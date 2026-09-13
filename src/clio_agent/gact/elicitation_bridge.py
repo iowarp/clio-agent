@@ -621,6 +621,17 @@ async def handle_elicitation(
         namespace=str(invocation.namespace or ""),
         audience=audience_raw,
     )
+    logger.info(
+        "elicitation routing decision audience_raw=%r route=%s reason=%s detail=%s "
+        "namespace=%r tool=%r mode=%r",
+        audience_raw,
+        decision.route,
+        decision.reason,
+        decision.detail,
+        invocation.namespace,
+        invocation.tool_name,
+        mode,
+    )
     field_patch = agent_elicitation.routing_fields(decision)
     if field_patch:
         question = question.model_copy(update=field_patch)

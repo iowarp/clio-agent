@@ -80,12 +80,38 @@ def _fake_app(sessions: dict[str, Any] | None = None) -> Any:
     return SimpleNamespace(state=SimpleNamespace(sessions=_FakeSessions(sessions or {})))
 
 
-def test_decide_routing_no_audience_hint_is_a_pure_noop() -> None:
-    """Regression lock: absent/unrecognized audience never routes and never
-    records a reason — the byte-identical-today case."""
+def test_decide_routing_unhinted_form_defaults_to_agent_by_contract() -> None:
+    """fastmcp drops the InputRequiredResult ``_meta`` (2026-09-07), so a
+    guard-style server's audience tag never arrives. Because clio advertises the
+    agent-driven-elicitation extension on every execution client, an unhinted FORM
+    elicitation reaching the handler is agent-directed by that contract and routes
+    to the agent under the typed unhinted reason (default ON)."""
 
-    app = _fake_app()
+    app = _fake_app({"sid1": SimpleNamespace(metadata={})})
+    decision = ae.decide_routing(app, mode="form", session_id="sid1", namespace="v2ex", audience="")
+    assert decision.route is True
+    assert decision.reason == ae.ROUTED_UNHINTED_REASON
+    assert decision.depth == 1
+
+
+def test_decide_routing_unhinted_empty_namespace_still_fails_closed() -> None:
+    """An unhinted elicitation with no identifiable server namespace fails closed."""
+
+    app = _fake_app({"sid1": SimpleNamespace(metadata={})})
     decision = ae.decide_routing(app, mode="form", session_id="sid1", namespace="", audience="")
+    assert decision.route is False
+    assert decision.detail == "unknown_server"
+
+
+def test_decide_routing_strict_mode_makes_unhinted_a_pure_noop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With ``default_unhinted`` OFF, an unhinted elicitation is the byte-identical
+    pre-2026 no-op again (strict explicit-tag routing)."""
+
+    monkeypatch.setattr(ae, "_default_unhinted", lambda: False)
+    app = _fake_app({"sid1": SimpleNamespace(metadata={})})
+    decision = ae.decide_routing(app, mode="form", session_id="sid1", namespace="v2ex", audience="")
     assert decision.route is False
     assert decision.reason == ""
     assert ae.routing_fields(decision) == {}
@@ -414,12 +440,9 @@ def test_agent_answer_passing_schema_resolves_and_attributes_agent(
     question = _mint_pending_form_question(app, sid)
     app.state.user_questions[question.id] = question
 
-    def answer_turn(*args: Any, **kwargs: Any) -> str:
-        del args
-        kwargs["on_spawn"](SimpleNamespace(task_id="task_answer", child_session_id="sess_answer"))
-        return '{"answer": {"nonce": "xyz-42"}}'
-
-    monkeypatch.setattr(ae, "_run_agent_answer_turn", answer_turn)
+    monkeypatch.setattr(
+        ae, "_run_agent_answer_inline", lambda *a, **k: '{"answer": {"nonce": "xyz-42"}}'
+    )
     invocation = MCPInvocationContext(
         invocation_id="inv", session_id=sid, namespace="v2ex", tool_name="agent_guarded_input"
     )
@@ -431,10 +454,6 @@ def test_agent_answer_passing_schema_resolves_and_attributes_agent(
     assert updated.status == "answered"
     assert updated.answered_by == "agent"
     assert updated.answer_metadata == {"nonce": "xyz-42"}
-    assert updated.metadata["agent_answer_task"] == {
-        "task_id": "task_answer",
-        "child_session_id": "sess_answer",
-    }
 
 
 def test_agent_answer_failing_schema_never_reaches_the_server(
@@ -462,7 +481,7 @@ def test_agent_answer_failing_schema_never_reaches_the_server(
         "clio_agent.gact.elicitation_bridge.claim_question_transition", _spying_transition
     )
     # The required "nonce" field is MISSING from the agent's answer -- schema-invalid.
-    monkeypatch.setattr(ae, "_run_agent_answer_turn", lambda *a, **k: '{"answer": {}}')
+    monkeypatch.setattr(ae, "_run_agent_answer_inline", lambda *a, **k: '{"answer": {}}')
 
     invocation = MCPInvocationContext(
         invocation_id="inv", session_id=sid, namespace="v2ex", tool_name="agent_guarded_input"
@@ -479,16 +498,23 @@ def test_agent_answer_failing_schema_never_reaches_the_server(
     assert still_pending.agent_elicitation_fallback_detail == "agent_answer_schema_invalid"
 
 
-def test_agent_decline_falls_back_to_human_typed(
+def test_agent_decline_is_forwarded_to_the_server_typed(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A DELIBERATE agent decline is a valid elicitation RESPONSE, not a failure
+    to answer: the question resolves (``elicitation_action: decline`` -- the
+    bridge maps it to ``ElicitResolution(action="decline")``) so the SERVER
+    applies its own fallback (the size-guard hard-truncates to a bounded result).
+    Headless there is no human to escalate a decline to; the human path stays
+    reserved for genuine NON-answers (error/timeout/unparseable/schema-invalid)."""
+
     app = client.app  # type: ignore[attr-defined]
     sid = _create_session(client)
     question = _mint_pending_form_question(app, sid)
     app.state.user_questions[question.id] = question
 
     monkeypatch.setattr(
-        ae, "_run_agent_answer_turn", lambda *a, **k: '{"decline": true, "reason": "unsure"}'
+        ae, "_run_agent_answer_inline", lambda *a, **k: '{"decline": true, "reason": "unsure"}'
     )
     invocation = MCPInvocationContext(
         invocation_id="inv", session_id=sid, namespace="v2ex", tool_name="agent_guarded_input"
@@ -497,9 +523,21 @@ def test_agent_decline_falls_back_to_human_typed(
 
     asyncio.run(ae._dispatch_agent_answer(app, question, invocation, None, decision))
 
-    still_pending = app.state.user_questions[question.id]
-    assert still_pending.status == "pending"
-    assert still_pending.agent_elicitation_fallback_detail == "agent_declined"
+    declined = app.state.user_questions[question.id]
+    assert declined.status == "answered"
+    assert declined.answered_by == "agent"
+    assert declined.answer_metadata == {"elicitation_action": "decline"}
+    # The author-independent disclosure was recorded for the observation seam
+    # (drained here so the module-global stays clean across tests).
+    from clio_agent.gact.elicitation_correlation import drain_narrowing_disclosures
+
+    assert drain_narrowing_disclosures(sid, "agent_guarded_input") == [
+        {
+            "tool": "agent_guarded_input",
+            "audience": "agent",
+            "answer": {"declined": True, "reason": "unsure"},
+        }
+    ]
 
 
 def test_agent_answer_error_falls_back_typed_never_crashes(
@@ -513,7 +551,7 @@ def test_agent_answer_error_falls_back_typed_never_crashes(
     def _boom(*a: Any, **k: Any) -> str:
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(ae, "_run_agent_answer_turn", _boom)
+    monkeypatch.setattr(ae, "_run_agent_answer_inline", _boom)
     invocation = MCPInvocationContext(
         invocation_id="inv", session_id=sid, namespace="v2ex", tool_name="agent_guarded_input"
     )
@@ -537,7 +575,9 @@ def test_human_still_answers_normally_after_a_fallback(
     sid = _create_session(client)
     question = _mint_pending_form_question(app, sid)
     app.state.user_questions[question.id] = question
-    monkeypatch.setattr(ae, "_run_agent_answer_turn", lambda *a, **k: '{"decline": true}')
+    # An UNPARSEABLE reply is a genuine non-answer -> typed fallback to human
+    # (a decline no longer falls back: it is forwarded to the server).
+    monkeypatch.setattr(ae, "_run_agent_answer_inline", lambda *a, **k: "not json at all")
     invocation = MCPInvocationContext(
         invocation_id="inv", session_id=sid, namespace="v2ex", tool_name="agent_guarded_input"
     )
@@ -894,7 +934,7 @@ def test_over_long_agent_answer_fails_the_schema_firewall_and_falls_back(
     app.state.user_questions[question.id] = question
     monkeypatch.setattr(
         ae,
-        "_run_agent_answer_turn",
+        "_run_agent_answer_inline",
         lambda *a, **k: '{"answer": {"code_word": "way-too-long-a-value"}}',
     )
     invocation = MCPInvocationContext(
@@ -971,10 +1011,17 @@ def _wait_for_pending_question(
     raise TimeoutError("elicitation question never appeared")
 
 
-def test_no_audience_hint_mints_a_question_with_no_new_fields(client: TestClient) -> None:
-    """Regression lock: a question minted with NO ``_meta`` audience hint carries
-    none of the #1309 wire fields at all -- exact key-set parity with today."""
+def test_no_audience_hint_mints_a_question_with_no_new_fields(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression lock (strict mode): with ``default_unhinted`` OFF, a question
+    minted with NO ``_meta`` audience hint carries none of the #1309 wire fields
+    at all -- exact key-set parity with the pre-2026 no-op. (The DEFAULT now routes
+    an unhinted form elicitation to the agent, since fastmcp drops the
+    InputRequiredResult ``_meta`` so the explicit tag can never survive -- covered
+    by ``test_decide_routing_unhinted_form_defaults_to_agent_by_contract``.)"""
 
+    monkeypatch.setattr(ae, "_default_unhinted", lambda: False)
     app = client.app  # type: ignore[attr-defined]
     sid = _create_session(client)
     backend = FastMCP("plain-elicit-backend")

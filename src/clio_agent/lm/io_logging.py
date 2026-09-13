@@ -127,6 +127,20 @@ def _shim_lmstudio_response_format(kwargs: dict[str, Any]) -> None:
         }
 
 
+def _kvnorm_response_id(response: Any) -> str:
+    """The provider response id (``chatcmpl-*``) for the kvnorm join, or ``""``.
+
+    Only meaningful when :func:`clio_agent.provenance_config.kvnorm_join_enabled`
+    holds (the ``provenance.kvnorm`` opt-in AND Flowcept configured); the caller
+    gates. Reads litellm's ``ModelResponse.id`` (dict responses supported).
+    """
+
+    rid = getattr(response, "id", None)
+    if rid is None and isinstance(response, dict):
+        rid = response.get("id")
+    return str(rid or "")
+
+
 def _is_transient_provider_error(exc: BaseException) -> bool:
     """True for transient provider/infrastructure failures that a re-issue can heal
     (vs. typed-output/parse errors, which are the repair loop's job, not retried)."""
@@ -636,6 +650,12 @@ def _io_logging_lm_cls() -> Any:
                     "usage": entry.get("usage"),
                     "timestamp": entry.get("timestamp"),
                 }
+                # Stage 3 kvnorm crosslink: the vLLM response id keys this lm.call
+                # to its kv_token_importance record in the fused Flowcept store.
+                from clio_agent.provenance_config import kvnorm_join_enabled  # noqa: PLC0415
+
+                if kvnorm_join_enabled():
+                    record["response_id"] = _kvnorm_response_id(response)
                 try:
                     from clio_agent.gact.context import (  # noqa: PLC0415
                         active_session_id,

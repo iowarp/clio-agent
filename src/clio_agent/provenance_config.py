@@ -71,6 +71,26 @@ def _normalize_provider_names(names: list[str]) -> list[str]:
     return result
 
 
+def kvnorm_join_enabled() -> bool:
+    """Whether the vLLM response id is stamped onto ``lm.call`` provenance records.
+
+    The id (``chatcmpl-*``) is the join key between clio's
+    ``ai_model_invocation`` stream and vllm-kvnorm's ``kv_token_importance``
+    stream in one Flowcept store. Requires BOTH the explicit
+    ``provenance.kvnorm`` opt-in AND Flowcept among the configured providers --
+    without Flowcept there is no fused store to join, so the stamp stays off.
+    """
+
+    if not conf.resolve(
+        "provenance.kvnorm",
+        env="CLIO_PROVENANCE_KVNORM",
+        default=False,
+        cast=conf.as_bool,
+    ):
+        return False
+    return "flowcept" in configured_provider_names()
+
+
 def native_durable_provenance_enabled() -> bool:
     """Whether ARC may release its event log after native persistence."""
 

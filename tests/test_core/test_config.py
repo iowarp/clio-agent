@@ -248,3 +248,80 @@ def test_guided_vllm_caps_output_to_the_remaining_context_window(
     assert result == [{"answer": "ready"}]
     assert lm.calls
     assert int(lm.calls[0]["max_tokens"]) < 2048
+
+
+# ---- #1326: _ContextOverflowError pre-flight for the non-guided path ----
+
+
+def test_context_overflow_error_raised_when_prompt_exceeds_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A _ContextOverflowError fires before the LM call when prompt > window."""
+    import dspy
+
+    from clio_agent.lm.adapters import _ContextOverflowError
+
+    class AnswerSig(dspy.Signature):
+        question: str = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    # Build a non-guided config with a tiny context window.
+    config = LMProviderConfig(provider_id="vllm", model="ibm/granite-4.2-30b", max_tokens=0)
+    config.context_window = 512
+    config.chosen_context = 512
+
+    adapter = create_chat_adapter(config)
+    # Verify the window was stamped onto the adapter.
+    assert int(getattr(adapter, "_clio_context_window", 0)) == 512
+
+    class NeverCalledLM:
+        model = "hosted_vllm/ibm/granite-4.2-30b"
+        supported_params: list[str] = []
+        kwargs: dict = {}
+
+        def __call__(self, **kwargs: object) -> list[str]:
+            raise AssertionError("LM should not be called when prompt overflows")
+
+    with pytest.raises(_ContextOverflowError, match="tokens > context"):
+        adapter(
+            NeverCalledLM(),
+            {},
+            AnswerSig,
+            [],
+            {"question": "word " * 600},  # ~600+ tokens, well above the 512 window
+        )
+
+
+def test_context_overflow_error_no_false_positive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A small prompt under the window should NOT raise _ContextOverflowError."""
+    import dspy
+
+    from clio_agent.lm.adapters import _ContextOverflowError
+
+    class TinySig(dspy.Signature):
+        question: str = dspy.InputField()
+        answer: str = dspy.OutputField()
+
+    config = LMProviderConfig(provider_id="vllm", model="ibm/granite-4.2-30b", max_tokens=0)
+    config.context_window = 32768
+    config.chosen_context = 32768
+
+    adapter = create_chat_adapter(config)
+    responses: list[str] = []
+
+    class EchoLM:
+        model = "hosted_vllm/ibm/granite-4.2-30b"
+        supported_params: list[str] = []
+        kwargs: dict = {}
+
+        def __call__(self, *, messages: list, **kwargs: object) -> list[str]:
+            responses.append("ok")
+            return ['[[ ## answer ## ]]\nok']
+
+    # Should not raise; a tiny prompt fits comfortably.
+    try:
+        adapter(EchoLM(), {}, TinySig, [], {"question": "hello"})
+    except _ContextOverflowError:
+        pytest.fail("_ContextOverflowError raised for a prompt well within the window")

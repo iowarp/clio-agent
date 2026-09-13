@@ -147,7 +147,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # comment lines explaining why the stamp is deliberately absent here.
     # MERGE (PR #1298 x #1310): 1030 -> 1032. Both campaigns' call-site lines
     # coexist; neither side's additions were dropped.
-    "src/clio_agent/agent.py": 986,  # blueprint activation moved to gact/blueprint_activation.py
+    "src/clio_agent/agent.py": 1015,  # blueprint activation moved to gact/blueprint_activation.py
     "src/clio_agent/arc/memory.py": 1389,  # provider ladder moved to provenance_config.py
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
@@ -167,6 +167,26 @@ RATCHET_BASELINE: dict[str, int] = {
     # minimized to concise docstrings; the per-op payload passing is irreducible. Ratchet
     # down with the #714/#767 decomposition.
     "src/clio_agent/arc/working_set_fold.py": 919,
+    # #1326: config.py was already 807 lines (7 over the 800 cap) before this
+    # change — unbaselined pre-existing debt. +48 for the four-part fix: (1) a
+    # native_context_window field on LMProviderConfig, (2) the lm.context_window /
+    # CLIO_LM_CONTEXT_WINDOW override resolved in apply_handshake, (3) the
+    # context_window_below_native warning, and (4) the updated load_config_from_env
+    # docstring. The override resolution lives inline in apply_handshake (the one
+    # bind-time site), not a new module, because it is a single conf.resolve call
+    # tightly coupled to the existing window-vs-override decision. Ratchet down
+    # as config.py's modular decomposition continues.
+    "src/clio_agent/config.py": 844,
+    # #1326: adapters.py was 780 lines (under the 800 cap). +56 for: a new
+    # _ContextOverflowError typed exception, a _check_context_overflow pre-flight
+    # helper (mirrors the guided path's _bound_guided_output_kwargs shape), pre-
+    # flight calls in LenientChatAdapter.__call__ and .acall, and _clio_context_window
+    # / _clio_model stamps in create_chat_adapter (mirrors the guided-path stamp).
+    # Together these surface a context overflow on the non-guided path as a typed,
+    # self-explaining "prompt≈N tokens > context M" error before the server sees the
+    # request, replacing an opaque HTTP 400. Ratchet down as the adapters module is
+    # further decomposed per #714/#767.
+    "src/clio_agent/lm/adapters.py": 836,
     # 2026-08-04 (78f81d6f, unrelated to the P5 wire-semantics wave): +43 for
     # validate_agent_blueprint_path's new runtime_tool_names parameter -- pack
     # validation only knew builtins + pack mcp_servers namespaces, so an expert
@@ -267,8 +287,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # asyncio.Task/asyncio.run is verify-don't-assume, not safe-by-default)
     # after B1 proved the "F3a's ensure_future boundary is just safe" framing
     # was itself the exact ordering bug the B1 fix corrects.
-    # MERGE (PR #1298 x #1310): 921 -> 924. Both campaigns' additive call sites
-    # land in this file; no logic moved in from either owner module.
+    # (reactv2.py's entry retired: 736 lines, back under the flat 800 cap.)
     # #948 S4/S5/S6 growth already carried this file past the flat 800 cap (to 842)
     # before it was ever added to this baseline — a pre-existing gap this change
     # did not introduce (it was silently exempt from the ratchet, not under it).
@@ -353,7 +372,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # other TaskSpec field already uses in this file.
     # MERGE (PR #1298 x #1310): 820 -> 824. Both campaigns' additive spawn-path
     # lines coexist.
-    # #1333 ratchet payment: 823 -> 818. The done-callback lambda + the
+    # #1333 ratchet payment: 823 -> 818 (this level's own baseline was briefly
+    # 824 per 75dbecab's parallel-campaign merge note below; our split moved
+    # the file well under either value). The done-callback lambda + the
     # continuation-chaining check landed in the new owner module
     # gact/agent_task_wake.py; the waiting_user HITL-forward branch moved to
     # its natural owner gact/child_forward.py (forward_waiting_child).
@@ -573,12 +594,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # the MCP_APP_MIME_TYPE literal (was hand-typed here AND in gact/artifacts/
     # wire.py) from the registry's re-export of fastmcp's own UI_MIME_TYPE.
     # Zero behavior change -- the value is byte-identical.
-    # #1308: +22 (780 -> 802) for the three typed no-silent-fallback call sites
-    # in the observer's early-return gates (mcp_app_skipped_no_resource_uri /
-    # _error_result / _no_session) plus the two re-export imports. The reason
-    # CATALOG + recording/query logic itself lives in the NEW owner module
-    # gact/mcp_app_observer_reasons.py (no-accretion) -- only the minimal
-    # per-gate call + a re-export land here.
+    # (mcp_apps.py's entry retired: 661 lines, back under the flat 800 cap.)
     # #895: +6 for threading the provider-generic thinking_level onto the LM bind
     # (LMProviderConfig arg + app.state.lm_config + the GET's thinking_level /
     # thinking_effective fields). The mapping logic itself lives in the owner
@@ -784,6 +800,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1333 ratchet payment: 822 -> 818, single-item multi-line imports (the
     # turn_finalize/turn_stream/types blocks) consolidated to one line each.
     "src/clio_agent/gact/turn.py": 818,
+    # (agent_tasks.py's entry retired: exactly 800 lines, at the flat cap.)
     # #952 S4 Pass C: -9 (the answer-substitution finalize call + import were
     # removed with the settle layer's degradation ledger).
     # #953 [5]: +3 to surface the variant winner stamp (variant_selection) on the
@@ -842,14 +859,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # gact/elicitation_schema.py, only the wire-model literal lands here.
     # C1-S7 (#1309): +26 (896 -> 922) for four additive, all-Optional
     # attribution/routing wire fields on UserQuestion (audience / answered_by /
-    # agent_elicitation_routing / agent_elicitation_fallback_detail) — every
-    # decision/dispatch/validation LOGIC these fields carry lives entirely in
-    # the new owner module gact/agent_elicitation.py; only the wire-model
-    # declarations (+ their per-field rationale docstrings, most of this
-    # delta) land here. All four default to ``None`` and are excluded by
-    # ``exclude_none`` on every existing dump, so a no-audience-hint question
-    # is byte-identical to the pre-#1309 shape (regression-locked,
-    # test_agent_elicitation.py::test_no_audience_hint_mints_a_question_with_no_new_fields).
+    # (types.py's entry retired: 741 lines, back under the flat 800 cap.)
     # -120 (#891): the SDK-session machinery moved out to sibling owner modules —
     # the blocking-path pool to providers/claude_code_sdk_pool.py and the per-expert
     # streaming session/delta transport to providers/claude_code_sessions.py; this
@@ -880,14 +890,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # 862 -> 866 (#1333): acompletion runs the blocking pool bridge off the loop (+1 import,
     # +2 comment, +1 to_thread call); the bridge itself stays in claude_code_sdk_pool.py.
     "src/clio_agent/providers/claude_code_litellm.py": 866,
-    # NEW entry (MERGE, PR #1298 x #1310): crossed the flat 800 cap (805) because
-    # BOTH campaigns' orphan-attribution guards now stack on the same census: the
-    # ProcessNode gains executable/cwd (path evidence, PR #1298) AND cmdline
-    # (#1303 product evidence), and the reparented-orphan branch runs
-    # _belongs_to_runtime BEFORE lazily attaching the live cmdline, so a row must
-    # clear both gates. Neither guard was dropped to fit the cap and the rationale
-    # is not trimmed to fit a ratchet; the baseline moves instead. Ratchets back
-    # when the snapshot/classify/reap trio is split into its own module.
+    # (process_census.py's entry retired: 711 lines, back under the flat 800 cap.)
     # NEW entry (#1305 review round): crossed the flat 800 cap (800 -> 825)
     # for the F2/F4/F6b fixes an adversarial review demanded on
     # _StreamClientEntry itself: (F2) the STREAM_END sentinel now queues
@@ -1084,8 +1087,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1285 (C1-S5, item 1): +5 for the two ``client.call_tool`` call sites
     # (unbounded + activity-backstop-bounded) routed through
     # ``call_tool_with_header_retry`` -- same owner module as above.
-    # #1333 ratchet payment: 934 -> 923, _tool_ui_metadata/_tool_visible_to_model
-    # moved to the new owner module tools/tool_ui_metadata.py (re-exported here).
+    # #1333 ratchet payment: this level's own baseline was briefly 940 per
+    # 75dbecab's parallel-campaign growth (merged below); _tool_ui_metadata/
+    # _tool_visible_to_model moved to the new owner module
+    # tools/tool_ui_metadata.py (re-exported here), landing well under either
+    # recorded value.
     "src/clio_agent/tools/mcp_executor.py": 923,
     # AF-FOLD (PR #1298): ratcheted DOWN 817 -> 816. Credential redaction moved to
     # the owner module tools/mcp_redaction.py, which more than paid for the
@@ -1201,6 +1207,18 @@ RATCHET_BASELINE: dict[str, int] = {
     # one-command install acceptance) adds it back slightly — net ratchet 1141 -> 1138 (still
     # a reduction vs the inherited baseline).
     "src/clio_agent/ui/cli.py": 1138,
+    # (agent_elicitation.py's entry retired, #1331 review round: the file was a
+    # NEW god-file at 1001 lines, never a legitimate baseline target -- the 800
+    # cap is a backstop, not a license. Split by behavior into owner modules
+    # (moved code byte-equal): agent_elicitation_reasons.py (shared reason
+    # catalog + AgentElicitationDecision), agent_elicitation_policy.py (config
+    # knobs), agent_elicitation_context.py (shared prompt/transcript-excerpt
+    # helpers), agent_elicitation_answer_turn.py (the child-turn answerer),
+    # agent_elicitation_answer_inline.py (the inline answerer -- also the
+    # hoisted _AgentAnswer signature's new home, see check_no_class_in_
+    # function.py), and agent_elicitation_dispatch.py (the routed background
+    # task). agent_elicitation.py itself is now 379 lines, back under the flat
+    # 800 cap, re-exporting every public/monkeypatch-reached name unchanged.)
 }
 
 # Root of the source tree to scan, relative to the repository root.

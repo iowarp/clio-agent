@@ -38,6 +38,7 @@ __all__ = [
     "lookup_litellm_output",
     "lookup_models_dev",
     "lookup_models_dev_output",
+    "lookup_native_context",
     "resolve_context",
     "resolve_output_limit",
 ]
@@ -48,6 +49,28 @@ SOURCE_MODELS_DEV = "models.dev"
 SOURCE_LITELLM = "litellm"
 #: Provenance string for the local DB source.
 SOURCE_DB = "db"
+
+
+def lookup_native_context(model_id: str) -> int | None:
+    """Return the offline catalog's published max context for ``model_id``, or None.
+
+    Walks the same offline-only ladder as
+    :func:`clio_agent.gact.runtime.context_tokens._resolve_expert_context_window`:
+    LiteLLM bundled catalog first, then the bundled ``model_limits.json`` DB.
+    No network call is made. Returns None when neither source has an entry, so the
+    caller can leave ``native_context_window`` unset rather than guessing.
+
+    This is intentionally distinct from :func:`resolve_context`, which includes the
+    network-based models.dev source and is used for the *served* window; here we only
+    want the authoritative published max from a fully offline catalog so the
+    ``context_window_below_native`` warning can fire without any I/O at handshake time.
+    """
+    if not (model_id or "").strip():
+        return None
+    ctx = lookup_litellm_context(model_id)
+    if ctx is not None:
+        return ctx
+    return db.lookup_context(model_id)
 
 
 def resolve_context(model_id: str, provider_kind: str) -> tuple[int | None, str]:

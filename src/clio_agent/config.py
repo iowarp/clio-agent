@@ -268,8 +268,11 @@ class LMProviderConfig:
     # place that networks). ``__post_init__`` stays network-free for /health.
     # ``chosen_context`` is the active context limit clio operates against
     # (queryable; for LM Studio it reflects the loaded/load-sized window).
+    # ``native_context_window`` is the model's published max from the offline
+    # catalog (LiteLLM / bundled model_limits.json); None when unknown.
     context_window: int | None = field(init=False, default=None)
     chosen_context: int | None = field(init=False, default=None)
+    native_context_window: int | None = field(init=False, default=None)
     is_reasoning: bool = field(init=False, default=False)
     reasoning_param: str | None = field(init=False, default=None)
     native_tool_calling: bool = field(init=False, default=False)
@@ -364,6 +367,14 @@ class LMProviderConfig:
         Output caps remain operator choices: zero omits the cap, and positive
         values are preserved. ``user_set_max_tokens`` is retained for callers
         using the earlier signature. No-op when the report has no usable profile.
+
+        Context window precedence (highest to lowest):
+          1. ``lm.context_window`` / ``CLIO_LM_CONTEXT_WINDOW`` explicit override (>0)
+          2. Handshake-discovered effective window (``loaded_context_window`` or
+             ``context_window`` — faithfully reflects what vLLM is serving).
+        When the served window is below the model's native maximum (from the offline
+        catalog), a structured ``context_window_below_native`` warning is logged at
+        bind time so the mismatch is always visible in the trace.
         """
         profile = None
         models = getattr(report, "models", None) or ()
@@ -384,8 +395,40 @@ class LMProviderConfig:
         self.reasoning_param = profile.reasoning_param
         self.native_tool_calling = bool(profile.native_tool_calling)
         self.tool_call_parser = profile.tool_call_parser
+        self.native_context_window = getattr(profile, "native_context_window", None)
         window = profile.effective_context_window
-        self.chosen_context = window
+
+        # Config override: ``lm.context_window`` / ``CLIO_LM_CONTEXT_WINDOW`` >0
+        # lets an operator assert a larger (or different) window than vLLM serves.
+        # The default is 0 (auto — use the discovered window). This is the only
+        # place the override is resolved; it does NOT suppress the served<native
+        # warning, which is about provider configuration, not operator intent.
+        from clio_agent import conf  # noqa: PLC0415 - keep config.py a leaf; lazy
+        override = conf.resolve(
+            "lm.context_window", env="CLIO_LM_CONTEXT_WINDOW", default=0, cast=conf.as_int
+        )
+        if override and override > 0:
+            self.chosen_context = override
+        else:
+            self.chosen_context = window
+
+        # Part 3: warn when the served window is below the model's native max.
+        # This fires even when the operator override is in effect — the mismatch
+        # is a provider configuration fact, not an operator intent.
+        if (
+            self.native_context_window
+            and window is not None
+            and window < self.native_context_window
+        ):
+            logger.warning(
+                "context_window_below_native model=%s "
+                "served_context=%d native_context=%d "
+                "reason=vllm_max_model_len_below_native "
+                "hint=set CLIO_LM_CONTEXT_WINDOW or lm.context_window to override",
+                self.model,
+                window,
+                self.native_context_window,
+            )
         # Discovery describes capacity; it does not configure an output cap.
         # Keep both zero (uncapped) and explicit per-role limits intact.
 
@@ -465,6 +508,10 @@ def load_config_from_env() -> LMProviderConfig:
         ``lm.top_p`` / ``lm.top_k`` / ``lm.min_p`` / ``lm.presence_penalty``: sampling
         ``lm.codex_transport`` / CLIO_CODEX_TRANSPORT: Codex transport (sdk only)
         ``lm.claude_code_transport`` / CLIO_CLAUDE_CODE_TRANSPORT: Claude Code transport
+        ``lm.context_window`` / CLIO_LM_CONTEXT_WINDOW: Override effective context window
+            (tokens); 0 = auto-derive from handshake (default). Set to assert a larger
+            window than the provider serves (e.g. when vLLM's --max-model-len clips the
+            native max). Applied in apply_handshake; resolved lazily there, not here.
         ``runtime.environment`` / CLIO_ENVIRONMENT: Deployment environment
 
     ``CLIO_LM_API_KEY`` is deliberately **NOT** routed through ``conf``: it is a
@@ -638,6 +685,7 @@ def has_explicit_model_override(env: Mapping[str, str] | None = None) -> bool:
 # F401`` marks the intentional after-code, imported-but-unused re-export.
 from clio_agent.lm.adapters import (
     _coerce_constructor_repr_to_jsonable,  # noqa: E402, F401
+    _ContextOverflowError,  # noqa: E402, F401
     _dump_unparseable_completion,  # noqa: E402, F401
     _fix_guided_schema,  # noqa: E402, F401
     _guided_output_enabled,  # noqa: E402, F401

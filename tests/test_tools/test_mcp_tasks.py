@@ -1114,9 +1114,15 @@ def test_make_mcp_client_declares_tasks_on_execution_clients() -> None:
     binding is unchanged); it finds that entry by type instead of assuming
     it is the only one, and pins the registry's OTHER active entry alongside
     it so a future entry addition/removal here is deliberate, not silent.
+
+    #1325 (a1f7a017, postdates this test): registry entry #3, the
+    agent-driven-elicitation ad, is unconditional like ``ui`` and folds in too.
     """
 
-    from clio_agent.tools.mcp_extension_registry import UI_EXTENSION_ID
+    from clio_agent.tools.mcp_extension_registry import (
+        AGENT_ELICITATION_EXTENSION_ID,
+        UI_EXTENSION_ID,
+    )
     from clio_agent.tools.mcp_runtime import make_mcp_client
 
     captured: dict[str, Any] = {}
@@ -1145,6 +1151,7 @@ def test_make_mcp_client_declares_tasks_on_execution_clients() -> None:
     assert {ext.identifier for ext in extensions} == {
         "io.modelcontextprotocol/tasks",
         UI_EXTENSION_ID,
+        AGENT_ELICITATION_EXTENSION_ID,
     }
 
 
@@ -1165,9 +1172,16 @@ def test_make_mcp_client_omits_the_declaration_for_a_proxy_client_class() -> Non
     is suppressed for this client class -- is unchanged; only the mechanical
     "no extensions key at all" assumption is updated to "tasks absent, ui
     present".
+
+    #1325 (a1f7a017, postdates this test): registry entry #3, the
+    agent-driven-elicitation ad, is unconditional like ``ui`` -- never
+    suppressed for a proxy client class either.
     """
 
-    from clio_agent.tools.mcp_extension_registry import UI_EXTENSION_ID
+    from clio_agent.tools.mcp_extension_registry import (
+        AGENT_ELICITATION_EXTENSION_ID,
+        UI_EXTENSION_ID,
+    )
     from clio_agent.tools.mcp_runtime import make_mcp_client
 
     captured: dict[str, Any] = {}
@@ -1184,7 +1198,10 @@ def test_make_mcp_client_omits_the_declaration_for_a_proxy_client_class() -> Non
 
     extensions = captured.get("extensions") or []
     assert not any(isinstance(ext, ClioTasksClientExtension) for ext in extensions)
-    assert {ext.identifier for ext in extensions} == {UI_EXTENSION_ID}
+    assert {ext.identifier for ext in extensions} == {
+        UI_EXTENSION_ID,
+        AGENT_ELICITATION_EXTENSION_ID,
+    }
 
 
 def test_no_tool_dispatching_client_is_built_outside_the_factory() -> None:
