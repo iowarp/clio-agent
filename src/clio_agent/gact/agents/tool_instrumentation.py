@@ -55,6 +55,7 @@ bridge, so a future tool cannot be born invisible.
 
 from __future__ import annotations
 
+import copy
 import functools
 import inspect
 import logging
@@ -73,6 +74,11 @@ logger = logging.getLogger(__name__)
 # survive ``functools.wraps``, which copies ``__dict__``).
 REPRESENTATION_ATTR = "_clio_tool_representation"
 TITLE_ATTR = "_clio_tool_title"
+PRESENTER_ATTR = "_clio_tool_result_presenter"
+START_PRESENTER_ATTR = "_clio_tool_start_presenter"
+_RESULT_PRESENTERS: dict[str, Any] = {}
+_START_PRESENTERS: dict[str, Callable[[Mapping[str, Any]], dict[str, Any]]] = {}
+_PRESENTER_KEYWORD_CONTAINERS: dict[str, tuple[str, ...]] = {}
 
 DEFAULT_REPRESENTATION = "row"
 TOOL_REPRESENTATIONS = frozenset({"row", "handoff", "chip"})
@@ -278,6 +284,8 @@ def native_tool(
     name: str,
     desc: str | None,
     args: dict[str, Any],
+    presentation: Any,
+    presentation_start: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None,
     title: str = "",
     representation: str = DEFAULT_REPRESENTATION,
 ) -> Any:
@@ -289,6 +297,11 @@ def native_tool(
     ONE sanctioned native construction path (CI guard baseline 0).
     """
 
+    from clio_agent.gact.agents.native_presenters import validate_declaration
+
+    validate_declaration(presentation)
+    setattr(func, PRESENTER_ATTR, presentation)
+    setattr(func, START_PRESENTER_ATTR, presentation_start)
     setattr(func, REPRESENTATION_ATTR, _validated_representation(representation, tool_name=name))
     setattr(func, TITLE_ATTR, sanitize_tool_title(title))
     return ClioNativeTool(func=func, name=name, desc=desc, args=args)
@@ -338,7 +351,13 @@ def rebuilt_tool(
     """
 
     inner_func = getattr(inner_tool, "func", None)
-    for attr in (TOOL_OBSERVED_ATTR, REPRESENTATION_ATTR, TITLE_ATTR):
+    for attr in (
+        TOOL_OBSERVED_ATTR,
+        REPRESENTATION_ATTR,
+        TITLE_ATTR,
+        PRESENTER_ATTR,
+        START_PRESENTER_ATTR,
+    ):
         value = getattr(inner_func, attr, None)
         if value is not None:
             setattr(func, attr, value)
@@ -489,6 +508,19 @@ def _instrument_tool(tool: Any) -> Any:
     )
     title = sanitize_tool_title(getattr(func, TITLE_ATTR, ""))
     _TOOL_PRESENTATIONS[name] = (representation, title)
+    presenter = getattr(func, PRESENTER_ATTR, None)
+    if presenter is not None:
+        _RESULT_PRESENTERS[name] = presenter
+        _PRESENTER_KEYWORD_CONTAINERS[name] = tuple(
+            parameter.name
+            for parameter in inspect.signature(func).parameters.values()
+            if parameter.kind is inspect.Parameter.VAR_KEYWORD
+        )
+    start_presenter = getattr(func, START_PRESENTER_ATTR, None)
+    if start_presenter is not None:
+        _START_PRESENTERS[name] = start_presenter
+    else:
+        _START_PRESENTERS.pop(name, None)
     if getattr(func, TOOL_OBSERVED_ATTR, False):
         return tool
     tool.func = observed_tool_callable(func, name)
@@ -505,3 +537,46 @@ def declared_tool_title(name: str) -> str:
     """The curated, sanitized title for ``name`` (empty when uncurated)."""
 
     return _TOOL_PRESENTATIONS.get(str(name or ""), (DEFAULT_REPRESENTATION, ""))[1]
+
+
+def present_native_result(
+    name: str, args: Mapping[str, Any], result: Any, structured: Any
+) -> dict[str, Any] | None:
+    """Run a registered observer presenter without changing the tool result."""
+
+    from clio_agent.gact.agents.native_presenters import native_presentation
+
+    presenter = _RESULT_PRESENTERS.get(name)
+    if presenter is None:
+        return None
+    args = _presentation_arguments(name, args)
+    if callable(presenter):
+        return presenter(copy.deepcopy(args), copy.deepcopy(result), copy.deepcopy(structured))
+    return native_presentation(presenter, args, result, structured)
+
+
+def _presentation_arguments(name: str, args: Mapping[str, Any]) -> dict[str, Any]:
+    """Unbind declared **keywords only for the observer's presentation copy."""
+    projected = copy.deepcopy(dict(args))
+    for container in _PRESENTER_KEYWORD_CONTAINERS.get(name, ()):
+        keywords = projected.get(container)
+        if isinstance(keywords, Mapping):
+            projected.pop(container)
+            projected.update(keywords)
+    return projected
+
+
+def present_native_start(name: str, args: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Project declared running activity without invoking the tool or changing arguments."""
+    from clio_agent.gact.tool_result_presentation import ToolPresentation
+
+    presenter = _START_PRESENTERS.get(name)
+    if presenter is None:
+        return None
+    try:
+        return ToolPresentation.model_validate(
+            presenter(_presentation_arguments(name, args))
+        ).model_dump(exclude_none=True)
+    except Exception:
+        logger.exception("Starting native presentation failed: %s", name)
+        return {"summary": "", "blocks": [], "diagnostic": "presentation_failed"}

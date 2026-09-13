@@ -1056,26 +1056,45 @@ def test_fanout_max_workers_bounds_batch_admission(tmp_path: Path, monkeypatch) 
             assert _wait_terminal(app, t.task_id, timeout=30.0).status == "completed"
 
 
-def test_fanout_unbounded_when_absent_uses_global_depth_cap(tmp_path: Path, monkeypatch) -> None:
+def test_fanout_unbounded_when_absent_uses_global_depth_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """With NO fanout declaration the batch admits up to the GLOBAL per-depth cap (3):
     a batch of 4 → 3 running + 1 queued (concurrency_cap), not fanout-bounded."""
 
     from tests.test_gact.test_spawn_ensemble_s5 import _RecordingAgent, _wait_terminal
 
-    agent = _RecordingAgent(sleep_s=0.6)
+    agent = _RecordingAgent()
+    release = threading.Event()
+    original_forward = agent.forward
+
+    def held_forward(question: str, session_id: str, **kwargs: Any) -> Any:
+        # Keep admission observable until the assertions finish, independent of
+        # suite load. A fixed sleep allowed a child to finish and admit the fourth
+        # task between the running and queued assertions on CI.
+        assert release.wait(timeout=30.0), "test did not release admitted children"
+        return original_forward(question, session_id, **kwargs)
+
+    monkeypatch.setattr(agent, "forward", held_forward)
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     agent.app = app
     plain_def = AgentDef(id="main", title="main", module={"kind": "react"})
     with TestClient(app) as client:
         app.state.max_concurrent_agent_tasks = 3
         parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
-        with _active(app, parent):
-            tool = _parallel_tool(_RecordingAgent(), plain_def, app, parent, monkeypatch)
-            out = json.loads(tool.func(spawns=[{"agent": "w", "task": f"r{i}"} for i in range(4)]))
+        try:
+            with _active(app, parent):
+                tool = _parallel_tool(_RecordingAgent(), plain_def, app, parent, monkeypatch)
+                out = json.loads(
+                    tool.func(spawns=[{"agent": "w", "task": f"r{i}"} for i in range(4)])
+                )
 
-        reg = app.state.agent_task_registry
-        tasks = [reg.get(s["task_id"]) for s in out["spawned"]]
-        assert sum(1 for t in tasks if t.status == "running") == 3, [t.status for t in tasks]
-        assert sum(1 for t in tasks if t.status == "queued") == 1, [t.status for t in tasks]
+            reg = app.state.agent_task_registry
+            tasks = [reg.get(s["task_id"]) for s in out["spawned"]]
+            assert sum(1 for t in tasks if t.status == "running") == 3, [t.status for t in tasks]
+            assert sum(1 for t in tasks if t.status == "queued") == 1, [t.status for t in tasks]
+            assert all(t.queued_reason == "concurrency_cap" for t in tasks if t.status == "queued")
+        finally:
+            release.set()
         for t in tasks:
             assert _wait_terminal(app, t.task_id, timeout=30.0).status == "completed"

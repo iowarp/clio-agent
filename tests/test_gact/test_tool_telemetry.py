@@ -317,7 +317,7 @@ class _LiveObservedDeclaredStructuredContentAgent:
         notify_global_tool_observer("wait_agent_tasks", args, "started", None)
         declare_structured_content(
             {
-                "summary": "waited 0.0s for 1 task — 1 completed",
+                "summary": "1 task — 1 completed",
                 "results": [
                     {
                         "name": "geospatial #1",
@@ -707,7 +707,10 @@ def test_live_observer_correlates_and_accumulates_terminal_progress(tmp_path: Pa
     assert [event.payload["call_id"] for event in progress] == [call_id, call_id]
     assert completed[0].payload["call_id"] == call_id
     assert progress[0].payload["output_stream"] == "collecting\n"
-    assert progress[1].payload["output_stream"] == ("collecting\n\x1b[31mwarning\n\x1b[0m")
+    assert progress[1].payload["output_stream"] == "collecting\nwarning\n"
+    deltas = [event for event in history if event.type == "tool.presentation.delta"]
+    assert [event.payload["channel"] for event in deltas] == ["stdout", "stderr"]
+    assert [event.payload["text"] for event in deltas] == ["collecting\n", "warning\n"]
 
 
 def test_wait_agent_tasks_tool_call_stamps_waited_tasks_display_rows(tmp_path: Path) -> None:
@@ -792,7 +795,7 @@ def test_declared_structured_content_wins_over_raw_result_and_is_one_shot(
     assert len(tool_results) == 2
     wait_result, other_result = tool_results
     assert wait_result["structured_content"] == {
-        "summary": "waited 0.0s for 1 task — 1 completed",
+        "summary": "1 task — 1 completed",
         "results": [
             {
                 "name": "geospatial #1",
@@ -1007,6 +1010,36 @@ def test_live_tool_observer_emits_route_context_before_tool_part(tmp_path: Path)
     assert added_parts[1]["tool_name"] == "NdpSearchDatasets"
     # The tool_call part is attributed to the expert that runs the tool.
     assert added_parts[1]["agent_id"] == "ndp_catalog"
+
+
+def test_live_tool_observer_marks_native_semantic_error_failed(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    client = TestClient(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+    observer = _make_tool_observer(app)
+
+    observer("raise_alert_card", {"title": "Notice"}, "started", None)
+    observer(
+        "raise_alert_card",
+        {"title": "Notice"},
+        "completed",
+        None,
+        {
+            "error": "alert_card_no_parent",
+            "message": "This session has no parent session.",
+        },
+    )
+
+    completed = [
+        event for event in _settled_history(app, sid) if event.type == "tool.call.completed"
+    ]
+    assert completed[-1].payload["ok"] is False
+    assert completed[-1].payload["error"] == "alert_card_no_parent"
+    assert completed[-1].payload["presentation"]["status"] == "failed"
+    assert completed[-1].payload["presentation"]["summary"] == ""
+    assert completed[-1].payload["presentation"]["blocks"][-1]["text"] == (
+        "This session has no parent session."
+    )
 
 
 def test_tool_result_full_in_trace_but_bounded_in_ledger(tmp_path: Path, monkeypatch) -> None:

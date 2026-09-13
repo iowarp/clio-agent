@@ -28,6 +28,7 @@ from clio_agent.gact.permission_gate import (
     _make_cancellation_checker,
     _make_permission_gate,
 )
+from clio_agent.gact.presentation_observer import completed_presentation, publish_presentation_delta
 from clio_agent.gact.runtime.globals import (
     _active_semantic_turn_id,
     _emit_semantic_event,
@@ -35,12 +36,13 @@ from clio_agent.gact.runtime.globals import (
     _new_message_id,
     _resolve_tool_session,
 )
-from clio_agent.gact.thought_dedup import TOOL_THOUGHT_STAGE, classify_live_thought
+from clio_agent.gact.thought_dedup import TOOL_THOUGHT_STAGE, resolve_started_tool_call_thought
 from clio_agent.gact.tool_progress import ToolProgressRegistry
 from clio_agent.gact.types import Message, Part
 from clio_agent.runtime import trace
 from clio_agent.runtime.stream_audit import stream_audit
 from clio_agent.tools.mcp_results import content_blocks_for_wire
+from clio_agent.tools.result_errors import structured_tool_result_error
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -57,28 +59,12 @@ _OBSERVER_CALL_T0 = threading.local()
 _OBSERVER_ELICIT_REC = threading.local()
 
 
-def _tool_call_event_key(call: Mapping[str, Any]) -> tuple[str, str]:
-    """Return a stable identity for de-duplicating tool telemetry events."""
-    call_id = str(call.get("call_id") or "").strip()
-    if call_id:
-        return "__call_id__", call_id
-    return _tool_call_name_args_key(call)
-
-
-def _tool_call_name_args_key(call: Mapping[str, Any]) -> tuple[str, str]:
-    """Return a tool-name/arguments identity for posthoc trajectory rows."""
-
-    name = str(call.get("name") or call.get("tool") or "")
-    args = call.get("args")
-    if args is None:
-        args = call.get("arguments")
-    if args is None:
-        args = call.get("params")
-    try:
-        encoded_args = json.dumps(args or {}, sort_keys=True, default=str)
-    except TypeError:
-        encoded_args = str(args or {})
-    return name, encoded_args
+from clio_agent.gact.tool_event_identity import (
+    _tool_call_event_key as _tool_call_event_key,
+)
+from clio_agent.gact.tool_event_identity import (
+    _tool_call_name_args_key as _tool_call_name_args_key,
+)
 
 
 def _tool_call_has_result_evidence(call: Mapping[str, Any]) -> bool:
@@ -242,12 +228,11 @@ def _open_turn_transcript(app: "FastAPI", sid: str, turn_id: str) -> "TurnTransc
     ``app.state`` dicts so untouched finalize reads and the live projection
     keep working during the PR2/PR3 window.
 
-    The ledger stores every streamed thought/answer part VERBATIM (#881): the
-    server no longer binds a visible-text prose cleaner here — model prose flows
-    to the wire byte-for-byte and the DSPy contract markers are split off at the
-    root (the #877 line-start detector), not scrubbed out of the transcript.
+    Parts are stored VERBATIM (#881; contract markers split at the root, #877). #1337:
+    the seal sink persists each part when it becomes final (part_atom_minter).
     """
 
+    from clio_agent.gact.part_atom_minter import transcript_sink  # noqa: PLC0415
     from clio_agent.gact.transcript import EventBusTranscriptPublisher  # noqa: PLC0415
 
     carried_msg_id = str(
@@ -259,6 +244,7 @@ def _open_turn_transcript(app: "FastAPI", sid: str, turn_id: str) -> "TurnTransc
         sid,
         turn_id,
         EventBusTranscriptPublisher(app.state.bus, sid),
+        sink=transcript_sink(app, sid),
     )
     if carried_msg_id or carried_parts or carried_keys:
         transcript.adopt_carried_state(
@@ -636,6 +622,7 @@ def _make_tool_observer(app: "FastAPI"):
             if projected is None:
                 return None
             sid, payload, handle = projected
+            publish_presentation_delta(app, sid, payload)
             app.state.bus.publish(Event(type="tool.call.progress", session_id=sid, payload=payload))
             return handle
 
@@ -675,6 +662,9 @@ def _make_tool_observer(app: "FastAPI"):
                 app, session_id=sid, tool_name=name, invocation_id=call_id
             )
             observer_handle = progress_registry.started(call_id, sid)
+            from clio_agent.gact.presentation_observer import starting_presentation
+
+            initial_presentation = starting_presentation(name, args)
             # B5 #979.7 (deferred B4 WRITER): join call_id → confined FLEET child (no-op on the
             # floor / built-in namespaces → the egress mint abstains). See ingest_edges.
             join_call_to_serving_child(app, sid, name, call_id)
@@ -685,6 +675,7 @@ def _make_tool_observer(app: "FastAPI"):
                 "call_id": call_id,
                 "tool": name,
                 "args": dict(args),
+                "presentation": initial_presentation,
                 "telemetry_source": "live_observer",
                 **representation_fields,
                 **tool_title_fields,
@@ -707,23 +698,18 @@ def _make_tool_observer(app: "FastAPI"):
             if representation == "handoff":
                 return observer_handle
             step_thought = _ctx.active_step_thought()
-            # #732/#883: next_thought owns its OWN streamed text row; the copy on
-            # tool_call.thought is redundant. Clear it IFF THIS step's next_thought
-            # tap slice SURVIVES cleaning as a visible row — a per-step, in-thread,
-            # format-only predicate (never a prose compare). A marker-only slice that
-            # cleans to empty, or no slice at all (SDK gap), KEEPS the thought so it
-            # never vanishes. Every outcome emits a structured reason (no silent
-            # fallback). See tests/test_gact/test_next_thought_single_owner.py.
+            raw_step_thought = step_thought
             transcript = _session_turn_transcript(app, sid)
             # #953: read the RUN-KEYED tap bucket (bare invoking_expert still owns attribution).
             _tap_scope = _ctx.run_keyed_scope(invoking_expert)
-            had_stream, survived = (
-                transcript.tap_step_survives_clean(_tap_scope, "next_thought")
-                if transcript is not None
-                else (False, False)
+            thought_step_id = _ctx.active_parent_span_id()
+            step_thought, decision = resolve_started_tool_call_thought(
+                transcript=transcript,
+                tap_scope=_tap_scope,
+                thought_step_id=thought_step_id,
+                step_thought=step_thought,
             )
-            decision = classify_live_thought(had_stream, survived)
-            if step_thought:
+            if raw_step_thought:
                 stream_audit(
                     TOOL_THOUGHT_STAGE,
                     agent_id=invoking_expert,
@@ -731,12 +717,14 @@ def _make_tool_observer(app: "FastAPI"):
                     visible=False,
                     duplicate_suppressed=decision.clear,
                     duplicate_reason=decision.reason,
-                    step_id=_ctx.active_parent_span_id(),
-                    head=step_thought[:120],
+                    step_id=thought_step_id,
+                    head=raw_step_thought[:120],
                 )
-            if decision.clear or not step_thought:
-                step_thought = ""
-            call_metadata = {"stream_source": "live", "telemetry_source": "live_observer"}
+            call_metadata = {
+                "stream_source": "live",
+                "telemetry_source": "live_observer",
+                **({"thought_step_id": thought_step_id} if thought_step_id else {}),
+            }
             # Per-tool STARTED metadata via the registry (tool_instrumentation.py)
             # -- never a hardcoded tool name in this generic path.
             metadata_resolver = tool_call_metadata_resolver(name)
@@ -756,6 +744,7 @@ def _make_tool_observer(app: "FastAPI"):
                     # model's text and the action it chose are one ordered event.
                     thought=step_thought,
                     input=bounded_tool_call_input(name, args),
+                    presentation=initial_presentation,
                     metadata=call_metadata,
                 ),
             )
@@ -763,7 +752,7 @@ def _make_tool_observer(app: "FastAPI"):
         elif phase == "completed":
             close_invocation(getattr(_OBSERVER_ELICIT_REC, "value", None))  # P1.3 #1113
             call_id = getattr(_OBSERVER_CALL_IDS, "value", "") or ""
-            progress_registry.completed(call_id)
+            terminal_output = progress_registry.completed(call_id)
             t0 = getattr(_OBSERVER_CALL_T0, "value", None)
             duration_ms = (time.time() - t0) * 1000 if t0 else 0.0
             cancel_event = app.state.cancel_events.get(sid)
@@ -771,6 +760,8 @@ def _make_tool_observer(app: "FastAPI"):
                 cancel_event is not None and cancel_event.is_set()
             )
             completion_error = error
+            if completion_error is None and result is not None:
+                completion_error = structured_tool_result_error(result)
             cancellation_metadata: dict[str, Any] = {}
             if completed_after_cancel:
                 completion_error = (
@@ -799,6 +790,9 @@ def _make_tool_observer(app: "FastAPI"):
                 )
             )
             result_summary = f"Tool {name} {'completed' if ok else 'failed'}."
+            result, presentation = completed_presentation(
+                name, args, result, structured_content, terminal_output, error=completion_error
+            )
             # Served payload = the tool-response atom's FACTS (ok/duration/cached/result/
             # error). No ui_summary/result_summary captions — clio transmits, it does not
             # author UI labels; the envelope ``summary`` below is the one short caption.
@@ -806,6 +800,7 @@ def _make_tool_observer(app: "FastAPI"):
                 "call_id": call_id,
                 "tool": name,
                 "ok": ok,
+                "presentation": presentation,
                 "duration_ms": duration_ms,
                 "cached": False,
                 "telemetry_source": "live_observer",
@@ -904,6 +899,7 @@ def _make_tool_observer(app: "FastAPI"):
                     # ``metadata``. Wire-only: the model's observation is the
                     # separate ``model_text`` built at the execution boundary.
                     structured_content=structured_content,
+                    presentation=presentation,
                     content_blocks=content_blocks_for_wire(result),  # #1188
                     content=[
                         Part(

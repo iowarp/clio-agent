@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
@@ -16,6 +17,7 @@ from clio_agent.gact.user_question_ledger import record_user_question
 
 PENDING_ASK_USER_META = "pending_ask_user"
 _KINDS = frozenset({"freeform", "choice", "confirmation"})
+_INTERNAL_FIELD_MARKER = re.compile(r"\[\[\s*##\s*[A-Za-z_][\w-]*\s*##")
 
 #: In-code fallbacks for the response window. Both are config-resolved
 #: (``gact.ask_user.ttl_s`` / ``gact.ask_user.max_ttl_s``) so an operator can widen
@@ -31,6 +33,20 @@ _DEADLINE_LOCK = threading.Lock()
 
 class AskUserError(RuntimeError):
     """Raised when ``ask_user`` cannot create a valid pending interaction."""
+
+
+def _validated_question(question: str) -> str:
+    """Return a clean user-facing question or reject model parser residue."""
+
+    prompt = str(question or "").strip()
+    if not prompt:
+        raise AskUserError("ask_user requires a non-empty question.")
+    if _INTERNAL_FIELD_MARKER.search(prompt):
+        raise AskUserError(
+            "ask_user question contains an internal parser marker; submit a clean "
+            "user-facing question."
+        )
+    return prompt
 
 
 def _task_id_for_session(app: Any, session_id: str) -> str:
@@ -151,9 +167,7 @@ def build_ask_user_tool(agent_def: Any) -> Any:
         session = app.state.sessions.get(session_id)
         if session is None:
             raise AskUserError("ask_user could not resolve the active session.")
-        prompt = str(question or "").strip()
-        if not prompt:
-            raise AskUserError("ask_user requires a non-empty question.")
+        prompt = _validated_question(question)
         normalized_kind = str(kind or "freeform").strip().lower()
         if normalized_kind not in _KINDS:
             raise AskUserError("ask_user kind must be freeform, choice, or confirmation.")
@@ -200,6 +214,7 @@ def build_ask_user_tool(agent_def: Any) -> Any:
     return native_tool(
         ask_user,
         name="ask_user",
+        presentation="specialized",
         desc=ask_user.__doc__,
         title="Ask User",
         args={

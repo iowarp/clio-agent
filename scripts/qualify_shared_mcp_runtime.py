@@ -107,9 +107,8 @@ def read_runtime_info(launcher: str, environment: dict[str, str]) -> dict[str, A
 
 async def discover_tools(launcher: str, environment: dict[str, str]) -> list[dict[str, Any]]:
     """Start four separate processes and return their MCP discovery evidence."""
-    from fastmcp.client.transports import StdioTransport  # noqa: PLC0415
-
     from fastmcp import Client  # noqa: PLC0415
+    from fastmcp.client.transports import StdioTransport  # noqa: PLC0415
 
     results: list[dict[str, Any]] = []
     for server in SERVERS:
@@ -133,9 +132,8 @@ async def exercise_csv_tools(
     launcher: str, work_dir: Path, environment: dict[str, str]
 ) -> list[dict[str, Any]]:
     """Profile and plot real CSV data through separate installed-server processes."""
-    from fastmcp.client.transports import StdioTransport  # noqa: PLC0415
-
     from fastmcp import Client  # noqa: PLC0415
+    from fastmcp.client.transports import StdioTransport  # noqa: PLC0415
 
     csv = work_dir / "data.csv"
     output = work_dir / "plot.png"

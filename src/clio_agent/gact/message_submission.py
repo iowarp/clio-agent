@@ -18,6 +18,7 @@ from clio_agent.gact.events import Event
 from clio_agent.gact.loop_inbox import enqueue_user_steer
 from clio_agent.gact.message_intents import DuplicateIntentError, PendingSteer
 from clio_agent.gact.messaging import _user_message_parts, raise_on_reserved_metadata
+from clio_agent.gact.part_atom_minter import run_transcript_job
 from clio_agent.gact.parts import Part
 from clio_agent.gact.providers.config import (
     _active_lm_supports_vision,
@@ -37,6 +38,7 @@ from clio_agent.gact.runtime.globals import (
     _iso_from_epoch,
     _new_message_id,
 )
+from clio_agent.gact.transcript_projection import on_message_appended
 from clio_agent.gact.turn_runner import session_busy_error_payload
 from clio_agent.gact.types import (
     ErrorEnvelope,
@@ -603,7 +605,12 @@ def accept_message(
             prior = app.state.message_intents.accept_pending(pending, key, ack)
             if prior is not None:
                 return _acceptance_replay(prior), 202
-            deps.append_session_message(app, sid, message)
+            # #1334: the ledger + local store now; the ARC atoms through the running
+            # turn's minter (FIFO, covered by its finalize barrier), never on the loop.
+            deps.append_session_message(app, sid, message, atoms_minted=True)
+            run_transcript_job(
+                app, sid, f"steer:{message.id}", lambda: on_message_appended(app, sid, message)
+            )
             enqueue_user_steer(
                 app,
                 sid,

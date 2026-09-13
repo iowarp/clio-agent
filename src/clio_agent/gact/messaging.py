@@ -286,9 +286,24 @@ def _ask_user_resume_text(question: UserQuestion) -> str:
 
 
 def _agent_accepts_images(agent: Any) -> bool:
-    """Return whether agent.forward can receive native image inputs."""
+    """Return whether agent.forward can receive native image inputs.
 
-    forward = getattr(agent, "forward", None)
+    #1334: resolve ``forward`` STATICALLY. ``dspy.Module.__getattribute__`` intercepts
+    exactly this attribute name and runs ``inspect.stack()`` (its "don't call forward
+    directly" check) — an O(frames) walk that reads and ``realpath``s every frame's source
+    file. Under uvicorn's deep loop stack the live #1334 legs measured 0.6-2.5 s for that
+    ONE getattr, on the server loop, right before the stream opens (plus a bogus DSPy
+    warning). ``getattr_static`` skips ``__getattribute__`` entirely; an object that only
+    exposes ``forward`` dynamically (``__getattr__``) still resolves through the fallback,
+    so the predicate's answer is unchanged for every agent shape.
+    """
+
+    try:
+        forward: Any = inspect.getattr_static(agent, "forward")
+    except AttributeError:
+        forward = getattr(agent, "forward", None)
+    if isinstance(forward, (staticmethod, classmethod)):
+        forward = forward.__func__
     if not callable(forward):
         return False
     try:

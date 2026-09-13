@@ -42,13 +42,11 @@ Design decisions (each answering a named review finding):
   visible).
 * **Byte-exact ``order`` (§4.1.A).** Each content atom carries a SCOPE-LOCAL ``order``
   computed exactly as :class:`~clio_agent.arc.segments.SegmentStore` computes it
-  (``max(order)+1`` for append, gap-midpoint for insert, the replaced slot for
-  summarize/replace), so the folded segment list is byte-identical to a
-  separately-written working set — the standing equivalence gate.
-* **Ingest-time search companion (§2.7).** Because content leaves the per-expert
-  scope, the per-scope ``.search`` companion would be orphaned. The fold rewrites it
-  at ingest: a zero-segment record under the logical scope carrying the folded live
-  text, so ``search_scopes`` ranks the scope identically to the old write.
+  (``max(order)+1`` for append, gap-midpoint for insert, the replaced slot for summarize/
+  replace), so the fold is byte-identical to a separately-written working set.
+* **Ingest-time search companion (§2.7).** Content leaves the per-expert scope, so the
+  fold rewrites the per-scope ``.search`` companion at ingest (a zero-segment record
+  under the logical scope carrying the folded live text); ``search_scopes`` is unchanged.
 
 The store is a drop-in behind the ``SegmentStore`` seam: it subclasses SegmentStore
 and overrides only the working-set ops/reads, delegating every reserved-scope
@@ -64,6 +62,7 @@ from typing import Any, Callable
 import msgspec
 
 from clio_agent.arc.live import EVENTS_SCOPE, is_events_scope
+from clio_agent.arc.loop_guard import assert_store_write_off_loop
 from clio_agent.arc.schema import (
     WORKING_SET_KINDS,
     Segment,
@@ -482,6 +481,7 @@ class FoldingSegmentStore(SegmentStore):
         """
         if not self._search_companion_enabled:
             return
+        assert_store_write_off_loop("segments.put", scope=scope)  # #1334: outside the catch
         try:
             live = self._live_fold(session_id, scope, as_of=None)
             text = "\n".join(segment_text(s) for s in live) or None

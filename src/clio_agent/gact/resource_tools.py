@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -217,23 +218,24 @@ async def wait_for_workspace_resource_processing(
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_s
     terminal_states = {"complete", "failed", "cancelled", "not_started"}
+
+    def result_payload(state: Any, *, terminal: bool, timed_out: bool) -> dict[str, Any]:
+        processing = state.model_dump()
+        processing.pop("events", None)
+        return {
+            "task_id": task_id,
+            "terminal": terminal,
+            "timed_out": timed_out,
+            "processing": processing,
+        }
+
     while True:
         state = await refresh_processing(app, record)
         if state.state in terminal_states:
-            return {
-                "task_id": task_id,
-                "terminal": True,
-                "timed_out": False,
-                "processing": state.model_dump(),
-            }
+            return result_payload(state, terminal=True, timed_out=False)
         remaining = deadline - loop.time()
         if remaining <= 0:
-            return {
-                "task_id": task_id,
-                "terminal": False,
-                "timed_out": True,
-                "processing": state.model_dump(),
-            }
+            return result_payload(state, terminal=False, timed_out=True)
         await asyncio.sleep(min(processing_poll_interval_s(), remaining))
 
 
@@ -422,9 +424,14 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
 
     def resource_wait(task_id: str, timeout_s: float) -> dict[str, Any]:
         app, workspace_id = active()
-        return asyncio.run(
+        started = time.perf_counter()
+        result = asyncio.run(
             wait_for_workspace_resource_processing(app, workspace_id, task_id, timeout_s)
         )
+        return {
+            **result,
+            "waited_ms": max(0, round((time.perf_counter() - started) * 1000)),
+        }
 
     def resource_search(resource_id: str, query: str, derivative_id: str = "") -> dict[str, Any]:
         app, workspace_id = active()
@@ -444,7 +451,8 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
         native_tool(
             resource_list,
             name="workspace_resource_list",
-            title="List Uploaded Resources",
+            presentation="resource",
+            title="List resources",
             representation="row",
             desc=(
                 "List uploaded resources owned by this workspace. Returns immutable resource "
@@ -455,7 +463,8 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
         native_tool(
             resource_inspect,
             name="workspace_resource_inspect",
-            title="Inspect Uploaded Resource",
+            presentation="resource",
+            title="Inspect",
             representation="row",
             desc=(
                 "Inspect one uploaded resource without reading its bytes. Returns custody, "
@@ -466,7 +475,8 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
         native_tool(
             resource_wait,
             name="workspace_resource_wait",
-            title="Wait for Resource Conversion",
+            presentation="resource",
+            title="Await conversion",
             representation="row",
             desc=(
                 "Wait once for a workspace resource conversion task to complete, fail, or be "
@@ -488,7 +498,8 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
         native_tool(
             resource_read,
             name="workspace_resource_read",
-            title="Read Uploaded Text",
+            presentation="resource",
+            title="Read",
             representation="row",
             desc=(
                 "Read a bounded textual upload or named Docling textual derivative. Use this "
@@ -505,7 +516,8 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
         native_tool(
             resource_search,
             name="workspace_resource_search",
-            title="Search Uploaded Resource",
+            presentation="resource",
+            title="Search",
             representation="row",
             desc=(
                 "Search bounded original text or a named Docling textual derivative. Use "
@@ -523,7 +535,8 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
         native_tool(
             resource_structure,
             name="workspace_resource_structure",
-            title="Read Document Structure",
+            presentation="resource",
+            title="Inspect structure",
             representation="row",
             desc=(
                 "Read the bounded Docling outline for an uploaded document, or one exact page, "

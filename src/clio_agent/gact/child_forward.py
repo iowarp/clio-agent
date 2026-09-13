@@ -39,8 +39,43 @@ __all__ = [
     "arm_forward_deadline",
     "fail_child_task",
     "fail_forwarded_child_task",
+    "forward_waiting_child",
     "settle_or_attach_forwarded_task",
 ]
+
+
+def forward_waiting_child(
+    app: "FastAPI", task: Any, child_sess: Any, child_sid: str, mode: str
+) -> bool:
+    """HITL-in-child (#1113): forward a paused child's pending question to the parent.
+
+    An unattended child cannot answer its own user question. If its turn paused
+    (``waiting_user``), FORWARD the pending question to the parent's HITL surface
+    instead of failing (replaces the deleted ``child_requires_user_input`` fail
+    path). Every edge terminates typed, nothing hangs: no pending question to
+    forward -> :func:`fail_child_task` now; forwarded -> the task stays in
+    progress but :func:`arm_forward_deadline` bounds an unattended-parent deadline
+    that terminates it typed and frees the slot; a parent answer resumes the child
+    (the caller's completion hook runs again at true completion); a parent
+    cancel/decline relays down to :func:`fail_forwarded_child_task`.
+
+    Returns ``True`` when the child was waiting and this call handled it (the
+    caller must return without its own terminal handling); ``False`` when the
+    child was not paused for user input (the caller proceeds as normal).
+    """
+
+    from clio_agent.gact.elicitation_forwarding import (  # noqa: PLC0415
+        forward_child_question_to_parent,
+    )
+
+    if child_sess is None or getattr(child_sess, "status", "") != "waiting_user":
+        return False
+    forwarded_qid = forward_child_question_to_parent(app, task, child_sid)
+    if forwarded_qid is None:
+        fail_child_task(app, task, child_sid, "child_question_forward_failed", mode)
+    else:
+        arm_forward_deadline(app, forwarded_qid)
+    return True
 
 
 def fail_child_task(app: "FastAPI", task: Any, child_sid: str, reason: str, mode: str) -> None:
@@ -153,12 +188,19 @@ def settle_or_attach_forwarded_task(app: "FastAPI", task_id: str) -> None:
         return
     child_sid = task.child_session_id
 
+    from clio_agent.gact.agent_task_wake import build_child_done_callback  # noqa: PLC0415
     from clio_agent.gact.turn_spawn import _on_child_done  # noqa: PLC0415
 
     in_flight = getattr(app.state, "in_flight_turns", {}).get(child_sid)
     if in_flight is not None:
+        # #1334 review round: MUST pass the finished-turn identity through (the
+        # same builder _launch uses) so _on_child_done's continuation check
+        # (agent_task_wake.resume_on_continuation_turn) recognizes THIS callback
+        # as belonging to the very turn it fired on, rather than mistaking the
+        # still-in-flight entry for a newer continuation and re-chaining forever
+        # (a bare no-finished_turn lambda here stalled the task at RUNNING).
         in_flight.add_done_callback(
-            lambda _t, tid=task_id, csid=child_sid: _on_child_done(app, tid, csid, "async")
+            build_child_done_callback(_on_child_done, app, task_id, child_sid, "async")
         )
         return
     _complete_forwarded_task(app, task)

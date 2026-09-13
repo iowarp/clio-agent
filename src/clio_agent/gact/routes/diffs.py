@@ -52,9 +52,10 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException, Request, Response
 
+from clio_agent.gact.diff_ledger import pending_diff_rows
 from clio_agent.gact.events import Event
 from clio_agent.gact.routes._body import json_body
-from clio_agent.gact.runtime.retention import enforce_list_bound
+from clio_agent.gact.runtime.retention import enforce_list_bound, ledger_guard
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 if TYPE_CHECKING:
@@ -114,7 +115,7 @@ def register_diffs_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        return {"diffs": [_diff_row_to_wire(row) for row in app.state.pending_diffs.get(sid, [])]}
+        return {"diffs": [_diff_row_to_wire(row) for row in pending_diff_rows(app, sid)]}
 
     @app.get("/v1/sessions/{sid}/messages/{message_id}/diffs")
     async def list_message_diffs(sid: str, message_id: str) -> dict[str, Any]:
@@ -146,7 +147,7 @@ def register_diffs_routes(app: FastAPI, deps: "GactDeps") -> None:
         return {
             "diffs": [
                 _diff_row_to_wire(row)
-                for row in app.state.pending_diffs.get(sid, [])
+                for row in pending_diff_rows(app, sid)
                 if row.get("message_id") == message_id
             ]
         }
@@ -178,8 +179,9 @@ def register_diffs_routes(app: FastAPI, deps: "GactDeps") -> None:
         body = await json_body(request, route="POST /v1/sessions/{sid}/diffs/apply")
         paths = [p for p in (body.get("paths") or []) if isinstance(p, str)]
 
-        rows = app.state.pending_diffs.get(sid, [])
-        targets = _filter_diff_paths(rows, paths)
+        with ledger_guard(app):  # #1334: finalize appends from the turn executor
+            rows = app.state.pending_diffs.get(sid, [])
+            targets = _filter_diff_paths(rows, paths)
         applied: list[str] = []
         write_errors: dict[str, str] = {}
         for r in targets:
@@ -264,8 +266,9 @@ def register_diffs_routes(app: FastAPI, deps: "GactDeps") -> None:
         body = await json_body(request, route="POST /v1/sessions/{sid}/diffs/reject")
         paths = [p for p in (body.get("paths") or []) if isinstance(p, str)]
 
-        rows = app.state.pending_diffs.get(sid, [])
-        targets = _filter_diff_paths(rows, paths)
+        with ledger_guard(app):  # #1334: finalize appends from the turn executor
+            rows = app.state.pending_diffs.get(sid, [])
+            targets = _filter_diff_paths(rows, paths)
         rejected: list[str] = []
         for r in targets:
             r["status"] = "rejected"
@@ -399,7 +402,8 @@ def register_diffs_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             )
         limit = max(1, min(int(limit or 50), 200))
-        rows = list(app.state.context_frames.get(sid, []))
+        with ledger_guard(app):
+            rows = list(app.state.context_frames.get(sid, []))
         return {"frames": rows[-limit:]}
 
     @app.get("/v1/sessions/{sid}/context/frames/{frame_id}")
@@ -416,7 +420,9 @@ def register_diffs_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        for row in app.state.context_frames.get(sid, []):
+        with ledger_guard(app):
+            frames = list(app.state.context_frames.get(sid, []))
+        for row in frames:
             if row.get("id") == frame_id:
                 return {"frame": row}
         raise HTTPException(

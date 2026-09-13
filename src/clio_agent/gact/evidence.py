@@ -261,7 +261,10 @@ def _extract_tools_called_from_trajectory(
     return rows
 
 
-def _propose_edit_diffs_from_pred(pred: Any) -> list[dict[str, Any]]:
+def _propose_edit_diffs_from_pred(
+    pred: Any,
+    observed_tools: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Promote successful ``fs_propose_edit`` tool results into file-diff proposals.
 
     A dynamic tool agent calls ``fs_propose_edit`` as a TOOL; unlike the builtin
@@ -277,7 +280,7 @@ def _propose_edit_diffs_from_pred(pred: Any) -> list[dict[str, Any]]:
     promoted; duplicates by (path, diff-prefix) are collapsed.
     """
 
-    rows: list[Any] = list(getattr(pred, "tools_called", None) or [])
+    rows: list[Any] = list(observed_tools or getattr(pred, "tools_called", None) or [])
     if not rows:
         rows = _extract_tools_called_from_trajectory(getattr(pred, "trajectory", None))
     diffs: list[dict[str, Any]] = []
@@ -291,6 +294,13 @@ def _propose_edit_diffs_from_pred(pred: Any) -> list[dict[str, Any]]:
         if row.get("ok") is False:
             continue
         result = row.get("result")
+        if isinstance(result, str):
+            try:
+                decoded_result = json.loads(result)
+            except (json.JSONDecodeError, TypeError):
+                decoded_result = None
+            if isinstance(decoded_result, Mapping):
+                result = decoded_result
         if not isinstance(result, Mapping):
             continue
         path = str(result.get("path") or "").strip()

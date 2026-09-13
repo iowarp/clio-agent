@@ -227,7 +227,9 @@ class A2UIStore:
         return announced
 
     def _persist_part(self, session_id: str, part: "Part") -> bool:
+        from clio_agent.gact.part_atom_minter import run_transcript_job  # noqa: PLC0415
         from clio_agent.gact.session_store import _append_session_message  # noqa: PLC0415
+        from clio_agent.gact.transcript_projection import on_message_appended  # noqa: PLC0415
         from clio_agent.gact.types import Message  # noqa: PLC0415
 
         now = utcnow_iso()
@@ -240,7 +242,16 @@ class A2UIStore:
             parts=[part],
             metadata={"a2ui_protocol_version": A2UI_V091},
         )
-        _append_session_message(self._app, session_id, message)
+        # #1334: the ledger is written here; the ARC atoms persist off the loop (the
+        # session's minter FIFO when a turn is open, else an off-loop dispatch).
+        _append_session_message(self._app, session_id, message, atoms_minted=True)
+        app = self._app
+        run_transcript_job(
+            app,
+            session_id,
+            f"a2ui:{part.id}",
+            lambda: on_message_appended(app, session_id, message),
+        )
         return True
 
     def apply(

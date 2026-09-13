@@ -7,8 +7,6 @@ import threading
 from collections.abc import Mapping
 from typing import Any
 
-_MAX_LIVE_TOOL_OUTPUT_CHARS = 128 * 1024
-
 
 def _terminal_progress_chunk(message: object) -> tuple[str, str] | None:
     """Decode CLIO's typed terminal-chunk progress envelope, if present."""
@@ -29,7 +27,7 @@ def _terminal_progress_chunk(message: object) -> tuple[str, str] | None:
 
 
 class ToolProgressRegistry:
-    """Correlate progress with a started call and retain bounded terminal output."""
+    """Correlate live deltas and retain complete output for durable presentation."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -42,11 +40,11 @@ class ToolProgressRegistry:
             self._output_by_call[call_id] = ""
         return {"call_id": call_id, "session_id": session_id}
 
-    def completed(self, call_id: str) -> None:
+    def completed(self, call_id: str) -> str:
         """Release retained progress state for a terminal call."""
 
         with self._lock:
-            self._output_by_call.pop(call_id, None)
+            return self._output_by_call.pop(call_id, "")
 
     def project(self, tool_name: str, result: object) -> tuple[str, dict[str, Any], object] | None:
         """Project one progress notification, or return no row if uncorrelated."""
@@ -68,13 +66,22 @@ class ToolProgressRegistry:
         terminal_chunk = _terminal_progress_chunk(message)
         if terminal_chunk is not None:
             stream, chunk = terminal_chunk
-            rendered = chunk if stream == "stdout" else f"\x1b[31m{chunk}\x1b[0m"
+            rendered = chunk
             with self._lock:
-                retained = (self._output_by_call.get(call_id, "") + rendered)[
-                    -_MAX_LIVE_TOOL_OUTPUT_CHARS:
-                ]
+                if call_id not in self._output_by_call:
+                    return None
+                previous = self._output_by_call[call_id]
+                retained = previous + rendered
                 self._output_by_call[call_id] = retained
             payload["output_stream"] = retained
+            payload["presentation_delta"] = {
+                "call_id": call_id,
+                "block_id": "terminal",
+                "offset": len(previous),
+                "sequence": len(previous),
+                "channel": stream,
+                "text": rendered,
+            }
         elif isinstance(message, str) and message:
             payload["progress_message"] = message
         return session_id, payload, handle

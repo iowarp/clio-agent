@@ -16,7 +16,7 @@ is stale or aspirational — do not treat it as ground truth.
    model's prose, nor fabricate a decision the model didn't make. The **parent agent
    (the model) is the router/decider** — a react main routes by CALLING the
    spawn-runtime tools (`spawn_agent_task` / `spawn_agents_parallel` / `wait_agent_tasks`
-   / `check_agent_tasks` / `run_workflow`); a spawn is a routing decision, no spawn means
+   / `observe_agent_tasks` / `run_workflow`); a spawn is a routing decision, no spawn means
    it decided it's done. clio's job is to **carry child results back to the live parent
    and spawn what it is told** — never to re-invoke a settled parent with a synthesized
    prompt or fake results back through prompt blocks (the settle/synthesis loop that did

@@ -236,6 +236,7 @@ class Part(DocumentPartFields):
     # the execution boundary (tools/mcp_executor.py::_result_to_text) and never
     # reads this field. ``None`` = absent on the wire (``to_wire`` drops defaults).
     structured_content: Optional[Any] = None
+    presentation: Optional[dict[str, Any]] = None
 
     # tool_result (#1188 MCP content-block half): the MCP result's typed
     # ``content`` blocks (``TextContent``/``ImageContent``/``AudioContent``/

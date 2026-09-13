@@ -77,6 +77,46 @@ def test_apply_edit_write_allows_new_file_under_write_policy(
     assert target.read_text(encoding="utf-8") == "hello\n"
 
 
+@pytest.mark.parametrize(
+    "before,after,body",
+    [
+        (
+            "def answer():\n    value = 42\n    return value\n",
+            "def answer():\n    value = 43\n    return value\n",
+            "@@ -1,3 +1,3 @@\n def answer():\n-    value = 42\n"
+            "+    value = 43\n     return value\n",
+        ),
+        ("a\n\nb\n", "a\n\nc\n", "@@ -1,3 +1,3 @@\n a\n \n-b\n+c\n"),
+        (
+            "a",
+            "b",
+            "@@ -1 +1 @@\n-a\n\\ No newline at end of file\n+b\n\\ No newline at end of file\n",
+        ),
+        ("a", "a\n", "@@ -1 +1 @@\n-a\n\\ No newline at end of file\n+a\n"),
+        ("a\n", "a", "@@ -1 +1 @@\n-a\n+a\n\\ No newline at end of file\n"),
+    ],
+)
+def test_proposal_diff_has_exact_line_spacing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, before: str, after: str, body: str
+) -> None:
+    """No separator-created blank rows; genuine blanks and EOF changes remain visible."""
+    from clio_agent.tools.tool_presentation import present_mcp_result
+
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    target = tmp_path / "spacing.py"
+    target.write_bytes(before.encode())
+    result = propose_edit(str(target), after)
+    expected = "--- a/spacing.py\n+++ b/spacing.py\n" + body
+    assert result["unified_diff"] == expected
+    assert result["new_content"] == after
+    assert target.read_bytes() == before.encode()
+    view = present_mcp_result(
+        "fs_propose_edit", {"filepath": str(target)}, {"structuredContent": result}
+    )
+    assert next(block["text"] for block in view["blocks"] if block["type"] == "diff") == expected
+    assert result["unified_diff"] == expected
+
+
 def test_written_bytes_are_verbatim_never_platform_newline_translated(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

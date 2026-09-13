@@ -47,6 +47,7 @@ from clio_agent.gact.artifacts.proposals import build_create_artifact_tool
 from clio_agent.gact.autonomous_loop import build_loop_wakeup_tool
 from clio_agent.gact.cron_tools import build_cron_tools
 from clio_agent.gact.goal import build_goal_status_tool
+from clio_agent.gact.memory_tools import build_memory_tools
 from clio_agent.gact.plan_mode import build_plan_exit_tool
 from clio_agent.gact.resource_tools import build_resource_tools
 from clio_agent.gact.todos import build_write_todos_tool
@@ -96,4 +97,5 @@ def build_auto_react_tools(agent_def: Any) -> list[Any]:
         if "create_a2ui_surface" not in declared:
             tools.append(build_create_a2ui_surface_tool())
         tools.append(build_refresh_provider_models_tool())
+        tools.extend(build_memory_tools(agent_def))
     return tools

@@ -72,6 +72,42 @@ def test_boot_does_not_make_bodies_resident(tmp_path: Path) -> None:
     assert app2.state.messages.resident_session_ids == [sids[0]]
 
 
+def test_boot_settles_restart_interrupted_session_without_resident_body(
+    tmp_path: Path,
+) -> None:
+    """A process restart makes an orphaned running turn explicitly terminal."""
+
+    sessions_path = tmp_path / "sessions.json"
+    app1 = build_app(sessions_path=sessions_path)
+    with TestClient(app1) as c1:
+        sid = c1.post("/v1/sessions", json={"title": "interrupted"}).json()["id"]
+        _replace_session_messages(
+            app1,
+            sid,
+            [_message("durable-user-message", sid, role="user", text="preserve me")],
+        )
+        app1.state.sessions.update(sid, status="running", message_count=0)
+
+    app2 = build_app(sessions_path=sessions_path)
+    restored = app2.state.sessions.get(sid)
+
+    assert restored is not None
+    assert restored.status == "error"
+    assert restored.message_count == 2
+    assert restored.metadata["restart_interruption"] == {
+        "reason": "server_restart_interrupted",
+        "previous_status": "running",
+    }
+    assert app2.state.messages.resident_count == 0
+    recovered_messages = app2.state.message_store.load_session(sid)
+    assert recovered_messages is not None
+    assert [message.role for message in recovered_messages] == ["user", "assistant"]
+    assert recovered_messages[-1].stop_reason == "error"
+    assert recovered_messages[-1].turn_id == "durable-user-message"
+    assert recovered_messages[-1].error_info is not None
+    assert recovered_messages[-1].error_info.error == "server_restart_interrupted"
+
+
 def test_first_get_messages_rehydrates_byte_identical(tmp_path: Path) -> None:
     sessions_path = tmp_path / "sessions.json"
 

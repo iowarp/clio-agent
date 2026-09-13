@@ -213,6 +213,78 @@ def test_completed_async_child_sets_notify_pending(tmp_path: Path, monkeypatch) 
         assert settled.notify_pending is True, "completed async child must be observe-later pending"
 
 
+def test_child_task_follows_immediate_continuation_before_completion(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A residual message turn must remain inside the original task boundary."""
+
+    from clio_agent.gact.types import Message, Part
+
+    _declare(monkeypatch, "research_methodologist")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        child = app.state.sessions.create(
+            workspace_id="ws_default", title="child", parent_session_id="sess_parent"
+        )
+        task = AgentTask(
+            task_id="task_continuation",
+            parent_session_id="sess_parent",
+            child_session_id=child.id,
+            agent_ref={
+                "expert_id": "research_methodologist",
+                "requesting_expert_id": "main",
+            },
+            status=STATUS_RUNNING,
+            created_at="2026-09-09T00:00:00+00:00",
+            updated_at="2026-09-09T00:00:00+00:00",
+        )
+        app.state.sessions.update(child.id, metadata_patch=task.to_metadata())
+        app.state.agent_task_registry.register(task)
+        app.state.messages[child.id] = [
+            Message(
+                id="msg_stale",
+                session_id=child.id,
+                role="assistant",
+                created_at="2026-09-09T00:00:01+00:00",
+                updated_at="2026-09-09T00:00:01+00:00",
+                parts=[Part(type="text", text="stale first answer")],
+            )
+        ]
+
+        callbacks: list[Any] = []
+        continuation = SimpleNamespace(add_done_callback=callbacks.append)
+        app.state.in_flight_turns[child.id] = continuation
+
+        _on_child_done(
+            app,
+            task.task_id,
+            child.id,
+            "async",
+            finished_turn=object(),
+        )
+
+        assert app.state.agent_task_registry.get(task.task_id).status == STATUS_RUNNING
+        assert len(callbacks) == 1
+
+        app.state.messages[child.id] = [
+            Message(
+                id="msg_final",
+                session_id=child.id,
+                role="assistant",
+                created_at="2026-09-09T00:00:02+00:00",
+                updated_at="2026-09-09T00:00:02+00:00",
+                parts=[Part(type="text", text="constraint applied in final answer")],
+            )
+        ]
+        app.state.in_flight_turns.pop(child.id, None)
+        callbacks[0](continuation)
+
+        settled = app.state.agent_task_registry.get(task.task_id)
+        assert settled.status == STATUS_COMPLETED
+        assert settled.result["message_ref"] == "msg_final"
+        assert settled.result["answer_excerpt"] == "constraint applied in final answer"
+
+
 def test_failed_async_child_sets_notify_pending(tmp_path: Path, monkeypatch) -> None:
     """A FAILED async child is observe-later exactly like a completed one — the
     model must learn its spawned task failed and decide what to do (#954)."""

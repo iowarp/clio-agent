@@ -58,8 +58,9 @@ from clio_agent.gact.runtime.globals import (
     _session_agent_id,
 )
 from clio_agent.gact.runtime.memory_search import _memory_search_response
-from clio_agent.gact.runtime.retention import enforce_list_bound
+from clio_agent.gact.runtime.retention import enforce_list_bound, ledger_guard
 from clio_agent.gact.types import ErrorInfo
+from clio_agent.tools.execution import tool_workspace_context
 from clio_agent.tools.file_policy import validate_write_path
 from clio_agent.tools.fs_write import write_text_with_policy
 
@@ -233,9 +234,10 @@ def _record_context_frame(
             else {},
         },
     }
-    frames = app.state.context_frames.setdefault(sid, [])
-    frames.append(frame)
-    enforce_list_bound(app, frames, "context_frames", session_id=sid)
+    with ledger_guard(app):  # #1334: the frame routes scan this list on the loop
+        frames = app.state.context_frames.setdefault(sid, [])
+        frames.append(frame)
+        enforce_list_bound(app, frames, "context_frames", session_id=sid)
     # NOT on the served UI wire: the context frame ("what the agent saw" — included
     # messages, token estimates) is observability the TUI surfaces on demand, not a
     # ReAct atom it renders inline. It stays queryable via
@@ -252,7 +254,8 @@ def _finalize_context_frame(
     *,
     error_info: Optional[ErrorInfo],
 ) -> None:
-    frames = app.state.context_frames.get(sid, [])
+    with ledger_guard(app):
+        frames = list(app.state.context_frames.get(sid, []))
     for frame in frames:
         if frame.get("id") != frame_id:
             continue
@@ -296,7 +299,13 @@ def _apply_edit_to_disk(
             raise PermissionError(
                 f"refused to write {target} outside workspace root {ws.root_path}"
             ) from exc
-    target = validate_write_path(path, field="path")
+    # This action runs from the HTTP approval route rather than an agent tool call,
+    # so it does not inherit the turn's active-workspace ContextVar. Bind the
+    # authoritative session workspace explicitly for both advisory file-policy
+    # checks. The route's workspace containment check above remains the hard scope.
+    workspace_root = ws.root_path if ws is not None else None
+    with tool_workspace_context(workspace_root):
+        target = validate_write_path(path, field="path")
 
     # Mode gate — plan/architect are read-only. P1.1 #1063: this is no longer a private
     # ``session.mode in {plan, architect}`` predicate; it rides the SAME resolver as the live
@@ -344,7 +353,8 @@ def _apply_edit_to_disk(
         reason="user_clicked_apply",
     )
 
-    write_result = write_text_with_policy(str(target), new_content)
+    with tool_workspace_context(workspace_root):
+        write_result = write_text_with_policy(str(target), new_content)
     # Seam (b), #966 S1: mint an artifact.created for the user-approved harness write
     # (mechanism harness, hashed-at-use from the sha256 the writer returned in-hand).
     # The owner module is fully guarded — a mint must never break the approved write.

@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.gact.agent_task_artifacts import returned_artifact_ref
+from clio_agent.gact.agent_task_wake import build_child_done_callback, resume_on_continuation_turn
 from clio_agent.gact.agent_tasks import (
     AGENT_TASK_EVENTS,
     STATUS_CANCELLED,
@@ -611,8 +612,8 @@ def _launch(app: "FastAPI", task: AgentTask, spec: TaskSpec) -> AgentTask:
     child_task = app.state.in_flight_turns.get(task.child_session_id)
     if child_task is not None:
         child_task.add_done_callback(
-            lambda _t, tid=task.task_id, csid=task.child_session_id, mode=spec.mode: _on_child_done(
-                app, tid, csid, mode
+            build_child_done_callback(
+                _on_child_done, app, task.task_id, task.child_session_id, spec.mode
             )
         )
     else:
@@ -665,7 +666,14 @@ def finalize_child_task_terminal(app: "FastAPI", task: AgentTask, child_sid: str
     release_session_resources(child_sid)
 
 
-def _on_child_done(app: "FastAPI", task_id: str, child_sid: str, mode: str) -> None:
+def _on_child_done(
+    app: "FastAPI",
+    task_id: str,
+    child_sid: str,
+    mode: str,
+    *,
+    finished_turn: Any = None,
+) -> None:
     """Completion hook: read the child's terminal message, transition the task to a
     terminal state with a result (message ref + bounded excerpt + workflow_state),
     publish + fire the wait-Event, and admit one queued task into the freed slot."""
@@ -676,29 +684,16 @@ def _on_child_done(app: "FastAPI", task_id: str, child_sid: str, mode: str) -> N
         return
     now = _now()
 
-    # HITL-in-child (#1113): an unattended child cannot answer its own user question.
-    # If its turn paused (waiting_user), FORWARD the pending question to the parent's
-    # HITL surface instead of failing (replaces the deleted child_requires_user_input
-    # fail path). Every edge terminates typed, nothing hangs: no pending question to
-    # forward -> typed terminal now; forwarded -> the task stays in progress but arms a
-    # bounded unattended-parent deadline that terminates it typed and frees the slot;
-    # a parent answer resumes the child (then _on_child_done runs again at true
-    # completion); a parent cancel/decline relays down and fails the task.
-    child_sess = app.state.sessions.get(child_sid)
-    if child_sess is not None and getattr(child_sess, "status", "") == "waiting_user":
-        from clio_agent.gact.child_forward import (  # noqa: PLC0415
-            arm_forward_deadline,
-            fail_child_task,
-        )
-        from clio_agent.gact.elicitation_forwarding import (  # noqa: PLC0415
-            forward_child_question_to_parent,
-        )
+    # HITL-in-child (#1113): see child_forward.forward_waiting_child.
+    from clio_agent.gact.child_forward import forward_waiting_child  # noqa: PLC0415
 
-        forwarded_qid = forward_child_question_to_parent(app, task, child_sid)
-        if forwarded_qid is None:
-            fail_child_task(app, task, child_sid, "child_question_forward_failed", mode)
-        else:
-            arm_forward_deadline(app, forwarded_qid)
+    child_sess = app.state.sessions.get(child_sid)
+    if forward_waiting_child(app, task, child_sess, child_sid, mode):
+        return
+
+    # A residual steer accepted mid-turn is promoted to a continuation turn the
+    # turn-runner's idle hook owns; see agent_task_wake.resume_on_continuation_turn.
+    if resume_on_continuation_turn(app, task_id, child_sid, mode, finished_turn, _on_child_done):
         return
 
     msgs = app.state.messages.get(child_sid, []) or []

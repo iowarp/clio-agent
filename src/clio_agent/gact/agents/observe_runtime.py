@@ -477,6 +477,7 @@ def build_observe_tool() -> Any:
     return native_tool(
         observe_agent_tasks,
         name="observe_agent_tasks",
+        presentation="tasks",
         desc=observe_agent_tasks.__doc__,
         title="Observe",
         args={

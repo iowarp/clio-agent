@@ -616,6 +616,68 @@ def test_wait_agent_tasks_completed_returns_wire_payload_and_emits_completed(mon
     assert completed["payload"]["stage"] == "delegate.completed"
 
 
+def test_wait_agent_tasks_returns_and_emits_children_in_recorded_completion_order(
+    monkeypatch,
+) -> None:
+    """A grouped wait must describe real completion order, not task-id order."""
+
+    later = replace(
+        _completed_task("task_later"),
+        child_session_id="child_later",
+        run_label="evidence_researcher #1",
+        updated_at="2026-09-09T22:59:10-05:00",
+        result={
+            "answer_excerpt": "long investigation",
+            "workflow_state": {},
+            "message_ref": "msg_later",
+        },
+    )
+    earlier = replace(
+        _completed_task("task_earlier"),
+        child_session_id="child_earlier",
+        run_label="independent_reviewer #1",
+        updated_at="2026-09-09T22:59:05-05:00",
+        result={
+            "answer_excerpt": "short review",
+            "workflow_state": {},
+            "message_ref": "msg_earlier",
+        },
+    )
+    registry = AgentTaskRegistry()
+    registry.register(later)
+    registry.register(earlier)
+    app = _fake_app(
+        registry,
+        messages={
+            "child_later": [
+                _assistant_message("msg_later", "child_later", "long investigation")
+            ],
+            "child_earlier": [
+                _assistant_message("msg_earlier", "child_earlier", "short review")
+            ],
+        },
+    )
+    _capture_emits(monkeypatch)
+    parts = _capture_parts(monkeypatch)
+
+    with _active_turn(app):
+        tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
+        result = json.loads(
+            tools["wait_agent_tasks"].func(task_ids=["task_later", "task_earlier"])
+        )
+
+    assert [row["task_id"] for row in result["results"]] == [
+        "task_earlier",
+        "task_later",
+    ]
+    returned = [
+        part.run_label
+        for _session_id, part in parts
+        if part.type == "expert_handoff" and part.stage == "delegate.completed"
+    ]
+    assert returned == ["independent_reviewer #1", "evidence_researcher #1"]
+
+
 def test_commission_wait_orders_artifact_return_before_parent_use(monkeypatch) -> None:
     task = replace(
         _completed_task("task_commission"),
@@ -741,8 +803,7 @@ def test_wait_agent_tasks_declares_typed_structured_content_shape(monkeypatch) -
         "workflow_state_conflicts",
         "merged_workflow_state",
     ]
-    assert shape["summary"].startswith("waited ")
-    assert "1 completed" in shape["summary"]
+    assert shape["summary"] == "1 task: 1 completed"
     (row,) = shape["results"]
     # The compact UI-ladder row: display name (the SAME rule waited_tasks uses),
     # typed status, duration, and the ALREADY-BOUNDED excerpt (never the full
@@ -751,6 +812,7 @@ def test_wait_agent_tasks_declares_typed_structured_content_shape(monkeypatch) -
         "name": "data_expert #1",
         "status": "completed",
         "duration_ms": 0.0,
+        "waited_ms": 0.0,
         "answer_excerpt": "child produced the staged CSV",
     }
     assert shape["workflow_state_conflicts"] == []
@@ -1032,6 +1094,10 @@ def test_spawn_agents_parallel_failed_sibling_still_reconciles_group_size(monkey
     assert failed.status == "failed"
     assert failed.stage == "delegate.completed"
     assert failed.metadata["error"] == "undeclared_child"
+    assert failed.metadata["question"] == "t2"
+    assert failed.metadata["error_message"] == (
+        "This child is not declared by the current agent, so it was not started."
+    )
     # The two real siblings still spawned normally, unaffected by geo_b's refusal.
     assert by_child["geo_a"].status == "running"
     assert by_child["geo_c"].status == "running"
@@ -2445,9 +2511,7 @@ def test_repeated_waits_remain_separate_tool_pairs() -> None:
 
     app, transcript, events = _collector_transcript_app()
     for call_id, text in [("call_a", "running"), ("call_b", "completed")]:
-        _append_live_assistant_part(
-            app, "sess_x", _collector_call(call_id, task_ids=["task_1"])
-        )
+        _append_live_assistant_part(app, "sess_x", _collector_call(call_id, task_ids=["task_1"]))
         _append_live_assistant_part(app, "sess_x", _collector_result(call_id, text, 5.0))
 
     parts = transcript.snapshot()
@@ -2469,9 +2533,7 @@ def test_historical_check_agent_tasks_call_renders_without_translation() -> None
     _append_live_assistant_part(
         app,
         "sess_x",
-        _collector_result(
-            "call_a", '{"results": []}', 5.0, tool_name="check_agent_tasks"
-        ),
+        _collector_result("call_a", '{"results": []}', 5.0, tool_name="check_agent_tasks"),
     )
 
     parts = transcript.snapshot()

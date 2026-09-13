@@ -248,7 +248,11 @@ def test_stale_declaration_from_before_this_call_never_attaches_to_it(
         (tool,) = instrument_tools(
             [
                 native_tool(
-                    plain, name="plain_after_leak", desc="d", args={"task": {"type": "string"}}
+                    plain,
+                    name="plain_after_leak",
+                    presentation="text",
+                    desc="d",
+                    args={"task": {"type": "string"}},
                 )
             ]
         )
@@ -330,6 +334,7 @@ def test_row_tool_lands_tool_parts_with_curated_title(tmp_path: Path) -> None:
                 native_tool(
                     rank_stations,
                     name="rank_stations",
+                    presentation="text",
                     desc=rank_stations.__doc__,
                     title="Rank stations",
                     args={"city": {"type": "string"}},
@@ -404,6 +409,7 @@ def test_handoff_representation_notifies_but_appends_no_tool_parts(tmp_path: Pat
                 native_tool(
                     declared_action,
                     name="declared_handoff",
+                    presentation="specialized",
                     desc=declared_action.__doc__,
                     title="Declared action",
                     representation="handoff",
@@ -458,6 +464,7 @@ def test_chip_representation_notifies_and_still_appends_tool_parts(tmp_path: Pat
                 native_tool(
                     declared_action,
                     name="declared_chip",
+                    presentation="artifact",
                     desc=declared_action.__doc__,
                     title="Declared action",
                     representation="chip",
@@ -500,7 +507,8 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(tmp_path: Path)
     """Drive the real react-runtime observed-call path for every tool
     auto-attached to a dynamic react expert (``auto_tools.build_auto_react_tools``:
     create_artifact, plan_exit, write_todos, the cron triad, loop_wakeup,
-    goal_status, raise_alert_card, refresh_provider_models) plus a plain
+    goal_status, raise_alert_card, refresh_provider_models, and the retained-memory
+    triad) plus a plain
     curated native "row" tool, and assert each
     EXECUTED call lands at least one ``tool_call`` part on the live transcript
     — whether the call itself succeeds or raises (the tool_call part is
@@ -527,7 +535,11 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(tmp_path: Path)
             return "ok"
 
         (row_tool,) = instrument_tools(
-            [native_tool(plain_native, name="plain_native", desc="plain", args={})]
+            [
+                native_tool(
+                    plain_native, name="plain_native", presentation="text", desc="plain", args={}
+                )
+            ]
         )
 
         # Minimal args per tool: exercise its real body. Several are expected
@@ -572,6 +584,12 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(tmp_path: Path)
             # the wait loop ever touches the processing task record — fast,
             # deterministic, and offline, like the rest of this table.
             "workspace_resource_wait": {"task_id": "missing", "timeout_s": 0},
+            "memory_search_sessions": {"query": "missing"},
+            "memory_read_session_summary": {"target_session_id": sid},
+            "memory_read_context_frame": {
+                "target_session_id": sid,
+                "frame_id": "missing",
+            },
         }
         assert set(calls) == set(auto_tools), (
             "auto_tools.build_auto_react_tools grew/shrank — update this sabotage test's "
@@ -830,10 +848,10 @@ def test_auto_react_tools_carry_their_declared_presentation() -> None:
     assert declared_tool_title("create_artifact") == "Create Artifact"
     for name, title in [
         ("plan_exit", "Exit Plan"),
-        ("write_todos", "Write Todos"),
-        ("cron_create", "Create Cron"),
-        ("cron_list", "List Crons"),
-        ("cron_delete", "Delete Cron"),
+        ("write_todos", "Update tasks"),
+        ("cron_create", "Create schedule"),
+        ("cron_list", "List schedules"),
+        ("cron_delete", "Delete schedule"),
         ("loop_wakeup", "Loop Wakeup"),
         ("goal_status", "Goal Status"),
     ]:
@@ -865,13 +883,42 @@ def test_spawn_runtime_tools_declare_handoff_for_spawn_and_row_for_collectors(
         "spawn_agents_parallel": ("handoff", "Spawn Agents"),
         "wait_agent_tasks": ("row", "Wait"),
         "observe_agent_tasks": ("row", "Observe"),
-        "get_agent_task_output": ("row", "Get Task Output"),
+        "get_agent_task_output": ("row", "Fetch full output"),
         "message_agent": ("row", "Message Agent"),
     }
     assert {t.name for t in tools} == set(expected)
     for name, (representation, title) in expected.items():
         assert declared_tool_representation(name) == representation, name
         assert declared_tool_title(name) == title, name
+
+
+def test_declared_workflow_keeps_a_tool_row_around_its_child_handoffs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A compound workflow owns one visible operation boundary around its stages."""
+
+    from clio_agent.gact.agents import spawn_runtime
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.resolution._runtime_declared_child_ids",
+        lambda a, pid, session_id="": {"child_a"},
+    )
+    agent = SimpleNamespace(
+        id="main",
+        metadata={
+            "agent_blueprint_id": "bp",
+            "workflow": {
+                "steps": [{"id": "inspect", "child": "child_a", "task": "Inspect"}]
+            },
+        },
+    )
+    with TestClient(app), _gact_app_context(app), _tool_session_context("sess_x"):
+        tools = spawn_runtime.build_spawn_runtime_tools(SimpleNamespace(), agent)
+    instrument_tools(tools)
+
+    assert declared_tool_representation("run_workflow") == "row"
+    assert declared_tool_title("run_workflow") == "Run Workflow"
 
 
 def test_invalid_representation_is_a_typed_error() -> None:
@@ -881,7 +928,9 @@ def test_invalid_representation_is_a_typed_error() -> None:
         return ""
 
     with pytest.raises(ValueError, match="unknown representation"):
-        native_tool(f, name="f", desc="", args={}, title="", representation="banner")
+        native_tool(
+            f, name="f", presentation="text", desc="", args={}, title="", representation="banner"
+        )
 
 
 # --------------------------------------------------------------------------- #

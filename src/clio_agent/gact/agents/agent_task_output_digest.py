@@ -276,12 +276,13 @@ def build_agent_task_output_tool() -> Any:
     return native_tool(
         get_agent_task_output,
         name=FETCH_FULL_OUTPUT_TOOL,
+        presentation="task_output",
         desc=get_agent_task_output.__doc__,
-        title="Get Task Output",
+        title="Fetch full output",
         args={
             "task_id": {
                 "type": "string",
-                "description": "A completed task's id (from spawn/wait/check).",
+                "description": "A completed task's id (from spawn/wait/observe).",
             },
         },
     )

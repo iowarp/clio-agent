@@ -198,6 +198,24 @@ def _live_equals_reload_property(monkeypatch):
 # host fake (test_gact, test_sdk, test_ui) can opt into it by name.
 
 
+def settle_turn_slot(client: TestClient, sid: str, *, timeout: float = 30.0) -> None:
+    """Wait until the session's turn slot is free (``TurnRunner.busy`` False).
+
+    ``complete_turn`` returns when the assistant message is persisted, and since #1333
+    the GOAL judge is AWAITED after that persistence (the loop is live during the judge),
+    so "the assistant replied" no longer implies "the goal was evaluated". Tests that
+    assert goal/loop metadata after a turn wait for the slot to clear first. A plain dict
+    read on the runner, safe from the test thread."""
+
+    runner = client.app.state.turn_runner
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not runner.busy(sid):
+            return
+        time.sleep(0.02)
+    raise TimeoutError(f"turn slot for {sid} still busy after {timeout}s")
+
+
 def complete_turn(
     client: TestClient,
     sid: str,
@@ -247,6 +265,10 @@ def complete_turn(
                     and msgs[i - 1]["role"] == "assistant"
                     and not msgs[i - 1].get("metadata", {}).get("live")
                 ):
+                    # #1334: finalize runs on the turn executor, so the assistant
+                    # message can be visible a few ms before the session status and
+                    # retry bookkeeping settle; "the turn completed" = the slot cleared.
+                    settle_turn_slot(client, sid, timeout=max(1.0, deadline - time.monotonic()))
                     return msgs[i - 1]
                 break
         time.sleep(poll_interval)

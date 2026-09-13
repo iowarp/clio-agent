@@ -57,11 +57,16 @@ the internals the S2 fold's ``FoldingSegmentStore._append_raw`` already uses.
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Mapping
+from datetime import datetime, timezone
 from typing import Any
 
 from clio_agent.arc.live import EVENTS_SCOPE
 from clio_agent.arc.schema import Segment, SegmentKind
 from clio_agent.gact.types import Message
+
+logger = logging.getLogger(__name__)
 
 # The atom kind (a new, additive ``SegmentKind`` member) and the reserved content
 # lane for the family: a partition UNDER ``_events`` (so ``is_events_scope`` is True —
@@ -73,7 +78,24 @@ MESSAGE_PART_SCOPE = f"{EVENTS_SCOPE}/m"
 
 # Bumped only on a breaking change to the atom ``content`` shape; stored per-atom so a
 # future reader can branch on it (design §2.3 ``schema_version``).
-PART_ATOM_SCHEMA_VERSION = 1
+#
+# v2 (#1337, streaming-native persistence) adds ``envelope_authority`` with two profiles:
+#   * ``"inline"`` — the v1 byte-shape: every atom denormalizes the full message envelope
+#     (batch paths: user messages, a2ui parts, backfill, replace/extend; the write count of
+#     those paths is unchanged and no envelope atom is emitted);
+#   * ``"atom"``   — the eager turn path: lean part atoms sealed WHEN THE PART BECAME FINAL
+#     (``message_stub`` + ``sealed_at`` / ``seal_source``, no envelope) plus ONE trailing
+#     ``atom_role == "envelope"`` atom written at finalize carrying the authoritative
+#     message fields (tokens, cost, stop_reason, error_info, metadata) — the ONLY place
+#     they exist for that message. A message whose envelope never landed (a crash before
+#     finalize) reassembles as a TYPED incomplete message, never a silently complete one.
+# ``atom_role == "retract"`` (``retracted_part_ids``) is honored by the reproducer as the
+# escape hatch for a sealed part that must not be served; no live path emits it (the
+# ledger only ever removes UNSEALED parts — pinned by tests).
+PART_ATOM_SCHEMA_VERSION = 2
+ENVELOPE_AUTHORITY_INLINE = "inline"
+ENVELOPE_AUTHORITY_ATOM = "atom"
+TRANSCRIPT_INCOMPLETE_REASON = "transcript_incomplete_no_envelope"
 
 
 # --------------------------------------------------------------------------- #
@@ -134,6 +156,7 @@ def _atom_content(
     stream_source = str((message.metadata or {}).get("stream_source", "") or "")
     content: dict[str, Any] = {
         "schema_version": PART_ATOM_SCHEMA_VERSION,
+        "envelope_authority": ENVELOPE_AUTHORITY_INLINE,
         "atom_role": "part" if part_dump is not None else "envelope",
         "message_id": message.id,
         "part_id": str(part_dump.get("id") or "") if part_dump is not None else "",
@@ -182,6 +205,158 @@ def build_message_part_atoms(message: Message) -> list[dict[str, Any]]:
 
 
 # --------------------------------------------------------------------------- #
+# The eager ("atom" authority) profile — sealed part atoms + one envelope atom (#1337)
+# --------------------------------------------------------------------------- #
+
+
+def message_stub(*, message_id: str, turn_id: str, session_id: str, created_at: str) -> dict:
+    """The identity a sealed part atom carries before the message envelope exists."""
+
+    return {
+        "id": message_id,
+        "turn_id": turn_id,
+        "session_id": session_id,
+        "role": "assistant",
+        "created_at": created_at,
+    }
+
+
+def build_sealed_part_atom(
+    stub: Mapping[str, Any],
+    part_dump: dict[str, Any],
+    part_index: int,
+    *,
+    sealed_at: str,
+    seal_source: str,
+) -> dict[str, Any]:
+    """One lean part atom for a part that just became final (no envelope, no usage).
+
+    Args:
+        stub: :func:`message_stub` of the in-flight assistant message.
+        part_dump: ``part.model_dump()`` at seal time (``sequence`` already stamped).
+        part_index: The part's 0-based position in the ledger (stable once sealed).
+        sealed_at: ISO timestamp of the seal.
+        seal_source: ``"live"`` (sealed by the ledger mid-turn) or ``"finalize"``.
+    """
+
+    content: dict[str, Any] = {
+        "schema_version": PART_ATOM_SCHEMA_VERSION,
+        "envelope_authority": ENVELOPE_AUTHORITY_ATOM,
+        "atom_role": "part",
+        "message_id": str(stub.get("id") or ""),
+        "part_id": str(part_dump.get("id") or ""),
+        "part_index": part_index,
+        "created_at": str(stub.get("created_at") or ""),
+        "role": str(stub.get("role") or "assistant"),
+        "kind": str(part_dump.get("type") or ""),
+        "stream_source": str((part_dump.get("metadata") or {}).get("stream_source") or ""),
+        "status": str(part_dump.get("status") or ""),
+        "part": part_dump,
+        "message_stub": dict(stub),
+        "sealed_at": sealed_at,
+        "seal_source": seal_source,
+    }
+    handoff = (part_dump.get("metadata") or {}).get("expert_handoff")
+    if handoff:
+        content["expert_handoff"] = handoff
+    compaction = _compaction_identity(part_dump)
+    if compaction is not None:
+        content["compaction"] = compaction
+    return content
+
+
+def build_envelope_atom(message: Message) -> dict[str, Any]:
+    """The trailing envelope atom: the authority for every message-level field."""
+
+    envelope = message.model_dump(exclude={"parts"})
+    return {
+        "schema_version": PART_ATOM_SCHEMA_VERSION,
+        "envelope_authority": ENVELOPE_AUTHORITY_ATOM,
+        "atom_role": "envelope",
+        "message_id": message.id,
+        "part_id": "",
+        "part_index": len(message.parts),
+        "created_at": message.created_at,
+        "role": message.role,
+        "kind": "",
+        "stream_source": str((message.metadata or {}).get("stream_source", "") or ""),
+        "usage": message.tokens.model_dump(),
+        "status": "",
+        "part": None,
+        "message": envelope,
+        "part_ids": [str(part.id or "") for part in message.parts],
+        "part_count": len(message.parts),
+        "complete": True,
+    }
+
+
+def _atom_turn_id(content: Mapping[str, Any]) -> str:
+    """The TURN an atom belongs to: its message stub's (part) or envelope's ``turn_id``."""
+
+    for key in ("message_stub", "message"):
+        holder = content.get(key)
+        if isinstance(holder, Mapping):
+            turn_id = str(holder.get("turn_id") or "")
+            if turn_id:
+                return turn_id
+    return ""
+
+
+def group_atoms_in_order(atoms: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Split a lane (append order) into per-message atom groups.
+
+    ONE rule for both profiles: a group is keyed by ``message_id`` and stays open until
+    its envelope atom lands (``"atom"`` authority); an atom whose message has no open
+    group opens one. The v1 / ``"inline"`` fallback keeps today's boundary: an atom whose
+    ``part_index`` does not advance the group AND whose ``part_id`` the group has not
+    seen opens a NEW group — two adjacent messages sharing a ``msg_asst_*`` id (observed
+    in the corpus, ``sess_b2d2c710f0f4``) stay distinct. Keying by id (not append
+    contiguity) is what keeps an atom of ANOTHER message interleaved mid-turn (an a2ui
+    part persisted while a turn streams) out of the in-flight message's group.
+
+    The ``"atom"`` profile needs its own boundary for the SAME duplicate-id case, because
+    an envelope-less group (a turn that died between its last seal and finalize) is never
+    closed and would otherwise swallow the next message that reuses its id — merging two
+    messages into one AND hiding the typed ``incomplete`` reassembly behind the later
+    message's envelope. The ordinal rule cannot serve here: ``mint_remainder`` legitimately
+    writes a never-sealed part at a LOWER index than an already-sealed one. The
+    discriminator is the TURN: one turn mints one assistant message, so an atom stamped
+    with a different ``turn_id`` than the open group's is a different message.
+    """
+
+    groups: list[list[dict[str, Any]]] = []
+    open_by_id: dict[str, list[dict[str, Any]]] = {}
+    for content in atoms:
+        mid = str(content.get("message_id") or "")
+        role = str(content.get("atom_role") or "part")
+        authority = str(content.get("envelope_authority") or ENVELOPE_AUTHORITY_INLINE)
+        index = int(content.get("part_index", 0) or 0)
+        pid = str(content.get("part_id") or "")
+        group = open_by_id.get(mid)
+        if group is not None and authority == ENVELOPE_AUTHORITY_INLINE:
+            seen_ids = {str(a.get("part_id") or "") for a in group}
+            max_index = max(int(a.get("part_index", 0) or 0) for a in group)
+            # An inline envelope-only atom IS a whole (zero-part) message; a part whose
+            # index does not advance the group under an unseen id is the next message.
+            if role == "envelope" or (index <= max_index and pid not in seen_ids):
+                group = None  # the inline boundary: a new message under the same id
+        elif group is not None:
+            open_turn = _atom_turn_id(group[0])
+            this_turn = _atom_turn_id(content)
+            if open_turn and this_turn and open_turn != this_turn:
+                group = None  # a different TURN reusing this message id: a new message
+        if group is None:
+            group = [content]
+            groups.append(group)
+            open_by_id[mid] = group
+        else:
+            group.append(content)
+        if role == "envelope" and authority == ENVELOPE_AUTHORITY_ATOM:
+            open_by_id.pop(mid, None)  # closed: the next atom of this id is a new message
+    return groups
+
+
+# --------------------------------------------------------------------------- #
 # Reproduction (§4.2 step-4 gate) — Message.model_dump(exclude_none=True) from atoms
 # --------------------------------------------------------------------------- #
 
@@ -207,11 +382,82 @@ def reproduce_message_wire(atoms: list[dict[str, Any]]) -> dict[str, Any]:
     """
     if not atoms:
         raise ValueError("reproduce_message_wire: no atoms for the message")
-    ordered = sorted(atoms, key=lambda a: a.get("part_index", 0))
-    envelope = dict(ordered[0]["message"])
-    part_dicts = [a["part"] for a in ordered if a.get("part") is not None]
+    retracted: set[str] = set()
+    envelope_atom: dict[str, Any] | None = None
+    latest_by_part: dict[str, dict[str, Any]] = {}
+    for atom in atoms:  # lane order: the LAST atom of a part id wins (a reseal)
+        role = str(atom.get("atom_role") or "part")
+        if role == "retract":
+            retracted.update(str(x) for x in (atom.get("retracted_part_ids") or []))
+        elif role == "envelope" and atom.get("envelope_authority") == ENVELOPE_AUTHORITY_ATOM:
+            envelope_atom = atom
+        elif atom.get("part") is not None:
+            latest_by_part[str(atom.get("part_id") or "") or f"@{id(atom)}"] = atom
+    ordered = sorted(latest_by_part.values(), key=lambda a: a.get("part_index", 0))
+    part_dicts = [a["part"] for a in ordered if str(a.get("part_id") or "") not in retracted]
+    if envelope_atom is not None:
+        envelope = dict(envelope_atom["message"])
+    else:
+        inline = sorted(
+            (a for a in atoms if a.get("message") is not None),
+            key=lambda a: a.get("part_index", 0),
+        )
+        if inline:
+            envelope = dict(inline[0]["message"])  # v1 / inline: every atom carries it
+        else:
+            envelope = _incomplete_envelope(atoms)
     message = Message(**envelope, parts=part_dicts)
     return message.model_dump(exclude_none=True)
+
+
+def _incomplete_envelope(atoms: list[dict[str, Any]]) -> dict[str, Any]:
+    """The TYPED envelope for sealed part atoms whose envelope never landed.
+
+    A turn that died between its last seal and finalize left durable parts but no
+    authority for tokens / cost / stop_reason. Reload serves those parts under
+    ``stop_reason="incomplete"`` with ``metadata.transcript_incomplete`` naming the
+    reason, and the stream audit records it — never a silently complete message.
+    """
+
+    from clio_agent.runtime.stream_audit import stream_audit  # noqa: PLC0415
+
+    stubs: list[dict[str, Any]] = [
+        a["message_stub"] for a in atoms if isinstance(a.get("message_stub"), dict)
+    ]
+    stub: dict[str, Any] = dict(stubs[0]) if stubs else {}
+    sealed = sorted(str(a.get("sealed_at") or "") for a in atoms if a.get("sealed_at"))
+    message_id = str(stub.get("id") or atoms[0].get("message_id") or "")
+    logger.warning(
+        "transcript reassembled WITHOUT its envelope: message=%s sealed_parts=%d reason=%s",
+        message_id,
+        len(atoms),
+        TRANSCRIPT_INCOMPLETE_REASON,
+    )
+    stream_audit(
+        "transcript.incomplete_no_envelope",
+        message_id=message_id,
+        session_id=str(stub.get("session_id") or ""),
+        sealed_parts=len(atoms),
+        reason=TRANSCRIPT_INCOMPLETE_REASON,
+    )
+    created = str(stub.get("created_at") or (sealed[0] if sealed else ""))
+    return {
+        "id": message_id,
+        "turn_id": str(stub.get("turn_id") or ""),
+        "session_id": str(stub.get("session_id") or ""),
+        "role": str(stub.get("role") or "assistant"),
+        "created_at": created,
+        "updated_at": sealed[-1] if sealed else created,
+        "stop_reason": "incomplete",
+        "metadata": {
+            "transcript_incomplete": {
+                "reason": TRANSCRIPT_INCOMPLETE_REASON,
+                "sealed_parts": len(atoms),
+                "message_id": message_id,
+                "detected_at": datetime.now(timezone.utc).isoformat(),
+            }
+        },
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -259,6 +505,16 @@ def _append_segment_raw(
         store._index.add(session_id, scope, seg)
         store._persist(session_id, scope, just_written=[seg])
         return seg
+
+
+def append_part_atom(store: Any, session_id: str, content: dict[str, Any]) -> Segment:
+    """Append ONE atom ``content`` to the session's ``_events/m`` lane (the raw append).
+
+    The public form of :func:`_append_segment_raw` for the eager path (the per-turn
+    minter seals one part at a time) and for ``live_edge``; same lane, same kind.
+    """
+
+    return _append_segment_raw(store, session_id, MESSAGE_PART_SCOPE, MESSAGE_PART_KIND, content)
 
 
 def mint_message_part_atoms(arc: Any, session_id: str, message: Message) -> list[Segment]:

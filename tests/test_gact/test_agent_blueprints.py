@@ -2051,7 +2051,10 @@ Coordinate genomics work.
     assert "IMMEDIATELY" in context  # spawn_agent_task returns immediately (non-blocking)
     assert "independent child right away" in context  # spawn all independent children first
     assert "one committed wait" in context  # one hold-open wait, not repeated polling
-    assert "requested children are terminal" in context
+    # #1000 (ab54e057): "requested children are terminal" was reworded to name what
+    # Wait actually delivers (the children's output, injected into context) rather
+    # than just their state.
+    assert "returns the requested children's output into your" in context
     assert "do not repeatedly poll" in context
     assert "NEXT turn" in context  # observe-later: results inject into the next turn
     assert "observe_agent_tasks" in context  # non-blocking observation while working

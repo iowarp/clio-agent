@@ -25,12 +25,11 @@ import json
 import logging
 import uuid
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents.blueprint_commission import (
-    SPAWN_AGENT_ARGUMENT,
-    SPAWN_BLUEPRINT_ARGUMENT,
     collect_commission_artifact,
     completion_context_fields,
     emit_commission_artifact_returned,
@@ -50,19 +49,22 @@ from clio_agent.gact.agents.spawn_completion import (
 from clio_agent.gact.agents.spawn_events import _started_handoff_part as _started_handoff_part
 from clio_agent.gact.agents.spawn_events import emit_spawn_started as _emit_spawn_started
 from clio_agent.gact.agents.spawn_group import (
-    failed_spawn_metadata_row,
+    wait_completion_offset_ms,
     wait_structured_row,
     wait_summary,
 )
 from clio_agent.gact.agents.spawn_placement import run_handle_fields
+from clio_agent.gact.agents.spawn_runtime_declarations import (
+    _failed_spawn_handoff_part,
+    assemble_spawn_runtime_tools,
+)
 from clio_agent.gact.runtime.globals import (
     _active_semantic_trace_id,
     _active_semantic_turn_id,
     _emit_semantic_event,
 )
 from clio_agent.gact.spawn_context import current_session_depth as _current_session_depth
-from clio_agent.gact.tool_observer import _append_live_assistant_part, _handoff_part_metadata
-from clio_agent.gact.types import Part
+from clio_agent.gact.tool_observer import _append_live_assistant_part
 
 if TYPE_CHECKING:
     from clio_agent.gact.agents.types import AgentDef
@@ -180,28 +182,6 @@ def _merge_wait_workflow_states(
         if isinstance(row.get("workflow_state"), dict) and "run_index" in row
     ]
     return merge_run_workflow_states(runs)
-
-
-def _failed_spawn_handoff_part(
-    agent_def: "AgentDef", child_id: str, spawn_group_id: str, group_size: int, exc: Exception
-) -> Part:
-    """Terminal Part for a batch sibling refused before it ever spawned (finding
-    [E]): builds directly on the terminal lane so the group's declared total
-    always reconciles even when one sibling never got a child session."""
-
-    reason = getattr(exc, "reason", type(exc).__name__)
-    row = failed_spawn_metadata_row(child_id, agent_def.id, reason, spawn_group_id, group_size)
-    return Part(
-        id=f"live_handoff_{uuid.uuid4().hex[:12]}",
-        type="expert_handoff",
-        agent_id=agent_def.id,
-        parent_agent=agent_def.id,
-        child_agent=child_id,
-        stage="delegate.completed",
-        status="failed",
-        text=f"{agent_def.id} -> {child_id}",
-        metadata={**_handoff_part_metadata(row), "stream_source": "live"},
-    )
 
 
 def _emit_delegation_terminal(app: Any, session_id: str, agent_def: "AgentDef", task: Any) -> None:
@@ -331,12 +311,10 @@ def build_spawn_runtime_tools(
     does not expose the declared-child spawn or workflow controls.
     """
 
-    from clio_agent.gact.agent_messaging import build_message_agent_tool  # noqa: PLC0415
     from clio_agent.gact.agents.agent_task_input_refs import (  # noqa: PLC0415
         resolve_input_task_evidence,
     )
     from clio_agent.gact.agents.agent_task_output_digest import (  # noqa: PLC0415
-        build_agent_task_output_tool,
         digested_model_row,
     )
     from clio_agent.gact.agents.invoker import (  # noqa: PLC0415
@@ -345,14 +323,12 @@ def build_spawn_runtime_tools(
         TaskHandle,
         TaskSpec,
     )
-    from clio_agent.gact.agents.observe_runtime import build_observe_tool  # noqa: PLC0415
     from clio_agent.gact.agents.resolution import _runtime_declared_child_ids  # noqa: PLC0415
     from clio_agent.gact.agents.spawn_placement import (  # noqa: PLC0415
         invoker_for_placement,
         invoker_for_task,
         resolve_batch_placement,
     )
-    from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
     from clio_agent.gact.spawn_context import bind_task_spec_to_parent  # noqa: PLC0415
 
     # Declared children own the complete routing surface. A spawn-effect skill can
@@ -461,7 +437,9 @@ def build_spawn_runtime_tools(
                 _append_live_assistant_part(
                     app,
                     session_id,
-                    _failed_spawn_handoff_part(agent_def, agent, spawn_group_id, group_size, exc),
+                    _failed_spawn_handoff_part(
+                        agent_def, agent, task, spawn_group_id, group_size, exc
+                    ),
                 )
             return json.dumps({"error": exc.reason, "message": str(exc)}, sort_keys=True)
         emit_spawn_started(
@@ -548,29 +526,29 @@ def build_spawn_runtime_tools(
         )
 
         call_start = _time.monotonic()
-        results = []
-        # Typed structured shape (owner ruling, P5): a tool DECLARES its wire
-        # presentation instead of the UI inferring it from JSON key order —
-        # built alongside ``results`` from the SAME per-task facts, and declared
-        # onto the wire's structured_content channel below (never returned to
-        # the model — that lane stays the compact ``results``/conflict rows).
-        structured_rows: list[dict[str, Any]] = []
-        for tid in task_ids or []:
+        wait_started_at = datetime.now(timezone.utc)
+        request_order_results: list[dict[str, Any]] = []
+        collected_rows: list[tuple[int, Any | None, dict[str, Any], dict[str, Any]]] = []
+        for request_index, tid in enumerate(task_ids or []):
             # Validate the id BEFORE waiting: registry.event() would setdefault a
             # fresh never-set Event for an unknown/typo id and block the FULL budget
             # (starving every real id after it via the shared deadline). An unknown
             # id returns immediately with a typed row and emits nothing.
             task = registry.get(tid)
             if task is None:
-                results.append({"task_id": tid, "error": "unknown_task"})
-                structured_rows.append(wait_structured_row(tid, "unknown_task", 0.0, ""))
+                payload = {"task_id": tid, "error": "unknown_task"}
+                structured_row = wait_structured_row(tid, "unknown_task", 0.0, "")
+                request_order_results.append(payload)
+                collected_rows.append((request_index, None, payload, structured_row))
                 continue
             try:
                 binding = invoker_for_task(app, task)
                 task_result = binding.invoker.wait(TaskHandle.from_task(task), timeout_s=None)
             except (InvokerError, SpawnError) as exc:
-                results.append({"task_id": tid, "error": exc.reason})
-                structured_rows.append(wait_structured_row(tid, exc.reason, 0.0, ""))
+                payload = {"task_id": tid, "error": exc.reason}
+                structured_row = wait_structured_row(tid, exc.reason, 0.0, "")
+                request_order_results.append(payload)
+                collected_rows.append((request_index, None, payload, structured_row))
                 continue
             payload = _completion_payload(app, task_result)
             payload.update(completion_context_fields(app, task_result))
@@ -578,19 +556,46 @@ def build_spawn_runtime_tools(
             # for THIS model-facing row only -- _emit_delegation_terminal below
             # reaches task_result directly and keeps the #880 verbatim payload
             # untouched on its own separate UI/semantic-event lane.
-            results.append(digested_model_row(payload, task_result))
-            structured_rows.append(
-                wait_structured_row(
-                    display_run_name(
-                        task_result.agent_ref.get("expert_id", ""),
-                        task_result.run_index,
-                        task_result.run_label,
-                    ),
-                    task_result.status,
-                    _task_duration_ms(task_result),
-                    (task_result.result or {}).get("answer_excerpt", ""),
-                )
+            model_row = digested_model_row(payload, task_result)
+            structured_row = wait_structured_row(
+                display_run_name(
+                    task_result.agent_ref.get("expert_id", ""),
+                    task_result.run_index,
+                    task_result.run_label,
+                ),
+                task_result.status,
+                _task_duration_ms(task_result),
+                (task_result.result or {}).get("answer_excerpt", ""),
+                wait_completion_offset_ms(wait_started_at, task_result.updated_at),
             )
+            request_order_results.append(model_row)
+            collected_rows.append((request_index, task_result, model_row, structured_row))
+
+        def _completion_order_key(
+            row: tuple[int, Any | None, dict[str, Any], dict[str, Any]],
+        ) -> tuple[int, float, int]:
+            request_index, task_result, _payload, _structured_row = row
+            if task_result is None or not task_result.is_terminal:
+                return (1, float(request_index), request_index)
+            try:
+                completed_at = datetime.fromisoformat(
+                    task_result.updated_at.replace("Z", "+00:00")
+                ).timestamp()
+            except (AttributeError, TypeError, ValueError):
+                return (1, float(request_index), request_index)
+            return (0, completed_at, request_index)
+
+        # A grouped wait is a collection boundary, so its result order is the
+        # children’s recorded terminal order rather than the caller’s task-id order.
+        # This same order drives the model-facing rows, transcript lifecycle events,
+        # and compact presentation. Workflow-state merging remains independently
+        # deterministic by run_index below.
+        collected_rows.sort(key=_completion_order_key)
+        results = [row[2] for row in collected_rows]
+        structured_rows = [row[3] for row in collected_rows]
+        for _request_index, task_result, _payload, _structured_row in collected_rows:
+            if task_result is None:
+                continue
             if task_result.is_terminal:
                 # Collecting a terminal task in-turn consumes its observe-later
                 # notification (#948 S6): the model saw the result HERE, so the next
@@ -610,7 +615,7 @@ def build_spawn_runtime_tools(
         # ORDER (run_index, never completion order) and surface every collision as a
         # typed ``workflow_state_merge_conflict`` row + a structured log — no silent
         # last-writer. The model reads the conflict rows and decides.
-        merged_state, conflicts = _merge_wait_workflow_states(results)
+        merged_state, conflicts = _merge_wait_workflow_states(request_order_results)
         for conflict in conflicts:
             logger.warning(
                 "workflow_state_merge_conflict key=%s winner_run=%s winner_agent=%s "
@@ -734,113 +739,15 @@ def build_spawn_runtime_tools(
         )
         return json.dumps(record, sort_keys=True, default=str)
 
-    # Declared presentation (tool_instrumentation): the spawn/fan-out/workflow
-    # tools' wire representation IS their ``expert_handoff`` part — declared
-    # ``handoff`` so the seam-attached observer records telemetry without a
-    # second representation on the wire. The collectors are plain ``row`` tools
-    # (owner, 2026-08-05: a wait/observe is a REAL call, never invisible mechanism
-    # the narration references).
-    tools = [
-        native_tool(
-            spawn_agent_task,
-            name="spawn_agent_task",
-            desc=spawn_agent_task.__doc__,
-            title="Spawn Agent",
-            representation="handoff",
-            args={
-                "agent": SPAWN_AGENT_ARGUMENT,
-                "task": {"type": "string", "description": "The specific task for that child."},
-                "placement": {
-                    "type": "string",
-                    "description": (
-                        "Optional execution placement: local or relay:<cluster>. "
-                        "Omit to use the session policy, then the local default."
-                    ),
-                },
-                "input_task_ids": {
-                    "type": "array",
-                    "description": (
-                        "Optional ids of YOUR OWN already-finished spawned tasks whose "
-                        "full stored output to hand this child as labeled evidence in "
-                        "its own briefing (e.g. a critic reviewing researchers' full "
-                        "material) -- the parent never sees this text. A foreign, "
-                        "unknown, or still-running id refuses the spawn (typed reason; "
-                        "no child created)."
-                    ),
-                },
-                "blueprint_id": SPAWN_BLUEPRINT_ARGUMENT,
-            },
-        ),
-        native_tool(
-            wait_agent_tasks,
-            name="wait_agent_tasks",
-            desc=wait_agent_tasks.__doc__,
-            title="Wait",
-            args={
-                "task_ids": {"type": "array", "description": "Task ids returned by spawn."},
-            },
-        ),
-        build_message_agent_tool(agent_def),
-        # OBSERVE posture (#1000): the read-only child-progress surface, built in
-        # its owner module (observe_runtime) so this file stays under the size ratchet.
-        build_observe_tool(),
-        # #1306 recoverability: fetches a digested (oversize) completed task's full
-        # stored output on demand; built in its own owner module for the same reason.
-        build_agent_task_output_tool(),
-        native_tool(
-            spawn_agents_parallel,
-            name="spawn_agents_parallel",
-            desc=spawn_agents_parallel.__doc__,
-            title="Spawn Agents",
-            representation="handoff",
-            args={
-                "spawns": {
-                    "type": "array",
-                    "description": (
-                        "List of {agent, task, input_task_ids?, blueprint_id?} to fan out. "
-                        "input_task_ids works exactly like spawn_agent_task's own "
-                        "parameter, per entry."
-                    ),
-                },
-                "placement": {
-                    "type": "string",
-                    "description": ("Optional placement applied to every spawn in this batch."),
-                },
-            },
-        ),
-    ]
-    if not has_declared_children:
-        collection_names = {
-            "wait_agent_tasks",
-            "message_agent",
-            "observe_agent_tasks",
-            "get_agent_task_output",
-            *(
-                {"spawn_agent_task", "spawn_agents_parallel"}
-                if can_commission_blueprints
-                else set()
-            ),
-        }
-        tools = [tool for tool in tools if getattr(tool, "name", "") in collection_names]
-
-    # run_workflow is gated on a DECLARED workflow (mirroring the children-gated
-    # toolset above): a blueprint with no ``workflow:`` block never sees the tool.
-    from clio_agent.gact.workflows import parse_workflow  # noqa: PLC0415
-
-    if has_declared_children and parse_workflow(agent_def) is not None:
-        tools.append(
-            native_tool(
-                run_workflow,
-                name="run_workflow",
-                desc=run_workflow.__doc__,
-                title="Run Workflow",
-                representation="handoff",
-                args={
-                    "request": {
-                        "type": "string",
-                        "description": "The user's request, grounding each declared step's task.",
-                    },
-                },
-            )
-        )
-    return tools
+    # Tool declarations (names/desc/JSON-schema args) live in their own owner
+    # module (spawn_runtime_declarations) so this file stays under the size
+    # ratchet; the closures above are this function's own contribution.
+    return assemble_spawn_runtime_tools(
+        agent_def,
+        spawn_agent_task=spawn_agent_task,
+        wait_agent_tasks=wait_agent_tasks,
+        spawn_agents_parallel=spawn_agents_parallel,
+        run_workflow=run_workflow,
+        has_declared_children=has_declared_children,
+        can_commission_blueprints=can_commission_blueprints,
+    )

@@ -8,7 +8,7 @@ from typing import Any, Callable, Mapping
 from clio_agent.gact.events import Event
 from clio_agent.gact.protocol.v3 import CONNECTION_ID, GACT_V3, Projection
 from clio_agent.gact.protocol.v3.composer import COMPOSER_PROJECTORS
-from clio_agent.gact.protocol.v3.message import message_to_v3, part_to_v3_block
+from clio_agent.gact.protocol.v3.message import message_to_v3, part_to_v3_block, subagent_from_part
 from clio_agent.gact.protocol.v3.session import session_to_v3
 
 # Cancellation facts that live ONLY on a session.status_changed payload (they are
@@ -102,9 +102,12 @@ def _message_upsert(event: Event, payload: dict[str, Any], session: Any) -> _Pro
 
 
 def _message_block_upsert(event: Event, payload: dict[str, Any], session: Any) -> _Projection:
-    del event, session
-    block = part_to_v3_block(_mapping(payload.get("part")))
+    del session
+    part = _mapping(payload.get("part"))
+    block = part_to_v3_block(part)
     projected = {"message_id": str(payload.get("message_id") or ""), "block": block}
+    if part.get("type") == "expert_handoff":
+        projected["subagent"] = subagent_from_part(part, event.session_id)
     return _Projection("message.block.upserted", projected, str(block.get("id") or ""))
 
 
@@ -163,6 +166,11 @@ def _tool_started(event: Event, payload: dict[str, Any], session: Any) -> _Proje
         **({"title": str(payload["tool_title"])} if payload.get("tool_title") else {}),
         "state": "running",
         "input": payload.get("args"),
+        **(
+            {"presentation": payload["presentation"]}
+            if payload.get("presentation") is not None
+            else {}
+        ),
     }
     return _Projection("tool.upserted", projected, entity_id)
 
@@ -179,7 +187,7 @@ def _tool_progress(event: Event, payload: dict[str, Any], session: Any) -> _Proj
         "state": "running",
         **(
             {"output_stream": str(payload["output_stream"])}
-            if payload.get("output_stream") is not None
+            if payload.get("output_stream") is not None and not payload.get("presentation_delta")
             else {}
         ),
         **(
@@ -202,6 +210,8 @@ def _tool_progress(event: Event, payload: dict[str, Any], session: Any) -> _Proj
 
 
 def _tool_completed(event: Event, payload: dict[str, Any], session: Any) -> _Projection:
+    from clio_agent.gact.tool_result_presentation import project_presentation
+
     del session
     entity_id = str(payload.get("call_id") or "")
     ok = bool(payload.get("ok"))
@@ -212,10 +222,27 @@ def _tool_completed(event: Event, payload: dict[str, Any], session: Any) -> _Pro
         **({"title": str(payload["tool_title"])} if payload.get("tool_title") else {}),
         "state": "succeeded" if ok else "failed",
         "output": payload.get("result"),
+        **(
+            {
+                "presentation": project_presentation(
+                    payload["presentation"],
+                    event.session_id,
+                    entity_id,
+                    tool_name=str(payload.get("tool") or ""),
+                )
+            }
+            if payload.get("presentation") is not None
+            else {}
+        ),
         "duration_ms": payload.get("duration_ms"),
         **({"error": str(payload["error"])} if payload.get("error") else {}),
     }
     return _Projection("tool.upserted", projected, entity_id)
+
+
+def _tool_presentation_delta(event: Event, payload: dict[str, Any], session: Any) -> _Projection:
+    del event, session
+    return _Projection("tool.presentation.delta", payload, str(payload.get("call_id") or ""))
 
 
 def _permission_requested(event: Event, payload: dict[str, Any], session: Any) -> _Projection:
@@ -344,6 +371,7 @@ _EVENT_PROJECTORS: dict[str, _Projector] = {
     "message.completed": _message_completed,
     "tool.call.started": _tool_started,
     "tool.call.progress": _tool_progress,
+    "tool.presentation.delta": _tool_presentation_delta,
     "tool.call.completed": _tool_completed,
     "permission.requested": _permission_requested,
     "permission.resolved": _permission_resolved,

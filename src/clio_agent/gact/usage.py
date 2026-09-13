@@ -41,6 +41,8 @@ __all__ = [
     "_all_known_lms",
     "_snapshot_lm_history_index",
     "_usage_from_history_slice",
+    "_last_prompt_usage_from_history_slice",
+    "_estimated_prompt_usage",
     "_entry_reasoning_text",
     "_entry_response_text",
     "_entry_prompt_text",
@@ -51,6 +53,32 @@ __all__ = [
     "_capture_reasoning_enabled",
     "capture_reasoning_log",
 ]
+
+
+def _usage_cache_tokens(usage: dict[str, Any]) -> tuple[int, int, bool]:
+    """Return provider-reported prompt-cache tokens and whether they were measured."""
+
+    details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details") or {}
+    details = details if isinstance(details, dict) else {}
+    read_keys = ("cache_read_input_tokens", "cached_tokens")
+    write_keys = ("cache_creation_input_tokens", "cache_write_input_tokens")
+    cache_read = int(
+        usage.get("cache_read_input_tokens")
+        or details.get("cached_tokens")
+        or details.get("cache_read_input_tokens")
+        or 0
+    )
+    cache_write = int(
+        usage.get("cache_creation_input_tokens")
+        or usage.get("cache_write_input_tokens")
+        or details.get("cache_creation_input_tokens")
+        or details.get("cache_write_input_tokens")
+        or 0
+    )
+    measured = any(key in usage for key in (*read_keys, *write_keys)) or any(
+        key in details for key in (*read_keys, *write_keys)
+    )
+    return cache_read, cache_write, measured
 
 
 def _all_known_lms(app: "FastAPI") -> list[Any]:
@@ -140,8 +168,9 @@ def _usage_from_history_slice(start: Any, app: Optional["FastAPI"] = None) -> di
                 continue
             input_tok += int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
             output_tok += int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
-            cache_read += int(usage.get("cache_read_input_tokens") or 0)
-            cache_write += int(usage.get("cache_creation_input_tokens") or 0)
+            entry_cache_read, entry_cache_write, _ = _usage_cache_tokens(usage)
+            cache_read += entry_cache_read
+            cache_write += entry_cache_write
             raw_cost += float(usage.get("cost_usd") or usage.get("total_cost") or 0.0)
             last_model = entry.get("model") or last_model
     if raw_cost == 0.0:
@@ -152,6 +181,109 @@ def _usage_from_history_slice(start: Any, app: Optional["FastAPI"] = None) -> di
         "cache_read": cache_read,
         "cache_write": cache_write,
         "cost_usd": raw_cost,
+    }
+
+
+def _last_prompt_usage_from_history_slice(
+    start: Any, app: Optional["FastAPI"] = None
+) -> dict[str, Any]:
+    """Return the newest prompt reading produced after ``start``.
+
+    The reading is provider-measured when the history entry carries prompt usage.
+    When a provider omits that number, the actual rendered messages are counted with
+    the same model-aware fallback used by automatic compaction. Cache utilization is
+    exposed only when the provider emitted cache detail fields.
+    """
+
+    if app is not None:
+        lms = _all_known_lms(app)
+    else:
+        from clio_agent.gact.runtime.ambient_lm import resolve_active_lm  # noqa: PLC0415
+
+        lm = resolve_active_lm(site="usage._last_prompt_usage_from_history_slice")
+        lms = [lm] if lm else []
+    snap = {id(lms[0]): start} if isinstance(start, int) and lms else (start or {})
+    candidates: list[tuple[str, int, Any, dict[str, Any]]] = []
+    ordinal = 0
+    for lm in lms:
+        history = getattr(lm, "history", None) or []
+        for entry in history[snap.get(id(lm), 0) :]:
+            if isinstance(entry, dict):
+                candidates.append((str(entry.get("timestamp") or ""), ordinal, lm, entry))
+                ordinal += 1
+    if not candidates:
+        return {}
+    _, _, lm, entry = max(candidates, key=lambda row: (row[0], row[1]))
+    usage = entry.get("usage") or {}
+    if not isinstance(usage, dict):
+        usage = {}
+    model = str(entry.get("model") or getattr(lm, "model", "") or "")
+    used_tokens = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+    cache_read, cache_write, cache_measured = _usage_cache_tokens(usage)
+    source = "provider" if used_tokens > 0 else ""
+    if used_tokens <= 0:
+        messages = entry.get("messages")
+        if messages:
+            from clio_agent.gact.runtime.context_tokens import (  # noqa: PLC0415
+                _heuristic_message_tokens,
+                _model_uses_tiktoken,
+            )
+
+            if model and _model_uses_tiktoken(model):
+                try:
+                    import litellm  # noqa: PLC0415
+
+                    used_tokens = int(litellm.token_counter(model=model, messages=messages))
+                except Exception:  # noqa: BLE001 - explicit heuristic fallback below
+                    used_tokens = _heuristic_message_tokens(messages)
+            else:
+                used_tokens = _heuristic_message_tokens(messages)
+            source = "estimated" if used_tokens > 0 else ""
+    if used_tokens <= 0:
+        return {}
+    return {
+        "used_tokens": used_tokens,
+        "source": source,
+        "model": model,
+        "cache_read_tokens": cache_read,
+        "cache_write_tokens": cache_write,
+        "cache_tokens_measured": cache_measured,
+    }
+
+
+def _estimated_prompt_usage(prompt: str, model: str) -> dict[str, Any]:
+    """Measure a materialized prompt when the provider emitted no usage record.
+
+    Subscription CLI providers can complete a real turn without adding a DSPy LM
+    history entry.  The exact prompt passed into the agent is still available at
+    the turn boundary, so retain a clearly labelled estimate instead of reporting
+    context usage as unavailable.  Cache fields remain unmeasured.
+    """
+
+    if not prompt:
+        return {}
+    from clio_agent.gact.runtime.context_tokens import (  # noqa: PLC0415
+        _heuristic_text_tokens,
+        _model_uses_tiktoken,
+    )
+
+    used_tokens = 0
+    if model and _model_uses_tiktoken(model):
+        try:
+            import litellm  # noqa: PLC0415
+
+            used_tokens = int(litellm.token_counter(model=model, text=prompt))
+        except Exception:  # noqa: BLE001 - explicit heuristic fallback below
+            used_tokens = 0
+    if used_tokens <= 0:
+        used_tokens = _heuristic_text_tokens(prompt)
+    return {
+        "used_tokens": used_tokens,
+        "source": "estimated",
+        "model": model,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "cache_tokens_measured": False,
     }
 
 
@@ -301,8 +433,7 @@ def _usage_from_dspy_history() -> dict[str, Any]:
         return {}
     input_tok = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
     output_tok = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
-    cache_read = int(usage.get("cache_read_input_tokens") or 0)
-    cache_write = int(usage.get("cache_creation_input_tokens") or 0)
+    cache_read, cache_write, _ = _usage_cache_tokens(usage)
     raw_cost = float(usage.get("cost_usd") or usage.get("total_cost") or 0.0)
     # iowarp/clio-agent#8: some OpenAI-compatible proxies don't pass
     # cost_usd through, so the upstream usage dict reports zero. Fall

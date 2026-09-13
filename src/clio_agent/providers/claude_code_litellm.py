@@ -15,6 +15,7 @@ execution layer.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import threading
@@ -689,7 +690,10 @@ class ClaudeCodeLLM(CustomLLM):
         timeout: Any = None,
         client: Any = None,
     ) -> ModelResponse:
-        return self.completion(
+        # The pooled SDK bridge BLOCKS its caller; awaited on the server loop (the goal
+        # judge, #1333) it froze the loop, so it runs on a worker (contextvars copied).
+        return await asyncio.to_thread(
+            self.completion,
             model=model,
             messages=messages,
             api_base=api_base,

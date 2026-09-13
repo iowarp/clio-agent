@@ -15,7 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal, Optional, TypeVar
 
 from pydantic import BaseModel, Field
 
@@ -79,25 +79,37 @@ def stage_intent_user_message(
     message: Message,
     *,
     replace_existing: bool,
-) -> None:
-    """Append a new user message or replace its persisted pending-steer identity."""
+    defer_atoms: bool = False,
+) -> Optional[Callable[[], None]]:
+    """Append a new user message or replace its persisted pending-steer identity.
+
+    With ``defer_atoms`` (#1334) the in-memory ledger + local store are written here
+    (on the accept path, on the loop) and the ARC transcript persist is RETURNED as a
+    job for the turn to run off the loop before anything else; ``None`` otherwise.
+    """
 
     from clio_agent.gact.app import (  # noqa: PLC0415
         _append_session_message,
         _replace_session_messages,
     )
+    from clio_agent.gact.transcript_projection import (  # noqa: PLC0415
+        on_ledger_replaced,
+        on_message_appended,
+    )
 
     if not replace_existing:
-        _append_session_message(app, session_id, message)
-        return
+        _append_session_message(app, session_id, message, atoms_minted=defer_atoms)
+        if not defer_atoms:
+            return None
+        return lambda: on_message_appended(app, session_id, message)
     messages = list(app.state.messages.get(session_id, []))
     if not any(current.id == message.id for current in messages):
         raise ValueError(f"pending user message not found: {message.id}")
-    _replace_session_messages(
-        app,
-        session_id,
-        [message if current.id == message.id else current for current in messages],
-    )
+    replaced = [message if current.id == message.id else current for current in messages]
+    _replace_session_messages(app, session_id, replaced, atoms_minted=defer_atoms)
+    if not defer_atoms:
+        return None
+    return lambda: on_ledger_replaced(app, session_id, replaced)
 
 
 def _now_iso() -> str:

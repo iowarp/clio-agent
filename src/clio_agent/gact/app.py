@@ -54,6 +54,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from clio_agent import conf
+from clio_agent.arc import loop_guard
 from clio_agent.gact import composer_runtime
 from clio_agent.gact.auth import configure_bearer_auth
 from clio_agent.gact.cors import gact_cors_origins as _gact_cors_origins
@@ -225,6 +226,7 @@ from clio_agent.gact.session_store import (  # noqa: E402,F401
     _extend_session_messages,
     _flush_context_files,
     _load_context_files,
+    _reconcile_restart_interrupted_sessions,
     _release_session_arc,
     _replace_session_messages,
 )
@@ -793,12 +795,8 @@ from clio_agent.gact.usage import (  # noqa: E402,F401
     _usage_from_dspy_history,
     _usage_from_history_slice,
 )
-from clio_agent.gact.workspaces import (
-    WorkspaceStore,
-)
-from clio_agent.gact.workspaces import (
-    _default_store_path as _ws_default_store_path,
-)
+from clio_agent.gact.workspaces import WorkspaceStore
+from clio_agent.gact.workspaces import _default_store_path as _ws_default_store_path
 
 
 class AgentLike(Protocol):
@@ -836,6 +834,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # #948 S1 (#662): anchor turn tasks to THIS app-lifetime loop, not whatever
     # transient request/portal loop submits them.
     app.state.turn_runner.bind_loop(app.state.mcp_app_loop)
+    # #1334: THIS is the loop an ARC store write must never block. A write on any
+    # other running loop (a provider's private ``asyncio.run`` on a worker) is
+    # audited and allowed rather than refused-and-dropped.
+    loop_guard.register_server_loop(app.state.mcp_app_loop)
     # #900: bind CLIO's child tree (MCP stdio + pooled SDK CLI) to this server so a HARD
     # kill reaps it (Windows Job Object / POSIX pdeathsig). Typed result → doctor probe.
     from clio_agent.runtime.process_tree import install_child_reaper  # noqa: PLC0415
@@ -877,6 +879,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     yield
 
+    # #1334: no request is served on this loop any more, so the teardown flushes below
+    # (the turn drain, the trace close) must LAND rather than be refused and dropped.
+    loop_guard.begin_server_loop_drain(app.state.mcp_app_loop)
     # #948 S1: the turn-runner idle hook is ALSO a turn producer — a draining
     # turn's completion would otherwise re-drive a deferred resume, staging a fresh
     # turn whose task the drain hard-cancels but whose SIDE EFFECTS (a persisted
@@ -963,6 +968,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ("I leave the TUI, everything gets released"). Doing it in this lifespan hook would
     # wrongly stop the SHARED daemon on any app teardown that is not a process exit
     # (e.g. a second app in the same process), which the atexit path correctly avoids.
+    loop_guard.unregister_server_loop(app.state.mcp_app_loop)  # #1334: strict again
 
 
 async def _construct_agent_async(app: "FastAPI") -> None:
@@ -1205,6 +1211,9 @@ def build_app(
     # Durable per-session message log (POST /messages writes, GET /messages reads);
     # per-session JSON ledgers so adapter deletion/redeploy preserves transcripts.
     app.state.message_store = MessageStore(path=session_store_path.parent / "messages")
+    # #1334 F2: placeholder for the reconciliation's _replace_session_messages write.
+    app.state.messages = {}
+    _reconcile_restart_interrupted_sessions(app)
     # #770 C3: bounded eviction-audit trail (init before the resident set).
     init_retention_state(app)
     # #770 C3 / #889: running metrics aggregate, seeded by a streaming parse-and-

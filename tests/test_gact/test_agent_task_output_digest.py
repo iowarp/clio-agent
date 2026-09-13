@@ -18,6 +18,7 @@ from clio_agent.gact.agent_tasks import AgentTask, AgentTaskRegistry
 from clio_agent.gact.agents.agent_task_output_digest import (
     AGENT_TASK_OUTPUT_OVERSIZE_REASON,
     agent_task_output_digest_chars,
+    build_agent_task_output_tool,
     digest_agent_task_output,
     digested_model_row,
     get_agent_task_output_impl,
@@ -30,6 +31,15 @@ def test_default_digest_cap_is_8000_chars() -> None:
     """The in-code default (also what config.defaults.yaml pins)."""
 
     assert agent_task_output_digest_chars() == 8_000
+
+
+def test_collect_argument_copy_names_the_current_observe_posture() -> None:
+    schema = build_agent_task_output_tool().format_as_litellm_function_call()["function"][
+        "parameters"
+    ]
+    description = schema["properties"]["task_id"]["description"]
+
+    assert description == "A completed task's id (from spawn/wait/observe)."
 
 
 def test_digest_cap_is_configurable() -> None:

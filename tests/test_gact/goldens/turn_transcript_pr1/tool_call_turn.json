@@ -38,6 +38,7 @@
           "path": "README.md"
         },
         "call_id": "<call#4>",
+        "presentation": null,
         "telemetry_source": "live_observer",
         "tool": "fs_read_file"
       },
@@ -82,6 +83,10 @@
         "cached": false,
         "call_id": "<call#4>",
         "ok": true,
+        "presentation": {
+          "blocks": [],
+          "summary": ""
+        },
         "result": {
           "ok": true,
           "text": "readme contents"
@@ -113,6 +118,10 @@
             },
             "stream_source": "live",
             "telemetry_source": "live_observer"
+          },
+          "presentation": {
+            "blocks": [],
+            "summary": ""
           },
           "tool_name": "fs_read_file",
           "type": "tool_result"
@@ -283,6 +292,10 @@
         },
         "stream_source": "live",
         "telemetry_source": "live_observer"
+      },
+      "presentation": {
+        "blocks": [],
+        "summary": ""
       },
       "sequence": 2,
       "tool_name": "fs_read_file",

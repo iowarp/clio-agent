@@ -68,6 +68,49 @@ def test_context_state_categories_and_autocompact(tmp_path):
     assert "framing" not in body["categories"]
 
 
+def test_context_state_uses_durable_scope_owned_provider_usage(tmp_path):
+    """Provider usage survives route calls and remains isolated by agent scope."""
+
+    sessions_path = tmp_path / "sessions.json"
+    arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+    client = TestClient(build_app(sessions_path=sessions_path, arc=arc))
+    sid = _session(client)
+    client.app.state.sessions.update(
+        sid,
+        metadata_patch={
+            "context_usage_by_scope": {
+                SCOPE: {
+                    "used_tokens": 1200,
+                    "source": "provider",
+                    "model": "anthropic/claude-sonnet-4-6",
+                    "cache_read_tokens": 900,
+                    "cache_write_tokens": 120,
+                    "cache_tokens_measured": True,
+                }
+            }
+        },
+    )
+
+    first = client.get(f"/v1/sessions/{sid}/context/state", params={"scope": SCOPE}).json()
+    restarted = TestClient(build_app(sessions_path=sessions_path, arc=arc))
+    after_restart = restarted.get(
+        f"/v1/sessions/{sid}/context/state", params={"scope": SCOPE}
+    ).json()
+    unrelated = restarted.get(
+        f"/v1/sessions/{sid}/context/state", params={"scope": "other-agent"}
+    ).json()
+
+    for state in (first, after_restart):
+        assert state["used_tokens"] == 1200
+        assert state["used_tokens_source"] == "provider"
+        assert state["usage_model"] == "anthropic/claude-sonnet-4-6"
+        assert state["cache_read_tokens"] == 900
+        assert state["cache_write_tokens"] == 120
+        assert state["cache_tokens_measured"] is True
+    assert unrelated["used_tokens"] is None
+    assert unrelated["cache_tokens_measured"] is False
+
+
 def test_context_preferences_are_session_owned_and_reflected_in_state(tmp_path):
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
     client = _client(tmp_path, arc)

@@ -15,6 +15,7 @@ from clio_agent.gact.message_intents import (
     RevisionConflictError,
 )
 from clio_agent.gact.message_submission import accept_message, prepare_references
+from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.runtime.globals import _new_message_id
 from clio_agent.gact.types import (
     ErrorEnvelope,
@@ -175,7 +176,7 @@ def register_message_intent_routes(app: FastAPI, deps: "GactDeps") -> None:
         if inbox is not None:
             inbox.cancel_user_message(message_id)
         messages = [row for row in app.state.messages.get(sid, []) if row.id != message_id]
-        deps.replace_session_messages(app, sid, messages)
+        await run_off_loop(deps.replace_session_messages, app, sid, messages)  # #1334
         payload = {"message_id": message_id, "session_id": sid}
         publish("message.cancelled", sid, payload)
         publish("pending_steer.cancelled", sid, payload)

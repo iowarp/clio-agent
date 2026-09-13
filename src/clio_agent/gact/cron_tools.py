@@ -282,10 +282,9 @@ def build_cron_create_tool() -> Any:
         )
 
         kind = "recurring" if sch.recurring else "one-shot"
-        trigger = f"cron {sch.cron}" if sch.cron else f"run_at {sch.run_at}"
         declare_structured_content(
             {
-                "message": f"armed schedule {sch.id} — {kind} {trigger}; next fire {sch.next_fire_at}",
+                "message": f"Created {kind} schedule {sch.id}, next run {sch.next_fire_at}",
                 **result,
             }
         )
@@ -294,8 +293,9 @@ def build_cron_create_tool() -> Any:
     return native_tool(
         cron_create,
         name="cron_create",
+        presentation="schedule_created",
         desc=cron_create.__doc__,
-        title="Create Cron",
+        title="Create schedule",
         args={
             "cron": {
                 "type": "string",
@@ -356,12 +356,12 @@ def build_cron_list_tool() -> Any:
 
         n = len(schedules)
         if n == 0:
-            message = "no schedules armed for this session"
+            message = "There are no schedules."
         else:
             recurring_n = sum(1 for s in schedules if s["recurring"])
             message = (
-                f"{n} schedule{'' if n == 1 else 's'}: "
-                f"{recurring_n} recurring, {n - recurring_n} one-shot"
+                f"{n} schedule{'' if n == 1 else 's'}, "
+                f"{recurring_n} recurring and {n - recurring_n} one-shot"
             )
         declare_structured_content({"message": message, "schedules": schedules})
         return schedules
@@ -369,8 +369,9 @@ def build_cron_list_tool() -> Any:
     return native_tool(
         cron_list,
         name="cron_list",
+        presentation="schedules",
         desc=cron_list.__doc__,
-        title="List Crons",
+        title="List schedules",
         args={},
     )
 
@@ -399,9 +400,9 @@ def build_cron_delete_tool() -> Any:
         )
 
         message = (
-            f"cancelled schedule {clean_id}"
+            "Schedule deleted."
             if deleted
-            else f"no schedule {clean_id} to cancel (already gone or never armed)"
+            else "No matching schedule was found."
         )
         declare_structured_content(
             {"message": message, "schedule_id": clean_id, "deleted": deleted}
@@ -411,8 +412,9 @@ def build_cron_delete_tool() -> Any:
     return native_tool(
         cron_delete,
         name="cron_delete",
+        presentation="schedule_deleted",
         desc=cron_delete.__doc__,
-        title="Delete Cron",
+        title="Delete schedule",
         args={
             "schedule_id": {
                 "type": "string",

@@ -48,11 +48,7 @@ from clio_agent.gact.delegation import (
     _prediction_workflow_state,
 )
 from clio_agent.gact.enrichment import (
-    _context_file_turn_provenance,
-    _record_context_frame,
     consume_pending_agent_task_notifications,
-    enrich_turn_context,
-    inject_pending_agent_task_notifications,
 )
 from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
 from clio_agent.gact.evidence import _propose_edit_diffs_from_pred
@@ -62,16 +58,14 @@ from clio_agent.gact.messaging import (
     _image_part_summaries,
     _user_message_parts,
 )
+from clio_agent.gact.off_loop import emit_semantic_event_async
 from clio_agent.gact.permission_delivery import publish_permission_event
-from clio_agent.gact.plan_mode import inject_plan_mode_reminder
-from clio_agent.gact.replanning import inject_replan_suggestion
 from clio_agent.gact.runtime import bringup_timing
 from clio_agent.gact.runtime.globals import (
     _BlueprintRootDisabled,
     _cancelled_error_info,
     _coerce_error_info,
     _ContextFileAccessError,
-    _emit_semantic_event,
     _iso_from_epoch,
     _new_message_id,
     _NoResolvableAgent,
@@ -81,9 +75,6 @@ from clio_agent.gact.runtime.globals import (
     _UnsupportedSessionAgent,
 )
 from clio_agent.gact.runtime.retention import enforce_dict_bound
-from clio_agent.gact.session_store import (
-    _compile_session_conversation_history,
-)
 from clio_agent.gact.skills import SkillNotDelegatableError
 from clio_agent.gact.streaming import (
     _extract_tools_called,
@@ -91,30 +82,20 @@ from clio_agent.gact.streaming import (
     _pop_stream_fallback,
     _StreamingOutputError,
 )
-from clio_agent.gact.todos import inject_todo_recitation
 from clio_agent.gact.tool_observer import (
     _merge_tool_call_rows,
     _tool_calls_from_handoff_rows,
 )
 from clio_agent.gact.turn_cancellation import settle_asyncio_cancellation
-from clio_agent.gact.turn_finalize import (
-    finalize_turn,
-    maybe_pause_for_user,
-    settle_failed_finalize,
-)
-from clio_agent.gact.turn_forward import forward_turn
-from clio_agent.gact.turn_state import new_turn_state
-from clio_agent.gact.turn_stream import (
-    bind_live_emitter,
-)
+from clio_agent.gact.turn_finalize import maybe_pause_for_user, settle_failed_finalize
+from clio_agent.gact.turn_finalize_goal import finalize_turn_async
+from clio_agent.gact.turn_forward import _run_turn_setup_off_loop, forward_turn
+from clio_agent.gact.turn_start_offloop import prepare_turn_off_loop, spawn_user_turn
+from clio_agent.gact.turn_state import DeferredTranscriptJob, new_turn_state
+from clio_agent.gact.turn_stream import bind_live_emitter, settle_turn_transcript
 from clio_agent.gact.turn_usage import roll_up_usage
 from clio_agent.gact.turn_watchdog import make_turn_cancel_event
-from clio_agent.gact.types import (
-    ErrorInfo,
-    Message,
-    Part,
-    Session,
-)
+from clio_agent.gact.types import ErrorInfo, Message, Part, Session
 from clio_agent.gact.usage import _snapshot_lm_history_index
 
 # NOTE (#714): every turn helper above is imported from its true *leaf* owner,
@@ -166,6 +147,7 @@ async def _run_turn_in_background(
     user_text: str,
     user_msg: "Message",
     turn_agent_id: str = "",
+    transcript_job: Optional[DeferredTranscriptJob] = None,
 ) -> None:
     """Drive an agent turn off the request thread.
 
@@ -217,6 +199,7 @@ async def _run_turn_in_background(
         sess=sess,
         bus=bus,
     )
+    state.transcript_job = transcript_job
 
     def _drain_observed_tool_calls(
         current_rows: list[dict[str, Any]],
@@ -263,106 +246,28 @@ async def _run_turn_in_background(
             )
         )
 
+    async def _settle_failed(exc: BaseException) -> None:
+        # #756 envelope, off the loop (#1334: it persists the error turn's message).
+        await _run_turn_setup_off_loop(
+            state,
+            lambda: settle_failed_finalize(
+                state.app,
+                state.sid,
+                turn_id=state.turn_id,
+                trace_id=state.trace_id,
+                turn_tokens=state.turn_tokens,
+                turn_cost=state.turn_cost,
+                turn_cancel_event=state.turn_cancel_event,
+                update_retry_attempt=_update_retry_attempt,
+                exc=exc,
+            ),
+        )
+
     if state.retry_attempt_id:
         _update_retry_attempt(
             "running",
             metadata_patch={"executed_user_message_id": state.user_msg.id},
         )
-    _emit_semantic_event(
-        state.app,
-        state.sid,
-        "turn.started",
-        turn_id=state.turn_id,
-        trace_id=state.trace_id,
-        status="running",
-        summary="User turn accepted and CLIO runtime started.",
-        actor={"role": "user"},
-        subject={"message_id": state.user_msg.id},
-        payload={"text": state.user_text, "retry_attempt_id": state.retry_attempt_id},
-    )
-    _publish_transcript_event(
-        state.bus,
-        state.sid,
-        "turn.started",
-        {
-            "turn_id": state.turn_id,
-            "agent_id": state.turn_agent_id or _session_agent_id(state.sess) or "main",
-        },
-    )
-    bringup_timing.timer_for_session(state.app, state.sid).end_phase("turn.accept_gap")
-
-    # iowarp/clio-agent#5: prepend attached context files to the user's text so the
-    # agent's forward() sees them as primed input (plain concat, expert-agnostic).
-    context_file_error: ErrorInfo | None = None
-    state.context_file_provenance = _context_file_turn_provenance(
-        state.app, state.sid, status="prepared"
-    )
-    state.memory_search_metadata = {}
-    try:
-        # #1215 S5: enrich_turn_context times BOTH mechanisms below as ONE
-        # "enrichment" bring-up phase (owner module gact/enrichment.py).
-        state.enriched_text, state.memory_search_metadata = enrich_turn_context(
-            state.app, state.sid, state.user_text, state.user_msg
-        )
-        # #948 S6 [1]/[4]: surface prior-turn background task results (observe-later).
-        # STAGE the ids only; consumption + terminal emission defer to the commit-to-
-        # run seam below, so a turn aborted after enrichment leaves them pending.
-        state.enriched_text, state.pending_notification_task_ids = (
-            inject_pending_agent_task_notifications(state.app, state.sid, state.enriched_text)
-        )
-        # P1.2 #1064: surface plan mode to the model each turn (survives compaction; no-op otherwise).
-        state.enriched_text = inject_plan_mode_reminder(
-            state.app, state.sid, state.sess, state.enriched_text
-        )
-        state.enriched_text = inject_todo_recitation(
-            state.app, state.sid, state.sess, state.enriched_text
-        )
-        # P1.6d #1068: surface a pending stall-triggered replanning suggestion once (no-op otherwise).
-        state.enriched_text = inject_replan_suggestion(
-            state.app, state.sid, state.sess, state.enriched_text
-        )
-        # Carry prior turns so a follow-up ("now plot it") reuses resolved state (no-op turn 1).
-        state.enriched_text = _compile_session_conversation_history(
-            state.app, state.sid, state.enriched_text
-        )
-    except _ContextFileAccessError as exc:
-        state.enriched_text = state.user_text
-        context_file_error = exc.error_info
-        state.context_file_provenance = _context_file_turn_provenance(
-            state.app, state.sid, status="error"
-        )
-    state.context_frame = _record_context_frame(
-        state.app,
-        state.sid,
-        state.sess,
-        state.user_msg,
-        user_text=state.user_text,
-        enriched_text=state.enriched_text,
-        context_error=context_file_error,
-    )
-    if state.memory_search_metadata:
-        _emit_semantic_event(
-            state.app,
-            state.sid,
-            "memory.search.completed",
-            turn_id=state.turn_id,
-            trace_id=state.trace_id,
-            summary="Requested memory search was injected into turn context.",
-            actor={"role": "runtime", "component": "memory"},
-            subject={"message_id": state.user_msg.id},
-            payload=state.memory_search_metadata,
-        )
-    # P2.2 #1070 / P2.6 #1074: UserPromptSubmit hooks (the ported ``pre_message``
-    # consumer). A deny VETOES the turn (session → error); a ``defer`` SUSPENDS it for
-    # out-of-band approval (waiting_user, resume as a new turn). The whole finalize-
-    # boundary protocol lives in the hooks owner module (no-accretion) — this is only
-    # the call site: any non-"proceed" outcome ends the turn here.
-    if context_file_error is None:
-        from clio_agent.gact.hooks.user_prompt import run_user_prompt_submit  # noqa: PLC0415
-
-        if run_user_prompt_submit(state, update_retry_attempt=_update_retry_attempt) != "proceed":
-            return
-
     # iowarp/clio-agent#6: try real per-token streaming via dspy.streamify when the LM supports it;
     # fall back to the synchronous executor path otherwise. Streaming produces message.part.delta
     # events as chunks arrive — without it the text part lands as one big delta after forward.
@@ -412,8 +317,20 @@ async def _run_turn_in_background(
     make_turn_cancel_event(state)
 
     try:
-        if context_file_error is not None:
-            raise _ContextFileAccessError(context_file_error)
+        # #1334: the whole prologue (the user message's deferred transcript persist, the
+        # ``turn.started`` event, enrichment incl. a memory-search RPC, the context
+        # frame, the UserPromptSubmit hooks) runs on the turn executor -- owner module
+        # ``turn_start_offloop.py``. Inside the try: a cancellation or a crash during it
+        # (a mint that fails) settles through the handlers below, never escaping the
+        # detached task; a non-"proceed" hook outcome ends the turn as before.
+        outcome = await _run_turn_setup_off_loop(
+            state, lambda: prepare_turn_off_loop(state, update_retry_attempt=_update_retry_attempt)
+        )
+        if outcome != "proceed":
+            settle_turn_transcript(state)
+            return
+        if state.context_file_error is not None:
+            raise _ContextFileAccessError(state.context_file_error)
 
         if state.sid in state.app.state.cancel_flags:
             state.app.state.cancel_flags.discard(state.sid)
@@ -457,7 +374,14 @@ async def _run_turn_in_background(
             state.error_info = pred_error_info
             if not state.error_info.details.get("partial", False):
                 state.answer_text = ""
-        if maybe_pause_for_user(state, state.pred, update_retry_attempt=_update_retry_attempt):
+        # #1334: both pause seams persist the paused transcript (store RPCs), so they run
+        # on the turn executor like finalize; the coroutine only reads their verdict.
+        if await _run_turn_setup_off_loop(
+            state,
+            lambda: maybe_pause_for_user(
+                state, state.pred, update_retry_attempt=_update_retry_attempt
+            ),
+        ):
             # #767 Phase B: the ask_user pause exits the turn before the
             # finalize region — the seam mints the question, flips the
             # session to waiting_user, and settles the ledger (see
@@ -468,7 +392,7 @@ async def _run_turn_in_background(
         # module gact/plan_mode.py; only the call site lands here).
         from clio_agent.gact.plan_mode import maybe_pause_for_plan_exit  # noqa: PLC0415
 
-        if maybe_pause_for_plan_exit(state):
+        if await _run_turn_setup_off_loop(state, lambda: maybe_pause_for_plan_exit(state)):
             return
         # iowarp/clio-agent#25: data branch reports which execution
         # path it took ("fast" or "expert_loop"). Empty when not
@@ -521,7 +445,10 @@ async def _run_turn_in_background(
             # Dynamic tool agents call fs_propose_edit as a TOOL and never set
             # pred.file_diffs; promote those results so they materialize as
             # file_diff parts + pending /diffs rows (iowarp/clio-agent#674).
-            state.proposed_diffs = _propose_edit_diffs_from_pred(state.pred)
+            state.proposed_diffs = _propose_edit_diffs_from_pred(
+                state.pred,
+                state.tools_called,
+            )
         state.nanoagents = list(getattr(state.pred, "nanoagents_spawned", None) or [])
         for req in getattr(state.pred, "permissions_requested", None) or []:
             src = (
@@ -546,7 +473,7 @@ async def _run_turn_in_background(
             enforce_dict_bound(
                 state.app, state.app.state.permissions, "permissions", session_id=state.sid
             )
-            _emit_semantic_event(
+            await emit_semantic_event_async(
                 state.app,
                 state.sid,
                 "permission.requested",
@@ -774,24 +701,14 @@ async def _run_turn_in_background(
     # orchestrator so a finalize crash is settled by ``settle_failed_finalize``
     # (a visible error turn + terminal session status), never re-raised.
     try:
-        finalize_turn(
+        await finalize_turn_async(
             state,
             state.pred,
             drain_observed_tool_calls=_drain_observed_tool_calls,
             update_retry_attempt=_update_retry_attempt,
         )
     except Exception as finalize_exc:  # noqa: BLE001 - detached task: settle, no re-raise
-        settle_failed_finalize(
-            state.app,
-            state.sid,
-            turn_id=state.turn_id,
-            trace_id=state.trace_id,
-            turn_tokens=state.turn_tokens,
-            turn_cost=state.turn_cost,
-            turn_cancel_event=state.turn_cancel_event,
-            update_retry_attempt=_update_retry_attempt,
-            exc=finalize_exc,
-        )
+        await _settle_failed(finalize_exc)
 
 
 def _start_background_user_turn(
@@ -857,8 +774,16 @@ def _start_background_user_turn(
         metadata=user_metadata,
     )
 
-    stage_intent_user_message(app, sid, user_msg, replace_existing=replace_existing_user_message)
-    app.state.sessions.update(sid, status="running")
+    # #1334: the ledger + local store are written here (the 202 already promised the
+    # identity); the ARC transcript persist is handed to the turn to run off the loop.
+    transcript_job = stage_intent_user_message(
+        app, sid, user_msg, replace_existing=replace_existing_user_message, defer_atoms=True
+    )
+    app.state.sessions.update(
+        sid,
+        status="running",
+        message_count=len(app.state.messages.get(sid, [])),
+    )
     app.state.bus.publish(
         Event(
             type="session.status_changed",
@@ -879,13 +804,15 @@ def _start_background_user_turn(
     )
 
     # #948 S1 (#662): route through the TurnRunner, the single owner of turn-task
-    # lifetime. It holds a master strong ref (no GC-cancellation), anchors the
-    # task to the app loop, records the busy-gate handle, and drops the
-    # per-session slot on completion — replacing the raw create_task + manual
-    # in_flight_turns bookkeeping that lived here.
-    app.state.turn_runner.spawn(
-        _run_turn_in_background(app, sid, user_text, user_msg, turn_agent_id),
-        sid=sid,
+    # lifetime (master strong ref, app-loop anchor, busy-gate handle, slot release).
+    # ``spawn_user_turn`` wraps that spawn with the deferred-persist guard: a turn
+    # cancelled before its prologue must not take the user message's atoms with it.
+    spawn_user_turn(
+        app,
+        sid,
         turn_id=user_msg_id,
+        transcript_job=transcript_job,
+        run_turn=_run_turn_in_background,
+        args=(app, sid, user_text, user_msg, turn_agent_id),
     )
     return user_msg

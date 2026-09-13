@@ -43,21 +43,21 @@ import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from clio_agent.gact.agents.resolution import (
-    _runtime_active_agent_blueprint_id,
-)
+from clio_agent.gact.agents.resolution import _runtime_active_agent_blueprint_id
 from clio_agent.gact.artifacts.cas_gc import finalize_cas_budget_check
 from clio_agent.gact.artifacts.grounding import ground_answer_artifacts
 from clio_agent.gact.artifacts.minting import clear_turn_artifacts
 from clio_agent.gact.artifacts.wire import append_turn_resource_links, proposed_diff_payload
-from clio_agent.gact.delegation import (
-    _produced_turn_workflow_state,
-)
+from clio_agent.gact.delegation import _produced_turn_workflow_state
+from clio_agent.gact.diff_ledger import index_turn_file_diffs
 from clio_agent.gact.direct_response import promote_tool_free_response
 from clio_agent.gact.enrichment import _finalize_context_frame
 from clio_agent.gact.events import Event, EventBus, _publish_transcript_event
-from clio_agent.gact.evidence import (
-    _tool_result_preview,
+from clio_agent.gact.evidence import _tool_result_preview
+from clio_agent.gact.part_atom_minter import (
+    close_turn_minter,
+    failed_finalize_identity,
+    persist_finalized_message,
 )
 from clio_agent.gact.runtime.globals import (
     _emit_semantic_event,
@@ -66,7 +66,6 @@ from clio_agent.gact.runtime.globals import (
     _new_part_id,
     _session_agent_id,
 )
-from clio_agent.gact.runtime.retention import enforce_list_bound
 from clio_agent.gact.streaming import (
     _pop_stream_fallback,
     _pop_stream_fallback_notes,
@@ -78,6 +77,7 @@ from clio_agent.gact.tool_observer import (
 )
 from clio_agent.gact.transcript_projection import final_message_embed
 from clio_agent.gact.turn_stream import assemble_stream_metadata, settle_turn_transcript
+from clio_agent.gact.turn_usage import context_usage_metadata_patch
 from clio_agent.gact.types import (
     ErrorInfo,
     Message,
@@ -131,10 +131,7 @@ def finalize_turn(
     # #714 danger set: bind through app at call time so test monkeypatches of
     # clio_agent.gact.app._enrich_cancellation_error_info /
     # _append_session_message keep intercepting with zero test edits.
-    from clio_agent.gact.app import (  # noqa: PLC0415
-        _append_session_message,
-        _enrich_cancellation_error_info,
-    )
+    from clio_agent.gact.app import _enrich_cancellation_error_info  # noqa: PLC0415
 
     # Final user-facing text only: correct any fabricated local artifact path the
     # answer presents as produced, by grounding it against the session's REGISTERED
@@ -466,25 +463,8 @@ def finalize_turn(
         error_info=state.error_info,
     )
 
-    # Index file_diff parts so /diffs/apply + /diffs/reject find them.
-    bucket = state.app.state.pending_diffs.setdefault(state.sid, [])
-    for p in assistant_parts:
-        if p.type != "file_diff":
-            continue
-        write_content = (
-            p.new_content if p.new_content or p.edit_mode in {"whole", "patch"} else None
-        )
-        bucket.append(
-            {
-                "path": p.path,
-                "unified_diff": p.unified_diff,
-                "new_content": write_content,
-                "status": "pending",
-                "part_id": p.id,
-                "message_id": assistant_msg.id,
-            }
-        )
-    enforce_list_bound(state.app, bucket, "pending_diffs", session_id=state.sid)
+    # Index file_diff parts so /diffs/apply + /diffs/reject find them (guarded owner).
+    index_turn_file_diffs(state.app, state.sid, assistant_parts, message_id=assistant_msg.id)
 
     # #767 PR3: finalize re-publishes NOTHING — every part's message.created /
     # part.added / part.delta / part.completed already went out at append
@@ -550,7 +530,7 @@ def finalize_turn(
     retry_status = (
         "cancelled" if state.cancelled_turn else ("failed" if state.error_info else "completed")
     )
-    _append_session_message(state.app, state.sid, assistant_msg)
+    persist_finalized_message(state.app, state.sid, assistant_msg)  # #1334: barrier first
     # #767 PR3: the ledger is already frozen by transcript.finalize(); settle
     # retires it from the registry so a late producer op is rejected +
     # audited, never absorbed silently.
@@ -566,13 +546,16 @@ def finalize_turn(
             "stop_reason": completed_payload["stop_reason"],
         },
     )
+    current_session = state.app.state.sessions.get(state.sid)
+    metadata_patch = context_usage_metadata_patch(state, current_session, assistant_msg)
     state.app.state.sessions.update(
         state.sid,
         status=final_status,
-        message_count=state.sess.message_count + 2,
+        message_count=len(state.app.state.messages.get(state.sid, [])),
         add_tokens_input=state.turn_tokens["input"],
         add_tokens_output=state.turn_tokens["output"],
         add_cost_usd=state.turn_cost,
+        metadata_patch=metadata_patch,
     )
     cancellation_status: dict[str, Any] = {}
     if state.cancelled_turn and state.error_info is not None:
@@ -630,13 +613,8 @@ def finalize_turn(
     from clio_agent.gact.autonomous_loop import dispatch_loop_at_finalize  # noqa: PLC0415
 
     dispatch_loop_at_finalize(state.app, session_id=state.sid, turn_id=state.turn_id)
-    # P4.2 #1080: run-until GOAL completion gate (owner module; no-op/never-raises).
-    from clio_agent.gact.goal import dispatch_goal_at_finalize  # noqa: PLC0415
-
-    goal_decision = dispatch_goal_at_finalize(
-        state.app, session_id=state.sid, turn_id=state.turn_id, trace_id=state.trace_id
-    )
-    compose_goal_loop_stop_at_finalize(state.app, state.sid, goal_decision)
+    # P4.2 #1080 GOAL gate: an LM call, so it is AWAITED on the loop after this returns
+    # (``turn_finalize_goal.finalize_turn_async``), never run sync on the loop thread (#1333).
     # P1.6d #1068: stall-monitor leaky bucket (owner module; no-op for unstructured sessions).
     from clio_agent.gact.replanning import dispatch_stall_monitor_at_finalize  # noqa: PLC0415
 
@@ -699,23 +677,16 @@ def settle_failed_finalize(
 ) -> None:
     """#756: the turn's error envelope for a finalize-region crash.
 
-    Everything after :func:`~clio_agent.gact.turn._run_turn_in_background`'s
-    forward except-chain (answer grounding, part assembly, diff indexing,
-    publishes, persistence) runs inside a fire-and-forget task. An exception
-    escaping there used to die silently -- no ``message.completed``, no
-    ``session.status_changed``, session wedged in ``running`` forever. This
-    settles the turn instead: structured log, ``turn.failed`` semantic event,
-    ``message.completed`` with ``stop_reason=error`` + ``error_info``, a
-    persisted assistant error message (so the failure is visible in the reloaded
-    transcript, not just live), and a terminal ``session.status_changed``.
-    Nothing degrades silently: every best-effort step below logs its reason when
-    it fails.
+    The finalize region runs inside a fire-and-forget task; an exception escaping it
+    used to die silently (no ``message.completed`` / ``session.status_changed``, the
+    session wedged in ``running``). This settles the turn instead: structured log,
+    ``turn.failed`` semantic event, ``message.completed`` with ``stop_reason=error`` +
+    ``error_info``, a persisted assistant error message (visible on reload, not just
+    live; #1337: carrying the parts already sealed) and a terminal status. Nothing
+    degrades silently: every best-effort step below logs its reason when it fails.
+    ``persist_finalized_message`` binds ``gact.app._append_session_message`` at call
+    time so the live==reload test monkeypatches keep intercepting.
     """
-
-    # #714 danger set: bind through app at call time so test monkeypatches of
-    # clio_agent.gact.app._append_session_message (e.g. the live==reload
-    # property fixture) keep intercepting assistant persistence.
-    from clio_agent.gact.app import _append_session_message  # noqa: PLC0415
 
     logger.error(
         "turn finalize failed: reason=turn_finalize_error session=%s turn=%s error=%s",
@@ -727,10 +698,12 @@ def settle_failed_finalize(
     if trace.HF_ON:
         trace.hot("TURN-FINALIZE-FAIL", "%s %s: %s", sid, type(exc).__name__, exc)
 
-    # #767 PR2: a failed finalize must still settle the ledger — freeze it
-    # (late producer ops are rejected + audited) and retire it from the
-    # registry so it can never poison the next turn. Runs unconditionally,
-    # before the already-settled early return below.
+    # #767 PR2: a failed finalize must still settle the ledger — freeze it (late producer
+    # ops are rejected + audited) and retire it from the registry so it can never poison
+    # the next turn. Unconditional, before the already-settled early return below.
+    # #1337: the streamed parts already sealed on the lane survive under this envelope
+    # (their message id + dumps are captured BEFORE the ledger is retired).
+    asst_id, sealed_parts = failed_finalize_identity(app, sid)
     registry = getattr(app.state, "turn_transcripts", None)
     if registry is not None:
         transcript = registry.get(sid)
@@ -764,13 +737,13 @@ def settle_failed_finalize(
     )
     now = time.time()
     assistant_msg = Message(
-        id=_new_message_id("asst"),
+        id=asst_id or _new_message_id("asst"),
         turn_id=turn_id,
         session_id=sid,
         role="assistant",
         created_at=_iso_from_epoch(now),
         updated_at=_iso_from_epoch(now),
-        parts=[],
+        parts=sealed_parts,
         tokens=Tokens(**dict(turn_tokens)),
         cost_usd=turn_cost,
         stop_reason="error",
@@ -816,13 +789,14 @@ def settle_failed_finalize(
         )
     )
     try:
-        _append_session_message(app, sid, assistant_msg)
+        persist_finalized_message(app, sid, assistant_msg)  # #1337: remainder + envelope
     except Exception:  # noqa: BLE001 - persistence degraded; the status flip must still happen
         logger.exception(
             "assistant error-message persistence failed during finalize settle: session=%s turn=%s",
             sid,
             turn_id,
         )
+    close_turn_minter(app, sid)  # #1334: after the persist; the thread stops here
     try:
         update_retry_attempt(
             "failed",
@@ -844,7 +818,7 @@ def settle_failed_finalize(
         app.state.sessions.update(
             sid,
             status="error",
-            message_count=sess.message_count + 2,
+            message_count=len(app.state.messages.get(sid, [])),
         )
     bus.publish(
         Event(

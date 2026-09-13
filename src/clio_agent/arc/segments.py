@@ -35,6 +35,7 @@ from typing import Any, Callable, Optional
 import msgspec
 from sortedcontainers import SortedDict
 
+from clio_agent.arc.loop_guard import assert_store_write_off_loop
 from clio_agent.arc.schema import (
     WORKING_SET_KINDS,
     Segment,
@@ -360,11 +361,10 @@ class SegmentStore:
     def _persist(
         self, session_id: str, scope: str, *, just_written: list[Segment] | None = None
     ) -> None:
-        """Encode + put the whole scope record. NON-POISONING: a single segment that
-        still fails to encode (despite the :func:`_coerce_content` chokepoint) is REMOVED
-        from the in-memory list and logged via ``runtime.trace`` (never silently), so it
-        can NEVER durably wedge the scope's future persists — one bad write must not break
-        the whole scope. ``just_written`` is the segment(s) the current op produced; they
+        """Encode + put the whole scope record. NON-POISONING: a segment that still fails
+        to encode (despite the :func:`_coerce_content` chokepoint) is REMOVED from the
+        in-memory list and logged via ``runtime.trace`` (never silently), so it can NEVER
+        wedge the scope's future persists. ``just_written`` is what the current op produced; they
         are the prime suspects and are dropped first."""
         segs = self._scopes[(session_id, scope)]
         try:
@@ -405,12 +405,13 @@ class SegmentStore:
 
     def _put_scope(self, session_id: str, scope: str, segs: list[Segment]) -> None:
         """Encode the scope's segments and put the record (with the live search_text
-        companion). Raises if ``encode_segments`` / ``store.put`` rejects any segment."""
+        companion). Raises if ``encode_segments`` / ``store.put`` rejects any segment,
+        or (#1334) if the caller is a thread running an event loop."""
+        assert_store_write_off_loop("segments.put", scope=scope)
         # search_text: the live render flattened to plain text, so semantic discovery
-        # (Thread D) can find this scope by content. Empty -> None drops the companion.
-        # A scope the ``search_indexed`` predicate excludes (the reserved ``_events``
-        # chunk family) NEVER writes the companion, so the semantic-event log can never
-        # surface in scope search.
+        # (Thread D) can find this scope by content. Empty -> None drops the companion. A
+        # scope the ``search_indexed`` predicate excludes (the reserved ``_events`` chunk
+        # family) NEVER writes the companion: the semantic-event log is never searchable.
         if self._search_indexed is None or self._search_indexed(scope):
             live_text = "\n".join(segment_text(s) for s in self._live_sorted(segs))
             search_text = live_text or None
@@ -1052,10 +1053,9 @@ class SegmentStore:
             self._scopes.pop(key, None)
             self._loaded.discard(key)
             self._index.drop_scope(session_id, scope)
+            assert_store_write_off_loop("segments.delete", scope=scope)
             self._store.delete("segments", self._record_name(session_id, scope))
-            logger.debug(
-                "segments: drop_scope session=%s scope=%s dropped=%d", session_id, scope, count
-            )
+            logger.debug("segments: drop_scope %s/%s dropped=%d", session_id, scope, count)
             return count
 
     def release(self, session_id: str) -> int:

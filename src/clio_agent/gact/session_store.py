@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -42,8 +43,6 @@ if TYPE_CHECKING:
     from clio_agent.gact.types import Message
 
 logger = logging.getLogger(__name__)
-
-
 # ------------------------------------------------------------------------- #
 # Session message ledger (in-memory + durable) #
 # ------------------------------------------------------------------------- #
@@ -59,8 +58,15 @@ def _metrics_counters(app: "FastAPI") -> Any:
     return getattr(app.state, "metrics_counters", None)
 
 
-def _append_session_message(app: "FastAPI", session_id: str, message: "Message") -> None:
-    """Append one chronological message to memory and disk."""
+def _append_session_message(
+    app: "FastAPI", session_id: str, message: "Message", *, atoms_minted: bool = False
+) -> None:
+    """Append one chronological message to memory and disk.
+
+    ``atoms_minted=True`` (#1334): the caller persists the message's ARC atoms itself,
+    off the loop thread (the turn's minter / off-loop setup); only the in-memory ledger
+    and the local message store are written here. Explicit, never inferred.
+    """
 
     app.state.messages.setdefault(session_id, []).append(message)
     counters = _metrics_counters(app)
@@ -78,7 +84,146 @@ def _append_session_message(app: "FastAPI", session_id: str, message: "Message")
         on_message_appended,
     )
 
-    on_message_appended(app, session_id, message)
+    on_message_appended(app, session_id, message, atoms_minted=atoms_minted)
+
+
+def _interrupted_assistant_row(
+    app: "FastAPI", session_id: str, last_user_message: "Message"
+) -> "Message":
+    """Build the typed interrupted-turn row a crashed-mid-turn session gets.
+
+    #1334 review round (Fable, F2): a synthetic empty row here would DESTROY a
+    partial answer the crashed turn already streamed and sealed onto the atom
+    lane (owner rule: deleting a vehicle keeps the feature — reload already
+    surfaces that partial as a typed ``stop_reason="incomplete"`` message,
+    ``metadata.transcript_incomplete`` named, via
+    :func:`~clio_agent.gact.part_atoms.reproduce_message_wire`). When the lane
+    holds that trailing incomplete assistant message, this reuses it VERBATIM
+    (id/turn_id/created_at/parts/metadata — ``transcript_incomplete`` stays) and
+    only overlays the restart's ``stop_reason``/``error_info``, so the streamed
+    text survives. Only a session whose lane has no such message (the crash hit
+    before the first part ever sealed) falls back to the empty synthetic row.
+    """
+
+    from clio_agent.gact.runtime.globals import _iso_from_epoch, _new_message_id  # noqa: PLC0415
+    from clio_agent.gact.transcript_projection import (  # noqa: PLC0415 - lazy: keep leaf
+        assemble_session_messages,
+        has_atoms,
+    )
+    from clio_agent.gact.types import ErrorInfo  # noqa: PLC0415
+
+    now = time.time()
+    turn_id = last_user_message.turn_id or last_user_message.id
+    error_info = ErrorInfo(
+        error="server_restart_interrupted",
+        message=(
+            "The agent service restarted before this response completed. "
+            "Your request was preserved and can be retried."
+        ),
+        details={
+            "reason": "server_restart_interrupted",
+            "session_id": session_id,
+            "turn_id": turn_id,
+        },
+        recoverable=True,
+    )
+
+    arc = getattr(app.state, "arc", None)
+    if arc is not None and getattr(arc, "_segments", None) is not None:
+        try:
+            lane_has_atoms = has_atoms(arc, session_id)
+        except OSError:
+            lane_has_atoms = False
+        if lane_has_atoms:
+            assembled = assemble_session_messages(arc, session_id)
+            trailing = assembled[-1] if assembled else None
+            if (
+                trailing is not None
+                and trailing.role == "assistant"
+                and trailing.stop_reason == "incomplete"
+            ):
+                return trailing.model_copy(
+                    update={"stop_reason": "error", "error_info": error_info}
+                )
+
+    from clio_agent.gact.types import Message  # noqa: PLC0415
+
+    return Message(
+        id=_new_message_id("asst"),
+        turn_id=turn_id,
+        session_id=session_id,
+        role="assistant",
+        created_at=_iso_from_epoch(now),
+        updated_at=_iso_from_epoch(now),
+        stop_reason="error",
+        error_info=error_info,
+    )
+
+
+def _reconcile_restart_interrupted_sessions(app: "FastAPI") -> None:
+    """Settle persisted running sessions whose process-local executor is gone.
+
+    A user message is durable before its assistant turn starts. If the process
+    exits mid-turn, the session registry can therefore retain ``running`` and an
+    older message count even though no :class:`TurnRunner` task can survive the
+    restart. Reconcile only those stale running rows, reading one ledger at a
+    time so ordinary historical sessions remain lazily materialized.
+    """
+
+    store = getattr(app.state, "message_store", None)
+    sessions = getattr(app.state, "sessions", None)
+    if store is None or sessions is None:
+        return
+    for session in sessions.list():
+        if session.status != "running":
+            continue
+        try:
+            messages = store.load_session(session.id) or []
+        except OSError as exc:
+            logger.error(
+                "restart interruption reconciliation failed session=%s error=%r",
+                session.id,
+                exc,
+            )
+            continue
+        durable_messages = list(messages)
+        last_message = durable_messages[-1] if durable_messages else None
+        if last_message is not None and last_message.role == "user":
+            interrupted_message = _interrupted_assistant_row(app, session.id, last_message)
+            durable_messages.append(interrupted_message)
+            try:
+                # #1334 review round (Fable, F2): through the sanctioned replace
+                # seam (the same one undo/rewind uses) so the atom lane is
+                # re-materialized to match -- file and lane agree by
+                # construction and materialize_ledger's divergence repair never
+                # fires on this session's first post-restart read. At boot there
+                # is no loop running, so on_ledger_replaced's mint runs inline
+                # (never deferred), still off any server loop thread.
+                _replace_session_messages(app, session.id, durable_messages)
+            except OSError as exc:
+                logger.error(
+                    "restart interruption boundary write failed session=%s error=%r",
+                    session.id,
+                    exc,
+                )
+                continue
+        sessions.update(
+            session.id,
+            status="error",
+            message_count=len(durable_messages),
+            metadata_patch={
+                "restart_interruption": {
+                    "reason": "server_restart_interrupted",
+                    "previous_status": "running",
+                }
+            },
+        )
+        trace.event(
+            "SESSION",
+            "restart_interrupted session=%s messages=%s",
+            session.id,
+            len(durable_messages),
+        )
 
 
 def _extend_session_messages(
@@ -109,8 +254,14 @@ def _replace_session_messages(
     app: "FastAPI",
     session_id: str,
     messages: list["Message"],
+    *,
+    atoms_minted: bool = False,
 ) -> None:
-    """Replace one session's message ledger in memory and disk."""
+    """Replace one session's message ledger in memory and disk.
+
+    ``atoms_minted=True`` (#1334): the caller re-materializes the atom lane itself, off
+    the loop thread; see :func:`_append_session_message`.
+    """
 
     app.state.messages[session_id] = list(messages)
     counters = _metrics_counters(app)
@@ -126,7 +277,8 @@ def _replace_session_messages(
         on_ledger_replaced,
     )
 
-    on_ledger_replaced(app, session_id, list(messages))
+    if not atoms_minted:
+        on_ledger_replaced(app, session_id, list(messages))
 
 
 def _delete_session_messages(app: "FastAPI", session_id: str) -> None:

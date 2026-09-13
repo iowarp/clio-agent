@@ -388,6 +388,22 @@ def test_compact_prompt_preserves_late_scientific_identifiers(tmp_path: Path) ->
         assert "operator_note" in prompt
 
 
+def test_compact_prompt_includes_the_full_message_ledger(tmp_path: Path) -> None:
+    agent = CapturingCompactAgent()
+    with TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=agent)) as c:
+        sid = c.post("/v1/sessions", json={"title": "compact full ledger"}).json()["id"]
+        messages = [
+            ("user", "FIRST_MESSAGE_MUST_SURVIVE_COMPACTION"),
+            *(("assistant", f"filler message {index}") for index in range(55)),
+        ]
+        _seed_text_messages(c, sid, messages)
+
+        response = c.post(f"/v1/sessions/{sid}/compact", json={})
+
+        assert response.status_code == 200, response.text
+        assert "FIRST_MESSAGE_MUST_SURVIVE_COMPACTION" in agent.prompts[-1]
+
+
 def test_post_v1_sessions_returns_created_session(client: TestClient) -> None:
     resp = client.post(
         "/v1/sessions",

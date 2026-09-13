@@ -248,7 +248,9 @@ class _AppendSessionMessage(Protocol):
     travels here so the command route does not import back into it.
     """
 
-    def __call__(self, app: "FastAPI", session_id: str, message: "Message") -> None: ...
+    def __call__(
+        self, app: "FastAPI", session_id: str, message: "Message", *, atoms_minted: bool = False
+    ) -> None: ...
 
 
 class _DeleteSessionMessages(Protocol):

@@ -26,7 +26,6 @@ from clio_agent.gact.app import (
     _make_permission_gate,
     build_app,
 )
-from clio_agent.tools.file_policy import FilePolicyError
 
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
 # test's ``build_app(agent=...)`` host fake (a ``dspy.Module`` host — e.g. the real
@@ -230,18 +229,25 @@ def test_apply_edit_refuses_policy_denied_write(tmp_path: Path) -> None:
     assert rows[0]["reason"] == "policy_deny"
 
 
-def test_apply_edit_refuses_outside_allowed_roots(
+def test_apply_edit_inside_the_workspace_survives_a_narrower_allowed_roots(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Workspace scope is not enough; writes must also pass file_policy."""
+    """#1334 review round: ``tool_workspace_context`` (de0b7dd7) binds the session's
+    OWN workspace as an always-writable file_policy root — 'a session must ALWAYS
+    be able to read/write ... inside its own workspace' (file_policy.py's own
+    ``_active_workspace_root`` doc) — so a configured ``allowed_roots`` narrower
+    than the workspace no longer refuses a write INSIDE it; the workspace
+    containment check above (a hard ``PermissionError``, not file_policy) remains
+    the actual boundary for a path outside the workspace."""
 
     workspace = tmp_path / "ws"
     allowed = tmp_path / "allowed"
     workspace.mkdir()
     allowed.mkdir()
-    # allowed_roots is file-layer (file > env); write the NARROWER root there,
-    # overwriting the fixture's ``tmp_path`` list, so the workspace write must still
-    # fail file_policy (a bare setenv would be shadowed by the fixture — #985).
+    # allowed_roots is file-layer (file > env); write the NARROWER root there
+    # (overwriting the fixture's ``tmp_path`` list) precisely to prove it no
+    # longer matters for a workspace-contained write (a bare setenv would be
+    # shadowed by the fixture — #985).
     from tests._config_layer import set_config
 
     set_config("tools.file_policy.allowed_roots", [str(allowed)])
@@ -253,11 +259,16 @@ def test_apply_edit_refuses_outside_allowed_roots(
         title="t",
         mode="edit",
     )
-    with pytest.raises(FilePolicyError) as exc:
+    target = workspace / "x.txt"
+    _apply_edit_to_disk(path=str(target), new_content="x", session=sess, app=app)
+    assert target.read_text(encoding="utf-8") == "x"
+
+    # The workspace containment check (PermissionError, not file_policy) is the
+    # boundary that still applies: a path outside the workspace is still refused.
+    with pytest.raises(PermissionError):
         _apply_edit_to_disk(
-            path=str(workspace / "x.txt"),
+            path=str(tmp_path / "outside.txt"),
             new_content="x",
             session=sess,
             app=app,
         )
-    assert exc.value.code == "outside_allowed_roots"

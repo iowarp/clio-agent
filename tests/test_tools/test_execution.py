@@ -18,6 +18,7 @@ from clio_agent import conf
 from clio_agent.errors import CancellationError
 from clio_agent.gact.artifacts.designation import ground_output_paths
 from clio_agent.tools import foreground_cancellation as foreground_cancel
+from clio_agent.tools import mcp_executor as mcp_executor_module
 from clio_agent.tools.execution import (
     MCPToolBridge,
     RepeatedToolFailureError,
@@ -386,7 +387,7 @@ def test_root_data_result_is_publicly_projected_without_private_metadata() -> No
     assert json.loads(result) == root.model_dump(mode="json")
     completed = [row for row in telemetry if row[2] == "completed"]
     assert len(completed) == 1
-    assert completed[0][4] == {
+    assert {key: value for key, value in completed[0][4].items() if key != "presentation"} == {
         "content": [{"type": "text", "text": f"Root({root!s})"}],
         "structuredContent": {
             "schema_version": "jarvis.execution.v1",
@@ -395,6 +396,9 @@ def test_root_data_result_is_publicly_projected_without_private_metadata() -> No
         },
     }
     assert "secret" not in str(completed)
+    assert completed[0][4]["presentation"]["summary"] == ""
+    assert completed[0][4]["presentation"]["blocks"][0]["type"] == "text"
+    assert completed[0][4]["presentation"]["blocks"][0]["text"] == f"Root({root!s})"
     assert len(app_results) == 1
     assert app_results[0][3] is private_result
 
@@ -428,6 +432,36 @@ def test_app_only_tools_are_hidden_from_model_tool_surface() -> None:
         assert [tool.name for tool in executor.to_dspy_tools()] == ["vigil_open"]
         assert set(executor.get_all_tool_definitions()) == {"vigil_open", "vigil_update"}
     assert executor.closed is True
+
+
+def test_plan_only_tools_follow_the_active_session_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Plan-file writes are model-visible only while the active session is planning."""
+
+    class VisibilityClient(FakeClient):
+        async def list_tools(self):
+            return [
+                SimpleNamespace(
+                    name="fs_apply_edit_write",
+                    description="Write the recorded Plan file.",
+                    inputSchema={"properties": {}},
+                    meta={"ui": {"visibility": ["model:plan"]}},
+                ),
+            ]
+
+    active_mode = "plan"
+    monkeypatch.setattr(mcp_executor_module, "_active_session_mode", lambda: active_mode)
+
+    with create_sync_tool_executor(
+        object(),
+        timeout=1.0,
+        client_factory=lambda _server: VisibilityClient(),
+    ) as executor:
+        assert executor.get_tool_names() == ["fs_apply_edit_write"]
+        assert [tool.name for tool in executor.to_dspy_tools()] == ["fs_apply_edit_write"]
+
+        active_mode = "execute"
+        assert executor.get_tool_names() == []
+        assert executor.to_dspy_tools() == []
 
 
 @pytest.mark.asyncio
@@ -725,7 +759,7 @@ def test_sync_mcp_tool_executor_reports_structured_tool_error_result():
     assert "parent_not_found" in observed[-1][3]
     # #964: the observer receives the preserved structured projection, not the
     # flattened model text — the full structuredContent payload is retained.
-    assert observed[-1][4] == {
+    assert {key: value for key, value in observed[-1][4].items() if key != "presentation"} == {
         "content": [],
         "structuredContent": {
             "error": {
@@ -737,6 +771,19 @@ def test_sync_mcp_tool_executor_reports_structured_tool_error_result():
             "args": {"output_path": "/missing/plot.png"},
         },
     }
+    # #1333 (de0b7dd7): a structured error now surfaces as FAILED telemetry, never
+    # hidden -- one semantic-error text block carrying the error's own type/message
+    # (never a silently empty presentation for a real failure).
+    presentation = observed[-1][4]["presentation"]
+    assert presentation["status"] == "failed"
+    assert presentation["summary"] == ""
+    assert len(presentation["blocks"]) == 1
+    block = presentation["blocks"][0]
+    assert block["id"] == "semantic-error"
+    assert block["type"] == "text"
+    assert block["severity"] == "error"
+    assert "parent_not_found" in block["text"]
+    assert "Output directory does not exist" in block["text"]
 
 
 def test_oversized_structured_failure_uses_raw_result_for_error_truth() -> None:

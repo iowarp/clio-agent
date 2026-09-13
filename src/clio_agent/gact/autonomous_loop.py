@@ -136,7 +136,11 @@ def _put_loop(app: Any, sid: str, loop: dict[str, Any]) -> None:
     ``SessionStore.update`` does a SHALLOW merge, so writing the whole ``loop`` dict
     replaces the prior one wholesale (no stale sub-keys)."""
 
-    app.state.sessions.update(sid, metadata_patch={"loop": loop})
+    from clio_agent.gact.work_state import work_record_patch
+
+    session = app.state.sessions.get(sid)
+    metadata = getattr(session, "metadata", None) or {}
+    app.state.sessions.update(sid, metadata_patch=work_record_patch(metadata, "loop", loop))
 
 
 def _active() -> tuple[Any, str]:
@@ -687,6 +691,7 @@ def build_loop_wakeup_tool() -> Any:
     return native_tool(
         loop_wakeup,
         name="loop_wakeup",
+        presentation="loop",
         desc=loop_wakeup.__doc__,
         title="Loop Wakeup",
         args={

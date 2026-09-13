@@ -1385,6 +1385,7 @@ def test_resource_conversion_wait_uses_one_stable_local_task_to_completion(
         assert waited["timed_out"] is False
         assert waited["processing"]["state"] == "complete"
         assert waited["processing"]["job_id"] == "remote_doc_job"
+        assert "events" not in waited["processing"]
 
 
 def test_resource_conversion_wait_times_out_without_cancelling_work(tmp_path: Path) -> None:
@@ -1442,6 +1443,7 @@ def test_resource_conversion_wait_times_out_without_cancelling_work(tmp_path: Pa
         assert waited["processing"]["progress_kind"] == "stage"
         assert waited["processing"]["stage"] == "docling"
         assert waited["processing"]["message"] == "Docling is processing the document"
+        assert "events" not in waited["processing"]
         assert app.state.resource_processing_store.state(record).state == "processing"
 
 

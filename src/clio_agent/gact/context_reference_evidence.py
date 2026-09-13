@@ -17,6 +17,7 @@ from urllib.parse import unquote, urlsplit
 
 from clio_agent import conf
 from clio_agent.gact.context_reference_result import reference_result as _reference_result
+from clio_agent.gact.runtime.retention import ledger_guard
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -183,7 +184,9 @@ def _diff_snapshots(
     snapshots: list[tuple[dict[str, Any], dict[str, Any]]] = []
     rows_by_session = getattr(app.state, "pending_diffs", {})
     for session in _workspace_sessions(app, workspace_id):
-        for index, row in enumerate(rows_by_session.get(session.id, []) or []):
+        with ledger_guard(app):  # #1334: finalize appends from the turn executor
+            rows = list(rows_by_session.get(session.id, []) or [])
+        for index, row in enumerate(rows):
             if not isinstance(row, Mapping):
                 continue
             path = str(row.get("path") or "Changed file")
@@ -224,7 +227,9 @@ def _context_frame_snapshots(
     snapshots: list[tuple[dict[str, Any], dict[str, Any]]] = []
     rows_by_session = getattr(app.state, "context_frames", {})
     for session in _workspace_sessions(app, workspace_id):
-        for row in rows_by_session.get(session.id, []) or []:
+        with ledger_guard(app):
+            rows = list(rows_by_session.get(session.id, []) or [])
+        for row in rows:
             if not isinstance(row, Mapping) or not row.get("id"):
                 continue
             frame_id = str(row["id"])

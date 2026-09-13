@@ -37,7 +37,6 @@ from clio_agent.tools.mcp_executor import (
     _tool_visible_to_model,
 )
 from clio_agent.tools.mcp_namespace_executor import SyncNamespacePreparationMixin
-from clio_agent.tools.mcp_results import call_tool_result_to_observer
 from clio_agent.tools.result_errors import structured_tool_result_error
 from clio_agent.tools.tool_hooks import InterceptDecision, PostToolHook, assemble_model_observation
 from clio_agent.tools.tool_observation import (
@@ -800,8 +799,8 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             )
             raise
         result = outcome.model_text
-        observer_result = tool_presentation.enrich_tool_observer_result(
-            call_tool_result_to_observer(outcome.raw_result), effective_args, presentation_snapshot
+        observer_result = tool_presentation.observe_mcp_result(
+            name, outcome.raw_result, effective_args, presentation_snapshot
         )
         structured_error = structured_tool_result_error(outcome.raw_result)
         if structured_error:
@@ -1126,7 +1125,7 @@ def _make_dspy_tools(
     return [
         _make_dspy_tool(name, mcp_tool, call_tool)
         for name, mcp_tool in mcp_tools.items()
-        if _tool_visible_to_model(mcp_tool)
+        if _tool_visible_to_model(name, mcp_tool)
     ]
 
 

@@ -45,6 +45,9 @@ from clio_agent.tools.mcp_task_routing import (
     resolve_and_build_direct_client,
 )
 from clio_agent.tools.mcp_timeout_budget import component_declared_timeout_seconds
+from clio_agent.tools.tool_ui_metadata import (
+    _tool_visible_to_model as _tool_visible_to_model,  # re-exported for execution.py
+)
 
 logger = logging.getLogger(__name__)
 
@@ -668,13 +671,17 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
         capability-bound app bridge but must not enlarge the model tool surface.
         """
 
-        return [name for name, tool in self._mcp_tools.items() if _tool_visible_to_model(tool)]
+        return [
+            name for name, tool in self._mcp_tools.items() if _tool_visible_to_model(name, tool)
+        ]
 
     def get_tool_definitions(self) -> dict[str, Any]:
         """Return model-visible MCP tool definitions keyed by stable name."""
 
         return {
-            name: tool for name, tool in self._mcp_tools.items() if _tool_visible_to_model(tool)
+            name: tool
+            for name, tool in self._mcp_tools.items()
+            if _tool_visible_to_model(name, tool)
         }
 
     def get_all_tool_definitions(self) -> dict[str, Any]:
@@ -892,38 +899,20 @@ def _result_to_text(result: Any) -> str:
         return _bounded_model_tool_result(str(data))
 
 
-def _tool_ui_metadata(tool: Any) -> Mapping[str, Any]:
-    """Return normalized MCP Apps metadata from a FastMCP tool definition."""
+def _active_session_mode() -> str:
+    """Return the active GACT session mode without coupling executor startup to GACT."""
 
-    if tool is None:
-        return {}
-    meta = getattr(tool, "meta", None) or getattr(tool, "_meta", None)
-    if meta is None and isinstance(tool, Mapping):
-        meta = tool.get("_meta") or tool.get("meta")
-    meta_dump = getattr(meta, "model_dump", None)
-    if callable(meta_dump):
-        meta = meta_dump(by_alias=True, exclude_none=True)
-    if not isinstance(meta, Mapping):
-        return {}
-    ui = meta.get("ui")
-    ui_dump = getattr(ui, "model_dump", None)
-    if callable(ui_dump):
-        ui = ui_dump(by_alias=True, exclude_none=True)
-    if isinstance(ui, Mapping):
-        return ui
-    # Deprecated flat metadata remains readable for interoperability, while
-    # new servers should emit the stable nested ``_meta.ui`` shape.
-    flat_uri = meta.get("ui/resourceUri")
-    return {"resourceUri": flat_uri} if isinstance(flat_uri, str) else {}
+    try:
+        from clio_agent.gact import context as gact_context  # noqa: PLC0415
 
-
-def _tool_visible_to_model(tool: Any) -> bool:
-    """Return whether a tool belongs on the model-facing tool surface."""
-
-    visibility = _tool_ui_metadata(tool).get("visibility")
-    if not isinstance(visibility, Sequence) or isinstance(visibility, (str, bytes)):
-        return True
-    return "model" in {str(item) for item in visibility}
+        app = gact_context.active_app()
+        sid = gact_context.active_session_id() or gact_context.active_tool_session_id()
+        if app is None or not sid:
+            return ""
+        session = app.state.sessions.get(sid)
+        return str(getattr(session, "mode", "") or "")
+    except (AttributeError, LookupError, RuntimeError):
+        return ""
 
 
 __all__ = [

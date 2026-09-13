@@ -21,13 +21,13 @@ gate fires).
 
 from __future__ import annotations
 
-import difflib
 from pathlib import Path
 from typing import Any
 
 from fastmcp import FastMCP
 
 from clio_agent import conf
+from clio_agent.tools.file_diff import unified_file_diff
 from clio_agent.tools.file_policy import (
     validate_non_empty_string,
     validate_read_path,
@@ -125,32 +125,31 @@ def propose_edit(filepath: str, new_content: str) -> dict[str, Any]:
         p = Path(safe_read)
         old = p.read_text(encoding="utf-8", errors="replace")
     new = new_content if isinstance(new_content, str) else str(new_content)
-    diff_lines = list(
-        difflib.unified_diff(
-            old.splitlines(keepends=True),
-            new.splitlines(keepends=True),
-            fromfile=f"a/{p.name}",
-            tofile=f"b/{p.name}",
-            lineterm="",
-        )
-    )
+    diff = unified_file_diff(old, new, p.name)
+    diff_lines = diff.splitlines()
     added = sum(1 for ln in diff_lines if ln.startswith("+") and not ln.startswith("+++"))
     removed = sum(1 for ln in diff_lines if ln.startswith("-") and not ln.startswith("---"))
     return {
         "path": str(p),
-        "unified_diff": "\n".join(diff_lines),
+        "unified_diff": diff,
         "new_content": new,
         "lines_added": added,
         "lines_removed": removed,
     }
 
 
-@fs_server.tool(annotations=_APPLY_EDIT_WRITE_ANNOTATIONS)
+@fs_server.tool(
+    annotations=_APPLY_EDIT_WRITE_ANNOTATIONS,
+    meta={"ui": {"visibility": ["model:plan"]}},
+)
 def apply_edit_write(filepath: str, new_content: str) -> dict[str, Any]:
     """Write ``new_content`` to ``filepath`` on disk. Its declared MCP
     annotations (``destructiveHint=True``, not read-only) project to the
-    catalog ``write`` tag, so the permission gate treats it as destructive
-    automatically — direct agent invocation requires user approval.
+    catalog ``write`` tag. The tool remains in the effective runtime catalog
+    for audit and harness execution. It is model-visible only while the active
+    session is in Plan mode, where the permission resolver limits it to the
+    recorded ``.clio/plans/*.md`` file. Outside Plan mode the model proposes a
+    reviewable edit and the approved ``/diffs/apply`` route owns this write.
 
     Designed for the GACT /diffs/apply path: when the user accepts
     a file_diff, the layer calls apply_edit_write with the full

@@ -123,7 +123,10 @@ def test_two_writes_in_one_step_rejected(tmp_path: Path) -> None:
     _run(app, sid, lambda: tool.func(todos=[{"content": "a", "status": "pending"}]), thought="step")
     with pytest.raises(TodoError) as exc:
         _run(
-            app, sid, lambda: tool.func(todos=[{"content": "b", "status": "pending"}]), thought="step"
+            app,
+            sid,
+            lambda: tool.func(todos=[{"content": "b", "status": "pending"}]),
+            thought="step",
         )
     assert exc.value.reason == "parallel_write"
     # The first write stands; the ambiguous second did not merge/replace.
@@ -137,8 +140,12 @@ def test_consecutive_steps_are_allowed(tmp_path: Path) -> None:
     sid = _session(app)
     tool = build_write_todos_tool(_AGENT)
     _run(app, sid, lambda: tool.func(todos=[{"content": "a", "status": "pending"}]), thought="s1")
-    _run(app, sid, lambda: tool.func(todos=[{"content": "a", "status": "in_progress"}]), thought="s2")
-    assert recorded_todos(app.state.sessions.get(sid)) == [{"content": "a", "status": "in_progress"}]
+    _run(
+        app, sid, lambda: tool.func(todos=[{"content": "a", "status": "in_progress"}]), thought="s2"
+    )
+    assert recorded_todos(app.state.sessions.get(sid)) == [
+        {"content": "a", "status": "in_progress"}
+    ]
 
 
 # ---- validation ------------------------------------------------------------------------
@@ -288,3 +295,61 @@ def test_write_todos_declares_typed_structured_content(tmp_path: Path, monkeypat
     assert shape["message"] == out  # SAME text as the model-facing confirmation
     assert shape["counts"] == {"pending": 2, "in_progress": 1, "completed": 1}
     assert [t["content"] for t in shape["todos"]] == ["explore", "write", "review", "ship"]
+    assert shape["previous_todos"] == []
+    assert [change["change"] for change in shape["changes"]] == [
+        "added",
+        "added",
+        "added",
+        "added",
+    ]
+
+
+def test_write_todos_declares_status_transitions_and_removals(tmp_path: Path, monkeypatch) -> None:
+    """A replacement receipt explains the delta while metadata keeps only current state."""
+
+    declared: list[dict] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.tool_instrumentation.declare_structured_content",
+        lambda value: declared.append(dict(value)),
+    )
+    app = build_app(sessions_path=tmp_path / "s.json")
+    sid = _session(app)
+    tool = build_write_todos_tool(_AGENT)
+
+    _run(
+        app,
+        sid,
+        lambda: tool.func(
+            todos=[
+                {"content": "Inspect evidence", "status": "pending"},
+                {"content": "Old task", "status": "in_progress"},
+            ]
+        ),
+        thought="first",
+    )
+    _run(
+        app,
+        sid,
+        lambda: tool.func(
+            todos=[
+                {"content": "Inspect evidence", "status": "completed"},
+                {"content": "New task", "status": "pending"},
+            ]
+        ),
+        thought="second",
+    )
+
+    assert declared[-1]["changes"] == [
+        {
+            "content": "Inspect evidence",
+            "status": "completed",
+            "previous_status": "pending",
+            "change": "status_changed",
+        },
+        {"content": "New task", "status": "pending", "change": "added"},
+        {"content": "Old task", "status": "in_progress", "change": "removed"},
+    ]
+    assert recorded_todos(app.state.sessions.get(sid)) == [
+        {"content": "Inspect evidence", "status": "completed"},
+        {"content": "New task", "status": "pending"},
+    ]

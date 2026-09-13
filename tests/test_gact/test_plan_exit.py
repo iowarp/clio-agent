@@ -28,6 +28,7 @@ from clio_agent.gact.plan_mode import (
     resolve_plan_exit_answer,
 )
 from clio_agent.gact.protocol_v3 import CLIO_A2UI_CATALOG_ID
+from clio_agent.gact.transcript import EventBusTranscriptPublisher, TurnTranscript
 from clio_agent.gact.types import UserQuestion
 
 
@@ -134,6 +135,11 @@ def _fake_state(app: Any, sess: Any) -> SimpleNamespace:
         user_msg=SimpleNamespace(id="msg_user_1"),
         context_frame={"id": "cf_1"},
         bus=bus,
+        transcript=TurnTranscript(
+            session_id=sess.id,
+            turn_id="turn_1",
+            publisher=EventBusTranscriptPublisher(bus, sess.id),
+        ),
     )
     state._published = published  # type: ignore[attr-defined]
     return state

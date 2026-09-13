@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import concurrent.futures
 import logging
 import queue
 import re
@@ -665,7 +666,20 @@ def run_sdk(
     timeout: float = DEFAULT_TURN_TIMEOUT_S,
     call_index: int = 0,
 ) -> tuple[str, dict[str, int]]:
-    """Collect one official SDK stream for LiteLLM's blocking completion path."""
+    """Collect one official SDK stream for LiteLLM's blocking completion path.
+
+    Provider-contract BACKSTOP (#1333): LiteLLM's sync ``completion`` must be callable
+    from a thread that already owns a running loop (claude_code's pool is), where a bare
+    ``asyncio.run()`` raises ``RuntimeError``. This uses the repository's
+    run-or-threadpool bridge (``handshake.run_handshake_sync``,
+    ``runtime.status._list_gateway_capabilities``): no loop on this thread -> run
+    inline; a loop is running -> run the collection on a helper thread and BLOCK the
+    caller. It turns a crash into a blocking call, it does not make the sync path
+    loop-friendly: clio's own loop-side LM calls (the finalize goal judge) take the
+    native async path (``acompletion``) and never reach here. Blocking is safe because
+    the stream only depends on the helper's own loop and the dedicated
+    ``codex-sdk-loop`` owner thread, never on the caller's loop.
+    """
 
     async def _collect() -> tuple[str, dict[str, int]]:
         parts: list[str] = []
@@ -692,7 +706,14 @@ def run_sdk(
                 }
         return "".join(parts), final_usage
 
-    return asyncio.run(_collect())
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_collect())
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="codex-sdk-sync"
+    ) as pool:
+        return pool.submit(lambda: asyncio.run(_collect())).result()
 
 
 __all__ = [

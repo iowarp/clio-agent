@@ -22,6 +22,7 @@ Each body runs in a fresh ``contextvars.copy_context()`` so the (reset-less)
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 from pathlib import Path
 from types import SimpleNamespace
@@ -93,9 +94,46 @@ def _goal_state(app: SimpleNamespace, sid: str) -> dict[str, Any]:
 
 
 def _mock_judge(monkeypatch: Any, *, met: bool, reason: str = "") -> None:
-    monkeypatch.setattr(
-        goal_mod, "run_llm_judge", lambda app, sid, goal: GoalJudgement(met=met, reason=reason)
+    """Patch the (async, #1333) judge with a canned verdict."""
+
+    async def _judge(app: Any, sid: str, goal: Any) -> GoalJudgement:
+        return GoalJudgement(met=met, reason=reason)
+
+    monkeypatch.setattr(goal_mod, "run_llm_judge", _judge)
+
+
+def test_goal_judge_transcript_includes_bounded_tool_call_and_result(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    sid = _session(app)
+    app.state.messages[sid] = [
+        SimpleNamespace(
+            role="assistant",
+            parts=[
+                SimpleNamespace(type="tool_call", tool_name="goal_status"),
+                SimpleNamespace(
+                    type="tool_result",
+                    tool_name="goal_status",
+                    is_error=False,
+                    presentation={"summary": "Goal is at iteration 0"},
+                    structured_content={"message": "raw fallback must not win"},
+                    metadata={},
+                    content=[],
+                ),
+            ],
+        )
+    ]
+
+    assert goal_mod._build_transcript(app, sid) == (
+        "assistant tool call: goal_status\n"
+        "assistant tool result: goal_status completed: Goal is at iteration 0"
     )
+
+
+def _dispatch(app: Any, **kwargs: Any) -> GoalDecision | None:
+    """Drive the awaited finalize dispatch to completion (a fresh loop per call, so the
+    ``contextvars`` isolation of each test body is inherited by the task)."""
+
+    return asyncio.run(dispatch_goal_at_finalize(app, **kwargs))
 
 
 # =========================================================================== #
@@ -165,7 +203,7 @@ def test_dispatch_redrives_when_judge_not_met(tmp_path: Path, monkeypatch: Any) 
         _mock_judge(monkeypatch, met=False, reason="tests still failing")
         arm_goal(app, sid, condition="all tests pass")
         # judge says NOT met -> the finalize eval must re-drive one more turn.
-        decision = dispatch_goal_at_finalize(app, session_id=sid, turn_id="t1")
+        decision = _dispatch(app, session_id=sid, turn_id="t1")
         assert decision is not None and decision.outcome == "redrive"
         goal = _goal_state(app, sid)
         assert goal["active"] is True
@@ -187,7 +225,7 @@ def test_dispatch_settles_and_autoclears_when_judge_met(tmp_path: Path, monkeypa
         _bind(app, sid)
         _mock_judge(monkeypatch, met=True, reason="the summary is complete")
         arm_goal(app, sid, condition="write a good summary")
-        decision = dispatch_goal_at_finalize(app, session_id=sid, turn_id="t1")
+        decision = _dispatch(app, session_id=sid, turn_id="t1")
         assert decision is not None and decision.outcome == "met"
         goal = _goal_state(app, sid)
         assert goal["active"] is False  # auto-cleared
@@ -209,11 +247,11 @@ def test_dispatch_max_iters_settles_with_typed_reason(tmp_path: Path, monkeypatc
         _mock_judge(monkeypatch, met=False, reason="not yet")
         arm_goal(app, sid, condition="c", max_goal_iters=1)
         # Iteration 1: unmet -> re-drive (iters 0 < 1).
-        d1 = dispatch_goal_at_finalize(app, session_id=sid, turn_id="t1")
+        d1 = _dispatch(app, session_id=sid, turn_id="t1")
         assert d1 is not None and d1.outcome == "redrive"
         assert _goal_state(app, sid)["iters_elapsed"] == 1
         # Iteration 2: iters_elapsed (1) >= max (1) -> bounded stop, no infinite loop.
-        d2 = dispatch_goal_at_finalize(app, session_id=sid, turn_id="t2")
+        d2 = _dispatch(app, session_id=sid, turn_id="t2")
         assert d2 is not None and d2.outcome == "capped"
         assert d2.reason == "goal_max_iters"
         assert _goal_state(app, sid)["active"] is False
@@ -225,7 +263,7 @@ def test_dispatch_noop_without_goal(tmp_path: Path) -> None:
     def body() -> None:
         app = _app(tmp_path)
         sid = _session(app)
-        assert dispatch_goal_at_finalize(app, session_id=sid, turn_id="t1") is None
+        assert _dispatch(app, session_id=sid, turn_id="t1") is None
         assert app.state.sessions.get(sid).metadata.get("goal") is None
 
     _in_ctx(body)
@@ -258,7 +296,7 @@ def test_when_state_arg_does_not_create_self_satisfiable_gate(
         assert goal.get("predicate_backed") in (None, False)
         # Even with the named state field 'satisfied', the not-met judge re-drives.
         app.state.sessions.update(sid, metadata_patch={"workflow_state": {"done": "true"}})
-        decision = dispatch_goal_at_finalize(app, session_id=sid, turn_id="t1")
+        decision = _dispatch(app, session_id=sid, turn_id="t1")
         assert decision is not None and decision.outcome == "redrive"
 
     _in_ctx(body)
@@ -381,14 +419,17 @@ def test_goal_command_arms_and_clears(tmp_path: Path) -> None:
 
 
 def test_goal_command_message_says_llm_judge(tmp_path: Path) -> None:
-    """The /goal confirmation is honest about the LLM-judge-only contract + hard bounds."""
+    """The /goal confirmation confirms arming (the verbose LLM-judge/bounds prose
+    this test name predates was replaced by the simplified copy at de0b7dd7;
+    the LLM-judge-only contract is still enforced -- see run_llm_judge -- just
+    no longer restated in the command's own confirmation text)."""
 
     def body() -> None:
         app = _app(tmp_path)
         sid = _session(app)
         _bind(app, sid)
         msg = run_goal_command(app, sid, {"input": "the report reads well"})
-        assert "LLM judge" in msg
+        assert msg == "Goal set at iteration 0. Open Session work to inspect it."
         assert "deterministic" not in msg.lower()
 
     _in_ctx(body)
@@ -400,7 +441,10 @@ def test_goal_command_usage_when_no_condition(tmp_path: Path) -> None:
         sid = _session(app)
         _bind(app, sid)
         msg = run_goal_command(app, sid, {"input": ""})
-        assert "usage" in msg.lower()
+        assert (
+            msg
+            == "Enter a completion condition after /goal. Use /goal clear to remove the active goal."
+        )
         assert _goal_state(app, sid) == {}
 
     _in_ctx(body)
@@ -479,7 +523,7 @@ def test_loop_stops_with_loop_goal_met_when_judge_met_at_finalize(
         _mock_judge(monkeypatch, met=True, reason="the deliverable is complete")
         arm_goal(app, sid, condition="the deliverable is complete")
 
-        decision = dispatch_goal_at_finalize(app, session_id=sid, turn_id="t1")
+        decision = _dispatch(app, session_id=sid, turn_id="t1")
         assert decision is not None and decision.outcome == "met"
         # Drive the SHIPPED finalize seam (the exact function turn_finalize.finalize_turn
         # calls) — not a hand-rolled stop — so deleting its stop_session_loop body turns
@@ -520,7 +564,7 @@ def test_finalize_seam_leaves_loop_running_when_goal_not_met(
         _mock_judge(monkeypatch, met=False, reason="not done yet")
         arm_goal(app, sid, condition="the deliverable is complete")
 
-        decision = dispatch_goal_at_finalize(app, session_id=sid, turn_id="t1")
+        decision = _dispatch(app, session_id=sid, turn_id="t1")
         assert decision is not None and decision.outcome != "met"
         assert compose_goal_loop_stop_at_finalize(app, sid, decision) is False
         # A None decision (no goal armed) is inert too.
