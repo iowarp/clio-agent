@@ -331,6 +331,10 @@ def _lenient_chat_adapter_cls() -> Any:
             )
 
         def __call__(self, lm, lm_kwargs, signature, demos, inputs):  # type: ignore[no-untyped-def]
+            # Pre-flight context overflow check: raises _ContextOverflowError with
+            # a self-explaining message instead of letting the server return an
+            # opaque HTTP 400. A no-op when _clio_context_window is 0 / unset.
+            _check_context_overflow(self, signature, demos, inputs)
             # Bounded re-SAMPLE on an unrecoverable parse failure. The lenient
             # parse() above repairs SHAPE (constructor-repr, dropped brace); it
             # CANNOT recover a genuinely missing field -- e.g. a reasoning model
@@ -356,6 +360,8 @@ def _lenient_chat_adapter_cls() -> Any:
             raise last_exc
 
         async def acall(self, lm, lm_kwargs, signature, demos, inputs):  # type: ignore[no-untyped-def]
+            # Pre-flight context overflow check (async path — same guard).
+            _check_context_overflow(self, signature, demos, inputs)
             attempts = self._clio_resample_attempts() + 1
             last_exc: Exception | None = None
             for i in range(attempts):
@@ -583,6 +589,17 @@ class _GuidedContextWindowError(ValueError):
     """The formatted guided-output prompt leaves no room for a completion."""
 
 
+class _ContextOverflowError(ValueError):
+    """Prompt exceeds the discovered context window on the non-guided path.
+
+    Raised as a pre-flight check before the LM call so the overflow is a
+    diagnosable, typed error ("prompt≈N tokens > context M") rather than an
+    opaque HTTP 400 from the server. Set ``lm.context_window`` /
+    ``CLIO_LM_CONTEXT_WINDOW`` to assert a larger window when vLLM's
+    --max-model-len clips the model's native maximum.
+    """
+
+
 def _guided_prompt_tokens(adapter: Any, signature: Any, demos: Any, inputs: Any) -> int:
     """Conservatively estimate tokens in the exact messages the adapter formats.
 
@@ -597,6 +614,34 @@ def _guided_prompt_tokens(adapter: Any, signature: Any, demos: Any, inputs: Any)
     rendered = adapter.format(signature, demos, inputs)
     payload = json.dumps(rendered, ensure_ascii=False, default=str)
     return max(1, (len(payload) + 2) // 3)
+
+
+def _check_context_overflow(adapter: Any, signature: Any, demos: Any, inputs: Any) -> None:
+    """Pre-flight context check for the non-guided chat path.
+
+    Raises :class:`_ContextOverflowError` when the estimated prompt token count
+    exceeds the adapter's ``_clio_context_window``. This surfaces a context
+    overflow as a typed, self-explaining error before the server sees the
+    request — replacing the opaque HTTP 400 vLLM returns.
+
+    A no-op when the adapter carries no ``_clio_context_window`` (0 / unset).
+    The check uses the same conservative 3 chars/token estimate as
+    :func:`_guided_prompt_tokens` so both paths share one accounting rule.
+    """
+    try:
+        context_window = int(getattr(adapter, "_clio_context_window", 0) or 0)
+    except (TypeError, ValueError):
+        context_window = 0
+    if context_window <= 0:
+        return
+    prompt_tokens = _guided_prompt_tokens(adapter, signature, demos, inputs)
+    if prompt_tokens >= context_window:
+        raise _ContextOverflowError(
+            f"prompt≈{prompt_tokens} tokens > context {context_window} "
+            f"(model={getattr(adapter, '_clio_model', 'unknown')!r}); "
+            "set lm.context_window / CLIO_LM_CONTEXT_WINDOW to override if "
+            "the served window is smaller than the model's native maximum"
+        )
 
 
 def _bound_guided_output_kwargs(
@@ -777,4 +822,15 @@ def create_chat_adapter(config: LMProviderConfig) -> Any:
     # models only; see _parse_retry_attempts). This is the base-case fix for a
     # reasoning model dropping a section (e.g. ReAct's next_tool_name) on one draw.
     adapter._clio_parse_retry = _parse_retry_attempts(config)
+    # Context-overflow pre-flight (part 4, #1326): stamp the resolved window so
+    # _check_context_overflow can raise _ContextOverflowError before the server
+    # sees an oversize prompt.  Mirrors the guided-path stamp at lines ~760-764.
+    provider_id = str(getattr(config, "provider_id", "") or getattr(config, "provider", ""))
+    if provider_id not in {"codex", "claude_code"}:
+        adapter._clio_context_window = int(  # type: ignore[attr-defined]
+            getattr(config, "chosen_context", None)
+            or getattr(config, "context_window", None)
+            or 0
+        )
+        adapter._clio_model = str(getattr(config, "model", "") or "")  # type: ignore[attr-defined]
     return adapter

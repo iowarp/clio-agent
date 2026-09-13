@@ -17,6 +17,7 @@ contract this package's degradation paths follow.
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 
 from pydantic import BaseModel
@@ -49,6 +50,16 @@ def pydantic_json_default(obj: Any) -> Any:
 
     if isinstance(obj, BaseModel):
         return obj.model_dump(mode="json")
+    # FastMCP >=4 returns a tool's structured output as a DATACLASS built from the
+    # tool's output schema (see fastmcp's CallToolResult docs; a wrapped/bare result
+    # comes back as a ``Root`` dataclass). A dataclass is not a BaseModel, so without
+    # this branch it fell through to ``_result_to_text``'s repr() fallback and the
+    # model saw a raw Python object dump instead of clean JSON. Project it shallowly
+    # and let ``json.dumps`` recurse — re-invoking this hook for any nested
+    # model/dataclass. This is a real, lossless serialization path (not a
+    # degradation), so a caller using it must NOT record a fallback reason.
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return {f.name: getattr(obj, f.name) for f in dataclasses.fields(obj)}
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 

@@ -21,8 +21,10 @@ the handler DECLINES with a typed reason rather than mis-correlate.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
@@ -36,8 +38,11 @@ __all__ = [
     "correlated_capabilities",
     "correlated_elicitation_handler",
     "correlated_session_id",
+    "drain_narrowing_disclosures",
     "make_correlated_handlers",
     "open_invocation",
+    "record_narrowing_disclosure",
+    "stamp_observation_with_disclosures",
 ]
 
 
@@ -52,6 +57,86 @@ class _InvocationRecord:
 
 _LOCK = threading.Lock()
 _OPEN: list[_InvocationRecord] = []
+
+
+# --------------------------------------------------------------------------- #
+# Author-independent narrowing disclosure (#1325)                             #
+# --------------------------------------------------------------------------- #
+# clio drives the MRTR loop, so clio -- not the server author -- tells the main
+# agent when a result was shaped by an agent-answered elicitation. Keyed by the
+# tool-call session (the executor serializes calls). The answer path RECORDS
+# before resolving; ``tools.tool_hooks.assemble_model_observation`` DRAINS and
+# stamps the result.
+_DISCLOSURES: dict[str, list[dict[str, Any]]] = {}
+_DISCLOSURES_LOCK = threading.Lock()
+
+
+def record_narrowing_disclosure(
+    session_id: str, tool_name: str, answer: Mapping[str, Any]
+) -> None:
+    """Record that ``session_id``'s in-flight ``tool_name`` call was narrowed by an
+    agent-answered elicitation (the fields the agent supplied).
+
+    Called on the answer path BEFORE the elicitation resolves, so the disclosure
+    is present by the time the resumed call's result reaches the observation seam.
+    """
+
+    if not session_id:
+        return
+    entry = {"tool": tool_name, "audience": "agent", "answer": dict(answer)}
+    with _DISCLOSURES_LOCK:
+        _DISCLOSURES.setdefault(session_id, []).append(entry)
+
+
+def drain_narrowing_disclosures(session_id: str, tool_name: str) -> list[dict[str, Any]]:
+    """Pop (and clear) the pending narrowing disclosures for ``session_id``'s
+    ``tool_name`` call. Entries for other tools on the same session are retained."""
+
+    if not session_id:
+        return []
+    with _DISCLOSURES_LOCK:
+        pending = _DISCLOSURES.get(session_id)
+        if not pending:
+            return []
+        matched = [entry for entry in pending if entry.get("tool") == tool_name]
+        remaining = [entry for entry in pending if entry.get("tool") != tool_name]
+        if remaining:
+            _DISCLOSURES[session_id] = remaining
+        else:
+            _DISCLOSURES.pop(session_id, None)
+        return matched
+
+
+def stamp_observation_with_disclosures(
+    observation: Any, disclosures: list[dict[str, Any]]
+) -> Any:
+    """Stamp narrowing disclosures into a model-facing observation, author-independent.
+
+    A JSON-object string result -> merge a ``_clio.elicitation`` key (mirroring the
+    truncation envelope's ``_clio`` metadata lane). Any other string -> prepend a
+    one-line typed note. Non-string observations pass through untouched.
+    """
+
+    if not disclosures or not isinstance(observation, str):
+        return observation
+    answers = [dict(entry.get("answer", {})) for entry in disclosures]
+    try:
+        parsed = json.loads(observation)
+    except (json.JSONDecodeError, ValueError):
+        parsed = None
+    if isinstance(parsed, dict):
+        clio = parsed.get("_clio")
+        if not isinstance(clio, dict):
+            clio = {}
+        clio["elicitation"] = {"narrowed_by": "agent", "answers": answers}
+        parsed["_clio"] = clio
+        return json.dumps(parsed, ensure_ascii=False)
+    summary = (
+        "This result was narrowed mid-call by an answer you (the agent) supplied to "
+        f"the tool's own question: {json.dumps(answers[-1], ensure_ascii=False)}. The "
+        "returned data reflects that narrowing (a subset of the full result)."
+    )
+    return f"[clio] {summary}\n{observation}"
 
 
 def open_invocation(

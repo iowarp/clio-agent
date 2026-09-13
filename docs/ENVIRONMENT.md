@@ -145,6 +145,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_LIVE_STREAMING` | `runtime.live_streaming` | bool | `true` | `src/clio_agent/lm/adapters.py` |
 | `CLIO_LMSTUDIO_FLASH_ATTENTION` | `lm.lmstudio_flash_attention` | bool | `true` | `src/clio_agent/gact/routes/providers.py` |
 | `CLIO_LM_API_BASE` | `lm.api_base` | str | _(unset)_ | `src/clio_agent/config.py` |
+| `CLIO_LM_CONTEXT_WINDOW` | `lm.context_window` | int | `0` | `src/clio_agent/config.py` |
 | `CLIO_LM_DEFER_TIKTOKEN` | `lm.defer_tiktoken` | bool | `true` | `src/clio_agent/lm/factory.py` |
 | `CLIO_LM_DISABLE_THINKING` | `lm.disable_thinking` | bool | `false` | `src/clio_agent/lm/factory.py` |
 | `CLIO_LM_GUIDED_OUTPUT` | `lm.guided_output` | bool | `false` | `src/clio_agent/lm/adapters.py` |
@@ -181,10 +182,12 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_MCP_CONTENT_BLOCK_MAX_BYTES` | `limits.mcp_content_block_max_bytes` | int | `524288` | `src/clio_agent/tools/mcp_results.py` |
 | `CLIO_MCP_DISCOVERY_CONCURRENCY` | `tools.mcp.discovery_concurrency` | int | `8` | `src/clio_agent/tools/mcp_discovery.py` |
 | `CLIO_MCP_DISCOVERY_HEAL_INTERVAL_S` | `tools.mcp.discovery_heal_interval_s` | float | `20.0` | `src/clio_agent/tools/mcp_discovery.py` |
-| `CLIO_MCP_ELICITATION_AGENT_AUDIENCE_DENIED_SERVERS` | `tools.mcp.elicitation.agent_audience.denied_servers` | list | `default` _(computed)_ | `src/clio_agent/gact/agent_elicitation.py` |
-| `CLIO_MCP_ELICITATION_AGENT_AUDIENCE_ENABLED` | `tools.mcp.elicitation.agent_audience.enabled` | bool | `true` | `src/clio_agent/gact/agent_elicitation.py` |
-| `CLIO_MCP_ELICITATION_AGENT_AUDIENCE_MAX_DEPTH` | `tools.mcp.elicitation.agent_audience.max_depth` | int | `1` | `src/clio_agent/gact/agent_elicitation.py` |
-| `CLIO_MCP_ELICITATION_AGENT_AUDIENCE_TIMEOUT_S` | `tools.mcp.elicitation.agent_audience.timeout_s` | float | `90.0` | `src/clio_agent/gact/agent_elicitation.py` |
+| `CLIO_MCP_ELICITATION_AGENT_AUDIENCE_ANSWER_MODE` | `tools.mcp.elicitation.agent_audience.answer_mode` | str | `inline` | `src/clio_agent/gact/agent_elicitation_policy.py` |
+| `CLIO_MCP_ELICITATION_AGENT_AUDIENCE_DEFAULT_UNHINTED` | `tools.mcp.elicitation.agent_audience.default_unhinted` | bool | `true` | `src/clio_agent/gact/agent_elicitation_policy.py` |
+| `CLIO_MCP_ELICITATION_AGENT_AUDIENCE_DENIED_SERVERS` | `tools.mcp.elicitation.agent_audience.denied_servers` | list | `default` _(computed)_ | `src/clio_agent/gact/agent_elicitation_policy.py` |
+| `CLIO_MCP_ELICITATION_AGENT_AUDIENCE_ENABLED` | `tools.mcp.elicitation.agent_audience.enabled` | bool | `true` | `src/clio_agent/gact/agent_elicitation_policy.py` |
+| `CLIO_MCP_ELICITATION_AGENT_AUDIENCE_MAX_DEPTH` | `tools.mcp.elicitation.agent_audience.max_depth` | int | `1` | `src/clio_agent/gact/agent_elicitation_policy.py` |
+| `CLIO_MCP_ELICITATION_AGENT_AUDIENCE_TIMEOUT_S` | `tools.mcp.elicitation.agent_audience.timeout_s` | float | `90.0` | `src/clio_agent/gact/agent_elicitation_policy.py` |
 | `CLIO_MCP_ELICITATION_URL_TRUSTED_ORIGINS` | `tools.mcp.elicitation.url_trusted_origins` | list | `default` _(computed)_ | `src/clio_agent/gact/elicitation_bridge.py` |
 | `CLIO_MCP_INPUT_REQUIRED_MAX_ROUNDS` | `tools.mcp.input_required_max_rounds` | int | `DEFAULT_INPUT_REQUIRED_MAX_ROUNDS` _(computed)_ | `src/clio_agent/tools/mcp_runtime.py` |
 | `CLIO_MCP_LAUNCHER_CACHE_LOCK_TIMEOUT_S` | `tools.mcp.launcher_cache_lock_timeout_s` | float | `600.0` | `src/clio_agent/tools/launcher_cache_lock.py` |
@@ -204,6 +207,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_NATIVE_ARTIFACT_STORE` | `provenance.artifacts.native.storage` | str | `file` | `src/clio_agent/gact/artifacts/provenance/factory.py` |
 | `CLIO_PLAN_REVIEW_CHARS` | `limits.plan_review_chars` | int | `256000` | `src/clio_agent/gact/plan_review.py` |
 | `CLIO_PROVENANCE_JSONL_PATH` | `provenance.agentic.jsonl.path` | str | _(unset)_ | `src/clio_agent/gact/provenance/factory.py` |
+| `CLIO_PROVENANCE_KVNORM` | `provenance.kvnorm` | bool | `false` | `src/clio_agent/provenance_config.py` |
 | `CLIO_PROVENANCE_PROVIDERS` | `provenance.agentic.providers` | list | `jsonl` | `src/clio_agent/provenance_config.py` |
 | `CLIO_PROVENANCE_QUERY_DEFAULT` | `provenance.agentic.query_default` | str | `native` | `src/clio_agent/gact/routes/provenance.py` |
 | `CLIO_PROVENANCE_QUEUE_SIZE` | `provenance.agentic.queue_size` | int | `4096` | `src/clio_agent/gact/provenance/factory.py` |

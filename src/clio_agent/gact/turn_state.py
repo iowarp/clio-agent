@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.runtime.constants import _CTX_MAX_BYTES
 from clio_agent.gact.runtime.globals import _semantic_trace_id
 
 if TYPE_CHECKING:
@@ -64,6 +65,25 @@ class DeferredTranscriptJob:
         with self._lock:
             job, self._job = self._job, None
             return job
+
+
+def _unset_context_file_provenance() -> dict[str, Any]:
+    """The typed empty record ``context_file_provenance`` carries before the
+    prologue assigns a real one (:func:`clio_agent.gact.enrichment._context_file_
+    turn_provenance`'s own shape -- ``status``/``count``/``max_inline_bytes``/
+    ``files``).
+
+    A turn whose prologue path skips BOTH of ``turn_start_offloop.py``'s own
+    assignments (the unconditional ``status="prepared"`` line and the
+    ``except _ContextFileAccessError`` overwrite -- e.g. a turn that never runs
+    :func:`~clio_agent.gact.turn_start_offloop.prepare_turn_off_loop` at all)
+    still reaches :mod:`clio_agent.gact.turn_finalize` with a dict it can safely
+    subscript (``state.context_file_provenance["files"]``) instead of ``None``.
+    ``status="unset"`` keeps this distinguishable from a real empty-attachments
+    turn (``status="prepared"``, also ``files: []``) if ever inspected.
+    """
+
+    return {"status": "unset", "count": 0, "max_inline_bytes": _CTX_MAX_BYTES, "files": []}
 
 
 @dataclass(kw_only=True)
@@ -109,7 +129,7 @@ class TurnState:
     _watchdog_poll_s: float = 0.0
     history_start: dict[int, int] = field(default_factory=dict)
     context_frame: Any = None
-    context_file_provenance: Any = None
+    context_file_provenance: dict[str, Any] = field(default_factory=_unset_context_file_provenance)
     enriched_text: str = ""
     memory_search_metadata: dict[str, Any] = field(default_factory=dict)
     # #948 S6 [1]/[4]: observe-later task ids composed into this turn's enriched

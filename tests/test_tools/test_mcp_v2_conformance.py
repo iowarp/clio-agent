@@ -75,7 +75,11 @@ from clio_agent.tools.mcp_connection_era import (
 )
 from clio_agent.tools.mcp_errors import typed_mcp_protocol_error
 from clio_agent.tools.mcp_executor import AsyncMCPToolExecutor
-from clio_agent.tools.mcp_extension_registry import UI_EXTENSION_ID, extensions_declaration
+from clio_agent.tools.mcp_extension_registry import (
+    AGENT_ELICITATION_EXTENSION_ID,
+    UI_EXTENSION_ID,
+    extensions_declaration,
+)
 from clio_agent.tools.mcp_runtime import MCPClientCapabilities, MCPClientHandlers, make_mcp_client
 from clio_agent.tools.mcp_task_extension import tasks_declaration
 from clio_agent.tools.mcp_task_records import InMemoryTaskRecordStore, set_task_record_store
@@ -895,18 +899,24 @@ def test_extensions_declaration_composes_tasks_and_ui_for_a_plain_client() -> No
     Tasks entry #1 is byte-identical to the pre-registry ``tasks_declaration``
     call (proven by the layer-4 tests above, untouched); this pins the NEW
     composition: ui is entry #2, and both are active for a plain client.
+
+    #1325 (a1f7a017, postdates this test): registry entry #3, the
+    agent-driven-elicitation ad, is unconditional like ``ui`` and folds in too.
     """
 
     declaration = extensions_declaration(Client, object())
     by_id = {entry.identifier: entry for entry in declaration.entries}
-    assert set(by_id) == {TASKS_EXTENSION_ID, UI_EXTENSION_ID}
+    assert set(by_id) == {TASKS_EXTENSION_ID, UI_EXTENSION_ID, AGENT_ELICITATION_EXTENSION_ID}
     assert by_id[TASKS_EXTENSION_ID].extension is not None
     assert by_id[TASKS_EXTENSION_ID].reason is None
     assert by_id[UI_EXTENSION_ID].extension is not None
     assert by_id[UI_EXTENSION_ID].reason is None
+    assert by_id[AGENT_ELICITATION_EXTENSION_ID].extension is not None
+    assert by_id[AGENT_ELICITATION_EXTENSION_ID].reason is None
     assert {ext.identifier for ext in declaration.extensions} == {
         TASKS_EXTENSION_ID,
         UI_EXTENSION_ID,
+        AGENT_ELICITATION_EXTENSION_ID,
     }
 
 
@@ -917,6 +927,11 @@ def test_extensions_declaration_suppresses_tasks_but_keeps_ui_for_a_proxy_client
     caller's behalf), a proxy can always relay a ui-bearing result unchanged;
     declaring ui is what makes a spec-compliant server willing to attach
     ``_meta.ui`` in the first place, regardless of transport shape.
+
+    #1325 (a1f7a017, postdates this test): registry entry #3, the
+    agent-driven-elicitation ad, is unconditional like ``ui`` -- never
+    suppressed for a proxy client either (a proxy's front CLIO still answers
+    the MRTR round-trip exactly as a direct client does).
     """
 
     declaration = extensions_declaration(ProxyClient, object())
@@ -925,7 +940,12 @@ def test_extensions_declaration_suppresses_tasks_but_keeps_ui_for_a_proxy_client
     assert by_id[TASKS_EXTENSION_ID].reason == MCP_TASKS_DECLARATION_SUPPRESSED
     assert by_id[UI_EXTENSION_ID].extension is not None
     assert by_id[UI_EXTENSION_ID].reason is None
-    assert [ext.identifier for ext in declaration.extensions] == [UI_EXTENSION_ID]
+    assert by_id[AGENT_ELICITATION_EXTENSION_ID].extension is not None
+    assert by_id[AGENT_ELICITATION_EXTENSION_ID].reason is None
+    assert {ext.identifier for ext in declaration.extensions} == {
+        UI_EXTENSION_ID,
+        AGENT_ELICITATION_EXTENSION_ID,
+    }
 
 
 async def test_declared_path_negotiates_the_synthetic_extension_end_to_end() -> None:

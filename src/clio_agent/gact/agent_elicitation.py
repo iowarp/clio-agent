@@ -1,12 +1,19 @@
 """Agent-driven elicitation (#1309, C1-S7): the session's agent can answer a
 typed MCP elicitation question, not only the human.
 
-An MCP server can return v2 ``input_required`` mid-flow and address it to the
-session's contextual agent. The human remains the terminal fallback.
+OWNER REQUIREMENT (verbatim intent): "I need my mcps being able to request
+things from the agent." An MCP server, mid-flow, returns ``input_required``
+(the v2 MRTR shape carried through :mod:`clio_agent.gact.elicitation_bridge`)
+and the thing that can answer is the SESSION'S AGENT -- running on the user's
+chosen provider, holding the session's own conversation context -- with the
+human remaining the terminal fallback.
 
-THE SEMANTIC FIREWALL: this is **NOT sampling** and must never become an
-inference channel. The MCP server gets no model access or prompt control, only
-a typed, schema-validated answer to its own question. The ``requestedSchema`` validation
+DESIGN INVARIANT -- THE SEMANTIC FIREWALL (owner ruling, 2026-09-03): this is
+**NOT sampling** and must never become an inference channel. The MCP server
+gets no model access, no free-form completions, and no prompt control -- it
+gets exactly what elicitation has always given it: a typed, schema-validated
+answer to its OWN declared question, with the session's agent as a permitted
+answerer alongside the human. The ``requestedSchema`` validation
 (:func:`clio_agent.gact.elicitation_schema.validate_elicitation_answer`) is
 applied to an agent's answer EXACTLY as it is to a human's -- an agent answer
 that fails it never reaches the server; it falls back to the human path,
@@ -62,6 +69,16 @@ ones the shared answer route drives -- so the MRTR retry resumes the server
 unchanged and every answer is transcript-visible with typed attribution
 (``UserQuestion.answered_by == "agent"``).
 
+ANSWER STRATEGY. The default answerer is an inline bounded completion on the
+session's own model (:func:`_run_agent_answer_inline`, ``answer_mode="inline"``).
+A child-turn spawn (:func:`_run_agent_answer_turn`, behind ``answer_mode="turn"``)
+deadlocks: the parent tool call is paused on the same session and still holds
+the turn slot, so the child never runs and the call hangs to the MCP backstop.
+The inline answerer is the same model, same bounded transcript excerpt, same
+schema-validated JSON, still tool-less -- one completion off the event loop
+(mirroring :mod:`clio_agent.gact.runtime.ai_review`), never the MCP sampling
+channel.
+
 THE RESIDUAL CHANNEL, NAMED HONESTLY: a server-declared ``{"type": "string"}``
 field (no ``enum``) is still an agent-authored free-text value -- the widest
 shape ``requestedSchema`` permits. ``validate_elicitation_answer``
@@ -92,18 +109,55 @@ of the audience hint (``url_mode_requires_human_consent``): opening a URL is a
 human-consent action (see the elicitation bridge's own URL-trust docstring),
 never something an LM's typed answer should be able to grant on the user's
 behalf.
+
+#1331 REVIEW ROUND SPLIT: this module crossed the flat 800-line cap (1001
+lines) with no ``RATCHET_BASELINE`` entry, and had grown one hidden
+``dspy.Signature`` class inside a function -- both were owner debts, not
+things to baseline/ratchet-exempt. The module is now split by behavior into
+owner modules (moved code byte-equal, no logic change): policy knobs
+(:mod:`clio_agent.gact.agent_elicitation_policy`), the shared reason catalog
++ :class:`AgentElicitationDecision` type (:mod:`clio_agent.gact.agent_elicitation_reasons`),
+the shared prompt/context helpers (:mod:`clio_agent.gact.agent_elicitation_context`),
+the two answer mechanisms (:mod:`clio_agent.gact.agent_elicitation_answer_turn`,
+:mod:`clio_agent.gact.agent_elicitation_answer_inline` -- the latter now the
+``_AgentAnswer`` signature's home at module scope), and the routed dispatch
+task (:mod:`clio_agent.gact.agent_elicitation_dispatch`). This module keeps
+the routing DECISION (:func:`decide_routing`, :func:`routing_fields`,
+:func:`audience_hint`) and the publish entry point (:func:`on_question_published`)
+-- its own cohesive behavior -- and re-exports every name a caller or test
+imported from here before the split, so no import path or monkeypatch target
+moved.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from clio_agent import conf
-from clio_agent.gact.agent_elicitation_activity import stamp_agent_answer_turn
+from clio_agent.gact.agent_elicitation_answer_inline import _run_agent_answer_inline
+from clio_agent.gact.agent_elicitation_answer_turn import (
+    _run_agent_answer_turn,
+    _spawn_agent_answer_turn,
+)
+from clio_agent.gact.agent_elicitation_dispatch import _dispatch_agent_answer
+from clio_agent.gact.agent_elicitation_policy import (
+    _default_unhinted,
+    _denied_servers,
+    _enabled,
+    _max_depth,
+)
+from clio_agent.gact.agent_elicitation_reasons import (
+    AGENT_AUDIENCE_META_KEY,
+    AGENT_AUDIENCE_VALUE,
+    AGENT_ELICITATION_FALLBACK_DETAILS,
+    AGENT_ELICITATION_REASONS,
+    FALLBACK_REASON,
+    ROUTED_REASON,
+    ROUTED_UNHINTED_REASON,
+    AgentElicitationDecision,
+)
 from clio_agent.gact.agent_elicitation_reply import (
     answer_field_text as _answer_field_text,
 )
@@ -118,6 +172,13 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 logger = logging.getLogger(__name__)
 
+# Re-exported for callers/tests that historically imported these names off
+# THIS module (before the #1331 review-round split moved their definitions
+# to the owner modules imported above) -- every name below keeps working
+# unchanged as `clio_agent.gact.agent_elicitation.<name>`, including the
+# underscore-prefixed ones tests call directly (never monkeypatched cross-
+# module, so a plain re-export is sufficient; see the split modules for the
+# real definitions).
 __all__ = [
     "AGENT_AUDIENCE_META_KEY",
     "AGENT_AUDIENCE_VALUE",
@@ -125,110 +186,19 @@ __all__ = [
     "AGENT_ELICITATION_REASONS",
     "FALLBACK_REASON",
     "ROUTED_REASON",
+    "ROUTED_UNHINTED_REASON",
     "AgentElicitationDecision",
+    "_answer_field_text",
+    "_dispatch_agent_answer",
+    "_parse_agent_reply",
+    "_run_agent_answer_inline",
+    "_run_agent_answer_turn",
+    "_spawn_agent_answer_turn",
     "audience_hint",
     "decide_routing",
     "on_question_published",
     "routing_fields",
 ]
-
-#: clio's convention for the "this question is for the agent" hint (a
-#: reverse-DNS vendor key on the ElicitRequest params' ``_meta``, mirroring the
-#: existing ``x-clio-agent/*`` convention this repo already uses for its own
-#: non-standard extensions/meta keys). Deliberately NOT the reserved
-#: ``io.modelcontextprotocol/*`` namespace, which the spec owns.
-AGENT_AUDIENCE_META_KEY = "x-clio-agent/audience"
-
-#: The one recognized value. Anything else -- absent, empty, a typo, a future
-#: value clio doesn't understand yet -- behaves exactly like "absent" (never
-#: guessed, never partially honored).
-AGENT_AUDIENCE_VALUE = "agent"
-
-#: Typed reason a routing decision is recorded under (stream_fallback style —
-#: catalog keys, never a bare/unexplained field flip). Named per the owner's
-#: 2026-09-03 vocabulary refinement -- never "sampling"/"agent-fulfilled MRTR".
-ROUTED_REASON = "elicitation_routed_to_agent"
-FALLBACK_REASON = "agent_elicitation_fallback_to_human"
-
-AGENT_ELICITATION_REASONS: dict[str, str] = {
-    ROUTED_REASON: "audience=agent and policy allows; the session's agent is answering",
-    FALLBACK_REASON: "an agent-audience elicitation question fell back to the human path",
-}
-
-#: Sub-reasons carried alongside :data:`FALLBACK_REASON` on
-#: ``UserQuestion.agent_elicitation_fallback_detail`` -- WHY the fallback
-#: happened, never a silent/unexplained downgrade.
-AGENT_ELICITATION_FALLBACK_DETAILS: dict[str, str] = {
-    "policy_disabled": "agent-audience routing is disabled by config",
-    "unknown_server": "no server namespace was identified; fails closed, never open",
-    "policy_denied_server": "this server is on the agent-audience deny list",
-    "url_mode_requires_human_consent": "url-mode consent must come from a human, never the agent",
-    "recursion_depth_exceeded": "the bounded agent-answer recursion depth was reached",
-    "no_session": "no CLIO session resolved for the elicitation",
-    "spawn_refused": "the bounded answer invocation could not be spawned",
-    "agent_declined": "the agent explicitly declined to answer (insufficient context)",
-    "agent_answer_unparseable": "the agent's reply was not the required JSON answer shape",
-    "agent_answer_schema_invalid": "the agent's answer failed the server's own requestedSchema",
-    "agent_answer_timeout": "the bounded answer invocation did not finish in time",
-    "agent_answer_error": "the bounded answer invocation raised an unexpected error",
-}
-
-_DEFAULT_MAX_DEPTH = 1
-_DEFAULT_TIMEOUT_S = 90.0
-_OUTER_TIMEOUT_MARGIN_S = 15.0
-_CONTEXT_EXCERPT_MAX_CHARS = 6000
-
-
-# --------------------------------------------------------------------------- #
-# Policy (config-over-env; the house pattern -- clio_agent.conf)              #
-# --------------------------------------------------------------------------- #
-
-
-def _enabled() -> bool:
-    """Global on/off for agent-audience routing (default ON, owner-ruled posture)."""
-
-    return conf.resolve(
-        "tools.mcp.elicitation.agent_audience.enabled",
-        env="CLIO_MCP_ELICITATION_AGENT_AUDIENCE_ENABLED",
-        default=True,
-        cast=conf.as_bool,
-    )
-
-
-def _denied_servers() -> frozenset[str]:
-    """Per-server opt-OUT list (namespace names) -- the policy knob the owner required."""
-
-    default: list[str] = []
-    return frozenset(
-        conf.resolve(
-            "tools.mcp.elicitation.agent_audience.denied_servers",
-            env="CLIO_MCP_ELICITATION_AGENT_AUDIENCE_DENIED_SERVERS",
-            default=default,
-            cast=conf.as_csv,
-        )
-    )
-
-
-def _max_depth() -> int:
-    """The bounded agent-answer recursion depth (default 1)."""
-
-    return conf.resolve(
-        "tools.mcp.elicitation.agent_audience.max_depth",
-        env="CLIO_MCP_ELICITATION_AGENT_AUDIENCE_MAX_DEPTH",
-        default=_DEFAULT_MAX_DEPTH,
-        cast=conf.as_int,
-    )
-
-
-def _timeout_s() -> float:
-    """Bounded wall-clock budget for one agent-answer child turn."""
-
-    return conf.resolve(
-        "tools.mcp.elicitation.agent_audience.timeout_s",
-        env="CLIO_MCP_ELICITATION_AGENT_AUDIENCE_TIMEOUT_S",
-        default=_DEFAULT_TIMEOUT_S,
-        cast=conf.as_float,
-    )
 
 
 # --------------------------------------------------------------------------- #
@@ -248,23 +218,6 @@ def audience_hint(params: Any) -> str:
     if not isinstance(meta, Mapping):
         return ""
     return str(meta.get(AGENT_AUDIENCE_META_KEY) or "").strip().lower()
-
-
-@dataclass(frozen=True)
-class AgentElicitationDecision:
-    """The routing verdict for one freshly-minted elicitation question.
-
-    ``route=False, reason=""`` is the REGRESSION-LOCKED no-hint case: nothing
-    downstream (:func:`routing_fields`, :func:`on_question_published`) does
-    anything observable. ``reason`` is otherwise always one of
-    :data:`ROUTED_REASON` / :data:`FALLBACK_REASON`; ``detail`` names WHY for a
-    fallback (a key into :data:`AGENT_ELICITATION_FALLBACK_DETAILS`).
-    """
-
-    route: bool
-    reason: str = ""
-    detail: str = ""
-    depth: int = 0
 
 
 def _session_agent_elicitation_depth(app: Any, session_id: str) -> int:
@@ -291,16 +244,22 @@ def decide_routing(
 ) -> AgentElicitationDecision:
     """Decide whether ONE freshly-minted elicitation question routes to the agent.
 
-    Keys ONLY on the typed ``audience`` value + policy + the structural
-    ``mode``/recursion-depth facts below -- never on question/prompt CONTENT
-    (superseding principle #1: clio never keyword-matches a model's or a
-    server's prose to decide). ``audience`` must be EXACTLY
-    :data:`AGENT_AUDIENCE_VALUE`; anything else returns the regression-locked
-    no-op decision.
+    Keys on structural facts ONLY -- the typed ``audience`` value, ``mode``,
+    policy, and recursion depth -- never on question/prompt CONTENT (superseding
+    principle #1: clio never keyword-matches a model's or a server's prose).
+
+    An explicit ``audience == "agent"`` routes. An EMPTY audience also routes by
+    default (:func:`_default_unhinted`, typed :data:`ROUTED_UNHINTED_REASON`)
+    because fastmcp drops the ``_meta`` tag in transit. An unrecognized non-empty
+    audience, or ``url`` mode, never routes.
     """
 
-    if audience != AGENT_AUDIENCE_VALUE:
-        return AgentElicitationDecision(route=False)
+    explicit_agent = audience == AGENT_AUDIENCE_VALUE
+    if not explicit_agent:
+        # Unrecognized non-empty value, url mode, or strict routing -> no-op.
+        # An empty audience falls through to the same policy gates below.
+        if audience or mode == "url" or not _default_unhinted():
+            return AgentElicitationDecision(route=False)
     if not session_id:
         return AgentElicitationDecision(route=False, reason=FALLBACK_REASON, detail="no_session")
     if not _enabled():
@@ -327,7 +286,8 @@ def decide_routing(
         return AgentElicitationDecision(
             route=False, reason=FALLBACK_REASON, detail="recursion_depth_exceeded"
         )
-    return AgentElicitationDecision(route=True, reason=ROUTED_REASON, depth=depth + 1)
+    reason = ROUTED_REASON if explicit_agent else ROUTED_UNHINTED_REASON
+    return AgentElicitationDecision(route=True, reason=reason, depth=depth + 1)
 
 
 def routing_fields(decision: AgentElicitationDecision) -> dict[str, Any]:
@@ -419,381 +379,3 @@ def on_question_published(
         _dispatch_agent_answer(app, question, invocation, translation, decision)
     )
     _track_task(app, task)
-
-
-# --------------------------------------------------------------------------- #
-# The bounded answer invocation (existing spawn/invoker machinery)           #
-# --------------------------------------------------------------------------- #
-
-
-def _flatten_message_text(msg: Any) -> str:
-    """Join a message's text parts (mirrors the same idiom used at every other
-    "read a message's text back" call site in gact — deliberately small and
-    duplicated here rather than reaching into another module's private helper)."""
-
-    parts = getattr(msg, "parts", None) or []
-    out: list[str] = []
-    for part in parts:
-        text = getattr(part, "text", None)
-        if text is None and isinstance(part, Mapping):
-            text = part.get("text")
-        part_type = getattr(part, "type", None) or (
-            part.get("type") if isinstance(part, Mapping) else None
-        )
-        if part_type == "text" and text:
-            out.append(str(text))
-    return "".join(out).strip()
-
-
-def _bounded_transcript_excerpt(app: Any, session_id: str) -> str:
-    """A bounded, best-effort excerpt of ``session_id``'s own message transcript.
-
-    NOT the ARC context-compilation pipeline (RULE 6): that plane
-    (:mod:`clio_agent.arc.context_compiler`) has exactly one production
-    consumer in this repo today (``arc/retrieval.py``) and is not wired into
-    any gact turn/session call site, so depending on it here would be a new,
-    unverified dependency rather than a reuse of "existing invocation
-    machinery". This reads the session's own ALREADY-COLLECTED message store
-    instead (RULE 4: no new store) and caps it so a long conversation cannot
-    blow an unbounded prompt into the bounded answer turn -- the MOST RECENT
-    text is kept (a truncated-from-the-front excerpt), since the nonce/fact the
-    agent needs to recall is typically closer to the paused tool call.
-    """
-
-    messages = getattr(app.state, "messages", {})
-    rows = messages.get(session_id, []) if hasattr(messages, "get") else []
-    lines: list[str] = []
-    for msg in rows:
-        role = str(getattr(msg, "role", "") or "")
-        if role not in ("user", "assistant"):
-            continue
-        text = _flatten_message_text(msg)
-        if text:
-            lines.append(f"{role}: {text}")
-    excerpt = "\n".join(lines)
-    if len(excerpt) > _CONTEXT_EXCERPT_MAX_CHARS:
-        excerpt = excerpt[-_CONTEXT_EXCERPT_MAX_CHARS:]
-    return excerpt
-
-
-def _render_field(field: Mapping[str, Any]) -> str:
-    piece = f"- {field.get('name')} ({field.get('type')}{'[]' if field.get('multi') else ''})"
-    enum = field.get("enum")
-    if enum:
-        piece += f", one of {list(enum)}"
-    if field.get("required"):
-        piece += ", REQUIRED"
-    description = field.get("description")
-    if description:
-        piece += f": {description}"
-    return piece
-
-
-def _build_answer_prompt(question: "UserQuestion", translation: "FormTranslation | None") -> str:
-    """The instructional prompt handed to the bounded answer child turn."""
-
-    fields = list(translation.fields) if translation is not None else []
-    schema_desc = "\n".join(_render_field(f) for f in fields) or "(no fields declared)"
-    return (
-        "An MCP tool call in THIS conversation is paused, waiting for an answer that "
-        "only you (the assistant, with this conversation's own context) can provide -- "
-        "a human is not being asked because the server marked this question for the "
-        "agent specifically.\n\n"
-        f"Question: {question.prompt}\n\n"
-        f"Answer fields:\n{schema_desc}\n\n"
-        "Reply with EXACTLY ONE JSON object and nothing else (no prose, no markdown "
-        "fences):\n"
-        "- If the conversation above already establishes a confident answer, reply "
-        '{"answer": {<one key per field name above, with a correctly-typed value>}}\n'
-        '- If it does not, reply {"decline": true, "reason": "<short reason>"}\n'
-        "Never guess -- decline unless the conversation genuinely established the answer."
-    )
-
-
-def _spawn_agent_answer_turn(
-    app: Any,
-    *,
-    answer_session_id: str,
-    prompt: str,
-    depth: int,
-) -> Any:
-    """Spawn (never waits for) the bounded, self-directed, TOOL-LESS answer child.
-
-    Split out from :func:`_run_agent_answer_turn` so the spawn step -- the
-    part F1's authority test drives for real -- is independently callable
-    without paying for a full answer-turn LM round trip. Reuses the SAME
-    invocation machinery every declared child spawn uses
-    (:class:`clio_agent.gact.agents.invoker.InProcessExpertInvoker` over
-    :func:`clio_agent.gact.turn_spawn.spawn_child_turn_threadsafe`) -- no new
-    turn-state machine. ``skip_declared_check=True`` marks this a
-    SELF-directed spawn (the answering expert is the session's own, exactly
-    like ``spawn_subagent_with_skill``'s self-directed skill-subagent), never
-    a routing decision to a different declared capability. ``tool_allowlist=()``
-    forces the child to ZERO tools (see
-    :func:`clio_agent.gact.agents.resolution._apply_session_tool_allowlist`) --
-    stamped onto the child's OWN metadata at MINT time by ``spawn_child_turn``
-    itself, so it is true before the child's first turn build, never patched
-    in after the fact.
-
-    Returns:
-        The :class:`~clio_agent.gact.agents.invoker.TaskHandle` for the caller
-        to ``wait``/``cancel``.
-
-    Raises:
-        SpawnError: the bounded spawn was refused (global depth cap, cancelled
-            parent, or no live expert bound to the answering session).
-    """
-
-    from clio_agent.gact.agents.invoker import InProcessExpertInvoker  # noqa: PLC0415
-    from clio_agent.gact.agents.spawn_runtime import _current_session_depth  # noqa: PLC0415
-    from clio_agent.gact.runtime.globals import _session_agent_id  # noqa: PLC0415
-    from clio_agent.gact.spawn_context import bind_task_spec_to_parent  # noqa: PLC0415
-    from clio_agent.gact.turn_spawn import SpawnError, TaskSpec  # noqa: PLC0415
-
-    session = app.state.sessions.get(answer_session_id)
-    expert_id = _session_agent_id(session) if session is not None else ""
-    if session is None or not expert_id:
-        raise SpawnError(
-            "no live session/expert bound to answer from",
-            reason="agent_elicitation_no_expert",
-        )
-
-    seed_context = _bounded_transcript_excerpt(app, answer_session_id)
-    spawn_depth = _current_session_depth(app, answer_session_id) + 1
-    spec = bind_task_spec_to_parent(
-        app,
-        TaskSpec(
-            child_expert_id=expert_id,
-            task_text=prompt,
-            parent_session_id=answer_session_id,
-            requesting_expert_id="agent_elicitation",
-            depth=spawn_depth,
-            mode="sync",
-            skip_declared_check=True,
-            seed_context=seed_context,
-            run_label="agent-elicitation answer",
-            # This is an implementation turn used to answer the paused tool's
-            # question from model context, not delegated user-facing work. The
-            # authoritative interaction remains attached to the invocation.
-            project_to_parent=False,
-            # F1/F3 (owner gate review): both stamped onto the child's OWN
-            # metadata at MINT time by spawn_child_turn itself -- true before
-            # the child's first turn build, never patched in afterward.
-            tool_allowlist=(),
-            agent_elicitation_depth=depth,
-        ),
-    )
-    return InProcessExpertInvoker(app).invoke(spec)  # SpawnError propagates, typed
-
-
-def _run_agent_answer_turn(
-    app: Any,
-    *,
-    answer_session_id: str,
-    prompt: str,
-    depth: int,
-    timeout_s: float,
-    on_spawn: Callable[[Any], None] | None = None,
-) -> str:
-    """Spawn + wait for the bounded answer child turn; return its raw reply
-    text (the bounded ``answer_excerpt``).
-
-    Runs entirely on a worker thread (every call here blocks) -- callers
-    dispatch it via ``asyncio.to_thread``, exactly like
-    ``gact.runtime.ai_review``'s one-shot reviewer runs its own bounded LM
-    call off the event loop.
-
-    Raises:
-        SpawnError: see :func:`_spawn_agent_answer_turn`.
-        TimeoutError: the answer turn did not reach a terminal state in time
-            (the in-flight child is cancelled before this raises).
-        RuntimeError: the answer turn reached a non-``completed`` terminal
-            status (failed/cancelled).
-    """
-
-    from clio_agent.gact.agents.invoker import InProcessExpertInvoker  # noqa: PLC0415
-
-    handle = _spawn_agent_answer_turn(
-        app, answer_session_id=answer_session_id, prompt=prompt, depth=depth
-    )
-    if on_spawn is not None:
-        on_spawn(handle)
-    invoker = InProcessExpertInvoker(app)
-    result = invoker.wait(handle, timeout_s=timeout_s)
-    if not result.is_terminal:
-        invoker.cancel(handle)
-        raise TimeoutError(f"agent-elicitation answer turn {handle.task_id} timed out")
-    if result.status != "completed":
-        raise RuntimeError(
-            f"agent-elicitation answer turn {handle.task_id} ended {result.status!r}: "
-            f"{result.error_reason or 'no reason recorded'}"
-        )
-    payload = result.result or {}
-    answer_text = _answer_field_text(
-        app, result.child_session_id, str(payload.get("message_ref", ""))
-    )
-    if answer_text:
-        return answer_text
-    # STRUCTURAL fallback (never a silent regression): no ``answer``-field part
-    # was found on the child's final message (an unexpected module shape --
-    # e.g. a future answer-turn kind that never streams a text `answer` part
-    # at all). Fall back to the generic, bounded excerpt exactly as before
-    # this fix, so SOME text still reaches _parse_agent_reply's typed
-    # unparseable fallback rather than an empty string masquerading as "the
-    # model said nothing".
-    return str(payload.get("answer_excerpt", ""))
-
-
-def _fallback(app: Any, question: "UserQuestion", detail: str, *, extra: str = "") -> None:
-    """Record a typed agent-elicitation fallback WITHOUT touching question state.
-
-    The question simply stays ``pending`` -- exactly as if audience routing had
-    never applied -- so the human path is untouched: never dropped, never
-    looped, the human remains the terminal fallback.
-    """
-
-    from clio_agent.gact.elicitation_bridge import stamp_question_routing_fields  # noqa: PLC0415
-
-    stamp_question_routing_fields(
-        app,
-        question.id,
-        agent_elicitation_routing=FALLBACK_REASON,
-        agent_elicitation_fallback_detail=detail,
-    )
-    detail_message = AGENT_ELICITATION_FALLBACK_DETAILS.get(detail, detail)
-    if extra:
-        detail_message = f"{detail_message} ({extra})"
-    logger.info(
-        "agent_elicitation fallback reason=%s detail=%s question_id=%s session_id=%s extra=%r",
-        FALLBACK_REASON,
-        detail,
-        question.id,
-        question.session_id,
-        extra,
-    )
-    bus = getattr(app.state, "bus", None)
-    if bus is None:
-        return
-    from clio_agent.gact.events import Event  # noqa: PLC0415
-
-    bus.publish(
-        Event(
-            type=FALLBACK_REASON,
-            session_id=question.session_id,
-            payload={
-                "question_id": question.id,
-                "reason": FALLBACK_REASON,
-                "detail": detail,
-                "detail_message": detail_message,
-            },
-        )
-    )
-
-
-async def _dispatch_agent_answer(
-    app: Any,
-    question: "UserQuestion",
-    invocation: "MCPInvocationContext",
-    translation: "FormTranslation | None",
-    decision: AgentElicitationDecision,
-) -> None:
-    """The routed background task: run the bounded answer turn, then resolve or fall back.
-
-    Every exit path either (a) resolves the question through the SAME atomic
-    primitives the shared answer route uses
-    (:func:`clio_agent.gact.elicitation_bridge.claim_question_transition` +
-    :func:`clio_agent.gact.elicitation_bridge.resolve_elicitation`), attributed
-    ``answered_by="agent"``, or (b) calls :func:`_fallback` with a typed
-    detail and returns, leaving the question pending for the human. Never
-    raises -- an unexpected exception is caught, logged, and treated as a
-    typed fallback (``agent_answer_error``), matching every other elicitation
-    degrade in this codebase ("never silent, never a crash").
-    """
-
-    from clio_agent.gact.turn_spawn import SpawnError  # noqa: PLC0415
-
-    answer_session_id = str(getattr(invocation, "session_id", "") or "") or question.session_id
-    prompt = _build_answer_prompt(question, translation)
-    timeout_s = _timeout_s()
-
-    try:
-        reply_text = await asyncio.wait_for(
-            asyncio.to_thread(
-                _run_agent_answer_turn,
-                app,
-                answer_session_id=answer_session_id,
-                prompt=prompt,
-                depth=decision.depth,
-                timeout_s=timeout_s,
-                on_spawn=lambda handle: stamp_agent_answer_turn(app, question.id, handle),
-            ),
-            timeout=timeout_s + _OUTER_TIMEOUT_MARGIN_S,
-        )
-    except SpawnError as exc:
-        _fallback(app, question, "spawn_refused", extra=exc.reason)
-        return
-    except (asyncio.TimeoutError, TimeoutError):
-        _fallback(app, question, "agent_answer_timeout")
-        return
-    except Exception:  # noqa: BLE001 - the whole point of this dispatcher is to fail safe
-        logger.exception(
-            "agent_elicitation answer turn raised question_id=%s session_id=%s",
-            question.id,
-            question.session_id,
-        )
-        _fallback(app, question, "agent_answer_error")
-        return
-
-    parsed = _parse_agent_reply(reply_text)
-    if parsed is None:
-        _fallback(app, question, "agent_answer_unparseable")
-        return
-    if parsed.get("decline"):
-        _fallback(app, question, "agent_declined")
-        return
-    answer_obj = parsed.get("answer")
-    if not isinstance(answer_obj, Mapping):
-        _fallback(app, question, "agent_answer_unparseable")
-        return
-
-    from clio_agent.gact.elicitation_bridge import (  # noqa: PLC0415
-        claim_question_transition,
-        resolve_elicitation,
-    )
-    from clio_agent.gact.elicitation_schema import validate_elicitation_answer  # noqa: PLC0415
-
-    # THE SEMANTIC FIREWALL: the agent's answer is validated against the
-    # SERVER's OWN requestedSchema exactly as a human's answer is -- a value
-    # shaped wrong for the server's own declared question NEVER reaches it.
-    error = validate_elicitation_answer(
-        question, selected_options=[], answer="", answer_metadata=dict(answer_obj)
-    )
-    if error is not None:
-        _fallback(app, question, "agent_answer_schema_invalid", extra=error)
-        return
-
-    updated = claim_question_transition(
-        app,
-        question.id,
-        "answered",
-        selected_options=[],
-        answer_metadata=dict(answer_obj),
-        answered_by="agent",
-    )
-    if updated is None:
-        # Lost the atomic transition race: a human/timeout/cancel already
-        # claimed the question first. Not a failure of this feature -- the
-        # question is already resolved, so there is nothing to fall back on.
-        return
-    resolve_elicitation(app, updated)
-    bus = getattr(app.state, "bus", None)
-    if bus is not None:
-        from clio_agent.gact.events import Event  # noqa: PLC0415
-
-        bus.publish(
-            Event(
-                type="user_question.answered",
-                session_id=updated.session_id,
-                payload=updated.model_dump(exclude_none=True),
-            )
-        )

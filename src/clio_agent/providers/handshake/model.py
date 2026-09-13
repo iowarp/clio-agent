@@ -55,12 +55,19 @@ class ModelProfile:
     "loaded at 8192 while max is 262144" class of failures. ``chosen_context`` is
     the GPU-aware value clio decided to use (``min(window, cap, override)``); it is
     the authoritative, queryable "active context limit".
+
+    ``native_context_window`` is the model's published MAXIMUM context from an
+    offline catalog (LiteLLM / bundled ``model_limits.json``). It may exceed the
+    served ``context_window`` when a vLLM instance is launched with a smaller
+    ``--max-model-len`` (e.g. 32 768 served vs. 131 072 native for granite-4.2-30b).
+    None when the catalog has no entry for the model.
     """
 
     id: str
     context_window: int | None = None
     loaded_context_window: int | None = None
     chosen_context: int | None = None
+    native_context_window: int | None = None
     output_limit: int | None = None
     is_reasoning: bool = False
     reasoning_param: str | None = None

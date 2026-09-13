@@ -77,6 +77,14 @@
   "context": 1048576,
   "source": "seed"
  },
+ "granite-4.2-30b": {
+  "context": 131072,
+  "source": "seed"
+ },
+ "ibm-granite/granite-4.2-30b": {
+  "context": 131072,
+  "source": "seed"
+ },
  "haiku": {
   "context": 200000,
   "provider": "claude_code",

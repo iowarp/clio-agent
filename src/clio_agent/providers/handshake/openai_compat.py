@@ -30,6 +30,7 @@ from clio_agent.providers.handshake.model import (
     ConnectivityState,
     ModelProfile,
 )
+from clio_agent.providers.handshake.sources import lookup_native_context
 
 #: ``provider_kind`` values that authenticate via Anthropic's header scheme
 #: (``x-api-key`` + a pinned API version) rather than a bearer token.
@@ -227,9 +228,20 @@ class OpenAICompatHandshake(ProviderHandshake):
             raw.get("max_completion_tokens"),
             top.get("max_completion_tokens"),
         )
+        # Populate native_context_window from the offline catalog when the provider
+        # self-reports a served context window (vLLM / OpenRouter). This lets
+        # apply_handshake fire the context_window_below_native warning when
+        # vLLM is launched with --max-model-len smaller than the model's true max.
+        # The lookup is LiteLLM catalog first, then bundled model_limits.json —
+        # no network call. We only set it when context_window is known so there is
+        # something meaningful to compare against.
+        native_context_window: int | None = None
+        if context_window is not None and model_id:
+            native_context_window = lookup_native_context(model_id)
         return ModelProfile(
             id=model_id,
             context_window=context_window,
+            native_context_window=native_context_window,
             output_limit=output_limit,
             context_source="live",
             raw=dict(raw),

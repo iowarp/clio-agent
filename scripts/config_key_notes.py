@@ -576,6 +576,11 @@ KEY_NOTES: dict[str, str] = {
         'Selects the Codex transport; "sdk" is the only supported value, kept as an explicit '
         "contract check, not a tuning knob."
     ),
+    "lm.context_window": (
+        "Override the effective context window (tokens); 0 auto-derives from the "
+        "handshake-discovered served window, set >0 to assert a larger window than the provider "
+        "serves (e.g. when vLLM's --max-model-len clips the native maximum)."
+    ),
     "lm.defer_tiktoken": (
         "Defers litellm's ~40MB cl100k tiktoken vocab load until first real encode; disable if "
         "something depends on eager tiktoken load at boot."
@@ -774,6 +779,11 @@ KEY_NOTES: dict[str, str] = {
     "provenance.artifacts.queue_size": (
         "Max queued artifact-provenance events awaiting async dispatch; raise if a slow provider "
         "causes drops under bursty activity."
+    ),
+    "provenance.kvnorm": (
+        "Stamp the vLLM response id (chatcmpl-*) onto each lm.call provenance record as the join "
+        "key between clio's ai_model_invocation stream and vllm-kvnorm's kv_token_importance "
+        "stream; only effective when Flowcept is a configured provenance provider."
     ),
     "providers.claude_code.max_concurrent_processes": (
         "Process-wide cap on concurrently-connected claude CLI subprocesses; a connect beyond it "
@@ -1100,6 +1110,19 @@ KEY_NOTES: dict[str, str] = {
     "tools.mcp.discovery_heal_interval_s": (
         "Seconds between background re-probes of MCP namespaces that failed discovery; lower to "
         "recover faster, raise to cut retry noise."
+    ),
+    "tools.mcp.elicitation.agent_audience.answer_mode": (
+        "Which answerer fulfills a routed agent-audience elicitation: 'inline' (default) runs "
+        "one bounded tool-less completion on the session's own model; 'turn' spawns the child "
+        "answer turn (deadlocks while the parent tool call holds the session's turn slot -- "
+        "retained for lifecycle parity only)."
+    ),
+    "tools.mcp.elicitation.agent_audience.default_unhinted": (
+        "Whether an UNHINTED form-mode elicitation defaults to the agent. fastmcp drops the "
+        "nested _meta on the InputRequiredResult round-trip, so an explicit "
+        "x-clio-agent/audience tag cannot survive MRTR; on = route by the negotiated "
+        "agent-driven-elicitation extension contract, off = strict explicit-tag routing "
+        "(unhinted questions go to the human)."
     ),
     "tools.mcp.elicitation.agent_audience.denied_servers": (
         "CSV of declared MCP server names whose agent-audience elicitations always fall back to "

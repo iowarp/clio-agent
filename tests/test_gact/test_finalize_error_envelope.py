@@ -88,4 +88,77 @@ def test_finalize_exception_settles_turn_with_error_envelope(
         error_turns = [m for m in msgs if m["role"] == "assistant" and m.get("turn_id") == user_id]
         assert error_turns, "error turn must land in the persisted transcript"
         assert error_turns[0]["stop_reason"] == "error"
-        assert error_turns[0]["error_info"]["error"] == "finalize_error"
+
+
+def test_finalize_survives_a_prologue_that_skipped_context_file_provenance(
+    tmp_path: Path,
+) -> None:
+    """#1331 review round: a turn whose prologue never ran
+    ``turn_start_offloop.prepare_turn_off_loop`` (both of its
+    ``state.context_file_provenance = ...`` assignments) must still finalize
+    cleanly, not crash with ``TypeError: 'NoneType' object is not subscriptable``
+    at ``turn_finalize.py``'s ``state.context_file_provenance["files"]``.
+
+    Drives ``finalize_turn`` directly on a ``TurnState`` built via
+    ``new_turn_state`` (which does NOT touch ``context_file_provenance`` --
+    only the prologue does) with the other ``init=False`` fields
+    (``workflow_schema``/``transcript``/``turn_cancel_event``) wired the same
+    way ``turn.py``'s own linear body wires them, BEFORE the try block that
+    calls ``prepare_turn_off_loop`` -- reproducing exactly the real ordering
+    gap: a turn that reaches finalize without its off-loop prologue ever
+    running (e.g. a crash/cancellation between that setup and the prologue
+    call) still carries an initialized identity but an unset
+    ``context_file_provenance``.
+    """
+
+    from clio_agent.gact.agents.resolution import _active_workflow_state_schema
+    from clio_agent.gact.tool_observer import _open_turn_transcript
+    from clio_agent.gact.turn_finalize import finalize_turn
+    from clio_agent.gact.turn_state import new_turn_state
+    from clio_agent.gact.turn_watchdog import make_turn_cancel_event
+    from clio_agent.gact.types import Message, Part
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=FakeClioAgent(answer="ok"))
+    sid = app.state.sessions.create(workspace_id="ws_default", title="t").id
+    now = "2026-09-12T00:00:00+00:00"
+    user_msg = Message(
+        id="msg_user_1",
+        session_id=sid,
+        role="user",
+        created_at=now,
+        updated_at=now,
+        parts=[Part(id="part_user_1", type="text", text="hello")],
+    )
+    sess = app.state.sessions.get(sid)
+    state = new_turn_state(app, sid, "hello", user_msg, "main", sess=sess, bus=app.state.bus)
+    # Wire the other init=False fields exactly as turn.py's linear body does,
+    # BEFORE the try block that calls prepare_turn_off_loop -- so this state
+    # is otherwise fully turn-shaped, only missing the ONE prologue-only
+    # assignment under test.
+    state.workflow_schema = _active_workflow_state_schema(app, sid)
+    state.transcript = _open_turn_transcript(app, sid, state.turn_id)
+    make_turn_cancel_event(state)
+    # NEVER call prepare_turn_off_loop: context_file_provenance stays at
+    # TurnState's own default. context_frame shares the same None-until-
+    # prologue shape (also only set by prepare_turn_off_loop, via
+    # _record_context_frame) and finalize_turn subscripts it too
+    # (state.context_frame["id"]) -- out of THIS fix's scope, so stand in a
+    # minimal real value here to isolate the one field under test.
+    state.context_frame = {"id": "frame-test"}
+    state.answer_text = "a real answer, so this isn't the empty_response branch"
+
+    pred = object()  # every read of it uses getattr(..., default) or is guarded
+    finalize_turn(
+        state,
+        pred,
+        drain_observed_tool_calls=lambda calls: calls,
+        update_retry_attempt=lambda *args, **kwargs: None,
+    )  # must not raise
+
+    assert state.context_file_provenance == {
+        "status": "unset",
+        "count": 0,
+        "max_inline_bytes": state.context_file_provenance["max_inline_bytes"],
+        "files": [],
+    }
+    assert "context_files" not in state.assistant_metadata

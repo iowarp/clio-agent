@@ -68,6 +68,7 @@ from fastmcp.utilities.tasks import TASKS_EXTENSION_ID
 from mcp.client.extension import ClientExtension, advertise
 
 __all__ = [
+    "AGENT_ELICITATION_EXTENSION_ID",
     "ENTERPRISE_MANAGED_AUTH_EXTENSION_ID",
     "KNOWN_EXTENSIONS",
     "MCP_APPS_PROTOCOL_REVISION",
@@ -96,6 +97,22 @@ OAUTH_CLIENT_CREDENTIALS_EXTENSION_ID = "io.modelcontextprotocol/oauth-client-cr
 #: Obligations doc row J2: ID-JAG token exchange + org config. Catalog-only
 #: (#1283 point 3) -- no ClientExtension is built for it in this slice.
 ENTERPRISE_MANAGED_AUTH_EXTENSION_ID = "io.modelcontextprotocol/enterprise-managed-auth"
+
+#: CLIO's OWN vendor extension (#1325 negotiation): declaring it tells a server
+#: "this client drives the modern-era MRTR ``InputRequiredResult`` loop and honors
+#: the ``x-clio-agent/audience: agent`` hint -- an over-budget tool may hand its
+#: narrowing question to the session's agent (agent-first, human as the terminal
+#: fallback; see ``gact/agent_elicitation.py`` and
+#: ``docs/design/agent-driven-elicitation-and-mrtr.md``)." A server READS it via
+#: ``ctx.client_supports_extension(AGENT_ELICITATION_EXTENSION_ID)`` and gates its
+#: size-guard on it: present -> return an ``InputRequiredResult`` tagged for the
+#: agent; ABSENT (any generic / non-CLIO client) -> return the full result, so the
+#: MCP tool still works for everyone. This is the negotiation signal that was
+#: missing while only the transport + routing existed -- the reason a size-guard
+#: could not tell a CLIO client apart from a generic one. Uses the repo's existing
+#: ``x-clio-agent/*`` vendor namespace (the same convention as
+#: ``AGENT_AUDIENCE_META_KEY``), which satisfies SEP-2133's reverse-DNS-prefix rule.
+AGENT_ELICITATION_EXTENSION_ID = "x-clio-agent/agent-driven-elicitation"
 
 
 @dataclass(frozen=True)
@@ -163,6 +180,31 @@ def _build_ui(client_cls: Any, target: Any) -> MCPExtensionDeclaration:  # noqa:
     )
 
 
+def _build_agent_elicitation(client_cls: Any, target: Any) -> MCPExtensionDeclaration:  # noqa: ARG001 - uniform entry signature
+    """Registry entry #3: CLIO's agent-driven-elicitation ad (#1325 negotiation).
+
+    Ad-only (no claims, no notifications) and unconditional -- like ``ui`` and
+    unlike ``tasks``. Every execution-path client carries the MRTR round cap
+    (``make_mcp_client`` sets ``input_required_max_rounds`` on ALL of them), so
+    every such client genuinely drives an ``InputRequiredResult`` loop and honors
+    the ``x-clio-agent/audience`` hint (agent-first, human terminal fallback) --
+    the claim is truthful on a direct client and on a proxy backend leg alike (the
+    front CLIO answers, exactly as it relays a ui-bearing result). It is NOT gated
+    on ``tools.mcp.elicitation.agent_audience.enabled``: disabling that toggle only
+    routes the SAME question to the human instead of the agent, so the round-trip
+    still completes -- the extension asserts protocol support, not a routing
+    guarantee. Declaring it is the negotiation signal a size-guard server reads
+    (:data:`AGENT_ELICITATION_EXTENSION_ID`) to prefer the agent over dumping a fat
+    result; absence means "generic client, return everything."
+    """
+
+    return MCPExtensionDeclaration(
+        identifier=AGENT_ELICITATION_EXTENSION_ID,
+        extension=advertise(AGENT_ELICITATION_EXTENSION_ID),
+        reason=None,
+    )
+
+
 #: Ordered registry: tasks stays entry #1 (fastmcp folds a same-identifier
 #: USER extension over an INTERNAL one, so entry order does not change tasks'
 #: own behavior, but keeping it first matches its pre-registry precedence and
@@ -173,6 +215,7 @@ def _build_ui(client_cls: Any, target: Any) -> MCPExtensionDeclaration:  # noqa:
 _ACTIVE_ENTRIES: tuple[Callable[[Any, Any], MCPExtensionDeclaration], ...] = (
     _build_tasks,
     _build_ui,
+    _build_agent_elicitation,
 )
 
 
@@ -239,6 +282,16 @@ KNOWN_EXTENSIONS: tuple[MCPKnownExtension, ...] = (
         note=(
             "registry entry #2, declared ad-only and unconditionally; the Apps HOST "
             f"(gact/mcp_apps.py, revision {MCP_APPS_PROTOCOL_REVISION}) is unchanged/regression-locked"
+        ),
+    ),
+    MCPKnownExtension(
+        identifier=AGENT_ELICITATION_EXTENSION_ID,
+        spec_reference="#1325 (agent-driven-elicitation negotiation signal)",
+        actively_declared=True,
+        note=(
+            "registry entry #3, declared ad-only and unconditionally; a size-guard "
+            "server reads it via ctx.client_supports_extension to prefer the agent "
+            "over dumping a fat result (absent -> return everything)"
         ),
     ),
     MCPKnownExtension(

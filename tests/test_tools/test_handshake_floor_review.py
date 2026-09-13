@@ -189,13 +189,22 @@ async def test_capability_envelope_always_declares_the_tasks_extension() -> None
     empty-settings ad (inert against a spec-compliant server) must redden
     HERE, not only in the raw-SDK-server test that exists to prove WHY the
     setting matters.
+
+    #1325 (a1f7a017, postdates this test): registry entry #3, the
+    agent-driven-elicitation ad, is unconditional like ``ui`` -- it rides the
+    SAME envelope too, so it belongs in this pin alongside tasks/ui.
     """
-    from clio_agent.tools.mcp_extension_registry import MCP_APP_MIME_TYPE, UI_EXTENSION_ID
+    from clio_agent.tools.mcp_extension_registry import (
+        AGENT_ELICITATION_EXTENSION_ID,
+        MCP_APP_MIME_TYPE,
+        UI_EXTENSION_ID,
+    )
 
     caps = await _advertised_caps()
     assert caps["extensions"] == {
         "io.modelcontextprotocol/tasks": {},
         UI_EXTENSION_ID: {"mimeTypes": [MCP_APP_MIME_TYPE]},
+        AGENT_ELICITATION_EXTENSION_ID: {},
     }
 
 
