@@ -9,12 +9,16 @@ from clio_agent import conf
 from clio_agent.gact.runtime import grant_resolver
 
 
-def ensure_owned_plan_directory(plan_file: str) -> None:
+def ensure_owned_plan_directory(plan_file: str, *, owned_directory: Path | None = None) -> None:
     """Create CLIO's plan directory without trusting arbitrary recorded paths."""
 
-    owned_directory = grant_resolver.plans_dir().resolve(strict=False)
-    if Path(plan_file).resolve(strict=False).parent == owned_directory:
-        owned_directory.mkdir(parents=True, exist_ok=True)
+    resolved_directory = (
+        owned_directory.resolve(strict=False)
+        if owned_directory is not None
+        else grant_resolver.plans_dir().resolve(strict=False)
+    )
+    if Path(plan_file).resolve(strict=False).parent == resolved_directory:
+        resolved_directory.mkdir(parents=True, exist_ok=True)
 
 
 def plan_review_content(plan_file: str) -> dict[str, Any]:

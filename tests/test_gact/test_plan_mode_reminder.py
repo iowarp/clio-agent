@@ -177,17 +177,31 @@ def test_live_turn_plan_path_matches_workspace_file_boundary(tmp_path: Path) -> 
         )
 
 
+def test_plan_injection_resolves_and_creates_workspace_plan_dir_without_tool_context(
+    tmp_path: Path,
+) -> None:
+    """Turn enrichment resolves the session workspace before tool execution binds its context."""
+
+    app, sess = _plan_session(tmp_path)
+    workspace = tmp_path / "external-workspace"
+    app.state.workspaces.update(sess.workspace_id, root_path=str(workspace))
+
+    inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)
+
+    plan_file = Path(app.state.sessions.get(sess.id).metadata[_PLAN_FILE_METADATA_KEY])
+    expected = (workspace / ".clio" / "plans").resolve()
+    assert plan_file.parent == expected
+    assert expected.is_dir()
+
+
 def test_first_plan_turn_creates_only_the_owned_plan_directory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     """A clean checkout can write its first plan without CLIO pre-writing content."""
 
     owned_plans = tmp_path / "clean-checkout" / ".clio" / "plans"
-    monkeypatch.setattr(
-        "clio_agent.gact.runtime.grant_resolver.plans_dir",
-        lambda: owned_plans.resolve(strict=False),
-    )
     app, sess = _plan_session(tmp_path)
+    app.state.workspaces.update(sess.workspace_id, root_path=str(owned_plans.parents[1]))
     assert not owned_plans.exists()
 
     inject_plan_mode_reminder(app, sess.id, sess, _USER_TEXT)

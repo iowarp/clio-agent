@@ -138,13 +138,31 @@ def _compute_plan_file_path(app: "FastAPI", sid: str, session: Any) -> Path:
     base_slug = _slugify(_first_user_text(app, sid) or str(getattr(session, "title", "") or ""))
     slug = f"{base_slug}-{sid_tail}" if base_slug else sid_tail
 
-    plans = plans_dir()
+    plans = _session_plans_dir(app, session, fallback=plans_dir())
     path = (plans / f"{slug}.md").resolve(strict=False)
     plan_glob = f"{plans}{os.sep}*.md"
     assert fnmatch.fnmatchcase(str(path), plan_glob), (  # noqa: S101 - carve-out invariant guard
         f"computed plan-file path {path!r} escapes the plan-ACL carve-out {plan_glob!r}"
     )
     return path
+
+
+def _session_plans_dir(app: "FastAPI", session: Any, *, fallback: Path) -> Path:
+    """Resolve the workspace-owned plans directory before the live tool context is bound."""
+
+    from clio_agent.tools.execution import get_active_tool_workspace_root  # noqa: PLC0415
+
+    active_root = str(get_active_tool_workspace_root() or "").strip()
+    if active_root:
+        return (Path(active_root).expanduser() / ".clio" / "plans").resolve(strict=False)
+
+    workspace_id = str(getattr(session, "workspace_id", "") or "").strip()
+    workspaces = getattr(app.state, "workspaces", None)
+    workspace = workspaces.get(workspace_id) if workspaces is not None and workspace_id else None
+    root_path = str(getattr(workspace, "root_path", "") or "").strip()
+    if root_path:
+        return (Path(root_path).expanduser() / ".clio" / "plans").resolve(strict=False)
+    return fallback.resolve(strict=False)
 
 
 def recorded_plan_file(session: Any) -> str | None:
@@ -197,7 +215,12 @@ def inject_plan_mode_reminder(app: "FastAPI", sid: str, session: Any, enriched_t
     # Markdown content. Without this, a clean checkout cannot make its first
     # permitted plan write because the edit tool intentionally does not create
     # missing parent directories.
-    ensure_owned_plan_directory(plan_file)
+    owned_plans = _session_plans_dir(
+        app,
+        session,
+        fallback=Path(plan_file).resolve(strict=False).parent,
+    )
+    ensure_owned_plan_directory(plan_file, owned_directory=owned_plans)
     exists = Path(plan_file).exists()
 
     # P1.6a #1068: a recorded plan VARIANT (plan_workflow / plan_small) shapes the reminder — a
