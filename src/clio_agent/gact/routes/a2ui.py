@@ -14,6 +14,7 @@ from clio_agent.gact.a2ui import (
     validate_client_action,
 )
 from clio_agent.gact.events import Event
+from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.permission_gate import GRANTOR_USER, resolve_permission
 from clio_agent.gact.protocol_v3 import A2UI_V091, A2UI_V091_WIRE
 from clio_agent.gact.routes._body import json_body
@@ -219,7 +220,14 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
             scope = {sid, *descendant_session_ids(app, sid)}
             if pending is not None and str(pending.get("session_id") or "") not in scope:
                 raise _error(404, "not_found", f"permission not found: {permission_id}")
-            row = resolve_permission(app, permission_id, decision, grantor=GRANTOR_USER)
+            row = await run_off_loop(
+                lambda: resolve_permission(
+                    app,
+                    permission_id,
+                    decision,
+                    grantor=GRANTOR_USER,
+                )
+            )
             if row is None and pending is None:
                 raise _error(404, "not_found", f"permission not found: {permission_id}")
             result["permission_id"] = permission_id

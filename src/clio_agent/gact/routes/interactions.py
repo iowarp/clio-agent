@@ -12,6 +12,7 @@ from starlette.concurrency import run_in_threadpool
 from clio_agent import conf
 from clio_agent.gact.a2ui import SERVER_ACTIONS
 from clio_agent.gact.mcp_task_store import app_task_store
+from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.permission_delivery import attended_session_id
 from clio_agent.gact.permission_gate import GRANTOR_USER, resolve_permission
 from clio_agent.gact.routes.async_processes import mcp_task_display_title
@@ -735,12 +736,14 @@ def register_interaction_routes(app: FastAPI, deps: "GactDeps") -> None:
             # defer may carry the modify/synthesize the approval decides. Dropping it
             # here made the normalized responder a strictly weaker door for the same
             # decision — an approve-with-modified-args arrived as a plain allow.
-            updated = resolve_permission(
-                app,
-                permission_id,
-                action,
-                grantor=GRANTOR_USER,
-                intercept=_permission_intercept(request.metadata),
+            updated = await run_off_loop(
+                lambda: resolve_permission(
+                    app,
+                    permission_id,
+                    action,
+                    grantor=GRANTOR_USER,
+                    intercept=_permission_intercept(request.metadata),
+                )
             )
             if updated is None:
                 raise _error(409, "interaction_resolved", "interaction is already resolved")

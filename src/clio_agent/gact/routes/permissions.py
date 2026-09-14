@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 
+from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.permission_gate import resolve_permission
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.runtime.grant_resolver import migrate_priorities
@@ -202,7 +203,15 @@ def register_permissions_routes(app: FastAPI, deps: "GactDeps") -> None:
             intercept = {"input": body["input"]}
         elif "result" in body:
             intercept = {"result": body["result"]}
-        resolve_permission(app, pid, action, grantor=GRANTOR_USER, intercept=intercept)
+        await run_off_loop(
+            lambda: resolve_permission(
+                app,
+                pid,
+                action,
+                grantor=GRANTOR_USER,
+                intercept=intercept,
+            )
+        )
         return Response(status_code=204)
 
     # ---- /v1/policies (SPEC §6.11.b permission policies) -------------

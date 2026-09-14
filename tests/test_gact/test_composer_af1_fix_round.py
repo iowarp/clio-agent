@@ -6,8 +6,10 @@ head (58547561) before its fix landed.
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -206,7 +208,24 @@ def test_a2ui_approval_respond_refuses_a_permission_outside_its_session_scope(
     assert app.state.permissions["perm_other"]["status"] == "pending"
 
 
-def test_a2ui_approval_respond_still_resolves_its_own_session_permission(tmp_path) -> None:
+def test_a2ui_approval_respond_still_resolves_its_own_session_permission(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.gact.routes import a2ui as a2ui_routes
+
+    original = a2ui_routes.resolve_permission
+    called_off_loop: list[bool] = []
+
+    def audited_resolve(*args: Any, **kwargs: Any) -> dict[str, Any] | None:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            called_off_loop.append(True)
+        else:
+            called_off_loop.append(False)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(a2ui_routes, "resolve_permission", audited_resolve)
     app = build_app(sessions_path=tmp_path / "sessions.json")
     owner = app.state.sessions.create(workspace_id="ws_default", title="owner")
     app.state.permissions["perm_other"] = {
@@ -238,6 +257,7 @@ def test_a2ui_approval_respond_still_resolves_its_own_session_permission(tmp_pat
 
     assert allowed.status_code == 200
     assert app.state.permissions["perm_other"]["status"] == "resolved"
+    assert called_off_loop == [True]
 
 
 def test_interaction_permission_response_forwards_the_intercept_payload(tmp_path) -> None:

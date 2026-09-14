@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from typing import Any
 
 import dspy
 from dspy.utils.dummies import DummyLM
@@ -209,7 +211,23 @@ def test_ask_user_success_ends_react_turn_before_another_model_step(tmp_path) ->
 
 def test_interactions_aggregate_children_and_route_question_and_permission(
     tmp_path,
+    monkeypatch,
 ) -> None:
+    from clio_agent.gact.routes import interactions as interaction_routes
+
+    original = interaction_routes.resolve_permission
+    called_off_loop: list[bool] = []
+
+    def audited_resolve(*args: Any, **kwargs: Any) -> dict[str, Any] | None:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            called_off_loop.append(True)
+        else:
+            called_off_loop.append(False)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(interaction_routes, "resolve_permission", audited_resolve)
     app = build_app(sessions_path=tmp_path / "sessions.json")
     root, child = _root_and_child(app)
     now = datetime.now(timezone.utc).isoformat()
@@ -309,6 +327,7 @@ def test_interactions_aggregate_children_and_route_question_and_permission(
         )
         assert allowed.status_code == 200
         assert app.state.permissions["perm_child"]["status"] == "resolved"
+        assert called_off_loop == [True]
 
         cancellable = UserQuestion(
             id="q_cancel",

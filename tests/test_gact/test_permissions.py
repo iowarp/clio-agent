@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -42,7 +44,22 @@ def _turn(client: TestClient, sid: str) -> dict:
     return complete_turn(client, sid, "delete /tmp")
 
 
-def test_permission_requested_then_allowed(tmp_path: Path) -> None:
+def test_permission_requested_then_allowed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from clio_agent.gact.routes import permissions as permission_routes
+
+    original = permission_routes.resolve_permission
+    called_off_loop: list[bool] = []
+
+    def audited_resolve(*args: Any, **kwargs: Any) -> dict[str, Any] | None:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            called_off_loop.append(True)
+        else:
+            called_off_loop.append(False)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(permission_routes, "resolve_permission", audited_resolve)
     client = _client(
         tmp_path,
         perms=[
@@ -68,6 +85,7 @@ def test_permission_requested_then_allowed(tmp_path: Path) -> None:
 
         resp = client.post(f"/v1/permissions/{pid}", json={"action": "allow"})
         assert resp.status_code == 204
+        assert called_off_loop == [True]
 
         # After resolution the pending filter is empty.
         body = client.get("/v1/permissions?status=pending").json()
