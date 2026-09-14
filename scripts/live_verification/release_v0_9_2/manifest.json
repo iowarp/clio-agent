@@ -2,11 +2,13 @@
   "schema_version": 1,
   "release": {
     "clio_agent": "0.9.2",
+    "clio_schemas": "0.2.3",
     "gact_tui": "0.11.0",
     "marketplace": "0.6.3"
   },
   "frozen_base": {
     "clio_agent": "1b43ae35844da87b22b9353a8a62729b15add583",
+    "clio_schemas": "f99450067e498de25c28764e15ecad1a88b7d595",
     "gact_tui": "1629ee736da35adf0c66260f0435922ce879b083",
     "marketplace": "fac72f0670607a08871a369040acd867e642ebec",
     "factorio_daisy_commit": "1defadf9252b5950247b083add9d2f31f0f70a06"
