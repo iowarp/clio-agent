@@ -372,7 +372,12 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
             else:
                 chronological_rows = []
         else:
-            chronological_rows = list(messages.get(sid, []))
+            # A cold atoms-regime ledger materializes from ARC's ``_events/m``
+            # lane. Never make that native store read from the async route's
+            # event-loop thread: it stalls progressive hydration and is rejected
+            # by the ARC loop guard. Copy the materialized ledger in the worker so
+            # response projection cannot race a concurrent in-place append.
+            chronological_rows = await run_off_loop(lambda: list(messages.get(sid, [])))
 
         # (1) Resolve ``before`` against the chronological list. The cursor names
         # a real stored message; return only rows strictly older than it. The

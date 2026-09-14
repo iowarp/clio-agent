@@ -12,7 +12,9 @@ Exercised against the real ``build_app`` / ``MessageStore`` / route handlers:
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+from typing import Any
 
 from fastapi.testclient import TestClient
 
@@ -142,11 +144,25 @@ def test_first_get_messages_rehydrates_byte_identical(tmp_path: Path) -> None:
         before = c1.get(f"/v1/sessions/{sid}/messages").json()
 
     app2 = build_app(sessions_path=sessions_path)
+    materialize = app2.state.messages._materialize
+    materialized_off_loop: list[bool] = []
+
+    def audited_materialize(session_id: str) -> Any:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            materialized_off_loop.append(True)
+        else:
+            materialized_off_loop.append(False)
+        return materialize(session_id)
+
+    app2.state.messages._materialize = audited_materialize
     with TestClient(app2) as c2:
         assert app2.state.messages.resident_count == 0
         after = c2.get(f"/v1/sessions/{sid}/messages").json()
 
     assert after == before  # reload == live, across a restart, off the lazy path
+    assert materialized_off_loop == [True]
 
 
 def test_metrics_correct_across_restart(tmp_path: Path) -> None:
