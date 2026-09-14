@@ -70,6 +70,8 @@ def run_persistent(args: argparse.Namespace) -> int:
     messages = common.session_messages(call, session_id)
     common.dump_json(args.out.parent / "mcp_apps_messages.json", messages)
 
+    tool_calls = common.find_tool_calls(messages, "_ui_echo")
+    tool_call = tool_calls[-1] if tool_calls else {}
     parts = _mcp_app_parts(messages)
     part = parts[-1] if parts else {}
     app_id = str(part.get("app_instance_id") or "")
@@ -82,14 +84,15 @@ def run_persistent(args: argparse.Namespace) -> int:
             params={"data_ref": data_ref},
         )
     resource = resolved_resource.get("resource") or {}
-    html = str(resource.get("html") or "")
+    tool_result = str(tool_call.get("result") or "")
 
     passed = bool(
         turn_status in {"idle", "completed"}
+        and common.tool_call_ok(tool_call)
+        and args.payload in tool_result
         and app_id
         and data_ref
         and resource.get("mime_type") == "text/html;profile=mcp-app"
-        and args.payload in html
     )
     verdict = {
         "gate": "mcp_apps",
@@ -103,11 +106,12 @@ def run_persistent(args: argparse.Namespace) -> int:
         "payload": args.payload,
         "turn_status": turn_status,
         "resolved_tools": resolved,
+        "tool_call": tool_call,
         "mcp_app_part": part,
         "resource": {
             "mime_type": resource.get("mime_type"),
             "uri": resource.get("uri"),
-            "payload_visible_in_html": args.payload in html,
+            "payload_delivered_by_tool": args.payload in tool_result,
         },
         "browser_pending": True,
     }
