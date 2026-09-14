@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Mapping
 
@@ -32,6 +33,23 @@ def _error(status: int, code: str, message: str, *, recoverable: bool = False) -
             error=ErrorInfo(error=code, message=message, recoverable=recoverable)
         ).model_dump(exclude_none=True),
     )
+
+
+def _agent_submit_context(context: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the resolved non-prompt fields supplied by an A2UI surface."""
+
+    return {key: value for key, value in context.items() if key not in {"text", "prompt"}}
+
+
+def _agent_submit_model_text(prompt: str, structured_context: Mapping[str, Any]) -> str:
+    """Adapt authoritative A2UI context into a bounded model-readable user steer."""
+
+    if not structured_context:
+        return prompt
+    encoded = json.dumps(
+        dict(structured_context), ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    )
+    return f"{prompt}\n\nStructured surface context:\n{encoded}"
 
 
 def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
@@ -151,26 +169,40 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
             prompt = str(context.get("text") or context.get("prompt") or "").strip()
             if not prompt:
                 raise _error(422, "validation_error", "agent.submit requires context.text")
-            # The canonical within-session gate every other turn producer uses.
-            # A status check is not equivalent: a cancelled-but-still-unwinding
-            # turn projects a non-running status while its slot is still held,
-            # and starting a second turn there orphans the first.
+            structured_context = _agent_submit_context(context)
+            model_text = _agent_submit_model_text(prompt, structured_context)
+            action_metadata = {
+                "a2ui_action": name,
+                "surface_id": surface_id,
+                "a2ui_action_context": structured_context,
+            }
+            # An agent-bound surface action is the same user intent whether the
+            # session is idle or a turn is still unwinding. Reuse the established
+            # loop inbox for the busy case so the current turn consumes it at a
+            # tool boundary, or the idle hook promotes it into exactly one later
+            # turn. Starting a second turn directly would orphan the first.
             busy = session_busy_error_payload(getattr(app.state, "turn_runner", None), sid)
             if busy is not None:
-                raise HTTPException(status_code=409, detail=busy)
-            # The gate reports idle, so this is a fresh turn: a cancellation
-            # aimed at the previous one must not poison it (mirrors the POST
-            # /messages producer).
-            app.state.cancel_flags.discard(sid)
-            app.state.cancel_events.pop(sid, None)
-            user_message = deps.start_background_user_turn(
-                sid,
-                sess,
-                prompt,
-                metadata={"a2ui_action": name, "surface_id": surface_id},
-                prev_status=sess.status,
-            )
-            result["message_id"] = user_message.id
+                from clio_agent.gact.loop_inbox import enqueue_user_steer  # noqa: PLC0415
+
+                enqueue_user_steer(app, sid, model_text, action_metadata)
+                result.update({"delivery": "steer", "state": "queued"})
+            else:
+                # The gate reports idle, so this is a fresh turn: a cancellation
+                # aimed at the previous one must not poison it (mirrors the POST
+                # /messages producer).
+                app.state.cancel_flags.discard(sid)
+                app.state.cancel_events.pop(sid, None)
+                user_message = deps.start_background_user_turn(
+                    sid,
+                    sess,
+                    model_text,
+                    metadata=action_metadata,
+                    prev_status=sess.status,
+                )
+                result.update(
+                    {"delivery": "start", "state": "started", "message_id": user_message.id}
+                )
         elif name == "approval.respond":
             permission_id = str(context.get("permission_id") or "")
             decision = str(context.get("action") or "")
@@ -220,6 +252,7 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
                     "name": name,
                     "status": result["status"],
                     "receivedAt": datetime.now(timezone.utc).isoformat(),
+                    "context": context,
                 },
             },
         }

@@ -39,6 +39,62 @@ Map points require `id`, `label`, numeric `latitude`, and numeric `longitude`.
 The optional fields are `detail` and `category`. Never provide a tile URL,
 basemap style, image URL, geocoder URL, CSS, or scripts.
 
+When the user must choose one observed point before analysis continues, make the
+map and its submission control one surface. A map click is local visual state;
+it does not by itself deliver a choice to the agent. Pair the map with a
+single-choice `ChoicePicker` and an `agent.submit` Button whose resolved context
+includes the selected identifiers:
+
+```yaml
+surface_id: observed-region
+components:
+  - id: root
+    component: Column
+    children: [map, station-choice, continue]
+  - id: map
+    component: clio.map.v1
+    title: Observed locations
+    points:
+      - id: leading-id
+        label: 1. Leading observed point
+        latitude: 0
+        longitude: 0
+      - id: alternate-id
+        label: 2. Alternate observed point
+        latitude: 0
+        longitude: 0
+  - id: station-choice
+    component: ChoicePicker
+    label: Choose a station
+    variant: mutuallyExclusive
+    displayStyle: chips
+    options:
+      - {label: 1. Leading observed point, value: leading-id}
+      - {label: 2. Alternate observed point, value: alternate-id}
+    value: {path: /selectedStationIds}
+  - id: continue-label
+    component: Text
+    text: Continue with this station
+  - id: continue
+    component: Button
+    child: continue-label
+    action:
+      event:
+        name: agent.submit
+        context:
+          prompt: Continue with the station selected in this surface.
+          selected_station_ids: {path: /selectedStationIds}
+data_model:
+  selectedStationIds: [leading-id]
+```
+
+Replace every option, point, and default with bounded observed evidence. Keep
+`variant: mutuallyExclusive` when exactly one station is allowed. The resolved
+`selected_station_ids` array is the authoritative structured choice; the prompt
+is only its concise model-facing instruction. Use `agent.submit` when the action
+must resume analysis. `form.submit` records fields but does not start or steer an
+agent turn.
+
 ## Data table
 
 ```yaml
