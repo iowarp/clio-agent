@@ -9,12 +9,16 @@ manifest. Do not substitute historical session output.
 2. Patch only this session to `automatic_compaction=true` and
    `autocompact_pct=0.01`, then send:
    `Remember this exact middle marker: V092-MIDDLE-ORBIT. Explain in three short paragraphs why transcript continuity matters.`
-3. After the automatic checkpoint is observed, restore `autocompact_pct=0.85`.
-4. Perform manual compaction, send:
+3. Send one short probe turn asking for both markers so the staged automatic
+   threshold is evaluated, then wait until exactly one automatic checkpoint is
+   visible.
+4. Disable automatic compaction for this session and restore the normal threshold
+   in the same request: `automatic_compaction=false`, `autocompact_pct=0.85`.
+5. Perform manual compaction, send:
    `Remember this exact late marker: V092-LATE-EMBER. Reply with the marker and one short sentence.`
-5. Perform the second manual compaction and restart the backend without deleting
+6. Perform the second manual compaction and restart the backend without deleting
    its CTE/state directory.
-6. After Browser reload:
+7. After Browser reload:
    `State the early, middle, and late markers in chronological order, then explain which one was introduced after the first manual compaction.`
 
 ## EarthScope Skills

@@ -30,6 +30,21 @@ there; otherwise fetch remotely as written.
    active workspace root. This also rewrites the source as UTF-8. The verified
    columns are station id `Site`, latitude `Latitude`, and longitude `(deg)`;
    `Longitude` is elevation and must never be used as longitude.
+   Use this exact filter shape, substituting only the observed input and workspace
+   paths:
+
+   ```json
+   {
+     "file_path": "<OBSERVED_RAW_PATH>",
+     "filter_conditions": {
+       "Latitude": {"operator": "between", "value": [-90, 90]}
+     },
+     "output_file": "<WORKSPACE>/earthscope_stations_clean.csv"
+   }
+   ```
+
+   Do not split the bounds across invented column aliases such as
+   `Latitude__upper`; every filter-condition key must be an observed column name.
 4. Call `geo_filter_points_by_radius` once with the fixed region center/radius and
    explicit columns `Latitude`, `(deg)`, and `Site`. Preserve the returned ranked
    points, `total_points`, `within_radius_count`, and `skipped_invalid`.
