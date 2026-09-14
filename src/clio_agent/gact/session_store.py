@@ -469,6 +469,20 @@ def _flush_context_files(app: "FastAPI") -> None:
     os.replace(tmp, path)
 
 
+def _inherit_session_context_files(
+    app: "FastAPI", parent_session_id: str, child_session_id: str
+) -> None:
+    """Copy a parent's immutable attachment ledger into a new child session."""
+
+    parent_files = app.state.context_files.get(parent_session_id, {}) or {}
+    if not parent_files:
+        return
+    app.state.context_files[child_session_id] = {
+        str(path): dict(row) for path, row in parent_files.items()
+    }
+    _flush_context_files(app)
+
+
 def _delete_session_context_files(app: "FastAPI", session_id: str) -> None:
     """Remove one session's context-file ledger from memory and disk."""
 

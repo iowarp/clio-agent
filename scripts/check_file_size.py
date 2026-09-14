@@ -380,7 +380,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # continuation-chaining check landed in the new owner module
     # gact/agent_task_wake.py; the waiting_user HITL-forward branch moved to
     # its natural owner gact/child_forward.py (forward_waiting_child).
-    "src/clio_agent/gact/turn_spawn.py": 818,
+    "src/clio_agent/gact/turn_spawn.py": 816,
     # (invoker.py's entry retired 2026-08: RelayExpertInvoker moved to its own
     # owner module agents/relay_expert_invoker.py, dropping invoker.py under the
     # 800 default cap — the #1221/#1222 contract-alignment growth that broke the
