@@ -313,6 +313,62 @@ def test_failed_async_child_sets_notify_pending(tmp_path: Path, monkeypatch) -> 
         assert settled.notify_pending is True, "failed async child must be observe-later pending"
 
 
+def test_child_completion_ignores_appended_compaction_checkpoint(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Collect seals the child's answer, never a later ledger checkpoint."""
+
+    from clio_agent.gact.types import Message, Part
+
+    _declare(monkeypatch, "data_expert")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app):
+        child = app.state.sessions.create(
+            workspace_id="ws_default", title="child", parent_session_id="sess_parent"
+        )
+        task = AgentTask(
+            task_id="task_compacted_child",
+            parent_session_id="sess_parent",
+            child_session_id=child.id,
+            agent_ref={"expert_id": "data_expert", "requesting_expert_id": "main"},
+            status=STATUS_RUNNING,
+            created_at="2026-09-14T00:00:00+00:00",
+            updated_at="2026-09-14T00:00:00+00:00",
+        )
+        app.state.sessions.update(child.id, metadata_patch=task.to_metadata())
+        app.state.agent_task_registry.register(task)
+        app.state.messages[child.id] = [
+            Message(
+                id="msg_final",
+                session_id=child.id,
+                role="assistant",
+                created_at="2026-09-14T00:00:02+00:00",
+                updated_at="2026-09-14T00:00:02+00:00",
+                parts=[Part(type="text", text="grounded specialist finding")],
+            ),
+            Message(
+                id="msg_compact",
+                session_id=child.id,
+                role="assistant",
+                created_at="2026-09-14T00:00:01+00:00",
+                updated_at="2026-09-14T00:00:03+00:00",
+                parts=[
+                    Part(
+                        type="compaction",
+                        summary="checkpoint, not a delegation answer",
+                        compacted_message_ids=["msg_user"],
+                    )
+                ],
+            ),
+        ]
+
+        _on_child_done(app, task.task_id, child.id, "async")
+
+        settled = app.state.agent_task_registry.get(task.task_id)
+        assert settled.result["message_ref"] == "msg_final"
+        assert settled.result["answer_excerpt"] == "grounded specialist finding"
+
+
 def test_failed_child_preserves_typed_tool_unavailability_for_parent(
     tmp_path: Path, monkeypatch
 ) -> None:

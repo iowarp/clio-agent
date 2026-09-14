@@ -20,6 +20,33 @@ def message_text(message: Any) -> str:
     return "".join(out).strip()
 
 
+def final_assistant_message(messages: Any) -> Any | None:
+    """Return the newest model answer, excluding appended compaction checkpoints."""
+
+    candidates = []
+    for message in messages or []:
+        metadata = getattr(message, "metadata", {}) or {}
+        parts = getattr(message, "parts", None) or []
+        is_checkpoint = any(
+            (part.get("type") if isinstance(part, dict) else getattr(part, "type", ""))
+            == "compaction"
+            for part in parts
+        )
+        if getattr(message, "role", "") == "assistant" and not metadata.get("live"):
+            if not is_checkpoint:
+                candidates.append(message)
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda message: (
+            str(getattr(message, "created_at", "") or ""),
+            str(getattr(message, "updated_at", "") or ""),
+            str(getattr(message, "id", "") or ""),
+        ),
+    )
+
+
 def child_workflow_state(app: "FastAPI", child_sid: str, final: Any) -> dict[str, Any]:
     """Return the workflow state carried by a child result, or an empty mapping."""
 
