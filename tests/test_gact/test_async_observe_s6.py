@@ -1097,6 +1097,52 @@ def test_terminal_delegation_stamps_child_final_message_with_return_metadata(
         assert stamped_after[0]["id"] == stamped_msg["id"]
 
 
+def test_delegation_return_stamp_defers_atom_replacement_off_event_loop(
+    tmp_path: Path,
+) -> None:
+    """A terminal fold may stamp from the server loop without ARC writes there."""
+
+    from clio_agent.gact.delegation_return import stamp_delegation_return
+    from clio_agent.gact.types import Message, Part
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    parent = app.state.sessions.create(workspace_id="ws_default", title="parent")
+    child = app.state.sessions.create(
+        workspace_id="ws_default", title="child", parent_session_id=parent.id
+    )
+    final = Message(
+        id="msg_loop_final",
+        session_id=child.id,
+        role="assistant",
+        created_at="2026-09-14T00:00:00+00:00",
+        updated_at="2026-09-14T00:00:00+00:00",
+        parts=[Part(type="text", text="loop-safe deliverable")],
+    )
+    app.state.messages[child.id] = [final]
+    task = AgentTask(
+        task_id="task_loop_stamp",
+        parent_session_id=parent.id,
+        child_session_id=child.id,
+        agent_ref={"expert_id": "main", "requesting_expert_id": "main"},
+        status=STATUS_COMPLETED,
+        result={"answer_excerpt": final.parts[0].text, "message_ref": final.id},
+        created_at="2026-09-14T00:00:00+00:00",
+        updated_at="2026-09-14T00:00:00+00:00",
+    )
+
+    @app.get("/_test/delegation-return-stamp")
+    async def _stamp_from_server_loop() -> dict[str, bool]:
+        return {"stamped": stamp_delegation_return(app, task)}
+
+    with TestClient(app) as client:
+        response = client.get("/_test/delegation-return-stamp")
+        assert response.status_code == 200
+        assert response.json() == {"stamped": True}
+        stamped = _wait_stamped(client, child.id)
+        assert stamped is not None
+        assert stamped["metadata"]["delegation_return"]["task_id"] == task.task_id
+
+
 def test_stamp_falls_back_to_newest_assistant_when_message_ref_absent(
     tmp_path: Path, monkeypatch
 ) -> None:

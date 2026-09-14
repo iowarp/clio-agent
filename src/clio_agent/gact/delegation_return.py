@@ -33,6 +33,7 @@ metadata idiom — so the stamp persists silently and rides the next ``GET``.
 
 from __future__ import annotations
 
+import functools
 import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Optional
@@ -117,7 +118,24 @@ def _stamp(app: "FastAPI", task: Any) -> bool:
     }
     # Memory + disk in lock step (and the atom lane under the atoms regime): the
     # stamped copy is what GET /v1/sessions/{child_sid}/messages serves afterwards.
-    _replace_session_messages(app, child_sid, list(messages))
+    rows = list(messages)
+    _replace_session_messages(app, child_sid, rows, atoms_minted=True)
+
+    # Terminal folds may run on the FastAPI event loop (for example, a child
+    # result delivered through the parent's live observation path). Replacing
+    # the canonical atom lane performs segment writes and therefore must follow
+    # the same off-loop discipline as stale handoff reconciliation.
+    from clio_agent.gact.part_atom_minter import run_transcript_job  # noqa: PLC0415
+    from clio_agent.gact.transcript_projection import (  # noqa: PLC0415
+        on_ledger_replaced,
+    )
+
+    run_transcript_job(
+        app,
+        child_sid,
+        f"delegation_return:{task_id}",
+        functools.partial(on_ledger_replaced, app, child_sid, rows),
+    )
     return True
 
 
