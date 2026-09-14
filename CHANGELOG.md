@@ -6,6 +6,48 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.2] - 2026-09-13
+
+This release pairs the agent runtime with the new GACT React workspace and
+expands the bundled scientific blueprint catalog.
+
+### Added
+
+- A shared browser and desktop workspace for streamed conversations, file and
+  artifact review, planning, attachments, child-agent navigation, workspace
+  memory, workflows, and execution evidence.
+- Native MCP Apps and MCP 2026-07-28 interactions, including elicitation,
+  multi-round tool input, durable task progress, cancellation, and prompts.
+- A2UI 0.9.1 surfaces with trusted components, persisted state, and structured
+  actions returned to the owning agent.
+- Provider discovery, secure configuration, native reasoning streams, and
+  managed local or remote services for supported runtimes.
+- New and expanded marketplace packs for EarthScope, Factorio Flat, phenotype
+  analysis, and SPOTTER AI. Factorio Flat includes Daisy Quach's materials
+  science, manufacturing, characterization, testing, fatigue, and data-analysis
+  specialists.
+
+### Changed
+
+- Tool calls now carry server-declared semantic presentations with labeled
+  arguments, bounded results, resource-aware layouts, and internal navigation.
+- Child work uses explicit Spawn, Observe, Message, Wait, and Collect operations
+  with stable task identity and resumable observation cursors.
+- Goal completion uses the bounded model judge as its sole semantic authority;
+  the former deterministic model-authored predicate remains removed.
+- Direct ReAct completion no longer runs hidden forced-submit or repair model
+  calls after the visible loop.
+
+### Fixed
+
+- Context compaction retains the complete human transcript while starting model
+  materialization at the latest checkpoint, including repeated compaction and
+  restart recovery.
+- Tool-output chunks, external-input provenance, and finalization state retain
+  their typed identities across streaming, reload, and interrupted turns.
+- Resource conversion, workspace-memory search, and child-agent results identify
+  their inputs and outcomes instead of exposing unlabeled transport payloads.
+
 ## [0.9.1.1] - 2026-08-20
 
 Emergency hotfix for a real-user capability loss on 0.9.1.
