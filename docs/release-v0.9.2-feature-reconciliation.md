@@ -14,11 +14,12 @@ live-runtime, packaging, version, or publication gates in
 | Component | Audited source | Candidate branch | Result |
 |---|---|---|---|
 | clio-agent | `def21cfbacd3e80bd0e8b6a3aaae5a859ed0b6a7` | `codex/release-0.9.2` | Recent stack PRs 1314, 1329, 1330, 1331, 1335, 1338, and 1340 are present; PR 1332 is carried by 1335. |
-| GACT UI | `91c6e232a3a693dfccaca740b7879630dd783a51` | `codex/release-0.11.0` | Recent UI PRs 389 through 393 are present, including the restacked PR 391 work. |
-| Marketplace | `0fa12654e2236c52a61f22e8c92c699afcda72c7` | `codex/release-0.6.3` | Recent base-agent and pack changes are present. |
+| GACT UI | `20edc76538d382c866acb3c0cfb29cd8889926ea` | `develop` after PR 394 | Recent UI PRs 389 through 393 are present, including the restacked PR 391 work, plus the v0.11.0 release record. |
+| Marketplace | `067631a44ce40fe1fa90764427a3b8e4e0229852` | `main` after PR 65 | Recent base-agent and pack changes are present, including Daisy Quach's Factorio Flat materials-science taxonomy at `1defadf`. |
 
-The release branches add release documentation only. They do not conceal product changes
-from their audited source tips.
+The GACT release branch adds release documentation only. The marketplace release branch also
+integrates Daisy Quach's six-specialist materials-science expansion while preserving her original
+commit in `main` ancestry.
 
 ## Recent branch reconciliation
 
@@ -42,8 +43,8 @@ audit. They were not used as evidence for passing this gate.
 
 ## Dirty-worktree reconciliation
 
-- The primary clio-agent checkout contains user-owned release/dependency residue, not an
-  uncommitted product implementation.
+- The preserved local documentation was committed under `docs/review`; no product source change
+  from the scoped period remains only in the primary checkout.
 - The old MCP v2 UI-contract worktree's four working blobs equal the candidate blobs.
 - The current GACT development checkout contains stale local dev scripts, generated build
   state, completed research copies, and one proposed/unapproved A2UI campaign document.
