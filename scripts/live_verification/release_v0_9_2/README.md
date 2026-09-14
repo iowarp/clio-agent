@@ -7,7 +7,7 @@ only and are not evidence for this release.
 ## Frozen inputs
 
 - clio-agent develop lineage: `1b43ae35844da87b22b9353a8a62729b15add583`
-- gact-tui: `1629ee736da35adf0c66260f0435922ce879b083`
+- gact-tui: `226fc7bbcf0fd79e57426b6dceb88bf23dc44a53`
 - clio-agent-marketplace: `fac72f0670607a08871a369040acd867e642ebec`
 - provider/model: `codex` / `gpt-5.6-luna`
 - target versions: clio-agent 0.9.2, gact-tui 0.11.0, marketplace 0.6.3

@@ -14,7 +14,7 @@ live-runtime, packaging, version, or publication gates in
 | Component | Audited source | Candidate branch | Result |
 |---|---|---|---|
 | clio-agent | `1b43ae35844da87b22b9353a8a62729b15add583` | `develop` plus the final qualification commits | Recent stack PRs 1314, 1329, 1330, 1331, 1335, 1338, and 1340 are present; PR 1332 is carried by 1335; PRs 1341-1352 contain the affected live-gate repairs. |
-| GACT UI | `1629ee736da35adf0c66260f0435922ce879b083` | `develop` after PR 400 | Recent UI PRs 389 through 400 are present, including the restacked PR 391 work, the v0.11.0 release record, SVG artifacts, accessible workspace transitions, and durable MCP App navigation. |
+| GACT UI | `226fc7bbcf0fd79e57426b6dceb88bf23dc44a53` | `develop` after PR 401 | Recent UI PRs 389 through 401 are present, including the restacked PR 391 work, the v0.11.0 release record, SVG artifacts, accessible workspace transitions, durable MCP App navigation, and the standalone release build fix. |
 | Marketplace | `fac72f0670607a08871a369040acd867e642ebec` | `main` after PR 68 | Recent base-agent and pack changes are present, including Daisy Quach's Factorio Flat taxonomy and the EarthScope ChoicePicker action contract. |
 
 The marketplace history preserves Daisy Quach's original six-specialist materials-science
