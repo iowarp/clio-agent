@@ -12,7 +12,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[4]
 CAMPAIGN = Path(__file__).resolve().parents[1]
 OUT = ROOT / "out" / "live-verification" / "release_v0_9_2"
-EXPECTED_UI = "20edc76538d382c866acb3c0cfb29cd8889926ea"
+EXPECTED_UI = "7d9d06c79558f429a267294dec81009a5971ebd6"
 EXPECTED_MARKETPLACE = "067631a44ce40fe1fa90764427a3b8e4e0229852"
 
 
