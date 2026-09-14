@@ -558,6 +558,7 @@ def test_registered_form_action_gets_a_server_surface_update(tmp_path: Path) -> 
     assert response.json()["submitted"] == {"selection": "quarantine"}
     messages = response.json()["surface"]["messages"]
     assert messages[-1]["updateDataModel"]["path"] == "/lastAction"
+    assert messages[-1]["updateDataModel"]["value"]["context"] == {"selection": "quarantine"}
 
 
 def test_action_route_requires_a2ui_negotiation_and_tolerates_extensions(tmp_path: Path) -> None:
@@ -1395,7 +1396,12 @@ class _LiveTurn:
         return False
 
 
-def _agent_submit(surface_id: str) -> dict[str, object]:
+def _agent_submit(
+    surface_id: str, *, selected_station_ids: list[str] | None = None
+) -> dict[str, object]:
+    context: dict[str, object] = {"text": "continue the analysis"}
+    if selected_station_ids is not None:
+        context["selected_station_ids"] = selected_station_ids
     return {
         "version": "v0.9.1",
         "action": {
@@ -1403,12 +1409,14 @@ def _agent_submit(surface_id: str) -> dict[str, object]:
             "surfaceId": surface_id,
             "sourceComponentId": "submit",
             "timestamp": "2026-08-22T12:00:00Z",
-            "context": {"text": "continue the analysis"},
+            "context": context,
         },
     }
 
 
-def test_agent_submit_is_refused_while_a_turn_is_in_flight(tmp_path: Path) -> None:
+def test_agent_submit_queues_on_the_existing_inbox_while_a_turn_is_in_flight(
+    tmp_path: Path,
+) -> None:
     client, sid, _ = _session_client(tmp_path)
     app = client.app
     client.post(
@@ -1420,18 +1428,54 @@ def test_agent_submit_is_refused_while_a_turn_is_in_flight(tmp_path: Path) -> No
     # exactly the window a status-based gate lets a second turn through.
     app.state.sessions.update(sid, status="cancelled")
     app.state.in_flight_turns[sid] = _LiveTurn()
-    staged_before = len(app.state.messages.get(sid, []))
+    staged_users_before = sum(message.role == "user" for message in app.state.messages.get(sid, []))
 
     response = client.post(
         f"/v1/sessions/{sid}/a2ui/actions",
         headers=HEADERS,
-        json={"message": _agent_submit("surface_1")},
+        json={"message": _agent_submit("surface_1", selected_station_ids=["SGPS"])},
     )
 
-    assert response.status_code == 409, response.text
-    assert response.json()["error"]["error"] == "session_busy"
-    assert response.json()["error"]["details"]["session_id"] == sid
-    assert len(app.state.messages.get(sid, [])) == staged_before
+    assert response.status_code == 200, response.text
+    assert response.json()["delivery"] == "steer"
+    assert response.json()["state"] == "queued"
+    assert (
+        sum(message.role == "user" for message in app.state.messages.get(sid, []))
+        == staged_users_before
+    )
+    [queued] = app.state.loop_inboxes[sid].snapshot()
+    assert queued.metadata["a2ui_action_context"] == {"selected_station_ids": ["SGPS"]}
+    assert '"selected_station_ids":["SGPS"]' in queued.text
+
+
+def test_agent_submit_starts_with_resolved_structured_surface_context(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    client, sid, _ = _session_client(tmp_path)
+    app = client.app
+    client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={"messages": [_create_message()]},
+    )
+
+    def _spawn(coro: Any, **_kwargs: Any) -> None:
+        coro.close()
+
+    monkeypatch.setattr(app.state.turn_runner, "spawn", _spawn)
+    response = client.post(
+        f"/v1/sessions/{sid}/a2ui/actions",
+        headers=HEADERS,
+        json={"message": _agent_submit("surface_1", selected_station_ids=["SGPS"])},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["delivery"] == "start"
+    message = next(
+        message for message in reversed(app.state.messages[sid]) if message.role == "user"
+    )
+    assert message.metadata["a2ui_action_context"] == {"selected_station_ids": ["SGPS"]}
+    assert '"selected_station_ids":["SGPS"]' in message.parts[0].text
 
 
 def test_agent_submit_clears_a_stale_cancel_flag_before_staging(

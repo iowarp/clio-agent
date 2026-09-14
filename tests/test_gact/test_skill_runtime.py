@@ -304,6 +304,26 @@ def test_default_root_auto_declares_workspace_skills_on_real_runtime_rows(
     assert effective_declared_skills(other_root, catalog) == []
 
 
+def test_interactive_analysis_skill_keeps_station_selection_agent_bound() -> None:
+    """The shipped map recipe must preserve a human choice into the next turn."""
+
+    from clio_agent.gact.agents import skill_runtime
+
+    skill_path = (
+        Path(skill_runtime.__file__).resolve().parents[1]
+        / "builtin_skills"
+        / "present-interactive-analysis"
+        / "SKILL.md"
+    )
+    body = skill_path.read_text(encoding="utf-8")
+
+    assert "component: ChoicePicker" in body
+    assert "value: {path: /selectedStationIds}" in body
+    assert "name: agent.submit" in body
+    assert "selected_station_ids: {path: /selectedStationIds}" in body
+    assert "selectedStationIds: [leading-id]" in body
+
+
 def test_flat_skill_has_no_bundled_files(scratch_flat: None, tmp_path: Path) -> None:
     """A flat .md skill has no per-skill directory: file= is a typed error and
     the listing never exposes sibling skills' bundles."""
