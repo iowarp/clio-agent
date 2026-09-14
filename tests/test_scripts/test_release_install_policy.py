@@ -85,7 +85,7 @@ def test_release_workflow_smokes_the_published_registry_tool() -> None:
     publish = workflow.index("run: uv publish")
     registry_job = workflow.index("registry-smoke:")
     registry_install = workflow.index(
-        'uv tool install --python 3.12 --no-cache --with dspy==3.3.0b1 "clio-agent==$version"'
+        'uv tool install --python 3.12 --no-cache --prerelease allow --with dspy==3.3.0b1 "clio-agent==$version"'
     )
 
     assert publish < registry_job < registry_install
@@ -98,7 +98,10 @@ def test_release_workflow_smokes_the_published_registry_tool() -> None:
 def test_documented_persistent_uv_tool_install_has_the_same_policy() -> None:
     """User-facing registry installs explicitly root only the DSPy prerelease."""
 
-    command = f"uv tool install --with dspy==3.3.0b1 clio-agent=={EXPECTED_VERSION}"
+    command = (
+        f"uv tool install --prerelease allow --with dspy==3.3.0b1 "
+        f"clio-agent=={EXPECTED_VERSION}"
+    )
     for relative_path in ("README.md", "docs/INSTALL.md", "install/README.md"):
         contents = _text(relative_path)
         assert command in contents
