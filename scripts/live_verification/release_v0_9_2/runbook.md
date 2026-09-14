@@ -15,7 +15,13 @@ Do not run the full local pytest or frontend test suites.
 Run gates in this order so shared-runtime defects surface before expensive science:
 
 1. Candidate identity and progressive reload.
-2. Automatic compaction, two manual compactions, backend restart, transcript proof.
+2. One automatic compaction, disable automatic compaction, two manual
+   compactions, backend restart, transcript proof. The release wrapper requires
+   an explicit probe turn to evaluate the staged low threshold and sets
+   `automatic_compaction=false` together with `autocompact_pct=0.85` after the
+   first automatic checkpoint. Leaving automatic compaction enabled invalidates
+   the three-checkpoint gate because a later turn can legitimately trigger a
+   second automatic checkpoint.
 3. EarthScope Skills.
 4. Factorio Flat and Daisy specialists.
 5. Consolidated presentation matrix.
