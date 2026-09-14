@@ -6,15 +6,19 @@
     "marketplace": "0.6.3"
   },
   "frozen_base": {
-    "clio_agent": "dc9268576d1d46b5fb2761d7f014642debeb6a75",
-    "gact_tui": "7d9d06c79558f429a267294dec81009a5971ebd6",
-    "marketplace": "067631a44ce40fe1fa90764427a3b8e4e0229852",
+    "clio_agent": "1b43ae35844da87b22b9353a8a62729b15add583",
+    "gact_tui": "1629ee736da35adf0c66260f0435922ce879b083",
+    "marketplace": "fac72f0670607a08871a369040acd867e642ebec",
     "factorio_daisy_commit": "1defadf9252b5950247b083add9d2f31f0f70a06"
   },
   "runtime_candidate": "written by scripts/preflight.py",
   "provider": "codex",
   "model": "gpt-5.6-luna",
   "evidence_root": "out/live-verification/release_v0_9_2",
+  "runtime_isolation": {
+    "clio_runtime_state_dir": "required in runtime evidence",
+    "clio_sessions_path": "required in runtime evidence"
+  },
   "historical_evidence_allowed": false,
   "release_blocking_science": [
     "earthscope-single-agent",

@@ -5,7 +5,14 @@
 1. Work from clean clio-agent `develop` with initialized submodules.
 2. Run `uv run python scripts/live_verification/release_v0_9_2/scripts/preflight.py`.
 3. Push the campaign commit and let GitHub run the comprehensive fleet.
-4. Boot a fresh private CTE and backend from the recorded candidate.
+4. Boot a fresh private CTE and backend from the recorded candidate. The
+   backend state must be isolated as a unit: set `CLIO_RUNTIME_STATE_DIR` to
+   the private daemon state directory **and** set `CLIO_SESSIONS_PATH` to
+   `<campaign-state>/sessions.json` before starting the server. Record both
+   paths in the runtime manifest. An isolated CTE paired with the default user
+   session registry is invalid: it forces legacy transcripts into an empty
+   store during Browser hydration and can turn attention fan-out into a
+   migration write storm.
 5. Start the pinned GACT web application and open it in the Browser tool.
 
 Do not run the full local pytest or frontend test suites.

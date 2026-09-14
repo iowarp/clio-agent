@@ -6,9 +6,9 @@ Status: release preparation in progress. Do not tag clio-agent until every gate 
 
 | Component | Candidate branch | Required release | Integrated tip |
 |---|---|---|---|
-| Marketplace | `main` via `codex/release-0.6.3` | v0.6.3 | `067631a44ce40fe1fa90764427a3b8e4e0229852` |
-| GACT UI | `develop` via `codex/release-0.11.0` | v0.11.0 | `20edc76538d382c866acb3c0cfb29cd8889926ea` |
-| clio-agent | `codex/release-0.9.2` | v0.9.2 | release version and pointer commit in progress |
+| Marketplace | `main` via PRs 65-68 | v0.6.3 | `fac72f0670607a08871a369040acd867e642ebec` |
+| GACT UI | `develop` through PR 400 | v0.11.0 | `1629ee736da35adf0c66260f0435922ce879b083` |
+| clio-agent | `codex/v0.9.2-final-qualification` | v0.9.2 | final pointer and evidence commit in progress |
 
 These dependency commits are the frozen pre-release inputs. The backend pins these exact commits
 before live testing; after the gates pass, the dependency tags must be created on these same
@@ -16,16 +16,16 @@ commits so publication does not change the tested graph.
 
 ## Stacked release order
 
-1. **Complete:** merge the marketplace v0.6.3 candidate to `main` at `067631a4`, including
+1. **Complete:** merge the marketplace v0.6.3 candidate to `main` at `fac72f06`, including
    Daisy Quach's Factorio Flat materials-science taxonomy; do not tag or publish yet.
-2. **Complete:** merge the GACT v0.11.0 candidate to `develop` at `20edc765`; do not tag,
+2. **Complete:** merge the GACT v0.11.0 candidate to `develop` at `1629ee73`; do not tag,
    publish, or advance `main` yet.
 3. Pin both exact dependency commits in clio-agent, bump every version pointer to 0.9.2,
    roll the changelog, and advance clio-agent `develop` to that coherent candidate.
 4. Run the release skill's static, build, metadata, memory-budget, and install-path gates,
    then run the full live matrix against those exact three commits.
-5. If and only if every gate passes, tag marketplace v0.6.3 at `067631a4`; fast-forward GACT
-   `main` to the already-tested `20edc765` and tag v0.11.0 there; publish and verify its assets.
+5. If and only if every gate passes, tag marketplace v0.6.3 at `fac72f06`; fast-forward GACT
+   `main` to the already-tested `1629ee73` and tag v0.11.0 there; publish and verify its assets.
 6. Confirm the backend gitlinks still match those tags, fast-forward clio-agent `main` to the
    already-tested `develop` commit, create v0.9.2, publish curated notes, and verify PyPI,
    all release assets, and all three GHCR images.

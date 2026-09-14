@@ -1,7 +1,7 @@
 # CLIO v0.9.2 feature reconciliation
 
-Audit date: 2026-09-13  
-Scope: product work committed or modified from 2026-08-30 through 2026-09-13  
+Audit date: 2026-09-14
+Scope: product work committed or modified from 2026-08-31 through 2026-09-14
 Gate: **PASS — feature convergence only**
 
 This is a read-only reconciliation of the release candidates against recent branches,
@@ -13,13 +13,13 @@ live-runtime, packaging, version, or publication gates in
 
 | Component | Audited source | Candidate branch | Result |
 |---|---|---|---|
-| clio-agent | `def21cfbacd3e80bd0e8b6a3aaae5a859ed0b6a7` | `codex/release-0.9.2` | Recent stack PRs 1314, 1329, 1330, 1331, 1335, 1338, and 1340 are present; PR 1332 is carried by 1335. |
-| GACT UI | `20edc76538d382c866acb3c0cfb29cd8889926ea` | `develop` after PR 394 | Recent UI PRs 389 through 393 are present, including the restacked PR 391 work, plus the v0.11.0 release record. |
-| Marketplace | `067631a44ce40fe1fa90764427a3b8e4e0229852` | `main` after PR 65 | Recent base-agent and pack changes are present, including Daisy Quach's Factorio Flat materials-science taxonomy at `1defadf`. |
+| clio-agent | `1b43ae35844da87b22b9353a8a62729b15add583` | `develop` plus the final qualification commits | Recent stack PRs 1314, 1329, 1330, 1331, 1335, 1338, and 1340 are present; PR 1332 is carried by 1335; PRs 1341-1352 contain the affected live-gate repairs. |
+| GACT UI | `1629ee736da35adf0c66260f0435922ce879b083` | `develop` after PR 400 | Recent UI PRs 389 through 400 are present, including the restacked PR 391 work, the v0.11.0 release record, SVG artifacts, accessible workspace transitions, and durable MCP App navigation. |
+| Marketplace | `fac72f0670607a08871a369040acd867e642ebec` | `main` after PR 68 | Recent base-agent and pack changes are present, including Daisy Quach's Factorio Flat taxonomy and the EarthScope ChoicePicker action contract. |
 
-The GACT release branch adds release documentation only. The marketplace release branch also
-integrates Daisy Quach's six-specialist materials-science expansion while preserving her original
-commit in `main` ancestry.
+The marketplace history preserves Daisy Quach's original six-specialist materials-science
+commit (`1defadf`) in `main` ancestry. The late GACT and marketplace commits are focused repairs
+found by the release live campaign; they do not remove earlier release features.
 
 ## Recent branch reconciliation
 
