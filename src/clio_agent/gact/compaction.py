@@ -33,6 +33,7 @@ is appended immediately (:func:`append_checkpoint`).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
@@ -637,7 +638,9 @@ def maybe_autocompact() -> None:
     ``trigger="auto"``. A failure is audited (:data:`AUDIT_AUTO_FAILED`) and
     swallowed -- the loop continues, backstopped by the existing
     ``ContextWindowExceededError`` handling; auto-compaction is a proactive
-    optimization, never a hard turn dependency. No active app to compact
+    optimization, never a hard turn dependency. The previous turn's durable
+    per-scope usage backs up ephemeral LM history for subscription providers
+    that create a fresh binding per turn. No active app to compact
     through (``_ctx.active_app()`` is documented nullable) is likewise a typed,
     audited skip (:data:`AUDIT_AUTO_SKIPPED`, ``reason="no_active_app"``), never
     a silent no-op.
@@ -649,7 +652,7 @@ def maybe_autocompact() -> None:
         _session_autocompact_preferences,
     )
 
-    arc, session, _scope = _arc_scope()
+    arc, session, scope = _arc_scope()
     if arc is None:
         return
     app = _ctx.active_app()
@@ -669,6 +672,23 @@ def maybe_autocompact() -> None:
         return
     window = _ctx.active_react_context_window()
     last = _last_prompt_tokens()
+    metadata = getattr(session_row, "metadata", None)
+    usage_by_scope = (
+        metadata.get("context_usage_by_scope", {}) if isinstance(metadata, Mapping) else {}
+    )
+    usage_scope = scope.partition("#run")[0]
+    durable_usage = (
+        usage_by_scope.get(usage_scope, {}) if isinstance(usage_by_scope, Mapping) else {}
+    )
+    try:
+        durable_prompt_tokens = int(durable_usage.get("used_tokens", 0) or 0)
+    except (TypeError, ValueError, AttributeError):
+        durable_prompt_tokens = 0
+    # Subscription-backed providers create a fresh LM binding for each turn, so
+    # its in-memory history can be empty before the first send. Finalization
+    # durably records the preceding turn's prompt usage on the session; retain
+    # that signal so proactive compaction still works across those bindings.
+    last = max(last, durable_prompt_tokens)
     if not window or not last:
         return
     if (last / window) < threshold:

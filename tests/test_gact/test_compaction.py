@@ -392,6 +392,52 @@ def test_auto_trigger_stages_and_flushes_after_the_turns_assistant_row(
         assert [m.id for m in reloaded] == [m.id for m in ledger]
 
 
+def test_auto_trigger_uses_durable_usage_when_new_lm_binding_has_no_history(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh subscription LM binding must not disable automatic compaction."""
+
+    import clio_agent.gact.agents.reactv2_events as reactv2_events
+    import clio_agent.gact.context as gact_context
+    import clio_agent.gact.runtime.context_tokens as context_tokens
+    from clio_agent.gact import context as _ctx
+    from clio_agent.gact.compaction import maybe_autocompact, staged_checkpoint
+
+    agent = _CapturingAgent(["durable usage summary"])
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    arc = app.state.arc
+    scope = "main"
+
+    with TestClient(app) as client:
+        sid = _create_session(client)
+        _open_minter_with_one_prior_message(client, sid)
+        arc.append_segment(sid, scope, "observation", {"text": "live segment"})
+        session = app.state.sessions.get(sid)
+        assert session is not None
+        app.state.sessions.update(
+            sid,
+            metadata_patch={
+                "context_usage_by_scope": {scope: {"used_tokens": 950}},
+            },
+        )
+
+        monkeypatch.setattr(reactv2_events, "_arc_scope", lambda: (arc, sid, scope))
+        monkeypatch.setattr(gact_context, "active_react_context_window", lambda: 1000)
+        monkeypatch.setattr(context_tokens, "_last_prompt_tokens", lambda: 0)
+
+        app_token = _ctx.set_app(app)
+        try:
+            maybe_autocompact()
+        finally:
+            _ctx.reset(app_token)
+
+        checkpoint = staged_checkpoint(app, sid)
+        assert checkpoint is not None
+        message = checkpoint["checkpoint"]
+        assert message.parts[0].type == "compaction"
+        assert message.parts[0].auto is True
+
+
 def test_maybe_autocompact_skips_typed_with_no_active_app(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
