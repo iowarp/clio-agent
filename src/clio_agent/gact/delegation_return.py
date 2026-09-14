@@ -39,6 +39,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.gact.session_store import _replace_session_messages
+from clio_agent.gact.turn_spawn_result import final_assistant_message
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -166,10 +167,4 @@ def _target_message(
     # newest non-live assistant message of the child session at terminal time is the
     # honest fallback — and when the child has NO assistant message at all we emit
     # NOTHING rather than stamp the wrong message.
-    finals = [
-        m
-        for m in messages
-        if getattr(m, "role", "") == "assistant"
-        and not ((getattr(m, "metadata", {}) or {}).get("live"))
-    ]
-    return finals[-1] if finals else None
+    return final_assistant_message(messages)

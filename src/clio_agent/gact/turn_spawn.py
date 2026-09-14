@@ -39,6 +39,7 @@ from clio_agent.gact.turn_spawn_failures import (
     child_task_failure_result,
 )
 from clio_agent.gact.turn_spawn_result import child_workflow_state as _child_workflow_state
+from clio_agent.gact.turn_spawn_result import final_assistant_message
 from clio_agent.gact.turn_spawn_result import message_text as _message_text
 
 if TYPE_CHECKING:
@@ -695,13 +696,7 @@ def _on_child_done(
         return
 
     msgs = app.state.messages.get(child_sid, []) or []
-    finals = [
-        m
-        for m in msgs
-        if getattr(m, "role", "") == "assistant"
-        and not (getattr(m, "metadata", {}) or {}).get("live")
-    ]
-    final = finals[-1] if finals else None
+    final = final_assistant_message(msgs)
     code = _err_code(getattr(final, "error_info", None) if final is not None else None)
 
     try:
