@@ -7,7 +7,7 @@ on:
 
 env:
   PNPM_VERSION: "9.15.9"
-  NODE_VERSION: "20.x"
+  NODE_VERSION: "22.x"
 
 jobs:
   installers:
@@ -82,26 +82,26 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
-          cache-dependency-path: external/gact-tui/apps/pnpm-lock.yaml
+          cache-dependency-path: external/gact-tui/pnpm-lock.yaml
       - name: Install
-        working-directory: external/gact-tui/apps
+        working-directory: external/gact-tui
         run: pnpm install --frozen-lockfile=false
       - name: Select CLIO brand (gact-tui config-file mechanism)
         shell: bash
         run: |
           root="${GITHUB_WORKSPACE//\\//}/branding"
           printf '{ "profile": "clio", "brandingRoot": "%s" }\n' "$root" \
-            > external/gact-tui/apps/brand.config.local.json
+            > external/gact-tui/brand.config.local.json
       - name: Build CLIO web
-        working-directory: external/gact-tui/apps
-        run: pnpm --filter @clio/web build
+        working-directory: external/gact-tui
+        run: pnpm --filter @clio/workspace build
       - name: Package
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
           stage="$RUNNER_TEMP/clio-web-stage"
           mkdir -p "$stage"
-          cp -r external/gact-tui/apps/web/dist "$stage/clio-web-$version"
+          cp -r external/gact-tui/web/dist "$stage/clio-web-$version"
           (cd "$stage" && zip -r "clio-web-$version.zip" "clio-web-$version")
           sha256sum "$stage/clio-web-$version.zip" > "$stage/SHA256SUMS.web.txt"
       - uses: softprops/action-gh-release@v2
@@ -188,7 +188,7 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
-          cache-dependency-path: external/gact-tui/apps/pnpm-lock.yaml
+          cache-dependency-path: external/gact-tui/pnpm-lock.yaml
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -199,16 +199,16 @@ jobs:
         if: matrix.variant == 'bundled'
       - name: Linux deps
         if: runner.os == 'Linux'
-        working-directory: external/gact-tui/apps
+        working-directory: external/gact-tui
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev librsvg2-dev libayatana-appindicator3-dev libdbus-1-dev pkg-config patchelf rpm
       - name: Install
-        working-directory: external/gact-tui/apps
+        working-directory: external/gact-tui
         run: pnpm install --frozen-lockfile=false
       - name: Build sidecar launcher
         shell: bash
-        run: bash external/gact-tui/apps/desktop/scripts/fetch-sidecar.sh ${{ matrix.target }}
+        run: bash external/gact-tui/desktop/scripts/fetch-sidecar.sh ${{ matrix.target }}
       # Portable embedded runtime (#909): built by OUR scripts (the brand
       # owns its runtime; gact-tui is generic infrastructure) from THIS
       # checkout, so the bundle ships exactly the released tree. The script
@@ -217,24 +217,24 @@ jobs:
       - name: Build embedded clio-agent runtime
         if: matrix.variant == 'bundled' && runner.os != 'Windows'
         shell: bash
-        run: bash install/build-gact-runtime.sh external/gact-tui/apps/desktop/src-tauri/gact-runtime
+        run: bash install/build-gact-runtime.sh external/gact-tui/desktop/src-tauri/gact-runtime
         env:
           CLIO_AGENT_SOURCE: ${{ github.workspace }}
       - name: Build embedded clio-agent runtime (Windows)
         if: matrix.variant == 'bundled' && runner.os == 'Windows'
         shell: pwsh
-        run: ./install/build-gact-runtime.ps1 -Out external/gact-tui/apps/desktop/src-tauri/gact-runtime -Source $env:GITHUB_WORKSPACE
+        run: ./install/build-gact-runtime.ps1 -Out external/gact-tui/desktop/src-tauri/gact-runtime -Source $env:GITHUB_WORKSPACE
       - name: Select CLIO brand (gact-tui config-file mechanism)
         shell: bash
         run: |
           root="${GITHUB_WORKSPACE//\\//}/branding"
           printf '{ "profile": "clio", "brandingRoot": "%s" }\n' "$root" \
-            > external/gact-tui/apps/brand.config.local.json
+            > external/gact-tui/brand.config.local.json
       - name: Build web
-        working-directory: external/gact-tui/apps
-        run: pnpm --filter @clio/web build
+        working-directory: external/gact-tui
+        run: pnpm --filter @clio/workspace build
       - name: Generate brand backend descriptor
-        working-directory: external/gact-tui/apps
+        working-directory: external/gact-tui
         run: pnpm --filter @clio/desktop run gen-brand-backend
       - name: Assert CLIO brand compiled
         shell: bash
@@ -244,10 +244,10 @@ jobs:
           # connect-mode default that shipped before #841. Two independent
           # signals: the generated backend descriptor is managed-mode, and the
           # web dist carries a CLIO-distinctive marker string.
-          gen="external/gact-tui/apps/desktop/src-tauri/gen/brand-backend.json"
+          gen="external/gact-tui/desktop/src-tauri/gen/brand-backend.json"
           jq -e '.mode == "managed" and .sidecarName == "clio-agent"' "$gen" >/dev/null \
             || { echo "::error::brand assert: $gen is not managed/clio-agent (neutral connect-mode build)"; exit 1; }
-          dist="external/gact-tui/apps/web/dist"
+          dist="external/gact-tui/web/dist"
           if ! grep -rqI 'Gnosis Research Center' "$dist"; then
             echo "::error::brand assert: CLIO marker absent from $dist (neutral web build)"
             exit 1
@@ -260,10 +260,10 @@ jobs:
           # overlay's relative "icons/..." paths resolve to branded art. A
           # copy-over is more robust than "../../../.." paths in the overlay.
           src="${{ github.workspace }}/branding/clio/icons"
-          dst="external/gact-tui/apps/desktop/src-tauri/icons"
+          dst="external/gact-tui/desktop/src-tauri/icons"
           cp -f "$src"/* "$dst"/
       - name: Tauri release build
-        working-directory: external/gact-tui/apps
+        working-directory: external/gact-tui
         shell: bash
         run: |
           set -euo pipefail
@@ -329,9 +329,9 @@ jobs:
           set -euo pipefail
           stage="$RUNNER_TEMP/clio-desktop-stage"
           mkdir -p "$stage"
-          root="external/gact-tui/apps/desktop/src-tauri/target/release/bundle"
-          if [ -d "external/gact-tui/apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle" ]; then
-            root="external/gact-tui/apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle"
+          root="external/gact-tui/desktop/src-tauri/target/release/bundle"
+          if [ -d "external/gact-tui/desktop/src-tauri/target/${{ matrix.target }}/release/bundle" ]; then
+            root="external/gact-tui/desktop/src-tauri/target/${{ matrix.target }}/release/bundle"
           fi
           if [ -d "$root" ]; then
             find "$root" -type f \( -iname '*.exe' -o -iname '*.msi' -o -iname '*.dmg' -o -iname '*.deb' -o -iname '*.AppImage' -o -iname '*.rpm' \) -print0 |
@@ -345,7 +345,7 @@ jobs:
                 cp "$f" "$stage/$base"
               done
           else
-            root="external/gact-tui/apps/desktop/src-tauri/target/release"
+            root="external/gact-tui/desktop/src-tauri/target/release"
             find "$root" -maxdepth 1 -type f -iname '*.exe' -print0 |
               while IFS= read -r -d '' f; do
                 base="$(basename "$f")"

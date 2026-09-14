@@ -45,7 +45,7 @@ $ServerBin = Join-Path $Prefix 'clio-agent\.venv\Scripts\clio-agent.exe'
 $GactBin   = Join-Path $Prefix 'gact.exe'
 # The Go TUI white-labels purely from GACT_BRAND_NAME at runtime (no brand root /
 # brand.json read anymore; web+desktop read that at build time via
-# apps/brand.config.local.json). Override by setting GACT_BRAND_NAME yourself.
+# brand.config.local.json). Override by setting GACT_BRAND_NAME yourself.
 $ClioBrandName = if ($env:GACT_BRAND_NAME) { $env:GACT_BRAND_NAME } else { 'CLIO' }
 $WebDir    = Join-Path $Prefix 'clio-agent\web'
 

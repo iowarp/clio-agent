@@ -37,7 +37,7 @@
 #   CLIO_LOG      server log path   (default: $CLIO_PREFIX/clio-server.log)
 #   CLIO_NO_UPDATE_CHECK  set to 1 to skip the on-launch PyPI update check
 #   CLIO_WEB_DIR  built web dist to serve (overrides the installed bundle)
-#   CLIO_WEB_SRC  gact-tui/apps checkout for `--dev` builds (auto-detected if unset)
+#   CLIO_WEB_SRC  gact-tui checkout for `--dev` builds (auto-detected if unset)
 #   CLIO_WEB_NO_BUILD  set to 1 to skip the `--dev` rebuild and serve the last dist
 #   CLIO_DESKTOP_BIN   installed desktop app binary for `clio --desktop`
 set -euo pipefail
@@ -57,7 +57,7 @@ SERVER_BIN="$CLIO_PREFIX/clio-agent/.venv/bin/clio-agent"
 GACT_BIN="$CLIO_PREFIX/gact"
 # The Go TUI is brand-neutral and white-labels purely from GACT_BRAND_NAME at
 # runtime (it no longer reads a brand root / brand.json — web+desktop read that
-# at build time via apps/brand.config.local.json). This drives the splash
+# at build time via brand.config.local.json). This drives the splash
 # wordmark + OS window title; override by exporting GACT_BRAND_NAME yourself.
 CLIO_BRAND_NAME="${GACT_BRAND_NAME:-CLIO}"
 WEB_DIR="$CLIO_PREFIX/clio-agent/web"
@@ -117,7 +117,7 @@ open_url() {
   else warn "open $url in your browser"; fi
 }
 
-# resolve_web_src echoes the gact-tui/apps checkout used by `--dev` builds,
+# resolve_web_src echoes the gact-tui checkout used by `--dev` builds,
 # honoring $CLIO_WEB_SRC first, then a few common locations. Echoes nothing and
 # returns 1 when none is found (the caller prints actionable guidance).
 resolve_web_src() {
@@ -125,8 +125,8 @@ resolve_web_src() {
   if [[ -n "${CLIO_WEB_SRC:-}" && -f "$CLIO_WEB_SRC/web/package.json" ]]; then
     printf '%s\n' "$CLIO_WEB_SRC"; return 0
   fi
-  for cand in "$HOME/gact-tui/apps" "$HOME/clio/apps" \
-              "$HOME/src/gact-tui/apps" "$HOME/projects/gact-tui/apps"; do
+  for cand in "$HOME/gact-tui" "$HOME/clio/gact-tui" \
+              "$HOME/src/gact-tui" "$HOME/projects/gact-tui"; do
     [[ -f "$cand/web/package.json" ]] && { printf '%s\n' "$cand"; return 0; }
   done
   return 1
@@ -354,13 +354,13 @@ main() {
         # the installed bundle, so `clio --web --dev` shows what you're building.
         local src
         if ! src="$(resolve_web_src)"; then
-          err "clio --web --dev: set CLIO_WEB_SRC to your gact-tui/apps checkout (none auto-detected)"
+          err "clio --web --dev: set CLIO_WEB_SRC to your gact-tui checkout (none auto-detected)"
           return 1
         fi
         command -v pnpm >/dev/null 2>&1 || { err "clio --web --dev needs pnpm on PATH to build the web"; return 1; }
         if [[ "${CLIO_WEB_NO_BUILD:-0}" != 1 ]]; then
           say "building dev web bundle from $src (set CLIO_WEB_NO_BUILD=1 to skip)"
-          ( cd "$src" && pnpm --filter @clio/web build ) || { err "dev web build failed"; return 1; }
+          ( cd "$src" && pnpm --filter @clio/workspace build ) || { err "dev web build failed"; return 1; }
         fi
         export CLIO_WEB_DIR="$src/web/dist"
         [[ -f "$CLIO_WEB_DIR/index.html" ]] || { err "no built web at $CLIO_WEB_DIR (run without CLIO_WEB_NO_BUILD)"; return 1; }
@@ -392,7 +392,7 @@ main() {
       if (( dt_dev )); then
         local src
         if ! src="$(resolve_web_src)"; then
-          err "clio --desktop --dev: set CLIO_WEB_SRC to your gact-tui/apps checkout (none auto-detected)"
+          err "clio --desktop --dev: set CLIO_WEB_SRC to your gact-tui checkout (none auto-detected)"
           return 1
         fi
         command -v pnpm >/dev/null 2>&1 || { err "clio --desktop --dev needs pnpm on PATH"; return 1; }

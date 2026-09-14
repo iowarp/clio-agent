@@ -57,7 +57,78 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           "$UV_TOOL_BIN_DIR/clio-agent" --version | grep -Fx "clio-agent $version" >/dev/null
 
+      - name: Check for an identical existing PyPI artifact
+        id: pypi-artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          wheel="$(find dist -maxdepth 1 -type f -name 'clio_agent-*.whl' -print -quit)"
+          test -n "$wheel"
+          WHEEL="$wheel" VERSION="$version" GITHUB_OUTPUT="$GITHUB_OUTPUT" python - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import io
+          import json
+          import os
+          import zipfile
+          from pathlib import Path
+          from urllib.error import HTTPError
+          from urllib.request import urlopen
+
+          wheel = Path(os.environ["WHEEL"])
+          version = os.environ["VERSION"]
+          url = f"https://pypi.org/pypi/clio-agent/{version}/json"
+          try:
+              with urlopen(url, timeout=30) as response:  # noqa: S310 - fixed PyPI URL
+                  payload = json.load(response)
+          except HTTPError as error:
+              if error.code != 404:
+                  raise
+              with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+                  output.write("exists=false\n")
+              raise SystemExit(0)
+
+          remote = next(
+              (item for item in payload["urls"] if item["filename"] == wheel.name),
+              None,
+          )
+          if remote is None:
+              raise SystemExit(f"PyPI {version} exists but lacks {wheel.name}")
+          with urlopen(remote["url"], timeout=60) as response:  # noqa: S310 - PyPI JSON URL
+              remote_wheel = response.read()
+
+          def member_hashes(source: Path | io.BytesIO) -> dict[str, str]:
+              """Return hashes of the immutable payload members in one wheel."""
+
+              with zipfile.ZipFile(source) as archive:
+                  return {
+                      name: hashlib.sha256(archive.read(name)).hexdigest()
+                      for name in sorted(archive.namelist())
+                      if not name.endswith("/")
+                  }
+
+          local_members = member_hashes(wheel)
+          remote_members = member_hashes(io.BytesIO(remote_wheel))
+          if local_members != remote_members:
+              changed = sorted(local_members.keys() ^ remote_members.keys())
+              changed.extend(
+                  name
+                  for name in local_members.keys() & remote_members.keys()
+                  if local_members[name] != remote_members[name]
+              )
+              raise SystemExit(
+                  f"PyPI {wheel.name} payload differs in: {', '.join(changed[:20])}"
+              )
+          remote_sha256 = remote["digests"]["sha256"]
+          print(f"PyPI already has the identical {wheel.name} payload ({remote_sha256})")
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+              output.write("exists=true\n")
+          PY
+
       - name: Publish to PyPI
+        if: steps.pypi-artifact.outputs.exists != 'true'
         run: uv publish
 
   registry-smoke:

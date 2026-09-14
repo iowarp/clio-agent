@@ -35,7 +35,7 @@ ldflags=("-s" "-w")
 
 (
   cd "$GACT_ROOT/tui"
-  CGO_ENABLED="${CGO_ENABLED:-0}" go build -trimpath -ldflags "${ldflags[*]}" -o "$OUT" .
+  CGO_ENABLED="${CGO_ENABLED:-0}" GOWORK=off go build -trimpath -ldflags "${ldflags[*]}" -o "$OUT" .
 )
 
 "$OUT" version >/dev/null 2>&1 || true

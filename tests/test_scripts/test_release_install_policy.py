@@ -76,6 +76,26 @@ def test_release_workflow_smokes_the_built_wheel_before_publish() -> None:
     assert 'export UV_TOOL_DIR="$smoke_root/tools"' in workflow
     assert 'export UV_TOOL_BIN_DIR="$smoke_root/bin"' in workflow
     assert "-name 'clio_agent-*.whl'" in workflow
+    assert "PyPI already has the identical" in workflow
+    assert "local_members != remote_members" in workflow
+    assert "zipfile.ZipFile" in workflow
+    assert "if: steps.pypi-artifact.outputs.exists != 'true'" in workflow
+
+
+def test_release_builds_follow_the_current_gact_workspace_layout() -> None:
+    """Bundle and container builders consume the released root pnpm workspace."""
+
+    bundles = _text(".github/workflows/clio-bundles.yml")
+    web_image = _text("docker/Dockerfile.clio-web")
+    tui_builder = _text("scripts/build_clio_tui.sh")
+    launcher = _text("install/clio")
+
+    for contents in (bundles, web_image, launcher):
+        assert "external/gact-tui/apps" not in contents
+        assert "@clio/web" not in contents
+        assert "@clio/workspace" in contents
+    assert 'for cand in "$HOME/gact-tui"' in launcher
+    assert 'GOWORK=off go build' in tui_builder
 
 
 def test_release_workflow_smokes_the_published_registry_tool() -> None:
