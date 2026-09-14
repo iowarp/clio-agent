@@ -79,7 +79,7 @@ def test_release_workflow_smokes_the_built_wheel_before_publish() -> None:
 
 
 def test_release_workflow_smokes_the_published_registry_tool() -> None:
-    """After publish, CI proves the documented narrow registry install."""
+    """After publish, CI enables the pinned betas for the registry install."""
 
     workflow = _text(".github/workflows/release.yml")
     publish = workflow.index("run: uv publish")
@@ -90,13 +90,12 @@ def test_release_workflow_smokes_the_published_registry_tool() -> None:
 
     assert publish < registry_job < registry_install
     assert "needs: pypi" in workflow[registry_job:registry_install]
-    assert "--prerelease" not in workflow
     assert "assert dspy.__version__ == '3.3.0b1'" in workflow
     assert "assert hasattr(dspy, 'ReActV2')" in workflow
 
 
 def test_documented_persistent_uv_tool_install_has_the_same_policy() -> None:
-    """User-facing registry installs explicitly root only the DSPy prerelease."""
+    """User-facing registry installs enable the package's pinned prereleases."""
 
     command = (
         f"uv tool install --prerelease allow --with dspy==3.3.0b1 "
@@ -105,7 +104,6 @@ def test_documented_persistent_uv_tool_install_has_the_same_policy() -> None:
     for relative_path in ("README.md", "docs/INSTALL.md", "install/README.md"):
         contents = _text(relative_path)
         assert command in contents
-        assert "--prerelease" not in contents
         assert "uvx" in contents or "uv tool run" in contents
 
 
