@@ -635,7 +635,10 @@ def maybe_autocompact() -> None:
 
     When ``prompt_tokens / context_window`` crosses the session's configured
     threshold, run the SAME operation manual compaction uses, with
-    ``trigger="auto"``. A failure is audited (:data:`AUDIT_AUTO_FAILED`) and
+    ``trigger="auto"``. At most one checkpoint may be staged during an open
+    turn: later ReAct iterations preserve the newly accumulated live working
+    set instead of repeatedly summarizing the same pre-turn ledger. A failure is
+    audited (:data:`AUDIT_AUTO_FAILED`) and
     swallowed -- the loop continues, backstopped by the existing
     ``ContextWindowExceededError`` handling; auto-compaction is a proactive
     optimization, never a hard turn dependency. The previous turn's durable
@@ -667,6 +670,13 @@ def maybe_autocompact() -> None:
         return
     sessions = getattr(getattr(app, "state", None), "sessions", None)
     session_row = sessions.get(session) if sessions is not None else None
+    if staged_checkpoint(app, session) is not None:
+        stream_audit(
+            AUDIT_AUTO_SKIPPED,
+            reason=SKIP_CHECKPOINT_ALREADY_STAGED,
+            session_id=session,
+        )
+        return
     enabled, threshold = _session_autocompact_preferences(getattr(session_row, "metadata", None))
     if not enabled:
         return
