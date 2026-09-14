@@ -62,8 +62,11 @@ PLAN_ACL_MODES = frozenset({"plan", "architect"})
 def plans_dir() -> Path:
     """Return the sole writable plan-artifact directory for plan mode (P1.1 #1063).
 
-    ``<repo>/.clio/plans`` when the current working directory is inside a VCS (``.git``) repo (so
-    the plan file is committable), else ``~/.clio/plans``. Returned resolved+absolute so the
+    During a live session turn, ``<workspace>/.clio/plans`` is authoritative. This keeps the
+    CLIO-owned plan inside the same workspace boundary enforced by the file tools when the server
+    hosts workspaces outside its own checkout. Off-turn, ``<repo>/.clio/plans`` is used when the
+    current working directory is inside a VCS (``.git``) repo (so the plan file is committable),
+    else ``~/.clio/plans``. Returned resolved+absolute so the
     ``path_pattern`` glob it seeds matches the resolved target path the gate hands
     :func:`grant_resolver.resolve`. The actual plan artifact is minted in a later slice (P1.3);
     this helper only defines WHERE the single @70 write carve-out permits a ``*.md`` write.
@@ -72,6 +75,19 @@ def plans_dir() -> Path:
         The resolved, absolute plans directory path.
     """
 
+    try:
+        # Lazy import avoids the execution -> permission gate -> grant resolver cycle. The
+        # ContextVar is bound for the whole live turn, including reminder construction and tool
+        # execution, so the recorded path and both policy checks see the same root.
+        from clio_agent.tools.execution import (  # noqa: PLC0415
+            get_active_tool_workspace_root,
+        )
+
+        active_root = str(get_active_tool_workspace_root() or "").strip()
+        if active_root:
+            return (Path(active_root).expanduser() / ".clio" / "plans").resolve()
+    except (ImportError, OSError):
+        pass
     try:
         cwd = Path.cwd()
     except OSError:

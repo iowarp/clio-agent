@@ -847,9 +847,7 @@ def test_default_plan_acl_rows_shape() -> None:
         assert r["modes"] == ["plan"]
 
     architect_tools = [r for r in rows[1:-1] if r["modes"] == ["architect"]]
-    assert {r["tool_name_pattern"] for r in architect_tools} == set(
-        PLAN_ACL_ARCHITECT_TOOLS
-    )
+    assert {r["tool_name_pattern"] for r in architect_tools} == set(PLAN_ACL_ARCHITECT_TOOLS)
     for r in architect_tools:
         assert r["action"] == "allow"
         assert r["priority"] == PLAN_ACL_ALLOW_TOOL_PRIORITY == 50
@@ -873,9 +871,10 @@ def test_plan_acl_user_deny_blocks_architect_artifact_publication() -> None:
             "action": "deny",
         }
     ]
-    assert resolve(
-        "tool", "create_artifact", policies=policies, session_id="s", mode="architect"
-    ) == "deny"
+    assert (
+        resolve("tool", "create_artifact", policies=policies, session_id="s", mode="architect")
+        == "deny"
+    )
 
 
 def test_plan_acl_allows_plan_safe_tools_in_plan_mode() -> None:
@@ -950,6 +949,16 @@ def test_plans_dir_uses_repo_dot_clio_in_vcs() -> None:
     assert p.name == "plans"
     assert p.parent.name == ".clio"
     assert p.is_absolute()
+
+
+def test_plans_dir_uses_active_session_workspace(tmp_path: Path) -> None:
+    """A hosted workspace owns its plan directory even when server cwd is another repo."""
+
+    from clio_agent.tools.execution import tool_workspace_context
+
+    workspace = tmp_path / "hosted-workspace"
+    with tool_workspace_context(str(workspace)):
+        assert plans_dir() == (workspace / ".clio" / "plans").resolve()
 
 
 @pytest.mark.parametrize(
