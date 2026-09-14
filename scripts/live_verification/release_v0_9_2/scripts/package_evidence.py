@@ -26,7 +26,7 @@ EVIDENCE_DIRECTORIES = (
     "compaction",
     "earthscope-final-rerun",
     "factorio-final-candidate",
-    "dist-2aed4061",
+    "dist-final",
     "schema-dist-f9945006",
 )
 
