@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import importlib.util
 import json
 import subprocess
 import sys
@@ -54,3 +55,34 @@ def test_tracked_manifest_separates_runtime_evidence() -> None:
     assert payload["model"] == "gpt-5.6-luna"
     assert payload["evidence_root"] == "out/live-verification/release_v0_9_2"
     assert payload["historical_evidence_allowed"] is False
+
+
+def test_evidence_packager_excludes_private_runtime_state(tmp_path: Path) -> None:
+    """The release archive is bounded to curated evidence and campaign inputs."""
+
+    script = CAMPAIGN / "scripts" / "package_evidence.py"
+    spec = importlib.util.spec_from_file_location("release_evidence_packager", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    evidence = tmp_path / "evidence"
+    campaign = tmp_path / "campaign"
+    (evidence / "screenshots").mkdir(parents=True)
+    (evidence / "state-final-candidate").mkdir()
+    campaign.mkdir()
+    (evidence / "manifest.json").write_text("{}", encoding="utf-8")
+    (evidence / "verdict.md").write_text("pass", encoding="utf-8")
+    (evidence / "screenshots" / "final.png").write_bytes(b"png")
+    (evidence / "state-final-candidate" / "cte.sqlite3").write_bytes(b"private")
+    (campaign / "README.md").write_text("runbook", encoding="utf-8")
+
+    archive_paths = {
+        archive_path.as_posix() for _, archive_path in module.iter_archive_files(evidence, campaign)
+    }
+    assert archive_paths == {
+        "campaign/README.md",
+        "evidence/manifest.json",
+        "evidence/screenshots/final.png",
+        "evidence/verdict.md",
+    }
