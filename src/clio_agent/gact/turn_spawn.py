@@ -1,8 +1,4 @@
-"""Spawn a child expert in a real child session projected as an AgentTask.
-
-``spawn_child_turn`` mints lineage, stages a user-equivalent background turn,
-and records lifecycle. A dedicated executor prevents parent starvation.
-"""
+"""Spawn child experts with lineage, lifecycle, and a starvation-safe executor."""
 
 from __future__ import annotations
 
@@ -26,6 +22,7 @@ from clio_agent.gact.agent_tasks import (
 )
 from clio_agent.gact.runtime.permission_policies import inherit_child_session_policies
 from clio_agent.gact.session_descendants import MAX_SPAWN_DEPTH as _MAX_SPAWN_DEPTH
+from clio_agent.gact.session_store import _inherit_session_context_files
 from clio_agent.gact.spawn_context import validate_task_spec
 from clio_agent.gact.task_fold import finish_agent_task_transition, fold_agent_task_transition
 from clio_agent.gact.turn_spawn_executor import (
@@ -324,6 +321,7 @@ def spawn_child_turn(app: "FastAPI", spec: TaskSpec) -> AgentTask:
     # keyed to the PARENT's session id, so without this projection a call the parent would
     # prompt for runs unprompted in the child (widening-only inheritance).
     inherit_child_session_policies(app, spec.parent_session_id, child.id)
+    _inherit_session_context_files(app, spec.parent_session_id, child.id)
     if parent_mode in _RESTRICTIVE_SESSION_MODES:
         # Typed, queryable note (no-silent-fallback ground rule): this is a real
         # behavior change from the pre-fix default (child always got ``edit``), so

@@ -9,6 +9,7 @@ has a child to accept.
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -100,6 +101,50 @@ def test_spawn_produces_child_session_and_completed_record(tmp_path: Path, monke
         assert child.metadata.get("session_type") == "agent_task"
         # Parent-visible completion event.
         assert _bus(app, parent, "agent.task.completed"), "no parent-visible completion event"
+
+
+def test_spawn_inherits_parent_context_files_for_child_analysis(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A delegated child can inspect the same user-attached files as its parent."""
+
+    _declare(monkeypatch, "main")
+    monkeypatch.setattr(
+        "clio_agent.gact.turn._start_background_user_turn",
+        lambda *args, **kwargs: None,
+    )
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
+    with TestClient(app) as client:
+        parent = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
+        attached = tmp_path / "qualification.csv"
+        attached.write_text("specimen,fatigue_life\nS01,120000\n", encoding="utf-8")
+        row = {
+            "path": str(attached),
+            "display_path": "qualification.csv",
+            "resolved_path": str(attached),
+            "workspace_id": "ws_default",
+            "source": "api",
+            "mode": "read",
+        }
+        app.state.context_files[parent] = {str(attached): row}
+
+        task = spawn_child_turn_threadsafe(
+            app,
+            TaskSpec(
+                child_expert_id="main",
+                task_text="analyze the attached qualification dataset",
+                parent_session_id=parent,
+                requesting_expert_id="main",
+            ),
+        )
+
+        child_files = app.state.context_files.get(task.child_session_id, {})
+        assert child_files == {str(attached): row}
+        assert child_files is not app.state.context_files[parent]
+        assert child_files[str(attached)] is not row
+
+        persisted = json.loads(app.state.context_files_path.read_text(encoding="utf-8"))
+        assert persisted["sessions"][task.child_session_id] == child_files
 
 
 def test_commissioned_child_activates_target_blueprint_scope(tmp_path: Path, monkeypatch) -> None:
