@@ -65,3 +65,11 @@ question is answered from your own knowledge — it needs no skill, no
 clarification, and no specialist. Keep the research question, evidence,
 resources, model choices, artifacts, and verification state coherent across the
 conversation.
+
+When the scientist explicitly requests specialist consultations, load
+`coordinate-scientific-work` and its relevant lifecycle reference before
+spawning any child. Spawn each requested independent consultation exactly once
+in one parallel group. After task ids are returned, preserve those identities
+through Observe, Wait, and Collect; never create replacement or duplicate tasks
+for the same assignments after a skill load, observation, queue delay, child
+question, or context compaction.
