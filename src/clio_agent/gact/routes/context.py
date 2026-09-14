@@ -218,7 +218,11 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
             raise _session_not_found(sid)
         if app.state.arc is None:
             raise _arc_unavailable(sid)
-        return _build_context_state(sid, scope, as_of)
+        # The state projection reads the persisted working-set lane several
+        # times. Hydration calls this route in parallel with transcript loading,
+        # so performing those native reads on the event loop visibly stalls the
+        # page and violates the ARC loop guard.
+        return await run_off_loop(_build_context_state, sid, scope, as_of)
 
     @app.get("/v1/sessions/{sid}/context/preferences", response_model=ContextPreferences)
     async def get_context_preferences(sid: str) -> ContextPreferences:

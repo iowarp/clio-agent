@@ -7,7 +7,9 @@ plus the redacted arc.op SSE-bus frame for the TUI.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+from typing import Any
 
 from fastapi.testclient import TestClient
 
@@ -25,16 +27,30 @@ def _session(client: TestClient) -> str:
     return client.post("/v1/sessions", json={"title": "t"}).json()["id"]
 
 
-def test_get_context_state(tmp_path):
+def test_get_context_state(tmp_path, monkeypatch):
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
     client = _client(tmp_path, arc)
     sid = _session(client)
     arc.append_segment(sid, SCOPE, "thought", {"text": "T0"}, step=0, token_count=5)
     arc.append_segment(sid, SCOPE, "tool_call", {"name": "a", "args": {}}, step=0)
     arc.append_segment(sid, SCOPE, "observation", {"text": "O0"}, step=0, token_count=10)
+    render_segments = arc.render_segments
+    rendered_off_loop: list[bool] = []
+
+    def audited_render_segments(*args: Any, **kwargs: Any) -> Any:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            rendered_off_loop.append(True)
+        else:
+            rendered_off_loop.append(False)
+        return render_segments(*args, **kwargs)
+
+    monkeypatch.setattr(arc, "render_segments", audited_render_segments)
 
     r = client.get(f"/v1/sessions/{sid}/context/state", params={"scope": SCOPE})
     assert r.status_code == 200, r.text
+    assert rendered_off_loop and all(rendered_off_loop)
     body = r.json()
     assert body["live_block_count"] == 3
     assert body["tokens_by_kind"] == {"thought": 5, "tool_call": 0, "observation": 10}
