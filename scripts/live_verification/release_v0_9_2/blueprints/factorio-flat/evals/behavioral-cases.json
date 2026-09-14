@@ -1,0 +1,153 @@
+[
+  {
+    "id": "greeting",
+    "user_message": "Hello, Factorio.",
+    "expect": {
+      "response": {
+        "nonempty": true,
+        "min_words": 4,
+        "max_words": 40
+      },
+      "outcome": {
+        "no_children": true,
+        "no_question_asked": true
+      }
+    }
+  },
+  {
+    "id": "simple_question",
+    "user_message": "What is the difference between stress and strain?",
+    "expect": {
+      "response": {
+        "nonempty": true,
+        "min_words": 15,
+        "max_words": 120
+      },
+      "outcome": {
+        "no_children": true,
+        "no_question_asked": true
+      }
+    }
+  },
+  {
+    "id": "useful_clarification",
+    "user_message": "I want to simulate my specimen in Abaqus.",
+    "expect": {
+      "response": {
+        "nonempty": true,
+        "min_words": 8,
+        "max_words": 100
+      },
+      "actions": {
+        "required": [
+          "ask_user"
+        ]
+      },
+      "question": {
+        "min_count": 1,
+        "requires_question": true,
+        "requires_reason": true
+      },
+      "outcome": {
+        "no_children": true
+      }
+    }
+  },
+  {
+    "id": "focused_skill_and_delegation",
+    "user_message": "My pilot data suggests laser scan speed changes fatigue life. Help me narrow that into a testable paper question.",
+    "expect": {
+      "response": {
+        "nonempty": true,
+        "min_words": 25,
+        "max_words": 180
+      },
+      "actions": {
+        "required": [
+          "load_skill",
+          "spawn_agent_task"
+        ]
+      },
+      "coordination": {
+        "required_skills": [
+          "coordinate-scientific-work",
+          "frame-research-problem"
+        ],
+        "exact_agents": [
+          "research_methodologist"
+        ]
+      },
+      "outcome": {
+        "children_completed": true,
+        "grounds_collected_results": true,
+        "min_shared_terms": 4
+      }
+    }
+  },
+  {
+    "id": "parallel_investigation",
+    "user_message": "In parallel, assess whether the literature supports a dwell-fatigue mechanism and whether our lab could validate it this semester.",
+    "expect": {
+      "response": {
+        "nonempty": true,
+        "min_words": 30,
+        "max_words": 220
+      },
+      "actions": {
+        "required": [
+          "load_skill",
+          "spawn_agents_parallel"
+        ]
+      },
+      "coordination": {
+        "required_skills": [
+          "coordinate-scientific-work"
+        ],
+        "exact_agents": [
+          "evidence_researcher",
+          "virtual_lab"
+        ],
+        "requires_parallel": true,
+        "min_parallel_width": 2
+      },
+      "outcome": {
+        "children_completed": true,
+        "grounds_collected_results": true,
+        "min_shared_terms": 4
+      }
+    }
+  },
+  {
+    "id": "blocked_child_resume",
+    "user_message": "Build the simulation formulation; if a consequential boundary condition is unknown, ask me and continue the same consultation.",
+    "expect": {
+      "response": {
+        "nonempty": true,
+        "min_words": 25,
+        "max_words": 220
+      },
+      "actions": {
+        "required": [
+          "spawn_agent_task"
+        ]
+      },
+      "coordination": {
+        "required_skills": [
+          "coordinate-scientific-work"
+        ],
+        "exact_agents": [
+          "simulation_methodologist"
+        ]
+      },
+      "blocked_child": {
+        "same_identity_resume": true,
+        "forbid_replacement": true
+      },
+      "outcome": {
+        "children_completed": true,
+        "grounds_collected_results": true,
+        "min_shared_terms": 4
+      }
+    }
+  }
+]

@@ -341,6 +341,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="stop before any LM turn; avenues 1, 2, 5, and 11 are recorded 'blocked' (skipped)",
     )
     parser.add_argument(
+        "--apps-ui-only",
+        action="store_true",
+        help="run only the model-driven MCP Apps UI avenue and its readiness gate",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="print the avenue plan and exit; boots nothing, calls nothing",
@@ -348,8 +353,11 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _print_dry_run() -> None:
-    print(json.dumps({"leg": "c2_v2_avenues", "dry_run": True, "avenues": AVENUE_PLAN}, indent=2))
+def _print_dry_run(*, apps_ui_only: bool = False) -> None:
+    plan = (
+        [row for row in AVENUE_PLAN if row["avenue"] == "apps-ui"] if apps_ui_only else AVENUE_PLAN
+    )
+    print(json.dumps({"leg": "c2_v2_avenues", "dry_run": True, "avenues": plan}, indent=2))
 
 
 # --------------------------------------------------------------------------- #
@@ -1569,14 +1577,14 @@ def avenue_headers(call: Any, hcap_port: int, hcap_log: Path) -> dict[str, Any]:
 def main() -> int:
     args = build_parser().parse_args()
     if args.dry_run:
-        _print_dry_run()
+        _print_dry_run(apps_ui_only=args.apps_ui_only)
         return 0
 
     out_path = Path(args.out)
     ws_dir = Path(args.ws_dir).resolve()
     ws_dir.mkdir(parents=True, exist_ok=True)
     hcap_log = common.OUT_ROOT / "leg_c2_hcap_captured.jsonl"
-    if hcap_log.exists():
+    if not args.apps_ui_only and hcap_log.exists():
         hcap_log.unlink()
 
     command = common.quoted_command(sys.executable, str(EXERCISER_PATH))
@@ -1592,13 +1600,14 @@ def main() -> int:
         "mcp_command": command,
         "namespace": EXERCISER_NAMESPACE,
         "plumbing_only": args.plumbing_only,
+        "apps_ui_only": args.apps_ui_only,
     }
 
     if not common.port_is_free(args.port):
         verdict["error"] = f"port {args.port} is not free"
         common.write_verdict(out_path, {**verdict, "pass": False})
         return 1
-    if not common.port_is_free(args.hcap_port):
+    if not args.apps_ui_only and not common.port_is_free(args.hcap_port):
         verdict["error"] = f"hcap port {args.hcap_port} is not free"
         common.write_verdict(out_path, {**verdict, "pass": False})
         return 1
@@ -1614,16 +1623,17 @@ def main() -> int:
         extra_env={"CLIO_MCP_ELICITATION_URL_TRUSTED_ORIGINS": URL_TRUST_ORIGIN},
     )
     try:
-        hcap_proc = subprocess.Popen(
-            [
-                sys.executable,
-                str(Path(__file__).resolve().parent / "_header_capture_server.py"),
-                "--port",
-                str(args.hcap_port),
-                "--log",
-                str(hcap_log),
-            ],
-        )
+        if not args.apps_ui_only:
+            hcap_proc = subprocess.Popen(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve().parent / "_header_capture_server.py"),
+                    "--port",
+                    str(args.hcap_port),
+                    "--log",
+                    str(hcap_log),
+                ],
+            )
 
         call = common.client(base)
         if not common.wait_health(call):
@@ -1658,40 +1668,41 @@ def main() -> int:
             "ready": readiness_ready,
         }
 
-        # --- static (no boot/network needed beyond what's already fetched) ---
-        avenues.append(avenue_cache())
-        avenues.append(avenue_list_changed())
-        avenues.append(avenue_adversarial())
-        avenues.append(avenue_extensions(v2ex_row))
-        avenues.append(avenue_pagination(main_tools))
+        if not args.apps_ui_only:
+            # --- static (no boot/network needed beyond what's already fetched) ---
+            avenues.append(avenue_cache())
+            avenues.append(avenue_list_changed())
+            avenues.append(avenue_adversarial())
+            avenues.append(avenue_extensions(v2ex_row))
+            avenues.append(avenue_pagination(main_tools))
 
-        # --- headers + mrtr-methods: headless HTTP, no LM needed ---
-        hcap_ready = common.expanding_wait(
-            lambda: hcap_proc.poll() is None and _hcap_reachable(args.hcap_port),
-            what="header-capture server reachable",
-            max_elapsed=60.0,
-        )
-        if not hcap_ready:
-            avenues.append(
-                {
-                    "avenue": "headers",
-                    "status": "fail",
-                    "evidence": {},
-                    "error": "the header-capture server never became reachable",
-                }
+            # --- headers + mrtr-methods: headless HTTP, no LM needed ---
+            assert hcap_proc is not None
+            hcap_ready = common.expanding_wait(
+                lambda: hcap_proc.poll() is None and _hcap_reachable(args.hcap_port),
+                what="header-capture server reachable",
+                max_elapsed=60.0,
             )
-        else:
-            avenues.append(avenue_headers(call, args.hcap_port, hcap_log))
-        avenues.append(avenue_mrtr_methods(call))
+            if not hcap_ready:
+                avenues.append(
+                    {
+                        "avenue": "headers",
+                        "status": "fail",
+                        "evidence": {},
+                        "error": "the header-capture server never became reachable",
+                    }
+                )
+            else:
+                avenues.append(avenue_headers(call, args.hcap_port, hcap_log))
+            avenues.append(avenue_mrtr_methods(call))
 
         if not readiness_ready:
-            for avenue_id in (
-                "task-modes",
-                "mrtr-url",
-                "waits-cancel",
-                "apps-ui",
-                "agent-elicitation",
-            ):
+            avenue_ids = (
+                ("apps-ui",)
+                if args.apps_ui_only
+                else ("task-modes", "mrtr-url", "waits-cancel", "apps-ui", "agent-elicitation")
+            )
+            for avenue_id in avenue_ids:
                 avenues.append(
                     {
                         "avenue": avenue_id,
@@ -1701,13 +1712,12 @@ def main() -> int:
                     }
                 )
         elif args.plumbing_only:
-            for avenue_id in (
-                "task-modes",
-                "mrtr-url",
-                "waits-cancel",
-                "apps-ui",
-                "agent-elicitation",
-            ):
+            avenue_ids = (
+                ("apps-ui",)
+                if args.apps_ui_only
+                else ("task-modes", "mrtr-url", "waits-cancel", "apps-ui", "agent-elicitation")
+            )
+            for avenue_id in avenue_ids:
                 avenues.append(
                     {
                         "avenue": avenue_id,
@@ -1720,31 +1730,33 @@ def main() -> int:
             common.bind_provider(call, provider=args.provider, model=args.model)
             verdict["provider"] = {"provider": args.provider, "model": args.model}
 
-            avenues.append(
-                avenue_task_modes(call, wsid, sid, out_path, turn_timeout_s=args.turn_timeout_s)
-            )
-            avenues.append(
-                avenue_mrtr_url(call, wsid, sid, out_path, turn_timeout_s=args.turn_timeout_s)
-            )
-            avenues.append(
-                avenue_waits_cancel(
-                    call,
-                    base,
-                    wsid,
-                    sid,
-                    out_path,
-                    wait_event_timeout_s=args.wait_event_timeout_s,
-                    cancel_timeout_s=args.cancel_timeout_s,
+            if not args.apps_ui_only:
+                avenues.append(
+                    avenue_task_modes(call, wsid, sid, out_path, turn_timeout_s=args.turn_timeout_s)
                 )
-            )
+                avenues.append(
+                    avenue_mrtr_url(call, wsid, sid, out_path, turn_timeout_s=args.turn_timeout_s)
+                )
+                avenues.append(
+                    avenue_waits_cancel(
+                        call,
+                        base,
+                        wsid,
+                        sid,
+                        out_path,
+                        wait_event_timeout_s=args.wait_event_timeout_s,
+                        cancel_timeout_s=args.cancel_timeout_s,
+                    )
+                )
             avenues.append(
                 avenue_apps_ui(call, wsid, sid, out_path, turn_timeout_s=args.turn_timeout_s)
             )
-            avenues.append(
-                avenue_agent_elicitation(
-                    call, wsid, sid, out_path, turn_timeout_s=args.turn_timeout_s
+            if not args.apps_ui_only:
+                avenues.append(
+                    avenue_agent_elicitation(
+                        call, wsid, sid, out_path, turn_timeout_s=args.turn_timeout_s
+                    )
                 )
-            )
 
         verdict["avenues"] = avenues
         verdict["pass"] = not any(a["status"] == "fail" for a in avenues)
