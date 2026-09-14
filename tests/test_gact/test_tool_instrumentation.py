@@ -883,7 +883,7 @@ def test_spawn_runtime_tools_declare_handoff_for_spawn_and_row_for_collectors(
         "spawn_agents_parallel": ("handoff", "Spawn Agents"),
         "wait_agent_tasks": ("row", "Wait"),
         "observe_agent_tasks": ("row", "Observe"),
-        "get_agent_task_output": ("row", "Fetch full output"),
+        "get_agent_task_output": ("row", "Collect"),
         "message_agent": ("row", "Message Agent"),
     }
     assert {t.name for t in tools} == set(expected)
@@ -908,9 +908,7 @@ def test_declared_workflow_keeps_a_tool_row_around_its_child_handoffs(
         id="main",
         metadata={
             "agent_blueprint_id": "bp",
-            "workflow": {
-                "steps": [{"id": "inspect", "child": "child_a", "task": "Inspect"}]
-            },
+            "workflow": {"steps": [{"id": "inspect", "child": "child_a", "task": "Inspect"}]},
         },
     )
     with TestClient(app), _gact_app_context(app), _tool_session_context("sess_x"):
