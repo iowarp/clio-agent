@@ -176,6 +176,39 @@ def test_prompt_is_the_full_model_context_not_the_last_fifty(tmp_path: Path) -> 
         assert "ROW-IDENTIFIER-59" in agent.prompts[0]
 
 
+def test_prompt_preserves_session_context_file_inventory(tmp_path: Path) -> None:
+    """A checkpoint must not describe an attached dataset as absent.
+
+    Context files live in a session-owned registry rather than message parts, so
+    compaction has to carry their stable identity alongside the transcript.
+    """
+
+    agent = _CapturingAgent(["ok"])
+    with TestClient(build_app(sessions_path=tmp_path / "s.json", agent=agent)) as client:
+        sid = _create_session(client)
+        _seed(client, sid, [_text_message("msg_seed", sid, "analyze the attached dataset")])
+        dataset = tmp_path / "materials_scan_speed_fatigue.csv"
+        client.app.state.context_files[sid] = {
+            str(dataset): {
+                "path": str(dataset),
+                "display_path": "fixtures/materials_scan_speed_fatigue.csv",
+                "mode": "read",
+                "size": 1_337,
+                "language": "csv",
+            }
+        }
+
+        resp = client.post(f"/v1/sessions/{sid}/compact", json={})
+
+        assert resp.status_code == 200, resp.text
+        prompt = agent.prompts[0]
+        assert "--- attached session files ---" in prompt
+        assert "fixtures/materials_scan_speed_fatigue.csv" in prompt
+        assert "mode=read" in prompt
+        assert "size=1337" in prompt
+        assert "language=csv" in prompt
+
+
 # --------------------------------------------------------------------------- #
 # 4. repeated compaction retains the transcript, advances the checkpoint.
 # --------------------------------------------------------------------------- #

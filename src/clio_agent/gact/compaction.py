@@ -239,6 +239,26 @@ def _build_transcript(model_messages: list[Message]) -> str:
     return "\n".join(lines)
 
 
+def _context_file_inventory(app: Any, sid: str) -> str:
+    """Render stable facts for files attached outside the message ledger."""
+
+    registry = getattr(app.state, "context_files", {}) or {}
+    bucket = registry.get(sid, {}) or {}
+    rows: list[str] = []
+    for raw in bucket.values():
+        row = raw if isinstance(raw, Mapping) else {}
+        path = str(row.get("display_path") or row.get("path") or "").strip()
+        if not path:
+            continue
+        facts = [f"path={_bounded(path)}"]
+        for key in ("mode", "size", "language"):
+            value = row.get(key)
+            if value not in (None, ""):
+                facts.append(f"{key}={_bounded(str(value))}")
+        rows.append("- " + "; ".join(facts))
+    return "\n".join(sorted(rows))
+
+
 _PROMPT_RULES = (
     "Create an evidence-preserving compact memory for the following CLIO "
     "conversation transcript. This becomes the next model-context checkpoint, "
@@ -260,10 +280,12 @@ _PROMPT_RULES = (
 )
 
 
-def _build_prompt(transcript: str, focus: str) -> str:
+def _build_prompt(transcript: str, focus: str, context_files: str = "") -> str:
     prompt = _PROMPT_RULES
     if focus:
         prompt += f"\n\nFocus the summary on: {focus}"
+    if context_files:
+        prompt += f"\n\n--- attached session files ---\n{context_files}\n--- end files ---"
     prompt += f"\n\n--- transcript ---\n{transcript}\n--- end ---"
     return prompt
 
@@ -399,7 +421,7 @@ def compact_session_context(
             "no LM agent wired; configure one via PUT /v1/providers/lm",
         )
 
-    prompt = _build_prompt(transcript, focus)
+    prompt = _build_prompt(transcript, focus, _context_file_inventory(app, sid))
 
     def _summarize() -> str:
         return agent._run_chat_agent(prompt, "")
