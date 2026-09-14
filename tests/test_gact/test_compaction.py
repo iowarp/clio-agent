@@ -368,10 +368,15 @@ def test_auto_trigger_stages_and_flushes_after_the_turns_assistant_row(
         app_token = _ctx.set_app(app)
         try:
             maybe_autocompact()
+            # The threshold remains crossed for every later ReAct iteration in
+            # this same turn.  Once a checkpoint is staged, those iterations
+            # must not summarize and fold the live working set again.
+            maybe_autocompact()
         finally:
             _ctx.reset(app_token)
 
         assert len(summarize_calls) == 1
+        assert len(agent.prompts) == 1
         assert reset_calls == ["ops_reset"]
         # Staged: the ledger is unchanged so far.
         assert [m.id for m in client.app.state.messages[sid]] == ["msg_user_1"]
