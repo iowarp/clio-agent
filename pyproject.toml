@@ -37,10 +37,8 @@ classifiers = [
 ]
 
 dependencies = [
-    # Intentional exact prerelease: CLIO's retained ReActV2 runtime uses DSPy 3.3 APIs.
-    # Locked/source and direct-wheel installs resolve the exact dependency normally.
-    # uv's registry-backed `tool install clio-agent==...` path requires DSPy as an
-    # explicit `--with dspy==3.3.0b1` root because the top-level CLIO release is stable.
+    # Intentional exact prereleases: registry-backed uv installs must declare DSPy,
+    # FastMCP, and FastMCP Tasks as explicit roots because the top-level release is stable.
     "dspy==3.3.0b1",
     # DSPy permits a broad LiteLLM range. Pin the tested stable wheel so a global
     # prerelease policy can never select a LiteLLM dev sdist on Windows.
@@ -49,8 +47,7 @@ dependencies = [
     # SDK directly; the SDK owns its pinned runtime and JSON-RPC lifecycle.
     "openai-codex>=0.147.0,<0.148.0",
     "fastmcp==4.0.0b5",  # 2026-07-28 line (#1107); b1->b5 beta-track hardening bump (#1285
-    # C1-S5 item 5, LAST commit -- everything else verified green on b1 first);
-    # re-lock needs --prerelease=allow (beta).
+    # C1-S5 item 5, LAST commit -- everything else verified green on b1 first).
     "fastmcp-tasks==4.0.0b5",
     "clio-schemas==0.2.3",
     "pydantic>=2.12,<2.14",

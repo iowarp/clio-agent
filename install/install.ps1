@@ -119,7 +119,11 @@ if ($ClioRef) {
     New-Item -ItemType Directory -Force -Path (Join-Path $Prefix 'clio-agent') | Out-Null
     if ($PyInstall -eq 'uv') {
         RunNative uv @('venv', '--python', '>=3.12', $Venv)
-        RunNative uv @('pip', 'install', '--quiet', '--python', (Join-Path $Venv 'Scripts\python.exe'), $pkgSpec, 'dspy==3.3.0b1')
+        RunNative uv @(
+            'pip', 'install', '--quiet', '--python', (Join-Path $Venv 'Scripts\python.exe'),
+            $pkgSpec, 'dspy==3.3.0b1', 'fastmcp==4.0.0b5',
+            'fastmcp-slim==4.0.0b5', 'fastmcp-tasks==4.0.0b5'
+        )
     } else {
         RunNative python @('-m', 'venv', $Venv)
         $PipExe = Join-Path $Venv "Scripts\$PyInstall.exe"

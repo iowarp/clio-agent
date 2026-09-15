@@ -64,14 +64,14 @@ cd clio-agent && uv sync --extra optimizers --extra argonne
 uv run src/clio_agent/ui/cli.py        # or: uv run clio-agent serve
 ```
 
-CLIO intentionally pins DSPy 3.3.0b1 for its retained ReActV2 runtime and pins the
-tested stable LiteLLM release. Registry-backed uv tool resolution requires the exact
-DSPy dependency as an explicit root, which avoids globally admitting unrelated
-prereleases. For a persistent backend-only installation, use `uv tool` (not the
+CLIO intentionally pins DSPy, FastMCP, and FastMCP Tasks prereleases and the tested
+stable LiteLLM release. Registry-backed uv tool resolution requires those exact
+prereleases as explicit roots, avoiding global admission of unrelated prereleases.
+For a persistent backend-only installation, use `uv tool` (not the
 ephemeral `uvx` / `uv tool run` path):
 
 ```sh
-uv tool install --prerelease allow --with dspy==3.3.0b1 clio-agent==0.9.2
+uv tool install --with dspy==3.3.0b1 --with fastmcp==4.0.0b5 --with fastmcp-slim==4.0.0b5 --with fastmcp-tasks==4.0.0b5 clio-agent==0.9.2
 clio-agent serve
 ```
 

@@ -55,16 +55,16 @@ That's it — no `git`, no `go`.
 
 ### Persistent backend-only install with uv
 
-CLIO intentionally pins `dspy==3.3.0b1` for the retained ReActV2 runtime and
+CLIO intentionally pins DSPy, FastMCP, and FastMCP Tasks prereleases and
 `litellm==1.91.3` as its tested stable provider boundary. Registry-backed uv tool
-resolution requires the exact DSPy dependency as an explicit root, which keeps
-unrelated dependencies on stable releases.
+resolution requires those exact prereleases as explicit roots, which keeps unrelated
+dependencies on stable releases.
 
 If you only need the long-running `clio-agent` backend, install it as a persistent uv
 tool rather than using the ephemeral `uvx` / `uv tool run` environment:
 
 ```sh
-uv tool install --prerelease allow --with dspy==3.3.0b1 clio-agent==0.9.2
+uv tool install --with dspy==3.3.0b1 --with fastmcp==4.0.0b5 --with fastmcp-slim==4.0.0b5 --with fastmcp-tasks==4.0.0b5 clio-agent==0.9.2
 clio-agent serve
 ```
 

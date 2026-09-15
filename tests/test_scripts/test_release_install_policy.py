@@ -1,8 +1,8 @@
-"""Release-install policy tests for CLIO's pinned provider dependency boundary.
+"""Release-install policy tests for CLIO's pinned dependency boundary.
 
-CLIO intentionally uses DSPy 3.3.0b1. Locked source installs and direct wheel
-installs resolve that exact dependency, while uv's registry-backed resolver needs
-DSPy declared as an explicit root. The tested LiteLLM wheel stays exact.
+Locked source installs resolve CLIO's exact dependencies, while uv's registry-backed
+resolver needs each intentional prerelease declared as an explicit root. The tested
+LiteLLM wheel stays exact.
 """
 
 from __future__ import annotations
@@ -14,6 +14,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_VERSION = "0.9.2"
 EXPECTED_DSPY = "dspy==3.3.0b1"
+EXPECTED_FASTMCP = "fastmcp==4.0.0b5"
+EXPECTED_FASTMCP_SLIM = "fastmcp-slim==4.0.0b5"
+EXPECTED_FASTMCP_TASKS = "fastmcp-tasks==4.0.0b5"
 EXPECTED_LITELLM = "litellm==1.91.3"
 
 
@@ -23,27 +26,26 @@ def _text(relative_path: str) -> str:
     return (ROOT / relative_path).read_text(encoding="utf-8")
 
 
-def test_release_installers_explicitly_root_only_the_dspy_prerelease() -> None:
-    """Every official uv path admits DSPy without a global prerelease policy."""
+def test_release_installers_explicitly_root_intentional_prereleases() -> None:
+    """Every official uv path admits exact betas without a global prerelease policy."""
 
     expected_commands = {
         "install/install.sh": (
             "uv sync --extra argonne",
-            'uv pip install --quiet --python "$VENV/bin/python" "$pkg_spec" "dspy==3.3.0b1"',
+            '"dspy==3.3.0b1" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5"',
         ),
         "install/install.ps1": (
             "RunNative uv @('sync')",
-            "RunNative uv @('pip', 'install', '--quiet', '--python', "
-            "(Join-Path $Venv 'Scripts\\python.exe'), $pkgSpec, 'dspy==3.3.0b1')",
+            "'fastmcp-slim==4.0.0b5', 'fastmcp-tasks==4.0.0b5'",
         ),
         "install/clio": (
-            'pip install --python "$CLIO_VENV/bin/python" -U clio-agent "dspy==3.3.0b1"',
+            '"dspy==3.3.0b1" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5"',
         ),
         "install/build-gact-runtime.sh": (
-            'uv pip install --python "$OUT/$PYBIN_REL" "$SPEC" "dspy==3.3.0b1"',
+            '"dspy==3.3.0b1" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5"',
         ),
         "install/build-gact-runtime.ps1": (
-            "@('pip', 'install', '--python', $pyBin, $spec, 'dspy==3.3.0b1')",
+            "'fastmcp-slim==4.0.0b5', 'fastmcp-tasks==4.0.0b5'",
         ),
     }
 
@@ -54,12 +56,15 @@ def test_release_installers_explicitly_root_only_the_dspy_prerelease() -> None:
             assert command in contents, f"{relative_path} lacks narrow DSPy install: {command}"
 
 
-def test_project_pins_dspy_prerelease_and_stable_litellm() -> None:
-    """The package pins only its intentional prerelease and tested provider wheel."""
+def test_project_pins_intentional_prereleases_and_stable_litellm() -> None:
+    """The package pins its intentional prereleases and tested provider wheel."""
 
     pyproject = tomllib.loads(_text("pyproject.toml"))
     dependencies = pyproject["project"]["dependencies"]
     assert EXPECTED_DSPY in dependencies
+    assert EXPECTED_FASTMCP in dependencies
+    assert EXPECTED_FASTMCP_SLIM not in dependencies
+    assert EXPECTED_FASTMCP_TASKS in dependencies
     assert EXPECTED_LITELLM in dependencies
 
 
@@ -105,11 +110,14 @@ def test_release_workflow_smokes_the_published_registry_tool() -> None:
     publish = workflow.index("run: uv publish")
     registry_job = workflow.index("registry-smoke:")
     registry_install = workflow.index(
-        'uv tool install --python 3.12 --no-cache --prerelease allow --with dspy==3.3.0b1 "clio-agent==$version"'
+        "uv tool install --python 3.12 --no-cache", registry_job
     )
 
     assert publish < registry_job < registry_install
     assert "needs: pypi" in workflow[registry_job:registry_install]
+    assert "--with fastmcp==4.0.0b5" in workflow
+    assert "--with fastmcp-slim==4.0.0b5" in workflow
+    assert "--with fastmcp-tasks==4.0.0b5" in workflow
     assert "assert dspy.__version__ == '3.3.0b1'" in workflow
     assert "assert hasattr(dspy, 'ReActV2')" in workflow
 
@@ -118,8 +126,9 @@ def test_documented_persistent_uv_tool_install_has_the_same_policy() -> None:
     """User-facing registry installs enable the package's pinned prereleases."""
 
     command = (
-        f"uv tool install --prerelease allow --with dspy==3.3.0b1 "
-        f"clio-agent=={EXPECTED_VERSION}"
+        f"uv tool install --with {EXPECTED_DSPY} --with {EXPECTED_FASTMCP} "
+        f"--with {EXPECTED_FASTMCP_SLIM} "
+        f"--with {EXPECTED_FASTMCP_TASKS} clio-agent=={EXPECTED_VERSION}"
     )
     for relative_path in ("README.md", "docs/INSTALL.md", "install/README.md"):
         contents = _text(relative_path)

@@ -146,7 +146,12 @@ jobs:
           export UV_TOOL_DIR="$RUNNER_TEMP/clio-agent-registry-smoke/tools"
           export UV_TOOL_BIN_DIR="$RUNNER_TEMP/clio-agent-registry-smoke/bin"
           for attempt in $(seq 1 12); do
-            if uv tool install --python 3.12 --no-cache --prerelease allow --with dspy==3.3.0b1 "clio-agent==$version"; then
+            if uv tool install --python 3.12 --no-cache \
+              --with dspy==3.3.0b1 \
+              --with fastmcp==4.0.0b5 \
+              --with fastmcp-slim==4.0.0b5 \
+              --with fastmcp-tasks==4.0.0b5 \
+              "clio-agent==$version"; then
               "$UV_TOOL_BIN_DIR/clio-agent" --version | grep -Fx "clio-agent $version" >/dev/null
               "$UV_TOOL_DIR/clio-agent/bin/python" -c \
                 "import dspy; assert dspy.__version__ == '3.3.0b1'; assert hasattr(dspy, 'ReActV2')"

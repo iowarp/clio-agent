@@ -87,7 +87,9 @@ else
   SPEC="clio-agent @ ${REPO_URL}@${REF}"
 fi
 echo "[build-gact-runtime] installing: $SPEC (no extras)"
-uv pip install --python "$OUT/$PYBIN_REL" "$SPEC" "dspy==3.3.0b1"
+uv pip install --python "$OUT/$PYBIN_REL" "$SPEC" \
+  "dspy==3.3.0b1" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5" \
+  "fastmcp-tasks==4.0.0b5"
 
 SIZE_BEFORE="$(dir_size_mb "$OUT")"
 echo "[build-gact-runtime] size before prune: ${SIZE_BEFORE} MB"

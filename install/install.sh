@@ -126,7 +126,9 @@ else
   mkdir -p "$PREFIX/clio-agent"
   if [ "$PYINSTALL" = "uv" ]; then
     uv venv --python ">=3.12" "$VENV" >/dev/null
-    uv pip install --quiet --python "$VENV/bin/python" "$pkg_spec" "dspy==3.3.0b1"
+    uv pip install --quiet --python "$VENV/bin/python" "$pkg_spec" \
+      "dspy==3.3.0b1" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5" \
+      "fastmcp-tasks==4.0.0b5"
   else
     python3 -m venv "$VENV"
     "$VENV/bin/$PYINSTALL" install --quiet --upgrade pip
