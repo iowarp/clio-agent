@@ -133,6 +133,7 @@ def test_documented_persistent_uv_tool_install_has_the_same_policy() -> None:
     for relative_path in ("docs/INSTALL.md", "install/README.md"):
         contents = _text(relative_path)
         assert command in contents
+        assert "uvx" in contents or "uv tool run" in contents
 
     # The immutable v0.9.2 wheel description retains the broader, still-valid command
     # published to PyPI. Official installers and current install docs use the narrower
@@ -141,11 +142,10 @@ def test_documented_persistent_uv_tool_install_has_the_same_policy() -> None:
         "uv tool install --prerelease allow --with dspy==3.3.0b1 "
         f"clio-agent=={EXPECTED_VERSION}"
     ) in _text("README.md")
-        assert "uvx" in contents or "uv tool run" in contents
 
 
 def test_package_init_and_lock_share_the_release_version() -> None:
-    """The package metadata, import surface, and lock all identify v0.9.1."""
+    """The package metadata, import surface, and lock share the release version."""
 
     pyproject = tomllib.loads(_text("pyproject.toml"))
     assert pyproject["project"]["version"] == EXPECTED_VERSION
