@@ -66,6 +66,19 @@
   font-size: 0.92rem;
   margin-top: 0.4rem;
 }
+.release-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-top: 0.35rem;
+  padding: 0.35rem 0.75rem;
+  border: 1px solid var(--accent-line);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font: 600 0.84rem/1.4 var(--mono);
+}
+.release-badge:hover { text-decoration: none; filter: brightness(1.08); }
 @media (max-width: 640px) { .beta-ribbon { top: 16px; right: -56px; padding: 6px 60px; } }
 
 * { box-sizing: border-box; }
