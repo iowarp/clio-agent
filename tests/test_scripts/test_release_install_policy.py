@@ -38,15 +38,11 @@ def test_release_installers_explicitly_root_intentional_prereleases() -> None:
             "RunNative uv @('sync')",
             "'fastmcp-slim==4.0.0b5', 'fastmcp-tasks==4.0.0b5'",
         ),
-        "install/clio": (
-            '"dspy==3.3.0b1" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5"',
-        ),
+        "install/clio": ('"dspy==3.3.0b1" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5"',),
         "install/build-gact-runtime.sh": (
             '"dspy==3.3.0b1" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5"',
         ),
-        "install/build-gact-runtime.ps1": (
-            "'fastmcp-slim==4.0.0b5', 'fastmcp-tasks==4.0.0b5'",
-        ),
+        "install/build-gact-runtime.ps1": ("'fastmcp-slim==4.0.0b5', 'fastmcp-tasks==4.0.0b5'",),
     }
 
     for relative_path, commands in expected_commands.items():
@@ -100,7 +96,13 @@ def test_release_builds_follow_the_current_gact_workspace_layout() -> None:
         assert "@clio/web" not in contents
         assert "@clio/workspace" in contents
     assert 'for cand in "$HOME/gact-tui"' in launcher
-    assert 'GOWORK=off go build' in tui_builder
+    assert "GOWORK=off go build" in tui_builder
+    assert '"$GACT_ROOT/package.json"' in tui_builder
+    assert 'gact_release="v${gact_package_version}"' in tui_builder
+    assert ".Release=${gact_release}" in tui_builder
+    assert ".BuildRevision=${gact_revision}" in tui_builder
+    assert '"$OUT" version' in tui_builder
+    assert '"$OUT" version >/dev/null 2>&1 || true' not in tui_builder
 
 
 def test_release_workflow_smokes_the_published_registry_tool() -> None:
@@ -109,9 +111,7 @@ def test_release_workflow_smokes_the_published_registry_tool() -> None:
     workflow = _text(".github/workflows/release.yml")
     publish = workflow.index("run: uv publish")
     registry_job = workflow.index("registry-smoke:")
-    registry_install = workflow.index(
-        "uv tool install --python 3.12 --no-cache", registry_job
-    )
+    registry_install = workflow.index("uv tool install --python 3.12 --no-cache", registry_job)
 
     assert publish < registry_job < registry_install
     assert "needs: pypi" in workflow[registry_job:registry_install]
@@ -139,8 +139,7 @@ def test_documented_persistent_uv_tool_install_has_the_same_policy() -> None:
     # published to PyPI. Official installers and current install docs use the narrower
     # exact-root policy above.
     assert (
-        "uv tool install --prerelease allow --with dspy==3.3.0b1 "
-        f"clio-agent=={EXPECTED_VERSION}"
+        f"uv tool install --prerelease allow --with dspy==3.3.0b1 clio-agent=={EXPECTED_VERSION}"
     ) in _text("README.md")
 
 

@@ -30,12 +30,35 @@ mkdir -p "$(dirname "$OUT")"
 # upstream (the brand symbols no longer exist; `-X` against a missing symbol is a
 # silent no-op). The TUI is now white-labeled purely at runtime — the `clio`
 # launcher exports `GACT_BRAND_NAME=CLIO` (see install/clio), which drives the
-# window title + splash wordmark. So this build stays a plain, stripped build.
-ldflags=("-s" "-w")
+# window title + splash wordmark. Version identity still belongs to the pinned
+# GACT source, so stamp the same fields as GACT's Makefile instead of falling
+# back to the historical development version embedded by a plain `go build`.
+version_pkg="github.com/JaimeCernuda/gact-tui/tui/internal/version"
+gact_revision="$(git -C "$GACT_ROOT" rev-parse HEAD)"
+gact_build_time="$(git -C "$GACT_ROOT" show -s --format=%cI HEAD)"
+gact_package_version="$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$GACT_ROOT/package.json" | head -n 1)"
+if [[ -z "$gact_package_version" ]]; then
+  echo "could not read the GACT release version from $GACT_ROOT/package.json" >&2
+  exit 1
+fi
+gact_release="v${gact_package_version}"
+if [[ -n "$(git -C "$GACT_ROOT" status --porcelain --untracked-files=no)" ]]; then
+  gact_dirty=true
+else
+  gact_dirty=false
+fi
+ldflags=(
+  "-s"
+  "-w"
+  "-X" "${version_pkg}.Release=${gact_release}"
+  "-X" "${version_pkg}.BuildRevision=${gact_revision}"
+  "-X" "${version_pkg}.BuildTime=${gact_build_time}"
+  "-X" "${version_pkg}.BuildDirty=${gact_dirty}"
+)
 
 (
   cd "$GACT_ROOT/tui"
   CGO_ENABLED="${CGO_ENABLED:-0}" GOWORK=off go build -trimpath -ldflags "${ldflags[*]}" -o "$OUT" .
 )
 
-"$OUT" version >/dev/null 2>&1 || true
+"$OUT" version
