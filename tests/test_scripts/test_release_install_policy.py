@@ -130,9 +130,17 @@ def test_documented_persistent_uv_tool_install_has_the_same_policy() -> None:
         f"--with {EXPECTED_FASTMCP_SLIM} "
         f"--with {EXPECTED_FASTMCP_TASKS} clio-agent=={EXPECTED_VERSION}"
     )
-    for relative_path in ("README.md", "docs/INSTALL.md", "install/README.md"):
+    for relative_path in ("docs/INSTALL.md", "install/README.md"):
         contents = _text(relative_path)
         assert command in contents
+
+    # The immutable v0.9.2 wheel description retains the broader, still-valid command
+    # published to PyPI. Official installers and current install docs use the narrower
+    # exact-root policy above.
+    assert (
+        "uv tool install --prerelease allow --with dspy==3.3.0b1 "
+        f"clio-agent=={EXPECTED_VERSION}"
+    ) in _text("README.md")
         assert "uvx" in contents or "uv tool run" in contents
 
 
