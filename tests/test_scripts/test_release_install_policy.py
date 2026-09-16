@@ -115,6 +115,9 @@ def test_release_builds_follow_the_current_gact_workspace_layout() -> None:
     assert '"$target_goarch" == "$(go env GOHOSTARCH)"' in tui_builder
     assert '"$OUT" version' in tui_builder
     assert '"$OUT" version >/dev/null 2>&1 || true' not in tui_builder
+    assert 'release_version="${GITHUB_REF_NAME#v}"' in bundles
+    assert "config.version = releaseVersion" in bundles
+    assert "invalid CLIO release version" in bundles
 
 
 def test_release_workflow_smokes_the_published_registry_tool() -> None:

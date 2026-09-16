@@ -19,6 +19,9 @@ desktop, and website revisions.
   version provenance without requiring copied `.git` internals.
 - Cross-compiled TUI release binaries are now inspected with Go's portable
   binary metadata reader instead of being executed on the Linux build host.
+- CLIO-branded desktop packages now inherit the CLIO release version, so the
+  embedded application version and installer filenames match the release that
+  produced them instead of exposing the independent GACT desktop-shell version.
 
 ## [0.9.3] - 2026-09-16
 

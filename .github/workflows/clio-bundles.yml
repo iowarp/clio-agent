@@ -269,12 +269,17 @@ jobs:
           set -euo pipefail
           brand="${{ github.workspace }}/branding/clio/tauri.clio.conf.json"
           cfg="$RUNNER_TEMP/tauri.release.conf.json"
+          release_version="${GITHUB_REF_NAME#v}"
           # The tauri CLI rejects multiple --config flags, so for the bundled
           # variant we deep-merge the bundled config + the CLIO branding overlay
           # into a single config (branding wins on conflicts) and pass it once.
-          node - "${{ matrix.variant }}" "$brand" "$cfg" <<'NODE'
+          node - "${{ matrix.variant }}" "$brand" "$cfg" "$release_version" <<'NODE'
           const fs = require("node:fs");
-          const [variant, brandPath, outputPath] = process.argv.slice(2);
+          const [variant, brandPath, outputPath, releaseVersion] = process.argv.slice(2);
+
+          if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(releaseVersion)) {
+            throw new Error(`invalid CLIO release version: ${releaseVersion}`);
+          }
 
           const isObject = (value) =>
             value !== null && typeof value === "object" && !Array.isArray(value);
@@ -299,6 +304,9 @@ jobs:
                   brand,
                 )
               : brand;
+          // CLIO-branded installers use the CLIO release identity. GACT keeps
+          // its independent package version for its own releases and diagnostics.
+          config.version = releaseVersion;
           config.bundle ??= {};
           config.bundle.createUpdaterArtifacts = false;
           if (config.plugins?.updater) {
