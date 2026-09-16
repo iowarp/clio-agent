@@ -6,6 +6,24 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.3] - 2026-09-16
+
+This patch release updates the public REUI-first product site and repairs the
+bundled desktop startup experience.
+
+### Fixed
+
+- The bundled desktop now explains that its private CLIO service is starting
+  and will connect automatically. It no longer presents a manual connection
+  address while the service selects its ephemeral localhost port.
+
+### Changed
+
+- The public site now leads with the web workspace, Desktop and Web access,
+  current release downloads, and real EarthScope and Factorio Flat evidence
+  captured during the v0.9.2 qualification campaign. The terminal UI remains
+  available as an optional interface rather than the primary product view.
+
 ## [0.9.2] - 2026-09-13
 
 This release pairs the agent runtime with the new GACT React workspace and

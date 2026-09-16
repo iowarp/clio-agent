@@ -12,7 +12,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_VERSION = "0.9.2"
+EXPECTED_VERSION = "0.9.3"
 EXPECTED_DSPY = "dspy==3.3.0b1"
 EXPECTED_FASTMCP = "fastmcp==4.0.0b5"
 EXPECTED_FASTMCP_SLIM = "fastmcp-slim==4.0.0b5"
@@ -135,7 +135,7 @@ def test_documented_persistent_uv_tool_install_has_the_same_policy() -> None:
         assert command in contents
         assert "uvx" in contents or "uv tool run" in contents
 
-    # The immutable v0.9.2 wheel description retains the broader, still-valid command
+    # The release README retains the broader, still-valid command
     # published to PyPI. Official installers and current install docs use the narrower
     # exact-root policy above.
     assert (
