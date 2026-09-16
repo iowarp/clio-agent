@@ -319,6 +319,24 @@
       })
       .then(function (data) {
         var assets = (data && data.assets) || [];
+        var tag = (data && data.tag_name) || "";
+        var version = tag.replace(/^v/, "");
+        var releaseUrl = (data && data.html_url) || RELEASES_PAGE;
+        document.querySelectorAll("[data-release-label]").forEach(function (label) {
+          label.textContent = tag ? "CLIO " + tag : "Latest release";
+        });
+        document.querySelectorAll("[data-release-version]").forEach(function (label) {
+          if (version) label.textContent = version;
+        });
+        var releaseBadge = document.getElementById("releaseBadge");
+        if (releaseBadge) releaseBadge.href = releaseUrl;
+        var dockerCommand = document.getElementById("dockerWebCommand");
+        if (dockerCommand && version) {
+          dockerCommand.setAttribute(
+            "data-copy",
+            "docker run --rm -p 8080:80 ghcr.io/iowarp/clio-web:" + version
+          );
+        }
         var variantByKey = {};
         document.querySelectorAll("[data-dl]").forEach(function (link) {
           var key = link.getAttribute("data-dl");
@@ -342,6 +360,23 @@
         document.querySelectorAll("[data-dl-note]").forEach(function (note) {
           note.textContent = variantNote(variantByKey[note.getAttribute("data-dl-note")]);
         });
+        var primaryKey = {
+          windows: "windows-exe",
+          macos: "macos-dmg",
+          linux: "linux-appimage"
+        }[os];
+        var heroDownload = document.getElementById("heroDownload");
+        if (heroDownload && primaryKey) {
+          var heroAsset = pickAsset(assets, DL_EXT[primaryKey], arch);
+          if (heroAsset) {
+            heroDownload.href = heroAsset.url;
+            heroDownload.target = "_blank";
+            heroDownload.rel = "noopener";
+            heroDownload.textContent = "Download for " +
+              (os === "macos" ? "macOS" : os.charAt(0).toUpperCase() + os.slice(1));
+            heroDownload.setAttribute("title", variantNote(heroAsset.variant));
+          }
+        }
       })
       .catch(function () {
         // graceful fallback: leave the default releases-page hrefs and show all buttons.
