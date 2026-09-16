@@ -768,6 +768,43 @@ details.card .card-body .hint { margin-top: 12px; }
 .home-v2 .nav-links a { font-size: 13px; letter-spacing: 0.01em; }
 .home-v2 .btn-large { padding: 14px 22px; border-radius: 12px; }
 
+.home-v2 section.download-hero.wrap {
+  padding-top: 72px;
+  padding-bottom: 64px;
+}
+.download-heading {
+  max-width: 760px;
+  margin: 0 auto 38px;
+  text-align: center;
+}
+.download-heading .release-badge { margin-bottom: 24px; }
+.download-heading .eyebrow { margin-bottom: 8px; }
+.download-heading h1 {
+  font-size: clamp(52px, 8vw, 92px);
+  line-height: .96;
+  letter-spacing: -.06em;
+}
+.download-heading > p:last-child {
+  max-width: 610px;
+  margin: 22px auto 0;
+  color: var(--muted);
+  font-size: 18px;
+}
+.os-grid-first { max-width: 1120px; margin: 0 auto; }
+.home-v2 .os-grid-first .os-card { min-height: 292px; padding: 24px; }
+.home-v2 .os-grid-first .os-mark { margin-bottom: 12px; }
+.home-v2 .os-grid-first .os-actions { padding-top: 12px; }
+.download-secondary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 14px 20px;
+  margin-top: 24px;
+  color: #77818b;
+  font-size: 12px;
+}
+
 .launch-hero {
   min-height: 720px;
   display: grid;
@@ -827,6 +864,30 @@ details.card .card-body .hint { margin-top: 12px; }
 .desktop-footnote { margin: 24px 0 0; color: #77818b; font-size: 12px; text-align: center; }
 
 .evidence-band { padding: 104px 0; background: #0c0f13; border-top: 1px solid var(--border-soft); border-bottom: 1px solid var(--border-soft); }
+.reui-carousel { max-width: 1160px; margin: 0 auto; }
+.reui-carousel .carousel-frame {
+  aspect-ratio: 16 / 8.65;
+  border-color: #2a323c;
+  border-radius: 18px;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, .38);
+}
+.reui-carousel .slide img {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  object-fit: cover;
+  object-position: top left;
+}
+.reui-carousel .car-caption {
+  display: flex;
+  justify-content: center;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 20px;
+}
+.reui-carousel .car-caption strong { color: #eef2f5; }
+.reui-carousel .car-caption span { color: var(--muted); }
 .proof-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 .proof-card { margin: 0; overflow: hidden; border-radius: 17px; border: 1px solid #252c34; background: #11151a; }
 .proof-card img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; object-position: top left; background: #050607; }
@@ -862,6 +923,13 @@ details.card .card-body .hint { margin-top: 12px; }
 }
 
 @media (max-width: 760px) {
+  .home-v2 section.download-hero.wrap { padding-top: 54px; padding-bottom: 54px; }
+  .download-heading { text-align: left; margin-bottom: 30px; }
+  .download-heading h1 { font-size: clamp(48px, 16vw, 68px); }
+  .download-heading > p:last-child { margin-left: 0; font-size: 16px; }
+  .download-secondary { justify-content: flex-start; }
+  .reui-carousel .carousel-frame { aspect-ratio: 4 / 3; }
+  .reui-carousel .car-caption { display: grid; gap: 3px; text-align: left; }
   .launch-hero { padding-top: 64px; padding-bottom: 64px; gap: 44px; }
   .launch-copy h1 { font-size: clamp(44px, 14vw, 62px); }
   .launch-actions .btn { width: 100%; justify-content: center; }

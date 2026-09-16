@@ -119,14 +119,6 @@
     var slides = Array.prototype.slice.call(root.querySelectorAll(".slide"));
     if (!slides.length) return;
 
-    var captions = [
-      "<strong>Inspect generated plots</strong>: artifacts shown in context",
-      "<strong>Rendered reports &amp; evidence</strong>: tables, checklists, Markdown",
-      "<strong>Generated artifacts</strong>: image &amp; file previews inline",
-      "<strong>Review proposed edits</strong>: see diffs before anything changes",
-      "<strong>Live, streaming responses</strong>: watch the work as it happens"
-    ];
-
     var prev = document.getElementById("carPrev");
     var next = document.getElementById("carNext");
     var caption = document.getElementById("carCaption");
@@ -149,7 +141,18 @@
     function render() {
       slides.forEach(function (s, i) { s.classList.toggle("active", i === index); });
       dots.forEach(function (d, i) { d.classList.toggle("active", i === index); });
-      if (caption) caption.innerHTML = captions[index] || "";
+      if (caption) {
+        var slide = slides[index];
+        var title = slide.getAttribute("data-title") || "";
+        var copy = slide.getAttribute("data-copy") || "";
+        caption.replaceChildren();
+        var heading = document.createElement("strong");
+        heading.textContent = title;
+        var detail = document.createElement("span");
+        detail.textContent = copy;
+        caption.appendChild(heading);
+        caption.appendChild(detail);
+      }
     }
 
     function go(i, userInitiated) {
@@ -288,8 +291,8 @@
 
   // Human caption for a resolved variant; drives the per-download honesty note.
   function variantNote(variant) {
-    if (variant === "bundled") return "Includes the CLIO backend — runs standalone.";
-    if (variant === "lite") return "Attach-only build — requires a running clio-agent.";
+    if (variant === "bundled") return "Includes the CLIO backend and runs standalone.";
+    if (variant === "lite") return "Attach-only build; requires a running clio-agent.";
     return "";
   }
 
