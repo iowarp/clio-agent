@@ -12,7 +12,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_VERSION = "0.9.3"
+EXPECTED_VERSION = "0.9.4"
 EXPECTED_DSPY = "dspy==3.3.0b1"
 EXPECTED_FASTMCP = "fastmcp==4.0.0b5"
 EXPECTED_FASTMCP_SLIM = "fastmcp-slim==4.0.0b5"
@@ -88,6 +88,8 @@ def test_release_builds_follow_the_current_gact_workspace_layout() -> None:
 
     bundles = _text(".github/workflows/clio-bundles.yml")
     web_image = _text("docker/Dockerfile.clio-web")
+    tui_image = _text("docker/Dockerfile.clio-tui")
+    docker_workflow = _text(".github/workflows/docker.yml")
     tui_builder = _text("scripts/build_clio_tui.sh")
     launcher = _text("install/clio")
 
@@ -101,6 +103,16 @@ def test_release_builds_follow_the_current_gact_workspace_layout() -> None:
     assert 'gact_release="v${gact_package_version}"' in tui_builder
     assert ".Release=${gact_release}" in tui_builder
     assert ".BuildRevision=${gact_revision}" in tui_builder
+    assert 'gact_revision="${GACT_TUI_REVISION:-}"' in tui_builder
+    assert 'gact_build_time="${GACT_TUI_BUILD_TIME:-}"' in tui_builder
+    assert "ARG GACT_TUI_REVISION" in tui_image
+    assert "ARG GACT_TUI_BUILD_TIME" in tui_image
+    assert "Resolve GACT source identity" in docker_workflow
+    assert "GACT_TUI_REVISION=${{ steps.gact_source.outputs.revision }}" in docker_workflow
+    assert "GACT_TUI_BUILD_TIME=${{ steps.gact_source.outputs.build_time }}" in docker_workflow
+    assert 'go version -m "$OUT"' in tui_builder
+    assert '"$target_goos" == "$(go env GOHOSTOS)"' in tui_builder
+    assert '"$target_goarch" == "$(go env GOHOSTARCH)"' in tui_builder
     assert '"$OUT" version' in tui_builder
     assert '"$OUT" version >/dev/null 2>&1 || true' not in tui_builder
 
