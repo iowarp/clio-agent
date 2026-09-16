@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>CLIO — a transparent AI workspace for science</title>
-  <meta name="description" content="CLIO is a local-first AI workspace for scientific work. Follow tools, evidence, agents, plots, and artifacts in one inspectable interface." />
+  <title>CLIO | A transparent AI workspace for science</title>
+  <meta name="description" content="Download CLIO, a local-first AI workspace that keeps tools, evidence, agents, plots, and artifacts visible." />
   <link rel="icon" href="assets/logo.png" type="image/png" />
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -18,9 +18,8 @@
       </a>
       <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation">☰</button>
       <nav class="nav-links" id="navLinks">
-        <a href="#product">Product</a>
         <a href="#desktop">Desktop</a>
-        <a href="#evidence">Live evidence</a>
+        <a href="#evidence">Product</a>
         <a href="#install">Install</a>
         <a href="docs.html">Docs</a>
         <a class="ghbtn" href="https://github.com/iowarp/clio-agent" target="_blank" rel="noopener">GitHub ↗</a>
@@ -29,35 +28,62 @@
   </header>
 
   <main>
-    <section class="launch-hero wrap" id="product">
-      <div class="launch-copy">
+    <section class="download-hero wrap" id="desktop">
+      <div class="download-heading">
         <a class="release-badge" id="releaseBadge" href="https://github.com/iowarp/clio-agent/releases/latest" target="_blank" rel="noopener">
           <span class="release-dot" aria-hidden="true"></span>
           <span data-release-label>CLIO v0.9.3</span>
         </a>
-        <h1>Scientific AI,<br /><span>with the work visible.</span></h1>
-        <p class="launch-lede">CLIO brings models, specialist agents, tools, evidence, plots, and files into one local-first workspace. You can follow the reasoning, intervene, and inspect every result.</p>
-        <div class="launch-actions">
-          <a class="btn btn-primary btn-large" id="heroDownload" href="#desktop">Download desktop</a>
-          <a class="btn btn-large" href="#install">Run the web app</a>
+        <p class="eyebrow">Desktop</p>
+        <h1>Download CLIO.</h1>
+        <p>Pick your platform. Bundled builds start a private CLIO backend and connect automatically.</p>
+      </div>
+
+      <div class="os-grid os-grid-first" id="osGrid">
+        <div class="os-card" data-os="windows" id="osCardWindows">
+          <span class="os-badge">Your platform</span>
+          <div class="os-mark">⊞</div>
+          <h2 class="os-name">Windows</h2>
+          <p class="os-arch">64-bit bundled app</p>
+          <div class="os-actions">
+            <a class="btn btn-primary os-primary" data-dl="windows-exe" href="https://github.com/iowarp/clio-agent/releases/latest" target="_blank" rel="noopener">Download .exe</a>
+            <div class="os-formats"><a class="os-format" data-dl="windows-msi" href="https://github.com/iowarp/clio-agent/releases/latest" target="_blank" rel="noopener">.msi</a></div>
+            <p class="os-dl-note" data-dl-note="windows-exe"></p>
+          </div>
         </div>
-        <div class="launch-facts" aria-label="CLIO product qualities">
-          <span>Local backend</span>
-          <span>Human checkpoints</span>
-          <span>Inspectable provenance</span>
+
+        <div class="os-card" data-os="macos" id="osCardMacos">
+          <span class="os-badge">Your platform</span>
+          <div class="os-mark">●</div>
+          <h2 class="os-name">macOS</h2>
+          <p class="os-arch">Apple Silicon bundled app</p>
+          <div class="os-actions">
+            <a class="btn btn-primary os-primary" data-dl="macos-dmg" href="https://github.com/iowarp/clio-agent/releases/latest" target="_blank" rel="noopener">Download .dmg</a>
+            <div class="os-formats"><span class="os-formats-note">Disk image</span></div>
+            <p class="os-dl-note" data-dl-note="macos-dmg"></p>
+          </div>
+        </div>
+
+        <div class="os-card" data-os="linux" id="osCardLinux">
+          <span class="os-badge">Your platform</span>
+          <div class="os-mark">⌁</div>
+          <h2 class="os-name">Linux</h2>
+          <p class="os-arch">AppImage, .deb, or .rpm</p>
+          <div class="os-actions">
+            <a class="btn btn-primary os-primary" data-dl="linux-appimage" href="https://github.com/iowarp/clio-agent/releases/latest" target="_blank" rel="noopener">Download AppImage</a>
+            <div class="os-formats">
+              <a class="os-format" data-dl="linux-deb" href="https://github.com/iowarp/clio-agent/releases/latest" target="_blank" rel="noopener">.deb</a>
+              <a class="os-format" data-dl="linux-rpm" href="https://github.com/iowarp/clio-agent/releases/latest" target="_blank" rel="noopener">.rpm</a>
+            </div>
+            <p class="os-dl-note" data-dl-note="linux-appimage"></p>
+          </div>
         </div>
       </div>
-      <figure class="product-window hero-window">
-        <div class="window-chrome" aria-hidden="true">
-          <span></span><span></span><span></span>
-          <strong>CLIO workspace</strong>
-        </div>
-        <img src="assets/reui-evidence.png" alt="CLIO web workspace showing an agent result, files, changes, and artifacts" />
-        <figcaption>
-          <span><b>Live run</b> Tools and reasoning stream as they happen</span>
-          <span><b>Evidence</b> Files, changes, and artifacts stay inspectable</span>
-        </figcaption>
-      </figure>
+
+      <div class="download-secondary">
+        <a class="btn" href="#install">Run the web app</a>
+        <span>Release assets resolve to the correct installer automatically.</span>
+      </div>
     </section>
 
     <section class="release-strip" aria-label="Release components">
@@ -70,81 +96,32 @@
       </div>
     </section>
 
-    <section id="desktop" class="wrap desktop-first">
-      <div class="section-head section-head-split">
-        <div>
-          <p class="eyebrow">Desktop</p>
-          <h2>Install it once.<br />CLIO starts itself.</h2>
-        </div>
-        <p class="section-sub">Bundled Windows, macOS, .deb, and .rpm packages include the CLIO backend. It starts on a private local address and connects the interface automatically—no port hunting or separate server setup. Attach-only downloads are labeled explicitly.</p>
-      </div>
-
-      <div class="os-grid" id="osGrid">
-        <div class="os-card" data-os="windows" id="osCardWindows">
-          <span class="os-badge">Your platform</span>
-          <div class="os-mark">⊞</div>
-          <h3 class="os-name">Windows</h3>
-          <p class="os-arch">64-bit · bundled backend</p>
-          <div class="os-actions">
-            <a class="btn btn-primary os-primary" data-dl="windows-exe" href="https://github.com/iowarp/clio-agent/releases/latest" target="_blank" rel="noopener">Download .exe</a>
-            <div class="os-formats"><a class="os-format" data-dl="windows-msi" href="https://github.com/iowarp/clio-agent/releases/latest" target="_blank" rel="noopener">Prefer .msi</a></div>
-            <p class="os-dl-note" data-dl-note="windows-exe"></p>
-          </div>
-        </div>
-
-        <div class="os-card" data-os="macos" id="osCardMacos">
-          <span class="os-badge">Your platform</span>
-          <div class="os-mark">●</div>
-          <h3 class="os-name">macOS</h3>
-          <p class="os-arch">Apple Silicon · bundled backend</p>
-          <div class="os-actions">
-            <a class="btn btn-primary os-primary" data-dl="macos-dmg" href="https://github.com/iowarp/clio-agent/releases/latest" target="_blank" rel="noopener">Download .dmg</a>
-            <div class="os-formats"><span class="os-formats-note">Native disk image</span></div>
-            <p class="os-dl-note" data-dl-note="macos-dmg"></p>
-          </div>
-        </div>
-
-        <div class="os-card" data-os="linux" id="osCardLinux">
-          <span class="os-badge">Your platform</span>
-          <div class="os-mark">⌁</div>
-          <h3 class="os-name">Linux</h3>
-          <p class="os-arch">64-bit · AppImage, .deb, or .rpm</p>
-          <div class="os-actions">
-            <a class="btn btn-primary os-primary" data-dl="linux-appimage" href="https://github.com/iowarp/clio-agent/releases/latest" target="_blank" rel="noopener">Download AppImage</a>
-            <div class="os-formats">
-              <a class="os-format" data-dl="linux-deb" href="https://github.com/iowarp/clio-agent/releases/latest" target="_blank" rel="noopener">.deb</a>
-              <a class="os-format" data-dl="linux-rpm" href="https://github.com/iowarp/clio-agent/releases/latest" target="_blank" rel="noopener">.rpm</a>
-            </div>
-            <p class="os-dl-note" data-dl-note="linux-appimage"></p>
-          </div>
-        </div>
-      </div>
-      <p class="desktop-footnote">Beta software. Interfaces, blueprints, and on-disk formats may change between releases. <a href="uninstall.html">Uninstall guide →</a></p>
-    </section>
-
     <section id="evidence" class="evidence-band">
       <div class="wrap">
         <div class="section-head section-head-split">
           <div>
-            <p class="eyebrow">The workspace</p>
-            <h2>One place for the analysis<br />and its evidence.</h2>
+            <p class="eyebrow">Inside the workspace</p>
+            <h2>See the run, not just the answer.</h2>
           </div>
-          <p class="section-sub">These are captured from the live v0.9.2 qualification campaign—not design mockups.</p>
+          <p class="section-sub">Real Browser captures from the release qualification. No mockups.</p>
         </div>
 
-        <div class="proof-grid">
-          <figure class="proof-card proof-wide">
-            <img src="assets/reui-earthscope-map.png" alt="Interactive EarthScope station selection map inside CLIO" loading="lazy" />
-            <figcaption><strong>Choose before the agent continues.</strong><span>Interactive scientific surfaces return structured human decisions to the same session.</span></figcaption>
-          </figure>
-          <figure class="proof-card">
-            <img src="assets/reui-earthscope-chart.png" alt="Interactive GNSS time-series chart inside CLIO" loading="lazy" />
-            <figcaption><strong>Explore real data in context.</strong><span>Interactive plots remain beside the request, tools, and provenance that created them.</span></figcaption>
-          </figure>
-          <figure class="proof-card">
-            <img src="assets/reui-factorio-report.png" alt="Materials-science report artifact open in the CLIO side panel" loading="lazy" />
-            <figcaption><strong>Open the deliverable without losing the run.</strong><span>Reports and figures stay attached to their source session.</span></figcaption>
-          </figure>
+        <div class="carousel reui-carousel" id="carousel">
+          <div class="carousel-frame">
+            <button class="car-arrow prev" id="carPrev" type="button" aria-label="Previous screenshot">‹</button>
+            <div class="slides">
+              <div class="slide active" data-title="Evidence and provenance" data-copy="Files, changes, and artifacts stay tied to the run that produced them."><img src="assets/reui-provenance-evidence.png" alt="CLIO evidence panel showing files, changes, artifacts, and their source run" /></div>
+              <div class="slide" data-title="Deep session search" data-copy="Search prior sessions, open each match, and keep the result bounded."><img src="assets/reui-deep-search.png" alt="CLIO session memory search with individually expandable results" loading="lazy" /></div>
+              <div class="slide" data-title="Agent execution graph" data-copy="Inspect parent and child work as a hierarchical execution timeline."><img src="assets/reui-agent-gantt.png" alt="CLIO hierarchical Gantt with agent and tool execution lanes" loading="lazy" /></div>
+              <div class="slide" data-title="Human data selection" data-copy="Choose a real station on the map before the workflow continues."><img src="assets/reui-earthscope-map.png" alt="Interactive EarthScope station selection map inside CLIO" loading="lazy" /></div>
+              <div class="slide" data-title="Interactive scientific charts" data-copy="Explore live data beside the tools and evidence that produced it."><img src="assets/reui-earthscope-chart.png" alt="Interactive GNSS time-series chart inside CLIO" loading="lazy" /></div>
+              <div class="slide" data-title="Reports and documents" data-copy="Open the deliverable beside its source session without losing context."><img src="assets/reui-factorio-report.png" alt="Materials-science report artifact open in the CLIO side panel" loading="lazy" /></div>
+              <div class="slide" data-title="Live tool semantics" data-copy="Tool calls, arguments, outcomes, and agent reasoning remain readable as work streams."><img src="assets/reui-evidence.png" alt="CLIO workspace with a live run and the evidence panel open" loading="lazy" /></div>
+            </div>
+            <button class="car-arrow next" id="carNext" type="button" aria-label="Next screenshot">›</button>
+          </div>
+          <div class="car-caption" id="carCaption"></div>
+          <div class="car-dots" id="carDots"></div>
         </div>
       </div>
     </section>
@@ -155,7 +132,7 @@
           <p class="eyebrow">Web and command line</p>
           <h2>Use the interface that fits<br />where you work.</h2>
         </div>
-        <p class="section-sub">Desktop is the simplest start. For servers and development environments, install CLIO once and open the same workspace in your browser. The terminal UI remains available as an optional interface.</p>
+        <p class="section-sub">Desktop is the simplest start. Servers and development environments can open the same workspace in a browser. The terminal UI remains optional.</p>
       </div>
 
       <div class="access-grid">
@@ -192,7 +169,7 @@
         </article>
 
         <article class="access-card access-compact">
-          <span class="access-kicker">Terminal · optional</span>
+          <span class="access-kicker">Terminal, optional</span>
           <h3>Prefer a keyboard-only workflow?</h3>
           <div class="launch-command"><code>clio</code><span>starts the terminal interface</span></div>
         </article>
