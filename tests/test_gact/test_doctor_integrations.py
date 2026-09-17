@@ -25,7 +25,12 @@ from clio_agent.providers.handshake.model import (
     HandshakeReport,
     ModelProfile,
 )
-from clio_agent.runtime.status import RuntimeProbe
+from clio_agent.runtime.status import (
+    IntegrationState,
+    IntegrationStatus,
+    RuntimeProbe,
+    RuntimeReport,
+)
 
 HDF5_CAPS = [
     {"name": "hdf5_list_datasets"},
@@ -91,6 +96,41 @@ def _health(app: Any, monkeypatch: pytest.MonkeyPatch, probe: RuntimeProbe):
 
 def _rows(body: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {r["name"]: r for r in body["integrations"]}
+
+
+def test_health_probes_the_runtime_provider_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A runtime Codex selection replaces the boot LM Studio doctor inputs."""
+
+    observed: dict[str, str] = {}
+
+    def _capture(**kwargs: Any) -> RuntimeReport:
+        observed.update(kwargs["env"])
+        return RuntimeReport(
+            integrations=[
+                IntegrationStatus(
+                    name="api",
+                    state=IntegrationState.READY,
+                    summary="ready",
+                )
+            ]
+        )
+
+    monkeypatch.setattr("clio_agent.gact.routes.system.collect_runtime_status", _capture)
+    app = build_app(sessions_path=tmp_path / "s.json")
+    app.state.lm_config = {
+        "provider": "codex",
+        "api_base": "codex://sdk",
+        "model": "gpt-5.6-luna",
+    }
+
+    response = TestClient(app).get("/v1/health")
+
+    assert response.status_code == 200
+    assert observed["CLIO_LM_PROVIDER"] == "codex"
+    assert observed["CLIO_LM_API_BASE"] == "codex://sdk"
+    assert observed["CLIO_LM_MODEL"] == "gpt-5.6-luna"
 
 
 def test_health_returns_probe_engine_rows_not_hand_rolled(
