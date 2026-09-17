@@ -34,6 +34,14 @@ def split_preserved_a2ui(messages: list[Message]) -> tuple[list[Message], list[M
     return candidates, carried
 
 
+#: Both transcript-owned A2UI part types: surfaces and their action lifecycle
+#: records (S5, docs/design/a2ui-compat-campaign-2026-09.md). A record is
+#: folded onto its surface by the SAME store (``A2UIStore``), so it must
+#: survive compaction/rewind exactly like the surface part it targets --
+#: dropping it would silently rewrite the durable action history.
+_PRESERVED_A2UI_PART_TYPES = frozenset({"a2ui", "a2ui_action"})
+
+
 def preserve_a2ui(
     session_id: str,
     retained_messages: list[Message],
@@ -43,9 +51,10 @@ def preserve_a2ui(
     """Keep A2UI parts when transcript prose is compacted or rewound.
 
     A2UI is transcript-owned. Removing its parts would otherwise delete a ready
-    surface without an A2UI lifecycle event or typed degradation. Preserved
-    parts retain their original ids and order in one synthetic assistant
-    message; already-retained parts are never duplicated.
+    surface (or its action lifecycle records) without an A2UI lifecycle event
+    or typed degradation. Preserved parts retain their original ids and order
+    in one synthetic assistant message; already-retained parts are never
+    duplicated.
     """
     retained_part_ids = {
         part.id for message in retained_messages for part in message.parts if part.id
@@ -53,7 +62,9 @@ def preserve_a2ui(
     preserved_parts = []
     for message in removed_messages:
         for part in message.parts:
-            if part.type != "a2ui" or (part.id and part.id in retained_part_ids):
+            if part.type not in _PRESERVED_A2UI_PART_TYPES or (
+                part.id and part.id in retained_part_ids
+            ):
                 continue
             preserved_parts.append(part.model_copy(deep=True))
             if part.id:

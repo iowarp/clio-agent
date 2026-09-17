@@ -165,6 +165,12 @@ class A2UISurfaceRecord:
     evicted_messages: int = 0
     created_at: str = field(default_factory=utcnow_iso)
     updated_at: str = field(default_factory=utcnow_iso)
+    # S5 (docs/design/a2ui-compat-campaign-2026-09.md): this surface's action
+    # lifecycle records, oldest first, one entry per DISTINCT ``a2ui_action``
+    # id (a record's own state transitions fold to its latest snapshot -- see
+    # ``gact/a2ui_actions/record.py::fold_action_records``). Populated by
+    # ``A2UIStore._project``, never written here.
+    actions: list[dict[str, Any]] = field(default_factory=list)
 
     def to_wire(self) -> dict[str, Any]:
         """Return the normalized frontend surface representation."""
@@ -289,7 +295,9 @@ def validate_client_action(
             ``destination`` for the dispatcher to consume (S5), alongside
             ``declared`` (whether the sidecar named this event explicitly, vs.
             falling through to the "agent" default) so a caller can tell
-            "undeclared, defaulted" apart from "explicitly routed to agent".
+            "undeclared, defaulted" apart from "explicitly routed to agent",
+            and ``operation`` (the sidecar's declared ``"cancel"``/``"retry"``
+            for a ``destination: "run"`` route, ``None`` otherwise).
     """
 
     try:
@@ -316,6 +324,11 @@ def validate_client_action(
     )
     action["destination"] = route.destination if route is not None else "agent"
     action["declared"] = route is not None
+    # S5: the sidecar's declared ``operation`` ("cancel"/"retry"), required by
+    # clio-schemas 0.3.1 for every ``destination: "run"`` route and forbidden
+    # otherwise -- the dispatcher reads this to pick the run owner without
+    # re-deriving it from the action name.
+    action["operation"] = route.operation if route is not None else None
     return action
 
 

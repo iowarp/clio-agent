@@ -109,8 +109,8 @@ class A2UIStore:
         ids.discard("")
         return ids
 
-    def _parts(self, session_id: str) -> list[Any]:
-        """Return this session's A2UI parts in causal (recorded) order.
+    def _parts(self, session_id: str, *, part_type: str = "a2ui") -> list[Any]:
+        """Return this session's A2UI(-family) parts in causal (recorded) order.
 
         The persisted ledger and the in-flight live parts are two views of one
         turn: a tool-produced surface lives only in ``live_assistant_parts``
@@ -137,7 +137,7 @@ class A2UIStore:
         seen: set[str] = set()
         carried = ""
         for part in candidates:
-            if getattr(part, "type", "") != "a2ui":
+            if getattr(part, "type", "") != part_type:
                 continue
             part_id = str(getattr(part, "id", "") or "")
             if part_id and part_id in seen:
@@ -162,6 +162,15 @@ class A2UIStore:
             self._parts(session_id),
             session_id,
             catalogs=session_catalog_resolver(self._app, session_id),
+        )
+        # S5: fold each surface's own action-lifecycle records onto it (a
+        # sibling ledger, same store, no new stage of its own) -- the actual
+        # fold + the repair-exhaustion projection rule live in the owner
+        # package, gact/a2ui_actions/record.py (no accretion here).
+        from clio_agent.gact.a2ui_actions.record import fold_action_records  # noqa: PLC0415
+
+        degradations.extend(
+            fold_action_records(self._action_parts(session_id), session_id, surfaces)
         )
         # a2ui_catalog_unavailable is declared in the typed reason catalog but
         # was never actually recorded there (adversarial S2 review): route it
@@ -249,6 +258,21 @@ class A2UIStore:
                     )
                 )
         return announced
+
+    def _action_parts(self, session_id: str) -> list[Any]:
+        """Return this session's ``a2ui_action`` parts in causal order (S5)."""
+
+        return self._parts(session_id, part_type="a2ui_action")
+
+    def persist_action_part(self, session_id: str, part: "Part") -> bool:
+        """Persist one ``a2ui_action`` lifecycle snapshot (S5).
+
+        The SAME durable writer :meth:`apply_batch_outcome` uses for a surface
+        part -- an action record rides the identical transcript ledger, never
+        a new store (RULE 4).
+        """
+
+        return self._persist_part(session_id, part)
 
     def _persist_part(self, session_id: str, part: "Part") -> bool:
         from clio_agent.gact.part_atom_minter import run_transcript_job  # noqa: PLC0415

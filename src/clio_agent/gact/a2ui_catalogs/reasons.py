@@ -150,6 +150,54 @@ _A2UI_CATALOG_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
             "refuses rather than silently substituting a different catalog"
         ),
     },
+    # S5 (docs/design/a2ui-compat-campaign-2026-09.md): action-dispatcher
+    # lifecycle reasons, recorded through the SAME ledger.
+    "a2ui_data_model_foreign_surface": {
+        "severity": "warning",
+        "detail": (
+            "a2uiClientDataModel named a surfaceId this session never created -- "
+            "that entry is dropped from the carried data model, the rest of the "
+            "request still proceeds"
+        ),
+    },
+    "a2ui_action_duplicate": {
+        "severity": "info",
+        "detail": (
+            "an action envelope resubmitted the same idempotency key -- the "
+            "existing record is returned, nothing is re-delivered"
+        ),
+    },
+    "a2ui_waiting_user_uncorrelated": {
+        "severity": "warning",
+        "detail": (
+            "the session is waiting_user but no pending question correlates to "
+            "this action's surface or context.question_id -- refused 409, the "
+            "record is durably marked failed"
+        ),
+    },
+    "a2ui_permission_out_of_scope": {
+        "severity": "warning",
+        "detail": (
+            "the action named a permission_id outside this session's own scope "
+            "(itself plus its spawned descendants) -- refused 404, the record is "
+            "durably marked failed"
+        ),
+    },
+    "a2ui_repair_exhausted": {
+        "severity": "warning",
+        "detail": (
+            "a second VALIDATION_FAILED for the same surface revision arrived "
+            "after one repair delivery already ran -- the surface is marked "
+            "state=failed, no further repair is delivered"
+        ),
+    },
+    "a2ui_client_error_unhandled": {
+        "severity": "info",
+        "detail": (
+            "a client error report used a code other than VALIDATION_FAILED -- "
+            "persisted as an error record, never delivered to the agent"
+        ),
+    },
 }
 
 #: Ring size shared by this global ledger AND ``CatalogRegistry``'s per-session
