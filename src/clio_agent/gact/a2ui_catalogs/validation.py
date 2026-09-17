@@ -25,11 +25,14 @@ Two layers, both catalog-aware:
 
 from __future__ import annotations
 
+import json
 import re
+import threading
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
+from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError, best_match
 
 if TYPE_CHECKING:
@@ -58,6 +61,21 @@ class A2UIFunctionNotInCatalogError(A2UIValidationError):
         self.function_name = function_name
         self.catalog_id = catalog_id
         super().__init__(f"A2UI function is not in catalog {catalog_id}: {function_name}")
+
+
+class A2UIEventContextInvalidError(A2UIValidationError):
+    """Raised when an action's ``context`` fails its sidecar-declared ``context_schema``.
+
+    Adversarial (S7 composability) review finding #12: the sidecar's
+    ``events[<name>].context_schema`` was compiled/declared but never
+    enforced server-side. Carries ``pointer`` (the JSON Pointer to the
+    failing property) so the HTTP door can name it in the typed
+    ``a2ui_event_context_invalid`` refusal.
+    """
+
+    def __init__(self, pointer: str, message: str) -> None:
+        self.pointer = pointer
+        super().__init__(f"A2UI event context is invalid at {pointer}: {message}")
 
 
 _FORBIDDEN_KEYS = frozenset(
@@ -143,6 +161,53 @@ def validate_components(entry: "CatalogEntry", components: Any, *, max_component
             raise A2UIValidationError(
                 f"component={name} id={comp_id} pointer={pointer}: {failure.message}"
             )
+
+
+#: One compiled ``Draft202012Validator`` per distinct ``context_schema`` body,
+#: keyed by its canonical JSON encoding — a sidecar's schema is immutable
+#: package/pack data, so compiling it once per distinct body (not once per
+#: call) mirrors ``registry.py::compiled_validators``'s checksum-cache doctrine.
+_CONTEXT_SCHEMA_VALIDATOR_CACHE: dict[str, "Draft202012Validator"] = {}
+_CONTEXT_SCHEMA_VALIDATOR_CACHE_LOCK = threading.Lock()
+
+
+def _context_schema_validator(schema: Mapping[str, Any]) -> "Draft202012Validator":
+    key = json.dumps(schema, sort_keys=True, separators=(",", ":"))
+    with _CONTEXT_SCHEMA_VALIDATOR_CACHE_LOCK:
+        cached = _CONTEXT_SCHEMA_VALIDATOR_CACHE.get(key)
+    if cached is not None:
+        return cached
+    compiled = Draft202012Validator(dict(schema))
+    with _CONTEXT_SCHEMA_VALIDATOR_CACHE_LOCK:
+        return _CONTEXT_SCHEMA_VALIDATOR_CACHE.setdefault(key, compiled)
+
+
+def validate_event_context(
+    context_schema: Mapping[str, Any] | None, context: Mapping[str, Any]
+) -> None:
+    """Validate an action's resolved ``context`` against its declared schema.
+
+    Adversarial (S7) review finding #12: the sidecar's
+    ``events[<name>].context_schema`` (``jsonschema`` Draft 2020-12, no
+    network — the SAME engine ``validate_components`` already uses) is
+    enforced HERE, server-side, before the dispatcher persists or delivers
+    the action — not merely declared and ignored. A no-op when the sidecar
+    declares no schema for this event (the S1 field is optional; server-side
+    enforcement only applies when the catalog actually asks for it).
+
+    Raises:
+        A2UIEventContextInvalidError: If ``context`` fails the schema, naming
+            the failing JSON Pointer.
+    """
+
+    if not context_schema:
+        return
+    validator = _context_schema_validator(context_schema)
+    errors = list(validator.iter_errors(dict(context)))
+    if errors:
+        failure = _most_specific_error(errors)
+        pointer = "/" + "/".join(str(part) for part in failure.absolute_path)
+        raise A2UIEventContextInvalidError(pointer, failure.message)
 
 
 def _validate_url(value: str) -> None:

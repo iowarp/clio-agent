@@ -685,13 +685,27 @@ def test_mermaid_component_is_trusted_but_executable_directives_are_rejected(
     assert "executable or HTML directive" in rejected.json()["error"]["message"]
 
 
-def test_registered_form_action_gets_a_server_surface_update(tmp_path: Path) -> None:
+def test_registered_form_action_gets_a_server_surface_update(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """S5: ``form.submit`` is now an ordinary agent-destination event -- the
+    five literal-name branches, the ``/lastAction`` ack, and the echo are
+    deleted. It delivers a fresh idle turn carrying the resolved structured
+    context, and the durable ``a2ui_action`` record (not a data-model write)
+    is the server's record of what happened."""
+
     client, sid, _ = _session_client(tmp_path)
+    app = client.app
     client.post(
         f"/v1/sessions/{sid}/a2ui/messages",
         headers=HEADERS,
         json={"messages": [_create_message()]},
     )
+
+    def _spawn(coro: Any, **_kwargs: Any) -> None:
+        coro.close()
+
+    monkeypatch.setattr(app.state.turn_runner, "spawn", _spawn)
     action = {
         "version": "v0.9.1",
         "action": {
@@ -709,15 +723,28 @@ def test_registered_form_action_gets_a_server_surface_update(tmp_path: Path) -> 
         json={"message": action, "correlation": {"run_id": "run_1"}},
     )
 
-    assert response.status_code == 200
-    assert response.json()["status"] == "accepted"
-    assert response.json()["submitted"] == {"selection": "quarantine"}
-    messages = response.json()["surface"]["messages"]
-    assert messages[-1]["updateDataModel"]["path"] == "/lastAction"
-    assert messages[-1]["updateDataModel"]["value"]["context"] == {"selection": "quarantine"}
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "accepted"
+    assert body["name"] == "form.submit"
+    assert body["destination"] == "agent"
+    assert body["delivery"] == "start"
+    assert body["state"] == "delivered"
+    assert "message_id" in body
+    surface = app.state.a2ui_store.get(sid, "surface_1")
+    assert surface is not None
+    [record] = surface.actions
+    assert record["envelope"]["action"]["context"] == {"selection": "quarantine"}
+    assert record["correlation"]["run_id"] == "run_1"
+    assert record["state"] == "delivered"
+    assert record["delivery"] == "start"
+    message = next(m for m in reversed(app.state.messages[sid]) if m.role == "user")
+    assert message.metadata["a2ui_action_context"] == {"selection": "quarantine"}
 
 
-def test_action_route_requires_a2ui_negotiation_and_tolerates_extensions(tmp_path: Path) -> None:
+def test_action_route_requires_a2ui_negotiation_and_tolerates_extensions(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
     """The OFFICIAL client envelope (``A2UIClientMessage``, forbid-extra at the
     top level) is verbatim now (campaign owner decision #2) -- an unknown key
     belongs on the ACTION object (``A2UIClientAction``, allow-extra), not the
@@ -725,11 +752,17 @@ def test_action_route_requires_a2ui_negotiation_and_tolerates_extensions(tmp_pat
     it at the shape the official schema actually allows it."""
 
     client, sid, _ = _session_client(tmp_path)
+    app = client.app
     client.post(
         f"/v1/sessions/{sid}/a2ui/messages",
         headers=HEADERS,
         json={"messages": [_create_message()]},
     )
+
+    def _spawn(coro: Any, **_kwargs: Any) -> None:
+        coro.close()
+
+    monkeypatch.setattr(app.state.turn_runner, "spawn", _spawn)
     action = {
         "version": "v0.9.1",
         "action": {
@@ -755,8 +788,16 @@ def test_action_route_requires_a2ui_negotiation_and_tolerates_extensions(tmp_pat
 
     assert missing_version.status_code == 406
     assert missing_version.json()["error"]["error"] == "unsupported_protocol"
-    assert accepted.status_code == 200
-    assert accepted.json()["submitted"] == {"selection": "continue"}
+    assert accepted.status_code == 200, accepted.text
+    body = accepted.json()
+    assert body["delivery"] == "start"
+    surface = app.state.a2ui_store.get(sid, "surface_1")
+    assert surface is not None
+    [record] = surface.actions
+    # The tolerated extension key rides on the envelope verbatim; it is not
+    # required (or read) by the dispatcher, only preserved on the record.
+    assert record["envelope"]["action"]["extension"] == {"source": "future-client"}
+    assert record["envelope"]["action"]["context"] == {"selection": "continue"}
 
 
 def test_undeclared_action_destination_defaults_to_agent(tmp_path: Path) -> None:
@@ -1088,17 +1129,18 @@ def test_server_rejects_a_double_wrapped_component_action(tmp_path: Path) -> Non
     assert "not valid under any of the given schemas" in response.json()["error"]["message"]
 
 
-def test_server_rejects_agent_submit_without_prompt_context(tmp_path: Path) -> None:
-    """S2 deletes the ``required_context`` table (docs/design/a2ui-compat-
-    campaign-2026-09.md): DEFINING a Button whose ``agent.submit`` action
-    context lacks ``text``/``prompt`` is no longer rejected at
-    ``updateComponents`` time -- the catalog file's schema does not (and
-    should not) constrain arbitrary event context shape. The requirement
-    survives at the layer the issue says stays until S5: DISPATCHING that
-    action (``routes/a2ui.py`` ``agent.submit`` branch) still 422s without a
-    prompt."""
+def test_agent_submit_delivers_without_any_text_or_prompt_context(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """S5 deletes the ``context.text`` requirement entirely (docs/design/
+    a2ui-compat-campaign-2026-09.md): defining -- and then dispatching -- an
+    ``agent.submit`` action whose context carries no ``text``/``prompt`` at
+    all is no longer rejected at EITHER updateComponents time (S2) or
+    dispatch time (pre-S5). The resolved context is the authoritative agent
+    input regardless of what (if anything) it contains."""
 
     client, sid, _ = _session_client(tmp_path)
+    app = client.app
     define = {
         "version": "v0.9.1",
         "updateComponents": {
@@ -1127,6 +1169,10 @@ def test_server_rejects_agent_submit_without_prompt_context(tmp_path: Path) -> N
     )
     assert define_response.status_code == 200
 
+    def _spawn(coro: Any, **_kwargs: Any) -> None:
+        coro.close()
+
+    monkeypatch.setattr(app.state.turn_runner, "spawn", _spawn)
     action = {
         "version": "v0.9.1",
         "action": {
@@ -1141,8 +1187,13 @@ def test_server_rejects_agent_submit_without_prompt_context(tmp_path: Path) -> N
         f"/v1/sessions/{sid}/a2ui/actions", headers=HEADERS, json={"message": action}
     )
 
-    assert dispatch_response.status_code == 422
-    assert "agent.submit requires context.text" in dispatch_response.json()["error"]["message"]
+    assert dispatch_response.status_code == 200, dispatch_response.text
+    body = dispatch_response.json()
+    assert body["delivery"] == "start"
+    assert body["state"] == "delivered"
+    message = next(m for m in reversed(app.state.messages[sid]) if m.role == "user")
+    assert message.metadata["a2ui_action_context"] == {"scope": "bounded_follow_up"}
+    assert "bounded_follow_up" in message.parts[0].text
 
 
 def test_server_accepts_a_bounded_scientific_map(tmp_path: Path) -> None:
@@ -1621,14 +1672,22 @@ def test_agent_submit_queues_on_the_existing_inbox_while_a_turn_is_in_flight(
 
     assert response.status_code == 200, response.text
     assert response.json()["delivery"] == "steer"
-    assert response.json()["state"] == "queued"
+    assert response.json()["state"] == "delivered"
     assert (
         sum(message.role == "user" for message in app.state.messages.get(sid, []))
         == staged_users_before
     )
     [queued] = app.state.loop_inboxes[sid].snapshot()
-    assert queued.metadata["a2ui_action_context"] == {"selected_station_ids": ["SGPS"]}
+    assert queued.metadata["a2ui_action_context"] == {
+        "text": "continue the analysis",
+        "selected_station_ids": ["SGPS"],
+    }
     assert '"selected_station_ids":["SGPS"]' in queued.text
+    surface = app.state.a2ui_store.get(sid, "surface_1")
+    assert surface is not None
+    [record] = surface.actions
+    assert record["state"] == "delivered"
+    assert record["delivery"] == "steer"
 
 
 def test_agent_submit_starts_with_resolved_structured_surface_context(
@@ -1653,12 +1712,21 @@ def test_agent_submit_starts_with_resolved_structured_surface_context(
     )
 
     assert response.status_code == 200, response.text
-    assert response.json()["delivery"] == "start"
+    body = response.json()
+    assert body["delivery"] == "start"
+    assert body["state"] == "delivered"
     message = next(
         message for message in reversed(app.state.messages[sid]) if message.role == "user"
     )
-    assert message.metadata["a2ui_action_context"] == {"selected_station_ids": ["SGPS"]}
+    assert message.metadata["a2ui_action_context"] == {
+        "text": "continue the analysis",
+        "selected_station_ids": ["SGPS"],
+    }
     assert '"selected_station_ids":["SGPS"]' in message.parts[0].text
+    surface = app.state.a2ui_store.get(sid, "surface_1")
+    assert surface is not None
+    [record] = surface.actions
+    assert record["correlation"]["message_id"] == message.id
 
 
 def test_agent_submit_clears_a_stale_cancel_flag_before_staging(

@@ -49,7 +49,7 @@ dependencies = [
     "fastmcp==4.0.0b5",  # 2026-07-28 line (#1107); b1->b5 beta-track hardening bump (#1285
     # C1-S5 item 5, LAST commit -- everything else verified green on b1 first).
     "fastmcp-tasks==4.0.0b5",
-    "clio-schemas==0.3.0",
+    "clio-schemas==0.3.1",
     "pydantic>=2.12,<2.14",
     # A2UI catalog validation: official catalog.json files are validated at runtime
     # with Draft 2020-12 (docs/design/a2ui-compat-campaign-2026-09.md, S2).
@@ -277,7 +277,10 @@ also_copy = ["src/clio_agent/", "tests/"]
 override-dependencies = ["mcp>=2.0.0"]
 
 [tool.uv.sources]
-# A2UI compat S2: clio-schemas 0.3.0 (docs/design/a2ui-compat-campaign-2026-09.md).
-# Pinned to origin/main of the clio-schemas checkout at the time this slice landed;
+# A2UI compat S5: clio-schemas 0.3.1 (docs/design/a2ui-compat-campaign-2026-09.md).
+# Patch bump: CatalogSidecar._EventRoute gains an optional `operation`
+# (Literal["cancel", "retry"]), required when destination == "run" and
+# forbidden otherwise; the builtin clio-workspace sidecar declares it for
+# run.cancel/run.retry. Pinned to the feat/a2ui-compat merge commit;
 # see `git -C <clio-schemas checkout> rev-parse origin/main`.
-clio-schemas = { git = "https://github.com/iowarp/clio-schemas.git", rev = "dd34c2b28b5f45c8c387979658eef7ebd5ed5fba" }
+clio-schemas = { git = "https://github.com/iowarp/clio-schemas.git", rev = "a41b320b1f1aab8677c26a82155d4797df940de6" }

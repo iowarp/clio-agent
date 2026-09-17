@@ -321,6 +321,17 @@ class Part(DocumentPartFields):
     a2ui_protocol_version: str = ""
     a2ui_messages: list[dict[str, Any]] = Field(default_factory=list)
 
+    # A2UI action lifecycle records (S5, docs/design/a2ui-compat-campaign-
+    # 2026-09.md) are a SIBLING part type on the same ledger: ``type=
+    # "a2ui_action"``, ``surface_id`` (above) identifies the target surface,
+    # ``a2ui_protocol_version`` (above) is stamped the same way. The record's
+    # own shape (envelope, state, delivery, idempotency, correlation,
+    # narration) is owned entirely by ``gact/a2ui_actions/record.py`` -- this
+    # part carries it opaquely, exactly like ``a2ui_messages`` carries the raw
+    # server-message batch above (no accretion: the shape lives in the owner
+    # package, not spread across typed Part fields).
+    a2ui_action_record: dict[str, Any] = Field(default_factory=dict)
+
     def to_wire(self) -> dict[str, Any]:
         """Project this part to its wire dict via ``exclude_defaults`` (omitempty:
         a part populates only its own ``type``'s fields; the rest sit at

@@ -109,8 +109,8 @@ class A2UIStore:
         ids.discard("")
         return ids
 
-    def _parts(self, session_id: str) -> list[Any]:
-        """Return this session's A2UI parts in causal (recorded) order.
+    def _parts(self, session_id: str, *, part_type: str = "a2ui") -> list[Any]:
+        """Return this session's A2UI(-family) parts in causal (recorded) order.
 
         The persisted ledger and the in-flight live parts are two views of one
         turn: a tool-produced surface lives only in ``live_assistant_parts``
@@ -137,7 +137,7 @@ class A2UIStore:
         seen: set[str] = set()
         carried = ""
         for part in candidates:
-            if getattr(part, "type", "") != "a2ui":
+            if getattr(part, "type", "") != part_type:
                 continue
             part_id = str(getattr(part, "id", "") or "")
             if part_id and part_id in seen:
@@ -162,6 +162,15 @@ class A2UIStore:
             self._parts(session_id),
             session_id,
             catalogs=session_catalog_resolver(self._app, session_id),
+        )
+        # S5: fold each surface's own action-lifecycle records onto it (a
+        # sibling ledger, same store, no new stage of its own) -- the actual
+        # fold + the repair-exhaustion projection rule live in the owner
+        # package, gact/a2ui_actions/record.py (no accretion here).
+        from clio_agent.gact.a2ui_actions.record import fold_action_records  # noqa: PLC0415
+
+        degradations.extend(
+            fold_action_records(self._action_parts(session_id), session_id, surfaces)
         )
         # a2ui_catalog_unavailable is declared in the typed reason catalog but
         # was never actually recorded there (adversarial S2 review): route it
@@ -249,6 +258,51 @@ class A2UIStore:
                     )
                 )
         return announced
+
+    def _action_parts(self, session_id: str) -> list[Any]:
+        """Return this session's ``a2ui_action`` parts in causal order (S5)."""
+
+        return self._parts(session_id, part_type="a2ui_action")
+
+    def persist_action_part(
+        self, session_id: str, part: "Part", *, idempotency_key: str = ""
+    ) -> dict[str, Any] | None:
+        """Persist one ``a2ui_action`` lifecycle snapshot (S5), atomically.
+
+        The SAME durable writer :meth:`apply_batch_outcome` uses for a surface
+        part -- an action record rides the identical transcript ledger, never
+        a new store (RULE 4). When ``idempotency_key`` is given (a NEW
+        ``received`` record only -- a transition snapshot never passes one),
+        the idempotency lookup over this session's already-persisted action
+        records and the persist itself happen under the SAME per-session
+        lock :meth:`apply_batch_outcome` uses, closing the race a caller-side
+        check-then-persist could not (adversarial review finding #1,
+        BLOCKING): two concurrent submissions of the same key can no longer
+        both observe "no existing record" and both persist.
+
+        Returns:
+            The EXISTING record's wire dict when ``idempotency_key`` already
+            matches a persisted record on this surface (nothing new
+            written), or ``None`` once ``part`` has been freshly persisted.
+        """
+
+        from clio_agent.gact.a2ui_actions.record import (  # noqa: PLC0415
+            find_by_idempotency_key,
+        )
+
+        with self._session_lock(session_id):
+            if idempotency_key:
+                surface_id = str(getattr(part, "surface_id", "") or "")
+                surface = self.get(session_id, surface_id)
+                existing = (
+                    find_by_idempotency_key(surface.actions, idempotency_key)
+                    if surface is not None
+                    else None
+                )
+                if existing is not None:
+                    return existing
+            self._persist_part(session_id, part)
+            return None
 
     def _persist_part(self, session_id: str, part: "Part") -> bool:
         from clio_agent.gact.part_atom_minter import run_transcript_job  # noqa: PLC0415

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Mapping
 
 from fastapi import FastAPI, HTTPException, Request
@@ -13,20 +11,13 @@ from clio_agent.gact.a2ui import (
     A2UICatalogUnknownError,
     A2UIFunctionNotInCatalogError,
     A2UIValidationError,
-    validate_client_action,
 )
-from clio_agent.gact.a2ui_capabilities import A2UICapabilitiesError, apply_client_metadata_guards
+from clio_agent.gact.a2ui_actions.dispatcher import dispatch_action
 from clio_agent.gact.a2ui_catalogs.routes.a2ui_capabilities import register_a2ui_capabilities_routes
 from clio_agent.gact.a2ui_catalogs.routes.a2ui_catalogs import register_a2ui_catalog_routes
-from clio_agent.gact.events import Event
-from clio_agent.gact.off_loop import run_off_loop
-from clio_agent.gact.permission_gate import GRANTOR_USER, resolve_permission
-from clio_agent.gact.protocol_v3 import A2UI_V091, A2UI_V091_WIRE
+from clio_agent.gact.protocol_v3 import A2UI_V091
 from clio_agent.gact.routes._body import json_body
-from clio_agent.gact.routes.sessions import cancel_session_state
-from clio_agent.gact.session_descendants import descendant_session_ids
-from clio_agent.gact.turn_runner import session_busy_error_payload
-from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, RetryTurnRequest
+from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -39,23 +30,6 @@ def _error(status: int, code: str, message: str, *, recoverable: bool = False) -
             error=ErrorInfo(error=code, message=message, recoverable=recoverable)
         ).model_dump(exclude_none=True),
     )
-
-
-def _agent_submit_context(context: Mapping[str, Any]) -> dict[str, Any]:
-    """Return the resolved non-prompt fields supplied by an A2UI surface."""
-
-    return {key: value for key, value in context.items() if key not in {"text", "prompt"}}
-
-
-def _agent_submit_model_text(prompt: str, structured_context: Mapping[str, Any]) -> str:
-    """Adapt authoritative A2UI context into a bounded model-readable user steer."""
-
-    if not structured_context:
-        return prompt
-    encoded = json.dumps(
-        dict(structured_context), ensure_ascii=False, separators=(",", ":"), sort_keys=True
-    )
-    return f"{prompt}\n\nStructured surface context:\n{encoded}"
 
 
 def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
@@ -147,19 +121,19 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
             "created_surface_ids": list(outcome.created_surface_ids),
         }
 
-    async def dispatch_action(
+    async def dispatch_action_negotiated(
         sid: str,
         body: Mapping[str, Any],
         *,
         protocol_version: str | None,
     ) -> dict[str, Any]:
-        """Dispatch a parsed action through the authoritative A2UI owner path.
+        """Negotiate + parse the request body, then call the owner dispatcher.
 
         ``protocol_version`` is the caller's negotiated ``x-a2ui-version``. The
         check lives HERE, not on one route, so every door into the dispatcher
-        enforces the same negotiation: the normalized interaction responder used
-        to reach this function with no negotiation at all while the canonical
-        ``/a2ui/actions`` route 406'd without it.
+        enforces the same negotiation: the normalized interaction responder
+        reaches this function with no negotiation of its own, while the
+        canonical ``/a2ui/actions`` route 406's without it.
         """
 
         if protocol_version != A2UI_V091:
@@ -168,208 +142,31 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
                 "unsupported_protocol",
                 f"A2UI {A2UI_V091} must be negotiated",
             )
-        sess = require_session(sid)
+        require_session(sid)
         if set(body) - {"message", "correlation", "metadata"}:
             raise _error(422, "validation_error", "A2UI action body contains unknown fields")
-        # S3: an action may carry the SAME renderer transport metadata a message
-        # does (client capability advertisement, or a data model scoped to a
-        # surface this action targets) -- one shared owner-module guard, same
-        # typed refusals, same per-session ledger as the POST /messages door.
-        try:
-            action_data_model = apply_client_metadata_guards(app, sid, body.get("metadata"))
-        except A2UICapabilitiesError as exc:
-            raise _error(422, exc.reason, str(exc)) from exc
         message = body.get("message")
         if not isinstance(message, Mapping):
             raise _error(422, "validation_error", "A2UI action message is required")
-        raw_action = message.get("action")
-        surface_id = (
-            str(raw_action.get("surfaceId") or "") if isinstance(raw_action, Mapping) else ""
+        return await dispatch_action(
+            app, sid, message, body.get("correlation"), body.get("metadata"), deps
         )
-        surface = app.state.a2ui_store.get(sid, surface_id)
-        if surface is None or surface.state == "deleted":
-            raise _error(404, "not_found", f"A2UI surface not found: {surface_id}")
-        from clio_agent.gact.a2ui_catalogs.activation import (  # noqa: PLC0415
-            session_catalog_resolver,
-        )
-
-        catalog_entry = session_catalog_resolver(app, sid).get(surface.catalog_id)
-        try:
-            action = validate_client_action(
-                message, surface_id=surface_id, catalog_entry=catalog_entry
-            )
-        except A2UIFunctionNotInCatalogError as exc:
-            app.state.a2ui_catalogs.record_session_reason(
-                sid,
-                "a2ui_function_not_in_catalog",
-                function_name=exc.function_name,
-                catalog_id=exc.catalog_id,
-            )
-            raise _error(422, "a2ui_function_not_in_catalog", str(exc)) from exc
-        except A2UIValidationError as exc:
-            raise _error(422, "a2ui_validation_failed", str(exc)) from exc
-
-        name = str(action["name"])
-        context = dict(action["context"])
-        result: dict[str, Any] = {"name": name, "status": "accepted"}
-        if name == "agent.submit":
-            prompt = str(context.get("text") or context.get("prompt") or "").strip()
-            if not prompt:
-                raise _error(422, "validation_error", "agent.submit requires context.text")
-            structured_context = _agent_submit_context(context)
-            model_text = _agent_submit_model_text(prompt, structured_context)
-            action_metadata: dict[str, Any] = {
-                "a2ui_action": name,
-                "surface_id": surface_id,
-                "a2ui_action_context": structured_context,
-            }
-            if action_data_model is not None:
-                # Carried on the STAGED record (what S5 reads), not only echoed
-                # in the HTTP response below -- same normalized key as POST
-                # /messages (S3).
-                action_metadata["a2ui_client_data_model"] = action_data_model.model_dump(
-                    mode="json", by_alias=True, exclude_none=True
-                )
-            # An agent-bound surface action is the same user intent whether the
-            # session is idle or a turn is still unwinding. Reuse the established
-            # loop inbox for the busy case so the current turn consumes it at a
-            # tool boundary, or the idle hook promotes it into exactly one later
-            # turn. Starting a second turn directly would orphan the first.
-            busy = session_busy_error_payload(getattr(app.state, "turn_runner", None), sid)
-            if busy is not None:
-                from clio_agent.gact.loop_inbox import enqueue_user_steer  # noqa: PLC0415
-
-                enqueue_user_steer(app, sid, model_text, action_metadata)
-                result.update({"delivery": "steer", "state": "queued"})
-            else:
-                # The gate reports idle, so this is a fresh turn: a cancellation
-                # aimed at the previous one must not poison it (mirrors the POST
-                # /messages producer).
-                app.state.cancel_flags.discard(sid)
-                app.state.cancel_events.pop(sid, None)
-                user_message = deps.start_background_user_turn(
-                    sid,
-                    sess,
-                    model_text,
-                    metadata=action_metadata,
-                    prev_status=sess.status,
-                )
-                result.update(
-                    {"delivery": "start", "state": "started", "message_id": user_message.id}
-                )
-        elif name == "approval.respond":
-            permission_id = str(context.get("permission_id") or "")
-            decision = str(context.get("action") or "")
-            if decision not in {"allow", "deny", "allow_session", "allow_workspace"}:
-                raise _error(422, "validation_error", "approval.respond has an invalid action")
-            # EXACT-OWNER routing, matching the ``permission:`` branch of the
-            # normalized interaction responder: a surface may only resolve a
-            # permission raised inside its OWN session scope (itself plus its
-            # spawned descendants). ``resolve_permission`` takes a bare id and has
-            # no session check of its own, so without this a surface in session A
-            # could grant a tool call parked in unrelated session B. An
-            # out-of-scope id is reported as not-found so existence does not leak.
-            pending = app.state.permissions.get(permission_id)
-            scope = {sid, *descendant_session_ids(app, sid)}
-            if pending is not None and str(pending.get("session_id") or "") not in scope:
-                raise _error(404, "not_found", f"permission not found: {permission_id}")
-            row = await run_off_loop(
-                lambda: resolve_permission(
-                    app,
-                    permission_id,
-                    decision,
-                    grantor=GRANTOR_USER,
-                )
-            )
-            if row is None and pending is None:
-                raise _error(404, "not_found", f"permission not found: {permission_id}")
-            result["permission_id"] = permission_id
-            result["resolution"] = decision
-        elif name == "run.cancel":
-            result["cancellation"] = cancel_session_state(app, deps, sid)
-        elif name == "run.retry":
-            source_id = str(context.get("message_id") or "")
-            attempt = await app.state.retry_turn_action(
-                sid,
-                source_id,
-                RetryTurnRequest(
-                    execute=True,
-                    notes=str(context.get("notes") or ""),
-                    metadata={"a2ui_action": name, "surface_id": surface_id},
-                ),
-            )
-            result["attempt"] = attempt.model_dump(exclude_none=True)
-        elif name == "form.submit":
-            result["submitted"] = context
-        else:
-            # Any event name outside these five owner branches is now a legal,
-            # open action (docs/design/a2ui-compat-campaign-2026-09.md S2: the
-            # catalog file is the allowlist, not a closed action Literal). Its
-            # sidecar-declared destination was already resolved onto the
-            # parsed action (default "agent") for the general destination-
-            # routed dispatcher S5 builds; S2 only acknowledges it here rather
-            # than inventing turn-dispatch semantics ahead of that slice.
-            destination = str(action.get("destination") or "agent")
-            # "declared" distinguishes an EXPLICIT sidecar events[name] route
-            # to "agent" from a name the sidecar never mentions at all -- only
-            # the latter is the degradation this reason describes; recording
-            # it for every ordinary agent.submit-shaped event (the common
-            # case) would drown the rare, actionable signal.
-            if not action.get("declared"):
-                app.state.a2ui_catalogs.record_session_reason(
-                    sid, "a2ui_event_destination_undeclared", action=name
-                )
-            result["destination"] = destination
-
-        ack = {
-            "version": A2UI_V091_WIRE,
-            "updateDataModel": {
-                "surfaceId": surface_id,
-                "path": "/lastAction",
-                "value": {
-                    "name": name,
-                    "status": result["status"],
-                    "receivedAt": datetime.now(timezone.utc).isoformat(),
-                    "context": context,
-                },
-            },
-        }
-        updated = app.state.a2ui_store.apply(sid, ack)
-        result["surface"] = updated.to_wire()
-        if action_data_model is not None:
-            # Carried through onto the accepted action, normalized key (S3;
-            # mirrors POST /messages) -- S5 owns ingestion/fold semantics.
-            result["a2ui_client_data_model"] = action_data_model.model_dump(
-                mode="json", by_alias=True, exclude_none=True
-            )
-        app.state.bus.publish(
-            Event(
-                type="a2ui.action.received",
-                session_id=sid,
-                payload={
-                    "surface_id": surface_id,
-                    "action": name,
-                    "source_component_id": action["sourceComponentId"],
-                },
-            )
-        )
-        return result
 
     @app.post("/v1/sessions/{sid}/a2ui/actions")
     async def handle_action(sid: str, request: Request) -> dict[str, Any]:
         """Validate and dispatch a registered official A2UI client action."""
 
         body = await json_body(request, route="POST /v1/sessions/{sid}/a2ui/actions")
-        return await dispatch_action(
+        return await dispatch_action_negotiated(
             sid,
             body,
             protocol_version=getattr(request.state, "a2ui_protocol_version", None),
         )
 
-    # The normalized interaction responder reuses this exact action dispatcher AND
-    # its negotiation gate: it passes its own request's negotiated version through,
-    # so both doors refuse an un-negotiated A2UI action identically.
-    app.state.dispatch_a2ui_action = dispatch_action
+    # The normalized interaction responder reuses this exact negotiation gate
+    # + dispatcher: it passes its own request's negotiated version through, so
+    # both doors refuse an un-negotiated A2UI action identically.
+    app.state.dispatch_a2ui_action = dispatch_action_negotiated
     # Catalog discovery is a sibling concern of A2UI production (S2's client
     # registry source): registered here so app.py needs no separate import.
     register_a2ui_catalog_routes(app)

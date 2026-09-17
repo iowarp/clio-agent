@@ -19,9 +19,11 @@ from pydantic import ValidationError as _PydanticValidationError
 
 from clio_agent.gact.a2ui_catalogs.registry import CatalogEntry, CatalogResolver
 from clio_agent.gact.a2ui_catalogs.validation import (
+    A2UIEventContextInvalidError,
     A2UIFunctionNotInCatalogError,
     A2UIValidationError,
     validate_components,
+    validate_event_context,
     validate_value,
 )
 from clio_agent.gact.protocol.constants import A2UI_V091, A2UI_V091_WIRE, A2UI_WIRE_VERSIONS
@@ -165,6 +167,12 @@ class A2UISurfaceRecord:
     evicted_messages: int = 0
     created_at: str = field(default_factory=utcnow_iso)
     updated_at: str = field(default_factory=utcnow_iso)
+    # S5 (docs/design/a2ui-compat-campaign-2026-09.md): this surface's action
+    # lifecycle records, oldest first, one entry per DISTINCT ``a2ui_action``
+    # id (a record's own state transitions fold to its latest snapshot -- see
+    # ``gact/a2ui_actions/record.py::fold_action_records``). Populated by
+    # ``A2UIStore._project``, never written here.
+    actions: list[dict[str, Any]] = field(default_factory=list)
 
     def to_wire(self) -> dict[str, Any]:
         """Return the normalized frontend surface representation."""
@@ -289,7 +297,9 @@ def validate_client_action(
             ``destination`` for the dispatcher to consume (S5), alongside
             ``declared`` (whether the sidecar named this event explicitly, vs.
             falling through to the "agent" default) so a caller can tell
-            "undeclared, defaulted" apart from "explicitly routed to agent".
+            "undeclared, defaulted" apart from "explicitly routed to agent",
+            and ``operation`` (the sidecar's declared ``"cancel"``/``"retry"``
+            for a ``destination: "run"`` route, ``None`` otherwise).
     """
 
     try:
@@ -314,8 +324,20 @@ def validate_client_action(
         if catalog_entry is not None
         else None
     )
+    if route is not None and route.context_schema is not None:
+        # Adversarial S7 review finding #12: the sidecar's declared
+        # ``context_schema`` was compiled/carried but never enforced --
+        # validate the RESOLVED context against it before this action is
+        # ever persisted or delivered. A2UIEventContextInvalidError propagates
+        # to the dispatcher (typed 422 ``a2ui_event_context_invalid``).
+        validate_event_context(route.context_schema, action.get("context") or {})
     action["destination"] = route.destination if route is not None else "agent"
     action["declared"] = route is not None
+    # S5: the sidecar's declared ``operation`` ("cancel"/"retry"), required by
+    # clio-schemas 0.3.1 for every ``destination: "run"`` route and forbidden
+    # otherwise -- the dispatcher reads this to pick the run owner without
+    # re-deriving it from the action name.
+    action["operation"] = route.operation if route is not None else None
     return action
 
 
@@ -702,6 +724,7 @@ def project_a2ui_parts(
 __all__ = [
     "A2UICatalogNotProducibleError",
     "A2UICatalogUnknownError",
+    "A2UIEventContextInvalidError",
     "A2UIFunctionNotInCatalogError",
     "A2UISurfaceRecord",
     "A2UITranscriptFrozenError",
