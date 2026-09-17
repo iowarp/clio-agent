@@ -482,13 +482,29 @@ granted. It is never read by the metadata door itself
 (`a2ui_capabilities.apply_client_metadata_guards`, the ONE guard every
 client-writable ingest in "Where the objects ride" above calls) — that
 function parses `metadata.a2uiClientCapabilities`/`a2uiClientDataModel` from
-the request BODY only. A Tauri desktop request typically carries no `Origin`
-header at all (same-machine loopback IPC is not a cross-origin browser
-fetch), which is why the guard must never treat a present-vs-absent
-`Origin` as a signal: a request with `Origin: http://localhost:5173` and one
-with no `Origin` header (a different `User-Agent`, otherwise identical body)
-are remembered byte-for-byte identically
-(`tests/test_gact/test_a2ui_desktop_parity.py`).
+the request BODY only.
+
+A real Tauri desktop request never carries `Origin` at all — not "typically
+doesn't," structurally can't. `desktop/src-tauri/src/gact_http.rs`'s own
+module doc: the WebView's origin (`http://tauri.localhost`) is cross-origin
+to the local sidecar and clio emits no `Access-Control-Allow-Origin`, so a
+vanilla browser `fetch()` from the WebView would be CORS-blocked; `gact_http`
+is a Tauri command that performs the request from Rust with the `ureq`
+native HTTP client instead, which — unlike a browser engine — never
+auto-attaches an `Origin` header. `web/src/lib/transport/browser-transport.ts`
+and `tauri-transport.ts`'s own private `headers()` methods build a
+byte-for-byte identical explicit set either way (`Accept`/`Content-Type`/
+`X-GACT-Version`/`X-A2UI-Version`/optional `Authorization`) — neither ever
+sets `Origin` itself; a browser's `Origin` comes solely from the browser
+engine auto-attaching `window.location.origin`. The guard must therefore
+never treat a present-vs-absent `Origin` as a signal either way:
+`tests/test_gact/test_a2ui_desktop_parity.py` vendors both transports' real
+header sets and the real `a2uiClientCapabilities` body shape/catalog ids
+under `tests/fixtures/a2ui_client_metadata/` (no raw Tauri network capture
+exists in gact-tui to vendor verbatim — the desktop e2e suite drives a real
+WebView rather than recording HTTP — so that fixture is derived from the
+Rust bridge source above) and proves both are remembered byte-for-byte
+identically.
 
 Consequence for a pack/catalog author: nothing in a catalog's sidecar or
 instructions may assume "this session is a browser" or "this session is

@@ -5,26 +5,41 @@ The client-side architecture (owner decision 7, campaign doc:
 ``external/gact-tui/packages/core/src/v3/a2ui/client-metadata.ts``) already
 states the invariant: "the transport never sees or builds this metadata, it
 only carries whatever the repository layer merges in — identical by
-construction," so browser (fetch) and Tauri (desktop webview IPC over the
-same local HTTP API) send the EXACT SAME ``a2uiClientCapabilities``/
-``a2uiClientDataModel`` JSON body. This module is the SERVER-side half of
-that proof: ``src/clio_agent/gact/cors.py``'s origin allowlist
-(``_DEFAULT_ORIGINS``) is the only place a request's transport/origin is
-ever consulted, and it exists purely to gate BROWSER CORS preflight -- the
-actual metadata parsing/remembering path
-(``a2ui_capabilities.apply_client_metadata_guards``, called from
-``message_submission.py``/the action dispatcher) never reads ``Origin`` or
-any other transport-identifying header at all. Two fixture requests --
-one with a real dev-server browser ``Origin`` header, one with a Tauri
-desktop webview's headers (a ``tauri://localhost`` origin, no ``Origin``
-header at all, and its own webview ``User-Agent`` -- Tauri requests
-typically omit ``Origin`` for same-machine loopback IPC, which this proves
-handles identically to a request that DOES carry one) -- must be remembered
-byte-for-byte identically.
+construction," so browser (fetch) and Tauri (desktop webview IPC bridged
+through Rust) send the EXACT SAME ``a2uiClientCapabilities``/
+``a2uiClientDataModel`` JSON body.
+
+Real recorded request metadata, not hand-invented headers (S8 review fix):
+``tests/fixtures/a2ui_client_metadata/`` vendors the literal header sets
+BOTH gact-tui transports construct --
+``external/gact-tui/web/src/lib/transport/browser-transport.ts`` and
+``tauri-transport.ts``'s own private ``headers()`` methods are
+byte-for-byte identical (``Accept``/``Content-Type``/``X-GACT-Version``/
+``X-A2UI-Version``/optional ``Authorization``) -- and the
+``a2uiClientCapabilities`` body shape + concrete catalog ids
+``external/gact-tui/web/src/lib/a2ui/registry-store.test.tsx`` (S6
+adversarial review) asserts the real client advertises. No Tauri-origin
+network recording exists in the gact-tui repo to vendor verbatim (the
+desktop e2e suite drives a real WebView rather than capturing raw HTTP), so
+this module's Tauri fixture is derived from the real Rust bridge source
+instead of invented: ``desktop/src-tauri/src/gact_http.rs``'s own module
+doc states the WebView origin (``http://tauri.localhost``) is cross-origin
+to the local sidecar and clio emits no ``Access-Control-Allow-Origin``, so
+a vanilla browser ``fetch()`` would be CORS-blocked -- ``gact_http`` is a
+Tauri command that performs the request from Rust with the ``ureq`` native
+HTTP client instead, which (unlike a browser engine) never auto-attaches an
+``Origin`` header. This module's SERVER-side half of that proof:
+``src/clio_agent/gact/cors.py``'s origin allowlist (``_DEFAULT_ORIGINS``)
+is the only place a request's ``Origin`` is EVER consulted server-side, and
+it exists purely to gate browser CORS preflight -- the actual metadata
+door (``a2ui_capabilities.apply_client_metadata_guards``) never reads
+``Origin`` or any other transport-identifying header. Both vendored
+fixture requests must be remembered byte-for-byte identically.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterator
@@ -45,24 +60,36 @@ pytestmark = pytest.mark.usefixtures("host_agent_executor")
 BASIC_ID = basic_catalog_id()
 WORKSPACE_ID = workspace_catalog_id()
 
-#: A real browser dev-server request (the gact-tui web build, one of
-#: ``cors.py``'s ``_DEFAULT_ORIGINS``).
-BROWSER_HEADERS = {
-    "Origin": "http://localhost:5173",
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-    ),
+FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "a2ui_client_metadata"
+
+
+def _load_fixture(name: str) -> dict[str, Any]:
+    return json.loads((FIXTURES_DIR / name).read_text(encoding="utf-8"))
+
+
+_BROWSER_FIXTURE = _load_fixture("browser_request.json")
+_DESKTOP_FIXTURE = _load_fixture("desktop_request.json")
+_CAPABILITIES_FIXTURE = _load_fixture("client_capabilities_body.json")
+
+#: The literal header set each real gact-tui transport constructs (vendored,
+#: not hand-written) -- see module docstring. Note what is ABSENT: neither
+#: fixture's own JS-authored ``headers`` dict carries ``Origin`` -- a real
+#: browser request gets one anyway, auto-attached by the browser engine
+#: itself (never by gact-tui's own code); a real Tauri request never does.
+BROWSER_HEADERS: dict[str, str] = {
+    **_BROWSER_FIXTURE["headers"],
+    "Origin": _BROWSER_FIXTURE["origin"],
 }
-#: A real Tauri desktop webview request against the SAME local GACT server:
-#: no ``Origin`` header at all (same-machine loopback IPC), its own webview
-#: User-Agent string.
-DESKTOP_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) clio-desktop/0.7.1 Tauri/2.0"
-    ),
-}
+DESKTOP_HEADERS: dict[str, str] = dict(_DESKTOP_FIXTURE["headers"])
+assert "Origin" not in DESKTOP_HEADERS, "a real Tauri request never carries Origin"
+
+#: The exact a2uiClientCapabilities body shape + concrete catalog ids
+#: real gact-tui client code advertises (vendored, see module docstring).
+CLIENT_CAPABILITIES_BODY: dict[str, Any] = _CAPABILITIES_FIXTURE["a2uiClientCapabilities"]
+# Sanity: the vendored fixture's catalog ids are still today's real builtin
+# ids -- if a builtin catalog id ever changes, this fixture is stale and
+# this assertion (not a mismatched test failure three lines down) says so.
+assert CLIENT_CAPABILITIES_BODY["v0.9"]["supportedCatalogIds"] == [WORKSPACE_ID, BASIC_ID]
 
 
 class _FakeClioAgent:
@@ -98,11 +125,7 @@ def _post_capabilities(client: TestClient, sid: str, headers: dict[str, str]) ->
         headers=headers,
         json={
             "parts": [{"type": "text", "text": "hi"}],
-            "metadata": {
-                "a2uiClientCapabilities": {
-                    "v0.9": {"supportedCatalogIds": [BASIC_ID, WORKSPACE_ID]}
-                }
-            },
+            "metadata": {"a2uiClientCapabilities": CLIENT_CAPABILITIES_BODY},
         },
     )
 
@@ -125,11 +148,7 @@ def test_browser_and_desktop_requests_remember_identical_capabilities(
     desktop_stored = client.app.state.sessions.get(sid_desktop).metadata[
         A2UI_CLIENT_CAPABILITIES_METADATA_KEY
     ]
-    assert (
-        browser_stored
-        == desktop_stored
-        == {"v0.9": {"supportedCatalogIds": [BASIC_ID, WORKSPACE_ID]}}
-    )
+    assert browser_stored == desktop_stored == CLIENT_CAPABILITIES_BODY
 
     browser_caps = client_capabilities(client.app, sid_browser)
     desktop_caps = client_capabilities(client.app, sid_desktop)
@@ -141,20 +160,19 @@ def test_browser_and_desktop_requests_remember_identical_capabilities(
 def test_desktop_request_with_no_origin_header_is_not_treated_as_untrusted(
     client: TestClient,
 ) -> None:
-    """Tauri's same-machine loopback IPC typically carries no ``Origin`` at
-    all -- the metadata door must not silently degrade or refuse a request
-    just because that header is absent (⚑ no-silent-fallback)."""
+    """A real Tauri request never carries ``Origin`` at all (module
+    docstring) -- the metadata door must not silently degrade or refuse a
+    request just because that header is absent (⚑ no-silent-fallback)."""
 
     sid = _create_session(client)
-    headers = {k: v for k, v in DESKTOP_HEADERS.items() if k != "Origin"}
-    assert "Origin" not in headers
+    assert "Origin" not in DESKTOP_HEADERS
 
-    response = _post_capabilities(client, sid, headers)
+    response = _post_capabilities(client, sid, DESKTOP_HEADERS)
 
     assert response.status_code == 200, response.text
     caps = client_capabilities(client.app, sid)
     assert caps is not None
-    assert list(caps.v0_9.supportedCatalogIds) == [BASIC_ID, WORKSPACE_ID]
+    assert list(caps.v0_9.supportedCatalogIds) == [WORKSPACE_ID, BASIC_ID]
 
 
 def test_data_model_metadata_also_parity_across_transports(client: TestClient) -> None:

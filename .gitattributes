@@ -18,3 +18,6 @@ tests/fixtures/a2ui_packs/**    text eol=lf
 # JSON list read back through MessageStore._load_file, so it needs the same
 # byte-stability guarantee as the corpus/pack fixtures above.
 tests/fixtures/a2ui_transcripts/**   text eol=lf
+# S8 review round (issue #1374 item 9): vendored gact-tui transport header
+# sets / capability bodies, same byte-stability guarantee.
+tests/fixtures/a2ui_client_metadata/**   text eol=lf
