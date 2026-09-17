@@ -455,13 +455,6 @@ def validate_agent_hierarchy(
     return out
 
 
-_MEMORY_TOOL_NAMES = {
-    "memory_search_sessions",
-    "memory_read_session_summary",
-    "memory_read_context_frame",
-}
-
-
 def _mapping_field(meta: dict[str, Any], *keys: str) -> dict[str, Any]:
     for key in keys:
         value = meta.get(key)
@@ -553,12 +546,19 @@ def _validate_agent_tool_references(
     declared_server_names: Iterable[str] = (),
     runtime_tool_names: Collection[str] = (),
 ) -> list[AgentDef]:
-    # Built-in tools are the universal in-process defaults (fs/shell) plus the
-    # memory tools. Everything else is a declared MCP tool: a reference is valid
-    # iff the pack declares its server namespace via ``mcp_servers`` (declaration
-    # is the enablement). Legacy ``tools/*.md`` descriptors remain explicitly
-    # gated until enabled/trusted.
-    builtin_tools = set(TOOL_CATALOG) | _MEMORY_TOOL_NAMES | {"ask_user", "create_a2ui_surface"}
+    # Built-in tools are the in-process defaults (fs/shell, memory, ask_user, A2UI
+    # producer tools). Everything else is a declared MCP tool, valid iff the pack
+    # declares its namespace via ``mcp_servers``; legacy ``tools/*.md`` stays gated.
+    builtin_tools = set(TOOL_CATALOG) | {
+        "ask_user",
+        "create_a2ui_surface",
+        "update_a2ui_components",
+        "update_a2ui_data_model",
+        "delete_a2ui_surface",
+        "memory_search_sessions",
+        "memory_read_session_summary",
+        "memory_read_context_frame",
+    }
     declared_namespaces = {str(n).strip() for n in declared_server_names if str(n).strip()}
     descriptor_tools: dict[str, dict[str, Any]] = {}
     for descriptor in mcp_descriptors:
