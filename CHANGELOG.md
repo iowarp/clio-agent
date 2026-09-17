@@ -32,6 +32,9 @@ during external-user verification of v0.9.4.
   tool is constructed, shortening the connection-critical launch path.
 - The desktop connection indicator now explains its current health or degraded
   state on hover instead of relying on color alone.
+- Windows upgrades and uninstalls stop only the managed CLIO process tree before
+  replacing files, so the bundled runtime is removed cleanly; the standard
+  opt-in checkbox still controls whether user data is also removed.
 - Four-part CLIO maintenance versions such as `0.9.4.1` are translated to
   numeric SemVer build metadata for Tauri while public tags and asset names
   keep the CLIO release version.
