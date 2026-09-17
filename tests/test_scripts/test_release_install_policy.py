@@ -146,6 +146,10 @@ def test_bundled_runtime_is_precompiled_before_relocation_proof() -> None:
     windows_builder = _text("install/build-gact-runtime.ps1")
     assert "codex_cli_bin\\bin\\codex.exe" in windows_builder
     assert "packaged Codex provider executable is missing" in windows_builder
+    assert "iowarp_core\\bin" in windows_builder
+    assert "packaged clio-core launcher is missing" in windows_builder
+    assert "initialize clio-core store" in windows_builder
+    assert "isinstance(store, ClioCoreStore)" in windows_builder
 
 
 def test_release_workflow_smokes_the_published_registry_tool() -> None:

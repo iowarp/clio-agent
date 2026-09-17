@@ -178,15 +178,24 @@ if (Test-Path $scriptsDir) {
 }
 # distlib/setuptools launcher stubs under site-packages (t64.exe, w64-arm.exe,
 # ...) are dead weight because console scripts are deleted and ``-m`` is the
-# GACT entry. Keep the Codex SDK's packaged runtime: it is a real provider
-# executable, not a generated Python console-script shim.
+# GACT entry. Keep real packaged runtimes: the Codex SDK provider executable
+# and iowarp-core's native daemon/tools. Removing clio_run.exe leaves imports
+# healthy but silently forces ARC to degrade when the first agent is built.
 if (Test-Path $sitePkgs) {
   $codexCli = Join-Path $sitePkgs 'codex_cli_bin\bin\codex.exe'
+  $iowarpCoreBin = Join-Path $sitePkgs 'iowarp_core\bin'
   Get-ChildItem -LiteralPath $sitePkgs -Recurse -File -Filter '*.exe' -ErrorAction SilentlyContinue |
-    Where-Object { $_.FullName -ne $codexCli } |
+    Where-Object {
+      $_.FullName -ne $codexCli -and
+      -not $_.FullName.StartsWith($iowarpCoreBin, [System.StringComparison]::OrdinalIgnoreCase)
+    } |
     ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
   if (-not (Test-Path -LiteralPath $codexCli)) {
     throw 'build-gact-runtime: packaged Codex provider executable is missing'
+  }
+  $clioCoreLauncher = Join-Path $iowarpCoreBin 'clio_run.exe'
+  if (-not (Test-Path -LiteralPath $clioCoreLauncher)) {
+    throw 'build-gact-runtime: packaged clio-core launcher is missing'
   }
 }
 
@@ -225,6 +234,30 @@ Copy-Item -LiteralPath $Out -Destination $reloc -Recurse
 $relocPy = Join-Path $reloc 'python\python.exe'
 Write-Host "[build-gact-runtime] sanity (relocated): $relocPy -m clio_agent.gact --help"
 Invoke-Native -Exe $relocPy -Args @('-m', 'clio_agent.gact', '--help') | Out-Null
+# Imports and /v1/capabilities do not initialize ARC under --no-agent. Prove
+# the relocated image can launch clio-core and select the intended tiered
+# backend instead of degrading to LocalFS after installation.
+$relocCoreLauncher = Join-Path $reloc 'python\Lib\site-packages\iowarp_core\bin\clio_run.exe'
+if (-not (Test-Path -LiteralPath $relocCoreLauncher)) {
+  throw 'build-gact-runtime: relocated clio-core launcher is missing'
+}
+$previousUserDir = $env:CLIO_USER_DIR
+$previousFileCapacity = $env:CLIO_ARC_CTE_FILE_CAPACITY
+try {
+  $env:CLIO_USER_DIR = Join-Path $reloc 'smoke-user'
+  $env:CLIO_ARC_CTE_FILE_CAPACITY = '1GB'
+  Write-Host '[build-gact-runtime] sanity (relocated ARC): initialize clio-core store'
+  Invoke-Native -Exe $relocPy -Args @(
+    '-c',
+    'from clio_agent.arc.storage import ClioCoreStore, make_arc_store; store = make_arc_store(backend="cte"); assert isinstance(store, ClioCoreStore), type(store).__name__'
+  ) | Out-Null
+} finally {
+  if ($null -eq $previousUserDir) { Remove-Item Env:CLIO_USER_DIR -ErrorAction SilentlyContinue }
+  else { $env:CLIO_USER_DIR = $previousUserDir }
+  if ($null -eq $previousFileCapacity) {
+    Remove-Item Env:CLIO_ARC_CTE_FILE_CAPACITY -ErrorAction SilentlyContinue
+  } else { $env:CLIO_ARC_CTE_FILE_CAPACITY = $previousFileCapacity }
+}
 # --help only proves imports; BOOT the relocated copy and poll the API --
 # the only automated proof a prune casualty or loader problem would fail.
 $port = Get-Random -Minimum 24000 -Maximum 44000
