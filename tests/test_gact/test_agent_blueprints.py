@@ -2941,6 +2941,37 @@ Use an undeclared external tool.
     assert "unknown tool reference: missing_external_tool" in "\n".join(body["validation_errors"])
 
 
+def test_validate_agent_tool_references_accepts_producer_and_memory_tools_rejects_bogus() -> None:
+    """S4 adversarial-review item 6: the builtin-tools allowlist covers the
+    three new A2UI producer tools alongside ask_user and every memory tool,
+    and still refuses a name none of that set (or an MCP declaration)
+    covers."""
+
+    from clio_agent.gact.agent_blueprints import _validate_agent_tool_references
+    from clio_agent.gact.types import AgentDef
+
+    row = AgentDef(
+        id="visual",
+        title="Visual",
+        tools=[
+            "ask_user",
+            "create_a2ui_surface",
+            "update_a2ui_components",
+            "update_a2ui_data_model",
+            "delete_a2ui_surface",
+            "memory_search_sessions",
+            "memory_read_session_summary",
+            "memory_read_context_frame",
+            "bogus_tool",
+        ],
+    )
+
+    [validated] = _validate_agent_tool_references([row], mcp_descriptors=[])
+
+    assert validated.validation_errors == ["unknown tool reference: bogus_tool"]
+    assert validated.enabled is False
+
+
 def test_agent_blueprint_mcp_descriptor_requires_explicit_enablement(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     root = workspace / ".clio" / "agent-blueprints" / "earth"
