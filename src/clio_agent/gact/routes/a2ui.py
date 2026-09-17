@@ -15,6 +15,8 @@ from clio_agent.gact.a2ui import (
     A2UIValidationError,
     validate_client_action,
 )
+from clio_agent.gact.a2ui_capabilities import A2UICapabilitiesError, apply_client_metadata_guards
+from clio_agent.gact.a2ui_catalogs.routes.a2ui_capabilities import register_a2ui_capabilities_routes
 from clio_agent.gact.a2ui_catalogs.routes.a2ui_catalogs import register_a2ui_catalog_routes
 from clio_agent.gact.events import Event
 from clio_agent.gact.off_loop import run_off_loop
@@ -167,8 +169,16 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
                 f"A2UI {A2UI_V091} must be negotiated",
             )
         sess = require_session(sid)
-        if set(body) - {"message", "correlation"}:
+        if set(body) - {"message", "correlation", "metadata"}:
             raise _error(422, "validation_error", "A2UI action body contains unknown fields")
+        # S3: an action may carry the SAME renderer transport metadata a message
+        # does (client capability advertisement, or a data model scoped to a
+        # surface this action targets) -- one shared owner-module guard, same
+        # typed refusals, same per-session ledger as the POST /messages door.
+        try:
+            action_data_model = apply_client_metadata_guards(app, sid, body.get("metadata"))
+        except A2UICapabilitiesError as exc:
+            raise _error(422, exc.reason, str(exc)) from exc
         message = body.get("message")
         if not isinstance(message, Mapping):
             raise _error(422, "validation_error", "A2UI action message is required")
@@ -319,6 +329,12 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
         }
         updated = app.state.a2ui_store.apply(sid, ack)
         result["surface"] = updated.to_wire()
+        if action_data_model is not None:
+            # Carried through onto the accepted action, normalized key (S3;
+            # mirrors POST /messages) -- S5 owns ingestion/fold semantics.
+            result["a2ui_client_data_model"] = action_data_model.model_dump(
+                mode="json", by_alias=True, exclude_none=True
+            )
         app.state.bus.publish(
             Event(
                 type="a2ui.action.received",
@@ -350,6 +366,8 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
     # Catalog discovery is a sibling concern of A2UI production (S2's client
     # registry source): registered here so app.py needs no separate import.
     register_a2ui_catalog_routes(app)
+    # S3: the per-session capability-negotiation route, same reasoning.
+    register_a2ui_capabilities_routes(app)
 
 
 __all__ = ["register_a2ui_routes"]

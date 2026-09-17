@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException
 
+from clio_agent.gact.a2ui_capabilities import (
+    A2UI_CLIENT_DATA_MODEL_METADATA_KEY,
+    A2UI_CLIENT_DATA_MODEL_WIRE_KEY,
+    A2UICapabilitiesError,
+    apply_client_metadata_guards,
+)
 from clio_agent.gact.context_reference_delivery import (
     context_reference_deliveries,
     enrich_with_context_references,
@@ -214,6 +221,36 @@ def _commit_resource_deliveries(
         )
 
 
+def _a2ui_client_metadata_error(exc: A2UICapabilitiesError) -> HTTPException:
+    return HTTPException(
+        status_code=422,
+        detail=ErrorEnvelope(
+            error=ErrorInfo(error=exc.reason, message=str(exc), recoverable=True)
+        ).model_dump(exclude_none=True),
+    )
+
+
+def _apply_a2ui_client_metadata_guards(
+    app: FastAPI, sid: str, metadata: Mapping[str, Any] | None
+) -> None:
+    """Validate + remember A2UI renderer transport metadata (S3 door guard).
+
+    Next to :func:`raise_on_reserved_metadata` (the OTHER client-metadata
+    chokepoint) rather than folded into it: these two keys are explicitly
+    NOT reserved (a client is meant to send them), so they get their own
+    schema-validation + typed-reason path via the shared owner-module guard
+    instead of the reject-unknown-key one. Runs once, early, for both a
+    fresh ``start`` and a busy-session ``steer`` -- a client's capability
+    advertisement is remembered even when the request later 503s for an
+    unrelated reason (LM/agent unavailable).
+    """
+
+    try:
+        apply_client_metadata_guards(app, sid, metadata)
+    except A2UICapabilitiesError as exc:
+        raise _a2ui_client_metadata_error(exc) from exc
+
+
 def _validate_provider_and_payload(
     app: FastAPI,
     deps: "GactDeps",
@@ -227,6 +264,7 @@ def _validate_provider_and_payload(
         raise _session_not_found(sid)
 
     raise_on_reserved_metadata(sid, req.metadata)
+    _apply_a2ui_client_metadata_guards(app, sid, req.metadata)
     lm_status = getattr(app.state, "lm_config_status", {}) or {}
     if lm_status.get("state") == "configuring":
         raise HTTPException(
@@ -542,6 +580,15 @@ def accept_message(
 
     behavior = req.behavior.model_dump()
     metadata = dict(req.metadata)
+    if A2UI_CLIENT_DATA_MODEL_WIRE_KEY in metadata:
+        # Already schema-validated in ``_apply_a2ui_client_metadata_guards`` above
+        # (strict + extra="forbid", so the raw value IS the canonical shape) --
+        # renamed onto the accepted message under the internal snake_case key so
+        # the wire key never lands verbatim in a stored record (S5 owns fold
+        # semantics; this is normalization, not a decision).
+        metadata[A2UI_CLIENT_DATA_MODEL_METADATA_KEY] = metadata.pop(
+            A2UI_CLIENT_DATA_MODEL_WIRE_KEY
+        )
     model_selection_source = (
         "per_message"
         if req.model is not None and not _model_ref_is_empty(req.model)
