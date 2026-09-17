@@ -264,15 +264,45 @@ class A2UIStore:
 
         return self._parts(session_id, part_type="a2ui_action")
 
-    def persist_action_part(self, session_id: str, part: "Part") -> bool:
-        """Persist one ``a2ui_action`` lifecycle snapshot (S5).
+    def persist_action_part(
+        self, session_id: str, part: "Part", *, idempotency_key: str = ""
+    ) -> dict[str, Any] | None:
+        """Persist one ``a2ui_action`` lifecycle snapshot (S5), atomically.
 
         The SAME durable writer :meth:`apply_batch_outcome` uses for a surface
         part -- an action record rides the identical transcript ledger, never
-        a new store (RULE 4).
+        a new store (RULE 4). When ``idempotency_key`` is given (a NEW
+        ``received`` record only -- a transition snapshot never passes one),
+        the idempotency lookup over this session's already-persisted action
+        records and the persist itself happen under the SAME per-session
+        lock :meth:`apply_batch_outcome` uses, closing the race a caller-side
+        check-then-persist could not (adversarial review finding #1,
+        BLOCKING): two concurrent submissions of the same key can no longer
+        both observe "no existing record" and both persist.
+
+        Returns:
+            The EXISTING record's wire dict when ``idempotency_key`` already
+            matches a persisted record on this surface (nothing new
+            written), or ``None`` once ``part`` has been freshly persisted.
         """
 
-        return self._persist_part(session_id, part)
+        from clio_agent.gact.a2ui_actions.record import (  # noqa: PLC0415
+            find_by_idempotency_key,
+        )
+
+        with self._session_lock(session_id):
+            if idempotency_key:
+                surface_id = str(getattr(part, "surface_id", "") or "")
+                surface = self.get(session_id, surface_id)
+                existing = (
+                    find_by_idempotency_key(surface.actions, idempotency_key)
+                    if surface is not None
+                    else None
+                )
+                if existing is not None:
+                    return existing
+            self._persist_part(session_id, part)
+            return None
 
     def _persist_part(self, session_id: str, part: "Part") -> bool:
         from clio_agent.gact.part_atom_minter import run_transcript_job  # noqa: PLC0415

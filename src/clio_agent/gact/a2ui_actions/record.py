@@ -21,10 +21,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal, Mapping
 from uuid import uuid4
+
+from fastapi import HTTPException
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -101,6 +104,10 @@ class ActionRecord:
         reason: A typed reason code when ``state`` is ``failed`` or the
             record was a ``duplicate``/``rejected`` delivery.
         narration: The deterministic, bounded text handed to the agent.
+        http_status: The HTTP status code a ``failed`` record's ORIGINAL
+            refusal raised, so a later duplicate submission can re-raise the
+            SAME typed refusal instead of returning a 200 (adversarial
+            review finding #5). ``0`` for every non-failed record.
         created_at: When this record's identity was first minted.
         updated_at: When this SNAPSHOT (this particular transcript part) was
             written.
@@ -121,6 +128,7 @@ class ActionRecord:
     client_data_model: dict[str, Any] | None = None
     reason: str = ""
     narration: str = ""
+    http_status: int = 0
     created_at: str = field(default_factory=utcnow_iso)
     updated_at: str = field(default_factory=utcnow_iso)
 
@@ -132,6 +140,7 @@ class ActionRecord:
         reason: str | None = None,
         narration: str | None = None,
         correlation: Mapping[str, Any] | None = None,
+        http_status: int | None = None,
     ) -> "ActionRecord":
         """Return a NEW snapshot of this record with the given fields updated.
 
@@ -154,6 +163,8 @@ class ActionRecord:
             updates["narration"] = narration
         if correlation:
             updates["correlation"] = {**self.correlation, **correlation}
+        if http_status is not None:
+            updates["http_status"] = http_status
         return replace(self, **updates)
 
     def to_wire(self) -> dict[str, Any]:
@@ -186,6 +197,7 @@ class ActionRecord:
                 ),
                 reason=str(data.get("reason") or ""),
                 narration=str(data.get("narration") or ""),
+                http_status=int(data.get("http_status") or 0),
                 created_at=str(data.get("created_at") or utcnow_iso()),
                 updated_at=str(data.get("updated_at") or utcnow_iso()),
             )
@@ -210,7 +222,7 @@ class ActionRecord:
 
 
 def find_by_idempotency_key(
-    actions: "list[Mapping[str, Any]]", idempotency_key: str
+    actions: "Sequence[Mapping[str, Any]]", idempotency_key: str
 ) -> dict[str, Any] | None:
     """Return the latest recorded action whose idempotency key matches, if any."""
 
@@ -222,12 +234,17 @@ def find_by_idempotency_key(
     return None
 
 
-def prior_error_count_for_revision(actions: "list[Mapping[str, Any]]", revision: int) -> int:
-    """Count prior VALIDATION_FAILED-triggered error records at this surface revision.
+def prior_error_count_for_revision(actions: "Sequence[Mapping[str, Any]]", revision: int) -> int:
+    """Count prior VALIDATION_FAILED repairs that actually DELIVERED at this revision.
 
     Used to decide "first VALIDATION_FAILED -> one repair delivery" vs.
-    "second -> the surface is repair-exhausted" (S5 deliverable 2b). A
-    generic (non-VALIDATION_FAILED) error never counts -- it is never
+    "second -> the surface is repair-exhausted" (S5 deliverable 2b).
+    Adversarial review finding #4: only a record that reached
+    ``delivered``/``consumed`` burns the repair budget -- a repair REFUSED
+    (e.g. ``a2ui_waiting_user_uncorrelated``, still ``state="failed"``) never
+    attempted delivery and must not count, or a transient refusal would
+    permanently exhaust a surface's repair budget. A generic
+    (non-VALIDATION_FAILED) error never counts either -- it is never
     delivered/repaired in the first place.
     """
 
@@ -236,6 +253,7 @@ def prior_error_count_for_revision(actions: "list[Mapping[str, Any]]", revision:
         for row in actions
         if row.get("kind") == "error"
         and row.get("reason") != "a2ui_client_error_unhandled"
+        and row.get("state") in ("delivered", "consumed")
         and row.get("correlation", {}).get("revision") == revision
     )
 
@@ -255,6 +273,7 @@ def lifecycle_event_payload(record: ActionRecord) -> dict[str, Any]:
         "action": record.action_name,
         "action_id": record.id,
         "state": record.state,
+        "kind": record.kind,
     }
     if record.source_component_id:
         payload["source_component_id"] = record.source_component_id
@@ -265,23 +284,100 @@ def lifecycle_event_payload(record: ActionRecord) -> dict[str, Any]:
     return payload
 
 
-def _persist(app: "FastAPI", session_id: str, record: ActionRecord) -> bool:
-    """Persist one lifecycle snapshot through the store's durable writer."""
+def persist_new_record(app: "FastAPI", record: ActionRecord) -> dict[str, Any] | None:
+    """Persist a NEW record's ``received`` snapshot, atomically idempotency-checked.
+
+    Adversarial review finding #1 (BLOCKING): the idempotency lookup and the
+    persist happen INSIDE ``A2UIStore.persist_action_part``, under the SAME
+    per-session lock ``apply_batch_outcome`` already uses -- a genuinely
+    concurrent double-submission can no longer race a stale read against the
+    write. ``record.idempotency_key`` is empty for an error record, which
+    always persists unconditionally (errors have no per-click identity).
+
+    Returns:
+        The EXISTING record's wire dict when ``idempotency_key`` already
+        matches a persisted record (nothing new was written -- the caller
+        must not deliver again), or ``None`` once this record's ``received``
+        snapshot has been freshly persisted.
+    """
 
     store = app.state.a2ui_store
-    return store.persist_action_part(session_id, record.to_part())
-
-
-def persist_new_record(app: "FastAPI", record: ActionRecord) -> bool:
-    """Persist the FIRST (``received``) snapshot of a new action/error record."""
-
-    return _persist(app, record.session_id, record)
+    return store.persist_action_part(
+        record.session_id, record.to_part(), idempotency_key=record.idempotency_key
+    )
 
 
 def persist_transition(app: "FastAPI", record: ActionRecord) -> bool:
-    """Persist a follow-up lifecycle snapshot (same id, new state/delivery)."""
+    """Persist a follow-up lifecycle snapshot (same id, new state/delivery).
 
-    return _persist(app, record.session_id, record)
+    Never passes ``idempotency_key`` (a transition is not a NEW record), so
+    ``A2UIStore.persist_action_part`` always takes its unconditional-persist
+    branch and returns ``None`` on success -- translated to ``True`` here so
+    this function's own ``bool`` contract (used by callers as a plain
+    success/failure check) stays accurate regardless of the store's own
+    duplicate-vs-fresh return shape.
+    """
+
+    store = app.state.a2ui_store
+    return store.persist_action_part(record.session_id, record.to_part()) is None
+
+
+def reason_for_exception(exc: BaseException) -> str:
+    """Return the typed reason a delivery-failure record should carry.
+
+    An ``HTTPException`` raised by an existing owner (``retry_turn_action``,
+    ``answer_user_question``, ...) already carries its own typed
+    ``error.error`` code in its ``detail`` -- reuse it verbatim so the
+    record's ``reason`` matches the response the caller actually saw. Any
+    other exception (a genuinely unexpected failure) gets the generic
+    ``a2ui_delivery_error`` reason.
+    """
+
+    if isinstance(exc, HTTPException) and isinstance(exc.detail, Mapping):
+        error = exc.detail.get("error")
+        if isinstance(error, Mapping) and error.get("error"):
+            return str(error["error"])
+    return "a2ui_delivery_error"
+
+
+def status_for_exception(exc: BaseException) -> int:
+    """Return the HTTP status a delivery-failure record's re-raise should carry."""
+
+    if isinstance(exc, HTTPException):
+        return exc.status_code
+    return 500
+
+
+def fail_and_publish(
+    app: "FastAPI", session_id: str, record: ActionRecord, exc: BaseException
+) -> ActionRecord:
+    """Transition ``record`` to ``failed``/``rejected`` for ``exc``, persist, publish.
+
+    Adversarial review finding #2 (BLOCKING): every owner call a delivery
+    lane makes (``answer_user_question``, ``_start_background_user_turn``,
+    ``enqueue_user_steer``, ``resolve_permission``, ``cancel_session_state``,
+    ``retry_turn_action``) is wrapped so a raise lands here BEFORE the
+    caller re-raises the SAME exception -- a record can no longer strand at
+    ``received`` while its HTTP response reports a failure.
+    """
+
+    from clio_agent.gact.events import Event  # noqa: PLC0415
+
+    failed = record.transition(
+        state="failed",
+        delivery="rejected",
+        reason=reason_for_exception(exc),
+        http_status=status_for_exception(exc),
+    )
+    persist_transition(app, failed)
+    app.state.bus.publish(
+        Event(
+            type="a2ui.action.failed",
+            session_id=session_id,
+            payload=lifecycle_event_payload(failed),
+        )
+    )
+    return failed
 
 
 def fold_action_records(
@@ -408,6 +504,7 @@ __all__ = [
     "ActionRecord",
     "ActionState",
     "compute_idempotency_key",
+    "fail_and_publish",
     "find_by_idempotency_key",
     "fold_action_records",
     "lifecycle_event_payload",
@@ -416,5 +513,7 @@ __all__ = [
     "persist_new_record",
     "persist_transition",
     "prior_error_count_for_revision",
+    "reason_for_exception",
+    "status_for_exception",
     "utcnow_iso",
 ]
