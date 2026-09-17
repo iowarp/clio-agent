@@ -9,6 +9,7 @@ The default-registry root expert auto-declares workspace skills.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -23,6 +24,7 @@ from clio_agent.gact.agents.skill_runtime import (
     skill_runtime_for_agent,
     skill_runtime_spawns_subagents,
 )
+from clio_agent.gact.app import build_app
 from clio_agent.gact.skills import SkillCatalog
 from clio_agent.gact.types import AgentDef
 
@@ -304,8 +306,9 @@ def test_default_root_auto_declares_workspace_skills_on_real_runtime_rows(
     assert effective_declared_skills(other_root, catalog) == []
 
 
-def test_interactive_analysis_skill_keeps_station_selection_agent_bound() -> None:
-    """The shipped map recipe must preserve a human choice into the next turn."""
+def test_interactive_analysis_skill_is_when_why_guidance_with_no_prop_lore() -> None:
+    """S4: the shipped presentation skill points at catalog skills for shapes and
+    keeps ONLY when/why guidance -- no component property lore lives here anymore."""
 
     from clio_agent.gact.agents import skill_runtime
 
@@ -317,11 +320,16 @@ def test_interactive_analysis_skill_keeps_station_selection_agent_bound() -> Non
     )
     body = skill_path.read_text(encoding="utf-8")
 
-    assert "component: ChoicePicker" in body
-    assert "value: {path: /selectedStationIds}" in body
-    assert "name: agent.submit" in body
-    assert "selected_station_ids: {path: /selectedStationIds}" in body
-    assert "selectedStationIds: [leading-id]" in body
+    # Preserves the "a human choice must be delivered to the agent" guidance...
+    assert "local visual state only" in body
+    assert "submit action" in body
+    # ...but never as a concrete component/prop recipe (deleted, S4).
+    assert "```yaml" not in body
+    assert "component: ChoicePicker" not in body
+    assert "selectedStationIds" not in body
+    # Points at catalog skills as the source of truth for exact shapes.
+    assert 'load_skill("a2ui-catalog-<slug>")' in body
+    assert 'file="catalog.json#/components/<Name>")' in body
 
 
 def test_flat_skill_has_no_bundled_files(scratch_flat: None, tmp_path: Path) -> None:
@@ -457,3 +465,209 @@ def test_predict_builder_wires_bodies(pack: Path, monkeypatch: pytest.MonkeyPatc
     )
     assert "SECRET_PROCEDURE_MARKER" in module.system_prompt
     assert module.tools == []
+
+
+# ---- S4: load_skill JSON pointer fragment support --------------------------------
+
+
+def test_load_skill_file_fragment_resolves_a_json_pointer(pack: Path) -> None:
+    catalog = {
+        "components": {
+            "Button": {
+                "type": "object",
+                "properties": {
+                    "action": {"$ref": "common_types.json#/$defs/Action"},
+                    "component": {"const": "Button"},
+                },
+            }
+        }
+    }
+    (pack / "skills" / "quality-rubric" / "catalog.json").write_text(
+        json.dumps(catalog), encoding="utf-8"
+    )
+    rt = _runtime(pack)
+    tool = build_load_skill_tool(_agent(pack), rt)
+
+    out = tool.func(skill_id="quality-rubric", file="catalog.json#/components/Button")
+
+    assert '"const": "Button"' in out
+    assert "common_types.json#/$defs/Action" in out
+
+
+def test_load_skill_file_fragment_unresolvable_lists_available_keys(pack: Path) -> None:
+    catalog = {"components": {"Button": {"type": "object"}}}
+    (pack / "skills" / "quality-rubric" / "catalog.json").write_text(
+        json.dumps(catalog), encoding="utf-8"
+    )
+    rt = _runtime(pack)
+    tool = build_load_skill_tool(_agent(pack), rt)
+
+    with pytest.raises(ValueError) as excinfo:
+        tool.func(skill_id="quality-rubric", file="catalog.json#/components/Missing")
+
+    assert "Button" in str(excinfo.value)
+    assert "does not resolve" in str(excinfo.value)
+
+
+def test_load_skill_file_fragment_requires_json(pack: Path) -> None:
+    rt = _runtime(pack)
+    tool = build_load_skill_tool(_agent(pack), rt)
+
+    with pytest.raises(ValueError) as excinfo:
+        tool.func(skill_id="quality-rubric", file="references/checklist.md#/x")
+
+    assert "fragment" in str(excinfo.value)
+
+
+def test_load_skill_file_fragment_requires_absolute_pointer(pack: Path) -> None:
+    (pack / "skills" / "quality-rubric" / "catalog.json").write_text("{}", encoding="utf-8")
+    rt = _runtime(pack)
+    tool = build_load_skill_tool(_agent(pack), rt)
+
+    with pytest.raises(ValueError) as excinfo:
+        tool.func(skill_id="quality-rubric", file="catalog.json#components")
+
+    assert "absolute" in str(excinfo.value)
+
+
+def test_load_skill_file_without_fragment_is_unaffected(pack: Path) -> None:
+    """No ``#`` in ``file`` is the pre-existing, unchanged path."""
+
+    rt = _runtime(pack)
+    tool = build_load_skill_tool(_agent(pack), rt)
+
+    assert tool.func(skill_id="quality-rubric", file="references/checklist.md") == "THE CHECKLIST"
+
+
+# ---- S4: catalogs disclosed as skill directories ----------------------------------
+
+
+def test_root_agent_with_no_blueprint_declares_the_two_builtin_catalog_skills(
+    tmp_path: Path,
+) -> None:
+    """Golden: tier 1 gains exactly one line per producible catalog, nothing else."""
+
+    from clio_agent.gact.a2ui_catalogs.builtin import load_builtin_catalogs
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="root")
+    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+
+    rt = skill_runtime_for_agent(app, root, session_id=session.id)
+
+    basic, workspace = load_builtin_catalogs()
+    assert list(rt.resolved) == ["a2ui-catalog-basic", "a2ui-catalog-clio-workspace"]
+    lines = rt.prompt_block.splitlines()
+    assert lines[0] == "## Skills available to you"
+    assert lines[2:] == [
+        f"- a2ui-catalog-basic: {basic.file['description']}",
+        f"- a2ui-catalog-clio-workspace: {workspace.file['description']}",
+    ]
+
+
+_FIXTURE_A2UI_PACK = Path(__file__).resolve().parents[1] / "fixtures" / "a2ui_packs" / "minimal"
+
+
+def test_pack_blueprint_session_declares_three_catalog_skills(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="root")
+    app.state.sessions.update(
+        session.id,
+        metadata_patch={
+            "active_agent_blueprint_id": "a2ui-minimal-pack",
+            "active_agent_blueprint_path": str(_FIXTURE_A2UI_PACK),
+        },
+    )
+    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+
+    rt = skill_runtime_for_agent(app, root, session_id=session.id)
+
+    assert list(rt.resolved) == [
+        "a2ui-catalog-basic",
+        "a2ui-catalog-clio-workspace",
+        "a2ui-catalog-minimal",
+    ]
+
+
+def test_producer_tool_declaration_auto_declares_catalog_skills_for_a_child(
+    tmp_path: Path,
+) -> None:
+    """A non-root expert gets catalog skills too, purely from declaring a producer tool."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="child")
+    child = AgentDef(
+        id="visual",
+        title="Visual",
+        parent_id="root",
+        module={"kind": "react"},
+        tools=["create_a2ui_surface"],
+    )
+
+    rt = skill_runtime_for_agent(app, child, session_id=session.id)
+
+    assert "a2ui-catalog-basic" in rt.resolved
+    assert "a2ui-catalog-clio-workspace" in rt.resolved
+
+
+def test_plain_child_with_no_producer_tool_gets_no_catalog_skills(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="child")
+    child = AgentDef(id="plain", title="Plain", parent_id="root", module={"kind": "react"})
+
+    rt = skill_runtime_for_agent(app, child, session_id=session.id)
+
+    assert rt.resolved == {}
+
+
+def test_load_skill_on_an_undeclared_catalog_skill_is_the_existing_not_declared_error(
+    tmp_path: Path,
+) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="child")
+    child = AgentDef(id="plain", title="Plain", parent_id="root", module={"kind": "react"})
+    rt = skill_runtime_for_agent(app, child, session_id=session.id)
+    tool = build_load_skill_tool(child, rt)
+
+    with pytest.raises(ValueError) as excinfo:
+        tool.func(skill_id="a2ui-catalog-basic")
+
+    assert "unknown skill" in str(excinfo.value)
+
+
+def test_catalog_skill_body_carries_instructions_index_and_load_skill_call(
+    tmp_path: Path,
+) -> None:
+    from clio_agent.gact.a2ui_catalogs.builtin import load_builtin_catalogs
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="root")
+    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    rt = skill_runtime_for_agent(app, root, session_id=session.id)
+    tool = build_load_skill_tool(root, rt)
+
+    body = tool.func(skill_id="a2ui-catalog-clio-workspace")
+
+    _, workspace = load_builtin_catalogs()
+    assert workspace.instructions.strip() in body
+    assert "## Components" in body
+    assert "`clio.status.v1`" in body
+    assert (
+        'load_skill("a2ui-catalog-clio-workspace", file="catalog.json#/components/<Name>")' in body
+    )
+
+
+def test_catalog_skill_component_file_matches_the_validated_catalog(tmp_path: Path) -> None:
+    """The loaded component schema is read from the SAME file the server validates
+    against (S2's allowlist), never a second maintained copy."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="root")
+    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    rt = skill_runtime_for_agent(app, root, session_id=session.id)
+    tool = build_load_skill_tool(root, rt)
+
+    out = tool.func(skill_id="a2ui-catalog-basic", file="catalog.json#/components/Button")
+
+    assert '"const": "Button"' in out
+    assert "common_types.json#/$defs/Action" in out

@@ -33,6 +33,8 @@ declaring expert's own pack root, mirroring how the agent rows were loaded.
 
 from __future__ import annotations
 
+import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -50,6 +52,19 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
     from clio_agent.gact.types import AgentDef
+
+#: Declaring any of these tools (or being a root agent, per ``auto_tools.py``'s
+#: root compatibility) auto-declares this session's producible A2UI catalog
+#: skills (S4) -- an expert should never need to also spell out
+#: ``skills: [a2ui-catalog-...]`` just to use the tool it already declared.
+_A2UI_PRODUCER_TOOL_NAMES = frozenset(
+    {
+        "create_a2ui_surface",
+        "update_a2ui_components",
+        "update_a2ui_data_model",
+        "delete_a2ui_surface",
+    }
+)
 
 
 @dataclass
@@ -104,10 +119,44 @@ def agent_pack_root(agent_def: "AgentDef") -> Path | None:
     return None
 
 
-def effective_declared_skills(agent_def: "AgentDef", catalog: SkillCatalog) -> list[str]:
+def _is_root_agent(agent_def: "AgentDef") -> bool:
+    """Root-compatibility check mirroring ``auto_tools.py``'s own gate."""
+
+    return not (agent_def.parent_id or "")
+
+
+def _declares_a2ui_producer_tool(agent_def: "AgentDef") -> bool:
+    declared_tools = {str(name).strip() for name in (getattr(agent_def, "tools", None) or [])}
+    return bool(declared_tools & _A2UI_PRODUCER_TOOL_NAMES)
+
+
+def _producible_a2ui_catalog_skill_ids(catalog: SkillCatalog) -> list[str]:
+    """This session's producible A2UI catalogs, as their generated skill ids.
+
+    Reads ``catalog``'s OWN ``catalog`` scope (:meth:`SkillCatalog.
+    _catalog_refs`) rather than re-deriving producibility here -- that is
+    already the session-correct set (builtins ∪ globally-installed packs ∪
+    the session's own path-activated pack), computed once and cached on the
+    SAME catalog instance :func:`effective_declared_skills` goes on to
+    ``resolve_declared`` against.
+    """
+
+    return sorted(ref.id for ref in catalog._catalog_refs())
+
+
+def effective_declared_skills(
+    agent_def: "AgentDef",
+    catalog: SkillCatalog,
+    *,
+    app: "FastAPI | None" = None,
+    session_id: str = "",
+) -> list[str]:
     """The expert's declared skill ids — plus, for the default-registry ROOT
     expert only, every workspace-scope skill (auto-declaration, §3.6), so
-    user-authored skills work in plain chat."""
+    user-authored skills work in plain chat -- plus, for any expert that
+    declares a producer tool or is itself a root agent (S4), this session's
+    producible A2UI catalog skill ids (``app``/``session_id`` unavailable —
+    e.g. an app-less rebuild — silently contributes none, never an error)."""
 
     declared = [str(s).strip() for s in agent_def.skills if str(s).strip()]
     meta = agent_def.metadata if isinstance(agent_def.metadata, dict) else {}
@@ -139,6 +188,11 @@ def effective_declared_skills(agent_def: "AgentDef", catalog: SkillCatalog) -> l
                     and ref.id not in declared
                 ):
                     declared.append(ref.id)
+    wants_a2ui_catalogs = _declares_a2ui_producer_tool(agent_def) or _is_root_agent(agent_def)
+    if app is not None and session_id and wants_a2ui_catalogs:
+        for skill_id in _producible_a2ui_catalog_skill_ids(catalog):
+            if skill_id not in declared:
+                declared.append(skill_id)
     return declared
 
 
@@ -168,8 +222,12 @@ def skill_runtime_for_agent(
         # No app, no cache: resolution falls back to the process cwd — typed,
         # never silent (workspace-tier skills may differ on this basis).
         trace.event("SKILLS", "app-less skill resolution for %s uses process cwd", aid or "?")
-    catalog = SkillCatalog(cwd=cwd)
-    declared = effective_declared_skills(agent_def, catalog)
+    catalog_app = app if has_state else None
+    catalog_session_id = session_id if has_state else ""
+    catalog = SkillCatalog(cwd=cwd, app=catalog_app, session_id=catalog_session_id)
+    declared = effective_declared_skills(
+        agent_def, catalog, app=catalog_app, session_id=catalog_session_id
+    )
     if not declared:
         return SkillRuntime()
     resolutions = catalog.resolve_declared(declared, pack_root=agent_pack_root(agent_def))
@@ -279,6 +337,81 @@ def _declare_load_skill_structured_content(
     declare_structured_content(payload)
 
 
+def _collect_ref_targets(node: Any) -> set[str]:
+    """Return every ``$ref`` string reachable under ``node`` (any nesting)."""
+
+    found: set[str] = set()
+    if isinstance(node, Mapping):
+        ref = node.get("$ref")
+        if isinstance(ref, str):
+            found.add(ref)
+        for value in node.values():
+            found.update(_collect_ref_targets(value))
+    elif isinstance(node, list):
+        for item in node:
+            found.update(_collect_ref_targets(item))
+    return found
+
+
+def _resolve_json_pointer_fragment(file_path: str, raw_text: str, fragment: str) -> str:
+    """Resolve an RFC 6901 JSON Pointer ``fragment`` against a bundled JSON file.
+
+    Returns the resolved node pretty-printed (2-space indent) plus one
+    trailing line naming the ``$ref`` targets it uses (e.g.
+    ``common_types.json#/$defs/Action``), so the model knows those are
+    standard shapes it does not need to load separately.
+
+    Raises:
+        ValueError: ``file_path`` does not end in ``.json`` (fragments are
+            JSON-only, never silently ignored); ``fragment`` is not an
+            absolute pointer (does not start with ``/``); or the pointer does
+            not resolve — the message names the available keys at the
+            nearest resolvable parent.
+    """
+
+    if not file_path.lower().endswith(".json"):
+        raise ValueError(
+            f"file {file_path!r} does not support a '#' fragment: JSON pointer "
+            "fragments are only supported for .json bundled files"
+        )
+    try:
+        document = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"bundled file {file_path!r} is not valid JSON: {exc}") from exc
+    if not fragment.startswith("/"):
+        raise ValueError(f"fragment {fragment!r} must be an absolute JSON pointer (start with '/')")
+    node: Any = document
+    walked: list[str] = []
+    for raw_part in fragment.split("/")[1:]:
+        part = raw_part.replace("~1", "/").replace("~0", "~")
+        if isinstance(node, Mapping) and part in node:
+            node = node[part]
+            walked.append(part)
+            continue
+        if isinstance(node, list):
+            index = int(part) if part.isdigit() else -1
+            if 0 <= index < len(node):
+                node = node[index]
+                walked.append(part)
+                continue
+        if isinstance(node, Mapping):
+            available: list[str] = sorted(node.keys())
+        elif isinstance(node, list):
+            available = [str(i) for i in range(len(node))]
+        else:
+            available = []
+        pointer_so_far = "/" + "/".join(walked)
+        raise ValueError(
+            f"JSON pointer {fragment!r} does not resolve in {file_path!r}: no "
+            f"{part!r} at {pointer_so_far!r}; available keys: {available}"
+        )
+    rendered = json.dumps(node, indent=2, sort_keys=False)
+    refs = sorted(_collect_ref_targets(node))
+    if refs:
+        rendered += "\n\nReferences standard shapes: " + ", ".join(refs)
+    return rendered
+
+
 def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
     """The tier-2 ``load_skill`` DSPy tool (auto-attached infrastructure)."""
 
@@ -349,17 +482,20 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
                     f"skill {skill_id!r} is a flat .md skill with no bundled directory"
                 )
         elif file:
-            target = (skill_dir / file).resolve(strict=False)
+            file_path, has_fragment, fragment = file.partition("#")
+            target = (skill_dir / file_path).resolve(strict=False)
             try:
                 target.relative_to(skill_dir.resolve(strict=False))
             except ValueError:
                 raise ValueError(
-                    f"file {file!r} is outside the {skill_id!r} skill directory"
+                    f"file {file_path!r} is outside the {skill_id!r} skill directory"
                 ) from None
             try:
                 content = target.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError) as exc:
-                raise ValueError(f"bundled file {file!r} unreadable: {exc}") from exc
+                raise ValueError(f"bundled file {file_path!r} unreadable: {exc}") from exc
+            if has_fragment:
+                content = _resolve_json_pointer_fragment(file_path, content, fragment)
             trace.event("SKILLS", "agent %s loaded %s file %s", agent_id, skill_id, file)
             _emit_loaded(len(content.encode("utf-8")), bundled_file=file)
             _declare_load_skill_structured_content(

@@ -24,7 +24,14 @@ tier shadows). :meth:`SkillResolution.to_metadata` renders the
 ``prompt_resolution`` in :mod:`clio_agent.gact.agents.composition`).
 
 This module is a pure leaf: stdlib + no gact imports, so every gact layer
-(catalog, expert packs, builders) can depend on it without cycles.
+(catalog, expert packs, builders) can depend on it without cycles. The one
+exception is the ``catalog`` scope (S4, docs/design/a2ui-compat-campaign-
+2026-09.md): a generated skill per installed A2UI catalog, sourced from
+:mod:`clio_agent.gact.a2ui_catalogs.skills` through a DEFERRED import inside
+:meth:`SkillCatalog._catalog_refs` only -- the same "import at call time, not
+module scope" idiom the rest of gact uses to keep leaf/owner modules acyclic
+despite a real dependency (``a2ui_catalogs`` -> ``agent_blueprints`` already
+imports this module at its own top level).
 """
 
 from __future__ import annotations
@@ -34,16 +41,20 @@ import os
 import os.path
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Callable, Literal, Optional
 
-SkillScope = Literal["pack", "workspace", "global", "builtin"]
+SkillScope = Literal["pack", "catalog", "workspace", "global", "builtin"]
 SkillStatus = Literal["resolved", "missing", "ambiguous", "unreadable"]
 
-#: Precedence order for :meth:`SkillCatalog.resolve`. ``builtin`` is LAST (lowest
-#: precedence) so a user-authored ``pack``/``workspace``/``global`` skill of the same id
-#: always shadows a shipped built-in — the built-ins (e.g. ``planning``) are defaults, not
-#: overrides.
-_SCOPE_ORDER: tuple[SkillScope, ...] = ("pack", "workspace", "global", "builtin")
+#: Precedence order for :meth:`SkillCatalog.resolve`. ``catalog`` sits right
+#: after ``pack`` so a pack-authored skill of the same id (e.g. a pack that
+#: ships its own ``skills/a2ui-catalog-earthscope/SKILL.md``) shadows the
+#: generated one, matching how a workspace skill shadows a global one.
+#: ``builtin`` is LAST (lowest precedence) so a user-authored
+#: ``pack``/``catalog``/``workspace``/``global`` skill of the same id always
+#: shadows a shipped built-in — the built-ins (e.g. ``planning``) are
+#: defaults, not overrides.
+_SCOPE_ORDER: tuple[SkillScope, ...] = ("pack", "catalog", "workspace", "global", "builtin")
 
 #: Root holding clio's shipped built-in skills (the ``planning`` entry-skill lives here).
 #: It is package-relative and independent of ``home``/``cwd``, so every catalog scan finds
@@ -87,6 +98,13 @@ class SkillRef:
     command derivation) never race a second read. Consumers that want
     load-time freshness (the #919 ``load_skill`` tool) use
     :func:`read_skill_body` instead, which re-reads from disk.
+
+    ``body_provider``, when set, makes this a GENERATED skill (S4): its body
+    is produced by calling the provider rather than reading ``path`` from
+    disk -- ``path``/``dir`` still name a real bundled-file root (so
+    ``load_skill(id, file=...)`` path-locking and reads work unchanged), but
+    the ``SKILL.md`` itself is synthesized, never written out. Set by
+    :mod:`clio_agent.gact.a2ui_catalogs.skills` for the ``catalog`` scope.
     """
 
     id: str
@@ -100,6 +118,7 @@ class SkillRef:
     meta: dict[str, Any]
     body: str = ""
     checksum: str = ""
+    body_provider: Optional[Callable[[], str]] = None
 
 
 @dataclass(frozen=True)
@@ -132,10 +151,17 @@ class SkillResolution:
 def read_skill_body(ref: SkillRef) -> str:
     """Return the SKILL.md body (markdown after frontmatter) for a resolved ref.
 
-    Raises :class:`SkillBodyUnreadableError` — a typed error, never ``''`` —
-    when the file vanished or is undecodable since discovery.
+    A generated ref (``ref.body_provider`` set) calls the provider instead of
+    reading disk. Raises :class:`SkillBodyUnreadableError` — a typed error,
+    never ``''`` — when the file vanished/is undecodable, or the provider
+    itself raises.
     """
 
+    if ref.body_provider is not None:
+        try:
+            return ref.body_provider()
+        except Exception as exc:  # noqa: BLE001 - typed, never silent
+            raise SkillBodyUnreadableError(ref.id, ref.path, str(exc)) from exc
     try:
         text = Path(ref.path).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
@@ -152,16 +178,37 @@ class SkillCatalog:
     once. Build a fresh catalog to observe disk changes.
     """
 
-    def __init__(self, *, home: Path | None = None, cwd: Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        home: Path | None = None,
+        cwd: Path | None = None,
+        app: Any | None = None,
+        session_id: str = "",
+    ) -> None:
         self._home = home or Path.home()
         self._cwd = cwd or Path(os.getcwd())
         self._root_cache: dict[str, list[SkillRef]] = {}
         self.scan_errors: list[dict[str, str]] = []
+        # ``app``/``session_id`` (both optional): used ONLY to resolve this
+        # SESSION's producible A2UI catalogs for the ``catalog`` scope (S4) --
+        # via the existing producibility/resolution seam
+        # (``a2ui_catalogs.activation``), never a fresh registry construction
+        # (that would reintroduce the per-message blueprint-discovery cost
+        # the registry's own cache doctrine exists to avoid). Both are
+        # required together: a session's PATH-activated pack catalog (one
+        # the app-level registry's own ``installed()`` never sees) only
+        # resolves through the session-scoped resolver, so ``app`` alone is
+        # not enough. Either missing means "no catalog skills this scan" --
+        # typed omission (empty list), not a crash.
+        self._app = app
+        self._session_id = session_id
+        self._catalog_cache: list[SkillRef] | None = None
 
     # ---- discovery -----------------------------------------------------
 
     def discover(self) -> list[SkillRef]:
-        """All built-in + global + workspace skills, in scan order (no id dedup).
+        """All built-in + global + workspace + catalog skills (no id dedup).
 
         Callers that need one-ref-per-id apply their own precedence;
         :meth:`resolve` is the canonical way to get "the" skill for an id.
@@ -170,7 +217,46 @@ class SkillCatalog:
         refs: list[SkillRef] = []
         for root, source, scope in _skill_search_roots(self._home, self._cwd):
             refs.extend(self._scan_root(root, scope=scope, source=source))
+        refs.extend(self._catalog_refs())
         return refs
+
+    def _catalog_refs(self) -> list[SkillRef]:
+        """Return the generated A2UI-catalog skills (S4), cached per instance.
+
+        Resolves this SESSION's full producible set -- builtins ∪
+        globally-installed packs ∪ the session's own PATH-activated pack --
+        through the same resolver the producer tools validate against
+        (:func:`~clio_agent.gact.a2ui_catalogs.activation.
+        session_catalog_resolver`), so a path-activated pack catalog is
+        disclosed as a skill exactly when it is actually producible, never
+        only when it happens to also be globally installed. Deferred import
+        (see the module docstring): this is the one place
+        :mod:`clio_agent.gact.skills` reaches into ``a2ui_catalogs``.
+        """
+
+        if self._catalog_cache is not None:
+            return self._catalog_cache
+        has_registry = getattr(getattr(self._app, "state", None), "a2ui_catalogs", None) is not None
+        if self._app is None or not self._session_id or not has_registry:
+            self._catalog_cache = []
+            return self._catalog_cache
+        from clio_agent.gact.a2ui_catalogs.activation import (  # noqa: PLC0415
+            session_catalog_resolver,
+            session_producible_catalog_ids,
+        )
+        from clio_agent.gact.a2ui_catalogs.skills import (  # noqa: PLC0415
+            discover_catalog_skill_refs,
+        )
+
+        resolver = session_catalog_resolver(self._app, self._session_id)
+        entries = [
+            resolver.get(catalog_id)
+            for catalog_id in session_producible_catalog_ids(self._app, self._session_id)
+        ]
+        self._catalog_cache = discover_catalog_skill_refs(
+            [entry for entry in entries if entry is not None]
+        )
+        return self._catalog_cache
 
     def discover_pack(self, pack_root: Path) -> list[SkillRef]:
         """Skills shipped by a pack/blueprint: ``<pack_root>/skills/``."""
@@ -253,6 +339,8 @@ class SkillCatalog:
             if pack_root is None:
                 return []
             refs = self.discover_pack(pack_root)
+        elif scope == "catalog":
+            refs = self._catalog_refs()
         else:
             for root, source, root_scope in _skill_search_roots(self._home, self._cwd):
                 if root_scope != scope:

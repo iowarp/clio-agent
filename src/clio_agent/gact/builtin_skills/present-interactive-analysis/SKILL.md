@@ -1,7 +1,7 @@
 ---
 name: present-interactive-analysis
 title: Present Interactive Analysis
-description: Optionally present observed data through validated A2UI maps, tables, charts, metrics, artifacts, and progressive updates without guessing protocol props.
+description: When and why to present observed data as an interactive A2UI surface instead of prose, and how to reach the exact component shapes for the active catalog.
 ---
 
 Use this generic presentation skill only after the underlying evidence exists and
@@ -9,161 +9,50 @@ only when interaction or structure helps the user more than prose. A2UI is a vie
 of observed state, never an analysis substitute. Do not mention the protocol or
 ask the user to supply component payloads.
 
+Component shapes are NOT in this skill — the catalog itself is the allowlist and
+the source of truth (`docs/design/a2ui-compat-campaign-2026-09.md` S2/S4). Load a
+catalog's index with `load_skill("a2ui-catalog-<slug>")` (see "Skills available to
+you" for the ids your session can currently produce) and one component's exact
+schema with `load_skill("a2ui-catalog-<slug>", file="catalog.json#/components/<Name>")`
+before producing it.
+
+## Choosing a view
+
+Match the surface to the shape of the evidence, not to what looks impressive:
+
+- A spatial result (stations, sites, points on a map) → a map component.
+- Structured rows and columns → a data table.
+- A quantity that changes over an index or time → an interactive time series,
+  preferring a registered artifact reference over inlined rows for anything
+  non-trivial in size.
+- A single observed value → one metric component per value.
+- Ongoing/completed work, a warning, or a diff → the matching status/callout/diff
+  component, never repurposing a generic text block for it.
+- A durable export (an image, a report) the user did not ask to view inline → a
+  registered artifact reference, not an inlined image.
+
+## Composing surfaces
+
 Prefer one small surface at the step it explains. Reuse a stable semantic
 `surface_id` to update that view in place. Do not accumulate unrelated work into
 one final tabbed dashboard. Tabs are appropriate only when several views of the
 same result belong together and the available width justifies them.
 
-Use only these validated component shapes. Replace every example value with
-current evidence. The component list is flat and has exactly one component whose
-id is `root`.
+## Preserving a user's choice into the next turn
 
-## Map
+A click or selection inside a surface is local visual state only — it does not by
+itself reach the agent. When the user must choose among options before analysis
+continues, pair the selector with a submit action whose event delivers the
+resolved selection as structured context; load the catalog's Button/action and
+your chosen selector's schemas together so the wiring between them is correct on
+the first try.
 
-```yaml
-surface_id: observed-region
-components:
-  - id: root
-    component: clio.map.v1
-    title: Observed locations
-    points:
-      - id: observed-id
-        label: Observed label
-        latitude: 0
-        longitude: 0
-        detail: Observed detail
-        category: observed-category
-```
+## Producing and verifying
 
-Map points require `id`, `label`, numeric `latitude`, and numeric `longitude`.
-The optional fields are `detail` and `category`. Never provide a tile URL,
-basemap style, image URL, geocoder URL, CSS, or scripts.
-
-When the user must choose one observed point before analysis continues, make the
-map and its submission control one surface. A map click is local visual state;
-it does not by itself deliver a choice to the agent. Pair the map with a
-single-choice `ChoicePicker` and an `agent.submit` Button whose resolved context
-includes the selected identifiers:
-
-```yaml
-surface_id: observed-region
-components:
-  - id: root
-    component: Column
-    children: [map, station-choice, continue]
-  - id: map
-    component: clio.map.v1
-    title: Observed locations
-    points:
-      - id: leading-id
-        label: 1. Leading observed point
-        latitude: 0
-        longitude: 0
-      - id: alternate-id
-        label: 2. Alternate observed point
-        latitude: 0
-        longitude: 0
-  - id: station-choice
-    component: ChoicePicker
-    label: Choose a station
-    variant: mutuallyExclusive
-    displayStyle: chips
-    options:
-      - {label: 1. Leading observed point, value: leading-id}
-      - {label: 2. Alternate observed point, value: alternate-id}
-    value: {path: /selectedStationIds}
-  - id: continue-label
-    component: Text
-    text: Continue with this station
-  - id: continue
-    component: Button
-    child: continue-label
-    action:
-      event:
-        name: agent.submit
-        context:
-          prompt: Continue with the station selected in this surface.
-          selected_station_ids: {path: /selectedStationIds}
-data_model:
-  selectedStationIds: [leading-id]
-```
-
-Replace every option, point, and default with bounded observed evidence. Keep
-`variant: mutuallyExclusive` when exactly one station is allowed. The resolved
-`selected_station_ids` array is the authoritative structured choice; the prompt
-is only its concise model-facing instruction. Use `agent.submit` when the action
-must resume analysis. `form.submit` records fields but does not start or steer an
-agent turn.
-
-## Data table
-
-```yaml
-surface_id: observed-table
-components:
-  - id: root
-    component: clio.data-table.v1
-    columns:
-      - {key: id, label: Identifier}
-      - {key: value, label: Observed value}
-    rows:
-      - {id: observed-id, value: 0}
-```
-
-Tables accept `columns` and `rows`, not `title`. Keep rows bounded. Compose a
-Text label in a Column only when the surrounding conversation does not already
-name the table.
-
-## Interactive time series
-
-Prefer a data-backed interactive chart over a rendered image. Reference the
-registered CSV artifact and name the exact observed columns:
-
-```yaml
-surface_id: observed-series
-components:
-  - id: root
-    component: clio.time-series.v1
-    title: Observed time series
-    dataUri: artifact://registered-csv-artifact-id
-    xKey: time
-    yKeys: [east, north, up]
-```
-
-`dataUri` must use `artifact://<artifact-id>` with the `artifact_id` returned
-when the CSV was registered. `xKey` names the x column and `yKeys` names one to
-five numeric columns. The renderer obtains a
-bounded preview from that artifact and owns hover values, legend interaction,
-zoom, and pan. Inline `series` rows are also valid for small already-observed
-datasets. A PNG is a durable export, not the interactive chart; show it as an
-artifact only when the user explicitly opens that artifact, or as an explicit
-degraded fallback. Never place a static image of the same data beside or below
-an interactive time series. The registered image remains available through the
-conversation artifact and workspace canvas without duplicating the chart.
-
-## Artifact
-
-```yaml
-surface_id: observed-artifact
-components:
-  - id: root
-    component: clio.artifact.v1
-    name: result.png
-    uri: artifact://registered-artifact-id
-    mediaType: image/png
-```
-
-Artifact requires `name`, `uri`, and `mediaType`. It does not accept
-`artifact_id`, `kind`, `path`, or a bare filesystem path.
-
-## Metrics and limitations
-
-Each `clio.metric.v1` represents exactly one value. Several metrics require one
-component per metric inside a Row or Grid. A callout requires `title`, `body`,
-and `severity`; it does not accept `text` or `level`. A status uses `detail`, not
-`message`. Do not add properties absent from the relevant shape.
-
-Call `create_a2ui_surface` once per coherent revision. Require `rendered=true`
-and `state=ready` before saying the view is available. If validation fails,
-correct the props from this skill and retry a bounded revision; do not print the
-payload as chat text, silently replace an interactive chart with an image, or
-claim success.
+Call `create_a2ui_surface` once per coherent revision (leave `catalog_id` empty
+to use the session's negotiated catalog). Require `rendered=true` and
+`state=ready` before saying the view is available. A refusal names what to load
+next (`hint`) — load exactly that component's schema, correct the call, and
+retry a bounded number of times; do not print the payload as chat text, silently
+replace an interactive component with a static image, or claim success on a
+refusal.

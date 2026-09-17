@@ -129,6 +129,7 @@ def _load_one(blueprint: Any, name: str, reldir: str) -> tuple[CatalogEntry | No
         root_path=root,
         checksum=_checksum(file),
         install_checksum=_blueprint_install_checksum(blueprint),
+        name=name,
     )
     return entry, []
 
