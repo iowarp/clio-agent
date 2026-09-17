@@ -524,12 +524,27 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(tmp_path: Path)
     this module closes. It passes post-fix because only "handoff" still
     short-circuits, and no auto-attached tool declares "handoff"."""
 
+    from clio_schemas.a2ui.v0_9_1.capabilities import A2UIClientCapabilities
+
+    from clio_agent.gact.a2ui_capabilities import remember_client_capabilities
+    from clio_agent.gact.a2ui_catalogs.builtin import workspace_catalog_id
     from clio_agent.gact.agents.auto_tools import build_auto_react_tools
 
     app, client, sid = _observing_app(tmp_path)
     try:
         agent_def = SimpleNamespace(id="tester")
         auto_tools = {t.name: t for t in instrument_tools(build_auto_react_tools(agent_def))}
+        # The A2UI producer triad (S4) needs a real client-capabilities
+        # advertisement to select a catalog at all; advertise the builtin
+        # workspace catalog so create_a2ui_surface below actually creates
+        # "test-surface" and the update/delete calls that follow it in the
+        # table operate on a REAL surface (sequencing, not three more
+        # refusals) -- exercising the tools' real bodies, per the invariant
+        # this test proves regardless of outcome.
+        caps = A2UIClientCapabilities.model_validate(
+            {"v0.9": {"supportedCatalogIds": [workspace_catalog_id()]}}
+        )
+        remember_client_capabilities(app, sid, caps)
 
         def plain_native() -> str:
             return "ok"
@@ -564,6 +579,20 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(tmp_path: Path)
                 "surface_id": "test-surface",
                 "components": [{"id": "root", "component": "Text", "text": "Ready"}],
             },
+            # S4: sequenced against the surface the create call above just
+            # made (the capabilities advertisement above makes that a real
+            # creation, not a refusal) -- update, then delete it, exercising
+            # each producer tool's real body rather than a canned refusal.
+            "update_a2ui_components": {
+                "surface_id": "test-surface",
+                "components": [{"id": "root", "component": "Text", "text": "Updated"}],
+            },
+            "update_a2ui_data_model": {
+                "surface_id": "test-surface",
+                "path": "/ack",
+                "value": True,
+            },
+            "delete_a2ui_surface": {"surface_id": "test-surface"},
             # #1211 review R6/S2: auto-attached ONLY for a tier-1 MAIN session
             # (this harness's agent_def has no parent_id, so it qualifies).
             # Scans configured providers only (is_provider_configured) and each

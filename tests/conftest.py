@@ -23,6 +23,34 @@ import os
 # imports litellm during collection or a test run.
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
+# Even with the network GET removed, litellm's own MODULE BODY costs ~3.5-4s
+# to import cold (hundreds of provider submodules + pydantic model builds --
+# not fixable from clio's side, it is dependency weight). That cost is paid
+# exactly once per process either way; the defect was WHERE it landed: lazily,
+# on whichever test happened to be first to reach a real turn dispatch
+# (gact/app.py's "import litellm" ahead of the builder thread). Measured
+# directly (tests/test_gact/test_post_messages.py::
+# test_post_message_turn_timeout_surfaces_error, --count 5 in one process):
+# repeat 1 (cold) took 10.32s wall-clock against its own timeout=2.0s
+# complete_turn budget and failed; repeats 2-5 (warm) took 1.0-1.2s each and
+# passed -- proving this is an ORDER-DEPENDENT one-time tax, not a per-turn
+# cost (confirmed unrelated to any application logic; identical on the
+# pre-A2UI-S4 merge-base). Paying it here, at collection time, makes every
+# test's timing budget see the SAME (warm) cost, instead of whichever test
+# collection/xdist happens to schedule first eating it. ``install_lazy_cl100k``
+# runs FIRST and is REQUIRED before this import (lm/lazy_tiktoken.py's own
+# contract: "MUST run before the first import litellm in the process") so this
+# warm-up does not reintroduce the ~40MB eager tiktoken RSS the #930 memory
+# gate patches around -- the same sequence lm.factory.create_lm always runs,
+# just eager here instead of lazy.
+try:  # pragma: no cover - best-effort warm-up, never fails collection
+    from clio_agent.lm.lazy_tiktoken import install_lazy_cl100k
+
+    install_lazy_cl100k()
+    import litellm  # noqa: F401
+except Exception:  # noqa: BLE001 - a warm-up failure must not block the suite
+    pass
+
 import contextlib  # noqa: E402
 import tempfile  # noqa: E402
 from pathlib import Path  # noqa: E402

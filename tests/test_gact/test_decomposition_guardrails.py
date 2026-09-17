@@ -109,7 +109,7 @@ from clio_agent.gact.app import build_app
 # +2 A2UI catalog discovery GETs (installed + session-scoped), owned by
 # gact/a2ui_catalogs/routes/a2ui_catalogs.py and registered from routes/a2ui.py
 # (docs/design/a2ui-compat-campaign-2026-09.md S2).
-EXPECTED_ROUTE_METHOD_PAIRS = 243
+EXPECTED_ROUTE_METHOD_PAIRS = 244
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
