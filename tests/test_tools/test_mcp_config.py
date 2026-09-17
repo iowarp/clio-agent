@@ -309,9 +309,36 @@ def test_transport_for_uses_bundled_clio_kit_module_without_console_shim(tmp_pat
         "ndp",
     ]
     assert stdio.env["PATH"].split(os.pathsep)[0] == str(bundled_bin)
-    assert stdio.env["CLIO_KIT_CACHE_DIR"] == str(
-        mcp_config.Path.home() / ".clio" / "mcp-runtime"
-    )
+    assert stdio.env["CLIO_KIT_CACHE_DIR"] == str(mcp_config.Path.home() / ".clio" / "mcp-runtime")
+
+
+def test_transport_for_prefers_bundled_clio_kit_over_ambient_shim(tmp_path, monkeypatch):
+    """A desktop runtime never launches another clio-kit found on user PATH."""
+    import clio_agent.tools.mcp_config as mcp_config
+
+    runtime = tmp_path / "gact-runtime"
+    python = runtime / "python" / "python.exe"
+    ambient = tmp_path / "ambient" / "clio-kit.exe"
+    python.parent.mkdir(parents=True)
+    ambient.parent.mkdir(parents=True)
+    python.touch()
+    ambient.touch()
+    (runtime / "runtime.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(mcp_config.shutil, "which", lambda command: str(ambient))
+    monkeypatch.setattr(mcp_config.importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(mcp_config.sys, "executable", str(python))
+
+    stdio = transport_for(spec_from_declaration("ndp", "clio-kit mcp-server ndp"))
+
+    assert stdio.command == str(python.resolve())
+    assert stdio.command != str(ambient)
+    assert stdio.args == [
+        "-c",
+        "from clio_kit import cli; cli()",
+        "mcp-server",
+        "ndp",
+    ]
 
 
 def test_transport_for_injects_dedicated_uv_cache_dir(tmp_path, monkeypatch):

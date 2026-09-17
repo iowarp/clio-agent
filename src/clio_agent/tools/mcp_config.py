@@ -598,19 +598,20 @@ def _bundled_module_launcher(
         (parent for parent in executable.parents if (parent / "runtime.json").is_file()),
         None,
     )
-    if runtime_root is not None:
-        bundled_bin = runtime_root / "bin"
-        if bundled_bin.is_dir():
-            ambient_path = os.environ.get("PATH", "")
-            env["PATH"] = os.pathsep.join(part for part in (str(bundled_bin), ambient_path) if part)
-        # A clio-kit server environment adds source hashes and a full Python
-        # package tree beneath its cache. AppData plus packaged-app redirection
-        # can push those imports beyond Windows' legacy path boundary, where an
-        # existing module misleadingly fails as ``ModuleNotFoundError``. Keep
-        # the desktop-owned cache short, persistent, and shared across sessions.
-        env["CLIO_KIT_CACHE_DIR"] = os.environ.get(
-            "CLIO_KIT_CACHE_DIR", str(Path.home() / ".clio" / "mcp-runtime")
-        )
+    if runtime_root is None:
+        return None
+    bundled_bin = runtime_root / "bin"
+    if bundled_bin.is_dir():
+        ambient_path = os.environ.get("PATH", "")
+        env["PATH"] = os.pathsep.join(part for part in (str(bundled_bin), ambient_path) if part)
+    # A clio-kit server environment adds source hashes and a full Python
+    # package tree beneath its cache. AppData plus packaged-app redirection
+    # can push those imports beyond Windows' legacy path boundary, where an
+    # existing module misleadingly fails as ``ModuleNotFoundError``. Keep
+    # the desktop-owned cache short, persistent, and shared across sessions.
+    env["CLIO_KIT_CACHE_DIR"] = os.environ.get(
+        "CLIO_KIT_CACHE_DIR", str(Path.home() / ".clio" / "mcp-runtime")
+    )
     return str(executable), ["-c", "from clio_kit import cli; cli()", *args], env
 
 
@@ -636,13 +637,15 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
                 f"the stdio subprocess cannot start (chdir/artifacts-root ENOENT). "
                 f"source={spec.source or 'unknown'}"
             )
-        resolved = shutil.which(spec.command) if spec.command else None
+        # A packaged runtime must be self-contained. Prefer its bundled module
+        # before PATH resolution so an unrelated per-user ``clio-kit`` shim
+        # cannot silently replace the version shipped with the desktop app.
+        bundled = _bundled_module_launcher(spec.command, spec.args) if spec.command else None
+        resolved = bundled[0] if bundled is not None else shutil.which(spec.command)
         resolved_args = list(spec.args)
         launcher_env: dict[str, str] = {}
-        if not resolved and spec.command:
-            bundled = _bundled_module_launcher(spec.command, spec.args)
-            if bundled is not None:
-                resolved, resolved_args, launcher_env = bundled
+        if bundled is not None:
+            resolved, resolved_args, launcher_env = bundled
         if not resolved:
             raise MCPSpawnError(
                 f"MCP server {spec.name!r}: launcher command {spec.command!r} not found on "
