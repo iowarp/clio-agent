@@ -95,6 +95,53 @@ _A2UI_CATALOG_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
             "discovered or path-activated blueprint -- its declared catalogs are dropped"
         ),
     },
+    # S3 (docs/design/a2ui-compat-campaign-2026-09.md): capability negotiation
+    # and catalog-selection reasons, recorded through the SAME ledger + the
+    # registry's per-session ``record_session_reason`` -- no new store.
+    "a2ui_client_capabilities_invalid": {
+        "severity": "warning",
+        "detail": (
+            "metadata['a2uiClientCapabilities'] did not validate as the official "
+            "A2UI 0.9 client-capabilities object -- refused 422, never coerced"
+        ),
+    },
+    "a2ui_inline_catalogs_unsupported": {
+        "severity": "warning",
+        "detail": (
+            "the client advertised inlineCatalogs, but this agent's own capabilities "
+            "declare acceptsInlineCatalogs: false -- refused 422 per the protocol's "
+            "own contract (inline catalogs are only sent when the agent accepts them)"
+        ),
+    },
+    "a2ui_client_data_model_invalid": {
+        "severity": "warning",
+        "detail": (
+            "metadata['a2uiClientDataModel'] did not validate as the official "
+            "A2UI 0.9 client-data-model object -- refused 422, never coerced"
+        ),
+    },
+    "a2ui_data_model_not_requested": {
+        "severity": "warning",
+        "detail": (
+            "a2uiClientDataModel was sent but no live surface in this session was "
+            "created with sendDataModel -- refused 422, the ingest is not silently "
+            "accepted for a surface that never asked for it"
+        ),
+    },
+    "a2ui_client_capabilities_unknown": {
+        "severity": "info",
+        "detail": (
+            "catalog selection was attempted before the client ever advertised "
+            "a2uiClientCapabilities for this session -- no client preference exists yet"
+        ),
+    },
+    "a2ui_catalog_no_client_match": {
+        "severity": "warning",
+        "detail": (
+            "none of the client's supportedCatalogIds (preference order) intersect "
+            "this session's producible catalog set -- no catalog can be selected"
+        ),
+    },
 }
 
 #: Bounded ring of recorded reasons, queryable after the fact (same contract
