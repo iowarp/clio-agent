@@ -225,7 +225,7 @@ _A2UI_CATALOG_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
         "severity": "warning",
         "detail": (
             "the action's resolved context failed its sidecar-declared "
-            "events[<name>].context_schema (jsonschema Draft 2020-12, "
+            "events[<name>].context_schema (JSON Schema Draft 2020-12, "
             "server-side, no network) -- refused 422, the record is durably "
             "marked failed/rejected, naming the failing JSON Pointer "
             "(adversarial review #1372 S7 finding #12)"

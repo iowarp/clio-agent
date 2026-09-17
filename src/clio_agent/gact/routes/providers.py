@@ -988,16 +988,16 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 agent = _copy.copy(existing)
                 agent.rebind_lms(cfg)
             else:
-                # First-time construction: hand the REQUESTED, handshake-applied
-                # ``cfg`` straight to the constructor (#1363) so __init__ binds
-                # its LM surface off it -- never off the ambient boot env
-                # (lm_studio default, which ran discovery before this request's
-                # provider ever applied). Inject the ONE per-process ARC (no
-                # per-bind churn). No follow-up ``rebind_lms(cfg)`` needed:
-                # __init__ already rebinds off this same ``cfg`` object.
+                # First-time construction: pass the REQUESTED cfg (#1363) so
+                # __init__ never falls back to the ambient (lm_studio) boot env.
                 agent = await construct_agent_with_relay(
                     app, arc=_process_arc(app), provider_config=cfg
                 )
+                # The fresh agent built its config + LMs from env (pre-handshake);
+                # carry the handshake-applied cfg + cfg-based LMs onto it so the
+                # context-aware max_tokens / chosen_context are in effect on the
+                # very first bind, not just on subsequent hot-swaps.
+                agent.rebind_lms(cfg)
         except HTTPException:
             # Argonne auth path raises a structured 401 above; keep its
             # error code intact instead of flattening to a generic 400. No
