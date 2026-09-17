@@ -26,7 +26,6 @@ turns a spec into a transport the existing ``execution.py`` machinery accepts.
 
 from __future__ import annotations
 
-import importlib.util
 import logging
 import os
 import re
@@ -42,6 +41,8 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 import yaml
 
 from clio_agent.errors import MCP_YAML_DECLARATION_UNREADABLE
+from clio_agent.tools.desktop_mcp_runtime import bundled_module_launcher, desktop_mcp_log_file
+from clio_agent.tools.mcp_cache import _mcp_uv_cache_dir
 from clio_agent.tools.mcp_config_values import optional_int
 from clio_agent.tools.mcp_environment import stdio_environment
 
@@ -562,85 +563,6 @@ def pdeathsig_wrapped_command(command: str, args: Sequence[str]) -> tuple[str, l
     return setpriv, ["--pdeathsig", "SIGKILL", "--", command, *arg_list]
 
 
-def _mcp_uv_cache_dir() -> Path:
-    """Return the dedicated uv cache dir for MCP stdio spawns (under the user cache).
-
-    A clio-owned cache directory that ``uvx``/``uv run`` MCP launchers use instead of
-    the developer's ambient uv cache, isolating them from the concurrent-spawn archive
-    race and from ``uv cache prune/clean`` deleting ephemeral envs under a running
-    server (astral-sh/uv#11694). Resolved through :mod:`clio_agent.paths` so it honours
-    the canonical per-user cache location on every OS.
-    """
-    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
-
-    return paths.user_cache_dir() / "mcp-uv-cache"
-
-
-def _desktop_mcp_log_file(namespace: str) -> Path | None:
-    """Return a real stderr sink for MCP children of the desktop supervisor.
-
-    The Windows desktop process captures the Go launcher's stdout/stderr through
-    Rust pipes.  Those handles remain valid for the launcher and Python backend,
-    but are not inheritable by a grandchild.  A stdio MCP server that inherits
-    ``sys.stderr`` therefore receives an invalid handle and can crash merely by
-    reporting installer progress (``OSError(22)``).  FastMCP accepts an explicit
-    log path and opens it in the backend before spawning the MCP child, giving the
-    child a valid handle while preserving its diagnostics.
-
-    Scope this behavior to the managed desktop marker set by the bundled
-    launcher.  CLI and server deployments retain their existing console logs.
-    """
-
-    if os.environ.get("CLIO_DESKTOP_BOOT_HEARTBEAT") != "1":
-        return None
-
-    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
-
-    log_dir = paths.user_cache_dir() / "mcp-stdio"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    safe_namespace = re.sub(r"[^A-Za-z0-9_.-]+", "-", namespace).strip("-.") or "server"
-    return log_dir / f"{safe_namespace}.log"
-
-
-def _bundled_module_launcher(
-    command: str, args: Sequence[str]
-) -> tuple[str, list[str], dict[str, str]] | None:
-    """Resolve a bundled Python module when its relocatable shim is absent.
-
-    Portable desktop runtimes deliberately remove generated console-script
-    launchers because those shims embed the build machine's Python path.  A
-    bundled ``clio_kit`` package remains safely executable through the runtime's
-    own interpreter.  Keep ordinary installations unchanged: this fallback is
-    used only when ``clio-kit`` is not already on ``PATH`` and the module is
-    importable by the running backend.
-    """
-
-    if command != "clio-kit" or importlib.util.find_spec("clio_kit") is None:
-        return None
-
-    env: dict[str, str] = {}
-    executable = Path(sys.executable).resolve()
-    runtime_root = next(
-        (parent for parent in executable.parents if (parent / "runtime.json").is_file()),
-        None,
-    )
-    if runtime_root is None:
-        return None
-    bundled_bin = runtime_root / "bin"
-    if bundled_bin.is_dir():
-        ambient_path = os.environ.get("PATH", "")
-        env["PATH"] = os.pathsep.join(part for part in (str(bundled_bin), ambient_path) if part)
-    # A clio-kit server environment adds source hashes and a full Python
-    # package tree beneath its cache. AppData plus packaged-app redirection
-    # can push those imports beyond Windows' legacy path boundary, where an
-    # existing module misleadingly fails as ``ModuleNotFoundError``. Keep
-    # the desktop-owned cache short, persistent, and shared across sessions.
-    env["CLIO_KIT_CACHE_DIR"] = os.environ.get(
-        "CLIO_KIT_CACHE_DIR", str(Path.home() / ".clio" / "mcp-runtime")
-    )
-    return str(executable), ["-c", "from clio_kit import cli; cli()", *args], env
-
-
 def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
     """Turn a spec into the ``server`` arg FastMCP's ``Client`` accepts.
 
@@ -663,10 +585,8 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
                 f"the stdio subprocess cannot start (chdir/artifacts-root ENOENT). "
                 f"source={spec.source or 'unknown'}"
             )
-        # A packaged runtime must be self-contained. Prefer its bundled module
-        # before PATH resolution so an unrelated per-user ``clio-kit`` shim
-        # cannot silently replace the version shipped with the desktop app.
-        bundled = _bundled_module_launcher(spec.command, spec.args) if spec.command else None
+        # Prefer the packaged module so an ambient shim cannot replace it.
+        bundled = bundled_module_launcher(spec.command, spec.args) if spec.command else None
         resolved = bundled[0] if bundled is not None else shutil.which(spec.command)
         resolved_args = list(spec.args)
         launcher_env: dict[str, str] = {}
@@ -750,7 +670,7 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
             cwd=cwd,
             **confined.popen_kwargs,
         )
-        desktop_log = _desktop_mcp_log_file(spec.name)
+        desktop_log = desktop_mcp_log_file(spec.name)
         if desktop_log is not None and hasattr(transport, "log_file"):
             transport.log_file = desktop_log
         return transport

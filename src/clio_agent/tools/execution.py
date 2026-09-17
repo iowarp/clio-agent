@@ -48,9 +48,8 @@ if TYPE_CHECKING:
     import dspy
 
 logger = logging.getLogger(__name__)
-# iowarp/clio-agent#7 + #2 + #735: the four tool-runtime hooks (permission
-# gate, telemetry observer, preflight interceptor, cancellation checker) are
-# resolved per tool call through the ``ToolRuntimeHooks`` seam below — gact
+# iowarp/clio-agent#7 + #2 + #735: the tool-runtime hooks are resolved per
+# call through the ``ToolRuntimeHooks`` seam below — gact
 MCPAppObserver = Callable[[str, Mapping[str, Any], Any, Any, str | None], None]
 PermissionGate = (
     Callable[[str, Mapping[str, Any]], str]
@@ -1135,10 +1134,7 @@ def _make_dspy_tool(
     mcp_tool: Any,
     call_tool: Callable[[str, Mapping[str, Any]], str],
 ) -> dspy.Tool:
-    """Create a single DSPy Tool from an MCP tool definition."""
-    # Keep DSPy off the agent-less desktop startup path. Constructing a real
-    # tool is the first operation that needs it, while health, capabilities,
-    # and the workspace shell only need the lightweight executor contracts.
+    # Keep DSPy off the agent-less desktop startup path until a tool is constructed.
     import dspy  # noqa: PLC0415
 
     description = getattr(mcp_tool, "description", None) or name
@@ -1148,10 +1144,8 @@ def _make_dspy_tool(
 
     tool_fn.__name__ = name
     tool_fn.__doc__ = description
-    # Bridged calls notify inside call_tool (this boundary): mark the callable
-    # so the instrumentation seam never adds a second notification.
+    # Bridged calls notify here; prevent instrumentation from adding a duplicate.
     setattr(tool_fn, TOOL_OBSERVED_ATTR, True)
-    # #1188 MCP half; owner logic in tool_instrumentation (lazy: cross-package cycle).
     from clio_agent.gact.agents.tool_instrumentation import stamp_mcp_tool_title  # noqa: PLC0415
 
     stamp_mcp_tool_title(tool_fn, mcp_tool)

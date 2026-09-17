@@ -281,6 +281,7 @@ def test_transport_for_uses_bundled_clio_kit_module_without_console_shim(tmp_pat
     import os
 
     import clio_agent.tools.mcp_config as mcp_config
+    from clio_agent.tools import desktop_mcp_runtime
 
     runtime = tmp_path / "gact-runtime"
     python = runtime / "python" / "python.exe"
@@ -296,8 +297,8 @@ def test_transport_for_uses_bundled_clio_kit_module_without_console_shim(tmp_pat
         "which",
         lambda command: None if command == "clio-kit" else real_which(command),
     )
-    monkeypatch.setattr(mcp_config.importlib.util, "find_spec", lambda name: object())
-    monkeypatch.setattr(mcp_config.sys, "executable", str(python))
+    monkeypatch.setattr(desktop_mcp_runtime.importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(desktop_mcp_runtime.sys, "executable", str(python))
 
     stdio = transport_for(spec_from_declaration("ndp", "clio-kit mcp-server ndp"))
 
@@ -315,6 +316,7 @@ def test_transport_for_uses_bundled_clio_kit_module_without_console_shim(tmp_pat
 def test_transport_for_prefers_bundled_clio_kit_over_ambient_shim(tmp_path, monkeypatch):
     """A desktop runtime never launches another clio-kit found on user PATH."""
     import clio_agent.tools.mcp_config as mcp_config
+    from clio_agent.tools import desktop_mcp_runtime
 
     runtime = tmp_path / "gact-runtime"
     python = runtime / "python" / "python.exe"
@@ -326,8 +328,8 @@ def test_transport_for_prefers_bundled_clio_kit_over_ambient_shim(tmp_path, monk
     (runtime / "runtime.json").write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr(mcp_config.shutil, "which", lambda command: str(ambient))
-    monkeypatch.setattr(mcp_config.importlib.util, "find_spec", lambda name: object())
-    monkeypatch.setattr(mcp_config.sys, "executable", str(python))
+    monkeypatch.setattr(desktop_mcp_runtime.importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(desktop_mcp_runtime.sys, "executable", str(python))
 
     stdio = transport_for(spec_from_declaration("ndp", "clio-kit mcp-server ndp"))
 

@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal, Optional
@@ -31,6 +30,7 @@ from clio_agent.gact.context_references import CONTEXT_REFERENCE_CAPABILITY
 from clio_agent.gact.protocol_v3 import capabilities_to_v3, project_for_request
 from clio_agent.gact.provenance.child_projection import CHILD_ACTIVITY_PROJECTION_CAPABILITY
 from clio_agent.gact.relay_status import relay_capabilities
+from clio_agent.gact.routes.provider_probe_env import runtime_provider_probe_env
 from clio_agent.gact.runtime.capabilities import (
     _capability_gap_metadata,
     _latency_stat,
@@ -363,27 +363,11 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         uptime = int(time.time() - app.state.started_at)
 
-        # The process environment is only the boot default.  A desktop user can
-        # select a provider at runtime through PUT /v1/providers/lm, so doctor
-        # probes must observe that live binding instead of continuing to report
-        # the (usually LM Studio) boot default after Codex or Claude is ready.
-        probe_env = dict(os.environ)
-        live_lm = getattr(app.state, "lm_config", None)
-        if isinstance(live_lm, Mapping):
-            runtime_lm_env = {
-                "CLIO_LM_PROVIDER": live_lm.get("provider"),
-                "CLIO_LM_API_BASE": live_lm.get("api_base"),
-                "CLIO_LM_MODEL": live_lm.get("model"),
-            }
-            for key, value in runtime_lm_env.items():
-                if value is not None:
-                    probe_env[key] = str(value)
-
         try:
             report = await asyncio.to_thread(
                 collect_runtime_status,
                 api_state=IntegrationState.READY,
-                env=probe_env,
+                env=runtime_provider_probe_env(getattr(app.state, "lm_config", None)),
                 lm_timeout=0.5,
                 # The full-box process census is served from a background cache
                 # below — a polled endpoint must not pay the ~10s cold psutil walk.
