@@ -299,6 +299,7 @@ class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
         audit: Optional[Callable[[dict[str, Any]], None]] = None,
         materialize: Optional[Callable[[str], Optional[list["Message"]]]] = None,
         on_rehydrate: Optional[Callable[[str, list["Message"]], object]] = None,
+        on_evict: Optional[Callable[[str], object]] = None,
         clock: Callable[[], float] = monotonic,
     ) -> None:
         """Wire the set to its durable store and its residency policy.
@@ -326,6 +327,16 @@ class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
                 the natural, already-lazy seam to repair historical data without
                 reintroducing the eager whole-corpus boot walk #889 removed. Defaults
                 to a no-op.
+            on_evict: Optional hook fired with a session id AFTER this set drops its
+                resident ledger for a genuine capacity/idle-TTL eviction (S8, issue
+                #1374, focused re-review item 3) -- never for ``discard``/``clear``/
+                ``popitem`` (explicit removal, e.g. session delete, already handled
+                at that call site). The app wires this to
+                :meth:`clio_agent.gact.a2ui_store.A2UIStore.forget_session`'s cache
+                half so ``A2UIStore``'s per-session ``_ProjectionCache`` -- which
+                holds every surface's full message list, the same bytes this set's
+                ``max_bytes`` cap governs -- never outlives the ledger it was folded
+                from. No second budget knob: eviction here is the ONE bound.
             clock: Monotonic time source (injectable for deterministic TTL tests).
         """
 
@@ -335,6 +346,7 @@ class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
         self._audit = audit or (lambda _payload: None)
         self._materialize = materialize or store.load_session
         self._on_rehydrate = on_rehydrate
+        self._on_evict = on_evict
         self._clock = clock
         self._resident: "OrderedDict[str, _Entry]" = OrderedDict()
         self._total_bytes = 0
@@ -537,6 +549,8 @@ class ResidentLedgerSet(MutableMapping[str, list["Message"]]):
             return
         self._total_bytes -= entry.nbytes
         self._audit(resident_ledger_reason_payload(reason, session_id=sid, bytes=entry.nbytes))
+        if self._on_evict is not None:
+            self._on_evict(sid)
 
     def _reconcile_bytes(self) -> None:
         """Cheaply true up byte accounting on the cap-enforcement hot path.
@@ -746,4 +760,23 @@ def build_resident_ledger_set(app: "FastAPI") -> ResidentLedgerSet:
         audit=lambda payload: _record_resident_audit(app, payload),
         materialize=lambda sid: materialize_ledger(app, sid),
         on_rehydrate=lambda sid, rows: sweep_stale_handoff_parts(app, sid, rows),
+        # S8 review round (issue #1374, focused re-review item 3): A2UIStore's
+        # per-session projection cache holds every surface's full message
+        # list -- the SAME bytes this set's max_bytes cap governs -- so it
+        # must not outlive the ledger it was folded from. One bound, no
+        # second knob: drop it exactly when THIS set evicts the session.
+        on_evict=lambda sid: _forget_a2ui_projection(app, sid),
     )
+
+
+def _forget_a2ui_projection(app: "FastAPI", sid: str) -> None:
+    """Drop a just-evicted session's A2UI projection cache, if one exists.
+
+    ``app.state.a2ui_store`` is always set before this set is built (see
+    ``app.py``'s boot order), but stays defensive against a future reorder or
+    a test harness that wires a bare ``ResidentLedgerSet`` without it.
+    """
+
+    store = getattr(app.state, "a2ui_store", None)
+    if store is not None:
+        store.forget_session(sid)
