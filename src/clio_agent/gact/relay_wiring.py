@@ -272,14 +272,31 @@ async def relay_agent_kwargs(app: FastAPI) -> dict[str, Any]:
     }
 
 
-async def construct_agent_with_relay(app: FastAPI, *, arc: Any) -> Any:
-    """Construct a first-time provider-bound agent with the retained relay owners."""
+async def construct_agent_with_relay(
+    app: FastAPI,
+    *,
+    arc: Any,
+    provider_config: Any,
+) -> Any:
+    """Construct a first-time provider-bound agent with the selected LM config.
+
+    The first runtime provider bind must not construct a throwaway agent from the
+    ambient defaults.  On a fresh desktop profile that default is LM Studio, so a
+    Codex or Claude selection otherwise waits through the local-provider retry
+    loop before the selected provider is applied.
+    """
 
     from clio_agent.agent import ClioAgent  # noqa: PLC0415
 
     relay_kwargs = await relay_agent_kwargs(app)
     return await asyncio.get_running_loop().run_in_executor(
-        None, lambda: ClioAgent(verbose=False, arc=arc, **relay_kwargs)
+        None,
+        lambda: ClioAgent(
+            verbose=False,
+            arc=arc,
+            provider_config=provider_config,
+            **relay_kwargs,
+        ),
     )
 
 
