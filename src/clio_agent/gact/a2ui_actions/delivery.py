@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Mapping
 
-from clio_agent.gact.a2ui_actions.record import ActionRecord, persist_transition
+from clio_agent.gact.a2ui_actions.record import ActionRecord, fail_and_publish, persist_transition
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -100,18 +100,25 @@ async def deliver_to_agent(
         question = _correlated_pending_question(app, session_id, record.surface_id, context)
         if question is None:
             failed = record.transition(
-                state="failed", delivery="rejected", reason="a2ui_waiting_user_uncorrelated"
+                state="failed",
+                delivery="rejected",
+                reason="a2ui_waiting_user_uncorrelated",
+                http_status=409,
             )
             persist_transition(app, failed)
             _publish(app, session_id, failed)
             return failed
         from clio_agent.gact.interaction_types import AnswerUserQuestionRequest  # noqa: PLC0415
 
-        answered = await app.state.answer_user_question(
-            session_id,
-            question.id,
-            AnswerUserQuestionRequest(answer=narration, metadata=metadata),
-        )
+        try:
+            answered = await app.state.answer_user_question(
+                session_id,
+                question.id,
+                AnswerUserQuestionRequest(answer=narration, metadata=metadata),
+            )
+        except Exception as exc:  # noqa: BLE001 - captured on the record, then re-raised verbatim
+            fail_and_publish(app, session_id, record, exc)
+            raise
         delivered = record.transition(
             state="delivered",
             delivery="resolve_question",
@@ -127,7 +134,11 @@ async def deliver_to_agent(
     if busy is not None:
         from clio_agent.gact.loop_inbox import enqueue_user_steer  # noqa: PLC0415
 
-        enqueue_user_steer(app, session_id, narration, metadata)
+        try:
+            enqueue_user_steer(app, session_id, narration, metadata)
+        except Exception as exc:  # noqa: BLE001 - captured on the record, then re-raised verbatim
+            fail_and_publish(app, session_id, record, exc)
+            raise
         delivered = record.transition(state="delivered", delivery="steer")
         persist_transition(app, delivered)
         _publish(app, session_id, delivered)
@@ -139,14 +150,18 @@ async def deliver_to_agent(
     # the previous one must not poison it (mirrors the pre-S5 producer).
     app.state.cancel_flags.discard(session_id)
     app.state.cancel_events.pop(session_id, None)
-    user_message = _start_background_user_turn(
-        app,
-        session_id,
-        sess,
-        narration,
-        metadata=metadata,
-        prev_status=sess.status if sess is not None else "idle",
-    )
+    try:
+        user_message = _start_background_user_turn(
+            app,
+            session_id,
+            sess,
+            narration,
+            metadata=metadata,
+            prev_status=sess.status if sess is not None else "idle",
+        )
+    except Exception as exc:  # noqa: BLE001 - captured on the record, then re-raised verbatim
+        fail_and_publish(app, session_id, record, exc)
+        raise
     delivered = record.transition(
         state="delivered", delivery="start", correlation={"message_id": user_message.id}
     )

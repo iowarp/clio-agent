@@ -35,8 +35,6 @@ def _error(status: int, code: str, message: str, *, recoverable: bool = False) -
 def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
     """Register A2UI routes against the app's persistent surface store."""
 
-    del deps  # S5: dispatch_action moved to the owner package; no route needs deps directly.
-
     def require_session(sid: str) -> Any:
         sess = app.state.sessions.get(sid)
         if sess is None:
@@ -151,7 +149,7 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
         if not isinstance(message, Mapping):
             raise _error(422, "validation_error", "A2UI action message is required")
         return await dispatch_action(
-            app, sid, message, body.get("correlation"), body.get("metadata")
+            app, sid, message, body.get("correlation"), body.get("metadata"), deps
         )
 
     @app.post("/v1/sessions/{sid}/a2ui/actions")

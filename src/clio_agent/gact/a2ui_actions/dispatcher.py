@@ -7,14 +7,19 @@ calls :func:`dispatch_action` with the parsed pieces. Order, every call:
 1. **Route an error envelope FIRST**, before any surface lookup
    (``client_state.ingest_client_error`` — issue #1372's S6-review comment).
 2. Resolve the surface + its catalog, validate the client action (S2).
-3. **Idempotency lookup** over the surface's own action records — a
-   resubmission of the same ``(surfaceId, sourceComponentId, timestamp,
-   context)`` returns the EXISTING record, never re-delivered.
-4. Persist the ``received`` snapshot.
-5. **Deliver by destination**: ``agent`` (idle/running/waiting_user, via
+3. **Idempotency lookup**, cheap peek first (BEFORE the data-model guards --
+   adversarial review finding #6, so a REPLAY never re-records a per-surface
+   data-model reason), then the AUTHORITATIVE atomic check-and-persist inside
+   ``A2UIStore.persist_action_part`` (finding #1, BLOCKING: the lookup and
+   the persist happen under the SAME per-session lock, closing the
+   check-then-persist race). A duplicate of a ``failed`` record re-raises
+   the SAME typed refusal (finding #5) rather than returning 200.
+4. **Deliver by destination**: ``agent`` (idle/running/waiting_user, via
    :mod:`clio_agent.gact.a2ui_actions.delivery`), ``permission`` (the
    existing session-scoped ``resolve_permission`` path), ``run`` (the
-   sidecar's declared ``cancel``/``retry`` operation).
+   sidecar's declared ``cancel``/``retry`` operation). Every owner call is
+   wrapped so an unexpected raise durably fails the record BEFORE the same
+   exception propagates (finding #2, BLOCKING).
 
 ⚑ No deterministic decision-making in core (.claude/CLAUDE.md #1): every
 branch below routes on the sidecar's DECLARED ``destination``/``operation``
@@ -28,6 +33,7 @@ from typing import TYPE_CHECKING, Any, Mapping
 from fastapi import HTTPException
 
 from clio_agent.gact.a2ui import (
+    A2UIEventContextInvalidError,
     A2UIFunctionNotInCatalogError,
     A2UIValidationError,
     validate_client_action,
@@ -42,6 +48,7 @@ from clio_agent.gact.a2ui_actions.narration import narration_for
 from clio_agent.gact.a2ui_actions.record import (
     ActionRecord,
     compute_idempotency_key,
+    fail_and_publish,
     find_by_idempotency_key,
     lifecycle_event_payload,
     new_record_id,
@@ -58,6 +65,8 @@ from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, RetryTurnRequest
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+    from clio_agent.gact.routes.deps import GactDeps
+
 
 def _error(status: int, code: str, message: str, *, recoverable: bool = False) -> HTTPException:
     return HTTPException(
@@ -66,27 +75,6 @@ def _error(status: int, code: str, message: str, *, recoverable: bool = False) -
             error=ErrorInfo(error=code, message=message, recoverable=recoverable)
         ).model_dump(exclude_none=True),
     )
-
-
-class _CancelDepsShim:
-    """The one ``GactDeps`` field ``cancel_session_state`` needs, re-derived.
-
-    The dispatcher's own signature (``app, sid, client_message, correlation,
-    metadata`` — no ``deps``) matches every other call site that reaches
-    turn/cancel machinery without threading ``GactDeps`` through
-    (``loop_inbox.py``, ``turn_spawn.py``, ``spotter_watcher.py`` all import
-    ``_start_background_user_turn`` directly). ``cancel_session_state`` is the
-    one owner function that still asks for the whole ``GactDeps`` bag; it
-    uses exactly one field, so this shim supplies it without changing that
-    function's shared signature (``routes/sessions.py``'s real ``/cancel``
-    keeps threading the real ``deps``).
-    """
-
-    @staticmethod
-    def cancellation_attempt_summary(attempt: Mapping[str, Any] | None) -> dict[str, Any]:
-        from clio_agent.gact.app import _cancellation_attempt_summary  # noqa: PLC0415
-
-        return _cancellation_attempt_summary(attempt)
 
 
 def _publish(app: "FastAPI", session_id: str, record: ActionRecord) -> None:
@@ -99,12 +87,68 @@ def _publish(app: "FastAPI", session_id: str, record: ActionRecord) -> None:
     )
 
 
+def _duplicate_result(
+    app: "FastAPI",
+    sid: str,
+    existing: Mapping[str, Any],
+    *,
+    name: str,
+    destination: str,
+    surface: Any,
+) -> dict[str, Any]:
+    """Handle a resubmission of an already-recorded idempotency key.
+
+    Adversarial review finding #5: a duplicate of a ``failed`` record
+    re-raises the SAME typed refusal (status + reason) the FIRST submission
+    raised — it is never silently downgraded to a 200 with ``state:
+    failed``. Every other duplicate is a 200 echoing the existing record; no
+    new snapshot is persisted and nothing is re-delivered either way.
+    """
+
+    if str(existing.get("state") or "") == "failed":
+        status = int(existing.get("http_status") or 0) or 500
+        reason = str(existing.get("reason") or "a2ui_delivery_error")
+        raise _error(
+            status,
+            reason,
+            f"duplicate submission of a previously refused action (reason={reason})",
+            recoverable=status in (409, 422),
+        )
+    app.state.a2ui_catalogs.record_session_reason(
+        sid, "a2ui_action_duplicate", surface_id=surface.id
+    )
+    duplicate = ActionRecord.from_wire(existing)
+    if duplicate is not None:
+        # No new persisted snapshot -- "duplicate, no re-delivery" means
+        # exactly that -- but the lifecycle event still fires, its OWN
+        # type (not the record's unchanged state) carrying the reason.
+        app.state.bus.publish(
+            Event(
+                type="a2ui.action.duplicate",
+                session_id=sid,
+                payload={**lifecycle_event_payload(duplicate), "reason": "a2ui_action_duplicate"},
+            )
+        )
+    return {
+        "action_id": existing.get("id", ""),
+        "state": existing.get("state", ""),
+        "delivery": existing.get("delivery", ""),
+        "reason": existing.get("reason", ""),
+        "surface_id": existing.get("surface_id", ""),
+        "status": "accepted",
+        "name": name,
+        "destination": destination,
+        "surface": surface.to_wire(),
+    }
+
+
 async def dispatch_action(
     app: "FastAPI",
     sid: str,
     client_message: Mapping[str, Any],
     correlation: Mapping[str, Any] | None,
     metadata: Mapping[str, Any] | None,
+    deps: "GactDeps",
 ) -> dict[str, Any]:
     """Dispatch one parsed A2UI client envelope through the owner path.
 
@@ -118,6 +162,10 @@ async def dispatch_action(
             ``part_id``/``task_id``/``run_id``.
         metadata: The request's top-level ``metadata`` (S3 renderer transport
             metadata: ``a2uiClientCapabilities``/``a2uiClientDataModel``).
+        deps: The real ``GactDeps`` bag (threaded from ``routes/a2ui.py``,
+            which already has it) -- the ``run.cancel`` destination hands it
+            to ``cancel_session_state`` verbatim (adversarial review finding
+            #7: no more re-derived shim).
 
     Returns:
         The HTTP-facing result body (200). Every refusal is a typed
@@ -129,14 +177,9 @@ async def dispatch_action(
         raise _error(404, "not_found", f"session not found: {sid}")
 
     try:
-        action_data_model = apply_client_metadata_guards(app, sid, metadata)
+        raw_data_model = apply_client_metadata_guards(app, sid, metadata)
     except A2UICapabilitiesError as exc:
         raise _error(422, exc.reason, str(exc)) from exc
-    if action_data_model is not None:
-        # S5: S3 only proved the session-wide gate (>=1 live sendDataModel
-        # surface exists); narrow to the surfaces THIS session actually owns,
-        # live, and requested -- every drop is a typed, recorded reason.
-        action_data_model = filter_owned_data_model(app, sid, action_data_model)
 
     # S6-review deliverable 2b: an ``error`` envelope routes BEFORE any
     # surface lookup — the renderer reporting its own rejection is accepted
@@ -162,6 +205,49 @@ async def dispatch_action(
         action = validate_client_action(
             client_message, surface_id=surface_id, catalog_entry=catalog_entry
         )
+    except A2UIEventContextInvalidError as exc:
+        # Finding #12: unlike an ordinary validation failure (never
+        # persisted), a context_schema mismatch IS durably recorded --
+        # replaying the SAME invalid context is deduped/re-raised by the
+        # SAME idempotent-duplicate path every other action uses.
+        raw = raw_action if isinstance(raw_action, Mapping) else {}
+        raw_context_value = raw.get("context")
+        raw_context: Mapping[str, Any] = (
+            raw_context_value if isinstance(raw_context_value, Mapping) else {}
+        )
+        name = str(raw.get("name") or "")
+        bad_key = compute_idempotency_key(
+            surface_id,
+            str(raw.get("sourceComponentId") or ""),
+            str(raw.get("timestamp") or ""),
+            raw_context,
+        )
+        failed_record = ActionRecord(
+            id=new_record_id(),
+            session_id=sid,
+            surface_id=surface_id,
+            catalog_id=surface.catalog_id,
+            kind="action",
+            envelope=dict(client_message),
+            action_name=name,
+            source_component_id=str(raw.get("sourceComponentId") or ""),
+            idempotency_key=bad_key,
+            correlation=dict(correlation or {}),
+            state="failed",
+            delivery="rejected",
+            reason="a2ui_event_context_invalid",
+            http_status=422,
+        )
+        existing = persist_new_record(app, failed_record)
+        if existing is not None:
+            return _duplicate_result(
+                app, sid, existing, name=name, destination="agent", surface=surface
+            )
+        app.state.a2ui_catalogs.record_session_reason(
+            sid, "a2ui_event_context_invalid", action=name, pointer=exc.pointer
+        )
+        _publish(app, sid, failed_record)
+        raise _error(422, "a2ui_event_context_invalid", str(exc)) from exc
     except A2UIFunctionNotInCatalogError as exc:
         app.state.a2ui_catalogs.record_session_reason(
             sid,
@@ -184,33 +270,23 @@ async def dispatch_action(
         )
 
     idempotency_key = compute_idempotency_key(surface_id, source_component_id, timestamp, context)
-    existing = find_by_idempotency_key(surface.actions, idempotency_key)
-    if existing is not None:
-        app.state.a2ui_catalogs.record_session_reason(
-            sid, "a2ui_action_duplicate", surface_id=surface_id
+
+    # Finding #6: a CHEAP, unlocked peek -- purely to skip the data-model
+    # guards' typed-reason recording on an obvious replay. The store's own
+    # atomic check (below, via persist_new_record) is the AUTHORITATIVE
+    # race-safe decision; this peek can only ever produce a false negative
+    # (a genuine race), never a false positive, so it never weakens finding
+    # #1's guarantee -- it only avoids needless reason-ledger noise on the
+    # common sequential replay.
+    existing_peek = find_by_idempotency_key(surface.actions, idempotency_key)
+    if existing_peek is not None:
+        return _duplicate_result(
+            app, sid, existing_peek, name=name, destination=destination, surface=surface
         )
-        duplicate = ActionRecord.from_wire(existing)
-        if duplicate is not None:
-            # No new persisted snapshot -- "duplicate, no re-delivery" means
-            # exactly that -- but the lifecycle event still fires, its OWN
-            # type (not the record's unchanged state) carrying the reason.
-            app.state.bus.publish(
-                Event(
-                    type="a2ui.action.duplicate",
-                    session_id=sid,
-                    payload={
-                        **lifecycle_event_payload(duplicate),
-                        "reason": "a2ui_action_duplicate",
-                    },
-                )
-            )
-        return {
-            **_wire(existing),
-            "status": "accepted",
-            "name": name,
-            "destination": destination,
-            "surface": surface.to_wire(),
-        }
+
+    action_data_model = (
+        filter_owned_data_model(app, sid, raw_data_model) if raw_data_model is not None else None
+    )
 
     correlation_fields = dict(correlation or {})
     record = ActionRecord(
@@ -231,14 +307,21 @@ async def dispatch_action(
         ),
         narration=narration_for(name, context),
     )
-    persist_new_record(app, record)
+    # Finding #1 (BLOCKING): the REAL idempotency decision. Persist and check
+    # atomically, under the store's per-session lock -- a concurrent
+    # duplicate racing the peek above is still caught here.
+    existing = persist_new_record(app, record)
+    if existing is not None:
+        return _duplicate_result(
+            app, sid, existing, name=name, destination=destination, surface=surface
+        )
     _publish(app, sid, record)
 
     if destination == "permission":
         delivered = await _deliver_permission(app, sid, record, context)
     elif destination == "run":
         operation = str(action.get("operation") or "")
-        delivered = await _deliver_run(app, sid, record, context, operation)
+        delivered = await _deliver_run(app, sid, record, context, operation, deps)
     else:
         delivered = await deliver_to_agent(
             app, sid, record, narration=record.narration, context=context
@@ -279,7 +362,9 @@ async def _deliver_permission(
     permission_id = str(context.get("permission_id") or "")
     decision = str(context.get("action") or "")
     if decision not in {"allow", "deny", "allow_session", "allow_workspace"}:
-        failed = record.transition(state="failed", delivery="rejected", reason="validation_error")
+        failed = record.transition(
+            state="failed", delivery="rejected", reason="validation_error", http_status=422
+        )
         persist_transition(app, failed)
         _publish(app, sid, failed)
         raise _error(422, "validation_error", "approval.respond has an invalid action")
@@ -290,16 +375,25 @@ async def _deliver_permission(
             sid, "a2ui_permission_out_of_scope", permission_id=permission_id
         )
         failed = record.transition(
-            state="failed", delivery="rejected", reason="a2ui_permission_out_of_scope"
+            state="failed",
+            delivery="rejected",
+            reason="a2ui_permission_out_of_scope",
+            http_status=404,
         )
         persist_transition(app, failed)
         _publish(app, sid, failed)
         raise _error(404, "not_found", f"permission not found: {permission_id}")
-    row = await run_off_loop(
-        lambda: resolve_permission(app, permission_id, decision, grantor=GRANTOR_USER)
-    )
+    try:
+        row = await run_off_loop(
+            lambda: resolve_permission(app, permission_id, decision, grantor=GRANTOR_USER)
+        )
+    except Exception as exc:  # noqa: BLE001 - captured on the record, then re-raised verbatim
+        fail_and_publish(app, sid, record, exc)
+        raise
     if row is None and pending is None:
-        failed = record.transition(state="failed", delivery="rejected", reason="not_found")
+        failed = record.transition(
+            state="failed", delivery="rejected", reason="not_found", http_status=404
+        )
         persist_transition(app, failed)
         _publish(app, sid, failed)
         raise _error(404, "not_found", f"permission not found: {permission_id}")
@@ -314,32 +408,47 @@ async def _deliver_permission(
 
 
 async def _deliver_run(
-    app: "FastAPI", sid: str, record: ActionRecord, context: Mapping[str, Any], operation: str
+    app: "FastAPI",
+    sid: str,
+    record: ActionRecord,
+    context: Mapping[str, Any],
+    operation: str,
+    deps: "GactDeps",
 ) -> ActionRecord:
     """Route to the two existing run owners by the sidecar's declared operation."""
 
-    from clio_agent.gact.routes.session_cancellation import cancel_session_state  # noqa: PLC0415
-
     if operation == "cancel":
-        cancel_session_state(app, _CancelDepsShim(), sid)  # type: ignore[arg-type]
+        from clio_agent.gact.routes.session_cancellation import (
+            cancel_session_state,  # noqa: PLC0415
+        )
+
+        try:
+            cancel_session_state(app, deps, sid)
+        except Exception as exc:  # noqa: BLE001 - captured on the record, then re-raised verbatim
+            fail_and_publish(app, sid, record, exc)
+            raise
         delivered = record.transition(state="delivered", delivery="run_cancel")
     elif operation == "retry":
         source_id = str(context.get("message_id") or "")
-        attempt = await app.state.retry_turn_action(
-            sid,
-            source_id,
-            RetryTurnRequest(
-                execute=True,
-                notes=str(context.get("notes") or ""),
-                metadata={"a2ui_action": record.id, "surface_id": record.surface_id},
-            ),
-        )
+        try:
+            attempt = await app.state.retry_turn_action(
+                sid,
+                source_id,
+                RetryTurnRequest(
+                    execute=True,
+                    notes=str(context.get("notes") or ""),
+                    metadata={"a2ui_action": record.id, "surface_id": record.surface_id},
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 - captured on the record, then re-raised verbatim
+            fail_and_publish(app, sid, record, exc)
+            raise
         delivered = record.transition(
             state="delivered", delivery="run_retry", correlation={"attempt_id": attempt.id}
         )
     else:
         delivered = record.transition(
-            state="failed", delivery="rejected", reason="a2ui_validation_failed"
+            state="failed", delivery="rejected", reason="a2ui_validation_failed", http_status=422
         )
         persist_transition(app, delivered)
         _publish(app, sid, delivered)
@@ -347,16 +456,6 @@ async def _deliver_run(
     persist_transition(app, delivered)
     _publish(app, sid, delivered)
     return delivered
-
-
-def _wire(action: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        "action_id": action.get("id", ""),
-        "state": action.get("state", ""),
-        "delivery": action.get("delivery", ""),
-        "reason": action.get("reason", ""),
-        "surface_id": action.get("surface_id", ""),
-    }
 
 
 __all__ = ["dispatch_action"]
