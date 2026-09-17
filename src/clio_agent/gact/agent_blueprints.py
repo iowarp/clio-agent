@@ -23,6 +23,7 @@ from typing import Any, Literal
 from clio_agent import conf
 from clio_agent.gact import skills as _skills
 from clio_agent.gact.a2ui_catalogs.blueprint import blueprint_and_expert_a2ui_catalog_errors
+from clio_agent.gact.agent_blueprint_requires import requires_floor_errors
 from clio_agent.gact.expert_packs import (
     ExpertPackDefinition,
     _fallback_expert_id,
@@ -396,6 +397,7 @@ def validate_agent_blueprint_path(
             for warning in descriptor.get("validation_warnings", [])
         )
     errors.extend(blueprint_and_expert_a2ui_catalog_errors(blueprint, rows))
+    errors.extend(requires_floor_errors(blueprint))
     return {
         "agent_blueprint": blueprint.to_wire(),
         "agents": [row.model_dump(exclude_none=True) for row in rows],

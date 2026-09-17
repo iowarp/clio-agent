@@ -37,6 +37,7 @@ from clio_agent.gact.agent_blueprints import (
     DEFAULT_REGISTRY_COMMIT,
     DEFAULT_REGISTRY_REF,
     _install_root,
+    _tree_checksum,
     default_registry_install_source,
     default_registry_url,
     install_agent_blueprint,
@@ -311,8 +312,48 @@ def reset_registry_sync_for_tests() -> None:
     _SYNC_COMPLETED_FOR.clear()
 
 
+def _reinstall_reason(existing_root: Path, candidate: Path) -> str | None:
+    """Decide whether ``candidate`` (a source pack) should (re)install over
+    ``existing_root`` (its install-root destination), and why.
+
+    Returns ``"missing_from_install_root"`` when ``existing_root`` has no
+    installed ``AGENT.md`` yet. For an existing install, compares checksums
+    rather than trusting "the folder exists" alone (S8, issue #1363 umbrella
+    live-gate finding 3): a local-edits install (its on-disk tree no longer
+    matches the checksum RECORDED at its own install time) is left alone —
+    reason ``None`` — so the user's edits are never clobbered; a source
+    checksum that differs from the (unedited) installed one instead returns
+    ``"source_checksum_changed"`` (both checksums are logged here); an
+    unchanged source returns ``None`` — genuinely nothing to do.
+    """
+
+    if not (existing_root / _BLUEPRINT_ROOT_NAME).exists():
+        return "missing_from_install_root"
+    recorded_checksum = str(read_install_metadata(existing_root).get("checksum") or "").strip()
+    installed_tree_checksum = _tree_checksum(existing_root)
+    if recorded_checksum and installed_tree_checksum != recorded_checksum:
+        logger.info(
+            "registry_pack_skipped reason=local_edits_present id=%s "
+            "recorded_checksum=%s installed_tree_checksum=%s",
+            existing_root.name,
+            recorded_checksum,
+            installed_tree_checksum,
+        )
+        return None
+    source_checksum = _tree_checksum(candidate)
+    if installed_tree_checksum == source_checksum:
+        return None
+    logger.info(
+        "registry_pack_source_checksum_changed id=%s installed_checksum=%s source_checksum=%s",
+        existing_root.name,
+        installed_tree_checksum,
+        source_checksum,
+    )
+    return "source_checksum_changed"
+
+
 def sync_local_registry_packs(*, source: str, home: Path, cwd: Path, pinned: str) -> str:
-    """Install registry packs missing from the global root (local-path sources only).
+    """Install/update registry packs from the global root (local-path sources only).
 
     A local registry checkout (the dev submodule) makes enumeration free, so a
     pack added to the registry after the original bootstrap (the
@@ -321,8 +362,18 @@ def sync_local_registry_packs(*, source: str, home: Path, cwd: Path, pinned: str
     this — their set is reconciled on first-run and manual installs, never via
     a per-boot network fetch. Guarantees:
 
-    * only MISSING ids install — an installed pack is never reinstalled here
-      (no clobbering of local edits, no downgrades from a stale submodule);
+    * a MISSING id installs fresh;
+    * an ALREADY-installed id is checksum-compared against the source
+      candidate (S8, issue #1363 umbrella live-gate finding 3: the live
+      harness's local marketplace checkout moved a pack's content forward —
+      e.g. a pinned version bump — while an older installed copy sat there
+      forever, served stale with no signal). Local user edits (the installed
+      tree's checksum has drifted from what was RECORDED at its own install
+      time) are never clobbered — same rule as
+      ``agent_blueprint_sources.source_install_skip_ids``'s
+      ``local_edits_present``. Otherwise, a source checksum that differs from
+      the installed one re-installs (never a silent stale copy) and is
+      logged with BOTH checksums;
     * a pack the USER uninstalled (the tombstone ledger) is never resurrected;
     * the whole body is failure-isolated: any error is a logged, returned
       diagnostic, never an exception into discovery (every blueprint route sits
@@ -358,7 +409,9 @@ def sync_local_registry_packs(*, source: str, home: Path, cwd: Path, pinned: str
                 if parsed.id in tombstones:
                     logger.info("registry_pack_skipped reason=user_uninstalled id=%s", parsed.id)
                     continue
-                if (install_root / parsed.id / _BLUEPRINT_ROOT_NAME).exists():
+                existing_root = install_root / parsed.id
+                reinstall_reason = _reinstall_reason(existing_root, candidate)
+                if reinstall_reason is None:
                     continue
                 try:
                     install_agent_blueprint(
@@ -371,7 +424,8 @@ def sync_local_registry_packs(*, source: str, home: Path, cwd: Path, pinned: str
                         pinned_commit=pinned,
                     )
                     logger.info(
-                        "registry_pack_installed reason=missing_from_install_root id=%s source=%s",
+                        "registry_pack_installed reason=%s id=%s source=%s",
+                        reinstall_reason,
                         parsed.id,
                         source,
                     )

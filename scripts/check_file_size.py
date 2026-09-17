@@ -200,7 +200,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # module agent_blueprint_refresh.py (this file is ratcheted, #774) and is
     # reached through the PEP 562 shim; only the one-line lazy import in
     # default_registry_metadata landed here, offset by two comment trims.
-    "src/clio_agent/gact/agent_blueprints.py": 1056,
+    # +2 (S8, issue #1374): requires.clio_agent floor enforcement's one
+    # errors.extend call site + import; the PEP 440 check itself lives in the
+    # owner module gact/agent_blueprint_requires.py.
+    "src/clio_agent/gact/agent_blueprints.py": 1058,
     # #948 S4: +14 for the children-must-be-react hierarchy rule (a predict/CoT
     # parent would silently strand its children now that the settle loop routing
     # for it is deleted; typed validation error instead).
@@ -549,7 +552,14 @@ RATCHET_BASELINE: dict[str, int] = {
     # Ratchets back with the mcp_app_* / #714 route decomposition.
     # Ratchet down (PR #1255 review): the source-ledger read-modify-writes and the
     # workspace-cwd refusal moved into gact/agent_blueprint_sources.py.
-    "src/clio_agent/gact/routes/blueprints.py": 877,  # a2ui S3 (#1369): ratcheted down after a net-neutral edit
+    # +14 (S8, issue #1374): requires.clio_agent floor enforcement at BOTH
+    # session-activation branches (installed-id, explicit-path) -- two thin
+    # requires_floor_activation_error(app=, session_id=) call sites (the
+    # route's own app/session_id locals, since a route handler has no
+    # ambient gact.context turn) + one import; the PEP 440 check and the
+    # HTTPException/ledger-recording it returns both live in the owner
+    # module gact/agent_blueprint_requires.py.
+    "src/clio_agent/gact/routes/blueprints.py": 891,  # a2ui S3 (#1369): ratcheted down after a net-neutral edit
     "src/clio_agent/gact/routes/catalog.py": 898,  # +4: /goal command dispatch wiring (#1080; logic in gact/goal.py)
     # #1201 (adversarial review, PR #1202): +6 for two direct-connect era-
     # classification call sites (call_external_mcp_tool + _external_mcp_inventory's

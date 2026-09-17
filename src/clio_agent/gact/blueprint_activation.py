@@ -62,6 +62,17 @@ _BLUEPRINT_RESOLUTION_REASON_DEFINITIONS: dict[str, dict[str, str]] = {
         "category": "configuration_invalid",
         "description": "The resolved Agent Blueprint declares no MCP servers.",
     },
+    # S8 (issue #1374, S7-review comment): the blueprint's declared
+    # ``requires: {clio_agent: ">=X"}`` PEP 440 floor is not met by this
+    # running server -- see ``gact/agent_blueprint_requires.py``.
+    "blueprint_requires_newer_clio_agent": {
+        "category": "configuration_invalid",
+        "description": (
+            "The Agent Blueprint declares a requires.clio_agent floor this "
+            "running server does not satisfy; activation is refused rather "
+            "than silently installing/running an under-versioned server."
+        ),
+    },
 }
 
 
@@ -86,8 +97,17 @@ def _record_resolution_reason(
     blueprint_id: str,
     *,
     exception: Exception | None = None,
+    app: Any | None = None,
+    session_id: str | None = None,
 ) -> None:
-    """Record one closed-set resolution reason on trace and the live session API."""
+    """Record one closed-set resolution reason on trace and the live session API.
+
+    ``app``/``session_id`` default to the ambient ``gact.context`` contextvars
+    (every pre-existing caller runs mid-turn, where those are populated). A
+    caller with the FastAPI app / session id as plain local variables instead
+    (a route handler, which has no ambient turn context — S8, issue #1374)
+    passes them explicitly rather than getting silently dropped.
+    """
 
     definition = _BLUEPRINT_RESOLUTION_REASON_DEFINITIONS.get(reason)
     if definition is None:
@@ -95,8 +115,8 @@ def _record_resolution_reason(
     from clio_agent.gact import context as gact_context  # noqa: PLC0415
 
     row = {"reason": reason, **definition, "blueprint_id": blueprint_id}
-    app = gact_context.active_app()
-    sid = gact_context.active_session_id()
+    app = app if app is not None else gact_context.active_app()
+    sid = session_id if session_id is not None else gact_context.active_session_id()
     if app is not None and sid:
         _reason_catalog(app).setdefault(sid, []).append(row)
         from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
@@ -119,6 +139,24 @@ def _record_resolution_reason(
         blueprint_id,
         type(exception).__name__ if exception is not None else "",
         str(exception or ""),
+    )
+
+
+def record_requires_floor_reason(
+    blueprint_id: str, *, app: Any | None = None, session_id: str | None = None
+) -> None:
+    """Record ``blueprint_requires_newer_clio_agent`` like any other resolution reason.
+
+    Called from ``gact/agent_blueprint_requires.py::requires_floor_activation_error``
+    right before that function's 400 is raised, so the refusal is durable and
+    queryable via :func:`blueprint_resolution_reasons` exactly like every
+    other Agent Blueprint resolution degradation (no new store). ``app``/
+    ``session_id`` are the session-activation ROUTE's own locals (it runs
+    with no ambient turn context) — see ``_record_resolution_reason``.
+    """
+
+    _record_resolution_reason(
+        "blueprint_requires_newer_clio_agent", blueprint_id, app=app, session_id=session_id
     )
 
 

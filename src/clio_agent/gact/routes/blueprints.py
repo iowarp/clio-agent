@@ -27,6 +27,7 @@ from clio_agent.gact.agent_blueprint_files import (
     resolve_agent_blueprint_root,
     resolve_blueprint_file_path,
 )
+from clio_agent.gact.agent_blueprint_requires import requires_floor_activation_error
 from clio_agent.gact.agent_blueprint_sources import (
     delete_agent_blueprint_source as _delete_agent_blueprint_source,
 )
@@ -792,6 +793,15 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                 scope="session",
                 runtime_tool_names=runtime_tool_names_for_validation(app),
             )
+            blueprint_wire = validation["agent_blueprint"]
+            requires_error = requires_floor_activation_error(
+                blueprint_wire.get("metadata") or {},
+                str(blueprint_wire.get("id") or ""),
+                app=app,
+                session_id=sid,
+            )
+            if requires_error is not None:
+                raise requires_error
             if not validation.get("enabled", False):
                 raise HTTPException(
                     status_code=400,
@@ -807,7 +817,6 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                         )
                     ).model_dump(exclude_none=True),
                 )
-            blueprint_wire = validation["agent_blueprint"]
             install_root = Path(str(blueprint_wire.get("root") or blueprint_path)).expanduser()
             activation_metadata = deps.agent_blueprint_activation_metadata(
                 blueprint_wire=blueprint_wire,
@@ -850,6 +859,11 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                         )
                     ).model_dump(exclude_none=True),
                 )
+            requires_error = requires_floor_activation_error(
+                blueprint.metadata, blueprint.id, app=app, session_id=sid
+            )
+            if requires_error is not None:
+                raise requires_error
             blueprint_wire = blueprint.to_wire()
             activation_metadata = deps.agent_blueprint_activation_metadata(
                 blueprint_wire=blueprint_wire,

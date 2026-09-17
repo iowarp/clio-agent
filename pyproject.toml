@@ -54,6 +54,11 @@ dependencies = [
     # A2UI catalog validation: official catalog.json files are validated at runtime
     # with Draft 2020-12 (docs/design/a2ui-compat-campaign-2026-09.md, S2).
     "jsonschema>=4.23",
+    # Agent Blueprint `requires: {clio_agent: ">=X"}` server-floor enforcement
+    # (docs/design/a2ui-compat-campaign-2026-09.md, S8): PEP 440 specifier
+    # parsing. Already present transitively (pip/fastapi's own tree); declared
+    # explicitly now that first-party code imports it directly.
+    "packaging>=24.0",
     "requests>=2.31.0",
     "h5py>=3.10.0",
     "pyarrow>=14.0.0",

@@ -1994,6 +1994,215 @@ def test_agent_blueprint_activation_replaces_default_agent_graph(tmp_path: Path)
     assert agents["variant"]["metadata"]["agent_blueprint_id"] == "genomics"
 
 
+# ---- S8 (issue #1374): requires.clio_agent server-floor enforcement ---------------
+
+
+def _write_blueprint_requiring(root: Path, *, blueprint_id: str, clio_agent_specifier: str) -> None:
+    """Same shape as :func:`_write_blueprint`, plus a ``requires.clio_agent`` floor."""
+
+    (root / "experts").mkdir(parents=True)
+    root.joinpath("AGENT.md").write_text(
+        f"""---
+id: {blueprint_id}
+version: 0.1.0
+title: Genomics Agent
+root_expert: root
+requires:
+  clio_agent: "{clio_agent_specifier}"
+---
+Genomics domain agent.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("experts", "root.md").write_text(
+        """---
+id: root
+title: Genomics Root
+tier: 1
+prompt_id: genomics.root
+---
+Coordinate genomics work.
+""",
+        encoding="utf-8",
+    )
+
+
+def test_unsatisfied_clio_agent_floor_reports_the_declared_specifier() -> None:
+    from clio_agent import __version__ as running_version
+    from clio_agent.gact.agent_blueprint_requires import unsatisfied_clio_agent_floor
+
+    # The exact marketplace S7 scenario the issue names: a pack declaring the
+    # floor the S2-S5 A2UI producer work landed under, checked against
+    # WHATEVER this server actually reports as its own running version (kept
+    # relative so this test does not silently stop exercising the failure
+    # path the day the running version happens to cross 0.9.5).
+    assert (
+        unsatisfied_clio_agent_floor({"requires": {"clio_agent": f">{running_version}.1"}})
+        == f">{running_version}.1"
+    )
+
+
+def test_unsatisfied_clio_agent_floor_satisfied_is_empty() -> None:
+    from clio_agent.gact.agent_blueprint_requires import unsatisfied_clio_agent_floor
+
+    assert unsatisfied_clio_agent_floor({"requires": {"clio_agent": ">=0.1.0"}}) == ""
+
+
+def test_unsatisfied_clio_agent_floor_absent_requires_is_empty() -> None:
+    from clio_agent.gact.agent_blueprint_requires import unsatisfied_clio_agent_floor
+
+    assert unsatisfied_clio_agent_floor({}) == ""
+    assert unsatisfied_clio_agent_floor({"requires": {}}) == ""
+    assert unsatisfied_clio_agent_floor({"requires": "not-a-mapping"}) == ""  # type: ignore[dict-item]
+
+
+def test_unsatisfied_clio_agent_floor_malformed_specifier_never_false_refuses() -> None:
+    """A malformed PEP 440 specifier is unenforceable, not a fabricated refusal
+    (⚑ #1/#2: clio surfaces reality, it does not invent a decision it cannot
+    actually evaluate)."""
+
+    from clio_agent.gact.agent_blueprint_requires import unsatisfied_clio_agent_floor
+
+    assert unsatisfied_clio_agent_floor({"requires": {"clio_agent": "not a specifier!!"}}) == ""
+
+
+def test_unsatisfied_clio_agent_floor_uses_explicit_running_version_override() -> None:
+    from clio_agent.gact.agent_blueprint_requires import unsatisfied_clio_agent_floor
+
+    metadata = {"requires": {"clio_agent": ">=0.9.5"}}
+    assert unsatisfied_clio_agent_floor(metadata, running_version="0.9.4") == ">=0.9.5"
+    assert unsatisfied_clio_agent_floor(metadata, running_version="0.9.5") == ""
+    assert unsatisfied_clio_agent_floor(metadata, running_version="0.10.0") == ""
+
+
+def test_validate_agent_blueprint_path_disables_on_unsatisfied_requires_floor(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "future-pack"
+    _write_blueprint_requiring(root, blueprint_id="future-pack", clio_agent_specifier=">=99.0.0")
+
+    body = validate_agent_blueprint_path(root)
+
+    assert body["enabled"] is False
+    assert any(
+        "blueprint_requires_newer_clio_agent" in error for error in body["validation_errors"]
+    )
+
+
+def test_validate_agent_blueprint_path_satisfied_requires_floor_stays_enabled(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "old-floor-pack"
+    _write_blueprint_requiring(root, blueprint_id="old-floor-pack", clio_agent_specifier=">=0.1.0")
+
+    body = validate_agent_blueprint_path(root)
+
+    assert body["enabled"] is True
+    assert not any("blueprint_requires_newer_clio_agent" in e for e in body["validation_errors"])
+
+
+def test_session_activation_by_id_refuses_unsatisfied_requires_floor(tmp_path: Path) -> None:
+    from clio_agent.gact.blueprint_activation import blueprint_resolution_reasons
+
+    workspace = tmp_path / "workspace"
+    blueprint = workspace / ".clio" / "agent-blueprints" / "future-pack"
+    _write_blueprint_requiring(
+        blueprint, blueprint_id="future-pack", clio_agent_specifier=">=99.0.0"
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "future-pack", "workspace_id": wid},
+        ).json()["id"]
+        activated = client.post(
+            f"/v1/sessions/{sid}/agent-blueprint",
+            json={"blueprint_id": "future-pack"},
+        )
+
+        assert activated.status_code == 400, activated.text
+        detail = activated.json()["error"]
+        assert detail["error"] == "blueprint_requires_newer_clio_agent"
+        assert detail["details"]["requires_clio_agent"] == ">=99.0.0"
+
+        reasons = blueprint_resolution_reasons(app, sid)
+        assert any(r["reason"] == "blueprint_requires_newer_clio_agent" for r in reasons)
+
+
+def test_session_activation_by_path_refuses_unsatisfied_requires_floor(tmp_path: Path) -> None:
+    from clio_agent.gact.blueprint_activation import blueprint_resolution_reasons
+
+    workspace = tmp_path / "workspace"
+    blueprint_root = tmp_path / "future-path-pack"
+    _write_blueprint_requiring(
+        blueprint_root, blueprint_id="future-path-pack", clio_agent_specifier=">=99.0.0"
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "future-path-pack", "workspace_id": wid},
+        ).json()["id"]
+        activated = client.post(
+            f"/v1/sessions/{sid}/agent-blueprint",
+            json={"path": str(blueprint_root)},
+        )
+
+        assert activated.status_code == 400, activated.text
+        detail = activated.json()["error"]
+        assert detail["error"] == "blueprint_requires_newer_clio_agent"
+
+        reasons = blueprint_resolution_reasons(app, sid)
+        assert any(r["reason"] == "blueprint_requires_newer_clio_agent" for r in reasons)
+
+
+def test_session_activation_satisfied_requires_floor_succeeds(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    blueprint = workspace / ".clio" / "agent-blueprints" / "current-pack"
+    _write_blueprint_requiring(
+        blueprint, blueprint_id="current-pack", clio_agent_specifier=">=0.1.0"
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "current-pack", "workspace_id": wid},
+        ).json()["id"]
+        activated = client.post(
+            f"/v1/sessions/{sid}/agent-blueprint",
+            json={"blueprint_id": "current-pack"},
+        )
+
+        assert activated.status_code == 200, activated.text
+
+
 def test_agent_blueprint_root_runtime_context_lists_declared_children(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     blueprint = workspace / ".clio" / "agent-blueprints" / "genomics"
@@ -3978,6 +4187,144 @@ def test_uninstalled_pack_is_not_resurrected_by_the_sync(
     reset_registry_sync_for_tests()
     assert ensure_default_registry_bootstrap(home=home, cwd=cwd) == ""
     assert extra_install.joinpath("AGENT.md").exists(), "explicit reinstall clears the tombstone"
+
+
+# ---- S8 (issue #1363 umbrella, live-gate finding 3): checksum-mismatch reinstall ---
+
+
+def test_registry_sync_updates_installed_pack_when_source_checksum_differs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The live-harness bug: an already-installed pack id used to be skipped
+    forever regardless of whether the LOCAL marketplace checkout's content
+    (e.g. a version bump) moved past what is installed. A source checksum
+    that differs from the installed one now reinstalls instead of silently
+    serving the stale copy.
+
+    **Sabotage:** revert to the bare "folder exists -> skip" check -> the
+    installed AGENT.md keeps its ORIGINAL content -> red.
+    """
+
+    from clio_agent.gact.agent_blueprint_refresh import (
+        reset_registry_sync_for_tests,
+        sync_local_registry_packs,
+    )
+    from clio_agent.gact.agent_blueprints import install_agent_blueprint
+
+    registry_dir = tmp_path / "local-registry"
+    extra_dir = registry_dir / "extra-pack"
+    extra_dir.mkdir(parents=True)
+    extra_dir.joinpath("AGENT.md").write_text(_EXTRA_PACK_MD, encoding="utf-8")
+
+    install_root, home = _prepare_default_store(tmp_path, monkeypatch)
+    cwd = tmp_path / "cwd"
+    install_agent_blueprint(
+        source=str(registry_dir), scope="global", cwd=cwd, home=home, blueprint_id="extra-pack"
+    )
+    installed_agent_md = install_root.parent / "extra-pack" / "AGENT.md"
+    assert installed_agent_md.read_text(encoding="utf-8") == _EXTRA_PACK_MD
+
+    # The source registry moved on (a pack content update, e.g. a version bump)
+    # while the install root kept the OLD snapshot.
+    updated_pack_md = _EXTRA_PACK_MD.replace("version: 0.1.0", "version: 0.2.0")
+    assert updated_pack_md != _EXTRA_PACK_MD
+    extra_dir.joinpath("AGENT.md").write_text(updated_pack_md, encoding="utf-8")
+
+    reset_registry_sync_for_tests()
+    diagnostic = sync_local_registry_packs(source=str(registry_dir), home=home, cwd=cwd, pinned="")
+
+    assert diagnostic == ""
+    assert installed_agent_md.read_text(encoding="utf-8") == updated_pack_md, (
+        "an installed pack must update when the SOURCE checksum changed, never "
+        "serve a stale copy silently"
+    )
+
+
+def test_registry_sync_never_clobbers_local_edits_even_when_source_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A user (or the blueprint file-write route) editing the INSTALLED copy in
+    place must never be clobbered by the registry sync, even when the source
+    ALSO changed in the meantime -- ``local_edits_present`` outranks
+    ``source_checksum_changed``.
+
+    **Sabotage:** compare only source-vs-installed checksums (drop the
+    recorded-vs-on-disk local-edit check) -> the user's edit is overwritten
+    -> red.
+    """
+
+    from clio_agent.gact.agent_blueprint_refresh import (
+        reset_registry_sync_for_tests,
+        sync_local_registry_packs,
+    )
+    from clio_agent.gact.agent_blueprints import install_agent_blueprint
+
+    registry_dir = tmp_path / "local-registry"
+    extra_dir = registry_dir / "extra-pack"
+    extra_dir.mkdir(parents=True)
+    extra_dir.joinpath("AGENT.md").write_text(_EXTRA_PACK_MD, encoding="utf-8")
+
+    install_root, home = _prepare_default_store(tmp_path, monkeypatch)
+    cwd = tmp_path / "cwd"
+    install_agent_blueprint(
+        source=str(registry_dir), scope="global", cwd=cwd, home=home, blueprint_id="extra-pack"
+    )
+    installed_agent_md = install_root.parent / "extra-pack" / "AGENT.md"
+
+    # The user hand-edits the INSTALLED copy (e.g. via the blueprint file-write
+    # route) -- its on-disk checksum now drifts from what ``.clio-install.md``
+    # recorded at install time.
+    user_edited_md = _EXTRA_PACK_MD.replace(
+        "A minimal single-agent pack.", "A minimal single-agent pack. User note added."
+    )
+    installed_agent_md.write_text(user_edited_md, encoding="utf-8")
+
+    # The source ALSO changed, independently of the user's edit.
+    extra_dir.joinpath("AGENT.md").write_text(
+        _EXTRA_PACK_MD.replace("version: 0.1.0", "version: 0.2.0"), encoding="utf-8"
+    )
+
+    reset_registry_sync_for_tests()
+    diagnostic = sync_local_registry_packs(source=str(registry_dir), home=home, cwd=cwd, pinned="")
+
+    assert diagnostic == ""
+    assert installed_agent_md.read_text(encoding="utf-8") == user_edited_md, (
+        "local edits must never be clobbered by the registry sync"
+    )
+
+
+def test_registry_sync_is_a_noop_when_source_and_install_already_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unchanged source and an unedited install is genuinely nothing to do —
+    the fast, common case stays cheap (no reinstall churn on every boot)."""
+
+    from clio_agent.gact.agent_blueprint_refresh import (
+        reset_registry_sync_for_tests,
+        sync_local_registry_packs,
+    )
+    from clio_agent.gact.agent_blueprints import install_agent_blueprint
+
+    registry_dir = tmp_path / "local-registry"
+    extra_dir = registry_dir / "extra-pack"
+    extra_dir.mkdir(parents=True)
+    extra_dir.joinpath("AGENT.md").write_text(_EXTRA_PACK_MD, encoding="utf-8")
+
+    install_root, home = _prepare_default_store(tmp_path, monkeypatch)
+    cwd = tmp_path / "cwd"
+    install_agent_blueprint(
+        source=str(registry_dir), scope="global", cwd=cwd, home=home, blueprint_id="extra-pack"
+    )
+    installed_agent_md = install_root.parent / "extra-pack" / "AGENT.md"
+    installed_mtime = installed_agent_md.stat().st_mtime_ns
+
+    reset_registry_sync_for_tests()
+    diagnostic = sync_local_registry_packs(source=str(registry_dir), home=home, cwd=cwd, pinned="")
+
+    assert diagnostic == ""
+    assert installed_agent_md.stat().st_mtime_ns == installed_mtime, (
+        "unchanged pack must not reinstall"
+    )
 
 
 def test_install_all_skips_invalid_pack_only_when_asked(
