@@ -427,7 +427,29 @@ def test_diff_paths_are_content_while_binding_paths_remain_json_pointers() -> No
             catalog_entry=workspace_entry,
         )
 
-    with raises(A2UIValidationError, match="data bindings must use JSON Pointer paths"):
+    # Relative paths (no leading "/") are legal binding syntax in
+    # collection/template scope (adversarial review S2 ruling) -- only
+    # updateDataModel.path, a different rule, must be an absolute pointer.
+    validate_server_message(
+        {
+            "version": "v0.9.1",
+            "updateComponents": {
+                "surfaceId": "binding-surface",
+                "components": [
+                    {
+                        "id": "field",
+                        "component": "TextField",
+                        "label": "Station",
+                        "value": {"path": "station/name"},
+                    }
+                ],
+            },
+        },
+        catalogs=_CATALOGS,
+        catalog_entry=workspace_entry,
+    )
+
+    with raises(A2UIValidationError, match="data bindings must be a non-empty string path"):
         validate_server_message(
             {
                 "version": "v0.9.1",
@@ -438,7 +460,7 @@ def test_diff_paths_are_content_while_binding_paths_remain_json_pointers() -> No
                             "id": "field",
                             "component": "TextField",
                             "label": "Station",
-                            "value": {"path": "station/name"},
+                            "value": {"path": ""},
                         }
                     ],
                 },
@@ -1615,9 +1637,15 @@ def test_partial_component_update_keeps_earlier_definitions_on_replay(tmp_path: 
     assert replayed.to_wire() == live
 
 
-def test_url_properties_cannot_be_data_bound(tmp_path: Path) -> None:
-    """A bound URL resolves after validation, so the scheme allowlist could not
-    have seen it -- the boundary refuses the indirection instead."""
+def test_bound_url_properties_are_accepted_scheme_enforced_on_literals_only(
+    tmp_path: Path,
+) -> None:
+    """``Image.url`` is a DynamicString (adversarial review S2 ruling, owner
+    decision 11, docs/design/a2ui-compat-campaign-2026-09.md): a bound value
+    ({"path": ...}) resolves client-side, so the server cannot and does not
+    scheme-check it -- only a LITERAL string URL is checked here. The
+    renderer's kernel media/artifact components enforce the same allowlist
+    on the resolved value at render time (VALIDATION_FAILED, S6)."""
 
     client, sid, _ = _session_client(tmp_path)
     bound_url = {
@@ -1635,10 +1663,21 @@ def test_url_properties_cannot_be_data_bound(tmp_path: Path) -> None:
         json={"messages": [_create_message(), bound_url, smuggled]},
     )
 
-    assert response.status_code == 422, response.text
-    assert response.json()["error"]["error"] == "a2ui_validation_failed"
-    assert "literal" in response.json()["error"]["message"]
-    assert client.app.state.a2ui_store.get(sid, "surface_1") is None
+    assert response.status_code == 200, response.text
+
+    literal_url = {
+        "version": "v0.9.1",
+        "updateComponents": {
+            "surfaceId": "surface_1",
+            "components": [{"id": "root", "component": "Image", "url": "javascript:alert(1)"}],
+        },
+    }
+    literal_response = client.post(
+        f"/v1/sessions/{sid}/a2ui/messages", headers=HEADERS, json={"messages": [literal_url]}
+    )
+    assert literal_response.status_code == 422
+    assert "literal" not in literal_response.json()["error"]["message"]
+    assert "allowed non-executable scheme" in literal_response.json()["error"]["message"]
 
 
 def test_projection_copies_surface_records_a_bounded_number_of_times(

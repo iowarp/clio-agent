@@ -204,9 +204,14 @@ def validate_value(
     if not isinstance(value, Mapping):
         return
     if set(value) == {"path"}:
+        # The official spec defines RELATIVE binding paths (no leading "/")
+        # in collection/template scope -- e.g. a List template's "name"
+        # resolves against the current item, not the surface root. Only
+        # updateDataModel.path (gact/a2ui.py, a different rule) must be an
+        # absolute JSON Pointer; a binding just needs a non-empty string.
         binding_path = value.get("path")
-        if not isinstance(binding_path, str) or not binding_path.startswith("/"):
-            raise A2UIValidationError("A2UI data bindings must use JSON Pointer paths")
+        if not isinstance(binding_path, str) or not binding_path:
+            raise A2UIValidationError("A2UI data bindings must be a non-empty string path")
     if "call" in value and isinstance(value.get("call"), str):
         _validate_function_call(value, entry=entry)
     # Both envelope shapes that carry a free-form payload -- the ``event`` inside a
@@ -218,17 +223,12 @@ def validate_value(
             raise A2UIValidationError("A2UI object keys must be strings")
         if child_key in _FORBIDDEN_KEYS:
             raise A2UIValidationError(f"A2UI property is prohibited: {child_key}")
-        if (
-            child_key.lower() in _URL_KEYS
-            and child_value is not None
-            and not isinstance(child_value, str)
-        ):
-            # A data binding or function call resolves in the renderer, after
-            # this boundary ran, so the scheme allowlist would never see the URL
-            # it ends up fetching. Require the literal instead.
-            raise A2UIValidationError(
-                f"A2UI {child_key} must be a literal string so its scheme can be checked"
-            )
+        # The scheme allowlist (_validate_url, below) applies to LITERAL URL
+        # strings only. A property like Image.url is a DynamicString, so a
+        # bound value ({"path": "/productImage"}) or a declared functionCall
+        # is legal here -- the renderer's kernel media/artifact components
+        # enforce the same allowlist on the resolved value at render time and
+        # report VALIDATION_FAILED (owner decision 11, S6 deliverable).
         validate_value(
             child_value,
             entry=entry,

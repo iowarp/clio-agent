@@ -23,7 +23,7 @@ from clio_agent.gact.a2ui_catalogs.validation import (
     validate_components,
     validate_value,
 )
-from clio_agent.gact.protocol.constants import A2UI_V091, A2UI_V091_WIRE
+from clio_agent.gact.protocol.constants import A2UI_V091, A2UI_V091_WIRE, A2UI_WIRE_VERSIONS
 
 
 def utcnow_iso() -> str:
@@ -150,8 +150,13 @@ class A2UISurfaceRecord:
 
 
 def _message_operation(message: Mapping[str, Any]) -> tuple[str, Mapping[str, Any]]:
-    if message.get("version") != A2UI_V091_WIRE:
-        raise A2UIValidationError(f"A2UI message version must be {A2UI_V091_WIRE}")
+    # The official envelope's "version" enum is ["v0.9", "v0.9.1"] -- both are
+    # accepted and persisted verbatim (never rewritten to A2UI_V091_WIRE); the
+    # x-a2ui-version NEGOTIATION header is the separate, unchanged 0.9.1 check.
+    if message.get("version") not in A2UI_WIRE_VERSIONS:
+        raise A2UIValidationError(
+            f"A2UI message version must be one of {sorted(A2UI_WIRE_VERSIONS)}"
+        )
     operations = [
         key
         for key in ("createSurface", "updateComponents", "updateDataModel", "deleteSurface")
@@ -228,8 +233,10 @@ def validate_server_message(
             catalog_entry, payload.get("components"), max_components=MAX_A2UI_COMPONENTS
         )
     if operation == "updateDataModel":
+        # Optional per the official schema: omitted (or "/") means the WHOLE
+        # data model; when present it must be an absolute JSON Pointer.
         path = payload.get("path")
-        if not isinstance(path, str) or not path.startswith("/"):
+        if path is not None and (not isinstance(path, str) or not path.startswith("/")):
             raise A2UIValidationError("A2UI updateDataModel path must be a JSON Pointer")
     validate_value(
         payload,
