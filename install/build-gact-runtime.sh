@@ -13,7 +13,7 @@
 # The runtime self-describes via a generic manifest (<out>/runtime.json,
 # iowarp/gact-tui#311) so the desktop launcher needs zero knowledge of
 # what's inside:
-#   {"schema": 1, "exec": ["python/bin/python3.12", "-m", "clio_agent.gact"]}
+#   {"schema": 1, "exec": ["python/bin/python3.12", "-m", "clio_agent.gact", "--no-agent"]}
 #
 # Console scripts are DELETED after install: their shims embed absolute
 # build paths and break on relocation — `-m clio_agent.gact` is the only
@@ -137,13 +137,13 @@ find "$OUT/python" -type f -name '*.exe' -delete
 # no-opped on macOS — the exact silent-fallback class this repo bans).
 find "$OUT/python" -type l ! -exec test -e {} ';' -delete
 
-# Prepare imports in the release image, not on the user's first launch. The
-# prune above intentionally removes build-host caches; regenerate portable,
-# unchecked-hash bytecode after the tree has reached its final shape. `-s/-p`
-# keeps tracebacks independent of the GitHub runner's checkout path.
-echo "[build-gact-runtime] compiling portable Python bytecode"
-"$OUT/$PYBIN_REL" -m compileall --invalidation-mode unchecked-hash \
-  -q -f -j 0 -s "$OUT" -p gact-runtime "$OUT/python"
+# Prepare the real startup import graph in the release image, not on the
+# user's first launch. Compiling the entire distribution is both wasteful and
+# invalid: CPython ships non-imported Tcl demo files with syntax errors, while
+# some optional provider paths exceed Windows' legacy path limit.
+echo "[build-gact-runtime] compiling portable startup bytecode"
+"$OUT/$PYBIN_REL" "$CLIO_AGENT_SOURCE/install/precompile_runtime.py" \
+  --python-root "$OUT/python"
 COMPILED="$(find "$OUT/python" -type f -name '*.pyc' | wc -l | tr -d ' ')"
 if [ "${COMPILED:-0}" -eq 0 ]; then
   echo "build-gact-runtime: bytecode preparation produced no .pyc files" >&2
@@ -158,7 +158,7 @@ echo "[build-gact-runtime] size after prune:  ${SIZE_AFTER} MB (was ${SIZE_BEFOR
 cat >"$OUT/runtime.json" <<EOF
 {
   "schema": 1,
-  "exec": ["${PYBIN_REL}", "-m", "clio_agent.gact"]
+  "exec": ["${PYBIN_REL}", "-m", "clio_agent.gact", "--no-agent"]
 }
 EOF
 echo "[build-gact-runtime] manifest: $(cat "$OUT/runtime.json" | tr -d '\n' | tr -s ' ')"

@@ -117,6 +117,8 @@ def test_release_builds_follow_the_current_gact_workspace_layout() -> None:
     assert '"$OUT" version >/dev/null 2>&1 || true' not in tui_builder
     assert 'release_version="${GITHUB_REF_NAME#v}"' in bundles
     assert "config.version = tauriVersion" in bundles
+    assert "`${maintenance[1]}+${maintenance[2]}`" in bundles
+    assert "+patch.${maintenance[2]}" not in bundles
     assert "config.bundle.windows.wix.version = releaseVersion" in bundles
     assert 'base="${base//$tauri_version/$release_version}"' in bundles
     assert "invalid CLIO release version" in bundles
@@ -125,16 +127,25 @@ def test_release_builds_follow_the_current_gact_workspace_layout() -> None:
 def test_bundled_runtime_is_precompiled_before_relocation_proof() -> None:
     """Official bundles pay Python compilation cost before installation."""
 
+    precompiler = _text("install/precompile_runtime.py")
+    assert "build_app()" in precompiler
+    assert "PycInvalidationMode.UNCHECKED_HASH" in precompiler
+
     for relative_path in (
         "install/build-gact-runtime.sh",
         "install/build-gact-runtime.ps1",
     ):
         script = _text(relative_path)
-        compile_step = script.index("compiling portable Python bytecode")
+        compile_step = script.index("compiling portable startup bytecode")
         relocation_proof = script.index("portability proof on the real object")
         assert compile_step < relocation_proof, relative_path
-        assert "unchecked-hash" in script, relative_path
+        assert "precompile_runtime.py" in script, relative_path
+        assert "'--no-agent'" in script or '"--no-agent"' in script, relative_path
         assert "within 30 seconds" in script, relative_path
+
+    windows_builder = _text("install/build-gact-runtime.ps1")
+    assert "codex_cli_bin\\bin\\codex.exe" in windows_builder
+    assert "packaged Codex provider executable is missing" in windows_builder
 
 
 def test_release_workflow_smokes_the_published_registry_tool() -> None:

@@ -283,10 +283,11 @@ jobs:
 
           // Tauri requires SemVer while CLIO maintenance releases use a
           // fourth numeric component. Preserve the public vX.Y.Z.N identity
-          // in tags/assets and encode N as SemVer build metadata internally.
+          // in tags/assets and encode N as numeric SemVer build metadata
+          // internally. Tauri's Windows bundlers reject nonnumeric metadata.
           const maintenance = releaseVersion.match(/^(\d+\.\d+\.\d+)\.(\d+)$/);
           const tauriVersion = maintenance
-            ? `${maintenance[1]}+patch.${maintenance[2]}`
+            ? `${maintenance[1]}+${maintenance[2]}`
             : releaseVersion;
 
           const isObject = (value) =>
@@ -353,7 +354,7 @@ jobs:
           release_version="${GITHUB_REF_NAME#v}"
           tauri_version="$release_version"
           if [[ "$release_version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.([0-9]+)$ ]]; then
-            tauri_version="${BASH_REMATCH[1]}+patch.${BASH_REMATCH[2]}"
+            tauri_version="${BASH_REMATCH[1]}+${BASH_REMATCH[2]}"
           fi
           root="external/gact-tui/desktop/src-tauri/target/release/bundle"
           if [ -d "external/gact-tui/desktop/src-tauri/target/${{ matrix.target }}/release/bundle" ]; then

@@ -16,7 +16,7 @@
   The runtime self-describes via a generic manifest (<out>\runtime.json,
   iowarp/gact-tui#311) so the desktop launcher needs zero knowledge of
   what's inside:
-    {"schema": 1, "exec": ["python/python.exe", "-m", "clio_agent.gact"]}
+    {"schema": 1, "exec": ["python/python.exe", "-m", "clio_agent.gact", "--no-agent"]}
 
   Console-script exes are DELETED after install: they embed absolute
   build paths and break on relocation -- `-m clio_agent.gact` is the only
@@ -177,24 +177,26 @@ if (Test-Path $scriptsDir) {
     ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
 }
 # distlib/setuptools launcher stubs under site-packages (t64.exe, w64-arm.exe,
-# ...) are dead weight (console scripts are deleted; -m is the entry) and the
-# release staging sweeps *.exe as installers. python.exe lives at the dist
-# root, untouched.
+# ...) are dead weight because console scripts are deleted and ``-m`` is the
+# GACT entry. Keep the Codex SDK's packaged runtime: it is a real provider
+# executable, not a generated Python console-script shim.
 if (Test-Path $sitePkgs) {
+  $codexCli = Join-Path $sitePkgs 'codex_cli_bin\bin\codex.exe'
   Get-ChildItem -LiteralPath $sitePkgs -Recurse -File -Filter '*.exe' -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -ne $codexCli } |
     ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+  if (-not (Test-Path -LiteralPath $codexCli)) {
+    throw 'build-gact-runtime: packaged Codex provider executable is missing'
+  }
 }
 
-# Prepare imports in the release image, not on the user's first launch. The
-# prune above intentionally removes build-host caches; regenerate portable,
-# unchecked-hash bytecode after the tree has reached its final shape. `-s/-p`
-# keeps tracebacks independent of the GitHub runner's checkout path.
-Write-Host "[build-gact-runtime] compiling portable Python bytecode"
-Invoke-Native -Exe $pyBin -Args @(
-  '-m', 'compileall', '--invalidation-mode', 'unchecked-hash',
-  '-q', '-f', '-j', '0', '-s', (Resolve-Path $Out).Path,
-  '-p', 'gact-runtime', $pyRoot
-) | Out-Null
+# Prepare the real startup import graph in the release image, not on the
+# user's first launch. Compiling the entire distribution is both wasteful and
+# invalid: CPython ships non-imported Tcl demo files with syntax errors, while
+# some optional provider paths exceed Windows' legacy path limit.
+Write-Host "[build-gact-runtime] compiling portable startup bytecode"
+$precompiler = Join-Path $Source 'install/precompile_runtime.py'
+Invoke-Native -Exe $pyBin -Args @($precompiler, '--python-root', $pyRoot)
 $compiled = @(Get-ChildItem -LiteralPath $pyRoot -Recurse -File -Filter '*.pyc' -ErrorAction SilentlyContinue).Count
 if ($compiled -eq 0) {
   throw 'build-gact-runtime: bytecode preparation produced no .pyc files'
@@ -205,7 +207,7 @@ $sizeAfter = Get-DirSizeMB $Out
 Write-Host "[build-gact-runtime] size after prune:  $sizeAfter MB (was $sizeBefore MB)"
 
 # --- 4. generic runtime manifest ----------------------------------------
-$manifest = @{ schema = 1; exec = @($pyBinRel, '-m', 'clio_agent.gact') } |
+$manifest = @{ schema = 1; exec = @($pyBinRel, '-m', 'clio_agent.gact', '--no-agent') } |
   ConvertTo-Json -Compress
 [System.IO.File]::WriteAllText((Join-Path $Out 'runtime.json'), $manifest + "`n")
 Write-Host "[build-gact-runtime] manifest: $manifest"

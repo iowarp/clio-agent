@@ -16,6 +16,15 @@ during external-user verification of v0.9.4.
 - Bundled desktop packaging now prepares Python bytecode before installation,
   so the first launch does not perform one-time import compilation or fall
   through to the manual service-address screen.
+- Bundled desktop startup now launches the local service without eagerly
+  selecting or authenticating a model provider; provider credentials are
+  validated only after the app is available and the user chooses a provider.
+- Windows bundles retain the Codex SDK's packaged executable while pruning
+  generated Python launcher stubs, so the Codex subscription provider remains
+  usable after installation.
+- Four-part CLIO maintenance versions such as `0.9.4.1` are translated to
+  numeric SemVer build metadata for Tauri while public tags and asset names
+  keep the CLIO release version.
 
 ## [0.9.4] - 2026-09-16
 
