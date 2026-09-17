@@ -1,0 +1,14 @@
+{
+  "catalogId": "https://example.test/a2ui/catalogs/second",
+  "protocolVersion": "0.9.1",
+  "trust": {
+    "source": "pack"
+  },
+  "implements": {
+    "SecondText": {
+      "kernel": "Text"
+    }
+  },
+  "events": {},
+  "instructions": "instructions.md"
+}
