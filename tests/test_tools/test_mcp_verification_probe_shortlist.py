@@ -76,23 +76,72 @@ def test_h3_pkce_absence_refusal_is_a_verified_sdk_gap() -> None:
 
 def test_a7_no_network_json_schema_dereferencing_in_clio_agent() -> None:
     """A7 (SEP-2106): clients MUST NOT auto-dereference a network `$ref` when
-    validating JSON Schema. clio_agent never implements its own JSON-Schema
-    validator or resolver at all (repo-wide grep: zero jsonschema/Registry/
-    RefResolver hits) -- every typed validation goes through pydantic's
-    TypeAdapter against LOCALLY Python-type-derived schemas (never a raw
-    JSON-Schema document with a $ref clio would need to resolve), so this is
-    vacuously satisfied by construction, not by an explicit refusal check."""
+    validating JSON Schema. Since the A2UI compatibility campaign (S2,
+    docs/design/a2ui-compat-campaign-2026-09.md) clio_agent validates A2UI
+    components against catalog FILES with `jsonschema`, so this is no longer
+    vacuously satisfied by construction. It is satisfied by design instead: the
+    only entry point is `clio_schemas.a2ui.validation`, whose
+    `referencing.Registry` is preloaded with every vendored `$id` and has NO
+    `retrieve` callable, so an unknown `$ref` raises `Unresolvable` instead of
+    being fetched. This test pins (a) the allowlist of files that may touch a
+    JSON-Schema library and (b) the refusal itself, with the network socket
+    layer armed to fail loudly if anything tried to fetch."""
 
+    allowed = {
+        Path("src/clio_agent/gact/a2ui_catalogs/registry.py"),
+        Path("src/clio_agent/gact/a2ui_catalogs/validation.py"),
+    }
     src_root = Path("src/clio_agent")
     offenders = []
     for path in src_root.rglob("*.py"):
         text = path.read_text(encoding="utf-8")
-        if "jsonschema" in text or "RefResolver" in text:
+        if ("jsonschema" in text or "RefResolver" in text) and path not in allowed:
             offenders.append(str(path))
     assert not offenders, (
-        f"clio_agent started using a JSON-Schema library directly: {offenders} -- "
-        "verify it never auto-dereferences a network $ref before allowing this"
+        f"clio_agent started using a JSON-Schema library outside the A2UI catalog "
+        f"validation seam: {offenders} -- route it through clio_schemas.a2ui.validation "
+        "(preloaded registry, no retrieve) or extend this proof"
     )
+    for path in allowed:
+        text = path.read_text(encoding="utf-8")
+        assert "RefResolver" not in text and "retrieve=" not in text, (
+            f"{path} must not construct a resolver that can fetch: no RefResolver, "
+            "no Registry(retrieve=...)"
+        )
+
+    # (b) The refusal, proven on the real validator with the network armed to fail.
+    import socket
+
+    import pytest
+    from clio_schemas.a2ui.validation import catalog_validators
+    from referencing.exceptions import Unresolvable
+
+    catalog = {
+        "catalogId": "https://example.invalid/catalogs/probe/v1",
+        "components": {
+            "Probe": {
+                "type": "object",
+                "properties": {
+                    "component": {"const": "Probe"},
+                    "leak": {"$ref": "https://example.invalid/never-fetched.json#/$defs/X"},
+                },
+                "required": ["component", "leak"],
+            }
+        },
+        "functions": {},
+    }
+
+    def _no_network(*args: object, **kwargs: object) -> None:
+        raise AssertionError("JSON-Schema validation attempted a network connection")
+
+    original_create_connection = socket.create_connection
+    socket.create_connection = _no_network  # type: ignore[assignment]
+    try:
+        validator = catalog_validators(catalog)["Probe"]
+        with pytest.raises(Unresolvable):
+            validator.validate({"component": "Probe", "leak": {"anything": 1}})
+    finally:
+        socket.create_connection = original_create_connection
 
 
 def test_b5_sse_streams_are_never_resumed_only_reissued() -> None:
