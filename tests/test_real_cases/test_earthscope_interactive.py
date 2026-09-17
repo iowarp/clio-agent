@@ -82,6 +82,23 @@ A2UI_PACK_ROOT = (
 )
 A2UI_CATALOG_ID = "https://iowarp.ai/a2ui/catalogs/earthscope-stations/v1"
 A2UI_HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
+# Advertised on EVERY posted message (first prompt and any follow-up): without
+# it the S3 door has no remembered client advertisement for the session, so
+# ``select_catalog`` (S4's create_a2ui_surface gate) refuses EVERY call with
+# ``a2ui_client_capabilities_unknown`` -- proven live (claude_code/sonnet,
+# 14 refused create_a2ui_surface calls, semantic trace
+# sess_abe5460cf5ae.semantic.jsonl) before this was wired in. A real renderer
+# advertises this on every request; the harness is standing in for one.
+A2UI_CLIENT_CAPABILITIES = {
+    "v0.9": {
+        "supportedCatalogIds": [
+            A2UI_CATALOG_ID,
+            "https://iowarp.ai/a2ui/catalogs/clio-workspace/v1",
+            "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json",
+        ]
+    }
+}
+A2UI_MESSAGE_METADATA = {"a2uiClientCapabilities": A2UI_CLIENT_CAPABILITIES}
 A2UI_PROMPT = "Show me the GNSS stations around Los Angeles."
 A2UI_ASK_FIRST_PROMPT = (
     "Show me the GNSS stations around Los Angeles, and check with me before "
@@ -479,6 +496,12 @@ def _a2ui_install_and_start(
             "workdir": str(tmp_path),
             "trace_path": str(gact_server.trace_dir / f"{label}.run.jsonl"),
             "timeout_s": 0,
+            # Every posted message must advertise supportedCatalogIds (S3): a
+            # real renderer does this on every request, and without it
+            # select_catalog has no remembered advertisement to pick against,
+            # so create_a2ui_surface refuses EVERY call
+            # (a2ui_client_capabilities_unknown) -- proven live.
+            "message_metadata": A2UI_MESSAGE_METADATA,
         }
     )
     assert run.error is None, run.error
@@ -549,7 +572,8 @@ def test_earthscope_a2ui_queued_selection(agent: Any, gact_server: Any, tmp_path
                         "type": "text",
                         "text": "Before we continue, summarize what you found so far.",
                     }
-                ]
+                ],
+                "metadata": A2UI_MESSAGE_METADATA,
             },
         )
         follow_up.raise_for_status()
