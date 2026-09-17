@@ -570,7 +570,17 @@ def apply_batch(
 
     if not messages:
         raise A2UIValidationError("A2UI message batch must not be empty")
-    staged = {key: _copy_record(record) for key, record in surfaces.items()}
+    # Copy only the keys THIS batch can touch (S8, issue #1374 item B) --
+    # deep-copying every surface in the session on every write was itself an
+    # O(session surface count) cost per call, on top of the fold's own O(new
+    # parts) cost. A key this batch never names is never mutated by
+    # ``_fold_batch``, so sharing its record object with the caller's own
+    # (about to be replaced) projection state is safe.
+    touched = _batch_surface_keys(session_id, messages)
+    staged = dict(surfaces)
+    for key in touched:
+        if key in staged:
+            staged[key] = _copy_record(staged[key])
     applied = _fold_batch(
         staged,
         session_id,
@@ -627,6 +637,8 @@ def project_a2ui_parts(
     session_id: str,
     *,
     catalogs: CatalogResolver,
+    existing_surfaces: dict[tuple[str, str], A2UISurfaceRecord] | None = None,
+    existing_degradations: list[dict[str, str]] | None = None,
 ) -> tuple[dict[tuple[str, str], A2UISurfaceRecord], list[dict[str, str]]]:
     """Fold persisted A2UI parts and quarantine unknown or invalid records.
 
@@ -635,10 +647,20 @@ def project_a2ui_parts(
     degradation instead of being quarantined — the surface (and its raw
     messages) is never dropped, only marked unrenderable until the catalog
     reappears.
+
+    ``existing_surfaces``/``existing_degradations`` (S8, issue #1374 item B):
+    an INCREMENTAL fold seam for ``A2UIStore``'s projection cache. When
+    given, folding starts from THIS state (mutated and returned) instead of
+    empty dicts -- a caller that already folded parts A..K and passes only
+    NEW parts K+1..N here gets the SAME result as folding A..N from scratch,
+    in O(new parts) instead of O(all parts). Every existing call site (this
+    module's own tests, ``a2ui_actions/record.py``, ``protocol/v3/
+    message.py``) omits both and keeps its current full-fold-from-scratch
+    behavior unchanged.
     """
 
-    surfaces: dict[tuple[str, str], A2UISurfaceRecord] = {}
-    degradations: list[dict[str, str]] = []
+    surfaces = existing_surfaces if existing_surfaces is not None else {}
+    degradations = existing_degradations if existing_degradations is not None else []
     catalogs = _MemoizedCatalogResolver(catalogs)
     for raw_part in parts:
         part = raw_part.to_wire() if hasattr(raw_part, "to_wire") else raw_part

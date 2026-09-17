@@ -23,22 +23,31 @@ production traffic (never a synthetic pre-sized list):
    deliverable's own instruction -- a call-count assertion is deterministic;
    a timing one is not.
 
-**Deviation from the issue's literal "1,000 surface updates"**: measured,
-this transcript-projection design refolds a session's WHOLE message ledger
-from scratch on every ``apply_batch``/action call
-(``A2UIStore._project``->``project_a2ui_parts`` walks every persisted
-message every time) -- 50 sequential updates measured ~1.8s, 100 ~11.7s, 200
-~56s (super-linear; each call's own list-copy/re-validate cost grows with
-the ledger). 1,000 calls in a tight loop would run many minutes, which is
-not what this deliverable is testing (the O(n) full-refold design is a
-pre-existing, separately-scoped architectural property, not an S8 defect)
-and would make this an untenable unit test. Each test below instead uses
-the SMALLEST N that still crosses its bound with a clear margin (60 updates
-against a lowered 8-message cap; 260 actions against the 256-entry ring)
--- proving the SAME bound-holds-under-sustained-load property the 1,000
-figure was chosen to demonstrate, in seconds rather than minutes. Flagged
-in the S8 report as a real, separately-worth-tracking perf characteristic
-of the fold-from-scratch design, not swept under a mock.
+**Deviation from the issue's literal "1,000 surface updates"**, UPDATED
+after the S8 review round's item B fix: the original measurement here (50
+sequential updates ~1.8s, 100 ~11.7s, 200 ~56s) was real, but conflated TWO
+separate O(n) costs, only ONE of which this slice's scope (``gact/
+a2ui_store.py``) owns. (1) ``A2UIStore._project`` used to refold a
+session's WHOLE ``a2ui``/``a2ui_action`` part history from scratch on
+EVERY call -- FIXED: ``_project`` now caches the prior fold per session and
+only folds parts NEW since the last call (see ``_ProjectionCache``),
+verified by a dedicated call-count test below. (2) ``MessageStore.
+_flush_locked`` re-serializes and rewrites a session's WHOLE message ledger
+to disk on every append (unrelated to A2UI at all, a general transcript-
+persistence property) -- NOT fixed here, out of this item's scope. These
+tests exercise the store/dispatcher directly (or with ``message_store``
+swapped to ``MessageStore(path=None)``, an in-memory no-disk-write
+instance) specifically to isolate (1), the property this deliverable is
+actually about, from (2)'s separate, pre-existing cost -- see
+``test_repeated_production_does_not_rediscover_blueprints_per_call``'s own
+GET call for the one place this module still touches a real disk-backed
+store. 1,000 calls in a tight loop through the FULL persisted-ledger path
+would still run into (2) and take minutes; each test below uses the
+smallest N that still crosses its own bound with a clear margin (60
+updates against a lowered 8-message cap; 260 actions against the
+256-entry ring), proving the SAME bound-holds-under-sustained-load property
+the 1,000 figure was chosen to demonstrate. Wall time before/after item B's
+fix is recorded in the S8 report.
 """
 
 from __future__ import annotations
@@ -52,9 +61,28 @@ from clio_agent.gact import a2ui as a2ui_module
 from clio_agent.gact.a2ui_catalogs.builtin import workspace_catalog_id
 from clio_agent.gact.a2ui_catalogs.reasons import A2UI_CATALOG_REASON_RING_MAXLEN
 from clio_agent.gact.app import build_app
+from clio_agent.gact.messages import MessageStore
 
 WORKSPACE_CATALOG_ID = workspace_catalog_id()
 HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
+
+
+def _isolated_app(tmp_path: Path, **kwargs: Any) -> Any:
+    """A fresh app whose session store is isolated under ``tmp_path`` AND
+    whose message store never touches disk.
+
+    ``build_app(sessions_path=None)`` does NOT mean "in-memory" — it falls
+    back to the REAL default store path (``_default_store_path()``), so a
+    load test passing ``None`` was both non-isolated (a real, if
+    project-relative, directory) AND paying (2)'s disk-flush cost on every
+    write (module docstring). ``tmp_path`` isolates the session registry;
+    swapping ``message_store`` to ``MessageStore(path=None)`` (a real no-op
+    instance, not a mock) skips (2) outright so these tests measure (1).
+    """
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", **kwargs)
+    app.state.message_store = MessageStore(path=None)
+    return app
 
 
 def _create_batch(surface_id: str) -> list[dict[str, Any]]:
@@ -81,14 +109,14 @@ def _stub_spawn(app: Any) -> None:
 
 
 def test_sustained_surface_updates_keep_message_retention_at_its_configured_bound(
-    monkeypatch: Any,
+    tmp_path: Path, monkeypatch: Any
 ) -> None:
     # A small bound (not the 512 default) makes eviction happen repeatedly
     # well within this test's (scaled-down, see module docstring) update
     # count rather than only near the very end.
     monkeypatch.setattr(a2ui_module, "max_a2ui_messages", lambda: 8)
 
-    app = build_app(sessions_path=None)
+    app = _isolated_app(tmp_path)
     session = app.state.sessions.create(workspace_id="ws_default", title="load bounds")
     sid = session.id
     app.state.a2ui_store.apply_batch(sid, _create_batch("load_surface"))
@@ -130,7 +158,7 @@ def test_sustained_surface_updates_keep_message_retention_at_its_configured_boun
 
 
 def test_sustained_actions_keep_the_per_session_reason_ring_at_256(tmp_path: Path) -> None:
-    app = build_app(sessions_path=None)
+    app = _isolated_app(tmp_path)
     _stub_spawn(app)
     with TestClient(app) as client:
         session = app.state.sessions.create(workspace_id="ws_default", title="reason ring")
@@ -164,7 +192,9 @@ def test_sustained_actions_keep_the_per_session_reason_ring_at_256(tmp_path: Pat
         assert len(reasons) <= A2UI_CATALOG_REASON_RING_MAXLEN
 
 
-def test_repeated_production_does_not_rediscover_blueprints_per_call(monkeypatch: Any) -> None:
+def test_repeated_production_does_not_rediscover_blueprints_per_call(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
     """The registry's own cache doctrine (``a2ui_catalogs/registry.py``):
     ``discover_agent_blueprints()`` runs at most ONCE per process for a
     session that never installs/uninstalls a pack -- sustained surface
@@ -183,7 +213,7 @@ def test_repeated_production_does_not_rediscover_blueprints_per_call(monkeypatch
 
     monkeypatch.setattr(agent_blueprints_module, "discover_agent_blueprints", _counting_discover)
 
-    app = build_app(sessions_path=None)
+    app = _isolated_app(tmp_path)
     with TestClient(app) as client:
         session = app.state.sessions.create(workspace_id="ws_default", title="discovery flat")
         sid = session.id
