@@ -572,9 +572,18 @@ def test_mcp_task_request_id_correlates_hyphenated_task_exactly(tmp_path) -> Non
     assert correlated.input_key == "output_format"
 
 
-def test_child_a2ui_interaction_routes_to_owning_surface(tmp_path) -> None:
+def test_child_a2ui_interaction_routes_to_owning_surface(tmp_path, monkeypatch) -> None:
+    """S5: ``form.submit`` is an ordinary agent-destination event now -- it
+    starts a fresh idle turn on the CHILD session rather than echoing its
+    context back (the deleted ``result["submitted"]`` shape)."""
+
     app = build_app(sessions_path=tmp_path / "sessions.json")
     root, child = _root_and_child(app)
+
+    def _spawn(coro, **_kwargs):  # noqa: ANN001, ANN002
+        coro.close()
+
+    monkeypatch.setattr(app.state.turn_runner, "spawn", _spawn)
     create = {
         "version": "v0.9.1",
         "createSurface": {"surfaceId": "child-form", "catalogId": CLIO_A2UI_CATALOG_ID},
@@ -635,8 +644,16 @@ def test_child_a2ui_interaction_routes_to_owning_surface(tmp_path) -> None:
             headers=HEADERS,
             json={"message": action},
         )
-        assert responded.status_code == 200
-        assert responded.json()["result"]["submitted"] == {"value": "x"}
+        assert responded.status_code == 200, responded.text
+        result = responded.json()["result"]
+        assert result["delivery"] == "start"
+        assert result["state"] == "delivered"
+        surface = app.state.a2ui_store.get(child, "child-form")
+        assert surface is not None
+        [record] = surface.actions
+        assert record["envelope"]["action"]["context"] == {"value": "x"}
+        assert record["correlation"]["interaction_id"] == row["id"]
+        assert record["correlation"]["owner_session_id"] == child
 
 
 def test_capabilities_advertise_normalized_interactions(tmp_path) -> None:
