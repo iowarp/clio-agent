@@ -209,13 +209,19 @@ RATCHET_BASELINE: dict[str, int] = {
     # install-route overwrite audit (install_row, owner module gact/
     # agent_blueprint_refresh.py) -- all three offset by five comment trims
     # elsewhere in the file. Net -1 versus the pre-S8 baseline.
-    "src/clio_agent/gact/agent_blueprints.py": 1055,
+    # Ratchet down -1 (S8 focused re-review item 4/5): the blueprint-vs-row
+    # error dedup moved to its true source (expert_packs.py), and the new
+    # AgentBlueprintInstallRefused import is deferred inside the one
+    # function that raises it instead of living at module level.
+    "src/clio_agent/gact/agent_blueprints.py": 1054,
     # #948 S4: +14 for the children-must-be-react hierarchy rule (a predict/CoT
     # parent would silently strand its children now that the settle loop routing
     # for it is deleted; typed validation error instead).
     # #948 S5: +7 to validate the dspy.BestOfN/Refine module variant declaration on the
     # row (the parse itself is the leaf runtime/type_parsing.parse_module_variant).
-    "src/clio_agent/gact/expert_packs.py": 818,
+    # Ratchet down -1 (S8 review, issue #1374 item 4): parse_expert_file no longer
+    # copies blueprint.validation_errors onto a row's errors/metadata at all.
+    "src/clio_agent/gact/expert_packs.py": 817,
     # #919: +35 to WIRE progressive-disclosure skills into all three module
     # classes (block + load_skill tool; logic lives in agents/skill_runtime.py)
     # and to document the deleted stale extract alias that crashed every
@@ -570,7 +576,13 @@ RATCHET_BASELINE: dict[str, int] = {
     # recording works from a route handler, which has no ambient
     # gact.context turn), offset by trimming the /v1/expert-packs/* banner
     # comment by 2 lines. Back at its pre-S8 baseline.
-    "src/clio_agent/gact/routes/blueprints.py": 877,  # a2ui S3 (#1369): ratcheted down after a net-neutral edit
+    # Ratchet down -7 (S8 focused re-review items 5/6): both the install-route
+    # refusal envelope and the by-path activation refusal moved to one-line
+    # calls into owner-module HTTPException builders in
+    # gact/agent_blueprint_requires.py (install_refusal_http_exception,
+    # path_activation_invalid_http_exception) instead of building the
+    # ErrorEnvelope inline here.
+    "src/clio_agent/gact/routes/blueprints.py": 870,
     "src/clio_agent/gact/routes/catalog.py": 898,  # +4: /goal command dispatch wiring (#1080; logic in gact/goal.py)
     # #1201 (adversarial review, PR #1202): +6 for two direct-connect era-
     # classification call sites (call_external_mcp_tool + _external_mcp_inventory's

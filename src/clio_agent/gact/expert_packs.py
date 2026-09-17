@@ -284,9 +284,8 @@ def parse_expert_file(
                 "pack_enabled": pack.enabled,
             }
         )
-        if pack.validation_errors:
-            metadata["pack_validation_errors"] = list(pack.validation_errors)
-            errors.extend(pack.validation_errors)
+        # A blueprint-level error (requires.clio_agent's floor) is never
+        # copied onto a row (S8, #1374 item 4) -- fixed at this one source.
     for key in ("fallback_tier", "model_fallback", "delegation_policy"):
         if meta.get(key):
             metadata[key] = str(meta[key]).strip()

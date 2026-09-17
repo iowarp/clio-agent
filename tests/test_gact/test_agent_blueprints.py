@@ -2133,6 +2133,50 @@ def test_install_agent_blueprint_refuses_unsatisfied_requires_floor(tmp_path: Pa
         )
 
 
+def test_install_route_refusal_carries_the_typed_code_machine_readably(tmp_path: Path) -> None:
+    """Focused re-review of #1374 item 5: the install ROUTE used to map every
+    ``install_agent_blueprint`` refusal (this one included) to a bare
+    ``error: "validation_error"`` with the actual typed code (here
+    ``blueprint_requires_newer_clio_agent``) buried only inside the free-form
+    ``message`` string -- a caller could not branch on it without parsing
+    prose. It now carries ``details.validation_errors`` (same list shape the
+    by-path session-activation branch already returns) AND
+    ``details.codes`` (the closed set of known typed reason codes found in
+    that list), machine-readable without any string parsing.
+
+    **Sabotage:** revert the route's except clause to the bare
+    ``_mutation_error`` call -> ``details`` carries no ``codes`` key -> red.
+    """
+
+    workspace = tmp_path / "workspace"
+    source_dir = tmp_path / "future-pack-src"
+    _write_blueprint_requiring(
+        source_dir, blueprint_id="future-pack", clio_agent_specifier=">=99.0.0"
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        response = client.post(
+            "/v1/agent-blueprints/install",
+            json={"source": str(source_dir), "scope": "workspace", "workspace_id": wid},
+        )
+
+    assert response.status_code == 400, response.text
+    error = response.json()["error"]
+    assert error["error"] == "validation_error"
+    details = error["details"]
+    assert details["codes"] == ["blueprint_requires_newer_clio_agent"]
+    assert any("blueprint_requires_newer_clio_agent" in e for e in details["validation_errors"])
+
+
 def test_install_agent_blueprint_skip_invalid_skips_unsatisfied_requires_floor(
     tmp_path: Path,
 ) -> None:
@@ -2185,6 +2229,64 @@ def test_discover_agent_blueprints_listing_shows_unsatisfied_requires_floor(
     assert any("blueprint_requires_newer_clio_agent" in e for e in row.validation_errors)
 
 
+def test_agent_blueprint_detail_route_never_duplicates_the_floor_error_per_row(
+    tmp_path: Path,
+) -> None:
+    """Focused re-review of #1374 item 4: the dedup a prior fix landed lived
+    only inside ``validate_agent_blueprint_path``'s own error aggregation --
+    ``GET /v1/agent-blueprints/{id}``'s ``agents[]`` rows (built through
+    ``load_agent_blueprints``/``validate_agent_hierarchy``/
+    ``parse_expert_file``, a DIFFERENT path) still showed the SAME
+    blueprint-level ``requires.clio_agent`` floor error once per expert row.
+    Two expert rows here means the pre-fix tree would show the floor error
+    THREE times total (once at blueprint level, once per row); fixed at the
+    source (``parse_expert_file`` no longer copies a pack's
+    ``validation_errors`` onto a row at all), so it shows exactly once,
+    at blueprint level, regardless of how many rows the pack declares."""
+
+    workspace = tmp_path / "workspace"
+    root = workspace / ".clio" / "agent-blueprints" / "future-pack"
+    _write_blueprint_requiring(root, blueprint_id="future-pack", clio_agent_specifier=">=99.0.0")
+    root.joinpath("experts", "variant.md").write_text(
+        """---
+id: variant
+title: Variant Expert
+parent_id: root
+tier: 2
+prompt_id: genomics.variant
+---
+Inspect variant evidence.
+""",
+        encoding="utf-8",
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        detail = client.get("/v1/agent-blueprints/future-pack", params={"workspace_id": wid})
+
+    assert detail.status_code == 200, detail.text
+    body = detail.json()
+    blueprint_errors = body["agent_blueprint"]["validation_errors"]
+    assert sum("blueprint_requires_newer_clio_agent" in e for e in blueprint_errors) == 1
+
+    agent_rows = body["agents"]
+    assert {row["id"] for row in agent_rows} == {"root", "variant"}
+    for row in agent_rows:
+        row_errors = row.get("validation_errors") or []
+        assert not any("blueprint_requires_newer_clio_agent" in e for e in row_errors), (
+            f"row {row['id']!r} must never inherit the blueprint-level floor error: {row_errors}"
+        )
+        assert "pack_validation_errors" not in (row.get("metadata") or {})
+
+
 def test_session_activation_by_id_refuses_unsatisfied_requires_floor(tmp_path: Path) -> None:
     from clio_agent.gact.blueprint_activation import blueprint_resolution_reasons
 
@@ -2231,7 +2333,17 @@ def test_session_activation_by_path_refuses_unsatisfied_requires_floor(tmp_path:
     ``blueprint_requires_newer_clio_agent`` reason shows up INSIDE
     ``details.validation_errors``, not as the top-level error code (that
     stays reserved for the installed-id branch, which has no upstream
-    validate_agent_blueprint_path pass to rely on)."""
+    validate_agent_blueprint_path pass to rely on).
+
+    Focused re-review item 6: this refusal must ALSO reach the SAME
+    ``blueprint.resolution.degraded`` reason ledger the by-id branch's
+    refusal reaches (``agent_blueprint_activation_metadata``'s own docstring
+    claims both branches are "identically defended" -- true of the CHECK,
+    but the by-path branch never actually called ``record_requires_floor_
+    reason`` before this fix, since its own upstream refusal short-circuits
+    before that seam ever runs)."""
+
+    from clio_agent.gact.blueprint_activation import blueprint_resolution_reasons
 
     workspace = tmp_path / "workspace"
     blueprint_root = tmp_path / "future-path-pack"
@@ -2264,6 +2376,11 @@ def test_session_activation_by_path_refuses_unsatisfied_requires_floor(tmp_path:
         assert any(
             "blueprint_requires_newer_clio_agent" in e
             for e in detail["details"]["validation_errors"]
+        )
+
+        reasons = blueprint_resolution_reasons(app, sid)
+        assert any(r["reason"] == "blueprint_requires_newer_clio_agent" for r in reasons), (
+            "by-path activation must reach the SAME reason ledger by-id does"
         )
 
 
@@ -4540,6 +4657,72 @@ def test_boot_sync_reinstall_reaches_the_same_typed_reason_ledger(
     ids = [r["blueprint_id"] for r in reasons if r["reason"] == "source_checksum_changed"]
     assert "__sentinel__" in ids
     assert "ledger-pack" in ids
+
+
+def test_install_route_reason_reaches_a_semantic_event(tmp_path: Path) -> None:
+    """Focused re-review of #1374 item 6: ``record_blueprint_install_reason``
+    used to reach ``trace``/an API ONLY via ``stream_audit``, itself a no-op
+    unless ``CLIO_STREAM_AUDIT_LOG`` is set -- an install-route overwrite was
+    invisible outside this module's own in-process ring by default. The
+    install ROUTE now threads ``app`` through so a genuine overwrite reaches
+    a ``blueprint.install.reason`` semantic event too, exactly like
+    ``blueprint_activation._record_resolution_reason`` does for an
+    activation refusal -- proven here by capturing what actually reaches
+    ``app.state.semantic_event_sink``, not merely the in-process ring.
+
+    **Sabotage:** drop the ``app=app`` threading (route -> install_agent_
+    blueprint -> install_row -> record_blueprint_install_reason) -> no
+    semantic event fires -> red.
+    """
+
+    workspace = tmp_path / "workspace"
+    source_dir = tmp_path / "semantic-pack-src"
+    source_dir.mkdir()
+    source_dir.joinpath("AGENT.md").write_text(
+        _EXTRA_PACK_MD.replace("extra-pack", "semantic-pack"), encoding="utf-8"
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    fired: list[Any] = []
+    original_emit = app.state.semantic_event_sink.emit
+
+    def _capturing_emit(event: Any) -> Any:
+        fired.append(event)
+        return original_emit(event)
+
+    app.state.semantic_event_sink.emit = _capturing_emit
+
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        first = client.post(
+            "/v1/agent-blueprints/install",
+            json={"source": str(source_dir), "scope": "workspace", "workspace_id": wid},
+        )
+        assert first.status_code == 201, first.text
+
+        source_dir.joinpath("AGENT.md").write_text(
+            _EXTRA_PACK_MD.replace("extra-pack", "semantic-pack").replace(
+                "A minimal single-agent pack.", "A minimal single-agent pack. Changed."
+            ),
+            encoding="utf-8",
+        )
+        second = client.post(
+            "/v1/agent-blueprints/install",
+            json={"source": str(source_dir), "scope": "workspace", "workspace_id": wid},
+        )
+        assert second.status_code == 201, second.text
+
+    matching = [e for e in fired if e.event_type == "blueprint.install.reason"]
+    assert matching, "an overwrite with a changed source must emit a semantic event"
+    assert matching[-1].payload["reason"] == "source_checksum_changed"
+    assert matching[-1].payload["blueprint_id"] == "semantic-pack"
 
 
 def test_install_all_skips_invalid_pack_only_when_asked(

@@ -51,7 +51,7 @@ from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from fastapi import HTTPException
 
@@ -215,11 +215,159 @@ def requires_floor_activation_error(
     )
 
 
+class AgentBlueprintInstallRefused(ValueError):
+    """Raised when a candidate pack's parse-time errors refuse an install.
+
+    S8, #1374, focused re-review item 5: install used to raise a bare
+    ``ValueError("; ".join(validation_errors))``, so the route could only
+    forward the JOINED message string inside a generic ``"validation_error"``
+    envelope -- a caller wanting the specific reason (e.g.
+    ``blueprint_requires_newer_clio_agent``) had to string-parse it back out
+    of prose. ``str(exc)`` stays the same joined message (existing
+    ``pytest.raises(ValueError, match=...)`` sites are unaffected); the
+    STRUCTURED list travels on ``.validation_errors`` instead.
+    """
+
+    def __init__(self, validation_errors: list[str]) -> None:
+        super().__init__("; ".join(validation_errors))
+        self.validation_errors = list(validation_errors)
+
+
+_KNOWN_ERROR_CODES = (BLUEPRINT_REQUIRES_NEWER_CLIO_AGENT, BLUEPRINT_REQUIRES_UNPARSEABLE)
+
+
+def typed_error_codes(validation_errors: "Sequence[str]") -> list[str]:
+    """Return the known typed reason codes present in ``validation_errors``.
+
+    A ``floor_declaration_errors`` string reads ``f"{blueprint_id}:
+    {reason_code}: {detail}"``; every OTHER validation error in this codebase
+    is free-form prose with no such convention, so this recognizes only the
+    closed set of codes this module owns -- never fabricates one by
+    splitting arbitrary text.
+    """
+
+    codes: list[str] = []
+    for error in validation_errors:
+        for code in _KNOWN_ERROR_CODES:
+            if f": {code}: " in error and code not in codes:
+                codes.append(code)
+    return codes
+
+
+def record_floor_reason_if_declared(
+    validation_errors: "Sequence[str]",
+    blueprint_id: str,
+    *,
+    app: Any | None = None,
+    session_id: str | None = None,
+) -> None:
+    """Record ``blueprint.resolution.degraded`` for any floor code present.
+
+    S8, #1374 focused re-review item 6: by-PATH activation's own upstream
+    refusal (``routes/blueprints.py``, ``validate_agent_blueprint_path``'s
+    ``enabled`` flag) short-circuits BEFORE ``agent_blueprint_activation_
+    metadata`` ever runs, so it never reached ``record_requires_floor_
+    reason`` -- unlike by-ID activation, whose refusal always goes through
+    that one seam. Call this right before raising the route's own "path is
+    invalid" error so both branches record the SAME typed reason for the
+    SAME underlying problem, keeping the module's own "identically
+    defended" claim actually true.
+    """
+
+    from clio_agent.gact.blueprint_activation import (  # noqa: PLC0415
+        record_requires_floor_reason,
+    )
+
+    for code in typed_error_codes(validation_errors):
+        record_requires_floor_reason(blueprint_id, reason=code, app=app, session_id=session_id)
+
+
+def path_activation_invalid_http_exception(
+    validation: "Mapping[str, Any]",
+    blueprint_path: str,
+    blueprint_wire: "Mapping[str, Any]",
+    *,
+    app: Any | None = None,
+    session_id: str | None = None,
+) -> "HTTPException":
+    """Build the typed 400 for a by-PATH session-activation refusal.
+
+    S8, #1374 focused re-review item 6: owner-module seam (matching
+    :func:`install_refusal_http_exception`) so ``routes/blueprints.py``
+    stays a one-line raise. Records the SAME ``blueprint.resolution.
+    degraded`` reason :func:`requires_floor_activation_error` records for
+    by-ID activation (via :func:`record_floor_reason_if_declared`) BEFORE
+    building the response, so both branches are identically defended in
+    the ledger, not only in the check.
+    """
+
+    record_floor_reason_if_declared(
+        validation.get("validation_errors", []),
+        str(blueprint_wire.get("id") or ""),
+        app=app,
+        session_id=session_id,
+    )
+    from fastapi import HTTPException  # noqa: PLC0415
+
+    from clio_agent.gact.types import ErrorEnvelope, ErrorInfo  # noqa: PLC0415
+
+    return HTTPException(
+        status_code=400,
+        detail=ErrorEnvelope(
+            error=ErrorInfo(
+                error="validation_error",
+                message="agent blueprint path is invalid",
+                details={
+                    "path": blueprint_path,
+                    "validation_errors": validation.get("validation_errors", []),
+                },
+                recoverable=True,
+            )
+        ).model_dump(exclude_none=True),
+    )
+
+
+def install_refusal_http_exception(exc: "AgentBlueprintInstallRefused") -> "HTTPException":
+    """Build the typed 400 for the install route's ``AgentBlueprintInstallRefused``.
+
+    Owner-module seam (S8, #1374 item 5) so ``routes/blueprints.py`` -- at its
+    file-size ratchet -- stays a one-line call, matching how
+    :func:`requires_floor_activation_error` already builds the by-id
+    activation branch's own ``HTTPException``. Same ``details.
+    validation_errors`` shape the by-path branch returns, plus a
+    machine-readable ``details.codes``.
+    """
+
+    from fastapi import HTTPException  # noqa: PLC0415
+
+    from clio_agent.gact.types import ErrorEnvelope, ErrorInfo  # noqa: PLC0415
+
+    return HTTPException(
+        status_code=400,
+        detail=ErrorEnvelope(
+            error=ErrorInfo(
+                error="validation_error",
+                message=f"agent blueprint install failed: {exc}",
+                details={
+                    "validation_errors": exc.validation_errors,
+                    "codes": typed_error_codes(exc.validation_errors),
+                },
+                recoverable=True,
+            )
+        ).model_dump(exclude_none=True),
+    )
+
+
 __all__ = [
     "BLUEPRINT_REQUIRES_NEWER_CLIO_AGENT",
     "BLUEPRINT_REQUIRES_UNPARSEABLE",
+    "AgentBlueprintInstallRefused",
     "declared_clio_agent_requirement",
     "floor_declaration_errors",
+    "install_refusal_http_exception",
+    "path_activation_invalid_http_exception",
+    "record_floor_reason_if_declared",
     "requires_floor_activation_error",
+    "typed_error_codes",
     "unsatisfied_clio_agent_floor",
 ]

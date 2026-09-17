@@ -325,9 +325,30 @@ _INSTALL_REASONS: "deque[dict[str, Any]]" = deque(maxlen=_INSTALL_REASON_RING_MA
 _INSTALL_REASONS_LOCK = threading.Lock()
 
 
-def record_blueprint_install_reason(reason: str, **fields: Any) -> dict[str, Any]:
-    """Record one typed blueprint-install reason: bounded ring + logger + trace."""
+def record_blueprint_install_reason(
+    reason: str,
+    *,
+    app: Any | None = None,
+    session_id: str | None = None,
+    **fields: Any,
+) -> dict[str, Any]:
+    """Record one typed blueprint-install reason: ring, trace, and (session
+    context permitting) a semantic event -- never only ``logger.info``.
 
+    S8, #1374 focused re-review item 6: this used to reach the ``trace``
+    ONLY via ``stream_audit``, itself a no-op unless ``CLIO_STREAM_AUDIT_LOG``
+    is set -- so an install-reason was invisible by default outside this
+    module's own in-process ring. Now calls ``runtime.trace.event`` UNCONDI-
+    TIONALLY (the boot-time registry sync path has no session, so this is
+    the one mechanism guaranteed to reach every caller) and, exactly like
+    ``blueprint_activation._record_resolution_reason``, also emits a
+    ``blueprint.install.reason`` semantic event when app/session context is
+    available (explicit, else the ambient ``gact.context`` contextvars) --
+    best-effort, never required.
+    """
+
+    from clio_agent.gact import context as gact_context  # noqa: PLC0415
+    from clio_agent.runtime import trace  # noqa: PLC0415
     from clio_agent.runtime.stream_audit import stream_audit  # noqa: PLC0415
 
     row = {"reason": reason, **fields}
@@ -335,6 +356,26 @@ def record_blueprint_install_reason(reason: str, **fields: Any) -> dict[str, Any
         _INSTALL_REASONS.append(row)
     stream_audit("blueprint_install_reason", **row)
     logger.info("blueprint_install_reason reason=%s fields=%s", reason, fields)
+    trace.event("BLUEPRINT-INSTALL", "reason=%s fields=%s", reason, fields)
+    resolved_app = app if app is not None else gact_context.active_app()
+    # Unlike a session-activation reason (inherently tied to ONE session), an
+    # install is tied to a blueprint/pack, not a session -- global/workspace-
+    # scope installs (the common case) never have one. Gate only on having a
+    # running app to route through; SemanticEventSink.emit captures to the
+    # durable trace backend regardless of session_id being empty.
+    if resolved_app is not None:
+        resolved_sid = session_id if session_id is not None else gact_context.active_session_id()
+        from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
+
+        _emit_semantic_event(
+            resolved_app,
+            resolved_sid,
+            "blueprint.install.reason",
+            status="completed",
+            summary=f"blueprint install: {reason}",
+            blueprint={"id": str(fields.get("blueprint_id") or "")},
+            payload=row,
+        )
     return row
 
 
@@ -346,7 +387,13 @@ def recorded_blueprint_install_reasons() -> list[dict[str, Any]]:
 
 
 def install_row(
-    dest: Path, scope: str, metadata: dict[str, Any], previous_checksum: str, source: str
+    dest: Path,
+    scope: str,
+    metadata: dict[str, Any],
+    previous_checksum: str,
+    source: str,
+    *,
+    app: Any | None = None,
 ) -> dict[str, Any]:
     """Build ``install_agent_blueprint``'s one ``installed`` row, auditing an
     overwrite whose source checksum actually changed (S8 review, issue
@@ -371,6 +418,7 @@ def install_row(
     if previous_checksum and previous_checksum != new_checksum:
         record_blueprint_install_reason(
             "source_checksum_changed",
+            app=app,
             blueprint_id=row.get("id", ""),
             installed_checksum=previous_checksum,
             source_checksum=new_checksum,
