@@ -26,6 +26,14 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
+from clio_agent.gact.a2ui_capabilities import (
+    A2UI_CLIENT_CAPABILITIES_METADATA_KEY,
+    A2UI_CLIENT_CAPABILITIES_WIRE_KEY,
+    A2UI_CLIENT_DATA_MODEL_METADATA_KEY,
+    A2UI_CLIENT_DATA_MODEL_WIRE_KEY,
+    A2UICapabilitiesError,
+    apply_client_metadata_guards,
+)
 from clio_agent.gact.agent_messaging import MessageAgentError, message_agent_task
 from clio_agent.gact.live_handle import project_live_handle
 from clio_agent.gact.messaging import raise_on_reserved_metadata
@@ -39,9 +47,11 @@ if TYPE_CHECKING:
 class SteerRequest(BaseModel):
     """POST /v1/agent-tasks/{id}/steer body (#1037): a human mid-turn steer.
 
-    ``text`` is the user's out-of-band message to the running child; ``metadata`` is
-    optional bookkeeping forwarded verbatim onto the inbox event (mirrors the
-    within-session steer POST body).
+    ``text`` is the user's out-of-band message to the running child; ``metadata``
+    is optional bookkeeping forwarded onto the inbox event (mirrors the
+    within-session steer POST body) -- except its A2UI renderer keys
+    (``a2uiClientCapabilities``/``a2uiClientDataModel``), which are validated
+    against the CHILD session and renamed onto their internal form (S3).
     """
 
     text: str = ""
@@ -60,6 +70,37 @@ def _not_found(kind: str, ident: str) -> HTTPException:
             )
         ).model_dump(exclude_none=True),
     )
+
+
+def _a2ui_error(exc: A2UICapabilitiesError) -> HTTPException:
+    return HTTPException(
+        status_code=422,
+        detail=ErrorEnvelope(
+            error=ErrorInfo(error=exc.reason, message=str(exc), recoverable=True)
+        ).model_dump(exclude_none=True),
+    )
+
+
+def _normalized_a2ui_steer_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Rename the A2UI wire keys onto their internal snake_case form (S3).
+
+    Mirrors ``message_submission.py``'s accepted-message normalization: by the
+    time this dict reaches the CHILD's queued steer/staged message, it has
+    already been schema-validated by :func:`apply_client_metadata_guards`
+    (called on the CHILD session before this), so the raw value IS the
+    canonical shape -- this is a rename, not a re-validation.
+    """
+
+    normalized = dict(metadata)
+    if A2UI_CLIENT_CAPABILITIES_WIRE_KEY in normalized:
+        normalized[A2UI_CLIENT_CAPABILITIES_METADATA_KEY] = normalized.pop(
+            A2UI_CLIENT_CAPABILITIES_WIRE_KEY
+        )
+    if A2UI_CLIENT_DATA_MODEL_WIRE_KEY in normalized:
+        normalized[A2UI_CLIENT_DATA_MODEL_METADATA_KEY] = normalized.pop(
+            A2UI_CLIENT_DATA_MODEL_WIRE_KEY
+        )
+    return normalized
 
 
 def register_agent_task_routes(app: FastAPI, deps: "GactDeps") -> None:
@@ -166,8 +207,19 @@ def register_agent_task_routes(app: FastAPI, deps: "GactDeps") -> None:
         # /messages and /retry already reject. Reject (never strip) the reserved key
         # via the shared chokepoint, keyed on the CHILD session where it would land.
         raise_on_reserved_metadata(task.child_session_id, body.metadata)
+        # A client steering a child DIRECTLY is a genuine door onto the CHILD
+        # session -- the same treatment POST /messages gives its own session:
+        # validate, remember a valid a2uiClientCapabilities ON THE CHILD, refuse
+        # a data model the child's own surfaces never requested. This is NOT
+        # parent->child forwarding (the model-facing message_agent tool never
+        # supplies metadata at all), so nothing here is silently stripped.
         try:
-            result = message_agent_task(app, task_id, body.text, body.metadata)
+            apply_client_metadata_guards(app, task.child_session_id, body.metadata)
+        except A2UICapabilitiesError as exc:
+            raise _a2ui_error(exc) from exc
+        steer_metadata = _normalized_a2ui_steer_metadata(body.metadata)
+        try:
+            result = message_agent_task(app, task_id, body.text, steer_metadata)
         except MessageAgentError as exc:
             raise HTTPException(
                 status_code=exc.status_code,

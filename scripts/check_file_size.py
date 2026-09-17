@@ -549,7 +549,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # Ratchets back with the mcp_app_* / #714 route decomposition.
     # Ratchet down (PR #1255 review): the source-ledger read-modify-writes and the
     # workspace-cwd refusal moved into gact/agent_blueprint_sources.py.
-    "src/clio_agent/gact/routes/blueprints.py": 878,
+    "src/clio_agent/gact/routes/blueprints.py": 877,  # a2ui S3 (#1369): ratcheted down after a net-neutral edit
     "src/clio_agent/gact/routes/catalog.py": 898,  # +4: /goal command dispatch wiring (#1080; logic in gact/goal.py)
     # #1201 (adversarial review, PR #1202): +6 for two direct-connect era-
     # classification call sites (call_external_mcp_tool + _external_mcp_inventory's
@@ -664,7 +664,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # gact/compaction.py::compact_session_context (one operation, two triggers); the
     # whole manual-compact body, gact/compact_memory.py's import, and the dead
     # session_archives snapshot are gone -- 1407 -> 1176.
-    "src/clio_agent/gact/routes/sessions.py": 1176,
+    "src/clio_agent/gact/routes/sessions.py": 1174,  # a2ui S3 (#1369): ratcheted down after a net-neutral edit
     # #1215 S5: crossed the 800 new-file cap (793 -> 809) for enrich_turn_context —
     # a thin timed combinator wrapping the TWO existing enrichment calls
     # (_enrich_with_context_files + _enrich_with_requested_memory_search) in ONE

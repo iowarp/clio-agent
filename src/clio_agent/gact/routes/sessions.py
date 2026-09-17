@@ -29,6 +29,7 @@ from clio_agent.gact.compaction import CompactionError, compact_session_context
 from clio_agent.gact.events import Event
 from clio_agent.gact.goal import stop_session_goal
 from clio_agent.gact.mcp_apps import cleanup_session_mcp_apps
+from clio_agent.gact.message_submission import _apply_a2ui_client_metadata_guards
 from clio_agent.gact.messaging import raise_on_reserved_metadata
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.permission_delivery import attended_session_id
@@ -999,6 +1000,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         # spread onto the staged turn's ``user_msg.metadata`` the UserPromptSubmit hook
         # reads. Reject a smuggled control key via the shared /messages chokepoint.
         raise_on_reserved_metadata(sid, req.metadata)
+        _apply_a2ui_client_metadata_guards(app, sid, req.metadata)
         model_payload = (req.model or ModelRef()).model_dump()
         if req.provider_id:
             model_payload["provider_id"] = req.provider_id
@@ -1044,11 +1046,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                                 "operation_id": lm_status.get("operation_id", ""),
                                 "provider": lm_status.get("provider", ""),
                                 "model": lm_status.get("model", ""),
-                                "recovery_actions": [
-                                    "wait",
-                                    "check_lm_provider_status",
-                                    "retry",
-                                ],
+                                "recovery_actions": ["wait", "check_lm_provider_status", "retry"],
                             },
                             recoverable=True,
                         )

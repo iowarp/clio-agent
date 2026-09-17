@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Literal, Optional, cast
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
 
+from clio_agent.gact.a2ui_capabilities import catalog_ids_for_resolved_blueprint
 from clio_agent.gact.agent_blueprint_files import (
     BlueprintPathEscapesRootError,
     is_textual_blueprint_file,
@@ -325,10 +326,9 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                     "agent_blueprint": blueprint.to_wire(),
                     "agents": [row.model_dump(exclude_none=True) for row in agents],
                     "mcp_descriptors": load_mcp_descriptors(
-                        blueprint.root,
-                        scope=blueprint.scope,
-                        blueprint_id=blueprint.id,
+                        blueprint.root, scope=blueprint.scope, blueprint_id=blueprint.id
                     ),
+                    "a2ui_capabilities": catalog_ids_for_resolved_blueprint(app, blueprint),
                 }
         raise HTTPException(
             status_code=404,
@@ -588,8 +588,7 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             )
         sid = f"agent_blueprint_mcp_{blueprint_id}_{descriptor_id}"
-        if not hasattr(app.state, "external_mcp_servers"):
-            app.state.external_mcp_servers = {}
+        app.state.external_mcp_servers = getattr(app.state, "external_mcp_servers", {})
         spec: dict[str, Any] = {"transport": descriptor.get("transport")}
         if descriptor.get("command"):
             spec["command"] = descriptor["command"]
