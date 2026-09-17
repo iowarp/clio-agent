@@ -22,6 +22,10 @@ during external-user verification of v0.9.4.
 - Windows bundles retain the Codex SDK's packaged executable while pruning
   generated Python launcher stubs, so the Codex subscription provider remains
   usable after installation.
+- Managed Windows desktop launches keep the local backend process tree hidden
+  while retaining its diagnostic boot log.
+- Managed desktop sessions use a stable app-data workspace instead of
+  inheriting whichever directory launched the executable.
 - Four-part CLIO maintenance versions such as `0.9.4.1` are translated to
   numeric SemVer build metadata for Tauri while public tags and asset names
   keep the CLIO release version.
