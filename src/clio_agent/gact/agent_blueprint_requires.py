@@ -327,6 +327,67 @@ def path_activation_invalid_http_exception(
     )
 
 
+def refuse_disabled_blueprint(
+    blueprint_id: str,
+    enabled: bool,
+    validation_errors: "Sequence[str]",
+    *,
+    app: Any | None = None,
+    session_id: str | None = None,
+) -> None:
+    """Raise the typed 400 for activating a DISABLED blueprint, by id or path.
+
+    S8 review round 3, issue #1374 item B (HIGH): "deleting a filter means
+    deleting what it pointed at" -- removing ``parse_expert_file``'s copy of
+    ``pack.validation_errors`` onto a row (item 4's dedup) also silently
+    deleted the thing that copy fed: ``row.enabled = not errors`` used to
+    see a blueprint-level problem through that copy. A blueprint disabled
+    for ANY reason was, until this fix, served and activatable by-ID as if
+    enabled (by-path already refuses upstream via ``validate_agent_
+    blueprint_path``'s own ``enabled`` flag -- this call is then always a
+    no-op for that branch, belt-and-suspenders, matching how the floor
+    check itself defends both branches identically).
+
+    A no-op (never raises) when ``enabled`` is already true, OR when
+    :func:`typed_error_codes` finds a floor code in ``validation_errors`` --
+    the floor gets its OWN specific top-level error code from
+    ``requires_floor_activation_error``, called right after this returns;
+    this is only the generic, non-floor case. Same envelope shape as the
+    floor refusal otherwise: ``details.validation_errors`` (the blueprint's
+    own list) + ``details.codes``.
+    """
+
+    if enabled:
+        return
+    errors = list(validation_errors)
+    if typed_error_codes(errors):
+        return
+    from clio_agent.gact.blueprint_activation import (  # noqa: PLC0415
+        record_active_blueprint_disabled_reason,
+    )
+
+    record_active_blueprint_disabled_reason(blueprint_id, app=app, session_id=session_id)
+    from fastapi import HTTPException  # noqa: PLC0415
+
+    from clio_agent.gact.types import ErrorEnvelope, ErrorInfo  # noqa: PLC0415
+
+    raise HTTPException(
+        status_code=400,
+        detail=ErrorEnvelope(
+            error=ErrorInfo(
+                error="validation_error",
+                message=f"agent blueprint {blueprint_id!r} is disabled",
+                details={
+                    "agent_blueprint_id": blueprint_id,
+                    "validation_errors": errors,
+                    "codes": typed_error_codes(errors),
+                },
+                recoverable=False,
+            )
+        ).model_dump(exclude_none=True),
+    )
+
+
 def install_refusal_http_exception(exc: "AgentBlueprintInstallRefused") -> "HTTPException":
     """Build the typed 400 for the install route's ``AgentBlueprintInstallRefused``.
 
@@ -367,6 +428,7 @@ __all__ = [
     "install_refusal_http_exception",
     "path_activation_invalid_http_exception",
     "record_floor_reason_if_declared",
+    "refuse_disabled_blueprint",
     "requires_floor_activation_error",
     "typed_error_codes",
     "unsatisfied_clio_agent_floor",

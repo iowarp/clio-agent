@@ -173,6 +173,24 @@ def record_requires_floor_reason(
     _record_resolution_reason(reason, blueprint_id, app=app, session_id=session_id)
 
 
+def record_active_blueprint_disabled_reason(
+    blueprint_id: str, *, app: Any | None = None, session_id: str | None = None
+) -> None:
+    """Record ``active_blueprint_disabled`` like any other resolution reason.
+
+    S8 review round 3, issue #1374 item B (HIGH): by-ID session activation
+    refusing a blueprint disabled for a NON-floor reason (a malformed
+    ``workflow_state``, a missing id, ...) now records through the SAME
+    ledger :func:`resolve_active_blueprint_servers`'s own disabled-blueprint
+    check already uses -- queryable via :func:`blueprint_resolution_reasons`,
+    no new store.
+    """
+
+    _record_resolution_reason(
+        "active_blueprint_disabled", blueprint_id, app=app, session_id=session_id
+    )
+
+
 def agent_blueprint_activation_metadata(
     *,
     blueprint_wire: Mapping[str, Any],
@@ -198,12 +216,26 @@ def agent_blueprint_activation_metadata(
     ``enabled=False`` (the floor is folded into parse-time validation) — but
     calling the SAME check here keeps both branches identically defended
     rather than trusting one branch's upstream gate to never regress.
+
+    Same defense-in-depth for a blueprint disabled for ANY OTHER reason
+    (S8 review round 3, item B): :func:`~clio_agent.gact.
+    agent_blueprint_requires.refuse_disabled_blueprint` runs first, a no-op
+    when ``enabled`` is already true or a floor code explains it (the floor
+    check just below then owns that case with its own specific error code).
     """
 
     from clio_agent.gact.agent_blueprint_requires import (  # noqa: PLC0415
+        refuse_disabled_blueprint,
         requires_floor_activation_error,
     )
 
+    refuse_disabled_blueprint(
+        str(blueprint_wire.get("id") or ""),
+        bool(blueprint_wire.get("enabled", True)),
+        list(blueprint_wire.get("validation_errors") or []),
+        app=app,
+        session_id=session_id,
+    )
     requires_error = requires_floor_activation_error(
         dict(blueprint_wire.get("metadata") or {}),
         str(blueprint_wire.get("id") or ""),

@@ -118,6 +118,54 @@ Inspect variant evidence.
     )
 
 
+def _write_blueprint_disabled_for_a_non_floor_reason(
+    root: Path, blueprint_id: str = "disabled-pack"
+) -> None:
+    """Same 2-expert shape as :func:`_write_blueprint`, but disabled via a
+    malformed ``workflow_state`` (not the ``requires.clio_agent`` floor) --
+    the S8 review round 3 item B probe."""
+
+    (root / "experts").mkdir(parents=True)
+    root.joinpath("AGENT.md").write_text(
+        f"""---
+id: {blueprint_id}
+version: 0.1.0
+title: Disabled Agent
+root_expert: root
+workflow_state:
+  sections:
+    acquisition:
+      status_ranks: "nope"
+---
+Disabled domain agent.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("experts", "root.md").write_text(
+        """---
+id: root
+title: Disabled Root
+tier: 1
+prompt_id: disabled.root
+---
+Coordinate work.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("experts", "variant.md").write_text(
+        """---
+id: variant
+title: Variant Expert
+parent_id: root
+tier: 2
+prompt_id: disabled.variant
+---
+Inspect evidence.
+""",
+        encoding="utf-8",
+    )
+
+
 def _write_data_root_blueprint(root: Path, blueprint_id: str = "remote-data") -> None:
     (root / "experts").mkdir(parents=True)
     root.joinpath("AGENT.md").write_text(
@@ -2285,6 +2333,147 @@ Inspect variant evidence.
             f"row {row['id']!r} must never inherit the blueprint-level floor error: {row_errors}"
         )
         assert "pack_validation_errors" not in (row.get("metadata") or {})
+
+
+def test_agent_blueprint_detail_route_disables_rows_for_a_non_floor_disabled_blueprint(
+    tmp_path: Path,
+) -> None:
+    """S8 review round 3 (issue #1374 item B, HIGH): "deleting a filter means
+    deleting what it pointed at" -- item 4's fix (removing ``parse_expert_
+    file``'s copy of ``pack.validation_errors`` onto a row) also silently
+    deleted what that copy FED: ``row.enabled = not errors`` used to see a
+    blueprint-level problem through that copy alone. A blueprint disabled
+    for a NON-floor reason (a malformed ``workflow_state`` here) must still
+    disable every row it owns, WITHOUT the error TEXT being duplicated onto
+    them (item 4's dedup stays fixed).
+
+    **Sabotage:** revert ``parse_expert_file``'s ``enabled`` computation to
+    ignore ``pack.enabled`` -> both rows show ``enabled: True`` despite the
+    blueprint itself being disabled -> red."""
+
+    workspace = tmp_path / "workspace"
+    root = workspace / ".clio" / "agent-blueprints" / "disabled-pack"
+    _write_blueprint_disabled_for_a_non_floor_reason(root, blueprint_id="disabled-pack")
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        detail = client.get("/v1/agent-blueprints/disabled-pack", params={"workspace_id": wid})
+
+    assert detail.status_code == 200, detail.text
+    body = detail.json()
+    assert body["agent_blueprint"]["enabled"] is False
+    blueprint_errors = body["agent_blueprint"]["validation_errors"]
+    assert any("invalid workflow_state schema" in e for e in blueprint_errors)
+
+    agent_rows = body["agents"]
+    assert {row["id"] for row in agent_rows} == {"root", "variant"}
+    for row in agent_rows:
+        assert row["enabled"] is False, f"row {row['id']!r} must inherit the pack's disablement"
+        row_errors = row.get("validation_errors") or []
+        assert not any("invalid workflow_state schema" in e for e in row_errors), (
+            f"row {row['id']!r} must never DUPLICATE the blueprint's own error text: {row_errors}"
+        )
+
+
+def test_list_agents_disables_rows_for_a_non_floor_disabled_blueprint(tmp_path: Path) -> None:
+    """S8 review round 3 (issue #1374 item B, HIGH): ``GET /v1/agents``
+    re-resolves a session's active blueprint LIVE from disk on every call
+    (``_runtime_active_agent_blueprint_rows`` -> ``load_agent_blueprints`` ->
+    ``parse_expert_file``, keyed only on ``session.metadata[
+    "active_agent_blueprint_id"]``) -- it must show a pack's rows as
+    disabled the moment the pack ON DISK becomes disabled, regardless of
+    whether it was enabled at activation time. Activation itself now
+    refuses a disabled pack outright (the previous test), so this sets the
+    session's active id directly -- the realistic case this route must
+    defend against is a pack edited AFTER a session already activated it.
+
+    **Sabotage:** same ``parse_expert_file`` regression as the detail-route
+    test -- red for the same reason.
+    """
+
+    workspace = tmp_path / "workspace"
+    root = workspace / ".clio" / "agent-blueprints" / "disabled-pack"
+    _write_blueprint_disabled_for_a_non_floor_reason(root, blueprint_id="disabled-pack")
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "disabled-pack", "workspace_id": wid},
+        ).json()["id"]
+        app.state.sessions.update(
+            sid, metadata_patch={"active_agent_blueprint_id": "disabled-pack"}
+        )
+        listed = client.get("/v1/agents", params={"session_id": sid})
+
+    assert listed.status_code == 200, listed.text
+    rows = {row["id"]: row for row in listed.json()["agents"] if row["id"] in {"root", "variant"}}
+    assert set(rows) == {"root", "variant"}
+    for row_id, row in rows.items():
+        assert row["enabled"] is False, f"row {row_id!r} must inherit the pack's disablement"
+
+
+def test_session_activation_by_id_refuses_a_non_floor_disabled_blueprint(tmp_path: Path) -> None:
+    """S8 review round 3 (issue #1374 item B, HIGH): by-ID activation had NO
+    ``blueprint.enabled`` gate at all -- a blueprint disabled for a NON-floor
+    reason (unlike the floor, which already refused via ``requires_floor_
+    activation_error``) returned 200 and activated normally.
+
+    **Sabotage:** remove the ``refuse_disabled_blueprint`` call from
+    ``agent_blueprint_activation_metadata`` -> 200 instead of 400 -> red.
+    """
+
+    from clio_agent.gact.blueprint_activation import blueprint_resolution_reasons
+
+    workspace = tmp_path / "workspace"
+    root = workspace / ".clio" / "agent-blueprints" / "disabled-pack"
+    _write_blueprint_disabled_for_a_non_floor_reason(root, blueprint_id="disabled-pack")
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "disabled-pack", "workspace_id": wid},
+        ).json()["id"]
+        activated = client.post(
+            f"/v1/sessions/{sid}/agent-blueprint",
+            json={"blueprint_id": "disabled-pack"},
+        )
+
+        assert activated.status_code == 400, activated.text
+        detail = activated.json()["error"]
+        assert detail["error"] == "validation_error"
+        assert detail["details"]["codes"] == [], "not a floor case -- no floor code applies"
+        assert any(
+            "invalid workflow_state schema" in e for e in detail["details"]["validation_errors"]
+        )
+
+        reasons = blueprint_resolution_reasons(app, sid)
+        assert any(r["reason"] == "active_blueprint_disabled" for r in reasons)
 
 
 def test_session_activation_by_id_refuses_unsatisfied_requires_floor(tmp_path: Path) -> None:
