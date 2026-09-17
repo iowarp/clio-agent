@@ -342,9 +342,23 @@ def record_blueprint_install_reason(
     TIONALLY (the boot-time registry sync path has no session, so this is
     the one mechanism guaranteed to reach every caller) and, exactly like
     ``blueprint_activation._record_resolution_reason``, also emits a
-    ``blueprint.install.reason`` semantic event when app/session context is
-    available (explicit, else the ambient ``gact.context`` contextvars) --
-    best-effort, never required.
+    ``blueprint.install.reason`` semantic event when app context is available.
+
+    NOT best-effort (S8 round 3, item C corrects this docstring's earlier
+    claim): ``_emit_semantic_event`` FAILS LOUD -- raises ``RuntimeError`` --
+    when no ARC is reachable, the same project-wide "never silently bypass
+    ARC-as-source" policy every other semantic-event emitter honours. The
+    ring append / ``stream_audit`` / ``logger.info`` / ``trace.event`` calls
+    above all already succeeded by the time that raise can happen (durable
+    audit trail intact even on this failure). ``install_row`` (this
+    function's caller for the install-route/registry-sync path) calls this
+    AFTER ``shutil.rmtree``/``copytree`` and the new ``.clio-install.md``
+    are already committed to disk -- so a 500 surfaced from an ARC-less
+    deployment means the pack install itself SUCCEEDED (the new content is
+    already on disk); only this reason's semantic-event leg failed loud.
+    Moving the call earlier would need the new tree's checksum/id before
+    the copy exists, which the caller does not have cheaply -- ordering
+    documented here rather than reworked.
     """
 
     from clio_agent.gact import context as gact_context  # noqa: PLC0415
