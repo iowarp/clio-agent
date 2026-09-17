@@ -302,7 +302,12 @@ def test_transport_for_uses_bundled_clio_kit_module_without_console_shim(tmp_pat
     stdio = transport_for(spec_from_declaration("ndp", "clio-kit mcp-server ndp"))
 
     assert stdio.command == str(python.resolve())
-    assert stdio.args == ["-m", "clio_kit", "mcp-server", "ndp"]
+    assert stdio.args == [
+        "-c",
+        "from clio_kit import cli; cli()",
+        "mcp-server",
+        "ndp",
+    ]
     assert stdio.env["PATH"].split(os.pathsep)[0] == str(bundled_bin)
 
 

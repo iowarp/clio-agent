@@ -143,7 +143,7 @@ def test_bundled_runtime_is_precompiled_before_relocation_proof() -> None:
         assert "'--no-agent'" in script or '"--no-agent"' in script, relative_path
         assert "within 30 seconds" in script, relative_path
         assert "clio-kit==2.10.6" in script, relative_path
-        assert "-m', 'clio_kit" in script or "-m clio_kit" in script, relative_path
+        assert "from clio_kit import cli; cli()" in script, relative_path
         assert "uvx" in script, relative_path
 
     windows_builder = _text("install/build-gact-runtime.ps1")

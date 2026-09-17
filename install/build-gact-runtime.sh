@@ -184,7 +184,7 @@ RELOC="$(mktemp -d)/gact-runtime-relocated"
 cp -a "$OUT" "$RELOC"
 echo "[build-gact-runtime] sanity (relocated): $RELOC/$PYBIN_REL -m clio_agent.gact --help"
 "$RELOC/$PYBIN_REL" -m clio_agent.gact --help >/dev/null
-"$RELOC/$PYBIN_REL" -m clio_kit --help >/dev/null
+"$RELOC/$PYBIN_REL" -c 'from clio_kit import cli; cli()' --help >/dev/null
 "$RELOC/bin/uv" --version >/dev/null
 # --help only proves imports; BOOT the relocated copy and poll the API —
 # the only automated proof a prune casualty or loader problem would fail.

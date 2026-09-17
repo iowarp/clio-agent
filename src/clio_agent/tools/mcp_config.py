@@ -603,7 +603,7 @@ def _bundled_module_launcher(
         if bundled_bin.is_dir():
             ambient_path = os.environ.get("PATH", "")
             env["PATH"] = os.pathsep.join(part for part in (str(bundled_bin), ambient_path) if part)
-    return str(executable), ["-m", "clio_kit", *args], env
+    return str(executable), ["-c", "from clio_kit import cli; cli()", *args], env
 
 
 def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:

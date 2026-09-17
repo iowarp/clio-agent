@@ -243,7 +243,7 @@ Copy-Item -LiteralPath $Out -Destination $reloc -Recurse
 $relocPy = Join-Path $reloc 'python\python.exe'
 Write-Host "[build-gact-runtime] sanity (relocated): $relocPy -m clio_agent.gact --help"
 Invoke-Native -Exe $relocPy -Args @('-m', 'clio_agent.gact', '--help') | Out-Null
-Invoke-Native -Exe $relocPy -Args @('-m', 'clio_kit', '--help') | Out-Null
+Invoke-Native -Exe $relocPy -Args @('-c', 'from clio_kit import cli; cli()', '--help') | Out-Null
 $relocUv = Join-Path $reloc 'bin\uv.exe'
 Invoke-Native -Exe $relocUv -Args @('--version') | Out-Null
 # Imports and /v1/capabilities do not initialize ARC under --no-agent. Prove
