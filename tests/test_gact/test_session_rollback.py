@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.a2ui_catalogs.builtin import workspace_catalog_id
 from clio_agent.gact.app import build_app
 from clio_agent.gact.types import Message, Part
+
+A2UI_HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
 
 CLIO_A2UI_CATALOG_ID = workspace_catalog_id()
 
@@ -102,6 +105,85 @@ def test_undo_preserves_ready_a2ui_surface_from_removed_message(tmp_path: Path) 
             "preserved_by": "undo",
         }
         assert app.state.messages[sid][-1].parts[0].type == "a2ui"
+
+
+def test_undo_preserves_a2ui_action_record_from_removed_message(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """S8 (issue #1374 deliverable 4): the SAME preservation path
+    (``_PRESERVED_A2UI_PART_TYPES``) must keep an ``a2ui_action`` durable
+    record, not only the ``a2ui`` surface part -- deleting an action's own
+    transcript message must never silently rewrite its action history."""
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "rollback action"}).json()["id"]
+        _seed_messages(client, sid, ["msg_1"])
+        app.state.a2ui_store.apply_batch(
+            sid,
+            [
+                {
+                    "version": "v0.9.1",
+                    "createSurface": {
+                        "surfaceId": "action_surface",
+                        "catalogId": CLIO_A2UI_CATALOG_ID,
+                    },
+                },
+                {
+                    "version": "v0.9.1",
+                    "updateComponents": {
+                        "surfaceId": "action_surface",
+                        "components": [{"id": "root", "component": "Text", "text": "hi"}],
+                    },
+                },
+            ],
+        )
+
+        def _spawn(coro: Any, **_kwargs: Any) -> None:
+            coro.close()
+
+        monkeypatch.setattr(app.state.turn_runner, "spawn", _spawn)
+        action_response = client.post(
+            f"/v1/sessions/{sid}/a2ui/actions",
+            headers=A2UI_HEADERS,
+            json={
+                "message": {
+                    "version": "v0.9.1",
+                    "action": {
+                        "name": "form.submit",
+                        "surfaceId": "action_surface",
+                        "sourceComponentId": "root",
+                        "timestamp": "2026-05-20T00:01:00Z",
+                        "context": {"x": 1},
+                    },
+                }
+            },
+        )
+        assert action_response.status_code == 200, action_response.text
+        action_id = action_response.json()["action_id"]
+        # The action door minted its own transcript message; undo count=1
+        # removes exactly that one.
+        assert app.state.messages[sid][-1].parts[0].type == "a2ui_action"
+        # The agent-lane delivery started a (stubbed-closed, never-run) turn,
+        # which marks the session "running"; undo refuses on a running
+        # session (unrelated to this test's own concern), so settle it back
+        # to idle the same way the stubbed turn's own finalize would have.
+        app.state.sessions.update(sid, status="idle")
+
+        response = client.post(f"/v1/sessions/{sid}/undo", json={"count": 1})
+
+        assert response.status_code == 200, response.text
+        surface = app.state.a2ui_store.get(sid, "action_surface")
+        assert surface is not None
+        [record] = surface.actions
+        assert record["id"] == action_id
+        assert record["state"] == "delivered"
+        assert app.state.messages[sid][-1].metadata == {
+            "synthetic": "a2ui_preservation",
+            "preserved_by": "undo",
+        }
+        preserved_types = {part.type for part in app.state.messages[sid][-1].parts}
+        assert "a2ui_action" in preserved_types
 
 
 def test_rewind_removes_messages_after_target_by_default(tmp_path: Path) -> None:
