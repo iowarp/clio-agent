@@ -463,3 +463,35 @@ derives `status` from the surface's LATEST action record
 (`delivered`/`consumed` -> `answered`, otherwise `pending`) instead of the
 deleted `/lastAction` data-model write; `payload.last_action` carries that
 record. `_surface_last_action` is deleted.
+
+## Desktop parity (S8)
+
+The client-side architecture already states the invariant this section
+proves server-side (`external/gact-tui/packages/core/src/v3/a2ui/client-
+metadata.ts`): "the transport never sees or builds this metadata, it only
+carries whatever the repository layer merges in — identical by
+construction." Browser (fetch, against the dev-server origins in
+`gact/cors.py`'s `_DEFAULT_ORIGINS`) and Tauri desktop (the packaged
+webview's IPC over the SAME local GACT HTTP API) build and send the
+identical `a2uiClientCapabilities` / `a2uiClientDataModel` JSON bodies — one
+`packages/core` module, one code path, no per-transport branch.
+
+On the server, `Origin` is consulted in exactly ONE place: `gact/cors.py`'s
+allowlist, which only governs whether a **browser's** CORS preflight is
+granted. It is never read by the metadata door itself
+(`a2ui_capabilities.apply_client_metadata_guards`, the ONE guard every
+client-writable ingest in "Where the objects ride" above calls) — that
+function parses `metadata.a2uiClientCapabilities`/`a2uiClientDataModel` from
+the request BODY only. A Tauri desktop request typically carries no `Origin`
+header at all (same-machine loopback IPC is not a cross-origin browser
+fetch), which is why the guard must never treat a present-vs-absent
+`Origin` as a signal: a request with `Origin: http://localhost:5173` and one
+with no `Origin` header (a different `User-Agent`, otherwise identical body)
+are remembered byte-for-byte identically
+(`tests/test_gact/test_a2ui_desktop_parity.py`).
+
+Consequence for a pack/catalog author: nothing in a catalog's sidecar or
+instructions may assume "this session is a browser" or "this session is
+desktop" — that distinction does not exist past the CORS preflight, and nothing
+downstream of `apply_client_metadata_guards` (catalog selection, producer
+tools, the action dispatcher) can observe it either.
