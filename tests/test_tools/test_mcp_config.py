@@ -309,6 +309,9 @@ def test_transport_for_uses_bundled_clio_kit_module_without_console_shim(tmp_pat
         "ndp",
     ]
     assert stdio.env["PATH"].split(os.pathsep)[0] == str(bundled_bin)
+    assert stdio.env["CLIO_KIT_CACHE_DIR"] == str(
+        mcp_config.Path.home() / ".clio" / "mcp-runtime"
+    )
 
 
 def test_transport_for_injects_dedicated_uv_cache_dir(tmp_path, monkeypatch):

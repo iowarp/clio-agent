@@ -603,6 +603,14 @@ def _bundled_module_launcher(
         if bundled_bin.is_dir():
             ambient_path = os.environ.get("PATH", "")
             env["PATH"] = os.pathsep.join(part for part in (str(bundled_bin), ambient_path) if part)
+        # A clio-kit server environment adds source hashes and a full Python
+        # package tree beneath its cache. AppData plus packaged-app redirection
+        # can push those imports beyond Windows' legacy path boundary, where an
+        # existing module misleadingly fails as ``ModuleNotFoundError``. Keep
+        # the desktop-owned cache short, persistent, and shared across sessions.
+        env["CLIO_KIT_CACHE_DIR"] = os.environ.get(
+            "CLIO_KIT_CACHE_DIR", str(Path.home() / ".clio" / "mcp-runtime")
+        )
     return str(executable), ["-c", "from clio_kit import cli; cli()", *args], env
 
 
