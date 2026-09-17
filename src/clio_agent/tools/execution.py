@@ -15,9 +15,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Optional, Protocol, cast
-
-import dspy
+from typing import TYPE_CHECKING, Any, Iterator, Optional, Protocol, cast
 
 from clio_agent import conf
 from clio_agent.errors import ClioError
@@ -45,6 +43,9 @@ from clio_agent.tools.tool_observation import (
     notify_tool_observer,
     observer_progress_handler,
 )
+
+if TYPE_CHECKING:
+    import dspy
 
 logger = logging.getLogger(__name__)
 # iowarp/clio-agent#7 + #2 + #735: the four tool-runtime hooks (permission
@@ -1135,6 +1136,11 @@ def _make_dspy_tool(
     call_tool: Callable[[str, Mapping[str, Any]], str],
 ) -> dspy.Tool:
     """Create a single DSPy Tool from an MCP tool definition."""
+    # Keep DSPy off the agent-less desktop startup path. Constructing a real
+    # tool is the first operation that needs it, while health, capabilities,
+    # and the workspace shell only need the lightweight executor contracts.
+    import dspy  # noqa: PLC0415
+
     description = getattr(mcp_tool, "description", None) or name
 
     def tool_fn(**kwargs: Any) -> str:

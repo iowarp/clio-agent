@@ -52,6 +52,18 @@ def test_gact_app_import_with_cli_args_does_not_load_hdf5() -> None:
     assert result.stdout.strip() == "ok"
 
 
+def test_tool_execution_import_does_not_load_dspy() -> None:
+    """Agent-less desktop startup must not pay DSPy's model runtime cost."""
+
+    result = _run_import_probe(
+        "import sys; "
+        "import clio_agent.tools.execution; "
+        "assert 'dspy' not in sys.modules; "
+        "print('ok')"
+    )
+    assert result.stdout.strip() == "ok"
+
+
 def test_clio_windows_platform_hardening_reaches_openai_headers() -> None:
     """CLIO's Windows platform guard must cover OpenAI client headers.
 

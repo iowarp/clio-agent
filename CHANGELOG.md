@@ -28,6 +28,10 @@ during external-user verification of v0.9.4.
   inheriting whichever directory launched the executable.
 - Managed desktop state is isolated from CLI and test profiles while the full
   marketplace blueprint catalog remains available on a fresh installation.
+- Agent-less desktop startup defers loading DSPy's model runtime until a real
+  tool is constructed, shortening the connection-critical launch path.
+- The desktop connection indicator now explains its current health or degraded
+  state on hover instead of relying on color alone.
 - Four-part CLIO maintenance versions such as `0.9.4.1` are translated to
   numeric SemVer build metadata for Tauri while public tags and asset names
   keep the CLIO release version.
