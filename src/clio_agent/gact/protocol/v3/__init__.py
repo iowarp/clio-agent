@@ -12,7 +12,6 @@ from fastapi import Request
 from clio_agent.gact.protocol.constants import (
     A2UI_V091,
     A2UI_V091_WIRE,
-    CLIO_A2UI_CATALOG_ID,
     GACT_V2,
     GACT_V3,
 )
@@ -69,7 +68,6 @@ from clio_agent.gact.protocol.v3.workspace import workspace_to_v3
 __all__ = [
     "A2UI_V091",
     "A2UI_V091_WIRE",
-    "CLIO_A2UI_CATALOG_ID",
     "CONNECTION_ID",
     "GACT_V3",
     "GACT_V2",

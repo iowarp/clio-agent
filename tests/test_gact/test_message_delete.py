@@ -4,9 +4,11 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from clio_agent.gact.a2ui_catalogs.builtin import workspace_catalog_id
 from clio_agent.gact.app import build_app
-from clio_agent.gact.protocol_v3 import CLIO_A2UI_CATALOG_ID
 from clio_agent.gact.types import Message, Part
+
+CLIO_A2UI_CATALOG_ID = workspace_catalog_id()
 
 
 def _message(message_id: str, sid: str, text: str) -> Message:

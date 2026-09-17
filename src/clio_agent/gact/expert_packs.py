@@ -256,11 +256,7 @@ def parse_expert_file(
         _parse_module_variant(module, agent_id=expert_id or "expert")
     except ValueError as variant_exc:
         errors.append(str(variant_exc))
-    for field_name, values in {
-        "tools": tools,
-        "skills": skills,
-        "commands": commands,
-    }.items():
+    for field_name, values in {"tools": tools, "skills": skills, "commands": commands}.items():
         for value in values:
             if not _REF_ID_RE.fullmatch(value):
                 errors.append(f"invalid {field_name} reference: {value}")
@@ -270,6 +266,7 @@ def parse_expert_file(
         "expert_scope": scope,
         "expert_layout": "expert_markdown",
         "definition_path": path.as_posix(),
+        "a2ui_catalogs": _list_field(meta, "a2ui_catalogs"),
     }
     if skills:
         # Resolution-checked (#917): typed per-id diagnostic on the row; never disables.

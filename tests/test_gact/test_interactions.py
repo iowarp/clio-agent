@@ -13,6 +13,7 @@ from dspy.utils.dummies import DummyLM
 from fastapi.testclient import TestClient
 
 from clio_agent.gact import context as gact_context
+from clio_agent.gact.a2ui_catalogs.builtin import workspace_catalog_id
 from clio_agent.gact.agent_initialization import mark_agent_ready, record_init_failure
 from clio_agent.gact.agent_tasks import AgentTask
 from clio_agent.gact.agents.auto_tools import build_auto_react_tools
@@ -25,13 +26,13 @@ from clio_agent.gact.elicitation_bridge import (
     invocation_with_request_correlation,
 )
 from clio_agent.gact.loop_inbox import InboxEvent, LoopInbox
-from clio_agent.gact.protocol_v3 import CLIO_A2UI_CATALOG_ID
 from clio_agent.gact.types import AgentDef, UserQuestion, UserQuestionOption
 from clio_agent.gact.user_question_ledger import record_user_question
 from clio_agent.tools.mcp_handlers import MCPInvocationContext
 from clio_agent.tools.mcp_task_records import TaskKey, TaskRecord, resolve_store
 
 HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
+CLIO_A2UI_CATALOG_ID = workspace_catalog_id()
 
 
 def test_agent_init_failure_surfaces_a_deferred_question_resume() -> None:

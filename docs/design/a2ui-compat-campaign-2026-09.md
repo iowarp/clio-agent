@@ -100,6 +100,12 @@ the protocol or invents a shape; MISSED = protocol fact the doc did not anticipa
 9. **clio-schemas → 0.3.0** (public exports removed).
 10. **New catalogs use UAX#31 identifier names**; `clio-workspace/v1` keeps its dotted names
     and is 0.9.1-only.
+11. **URL scheme enforcement: server on literals; the renderer's kernel media/artifact
+    components enforce the same allowlist on bound values at render time and report
+    VALIDATION_FAILED (S6 deliverable).** A property like `Image.url` is a `DynamicString`, so
+    a data binding (`{"path": "/productImage"}`) or a declared `functionCall` resolves
+    client-side; the server boundary cannot see the resolved value and no longer requires the
+    literal (adversarial S2 review). Only a literal string URL is scheme-checked server-side.
 
 ## Architecture
 
@@ -129,11 +135,11 @@ Each slice merges to develop on CI green before the next starts. Fill in as work
 |---|---|---|---|---|---|---|
 | S0 | Campaign doc, red baseline, vendored corpus, `jsonschema` dep | | | | | in progress |
 | S1 | clio-schemas 0.3.0: official shapes, catalog files, sidecar; delete union + Literal | | | | | |
-| S2 | Server registry, per-catalog validation, blueprint declaration; delete constant, action sets, `required_context`, functionCall rejection | | | | | |
+| S2 | Server registry, per-catalog validation, blueprint declaration; delete constant, action sets, `required_context`, functionCall rejection. Adversarially reviewed and fixed: registry/discovery caching, the 126-message official corpus, four safety-walk protocol-conformance rulings, typed reasons for every swallowed exception. Accepted deviation: `routes/interactions.py`'s `_surface_actions` reports every declared event name found in a surface's messages rather than filtering to catalog-sidecar-declared destinations only — the catalog file is the allowlist for VALIDITY (S2), not for this UI-hint projection's vocabulary. | [#1365](https://github.com/iowarp/clio-agent/issues/1365) | (not pushed) | (local commits, see `git log`) | `gact/a2ui_catalogs/` (registry/builtin/blueprint/activation/validation/reasons/routes), `tests/test_gact/test_a2ui_catalog_registry.py`, `tests/test_gact/test_a2ui_corpus_conformance.py`, `tests/fixtures/a2ui_packs/minimal/`, `tests/fixtures/a2ui_corpus/v0_9_1/` (126/126 official messages validate); clio-schemas pinned to 0.3.0 @ `dd34c2b28b5f45c8c387979658eef7ebd5ed5fba` | implemented locally, PR pending |
 | S3 | Official capabilities, per-session client memory, GACT binding doc | | | | | |
 | S4 | Producer tools (4 ops), catalogs as skill directories; delete `a2ui_tools.py` | | | | | |
 | S5 | Dispatcher on the interactions substrate; delete `/lastAction` ack, `context.text`, `form.submit` echo | | | | | |
-| S6 | Client runtime: registry, incremental processor, functions, capabilities, errors, lifecycle | | | | | |
+| S6 | Client runtime: registry, incremental processor, functions, capabilities, errors, lifecycle. Owes: kernel media/artifact components enforce the URL scheme allowlist on bound/resolved values at render time and report VALIDATION_FAILED (owner decision 11 — the server only checks literals as of S2). | | | | | |
 | S7 | EarthScope pack catalog: composability proof + live gate | | | | | |
 | S8 | Hardening: library 0.11.x, replay/degradation/parity | | | | | |
 | S9 | Conformance in CI, bounded claim, records | | | | | |

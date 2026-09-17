@@ -8,13 +8,15 @@ from typing import Any, Optional
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.a2ui import (
+    A2UICatalogNotProducibleError,
+    A2UICatalogUnknownError,
     A2UITranscriptFrozenError,
     A2UIValidationError,
-    trusted_component_names,
 )
+from clio_agent.gact.a2ui_catalogs.builtin import load_builtin_catalogs, workspace_catalog_id
 from clio_agent.gact.agents.tool_instrumentation import native_tool
 from clio_agent.gact.parts import Part
-from clio_agent.gact.protocol_v3 import A2UI_V091_WIRE, CLIO_A2UI_CATALOG_ID
+from clio_agent.gact.protocol_v3 import A2UI_V091_WIRE
 
 # The surface registry rides back in the model lane on every production, so it
 # is bounded: a long session's oldest surfaces are the ones least likely to be
@@ -44,6 +46,18 @@ _COMPONENT_KIND_LABELS = {
     "clio.status.v1": "Status",
     "clio.progress.v1": "Status",
 }
+
+
+def _workspace_component_names() -> list[str]:
+    """Return the CLIO workspace catalog's component names, sorted.
+
+    Read from the catalog FILE (the same registry the server validates
+    against), not a separately maintained list — the catalog is the
+    allowlist (docs/design/a2ui-compat-campaign-2026-09.md S2).
+    """
+
+    _, workspace_entry = load_builtin_catalogs()
+    return sorted(workspace_entry.file["components"])
 
 
 def _surface_kind(components: Any) -> str:
@@ -239,7 +253,7 @@ def build_create_a2ui_surface_tool() -> Any:
                     "version": A2UI_V091_WIRE,
                     "createSurface": {
                         "surfaceId": surface_id,
-                        "catalogId": CLIO_A2UI_CATALOG_ID,
+                        "catalogId": workspace_catalog_id(),
                     },
                 }
             )
@@ -287,6 +301,31 @@ def build_create_a2ui_surface_tool() -> Any:
                 "session_id": session_id,
                 "surface_id": surface_id,
             }
+        except A2UICatalogUnknownError as exc:
+            # Routes through the SAME per-session recorder the HTTP production
+            # door uses (adversarial S2 review) -- a session's catalog-boundary
+            # history is retrievable regardless of which door produced it.
+            app.state.a2ui_catalogs.record_session_reason(
+                session_id, "a2ui_catalog_unknown", catalog_id=exc.catalog_id
+            )
+            return {
+                "rendered": False,
+                "reason": "a2ui_catalog_unknown",
+                "session_id": session_id,
+                "surface_id": surface_id,
+                "message": str(exc),
+            }
+        except A2UICatalogNotProducibleError as exc:
+            app.state.a2ui_catalogs.record_session_reason(
+                session_id, "a2ui_catalog_not_producible", catalog_id=exc.catalog_id
+            )
+            return {
+                "rendered": False,
+                "reason": "a2ui_catalog_not_producible",
+                "session_id": session_id,
+                "surface_id": surface_id,
+                "message": str(exc),
+            }
         surface = outcome.surfaces[-1]
         registry = outcome.session_surface_ids
         truncated = len(registry) > MAX_REPORTED_SURFACE_IDS
@@ -308,7 +347,7 @@ def build_create_a2ui_surface_tool() -> Any:
         return result
 
     create_a2ui_surface.__doc__ = (create_a2ui_surface.__doc__ or "").replace(
-        "{trusted_component_names}", ", ".join(trusted_component_names())
+        "{trusted_component_names}", ", ".join(_workspace_component_names())
     )
     return native_tool(
         create_a2ui_surface,

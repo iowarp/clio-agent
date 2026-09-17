@@ -76,6 +76,23 @@ if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
 
 
+def _invalidate_a2ui_catalogs(app: FastAPI) -> None:
+    """Drop cached A2UI pack-catalog discovery after a blueprint mutation (S2 campaign doc)."""
+    catalogs = getattr(app.state, "a2ui_catalogs", None)
+    if catalogs is not None:
+        catalogs.invalidate()
+
+
+def _mutation_error(status: int, code: str, message: str) -> HTTPException:
+    """One-line HTTPException builder for the install/update/delete except blocks."""
+    return HTTPException(
+        status_code=status,
+        detail=ErrorEnvelope(
+            error=ErrorInfo(error=code, message=message, recoverable=True)
+        ).model_dump(exclude_none=True),
+    )
+
+
 def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
     """Register the agent-blueprint + expert-pack lifecycle routes on ``app``.
 
@@ -396,7 +413,7 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         cwd = _runtime_workspace_catalog_cwd(app, workspace_id=str(req.get("workspace_id") or ""))
         try:
-            return install_agent_blueprint(
+            result = install_agent_blueprint(
                 source=source,
                 scope=scope,  # type: ignore[arg-type]
                 cwd=cwd or Path.cwd(),
@@ -406,16 +423,11 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                     req.get("pinned_commit") or source_row.get("pinned_commit") or ""
                 ),
             )
+            _invalidate_a2ui_catalogs(app)
+            return result
         except (OSError, ValueError, subprocess.CalledProcessError) as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="validation_error",
-                        message=f"agent blueprint install failed: {exc}",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
+            raise _mutation_error(
+                400, "validation_error", f"agent blueprint install failed: {exc}"
             ) from exc
 
     @app.post("/v1/agent-blueprints/{blueprint_id:path}/update")
@@ -438,21 +450,16 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         cwd = _runtime_workspace_catalog_cwd(app, workspace_id=str(body.get("workspace_id") or ""))
         try:
-            return update_installed_agent_blueprint(
+            result = update_installed_agent_blueprint(
                 blueprint_id=blueprint_id,
                 scope=scope,  # type: ignore[arg-type]
                 cwd=cwd or Path.cwd(),
             )
+            _invalidate_a2ui_catalogs(app)
+            return result
         except (OSError, ValueError, subprocess.CalledProcessError) as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="validation_error",
-                        message=f"agent blueprint update failed: {exc}",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
+            raise _mutation_error(
+                400, "validation_error", f"agent blueprint update failed: {exc}"
             ) from exc
 
     @app.delete("/v1/agent-blueprints/{blueprint_id:path}")
@@ -485,22 +492,15 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id)
         try:
-            return uninstall_agent_blueprint(
+            result = uninstall_agent_blueprint(
                 blueprint_id=blueprint_id,
                 scope=scope,  # type: ignore[arg-type]
                 cwd=cwd or Path.cwd(),
             )
+            _invalidate_a2ui_catalogs(app)
+            return result
         except OSError as exc:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=str(exc),
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from exc
+            raise _mutation_error(404, "not_found", str(exc)) from exc
 
     # ---- /v1/expert-packs/* — thin aliases of the agent-blueprint lifecycle
     # (iowarp/clio-agent#663). A blueprint (structured workflow with a root

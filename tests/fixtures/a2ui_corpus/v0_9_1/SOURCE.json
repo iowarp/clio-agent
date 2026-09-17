@@ -1,0 +1,178 @@
+{
+  "commit": "0086493c40b119a4143fe15197006678467cad60",
+  "files": {
+    "examples/00_complex-layout.json": {
+      "sha256": "ed212b67775521aca4b9843549ebeafc187531ce3744c9d23c6ff05e3fef4eeb",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/00_complex-layout.json"
+    },
+    "examples/00_formatted-text.json": {
+      "sha256": "6e4f63093895f7bbbd9f7b119f2c5024ca8eb0abd42d0e027270bccfa5e85851",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/00_formatted-text.json"
+    },
+    "examples/00_incremental.json": {
+      "sha256": "5ec9d7e2221cc5a7d96d6e9ddb6a87daca6acd1714727d2bd905b8a1bef74929",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/00_incremental.json"
+    },
+    "examples/00_interactive-button.json": {
+      "sha256": "19d990117be8d66ffed20d5bb21127c9d153f90b8e3b2670f80c72d34aad0fb5",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/00_interactive-button.json"
+    },
+    "examples/00_row-layout.json": {
+      "sha256": "e97fd9bdf4c9a9811611184bf9b8b60371818b41689739492ea3609c9c832985",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/00_row-layout.json"
+    },
+    "examples/00_simple-login-form.json": {
+      "sha256": "97a0707fcc93186901165942eb965857c3d94ee258d9c885e6b0862606baec4e",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/00_simple-login-form.json"
+    },
+    "examples/00_simple-text.json": {
+      "sha256": "130ae3b46fa16b24246fb5bcd5d14d9707abbae8adda5fbd047ad98d1b13a56b",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/00_simple-text.json"
+    },
+    "examples/01_flight-status.json": {
+      "sha256": "bb0ce059e5d5c3bf021b8decf59112fbcbeb93a143849c2a1558ca54b725c9b4",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/01_flight-status.json"
+    },
+    "examples/02_email-compose.json": {
+      "sha256": "c4576cd6ab4781ee87bfbb4dba34e06b4723794be88e249345704765fb82a1ec",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/02_email-compose.json"
+    },
+    "examples/03_calendar-day.json": {
+      "sha256": "01dc40f9ad6f56f46a99c948c61cab7f040a79579c04b071693c2a1525033434",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/03_calendar-day.json"
+    },
+    "examples/04_weather-current.json": {
+      "sha256": "d421fb4d33a0671a991b2e70ff80e84a10fe61dc0a39be11ba5e174e8d6ea8af",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/04_weather-current.json"
+    },
+    "examples/05_product-card.json": {
+      "sha256": "becc323ed5a982465fa90e1d0a39a38f86594f6b345b69785838c8574362992c",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/05_product-card.json"
+    },
+    "examples/06_music-player.json": {
+      "sha256": "6700fd8abdbaa218f5f230b35eb5d707ea60466fc28cc05a5bcf25f46a946b54",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/06_music-player.json"
+    },
+    "examples/07_task-card.json": {
+      "sha256": "56df25f4347b647cc5c1084f6e2da9901c351cd2628c65b8f93d29b6f779e983",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/07_task-card.json"
+    },
+    "examples/08_user-profile.json": {
+      "sha256": "98b844ed63f38068ee3d9fd0fd6c7f1deb106e9e24ac7eeddce6f209b2960fd5",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/08_user-profile.json"
+    },
+    "examples/09_login-form.json": {
+      "sha256": "7d793fdff46a5a7d8008026e7a9c6242d9eb8385d70cccb362de240bd29f7417",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/09_login-form.json"
+    },
+    "examples/10_notification-permission.json": {
+      "sha256": "b2a020ee0a378107efa042691dd28b5b014e308a950016d54d6c0c60603f254a",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/10_notification-permission.json"
+    },
+    "examples/11_purchase-complete.json": {
+      "sha256": "5323a4c206f43e2ed7e0ae7a58a4fd2985ca62d92d7b6170baa3dcb61158a65e",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/11_purchase-complete.json"
+    },
+    "examples/12_chat-message.json": {
+      "sha256": "2f39a7ba5b822825dff07e17f5849e5ef4ad1cf48c3ca8cfbaa03596a87829b4",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/12_chat-message.json"
+    },
+    "examples/13_coffee-order.json": {
+      "sha256": "4447e50ce96ceea0d2f1bdec43b424f6fe68002ff97fdd666bd828d17b76b0c1",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/13_coffee-order.json"
+    },
+    "examples/14_sports-player.json": {
+      "sha256": "91956b59d79b7ad2446a643f8041bc56afb66df2e4fb6d0cd0e70c1b32fae9cb",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/14_sports-player.json"
+    },
+    "examples/15_account-balance.json": {
+      "sha256": "163deebd8e307614c3bcc68121776fae23376f324b1628289354eb3ee1d7055d",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/15_account-balance.json"
+    },
+    "examples/16_workout-summary.json": {
+      "sha256": "23be427d04680c55764a437fa38ae723d2435638e2afda078e6b52bccd332ed6",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/16_workout-summary.json"
+    },
+    "examples/17_event-detail.json": {
+      "sha256": "2faaefdcd69c5e6cbc8a84b0a6a8f17b8050318d02d6eef97c5a474b7244750e",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/17_event-detail.json"
+    },
+    "examples/18_track-list.json": {
+      "sha256": "af3228b550a857b540818819108aad65e7a642861ce635c0eb679254a2220e6e",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/18_track-list.json"
+    },
+    "examples/19_software-purchase.json": {
+      "sha256": "58b7c877904f1b9dcaaaf15167a41acf1764b27dd5f4eb7344be64bad9991841",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/19_software-purchase.json"
+    },
+    "examples/20_restaurant-card.json": {
+      "sha256": "d1300e0b55d65ace69cd9d3df15b0a832c49db478aab5c18d12e7d385bd13b0e",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/20_restaurant-card.json"
+    },
+    "examples/21_shipping-status.json": {
+      "sha256": "0dee0c632921350b60273f8af0c368bd80778bf7d8c3e74735d3819e7acd821a",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/21_shipping-status.json"
+    },
+    "examples/22_credit-card.json": {
+      "sha256": "4da52cb867614d68fb1cd764874c418a5248b74bc42f0138fa7910dd384b06ba",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/22_credit-card.json"
+    },
+    "examples/23_step-counter.json": {
+      "sha256": "065ac805dfd7d421169c0a48538a8ee9b4f47440db1d91364333bb60f19a3030",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/23_step-counter.json"
+    },
+    "examples/24_recipe-card.json": {
+      "sha256": "76ad922b8645e6318f6d9feae22356161e31a9b3bd357cdeffad96e3f636c154",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/24_recipe-card.json"
+    },
+    "examples/25_contact-card.json": {
+      "sha256": "77c0f91f4921e347fb170b99b60ff565d9272dedc7fb05f5eed9617f33ef66df",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/25_contact-card.json"
+    },
+    "examples/26_podcast-episode.json": {
+      "sha256": "532c82d91aac256a869f6ab868d732e3fa95e833378e343dbc2073d90445a172",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/26_podcast-episode.json"
+    },
+    "examples/27_stats-card.json": {
+      "sha256": "5caa95bafc5cff3809379cc07f8b290d5889ecb675efb896c77585b8bcf1a841",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/27_stats-card.json"
+    },
+    "examples/28_countdown-timer.json": {
+      "sha256": "d688aa5ffbf7f07ad9462d2c2d224c5fbb17816ebd5442a9d083700cac3f7a62",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/28_countdown-timer.json"
+    },
+    "examples/29_movie-card.json": {
+      "sha256": "0b5a43cf9cd914ccf2684710f8705f3bf2f7bd9ee60c5e3dc8e091345a9c6a81",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/29_movie-card.json"
+    },
+    "examples/30_live-invitation-builder.json": {
+      "sha256": "249bb068524d9ce91c92ffd44dc4f189009324164635d9aec68462b9d616ea05",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/30_live-invitation-builder.json"
+    },
+    "examples/31_incremental-dashboard.json": {
+      "sha256": "d39a1c69fda4d4dc9e66bc90bf1649979b69e1172c5080c8e6202671ee548d13",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/31_incremental-dashboard.json"
+    },
+    "examples/32_advanced-form-validator.json": {
+      "sha256": "6cd53629e2d6bcc0e8b7a24df13e64e6704eefb1f00ca8f4be1724065d398fd2",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/32_advanced-form-validator.json"
+    },
+    "examples/33_financial-data-grid.json": {
+      "sha256": "7bdd845e8ceed3e3907674d1b11b98b7e4c0766a2589454d8a1d01d494e5a252",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/33_financial-data-grid.json"
+    },
+    "examples/34_child-list-template.json": {
+      "sha256": "9e79e4057e05fb097ddd96c2f5b328984eee7dd567218d3f67b2f8f67da064a2",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/34_child-list-template.json"
+    },
+    "examples/35_markdown-text.json": {
+      "sha256": "27385d9d38c14f6efb92afadcb9a9fd9ec2055c3631154f18d47fecb2993daf7",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/35_markdown-text.json"
+    },
+    "examples/36_modal.json": {
+      "sha256": "4f58e348baf10a79fbe86ccae785684454cadb109ecc54d4f600d95fef1ff17a",
+      "upstream_path": "specification/v0_9_1/catalogs/basic/examples/36_modal.json"
+    }
+  },
+  "source": "clio-schemas tests/a2ui_corpus/v0_9_1/SOURCE.json (examples/* subset)"
+}

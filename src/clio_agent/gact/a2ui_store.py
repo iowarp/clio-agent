@@ -154,7 +154,31 @@ class A2UIStore:
     def _project(
         self, session_id: str
     ) -> tuple[dict[tuple[str, str], A2UISurfaceRecord], list[dict[str, str]]]:
-        return project_a2ui_parts(self._parts(session_id), session_id)
+        from clio_agent.gact.a2ui_catalogs.activation import (  # noqa: PLC0415
+            session_catalog_resolver,
+        )
+
+        surfaces, degradations = project_a2ui_parts(
+            self._parts(session_id),
+            session_id,
+            catalogs=session_catalog_resolver(self._app, session_id),
+        )
+        # a2ui_catalog_unavailable is declared in the typed reason catalog but
+        # was never actually recorded there (adversarial S2 review): route it
+        # through the SAME per-session ledger the HTTP door uses, so a
+        # replay-time catalog degradation is retrievable the same way a
+        # production-time one is.
+        catalogs = getattr(self._app.state, "a2ui_catalogs", None)
+        if catalogs is not None:
+            for degradation in degradations:
+                if degradation.get("code") == "a2ui_catalog_unavailable":
+                    catalogs.record_session_reason(
+                        session_id,
+                        "a2ui_catalog_unavailable",
+                        part_id=degradation.get("part_id", ""),
+                        detail=degradation.get("reason", ""),
+                    )
+        return surfaces, degradations
 
     @property
     def load_degradation(self) -> dict[str, str] | None:
@@ -319,6 +343,10 @@ class A2UIStore:
 
         from uuid import uuid4  # noqa: PLC0415
 
+        from clio_agent.gact.a2ui_catalogs.activation import (  # noqa: PLC0415
+            session_catalog_resolver,
+            session_producible_catalog_ids,
+        )
         from clio_agent.gact.parts import Part  # noqa: PLC0415
 
         with self._session_lock(session_id):
@@ -332,10 +360,18 @@ class A2UIStore:
                 )
             current, _ = self._project(session_id)
             timestamp = utcnow_iso()
+            # Every production door (HTTP POST /messages, create_a2ui_surface)
+            # routes through here, so the session-producible gate lives in ONE
+            # place: a createSurface against an installed-but-inactive pack
+            # catalog is refused with a2ui_catalog_not_producible regardless of
+            # which door it came through.
+            producible = frozenset(session_producible_catalog_ids(self._app, session_id))
             folded, applied = apply_batch(
                 current,
                 session_id,
                 messages,
+                catalogs=session_catalog_resolver(self._app, session_id),
+                producible=producible,
                 run_id=run_id,
                 message_id=message_id,
                 part_id=persisted_part_id,

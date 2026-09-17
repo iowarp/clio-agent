@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.a2ui_catalogs.builtin import workspace_catalog_id
 from clio_agent.gact.app import build_app
 from clio_agent.gact.plan_mode import (
     PLAN_EXIT_APPROVAL_META,
@@ -27,9 +28,10 @@ from clio_agent.gact.plan_mode import (
     maybe_pause_for_plan_exit,
     resolve_plan_exit_answer,
 )
-from clio_agent.gact.protocol_v3 import CLIO_A2UI_CATALOG_ID
 from clio_agent.gact.transcript import EventBusTranscriptPublisher, TurnTranscript
 from clio_agent.gact.types import UserQuestion
+
+CLIO_A2UI_CATALOG_ID = workspace_catalog_id()
 
 
 def _make_app(tmp_path: Path):

@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from clio_agent.gact.a2ui import project_a2ui_parts
 from clio_agent.gact.evidence import _bounded_tool_call_result
 from clio_agent.gact.protocol.v3 import utcnow_iso
 from clio_agent.gact.tool_result_presentation import project_presentation
+
+if TYPE_CHECKING:
+    from clio_agent.gact.a2ui_catalogs.registry import CatalogResolver
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -548,6 +551,7 @@ def transcript_entities(
     session_id: str,
     *,
     subagent_links: Mapping[str, Mapping[str, Any]] | None = None,
+    catalogs: "CatalogResolver | None" = None,
 ) -> dict[str, Any]:
     """Return a normalized transcript snapshot and its referenced entities.
 
@@ -662,8 +666,12 @@ def transcript_entities(
     projected_messages.extend(row for _created_at, _index, row in child_relations)
 
     transcript_parts.sort(key=lambda row: (row[0], row[1]))
+    if catalogs is None:
+        from clio_agent.gact.a2ui_catalogs.registry import CatalogRegistry  # noqa: PLC0415
+
+        catalogs = CatalogRegistry()
     surface_records, a2ui_degradations = project_a2ui_parts(
-        [row[2] for row in transcript_parts], session_id
+        [row[2] for row in transcript_parts], session_id, catalogs=catalogs
     )
     surfaces = list(surface_records.values())
     surfaces.sort(key=lambda row: row.created_at)

@@ -200,13 +200,13 @@ RATCHET_BASELINE: dict[str, int] = {
     # module agent_blueprint_refresh.py (this file is ratcheted, #774) and is
     # reached through the PEP 562 shim; only the one-line lazy import in
     # default_registry_metadata landed here, offset by two comment trims.
-    "src/clio_agent/gact/agent_blueprints.py": 1057,
+    "src/clio_agent/gact/agent_blueprints.py": 1056,
     # #948 S4: +14 for the children-must-be-react hierarchy rule (a predict/CoT
     # parent would silently strand its children now that the settle loop routing
     # for it is deleted; typed validation error instead).
     # #948 S5: +7 to validate the dspy.BestOfN/Refine module variant declaration on the
     # row (the parse itself is the leaf runtime/type_parsing.parse_module_variant).
-    "src/clio_agent/gact/expert_packs.py": 821,
+    "src/clio_agent/gact/expert_packs.py": 818,
     # #919: +35 to WIRE progressive-disclosure skills into all three module
     # classes (block + load_skill tool; logic lives in agents/skill_runtime.py)
     # and to document the deleted stale extract alias that crashed every

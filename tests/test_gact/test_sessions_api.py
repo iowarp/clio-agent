@@ -15,9 +15,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.arc.schema import Conversation as ARCConversation
+from clio_agent.gact.a2ui_catalogs.builtin import workspace_catalog_id
 from clio_agent.gact.app import build_app
-from clio_agent.gact.protocol_v3 import CLIO_A2UI_CATALOG_ID
 from clio_agent.gact.types import Message, Part, Tokens
+
+CLIO_A2UI_CATALOG_ID = workspace_catalog_id()
 
 
 @pytest.fixture()

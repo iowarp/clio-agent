@@ -22,6 +22,7 @@ from typing import Any, Literal
 
 from clio_agent import conf
 from clio_agent.gact import skills as _skills
+from clio_agent.gact.a2ui_catalogs.blueprint import blueprint_and_expert_a2ui_catalog_errors
 from clio_agent.gact.expert_packs import (
     ExpertPackDefinition,
     _fallback_expert_id,
@@ -322,13 +323,10 @@ def parse_agent_blueprint_root(root: Path, *, scope: str) -> AgentBlueprintDefin
         metadata={
             "layout": "agent_blueprint",
             "body": body.strip(),
-            "compatibility": meta.get("compatibility")
-            if isinstance(meta.get("compatibility"), dict)
-            else {},
+            "compatibility": _mapping_field(meta, "compatibility"),
             "requires": requirements,
-            "mcp_servers": meta.get("mcp_servers")
-            if isinstance(meta.get("mcp_servers"), dict)
-            else {},
+            "mcp_servers": _mapping_field(meta, "mcp_servers"),
+            "a2ui_catalogs": _mapping_field(meta, "a2ui_catalogs"),  # sibling of mcp_servers (S2)
             "includes": _list_field(meta, "includes"),
             "blueprint": meta.get("blueprint") if isinstance(meta.get("blueprint"), dict) else {},
             # Raw pack-declared workflow_state vocabulary (#646/#648, Phase C).
@@ -397,6 +395,7 @@ def validate_agent_blueprint_path(
             f"{descriptor.get('id', 'mcp')}: {warning}"
             for warning in descriptor.get("validation_warnings", [])
         )
+    errors.extend(blueprint_and_expert_a2ui_catalog_errors(blueprint, rows))
     return {
         "agent_blueprint": blueprint.to_wire(),
         "agents": [row.model_dump(exclude_none=True) for row in rows],
