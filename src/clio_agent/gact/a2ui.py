@@ -299,7 +299,11 @@ def validate_client_action(
             falling through to the "agent" default) so a caller can tell
             "undeclared, defaulted" apart from "explicitly routed to agent",
             and ``operation`` (the sidecar's declared ``"cancel"``/``"retry"``
-            for a ``destination: "run"`` route, ``None`` otherwise).
+            for a ``destination: "run"`` route, ``None`` otherwise). The
+            resolved sidecar ``route`` itself (or ``None``) is ALSO stored
+            verbatim as ``route`` (S5b) so
+            ``a2ui_actions.narration.narration_for`` can read its declared
+            ``narration`` template without re-resolving the catalog.
     """
 
     try:
@@ -338,6 +342,11 @@ def validate_client_action(
     # otherwise -- the dispatcher reads this to pick the run owner without
     # re-deriving it from the action name.
     action["operation"] = route.operation if route is not None else None
+    # S5b (clio-schemas 0.3.2): the resolved route itself, verbatim -- lets
+    # the dispatcher render `route.narration` (when the sidecar declares one)
+    # without a second catalog lookup. `None` when no route exists, exactly
+    # like `declared` above.
+    action["route"] = route
     return action
 
 

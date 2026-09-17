@@ -378,6 +378,36 @@ resolved `context` object, verbatim) onto the staged/steered/resumed turn.
 text channel from the SAME context (prefixed by `context.userMessage` when
 present) -- no `text`/`prompt` field is ever required.
 
+**Narration (S5b).** The text above is *some* rendering of the context --
+until the sidecar says otherwise, it is the S5 fallback: event name + the
+canonical context JSON, plus `context.userMessage` when the renderer sends
+one. That fallback is prose an agent can misread as a REPORT rather than a
+REQUEST (clio-agent#1363's live-gate finding: a resumed turn read `A2UI
+event: earthscope.stations.selected` + JSON and never staged the selected
+stations). The event's MEANING is the pack author's to declare, the same way
+0.9.1's own `context_schema` already declares its SHAPE: clio-schemas 0.3.2
+adds `CatalogSidecar.events[<name>].narration`, a template string rendered
+against the resolved `context` via `clio_schemas.a2ui.sidecar.
+render_narration(route, context) -> str | None` (an unresolved `{placeholder}`
+is left literal, never raises; a list/dict value renders as compact JSON, so
+`{stationIds}` against `{"stationIds": ["MTA1", "PKRD"]}` reads
+`["MTA1","PKRD"]`). When a `context_schema` is ALSO declared, every
+`narration` placeholder must name one of its `properties` -- checked at
+sidecar-construction time, not at render time, so a typo in a pack's own
+`catalog.clio.json` fails loudly at install, not silently at delivery. When
+declared, the rendered template IS the narration (bounded to the same <=2 KiB
+ceiling, same truncation marker), followed by the canonical context JSON on
+an UNBOUNDED second paragraph -- the structured object always reaches a
+text-only provider, however long the declared template renders. When no
+route declares a narration (no route at all, or one without this field), the
+S5 fallback form is unchanged, and the session records the typed reason
+`a2ui_event_narration_undeclared` ONCE per event name (not once per action --
+`gact/a2ui_catalogs/registry.py::CatalogRegistry.
+record_narration_undeclared_once`). This mirrors 1.0's own `userMessage`
+action field (the campaign's seam-point item 19): 0.9.1 carries no such field
+on the wire, so `narration` is 0.9.1-sidecar-declared, early metadata a pack
+author already controls today, not a wire change.
+
 **Consumed.** `gact/a2ui_actions/record.py::mark_a2ui_action_consumed` flips
 a `delivered` record to `consumed` (publishing `a2ui.action.consumed`) the
 moment the turn/steer that carried it actually starts executing: hooked at

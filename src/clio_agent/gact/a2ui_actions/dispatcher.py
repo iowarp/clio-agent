@@ -44,7 +44,7 @@ from clio_agent.gact.a2ui_actions.client_state import (
     is_error_envelope,
 )
 from clio_agent.gact.a2ui_actions.delivery import deliver_to_agent
-from clio_agent.gact.a2ui_actions.narration import narration_for
+from clio_agent.gact.a2ui_actions.narration import narration_declared, narration_for
 from clio_agent.gact.a2ui_actions.record import (
     ActionRecord,
     compute_idempotency_key,
@@ -264,10 +264,16 @@ async def dispatch_action(
     source_component_id = str(action.get("sourceComponentId") or "")
     timestamp = str(action.get("timestamp") or "")
     destination = str(action.get("destination") or "agent")
+    route = action.get("route")
     if not action.get("declared"):
         app.state.a2ui_catalogs.record_session_reason(
             sid, "a2ui_event_destination_undeclared", action=name
         )
+    if not narration_declared(route):
+        # S5b: dedupes on (session, event name) -- see
+        # ``CatalogRegistry.record_narration_undeclared_once`` -- unlike the
+        # per-action reason above, this one is once-per-name-per-session.
+        app.state.a2ui_catalogs.record_narration_undeclared_once(sid, name)
 
     idempotency_key = compute_idempotency_key(surface_id, source_component_id, timestamp, context)
 
@@ -305,7 +311,7 @@ async def dispatch_action(
             if action_data_model is not None
             else None
         ),
-        narration=narration_for(name, context),
+        narration=narration_for(name, context, route=route),
     )
     # Finding #1 (BLOCKING): the REAL idempotency decision. Persist and check
     # atomically, under the store's per-session lock -- a concurrent
