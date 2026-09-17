@@ -12,7 +12,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_VERSION = "0.9.5"
+EXPECTED_VERSION = "0.9.4.1"
 EXPECTED_DSPY = "dspy==3.3.0b1"
 EXPECTED_FASTMCP = "fastmcp==4.0.0b5"
 EXPECTED_FASTMCP_SLIM = "fastmcp-slim==4.0.0b5"
@@ -116,8 +116,25 @@ def test_release_builds_follow_the_current_gact_workspace_layout() -> None:
     assert '"$OUT" version' in tui_builder
     assert '"$OUT" version >/dev/null 2>&1 || true' not in tui_builder
     assert 'release_version="${GITHUB_REF_NAME#v}"' in bundles
-    assert "config.version = releaseVersion" in bundles
+    assert "config.version = tauriVersion" in bundles
+    assert "config.bundle.windows.wix.version = releaseVersion" in bundles
+    assert 'base="${base//$tauri_version/$release_version}"' in bundles
     assert "invalid CLIO release version" in bundles
+
+
+def test_bundled_runtime_is_precompiled_before_relocation_proof() -> None:
+    """Official bundles pay Python compilation cost before installation."""
+
+    for relative_path in (
+        "install/build-gact-runtime.sh",
+        "install/build-gact-runtime.ps1",
+    ):
+        script = _text(relative_path)
+        compile_step = script.index("compiling portable Python bytecode")
+        relocation_proof = script.index("portability proof on the real object")
+        assert compile_step < relocation_proof, relative_path
+        assert "unchecked-hash" in script, relative_path
+        assert "within 30 seconds" in script, relative_path
 
 
 def test_release_workflow_smokes_the_published_registry_tool() -> None:

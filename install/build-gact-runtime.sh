@@ -137,6 +137,20 @@ find "$OUT/python" -type f -name '*.exe' -delete
 # no-opped on macOS — the exact silent-fallback class this repo bans).
 find "$OUT/python" -type l ! -exec test -e {} ';' -delete
 
+# Prepare imports in the release image, not on the user's first launch. The
+# prune above intentionally removes build-host caches; regenerate portable,
+# unchecked-hash bytecode after the tree has reached its final shape. `-s/-p`
+# keeps tracebacks independent of the GitHub runner's checkout path.
+echo "[build-gact-runtime] compiling portable Python bytecode"
+"$OUT/$PYBIN_REL" -m compileall --invalidation-mode unchecked-hash \
+  -q -f -j 0 -s "$OUT" -p gact-runtime "$OUT/python"
+COMPILED="$(find "$OUT/python" -type f -name '*.pyc' | wc -l | tr -d ' ')"
+if [ "${COMPILED:-0}" -eq 0 ]; then
+  echo "build-gact-runtime: bytecode preparation produced no .pyc files" >&2
+  exit 1
+fi
+echo "[build-gact-runtime] prepared $COMPILED bytecode files"
+
 SIZE_AFTER="$(dir_size_mb "$OUT")"
 echo "[build-gact-runtime] size after prune:  ${SIZE_AFTER} MB (was ${SIZE_BEFORE} MB)"
 
@@ -167,8 +181,9 @@ PORT=$((RANDOM % 20000 + 24000))
 echo "[build-gact-runtime] sanity (relocated boot): /v1/capabilities on :$PORT"
 "$RELOC/$PYBIN_REL" -m clio_agent.gact --no-agent --host 127.0.0.1 --port "$PORT" >/dev/null 2>&1 &
 SRV=$!
+BOOT_STARTED="$(date +%s)"
 BOOT_OK=""
-for _ in $(seq 1 60); do
+for _ in $(seq 1 30); do
   if curl -fsS --max-time 2 "http://127.0.0.1:$PORT/v1/capabilities" >/dev/null 2>&1; then
     BOOT_OK=1
     break
@@ -179,8 +194,9 @@ kill "$SRV" 2>/dev/null || true
 wait "$SRV" 2>/dev/null || true
 rm -rf "$(dirname "$RELOC")"
 if [ -z "$BOOT_OK" ]; then
-  echo "build-gact-runtime: relocated runtime failed to serve /v1/capabilities" >&2
+  echo "build-gact-runtime: relocated runtime failed to serve /v1/capabilities within 30 seconds" >&2
   exit 1
 fi
+echo "[build-gact-runtime] relocated cold boot ready in $(( $(date +%s) - BOOT_STARTED ))s"
 
 echo "[build-gact-runtime] OK — portable runtime ready at $OUT (${SIZE_AFTER} MB)"
