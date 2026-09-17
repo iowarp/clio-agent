@@ -6,17 +6,16 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
-## [0.9.5] - 2026-09-16
+## [0.9.4.1] - 2026-09-16
 
 This maintenance release repairs the bundled desktop first-launch path found
 during external-user verification of v0.9.4.
 
 ### Fixed
 
-- Bundled desktop first launch now allows the private backend enough time to
-  complete cold Python-runtime initialization. A healthy backend that needs
-  slightly more than 30 seconds no longer falls through to the manual service
-  address screen.
+- Bundled desktop packaging now prepares Python bytecode before installation,
+  so the first launch does not perform one-time import compilation or fall
+  through to the manual service-address screen.
 
 ## [0.9.4] - 2026-09-16
 

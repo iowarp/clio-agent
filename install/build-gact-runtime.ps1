@@ -185,6 +185,22 @@ if (Test-Path $sitePkgs) {
     ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
 }
 
+# Prepare imports in the release image, not on the user's first launch. The
+# prune above intentionally removes build-host caches; regenerate portable,
+# unchecked-hash bytecode after the tree has reached its final shape. `-s/-p`
+# keeps tracebacks independent of the GitHub runner's checkout path.
+Write-Host "[build-gact-runtime] compiling portable Python bytecode"
+Invoke-Native -Exe $pyBin -Args @(
+  '-m', 'compileall', '--invalidation-mode', 'unchecked-hash',
+  '-q', '-f', '-j', '0', '-s', (Resolve-Path $Out).Path,
+  '-p', 'gact-runtime', $pyRoot
+) | Out-Null
+$compiled = @(Get-ChildItem -LiteralPath $pyRoot -Recurse -File -Filter '*.pyc' -ErrorAction SilentlyContinue).Count
+if ($compiled -eq 0) {
+  throw 'build-gact-runtime: bytecode preparation produced no .pyc files'
+}
+Write-Host "[build-gact-runtime] prepared $compiled bytecode files"
+
 $sizeAfter = Get-DirSizeMB $Out
 Write-Host "[build-gact-runtime] size after prune:  $sizeAfter MB (was $sizeBefore MB)"
 
@@ -213,18 +229,21 @@ $port = Get-Random -Minimum 24000 -Maximum 44000
 Write-Host "[build-gact-runtime] sanity (relocated boot): /v1/capabilities on :$port"
 $srv = Start-Process -FilePath $relocPy -PassThru -WindowStyle Hidden `
   -ArgumentList @('-m', 'clio_agent.gact', '--no-agent', '--host', '127.0.0.1', '--port', "$port")
+$bootWatch = [System.Diagnostics.Stopwatch]::StartNew()
 $bootOk = $false
-foreach ($i in 1..60) {
+foreach ($i in 1..30) {
   try {
     $resp = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 -Uri "http://127.0.0.1:$port/v1/capabilities"
     if ($resp.StatusCode -eq 200) { $bootOk = $true; break }
   } catch {}
   Start-Sleep -Seconds 1
 }
+$bootWatch.Stop()
 Stop-Process -Id $srv.Id -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $reloc -Recurse -Force -ErrorAction SilentlyContinue
 if (-not $bootOk) {
-  throw "build-gact-runtime: relocated runtime failed to serve /v1/capabilities"
+  throw "build-gact-runtime: relocated runtime failed to serve /v1/capabilities within 30 seconds"
 }
+Write-Host ("[build-gact-runtime] relocated cold boot ready in {0:N2}s" -f $bootWatch.Elapsed.TotalSeconds)
 
 Write-Host "[build-gact-runtime] OK - portable runtime ready at $Out ($sizeAfter MB)"

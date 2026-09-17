@@ -277,9 +277,17 @@ jobs:
           const fs = require("node:fs");
           const [variant, brandPath, outputPath, releaseVersion] = process.argv.slice(2);
 
-          if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(releaseVersion)) {
+          if (!/^\d+\.\d+\.\d+(?:\.\d+|-[0-9A-Za-z.-]+)?$/.test(releaseVersion)) {
             throw new Error(`invalid CLIO release version: ${releaseVersion}`);
           }
+
+          // Tauri requires SemVer while CLIO maintenance releases use a
+          // fourth numeric component. Preserve the public vX.Y.Z.N identity
+          // in tags/assets and encode N as SemVer build metadata internally.
+          const maintenance = releaseVersion.match(/^(\d+\.\d+\.\d+)\.(\d+)$/);
+          const tauriVersion = maintenance
+            ? `${maintenance[1]}+patch.${maintenance[2]}`
+            : releaseVersion;
 
           const isObject = (value) =>
             value !== null && typeof value === "object" && !Array.isArray(value);
@@ -306,8 +314,13 @@ jobs:
               : brand;
           // CLIO-branded installers use the CLIO release identity. GACT keeps
           // its independent package version for its own releases and diagnostics.
-          config.version = releaseVersion;
+          config.version = tauriVersion;
           config.bundle ??= {};
+          if (maintenance) {
+            config.bundle.windows ??= {};
+            config.bundle.windows.wix ??= {};
+            config.bundle.windows.wix.version = releaseVersion;
+          }
           config.bundle.createUpdaterArtifacts = false;
           if (config.plugins?.updater) {
             delete config.plugins.updater.pubkey;
@@ -337,6 +350,11 @@ jobs:
           set -euo pipefail
           stage="$RUNNER_TEMP/clio-desktop-stage"
           mkdir -p "$stage"
+          release_version="${GITHUB_REF_NAME#v}"
+          tauri_version="$release_version"
+          if [[ "$release_version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.([0-9]+)$ ]]; then
+            tauri_version="${BASH_REMATCH[1]}+patch.${BASH_REMATCH[2]}"
+          fi
           root="external/gact-tui/desktop/src-tauri/target/release/bundle"
           if [ -d "external/gact-tui/desktop/src-tauri/target/${{ matrix.target }}/release/bundle" ]; then
             root="external/gact-tui/desktop/src-tauri/target/${{ matrix.target }}/release/bundle"
@@ -345,6 +363,7 @@ jobs:
             find "$root" -type f \( -iname '*.exe' -o -iname '*.msi' -o -iname '*.dmg' -o -iname '*.deb' -o -iname '*.AppImage' -o -iname '*.rpm' \) -print0 |
               while IFS= read -r -d '' f; do
                 base="$(basename "$f")"
+                base="${base//$tauri_version/$release_version}"
                 if [ "${{ matrix.variant }}" = "bundled" ]; then
                   ext="${base##*.}"
                   stem="${base%.*}"
