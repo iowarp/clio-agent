@@ -129,7 +129,7 @@ Each slice merges to develop on CI green before the next starts. Fill in as work
 |---|---|---|---|---|---|---|
 | S0 | Campaign doc, red baseline, vendored corpus, `jsonschema` dep | | | | | in progress |
 | S1 | clio-schemas 0.3.0: official shapes, catalog files, sidecar; delete union + Literal | | | | | |
-| S2 | Server registry, per-catalog validation, blueprint declaration; delete constant, action sets, `required_context`, functionCall rejection | | | | | |
+| S2 | Server registry, per-catalog validation, blueprint declaration; delete constant, action sets, `required_context`, functionCall rejection | [#1365](https://github.com/iowarp/clio-agent/issues/1365) | (not pushed) | (local, uncommitted at doc-write time) | `gact/a2ui_catalogs/` (registry/builtin/blueprint/activation/validation/reasons/routes), `tests/test_gact/test_a2ui_catalog_registry.py`, `tests/fixtures/a2ui_packs/minimal/`; clio-schemas pinned to 0.3.0 @ `dd34c2b28b5f45c8c387979658eef7ebd5ed5fba` | implemented locally, PR pending |
 | S3 | Official capabilities, per-session client memory, GACT binding doc | | | | | |
 | S4 | Producer tools (4 ops), catalogs as skill directories; delete `a2ui_tools.py` | | | | | |
 | S5 | Dispatcher on the interactions substrate; delete `/lastAction` ack, `context.text`, `form.submit` echo | | | | | |
