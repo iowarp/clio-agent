@@ -101,8 +101,8 @@ A2UI_CLIENT_CAPABILITIES = {
 A2UI_MESSAGE_METADATA = {"a2uiClientCapabilities": A2UI_CLIENT_CAPABILITIES}
 A2UI_PROMPT = "Show me the GNSS stations around Los Angeles."
 A2UI_ASK_FIRST_PROMPT = (
-    "Show me the GNSS stations around Los Angeles, and check with me before "
-    "doing anything else with them."
+    "Show me the GNSS stations around Los Angeles, then ask me which of them "
+    "you should analyse before you stage anything."
 )
 
 
