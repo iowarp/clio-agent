@@ -135,27 +135,45 @@ class A2UIStore:
             return lock
 
     def forget_session(self, session_id: str) -> None:
-        """Drop this session's projection cache and lock (S8, issue #1374).
+        """Drop this session's projection cache AND lock -- session DELETE ONLY.
 
         ``DELETE /v1/sessions/{sid}`` never pruned either -- a per-session-
         ever-created leak this store's OWN ``_ProjectionCache`` addition
         would otherwise widen. Called from the session-delete route,
         alongside ``CatalogRegistry.forget_session``.
 
-        Also called (focused re-review item 3) from
-        ``resident_ledgers.py::build_resident_ledger_set``'s ``on_evict``
-        hook whenever ``ResidentLedgerSet`` drops a session's resident
-        message ledger for real capacity/idle-TTL pressure -- otherwise this
-        cache, which holds every surface's full message list, would keep
-        growing unbounded under the SAME load #889's cap was built to bound,
-        a second, unbounded knob no test would catch until OOM. The session
-        itself is NOT gone (it may still be idle-resident on disk), so the
-        next A2UI read simply re-folds from scratch and re-caches -- the same
-        cold-start cost a resident-ledger cache miss already pays.
+        NEVER call this from a resident-ledger EVICTION hook (S8 review
+        round 3, issue #1374 item A) -- see :meth:`forget_projection`, the
+        eviction-safe half of what this used to do unconditionally.
         """
 
         with self._session_locks_guard:
             self._session_locks.pop(session_id, None)
+        self._projection_cache.pop(session_id, None)
+
+    def forget_projection(self, session_id: str) -> None:
+        """Drop ONLY this session's projection cache entry, never its lock.
+
+        S8 review round 3, issue #1374 item A (HIGH): a resident-ledger
+        EVICTION (``resident_ledgers.py``'s ``on_evict`` hook), unlike a
+        session DELETE, can fire for a session that is mid-write on ANOTHER
+        thread right now -- ``ResidentLedgerSet._evict``'s victim is picked
+        from every RESIDENT session during cap enforcement, not scoped to
+        the session a caller is currently touching. The old ``forget_session``
+        call from this hook popped ``_session_locks[session_id]`` too: the
+        next ``_session_lock`` call then minted a FRESH ``RLock`` while the
+        in-flight writer still held the ORIGINAL one, letting a second
+        writer enter the session's critical section concurrently -- exactly
+        the idempotency check-then-persist race that lock exists to
+        prevent. Only a genuine session DELETE, which no writer can outlive,
+        may remove the lock (:meth:`forget_session`). The projection cache
+        is always safe to drop underneath an in-flight write: ``_project``
+        re-reads ``self._projection_cache.get(session_id)`` fresh on every
+        call, inside the (unchanged) lock, so a concurrent drop here just
+        means that call's next read is a full refold instead of a cache
+        hit -- never a torn or duplicated write.
+        """
+
         self._projection_cache.pop(session_id, None)
 
     def _all_part_ids(self, session_id: str) -> set[str]:

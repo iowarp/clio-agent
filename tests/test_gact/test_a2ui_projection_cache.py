@@ -21,6 +21,7 @@ passes a non-``None`` ``existing_surfaces`` (O(new parts) only).
 
 from __future__ import annotations
 
+import threading
 from itertools import count
 from pathlib import Path
 from typing import Any
@@ -311,3 +312,69 @@ def test_full_fold_recurs_once_for_a_late_arriving_causally_earlier_part(
     # refold reprocessed the injected part in the RIGHT causal position,
     # not merely appended it at the end.
     assert surface.messages[-1]["updateComponents"]["components"][0]["text"] == "later"
+
+
+def test_eviction_never_replaces_a_held_session_lock(tmp_path: Path) -> None:
+    """S8 review round 3 (issue #1374 item A, HIGH): a resident-ledger
+    EVICTION must drop ONLY the projection cache entry, never the session's
+    write lock. ``_evict``'s victim is picked from every RESIDENT session
+    during cap enforcement -- it can fire for a session another thread is
+    mid-write on RIGHT NOW. Popping ``_session_locks[sid]`` there (the old
+    ``forget_session`` call from the eviction hook) let the next
+    ``_session_lock(sid)`` mint a FRESH ``RLock`` while the in-flight writer
+    still held the ORIGINAL one, so a second writer could enter the SAME
+    session's critical section concurrently -- the idempotency
+    check-then-persist race the lock exists to prevent.
+
+    **Sabotage:** have the eviction path call ``forget_session`` instead of
+    ``forget_projection`` -> the lock identity changes underneath T1 and T2
+    acquires while T1 still holds it -> red.
+    """
+
+    app = _isolated_app(tmp_path)
+    session = app.state.sessions.create(workspace_id="ws_default", title="lock race")
+    sid = session.id
+    store = app.state.a2ui_store
+    store.apply_batch(sid, _create_batch("s1"))
+
+    lock_before = store._session_lock(sid)
+    t1_inside = threading.Event()
+    t1_release = threading.Event()
+    t2_acquired = threading.Event()
+
+    def _t1() -> None:
+        with store._session_lock(sid):
+            t1_inside.set()
+            t1_release.wait(timeout=5)
+
+    t1 = threading.Thread(target=_t1)
+    t1.start()
+    assert t1_inside.wait(timeout=5), "T1 never entered the critical section"
+
+    try:
+        # Eviction fires WHILE T1 still holds the lock (the exact race the
+        # reviewer's probe names): this must be forget_projection, never
+        # forget_session.
+        store.forget_projection(sid)
+
+        assert store._session_lock(sid) is lock_before, (
+            "eviction must never replace a HELD session lock with a fresh one"
+        )
+
+        def _t2() -> None:
+            if lock_before.acquire(timeout=0.3):
+                t2_acquired.set()
+                lock_before.release()
+
+        t2 = threading.Thread(target=_t2)
+        t2.start()
+        t2.join(timeout=2)
+        assert not t2_acquired.is_set(), "T2 must not enter while T1 still holds the lock"
+    finally:
+        t1_release.set()
+        t1.join(timeout=5)
+
+    # T1 released; the SAME lock object now admits a fresh acquire.
+    assert store._session_lock(sid) is lock_before
+    assert lock_before.acquire(timeout=2), "T2 must be able to enter once T1 releases"
+    lock_before.release()

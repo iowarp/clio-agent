@@ -770,13 +770,20 @@ def build_resident_ledger_set(app: "FastAPI") -> ResidentLedgerSet:
 
 
 def _forget_a2ui_projection(app: "FastAPI", sid: str) -> None:
-    """Drop a just-evicted session's A2UI projection cache, if one exists.
+    """Drop a just-evicted session's A2UI projection cache entry, if any.
 
     ``app.state.a2ui_store`` is always set before this set is built (see
     ``app.py``'s boot order), but stays defensive against a future reorder or
     a test harness that wires a bare ``ResidentLedgerSet`` without it.
+
+    Calls ``forget_projection``, NOT ``forget_session`` (S8 review round 3,
+    issue #1374 item A, HIGH): eviction can fire for a session mid-write on
+    ANOTHER thread, and ``forget_session`` also drops the session's write
+    lock -- letting a concurrent second writer mint a fresh one and enter
+    the same critical section. Only a genuine session DELETE may drop the
+    lock; see ``A2UIStore.forget_projection``'s own docstring.
     """
 
     store = getattr(app.state, "a2ui_store", None)
     if store is not None:
-        store.forget_session(sid)
+        store.forget_projection(sid)
