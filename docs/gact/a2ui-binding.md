@@ -54,9 +54,25 @@ accepts them) and is refused, not silently dropped.
 | Object | Door | Field |
 | --- | --- | --- |
 | `a2uiClientCapabilities` | `POST /v1/sessions/{sid}/messages` | top-level `metadata.a2uiClientCapabilities` |
+| `a2uiClientCapabilities` | `POST /v1/sessions/{sid}/messages/{id}/retry` | top-level `metadata.a2uiClientCapabilities` |
 | `a2uiClientCapabilities` | `POST /v1/sessions/{sid}/a2ui/actions` | top-level `metadata.a2uiClientCapabilities` (new optional body field, beside `message`/`correlation`) |
+| `a2uiClientCapabilities` | `POST /v1/agent-tasks/{id}/steer` | top-level `metadata.a2uiClientCapabilities`, validated against the **CHILD** session (`task.child_session_id`), not the caller's own session |
 | `a2uiClientDataModel` | `POST /v1/sessions/{sid}/messages` | top-level `metadata.a2uiClientDataModel` |
 | `a2uiClientDataModel` | `POST /v1/sessions/{sid}/a2ui/actions` | top-level `metadata.a2uiClientDataModel` |
+| `a2uiClientDataModel` | `POST /v1/agent-tasks/{id}/steer` | top-level `metadata.a2uiClientDataModel`, checked against the **CHILD**'s own `sendDataModel` surfaces |
+
+`POST /v1/sessions/{sid}/messages/{id}/retry` runs the same guard as `POST
+/messages` (malformed capabilities refuse 422; a valid advertisement is
+remembered) but does not rename the data-model key onto the retry record —
+only the two live message/action doors normalize it (S5 reads it from
+there).
+
+`POST /v1/agent-tasks/{id}/steer` is a genuine client door onto the **CHILD**
+session, not "parent forwarding" — a client steering a running child directly
+gets exactly the same treatment `POST /messages` gives its own session,
+scoped to the child. This is distinct from the model-facing `message_agent`
+tool, which never carries any client metadata at all (see "Sub-agent
+stripping" below).
 
 Both keys are documented, **client-writable** metadata — unlike the internal
 turn-control keys in `gact/messaging.py::RESERVED_CLIENT_METADATA_KEYS`
@@ -79,33 +95,52 @@ both doors call, right next to `raise_on_reserved_metadata` on
 `POST /messages` (`gact/message_submission.py`) and right after the
 unknown-top-level-field check on the action route (`gact/routes/a2ui.py`):
 
-1. **Parse + validate `a2uiClientCapabilities`.** Malformed shape -> HTTP 422
+The WHOLE request is validated before anything is remembered — a valid
+`a2uiClientCapabilities` alongside a REFUSED `a2uiClientDataModel` leaves
+nothing persisted; a refused request has no partial effects:
+
+1. **Parse `a2uiClientCapabilities`.** Malformed shape -> HTTP 422
    `a2ui_client_capabilities_invalid`. `inlineCatalogs` present -> HTTP 422
-   `a2ui_inline_catalogs_unsupported`. Absent is not an error — it just means
-   nothing is remembered this request.
-2. **Remember it.** On success, `remember_client_capabilities` persists it on
+   `a2ui_inline_catalogs_unsupported`. Absent is not an error.
+2. **Parse + check `a2uiClientDataModel`.** Malformed shape -> HTTP 422
+   `a2ui_client_data_model_invalid`. Checked against **the target session's
+   own** LIVE surfaces — the caller's session on `POST /messages` and
+   `.../retry`, the **CHILD** session on `POST /agent-tasks/{id}/steer` — a
+   `deleted` surface no longer counts even though its `createSurface`
+   message (and its `sendDataModel` flag) is still in the transcript. If no
+   LIVE surface requested `sendDataModel: true`, the whole request is
+   refused HTTP 422 `a2ui_data_model_not_requested` on **every** door that
+   carries a data model (not only `POST /messages`).
+3. **Remember, only now.** Only after both checks pass does
+   `remember_client_capabilities` persist the capabilities object on
    `Session.metadata["a2ui_client_capabilities"]` through the existing
    `SessionStore.update` path (shallow metadata merge, flush-to-disk on every
    call) — no fifth store (RULE 4). **Last advertisement wins**: a later
    request with a different `supportedCatalogIds` list simply overwrites the
    key. Because `SessionStore.update` flushes synchronously, the
    advertisement **survives a process restart** exactly like `goal`/`loop`
-   session state.
-3. **Parse + validate `a2uiClientDataModel`.** Malformed shape -> HTTP 422
-   `a2ui_client_data_model_invalid`. On `POST /messages` specifically: if no
-   live surface in the session was created with `sendDataModel: true`, the
-   whole request is refused HTTP 422 `a2ui_data_model_not_requested` — a data
-   model nobody asked for is not silently accepted and thrown away.
-4. **Carry it through, renamed.** On success, the accepted message/action
+   session state. A stored value that later fails to re-validate (a
+   hand-edited/corrupted session row) is never read back as a bare `None` —
+   it records the same `a2ui_client_capabilities_invalid` reason, tagged
+   `source="stored"`, before falling back to "no advertisement."
+4. **Carry the data model through, renamed.** On success, the accepted
    record replaces the wire key `a2uiClientDataModel` with the internal,
-   snake_case `a2ui_client_data_model` (the same validated value) — so a
-   consumer downstream (S5 owns ingestion/fold semantics) reads one
-   consistent internal key regardless of which door it arrived through.
+   snake_case `a2ui_client_data_model` (the same validated value) on `POST
+   /messages` and the action route's staged `agent.submit` record, and on
+   `POST /agent-tasks/{id}/steer`'s queued steer metadata — so a consumer
+   downstream (S5 owns ingestion/fold semantics) reads one consistent
+   internal key regardless of which door it arrived through. `POST
+   .../retry` remembers capabilities but does not perform this rename.
+   `a2uiClientCapabilities` is renamed onto `a2ui_client_capabilities` the
+   same way on the message and steer doors' accepted records.
 
 Every refusal above records a typed reason through the S2 per-session ledger
 (`CatalogRegistry.record_session_reason` / `.session_reasons(session_id)`,
 `gact/a2ui_catalogs/reasons.py`) **before** the HTTP exception is raised —
-queryable after the fact, never a bare exception message.
+queryable after the fact, never a bare exception message. The ONE exception:
+a pure READ of the negotiation state (`GET /v1/sessions/{sid}/a2ui/capabilities`)
+computes `select_catalog(..., record=False)` — looking never writes to the
+ledger.
 
 ## Producible vs. installed
 
@@ -137,12 +172,18 @@ list" — `gact/a2ui_capabilities.py::select_catalog(app, session_id, preferred=
 1. No client advertisement remembered yet for this session -> typed
    `a2ui_client_capabilities_unknown`. Selection is never silently defaulted
    to a catalog the client never mentioned.
-2. Otherwise, walk the client's `supportedCatalogIds` **in the client's own
-   preference order** and return the first id that is in this session's
-   PRODUCIBLE set. `preferred` (an explicit tool argument) wins only when it
-   is itself in *both* the client-supported set and the producible set — it
-   never bypasses either.
-3. Zero intersection -> typed `a2ui_catalog_no_client_match`.
+2. If `preferred` (an explicit tool argument) is given, it wins ONLY when it
+   is itself in *both* the client-supported set and the producible set.
+   Otherwise selection stops there with a typed
+   `a2ui_preferred_catalog_not_selectable` — it NEVER falls through to the
+   general preference-order pick below and substitutes a different catalog
+   the caller did not ask for. The reason carries the preferred id and the
+   client-supported ∩ producible intersection, so a caller can tell "asked
+   for X, got nothing" from "asked for X, silently got Y."
+3. With no `preferred` given, walk the client's `supportedCatalogIds` **in
+   the client's own preference order** and return the first id that is in
+   this session's PRODUCIBLE set.
+4. Zero intersection -> typed `a2ui_catalog_no_client_match`.
 
 `select_catalog` always **returns** a `CatalogSelection` (never raises); a
 producer tool (S4) is the one that turns an unsuccessful selection into a
@@ -164,30 +205,49 @@ this module's.
 - `GET /v1/agents`, `GET /v1/agents/{id}` — each row's `metadata` gains
   `a2ui_capabilities`: that row's OWN declaring blueprint's catalogs ∪ the
   builtins (not the caller session's active blueprint — a listing enumerates
-  every agent, most of which are not the session's current one).
+  every agent, most of which are not the session's current one). Resolution
+  mirrors S2's own session activation (path-activated blueprints included,
+  not only installed ones); an unresolved `agent_blueprint_id` records the
+  typed `a2ui_blueprint_unresolved` reason rather than silently falling back
+  to builtins with no signal.
+- `GET /v1/agent-blueprints/{id}` — the detail response gains top-level
+  `a2ui_capabilities`: that ONE blueprint's declared catalog ids ∪ the
+  builtins.
 
 ## Sub-agent stripping
 
 The protocol is explicit: `a2uiClientDataModel` is "sent exclusively to the
 server that created the surface," and orchestrators "MUST strip it before
 sub-agents." `strip_renderer_metadata` removes both raw wire keys
-(`a2uiClientCapabilities`, `a2uiClientDataModel`) and the accepted-message's
-renamed key (`a2ui_client_data_model`) from any metadata mapping about to
-ride onto a spawned child/expert turn. It is applied at every site that
-hands a metadata mapping to a child session:
+(`a2uiClientCapabilities`, `a2uiClientDataModel`) and BOTH accepted-record
+renamed keys (`a2ui_client_capabilities`, `a2ui_client_data_model`) from any
+metadata mapping about to ride onto a spawned child/expert turn.
 
-- `gact/turn_spawn.py::_launch` — a child's FIRST staged user message.
-  Structurally this dict is built fresh (never a copy of the parent's
-  message metadata), so the strip is the enforced invariant against a future
-  change that folds parent metadata in here, proven by
+**The strip belongs at the FORWARDING boundary only — never at a genuine
+client door.** A client steering a running child directly
+(`POST /v1/agent-tasks/{id}/steer`) is not "parent forwarding": it is a
+fresh client-to-child message, so it gets the SAME door guard `POST
+/messages` gives its own session (see above), scoped to the child, and its
+validated/renamed metadata rides onto the child's inbox UNSTRIPPED — a
+client's own advertisement is never silently thrown away without a typed
+reason.
+
+- `gact/turn_spawn.py::_launch` — a child's FIRST staged user message. This
+  dict is a fixed literal (`{"agent_task_id": ..., "spawned_by": ...}`),
+  never a copy of the parent's message metadata, so it structurally cannot
+  carry the renderer keys — no strip call is needed here; the invariant is
+  proven by
   `tests/test_gact/test_a2ui_capabilities.py::test_spawn_child_turn_never_forwards_renderer_metadata`.
-- `gact/agent_message_transport.py::message_in_process` — a mid-run steer
-  onto an already-running child's inbox (reached from both the client-facing
-  `POST /v1/agent-tasks/{task_id}/steer` route and the model-facing
-  `message_agent` tool). This is the one call site where an ARBITRARY
-  caller-supplied metadata mapping genuinely could carry the two keys, so
-  the strip here is a real removal, not just an invariant —
-  proven by `test_message_in_process_strips_renderer_metadata`.
+- `gact/agent_message_transport.py::message_in_process` is a NEUTRAL
+  transport shared by two callers with different semantics, so the decision
+  lives with the caller, not the transport:
+  - `routes/agent_tasks.py::steer_task` (the client door above) validates
+    against the CHILD, renames, and passes the result through unstripped.
+  - `agents/agent_messaging.py::build_message_agent_tool`'s `message_agent`
+    (the true parent->child FORWARDING path) never supplies a `metadata`
+    argument at all today, so there is nothing to strip on that path —
+    if it ever gains one, THAT call site is where `strip_renderer_metadata`
+    belongs, mirroring `_launch`.
 
 `gact/turn_forward.py`, `gact/delegation.py`, `gact/delegation_return.py`,
 `gact/child_forward.py`, and `gact/agents/spawn_runtime*.py` were audited and
@@ -195,19 +255,23 @@ carry no other site that forwards a parent turn's *message* metadata
 wholesale into a child: `spawn_context.inherited_session_scope_metadata`
 copies only an allowlisted SESSION-level prefix set
 (`active_agent_blueprint_*`, `active_expert_pack_*`, `expert_pack_id`) that
-never matches the two renderer keys, by construction.
+never matches the renderer keys, by construction.
 
 ## Typed reasons (S2 ledger, reused)
 
 No new store — every S3 degradation lands in the same per-session ledger S2
 built (`CatalogRegistry.record_session_reason` /
-`gact/a2ui_catalogs/reasons.py`):
+`gact/a2ui_catalogs/reasons.py`), bounded to the SAME 256-row ring the global
+ledger uses (`A2UI_CATALOG_REASON_RING_MAXLEN`) so a long-lived session's
+per-session history cannot grow unbounded (bounded memory is release-gating):
 
 | Reason | When |
 | --- | --- |
-| `a2ui_client_capabilities_invalid` | malformed `a2uiClientCapabilities` |
+| `a2ui_client_capabilities_invalid` | malformed `a2uiClientCapabilities` (`detail.source="stored"` when it was a previously-remembered value that failed re-validation, e.g. a hand-edited session row, rather than a live parse) |
 | `a2ui_inline_catalogs_unsupported` | client sent `inlineCatalogs` |
 | `a2ui_client_data_model_invalid` | malformed `a2uiClientDataModel` |
-| `a2ui_data_model_not_requested` | data model sent, no `sendDataModel` surface |
+| `a2ui_data_model_not_requested` | data model sent, no LIVE `sendDataModel` surface on the target session (the caller's own session, or the CHILD on the steer door) |
 | `a2ui_client_capabilities_unknown` | selection attempted, no advertisement yet |
+| `a2ui_preferred_catalog_not_selectable` | `preferred` not in client-supported ∩ producible |
 | `a2ui_catalog_no_client_match` | selection attempted, zero intersection |
+| `a2ui_blueprint_unresolved` | (S2, reused) a row's `agent_blueprint_id` did not resolve via path-activation or the installed registry -- its `a2ui_capabilities` falls back to builtins-only |
