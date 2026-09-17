@@ -25,9 +25,9 @@ def build_create_a2ui_surface_tool() -> Any:
 
         ``surface_id`` selects the surface: reuse an id from a prior result's
         ``session_surface_ids`` to revise it in place; any other id creates a
-        new one (the result's ``created`` reports which happened).
-        ``catalog_id`` left empty auto-selects the client's preferred
-        producible catalog for a new surface.
+        new one (the result's ``created`` reports which happened). For a new
+        surface, ``catalog_id`` is a preference that must also be client-
+        advertised; leave it empty to auto-select instead.
 
         Component shapes and guidance: load_skill("a2ui-catalog-<slug>");
         one component: load_skill(..., file="catalog.json#/components/<Name>").
@@ -47,22 +47,33 @@ def build_create_a2ui_surface_tool() -> Any:
 
         existing = _common.existing_surface(app, session_id, surface_id)
         is_new = existing is None or existing.state == "deleted"
-        resolved_catalog_id = catalog_id.strip()
-        if not resolved_catalog_id:
-            if not is_new:
-                resolved_catalog_id = existing.catalog_id
-            else:
-                selection = select_catalog(app, session_id)
-                if not selection.ok:
-                    assert selection.reason is not None
-                    return refusal(
-                        selection.reason,
-                        detail=(
-                            "no catalog_id was given and catalog selection did not "
-                            "resolve one for this session"
-                        ),
-                    )
-                resolved_catalog_id = selection.catalog_id or ""
+        if not is_new:
+            # Locked per surface: an existing surface's own catalog wins
+            # regardless of what this call's catalog_id argument says.
+            resolved_catalog_id = existing.catalog_id
+        else:
+            # A NEW surface always crosses the client-preference gate, even
+            # with an explicit catalog_id: "preferred wins only when it is
+            # itself in both the client-supported and the producible set"
+            # (docs/gact/a2ui-binding.md) applies to every caller, not only
+            # the empty-catalog_id default -- a caller that names a specific
+            # catalog either gets exactly that one or a typed refusal, never
+            # a silently substituted different one and never a bypass of
+            # negotiation altogether.
+            preferred = catalog_id.strip() or None
+            selection = select_catalog(app, session_id, preferred=preferred)
+            if not selection.ok:
+                assert selection.reason is not None
+                return refusal(
+                    selection.reason,
+                    detail=(
+                        "catalog selection did not resolve a catalog for this "
+                        "new surface"
+                        if preferred is None
+                        else f"catalog_id {preferred!r} is not selectable for this session"
+                    ),
+                )
+            resolved_catalog_id = selection.catalog_id or ""
 
         messages: list[dict[str, Any]] = []
         if is_new:
@@ -137,8 +148,9 @@ def build_create_a2ui_surface_tool() -> Any:
             "catalog_id": {
                 "type": "string",
                 "description": (
-                    "Producible catalog id, or empty to auto-select the client's "
-                    "preferred producible catalog for a new surface."
+                    "Preferred catalog id for a NEW surface (must be both client-"
+                    "advertised and producible, or the call is refused); empty "
+                    "auto-selects the client's preferred producible catalog."
                 ),
             },
         },

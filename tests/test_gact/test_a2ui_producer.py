@@ -12,7 +12,7 @@ from typing import Any
 
 from clio_agent.gact import context as gact_context
 from clio_agent.gact.a2ui_capabilities import remember_client_capabilities
-from clio_agent.gact.a2ui_catalogs.builtin import workspace_catalog_id
+from clio_agent.gact.a2ui_catalogs.builtin import basic_catalog_id, workspace_catalog_id
 from clio_agent.gact.a2ui_producer import (
     build_create_a2ui_surface_tool,
     build_delete_a2ui_surface_tool,
@@ -22,6 +22,7 @@ from clio_agent.gact.a2ui_producer import (
 from clio_agent.gact.app import build_app
 
 WORKSPACE_ID = workspace_catalog_id()
+BASIC_ID = basic_catalog_id()
 
 
 def _session(tmp_path: Path, monkeypatch: Any) -> tuple[Any, str]:
@@ -36,6 +37,13 @@ def _advertise_workspace_catalog(app: Any, session_id: str) -> None:
     from clio_schemas.a2ui.v0_9_1.capabilities import A2UIClientCapabilities
 
     caps = A2UIClientCapabilities.model_validate({"v0.9": {"supportedCatalogIds": [WORKSPACE_ID]}})
+    remember_client_capabilities(app, session_id, caps)
+
+
+def _advertise_basic_catalog_only(app: Any, session_id: str) -> None:
+    from clio_schemas.a2ui.v0_9_1.capabilities import A2UIClientCapabilities
+
+    caps = A2UIClientCapabilities.model_validate({"v0.9": {"supportedCatalogIds": [BASIC_ID]}})
     remember_client_capabilities(app, session_id, caps)
 
 
@@ -139,10 +147,56 @@ def test_create_with_empty_catalog_id_and_no_advertisement_is_a_typed_refusal(
     assert app.state.a2ui_store.get(sid, "unselectable") is None
 
 
+def test_create_explicit_catalog_id_not_advertised_is_a_typed_refusal(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """S4 adversarial-review fix: an explicit catalog_id for a NEW surface is
+    a PREFERENCE, not a bypass -- it still must cross select_catalog's
+    client-preference gate exactly like the empty-catalog_id default."""
+
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_basic_catalog_only(app, sid)
+
+    result = build_create_a2ui_surface_tool()(
+        surface_id="not-advertised",
+        components=[{"id": "root", "component": "Text", "text": "x"}],
+        catalog_id=WORKSPACE_ID,
+    )
+
+    assert result == {
+        "ok": False,
+        "reason": "a2ui_preferred_catalog_not_selectable",
+        "detail": f"catalog_id {WORKSPACE_ID!r} is not selectable for this session",
+        "hint": "",
+    }
+    assert app.state.a2ui_store.get(sid, "not-advertised") is None
+
+
+def test_create_explicit_catalog_id_advertised_is_honoured(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The positive twin: the same explicit catalog_id succeeds once it is
+    both client-advertised and producible."""
+
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+
+    result = build_create_a2ui_surface_tool()(
+        surface_id="advertised",
+        components=[{"id": "root", "component": "Text", "text": "x"}],
+        catalog_id=WORKSPACE_ID,
+    )
+
+    assert result.get("ok") is not False
+    assert result["rendered"] is True
+    assert result["catalog_id"] == WORKSPACE_ID
+
+
 def test_component_validation_failure_names_the_load_skill_hint(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
 
     result = build_create_a2ui_surface_tool()(
         surface_id="bad-button",
@@ -215,7 +269,8 @@ def test_create_session_unavailable_is_a_typed_refusal(monkeypatch: Any) -> None
 
 
 def test_create_missing_root_component_is_a_typed_refusal(tmp_path: Path, monkeypatch: Any) -> None:
-    _session(tmp_path, monkeypatch)
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
 
     result = build_create_a2ui_surface_tool()(
         surface_id="no-root",

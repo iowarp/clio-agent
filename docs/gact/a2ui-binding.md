@@ -209,33 +209,26 @@ this module's.
 ### S4: how the producer tools actually call this
 
 `create_a2ui_surface(..., catalog_id="")` (`gact/a2ui_producer/create.py`) is
-the one caller of `select_catalog`, and only in the two cases where a catalog
-still needs deciding:
+the one caller of `select_catalog`:
 
-- `catalog_id` empty AND the surface is new -> `select_catalog(app, session_id)`
-  (no `preferred`); a non-selection becomes the typed refusal
-  `{"ok": false, "reason": <CatalogSelection.reason>, "detail": ...}` —
-  the model reads the SAME reason codes this document defines, never a
-  bare exception.
-- `catalog_id` empty AND the surface already exists -> the EXISTING surface's
-  own locked `catalog_id` is reused (no renegotiation of an established
-  surface).
-- `catalog_id` given explicitly (non-empty) -> used AS GIVEN, never routed
-  through `select_catalog`'s client-preference gate. It still crosses every
-  other boundary unchanged: `validate_server_message` refuses an unknown or
-  non-producible id (`a2ui_catalog_unknown` / `a2ui_catalog_not_producible`)
-  exactly as it always has. This is a deliberate reading of "preferred wins
-  only when in both sets": an EXPLICIT tool argument is the caller's own
-  assertion (a blueprint/skill that already knows which catalog it wants),
-  distinct from `select_catalog`'s `preferred=` parameter (which exists for
-  a caller that wants negotiation with a fallback); the two are not required
-  to be the same code path, and collapsing them would additionally require
-  every producer-tool caller that already knows its catalog id to first
-  have a remembered client advertisement, which is not otherwise a
-  precondition of producing a surface. `update_a2ui_components`,
-  `update_a2ui_data_model`, and `delete_a2ui_surface` never take a
-  `catalog_id` argument at all — they always resolve it from the addressed
-  surface's own record.
+- The surface already exists -> the EXISTING surface's own locked
+  `catalog_id` is reused; no renegotiation of an established surface, and
+  the `catalog_id` argument (if any) is ignored.
+- The surface is new -> ALWAYS `select_catalog(app, session_id,
+  preferred=catalog_id or None)`, whether `catalog_id` was left empty or
+  given explicitly. An explicit id is a preference, not an assertion that
+  bypasses the client-preference gate: "preferred wins only when it is
+  itself in both the client-supported and the producible set" applies to
+  every caller uniformly. A non-selection becomes the typed refusal
+  `{"ok": false, "reason": <CatalogSelection.reason>, "detail": ...}` — the
+  model reads the SAME reason codes this document defines, never a bare
+  exception, and a caller-preferred-but-unselectable id refuses with
+  `a2ui_preferred_catalog_not_selectable` rather than silently substituting
+  a different catalog or producing against one the client never advertised.
+
+`update_a2ui_components`, `update_a2ui_data_model`, and
+`delete_a2ui_surface` never take a `catalog_id` argument at all — they
+always resolve it from the addressed surface's own record.
 
 ## Routes
 
