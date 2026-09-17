@@ -73,3 +73,13 @@ When you add or split a module in `clio_agent.gact`:
 See `scripts/check_file_size.py` and `scripts/check_no_class_in_function.py` for
 the enforced guardrails, and the CI `warn:` steps in `.github/workflows/ci.yml`
 that run them. Tracking issue: iowarp/clio-agent#714.
+
+## Protocol bindings
+
+GACT is CLIO's one HTTP front door, so it is also the binding surface for
+protocols CLIO speaks as transport metadata rather than inventing its own
+shape for. See [`a2ui-binding.md`](a2ui-binding.md) for the A2UI 0.9
+capability-negotiation binding: where `a2uiClientCapabilities` /
+`a2uiClientDataModel` ride (message/action metadata), per-session memory
+semantics, catalog selection, and sub-agent stripping
+(`gact/a2ui_capabilities.py`, docs/design/a2ui-compat-campaign-2026-09.md S3).
