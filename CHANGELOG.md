@@ -26,6 +26,8 @@ during external-user verification of v0.9.4.
   while retaining its diagnostic boot log.
 - Managed desktop sessions use a stable app-data workspace instead of
   inheriting whichever directory launched the executable.
+- Managed desktop state is isolated from CLI and test profiles while the full
+  marketplace blueprint catalog remains available on a fresh installation.
 - Four-part CLIO maintenance versions such as `0.9.4.1` are translated to
   numeric SemVer build metadata for Tauri while public tags and asset names
   keep the CLIO release version.
