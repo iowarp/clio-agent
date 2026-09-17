@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal, Mapping
@@ -433,6 +433,7 @@ def fold_action_records(
     surfaces: "dict[tuple[str, str], Any]",
     *,
     state: "ActionFoldState | None" = None,
+    reattach_surface_ids: "Iterable[str] | None" = None,
 ) -> list[dict[str, str]]:
     """Fold a session's ``a2ui_action`` parts onto their owning surfaces.
 
@@ -457,6 +458,18 @@ def fold_action_records(
     default), this is exactly the original full-fold-from-scratch
     behavior — every existing caller (this module's own tests,
     ``A2UIStore`` before this slice) is unaffected.
+
+    ``reattach_surface_ids`` (S8, issue #1374, focused re-review item 2):
+    surface ids to re-attach/re-evaluate from ``state.by_surface`` even when
+    NO new action part arrived for them this call. A createSurface for a
+    PREVIOUSLY-deleted surface id builds a brand-new
+    ``A2UISurfaceRecord`` (empty ``actions``) -- a from-scratch fold always
+    re-attaches that id's whole action history afterward (the action pass
+    runs once, over every action part, at the end); an incremental fold
+    that only walks NEW action parts would otherwise leave that history
+    detached until a fresh action happens to arrive for the SAME id. The
+    caller (``A2UIStore._project``) passes the surface ids its own
+    incremental a2ui fold just (re)created.
 
     Returns:
         Typed degradations for any malformed ``a2ui_action`` part encountered
@@ -489,6 +502,8 @@ def fold_action_records(
         state.latest[record_id] = record
         state.by_surface.setdefault(surface_id, {})[record_id] = record
         touched_surfaces.add(surface_id)
+    if reattach_surface_ids is not None:
+        touched_surfaces.update(reattach_surface_ids)
 
     for surface_id in touched_surfaces:
         surface = surfaces.get((session_id, surface_id))

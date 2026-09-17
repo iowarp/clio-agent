@@ -401,8 +401,16 @@ def _apply_staged_message(
     message_id: str,
     part_id: str,
     observed_at: str,
+    created_surface_ids: "set[str] | None" = None,
 ) -> tuple[str, str, A2UISurfaceRecord]:
-    """Apply one validated message to an uncommitted projection."""
+    """Apply one validated message to an uncommitted projection.
+
+    ``created_surface_ids`` (S8, #1374 item 2): a ``createSurface`` (fresh OR
+    recreating a deleted id) adds ``surface_id`` to it, when given -- lets
+    ``A2UIStore``'s incremental fold know which surfaces need their action
+    history re-attached (``record.py::fold_action_records``'s
+    ``reattach_surface_ids``) even with no new action part this call.
+    """
 
     _, peek_payload = _message_operation(message)
     peek_surface_id = str(peek_payload.get("surfaceId") or "")
@@ -432,6 +440,8 @@ def _apply_staged_message(
             updated_at=observed_at,
         )
         surfaces[key] = surface
+        if created_surface_ids is not None:
+            created_surface_ids.add(surface_id)
     elif surface is None:
         raise A2UIValidationError("A2UI surface does not exist in this session")
     elif surface.state == "deleted":
@@ -463,6 +473,13 @@ def _apply_staged_message(
     surface.messages.append(dict(message))
     surface.revision += 1
     surface.updated_at = observed_at
+    # The repair-exhausted error is scoped to ONE revision (record.py's
+    # fold_action_records: valid only while correlation.revision == surface.
+    # revision); this message just bumped that revision, so a stale error
+    # must not survive onto it -- fold_action_records re-sets it in the same
+    # pass if a FRESH exhausted record at the new revision says so (S8, #1374
+    # item 1: a from-scratch fold never leaves this stale in the first place).
+    surface.error = ""
     if operation == "deleteSurface":
         surface.state = "deleted"
         deleted_in_batch.add(surface_id)
@@ -507,6 +524,7 @@ def _fold_batch(
     part_id: str,
     observed_at: str,
     capture: bool,
+    created_surface_ids: "set[str] | None" = None,
 ) -> list[tuple[str, str, A2UISurfaceRecord]]:
     """Fold one ordered batch into ``surfaces`` in place.
 
@@ -523,6 +541,7 @@ def _fold_batch(
         observed_at: Timestamp stamped on every record this batch touches.
         capture: Snapshot each applied record (publication needs the per-message
             state); readers that discard the result pass ``False``.
+        created_surface_ids: Forwarded to :func:`_apply_staged_message`.
 
     Returns:
         One ``(operation, surface_id, record)`` row per applied message.
@@ -546,6 +565,7 @@ def _fold_batch(
             message_id=message_id,
             part_id=part_id,
             observed_at=observed_at,
+            created_surface_ids=created_surface_ids,
         )
         applied.append((operation, surface_id, _copy_record(record) if capture else record))
     return applied
@@ -639,6 +659,7 @@ def project_a2ui_parts(
     catalogs: CatalogResolver,
     existing_surfaces: dict[tuple[str, str], A2UISurfaceRecord] | None = None,
     existing_degradations: list[dict[str, str]] | None = None,
+    created_surface_ids: "set[str] | None" = None,
 ) -> tuple[dict[tuple[str, str], A2UISurfaceRecord], list[dict[str, str]]]:
     """Fold persisted A2UI parts and quarantine unknown or invalid records.
 
@@ -657,6 +678,10 @@ def project_a2ui_parts(
     module's own tests, ``a2ui_actions/record.py``, ``protocol/v3/
     message.py``) omits both and keeps its current full-fold-from-scratch
     behavior unchanged.
+
+    ``created_surface_ids`` (S8, #1374 item 2): collects, when given, every
+    surface id a ``createSurface`` in ``parts`` established (a rolled-back
+    attempt excluded). See ``_apply_staged_message``.
     """
 
     surfaces = existing_surfaces if existing_surfaces is not None else {}
@@ -711,6 +736,7 @@ def project_a2ui_parts(
                 part_id=part_id,
                 observed_at=recorded_at,
                 capture=False,
+                created_surface_ids=created_surface_ids,
             )
         except A2UICatalogUnknownError as exc:
             for key, record in snapshot.items():
@@ -739,6 +765,8 @@ def project_a2ui_parts(
             for key, record in snapshot.items():
                 if record is None:
                     surfaces.pop(key, None)
+                    if created_surface_ids is not None:
+                        created_surface_ids.discard(key[1])  # rolled back; never took
                 else:
                     surfaces[key] = record
             degradations.append(

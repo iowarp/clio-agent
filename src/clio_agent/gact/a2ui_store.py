@@ -141,6 +141,17 @@ class A2UIStore:
         ever-created leak this store's OWN ``_ProjectionCache`` addition
         would otherwise widen. Called from the session-delete route,
         alongside ``CatalogRegistry.forget_session``.
+
+        Also called (focused re-review item 3) from
+        ``resident_ledgers.py::build_resident_ledger_set``'s ``on_evict``
+        hook whenever ``ResidentLedgerSet`` drops a session's resident
+        message ledger for real capacity/idle-TTL pressure -- otherwise this
+        cache, which holds every surface's full message list, would keep
+        growing unbounded under the SAME load #889's cap was built to bound,
+        a second, unbounded knob no test would catch until OOM. The session
+        itself is NOT gone (it may still be idle-resident on disk), so the
+        next A2UI read simply re-folds from scratch and re-caches -- the same
+        cold-start cost a resident-ledger cache miss already pays.
         """
 
         with self._session_locks_guard:
@@ -270,6 +281,18 @@ class A2UIStore:
                 action_degradations = cache.action_degradations
                 action_state = cache.action_state
                 new_degradations = []
+                # S8 review round (issue #1374, focused re-review item 2):
+                # created_surface_ids collects any id a createSurface in
+                # new_a2ui_parts just (re)established -- including recreating
+                # a previously-DELETED id, which builds a brand-new record
+                # with empty actions. A from-scratch fold always re-attaches
+                # that id's whole action history afterward (its action pass
+                # runs once, over every action part, at the end); this
+                # incremental fold must force the same reattachment even when
+                # no NEW action part arrived this call, from the already-
+                # cached action_state -- never a silent identity-loses-
+                # history gap.
+                created_surface_ids: set[str] = set()
                 if new_a2ui_parts:
                     before = len(degradations)
                     surfaces, degradations = project_a2ui_parts(
@@ -278,14 +301,19 @@ class A2UIStore:
                         catalogs=session_catalog_resolver(self._app, session_id),
                         existing_surfaces=surfaces,
                         existing_degradations=degradations,
+                        created_surface_ids=created_surface_ids,
                     )
                     new_degradations.extend(degradations[before:])
-                if new_action_parts:
+                if new_action_parts or created_surface_ids:
                     before = len(action_degradations)
                     action_degradations = list(action_degradations)
                     action_degradations.extend(
                         fold_action_records(
-                            new_action_parts, session_id, surfaces, state=action_state
+                            new_action_parts,
+                            session_id,
+                            surfaces,
+                            state=action_state,
+                            reattach_surface_ids=created_surface_ids,
                         )
                     )
                     new_degradations.extend(action_degradations[before:])
