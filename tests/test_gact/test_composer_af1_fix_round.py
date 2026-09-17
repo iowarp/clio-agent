@@ -216,9 +216,14 @@ def test_a2ui_approval_respond_refuses_a_permission_outside_its_session_scope(
 def test_a2ui_approval_respond_still_resolves_its_own_session_permission(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from clio_agent.gact.routes import a2ui as a2ui_routes
+    # S5 moved the ``permission`` destination's resolve_permission call out of
+    # routes/a2ui.py into the owner dispatcher (docs/design/a2ui-compat-
+    # campaign-2026-09.md S5) -- the seam to audit is now
+    # gact.a2ui_actions.dispatcher, which imports resolve_permission directly
+    # and calls it via run_off_loop from ``_deliver_permission``.
+    from clio_agent.gact.a2ui_actions import dispatcher as a2ui_dispatcher
 
-    original = a2ui_routes.resolve_permission
+    original = a2ui_dispatcher.resolve_permission
     called_off_loop: list[bool] = []
 
     def audited_resolve(*args: Any, **kwargs: Any) -> dict[str, Any] | None:
@@ -230,7 +235,7 @@ def test_a2ui_approval_respond_still_resolves_its_own_session_permission(
             called_off_loop.append(False)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(a2ui_routes, "resolve_permission", audited_resolve)
+    monkeypatch.setattr(a2ui_dispatcher, "resolve_permission", audited_resolve)
     app = build_app(sessions_path=tmp_path / "sessions.json")
     owner = app.state.sessions.create(workspace_id="ws_default", title="owner")
     app.state.permissions["perm_other"] = {
