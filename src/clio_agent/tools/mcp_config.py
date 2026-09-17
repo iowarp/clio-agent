@@ -576,6 +576,32 @@ def _mcp_uv_cache_dir() -> Path:
     return paths.user_cache_dir() / "mcp-uv-cache"
 
 
+def _desktop_mcp_log_file(namespace: str) -> Path | None:
+    """Return a real stderr sink for MCP children of the desktop supervisor.
+
+    The Windows desktop process captures the Go launcher's stdout/stderr through
+    Rust pipes.  Those handles remain valid for the launcher and Python backend,
+    but are not inheritable by a grandchild.  A stdio MCP server that inherits
+    ``sys.stderr`` therefore receives an invalid handle and can crash merely by
+    reporting installer progress (``OSError(22)``).  FastMCP accepts an explicit
+    log path and opens it in the backend before spawning the MCP child, giving the
+    child a valid handle while preserving its diagnostics.
+
+    Scope this behavior to the managed desktop marker set by the bundled
+    launcher.  CLI and server deployments retain their existing console logs.
+    """
+
+    if os.environ.get("CLIO_DESKTOP_BOOT_HEARTBEAT") != "1":
+        return None
+
+    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
+
+    log_dir = paths.user_cache_dir() / "mcp-stdio"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    safe_namespace = re.sub(r"[^A-Za-z0-9_.-]+", "-", namespace).strip("-.") or "server"
+    return log_dir / f"{safe_namespace}.log"
+
+
 def _bundled_module_launcher(
     command: str, args: Sequence[str]
 ) -> tuple[str, list[str], dict[str, str]] | None:
@@ -717,13 +743,17 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
             from clio_agent.runtime.sandbox_net import register_namespace_child  # noqa: PLC0415
 
             register_namespace_child(cwd, spec.name, sandbox_net_child)
-        return StdioTransport(
+        transport = StdioTransport(
             command=confined.command,
             args=confined.args,
             env={**env, **confined.env_overlay},
             cwd=cwd,
             **confined.popen_kwargs,
         )
+        desktop_log = _desktop_mcp_log_file(spec.name)
+        if desktop_log is not None and hasattr(transport, "log_file"):
+            transport.log_file = desktop_log
+        return transport
 
     from fastmcp.client.transports import StreamableHttpTransport  # noqa: PLC0415
 

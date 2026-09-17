@@ -364,6 +364,32 @@ def test_transport_for_injects_dedicated_uv_cache_dir(tmp_path, monkeypatch):
     assert expected.is_dir()
 
 
+def test_transport_for_desktop_gives_stdio_child_valid_stderr(tmp_path, monkeypatch):
+    """Managed desktop MCP grandchildren write stderr to an inheritable file handle."""
+    from clio_agent import paths
+
+    monkeypatch.setenv("CLIO_USER_DIR", str(tmp_path))
+    monkeypatch.setenv("CLIO_DESKTOP_BOOT_HEARTBEAT", "1")
+
+    stdio = transport_for(
+        spec_from_declaration("geo/status", {"command": sys.executable, "args": ["-c", "pass"]})
+    )
+
+    assert stdio.log_file == paths.user_cache_dir() / "mcp-stdio" / "geo-status.log"
+    assert stdio.log_file.parent.is_dir()
+
+
+def test_transport_for_cli_keeps_stdio_stderr_on_console(monkeypatch):
+    """Non-desktop processes retain FastMCP's normal console stderr behavior."""
+    monkeypatch.delenv("CLIO_DESKTOP_BOOT_HEARTBEAT", raising=False)
+
+    stdio = transport_for(
+        spec_from_declaration("geo", {"command": sys.executable, "args": ["-c", "pass"]})
+    )
+
+    assert stdio.log_file is None
+
+
 def test_transport_for_declaration_uv_cache_dir_wins(tmp_path, monkeypatch):
     """A declaration-provided UV_CACHE_DIR is honored, never overridden by the default."""
     monkeypatch.setenv("CLIO_USER_DIR", str(tmp_path))
