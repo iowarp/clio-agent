@@ -6,6 +6,26 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.4] - 2026-09-16
+
+This patch release completes the v0.9.3 publication by repairing the CLIO TUI
+container build while preserving the same qualified backend, GACT, Marketplace,
+desktop, and website revisions.
+
+### Fixed
+
+- The `clio-tui` Docker build now receives the exact GACT submodule revision and
+  commit time explicitly, so source-only Docker contexts retain truthful TUI
+  version provenance without requiring copied `.git` internals.
+- Cross-compiled TUI release binaries are now inspected with Go's portable
+  binary metadata reader instead of being executed on the Linux build host.
+- CLIO-branded desktop packages now inherit the CLIO release version, so the
+  embedded application version and installer filenames match the release that
+  produced them instead of exposing the independent GACT desktop-shell version.
+- Provider context metadata now reads the catalog bundled with the pinned
+  LiteLLM wheel instead of a mutable upstream branch, preventing release behavior
+  and CI results from changing after a commit has already passed.
+
 ## [0.9.3] - 2026-09-16
 
 This patch release updates the public REUI-first product site and repairs the

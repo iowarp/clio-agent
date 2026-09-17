@@ -4,16 +4,21 @@ LiteLLM ships a curated catalog (``model_prices_and_context_window.json``) expos
 through ``litellm.get_model_info(model)``, which returns ``max_input_tokens`` (the
 context window) and ``max_output_tokens`` for thousands of known models. This is
 the natural metadata source for the **cloud** providers (OpenAI, Anthropic,
-OpenRouter, ...) whose ``/models`` APIs report no context at all — and it is the
-same catalog that bounds clio's actual requests at runtime.
+OpenRouter, ...) whose ``/models`` APIs report no context at all. CLIO uses the
+release-pinned snapshot as a deterministic metadata fallback.
 
-Offline-safe: the catalog is bundled with the ``litellm`` package, so lookups make
-no network call. ``get_model_info`` is strict about ids (it wants the exact mapped
-key, often provider-prefixed), so we probe a few id variants before giving up.
+Offline-safe: lookups read the catalog bundled with the pinned ``litellm`` wheel.
+They intentionally do not call ``litellm.get_model_info`` because importing LiteLLM
+fetches a mutable catalog from its upstream ``main`` branch by default. The bundled
+snapshot keeps release behavior reproducible. Catalog keys are often
+provider-prefixed, so we probe a few id variants before giving up.
 """
 
 from __future__ import annotations
 
+import json
+from functools import lru_cache
+from importlib import resources
 from typing import Any
 
 from clio_agent.providers.handshake.sources._normalize import iter_id_candidates
@@ -36,18 +41,31 @@ def _id_variants(model_id: str) -> list[str]:
     return variants
 
 
+@lru_cache(maxsize=1)
+def _bundled_model_cost_map() -> dict[str, Any]:
+    """Load the immutable model catalog shipped in the pinned LiteLLM wheel."""
+    try:
+        text = (
+            resources.files("litellm")
+            .joinpath("model_prices_and_context_window_backup.json")
+            .read_text(encoding="utf-8")
+        )
+        payload = json.loads(text)
+    except (
+        FileNotFoundError,
+        ModuleNotFoundError,
+        OSError,
+        TypeError,
+        json.JSONDecodeError,
+    ):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {key: value for key, value in payload.items() if isinstance(key, str)}
+
+
 def _get_model_info(candidate: str) -> dict[str, Any] | None:
-    try:
-        import litellm  # noqa: PLC0415
-    except Exception:  # noqa: BLE001 - litellm optional; None when unavailable
-        return None
-    try:
-        info = litellm.get_model_info(candidate)
-    except Exception:  # noqa: BLE001 - unmapped model id is a clean miss (see comment)
-        # get_model_info raises for unmapped ids — a clean miss, try the next.
-        return None
-    # get_model_info returns a ModelInfo TypedDict; coerce to a plain dict for the
-    # declared dict[str, Any] | None return (a clean miss is None).
+    info = _bundled_model_cost_map().get(candidate)
     return dict(info) if isinstance(info, dict) else None
 
 

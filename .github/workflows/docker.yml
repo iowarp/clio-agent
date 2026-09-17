@@ -46,6 +46,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      - name: Resolve GACT source identity
+        id: gact_source
+        if: matrix.image == 'clio-tui'
+        shell: bash
+        run: |
+          echo "revision=$(git -C external/gact-tui rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "build_time=$(git -C external/gact-tui show -s --format=%cI HEAD)" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@v3
       - name: Log in to GHCR
         if: startsWith(github.ref, 'refs/tags/v')
@@ -74,4 +81,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          build-args: |
+            GACT_TUI_REVISION=${{ steps.gact_source.outputs.revision }}
+            GACT_TUI_BUILD_TIME=${{ steps.gact_source.outputs.build_time }}
           provenance: false
