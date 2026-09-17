@@ -278,7 +278,13 @@ class ClioAgent(SUT):
                     payload[_key] = _cast(_val)
             if "system_prompt" in self._overrides:
                 payload["system_prompt"] = self._overrides["system_prompt"]
-            http.put("/v1/providers/lm", json=payload, timeout=180.0).raise_for_status()
+            bind = http.put("/v1/providers/lm", json=payload, timeout=180.0)
+            if bind.is_error:
+                # Surface the server's TYPED reason; a bare HTTPStatusError hides it.
+                raise RuntimeError(
+                    f"LM bind refused ({bind.status_code}) for {payload['provider']!r} "
+                    f"{payload['model']!r} at {payload['api_base']!r}: {bind.text[:800]}"
+                )
             self._wait_lm_ready(http, timeout_s=float(self._overrides.get("bind_timeout_s", 120.0)))
         return self
 
