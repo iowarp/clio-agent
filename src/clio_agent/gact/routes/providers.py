@@ -988,11 +988,11 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 agent = _copy.copy(existing)
                 agent.rebind_lms(cfg)
             else:
-                # First-time agent construction reads the ambient boot config
-                # from env; its throwaway LMs are immediately replaced by the
-                # cfg-built ones below, so no env stamping is needed. Inject the
-                # ONE per-process ARC so this build reuses it (no per-bind ARC churn).
-                agent = await construct_agent_with_relay(app, arc=_process_arc(app))
+                # First-time construction: pass the REQUESTED cfg (#1363) so
+                # __init__ never falls back to the ambient (lm_studio) boot env.
+                agent = await construct_agent_with_relay(
+                    app, arc=_process_arc(app), provider_config=cfg
+                )
                 # The fresh agent built its config + LMs from env (pre-handshake);
                 # carry the handshake-applied cfg + cfg-based LMs onto it so the
                 # context-aware max_tokens / chosen_context are in effect on the
