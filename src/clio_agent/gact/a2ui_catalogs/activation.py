@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from clio_agent.gact.a2ui_catalogs.reasons import record_a2ui_catalog_reason
 from clio_agent.gact.protocol.constants import A2UI_V091
 
 if TYPE_CHECKING:
@@ -31,7 +32,12 @@ def _active_blueprint(app: "FastAPI", session_id: str) -> Any | None:
     Path-first (an explicitly activated on-disk pack decides outright), then
     the installed registry for the session's bound blueprint id — the same
     two-step resolution ``resolve_active_blueprint_servers`` /
-    ``blueprint_mcp_servers`` apply for MCP servers.
+    ``blueprint_mcp_servers`` apply for MCP servers. Discovery goes through
+    ``app.state.a2ui_catalogs.discovered_blueprints()`` (cached, no-silent
+    typed reason on failure) when a registry is available, never a fresh
+    ``discover_agent_blueprints()`` scan per call. Every degradation --
+    parse failure, or a bound blueprint id that resolves to nothing -- is a
+    typed, recorded reason; none return ``None`` silently.
     """
 
     from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
@@ -43,25 +49,47 @@ def _active_blueprint(app: "FastAPI", session_id: str) -> Any | None:
     if not blueprint_id:
         return None
     blueprint_path = _runtime_active_agent_blueprint_path(app, session_id)
-    from clio_agent.gact.agent_blueprints import (  # noqa: PLC0415
-        discover_agent_blueprints,
-        parse_agent_blueprint_root,
-    )
+    from clio_agent.gact.agent_blueprints import parse_agent_blueprint_root  # noqa: PLC0415
 
     if blueprint_path is not None:
         try:
             blueprint = parse_agent_blueprint_root(blueprint_path, scope="session")
-        except Exception:  # noqa: BLE001 - degrade to no active blueprint, not a crash
+        except Exception as exc:  # noqa: BLE001 - typed, recorded, never silent
+            record_a2ui_catalog_reason(
+                "a2ui_blueprint_discovery_failed",
+                blueprint_id=blueprint_id,
+                session_id=session_id,
+                detail=str(exc),
+            )
             return None
-        return blueprint if blueprint.id == blueprint_id and blueprint.enabled else None
-    try:
-        blueprints = discover_agent_blueprints()
-    except Exception:  # noqa: BLE001 - degrade to no active blueprint, not a crash
+        if blueprint.id == blueprint_id and blueprint.enabled:
+            return blueprint
+        record_a2ui_catalog_reason(
+            "a2ui_blueprint_unresolved", blueprint_id=blueprint_id, session_id=session_id
+        )
         return None
-    return next(
-        (row for row in blueprints if row.id == blueprint_id and row.enabled),
-        None,
-    )
+    registry = getattr(app.state, "a2ui_catalogs", None)
+    if registry is not None:
+        blueprints = registry.discovered_blueprints()
+    else:
+        from clio_agent.gact.agent_blueprints import discover_agent_blueprints  # noqa: PLC0415
+
+        try:
+            blueprints = discover_agent_blueprints()
+        except Exception as exc:  # noqa: BLE001 - typed, recorded, never silent
+            record_a2ui_catalog_reason(
+                "a2ui_blueprint_discovery_failed",
+                blueprint_id=blueprint_id,
+                session_id=session_id,
+                detail=str(exc),
+            )
+            return None
+    match = next((row for row in blueprints if row.id == blueprint_id and row.enabled), None)
+    if match is None:
+        record_a2ui_catalog_reason(
+            "a2ui_blueprint_unresolved", blueprint_id=blueprint_id, session_id=session_id
+        )
+    return match
 
 
 def session_producible_catalog_ids(app: "FastAPI", session_id: str) -> list[str]:
@@ -79,13 +107,21 @@ def session_producible_catalog_ids(app: "FastAPI", session_id: str) -> list[str]
         Sorted, deduplicated catalog ids.
     """
 
-    from clio_agent.gact.a2ui_catalogs.blueprint import (
+    from clio_agent.gact.a2ui_catalogs.blueprint import (  # noqa: PLC0415
         blueprint_catalog_map,
         load_blueprint_catalogs,
     )
 
     registry = getattr(app.state, "a2ui_catalogs", None)
-    ids = {entry.catalog_id for entry in registry.builtin()} if registry is not None else set()
+    if registry is None:
+        record_a2ui_catalog_reason(
+            "a2ui_catalog_unavailable",
+            session_id=session_id,
+            detail="app.state.a2ui_catalogs is not set; producibility degrades to no catalogs",
+        )
+        ids: set[str] = set()
+    else:
+        ids = {entry.catalog_id for entry in registry.builtin()}
     blueprint = _active_blueprint(app, session_id)
     if blueprint is not None and blueprint_catalog_map(blueprint):
         ids.update(entry.catalog_id for entry in load_blueprint_catalogs(blueprint))

@@ -11,10 +11,10 @@ from fastapi import FastAPI, HTTPException, Request
 from clio_agent.gact.a2ui import (
     A2UICatalogNotProducibleError,
     A2UICatalogUnknownError,
+    A2UIFunctionNotInCatalogError,
     A2UIValidationError,
     validate_client_action,
 )
-from clio_agent.gact.a2ui_catalogs.reasons import record_a2ui_catalog_reason
 from clio_agent.gact.a2ui_catalogs.routes.a2ui_catalogs import register_a2ui_catalog_routes
 from clio_agent.gact.events import Event
 from clio_agent.gact.off_loop import run_off_loop
@@ -116,15 +116,23 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
                 part_id=str(correlation.get("part_id") or ""),
             )
         except A2UICatalogUnknownError as exc:
-            record_a2ui_catalog_reason(
-                "a2ui_catalog_unknown", catalog_id=exc.catalog_id, session_id=sid
+            app.state.a2ui_catalogs.record_session_reason(
+                sid, "a2ui_catalog_unknown", catalog_id=exc.catalog_id
             )
             raise _error(422, "a2ui_catalog_unknown", str(exc)) from exc
         except A2UICatalogNotProducibleError as exc:
-            record_a2ui_catalog_reason(
-                "a2ui_catalog_not_producible", catalog_id=exc.catalog_id, session_id=sid
+            app.state.a2ui_catalogs.record_session_reason(
+                sid, "a2ui_catalog_not_producible", catalog_id=exc.catalog_id
             )
             raise _error(422, "a2ui_catalog_not_producible", str(exc)) from exc
+        except A2UIFunctionNotInCatalogError as exc:
+            app.state.a2ui_catalogs.record_session_reason(
+                sid,
+                "a2ui_function_not_in_catalog",
+                function_name=exc.function_name,
+                catalog_id=exc.catalog_id,
+            )
+            raise _error(422, "a2ui_function_not_in_catalog", str(exc)) from exc
         except A2UIValidationError as exc:
             raise _error(422, "a2ui_validation_failed", str(exc)) from exc
         # Sibling of the model tool's ``created`` flag: the same fold-derived
@@ -180,6 +188,14 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
             action = validate_client_action(
                 message, surface_id=surface_id, catalog_entry=catalog_entry
             )
+        except A2UIFunctionNotInCatalogError as exc:
+            app.state.a2ui_catalogs.record_session_reason(
+                sid,
+                "a2ui_function_not_in_catalog",
+                function_name=exc.function_name,
+                catalog_id=exc.catalog_id,
+            )
+            raise _error(422, "a2ui_function_not_in_catalog", str(exc)) from exc
         except A2UIValidationError as exc:
             raise _error(422, "a2ui_validation_failed", str(exc)) from exc
 
@@ -277,9 +293,14 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
             # routed dispatcher S5 builds; S2 only acknowledges it here rather
             # than inventing turn-dispatch semantics ahead of that slice.
             destination = str(action.get("destination") or "agent")
-            if destination == "agent":
-                record_a2ui_catalog_reason(
-                    "a2ui_event_destination_undeclared", action=name, session_id=sid
+            # "declared" distinguishes an EXPLICIT sidecar events[name] route
+            # to "agent" from a name the sidecar never mentions at all -- only
+            # the latter is the degradation this reason describes; recording
+            # it for every ordinary agent.submit-shaped event (the common
+            # case) would drown the rare, actionable signal.
+            if not action.get("declared"):
+                app.state.a2ui_catalogs.record_session_reason(
+                    sid, "a2ui_event_destination_undeclared", action=name
                 )
             result["destination"] = destination
 

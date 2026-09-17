@@ -19,6 +19,7 @@ from pydantic import ValidationError as _PydanticValidationError
 
 from clio_agent.gact.a2ui_catalogs.registry import CatalogEntry, CatalogResolver
 from clio_agent.gact.a2ui_catalogs.validation import (
+    A2UIFunctionNotInCatalogError,
     A2UIValidationError,
     validate_components,
     validate_value,
@@ -120,6 +121,29 @@ class A2UICatalogNotProducibleError(A2UIValidationError):
     def __init__(self, catalog_id: str) -> None:
         self.catalog_id = catalog_id
         super().__init__(f"A2UI catalog is not producible in this session: {catalog_id}")
+
+
+class _MemoizedCatalogResolver:
+    """Wraps a ``CatalogResolver``, resolving each distinct id ONCE per instance.
+
+    ``project_a2ui_parts`` folds every message in a transcript through this;
+    a long-lived surface's ``updateComponents``/``updateDataModel`` messages
+    all name the SAME catalog id, so without this a 200-message surface
+    re-queried the (already cached, but still a dict-scan-plus-lock) registry
+    200 times for an answer that cannot change within one fold call.
+    """
+
+    __slots__ = ("_cache", "_inner")
+
+    def __init__(self, inner: CatalogResolver) -> None:
+        self._inner = inner
+        self._cache: dict[tuple[str, str], CatalogEntry | None] = {}
+
+    def get(self, catalog_id: str, protocol_version: str = A2UI_V091) -> CatalogEntry | None:
+        key = (catalog_id, protocol_version)
+        if key not in self._cache:
+            self._cache[key] = self._inner.get(catalog_id, protocol_version)
+        return self._cache[key]
 
 
 @dataclass
@@ -262,7 +286,10 @@ def validate_client_action(
             action's sidecar-declared destination (defaults to ``"agent"``
             when the catalog carries no explicit route for this name, or when
             no entry is supplied). Stored on the returned action as
-            ``destination`` for the dispatcher to consume (S5).
+            ``destination`` for the dispatcher to consume (S5), alongside
+            ``declared`` (whether the sidecar named this event explicitly, vs.
+            falling through to the "agent" default) so a caller can tell
+            "undeclared, defaulted" apart from "explicitly routed to agent".
     """
 
     try:
@@ -282,12 +309,13 @@ def validate_client_action(
         max_depth=MAX_A2UI_DEPTH,
         max_string=max_a2ui_string_chars(),
     )
-    destination = "agent"
-    if catalog_entry is not None:
-        route = catalog_entry.sidecar.events.get(str(action.get("name") or ""))
-        if route is not None:
-            destination = route.destination
-    action["destination"] = destination
+    route = (
+        catalog_entry.sidecar.events.get(str(action.get("name") or ""))
+        if catalog_entry is not None
+        else None
+    )
+    action["destination"] = route.destination if route is not None else "agent"
+    action["declared"] = route is not None
     return action
 
 
@@ -580,6 +608,7 @@ def project_a2ui_parts(
 
     surfaces: dict[tuple[str, str], A2UISurfaceRecord] = {}
     degradations: list[dict[str, str]] = []
+    catalogs = _MemoizedCatalogResolver(catalogs)
     for raw_part in parts:
         part = raw_part.to_wire() if hasattr(raw_part, "to_wire") else raw_part
         if not isinstance(part, Mapping) or part.get("type") != "a2ui":
@@ -673,6 +702,7 @@ def project_a2ui_parts(
 __all__ = [
     "A2UICatalogNotProducibleError",
     "A2UICatalogUnknownError",
+    "A2UIFunctionNotInCatalogError",
     "A2UISurfaceRecord",
     "A2UITranscriptFrozenError",
     "A2UIValidationError",

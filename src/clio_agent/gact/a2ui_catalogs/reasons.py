@@ -81,6 +81,20 @@ _A2UI_CATALOG_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
             "(0.9.1 tolerates this; new catalogs should not)"
         ),
     },
+    "a2ui_blueprint_discovery_failed": {
+        "severity": "warning",
+        "detail": (
+            "Agent Blueprint discovery raised while resolving A2UI catalogs -- the "
+            "session/registry degrades to builtins only, not silently to a stale list"
+        ),
+    },
+    "a2ui_blueprint_unresolved": {
+        "severity": "warning",
+        "detail": (
+            "the session's bound active_agent_blueprint_id did not resolve to any "
+            "discovered or path-activated blueprint -- its declared catalogs are dropped"
+        ),
+    },
 }
 
 #: Bounded ring of recorded reasons, queryable after the fact (same contract

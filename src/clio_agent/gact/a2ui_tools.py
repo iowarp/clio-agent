@@ -8,6 +8,8 @@ from typing import Any, Optional
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.a2ui import (
+    A2UICatalogNotProducibleError,
+    A2UICatalogUnknownError,
     A2UITranscriptFrozenError,
     A2UIValidationError,
 )
@@ -298,6 +300,31 @@ def build_create_a2ui_surface_tool() -> Any:
                 "reason": "transcript_frozen",
                 "session_id": session_id,
                 "surface_id": surface_id,
+            }
+        except A2UICatalogUnknownError as exc:
+            # Routes through the SAME per-session recorder the HTTP production
+            # door uses (adversarial S2 review) -- a session's catalog-boundary
+            # history is retrievable regardless of which door produced it.
+            app.state.a2ui_catalogs.record_session_reason(
+                session_id, "a2ui_catalog_unknown", catalog_id=exc.catalog_id
+            )
+            return {
+                "rendered": False,
+                "reason": "a2ui_catalog_unknown",
+                "session_id": session_id,
+                "surface_id": surface_id,
+                "message": str(exc),
+            }
+        except A2UICatalogNotProducibleError as exc:
+            app.state.a2ui_catalogs.record_session_reason(
+                session_id, "a2ui_catalog_not_producible", catalog_id=exc.catalog_id
+            )
+            return {
+                "rendered": False,
+                "reason": "a2ui_catalog_not_producible",
+                "session_id": session_id,
+                "surface_id": surface_id,
+                "message": str(exc),
             }
         surface = outcome.surfaces[-1]
         registry = outcome.session_surface_ids

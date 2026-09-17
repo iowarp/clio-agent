@@ -128,8 +128,20 @@ def _load_one(blueprint: Any, name: str, reldir: str) -> tuple[CatalogEntry | No
         source="blueprint",
         root_path=root,
         checksum=_checksum(file),
+        install_checksum=_blueprint_install_checksum(blueprint),
     )
     return entry, []
+
+
+def _blueprint_install_checksum(blueprint: Any) -> str:
+    """The owning pack's OWN install checksum (``.clio-install.md``), not the
+    catalog file's content checksum -- stamped like
+    ``blueprint_activation.blueprint_server_map``'s
+    ``CLIO_BLUEPRINT_INSTALL_CHECKSUM`` env var, so a consumer can tell "this
+    catalog came from pack version X" without re-hashing the catalog file."""
+
+    install = blueprint.metadata.get("install")
+    return str(install.get("checksum") or "") if isinstance(install, dict) else ""
 
 
 def validate_blueprint_catalogs(blueprint: Any) -> list[str]:
@@ -165,21 +177,27 @@ def load_blueprint_catalogs(blueprint: Any) -> list[CatalogEntry]:
     return entries
 
 
-def load_all_blueprint_catalogs() -> list[CatalogEntry]:
-    """Return every declared catalog from every discovered Agent Blueprint.
+def load_all_blueprint_catalogs(blueprints: list[Any] | None = None) -> list[CatalogEntry]:
+    """Return every declared catalog from every given (or discovered) Agent Blueprint.
 
-    Discovery re-scans the filesystem each call (same live-rescan contract as
-    ``blueprint_activation.blueprint_mcp_servers``), so a freshly installed or
-    removed pack is reflected on the next registry lookup.
+    Args:
+        blueprints: A pre-discovered blueprint list (``CatalogRegistry``
+            passes its OWN cached :meth:`~registry.CatalogRegistry.
+            discovered_blueprints` result here, so this call never re-scans
+            the filesystem). ``None`` runs a fresh, typed-reason-guarded
+            discovery for standalone callers (tests, CLI) that have no
+            registry to cache through.
     """
 
-    from clio_agent.gact.agent_blueprints import discover_agent_blueprints  # noqa: PLC0415
+    if blueprints is None:
+        from clio_agent.gact.agent_blueprints import discover_agent_blueprints  # noqa: PLC0415
 
+        try:
+            blueprints = discover_agent_blueprints()
+        except Exception as exc:  # noqa: BLE001 - typed, recorded, never silent
+            record_a2ui_catalog_reason("a2ui_blueprint_discovery_failed", detail=str(exc))
+            blueprints = []
     entries: list[CatalogEntry] = []
-    try:
-        blueprints = discover_agent_blueprints()
-    except Exception:  # noqa: BLE001 - a broken discovery must not crash the registry
-        return entries
     for blueprint in blueprints:
         if not blueprint.enabled or not blueprint_catalog_map(blueprint):
             continue

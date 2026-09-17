@@ -46,6 +46,20 @@ class A2UIValidationError(ValueError):
     """
 
 
+class A2UIFunctionNotInCatalogError(A2UIValidationError):
+    """Raised when a ``functionCall`` names a function its catalog does not declare.
+
+    Carries ``function_name`` and ``catalog_id`` so the HTTP door can map it
+    to the typed ``a2ui_function_not_in_catalog`` reason (adversarial S2
+    review) instead of the generic ``a2ui_validation_failed`` code.
+    """
+
+    def __init__(self, function_name: str, catalog_id: str) -> None:
+        self.function_name = function_name
+        self.catalog_id = catalog_id
+        super().__init__(f"A2UI function is not in catalog {catalog_id}: {function_name}")
+
+
 _FORBIDDEN_KEYS = frozenset(
     {
         "css",
@@ -144,7 +158,7 @@ def _validate_function_call(value: Mapping[str, Any], *, entry: "CatalogEntry | 
     functions = entry.file.get("functions", {}) if entry is not None else {}
     if name not in functions:
         catalog_id = entry.catalog_id if entry is not None else "<unresolved>"
-        raise A2UIValidationError(f"A2UI function is not in catalog {catalog_id}: {name}")
+        raise A2UIFunctionNotInCatalogError(name, catalog_id)
 
 
 def validate_value(
@@ -155,15 +169,15 @@ def validate_value(
     depth: int = 0,
     max_depth: int,
     max_string: int,
-    free_form: bool = False,
 ) -> None:
     """Walk one A2UI value, enforcing CLIO's catalog-aware safety policy.
 
-    ``free_form`` marks a subtree that is an action/event ``context`` —
-    arbitrary producer/client DATA, not renderable structure. The SAFETY
-    rules (forbidden keys, function calls, URL literals, string/nesting
-    bounds) still apply there; only structural Action-envelope shape rules
-    (none remain in this walk — see ``gact/a2ui.py``) would be lifted.
+    Every SAFETY rule (forbidden keys, function calls, URL literals,
+    string/nesting bounds) applies uniformly to the whole payload, including
+    an action/event ``context`` subtree -- there is no longer a structural
+    Action-envelope shape this walk enforces (deleted with
+    ``_validate_action``, adversarial S2 review removed the now-dead
+    ``free_form`` parameter that used to gate it).
 
     Args:
         value: The (sub)value to walk.
@@ -175,7 +189,6 @@ def validate_value(
         depth: Current recursion depth.
         max_depth: Nesting bound (caller resolves config once).
         max_string: Per-string character bound (caller resolves config once).
-        free_form: Whether this subtree is action/event context data.
 
     Raises:
         A2UIValidationError: On any safety-policy violation.
@@ -198,7 +211,6 @@ def validate_value(
                 depth=depth + 1,
                 max_depth=max_depth,
                 max_string=max_string,
-                free_form=free_form,
             )
         return
     if not isinstance(value, Mapping):
@@ -214,10 +226,6 @@ def validate_value(
             raise A2UIValidationError("A2UI data bindings must be a non-empty string path")
     if "call" in value and isinstance(value.get("call"), str):
         _validate_function_call(value, entry=entry)
-    # Both envelope shapes that carry a free-form payload -- the ``event`` inside a
-    # component's action and the client action message itself -- pair ``name`` with
-    # ``context``. Everything under that ``context`` is producer/client data.
-    carries_action_context = "name" in value and "context" in value
     for child_key, child_value in value.items():
         if not isinstance(child_key, str):
             raise A2UIValidationError("A2UI object keys must be strings")
@@ -236,7 +244,6 @@ def validate_value(
             depth=depth + 1,
             max_depth=max_depth,
             max_string=max_string,
-            free_form=free_form or (carries_action_context and child_key == "context"),
         )
     if str(value.get("component") or "") == "clio.mermaid.v1":
         source = value.get("source")
@@ -247,6 +254,7 @@ def validate_value(
 
 
 __all__ = [
+    "A2UIFunctionNotInCatalogError",
     "A2UIValidationError",
     "validate_components",
     "validate_value",
