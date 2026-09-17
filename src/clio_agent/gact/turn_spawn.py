@@ -578,12 +578,19 @@ def _launch(app: "FastAPI", task: AgentTask, spec: TaskSpec) -> AgentTask:
 
         text = f"{text}\n\n[workflow_state]\n{json.dumps(spec.workflow_state, sort_keys=True, default=str)}"
 
+    from clio_agent.gact.a2ui_capabilities import strip_renderer_metadata  # noqa: PLC0415
+
+    # strip_renderer_metadata: enforced invariant, not a live leak -- this dict is
+    # built fresh (never copies parent message metadata), a2ui S3.
+    child_metadata = strip_renderer_metadata(
+        {"agent_task_id": task.task_id, "spawned_by": spec.requesting_expert_id}
+    )
     _start_background_user_turn(
         app,
         task.child_session_id,
         child,
         text,
-        metadata={"agent_task_id": task.task_id, "spawned_by": spec.requesting_expert_id},
+        metadata=child_metadata,
         prev_status="idle",
         turn_agent_id=spec.child_expert_id,
     )

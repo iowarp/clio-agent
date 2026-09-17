@@ -380,7 +380,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # continuation-chaining check landed in the new owner module
     # gact/agent_task_wake.py; the waiting_user HITL-forward branch moved to
     # its natural owner gact/child_forward.py (forward_waiting_child).
-    "src/clio_agent/gact/turn_spawn.py": 811,
+    # a2ui S3 (#1369): +7 -- _launch's child staged-message metadata now runs
+    # through strip_renderer_metadata (owner module gact/a2ui_capabilities.py)
+    # so a2uiClientCapabilities/a2uiClientDataModel can never ride onto a
+    # spawned child even if a future change folds parent metadata in here.
+    "src/clio_agent/gact/turn_spawn.py": 818,
     # (invoker.py's entry retired 2026-08: RelayExpertInvoker moved to its own
     # owner module agents/relay_expert_invoker.py, dropping invoker.py under the
     # 800 default cap — the #1221/#1222 contract-alignment growth that broke the
@@ -535,7 +539,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # #948 S4: +10 for round-tripping the module: declaration in the overlay
     # export (an exported react parent re-loaded as predict and failed the new
     # hierarchy validation).
-    "src/clio_agent/gact/routes/agents.py": 931,
+    # a2ui S3 (#1369): +10 for ``_with_a2ui_capabilities`` -- GET /v1/agents and
+    # /v1/agents/{id} rows gain metadata["a2ui_capabilities"] (own blueprint's
+    # declared catalogs ∪ builtins). The catalog derivation itself lives in the
+    # owner module gact/a2ui_capabilities.py; only the thin per-row call + a
+    # small row-mapping helper landed here (no-accretion).
+    "src/clio_agent/gact/routes/agents.py": 941,
     # merge(main->develop): +2 blueprints, +63 catalog, +54 mcp integrating main's
     # #956 MCP-apps runtime tool exposure (runtime MCP tools surfaced in the GACT
     # catalog + reconnect/streamable-http route growth). Part of the #947 MCP-apps

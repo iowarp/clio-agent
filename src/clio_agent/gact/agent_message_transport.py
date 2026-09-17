@@ -8,13 +8,19 @@ from typing import Any
 def message_in_process(invoker: Any, handle: Any, text: str, metadata: Any) -> None:
     """Reuse the established child-session step-boundary steer producer."""
 
+    from clio_agent.gact.a2ui_capabilities import strip_renderer_metadata  # noqa: PLC0415
     from clio_agent.gact.agents.invoker import InvokerError  # noqa: PLC0415
     from clio_agent.gact.live_handle import enqueue_steer_or_raise  # noqa: PLC0415
 
     task = invoker.app.state.agent_task_registry.get(handle.task_id)
     if task is None:
         raise InvokerError(f"unknown task {handle.task_id!r}", reason="unknown_task")
-    enqueue_steer_or_raise(invoker.app, task, text, dict(metadata or {}))
+    # A CHILD's task -- this metadata rides directly onto the child session's
+    # inbox (a live turn's user_msg.metadata), so the same renderer-transport
+    # strip applies as the initial spawn (docs/design/a2ui-compat-campaign-
+    # 2026-09.md S3): a2uiClientCapabilities/a2uiClientDataModel are scoped to
+    # the session that created a surface, never a sibling/descendant task.
+    enqueue_steer_or_raise(invoker.app, task, text, strip_renderer_metadata(metadata))
 
 
 def message_via_relay(invoker: Any, handle: Any, text: str, metadata: Any) -> None:
