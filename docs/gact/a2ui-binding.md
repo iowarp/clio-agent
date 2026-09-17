@@ -314,3 +314,122 @@ per-session history cannot grow unbounded (bounded memory is release-gating):
 | `a2ui_preferred_catalog_not_selectable` | `preferred` not in client-supported ∩ producible |
 | `a2ui_catalog_no_client_match` | selection attempted, zero intersection |
 | `a2ui_blueprint_unresolved` | (S2, reused) a row's `agent_blueprint_id` did not resolve via path-activation or the installed registry -- its `a2ui_capabilities` falls back to builtins-only |
+| `a2ui_data_model_foreign_surface` | (S5) `a2uiClientDataModel` named a surfaceId this session never created -- that entry is dropped, the rest of the request still proceeds |
+| `a2ui_action_duplicate` | (S5) an action resubmitted the same idempotency key -- the existing record is returned, nothing re-delivered |
+| `a2ui_waiting_user_uncorrelated` | (S5) the session is `waiting_user` but no pending question correlates to the action's surface or `context.question_id` -- refused 409 |
+| `a2ui_permission_out_of_scope` | (S5) the action named a `permission_id` outside this session's own scope |
+| `a2ui_repair_exhausted` | (S5) a second `VALIDATION_FAILED` for the same surface revision arrived after one repair delivery -- the surface folds to `state="failed"` |
+| `a2ui_client_error_unhandled` | (S5) a client error report used a code other than `VALIDATION_FAILED` -- persisted, never delivered |
+
+## S5: action lifecycle, delivery matrix, idempotency, and the error round-trip
+
+Slice: S5, [#1372](https://github.com/iowarp/clio-agent/issues/1372). Owner
+package: `src/clio_agent/gact/a2ui_actions/` (`record.py`, `dispatcher.py`,
+`delivery.py`, `narration.py`, `client_state.py`). `routes/a2ui.py` keeps
+only the routes: header negotiation, body parsing, and a thin
+`dispatch_action_negotiated` wrapper that calls the owner
+`dispatch_action(app, sid, client_message, correlation, metadata)`.
+
+**The durable record.** Every client action (or error report) becomes an
+`a2ui_action` transcript Part -- a sibling of the `a2ui` surface part, on the
+SAME ledger, folded by `A2UIStore` into `A2UISurfaceRecord.actions[]`
+(`gact/a2ui_actions/record.py::fold_action_records`, wired into
+`A2UIStore._project`). A record's lifecycle transition (`received ->
+delivered -> consumed`, or `received -> failed`) is append-only: each
+transition mints a NEW part sharing the record's `id`; the fold keeps only
+the latest snapshot per id, in causal (`recorded_at`) order -- exactly the
+convention `project_a2ui_parts` already uses for `a2ui` parts.
+
+**Idempotency.** `idempotency_key = sha256(surfaceId, sourceComponentId,
+timestamp, canonical JSON of context)`. Before persisting anything, the
+dispatcher looks the key up over the surface's own `actions[]`; a match
+returns the EXISTING record (200) and publishes `a2ui.action.duplicate` --
+nothing is re-persisted, nothing is re-delivered. A resubmission of the
+identical envelope (a double-click, a retried POST) is a no-op past the
+first; a genuinely distinct click (a fresh `timestamp`) always mints a new
+record. No cross-request lock guards the check-then-persist window (matching
+the pre-S5 code, which had none either) -- a truly concurrent double
+submission is unhandled, tracked as residual debt rather than blocking this
+slice.
+
+**Delivery matrix**, keyed by the action's sidecar-declared `destination`
+(never its name):
+
+| Destination | Session state | Delivery | Owner |
+| --- | --- | --- | --- |
+| `agent` (default) | idle | `start` | `_start_background_user_turn` (a fresh turn; metadata carries `a2ui_action`/`surface_id`/`a2ui_action_context`) |
+| `agent` | running | `steer` | `loop_inbox.enqueue_user_steer` |
+| `agent` | `waiting_user`, correlated | `resolve_question` | `app.state.answer_user_question` (the pending question tagged `metadata["a2ui_surface_id"] == surfaceId`, or named by `context.question_id`) |
+| `agent` | `waiting_user`, uncorrelated | `rejected` | typed 409 `a2ui_waiting_user_uncorrelated`; the record is durably `failed` |
+| `permission` | any | `permission` | `resolve_permission`, gated to the session's own scope (itself + spawned descendants) |
+| `run`, `operation: "cancel"` | any | `run_cancel` | `cancel_session_state` |
+| `run`, `operation: "retry"` | any | `run_retry` | `app.state.retry_turn_action` |
+
+`gact/a2ui_actions/delivery.py::deliver_to_agent` is the ONE function behind
+every `agent`-destination row, shared verbatim by an ordinary action AND a
+`VALIDATION_FAILED` repair delivery (below) -- a repair is "one more
+agent-bound event," never a special case.
+
+**Structured context is the authoritative agent input.** Every `agent`
+delivery stamps `metadata["a2ui_action"]` (the record id),
+`metadata["surface_id"]`, and `metadata["a2ui_action_context"]` (the
+resolved `context` object, verbatim) onto the staged/steered/resumed turn.
+`narration.py::narration_for` composes the bounded (<=2 KiB), deterministic
+text channel from the SAME context (prefixed by `context.userMessage` when
+present) -- no `text`/`prompt` field is ever required.
+
+**Consumed.** `gact/a2ui_actions/record.py::mark_a2ui_action_consumed` flips
+a `delivered` record to `consumed` (publishing `a2ui.action.consumed`) the
+moment the turn/steer that carried it actually starts executing: hooked at
+`turn.py::_run_turn_in_background` (a fresh or idle-redriven turn -- both
+stage through `_start_background_user_turn`) and
+`steer_delivery.py::compose_steer_block` (a mid-turn-drained steer). A no-op
+for any metadata that carries no `a2ui_action` key or whose record is not
+currently `delivered`.
+
+**The client data-model per-surface filter.** S3's
+`apply_client_metadata_guards` proves only that the SESSION carries at least
+one live `sendDataModel` surface. `client_state.py::filter_owned_data_model`
+narrows further, per surface key: a surfaceId this session never produced is
+dropped with `a2ui_data_model_foreign_surface`; one that exists but is
+deleted or was not created with `sendDataModel: true` is dropped with
+`a2ui_data_model_not_requested`. The rest of the request -- including the
+action's own delivery -- still proceeds; only the offending entries are
+missing from `result["a2ui_client_data_model"]["surfaces"]`.
+
+**The error round-trip.** `client_state.py::ingest_client_error` handles the
+official `{version, error: {...}}` envelope, routed BEFORE any surface
+lookup (a renderer reporting its own rejection is accepted even when
+`surfaceId` cannot be resolved). `VALIDATION_FAILED {surfaceId, path,
+message}`: the FIRST report at a surface's current revision gets exactly one
+repair delivery, narrated `"renderer rejected surface <id> at <path>:
+<message>; repair with update_a2ui_components(...) or load_skill(...)"`; a
+SECOND report at the SAME revision (`prior_error_count_for_revision`) never
+delivers -- the record is `failed`/`a2ui_repair_exhausted` and
+`fold_action_records` folds the SURFACE itself to `state="failed"` (a
+genuine new revision resets the count). Any other error code is persisted
+with `reason="a2ui_client_error_unhandled"` and never delivered.
+
+**Events.** `a2ui.action.received|delivered|consumed|failed|duplicate`,
+scoped like the pre-S5 `a2ui.action.received`. Payload contract (set during
+the S6 client review, gact-tui#407 -- a lenient client schema, unknown keys
+ignored, missing optional keys never gap the stream):
+
+```json
+{
+  "surface_id": "<required>",
+  "action_name": "<required>",
+  "action": "<same value, kept for the pre-S5 consumer>",
+  "source_component_id": "<optional>",
+  "action_id": "<record id>",
+  "state": "received|delivered|consumed|failed",
+  "delivery": "start|steer|resolve_question|permission|run_cancel|run_retry|rejected",
+  "reason": "<typed code when failed/rejected/duplicate>"
+}
+```
+
+**Interactions projection.** `routes/interactions.py::_a2ui_interactions`
+derives `status` from the surface's LATEST action record
+(`delivered`/`consumed` -> `answered`, otherwise `pending`) instead of the
+deleted `/lastAction` data-model write; `payload.last_action` carries that
+record. `_surface_last_action` is deleted.
