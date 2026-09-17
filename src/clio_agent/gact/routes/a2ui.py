@@ -218,11 +218,18 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
                 raise _error(422, "validation_error", "agent.submit requires context.text")
             structured_context = _agent_submit_context(context)
             model_text = _agent_submit_model_text(prompt, structured_context)
-            action_metadata = {
+            action_metadata: dict[str, Any] = {
                 "a2ui_action": name,
                 "surface_id": surface_id,
                 "a2ui_action_context": structured_context,
             }
+            if action_data_model is not None:
+                # Carried on the STAGED record (what S5 reads), not only echoed
+                # in the HTTP response below -- same normalized key as POST
+                # /messages (S3).
+                action_metadata["a2ui_client_data_model"] = action_data_model.model_dump(
+                    mode="json", by_alias=True, exclude_none=True
+                )
             # An agent-bound surface action is the same user intent whether the
             # session is idle or a turn is still unwinding. Reuse the established
             # loop inbox for the busy case so the current turn consumes it at a
