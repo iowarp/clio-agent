@@ -407,9 +407,46 @@ def _resolve_json_pointer_fragment(file_path: str, raw_text: str, fragment: str)
         )
     rendered = json.dumps(node, indent=2, sort_keys=False)
     refs = sorted(_collect_ref_targets(node))
-    if refs:
-        rendered += "\n\nReferences standard shapes: " + ", ".join(refs)
+    # Local refs (bare "#/...", relative to THIS document) are themselves
+    # loadable with another load_skill(..., file="catalog.json#/...") call;
+    # a ref into an external file (typically common_types.json) names a
+    # STANDARD shape this catalog does not define and this call cannot load.
+    local_refs = sorted(f"catalog.json{ref}" for ref in refs if ref.startswith("#/"))
+    standard_refs = sorted(ref for ref in refs if not ref.startswith("#/"))
+    if local_refs:
+        rendered += "\n\nLocal refs (load via file=): " + ", ".join(local_refs)
+    if standard_refs:
+        rendered += "\n\nStandard refs (not loadable here): " + ", ".join(standard_refs)
     return rendered
+
+
+def _resolve_bundled_file(
+    skill_id: str, primary_dir: Path, extra_dirs: tuple[str, ...], file_path: str
+) -> Path:
+    """Resolve ``file_path`` against ``primary_dir``, then each of ``extra_dirs``.
+
+    Each candidate root is path-locked independently (a traversal outside
+    ANY given root is never tolerated just because it lands inside a
+    different one). The first root where the resolved path both stays
+    within bounds AND the file actually exists wins; a path that is within
+    bounds in at least one root but exists in none of them is reported as
+    unreadable, never silently swallowed into "outside."
+    """
+
+    roots = [primary_dir, *(Path(extra) for extra in extra_dirs)]
+    within_any_root = False
+    for root in roots:
+        candidate = (root / file_path).resolve(strict=False)
+        try:
+            candidate.relative_to(root.resolve(strict=False))
+        except ValueError:
+            continue
+        within_any_root = True
+        if candidate.is_file():
+            return candidate
+    if not within_any_root:
+        raise ValueError(f"file {file_path!r} is outside the {skill_id!r} skill directory")
+    raise ValueError(f"bundled file {file_path!r} unreadable: not found")
 
 
 def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
@@ -483,13 +520,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
                 )
         elif file:
             file_path, has_fragment, fragment = file.partition("#")
-            target = (skill_dir / file_path).resolve(strict=False)
-            try:
-                target.relative_to(skill_dir.resolve(strict=False))
-            except ValueError:
-                raise ValueError(
-                    f"file {file_path!r} is outside the {skill_id!r} skill directory"
-                ) from None
+            target = _resolve_bundled_file(skill_id, skill_dir, ref.extra_dirs, file_path)
             try:
                 content = target.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError) as exc:
@@ -518,16 +549,24 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
         bundled: list[str] = []
         if ref.layout == "skill_md":
             skill_md = Path(ref.path).resolve(strict=False)
-            for p in sorted(skill_dir.rglob("*")):
-                rel = str(p.relative_to(skill_dir)).replace("\\", "/")
-                if not p.is_file() or p.resolve(strict=False) == skill_md:
+            roots = [skill_dir, *(Path(extra) for extra in ref.extra_dirs)]
+            capped = False
+            for root in roots:
+                if capped or not root.is_dir():
                     continue
-                if any(part.startswith(".") for part in rel.split("/")):
-                    continue  # dotfiles/.git etc. are not part of the skill surface
-                bundled.append(rel)
-                if len(bundled) >= 50:
-                    bundled.append("... (listing capped at 50 files)")
-                    break
+                for p in sorted(root.rglob("*")):
+                    rel = str(p.relative_to(root)).replace("\\", "/")
+                    if not p.is_file() or p.resolve(strict=False) == skill_md:
+                        continue
+                    if any(part.startswith(".") for part in rel.split("/")):
+                        continue  # dotfiles/.git etc. are not part of the skill surface
+                    if rel in bundled:
+                        continue  # already listed from a higher-precedence root
+                    bundled.append(rel)
+                    if len(bundled) >= 50:
+                        bundled.append("... (listing capped at 50 files)")
+                        capped = True
+                        break
         trace.event("SKILLS", "agent %s loaded skill %s (%s)", agent_id, skill_id, ref.path)
         _emit_loaded(len(body.encode("utf-8")))
         listing = (

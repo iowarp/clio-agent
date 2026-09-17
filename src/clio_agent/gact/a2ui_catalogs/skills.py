@@ -147,12 +147,19 @@ def generate_catalog_skill_body(entry: "CatalogEntry") -> str:
 
 
 def _catalog_skill_ref(entry: "CatalogEntry") -> SkillRef:
-    # The bundled-file root is catalog.json's OWN parent directory, not
-    # ``entry.root_path`` -- the two differ for the vendored Basic catalog
-    # (asymmetric layout, ``builtin.py``'s module docstring). This is what
-    # makes ``load_skill(id, file="catalog.json#/...")`` read the same
-    # official bytes the server validates against for EVERY catalog.
-    root = Path(entry.catalog_file_path).parent
+    # PRIMARY root = the sidecar directory (entry.root_path): holds
+    # catalog.clio.json + instructions.md for every catalog, and catalog.json
+    # too for every catalog EXCEPT the vendored Basic catalog, whose
+    # catalog.json lives elsewhere (asymmetric layout, ``builtin.py``'s
+    # module docstring). SECONDARY root = catalog.json's own parent
+    # directory, added to ``extra_dirs`` only when it differs from the
+    # primary root -- this is what makes BOTH
+    # load_skill(id, file="instructions.md") and
+    # load_skill(id, file="catalog.json#/...") work for every catalog,
+    # Basic included, without exposing anything outside these two locations.
+    root = Path(entry.root_path)
+    catalog_dir = Path(entry.catalog_file_path).parent
+    extra_dirs = () if catalog_dir == root else (str(catalog_dir),)
     file = entry.file
     skill_id = catalog_skill_id(entry)
     description = str(file.get("description") or file.get("title") or entry.catalog_id)
@@ -165,6 +172,7 @@ def _catalog_skill_ref(entry: "CatalogEntry") -> SkillRef:
         # comes from ``body_provider``, never ``Path(path).read_text()``.
         path=str(root / "SKILL.md"),
         dir=str(root),
+        extra_dirs=extra_dirs,
         scope="catalog",
         source=entry.source,
         layout="skill_md",

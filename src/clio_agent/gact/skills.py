@@ -105,6 +105,15 @@ class SkillRef:
     ``load_skill(id, file=...)`` path-locking and reads work unchanged), but
     the ``SKILL.md`` itself is synthesized, never written out. Set by
     :mod:`clio_agent.gact.a2ui_catalogs.skills` for the ``catalog`` scope.
+
+    ``extra_dirs``, when set, names ADDITIONAL bundled-file roots
+    ``load_skill(id, file=...)`` may resolve ``file`` against, tried in
+    order AFTER ``dir`` (path-locked to each in turn, same as ``dir``). A
+    generated catalog skill's real files are not always all under one
+    directory (the vendored Basic catalog's ``catalog.json`` lives outside
+    its sidecar directory -- ``a2ui_catalogs/builtin.py``'s module
+    docstring); this is how one skill discloses more than one real root
+    without inventing a second path-locking mechanism.
     """
 
     id: str
@@ -119,6 +128,7 @@ class SkillRef:
     body: str = ""
     checksum: str = ""
     body_provider: Optional[Callable[[], str]] = None
+    extra_dirs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -232,12 +242,33 @@ class SkillCatalog:
         only when it happens to also be globally installed. Deferred import
         (see the module docstring): this is the one place
         :mod:`clio_agent.gact.skills` reaches into ``a2ui_catalogs``.
+
+        Two DIFFERENT "nothing to disclose" cases, told apart (adversarial-
+        review fix -- both used to return ``[]`` silently):
+
+        * ``self._app is None`` -- the APP-LESS unit case (a bare
+          ``SkillCatalog()`` in a unit test, or an app-less rebuild). There
+          is no session to scope producibility to, so an empty catalog
+          scope is structurally correct, not a degradation -- documented
+          here as the ONE case this method stays silent for.
+        * ``self._app`` is set but there is no session id, or the app
+          carries no ``a2ui_catalogs`` registry -- a REAL request/session
+          context exists, so resolving nothing is a typed, queryable
+          degradation: recorded to ``self.scan_errors`` (the same list
+          :meth:`_scan_root` already uses for a skill-file read failure),
+          never silent.
         """
 
         if self._catalog_cache is not None:
             return self._catalog_cache
+        if self._app is None:
+            self._catalog_cache = []
+            return self._catalog_cache
         has_registry = getattr(getattr(self._app, "state", None), "a2ui_catalogs", None) is not None
-        if self._app is None or not self._session_id or not has_registry:
+        if not self._session_id or not has_registry:
+            self.scan_errors.append(
+                {"scope": "catalog", "error": "a2ui_catalog_registry_unavailable"}
+            )
             self._catalog_cache = []
             return self._catalog_cache
         from clio_agent.gact.a2ui_catalogs.activation import (  # noqa: PLC0415

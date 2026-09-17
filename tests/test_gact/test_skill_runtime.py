@@ -610,6 +610,40 @@ def test_producer_tool_declaration_auto_declares_catalog_skills_for_a_child(
     assert "a2ui-catalog-clio-workspace" in rt.resolved
 
 
+def test_catalog_scope_records_a_typed_scan_error_when_session_scoped_but_no_registry(
+    tmp_path: Path,
+) -> None:
+    """Adversarial-review fix: an app IS present (a real request/session
+    context) but no session id / no a2ui_catalogs registry -- this is a
+    degradation, not the app-less unit "nothing to disclose" case, and must
+    be recorded to scan_errors instead of returning [] silently."""
+
+    from types import SimpleNamespace
+
+    stub_app = SimpleNamespace(state=SimpleNamespace())  # no a2ui_catalogs attribute
+    catalog = SkillCatalog(app=stub_app, session_id="sess_x")
+
+    refs = catalog._catalog_refs()
+
+    assert refs == []
+    assert catalog.scan_errors == [
+        {"scope": "catalog", "error": "a2ui_catalog_registry_unavailable"}
+    ]
+
+
+def test_catalog_scope_app_less_unit_case_stays_silent(tmp_path: Path) -> None:
+    """The documented ONE silent case: no app at all (a bare SkillCatalog(),
+    as most of this test file's own fixtures build) is not a degradation --
+    there is no session to scope producibility to in the first place."""
+
+    catalog = SkillCatalog(cwd=tmp_path)
+
+    refs = catalog._catalog_refs()
+
+    assert refs == []
+    assert catalog.scan_errors == []
+
+
 def test_plain_child_with_no_producer_tool_gets_no_catalog_skills(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="child")
@@ -670,4 +704,49 @@ def test_catalog_skill_component_file_matches_the_validated_catalog(tmp_path: Pa
     out = tool.func(skill_id="a2ui-catalog-basic", file="catalog.json#/components/Button")
 
     assert '"const": "Button"' in out
+    assert "common_types.json#/$defs/Action" in out
+
+
+def test_catalog_skill_basic_exposes_both_sidecar_and_catalog_file_roots(
+    tmp_path: Path,
+) -> None:
+    """Adversarial-review fix: the Basic catalog's asymmetric layout (sidecar
+    files in one directory, catalog.json in another) must not hide either
+    root from load_skill -- both the sidecar's instructions.md and the
+    catalog file's own component schemas must be reachable."""
+
+    from clio_agent.gact.a2ui_catalogs.builtin import load_builtin_catalogs
+    from clio_agent.gact.app import build_app
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="root")
+    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    rt = skill_runtime_for_agent(app, root, session_id=session.id)
+    tool = build_load_skill_tool(root, rt)
+
+    basic, _ = load_builtin_catalogs()
+    instructions = tool.func(skill_id="a2ui-catalog-basic", file="instructions.md")
+    component = tool.func(skill_id="a2ui-catalog-basic", file="catalog.json#/components/Button")
+
+    assert instructions.strip() == basic.instructions.strip()
+    assert '"const": "Button"' in component
+
+
+def test_catalog_skill_fragment_trailer_distinguishes_local_from_standard_refs(
+    tmp_path: Path,
+) -> None:
+    from clio_agent.gact.app import build_app
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="root")
+    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    rt = skill_runtime_for_agent(app, root, session_id=session.id)
+    tool = build_load_skill_tool(root, rt)
+
+    out = tool.func(
+        skill_id="a2ui-catalog-clio-workspace", file="catalog.json#/components/Button"
+    )
+
+    assert "Local refs (load via file=): catalog.json#/$defs/CatalogComponentCommon" in out
+    assert "Standard refs (not loadable here):" in out
     assert "common_types.json#/$defs/Action" in out
