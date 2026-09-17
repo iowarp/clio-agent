@@ -14,13 +14,14 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from clio_agent.gact.a2ui_catalogs.builtin import workspace_catalog_id
 from clio_agent.gact.app import build_app
 from clio_agent.gact.ask_user_tool import arm_ask_user_deadline
-from clio_agent.gact.protocol_v3 import CLIO_A2UI_CATALOG_ID
 from clio_agent.gact.types import UserQuestion
 from tests._config_layer import set_config
 
 HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
+CLIO_A2UI_CATALOG_ID = workspace_catalog_id()
 
 
 def _armed_question(app: object, sid: str, question_id: str, *, ttl_s: int = 3600) -> UserQuestion:
@@ -139,7 +140,8 @@ def _a2ui_surface(client: TestClient, sid: str, surface_id: str) -> dict[str, ob
 def test_approval_respond_context_action_is_data_not_a_nested_action_envelope() -> None:
     """``approval.respond`` was unroutable: its own context.action failed validation."""
 
-    from clio_agent.gact.a2ui import A2UIValidationError, _validate_value, validate_client_action
+    from clio_agent.gact.a2ui import A2UIValidationError, validate_client_action
+    from clio_agent.gact.a2ui_catalogs.validation import validate_value
 
     message = {
         "version": "v0.9.1",
@@ -157,7 +159,7 @@ def test_approval_respond_context_action_is_data_not_a_nested_action_envelope() 
     # The SAFETY rules still apply inside a free-form action context.
     for unsafe in ({"style": "x"}, {"call": "x"}, {"url": "http://evil"}):
         with pytest.raises(A2UIValidationError):
-            _validate_value(
+            validate_value(
                 {
                     "id": "b",
                     "component": "Button",
@@ -167,7 +169,10 @@ def test_approval_respond_context_action_is_data_not_a_nested_action_envelope() 
                             "context": {"permission_id": "p", "action": "allow", **unsafe},
                         }
                     },
-                }
+                },
+                entry=None,
+                max_depth=20,
+                max_string=16 * 1024,
             )
 
 
