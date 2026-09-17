@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, HTTPException
 
 from clio_agent.gact.a2ui_capabilities import (
+    A2UI_CLIENT_CAPABILITIES_METADATA_KEY,
+    A2UI_CLIENT_CAPABILITIES_WIRE_KEY,
     A2UI_CLIENT_DATA_MODEL_METADATA_KEY,
     A2UI_CLIENT_DATA_MODEL_WIRE_KEY,
     A2UICapabilitiesError,
@@ -580,12 +582,16 @@ def accept_message(
 
     behavior = req.behavior.model_dump()
     metadata = dict(req.metadata)
+    # Already schema-validated in ``_apply_a2ui_client_metadata_guards`` above
+    # (strict + extra="forbid"/"allow", so the raw value IS the canonical shape)
+    # -- renamed onto the accepted message under the internal snake_case key so
+    # neither wire key ever lands verbatim in a stored record (S5 owns fold
+    # semantics; this is normalization, not a decision).
+    if A2UI_CLIENT_CAPABILITIES_WIRE_KEY in metadata:
+        metadata[A2UI_CLIENT_CAPABILITIES_METADATA_KEY] = metadata.pop(
+            A2UI_CLIENT_CAPABILITIES_WIRE_KEY
+        )
     if A2UI_CLIENT_DATA_MODEL_WIRE_KEY in metadata:
-        # Already schema-validated in ``_apply_a2ui_client_metadata_guards`` above
-        # (strict + extra="forbid", so the raw value IS the canonical shape) --
-        # renamed onto the accepted message under the internal snake_case key so
-        # the wire key never lands verbatim in a stored record (S5 owns fold
-        # semantics; this is normalization, not a decision).
         metadata[A2UI_CLIENT_DATA_MODEL_METADATA_KEY] = metadata.pop(
             A2UI_CLIENT_DATA_MODEL_WIRE_KEY
         )
