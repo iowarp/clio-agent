@@ -1,5 +1,9 @@
 # ARC live context plane — roadmap beyond v1
 
+> **Active campaign (2026-09):** A2UI 0.9.1 compatibility —
+> `docs/design/a2ui-compat-campaign-2026-09.md`, umbrella
+> [#1363](https://github.com/iowarp/clio-agent/issues/1363).
+
 v1 (the single-node *logical* plane) is DONE and green on real ALCF: the DSPy ReAct
 loop reads its prompt FROM ARC each iteration; the four ops + per-expert 90%
 auto-compaction + ARC/Trace separation are proven (byte-equality, mutation-propagation,
