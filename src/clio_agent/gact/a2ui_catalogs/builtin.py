@@ -63,6 +63,11 @@ def _load_basic() -> CatalogEntry:
         source="builtin",
         root_path=_resource_root() / _BASIC_SIDECAR_DIR,
         checksum=_checksum(file),
+        name="basic",
+        # The asymmetric layout this module's docstring describes: Basic's
+        # catalog.json is NOT under root_path (the sidecar dir) -- it lives
+        # beside the rest of the vendored 0.9.1 spec.
+        catalog_file_path=_resource_root() / _BASIC_CATALOG_FILE_RELPATH,
     )
 
 
@@ -77,6 +82,7 @@ def _load_workspace() -> CatalogEntry:
         source="builtin",
         root_path=_resource_root() / _WORKSPACE_DIR,
         checksum=_checksum(file),
+        name="clio-workspace",
     )
 
 

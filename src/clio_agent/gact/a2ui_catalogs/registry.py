@@ -71,6 +71,27 @@ class CatalogEntry:
             ``CLIO_BLUEPRINT_INSTALL_CHECKSUM``) -- distinct from
             ``checksum`` (the catalog FILE's own bytes). Empty for a builtin
             catalog, which has no install lifecycle.
+        name: The short local slug this catalog is known by beside its full
+            ``catalogId`` -- ``"basic"``/``"clio-workspace"`` for the two
+            builtins, or the pack's own ``a2ui_catalogs:`` key for a
+            blueprint-declared catalog (``blueprint.py``'s
+            ``blueprint_catalog_map`` keys, NOT derived from ``root_path``,
+            which may differ from the declared name via a custom ``reldir``).
+            The sole consumer today is :mod:`clio_agent.gact.a2ui_catalogs.
+            skills` (S4), which mints the ``a2ui-catalog-<name>`` skill id
+            from it -- kept on the entry rather than re-derived by callers so
+            there is exactly one place that decides a catalog's short name.
+        catalog_file_path: The ``catalog.json`` FILE's own path -- distinct
+            from ``root_path`` because the vendored Basic catalog's layout is
+            asymmetric (``builtin.py``'s module docstring): its
+            ``catalog.json`` lives beside the rest of the vendored 0.9.1
+            spec, while ``root_path`` (its sidecar/instructions directory)
+            does not contain it. Defaults to ``root_path / "catalog.json"``,
+            true for every catalog except vendored Basic. The catalog-skill
+            bundled-file root (S4, :mod:`clio_agent.gact.a2ui_catalogs.
+            skills`) is this path's PARENT, so ``load_skill(id,
+            file="catalog.json#/...")`` reads the same official bytes the
+            server validates against for every catalog, Basic included.
     """
 
     catalog_id: str
@@ -83,6 +104,8 @@ class CatalogEntry:
     checksum: str
     validators: dict[str, Draft202012Validator]
     install_checksum: str = ""
+    name: str = ""
+    catalog_file_path: Path = Path()
 
 
 class CatalogResolver(Protocol):
@@ -128,8 +151,15 @@ def make_entry(
     root_path: Path,
     checksum: str,
     install_checksum: str = "",
+    name: str = "",
+    catalog_file_path: "Path | None" = None,
 ) -> CatalogEntry:
-    """Build one :class:`CatalogEntry`, compiling (or reusing cached) validators."""
+    """Build one :class:`CatalogEntry`, compiling (or reusing cached) validators.
+
+    ``catalog_file_path`` defaults to ``root_path / "catalog.json"`` -- true
+    for every catalog except the vendored Basic catalog, whose loader passes
+    the real path explicitly (see :attr:`CatalogEntry.catalog_file_path`).
+    """
 
     return CatalogEntry(
         catalog_id=str(file["catalogId"]),
@@ -138,10 +168,12 @@ def make_entry(
         sidecar=sidecar,
         instructions=instructions,
         source=source,
+        catalog_file_path=catalog_file_path or (root_path / "catalog.json"),
         install_checksum=install_checksum,
         root_path=root_path,
         checksum=checksum,
         validators=compiled_validators(checksum, file),
+        name=name,
     )
 
 

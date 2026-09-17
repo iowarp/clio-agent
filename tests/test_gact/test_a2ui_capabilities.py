@@ -452,14 +452,19 @@ def test_spawn_child_turn_never_forwards_renderer_metadata(
             ),
         )
 
-        deadline = time.monotonic() + 10.0
-        settled = None
-        while time.monotonic() < deadline:
-            settled = app.state.agent_task_registry.get(task.task_id)
-            if settled is not None and settled.is_terminal:
-                break
-            time.sleep(0.05)
-        assert settled is not None and settled.status == "completed", (
+        # Wait on the task's own completion primitive (turn_spawn.py's
+        # AgentTaskRegistry.event -- a threading.Event set on terminal
+        # transition, the S6 wait primitive `wait_agent_tasks` itself
+        # blocks on) rather than a bare sleep-poll: efficient (no polling
+        # granularity to tune) and correct across the thread boundary
+        # (TestClient runs the app's event loop on its own thread). The
+        # ceiling stays generous -- a cold first turn imports litellm,
+        # measured ~9.3s under load even with LITELLM_LOCAL_MODEL_COST_MAP
+        # pinned (see conftest.py) -- rather than fixed at exactly the
+        # measured worst case.
+        completed = app.state.agent_task_registry.event(task.task_id).wait(timeout=30.0)
+        settled = app.state.agent_task_registry.get(task.task_id)
+        assert completed and settled is not None and settled.status == "completed", (
             settled.status if settled else "no task"
         )
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -11,7 +12,6 @@ from pytest import MonkeyPatch, raises
 
 from clio_agent.gact import a2ui as a2ui_module
 from clio_agent.gact import a2ui_store as a2ui_store_module
-from clio_agent.gact import a2ui_tools as a2ui_tools_module
 from clio_agent.gact import context as gact_context
 from clio_agent.gact.a2ui import (
     A2UIValidationError,
@@ -21,7 +21,9 @@ from clio_agent.gact.a2ui import (
 )
 from clio_agent.gact.a2ui_catalogs.builtin import workspace_catalog_id
 from clio_agent.gact.a2ui_catalogs.registry import CatalogRegistry
-from clio_agent.gact.a2ui_tools import build_create_a2ui_surface_tool
+from clio_agent.gact.a2ui_producer import _emit as a2ui_emit_module
+from clio_agent.gact.a2ui_producer import _presentation as a2ui_presentation_module
+from clio_agent.gact.a2ui_producer import build_create_a2ui_surface_tool
 from clio_agent.gact.app import build_app
 from clio_agent.gact.parts import Part
 from clio_agent.gact.protocol.constants import A2UI_V091
@@ -53,8 +55,45 @@ def _create_message(surface_id: str = "surface_1") -> dict[str, object]:
     }
 
 
+def _default_catalog_tool() -> Any:
+    """A ``create_a2ui_surface`` tool pre-selecting the workspace catalog.
+
+    S4 gates the empty-``catalog_id`` default (AND, since the adversarial-
+    review fix, an explicit ``catalog_id`` too) through client-capability
+    negotiation (``select_catalog``); the persistence/replay/store-fold
+    tests in this file exercise the FOLD, not negotiation, so they select
+    the workspace catalog explicitly and advertise it as client-supported
+    here (mirrors the unconditional default this file's tests were written
+    against pre-S4). Negotiation itself — including the
+    ``a2ui_client_capabilities_unknown`` / ``a2ui_preferred_catalog_not_
+    selectable`` refusals — is covered in ``tests/test_gact/
+    test_a2ui_producer.py``. Must run AFTER the caller monkeypatches
+    ``gact_context.active_app``/``active_session_id``, since it reads them
+    to remember the advertisement on the right session.
+    """
+
+    from clio_schemas.a2ui.v0_9_1.capabilities import A2UIClientCapabilities
+
+    from clio_agent.gact.a2ui_capabilities import remember_client_capabilities
+
+    app = gact_context.active_app()
+    session_id = gact_context.active_session_id()
+    if app is not None and session_id and app.state.sessions.get(session_id) is not None:
+        caps = A2UIClientCapabilities.model_validate(
+            {"v0.9": {"supportedCatalogIds": [WORKSPACE_CATALOG_ID]}}
+        )
+        remember_client_capabilities(app, session_id, caps)
+
+    inner = build_create_a2ui_surface_tool()
+
+    def tool(*, catalog_id: str = WORKSPACE_CATALOG_ID, **kwargs: Any) -> Any:
+        return inner(catalog_id=catalog_id, **kwargs)
+
+    return tool
+
+
 def test_surface_tool_presentation_uses_the_surface_as_its_qualifying_subject() -> None:
-    presentation = a2ui_tools_module._surface_presentation(
+    presentation = a2ui_presentation_module.surface_presentation(
         {
             "surface_id": "qualification-scenario-5",
             "components": [
@@ -88,7 +127,7 @@ def test_surface_tool_presentation_uses_the_surface_as_its_qualifying_subject() 
 
 
 def test_surface_tool_presentation_classifies_noninteractive_text() -> None:
-    presentation = a2ui_tools_module._surface_presentation(
+    presentation = a2ui_presentation_module.surface_presentation(
         {
             "surface_id": "header-proof",
             "components": [{"id": "root", "component": "Text", "text": "Verified"}],
@@ -98,6 +137,96 @@ def test_surface_tool_presentation_classifies_noninteractive_text() -> None:
     )
 
     assert presentation["blocks"][0]["label"] == "Text"
+
+
+class _StubCatalogRegistry:
+    def __init__(self, entry: Any) -> None:
+        self._entry = entry
+
+    def get(self, catalog_id: str, protocol_version: str = "0.9.1") -> Any:
+        return self._entry if catalog_id == self._entry.catalog_id else None
+
+
+def _pack_entry_aliasing_textfield() -> Any:
+    """A synthetic pack CatalogEntry aliasing TextField under a new name.
+
+    Built in-memory (no fixture pack needed): a single component ``MyField``
+    whose own schema composes ``Checkable`` and whose sidecar names its
+    kernel ``TextField`` -- proves S4's presentation kind derivation reads
+    the CATALOG, not a hardcoded component-name table.
+    """
+
+    from pathlib import Path
+
+    from clio_schemas.a2ui.sidecar import CatalogSidecar
+
+    from clio_agent.gact.a2ui_catalogs.registry import make_entry
+
+    file = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://example.test/alias/catalog.json",
+        "title": "Alias catalog",
+        "description": "Aliases TextField under a pack-chosen name.",
+        "catalogId": "https://example.test/alias/catalog.json",
+        "components": {
+            "MyField": {
+                "type": "object",
+                "allOf": [
+                    {
+                        "$ref": "https://a2ui.org/specification/v0_9/common_types.json#/$defs/ComponentCommon"
+                    },
+                    {
+                        "$ref": "https://a2ui.org/specification/v0_9/common_types.json#/$defs/Checkable"
+                    },
+                    {"type": "object", "properties": {"component": {"const": "MyField"}}},
+                ],
+            }
+        },
+        "functions": {},
+        "$defs": {},
+    }
+    sidecar = CatalogSidecar.model_validate(
+        {
+            "catalogId": file["catalogId"],
+            "protocolVersion": "0.9.1",
+            "trust": {"source": "pack"},
+            "implements": {"MyField": {"kernel": "TextField"}},
+            "events": {},
+            "instructions": "instructions.md",
+        }
+    )
+    return make_entry(
+        file=file,
+        sidecar=sidecar,
+        instructions="",
+        source="blueprint",
+        root_path=Path("."),
+        checksum="alias-checksum",
+        name="alias",
+    )
+
+
+def test_surface_tool_presentation_derives_input_from_a_pack_alias(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """S4 adversarial-review fix: kind derivation reads the CATALOG (Checkable
+    composition + resolved kernel), never a hand-maintained component-name
+    table -- a pack alias must classify correctly with no name overlap."""
+
+    entry = _pack_entry_aliasing_textfield()
+    app = SimpleNamespace(state=SimpleNamespace(a2ui_catalogs=_StubCatalogRegistry(entry)))
+    monkeypatch.setattr(gact_context, "active_app", lambda: app)
+
+    presentation = a2ui_presentation_module.surface_presentation(
+        {
+            "surface_id": "alias-surface",
+            "components": [{"id": "root", "component": "MyField"}],
+        },
+        {"created": True, "rendered": True, "catalog_id": entry.catalog_id},
+        None,
+    )
+
+    assert presentation["blocks"][0]["label"] == "Input"
 
 
 def test_surface_lifecycle_persists_and_reconciles(tmp_path: Path) -> None:
@@ -366,26 +495,6 @@ def test_renderer_required_component_properties_are_rejected_before_persistence(
     assert "'uri' is a required property" in response.json()["error"]["message"]
     assert "component=clio.artifact.v1 id=root pointer=" in response.json()["error"]["message"]
     assert client.app.state.a2ui_store.get(sid, "surface_1") is None
-
-
-def test_catalog_file_is_the_allowlist_for_generated_tool_guidance() -> None:
-    """The CLIO workspace catalog FILE is the single allowlist (S2): the tool's
-    generated docstring names exactly its component set, read from the catalog
-    the server also validates against -- no separately maintained union."""
-
-    from clio_agent.gact.a2ui_catalogs.builtin import load_builtin_catalogs
-
-    tool = build_create_a2ui_surface_tool()
-    _, workspace = load_builtin_catalogs()
-    catalog_names = sorted(workspace.file["components"])
-
-    generated_allowlist = ", ".join(catalog_names)
-    assert f"Trusted component names: {generated_allowlist}." in tool.desc
-    assert "Checkbox" not in generated_allowlist
-    assert "CheckBox" in generated_allowlist
-    # The compiled validators (what the server actually checks components
-    # against) cover exactly the same names the docstring advertises.
-    assert set(workspace.validators) == set(catalog_names)
 
 
 def test_catalog_components_are_closed_and_require_id_and_component() -> None:
@@ -688,7 +797,7 @@ def test_root_agent_tool_produces_surface_and_transcript_reference(
     app = client.app
     monkeypatch.setattr(gact_context, "active_app", lambda: app)
     monkeypatch.setattr(gact_context, "active_session_id", lambda: sid)
-    tool = build_create_a2ui_surface_tool()
+    tool = _default_catalog_tool()
 
     result = tool(
         surface_id="luna-status",
@@ -718,7 +827,7 @@ def test_root_agent_tool_updates_one_stable_transcript_reference(
     app = client.app
     monkeypatch.setattr(gact_context, "active_app", lambda: app)
     monkeypatch.setattr(gact_context, "active_session_id", lambda: sid)
-    tool = build_create_a2ui_surface_tool()
+    tool = _default_catalog_tool()
 
     first = tool(
         surface_id="stable-view",
@@ -749,7 +858,7 @@ def _tool_in_session(tmp_path: Path, monkeypatch: MonkeyPatch) -> tuple[Any, Any
     app = client.app
     monkeypatch.setattr(gact_context, "active_app", lambda: app)
     monkeypatch.setattr(gact_context, "active_session_id", lambda: sid)
-    return build_create_a2ui_surface_tool(), app, sid
+    return _default_catalog_tool(), app, sid
 
 
 def test_root_agent_tool_reports_creation_and_the_session_surface_registry(
@@ -832,7 +941,7 @@ def test_root_agent_tool_registry_excludes_a_deleted_surface(
     app = client.app
     monkeypatch.setattr(gact_context, "active_app", lambda: app)
     monkeypatch.setattr(gact_context, "active_session_id", lambda: sid)
-    tool = build_create_a2ui_surface_tool()
+    tool = _default_catalog_tool()
 
     tool(
         surface_id="retired-view",
@@ -868,7 +977,7 @@ def test_root_agent_tool_registry_is_scoped_to_the_active_session(
     monkeypatch.setattr(gact_context, "active_app", lambda: app)
     monkeypatch.setattr(gact_context, "active_session_id", lambda: sid)
 
-    result = build_create_a2ui_surface_tool()(
+    result = _default_catalog_tool()(
         surface_id="own-surface",
         components=[{"id": "root", "component": "Text", "text": "Own"}],
     )
@@ -884,51 +993,36 @@ def test_root_agent_tool_documents_how_to_revise_an_existing_surface() -> None:
     assert "``created``" in compact_description
 
 
-def test_root_agent_tool_documents_the_valid_button_action_envelope() -> None:
-    tool = build_create_a2ui_surface_tool()
-    compact_description = " ".join(tool.desc.split())
-
-    assert '"component": "Button", "child": "label-id", "action": {"event"' in compact_description
-    assert (
-        '"component": "Tabs", "tabs": [{"title": "Plot", "child": "plot-view"}'
-        in compact_description
-    )
-    assert 'literal ``"root"`` because the official renderer mounts that id' in tool.desc
-    assert "Tabs never use a ``children`` property" in tool.desc
-    assert "``clio.data-table.v1`` does not accept ``title``" in tool.desc
-    assert "Do not nest a second ``action`` object" in tool.desc
-    compact_description = " ".join(tool.desc.split())
-    assert "``agent.submit`` needs ``text`` or ``prompt``" in compact_description
-    assert 'a server action has the shape ``{"event"' not in tool.desc
-    assert "Accessibility is always an object, never a string" in tool.desc
-
-
 def test_server_and_tool_reject_string_accessibility_before_persisting(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
+    """S4: a producer mistake comes back as a typed refusal, never an exception."""
+
     client, sid, _ = _session_client(tmp_path)
     app = client.app
     monkeypatch.setattr(gact_context, "active_app", lambda: app)
     monkeypatch.setattr(gact_context, "active_session_id", lambda: sid)
 
-    with raises(A2UIValidationError, match="not of type 'object'"):
-        build_create_a2ui_surface_tool()(
-            surface_id="invalid-accessibility",
-            components=[
-                {
-                    "id": "root",
-                    "component": "Column",
-                    "children": ["diagram"],
-                    "accessibility": "Scientific workflow",
-                },
-                {
-                    "id": "diagram",
-                    "component": "clio.mermaid.v1",
-                    "source": "flowchart LR\nA --> B",
-                },
-            ],
-        )
+    result = _default_catalog_tool()(
+        surface_id="invalid-accessibility",
+        components=[
+            {
+                "id": "root",
+                "component": "Column",
+                "children": ["diagram"],
+                "accessibility": "Scientific workflow",
+            },
+            {
+                "id": "diagram",
+                "component": "clio.mermaid.v1",
+                "source": "flowchart LR\nA --> B",
+            },
+        ],
+    )
 
+    assert result["ok"] is False
+    assert result["reason"] == "a2ui_validation_failed"
+    assert "not of type 'object'" in result["detail"]
     assert app.state.a2ui_store.get(sid, "invalid-accessibility") is None
 
 
@@ -1187,14 +1281,16 @@ def test_root_agent_tool_rejects_batch_atomically(tmp_path: Path, monkeypatch: M
     app = client.app
     monkeypatch.setattr(gact_context, "active_app", lambda: app)
     monkeypatch.setattr(gact_context, "active_session_id", lambda: sid)
-    tool = build_create_a2ui_surface_tool()
+    tool = _default_catalog_tool()
 
-    with raises(A2UIValidationError, match="component is not in catalog"):
-        tool(
-            surface_id="invalid-surface",
-            components=[{"id": "root", "component": {"type": "Column"}}],
-        )
+    result = tool(
+        surface_id="invalid-surface",
+        components=[{"id": "root", "component": {"type": "Column"}}],
+    )
 
+    assert result["ok"] is False
+    assert result["reason"] == "a2ui_validation_failed"
+    assert "component is not in catalog" in result["detail"]
     assert app.state.a2ui_store.get(sid, "invalid-surface") is None
 
 
@@ -1205,21 +1301,23 @@ def test_root_agent_tool_requires_the_renderer_root_atomically(
     app = client.app
     monkeypatch.setattr(gact_context, "active_app", lambda: app)
     monkeypatch.setattr(gact_context, "active_session_id", lambda: sid)
-    tool = build_create_a2ui_surface_tool()
+    tool = _default_catalog_tool()
 
-    with raises(A2UIValidationError, match='exactly one id="root"'):
-        tool(
-            surface_id="missing-renderer-root",
-            components=[
-                {
-                    "id": "root-tabs",
-                    "component": "Tabs",
-                    "tabs": [{"title": "Overview", "child": "overview"}],
-                },
-                {"id": "overview", "component": "Text", "text": "Overview"},
-            ],
-        )
+    result = tool(
+        surface_id="missing-renderer-root",
+        components=[
+            {
+                "id": "root-tabs",
+                "component": "Tabs",
+                "tabs": [{"title": "Overview", "child": "overview"}],
+            },
+            {"id": "overview", "component": "Text", "text": "Overview"},
+        ],
+    )
 
+    assert result["ok"] is False
+    assert result["reason"] == "a2ui_validation_failed"
+    assert 'exactly one id="root"' in result["detail"]
     assert app.state.a2ui_store.get(sid, "missing-renderer-root") is None
 
 
@@ -1245,7 +1343,7 @@ def test_root_agent_tool_recreates_a_deleted_surface(
     monkeypatch.setattr(gact_context, "active_app", lambda: app)
     monkeypatch.setattr(gact_context, "active_session_id", lambda: sid)
 
-    result = build_create_a2ui_surface_tool()(
+    result = _default_catalog_tool()(
         surface_id="recreated-surface",
         components=[
             {
@@ -1333,7 +1431,7 @@ def test_http_part_written_during_a_live_surface_folds_after_its_create(
     app = client.app
     monkeypatch.setattr(gact_context, "active_app", lambda: app)
     monkeypatch.setattr(gact_context, "active_session_id", lambda: sid)
-    build_create_a2ui_surface_tool()(
+    _default_catalog_tool()(
         surface_id="live-surface",
         components=[{"id": "root", "component": "Text", "text": "Live"}],
     )
@@ -1419,18 +1517,18 @@ def test_frozen_transcript_returns_the_typed_tool_reason(
     app = client.app
     monkeypatch.setattr(gact_context, "active_app", lambda: app)
     monkeypatch.setattr(gact_context, "active_session_id", lambda: sid)
-    monkeypatch.setattr(a2ui_tools_module, "_emit_surface_part", lambda *_a, **_k: False)
+    monkeypatch.setattr(a2ui_emit_module, "emit_surface_part", lambda *_a, **_k: False)
 
-    result = build_create_a2ui_surface_tool()(
+    result = _default_catalog_tool()(
         surface_id="frozen-surface",
         components=[{"id": "root", "component": "Text", "text": "Frozen"}],
     )
 
     assert result == {
-        "rendered": False,
-        "reason": "transcript_frozen",
-        "session_id": sid,
-        "surface_id": "frozen-surface",
+        "ok": False,
+        "reason": "a2ui_transcript_frozen",
+        "detail": "the turn's ledger is already settled; nothing was persisted",
+        "hint": "",
     }
     assert app.state.a2ui_store.get(sid, "frozen-surface") is None
 

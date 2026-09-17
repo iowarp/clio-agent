@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from clio_agent.gact.a2ui_tools import build_create_a2ui_surface_tool
+from clio_agent.gact.a2ui_producer import (
+    build_create_a2ui_surface_tool,
+    build_delete_a2ui_surface_tool,
+    build_update_a2ui_components_tool,
+    build_update_a2ui_data_model_tool,
+)
 from clio_agent.gact.agents import toolset_inventory
 from clio_agent.gact.ask_user_tool import build_ask_user_tool
 from clio_agent.gact.memory_tools import (
@@ -24,6 +29,9 @@ def resolve_declared_native_tools(
     builders = {
         "ask_user": lambda: build_ask_user_tool(agent_def),
         "create_a2ui_surface": build_create_a2ui_surface_tool,
+        "update_a2ui_components": build_update_a2ui_components_tool,
+        "update_a2ui_data_model": build_update_a2ui_data_model_tool,
+        "delete_a2ui_surface": build_delete_a2ui_surface_tool,
         "memory_search_sessions": lambda: build_memory_search_tool(agent_def),
         "memory_read_session_summary": lambda: build_memory_summary_tool(agent_def),
         "memory_read_context_frame": lambda: build_memory_context_frame_tool(agent_def),
