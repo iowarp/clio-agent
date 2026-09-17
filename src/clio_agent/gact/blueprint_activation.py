@@ -73,6 +73,14 @@ _BLUEPRINT_RESOLUTION_REASON_DEFINITIONS: dict[str, dict[str, str]] = {
             "than silently installing/running an under-versioned server."
         ),
     },
+    "blueprint_requires_unparseable": {
+        "category": "configuration_invalid",
+        "description": (
+            "The Agent Blueprint's declared requires.clio_agent specifier does "
+            "not parse as PEP 440; activation is refused rather than silently "
+            "treating an unparseable floor as satisfied."
+        ),
+    },
 }
 
 
@@ -143,11 +151,18 @@ def _record_resolution_reason(
 
 
 def record_requires_floor_reason(
-    blueprint_id: str, *, app: Any | None = None, session_id: str | None = None
+    blueprint_id: str,
+    *,
+    reason: str = "blueprint_requires_newer_clio_agent",
+    app: Any | None = None,
+    session_id: str | None = None,
 ) -> None:
-    """Record ``blueprint_requires_newer_clio_agent`` like any other resolution reason.
+    """Record a requires.clio_agent floor reason like any other resolution reason.
 
-    Called from ``gact/agent_blueprint_requires.py::requires_floor_activation_error``
+    ``reason`` is one of ``agent_blueprint_requires.BLUEPRINT_REQUIRES_NEWER_
+    CLIO_AGENT`` / ``BLUEPRINT_REQUIRES_UNPARSEABLE`` (both closed-set entries
+    in ``_BLUEPRINT_RESOLUTION_REASON_DEFINITIONS`` above). Called from
+    ``gact/agent_blueprint_requires.py::requires_floor_activation_error``
     right before that function's 400 is raised, so the refusal is durable and
     queryable via :func:`blueprint_resolution_reasons` exactly like every
     other Agent Blueprint resolution degradation (no new store). ``app``/
@@ -155,9 +170,70 @@ def record_requires_floor_reason(
     with no ambient turn context) — see ``_record_resolution_reason``.
     """
 
-    _record_resolution_reason(
-        "blueprint_requires_newer_clio_agent", blueprint_id, app=app, session_id=session_id
+    _record_resolution_reason(reason, blueprint_id, app=app, session_id=session_id)
+
+
+def agent_blueprint_activation_metadata(
+    *,
+    blueprint_wire: Mapping[str, Any],
+    install_root: Path | None,
+    scope: str,
+    app: Any | None = None,
+    session_id: str | None = None,
+) -> dict[str, str]:
+    """Build the session-activation metadata patch for a blueprint.
+
+    Moved here verbatim from ``gact/app.py``'s ``_agent_blueprint_activation_
+    metadata`` closure (S8 review, issue #1374): this module already owns the
+    ``blueprint.resolution.degraded`` reason ledger the requires.clio_agent
+    floor check needs, and it is the ONE seam BOTH of ``routes/blueprints.py``'s
+    session-activation branches (installed-id, explicit-path) call — so the
+    floor check lives HERE ONCE rather than at each route branch. Raises the
+    typed 400 (:func:`~clio_agent.gact.agent_blueprint_requires.
+    requires_floor_activation_error`) BEFORE projecting the wire row's install
+    provenance into ``active_agent_blueprint_*`` metadata keys, so no partial
+    session-metadata write ever lands for a blueprint this server cannot
+    honour. A no-op for the explicit-path branch in practice — that branch
+    already refuses upstream via ``validate_agent_blueprint_path``'s
+    ``enabled=False`` (the floor is folded into parse-time validation) — but
+    calling the SAME check here keeps both branches identically defended
+    rather than trusting one branch's upstream gate to never regress.
+    """
+
+    from clio_agent.gact.agent_blueprint_requires import (  # noqa: PLC0415
+        requires_floor_activation_error,
     )
+
+    requires_error = requires_floor_activation_error(
+        dict(blueprint_wire.get("metadata") or {}),
+        str(blueprint_wire.get("id") or ""),
+        app=app,
+        session_id=session_id,
+    )
+    if requires_error is not None:
+        raise requires_error
+
+    from clio_agent.gact.agent_blueprints import read_install_metadata  # noqa: PLC0415
+
+    install = read_install_metadata(install_root) if install_root is not None else {}
+    return {
+        "active_agent_blueprint_id": str(blueprint_wire.get("id") or ""),
+        "active_agent_blueprint_name": str(
+            blueprint_wire.get("name")
+            or blueprint_wire.get("display_name")
+            or blueprint_wire.get("title")
+            or ""
+        ),
+        "active_agent_blueprint_version": str(blueprint_wire.get("version") or ""),
+        "active_agent_blueprint_scope": scope,
+        "active_agent_blueprint_definition_path": str(blueprint_wire.get("definition_path") or ""),
+        "active_agent_blueprint_source": str(install.get("source") or ""),
+        "active_agent_blueprint_source_kind": str(install.get("source_kind") or ""),
+        "active_agent_blueprint_ref": str(install.get("ref") or ""),
+        "active_agent_blueprint_commit": str(install.get("commit") or ""),
+        "active_agent_blueprint_checksum": str(install.get("checksum") or ""),
+        "active_agent_blueprint_installed_at": str(install.get("installed_at") or ""),
+    }
 
 
 def blueprint_mcp_servers(

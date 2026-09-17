@@ -162,11 +162,17 @@ class _ActiveSessionAgentBlueprintId(Protocol):
 class _AgentBlueprintActivationMetadata(Protocol):
     """Callable seam building the session-activation metadata patch for a blueprint.
 
-    ``_agent_blueprint_activation_metadata`` (in :mod:`clio_agent.gact.app`)
-    projects a blueprint's wire row plus its on-disk install provenance
-    (``read_install_metadata``) into the ``active_agent_blueprint_*`` metadata keys
-    persisted on a session when ``POST /v1/sessions/{sid}/agent-blueprint`` sets
-    the active blueprint. It stays built in ``build_app`` and travels here.
+    ``_agent_blueprint_activation_metadata`` (in :mod:`clio_agent.gact.app`,
+    delegating to :func:`clio_agent.gact.blueprint_activation.
+    agent_blueprint_activation_metadata`) projects a blueprint's wire row plus
+    its on-disk install provenance (``read_install_metadata``) into the
+    ``active_agent_blueprint_*`` metadata keys persisted on a session when
+    ``POST /v1/sessions/{sid}/agent-blueprint`` sets the active blueprint. It
+    stays built in ``build_app`` and travels here. ``session_id`` (S8, issue
+    #1374) is the calling route's own local -- threaded through so this
+    seam's requires.clio_agent floor check can record its typed
+    ``blueprint.resolution.degraded`` reason against the right session; a
+    route handler has no ambient ``gact.context`` turn to read it from.
     """
 
     def __call__(
@@ -175,6 +181,7 @@ class _AgentBlueprintActivationMetadata(Protocol):
         blueprint_wire: Mapping[str, Any],
         install_root: "Path | None",
         scope: str,
+        session_id: str = ...,
     ) -> dict[str, str]: ...
 
 

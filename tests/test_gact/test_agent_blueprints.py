@@ -2056,14 +2056,22 @@ def test_unsatisfied_clio_agent_floor_absent_requires_is_empty() -> None:
     assert unsatisfied_clio_agent_floor({"requires": "not-a-mapping"}) == ""  # type: ignore[dict-item]
 
 
-def test_unsatisfied_clio_agent_floor_malformed_specifier_never_false_refuses() -> None:
-    """A malformed PEP 440 specifier is unenforceable, not a fabricated refusal
-    (⚑ #1/#2: clio surfaces reality, it does not invent a decision it cannot
-    actually evaluate)."""
+def test_unsatisfied_clio_agent_floor_malformed_specifier_is_a_typed_problem() -> None:
+    """S8 review fix: a malformed PEP 440 specifier used to be silently
+    treated as "no floor to enforce" (a silent fallback). It is now a
+    distinct typed reason (blueprint_requires_unparseable, ⚑ #2: schema-
+    validate is allowed) — a format-only surfacing of the pack author's own
+    malformed declaration, never a fabricated semantic decision."""
 
-    from clio_agent.gact.agent_blueprint_requires import unsatisfied_clio_agent_floor
+    from clio_agent.gact.agent_blueprint_requires import (
+        BLUEPRINT_REQUIRES_UNPARSEABLE,
+        _floor_reason,
+        unsatisfied_clio_agent_floor,
+    )
 
-    assert unsatisfied_clio_agent_floor({"requires": {"clio_agent": "not a specifier!!"}}) == ""
+    metadata = {"requires": {"clio_agent": "not a specifier!!"}}
+    assert unsatisfied_clio_agent_floor(metadata) == "not a specifier!!"
+    assert _floor_reason(metadata) == (BLUEPRINT_REQUIRES_UNPARSEABLE, "not a specifier!!")
 
 
 def test_unsatisfied_clio_agent_floor_uses_explicit_running_version_override() -> None:
@@ -2099,6 +2107,82 @@ def test_validate_agent_blueprint_path_satisfied_requires_floor_stays_enabled(
 
     assert body["enabled"] is True
     assert not any("blueprint_requires_newer_clio_agent" in e for e in body["validation_errors"])
+
+
+def test_install_agent_blueprint_refuses_unsatisfied_requires_floor(tmp_path: Path) -> None:
+    """S8 review fix: install used to gate only on ``parse_agent_blueprint_root(
+    ...).enabled``, which never ran the floor check (it lived only in
+    ``validate_agent_blueprint_path``) -- a pack over the floor installed 201
+    with ``validation_errors: []``. The floor is now folded into
+    ``parse_agent_blueprint_root`` itself, so install refuses it exactly like
+    any other invalid pack (strict/explicit-install contract: raises)."""
+
+    from clio_agent.gact.agent_blueprints import install_agent_blueprint
+
+    source_dir = tmp_path / "future-pack-src"
+    _write_blueprint_requiring(
+        source_dir, blueprint_id="future-pack", clio_agent_specifier=">=99.0.0"
+    )
+
+    with pytest.raises(ValueError, match="blueprint_requires_newer_clio_agent"):
+        install_agent_blueprint(
+            source=str(source_dir),
+            scope="global",
+            cwd=tmp_path / "cwd",
+            home=tmp_path / "home",
+        )
+
+
+def test_install_agent_blueprint_skip_invalid_skips_unsatisfied_requires_floor(
+    tmp_path: Path,
+) -> None:
+    from clio_agent.gact.agent_blueprints import install_agent_blueprint
+
+    source_dir = tmp_path / "future-pack-src"
+    _write_blueprint_requiring(
+        source_dir, blueprint_id="future-pack", clio_agent_specifier=">=99.0.0"
+    )
+
+    result = install_agent_blueprint(
+        source=str(source_dir),
+        scope="global",
+        cwd=tmp_path / "cwd",
+        home=tmp_path / "home",
+        skip_invalid=True,
+    )
+
+    assert result["installed"] == []
+    [skipped] = result["skipped"]
+    assert skipped["id"] == "future-pack"
+    assert any("blueprint_requires_newer_clio_agent" in e for e in skipped["validation_errors"])
+
+
+def test_discover_agent_blueprints_listing_shows_unsatisfied_requires_floor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S8 review fix: ``GET /v1/agent-blueprints`` (``discover_agent_
+    blueprints``) used to show ``enabled: true, validation_errors: []`` for
+    an over-the-floor pack -- only session activation refused it. Both now
+    read the SAME ``parse_agent_blueprint_root`` result. Written directly to
+    the install root (not through ``install_agent_blueprint``, which now
+    refuses an over-the-floor pack outright) to prove the LISTING path
+    itself catches a pack that landed on disk some other way (a hand-copied
+    pack, or one installed by an older server build)."""
+
+    # Bootstrap disabled (unit isolation, no network): this test only cares
+    # whether a pack already on disk shows its floor problem in the listing.
+    monkeypatch.setenv("CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP", "1")
+    config_dir = tmp_path / "store" / "clio-agent"
+    monkeypatch.setenv("CLIO_USER_DIR", str(config_dir))
+    home = tmp_path / "home"
+    root = config_dir / "agent-blueprints" / "future-pack"
+    _write_blueprint_requiring(root, blueprint_id="future-pack", clio_agent_specifier=">=99.0.0")
+
+    rows = discover_agent_blueprints(home=home, cwd=tmp_path / "cwd")
+
+    [row] = [r for r in rows if r.id == "future-pack"]
+    assert row.enabled is False
+    assert any("blueprint_requires_newer_clio_agent" in e for e in row.validation_errors)
 
 
 def test_session_activation_by_id_refuses_unsatisfied_requires_floor(tmp_path: Path) -> None:
@@ -2139,7 +2223,15 @@ def test_session_activation_by_id_refuses_unsatisfied_requires_floor(tmp_path: P
 
 
 def test_session_activation_by_path_refuses_unsatisfied_requires_floor(tmp_path: Path) -> None:
-    from clio_agent.gact.blueprint_activation import blueprint_resolution_reasons
+    """The explicit-path branch has no separate floor check (S8 review fix):
+    the floor is folded into ``parse_agent_blueprint_root``'s own
+    ``enabled``/``validation_errors``, so ``validate_agent_blueprint_path``
+    already disables the blueprint and the route's PRE-EXISTING generic
+    "agent blueprint path is invalid" refusal fires -- the typed
+    ``blueprint_requires_newer_clio_agent`` reason shows up INSIDE
+    ``details.validation_errors``, not as the top-level error code (that
+    stays reserved for the installed-id branch, which has no upstream
+    validate_agent_blueprint_path pass to rely on)."""
 
     workspace = tmp_path / "workspace"
     blueprint_root = tmp_path / "future-path-pack"
@@ -2168,10 +2260,11 @@ def test_session_activation_by_path_refuses_unsatisfied_requires_floor(tmp_path:
 
         assert activated.status_code == 400, activated.text
         detail = activated.json()["error"]
-        assert detail["error"] == "blueprint_requires_newer_clio_agent"
-
-        reasons = blueprint_resolution_reasons(app, sid)
-        assert any(r["reason"] == "blueprint_requires_newer_clio_agent" for r in reasons)
+        assert detail["error"] == "validation_error"
+        assert any(
+            "blueprint_requires_newer_clio_agent" in e
+            for e in detail["details"]["validation_errors"]
+        )
 
 
 def test_session_activation_satisfied_requires_floor_succeeds(tmp_path: Path) -> None:
@@ -4325,6 +4418,128 @@ def test_registry_sync_is_a_noop_when_source_and_install_already_match(
     assert installed_agent_md.stat().st_mtime_ns == installed_mtime, (
         "unchanged pack must not reinstall"
     )
+
+
+# ---- S8 review round (issue #1374 item 3): install-route overwrite audit -----------
+
+
+def test_install_route_overwrite_with_changed_source_reports_replaced(tmp_path: Path) -> None:
+    """An install-route re-install whose source content changed used to
+    return 201 with a new checksum and no structured audit trail. It now
+    reports ``replaced: {previous_checksum, checksum}`` on the row, and
+    records a typed reason that reaches the same ledger the boot-time sync
+    path uses (never only a logger.info call).
+
+    **Sabotage:** drop the ``previous_checksum`` capture (read it AFTER the
+    rmtree/copytree instead of before) -> it always reads the NEW checksum
+    -> ``replaced`` is never reported -> red.
+    """
+
+    from clio_agent.gact.agent_blueprint_refresh import recorded_blueprint_install_reasons
+    from clio_agent.gact.agent_blueprints import install_agent_blueprint
+
+    source_dir = tmp_path / "overwrite-pack-src"
+    source_dir.mkdir()
+    source_dir.joinpath("AGENT.md").write_text(
+        _EXTRA_PACK_MD.replace("extra-pack", "overwrite-pack"), encoding="utf-8"
+    )
+    cwd = tmp_path / "cwd"
+    home = tmp_path / "home"
+
+    first = install_agent_blueprint(source=str(source_dir), scope="global", cwd=cwd, home=home)
+    assert "replaced" not in first["installed"][0], "a fresh install has nothing to replace"
+    first_checksum = first["installed"][0]["install"]["checksum"]
+
+    source_dir.joinpath("AGENT.md").write_text(
+        _EXTRA_PACK_MD.replace("extra-pack", "overwrite-pack").replace(
+            "A minimal single-agent pack.", "A minimal single-agent pack. Changed."
+        ),
+        encoding="utf-8",
+    )
+    second = install_agent_blueprint(source=str(source_dir), scope="global", cwd=cwd, home=home)
+
+    row = second["installed"][0]
+    second_checksum = row["install"]["checksum"]
+    assert second_checksum != first_checksum
+    assert row["replaced"] == {"previous_checksum": first_checksum, "checksum": second_checksum}
+
+    reasons = recorded_blueprint_install_reasons()
+    matching = [
+        r
+        for r in reasons
+        if r["reason"] == "source_checksum_changed" and r["blueprint_id"] == "overwrite-pack"
+    ]
+    assert matching, "the overwrite must reach the typed reason ledger, not only a logger call"
+    assert matching[-1]["installed_checksum"] == first_checksum
+    assert matching[-1]["source_checksum"] == second_checksum
+
+
+def test_install_route_overwrite_with_unchanged_source_reports_no_replaced(
+    tmp_path: Path,
+) -> None:
+    from clio_agent.gact.agent_blueprints import install_agent_blueprint
+
+    source_dir = tmp_path / "stable-pack-src"
+    source_dir.mkdir()
+    source_dir.joinpath("AGENT.md").write_text(
+        _EXTRA_PACK_MD.replace("extra-pack", "stable-pack"), encoding="utf-8"
+    )
+    cwd = tmp_path / "cwd"
+    home = tmp_path / "home"
+
+    install_agent_blueprint(source=str(source_dir), scope="global", cwd=cwd, home=home)
+    second = install_agent_blueprint(source=str(source_dir), scope="global", cwd=cwd, home=home)
+
+    assert "replaced" not in second["installed"][0]
+
+
+def test_boot_sync_reinstall_reaches_the_same_typed_reason_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The boot-time registry-sync reinstall path (``_reinstall_reason``,
+    already covered functionally by
+    ``test_registry_sync_updates_installed_pack_when_source_checksum_differs``)
+    now records through the SAME ledger the install route uses, not only
+    ``logger.info`` -- both paths converge on one typed reason name/shape."""
+
+    from clio_agent.gact.agent_blueprint_refresh import (
+        record_blueprint_install_reason,
+        recorded_blueprint_install_reasons,
+        reset_registry_sync_for_tests,
+        sync_local_registry_packs,
+    )
+    from clio_agent.gact.agent_blueprints import install_agent_blueprint
+
+    registry_dir = tmp_path / "local-registry"
+    extra_dir = registry_dir / "ledger-pack"
+    extra_dir.mkdir(parents=True)
+    extra_dir.joinpath("AGENT.md").write_text(
+        _EXTRA_PACK_MD.replace("extra-pack", "ledger-pack"), encoding="utf-8"
+    )
+
+    install_root, home = _prepare_default_store(tmp_path, monkeypatch)
+    cwd = tmp_path / "cwd"
+    install_agent_blueprint(
+        source=str(registry_dir), scope="global", cwd=cwd, home=home, blueprint_id="ledger-pack"
+    )
+
+    extra_dir.joinpath("AGENT.md").write_text(
+        _EXTRA_PACK_MD.replace("extra-pack", "ledger-pack").replace(
+            "version: 0.1.0", "version: 0.2.0"
+        ),
+        encoding="utf-8",
+    )
+    # A sentinel row proves the ring is the SAME object the sync path writes
+    # to (not a coincidentally-identically-shaped separate one).
+    record_blueprint_install_reason("source_checksum_changed", blueprint_id="__sentinel__")
+
+    reset_registry_sync_for_tests()
+    assert sync_local_registry_packs(source=str(registry_dir), home=home, cwd=cwd, pinned="") == ""
+
+    reasons = recorded_blueprint_install_reasons()
+    ids = [r["blueprint_id"] for r in reasons if r["reason"] == "source_checksum_changed"]
+    assert "__sentinel__" in ids
+    assert "ledger-pack" in ids
 
 
 def test_install_all_skips_invalid_pack_only_when_asked(

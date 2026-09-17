@@ -200,10 +200,16 @@ RATCHET_BASELINE: dict[str, int] = {
     # module agent_blueprint_refresh.py (this file is ratcheted, #774) and is
     # reached through the PEP 562 shim; only the one-line lazy import in
     # default_registry_metadata landed here, offset by two comment trims.
-    # +2 (S8, issue #1374): requires.clio_agent floor enforcement's one
-    # errors.extend call site + import; the PEP 440 check itself lives in the
-    # owner module gact/agent_blueprint_requires.py.
-    "src/clio_agent/gact/agent_blueprints.py": 1058,
+    # S8 review round (issue #1374): requires.clio_agent floor enforcement
+    # moved from validate_agent_blueprint_path to parse_agent_blueprint_root
+    # (the PEP 440 check itself lives in the owner module gact/
+    # agent_blueprint_requires.py); the per-row error-dedup fix (a row
+    # inherits a COPY of blueprint.validation_errors, so the floor error was
+    # showing up twice -- once blueprint-level, once per-row); and the
+    # install-route overwrite audit (install_row, owner module gact/
+    # agent_blueprint_refresh.py) -- all three offset by five comment trims
+    # elsewhere in the file. Net -1 versus the pre-S8 baseline.
+    "src/clio_agent/gact/agent_blueprints.py": 1055,
     # #948 S4: +14 for the children-must-be-react hierarchy rule (a predict/CoT
     # parent would silently strand its children now that the settle loop routing
     # for it is deleted; typed validation error instead).
@@ -463,7 +469,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # never disagree with what the runtime turn path actually executes). All
     # decision logic lives in the owner module; only the two wrapping calls
     # landed here.
-    "src/clio_agent/gact/app.py": 2493,  # relay wiring moved to gact/relay_wiring.py; +6 one-line provenance_wiring calls (#1247); #1333: two workspaces imports merged to one line each, netted against the #1334 F2 review's app.state.messages boot placeholder (see build_app)
+    # Ratchet down (S8 review, issue #1374): -7. `_agent_blueprint_activation_
+    # metadata`'s body moved to gact/blueprint_activation.py (that module owns
+    # the reason ledger its requires.clio_agent floor check needs); the
+    # now-unused `read_install_metadata` re-export import dropped too.
+    "src/clio_agent/gact/app.py": 2486,  # relay wiring moved to gact/relay_wiring.py; +6 one-line provenance_wiring calls (#1247); #1333: two workspaces imports merged to one line each, netted against the #1334 F2 review's app.state.messages boot placeholder (see build_app)
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -552,14 +562,15 @@ RATCHET_BASELINE: dict[str, int] = {
     # Ratchets back with the mcp_app_* / #714 route decomposition.
     # Ratchet down (PR #1255 review): the source-ledger read-modify-writes and the
     # workspace-cwd refusal moved into gact/agent_blueprint_sources.py.
-    # +14 (S8, issue #1374): requires.clio_agent floor enforcement at BOTH
-    # session-activation branches (installed-id, explicit-path) -- two thin
-    # requires_floor_activation_error(app=, session_id=) call sites (the
-    # route's own app/session_id locals, since a route handler has no
-    # ambient gact.context turn) + one import; the PEP 440 check and the
-    # HTTPException/ledger-recording it returns both live in the owner
-    # module gact/agent_blueprint_requires.py.
-    "src/clio_agent/gact/routes/blueprints.py": 891,  # a2ui S3 (#1369): ratcheted down after a net-neutral edit
+    # S8 review round (issue #1374): the requires.clio_agent floor check
+    # moved OUT of this route entirely, into the ONE seam both
+    # session-activation branches already call
+    # (gact/blueprint_activation.py::agent_blueprint_activation_metadata) --
+    # net +2 for threading session_id=sid to that seam (so its ledger
+    # recording works from a route handler, which has no ambient
+    # gact.context turn), offset by trimming the /v1/expert-packs/* banner
+    # comment by 2 lines. Back at its pre-S8 baseline.
+    "src/clio_agent/gact/routes/blueprints.py": 877,  # a2ui S3 (#1369): ratcheted down after a net-neutral edit
     "src/clio_agent/gact/routes/catalog.py": 898,  # +4: /goal command dispatch wiring (#1080; logic in gact/goal.py)
     # #1201 (adversarial review, PR #1202): +6 for two direct-connect era-
     # classification call sites (call_external_mcp_tool + _external_mcp_inventory's

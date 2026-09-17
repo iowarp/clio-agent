@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -312,6 +313,73 @@ def reset_registry_sync_for_tests() -> None:
     _SYNC_COMPLETED_FOR.clear()
 
 
+#: Bounded ring of recorded blueprint-install reasons, queryable after the
+#: fact (mirrors ``a2ui_catalogs/reasons.py``'s style). S8 review, issue
+#: #1374: an install-route overwrite with a changed source used to return
+#: 201 with no structured audit trail -- both the boot-time registry sync's
+#: reinstall path (:func:`_reinstall_reason`) and the explicit install
+#: route's overwrite audit (:func:`install_row`) now converge on this ONE
+#: typed reason ledger instead of a bare ``logger.info`` call.
+_INSTALL_REASON_RING_MAXLEN = 256
+_INSTALL_REASONS: "deque[dict[str, Any]]" = deque(maxlen=_INSTALL_REASON_RING_MAXLEN)
+_INSTALL_REASONS_LOCK = threading.Lock()
+
+
+def record_blueprint_install_reason(reason: str, **fields: Any) -> dict[str, Any]:
+    """Record one typed blueprint-install reason: bounded ring + logger + trace."""
+
+    from clio_agent.runtime.stream_audit import stream_audit  # noqa: PLC0415
+
+    row = {"reason": reason, **fields}
+    with _INSTALL_REASONS_LOCK:
+        _INSTALL_REASONS.append(row)
+    stream_audit("blueprint_install_reason", **row)
+    logger.info("blueprint_install_reason reason=%s fields=%s", reason, fields)
+    return row
+
+
+def recorded_blueprint_install_reasons() -> list[dict[str, Any]]:
+    """Return a snapshot of every recorded blueprint-install reason (queryable audit)."""
+
+    with _INSTALL_REASONS_LOCK:
+        return list(_INSTALL_REASONS)
+
+
+def install_row(
+    dest: Path, scope: str, metadata: dict[str, Any], previous_checksum: str, source: str
+) -> dict[str, Any]:
+    """Build ``install_agent_blueprint``'s one ``installed`` row, auditing an
+    overwrite whose source checksum actually changed (S8 review, issue
+    #1374). ``previous_checksum`` is the caller's OWN pre-overwrite read
+    (``read_install_metadata(dest)`` before the ``rmtree``/``copytree`` that
+    replaces it) -- by the time this function runs, ``dest``'s own
+    ``.clio-install.md`` already reflects the NEW install. A genuine
+    checksum change records the SAME typed ``source_checksum_changed``
+    reason :func:`_reinstall_reason` already uses, and the row itself
+    carries ``replaced: {previous_checksum, checksum}`` instead of a silent
+    201 -- an unchanged/absent previous checksum (a fresh install) leaves
+    the row exactly as before.
+    """
+
+    from clio_agent.gact.agent_blueprints import parse_agent_blueprint_root  # noqa: PLC0415
+
+    row: dict[str, Any] = {
+        **parse_agent_blueprint_root(dest, scope=scope).to_wire(),
+        "install": metadata,
+    }
+    new_checksum = str(metadata.get("checksum") or "")
+    if previous_checksum and previous_checksum != new_checksum:
+        record_blueprint_install_reason(
+            "source_checksum_changed",
+            blueprint_id=row.get("id", ""),
+            installed_checksum=previous_checksum,
+            source_checksum=new_checksum,
+            source=source,
+        )
+        row["replaced"] = {"previous_checksum": previous_checksum, "checksum": new_checksum}
+    return row
+
+
 def _reinstall_reason(existing_root: Path, candidate: Path) -> str | None:
     """Decide whether ``candidate`` (a source pack) should (re)install over
     ``existing_root`` (its install-root destination), and why.
@@ -343,11 +411,11 @@ def _reinstall_reason(existing_root: Path, candidate: Path) -> str | None:
     source_checksum = _tree_checksum(candidate)
     if installed_tree_checksum == source_checksum:
         return None
-    logger.info(
-        "registry_pack_source_checksum_changed id=%s installed_checksum=%s source_checksum=%s",
-        existing_root.name,
-        installed_tree_checksum,
-        source_checksum,
+    record_blueprint_install_reason(
+        "source_checksum_changed",
+        blueprint_id=existing_root.name,
+        installed_checksum=installed_tree_checksum,
+        source_checksum=source_checksum,
     )
     return "source_checksum_changed"
 

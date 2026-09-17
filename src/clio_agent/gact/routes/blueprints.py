@@ -27,7 +27,6 @@ from clio_agent.gact.agent_blueprint_files import (
     resolve_agent_blueprint_root,
     resolve_blueprint_file_path,
 )
-from clio_agent.gact.agent_blueprint_requires import requires_floor_activation_error
 from clio_agent.gact.agent_blueprint_sources import (
     delete_agent_blueprint_source as _delete_agent_blueprint_source,
 )
@@ -504,12 +503,10 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
             raise _mutation_error(404, "not_found", str(exc)) from exc
 
     # ---- /v1/expert-packs/* — thin aliases of the agent-blueprint lifecycle
-    # (iowarp/clio-agent#663). A blueprint (structured workflow with a root
-    # orchestrator) and a pack (loose collection of experts) share ONE
-    # install/update/delete engine; the installed row's ``kind`` field
-    # distinguishes them. These delegate to the blueprint route handlers so
-    # there is exactly one implementation, one provenance model, one set of
-    # structured error envelopes.
+    # (iowarp/clio-agent#663): a pack shares ONE install/update/delete engine
+    # with a blueprint (the installed row's ``kind`` field distinguishes
+    # them), so these delegate to the blueprint route handlers -- one
+    # implementation, one provenance model, one set of error envelopes.
     @app.post("/v1/expert-packs/install", status_code=201)
     async def install_expert_pack_route(req: dict[str, Any]) -> dict[str, Any]:
         """Install an expert pack from a source URL/path/ref into workspace or
@@ -794,14 +791,6 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                 runtime_tool_names=runtime_tool_names_for_validation(app),
             )
             blueprint_wire = validation["agent_blueprint"]
-            requires_error = requires_floor_activation_error(
-                blueprint_wire.get("metadata") or {},
-                str(blueprint_wire.get("id") or ""),
-                app=app,
-                session_id=sid,
-            )
-            if requires_error is not None:
-                raise requires_error
             if not validation.get("enabled", False):
                 raise HTTPException(
                     status_code=400,
@@ -822,6 +811,7 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                 blueprint_wire=blueprint_wire,
                 install_root=install_root,
                 scope="session",
+                session_id=sid,
             )
             updated = app.state.sessions.update(
                 sid,
@@ -859,16 +849,12 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                         )
                     ).model_dump(exclude_none=True),
                 )
-            requires_error = requires_floor_activation_error(
-                blueprint.metadata, blueprint.id, app=app, session_id=sid
-            )
-            if requires_error is not None:
-                raise requires_error
             blueprint_wire = blueprint.to_wire()
             activation_metadata = deps.agent_blueprint_activation_metadata(
                 blueprint_wire=blueprint_wire,
                 install_root=blueprint.root,
                 scope=blueprint.scope,
+                session_id=sid,
             )
             updated = app.state.sessions.update(
                 sid,
