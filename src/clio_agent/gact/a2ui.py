@@ -19,9 +19,11 @@ from pydantic import ValidationError as _PydanticValidationError
 
 from clio_agent.gact.a2ui_catalogs.registry import CatalogEntry, CatalogResolver
 from clio_agent.gact.a2ui_catalogs.validation import (
+    A2UIEventContextInvalidError,
     A2UIFunctionNotInCatalogError,
     A2UIValidationError,
     validate_components,
+    validate_event_context,
     validate_value,
 )
 from clio_agent.gact.protocol.constants import A2UI_V091, A2UI_V091_WIRE, A2UI_WIRE_VERSIONS
@@ -322,6 +324,13 @@ def validate_client_action(
         if catalog_entry is not None
         else None
     )
+    if route is not None and route.context_schema is not None:
+        # Adversarial S7 review finding #12: the sidecar's declared
+        # ``context_schema`` was compiled/carried but never enforced --
+        # validate the RESOLVED context against it before this action is
+        # ever persisted or delivered. A2UIEventContextInvalidError propagates
+        # to the dispatcher (typed 422 ``a2ui_event_context_invalid``).
+        validate_event_context(route.context_schema, action.get("context") or {})
     action["destination"] = route.destination if route is not None else "agent"
     action["declared"] = route is not None
     # S5: the sidecar's declared ``operation`` ("cancel"/"retry"), required by
@@ -715,6 +724,7 @@ def project_a2ui_parts(
 __all__ = [
     "A2UICatalogNotProducibleError",
     "A2UICatalogUnknownError",
+    "A2UIEventContextInvalidError",
     "A2UIFunctionNotInCatalogError",
     "A2UISurfaceRecord",
     "A2UITranscriptFrozenError",

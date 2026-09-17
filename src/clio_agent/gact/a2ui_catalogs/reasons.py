@@ -123,9 +123,13 @@ _A2UI_CATALOG_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
     "a2ui_data_model_not_requested": {
         "severity": "warning",
         "detail": (
-            "a2uiClientDataModel was sent but no live surface in this session was "
-            "created with sendDataModel -- refused 422, the ingest is not silently "
-            "accepted for a surface that never asked for it"
+            "a surface named in a2uiClientDataModel was not created with "
+            "sendDataModel (or has since been deleted) -- on POST /messages "
+            "and .../retry (S3) this refuses the WHOLE request 422 when no live "
+            "surface in the session requested it at all; on the A2UI action door "
+            "(S5) it is a PER-SURFACE drop-and-continue -- that one entry is "
+            "removed from the carried data model, never silently accepted, and "
+            "the rest of the request still proceeds"
         ),
     },
     "a2ui_client_capabilities_unknown": {
@@ -196,6 +200,35 @@ _A2UI_CATALOG_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
         "detail": (
             "a client error report used a code other than VALIDATION_FAILED -- "
             "persisted as an error record, never delivered to the agent"
+        ),
+    },
+    "a2ui_error_surface_unknown": {
+        "severity": "warning",
+        "detail": (
+            "a client error report named a surfaceId this session never created -- "
+            "persisted as a failed error record (200, the record id), NEVER "
+            "delivered: an unknown surface is a dead end, not a repair target "
+            "(adversarial review #1372, finding #3 -- an unbounded re-drive risk)"
+        ),
+    },
+    "a2ui_delivery_error": {
+        "severity": "warning",
+        "detail": (
+            "an owner call the agent/permission/run delivery lane made "
+            "(answer_user_question, _start_background_user_turn, "
+            "enqueue_user_steer, resolve_permission, cancel_session_state, "
+            "retry_turn_action) raised unexpectedly -- the record is durably "
+            "marked failed/rejected before the same exception is re-raised"
+        ),
+    },
+    "a2ui_event_context_invalid": {
+        "severity": "warning",
+        "detail": (
+            "the action's resolved context failed its sidecar-declared "
+            "events[<name>].context_schema (jsonschema Draft 2020-12, "
+            "server-side, no network) -- refused 422, the record is durably "
+            "marked failed/rejected, naming the failing JSON Pointer "
+            "(adversarial review #1372 S7 finding #12)"
         ),
     },
 }
