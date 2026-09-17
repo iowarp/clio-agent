@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,7 @@ from clio_agent.gact.agent_blueprints import (
     DEFAULT_REGISTRY_COMMIT,
     DEFAULT_REGISTRY_REF,
     _install_root,
+    _tree_checksum,
     default_registry_install_source,
     default_registry_url,
     install_agent_blueprint,
@@ -311,8 +313,177 @@ def reset_registry_sync_for_tests() -> None:
     _SYNC_COMPLETED_FOR.clear()
 
 
+#: Bounded ring of recorded blueprint-install reasons, queryable after the
+#: fact (mirrors ``a2ui_catalogs/reasons.py``'s style). S8 review, issue
+#: #1374: an install-route overwrite with a changed source used to return
+#: 201 with no structured audit trail -- both the boot-time registry sync's
+#: reinstall path (:func:`_reinstall_reason`) and the explicit install
+#: route's overwrite audit (:func:`install_row`) now converge on this ONE
+#: typed reason ledger instead of a bare ``logger.info`` call.
+_INSTALL_REASON_RING_MAXLEN = 256
+_INSTALL_REASONS: "deque[dict[str, Any]]" = deque(maxlen=_INSTALL_REASON_RING_MAXLEN)
+_INSTALL_REASONS_LOCK = threading.Lock()
+
+
+def record_blueprint_install_reason(
+    reason: str,
+    *,
+    app: Any | None = None,
+    session_id: str | None = None,
+    **fields: Any,
+) -> dict[str, Any]:
+    """Record one typed blueprint-install reason: ring, trace, and (session
+    context permitting) a semantic event -- never only ``logger.info``.
+
+    S8, #1374 focused re-review item 6: this used to reach the ``trace``
+    ONLY via ``stream_audit``, itself a no-op unless ``CLIO_STREAM_AUDIT_LOG``
+    is set -- so an install-reason was invisible by default outside this
+    module's own in-process ring. Now calls ``runtime.trace.event`` UNCONDI-
+    TIONALLY (the boot-time registry sync path has no session, so this is
+    the one mechanism guaranteed to reach every caller) and, exactly like
+    ``blueprint_activation._record_resolution_reason``, also emits a
+    ``blueprint.install.reason`` semantic event when app context is available.
+
+    NOT best-effort (S8 round 3, item C corrects this docstring's earlier
+    claim): ``_emit_semantic_event`` FAILS LOUD -- raises ``RuntimeError`` --
+    when no ARC is reachable, the same project-wide "never silently bypass
+    ARC-as-source" policy every other semantic-event emitter honours. The
+    ring append / ``stream_audit`` / ``logger.info`` / ``trace.event`` calls
+    above all already succeeded by the time that raise can happen (durable
+    audit trail intact even on this failure). ``install_row`` (this
+    function's caller for the install-route/registry-sync path) calls this
+    AFTER ``shutil.rmtree``/``copytree`` and the new ``.clio-install.md``
+    are already committed to disk -- so a 500 surfaced from an ARC-less
+    deployment means the pack install itself SUCCEEDED (the new content is
+    already on disk); only this reason's semantic-event leg failed loud.
+    Moving the call earlier would need the new tree's checksum/id before
+    the copy exists, which the caller does not have cheaply -- ordering
+    documented here rather than reworked.
+    """
+
+    from clio_agent.gact import context as gact_context  # noqa: PLC0415
+    from clio_agent.runtime import trace  # noqa: PLC0415
+    from clio_agent.runtime.stream_audit import stream_audit  # noqa: PLC0415
+
+    row = {"reason": reason, **fields}
+    with _INSTALL_REASONS_LOCK:
+        _INSTALL_REASONS.append(row)
+    stream_audit("blueprint_install_reason", **row)
+    logger.info("blueprint_install_reason reason=%s fields=%s", reason, fields)
+    trace.event("BLUEPRINT-INSTALL", "reason=%s fields=%s", reason, fields)
+    resolved_app = app if app is not None else gact_context.active_app()
+    # Unlike a session-activation reason (inherently tied to ONE session), an
+    # install is tied to a blueprint/pack, not a session -- global/workspace-
+    # scope installs (the common case) never have one. Gate only on having a
+    # running app to route through; SemanticEventSink.emit captures to the
+    # durable trace backend regardless of session_id being empty.
+    if resolved_app is not None:
+        resolved_sid = session_id if session_id is not None else gact_context.active_session_id()
+        from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
+
+        _emit_semantic_event(
+            resolved_app,
+            resolved_sid,
+            "blueprint.install.reason",
+            status="completed",
+            summary=f"blueprint install: {reason}",
+            blueprint={"id": str(fields.get("blueprint_id") or "")},
+            payload=row,
+        )
+    return row
+
+
+def recorded_blueprint_install_reasons() -> list[dict[str, Any]]:
+    """Return a snapshot of every recorded blueprint-install reason (queryable audit)."""
+
+    with _INSTALL_REASONS_LOCK:
+        return list(_INSTALL_REASONS)
+
+
+def install_row(
+    dest: Path,
+    scope: str,
+    metadata: dict[str, Any],
+    previous_checksum: str,
+    source: str,
+    *,
+    app: Any | None = None,
+) -> dict[str, Any]:
+    """Build ``install_agent_blueprint``'s one ``installed`` row, auditing an
+    overwrite whose source checksum actually changed (S8 review, issue
+    #1374). ``previous_checksum`` is the caller's OWN pre-overwrite read
+    (``read_install_metadata(dest)`` before the ``rmtree``/``copytree`` that
+    replaces it) -- by the time this function runs, ``dest``'s own
+    ``.clio-install.md`` already reflects the NEW install. A genuine
+    checksum change records the SAME typed ``source_checksum_changed``
+    reason :func:`_reinstall_reason` already uses, and the row itself
+    carries ``replaced: {previous_checksum, checksum}`` instead of a silent
+    201 -- an unchanged/absent previous checksum (a fresh install) leaves
+    the row exactly as before.
+    """
+
+    from clio_agent.gact.agent_blueprints import parse_agent_blueprint_root  # noqa: PLC0415
+
+    row: dict[str, Any] = {
+        **parse_agent_blueprint_root(dest, scope=scope).to_wire(),
+        "install": metadata,
+    }
+    new_checksum = str(metadata.get("checksum") or "")
+    if previous_checksum and previous_checksum != new_checksum:
+        record_blueprint_install_reason(
+            "source_checksum_changed",
+            app=app,
+            blueprint_id=row.get("id", ""),
+            installed_checksum=previous_checksum,
+            source_checksum=new_checksum,
+            source=source,
+        )
+        row["replaced"] = {"previous_checksum": previous_checksum, "checksum": new_checksum}
+    return row
+
+
+def _reinstall_reason(existing_root: Path, candidate: Path) -> str | None:
+    """Decide whether ``candidate`` (a source pack) should (re)install over
+    ``existing_root`` (its install-root destination), and why.
+
+    Returns ``"missing_from_install_root"`` when ``existing_root`` has no
+    installed ``AGENT.md`` yet. For an existing install, compares checksums
+    rather than trusting "the folder exists" alone (S8, issue #1363 umbrella
+    live-gate finding 3): a local-edits install (its on-disk tree no longer
+    matches the checksum RECORDED at its own install time) is left alone —
+    reason ``None`` — so the user's edits are never clobbered; a source
+    checksum that differs from the (unedited) installed one instead returns
+    ``"source_checksum_changed"`` (both checksums are logged here); an
+    unchanged source returns ``None`` — genuinely nothing to do.
+    """
+
+    if not (existing_root / _BLUEPRINT_ROOT_NAME).exists():
+        return "missing_from_install_root"
+    recorded_checksum = str(read_install_metadata(existing_root).get("checksum") or "").strip()
+    installed_tree_checksum = _tree_checksum(existing_root)
+    if recorded_checksum and installed_tree_checksum != recorded_checksum:
+        logger.info(
+            "registry_pack_skipped reason=local_edits_present id=%s "
+            "recorded_checksum=%s installed_tree_checksum=%s",
+            existing_root.name,
+            recorded_checksum,
+            installed_tree_checksum,
+        )
+        return None
+    source_checksum = _tree_checksum(candidate)
+    if installed_tree_checksum == source_checksum:
+        return None
+    record_blueprint_install_reason(
+        "source_checksum_changed",
+        blueprint_id=existing_root.name,
+        installed_checksum=installed_tree_checksum,
+        source_checksum=source_checksum,
+    )
+    return "source_checksum_changed"
+
+
 def sync_local_registry_packs(*, source: str, home: Path, cwd: Path, pinned: str) -> str:
-    """Install registry packs missing from the global root (local-path sources only).
+    """Install/update registry packs from the global root (local-path sources only).
 
     A local registry checkout (the dev submodule) makes enumeration free, so a
     pack added to the registry after the original bootstrap (the
@@ -321,8 +492,18 @@ def sync_local_registry_packs(*, source: str, home: Path, cwd: Path, pinned: str
     this — their set is reconciled on first-run and manual installs, never via
     a per-boot network fetch. Guarantees:
 
-    * only MISSING ids install — an installed pack is never reinstalled here
-      (no clobbering of local edits, no downgrades from a stale submodule);
+    * a MISSING id installs fresh;
+    * an ALREADY-installed id is checksum-compared against the source
+      candidate (S8, issue #1363 umbrella live-gate finding 3: the live
+      harness's local marketplace checkout moved a pack's content forward —
+      e.g. a pinned version bump — while an older installed copy sat there
+      forever, served stale with no signal). Local user edits (the installed
+      tree's checksum has drifted from what was RECORDED at its own install
+      time) are never clobbered — same rule as
+      ``agent_blueprint_sources.source_install_skip_ids``'s
+      ``local_edits_present``. Otherwise, a source checksum that differs from
+      the installed one re-installs (never a silent stale copy) and is
+      logged with BOTH checksums;
     * a pack the USER uninstalled (the tombstone ledger) is never resurrected;
     * the whole body is failure-isolated: any error is a logged, returned
       diagnostic, never an exception into discovery (every blueprint route sits
@@ -358,7 +539,9 @@ def sync_local_registry_packs(*, source: str, home: Path, cwd: Path, pinned: str
                 if parsed.id in tombstones:
                     logger.info("registry_pack_skipped reason=user_uninstalled id=%s", parsed.id)
                     continue
-                if (install_root / parsed.id / _BLUEPRINT_ROOT_NAME).exists():
+                existing_root = install_root / parsed.id
+                reinstall_reason = _reinstall_reason(existing_root, candidate)
+                if reinstall_reason is None:
                     continue
                 try:
                     install_agent_blueprint(
@@ -371,7 +554,8 @@ def sync_local_registry_packs(*, source: str, home: Path, cwd: Path, pinned: str
                         pinned_commit=pinned,
                     )
                     logger.info(
-                        "registry_pack_installed reason=missing_from_install_root id=%s source=%s",
+                        "registry_pack_installed reason=%s id=%s source=%s",
+                        reinstall_reason,
                         parsed.id,
                         source,
                     )

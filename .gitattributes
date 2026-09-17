@@ -14,3 +14,10 @@ install/clio   text eol=lf
 # match the manifest regardless of the client's core.autocrlf.
 tests/fixtures/a2ui_corpus/**   text eol=lf
 tests/fixtures/a2ui_packs/**    text eol=lf
+# S8 (issue #1374): the vendored v0.9.2 replay transcript is a Message/Part
+# JSON list read back through MessageStore._load_file, so it needs the same
+# byte-stability guarantee as the corpus/pack fixtures above.
+tests/fixtures/a2ui_transcripts/**   text eol=lf
+# S8 review round (issue #1374 item 9): vendored gact-tui transport header
+# sets / capability bodies, same byte-stability guarantee.
+tests/fixtures/a2ui_client_metadata/**   text eol=lf

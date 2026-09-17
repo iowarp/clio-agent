@@ -683,7 +683,6 @@ from clio_agent.gact.agent_blueprints import (
     discover_agent_blueprints,
     load_agent_blueprint_path,
     load_agent_blueprints,
-    read_install_metadata,
 )
 from clio_agent.gact.catalog import (  # noqa: E402, F401
     _builtin_agents,
@@ -1893,28 +1892,22 @@ def build_app(
         blueprint_wire: Mapping[str, Any],
         install_root: Path | None,
         scope: str,
+        session_id: str = "",
     ) -> dict[str, str]:
-        install = read_install_metadata(install_root) if install_root is not None else {}
-        return {
-            "active_agent_blueprint_id": str(blueprint_wire.get("id") or ""),
-            "active_agent_blueprint_name": str(
-                blueprint_wire.get("name")
-                or blueprint_wire.get("display_name")
-                or blueprint_wire.get("title")
-                or ""
-            ),
-            "active_agent_blueprint_version": str(blueprint_wire.get("version") or ""),
-            "active_agent_blueprint_scope": scope,
-            "active_agent_blueprint_definition_path": str(
-                blueprint_wire.get("definition_path") or ""
-            ),
-            "active_agent_blueprint_source": str(install.get("source") or ""),
-            "active_agent_blueprint_source_kind": str(install.get("source_kind") or ""),
-            "active_agent_blueprint_ref": str(install.get("ref") or ""),
-            "active_agent_blueprint_commit": str(install.get("commit") or ""),
-            "active_agent_blueprint_checksum": str(install.get("checksum") or ""),
-            "active_agent_blueprint_installed_at": str(install.get("installed_at") or ""),
-        }
+        # Body moved to gact/blueprint_activation.py (S8 review, issue #1374):
+        # that module owns the blueprint.resolution.degraded reason ledger the
+        # requires.clio_agent floor check (raised from inside it) needs.
+        from clio_agent.gact.blueprint_activation import (  # noqa: PLC0415
+            agent_blueprint_activation_metadata as _impl,
+        )
+
+        return _impl(
+            blueprint_wire=blueprint_wire,
+            install_root=install_root,
+            scope=scope,
+            app=app,
+            session_id=session_id,
+        )
 
     def _session_agent_overlay(session_id: str = "") -> dict[str, Any]:
         if not session_id:

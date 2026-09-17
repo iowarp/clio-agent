@@ -1579,7 +1579,10 @@ def test_frozen_transcript_returns_the_typed_tool_reason(
         "ok": False,
         "reason": "a2ui_transcript_frozen",
         "detail": "the turn's ledger is already settled; nothing was persisted",
-        "hint": "",
+        "hint": (
+            "this turn's transcript ledger is already settled; do not retry in "
+            "this turn, a later turn can persist again"
+        ),
     }
     assert app.state.a2ui_store.get(sid, "frozen-surface") is None
 

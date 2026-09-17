@@ -7,7 +7,7 @@ from typing import Any, Optional
 from clio_agent.gact.a2ui_capability_selection import select_catalog
 from clio_agent.gact.a2ui_producer import _common
 from clio_agent.gact.a2ui_producer._presentation import surface_presentation
-from clio_agent.gact.a2ui_producer._refusal import refusal
+from clio_agent.gact.a2ui_producer._refusal import catalog_selection_refusal, refusal
 from clio_agent.gact.agents.tool_instrumentation import native_tool
 from clio_agent.gact.protocol_v3 import A2UI_V091_WIRE
 
@@ -63,15 +63,7 @@ def build_create_a2ui_surface_tool() -> Any:
             preferred = catalog_id.strip() or None
             selection = select_catalog(app, session_id, preferred=preferred)
             if not selection.ok:
-                assert selection.reason is not None
-                return refusal(
-                    selection.reason,
-                    detail=(
-                        "catalog selection did not resolve a catalog for this new surface"
-                        if preferred is None
-                        else f"catalog_id {preferred!r} is not selectable for this session"
-                    ),
-                )
+                return catalog_selection_refusal(selection, preferred=preferred)
             resolved_catalog_id = selection.catalog_id or ""
 
         messages: list[dict[str, Any]] = []

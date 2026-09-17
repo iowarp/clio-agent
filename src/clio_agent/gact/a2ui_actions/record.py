@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Literal, Mapping
@@ -409,8 +409,31 @@ def fail_and_publish(
     return failed
 
 
+@dataclass
+class ActionFoldState:
+    """Incremental fold state for :func:`fold_action_records` (S8, issue
+    #1374 item B): ``latest``/``by_surface`` persist across calls on
+    ``A2UIStore``'s projection cache, so a caller folding only NEW action
+    parts (not the session's whole action history every time) still
+    produces the exact result a full re-fold from scratch would -- last
+    snapshot per record id wins, same as before, just remembered instead of
+    recomputed. ``by_surface``'s per-surface dict preserves INSERTION order
+    (Python dict semantics) exactly like the original ``first_seen_order``
+    list did, so a transition (same record id, new snapshot) updates its
+    entry IN PLACE without moving position.
+    """
+
+    latest: dict[str, dict[str, Any]] = field(default_factory=dict)
+    by_surface: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
+
+
 def fold_action_records(
-    parts: "list[Any]", session_id: str, surfaces: "dict[tuple[str, str], Any]"
+    parts: "list[Any]",
+    session_id: str,
+    surfaces: "dict[tuple[str, str], Any]",
+    *,
+    state: "ActionFoldState | None" = None,
+    reattach_surface_ids: "Iterable[str] | None" = None,
 ) -> list[dict[str, str]]:
     """Fold a session's ``a2ui_action`` parts onto their owning surfaces.
 
@@ -427,14 +450,36 @@ def fold_action_records(
     revision resets this, since the exhausted record's ``correlation
     ["revision"]`` then no longer matches).
 
+    ``state`` (S8, issue #1374 item B): when given, folding accumulates onto
+    THIS state (mutated in place) instead of a fresh one built from
+    scratch -- pass only the NEW ``a2ui_action`` parts here with the SAME
+    ``state`` object across calls for O(new parts) work instead of
+    O(session's whole action history) on every projection. Omitted (the
+    default), this is exactly the original full-fold-from-scratch
+    behavior — every existing caller (this module's own tests,
+    ``A2UIStore`` before this slice) is unaffected.
+
+    ``reattach_surface_ids`` (S8, issue #1374, focused re-review item 2):
+    surface ids to re-attach/re-evaluate from ``state.by_surface`` even when
+    NO new action part arrived for them this call. A createSurface for a
+    PREVIOUSLY-deleted surface id builds a brand-new
+    ``A2UISurfaceRecord`` (empty ``actions``) -- a from-scratch fold always
+    re-attaches that id's whole action history afterward (the action pass
+    runs once, over every action part, at the end); an incremental fold
+    that only walks NEW action parts would otherwise leave that history
+    detached until a fresh action happens to arrive for the SAME id. The
+    caller (``A2UIStore._project``) passes the surface ids its own
+    incremental a2ui fold just (re)created.
+
     Returns:
         Typed degradations for any malformed ``a2ui_action`` part encountered
         (mirrors ``project_a2ui_parts``'s ``a2ui_persisted_payload_invalid``).
     """
 
-    latest: dict[str, dict[str, Any]] = {}
-    first_seen_order: list[str] = []
+    if state is None:
+        state = ActionFoldState()
     degradations: list[dict[str, str]] = []
+    touched_surfaces: set[str] = set()
     for raw_part in parts:
         part = raw_part.to_wire() if hasattr(raw_part, "to_wire") else raw_part
         if not isinstance(part, Mapping) or part.get("type") != A2UI_ACTION_PART_TYPE:
@@ -452,19 +497,19 @@ def fold_action_records(
                 }
             )
             continue
-        if record_id not in latest:
-            first_seen_order.append(record_id)
-        latest[record_id] = dict(raw_record)
+        record = dict(raw_record)
+        surface_id = str(record.get("surface_id") or "")
+        state.latest[record_id] = record
+        state.by_surface.setdefault(surface_id, {})[record_id] = record
+        touched_surfaces.add(surface_id)
+    if reattach_surface_ids is not None:
+        touched_surfaces.update(reattach_surface_ids)
 
-    by_surface: dict[str, list[dict[str, Any]]] = {}
-    for record_id in first_seen_order:
-        record = latest[record_id]
-        by_surface.setdefault(str(record.get("surface_id") or ""), []).append(record)
-
-    for surface_id, records in by_surface.items():
+    for surface_id in touched_surfaces:
         surface = surfaces.get((session_id, surface_id))
         if surface is None:
             continue
+        records = list(state.by_surface.get(surface_id, {}).values())
         surface.actions = records
         latest_error = next((row for row in reversed(records) if row.get("kind") == "error"), None)
         if (
@@ -530,6 +575,7 @@ def mark_a2ui_action_consumed(
 __all__ = [
     "A2UI_ACTION_PART_TYPE",
     "ActionDelivery",
+    "ActionFoldState",
     "ActionRecord",
     "ActionState",
     "compute_idempotency_key",

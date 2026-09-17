@@ -246,6 +246,35 @@ _A2UI_CATALOG_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
             "the pack author's declared meaning"
         ),
     },
+    # S8 (issue #1374 live-gate comment): a producer-tool refusal reason
+    # (gact/a2ui_producer/_refusal.py) recurring within one turn. Recorded by
+    # ``CatalogRegistry.record_producer_refusal_reason`` -- observability
+    # only, never a cap: the idle-cell evidence was 14 identical
+    # ``a2ui_client_capabilities_unknown`` refusals in one turn, invisible
+    # without hand-reading the semantic trace.
+    "a2ui_producer_refusal_repeated": {
+        "severity": "info",
+        "detail": (
+            "the same producer-tool refusal reason recurred within one turn "
+            "-- surfaced for observability only, this call's own result is "
+            "never capped or rerouted because of it"
+        ),
+    },
+    # S8 review round (issue #1374 item B): A2UIStore's per-session
+    # projection cache (a2ui_store.py::_project) is self-verifying, not
+    # hook-driven -- a NON-extension of the previously-folded part sequence
+    # (a part removed/reordered, a late-arriving part whose stamp sorts
+    # before the cached high-water mark, or a bumped CatalogRegistry/active-
+    # blueprint generation) falls back to a full refold from scratch rather
+    # than silently trusting a cache that may no longer reflect reality.
+    "a2ui_projection_cache_invalidated": {
+        "severity": "info",
+        "detail": (
+            "the session's cached A2UI projection was not a pure extension of "
+            "the new part/generation state, so it was rebuilt from scratch "
+            "instead of incrementally folded"
+        ),
+    },
 }
 
 #: Ring size shared by this global ledger AND ``CatalogRegistry``'s per-session

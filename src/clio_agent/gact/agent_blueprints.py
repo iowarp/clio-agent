@@ -23,6 +23,7 @@ from typing import Any, Literal
 from clio_agent import conf
 from clio_agent.gact import skills as _skills
 from clio_agent.gact.a2ui_catalogs.blueprint import blueprint_and_expert_a2ui_catalog_errors
+from clio_agent.gact.agent_blueprint_requires import floor_declaration_errors
 from clio_agent.gact.expert_packs import (
     ExpertPackDefinition,
     _fallback_expert_id,
@@ -75,11 +76,9 @@ class AgentBlueprintDefinition:
         payload["root"] = str(self.root)
         payload["root_path"] = str(self.root_path)
         payload["definition_path"] = str(self.root_path)
-        # kind discriminator (iowarp/clio-agent#663): a *blueprint* is a
-        # structured workflow with a root orchestrator (root_expert set); a
-        # *pack* is a loose collection of experts with no orchestrator root.
-        # Same install/update/delete lifecycle; the kind is a property of the
-        # installed artifact, surfaced so the UI can render and filter them.
+        # kind discriminator (iowarp/clio-agent#663): a *blueprint* has a root
+        # orchestrator (root_expert set); a *pack* is a loose expert collection.
+        # Same lifecycle; surfaced so the UI can render/filter by kind.
         payload["kind"] = "blueprint" if str(self.root_expert).strip() else "pack"
         payload["name"] = self.display_name or self.title or self.id
         return payload
@@ -185,9 +184,7 @@ def discover_agent_blueprints(
         )
         for candidate in candidates:
             blueprints.append(parse_agent_blueprint_root(candidate, scope=scope))
-    # ONE row per id: scopes scan global→workspace and the MOST SPECIFIC copy
-    # wins (a project-local ``.clio`` pack overrides the installed one). Without
-    # it the pack lists twice AND both copies' experts load (#13, 2026-08-13).
+    # ONE row per id: the most specific copy wins (#13, 2026-08-13).
     by_id: dict[str, AgentBlueprintDefinition] = {}
     for row in blueprints:
         by_id[row.id] = row
@@ -279,16 +276,14 @@ def parse_agent_blueprint_root(root: Path, *, scope: str) -> AgentBlueprintDefin
         errors.append("invalid blueprint id; use letters, numbers, dots, underscores, and hyphens")
     raw_defaults = meta.get("defaults")
     defaults = raw_defaults if isinstance(raw_defaults, dict) else {}
-    requirements = meta.get("requires") if isinstance(meta.get("requires"), dict) else {}
+    raw_requirements = meta.get("requires")
+    requirements = raw_requirements if isinstance(raw_requirements, dict) else {}
+    errors.extend(floor_declaration_errors(blueprint_id, requirements))
     install_metadata = read_install_metadata(path.parent)
     title = str(meta.get("title") or blueprint_id).strip()
     display_name = str(meta.get("display_name") or title).strip()
-    # Fail loud on a malformed workflow_state declaration (#646/#648, Phase C
-    # slice E): a Mapping declaration that does not compile to a WorkflowStateSchema
-    # disables the blueprint (``enabled=not errors`` below) with a validation error
-    # — the resolver then never sees a malformed declaration and only ever falls
-    # back to GENERIC on an absent / bool-only one. A bool / None declaration is a
-    # legitimate opt-out and is left to the resolver's loud generic fallback.
+    # Fail loud on a malformed workflow_state (#646/#648): a Mapping that fails
+    # WorkflowStateSchema disables the blueprint; a bool/None is a legit opt-out.
     workflow_state_declaration = meta.get("workflow_state")
     if isinstance(workflow_state_declaration, dict):
         from pydantic import ValidationError  # noqa: PLC0415
@@ -384,8 +379,10 @@ def validate_agent_blueprint_path(
     )
     errors = list(blueprint.validation_errors)
     warnings: list[str] = []
+    # No row dedup needed (S8 #1374 item 4): parse_expert_file never copies
+    # blueprint.validation_errors onto a row's own errors.
     for row in rows:
-        errors.extend(f"{row.id}: {error}" for error in row.validation_errors)
+        errors.extend(f"{row.id}: {e}" for e in row.validation_errors)
     for descriptor in mcp_descriptors:
         errors.extend(
             f"{descriptor.get('id', 'mcp')}: {error}"
@@ -546,9 +543,8 @@ def _validate_agent_tool_references(
     declared_server_names: Iterable[str] = (),
     runtime_tool_names: Collection[str] = (),
 ) -> list[AgentDef]:
-    # Built-in tools are the in-process defaults (fs/shell, memory, ask_user, A2UI
-    # producer tools). Everything else is a declared MCP tool, valid iff the pack
-    # declares its namespace via ``mcp_servers``; legacy ``tools/*.md`` stays gated.
+    # Built-in tools = in-process defaults (fs/shell, memory, ask_user, A2UI); else a
+    # declared MCP tool, valid iff declared via ``mcp_servers`` (``tools/*.md`` gated).
     builtin_tools = set(TOOL_CATALOG) | {
         "ask_user",
         "create_a2ui_surface",
@@ -739,6 +735,7 @@ def install_agent_blueprint(
     pinned_commit: str = "",
     skip_invalid: bool = False,
     skip_blueprint_ids: Mapping[str, str] | None = None,
+    app: Any | None = None,
 ) -> dict[str, Any]:
     """Install blueprint pack(s) from ``source`` (all packs when ``blueprint_id`` is empty).
 
@@ -748,8 +745,10 @@ def install_agent_blueprint(
     ``skipped`` row each, so one broken marketplace entry can never veto the
     rest of the set.
     ``skip_blueprint_ids`` maps a blueprint id to the typed reason it is not installed.
+    ``app`` (the install ROUTE has one) lets an overwrite-audit reason reach a semantic event.
     """
-    from clio_agent.gact.agent_blueprint_refresh import clear_uninstall_tombstones  # noqa: PLC0415
+    from clio_agent.gact.agent_blueprint_refresh import clear_uninstall_tombstones, install_row
+    from clio_agent.gact.agent_blueprint_requires import AgentBlueprintInstallRefused
 
     home = home or Path.home()
     install_root = _install_root(home=home, cwd=cwd, scope=scope)
@@ -870,8 +869,9 @@ def install_agent_blueprint(
                         {"id": parsed.id, "validation_errors": list(parsed.validation_errors)}
                     )
                     continue
-                raise ValueError("; ".join(parsed.validation_errors))
+                raise AgentBlueprintInstallRefused(list(parsed.validation_errors))
             dest = install_root / parsed.id
+            previous_checksum = str(read_install_metadata(dest).get("checksum") or "").strip()
             if dest.exists():
                 shutil.rmtree(dest)
             shutil.copytree(candidate, dest)
@@ -886,9 +886,7 @@ def install_agent_blueprint(
                 "scope": scope,
             }
             _write_install_metadata(dest, metadata)
-            installed.append(
-                {**parse_agent_blueprint_root(dest, scope=scope).to_wire(), "install": metadata}
-            )
+            installed.append(install_row(dest, scope, metadata, previous_checksum, source, app=app))
         clear_uninstall_tombstones(installed, scope=scope, home=home, cwd=cwd)
         return {"installed": installed, "skipped": skipped}
 

@@ -1,0 +1,11 @@
+{
+  "_provenance": "S8 review round (issue #1374 item 9). The a2uiClientCapabilities SHAPE (the 'v0.9'/supportedCatalogIds keys) is vendored from external/gact-tui/packages/core/src/v3/a2ui/client-metadata.ts's buildA2uiClientCapabilities(); the CONCRETE catalog ids are the exact values external/gact-tui/web/src/lib/a2ui/registry-store.test.tsx (S6 adversarial review, 'advertises a2uiClientCapabilities as soon as the session opens' and the 'old server' test) asserts the real client advertises -- clio-workspace then Basic, matching gact/a2ui_catalogs/builtin.py's own two builtin catalogs. Sent in the JSON BODY (metadata.a2uiClientCapabilities on POST /v1/sessions/{sid}/messages and the /a2ui/actions door), never as a header -- identical regardless of transport (browser fetch() body vs the Tauri Rust bridge's JSON body), matching client-metadata.ts's own docstring: 'the transport never sees or builds this metadata, it only carries whatever the repository layer merges in -- identical by construction.'",
+  "a2uiClientCapabilities": {
+    "v0.9": {
+      "supportedCatalogIds": [
+        "https://iowarp.ai/a2ui/catalogs/clio-workspace/v1",
+        "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json"
+      ]
+    }
+  }
+}
