@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from fastapi import FastAPI, HTTPException, Request, Response
 
-from clio_agent.gact.a2ui_capabilities import blueprint_a2ui_capability_ids
+from clio_agent.gact.a2ui_capabilities import with_a2ui_capabilities
 from clio_agent.gact.agent_blueprints import (
     validate_agent_blueprint_path,
     validate_agent_hierarchy,
@@ -68,15 +68,6 @@ if TYPE_CHECKING:
 # Built-in expert ids reserved for CLIO's core experts: a user agent may not
 # shadow them via create/update/delete/extract.
 _RESERVED_AGENT_IDS = frozenset({"main", "data", "analysis", "visualization"})
-
-
-def _with_a2ui_capabilities(app: FastAPI, row: AgentDef) -> AgentDef:
-    """Attach ``metadata["a2ui_capabilities"]``: this row's OWN blueprint's
-    declared catalogs ∪ the two builtins (S3) -- not the caller session's
-    active blueprint, since a listing enumerates every agent."""
-
-    ids = blueprint_a2ui_capability_ids(app, str(row.metadata.get("agent_blueprint_id") or ""))
-    return row.model_copy(update={"metadata": {**row.metadata, "a2ui_capabilities": ids}})
 
 
 def _known_agent_overlay_tool_names(app: FastAPI) -> set[str]:
@@ -169,15 +160,13 @@ def _validate_session_agent_overlay_payload(
         session_id=session_id, workspace_id=workspace_id
     )
     base_ids = {row.id for row in base_rows}
-    agents = overlay.get("agents")
     if not base_rows:
         _overlay_validation_error(
             errors,
             code="missing_active_agent_blueprint",
             message="session has no active Agent Blueprint to overlay",
         )
-    if agents is None:
-        agents = {}
+    agents = overlay.get("agents") if overlay.get("agents") is not None else {}
     if not isinstance(agents, Mapping):
         _overlay_validation_error(
             errors,
@@ -798,10 +787,11 @@ def register_agents_routes(app: FastAPI, deps: "GactDeps") -> None:
         so the TUI's sidebar groups consistently.
         """
 
-        rows = deps.agent_rows(session_id=session_id or "", workspace_id=workspace_id or "")
+        sid = session_id or ""
+        rows = deps.agent_rows(session_id=sid, workspace_id=workspace_id or "")
         if tier is not None:
             rows = [a for a in rows if a.tier == tier]
-        return ListAgentsResponse(agents=[_with_a2ui_capabilities(app, row) for row in rows])
+        return ListAgentsResponse(agents=[with_a2ui_capabilities(app, row, sid) for row in rows])
 
     @app.get("/v1/agents/{agent_id}", response_model=AgentDef)
     async def get_agent(
@@ -813,7 +803,7 @@ def register_agents_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         for row in deps.agent_rows(session_id=session_id or "", workspace_id=workspace_id or ""):
             if row.id == agent_id:
-                return _with_a2ui_capabilities(app, row)
+                return with_a2ui_capabilities(app, row, session_id or "")
         raise HTTPException(
             status_code=404,
             detail=ErrorEnvelope(

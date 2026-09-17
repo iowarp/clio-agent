@@ -380,11 +380,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # continuation-chaining check landed in the new owner module
     # gact/agent_task_wake.py; the waiting_user HITL-forward branch moved to
     # its natural owner gact/child_forward.py (forward_waiting_child).
-    # a2ui S3 (#1369): +7 -- _launch's child staged-message metadata now runs
-    # through strip_renderer_metadata (owner module gact/a2ui_capabilities.py)
-    # so a2uiClientCapabilities/a2uiClientDataModel can never ride onto a
-    # spawned child even if a future change folds parent metadata in here.
-    "src/clio_agent/gact/turn_spawn.py": 818,
+    "src/clio_agent/gact/turn_spawn.py": 811,
     # (invoker.py's entry retired 2026-08: RelayExpertInvoker moved to its own
     # owner module agents/relay_expert_invoker.py, dropping invoker.py under the
     # 800 default cap — the #1221/#1222 contract-alignment growth that broke the
@@ -539,12 +535,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # #948 S4: +10 for round-tripping the module: declaration in the overlay
     # export (an exported react parent re-loaded as predict and failed the new
     # hierarchy validation).
-    # a2ui S3 (#1369): +10 for ``_with_a2ui_capabilities`` -- GET /v1/agents and
-    # /v1/agents/{id} rows gain metadata["a2ui_capabilities"] (own blueprint's
-    # declared catalogs ∪ builtins). The catalog derivation itself lives in the
-    # owner module gact/a2ui_capabilities.py; only the thin per-row call + a
-    # small row-mapping helper landed here (no-accretion).
-    "src/clio_agent/gact/routes/agents.py": 941,
+    "src/clio_agent/gact/routes/agents.py": 931,
     # merge(main->develop): +2 blueprints, +63 catalog, +54 mcp integrating main's
     # #956 MCP-apps runtime tool exposure (runtime MCP tools surfaced in the GACT
     # catalog + reconnect/streamable-http route growth). Part of the #947 MCP-apps
@@ -558,7 +549,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # Ratchets back with the mcp_app_* / #714 route decomposition.
     # Ratchet down (PR #1255 review): the source-ledger read-modify-writes and the
     # workspace-cwd refusal moved into gact/agent_blueprint_sources.py.
-    "src/clio_agent/gact/routes/blueprints.py": 878,
+    "src/clio_agent/gact/routes/blueprints.py": 877,  # a2ui S3 (#1369): ratcheted down after a net-neutral edit
     "src/clio_agent/gact/routes/catalog.py": 898,  # +4: /goal command dispatch wiring (#1080; logic in gact/goal.py)
     # #1201 (adversarial review, PR #1202): +6 for two direct-connect era-
     # classification call sites (call_external_mcp_tool + _external_mcp_inventory's
@@ -673,7 +664,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # gact/compaction.py::compact_session_context (one operation, two triggers); the
     # whole manual-compact body, gact/compact_memory.py's import, and the dead
     # session_archives snapshot are gone -- 1407 -> 1176.
-    "src/clio_agent/gact/routes/sessions.py": 1176,
+    "src/clio_agent/gact/routes/sessions.py": 1174,  # a2ui S3 (#1369): ratcheted down after a net-neutral edit
     # #1215 S5: crossed the 800 new-file cap (793 -> 809) for enrich_turn_context —
     # a thin timed combinator wrapping the TWO existing enrichment calls
     # (_enrich_with_context_files + _enrich_with_requested_memory_search) in ONE
