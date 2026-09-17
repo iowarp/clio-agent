@@ -246,6 +246,20 @@ _A2UI_CATALOG_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
             "the pack author's declared meaning"
         ),
     },
+    # S8 (issue #1374 live-gate comment): a producer-tool refusal reason
+    # (gact/a2ui_producer/_refusal.py) recurring within one turn. Recorded by
+    # ``CatalogRegistry.record_producer_refusal_reason`` -- observability
+    # only, never a cap: the idle-cell evidence was 14 identical
+    # ``a2ui_client_capabilities_unknown`` refusals in one turn, invisible
+    # without hand-reading the semantic trace.
+    "a2ui_producer_refusal_repeated": {
+        "severity": "info",
+        "detail": (
+            "the same producer-tool refusal reason recurred within one turn "
+            "-- surfaced for observability only, this call's own result is "
+            "never capped or rerouted because of it"
+        ),
+    },
 }
 
 #: Ring size shared by this global ledger AND ``CatalogRegistry``'s per-session

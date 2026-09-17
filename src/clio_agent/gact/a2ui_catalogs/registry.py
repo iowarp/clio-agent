@@ -210,6 +210,12 @@ class CatalogRegistry:
         # undeclared names simply stop deduping (still recorded, just no
         # longer once-only) rather than growing unbounded.
         self._narration_undeclared_seen: dict[str, set[str]] = {}
+        # S8 (issue #1374 live-gate comment): ONE (turn_id, reason -> count)
+        # slot per session -- only the CURRENT turn's counts matter, so a new
+        # turn_id for a session drops the prior turn's counts instead of
+        # accumulating across the session's whole lifetime (bounded memory
+        # is release-gating; same doctrine as ``_narration_undeclared_seen``).
+        self._producer_refusal_state: dict[str, tuple[str, dict[str, int]]] = {}
 
     def record_session_reason(self, session_id: str, reason: str, **fields: Any) -> dict[str, Any]:
         """Record a typed catalog reason AND append it to ``session_id``'s ledger.
@@ -262,6 +268,43 @@ class CatalogRegistry:
                 seen.add(event_name)
         self.record_session_reason(session_id, "a2ui_event_narration_undeclared", action=event_name)
         return True
+
+    def record_producer_refusal_reason(self, session_id: str, turn_id: str, reason: str) -> bool:
+        """Record one producer-tool refusal ``reason`` for ``(session_id, turn_id)``.
+
+        A SECOND (or later) occurrence of the SAME ``reason`` within the SAME
+        turn additionally records the typed ``a2ui_producer_refusal_repeated``
+        ledger reason -- observability only, never a cap or a reroute (⚑ #1:
+        clio never decides FOR the model). Evidence this exists for: a resumed
+        idle turn (claude_code/sonnet, 2026-09-17) called
+        ``create_a2ui_surface`` and got ``a2ui_client_capabilities_unknown``
+        14 times in a row, invisible without hand-reading the semantic trace
+        (issue #1374 live-gate comment).
+
+        Returns:
+            ``True`` iff this call recorded a repeat (this session's second+
+            occurrence of ``reason`` within ``turn_id``); ``False`` on the
+            first occurrence of a reason within a turn, or when a new
+            ``turn_id`` resets this session's counts.
+        """
+
+        with self._session_reasons_lock:
+            state = self._producer_refusal_state.get(session_id)
+            if state is None or state[0] != turn_id:
+                state = (turn_id, {})
+                self._producer_refusal_state[session_id] = state
+            counts = state[1]
+            count = counts.get(reason, 0) + 1
+            counts[reason] = count
+        if count > 1:
+            self.record_session_reason(
+                session_id,
+                "a2ui_producer_refusal_repeated",
+                refusal_reason=reason,
+                count=count,
+            )
+            return True
+        return False
 
     def session_reasons(self, session_id: str) -> list[dict[str, Any]]:
         """Return the typed catalog reasons recorded for ``session_id``, oldest first."""
