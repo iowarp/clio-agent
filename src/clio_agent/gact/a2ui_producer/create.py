@@ -67,8 +67,7 @@ def build_create_a2ui_surface_tool() -> Any:
                 return refusal(
                     selection.reason,
                     detail=(
-                        "catalog selection did not resolve a catalog for this "
-                        "new surface"
+                        "catalog selection did not resolve a catalog for this new surface"
                         if preferred is None
                         else f"catalog_id {preferred!r} is not selectable for this session"
                     ),

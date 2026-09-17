@@ -743,9 +743,7 @@ def test_catalog_skill_fragment_trailer_distinguishes_local_from_standard_refs(
     rt = skill_runtime_for_agent(app, root, session_id=session.id)
     tool = build_load_skill_tool(root, rt)
 
-    out = tool.func(
-        skill_id="a2ui-catalog-clio-workspace", file="catalog.json#/components/Button"
-    )
+    out = tool.func(skill_id="a2ui-catalog-clio-workspace", file="catalog.json#/components/Button")
 
     assert "Local refs (load via file=): catalog.json#/$defs/CatalogComponentCommon" in out
     assert "Standard refs (not loadable here):" in out
