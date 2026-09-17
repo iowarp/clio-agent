@@ -10,7 +10,6 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from starlette.concurrency import run_in_threadpool
 
 from clio_agent import conf
-from clio_agent.gact.a2ui import SERVER_ACTIONS
 from clio_agent.gact.mcp_task_store import app_task_store
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.permission_delivery import attended_session_id
@@ -337,7 +336,14 @@ def _permission_interaction(app: FastAPI, row: Mapping[str, Any]) -> PendingInte
 
 
 def _surface_actions(surface: Mapping[str, Any]) -> list[str]:
-    """Return registered server action names declared by a folded surface."""
+    """Return every action name a folded surface's messages declare.
+
+    Pre-S2 this filtered against a closed ``SERVER_ACTIONS`` Literal; the
+    catalog file is now the allowlist (docs/design/a2ui-compat-campaign-
+    2026-09.md S2) and ANY non-empty event name is a legal action, so this
+    just reports what the surface actually offers rather than re-deriving a
+    trust decision the server already made at ``updateComponents`` time.
+    """
 
     found: set[str] = set()
 
@@ -346,7 +352,7 @@ def _surface_actions(surface: Mapping[str, Any]) -> list[str]:
             event = value.get("event")
             if isinstance(event, Mapping):
                 name = str(event.get("name") or "")
-                if name in SERVER_ACTIONS:
+                if name:
                     found.add(name)
             for child in value.values():
                 visit(child)
