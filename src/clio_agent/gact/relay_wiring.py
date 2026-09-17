@@ -18,6 +18,8 @@ from clio_agent.tools.gateway import (
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+    from clio_agent.config import LMProviderConfig
+
 logger = logging.getLogger(__name__)
 
 #: #1227 D2 default: how long a discovered relay catalog is trusted before the
@@ -272,14 +274,30 @@ async def relay_agent_kwargs(app: FastAPI) -> dict[str, Any]:
     }
 
 
-async def construct_agent_with_relay(app: FastAPI, *, arc: Any) -> Any:
-    """Construct a first-time provider-bound agent with the retained relay owners."""
+async def construct_agent_with_relay(
+    app: FastAPI, *, arc: Any, provider_config: LMProviderConfig | None = None
+) -> Any:
+    """Construct a first-time provider-bound agent with the retained relay owners.
+
+    Args:
+        app: The serving GACT application (source of the retained relay owners).
+        arc: The one per-process ARC to inject (see ``ClioAgent.__init__``).
+        provider_config: The REQUESTED provider config for this bind (the
+            handler's handshake-applied ``cfg``), forwarded straight to
+            ``ClioAgent.__init__``. Without this, the constructor falls back to
+            ``load_config_from_env()`` -- the ambient boot provider, defaulting
+            to lm_studio -- and runs LM Studio discovery against it even when
+            the caller asked for a different provider (the first-bind
+            discovery-before-rebind defect, #1363). ``None`` keeps the
+            standalone CLI / test baseline (env-sourced config) unchanged.
+    """
 
     from clio_agent.agent import ClioAgent  # noqa: PLC0415
 
     relay_kwargs = await relay_agent_kwargs(app)
     return await asyncio.get_running_loop().run_in_executor(
-        None, lambda: ClioAgent(verbose=False, arc=arc, **relay_kwargs)
+        None,
+        lambda: ClioAgent(verbose=False, arc=arc, provider_config=provider_config, **relay_kwargs),
     )
 
 
