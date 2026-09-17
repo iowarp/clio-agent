@@ -185,6 +185,12 @@ async def _run_turn_in_background(
     # #1215 S5: first-turn bring-up phase from "the background task started
     # running" to "turn.started published" (see the end_phase call below).
     bringup_timing.timer_for_session(app, sid).start_phase("turn.accept_gap")
+    # A2UI compat S5: this is "the turn that carried the record starts
+    # executing" for a fresh/idle-redriven delivery (mid-turn steers hook via
+    # steer_delivery.compose_steer_block instead). No-op for a normal turn.
+    from clio_agent.gact.a2ui_actions.record import mark_a2ui_action_consumed  # noqa: PLC0415
+
+    mark_a2ui_action_consumed(app, sid, user_msg.metadata)
 
     # #767 Phase B: the turn's whole working set lives on one mutable ``TurnState``
     # threaded through the closures + body (formerly ~40 function-scope locals).

@@ -82,6 +82,7 @@ def maybe_pause_for_user(
             "selected_agent": state.selected_agent,
             "route_source": state.route_source,
             "route_reason": state.route_reason,
+            "a2ui_surface_id": str(ask_user_action.get("a2ui_surface_id") or ""),
         },
     )
     assistant_message_id = persist_paused_transcript(state)

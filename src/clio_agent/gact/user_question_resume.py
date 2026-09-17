@@ -47,6 +47,12 @@ def resume_answered_question(
         "ask_user_attempt_id": question.attempt_id,
         "ask_user_caller": question.metadata.get("caller", {}),
         "ask_user_resume": True,
+        # S5: the answering caller's own metadata (e.g. the A2UI dispatcher's
+        # {"a2ui_action": record_id, "a2ui_action_context": ..., "surface_id":
+        # ...}) rides onto the resumed turn -- "structured context is the
+        # authoritative agent input" applies here exactly as it does to a
+        # fresh idle/steer delivery.
+        **dict(question.answer_metadata or {}),
     }
     agent_initializing = app.state.agent is None
     if should_resume and (agent_initializing or app.state.turn_runner.busy(sid)):

@@ -151,13 +151,16 @@ def build_ask_user_tool(agent_def: Any) -> Any:
         allowFreeform: bool = False,  # noqa: N803 - public tool schema is camelCase
         reason: str = "",
         expiresInSeconds: int = 0,  # noqa: N803 - public tool schema is camelCase
+        surface_id: str = "",
     ) -> str:
         """Ask the user one necessary question and end this turn.
 
         Use only when progress genuinely requires user intent or a tradeoff. Supply
         ``options`` for choice questions. This ends the turn; do not call more tools
         or continue the answer after this succeeds. The exact owning child/task is
-        resumed when the attended user responds.
+        resumed when the attended user responds. Pass ``surface_id`` when this
+        question resumes a specific A2UI surface (S5): the dispatcher correlates a
+        ``waiting_user`` action against it via ``metadata["a2ui_surface_id"]``.
         """
 
         app = _ctx.active_app()
@@ -204,6 +207,7 @@ def build_ask_user_tool(agent_def: Any) -> Any:
             "invocation_id": invocation_id,
             "caller": {"agent_id": str(getattr(agent_def, "id", "") or "")},
             "surfaced": False,
+            "a2ui_surface_id": str(surface_id or "").strip(),
         }
         app.state.sessions.update(owner, metadata_patch={PENDING_ASK_USER_META: pending})
         return (
@@ -239,6 +243,13 @@ def build_ask_user_tool(agent_def: Any) -> Any:
                     "Response window in seconds; 0 uses the server default "
                     "(gact.ask_user.ttl_s) and any value is clamped to "
                     "gact.ask_user.max_ttl_s."
+                ),
+            },
+            "surface_id": {
+                "type": "string",
+                "description": (
+                    "Optional: the A2UI surface id this question resumes, so a later "
+                    "waiting_user action on that surface correlates to it."
                 ),
             },
         },
@@ -321,6 +332,7 @@ def restore_pending_ask_user_questions(app: Any) -> int:
                     "invocation_id": str(pending_raw.get("invocation_id") or ""),
                     "resume_on_answer": True,
                     "selected_agent": str(caller.get("agent_id") or ""),
+                    "a2ui_surface_id": str(pending_raw.get("a2ui_surface_id") or ""),
                 },
             )
 
