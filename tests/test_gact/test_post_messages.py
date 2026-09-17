@@ -1628,7 +1628,22 @@ def test_post_message_turn_timeout_surfaces_error(
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=agent)
     with TestClient(app) as c:
         sid = _create_session(c)
-        assistant = complete_turn(c, sid, "hi", timeout=2.0)
+        # CI investigation (PR #1375): this test's own tighter override
+        # (previously timeout=2.0) raced a one-time cold-process cost that
+        # has nothing to do with the 0.2s turn_timeout_s under test --
+        # measured directly (--count 5 in one process, both on this branch
+        # and on the pre-A2UI-S4 develop merge-base, identical): the FIRST
+        # real turn dispatch in a process pays for litellm's own module
+        # import (partly mitigated by conftest.py's collection-time
+        # pre-warm) plus first-use dspy/tool-executor/CTE-daemon setup --
+        # up to ~10s cold, ~1.0-1.2s once warm; every OTHER test in this
+        # file passes in well under a second. The 0.2s timeout mechanism
+        # itself is not slow; this ONE test simply carved out a tighter
+        # budget than the rest of the suite's own documented default
+        # (complete_turn's own 30s, calibrated for exactly this class of
+        # cold-dispatch cost -- see its docstring). Deferring to that
+        # default instead of re-asserting a narrower one.
+        assistant = complete_turn(c, sid, "hi")
         sess = c.get(f"/v1/sessions/{sid}").json()
 
     assert assistant["stop_reason"] == "error"

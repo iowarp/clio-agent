@@ -565,6 +565,46 @@ def test_root_agent_with_no_blueprint_declares_the_two_builtin_catalog_skills(
     ]
 
 
+def test_catalog_skill_body_generator_runs_once_across_twenty_turns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Perf fix (CI investigation, PR #1375): skill_runtime_for_agent's
+    tier-2 pass (skill_bodies_context) reads EVERY resolved skill's body on
+    every call, even for a react expert that only ever uses prompt_block --
+    without the checksum-keyed cache in a2ui_catalogs/skills.py, a session
+    with two auto-declared catalog skills regenerated both bodies on every
+    single turn build. Twenty builds must render each catalog's body ONCE."""
+
+    from clio_agent.gact.a2ui_catalogs import skills as cat_skills_mod
+
+    # The cache is process-global, keyed by content checksum (mirrors
+    # registry.py's compiled_validators/_VALIDATOR_CACHE) -- an earlier test
+    # in the same session may have already warmed it for these same builtin
+    # catalogs. Start this test from a known-cold state for a deterministic
+    # count instead of asserting on residual state from test order.
+    cat_skills_mod._BODY_CACHE.clear()
+
+    render_calls: list[str] = []
+    original = cat_skills_mod._render_catalog_skill_body
+
+    def counting(entry: Any) -> str:
+        render_calls.append(entry.checksum)
+        return original(entry)
+
+    monkeypatch.setattr(cat_skills_mod, "_render_catalog_skill_body", counting)
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="root")
+    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+
+    for _ in range(20):
+        skill_runtime_for_agent(app, root, session_id=session.id)
+
+    # Two producible builtin catalogs (basic, clio-workspace) -- one render
+    # call per DISTINCT checksum across all twenty builds, never twenty.
+    assert len(render_calls) == len(set(render_calls)) == 2
+
+
 _FIXTURE_A2UI_PACK = Path(__file__).resolve().parents[1] / "fixtures" / "a2ui_packs" / "minimal"
 
 

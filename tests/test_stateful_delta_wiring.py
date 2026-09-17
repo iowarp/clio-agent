@@ -70,6 +70,17 @@ def test_codex_colliding_model_reaches_custom_handler(monkeypatch: pytest.Monkey
     codex_litellm.ensure_registered()
     litellm.utils.custom_llm_setup()
     # The bare model id WOULD collide with a registered OpenAI model — that is the trap.
+    # Make the collision deterministic instead of trusting litellm's model catalog:
+    # the test session pins LITELLM_LOCAL_MODEL_COST_MAP=True (bundled map, no
+    # import-time network fetch), and the bundled map of the pinned litellm does not
+    # list gpt-5.6-sol while the remote one does. The routing defect this pins does
+    # not depend on which catalog knows the id, only on the id being in litellm's
+    # OpenAI collision set when create_lm resolves it.
+    monkeypatch.setattr(
+        litellm,
+        "open_ai_chat_completion_models",
+        set(litellm.open_ai_chat_completion_models) | {"gpt-5.6-sol"},
+    )
     assert "gpt-5.6-sol" in litellm.open_ai_chat_completion_models
 
     cfg = LMProviderConfig(provider="codex", model="gpt-5.6-sol")

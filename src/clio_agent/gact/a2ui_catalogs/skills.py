@@ -25,6 +25,7 @@ gact.a2ui_producer._refusal` mint the same id/hint strings by importing
 from __future__ import annotations
 
 import functools
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -104,8 +105,24 @@ def _event_lines(entry: "CatalogEntry") -> list[str]:
     return lines
 
 
+#: Generated SKILL.md bodies, cached by the catalog FILE's own content
+#: checksum (``CatalogEntry.checksum`` -- the same key ``registry.py``'s
+#: ``compiled_validators``/``_VALIDATOR_CACHE`` already uses, same doctrine:
+#: a cache accelerates, is keyed by content so it can never serve a stale
+#: body for a changed catalog, and is invalidated implicitly -- a changed
+#: catalog file produces a different checksum, a different cache slot, never
+#: a stale hit). Perf finding (CI investigation, PR #1375): every
+#: ``skill_runtime_for_agent`` call unconditionally computes BOTH tiers
+#: (``skill_bodies_context`` reads every resolved skill's body even for a
+#: react expert that only ever uses ``prompt_block``), so an auto-declared
+#: catalog skill regenerated its body on EVERY turn build before this cache
+#: existed -- measured 40 regenerations across 20 builds (2 catalogs x 20).
+_BODY_CACHE: dict[str, str] = {}
+_BODY_CACHE_LOCK = threading.Lock()
+
+
 def generate_catalog_skill_body(entry: "CatalogEntry") -> str:
-    """Render this catalog's generated ``SKILL.md`` text.
+    """Render (or return the cached) generated ``SKILL.md`` text.
 
     Frontmatter (``name``/``description`` from the catalog file's own
     ``title``/``description``), then the sidecar ``instructions.md`` verbatim,
@@ -113,6 +130,18 @@ def generate_catalog_skill_body(entry: "CatalogEntry") -> str:
     exact ``load_skill(...)`` call for one component's schema -- never the
     component shapes themselves (the catalog file is the allowlist, S2).
     """
+
+    with _BODY_CACHE_LOCK:
+        cached = _BODY_CACHE.get(entry.checksum)
+    if cached is not None:
+        return cached
+    rendered = _render_catalog_skill_body(entry)
+    with _BODY_CACHE_LOCK:
+        return _BODY_CACHE.setdefault(entry.checksum, rendered)
+
+
+def _render_catalog_skill_body(entry: "CatalogEntry") -> str:
+    """The actual, uncached rendering (see :func:`generate_catalog_skill_body`)."""
 
     file = entry.file
     skill_id = catalog_skill_id(entry)
