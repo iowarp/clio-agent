@@ -164,6 +164,21 @@ server activation):
 PRODUCIBLE scoping (a session's own set, or — for an agent-listing row — that
 row's own blueprint's declared set), never the full installed catalog.
 
+**S4: producers learn catalogs through skills, not this document's shapes.**
+This document is the wire/negotiation contract; it is never where a model
+learns a component's properties. Each of a session's producible catalogs is
+disclosed as a generated skill id `a2ui-catalog-<slug>`
+(`gact/a2ui_catalogs/skills.py`), auto-declared onto any expert that declares
+a producer tool or is a root agent (`agents/skill_runtime.py`). Its body is
+the catalog's own `instructions.md` plus a generated component/function/event
+index; the exact schema for one component comes from
+`load_skill("a2ui-catalog-<slug>", file="catalog.json#/components/<Name>")`
+— a JSON-pointer fragment read of the SAME `catalog.json` this document's
+`select_catalog` and the S2 validator resolve against, never a second
+maintained copy. A component-schema validation failure a producer tool
+catches carries this exact `load_skill(...)` call as its `hint` (see
+`gact/a2ui_producer/_refusal.py`).
+
 ## Catalog selection
 
 "The agent selects the best match from the client's `supportedCatalogIds`
@@ -190,6 +205,37 @@ producer tool (S4) is the one that turns an unsuccessful selection into a
 tool refusal. The selected catalog is **locked per surface** at
 `createSurface` time — that locking is the S4 producer tool's concern, not
 this module's.
+
+### S4: how the producer tools actually call this
+
+`create_a2ui_surface(..., catalog_id="")` (`gact/a2ui_producer/create.py`) is
+the one caller of `select_catalog`, and only in the two cases where a catalog
+still needs deciding:
+
+- `catalog_id` empty AND the surface is new -> `select_catalog(app, session_id)`
+  (no `preferred`); a non-selection becomes the typed refusal
+  `{"ok": false, "reason": <CatalogSelection.reason>, "detail": ...}` —
+  the model reads the SAME reason codes this document defines, never a
+  bare exception.
+- `catalog_id` empty AND the surface already exists -> the EXISTING surface's
+  own locked `catalog_id` is reused (no renegotiation of an established
+  surface).
+- `catalog_id` given explicitly (non-empty) -> used AS GIVEN, never routed
+  through `select_catalog`'s client-preference gate. It still crosses every
+  other boundary unchanged: `validate_server_message` refuses an unknown or
+  non-producible id (`a2ui_catalog_unknown` / `a2ui_catalog_not_producible`)
+  exactly as it always has. This is a deliberate reading of "preferred wins
+  only when in both sets": an EXPLICIT tool argument is the caller's own
+  assertion (a blueprint/skill that already knows which catalog it wants),
+  distinct from `select_catalog`'s `preferred=` parameter (which exists for
+  a caller that wants negotiation with a fallback); the two are not required
+  to be the same code path, and collapsing them would additionally require
+  every producer-tool caller that already knows its catalog id to first
+  have a remembered client advertisement, which is not otherwise a
+  precondition of producing a surface. `update_a2ui_components`,
+  `update_a2ui_data_model`, and `delete_a2ui_surface` never take a
+  `catalog_id` argument at all — they always resolve it from the addressed
+  surface's own record.
 
 ## Routes
 
