@@ -314,6 +314,8 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         deps.delete_session_context_files(app, sid)
         await run_off_loop(deps.release_session_arc, app, sid)  # #1334: drops _events scopes
         purge_session_tasks(app, sid)
+        app.state.a2ui_catalogs.forget_session(sid)
+        app.state.a2ui_store.forget_session(sid)
         return Response(status_code=204)
 
     # ---- Rollback (undo / rewind) -----------------------------------
@@ -428,11 +430,10 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         if sess is None:
             raise _session_not_found(sid)
         _reject_rollback_while_active(sid, sess)
-        # Optional free-form body: a malformed or ``null`` payload is treated as
-        # ``{}`` (unchanged behavior, now with a structured
-        # ``request_body_unparseable`` reason in the trace), but a valid-JSON
-        # non-object payload keeps its pre-#772 422 -- undo is destructive and
-        # must not proceed on a wrong-shaped body coerced to defaults.
+        # Optional free-form body: malformed/``null`` is treated as ``{}`` (a
+        # structured ``request_body_unparseable`` trace reason), but a
+        # valid-JSON non-object payload keeps its pre-#772 422 -- undo is
+        # destructive and must not proceed on a wrong-shaped coerced body.
         try:
             body = await json_body(
                 request, route="POST /v1/sessions/{sid}/undo", non_object="raise"
@@ -996,9 +997,8 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
-        # #1057 B2 (BLOCKER): retry is a POST /messages sibling — ``req.metadata`` is
-        # spread onto the staged turn's ``user_msg.metadata`` the UserPromptSubmit hook
-        # reads. Reject a smuggled control key via the shared /messages chokepoint.
+        # #1057 B2 (BLOCKER): retry is a POST /messages sibling -- reject a
+        # smuggled control key in ``req.metadata`` via the shared chokepoint.
         raise_on_reserved_metadata(sid, req.metadata)
         _apply_a2ui_client_metadata_guards(app, sid, req.metadata)
         model_payload = (req.model or ModelRef()).model_dump()

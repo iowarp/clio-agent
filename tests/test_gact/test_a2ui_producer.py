@@ -411,6 +411,63 @@ def test_repeated_refusal_ledger_is_per_reason_not_per_call(
     assert repeats == []
 
 
+def test_repeated_refusal_with_no_active_turn_is_never_flagged_a_repeat(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """S8 review nit (issue #1374): ``turn_id=""`` (``gact/context.py``'s
+    ``TurnContext`` default -- a producer tool called with no active turn,
+    e.g. a script or a test harness) is not a real grouping key. Two
+    out-of-turn refusals must never be treated as "the same turn,
+    recurring", or the per-session state dict would accumulate counts
+    across calls that have no actual temporal relationship."""
+
+    app, sid = _session(tmp_path, monkeypatch)
+    monkeypatch.setattr(gact_context, "active_turn_id", lambda: "")
+
+    for _ in range(3):
+        build_create_a2ui_surface_tool()(
+            surface_id="unselectable",
+            components=[{"id": "root", "component": "Text", "text": "x"}],
+        )
+
+    reasons = app.state.a2ui_catalogs.session_reasons(sid)
+    repeats = [r for r in reasons if r["reason"] == "a2ui_producer_refusal_repeated"]
+    assert repeats == []
+
+
+def test_session_delete_prunes_the_producer_refusal_state(tmp_path: Path, monkeypatch: Any) -> None:
+    """S8 review nit (issue #1374): ``CatalogRegistry.forget_session`` (called
+    from ``DELETE /v1/sessions/{sid}``) drops this session's entry from
+    every per-session ring the registry keeps, not just the reason ledger
+    -- proven here by re-triggering the SAME reason after "delete" and
+    confirming it counts as a FIRST occurrence again, not a leftover
+    repeat from before the (simulated) delete."""
+
+    app, sid = _session(tmp_path, monkeypatch)
+    monkeypatch.setattr(gact_context, "active_turn_id", lambda: "turn-1")
+
+    build_create_a2ui_surface_tool()(
+        surface_id="s1", components=[{"id": "root", "component": "Text", "text": "x"}]
+    )
+    build_create_a2ui_surface_tool()(
+        surface_id="s2", components=[{"id": "root", "component": "Text", "text": "x"}]
+    )
+    before = app.state.a2ui_catalogs.session_reasons(sid)
+    assert any(r["reason"] == "a2ui_producer_refusal_repeated" for r in before)
+
+    app.state.a2ui_catalogs.forget_session(sid)
+    app.state.a2ui_store.forget_session(sid)
+
+    assert app.state.a2ui_catalogs.session_reasons(sid) == []
+    build_create_a2ui_surface_tool()(
+        surface_id="s3", components=[{"id": "root", "component": "Text", "text": "x"}]
+    )
+    after = app.state.a2ui_catalogs.session_reasons(sid)
+    assert not any(r["reason"] == "a2ui_producer_refusal_repeated" for r in after), (
+        "forget_session must reset the per-turn refusal count, not leave a stale one"
+    )
+
+
 # ---- docstrings carry no prop lore (S4 item 3) -------------------------------------
 
 

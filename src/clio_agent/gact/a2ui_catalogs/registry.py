@@ -195,6 +195,14 @@ class CatalogRegistry:
         self._lock = threading.Lock()
         self._discovered_blueprints: list[Any] | None = None
         self._pack_cache: list[CatalogEntry] | None = None
+        # S8 review round (issue #1374 item B): a cheap integer callers can
+        # compare against to know "has the installed-catalog set possibly
+        # changed" without re-walking anything -- A2UIStore's projection
+        # cache uses this to invalidate itself when a pack install/uninstall
+        # could change how an ALREADY-persisted part folds (e.g.
+        # state="unknown" -> resolved), a change no session message ever
+        # reflects on its own.
+        self._generation = 0
         # Bounded PER SESSION (adversarial review: an unbounded per-session list
         # is a release-gating memory leak for a long-lived session -- same ring
         # size as the global ledger in ``reasons.py``, one source of truth).
@@ -281,13 +289,23 @@ class CatalogRegistry:
         14 times in a row, invisible without hand-reading the semantic trace
         (issue #1374 live-gate comment).
 
+        ``turn_id`` empty (``gact/context.py``'s ``TurnContext.turn_id``
+        default -- a producer tool called with no active turn, e.g. a script
+        or a test harness) is never a real grouping key: two out-of-turn
+        calls have no actual "same turn" relationship, so this is a no-op
+        rather than silently treating them as one ever-growing turn (S8
+        review nit, issue #1374).
+
         Returns:
             ``True`` iff this call recorded a repeat (this session's second+
             occurrence of ``reason`` within ``turn_id``); ``False`` on the
-            first occurrence of a reason within a turn, or when a new
-            ``turn_id`` resets this session's counts.
+            first occurrence of a reason within a turn, when a new
+            ``turn_id`` resets this session's counts, or when ``turn_id`` is
+            empty.
         """
 
+        if not turn_id:
+            return False
         with self._session_reasons_lock:
             state = self._producer_refusal_state.get(session_id)
             if state is None or state[0] != turn_id:
@@ -312,17 +330,40 @@ class CatalogRegistry:
         with self._session_reasons_lock:
             return list(self._session_reasons.get(session_id, []))
 
+    def forget_session(self, session_id: str) -> None:
+        """Drop every per-session ring this registry keeps for ``session_id``.
+
+        Nit (S8 review round, issue #1374): ``DELETE /v1/sessions/{sid}``
+        never pruned ``_session_reasons``/``_narration_undeclared_seen``/
+        ``_producer_refusal_state`` — a bounded-per-session leak (each ring
+        is capped, but the DICT of rings itself grows by one entry per
+        session ever created, never shrinking) that outlives the session
+        for the rest of the process. Called from the session-delete route.
+        """
+
+        with self._session_reasons_lock:
+            self._session_reasons.pop(session_id, None)
+            self._narration_undeclared_seen.pop(session_id, None)
+            self._producer_refusal_state.pop(session_id, None)
+
     def invalidate(self) -> None:
         """Drop the cached discovery + pack-catalog list.
 
         Called by ``routes/blueprints.py``'s install/update/uninstall
         handlers after a mutation completes; the next lookup re-discovers
-        once and repopulates both caches.
+        once and repopulates both caches. Also bumps :attr:`generation`.
         """
 
         with self._lock:
             self._discovered_blueprints = None
             self._pack_cache = None
+            self._generation += 1
+
+    @property
+    def generation(self) -> int:
+        """Bumped by every :meth:`invalidate` call (S8, issue #1374)."""
+
+        return self._generation
 
     def discovered_blueprints(self) -> list[Any]:
         """Return the cached ``discover_agent_blueprints()`` result.
