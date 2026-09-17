@@ -54,6 +54,58 @@ def _create_message(catalog_id: str, surface_id: str = "surface_1") -> dict[str,
     }
 
 
+def _install_isolated_minimal_pack(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, Path, dict[str, Any]]:
+    """Install the ``a2ui-minimal-pack`` fixture into a tmp-isolated user config dir.
+
+    Adversarial (S7 composability) review finding #13: ``install_agent_
+    blueprint``'s install root resolves through ``paths.user_config_dir_for
+    (home, os.environ)``, which checks ``CLIO_USER_DIR``/``XDG_CONFIG_HOME``
+    in ``os.environ`` BEFORE ever consulting the injected ``home`` argument --
+    a bare ``Path.home`` monkeypatch does NOT redirect it on Windows
+    (``%LOCALAPPDATA%\\clio-agent`` wins over an unset override), so a test
+    that only patches ``Path.home`` can install fixture packs into the
+    developer's REAL Agent Blueprint registry. ``tests/conftest.py``'s
+    autouse ``allow_pytest_tmp_path`` fixture already sets both env vars
+    process-wide, but this helper sets them explicitly too (belt-and-
+    suspenders self-contained isolation, not an implicit dependency on
+    fixture ordering elsewhere) and asserts, after the install, that the
+    pack never landed under the REAL (unpatched) per-user registry.
+    """
+
+    import os
+
+    from clio_agent import paths
+    from clio_agent.gact.agent_blueprints import install_agent_blueprint
+
+    # Captured BEFORE any patch below: the REAL, unpatched per-user registry
+    # root, so the post-install assertion checks the actual machine rather
+    # than a path relative to this test's own overrides.
+    real_root = paths.user_config_dir_for(Path.home(), dict(os.environ))
+
+    home = tmp_path / "home"
+    cwd = tmp_path / "cwd"
+    home.mkdir()
+    cwd.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv("CLIO_USER_DIR", str(tmp_path / "user-config"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+    result = install_agent_blueprint(
+        source=str(FIXTURE_PACK),
+        scope="global",
+        cwd=cwd,
+        home=home,
+        blueprint_id="a2ui-minimal-pack",
+    )
+
+    leaked = real_root / "agent-blueprints" / "a2ui-minimal-pack"
+    assert not leaked.exists(), f"fixture pack leaked into the real registry: {leaked}"
+    return home, cwd, result
+
+
 # --------------------------------------------------------------------------- #
 # Builtin registry
 # --------------------------------------------------------------------------- #
@@ -115,22 +167,7 @@ def test_pack_catalog_producible_only_in_a_session_that_activated_its_blueprint(
     creatable via ``createSurface`` — in a session whose own active blueprint
     declared it."""
 
-    from clio_agent.gact.agent_blueprints import install_agent_blueprint
-
-    home = tmp_path / "home"
-    cwd = tmp_path / "cwd"
-    home.mkdir()
-    cwd.mkdir()
-    monkeypatch.setattr(Path, "home", lambda: home)
-    monkeypatch.chdir(cwd)
-
-    install_agent_blueprint(
-        source=str(FIXTURE_PACK),
-        scope="global",
-        cwd=cwd,
-        home=home,
-        blueprint_id="a2ui-minimal-pack",
-    )
+    _install_isolated_minimal_pack(tmp_path, monkeypatch)
 
     client, sid = _session_client(tmp_path)
     app = client.app
@@ -784,21 +821,7 @@ def test_second_session_with_no_active_blueprint_cannot_produce_the_pack_catalog
     """Producibility is SESSION-scoped: activating a pack in one session must
     not leak into a second, unrelated session on the same app."""
 
-    from clio_agent.gact.agent_blueprints import install_agent_blueprint
-
-    home = tmp_path / "home"
-    cwd = tmp_path / "cwd"
-    home.mkdir()
-    cwd.mkdir()
-    monkeypatch.setattr(Path, "home", lambda: home)
-    monkeypatch.chdir(cwd)
-    install_agent_blueprint(
-        source=str(FIXTURE_PACK),
-        scope="global",
-        cwd=cwd,
-        home=home,
-        blueprint_id="a2ui-minimal-pack",
-    )
+    _install_isolated_minimal_pack(tmp_path, monkeypatch)
 
     client, activated_sid = _session_client(tmp_path)
     app = client.app
@@ -827,21 +850,7 @@ def test_pack_catalog_entry_carries_the_blueprint_install_checksum(
     the entry's install_checksum names the OWNING pack version, distinct from
     its own catalog-file content checksum."""
 
-    from clio_agent.gact.agent_blueprints import install_agent_blueprint
-
-    home = tmp_path / "home"
-    cwd = tmp_path / "cwd"
-    home.mkdir()
-    cwd.mkdir()
-    monkeypatch.setattr(Path, "home", lambda: home)
-    monkeypatch.chdir(cwd)
-    installed = install_agent_blueprint(
-        source=str(FIXTURE_PACK),
-        scope="global",
-        cwd=cwd,
-        home=home,
-        blueprint_id="a2ui-minimal-pack",
-    )
+    _, _, installed = _install_isolated_minimal_pack(tmp_path, monkeypatch)
     expected_checksum = installed["installed"][0]["install"]["checksum"]
     assert expected_checksum
 
