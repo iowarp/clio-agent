@@ -63,8 +63,6 @@ import threading
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
-import dspy
-
 from clio_agent.gact.evidence import _bounded_tool_call_result
 from clio_agent.tools.execution import TOOL_OBSERVED_ATTR
 
@@ -86,19 +84,36 @@ TOOL_REPRESENTATIONS = frozenset({"row", "handoff", "chip"})
 TITLE_MAX_CHARS = 80
 
 
-class ClioNativeTool(dspy.Tool):
-    """DSPy tool whose JSON schema honors declared argument defaults."""
+_CLIO_NATIVE_TOOL_CLASS: Any = None
 
-    def format_as_litellm_function_call(self) -> dict[str, Any]:
-        """Return a LiteLLM schema that requires only arguments without defaults."""
 
-        formatted = super().format_as_litellm_function_call()
-        function_schema = formatted["function"]
-        properties = function_schema["parameters"]["properties"]
-        function_schema["parameters"]["required"] = [
-            arg_name for arg_name, arg_schema in properties.items() if "default" not in arg_schema
-        ]
-        return formatted
+def _clio_native_tool_class() -> Any:
+    """Return the CLIO DSPy Tool subclass without loading DSPy at UI boot."""
+
+    global _CLIO_NATIVE_TOOL_CLASS  # noqa: PLW0603
+    if _CLIO_NATIVE_TOOL_CLASS is not None:
+        return _CLIO_NATIVE_TOOL_CLASS
+
+    import dspy  # noqa: PLC0415
+
+    class ClioNativeTool(dspy.Tool):
+        """DSPy tool whose JSON schema honors declared argument defaults."""
+
+        def format_as_litellm_function_call(self) -> dict[str, Any]:
+            """Return a LiteLLM schema requiring only arguments without defaults."""
+
+            formatted = super().format_as_litellm_function_call()
+            function_schema = formatted["function"]
+            properties = function_schema["parameters"]["properties"]
+            function_schema["parameters"]["required"] = [
+                arg_name
+                for arg_name, arg_schema in properties.items()
+                if "default" not in arg_schema
+            ]
+            return formatted
+
+    _CLIO_NATIVE_TOOL_CLASS = ClioNativeTool
+    return ClioNativeTool
 
 
 # name -> (representation, sanitized title). Populated at the assembly seam
@@ -304,7 +319,7 @@ def native_tool(
     setattr(func, START_PRESENTER_ATTR, presentation_start)
     setattr(func, REPRESENTATION_ATTR, _validated_representation(representation, tool_name=name))
     setattr(func, TITLE_ATTR, sanitize_tool_title(title))
-    return ClioNativeTool(func=func, name=name, desc=desc, args=args)
+    return _clio_native_tool_class()(func=func, name=name, desc=desc, args=args)
 
 
 def boundary_observed_tool(
@@ -330,6 +345,8 @@ def boundary_observed_tool(
 
     setattr(func, TOOL_OBSERVED_ATTR, True)
     setattr(func, TITLE_ATTR, sanitize_tool_title(title))
+    import dspy  # noqa: PLC0415
+
     return dspy.Tool(func=func, name=name, desc=desc, args=args)
 
 
@@ -361,6 +378,8 @@ def rebuilt_tool(
         value = getattr(inner_func, attr, None)
         if value is not None:
             setattr(func, attr, value)
+    import dspy  # noqa: PLC0415
+
     return dspy.Tool(func=func, name=name, desc=desc, args=args)
 
 

@@ -64,6 +64,15 @@ def test_tool_execution_import_does_not_load_dspy() -> None:
     assert result.stdout.strip() == "ok"
 
 
+def test_gact_app_import_defers_turn_only_runtime() -> None:
+    """Desktop health startup must defer the model runtime."""
+
+    result = _run_import_probe(
+        "import sys; import clio_agent.gact.app; assert 'dspy' not in sys.modules; print('ok')"
+    )
+    assert result.stdout.strip() == "ok"
+
+
 def test_clio_windows_platform_hardening_reaches_openai_headers() -> None:
     """CLIO's Windows platform guard must cover OpenAI client headers.
 
