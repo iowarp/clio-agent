@@ -33,6 +33,7 @@ re-validation:
 from __future__ import annotations
 
 import threading
+from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -162,7 +163,10 @@ class CatalogRegistry:
         self._lock = threading.Lock()
         self._discovered_blueprints: list[Any] | None = None
         self._pack_cache: list[CatalogEntry] | None = None
-        self._session_reasons: dict[str, list[dict[str, Any]]] = {}
+        # Bounded PER SESSION (adversarial review: an unbounded per-session list
+        # is a release-gating memory leak for a long-lived session -- same ring
+        # size as the global ledger in ``reasons.py``, one source of truth).
+        self._session_reasons: dict[str, "deque[dict[str, Any]]"] = {}
         self._session_reasons_lock = threading.Lock()
 
     def record_session_reason(self, session_id: str, reason: str, **fields: Any) -> dict[str, Any]:
@@ -176,12 +180,16 @@ class CatalogRegistry:
         """
 
         from clio_agent.gact.a2ui_catalogs.reasons import (  # noqa: PLC0415
+            A2UI_CATALOG_REASON_RING_MAXLEN,
             record_a2ui_catalog_reason,
         )
 
         row = record_a2ui_catalog_reason(reason, session_id=session_id, **fields)
         with self._session_reasons_lock:
-            self._session_reasons.setdefault(session_id, []).append(row)
+            ring = self._session_reasons.setdefault(
+                session_id, deque(maxlen=A2UI_CATALOG_REASON_RING_MAXLEN)
+            )
+            ring.append(row)
         return row
 
     def session_reasons(self, session_id: str) -> list[dict[str, Any]]:

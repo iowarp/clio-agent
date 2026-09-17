@@ -77,12 +77,17 @@ A2UI_CLIENT_DATA_MODEL_WIRE_KEY = "a2uiClientDataModel"
 #: Every metadata key :func:`strip_renderer_metadata` removes before a
 #: spawned child/expert turn ever sees a mapping derived from a parent
 #: message/session: both raw wire keys (defence in depth — a caller that
-#: forwards an un-normalized client mapping is still covered) plus the
-#: accepted-message's renamed data-model key (the one actually stored once
-#: :func:`apply_client_metadata_guards` has run).
+#: forwards an un-normalized client mapping is still covered) plus BOTH
+#: accepted-message renamed keys (the ones actually stored once
+#: :func:`apply_client_metadata_guards` has run -- note
+#: ``A2UI_CLIENT_CAPABILITIES_METADATA_KEY`` doubles as the SESSION metadata
+#: key for the remembered advertisement; :func:`client_capabilities` reads
+#: ``Session.metadata`` directly and never goes through this strip, so
+#: including it here only affects a message/action metadata mapping).
 RENDERER_METADATA_KEYS: frozenset[str] = frozenset(
     {
         A2UI_CLIENT_CAPABILITIES_WIRE_KEY,
+        A2UI_CLIENT_CAPABILITIES_METADATA_KEY,
         A2UI_CLIENT_DATA_MODEL_WIRE_KEY,
         A2UI_CLIENT_DATA_MODEL_METADATA_KEY,
     }
@@ -181,13 +186,19 @@ def session_requested_send_data_model(app: "FastAPI", session_id: str) -> bool:
     ``A2UISurfaceRecord`` — ``sendDataModel`` already rides verbatim on the
     stored ``createSurface`` message (``gact/a2ui.py``'s
     ``allowed_payload_keys``), this only reads it back (no accretion onto the
-    S2 owner module).
+    S2 owner module). "LIVE" mirrors ``routes/a2ui.py``'s action door: a
+    ``deleted`` surface no longer counts, even though its ``createSurface``
+    message (and its ``sendDataModel`` flag) is still present in the
+    transcript -- a client cannot keep sending updates for a surface it
+    already deleted.
     """
 
     store = getattr(app.state, "a2ui_store", None)
     if store is None:
         return False
     for row in store.list_wire(session_id):
+        if row.get("state") == "deleted":
+            continue
         for message in row.get("messages", []) or []:
             if not isinstance(message, Mapping):
                 continue
@@ -242,13 +253,17 @@ def apply_client_metadata_guards(
         carried none. A caller that wants to carry it through onto an
         accepted record (message/action) attaches it itself, under
         :data:`A2UI_CLIENT_DATA_MODEL_METADATA_KEY`.
+
+    The WHOLE request is validated before anything is remembered: a request
+    that carries a perfectly valid ``a2uiClientCapabilities`` alongside an
+    ``a2uiClientDataModel`` that gets refused (malformed, or not requested by
+    any live surface) must not leave the capabilities persisted -- a refused
+    request has no partial effects.
     """
 
     registry: "CatalogRegistry | None" = getattr(app.state, "a2ui_catalogs", None)
     try:
         caps = parse_client_capabilities(metadata)
-        if caps is not None:
-            remember_client_capabilities(app, session_id, caps)
         data_model = parse_client_data_model(metadata)
         if data_model is not None and not session_requested_send_data_model(app, session_id):
             raise A2UICapabilitiesError(
@@ -260,6 +275,8 @@ def apply_client_metadata_guards(
         if registry is not None:
             registry.record_session_reason(session_id, exc.reason)
         raise
+    if caps is not None:
+        remember_client_capabilities(app, session_id, caps)
     return data_model
 
 
@@ -276,9 +293,17 @@ def client_capabilities(app: "FastAPI", session_id: str) -> A2UIClientCapabiliti
         return A2UIClientCapabilities.model_validate(raw)
     except _PydanticValidationError:
         # A value this module itself wrote can only fail to re-validate if the
-        # stored session row was hand-edited/corrupted out of band -- treat it
-        # as "no advertisement" (never crash a read path over it); the typed
-        # a2ui_client_capabilities_unknown reason still fires at selection time.
+        # stored session row was hand-edited/corrupted out of band -- never a
+        # bare None: record the SAME typed reason parsing uses, tagged
+        # source="stored" so it is distinguishable from a live parse failure,
+        # then treat it as "no advertisement" (never crash a read path over
+        # it; the typed a2ui_client_capabilities_unknown reason still fires at
+        # selection time).
+        registry: "CatalogRegistry | None" = getattr(app.state, "a2ui_catalogs", None)
+        if registry is not None:
+            registry.record_session_reason(
+                session_id, "a2ui_client_capabilities_invalid", source="stored"
+            )
         return None
 
 
@@ -332,7 +357,7 @@ class CatalogSelection:
 
 
 def select_catalog(
-    app: "FastAPI", session_id: str, preferred: str | None = None
+    app: "FastAPI", session_id: str, preferred: str | None = None, *, record: bool = True
 ) -> CatalogSelection:
     """Select the first client-preferred catalog this session can produce.
 
@@ -346,15 +371,26 @@ def select_catalog(
     Every non-selection is a typed, recorded reason, never a silent default:
 
     * no client advertisement yet -> ``a2ui_client_capabilities_unknown``
+    * ``preferred`` given but not in BOTH the client-supported and the
+      producible set -> ``a2ui_preferred_catalog_not_selectable`` (this
+      NEVER falls through to the general preference-order pick -- a caller
+      that asked for a specific catalog either gets exactly that one or a
+      typed refusal, never a silently substituted different one)
     * a real advertisement with zero intersection against the session's
       producible set -> ``a2ui_catalog_no_client_match``
+
+    ``record`` gates whether a non-selection is written to the S2 ledger --
+    a pure READ (e.g. ``GET /v1/sessions/{sid}/a2ui/capabilities``, which
+    reports "what would selection currently resolve to" for display) passes
+    ``record=False`` so merely looking never pollutes the ledger; a real
+    selection ATTEMPT (the S4 producer tool) leaves it ``True``.
     """
 
     registry: "CatalogRegistry | None" = getattr(app.state, "a2ui_catalogs", None)
     caps = client_capabilities(app, session_id)
     producible = tuple(session_producible_catalog_ids(app, session_id))
     if caps is None:
-        if registry is not None:
+        if record and registry is not None:
             registry.record_session_reason(session_id, "a2ui_client_capabilities_unknown")
         return CatalogSelection(
             catalog_id=None,
@@ -363,10 +399,25 @@ def select_catalog(
         )
     supported = tuple(caps.v0_9.supportedCatalogIds)
     producible_set = set(producible)
-    if preferred is not None and preferred in supported and preferred in producible_set:
+    if preferred is not None:
+        if preferred in supported and preferred in producible_set:
+            return CatalogSelection(
+                catalog_id=preferred,
+                reason=None,
+                client_supported_catalog_ids=supported,
+                producible_catalog_ids=producible,
+            )
+        intersection = [cid for cid in supported if cid in producible_set]
+        if record and registry is not None:
+            registry.record_session_reason(
+                session_id,
+                "a2ui_preferred_catalog_not_selectable",
+                preferred_catalog_id=preferred,
+                intersection=intersection,
+            )
         return CatalogSelection(
-            catalog_id=preferred,
-            reason=None,
+            catalog_id=None,
+            reason="a2ui_preferred_catalog_not_selectable",
             client_supported_catalog_ids=supported,
             producible_catalog_ids=producible,
         )
@@ -378,7 +429,7 @@ def select_catalog(
                 client_supported_catalog_ids=supported,
                 producible_catalog_ids=producible,
             )
-    if registry is not None:
+    if record and registry is not None:
         registry.record_session_reason(
             session_id,
             "a2ui_catalog_no_client_match",
@@ -408,13 +459,24 @@ def strip_renderer_metadata(metadata: Mapping[str, Any] | None) -> dict[str, Any
     return {key: value for key, value in metadata.items() if key not in RENDERER_METADATA_KEYS}
 
 
-def blueprint_a2ui_capability_ids(app: "FastAPI", agent_blueprint_id: str) -> list[str]:
+def blueprint_a2ui_capability_ids(
+    app: "FastAPI", agent_blueprint_id: str, *, session_id: str = ""
+) -> list[str]:
     """Return one blueprint's declared catalog ids, unioned with the builtins.
 
-    Used by the agent-listing rows (``routes/agents.py``): each row's
-    ``a2ui_capabilities`` names what ITS OWN blueprint declares, not the
-    caller session's active blueprint -- a listing enumerates every agent,
-    most of which are not the session's currently active one.
+    Resolution mirrors ``a2ui_catalogs.activation._active_blueprint`` exactly
+    (path-first, then the installed registry) rather than only consulting
+    ``registry.discovered_blueprints()`` -- a blueprint activated by PATH
+    (a marketplace pack launched on-disk, not yet copied into the installed
+    registry) would otherwise never resolve here, and a row for it would
+    silently fall back to builtins-only with no signal that anything was
+    dropped. ``session_id``, when given, is the row's OWN session scope (the
+    caller of ``routes/agents.py``'s listing already has it) -- required to
+    reach the path-activation lookup; a session-less caller (or one whose
+    active blueprint doesn't match ``agent_blueprint_id``) falls back to the
+    installed-registry-only lookup. An id that still does not resolve records
+    the typed ``a2ui_blueprint_unresolved`` reason instead of silently
+    yielding builtins.
     """
 
     registry: "CatalogRegistry | None" = getattr(app.state, "a2ui_catalogs", None)
@@ -423,18 +485,63 @@ def blueprint_a2ui_capability_ids(app: "FastAPI", agent_blueprint_id: str) -> li
     ids = {entry.catalog_id for entry in registry.builtin()}
     if not agent_blueprint_id:
         return sorted(ids)
+    from clio_agent.gact.a2ui_catalogs.activation import _active_blueprint  # noqa: PLC0415
+
+    blueprint = None
+    if session_id:
+        candidate = _active_blueprint(app, session_id)
+        if candidate is not None and candidate.id == agent_blueprint_id:
+            blueprint = candidate
+    if blueprint is None:
+        blueprint = next(
+            (row for row in registry.discovered_blueprints() if row.id == agent_blueprint_id),
+            None,
+        )
+    if blueprint is None:
+        registry.record_session_reason(
+            session_id, "a2ui_blueprint_unresolved", blueprint_id=agent_blueprint_id
+        )
+        return sorted(ids)
+    return catalog_ids_for_resolved_blueprint(app, blueprint)
+
+
+def catalog_ids_for_resolved_blueprint(app: "FastAPI", blueprint: Any) -> list[str]:
+    """Return an ALREADY-RESOLVED blueprint's declared catalog ids ∪ the builtins.
+
+    For a caller that has the blueprint object in hand from its OWN
+    discovery pass (e.g. ``routes/blueprints.py``'s
+    ``GET /v1/agent-blueprints/{id}``, which resolves it via a
+    workspace-scoped ``cwd`` the registry's own cache does not share) --
+    re-deriving it through :func:`blueprint_a2ui_capability_ids`'s
+    id-based lookup would miss a workspace- or session-scoped blueprint the
+    registry's global discovery never sees, and silently under-report.
+    """
+
+    registry: "CatalogRegistry | None" = getattr(app.state, "a2ui_catalogs", None)
+    ids = {entry.catalog_id for entry in registry.builtin()} if registry is not None else set()
     from clio_agent.gact.a2ui_catalogs.blueprint import (  # noqa: PLC0415
         blueprint_catalog_map,
         load_blueprint_catalogs,
     )
 
-    blueprint = next(
-        (row for row in registry.discovered_blueprints() if row.id == agent_blueprint_id),
-        None,
-    )
-    if blueprint is not None and blueprint_catalog_map(blueprint):
+    if blueprint_catalog_map(blueprint):
         ids.update(entry.catalog_id for entry in load_blueprint_catalogs(blueprint))
     return sorted(ids)
+
+
+def with_a2ui_capabilities(app: "FastAPI", row: Any, session_id: str = "") -> Any:
+    """Return ``row`` (an ``AgentDef``) with ``metadata["a2ui_capabilities"]`` attached.
+
+    This row's OWN declaring blueprint's catalogs ∪ the two builtins -- not
+    the caller session's active blueprint, since a listing enumerates every
+    agent, most of which are not the session's current one. ``session_id`` is
+    threaded through to :func:`blueprint_a2ui_capability_ids` so a
+    PATH-activated blueprint's row resolves correctly (see there).
+    """
+
+    agent_blueprint_id = str(row.metadata.get("agent_blueprint_id") or "")
+    ids = blueprint_a2ui_capability_ids(app, agent_blueprint_id, session_id=session_id)
+    return row.model_copy(update={"metadata": {**row.metadata, "a2ui_capabilities": ids}})
 
 
 __all__ = [
@@ -448,6 +555,7 @@ __all__ = [
     "agent_capabilities",
     "apply_client_metadata_guards",
     "blueprint_a2ui_capability_ids",
+    "catalog_ids_for_resolved_blueprint",
     "client_capabilities",
     "parse_client_capabilities",
     "parse_client_data_model",
@@ -455,4 +563,5 @@ __all__ = [
     "select_catalog",
     "session_requested_send_data_model",
     "strip_renderer_metadata",
+    "with_a2ui_capabilities",
 ]

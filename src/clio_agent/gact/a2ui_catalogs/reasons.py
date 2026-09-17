@@ -142,11 +142,24 @@ _A2UI_CATALOG_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
             "this session's producible catalog set -- no catalog can be selected"
         ),
     },
+    "a2ui_preferred_catalog_not_selectable": {
+        "severity": "warning",
+        "detail": (
+            "the caller-preferred catalog id is not in BOTH the client's "
+            "supportedCatalogIds and this session's producible set -- selection "
+            "refuses rather than silently substituting a different catalog"
+        ),
+    },
 }
+
+#: Ring size shared by this global ledger AND ``CatalogRegistry``'s per-session
+#: reason ring (``registry.py``) -- bounded memory is release-gating; one
+#: source of truth for "how many" so the two rings can never silently drift.
+A2UI_CATALOG_REASON_RING_MAXLEN = 256
 
 #: Bounded ring of recorded reasons, queryable after the fact (same contract
 #: as ``recorded_mcp_app_observer_skips``).
-_A2UI_CATALOG_REASONS: "deque[dict[str, Any]]" = deque(maxlen=256)
+_A2UI_CATALOG_REASONS: "deque[dict[str, Any]]" = deque(maxlen=A2UI_CATALOG_REASON_RING_MAXLEN)
 _A2UI_CATALOG_REASONS_LOCK = threading.Lock()
 
 
@@ -193,6 +206,7 @@ def recorded_a2ui_catalog_reasons() -> list[dict[str, Any]]:
 
 
 __all__ = [
+    "A2UI_CATALOG_REASON_RING_MAXLEN",
     "record_a2ui_catalog_reason",
     "recorded_a2ui_catalog_reasons",
 ]

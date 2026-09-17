@@ -41,7 +41,9 @@ def register_a2ui_capabilities_routes(app: FastAPI) -> None:
         if app.state.sessions.get(sid) is None:
             raise _error(404, "not_found", f"session not found: {sid}")
         client = client_capabilities(app, sid)
-        selection = select_catalog(app, sid)
+        # A read of "what would resolve" is not a selection ATTEMPT -- never
+        # writes to the S2 ledger (bounded_memory / no-silent-pollution).
+        selection = select_catalog(app, sid, record=False)
         return {
             "agent": agent_capabilities(app, sid),
             "client": client.model_dump(mode="json", by_alias=True) if client is not None else None,
