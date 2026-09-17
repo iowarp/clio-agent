@@ -6,6 +6,18 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.5] - 2026-09-16
+
+This maintenance release repairs the bundled desktop first-launch path found
+during external-user verification of v0.9.4.
+
+### Fixed
+
+- Bundled desktop first launch now allows the private backend enough time to
+  complete cold Python-runtime initialization. A healthy backend that needs
+  slightly more than 30 seconds no longer falls through to the manual service
+  address screen.
+
 ## [0.9.4] - 2026-09-16
 
 This patch release completes the v0.9.3 publication by repairing the CLIO TUI
