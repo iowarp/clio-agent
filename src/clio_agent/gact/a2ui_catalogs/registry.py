@@ -200,6 +200,16 @@ class CatalogRegistry:
         # size as the global ledger in ``reasons.py``, one source of truth).
         self._session_reasons: dict[str, "deque[dict[str, Any]]"] = {}
         self._session_reasons_lock = threading.Lock()
+        # S5b: event NAMES this session has already recorded
+        # ``a2ui_event_narration_undeclared`` for, so a chatty client
+        # resubmitting the same undeclared event doesn't flood the ledger
+        # with a duplicate reason on every action (unlike
+        # ``a2ui_event_destination_undeclared``, recorded per-action).
+        # Bounded per session at the SAME ring size as ``_session_reasons``
+        # for one source of truth on "how many": past that, further distinct
+        # undeclared names simply stop deduping (still recorded, just no
+        # longer once-only) rather than growing unbounded.
+        self._narration_undeclared_seen: dict[str, set[str]] = {}
 
     def record_session_reason(self, session_id: str, reason: str, **fields: Any) -> dict[str, Any]:
         """Record a typed catalog reason AND append it to ``session_id``'s ledger.
@@ -223,6 +233,35 @@ class CatalogRegistry:
             )
             ring.append(row)
         return row
+
+    def record_narration_undeclared_once(self, session_id: str, event_name: str) -> bool:
+        """Record ``a2ui_event_narration_undeclared`` for ``event_name``, once.
+
+        Dedupes on ``(session_id, event_name)`` via ``_narration_undeclared_
+        seen`` -- a repeat submission of the SAME undeclared event name
+        (a2ui_actions/dispatcher.py's per-action idempotency dedupe already
+        catches an exact resubmission; this catches distinct actions sharing
+        one undeclared name) records the typed reason once, not once per
+        action, per the S5b campaign deliverable.
+
+        Returns:
+            ``True`` iff this call newly recorded the reason (first time this
+            session has seen ``event_name`` go undeclared); ``False`` when
+            already recorded.
+        """
+
+        from clio_agent.gact.a2ui_catalogs.reasons import (  # noqa: PLC0415
+            A2UI_CATALOG_REASON_RING_MAXLEN,
+        )
+
+        with self._session_reasons_lock:
+            seen = self._narration_undeclared_seen.setdefault(session_id, set())
+            if event_name in seen:
+                return False
+            if len(seen) < A2UI_CATALOG_REASON_RING_MAXLEN:
+                seen.add(event_name)
+        self.record_session_reason(session_id, "a2ui_event_narration_undeclared", action=event_name)
+        return True
 
     def session_reasons(self, session_id: str) -> list[dict[str, Any]]:
         """Return the typed catalog reasons recorded for ``session_id``, oldest first."""

@@ -231,6 +231,21 @@ _A2UI_CATALOG_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
             "(adversarial review #1372 S7 finding #12)"
         ),
     },
+    # S5b (clio-schemas 0.3.2, clio-agent#1363 live-gate finding): the
+    # event's MEANING is the pack author's to declare via
+    # events[<name>].narration -- when a route declares none (no route at
+    # all, or a route without `narration`), delivery falls back to the
+    # name+context form a resuming model can misread as a report rather than
+    # a request. Recorded ONCE per (session, event name) -- see
+    # ``CatalogRegistry.record_narration_undeclared_once``.
+    "a2ui_event_narration_undeclared": {
+        "severity": "info",
+        "detail": (
+            "an action event's sidecar route declares no `narration` template "
+            "-- delivery falls back to the legacy name+context text instead of "
+            "the pack author's declared meaning"
+        ),
+    },
 }
 
 #: Ring size shared by this global ledger AND ``CatalogRegistry``'s per-session
