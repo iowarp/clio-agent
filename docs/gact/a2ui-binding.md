@@ -179,6 +179,50 @@ maintained copy. A component-schema validation failure a producer tool
 catches carries this exact `load_skill(...)` call as its `hint` (see
 `gact/a2ui_producer/_refusal.py`).
 
+## Pack-borne catalogs: a worked example
+
+S7 (docs/design/a2ui-compat-campaign-2026-09.md, iowarp/clio-agent-marketplace#69)
+is the campaign's composability proof: a marketplace pack ships its own
+catalog and this binding accepts it with **no clio-agent source edit** — a
+pack author needs nothing beyond the files below and the declaration in
+`AGENT.md`.
+
+`external/clio-agent-marketplace/earthscope-single-agent/` ships
+`catalogs/earthscope-stations/{catalog.json, catalog.clio.json,
+instructions.md}` — `StationMap`/`StationPicker` aliasing the renderer's
+`clio.map.v1`/`ChoicePicker` kernels (the latter preset to
+`variant: "multipleSelection"`), plus the unmodified Basic `Text`/`Column`/
+`Row`/`Button`, and one declared event: `earthscope.stations.selected`
+(`destination: "agent"`, a `context_schema` requiring `searchId` and a
+non-empty `stationIds` array). Its `AGENT.md` frontmatter declares it exactly
+like an MCP server:
+
+```yaml
+a2ui_catalogs:
+  earthscope-stations: catalogs/earthscope-stations
+```
+
+and `experts/main.md` lists the catalog under its own `a2ui_catalogs:` so the
+root expert gets the generated skill `a2ui-catalog-earthscope-stations`
+alongside the two builtins. Installing the pack (`install_agent_blueprint`,
+the same path an MCP server's declaration takes) registers the catalog under
+`(catalogId, "0.9.1")`; activating the blueprint in a session makes it
+**producible** there (see "Producible vs. installed" above) — nothing else
+changes: the same `select_catalog`, the same `create_a2ui_surface` producer
+tool, the same `POST /v1/sessions/{sid}/a2ui/actions` dispatcher route this
+document already describes.
+
+`tests/test_gact/test_a2ui_pack_composability.py` is the CI-run proof: it
+installs this real pack into an isolated user config dir, activates it,
+and — against an otherwise unmodified server — asserts the catalog is
+producible with its file/sidecar/instructions, is listed in both
+`GET /v1/capabilities` and a client-preference-first `select_catalog`, that
+`create_a2ui_surface` renders the pack's own worked example (parsed straight
+out of `instructions.md`, so the test cannot drift from the docs), and that
+`earthscope.stations.selected` round-trips through the idle, duplicate, and
+waiting-user delivery paths. `tests/test_real_cases/test_earthscope_interactive.py`
+carries the live-provider twin of the same three scenes.
+
 ## Catalog selection
 
 "The agent selects the best match from the client's `supportedCatalogIds`

@@ -278,7 +278,13 @@ class ClioAgent(SUT):
                     payload[_key] = _cast(_val)
             if "system_prompt" in self._overrides:
                 payload["system_prompt"] = self._overrides["system_prompt"]
-            http.put("/v1/providers/lm", json=payload, timeout=180.0).raise_for_status()
+            bind = http.put("/v1/providers/lm", json=payload, timeout=180.0)
+            if bind.is_error:
+                # Surface the server's TYPED reason; a bare HTTPStatusError hides it.
+                raise RuntimeError(
+                    f"LM bind refused ({bind.status_code}) for {payload['provider']!r} "
+                    f"{payload['model']!r} at {payload['api_base']!r}: {bind.text[:800]}"
+                )
             self._wait_lm_ready(http, timeout_s=float(self._overrides.get("bind_timeout_s", 120.0)))
         return self
 
@@ -412,11 +418,22 @@ class ClioAgent(SUT):
         """Run one blueprint turn and normalize the trace into a Run.
 
         input: {"task": str, "blueprint_id": str, "marketplace_source"?: str,
-                "workdir"?: str, "timeout_s"?: float, "trace_path"?: str}
+                "workdir"?: str, "timeout_s"?: float, "trace_path"?: str,
+                "message_metadata"?: dict}
+
+        ``message_metadata``, when given, is attached verbatim to the
+        ``metadata`` field of EVERY posted message (every prompt in a
+        multi-turn ``turns`` list too) — an opt-in hook so a case that needs
+        renderer transport metadata on the wire (e.g. the A2UI live gate's
+        ``a2uiClientCapabilities`` advertisement, S3/S7) doesn't have to
+        bypass this SUT and re-implement turn-posting/waiting itself.
+        Omitted (the default for every other case) leaves the posted body
+        exactly as before.
         """
         spec = input if isinstance(input, dict) else {"task": str(input)}
         prompt = str(spec.get("task") or spec.get("prompt") or "")
         blueprint_id = str(spec.get("blueprint_id") or "")
+        message_metadata = spec.get("message_metadata")
         # ``workdir`` is MANDATORY: it becomes the session's workspace root, and
         # the agent writes its real deliverables (staged CSVs, rendered PNGs)
         # there. Defaulting it to ``Path.cwd()`` silently turned the repo root
@@ -457,7 +474,9 @@ class ClioAgent(SUT):
             seen_artifact_ids: set[str] = set()
             assistant: dict[str, Any] = {}
             for turn_prompt in prompts:
-                assistant = self._post_turn(http, session_id, turn_prompt, timeout_s)
+                assistant = self._post_turn(
+                    http, session_id, turn_prompt, timeout_s, metadata=message_metadata
+                )
                 snapshot = http.get(f"/v1/sessions/{session_id}/messages").json()["messages"]
                 if turns:
                     fresh = [m for m in snapshot if str(m.get("id")) not in seen_ids]
@@ -588,12 +607,18 @@ class ClioAgent(SUT):
         return session_id
 
     def _post_turn(
-        self, http: httpx.Client, session_id: str, prompt: str, timeout_s: float
+        self,
+        http: httpx.Client,
+        session_id: str,
+        prompt: str,
+        timeout_s: float,
+        *,
+        metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        ack = http.post(
-            f"/v1/sessions/{session_id}/messages",
-            json={"parts": [{"type": "text", "text": prompt}]},
-        )
+        body: dict[str, Any] = {"parts": [{"type": "text", "text": prompt}]}
+        if metadata:
+            body["metadata"] = metadata
+        ack = http.post(f"/v1/sessions/{session_id}/messages", json=body)
         ack.raise_for_status()
         user_id = ack.json()["message_id"]
         # Progress-based wait: NO per-session/per-experiment wall. Keep waiting as
