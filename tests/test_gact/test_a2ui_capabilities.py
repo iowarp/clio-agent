@@ -285,9 +285,17 @@ def test_select_catalog_preferred_wins_only_when_in_both_sets(tmp_path: Path) ->
     remember_client_capabilities(app, session.id, caps)
     # preferred is producible AND client-supported -> wins over preference order
     assert select_catalog(app, session.id, preferred=BASIC_ID).catalog_id == BASIC_ID
-    # preferred not client-supported -> falls back to client preference order
-    assert (
-        select_catalog(app, session.id, preferred="unsupported/catalog").catalog_id == WORKSPACE_ID
+    # preferred not client-supported -> a typed non-selection, NEVER a silent
+    # substitution of a different catalog the caller did not ask for.
+    selection = select_catalog(app, session.id, preferred="unsupported/catalog")
+    assert selection.catalog_id is None
+    assert selection.reason == "a2ui_preferred_catalog_not_selectable"
+    reasons = app.state.a2ui_catalogs.session_reasons(session.id)
+    assert any(
+        row["reason"] == "a2ui_preferred_catalog_not_selectable"
+        and row["preferred_catalog_id"] == "unsupported/catalog"
+        and row["intersection"] == [WORKSPACE_ID, BASIC_ID]
+        for row in reasons
     )
 
 
@@ -300,6 +308,7 @@ def test_strip_renderer_metadata_removes_only_renderer_keys() -> None:
     stripped = strip_renderer_metadata(
         {
             "a2uiClientCapabilities": {"v0.9": {"supportedCatalogIds": [WORKSPACE_ID]}},
+            "a2ui_client_capabilities": {"v0.9": {"supportedCatalogIds": [WORKSPACE_ID]}},
             "a2uiClientDataModel": {"version": "v0.9", "surfaces": {}},
             "a2ui_client_data_model": {"version": "v0.9", "surfaces": {}},
             "keep_me": "yes",
@@ -336,11 +345,17 @@ def test_blueprint_a2ui_capability_ids_falls_back_to_builtins(tmp_path: Path) ->
 
 
 # --------------------------------------------------------------------------- #
-# sub-agent stripping: agent_message_transport.message_in_process            #
+# agent_message_transport.message_in_process: a neutral transport (S3        #
+# adversarial review, item 11) -- it no longer strips anything itself. The   #
+# client-facing steer HTTP door applies the real guard on the CHILD session  #
+# (tested below, under "POST /v1/agent-tasks/{id}/steer"); the model-facing  #
+# message_agent tool never supplies metadata at all (nothing to strip).      #
 # --------------------------------------------------------------------------- #
 
 
-def test_message_in_process_strips_renderer_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_message_in_process_passes_metadata_through_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     captured: dict[str, Any] = {}
 
     def _fake_enqueue(app: Any, task: Any, text: str, metadata: Any) -> None:
@@ -354,19 +369,15 @@ def test_message_in_process_strips_renderer_metadata(monkeypatch: pytest.MonkeyP
     invoker = SimpleNamespace(app=fake_app)
     handle = SimpleNamespace(task_id="t1")
 
-    message_in_process(
-        invoker,
-        handle,
-        "steer text",
-        {
-            "a2uiClientCapabilities": {"v0.9": {"supportedCatalogIds": [WORKSPACE_ID]}},
-            "a2uiClientDataModel": {"version": "v0.9", "surfaces": {}},
-            "a2ui_client_data_model": {"version": "v0.9", "surfaces": {}},
-            "keep_me": "yes",
-        },
-    )
+    metadata = {
+        "a2ui_client_capabilities": {"v0.9": {"supportedCatalogIds": [WORKSPACE_ID]}},
+        "a2ui_client_data_model": {"version": "v0.9", "surfaces": {}},
+        "keep_me": "yes",
+    }
+    message_in_process(invoker, handle, "steer text", metadata)
 
-    assert captured["metadata"] == {"keep_me": "yes"}
+    assert captured["metadata"] == metadata
+    assert captured["metadata"] is not metadata  # a defensive copy, not the same dict
 
 
 def test_message_in_process_handles_no_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -742,3 +753,242 @@ def test_agent_detail_route_carries_a2ui_capabilities(client: TestClient) -> Non
     assert resp.status_code == 200
     ids = resp.json()["metadata"]["a2ui_capabilities"]
     assert set(ids) >= {BASIC_ID, WORKSPACE_ID}
+
+
+# --------------------------------------------------------------------------- #
+# POST /v1/agent-tasks/{id}/steer: the SAME door guard, applied to the       #
+# CHILD session (S3 adversarial review, item 11)                            #
+# --------------------------------------------------------------------------- #
+
+
+class _SlowChildAgent:
+    """Stays "running" long enough for one or two steers to land before settling."""
+
+    def forward(self, question: str, session_id: str, **_kw: Any) -> Any:
+        time.sleep(4.0)
+        return SimpleNamespace(answer=f"child did: {question[:20]}", selected_expert="")
+
+
+@pytest.fixture()
+def running_child_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[tuple[TestClient, str]]:
+    """Yield ``(test_client, task_id)`` for a child STILL RUNNING (the stub
+    agent sleeps 4s before answering) -- everything (spawn AND steer) stays
+    within the SAME TestClient context, since exiting/re-entering a fresh one
+    triggers app shutdown/startup that consumes the sleep window and lets the
+    child settle before the test ever gets to steer it."""
+
+    from clio_agent.gact.turn_spawn import TaskSpec, spawn_child_turn_threadsafe
+
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.resolution._runtime_declared_child_ids",
+        lambda app, pid, session_id="", **_bindings: {"main"},
+    )
+    app = build_app(sessions_path=tmp_path / "s.json", agent=_SlowChildAgent())
+    with TestClient(app) as test_client:
+        parent = test_client.post("/v1/sessions", json={"title": "p"}).json()["id"]
+        task = spawn_child_turn_threadsafe(
+            app,
+            TaskSpec(
+                child_expert_id="main",
+                task_text="analyze the dataset",
+                parent_session_id=parent,
+                requesting_expert_id="main",
+            ),
+        )
+        yield test_client, task.task_id
+
+
+def test_steer_door_malformed_capabilities_422_and_not_remembered(
+    running_child_client: tuple[TestClient, str],
+) -> None:
+    test_client, task_id = running_child_client
+    app = test_client.app
+    resp = test_client.post(
+        f"/v1/agent-tasks/{task_id}/steer",
+        json={
+            "text": "hello child",
+            "metadata": {"a2uiClientCapabilities": {"v0.9": {"supportedCatalogIds": "nope"}}},
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["error"] == "a2ui_client_capabilities_invalid"
+
+    task = app.state.agent_task_registry.get(task_id)
+    child = app.state.sessions.get(task.child_session_id)
+    assert A2UI_CLIENT_CAPABILITIES_METADATA_KEY not in child.metadata
+    reasons = app.state.a2ui_catalogs.session_reasons(task.child_session_id)
+    assert any(row["reason"] == "a2ui_client_capabilities_invalid" for row in reasons)
+
+
+def test_steer_door_valid_capabilities_remembered_on_child_session(
+    running_child_client: tuple[TestClient, str],
+) -> None:
+    test_client, task_id = running_child_client
+    app = test_client.app
+    resp = test_client.post(
+        f"/v1/agent-tasks/{task_id}/steer",
+        json={
+            "text": "hello child",
+            "metadata": {
+                "a2uiClientCapabilities": {"v0.9": {"supportedCatalogIds": [WORKSPACE_ID]}}
+            },
+        },
+    )
+    assert resp.status_code == 202, resp.text
+
+    task = app.state.agent_task_registry.get(task_id)
+    child = app.state.sessions.get(task.child_session_id)
+    assert child.metadata[A2UI_CLIENT_CAPABILITIES_METADATA_KEY] == {
+        "v0.9": {"supportedCatalogIds": [WORKSPACE_ID]}
+    }
+
+
+def test_steer_door_data_model_checked_against_the_childs_own_surfaces(
+    running_child_client: tuple[TestClient, str],
+) -> None:
+    test_client, task_id = running_child_client
+    app = test_client.app
+    task = app.state.agent_task_registry.get(task_id)
+    child_sid = task.child_session_id
+
+    # No surface on the CHILD requested sendDataModel yet -> refused.
+    resp = test_client.post(
+        f"/v1/agent-tasks/{task_id}/steer",
+        json={
+            "text": "hello child",
+            "metadata": {"a2uiClientDataModel": {"version": "v0.9.1", "surfaces": {"s1": {}}}},
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["error"] == "a2ui_data_model_not_requested"
+
+    # Once the CHILD's own surface requests it, the same data model is accepted.
+    create = test_client.post(
+        f"/v1/sessions/{child_sid}/a2ui/messages",
+        headers=A2UI_HEADERS,
+        json={
+            "messages": [
+                {
+                    "version": "v0.9.1",
+                    "createSurface": {
+                        "surfaceId": "s1",
+                        "catalogId": WORKSPACE_ID,
+                        "sendDataModel": True,
+                    },
+                }
+            ]
+        },
+    )
+    assert create.status_code == 200, create.text
+
+    resp2 = test_client.post(
+        f"/v1/agent-tasks/{task_id}/steer",
+        json={
+            "text": "hello again",
+            "metadata": {
+                "a2uiClientDataModel": {"version": "v0.9.1", "surfaces": {"s1": {"x": 1}}}
+            },
+        },
+    )
+    assert resp2.status_code == 202, resp2.text
+
+
+# --------------------------------------------------------------------------- #
+# Pack-blueprint end to end: a PATH-activated session with a declared        #
+# catalog (S2 fixture pack) is visible everywhere a2ui_capabilities reaches  #
+# (S3 adversarial review, item 7)                                            #
+# --------------------------------------------------------------------------- #
+
+_FIXTURE_PACK = Path(__file__).resolve().parents[1] / "fixtures" / "a2ui_packs" / "minimal"
+_PACK_CATALOG_ID = "https://example.test/a2ui/catalogs/minimal"
+
+
+def _activate_minimal_pack(app: Any, sid: str) -> None:
+    app.state.sessions.update(
+        sid,
+        metadata_patch={
+            "active_agent_blueprint_id": "a2ui-minimal-pack",
+            "active_agent_blueprint_path": str(_FIXTURE_PACK),
+        },
+    )
+
+
+def test_pack_blueprint_session_capabilities_route_lists_the_pack_catalog(
+    client: TestClient,
+) -> None:
+    sid = _create_session(client)
+    _activate_minimal_pack(client.app, sid)
+
+    resp = client.get(f"/v1/sessions/{sid}/a2ui/capabilities")
+    assert resp.status_code == 200
+    assert _PACK_CATALOG_ID in resp.json()["agent"]["v0.9"]["supportedCatalogIds"]
+
+
+def test_pack_blueprint_select_catalog_picks_it_when_client_lists_it_first(
+    tmp_path: Path,
+) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="t")
+    _activate_minimal_pack(app, session.id)
+
+    caps = parse_client_capabilities(
+        {"a2uiClientCapabilities": {"v0.9": {"supportedCatalogIds": [_PACK_CATALOG_ID, BASIC_ID]}}}
+    )
+    assert caps is not None
+    remember_client_capabilities(app, session.id, caps)
+
+    selection = select_catalog(app, session.id)
+    assert selection.catalog_id == _PACK_CATALOG_ID
+
+
+def test_pack_blueprint_agent_row_for_that_session_carries_it(client: TestClient) -> None:
+    sid = _create_session(client)
+    _activate_minimal_pack(client.app, sid)
+
+    resp = client.get(f"/v1/agents?session_id={sid}")
+    assert resp.status_code == 200
+    rows = resp.json()["agents"]
+    assert rows, "the path-activated blueprint produced no agent rows"
+    assert any(
+        row["metadata"].get("agent_blueprint_id") == "a2ui-minimal-pack"
+        and _PACK_CATALOG_ID in row["metadata"]["a2ui_capabilities"]
+        for row in rows
+    ), rows
+
+
+# --------------------------------------------------------------------------- #
+# GET /v1/agent-blueprints/{id} detail rows carry a2ui_capabilities          #
+# (S3 adversarial review, item 12 / spec item 4)                            #
+# --------------------------------------------------------------------------- #
+
+
+def test_agent_blueprint_detail_route_carries_a2ui_capabilities(
+    client: TestClient, tmp_path: Path
+) -> None:
+    import shutil
+
+    marketplace = tmp_path / "marketplace"
+    shutil.copytree(_FIXTURE_PACK, marketplace / "a2ui-minimal-pack")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    wid = client.post(
+        "/v1/workspaces",
+        json={
+            "name": "Workspace",
+            "root_path": str(workspace),
+            "storage_root": str(workspace / ".clio"),
+        },
+    ).json()["id"]
+    installed = client.post(
+        "/v1/agent-blueprints/install",
+        json={"source": str(marketplace), "scope": "workspace", "workspace_id": wid},
+    )
+    assert installed.status_code == 201, installed.text
+
+    detail = client.get("/v1/agent-blueprints/a2ui-minimal-pack", params={"workspace_id": wid})
+    assert detail.status_code == 200, detail.text
+    assert _PACK_CATALOG_ID in detail.json()["a2ui_capabilities"]
+    assert BASIC_ID in detail.json()["a2ui_capabilities"]
