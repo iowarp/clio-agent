@@ -22,6 +22,9 @@ desktop, and website revisions.
 - CLIO-branded desktop packages now inherit the CLIO release version, so the
   embedded application version and installer filenames match the release that
   produced them instead of exposing the independent GACT desktop-shell version.
+- Provider context metadata now reads the catalog bundled with the pinned
+  LiteLLM wheel instead of a mutable upstream branch, preventing release behavior
+  and CI results from changing after a commit has already passed.
 
 ## [0.9.3] - 2026-09-16
 

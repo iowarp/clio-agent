@@ -8,7 +8,6 @@ facts for well-known models. The variant/miss logic is exercised with a mocked
 
 from __future__ import annotations
 
-import litellm
 import pytest
 
 from clio_agent.providers.handshake.sources import litellm_catalog as lc
@@ -40,27 +39,24 @@ def test_variants_include_provider_prefixes() -> None:
 
 
 def test_prefix_resolves_when_bare_id_misses(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_get(candidate: str) -> dict[str, int]:
+    def fake_get(candidate: str) -> dict[str, int] | None:
         if candidate == "anthropic/foo-model":
             return {"max_input_tokens": 50000, "max_output_tokens": 4096}
-        raise KeyError(candidate)  # unmapped -> clean miss
+        return None
 
-    monkeypatch.setattr(litellm, "get_model_info", fake_get)
+    monkeypatch.setattr(lc, "_get_model_info", fake_get)
     assert lc.lookup_litellm("foo-model") == (50000, 4096)
 
 
-def test_get_model_info_raises_is_clean_miss(monkeypatch: pytest.MonkeyPatch) -> None:
-    def boom(candidate: str) -> dict[str, int]:
-        raise KeyError(candidate)
-
-    monkeypatch.setattr(litellm, "get_model_info", boom)
+def test_bundled_catalog_miss_is_clean(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(lc, "_bundled_model_cost_map", lambda: {})
     assert lc.lookup_litellm("anything") == (None, None)
 
 
 def test_zero_and_bool_values_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        litellm,
-        "get_model_info",
+        lc,
+        "_get_model_info",
         lambda candidate: {"max_input_tokens": 0, "max_output_tokens": True},
     )
     assert lc.lookup_litellm("x") == (None, None)
@@ -69,8 +65,8 @@ def test_zero_and_bool_values_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_max_tokens_fallback_for_context(monkeypatch: pytest.MonkeyPatch) -> None:
     # some entries only carry max_tokens (no max_input_tokens) -> used as context
     monkeypatch.setattr(
-        litellm,
-        "get_model_info",
+        lc,
+        "_get_model_info",
         lambda candidate: {"max_tokens": 32768, "max_output_tokens": 8192},
     )
     assert lc.lookup_litellm("x") == (32768, 8192)
