@@ -284,6 +284,35 @@ def lifecycle_event_payload(record: ActionRecord) -> dict[str, Any]:
     return payload
 
 
+def last_action_wire(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Project a persisted action record into the legacy ``/lastAction`` wire shape.
+
+    ``routes/interactions.py``'s ``payload.last_action`` is a WIRE CONTRACT
+    the client reads: pre-S5, it was the ``/lastAction`` data-model value
+    ``dispatch_action`` wrote -- ``{name, status, receivedAt, context}``.
+    That write is deleted (S5), but the SHAPE is not -- every field the old
+    value exposed is kept byte-compatible here; ``action_id``/``state``/
+    ``delivery`` are S5 additions, never a replacement for the originals.
+    ``status`` is the literal ``"accepted"`` for every record that reached
+    persistence, matching the old ack (stamped once the envelope validated,
+    independent of delivery outcome -- the old code never wrote ``/lastAction``
+    for a rejected action at all).
+    """
+
+    envelope = record.get("envelope")
+    action = envelope.get("action") if isinstance(envelope, Mapping) else None
+    context = action.get("context") if isinstance(action, Mapping) else None
+    return {
+        "name": str(record.get("action_name") or ""),
+        "status": "accepted",
+        "receivedAt": str(record.get("created_at") or ""),
+        "context": dict(context) if isinstance(context, Mapping) else {},
+        "action_id": str(record.get("id") or ""),
+        "state": str(record.get("state") or ""),
+        "delivery": str(record.get("delivery") or ""),
+    }
+
+
 def persist_new_record(app: "FastAPI", record: ActionRecord) -> dict[str, Any] | None:
     """Persist a NEW record's ``received`` snapshot, atomically idempotency-checked.
 
@@ -507,6 +536,7 @@ __all__ = [
     "fail_and_publish",
     "find_by_idempotency_key",
     "fold_action_records",
+    "last_action_wire",
     "lifecycle_event_payload",
     "mark_a2ui_action_consumed",
     "new_record_id",

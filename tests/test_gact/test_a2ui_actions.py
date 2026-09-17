@@ -553,7 +553,20 @@ def test_interactions_row_flips_pending_to_answered_once_delivered(
     [row_after] = [r for r in after.rows if r.kind == "a2ui"]
     assert row_after.status == "answered"
     assert row_after.requires_human_response is False
-    assert row_after.payload["last_action"]["state"] == "delivered"
+    last_action = row_after.payload["last_action"]
+    assert last_action["state"] == "delivered"
+    # Contract: payload.last_action is a WIRE shape the client reads --
+    # pre-S5 it was the /lastAction data-model value dispatch_action wrote
+    # ({name, status, receivedAt, context}); that write is deleted, but every
+    # field it exposed must survive byte-compatible off the durable record,
+    # with action_id/state/delivery as S5-only additions (never a
+    # replacement for the originals).
+    assert last_action["name"] == "agent.submit"
+    assert last_action["status"] == "accepted"
+    assert last_action["receivedAt"]
+    assert last_action["context"] == {"text": "go"}
+    assert last_action["action_id"]
+    assert last_action["delivery"] == "start"
 
 
 # --------------------------------------------------------------------------- #

@@ -10,6 +10,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from starlette.concurrency import run_in_threadpool
 
 from clio_agent import conf
+from clio_agent.gact.a2ui_actions.record import last_action_wire
 from clio_agent.gact.mcp_task_store import app_task_store
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.permission_delivery import attended_session_id
@@ -416,7 +417,7 @@ def _a2ui_interactions(
         }
         payload: dict[str, Any] = {"revision": surface.get("revision", 0)}
         if latest_record is not None:
-            payload["last_action"] = latest_record
+            payload["last_action"] = last_action_wire(latest_record)
         rows.append(
             PendingInteraction(
                 id=f"a2ui:{owner}:{surface_id}",
