@@ -47,7 +47,7 @@ against ``claude_code`` or ``codex``, e.g.::
         -o addopts="" -p no:cacheprovider -q
 
 and likewise with ``-k a2ui_queued_selection`` / ``-k a2ui_waiting_user_selection``
-(and ``--provider codex --model gpt-5-codex`` for the second required cell).
+(and ``--provider codex --model gpt-5.5`` for the second required cell).
 Each scene installs the pack fresh via ``marketplace_source`` (the SAME
 mechanism ``ClioAgent.invoke`` already uses for a workspace-scoped
 ``/v1/agent-blueprints/install``, real CTE, real gact server — no fixture
