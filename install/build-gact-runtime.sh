@@ -76,7 +76,7 @@ find "$OUT/python" -maxdepth 3 -name EXTERNALLY-MANAGED -delete
 PYBIN_REL="python/bin/python${PYVER}"
 [ -x "$OUT/$PYBIN_REL" ] || { echo "build-gact-runtime: $PYBIN_REL missing in dist" >&2; exit 1; }
 
-# --- 2. install clio-agent (NO extras) directly into the dist ----------
+# --- 2. install clio-agent + the portable science launcher -------------
 if [ -n "${CLIO_AGENT_SOURCE:-}" ]; then
   [ -f "${CLIO_AGENT_SOURCE}/pyproject.toml" ] || {
     echo "build-gact-runtime: CLIO_AGENT_SOURCE=$CLIO_AGENT_SOURCE is not a clio-agent checkout" >&2
@@ -86,10 +86,19 @@ if [ -n "${CLIO_AGENT_SOURCE:-}" ]; then
 else
   SPEC="clio-agent @ ${REPO_URL}@${REF}"
 fi
-echo "[build-gact-runtime] installing: $SPEC (no extras)"
-uv pip install --python "$OUT/$PYBIN_REL" "$SPEC" \
+CLIO_KIT_SPEC="clio-kit==2.10.6"
+echo "[build-gact-runtime] installing: $SPEC + $CLIO_KIT_SPEC"
+uv pip install --python "$OUT/$PYBIN_REL" "$SPEC" "$CLIO_KIT_SPEC" \
   "dspy==3.3.0b1" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5" \
   "fastmcp-tasks==4.0.0b5"
+
+# clio-kit materializes each locked MCP server with uv on first use. Ship uv
+# beside the relocatable runtime instead of requiring a fresh desktop user to
+# install developer tooling or configure PATH.
+mkdir -p "$OUT/bin"
+cp "$(command -v uv)" "$OUT/bin/uv"
+cp "$(command -v uv)" "$OUT/bin/uvx"
+chmod +x "$OUT/bin/uv" "$OUT/bin/uvx"
 
 SIZE_BEFORE="$(dir_size_mb "$OUT")"
 echo "[build-gact-runtime] size before prune: ${SIZE_BEFORE} MB"
@@ -175,6 +184,8 @@ RELOC="$(mktemp -d)/gact-runtime-relocated"
 cp -a "$OUT" "$RELOC"
 echo "[build-gact-runtime] sanity (relocated): $RELOC/$PYBIN_REL -m clio_agent.gact --help"
 "$RELOC/$PYBIN_REL" -m clio_agent.gact --help >/dev/null
+"$RELOC/$PYBIN_REL" -m clio_kit --help >/dev/null
+"$RELOC/bin/uv" --version >/dev/null
 # --help only proves imports; BOOT the relocated copy and poll the API —
 # the only automated proof a prune casualty or loader problem would fail.
 PORT=$((RANDOM % 20000 + 24000))

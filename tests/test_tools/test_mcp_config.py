@@ -276,6 +276,36 @@ def test_transport_for_unresolved_command_fails_loud():
         transport_for(spec_from_declaration("geo", "definitely-not-a-real-binary-xyz123 run"))
 
 
+def test_transport_for_uses_bundled_clio_kit_module_without_console_shim(tmp_path, monkeypatch):
+    """A relocated desktop runtime launches clio-kit through its own Python."""
+    import os
+
+    import clio_agent.tools.mcp_config as mcp_config
+
+    runtime = tmp_path / "gact-runtime"
+    python = runtime / "python" / "python.exe"
+    bundled_bin = runtime / "bin"
+    python.parent.mkdir(parents=True)
+    bundled_bin.mkdir()
+    python.touch()
+    (runtime / "runtime.json").write_text("{}", encoding="utf-8")
+
+    real_which = mcp_config.shutil.which
+    monkeypatch.setattr(
+        mcp_config.shutil,
+        "which",
+        lambda command: None if command == "clio-kit" else real_which(command),
+    )
+    monkeypatch.setattr(mcp_config.importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(mcp_config.sys, "executable", str(python))
+
+    stdio = transport_for(spec_from_declaration("ndp", "clio-kit mcp-server ndp"))
+
+    assert stdio.command == str(python.resolve())
+    assert stdio.args == ["-m", "clio_kit", "mcp-server", "ndp"]
+    assert stdio.env["PATH"].split(os.pathsep)[0] == str(bundled_bin)
+
+
 def test_transport_for_injects_dedicated_uv_cache_dir(tmp_path, monkeypatch):
     """stdio spawns get a dedicated UV_CACHE_DIR under the canonical user cache.
 

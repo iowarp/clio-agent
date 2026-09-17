@@ -26,6 +26,7 @@ turns a spec into a transport the existing ``execution.py`` machinery accepts.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import os
 import re
@@ -575,6 +576,36 @@ def _mcp_uv_cache_dir() -> Path:
     return paths.user_cache_dir() / "mcp-uv-cache"
 
 
+def _bundled_module_launcher(
+    command: str, args: Sequence[str]
+) -> tuple[str, list[str], dict[str, str]] | None:
+    """Resolve a bundled Python module when its relocatable shim is absent.
+
+    Portable desktop runtimes deliberately remove generated console-script
+    launchers because those shims embed the build machine's Python path.  A
+    bundled ``clio_kit`` package remains safely executable through the runtime's
+    own interpreter.  Keep ordinary installations unchanged: this fallback is
+    used only when ``clio-kit`` is not already on ``PATH`` and the module is
+    importable by the running backend.
+    """
+
+    if command != "clio-kit" or importlib.util.find_spec("clio_kit") is None:
+        return None
+
+    env: dict[str, str] = {}
+    executable = Path(sys.executable).resolve()
+    runtime_root = next(
+        (parent for parent in executable.parents if (parent / "runtime.json").is_file()),
+        None,
+    )
+    if runtime_root is not None:
+        bundled_bin = runtime_root / "bin"
+        if bundled_bin.is_dir():
+            ambient_path = os.environ.get("PATH", "")
+            env["PATH"] = os.pathsep.join(part for part in (str(bundled_bin), ambient_path) if part)
+    return str(executable), ["-m", "clio_kit", *args], env
+
+
 def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
     """Turn a spec into the ``server`` arg FastMCP's ``Client`` accepts.
 
@@ -598,6 +629,12 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
                 f"source={spec.source or 'unknown'}"
             )
         resolved = shutil.which(spec.command) if spec.command else None
+        resolved_args = list(spec.args)
+        launcher_env: dict[str, str] = {}
+        if not resolved and spec.command:
+            bundled = _bundled_module_launcher(spec.command, spec.args)
+            if bundled is not None:
+                resolved, resolved_args, launcher_env = bundled
         if not resolved:
             raise MCPSpawnError(
                 f"MCP server {spec.name!r}: launcher command {spec.command!r} not found on "
@@ -607,6 +644,7 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
 
         # Preserve the host environment beneath explicit server overrides.
         env = stdio_environment(spec.env)
+        env.update(launcher_env)
         if cwd:
             # Pin clio-kit's artifacts root to the workspace so staged resources
             # and generated artifacts land in the workspace even when the
@@ -638,12 +676,12 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
         # inside spawn_diet.
         from clio_agent.tools import spawn_diet  # noqa: PLC0415
 
-        diet = spawn_diet.diet_transport_args(spec.name, resolved, tuple(spec.args), env)
+        diet = spawn_diet.diet_transport_args(spec.name, resolved, tuple(resolved_args), env)
         if diet is not None:
             diet_command, diet_args, env = diet
             final_command, final_args = diet_command, diet_args
         else:
-            final_command, final_args = resolved, list(spec.args)
+            final_command, final_args = resolved, resolved_args
         # #975: route the FINAL argv (post spawn-diet) through the single confinement
         # composer. Floor-first — the `fleet` profile resolves to passthrough this slice,
         # so command/args/env are byte-identical; only the recorded confinement intent

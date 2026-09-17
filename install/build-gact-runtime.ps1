@@ -109,7 +109,7 @@ $pyBinRel = 'python/python.exe'
 $pyBin = Join-Path $Out 'python\python.exe'
 if (-not (Test-Path $pyBin)) { throw "build-gact-runtime: $pyBinRel missing in dist" }
 
-# --- 2. install clio-agent (NO extras) directly into the dist ----------
+# --- 2. install clio-agent + the portable science launcher -------------
 if ($Source) {
   if (-not (Test-Path (Join-Path $Source 'pyproject.toml'))) {
     throw "build-gact-runtime: Source=$Source is not a clio-agent checkout"
@@ -118,12 +118,21 @@ if ($Source) {
 } else {
   $spec = "clio-agent @ git+https://github.com/iowarp/clio-agent.git@$Ref"
 }
-Write-Host "[build-gact-runtime] installing: $spec (no extras)"
+$clioKitSpec = 'clio-kit==2.10.6'
+Write-Host "[build-gact-runtime] installing: $spec + $clioKitSpec"
 Invoke-Native -Exe $uv.Source -Args @(
-    'pip', 'install', '--python', $pyBin, $spec,
+    'pip', 'install', '--python', $pyBin, $spec, $clioKitSpec,
     'dspy==3.3.0b1', 'fastmcp==4.0.0b5',
     'fastmcp-slim==4.0.0b5', 'fastmcp-tasks==4.0.0b5'
 )
+
+# clio-kit materializes each locked MCP server with uv on first use. Ship uv
+# beside the relocatable runtime instead of requiring a fresh desktop user to
+# install developer tooling or discover PATH configuration.
+$runtimeBin = Join-Path $Out 'bin'
+New-Item -ItemType Directory -Path $runtimeBin -Force | Out-Null
+Copy-Item -LiteralPath $uv.Source -Destination (Join-Path $runtimeBin 'uv.exe') -Force
+Copy-Item -LiteralPath $uv.Source -Destination (Join-Path $runtimeBin 'uvx.exe') -Force
 
 $sizeBefore = Get-DirSizeMB $Out
 Write-Host "[build-gact-runtime] size before prune: $sizeBefore MB"
@@ -234,6 +243,9 @@ Copy-Item -LiteralPath $Out -Destination $reloc -Recurse
 $relocPy = Join-Path $reloc 'python\python.exe'
 Write-Host "[build-gact-runtime] sanity (relocated): $relocPy -m clio_agent.gact --help"
 Invoke-Native -Exe $relocPy -Args @('-m', 'clio_agent.gact', '--help') | Out-Null
+Invoke-Native -Exe $relocPy -Args @('-m', 'clio_kit', '--help') | Out-Null
+$relocUv = Join-Path $reloc 'bin\uv.exe'
+Invoke-Native -Exe $relocUv -Args @('--version') | Out-Null
 # Imports and /v1/capabilities do not initialize ARC under --no-agent. Prove
 # the relocated image can launch clio-core and select the intended tiered
 # backend instead of degrading to LocalFS after installation.
