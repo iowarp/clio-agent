@@ -5,15 +5,32 @@ Provides shared fixtures for all test modules, including synthetic
 HDF5 and Parquet test data for MCP server testing.
 """
 
-import contextlib
 import os
-import tempfile
-from pathlib import Path
 
-import pytest
-import yaml
+# LiteLLM does a network GET for its model-cost map on the first `import
+# litellm` unless this is set (litellm's own offline-mode flag) -- every
+# GACT test that reaches a first turn (build_app's agent-initialization
+# preflight, gact/app.py's "import litellm" ahead of the builder thread)
+# imports litellm cold, and that network round-trip measured ~9.3s under
+# load in the adversarial-review flake diagnosis, enough to blow a
+# cold-turn test's completion deadline (tests/test_gact/
+# test_a2ui_capabilities.py::test_spawn_child_turn_never_forwards_
+# renderer_metadata). Production already pins provider lookups to the
+# bundled cost map via this same var; this removes the import-time GET
+# from every test turn too. Set here, as the FIRST statement in this
+# conftest (before any import that might itself import litellm
+# transitively), so it is in effect regardless of which module first
+# imports litellm during collection or a test run.
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
-import clio_agent  # noqa: F401
+import contextlib  # noqa: E402
+import tempfile  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+import pytest  # noqa: E402
+import yaml  # noqa: E402
+
+import clio_agent  # noqa: E402, F401
 from tests._cte_isolation import (
     cte_isolation_available,
     eagerly_attach_private_daemon,
