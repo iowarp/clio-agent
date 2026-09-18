@@ -122,6 +122,30 @@ class Extension(BaseModel):
     docs: str = ""
 
 
+class MarketplaceVersion(BaseModel):
+    """The default marketplace's registry pin (mirrors a source-ledger row, #A5)."""
+
+    source: str
+    ref: str
+    pinned_commit: str
+    installed_commit: str
+    source_id: str
+
+
+class VersionInfo(BaseModel):
+    """``versions`` on ``GET /v1/capabilities`` (desktop Versions panel, #A5).
+
+    Built best-effort by ``gact/version_info.py::build_version_info`` — an
+    unresolvable field types as ``"unknown"``, never raises.
+    """
+
+    clio_agent: str
+    backend_build: str
+    python: str
+    gact_contract: str
+    marketplace: Optional[MarketplaceVersion] = None
+
+
 class Capabilities(BaseModel):
     """GET /v1/capabilities — SPEC §3.3."""
 
@@ -132,6 +156,7 @@ class Capabilities(BaseModel):
     auth: AuthInfo = Field(default_factory=AuthInfo)
     extensions: list[Extension] = Field(default_factory=list)
     relay: dict[str, Any] = Field(default_factory=dict)
+    versions: Optional[VersionInfo] = None  # additive (#A5)
 
 
 # ---------------------------------------------------------------------------

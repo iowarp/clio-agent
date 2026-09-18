@@ -62,6 +62,7 @@ from clio_agent.gact.types import (
     SessionMemoryStats,
     TransportFlags,
 )
+from clio_agent.gact.version_info import build_version_info
 from clio_agent.runtime.status import (
     IntegrationState,
     IntegrationStatus,
@@ -420,6 +421,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         task_store_durable = task_record_store_is_durable()
         response = Capabilities(
             contract_version=CONTRACT_VERSION,
+            versions=build_version_info(),
             backend=BackendInfo(
                 name="clio-agent-gact",
                 version=GACT_BACKEND_VERSION,
