@@ -10,7 +10,6 @@ NAME. These tests lock the schema/domain projection
 from __future__ import annotations
 
 import asyncio
-import time
 from pathlib import Path
 from typing import Any, Awaitable
 
@@ -163,15 +162,18 @@ def test_builtin_tool_rows_never_calls_the_async_gateway_listing(
 
 
 def test_catalog_tools_route_is_fast_in_process(client: TestClient) -> None:
-    """``GET /v1/catalog/tools`` stays well under the ~50ms in-process budget once the memoized
-    static-row cache is warm -- no per-request event loop/FastMCP client round trip."""
+    """``GET /v1/catalog/tools`` serves from the memoized, synchronous static-row cache once warm
+    -- no per-request event loop/FastMCP client round trip.
+
+    The actual contract is ``test_builtin_tool_rows_never_calls_the_async_gateway_listing``
+    above (a `_must_not_run` guard on the async gateway listing); a wall-clock
+    ``elapsed_ms < 50`` assertion here flaked under load and was dropped (#A6 review) rather
+    than fixed with a wider budget that would just flake less often.
+    """
 
     client.get("/v1/catalog/tools")  # warm the memoized static-gateway-row cache once
-    start = time.perf_counter()
     resp = client.get("/v1/catalog/tools")
-    elapsed_ms = (time.perf_counter() - start) * 1000
     assert resp.status_code == 200
-    assert elapsed_ms < 50, f"GET /v1/catalog/tools took {elapsed_ms:.1f}ms (budget 50ms)"
 
 
 def test_native_tool_rejects_unknown_domain() -> None:

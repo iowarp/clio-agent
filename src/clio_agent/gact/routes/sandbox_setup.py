@@ -29,7 +29,11 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from clio_agent.gact.routes.health_projection import integration_to_wire
-from clio_agent.gact.sandbox_setup import SandboxSetupConflict, run_sandbox_setup
+from clio_agent.gact.sandbox_setup import (
+    SandboxSetupConflict,
+    run_sandbox_setup,
+    setup_in_progress,
+)
 from clio_agent.runtime import sandbox_cli
 from clio_agent.runtime.sandbox_doctor import probe_sandbox
 
@@ -45,9 +49,22 @@ def register_sandbox_setup_routes(app: FastAPI) -> None:
 
     @app.get("/v1/system/sandbox")
     async def get_sandbox_row() -> dict[str, Any]:
-        """The ``sandbox`` doctor row alone, wire-projected the same way ``/v1/health`` does."""
+        """The ``sandbox`` doctor row, wire-projected the same way ``/v1/health`` does, plus
+        three desktop-panel conveniences the shared health projection drops (it has no ``sandbox``-
+        specific shape): ``setup_in_progress`` (the setup lock, so the button can show a spinner
+        instead of racing a concurrent run), ``reason`` (the doctor row's typed reason token,
+        lifted out of ``details`` so the panel need not parse ``summary``), and ``codex_source``
+        (``bundled``/``path``/``None`` from codex detection)."""
 
-        return integration_to_wire(probe_sandbox()).model_dump()
+        row = probe_sandbox()
+        wire = integration_to_wire(row).model_dump()
+        codex_details = row.details.get("codex") if isinstance(row.details, dict) else None
+        wire["setup_in_progress"] = setup_in_progress()
+        wire["reason"] = str(row.details.get("reason", "")) if isinstance(row.details, dict) else ""
+        wire["codex_source"] = (
+            (codex_details.get("source") or None) if isinstance(codex_details, dict) else None
+        )
+        return wire
 
     @app.post("/v1/system/sandbox/setup")
     async def post_sandbox_setup() -> JSONResponse:
@@ -70,7 +87,7 @@ def register_sandbox_setup_routes(app: FastAPI) -> None:
                 },
             )
         try:
-            result = await asyncio.to_thread(run_sandbox_setup)
+            result = await asyncio.to_thread(run_sandbox_setup, app=app)
         except SandboxSetupConflict as exc:
             logger.info("sandbox setup rejected reason=%s", exc.reason)
             return JSONResponse(

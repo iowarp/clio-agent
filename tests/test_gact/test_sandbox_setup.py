@@ -18,6 +18,7 @@ never reach provisioning at all).
 
 from __future__ import annotations
 
+import logging
 import threading
 from pathlib import Path
 from typing import Any
@@ -34,7 +35,7 @@ from clio_agent.gact.sandbox_setup import (
     SandboxSetupConflict,
     run_sandbox_setup,
 )
-from clio_agent.runtime import sandbox_cli, sandbox_codex
+from clio_agent.runtime import sandbox, sandbox_cli, sandbox_codex
 from clio_agent.runtime.sandbox_doctor import probe_sandbox
 from clio_agent.runtime.status import IntegrationState
 
@@ -113,6 +114,10 @@ def test_setup_runs_injected_elevator_and_reprobes(monkeypatch: pytest.MonkeyPat
     that default is faked too -- deterministically, never a real `net user`/marker read.
     """
 
+    # This run activates a FAKE codex fence via `sandbox.reresolve_after_setup`, which mutates
+    # the process-global `sandbox._STATE` cache. Restore it at teardown so the fake ACTIVE state
+    # can never leak into a later test that reads `sandbox.current_state()` (#A6 review).
+    monkeypatch.setattr(sandbox, "_STATE", sandbox.current_state())
     monkeypatch.setattr(sandbox_codex, "detect_codex", lambda **_kw: _fake_codex_detected())
     monkeypatch.setattr(
         sandbox_codex,
@@ -168,6 +173,97 @@ def test_setup_reports_typed_failure_when_verifier_escapes(
     assert result.reason == sandbox_codex.REASON_CODEX_ENFORCEMENT_ESCAPED
     assert result.elevated is True
     assert result.row.state == IntegrationState.DEGRADED
+
+
+# --------------------------------------------------------------------------- #
+# Pending-restart: setup succeeds but an already-spawned MCP fleet is not      #
+# covered by the just-activated fence (#A6 review, HIGH).                      #
+# --------------------------------------------------------------------------- #
+
+
+class _FakeExecutor:
+    """Stand-in for ``SyncMCPToolExecutor``/``AsyncMCPToolExecutor`` — only the ONE private
+    attribute :func:`clio_agent.gact.sandbox_setup._fleet_already_running` reads."""
+
+    def __init__(self, *, connected: bool) -> None:
+        self._connected_namespaces = {"fs"} if connected else set()
+
+
+def _fake_app_with_fleet(*, connected: bool) -> Any:
+    """A minimal ``app``-shaped stand-in exposing ``app.state.agent.tool_executor``."""
+
+    agent = type("Agent", (), {"tool_executor": _FakeExecutor(connected=connected)})()
+    state = type("State", (), {"agent": agent})()
+    return type("App", (), {"state": state})()
+
+
+def test_setup_marks_pending_restart_when_fleet_already_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fence goes inactive -> active while an MCP namespace already connected (spawned) in this
+    process: the re-probed row is DEGRADED with the typed pending-restart reason -- a successful
+    elevation must never claim READY over already-unfenced tool servers."""
+
+    monkeypatch.setattr(
+        sandbox,
+        "_STATE",
+        sandbox.SandboxResult(
+            mechanism=sandbox.MECHANISM_NONE, active=False, reason="test_floor", details={}
+        ),
+    )
+    monkeypatch.setattr(sandbox, "_FENCE_PENDING_RESTART", False)
+    monkeypatch.setattr(sandbox_codex, "detect_codex", lambda **_kw: _fake_codex_detected())
+    monkeypatch.setattr(
+        sandbox_codex,
+        "codex_windows_gate",
+        lambda **_kw: (True, sandbox_codex.REASON_CODEX_WINDOWS_PROVISIONED),
+    )
+
+    result = run_sandbox_setup(
+        elevator=lambda _binary: (True, "elevated ok"),
+        verifier=lambda _b, _r, platform="win32": (
+            True,
+            sandbox_codex.REASON_CODEX_ENFORCEMENT_VERIFIED,
+        ),
+        gate=lambda *, platform: (False, sandbox_codex.REASON_CODEX_WINDOWS_UNPROVISIONED),
+        app=_fake_app_with_fleet(connected=True),
+    )
+
+    assert result.status == sandbox_cli.OUTCOME_PROVISIONED  # provisioning itself still succeeded
+    assert result.row.state == IntegrationState.DEGRADED
+    assert result.row.details["reason"] == sandbox.REASON_FENCE_PENDING_RESTART
+    assert result.row.next_action == "Restart CLIO to fence already-running tool servers."
+
+
+def test_setup_stays_ready_when_no_fleet_already_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same fresh-activation scenario, but with NO already-spawned fleet: the row stays READY."""
+
+    monkeypatch.setattr(
+        sandbox,
+        "_STATE",
+        sandbox.SandboxResult(
+            mechanism=sandbox.MECHANISM_NONE, active=False, reason="test_floor", details={}
+        ),
+    )
+    monkeypatch.setattr(sandbox, "_FENCE_PENDING_RESTART", False)
+    monkeypatch.setattr(sandbox_codex, "detect_codex", lambda **_kw: _fake_codex_detected())
+    monkeypatch.setattr(
+        sandbox_codex,
+        "codex_windows_gate",
+        lambda **_kw: (True, sandbox_codex.REASON_CODEX_WINDOWS_PROVISIONED),
+    )
+
+    result = run_sandbox_setup(
+        elevator=lambda _binary: (True, "elevated ok"),
+        verifier=lambda _b, _r, platform="win32": (
+            True,
+            sandbox_codex.REASON_CODEX_ENFORCEMENT_VERIFIED,
+        ),
+        gate=lambda *, platform: (False, sandbox_codex.REASON_CODEX_WINDOWS_UNPROVISIONED),
+        app=_fake_app_with_fleet(connected=False),
+    )
+
+    assert result.row.state == IntegrationState.READY
 
 
 # --------------------------------------------------------------------------- #
@@ -236,6 +332,60 @@ def test_setup_unsupported_off_windows(monkeypatch: pytest.MonkeyPatch, tmp_path
 
 
 # --------------------------------------------------------------------------- #
+# GET /v1/system/sandbox — the desktop-panel conveniences (#A6 review, MEDIUM). #
+# --------------------------------------------------------------------------- #
+
+
+def test_get_sandbox_row_carries_setup_progress_reason_and_codex_source(
+    tmp_path: Path,
+) -> None:
+    """The row carries `setup_in_progress` (False, idle), a non-blank typed `reason`, and a
+    `codex_source` the panel can render without parsing `summary`/`details`."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        resp = client.get("/v1/system/sandbox")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["setup_in_progress"] is False
+    assert isinstance(body["reason"], str) and body["reason"]
+    assert body["codex_source"] in (
+        None,
+        sandbox_codex.CODEX_SOURCE_BUNDLED,
+        sandbox_codex.CODEX_SOURCE_PATH,
+    )
+
+
+def test_get_sandbox_row_reports_setup_in_progress_while_locked(tmp_path: Path) -> None:
+    """`setup_in_progress` reflects the module lock live -- the panel can show a spinner instead
+    of racing a concurrent setup run."""
+
+    held = threading.Event()
+    release = threading.Event()
+
+    def _hold_lock() -> None:
+        SETUP_LOCK.acquire()
+        held.set()
+        release.wait(timeout=5)
+        SETUP_LOCK.release()
+
+    holder = threading.Thread(target=_hold_lock, daemon=True)
+    holder.start()
+    try:
+        assert held.wait(timeout=2), "background thread never acquired the setup lock"
+        app = build_app(sessions_path=tmp_path / "sessions.json")
+        with TestClient(app) as client:
+            resp = client.get("/v1/system/sandbox")
+    finally:
+        release.set()
+        holder.join(timeout=5)
+
+    assert resp.status_code == 200
+    assert resp.json()["setup_in_progress"] is True
+
+
+# --------------------------------------------------------------------------- #
 # Bundled codex.exe detection (desktop runtime).                               #
 # --------------------------------------------------------------------------- #
 
@@ -278,3 +428,30 @@ def test_codex_detection_falls_back_to_path_outside_bundled_runtime() -> None:
     assert det.installed is True
     assert det.source == sandbox_codex.CODEX_SOURCE_PATH
     assert det.binary_path == "C:\\codex\\codex.cmd"
+
+
+def test_bundled_root_found_but_binary_missing_warns_and_falls_back_to_path(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A desktop runtime root WAS found (`runtime.json` present) but its bundled `codex.exe` is
+    missing on disk -- a packaging defect, not an ordinary "no bundled runtime": a WARNING fires
+    and detection falls back to PATH, carrying the miss on the returned detection (#A6 review)."""
+
+    runtime_root = tmp_path
+    (runtime_root / "runtime.json").write_text("{}", encoding="utf-8")
+    # No codex_cli_bin tree created at all -- the bundled binary path does not exist on disk.
+
+    with caplog.at_level(logging.WARNING, logger="clio_agent.runtime.sandbox_codex"):
+        det = sandbox_codex.detect_codex(
+            bundled_root=lambda: runtime_root,
+            which=lambda _name: "C:\\codex\\codex.cmd" if _name == "codex.cmd" else None,
+            version_reader=lambda _binary: "0.145.0",
+            platform="win32",
+        )
+
+    assert det.installed is True
+    assert det.source == sandbox_codex.CODEX_SOURCE_PATH
+    assert det.bundled_codex_absent is True
+    assert any("bundled_codex_absent" in record.getMessage() for record in caplog.records), (
+        "a packaging defect (bundled root found, binary missing) must warn with a typed reason"
+    )

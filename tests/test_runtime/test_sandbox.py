@@ -186,6 +186,25 @@ def test_resolve_backend_disabled_by_config() -> None:
     assert result.reason == sandbox.REASON_DISABLED
 
 
+def test_resolve_backend_codex_details_carry_source_and_bundled_flag() -> None:
+    """``_resolve_backend`` threads codex detection's ``source``/``bundled_codex_absent`` onto
+    ``details["codex"]`` (#A6 review) -- the desktop's ``codex_source`` panel field is derived
+    from this without re-probing detection separately."""
+    result = sandbox._resolve_backend(
+        platform="linux",
+        codex_detection=sc.CodexDetection(
+            installed=True,
+            binary_path="/usr/bin/codex",
+            version="0.145.0",
+            reason=sc.REASON_CODEX_DETECTED,
+            source=sc.CODEX_SOURCE_PATH,
+            bundled_codex_absent=True,
+        ),
+    )
+    assert result.details["codex"]["source"] == sc.CODEX_SOURCE_PATH
+    assert result.details["codex"]["bundled_codex_absent"] is True
+
+
 def test_install_and_current_state_cache() -> None:
     """install_sandbox resolves + caches; current_state returns the cached result.
 
@@ -468,6 +487,43 @@ def test_probe_sandbox_skipped_when_unresolved(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(sandbox, "_STATE", None)
     row = sandbox.probe_sandbox()
     assert row.state == IntegrationState.SKIPPED
+
+
+def test_probe_sandbox_degrades_when_fence_pending_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#A6 review: an ACTIVE fence still reports DEGRADED, never a false READY, once
+    ``mark_fence_pending_restart`` has fired -- an already-spawned MCP fleet is not covered by a
+    fence that only just activated."""
+    monkeypatch.setattr(sandbox, "_FENCE_PENDING_RESTART", False)
+    state = sandbox.SandboxResult(
+        mechanism=sandbox.MECHANISM_CODEX,
+        active=True,
+        reason=sandbox.REASON_FENCE_ACTIVE,
+        details={"net_enforcement": sandbox.NET_ENFORCEMENT_PROXY},
+    )
+    sandbox.mark_fence_pending_restart()
+
+    row = sandbox.probe_sandbox(state=state)
+
+    assert row.state == IntegrationState.DEGRADED
+    assert row.details["reason"] == sandbox.REASON_FENCE_PENDING_RESTART
+    assert row.next_action == "Restart CLIO to fence already-running tool servers."
+
+
+def test_probe_sandbox_ready_without_pending_restart(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The ordinary case: an ACTIVE fence with no pending-restart flag reports READY."""
+    monkeypatch.setattr(sandbox, "_FENCE_PENDING_RESTART", False)
+    state = sandbox.SandboxResult(
+        mechanism=sandbox.MECHANISM_CODEX,
+        active=True,
+        reason=sandbox.REASON_FENCE_ACTIVE,
+        details={"net_enforcement": sandbox.NET_ENFORCEMENT_PROXY},
+    )
+
+    row = sandbox.probe_sandbox(state=state)
+
+    assert row.state == IntegrationState.READY
 
 
 # --------------------------------------------------------------------------- #

@@ -112,7 +112,10 @@ class CodexDetection:
     (:data:`REASON_CODEX_NOT_INSTALLED`, :data:`REASON_CODEX_VERSION_UNSUPPORTED`,
     :data:`REASON_CODEX_DETECTED`). ``source`` is :data:`CODEX_SOURCE_BUNDLED` when the desktop's
     own shipped ``codex.exe`` was used, :data:`CODEX_SOURCE_PATH` when resolved off ``PATH``, or
-    ``""`` when nothing was found.
+    ``""`` when nothing was found. ``bundled_codex_absent`` is ``True`` when a desktop runtime
+    root WAS found but its bundled ``codex.exe`` was missing on disk, so detection fell back to
+    the ``PATH`` lookup -- a desktop install shipping without its expected binary is a real
+    packaging defect, not silently equivalent to "no bundled runtime at all".
     """
 
     installed: bool
@@ -120,6 +123,7 @@ class CodexDetection:
     version: str
     reason: str
     source: str = ""
+    bundled_codex_absent: bool = False
 
 
 def parse_version(version: str) -> tuple[int, int, int]:
@@ -209,14 +213,23 @@ def detect_codex(
     launchable ``codex.cmd``/``codex.exe`` are preferred over the extensionless ``codex`` (a
     POSIX shim ``which`` returns first cannot be exec'd by CreateProcess — the #1025 srt.cmd
     lesson). The returned :attr:`CodexDetection.reason` is the typed ladder reason the
-    missing/present/old fence implies.
+    missing/present/old fence implies. When a runtime root IS found but the bundled binary is
+    missing on disk, that is a WARNING (a packaging defect, not an ordinary "no bundled runtime")
+    before falling back to the ``PATH`` lookup; the miss is also carried on the returned
+    :attr:`CodexDetection.bundled_codex_absent` rather than silently swallowed.
     """
     root = bundled_root()
     bundled_binary = Path(root, *_BUNDLED_CODEX_RELATIVE) if root is not None else None
+    bundled_codex_absent = False
     if bundled_binary is not None and bundled_binary.is_file():
         binary = str(bundled_binary)
         source = CODEX_SOURCE_BUNDLED
     else:
+        if bundled_binary is not None:
+            bundled_codex_absent = True
+            logger.warning(
+                "codex bundled binary absent reason=bundled_codex_absent path=%s", bundled_binary
+            )
         names = (
             ("codex.cmd", "codex.exe", CODEX_BINARY_NAME)
             if platform.startswith("win")
@@ -232,6 +245,7 @@ def detect_codex(
             version="",
             reason=REASON_CODEX_NOT_INSTALLED,
             source="",
+            bundled_codex_absent=bundled_codex_absent,
         )
     version = version_reader(binary) or ""
     reason = (
@@ -244,6 +258,7 @@ def detect_codex(
         binary_path=binary,
         version=version,
         reason=reason,
+        bundled_codex_absent=bundled_codex_absent,
         source=source,
     )
 

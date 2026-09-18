@@ -83,6 +83,26 @@ def probe_sandbox(*, state: sb.SandboxResult | None = None) -> IntegrationStatus
         **resolved.details,
     }
     if resolved.active and resolved.mechanism in sb.KNOWN_MECHANISMS - {sb.MECHANISM_NONE}:
+        if sb.fence_pending_restart():
+            # #A6 review: a fence that just activated does NOT retroactively cover an MCP tool
+            # fleet this process already spawned before setup ran -- those stdio children keep
+            # running outside it until CLIO restarts. Reporting READY here would be a silent
+            # false-green; both this row and /v1/health read through the same probe, so they
+            # stay consistent automatically.
+            return IntegrationStatus(
+                name="sandbox",
+                state=IntegrationState.DEGRADED,
+                summary=(
+                    f"OS write-confinement (mechanism={resolved.mechanism}) was just activated, "
+                    "but an MCP tool fleet already spawned before that activation is not "
+                    "covered by it."
+                ),
+                config_source="runtime:sandbox",
+                next_action="Restart CLIO to fence already-running tool servers.",
+                fallback="fence-active-pending-restart",
+                details={**details, "reason": sb.REASON_FENCE_PENDING_RESTART},
+                required=True,
+            )
         net = (
             resolved.details.get("net_enforcement", "")
             if isinstance(resolved.details, dict)
