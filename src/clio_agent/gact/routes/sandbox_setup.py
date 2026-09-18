@@ -37,6 +37,19 @@ from clio_agent.gact.sandbox_setup import (
 from clio_agent.runtime import sandbox_cli
 from clio_agent.runtime.sandbox_doctor import probe_sandbox
 
+
+def current_platform() -> str:
+    """Return the host platform the desktop-setup gate consults.
+
+    A seam (rather than a bare ``sys.platform`` read) so tests can exercise the
+    Windows-only route branches on any CI runner WITHOUT patching ``sys.platform``
+    process-wide, which would drag Windows-only code paths (``ctypes.WinDLL``)
+    into unrelated modules on Linux.
+    """
+
+    return sys.platform
+
+
 logger = logging.getLogger("clio_agent.gact.routes.sandbox_setup")
 
 #: Typed reason: off-Windows there is nothing to provision (Codex fences automatically via
@@ -76,7 +89,7 @@ def register_sandbox_setup_routes(app: FastAPI) -> None:
         (``sandbox_setup_in_progress``) rather than a second overlapping elevation.
         """
 
-        if not sys.platform.startswith("win"):
+        if not current_platform().startswith("win"):
             return JSONResponse(
                 status_code=501,
                 content={

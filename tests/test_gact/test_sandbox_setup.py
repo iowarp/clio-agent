@@ -404,7 +404,7 @@ def test_setup_conflict_when_already_running(
     check itself is the very first thing `run_sandbox_setup` does, before touching `platform`).
     """
 
-    monkeypatch.setattr(sandbox_setup_routes.sys, "platform", "win32")
+    monkeypatch.setattr(sandbox_setup_routes, "current_platform", lambda: "win32")
     held = threading.Event()
     release = threading.Event()
 
@@ -445,7 +445,7 @@ def test_run_sandbox_setup_raises_typed_conflict_directly() -> None:
 def test_setup_unsupported_off_windows(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Off-Windows the route is a typed 501 with the current row -- nothing to provision."""
 
-    monkeypatch.setattr(sandbox_setup_routes.sys, "platform", "linux")
+    monkeypatch.setattr(sandbox_setup_routes, "current_platform", lambda: "linux")
     app = build_app(sessions_path=tmp_path / "sessions.json")
     with TestClient(app) as client:
         resp = client.post("/v1/system/sandbox/setup")
