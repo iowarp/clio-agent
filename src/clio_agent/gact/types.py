@@ -78,6 +78,7 @@ class Integration(BaseModel):
     config_source: Optional[str] = None
     next_action: Optional[str] = None
     endpoint: Optional[str] = None
+    required: bool = True
 
 
 class HealthResponse(BaseModel):

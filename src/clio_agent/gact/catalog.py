@@ -204,28 +204,66 @@ def _truthy_command_field(value: Any, default: bool) -> bool:
 
 
 def _builtin_tools() -> list[Tool]:
-    """Flatten the experts' curated tool lists into a single GACT
-    Tool catalog. Stable ids (same strings the experts reference),
-    backend flag `builtin`. The names MAY duplicate across experts
-    (e.g. read_file) — we dedupe by id so GET /v1/catalog/tools has
-    one row per distinct tool."""
+    """Return the code-shipped tool surface for a bare CLIO session.
+
+    This is a product catalog, not a session-effective inventory: it includes
+    the workspace gateway, universal react tools, and root coordination tools.
+    Blueprint/session additions remain visible through the effective-toolset
+    endpoint and are deliberately not guessed here.
+    """
+
+    from clio_agent.gact.agents.auto_tools import build_auto_react_tools  # noqa: PLC0415
+    from clio_agent.gact.agents.spawn_runtime_declarations import (  # noqa: PLC0415
+        assemble_spawn_runtime_tools,
+    )
+
+    def _catalog_stub(*_args: Any, **_kwargs: Any) -> str:
+        """Catalog-only placeholder; this declaration is never executed."""
+
+        return ""
 
     seen: dict[str, Tool] = {}
-    for agent in _builtin_agents():
-        if agent.tier not in {2, 3}:
+    main = _builtin_main_agent()
+    declarations: list[tuple[str, str, str]] = [
+        (tool_name, tool_name.replace("_", " ").title(), "") for tool_name in main.tools
+    ]
+    declarations.extend(
+        (
+            str(getattr(tool, "name", "")),
+            str(getattr(tool, "title", "") or ""),
+            str(getattr(tool, "desc", "") or getattr(tool, "description", "") or ""),
+        )
+        for tool in build_auto_react_tools(main)
+    )
+    declarations.extend(
+        (
+            str(getattr(tool, "name", "")),
+            str(getattr(tool, "title", "") or ""),
+            str(getattr(tool, "desc", "") or getattr(tool, "description", "") or ""),
+        )
+        for tool in assemble_spawn_runtime_tools(
+            main,
+            spawn_agent_task=_catalog_stub,
+            wait_agent_tasks=_catalog_stub,
+            spawn_agents_parallel=_catalog_stub,
+            run_workflow=_catalog_stub,
+            has_declared_children=False,
+            can_commission_blueprints=True,
+        )
+    )
+    for tool_name, title, description in declarations:
+        if not tool_name or tool_name in seen:
             continue
-        for tool_name in agent.tools:
-            if tool_name in seen:
-                continue
-            seen[tool_name] = Tool(
-                id=tool_name,
-                source="builtin",
-                name=tool_name,
-                title=tool_name.replace("_", " ").title(),
-                owner=_tool_owner_for_catalog(tool_name),
-                tags=_tool_tags_for_catalog(tool_name),
-                visible_to=_tool_visible_to_for_catalog(tool_name),
-            )
+        seen[tool_name] = Tool(
+            id=tool_name,
+            source="builtin",
+            name=tool_name,
+            title=title or tool_name.replace("_", " ").title(),
+            description=description,
+            owner=_tool_owner_for_catalog(tool_name),
+            tags=_tool_tags_for_catalog(tool_name),
+            visible_to=_tool_visible_to_for_catalog(tool_name),
+        )
     return list(seen.values())
 
 

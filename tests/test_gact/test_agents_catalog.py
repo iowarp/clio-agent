@@ -182,20 +182,16 @@ def test_list_agents_unknown_tier_returns_empty(client: TestClient) -> None:
     assert resp.json() == {"agents": []}
 
 
-def test_catalog_tools_is_empty_with_no_blueprint_installed_or_activated(
+def test_catalog_tools_describes_bare_clio_without_blueprint_activation(
     client: TestClient,
 ) -> None:
-    """``/v1/catalog/tools`` has no session concept (the route takes no
-    session_id) -- it can only ever reflect the code-shipped catalog, never a
-    particular session's activation. ``catalog._builtin_tools()`` flattens
-    tier-2/3 CURATED per-expert tool lists (RULE 5); the ONE code-shipped agent
-    (``catalog._builtin_main_agent``) is tier 1 with the raw native tool
-    surface, not a curated sub-expert list, so there is nothing to flatten.
-    """
+    """The session-less catalog reports the code-shipped bare CLIO surface."""
 
     resp = client.get("/v1/catalog/tools")
     assert resp.status_code == 200
-    assert resp.json()["tools"] == []
+    names = {row["name"] for row in resp.json()["tools"]}
+    assert {"fs_read_file", "create_artifact", "memory_search_sessions"} <= names
+    assert {"spawn_agent_task", "observe_agent_tasks", "wait_agent_tasks"} <= names
 
 
 def test_unified_tools_endpoint_exposes_inspector_metadata(client: TestClient) -> None:

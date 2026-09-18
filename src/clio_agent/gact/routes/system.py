@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal, Optional
@@ -217,6 +218,7 @@ def _integration_to_wire(item: IntegrationStatus) -> Integration:
         config_source=item.config_source or None,
         next_action=item.next_action or None,
         endpoint=item.endpoint,
+        required=item.required,
     )
 
 
@@ -374,6 +376,28 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 include_process_census=False,
             )
             integrations = list(report.integrations)
+            # A desktop session chooses its provider when work starts. Until a
+            # provider is explicitly selected, the doctor's historical LM
+            # Studio default is not an outage and must not make CLIO look down.
+            if (
+                os.environ.get("CLIO_DESKTOP_BOOT_HEARTBEAT") == "1"
+                and getattr(app.state, "lm_config", None) is None
+                and not runtime_provider_probe_env(None).get("CLIO_LM_PROVIDER", "").strip()
+            ):
+                integrations = [
+                    IntegrationStatus(
+                        name="lm_provider",
+                        state=IntegrationState.SKIPPED,
+                        summary="Choose a language model when starting a session.",
+                        config_source="session:model-selection",
+                        next_action="Select a provider and model in the message composer.",
+                        required=False,
+                    )
+                    if item.name == "lm_provider"
+                    else item
+                    for item in integrations
+                ]
+                report = RuntimeReport(integrations=integrations)
         except Exception as exc:  # noqa: BLE001 - surfaced as a degraded doctor row (see comment)
             # No silent fallback (cleanup ground rule): a probe engine failure is
             # surfaced as a structured degraded doctor row, not a bare 200.

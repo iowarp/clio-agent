@@ -75,6 +75,7 @@ class Integration(_WireModel):
     config_source: str | None = None
     next_action: str | None = None
     endpoint: str | None = None
+    required: bool = True
 
 
 class Health(_WireModel):
