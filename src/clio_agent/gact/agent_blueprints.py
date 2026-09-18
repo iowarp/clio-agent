@@ -22,6 +22,7 @@ from typing import Any, Literal
 
 from clio_agent import conf
 from clio_agent.gact import skills as _skills
+from clio_agent.gact.blueprint_paths import install_root, relative_to_blueprint_root
 from clio_agent.gact.expert_packs import (
     ExpertPackDefinition,
     _fallback_expert_id,
@@ -33,6 +34,11 @@ from clio_agent.gact.expert_packs import (
 from clio_agent.gact.git_source import normalize_git_clone_source
 from clio_agent.gact.types import AgentDef
 from clio_agent.tools.catalog import TOOL_CATALOG
+
+# Historical private names kept importable here: agent_blueprint_refresh.py /
+# agent_blueprint_sources.py do ``from ...agent_blueprints import _install_root``.
+_install_root = install_root
+_relative_to_blueprint_root = relative_to_blueprint_root
 
 logger = logging.getLogger(__name__)
 
@@ -907,17 +913,6 @@ def read_install_metadata(root: Path) -> dict[str, str]:
     return rows
 
 
-def _install_root(*, home: Path, cwd: Path, scope: str) -> Path:
-    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
-
-    config_root = paths.user_config_dir_for(home, os.environ)
-    if scope == "global":
-        return config_root / "agent-blueprints"
-    if scope == "workspace":
-        return cwd / ".clio" / "agent-blueprints"
-    raise ValueError("scope must be global or workspace")
-
-
 def _install_candidates(source: Path, *, blueprint_id: str = "") -> list[Path]:
     candidates: list[Path] = []
     if (source / _BLUEPRINT_ROOT_NAME).exists():
@@ -951,31 +946,6 @@ def _tree_checksum(root: Path) -> str:
         digest.update(str(path.relative_to(root)).encode())
         digest.update(path.read_bytes())
     return digest.hexdigest()
-
-
-def _relative_to_blueprint_root(path: Path, root: Path) -> Path:
-    """Return a safe relative path across Windows packaged-path redirection.
-
-    A process descended from a packaged Windows app can enumerate an ordinary
-    ``%LOCALAPPDATA%`` file through the package's ``LocalCache\\Local`` alias.
-    ``Path.resolve()`` then rewrites the child but not necessarily its blueprint
-    root, so a plain ``relative_to`` rejects two paths that identify the same
-    on-disk tree.  The file-identity fallback accepts only an equivalent root;
-    a symlink that actually escapes the blueprint remains rejected.
-    """
-
-    lexical = path.relative_to(root)
-    resolved = path.resolve()
-    resolved_root = root.resolve()
-    try:
-        return resolved.relative_to(resolved_root)
-    except ValueError:
-        equivalent_root = resolved
-        for _part in lexical.parts:
-            equivalent_root = equivalent_root.parent
-        if os.path.samefile(equivalent_root, resolved_root):
-            return lexical
-        raise
 
 
 def _load_blueprint_agents(

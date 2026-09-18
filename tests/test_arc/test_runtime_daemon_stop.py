@@ -1,6 +1,6 @@
 """Regression tests for the clio-core daemon clean-stop path (issue #765 (c)).
 
-``_stop_runtime_daemon`` must build the ``clio_run stop`` command and its
+``stop_runtime_daemon`` must build the ``clio_run stop`` command and its
 environment with the SAME cross-platform helpers as the spawn path
 (``_runtime_launcher_path`` for the ``.exe``-aware launcher name and
 ``_dynamic_library_env_var`` for the OS shared-library path variable),
@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from clio_agent.arc import storage
+from clio_agent.arc import runtime_stop, storage
 
 
 @pytest.fixture()
@@ -54,9 +54,9 @@ def test_stop_runtime_daemon_uses_spawn_helpers(
         calls["env"] = kwargs["env"]
         return FakeProcess()
 
-    monkeypatch.setattr(storage.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(storage, "_resolve_runtime_port", lambda config_path: 65001)
-    monkeypatch.setattr(storage, "_runtime_alive", lambda port: False)
+    monkeypatch.setattr(runtime_stop.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(runtime_stop, "_resolve_runtime_port", lambda config_path: 65001)
+    monkeypatch.setattr(runtime_stop, "_runtime_alive", lambda port: False)
 
     def fail_kill() -> None:
         raise AssertionError("clean stop must not fall through to the pidfile kill")
@@ -64,13 +64,13 @@ def test_stop_runtime_daemon_uses_spawn_helpers(
     monkeypatch.setattr(storage, "_kill_daemon_pidfile", fail_kill)
     monkeypatch.setattr(storage, "_daemon_pidfile", lambda: tmp_path / "daemon.pid")
 
-    storage._stop_runtime_daemon("", "error")
+    runtime_stop.stop_runtime_daemon("", "error")
 
-    expected_exe = storage._runtime_launcher_path(fake_iowarp_core)
+    expected_exe = runtime_stop._runtime_launcher_path(fake_iowarp_core)
     assert expected_exe is not None
     assert calls["cmd"] == [expected_exe, "stop"]
 
-    lib_var = storage._dynamic_library_env_var()
+    lib_var = runtime_stop._dynamic_library_env_var()
     env = calls["env"]
     assert isinstance(env, dict)
     assert env[lib_var].split(os.pathsep)[0] == fake_iowarp_core.get_lib_dir()
@@ -92,15 +92,15 @@ def test_stop_runtime_daemon_warns_and_kills_when_launcher_missing(
     def fail_run(*args, **kwargs):  # noqa: ANN002, ANN003 - test shim
         raise AssertionError("no launcher on disk: clean stop must not be attempted")
 
-    monkeypatch.setattr(storage.subprocess, "Popen", fail_run)
-    monkeypatch.setattr(storage, "_resolve_runtime_port", lambda config_path: 65001)
-    monkeypatch.setattr(storage, "_runtime_alive", lambda port: False)
+    monkeypatch.setattr(runtime_stop.subprocess, "Popen", fail_run)
+    monkeypatch.setattr(runtime_stop, "_resolve_runtime_port", lambda config_path: 65001)
+    monkeypatch.setattr(runtime_stop, "_runtime_alive", lambda port: False)
     killed: list[bool] = []
     monkeypatch.setattr(storage, "_kill_daemon_pidfile", lambda: killed.append(True))
     monkeypatch.setattr(storage, "_daemon_pidfile", lambda: tmp_path / "daemon.pid")
 
-    with caplog.at_level(logging.WARNING, logger=storage.logger.name):
-        storage._stop_runtime_daemon("", "error")
+    with caplog.at_level(logging.WARNING, logger=runtime_stop.logger.name):
+        runtime_stop.stop_runtime_daemon("", "error")
 
     assert killed == [True]
     assert any("launcher_not_found" in record.getMessage() for record in caplog.records)
@@ -129,12 +129,12 @@ def test_stop_runtime_daemon_reaps_helper_as_soon_as_runtime_is_down(
         def kill(self) -> None:
             calls.append("kill")
 
-    monkeypatch.setattr(storage.subprocess, "Popen", lambda *args, **kwargs: HungStopProcess())
-    monkeypatch.setattr(storage, "_resolve_runtime_port", lambda config_path: 65001)
-    monkeypatch.setattr(storage, "_runtime_alive", lambda port: False)
+    monkeypatch.setattr(runtime_stop.subprocess, "Popen", lambda *args, **kwargs: HungStopProcess())
+    monkeypatch.setattr(runtime_stop, "_resolve_runtime_port", lambda config_path: 65001)
+    monkeypatch.setattr(runtime_stop, "_runtime_alive", lambda port: False)
     monkeypatch.setattr(storage, "_kill_daemon_pidfile", lambda: calls.append("pidfile-kill"))
     monkeypatch.setattr(storage, "_daemon_pidfile", lambda: tmp_path / "daemon.pid")
 
-    storage._stop_runtime_daemon("", "error")
+    runtime_stop.stop_runtime_daemon("", "error")
 
     assert calls == ["terminate", "wait:1.0"]

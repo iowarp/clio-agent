@@ -146,51 +146,12 @@ def _web_dir() -> str:
     return conf.resolve("paths.web_dir", env="CLIO_WEB_DIR", default="", cast=conf.as_str).strip()
 
 
-def _agent_not_available_error(app: "FastAPI", sid: str) -> "ErrorEnvelope":
-    """Return a typed error when no executable CLIO agent is ready for a turn."""
-
-    task = getattr(app.state, "agent_construction_task", None)
-    task_done = bool(getattr(task, "done", lambda: True)())
-    init_error = str(getattr(app.state, "agent_init_error", "") or "")
-    want_agent = bool(getattr(app.state, "want_agent", False))
-
-    if want_agent and not task_done:
-        status = "starting"
-        message = "CLIO is still starting its agent; no agent is ready to accept messages yet."
-        recoverable = True
-        recovery_actions = ["wait_for_agent_startup", "retry", "check_health"]
-    elif init_error:
-        status = "failed"
-        message = "CLIO agent startup failed; no agent is available to accept messages."
-        recoverable = True
-        recovery_actions = ["check_server_logs", "fix_lm_configuration", "restart_agent"]
-    else:
-        status = "not_configured"
-        message = (
-            "No executable CLIO agent is configured for this backend. Launch `clio-agent-gact` "
-            "with an LM provider configured before sending messages."
-        )
-        recoverable = False
-        recovery_actions = ["configure_lm_provider", "restart_agent"]
-
-    details: dict[str, Any] = {
-        "session_id": sid,
-        "agent_status": status,
-        "want_agent": want_agent,
-        "recovery_actions": recovery_actions,
-    }
-    if init_error:
-        details["agent_init_error"] = init_error
-
-    return ErrorEnvelope(
-        error=ErrorInfo(
-            error="agent_not_available",
-            message=message,
-            details=details,
-            recoverable=recoverable,
-        )
-    )
-
+# ``_agent_not_available_error`` now lives in gact/agent_initialization.py
+# (#775/#774 file-size ratchet) -- it reads the exact deferred-construction
+# state (``agent_construction_task`` / ``agent_init_error`` / ``want_agent``)
+# that module already owns. Called at its one call site below as
+# ``agent_initialization.agent_not_available_error``; not re-exported here
+# because it is not in test_import_seams.SEAM_SYMBOLS (no other caller).
 
 # Session message-ledger + context-file helpers now live in
 # clio_agent.gact.session_store (#714 decomposition). Re-exported here so
@@ -299,7 +260,7 @@ def _enrich_cancellation_error_info(
 # (behavior-preserving extraction)                                              #
 # --------------------------------------------------------------------------- #
 # gact/_params.py -- user-agent generation-parameter parsing.
-from clio_agent.gact import provenance_wiring, relay_wiring  # noqa: E402
+from clio_agent.gact import desktop_lifecycle, provenance_wiring, relay_wiring  # noqa: E402
 from clio_agent.gact._params import (  # noqa: E402,F401
     _gact_turn_timeout_s,
     _semantic_trace_detail_level,
@@ -830,12 +791,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     ``app.state.agent`` is stamped.
     """
 
-    from clio_agent.providers.lmstudio_discovery import (  # noqa: PLC0415
-        request_discovery_shutdown,
-        reset_discovery_shutdown,
-    )
-
-    reset_discovery_shutdown()
+    desktop_lifecycle.reset_for_boot()
     app.state.started_at = time.time()
     app.state.mcp_app_loop = asyncio.get_running_loop()
     # #948 S1 (#662): anchor turn tasks to THIS app-lifetime loop, not whatever
@@ -890,7 +846,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # does not stop that thread, and Python waits for executor workers at process
     # exit. Wake provider discovery before cancelling the task so a missing LM
     # Studio instance cannot add its entire retry window to Desktop Quit.
-    request_discovery_shutdown()
+    desktop_lifecycle.wake_for_shutdown()
 
     # #1334: no request is served on this loop any more, so the teardown flushes below
     # (the turn drain, the trace close) must LAND rather than be refused and dropped.
@@ -936,10 +892,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # could immediately spawn clio-core again); releasing at the very end was too
     # late (a stuck executor join let the desktop supervisor kill Python first,
     # skipping this cleanup and leaking clio-core).
-    if getattr(app.state, "desktop_shutdown_requested", False):
-        from clio_agent.arc.storage import release_runtime_client  # noqa: PLC0415
-
-        await asyncio.to_thread(release_runtime_client)
+    await desktop_lifecycle.release_runtime_after_drain(app)
 
     # #948 S3/S4: shut down every per-depth agent-task pool (child forwards) off the
     # loop, symmetric to their lazy install. Without this their non-daemon workers
@@ -2123,7 +2076,7 @@ def build_app(
         cancellation_attempt_summary=_cancellation_attempt_summary,
         active_lm_model_ref=_active_lm_model_ref,
         unsupported_model_ref_error=_unsupported_model_ref_error,
-        agent_not_available_error=_agent_not_available_error,
+        agent_not_available_error=agent_initialization.agent_not_available_error,
         ask_user_resume_text=_ask_user_resume_text,
         compact_exact_evidence_index=_compact_exact_evidence_index,
         install_tool_runtime_hooks=_install_tool_runtime_hooks,
@@ -2448,14 +2401,7 @@ def run_server(
         )
         return
 
-    # Keep the concrete server reachable by the authenticated desktop lifecycle
-    # route.  Raising SIGINT from a request callback is unreliable on Windows: the
-    # HTTP response succeeds, but uvicorn can continue serving until the desktop's
-    # fallback kills Python and thereby skips shared-runtime cleanup.  Setting
-    # ``should_exit`` is uvicorn's direct, cross-platform graceful-stop contract.
-    server = uvicorn.Server(uvicorn.Config(app_to_run, host=host, port=port))
-    app_to_run.state.uvicorn_server = server
-    server.run()
+    desktop_lifecycle.serve_foreground(app_to_run, host=host, port=port)
 
 
 def main() -> None:
