@@ -231,3 +231,104 @@ def test_source_and_ci_sync_commands_keep_uv_stable_only() -> None:
         for line in contents.splitlines():
             if "uv sync" in line:
                 assert "--prerelease" not in line, relative_path
+
+
+def test_release_workflow_signs_and_publishes_the_update_manifest() -> None:
+    """Signed desktop auto-update plumbing (v0.9.4.1, #A7) is wired into clio-bundles.yml."""
+
+    bundles = _text(".github/workflows/clio-bundles.yml")
+
+    # (f) workflow_dispatch frozen-at-tag escape hatch, decoupled from the
+    # heavy build jobs (which stay push-only).
+    assert "workflow_dispatch:" in bundles
+    assert "tag:" in bundles
+    assert "if: github.event_name == 'push'" in bundles
+    assert "TAG: ${{ inputs.tag || github.ref_name }}" in bundles
+
+    # (a) the merge script no longer forces createUpdaterArtifacts off or
+    # strips the pubkey; it sets the per-variant update feed instead.
+    assert "config.bundle.createUpdaterArtifacts = false" not in bundles
+    assert "delete config.plugins.updater.pubkey" not in bundles
+    assert "latest-lite.json" in bundles
+    assert (
+        "`https://github.com/iowarp/clio-agent/releases/latest/download/${manifestName}`" in bundles
+    )
+
+    # (b) the Tauri build step signs with the repo secrets.
+    build_idx = bundles.index("name: Tauri release build")
+    stage_idx = bundles.index("name: Stage artifacts")
+    build_step = bundles[build_idx:stage_idx]
+    assert "TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" in build_step
+    assert (
+        "TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}"
+        in build_step
+    )
+
+    # (d) the macOS decorations assert is guarded, never fatal when the
+    # branded runner isn't pinned yet.
+    assert "Assert macOS traffic lights survive the brand overlay" in bundles
+    assert "run-tauri-branded.mjs not present in this gact-tui pin yet" in bundles
+
+    # (c) staging also produces + renames .sig / .app.tar.gz, and excludes
+    # .sig from the bundled payload floor.
+    stage_end_idx = bundles.index("uses: softprops/action-gh-release@v2", stage_idx)
+    stage_step = bundles[stage_idx:stage_end_idx]
+    assert "-iname '*.sig'" in stage_step
+    assert "-iname '*.tar.gz'" in stage_step
+    assert "find \"$stage\" -type f -name '*-bundled.*' ! -name '*.sig' -print0" in stage_step
+    assert 'base="${base//$tauri_version/$release_version}"' in stage_step
+
+    # (e) release-check generates + uploads the manifest before the
+    # completeness check, which now reads $TAG (not $GITHUB_REF_NAME).
+    check_idx = bundles.index("name: release completeness")
+    manifest_idx = bundles.index("name: Generate signed Tauri update manifest", check_idx)
+    completeness_idx = bundles.index("name: Assert release asset completeness", manifest_idx)
+    assert check_idx < manifest_idx < completeness_idx
+    manifest_step = bundles[manifest_idx:completeness_idx]
+    assert 'gen_tauri_update_manifest.py --tag "$TAG" --variant bundled --out latest.json' in (
+        manifest_step
+    )
+    assert 'gen_tauri_update_manifest.py --tag "$TAG" --variant lite --out latest-lite.json' in (
+        manifest_step
+    )
+    assert 'gh release upload "$TAG" latest.json latest-lite.json --clobber' in manifest_step
+    assert 'gh release view "$TAG" --json assets' in bundles
+    assert 'gh release view "$GITHUB_REF_NAME"' not in bundles
+
+
+def test_release_completeness_expects_signed_updater_assets() -> None:
+    """check_release_completeness.py's EXPECTED_ASSETS covers the new signed-update assets."""
+
+    from scripts.check_release_completeness import EXPECTED_ASSETS
+
+    labels = {label for label, _ in EXPECTED_ASSETS}
+    for expected_label in (
+        "bundled nsis sig (x86_64 Windows)",
+        "bundled macOS updater bundle (aarch64)",
+        "bundled macOS updater sig (aarch64)",
+        "lite nsis sig (x86_64 Windows)",
+        "lite macOS updater bundle (aarch64)",
+        "lite macOS updater sig (aarch64)",
+        "lite macOS updater bundle (x86_64)",
+        "lite macOS updater sig (x86_64)",
+        "lite AppImage sig (x86_64 Linux)",
+        "lite AppImage sig (aarch64 Linux)",
+        "Tauri update manifest (bundled)",
+        "Tauri update manifest (lite)",
+    ):
+        assert expected_label in labels
+
+
+def test_clio_brand_overlay_declares_the_updater() -> None:
+    """The CLIO Tauri brand overlay ships its own updater endpoint + pubkey."""
+
+    import json
+
+    overlay = json.loads(_text("branding/clio/tauri.clio.conf.json"))
+    assert overlay["bundle"]["createUpdaterArtifacts"] is True
+    updater = overlay["plugins"]["updater"]
+    assert updater["endpoints"] == [
+        "https://github.com/iowarp/clio-agent/releases/latest/download/latest.json"
+    ]
+    assert updater["pubkey"]
+    assert updater["windows"]["installMode"] == "passive"

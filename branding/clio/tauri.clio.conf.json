@@ -28,6 +28,16 @@
       "icons/icon.png",
       "icons/icon.ico",
       "icons/icon.icns"
-    ]
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": ["https://github.com/iowarp/clio-agent/releases/latest/download/latest.json"],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE3MTc3OEQyQ0YwQzg0RDcKUldUWGhBelAwbmdYcHdKU1FZWWZkMFNoOWVGbjVFdlViWFpldHFSeC9nYVI3MU1aUTBPd1YzM1QK",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }
