@@ -1,6 +1,6 @@
 # ARC live context plane — roadmap beyond v1
 
-> **Active campaign (2026-09):** A2UI 0.9.1 compatibility —
+> **Campaign complete (S0-S9, 2026-09-17):** A2UI 0.9.1 compatibility —
 > `docs/design/a2ui-compat-campaign-2026-09.md`, umbrella
 > [#1363](https://github.com/iowarp/clio-agent/issues/1363).
 

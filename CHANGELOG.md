@@ -6,6 +6,33 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Changed
+
+- CLIO implements A2UI v0.9.1: the official message, capability, data-model and
+  error schemas; the official Basic catalog plus blueprint-declared,
+  pack-installed catalogs; catalog functions and checks; validated against the
+  official conformance corpus in browser and desktop. Not supported: A2UI 1.0,
+  inline catalogs, A2A transport, pack-shipped renderer code.
+- Agent blueprints declare their A2UI catalogs the same way they declare MCP
+  servers; installing a blueprint's pack now installs its catalogs too, and
+  each catalog is disclosed to the agent as a catalog skill alongside its
+  instructions.
+- Interactive-surface actions (button presses, form submissions, selections)
+  now carry catalog-declared functions and checks, and are recorded durably in
+  the session transcript with idle, steer, and waiting-user delivery to the
+  owning agent instead of a fire-and-forget acknowledgment.
+- The client and server negotiate A2UI capabilities (supported catalogs,
+  inline-catalog acceptance) on every session instead of assuming a single
+  fixed catalog.
+- An agent blueprint can declare a minimum required CLIO version
+  (`requires.clio_agent`); a blueprint or pack that needs a newer CLIO is
+  refused with a clear reason instead of installing into an unsupported
+  runtime.
+- The former fixed set of special client-side action names is gone. Every
+  interactive-surface event is a single, agent-bound structured event, and its
+  destination (the agent, a permission gate, or a run) is declared by the
+  catalog rather than hard-coded.
+
 ## [0.9.4] - 2026-09-16
 
 This patch release completes the v0.9.3 publication by repairing the CLIO TUI
