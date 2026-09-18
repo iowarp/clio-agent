@@ -160,13 +160,13 @@ jobs:
             bundle-args: "--no-bundle"
           - target: aarch64-apple-darwin
             os: macos-14
-            bundle-args: "--bundles dmg --target aarch64-apple-darwin"
+            bundle-args: "--bundles app,dmg --target aarch64-apple-darwin"
           # Intel macOS: GitHub is retiring the x86 `macos-13` runners, so
           # cross-compile the x86_64 target ON an Apple-Silicon `macos-14` runner
           # (the rust toolchain step installs the x86_64-apple-darwin target).
           - target: x86_64-apple-darwin
             os: macos-14
-            bundle-args: "--bundles dmg --target x86_64-apple-darwin"
+            bundle-args: "--bundles app,dmg --target x86_64-apple-darwin"
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
             bundle-args: "--bundles deb,appimage,rpm"
@@ -303,9 +303,10 @@ jobs:
           # declares plugins.updater (endpoints + pubkey) and
           # bundle.createUpdaterArtifacts: true, so a Tauri build with these
           # secrets present produces a `.sig` alongside each update-capable
-          # payload (NSIS exe / macOS .app.tar.gz / AppImage). Absent on a
-          # fork PR build (no repo secrets) -- Tauri then skips signing and
-          # simply builds unsigned bundles, never a hard failure.
+          # payload (NSIS exe / macOS .app.tar.gz / AppImage). Because the
+          # overlay declares a pubkey, a build WITHOUT the private key is a
+          # hard Tauri error ("A public key has been found, but no private
+          # key") -- intended: a release must never ship unsigned updates.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
@@ -396,7 +397,15 @@ jobs:
             echo "::error::runtime guard: gact-runtime/runtime.json missing (#909 - bundled variant would ship without its backend)"
             exit 1
           fi
-          pnpm --filter @clio/desktop tauri build --config "$cfg" ${{ matrix.bundle-args }}
+          # Tauri only WARNS when the private key does not match the overlay's
+          # pubkey, yet every client would reject the resulting signatures at
+          # update time. Promote that warning to a hard failure.
+          build_log="$RUNNER_TEMP/tauri-build.log"
+          pnpm --filter @clio/desktop tauri build --config "$cfg" ${{ matrix.bundle-args }} 2>&1 | tee "$build_log"
+          if grep -q "does not match the public key" "$build_log"; then
+            echo "::error::updater signing key does not match the brand pubkey" >&2
+            exit 1
+          fi
       - name: Assert macOS traffic lights survive the brand overlay
         if: runner.os == 'macOS'
         working-directory: external/gact-tui
@@ -475,7 +484,7 @@ jobs:
             printf '%s\n' "$base"
           }
           if [ -d "$root" ]; then
-            find "$root" -type f \( -iname '*.exe' -o -iname '*.msi' -o -iname '*.dmg' -o -iname '*.deb' -o -iname '*.AppImage' -o -iname '*.rpm' -o -iname '*.sig' -o -iname '*.tar.gz' \) -print0 |
+            find "$root" -maxdepth 2 -type f \( -iname '*.exe' -o -iname '*.msi' -o -iname '*.dmg' -o -iname '*.deb' -o -iname '*.AppImage' -o -iname '*.rpm' -o -iname '*.sig' -o -name '*.app.tar.gz' \) -print0 |
               while IFS= read -r -d '' f; do
                 cp "$f" "$stage/$(stage_name "$f")"
               done
