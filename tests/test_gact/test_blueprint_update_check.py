@@ -23,6 +23,8 @@ from fastapi.testclient import TestClient
 from clio_agent.gact.agent_blueprint_sources import upsert_agent_blueprint_source
 from clio_agent.gact.app import build_app
 from clio_agent.gact.blueprint_update_check import (
+    _commits_match,
+    _git_env,
     check_source_update,
     remote_head_commit,
 )
@@ -407,3 +409,60 @@ def test_updates_route_precedes_blueprint_catch_all(tmp_path: Path, monkeypatch)
     body = resp.json()
     assert body["sources"] == []
     assert "checked_at" in body
+
+
+# --------------------------------------------------------------------------- #
+# _commits_match / _git_env -- small pure-function regressions.               #
+# --------------------------------------------------------------------------- #
+
+
+def test_commits_match_is_case_insensitive_on_full_sha() -> None:
+    """A human-edited config recording the sha in upper/mixed case is still up to date."""
+
+    remote = "a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3"
+    assert _commits_match(remote.upper(), remote) is True
+
+
+def test_commits_match_is_case_insensitive_on_abbreviated_sha() -> None:
+    """An abbreviated, upper-case-recorded sha still matches as a prefix."""
+
+    remote = "a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3"
+    assert _commits_match(remote[:12].upper(), remote) is True
+
+
+def test_commits_match_rejects_a_different_commit() -> None:
+    remote = "a1b2c3d4e5f60718293a4b5c6d7e8f9a0b1c2d3"
+    assert _commits_match("f" * 40, remote) is False
+
+
+def test_git_env_augments_an_existing_git_ssh_command_verbatim(monkeypatch) -> None:
+    """GIT_SSH_COMMAND is already shell syntax -- only ever appended to, never re-quoted."""
+
+    monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -i /home/user/.ssh/bastion_key")
+    monkeypatch.delenv("GIT_SSH", raising=False)
+
+    env = _git_env()
+
+    assert env["GIT_SSH_COMMAND"] == "ssh -i /home/user/.ssh/bastion_key -o BatchMode=yes"
+
+
+def test_git_env_quotes_a_bare_git_ssh_path_containing_spaces(monkeypatch) -> None:
+    """GIT_SSH names a bare executable path (not shell syntax) -- promoting it into the
+    shell-parsed GIT_SSH_COMMAND unquoted would split it on its embedded spaces and git
+    would try to exec "C:\\Program" instead of the real ssh binary (#A7 fix)."""
+
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    monkeypatch.setenv("GIT_SSH", "C:\\Program Files\\OpenSSH\\ssh.exe")
+
+    env = _git_env()
+
+    assert env["GIT_SSH_COMMAND"] == "'C:\\Program Files\\OpenSSH\\ssh.exe' -o BatchMode=yes"
+
+
+def test_git_env_defaults_to_plain_ssh_with_no_custom_transport(monkeypatch) -> None:
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    monkeypatch.delenv("GIT_SSH", raising=False)
+
+    env = _git_env()
+
+    assert env["GIT_SSH_COMMAND"] == "ssh -o BatchMode=yes"

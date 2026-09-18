@@ -21,6 +21,7 @@ comparison.
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 from contextlib import suppress
 from dataclasses import asdict, dataclass
@@ -118,16 +119,25 @@ def _git_env() -> dict[str, str]:
     for a reason, and clobbering it here would silently break their transport
     while only fixing an unrelated prompt hang. ``-o BatchMode=yes`` is safe to
     append to any ``ssh``-shaped command -- it is an ordinary repeatable option.
+
+    ``GIT_SSH_COMMAND`` is already a shell-parsed command line (git splits it
+    itself), so an existing value is only ever augmented verbatim. ``GIT_SSH``
+    is different: it names a bare executable PATH, never shell syntax, so it
+    is quoted before being folded into ``GIT_SSH_COMMAND`` -- otherwise a path
+    containing spaces (e.g. ``C:\\Program Files\\OpenSSH\\ssh.exe``) would be
+    split on whitespace and git would try to exec ``C:\\Program`` with
+    ``Files\\OpenSSH\\ssh.exe`` as a bogus argument.
     """
 
     env = dict(os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
-    existing_ssh_command = (env.get("GIT_SSH_COMMAND") or env.get("GIT_SSH") or "").strip()
-    env["GIT_SSH_COMMAND"] = (
-        f"{existing_ssh_command} -o BatchMode=yes"
-        if existing_ssh_command
-        else "ssh -o BatchMode=yes"
-    )
+    existing_ssh_command = (env.get("GIT_SSH_COMMAND") or "").strip()
+    if existing_ssh_command:
+        base = existing_ssh_command
+    else:
+        existing_ssh_path = (env.get("GIT_SSH") or "").strip()
+        base = shlex.quote(existing_ssh_path) if existing_ssh_path else "ssh"
+    env["GIT_SSH_COMMAND"] = f"{base} -o BatchMode=yes"
     return env
 
 
@@ -287,9 +297,13 @@ def _commits_match(installed: str, remote: str) -> bool:
     ls-remote``/``rev-parse`` always returns; a strict ``==`` would then report a
     permanent false ``update_available``. A 7-39 char lowercase-hex ``installed``
     value is treated as a sha PREFIX of ``remote``; anything else (full sha, or not
-    hex at all) still requires exact equality.
+    hex at all) still requires exact equality. ``installed`` is lowercased before
+    any comparison -- git shas are case-insensitive but always rendered lowercase
+    by ``git ls-remote``/``rev-parse``, so a human-edited config recording one in
+    upper/mixed case must not report a permanent false ``update_available``.
     """
 
+    installed = installed.lower()
     if installed == remote:
         return True
     if 7 <= len(installed) < 40 and all(c in "0123456789abcdef" for c in installed):

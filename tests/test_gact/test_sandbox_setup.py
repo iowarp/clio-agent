@@ -18,6 +18,7 @@ never reach provisioning at all).
 
 from __future__ import annotations
 
+import functools
 import logging
 import threading
 from pathlib import Path
@@ -67,6 +68,27 @@ def _never_touch_the_real_machine(monkeypatch: pytest.MonkeyPatch) -> dict[str, 
     monkeypatch.setattr(sandbox_cli, "grant_fleet_runtime_access", _spy_grant)
     monkeypatch.setattr(sandbox_codex, "write_codex_provision_marker", _spy_marker)
     return calls
+
+
+@pytest.fixture(autouse=True)
+def _pin_ladder_to_win32(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bind the confinement-ladder resolver's platform default to win32 for this whole file.
+
+    ``sandbox._resolve_backend``'s ``platform: str = sys.platform`` default is bound at IMPORT
+    time -- on a Linux CI runner that default is permanently ``"linux"``, so the post-setup
+    re-resolve chain (``sandbox.reresolve_after_setup`` -> ``install_sandbox`` ->
+    ``_resolve_backend(env=env)``, which never passes an explicit ``platform=``) would silently
+    take the Linux/Landlock ladder branch instead of the win32 ``codex_windows_gate`` branch
+    every test in this file fakes, turning an intended DEGRADED into a false READY. Pin it here
+    so these Windows-semantics unit tests behave the same on every CI OS.
+    ``test_setup_unsupported_off_windows`` exercises the ROUTE's own off-Windows gate
+    separately (it patches ``sys.platform`` directly, before ``run_sandbox_setup`` is ever
+    reached) and is unaffected by this pin.
+    """
+
+    monkeypatch.setattr(
+        sandbox, "_resolve_backend", functools.partial(sandbox._resolve_backend, platform="win32")
+    )
 
 
 def _fake_codex_detected() -> sandbox_codex.CodexDetection:
