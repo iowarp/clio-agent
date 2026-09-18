@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal, Optional
@@ -31,6 +30,10 @@ from clio_agent.gact.context_references import CONTEXT_REFERENCE_CAPABILITY
 from clio_agent.gact.protocol_v3 import capabilities_to_v3, project_for_request
 from clio_agent.gact.provenance.child_projection import CHILD_ACTIVITY_PROJECTION_CAPABILITY
 from clio_agent.gact.relay_status import relay_capabilities
+from clio_agent.gact.routes.health_projection import (
+    desktop_provider_report,
+    integration_to_wire,
+)
 from clio_agent.gact.routes.provider_probe_env import runtime_provider_probe_env
 from clio_agent.gact.runtime.capabilities import (
     _capability_gap_metadata,
@@ -51,7 +54,6 @@ from clio_agent.gact.types import (
     CapabilityFlags,
     GlobalMemoryStats,
     HealthResponse,
-    Integration,
     MemoryStats,
     Message,
     Metrics,
@@ -72,20 +74,6 @@ if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
 
 logger = logging.getLogger("clio_agent.gact.routes.system")
-
-
-# The single doctor speaks five probe states; the v0.2 health wire only has
-# three. Map the two extra states to the closest wire chip: SKIPPED (a
-# deliberately-unprobed / not-required row) is not a problem -> ready; a
-# MISCONFIGURED row needs attention but the server is up -> degraded. UNAVAILABLE
-# is the only hard-down that trips the 503 contract (handled in the handler).
-_PROBE_STATE_TO_WIRE: dict[str, Literal["ready", "degraded", "unavailable"]] = {
-    IntegrationState.READY.value: "ready",
-    IntegrationState.SKIPPED.value: "ready",
-    IntegrationState.DEGRADED.value: "degraded",
-    IntegrationState.MISCONFIGURED.value: "degraded",
-    IntegrationState.UNAVAILABLE.value: "unavailable",
-}
 
 
 # --------------------------------------------------------------------------- #
@@ -200,26 +188,6 @@ async def _prime_orphan_scan_cache(app: "FastAPI") -> None:
         app.state.orphan_scan_at = time.time()
     finally:
         app.state.orphan_scan_refreshing = False
-
-
-def _integration_to_wire(item: IntegrationStatus) -> Integration:
-    """Project one probe :class:`IntegrationStatus` to the health wire row.
-
-    Preserves the v0.2 ``name``/``status``/``detail`` triple (``detail`` mirrors
-    the human ``summary`` for back-compat) and carries the richer probe fields so
-    no doctor detail is lost on the gact surface.
-    """
-
-    return Integration(
-        name=item.name,
-        status=_PROBE_STATE_TO_WIRE.get(item.state.value, "degraded"),
-        detail=item.summary,
-        summary=item.summary,
-        config_source=item.config_source or None,
-        next_action=item.next_action or None,
-        endpoint=item.endpoint,
-        required=item.required,
-    )
 
 
 def _health_overall(report: RuntimeReport) -> Literal["ready", "degraded", "unavailable"]:
@@ -375,29 +343,14 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                 # below — a polled endpoint must not pay the ~10s cold psutil walk.
                 include_process_census=False,
             )
+            report = desktop_provider_report(
+                report,
+                lm_config=getattr(app.state, "lm_config", None),
+                provider_configured=bool(
+                    runtime_provider_probe_env(None).get("CLIO_LM_PROVIDER", "").strip()
+                ),
+            )
             integrations = list(report.integrations)
-            # A desktop session chooses its provider when work starts. Until a
-            # provider is explicitly selected, the doctor's historical LM
-            # Studio default is not an outage and must not make CLIO look down.
-            if (
-                os.environ.get("CLIO_DESKTOP_BOOT_HEARTBEAT") == "1"
-                and getattr(app.state, "lm_config", None) is None
-                and not runtime_provider_probe_env(None).get("CLIO_LM_PROVIDER", "").strip()
-            ):
-                integrations = [
-                    IntegrationStatus(
-                        name="lm_provider",
-                        state=IntegrationState.SKIPPED,
-                        summary="Choose a language model when starting a session.",
-                        config_source="session:model-selection",
-                        next_action="Select a provider and model in the message composer.",
-                        required=False,
-                    )
-                    if item.name == "lm_provider"
-                    else item
-                    for item in integrations
-                ]
-                report = RuntimeReport(integrations=integrations)
         except Exception as exc:  # noqa: BLE001 - surfaced as a degraded doctor row (see comment)
             # No silent fallback (cleanup ground rule): a probe engine failure is
             # surfaced as a structured degraded doctor row, not a bare 200.
@@ -441,7 +394,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         report = RuntimeReport(integrations=integrations)
 
         overall = _health_overall(report)
-        rows = [_integration_to_wire(item) for item in integrations]
+        rows = [integration_to_wire(item) for item in integrations]
 
         response = HealthResponse(
             healthy=overall != "unavailable",
