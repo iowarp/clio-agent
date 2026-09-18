@@ -447,7 +447,7 @@ def test_probe_sandbox_floor_is_degraded_never_error() -> None:
     assert row.state == IntegrationState.DEGRADED
     assert row.state not in {IntegrationState.UNAVAILABLE, IntegrationState.MISCONFIGURED}
     assert row.details["reason"] == sc.REASON_CODEX_NOT_INSTALLED
-    assert row.required is False
+    assert row.required is True
 
 
 def test_probe_sandbox_reports_mechanism_and_reason() -> None:

@@ -953,6 +953,31 @@ def _tree_checksum(root: Path) -> str:
     return digest.hexdigest()
 
 
+def _relative_to_blueprint_root(path: Path, root: Path) -> Path:
+    """Return a safe relative path across Windows packaged-path redirection.
+
+    A process descended from a packaged Windows app can enumerate an ordinary
+    ``%LOCALAPPDATA%`` file through the package's ``LocalCache\\Local`` alias.
+    ``Path.resolve()`` then rewrites the child but not necessarily its blueprint
+    root, so a plain ``relative_to`` rejects two paths that identify the same
+    on-disk tree.  The file-identity fallback accepts only an equivalent root;
+    a symlink that actually escapes the blueprint remains rejected.
+    """
+
+    lexical = path.relative_to(root)
+    resolved = path.resolve()
+    resolved_root = root.resolve()
+    try:
+        return resolved.relative_to(resolved_root)
+    except ValueError:
+        equivalent_root = resolved
+        for _part in lexical.parts:
+            equivalent_root = equivalent_root.parent
+        if os.path.samefile(equivalent_root, resolved_root):
+            return lexical
+        raise
+
+
 def _load_blueprint_agents(
     blueprint: AgentBlueprintDefinition, *, skill_catalog: "_skills.SkillCatalog | None" = None
 ) -> list[AgentDef]:
@@ -978,7 +1003,7 @@ def _load_blueprint_agents(
             if normalized in seen:
                 continue
             seen.add(normalized)
-            relative = "/" + normalized.relative_to(root_resolved).as_posix()
+            relative = "/" + _relative_to_blueprint_root(path, blueprint.root).as_posix()
             if (
                 path.name == _BLUEPRINT_ROOT_NAME
                 or "/prompts/" in relative

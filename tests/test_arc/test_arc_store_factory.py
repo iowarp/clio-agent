@@ -244,6 +244,15 @@ def _isolate_clio_home(monkeypatch, tmp_path):
     monkeypatch.delenv("CLIO_RUNTIME_STATE_DIR", raising=False)
     monkeypatch.setattr(storage.Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr(storage, "_client_registered", False)
+    monkeypatch.setattr(storage, "_runtime_shutdown_requested", False)
+
+
+def test_prepare_runtime_shutdown_prevents_late_reacquire(monkeypatch, tmp_path):
+    _isolate_clio_home(monkeypatch, tmp_path)
+    storage.prepare_runtime_shutdown()
+
+    with pytest.raises(RuntimeError, match="runtime is shutting down"):
+        storage._ensure_runtime_daemon(object(), "", "error")
 
 
 def test_proc_create_time_and_pid_alive():
@@ -326,9 +335,7 @@ def test_ensure_runtime_registers_atexit_release(monkeypatch, tmp_path):
     monkeypatch.setattr(storage.ClioCoreStore, "_initialized", False)
 
     registered: list[tuple] = []
-    monkeypatch.setattr(
-        storage.atexit, "register", lambda fn, *a: registered.append((fn, a))
-    )
+    monkeypatch.setattr(storage.atexit, "register", lambda fn, *a: registered.append((fn, a)))
 
     storage.ClioCoreStore._ensure_runtime("", "error", 0.0)
 

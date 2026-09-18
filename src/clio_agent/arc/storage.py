@@ -73,7 +73,11 @@ from clio_agent.arc.rpc_liveness import (
     guarded_store_rpc,
     store_rpc_health_probe,
 )
-from clio_agent.arc.runtime_crash import clear_crash_record, watch_daemon_process
+from clio_agent.arc.runtime_crash import (
+    clear_crash_record,
+    expect_daemon_exit,
+    watch_daemon_process,
+)
 
 # Per-OS spawn primitives live in owner module (#1148); re-exported for callers/tests.
 from clio_agent.arc.runtime_spawn import (  # noqa: F401 - re-exported for callers/tests
@@ -84,6 +88,9 @@ from clio_agent.arc.runtime_spawn import (  # noqa: F401 - re-exported for calle
 from clio_agent.runtime.stream_audit import stream_audit
 
 logger = logging.getLogger(__name__)
+
+_RUNTIME_STOP_STALL_SECONDS = 30.0
+_RUNTIME_STOP_POLL_SECONDS = 0.1
 
 # The logical record families ARC persists (a directory per kind for LocalFSStore;
 # a namespace/key prefix for a clio-core-backed store). Single source of truth.
@@ -359,6 +366,7 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
 # against PID reuse) on the next register/release — at most one warm instance, no leak.
 
 _client_registered = False  # process-level: are WE in the registry?
+_runtime_shutdown_requested = False  # desktop Quit forbids late runtime reacquisition
 _active_config_path = ""  # stashed so atexit/shutdown can stop the right daemon
 _active_log_level = "error"
 
@@ -497,6 +505,12 @@ def _stop_runtime_daemon(config_path: str, log_level: str) -> None:
     """
     stopped = False
     try:
+        daemon_pid = int(_daemon_pidfile().read_text(encoding="utf-8").split()[0])
+    except (OSError, ValueError, IndexError):
+        daemon_pid = None
+    if daemon_pid is not None:
+        expect_daemon_exit(daemon_pid)
+    try:
         import iowarp_core  # noqa: PLC0415
 
         exe = _runtime_launcher_path(iowarp_core)
@@ -515,16 +529,43 @@ def _stop_runtime_daemon(config_path: str, log_level: str) -> None:
             env.setdefault("CTP_LOG_LEVEL", log_level)
             if config_path:
                 env["CLIO_SERVER_CONF"] = config_path
-            subprocess.run(  # noqa: S603 - fixed launcher path
+            runtime_port = _resolve_runtime_port(config_path)
+            stop_process = subprocess.Popen(  # noqa: S603 - fixed launcher path
                 [exe, "stop"],
                 env=env,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                timeout=20,
-                check=False,
             )
-            stopped = True
+            stall_deadline = time.monotonic() + _RUNTIME_STOP_STALL_SECONDS
+            while True:
+                helper_status = stop_process.poll()
+                runtime_is_alive = _runtime_alive(runtime_port)
+                if not runtime_is_alive:
+                    stopped = True
+                    if helper_status is None:
+                        stop_process.terminate()
+                        try:
+                            stop_process.wait(timeout=1.0)
+                        except subprocess.TimeoutExpired:
+                            stop_process.kill()
+                            stop_process.wait(timeout=1.0)
+                    break
+                if helper_status is not None:
+                    break
+                if time.monotonic() >= stall_deadline:
+                    logger.warning(
+                        "clean clio-core daemon stop stalled while runtime remained live; "
+                        "falling back to pidfile kill"
+                    )
+                    stop_process.terminate()
+                    try:
+                        stop_process.wait(timeout=1.0)
+                    except subprocess.TimeoutExpired:
+                        stop_process.kill()
+                        stop_process.wait(timeout=1.0)
+                    break
+                time.sleep(_RUNTIME_STOP_POLL_SECONDS)
     except (subprocess.TimeoutExpired, OSError, ImportError) as exc:
         logger.warning(
             "clean clio-core daemon stop failed (reason=%s: %s); falling back to pidfile kill",
@@ -558,6 +599,19 @@ def release_runtime_client(config_path: str = "", log_level: str = "error") -> N
             _stop_runtime_daemon(config_path or _active_config_path, log_level)
 
 
+def prepare_runtime_shutdown() -> None:
+    """Prevent work still unwinding during process shutdown from reacquiring ARC.
+
+    Desktop Quit releases the shared daemon before the rest of the application
+    teardown because provider and tool workers may take longer to join.  Marking
+    the process first closes the race where such a worker could register this
+    dying process again after its runtime client has been released.
+    """
+
+    global _runtime_shutdown_requested
+    _runtime_shutdown_requested = True
+
+
 def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str) -> None:
     """Connect-or-spawn + register: ensure a shared daemon is up and count this client.
 
@@ -567,6 +621,9 @@ def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str
     stop the daemon we are about to connect to. FAIL LOUD if a spawned daemon never
     binds the RPC port.
     """
+    if _runtime_shutdown_requested:
+        raise RuntimeError("clio-core runtime is shutting down")
+
     port = _resolve_runtime_port(config_path)
     with _runtime_spawn_lock():
         _register_client()  # prunes nothing here; release-side prunes. We are now live.

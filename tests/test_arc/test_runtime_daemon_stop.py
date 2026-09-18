@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 import os
-import subprocess
 import sys
 import types
 from pathlib import Path
@@ -46,12 +45,16 @@ def test_stop_runtime_daemon_uses_spawn_helpers(
 ) -> None:
     calls: dict[str, object] = {}
 
-    def fake_run(cmd, **kwargs):  # noqa: ANN001, ANN003 - test shim
+    class FakeProcess:
+        def poll(self) -> int:
+            return 0
+
+    def fake_popen(cmd, **kwargs):  # noqa: ANN001, ANN003 - test shim
         calls["cmd"] = cmd
         calls["env"] = kwargs["env"]
-        return subprocess.CompletedProcess(cmd, 0)
+        return FakeProcess()
 
-    monkeypatch.setattr(storage.subprocess, "run", fake_run)
+    monkeypatch.setattr(storage.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(storage, "_resolve_runtime_port", lambda config_path: 65001)
     monkeypatch.setattr(storage, "_runtime_alive", lambda port: False)
 
@@ -89,7 +92,7 @@ def test_stop_runtime_daemon_warns_and_kills_when_launcher_missing(
     def fail_run(*args, **kwargs):  # noqa: ANN002, ANN003 - test shim
         raise AssertionError("no launcher on disk: clean stop must not be attempted")
 
-    monkeypatch.setattr(storage.subprocess, "run", fail_run)
+    monkeypatch.setattr(storage.subprocess, "Popen", fail_run)
     monkeypatch.setattr(storage, "_resolve_runtime_port", lambda config_path: 65001)
     monkeypatch.setattr(storage, "_runtime_alive", lambda port: False)
     killed: list[bool] = []
@@ -101,3 +104,37 @@ def test_stop_runtime_daemon_warns_and_kills_when_launcher_missing(
 
     assert killed == [True]
     assert any("launcher_not_found" in record.getMessage() for record in caplog.records)
+
+
+def test_stop_runtime_daemon_reaps_helper_as_soon_as_runtime_is_down(
+    fake_iowarp_core: types.SimpleNamespace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hung stop helper must not hold Desktop Quit after the daemon has stopped."""
+
+    calls: list[str] = []
+
+    class HungStopProcess:
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            calls.append("terminate")
+
+        def wait(self, *, timeout: float) -> int:
+            calls.append(f"wait:{timeout}")
+            return 0
+
+        def kill(self) -> None:
+            calls.append("kill")
+
+    monkeypatch.setattr(storage.subprocess, "Popen", lambda *args, **kwargs: HungStopProcess())
+    monkeypatch.setattr(storage, "_resolve_runtime_port", lambda config_path: 65001)
+    monkeypatch.setattr(storage, "_runtime_alive", lambda port: False)
+    monkeypatch.setattr(storage, "_kill_daemon_pidfile", lambda: calls.append("pidfile-kill"))
+    monkeypatch.setattr(storage, "_daemon_pidfile", lambda: tmp_path / "daemon.pid")
+
+    storage._stop_runtime_daemon("", "error")
+
+    assert calls == ["terminate", "wait:1.0"]

@@ -1,10 +1,11 @@
-"""The ``sandbox`` doctor row (DEGRADED never ERROR — the floor is legal) (#975/#976).
+"""The ``sandbox`` doctor row (a required DEGRADED state when no fence is active).
 
 Split out of the :mod:`clio_agent.runtime.sandbox` ladder owner to keep it under the
 file-size ratchet. Reports the resolved confinement backend as an
 :class:`~clio_agent.runtime.status.IntegrationStatus`: READY when an OS fence is active,
-DEGRADED (surfaced, never an error) on the honest floor, SKIPPED when no server boot resolved
-a backend. Re-exported from :mod:`clio_agent.runtime.sandbox` so callers keep reaching
+DEGRADED on the honest floor, SKIPPED when no server boot resolved a backend. The advisory
+fallback keeps CLIO usable, but it does not make OS confinement optional. Re-exported from
+:mod:`clio_agent.runtime.sandbox` so callers keep reaching
 ``sandbox.probe_sandbox``.
 """
 
@@ -59,10 +60,9 @@ def emit_boot_state_event(app: Any, state: "sb.SandboxResult | None") -> None:
 def probe_sandbox(*, state: sb.SandboxResult | None = None) -> IntegrationStatus:
     """Report the confinement backend as a doctor row (#975/#976).
 
-    READY when an OS fence is active (Codex / Landlock); DEGRADED (surfaced, never an error
-    state) on the honest floor, because a missing fence is a *legal* configuration (the
-    advisory file_policy still applies; HPC/no-codex hosts are floor-only). Cites the
-    mechanism, the typed reason and the codex/landlock detection details.
+    READY when an OS fence is active (Codex / Landlock); DEGRADED on the honest floor. The
+    advisory file policy keeps execution available, but the missing OS fence remains a required
+    safety problem. Cites the mechanism, typed reason, and codex/landlock detection details.
     """
     resolved = state if state is not None else sb.current_state()
     if resolved is None:
@@ -73,7 +73,7 @@ def probe_sandbox(*, state: sb.SandboxResult | None = None) -> IntegrationStatus
             config_source="runtime:sandbox",
             next_action="Start the gact server to resolve the confinement backend.",
             details={"reason": sb.REASON_NOT_INSTALLED},
-            required=False,
+            required=True,
         )
 
     details: dict[str, Any] = {
@@ -99,7 +99,7 @@ def probe_sandbox(*, state: sb.SandboxResult | None = None) -> IntegrationStatus
             next_action="No action required.",
             capabilities=["write-fence"],
             details=details,
-            required=False,
+            required=True,
         )
 
     from clio_agent.runtime import sandbox_codex as sc  # noqa: PLC0415
@@ -136,7 +136,7 @@ def probe_sandbox(*, state: sb.SandboxResult | None = None) -> IntegrationStatus
         next_action=next_action,
         fallback="advisory-file-policy-only",
         details=details,
-        required=False,
+        required=True,
     )
 
 

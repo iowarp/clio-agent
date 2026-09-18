@@ -5,7 +5,15 @@
   "app": {
     "windows": [
       {
-        "title": "CLIO Desktop"
+        "title": "CLIO Desktop",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 960,
+        "minHeight": 600,
+        "resizable": true,
+        "decorations": false,
+        "fullscreen": false,
+        "transparent": false
       }
     ]
   },

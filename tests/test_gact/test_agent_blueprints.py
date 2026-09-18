@@ -21,6 +21,7 @@ from clio_agent.gact.agent_blueprints import (
     DEFAULT_REGISTRY_COMMIT,
     DEFAULT_REGISTRY_REF,
     DEFAULT_REGISTRY_URL,
+    _relative_to_blueprint_root,
     default_registry_install_source,
     default_registry_metadata,
     default_registry_url,
@@ -57,6 +58,15 @@ from clio_agent.gact.runtime.globals import _UnsupportedSessionAgent
 from clio_agent.gact.types import AgentDef
 from tests.test_gact.conftest import complete_turn
 from tests.test_gact.earthscope_schema import EARTHSCOPE_WORKFLOW_STATE_SCHEMA
+
+
+def test_relative_to_blueprint_root_uses_stable_lexical_identity(tmp_path: Path) -> None:
+    root = tmp_path / "blueprint"
+    expert = root / "experts" / "main.md"
+    expert.parent.mkdir(parents=True)
+    expert.write_text("# Main\n", encoding="utf-8")
+
+    assert _relative_to_blueprint_root(expert, root) == Path("experts/main.md")
 
 
 def _fake_resolved_spec(provider: str, model: str) -> Any:

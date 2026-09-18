@@ -474,6 +474,7 @@ from clio_agent.gact.routes.expert_packs import (  # noqa: E402
 from clio_agent.gact.routes.interactions import (  # noqa: E402
     register_permission_and_interaction_routes,
 )
+from clio_agent.gact.routes.lifecycle import register_lifecycle_routes  # noqa: E402
 from clio_agent.gact.routes.mcp import (  # noqa: E402
     register_mcp_routes,
 )
@@ -829,6 +830,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     ``app.state.agent`` is stamped.
     """
 
+    from clio_agent.providers.lmstudio_discovery import (  # noqa: PLC0415
+        request_discovery_shutdown,
+        reset_discovery_shutdown,
+    )
+
+    reset_discovery_shutdown()
     app.state.started_at = time.time()
     app.state.mcp_app_loop = asyncio.get_running_loop()
     # #948 S1 (#662): anchor turn tasks to THIS app-lifetime loop, not whatever
@@ -879,6 +886,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     yield
 
+    # Agent construction runs on an executor thread. Cancelling its asyncio task
+    # does not stop that thread, and Python waits for executor workers at process
+    # exit. Wake provider discovery before cancelling the task so a missing LM
+    # Studio instance cannot add its entire retry window to Desktop Quit.
+    request_discovery_shutdown()
+
     # #1334: no request is served on this loop any more, so the teardown flushes below
     # (the turn drain, the trace close) must LAND rather than be refused and dropped.
     loop_guard.begin_server_loop_drain(app.state.mcp_app_loop)
@@ -914,6 +927,19 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # they persist into are still alive (owner module does the cooperative-cancel +
     # bounded-grace + typed-reason drain).
     await drain_app_turns(app, logger)
+
+    # Desktop Quit must release the shared runtime before any later executor join can
+    # block on a provider/tool worker.  The turn drain above is the safety boundary:
+    # cooperative cancellation has been signalled and every asyncio turn task has
+    # settled or been hard-cancelled, so application work can no longer reacquire the
+    # runtime.  Releasing from the HTTP route itself was too early (an active turn
+    # could immediately spawn clio-core again); releasing at the very end was too
+    # late (a stuck executor join let the desktop supervisor kill Python first,
+    # skipping this cleanup and leaking clio-core).
+    if getattr(app.state, "desktop_shutdown_requested", False):
+        from clio_agent.arc.storage import release_runtime_client  # noqa: PLC0415
+
+        await asyncio.to_thread(release_runtime_client)
 
     # #948 S3/S4: shut down every per-depth agent-task pool (child forwards) off the
     # loop, symmetric to their lazy install. Without this their non-daemon workers
@@ -962,12 +988,6 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     _agent = getattr(app.state, "agent", None)
     await asyncio.get_running_loop().run_in_executor(None, lambda: shutdown_child_processes(_agent))
-    # NOTE: the shared clio-core runtime client is released (last-one-out stop) via the
-    # atexit hook registered in ClioCoreStore — NOT here. uvicorn handles SIGTERM by exiting
-    # the serve loop and returning normally, so the interpreter exits and atexit fires
-    # ("I leave the TUI, everything gets released"). Doing it in this lifespan hook would
-    # wrongly stop the SHARED daemon on any app teardown that is not a process exit
-    # (e.g. a second app in the same process), which the atexit path correctly avoids.
     loop_guard.unregister_server_loop(app.state.mcp_app_loop)  # #1334: strict again
 
 
@@ -2223,6 +2243,7 @@ def build_app(
     # the wire/limit constants live in runtime/constants.py. It needs no
     # cross-concern seam from ``deps``.
     register_system_routes(app, deps)
+    register_lifecycle_routes(app)
     register_relay_routes(app, deps)
 
     # ---- /v1/sessions/{sid}/tasks + /v1/tasks/{tid} + memory/events + share ----
@@ -2418,12 +2439,23 @@ def run_server(
     ):
         app_to_run.state.want_agent = True
 
-    uvicorn.run(
-        app_to_run,
-        host=host,
-        port=port,
-        reload=reload,
-    )
+    if reload:
+        uvicorn.run(
+            app_to_run,
+            host=host,
+            port=port,
+            reload=True,
+        )
+        return
+
+    # Keep the concrete server reachable by the authenticated desktop lifecycle
+    # route.  Raising SIGINT from a request callback is unreliable on Windows: the
+    # HTTP response succeeds, but uvicorn can continue serving until the desktop's
+    # fallback kills Python and thereby skips shared-runtime cleanup.  Setting
+    # ``should_exit`` is uvicorn's direct, cross-platform graceful-stop contract.
+    server = uvicorn.Server(uvicorn.Config(app_to_run, host=host, port=port))
+    app_to_run.state.uvicorn_server = server
+    server.run()
 
 
 def main() -> None:
