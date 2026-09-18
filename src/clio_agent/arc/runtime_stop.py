@@ -16,6 +16,14 @@ This module therefore imports ``storage`` LAZILY, inside
 :func:`stop_runtime_daemon`, rather than at module scope: ``storage.py``
 imports this module (to implement ``release_runtime_client``), so a
 module-level import here back into ``storage`` would be circular.
+
+This module also owns the shutdown latch (:func:`prepare_runtime_shutdown` /
+:func:`reset_runtime_shutdown` / :class:`RuntimeShutdownInProgress`) that
+forbids reacquiring the shared runtime once a desktop-managed process has
+started tearing down. It moved here from ``storage.py`` (rather than growing
+that module past its file-size ratchet baseline, #775/#774) alongside the
+clean-stop sequence it gates; ``storage.py`` re-exports all three names for
+its existing callers.
 """
 
 from __future__ import annotations
@@ -34,6 +42,39 @@ logger = logging.getLogger(__name__)
 
 _RUNTIME_STOP_STALL_SECONDS = 30.0
 _RUNTIME_STOP_POLL_SECONDS = 0.1
+
+_runtime_shutdown_requested = False  # desktop Quit forbids late runtime reacquisition
+
+
+class RuntimeShutdownInProgress(RuntimeError):
+    """Raised when a caller tries to (re)acquire the shared runtime mid-shutdown."""
+
+
+def prepare_runtime_shutdown() -> None:
+    """Prevent work still unwinding during process shutdown from reacquiring ARC.
+
+    Desktop Quit releases the shared daemon before the rest of the application
+    teardown because provider and tool workers may take longer to join.  Marking
+    the process first closes the race where such a worker could register this
+    dying process again after its runtime client has been released.
+    """
+
+    global _runtime_shutdown_requested
+    _runtime_shutdown_requested = True
+
+
+def reset_runtime_shutdown() -> None:
+    """Clear the shutdown latch so a later app lifecycle can reacquire the runtime.
+
+    The latch is process-global, not lifespan-scoped: without a reset, a second
+    ``build_app``/lifespan boot inside the SAME interpreter (a desktop relaunch
+    that reuses the process, or a test harness building a second app) could never
+    reacquire the shared clio-core runtime again after the first Quit latched it.
+    Called at lifespan boot (``desktop_lifecycle.reset_for_boot``).
+    """
+
+    global _runtime_shutdown_requested
+    _runtime_shutdown_requested = False
 
 
 def stop_runtime_daemon(config_path: str, log_level: str) -> None:

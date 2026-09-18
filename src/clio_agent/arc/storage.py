@@ -39,6 +39,14 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Dict, Optional, Protocol, runtime_checkable
 
+# The clean-stop-with-pidfile-fallback sequence AND the shutdown latch it is
+# gated by live in the owner module arc/runtime_stop.py (file-size ratchet,
+# #775/#774), re-exported below for existing callers/tests. The module itself
+# is ALSO imported (not just its names) so ``_ensure_runtime_daemon`` reads the
+# latch flag live -- a ``from ... import <name>`` of a mutable module global
+# would freeze a stale copy at import time.
+from clio_agent.arc import runtime_stop
+
 # CTE config generation + capacity policy (the bounded ram hot-tier cap) live in
 # their own owner module (iowarp/clio-agent#774/#890); re-exported here so callers/
 # tests reaching ``storage._default_cte_dir`` / ``default_cte_config_path`` keep working.
@@ -84,11 +92,11 @@ from clio_agent.arc.runtime_spawn import (  # noqa: F401 - re-exported for calle
     _dynamic_library_env_var,
     _runtime_launcher_path,
 )
-
-# The clean-stop-with-pidfile-fallback sequence lives in the owner module
-# arc/runtime_stop.py (file-size ratchet, #775/#774); aliased here under its
-# historical private name because tests monkeypatch ``storage._stop_runtime_daemon``
-# to intercept ``release_runtime_client`` without touching a real daemon.
+from clio_agent.arc.runtime_stop import (  # noqa: F401 - re-exported for callers/tests
+    RuntimeShutdownInProgress,
+    prepare_runtime_shutdown,
+    reset_runtime_shutdown,
+)
 from clio_agent.arc.runtime_stop import stop_runtime_daemon as _stop_runtime_daemon
 from clio_agent.runtime.stream_audit import stream_audit
 
@@ -368,7 +376,8 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
 # against PID reuse) on the next register/release — at most one warm instance, no leak.
 
 _client_registered = False  # process-level: are WE in the registry?
-_runtime_shutdown_requested = False  # desktop Quit forbids late runtime reacquisition
+# The shutdown latch (desktop Quit forbids late runtime reacquisition) lives in
+# arc/runtime_stop.py -- see the ``runtime_stop`` import above.
 _active_config_path = ""  # stashed so atexit/shutdown can stop the right daemon
 _active_log_level = "error"
 
@@ -515,19 +524,6 @@ def release_runtime_client(config_path: str = "", log_level: str = "error") -> N
             _stop_runtime_daemon(config_path or _active_config_path, log_level)
 
 
-def prepare_runtime_shutdown() -> None:
-    """Prevent work still unwinding during process shutdown from reacquiring ARC.
-
-    Desktop Quit releases the shared daemon before the rest of the application
-    teardown because provider and tool workers may take longer to join.  Marking
-    the process first closes the race where such a worker could register this
-    dying process again after its runtime client has been released.
-    """
-
-    global _runtime_shutdown_requested
-    _runtime_shutdown_requested = True
-
-
 def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str) -> None:
     """Connect-or-spawn + register: ensure a shared daemon is up and count this client.
 
@@ -537,8 +533,8 @@ def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str
     stop the daemon we are about to connect to. FAIL LOUD if a spawned daemon never
     binds the RPC port.
     """
-    if _runtime_shutdown_requested:
-        raise RuntimeError("clio-core runtime is shutting down")
+    if runtime_stop._runtime_shutdown_requested:
+        raise RuntimeShutdownInProgress("clio-core runtime is shutting down")
 
     port = _resolve_runtime_port(config_path)
     with _runtime_spawn_lock():

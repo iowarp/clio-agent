@@ -14,7 +14,7 @@ import socket
 import msgspec
 import pytest
 
-from clio_agent.arc import storage
+from clio_agent.arc import runtime_stop, storage
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.storage import LocalFSStore, make_arc_store
 
@@ -244,14 +244,14 @@ def _isolate_clio_home(monkeypatch, tmp_path):
     monkeypatch.delenv("CLIO_RUNTIME_STATE_DIR", raising=False)
     monkeypatch.setattr(storage.Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setattr(storage, "_client_registered", False)
-    monkeypatch.setattr(storage, "_runtime_shutdown_requested", False)
+    monkeypatch.setattr(runtime_stop, "_runtime_shutdown_requested", False)
 
 
 def test_prepare_runtime_shutdown_prevents_late_reacquire(monkeypatch, tmp_path):
     _isolate_clio_home(monkeypatch, tmp_path)
     storage.prepare_runtime_shutdown()
 
-    with pytest.raises(RuntimeError, match="runtime is shutting down"):
+    with pytest.raises(runtime_stop.RuntimeShutdownInProgress, match="runtime is shutting down"):
         storage._ensure_runtime_daemon(object(), "", "error")
 
 
