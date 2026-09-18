@@ -138,6 +138,10 @@ def test_setup_runs_injected_elevator_and_reprobes(monkeypatch: pytest.MonkeyPat
             sandbox_codex.REASON_CODEX_ENFORCEMENT_VERIFIED,
         ),
         gate=lambda *, platform: (False, sandbox_codex.REASON_CODEX_WINDOWS_UNPROVISIONED),
+        # Explicit: `provision_codex_windows`'s own `platform` default is bound at
+        # `sandbox_cli` IMPORT time, so on a non-Windows CI runner it would otherwise
+        # take the typed off-Windows no-op path regardless of every fake injected above.
+        platform="win32",
     )
 
     assert elevated == ["C:\\codex\\codex.cmd"]  # the setup elevation ran exactly once
@@ -167,6 +171,7 @@ def test_setup_reports_typed_failure_when_verifier_escapes(
             sandbox_codex.REASON_CODEX_ENFORCEMENT_ESCAPED,
         ),
         gate=lambda *, platform: (False, sandbox_codex.REASON_CODEX_WINDOWS_UNPROVISIONED),
+        platform="win32",
     )
 
     assert result.status == sandbox_cli.OUTCOME_ENFORCEMENT_UNVERIFIED
@@ -182,19 +187,33 @@ def test_setup_reports_typed_failure_when_verifier_escapes(
 
 
 class _FakeExecutor:
-    """Stand-in for ``SyncMCPToolExecutor``/``AsyncMCPToolExecutor`` — only the ONE private
-    attribute :func:`clio_agent.gact.sandbox_setup._fleet_already_running` reads."""
+    """Stand-in for ``SyncMCPToolExecutor``/``AsyncMCPToolExecutor`` — only the attributes
+    :func:`clio_agent.gact.sandbox_setup._fleet_already_running` reads."""
 
-    def __init__(self, *, connected: bool) -> None:
+    def __init__(
+        self,
+        *,
+        connected: bool,
+        namespace_clients: dict[str, Any] | None = None,
+        closed: bool = False,
+    ) -> None:
         self._connected_namespaces = {"fs"} if connected else set()
+        self._namespace_clients = dict(namespace_clients) if namespace_clients else {}
+        self.closed = closed
+
+
+def _fake_app_with_executor(executor: Any) -> Any:
+    """A minimal ``app``-shaped stand-in exposing ``app.state.agent.tool_executor``."""
+
+    agent = type("Agent", (), {"tool_executor": executor})()
+    state = type("State", (), {"agent": agent})()
+    return type("App", (), {"state": state})()
 
 
 def _fake_app_with_fleet(*, connected: bool) -> Any:
     """A minimal ``app``-shaped stand-in exposing ``app.state.agent.tool_executor``."""
 
-    agent = type("Agent", (), {"tool_executor": _FakeExecutor(connected=connected)})()
-    state = type("State", (), {"agent": agent})()
-    return type("App", (), {"state": state})()
+    return _fake_app_with_executor(_FakeExecutor(connected=connected))
 
 
 def test_setup_marks_pending_restart_when_fleet_already_running(
@@ -227,6 +246,7 @@ def test_setup_marks_pending_restart_when_fleet_already_running(
         ),
         gate=lambda *, platform: (False, sandbox_codex.REASON_CODEX_WINDOWS_UNPROVISIONED),
         app=_fake_app_with_fleet(connected=True),
+        platform="win32",
     )
 
     assert result.status == sandbox_cli.OUTCOME_PROVISIONED  # provisioning itself still succeeded
@@ -261,6 +281,82 @@ def test_setup_stays_ready_when_no_fleet_already_running(monkeypatch: pytest.Mon
         ),
         gate=lambda *, platform: (False, sandbox_codex.REASON_CODEX_WINDOWS_UNPROVISIONED),
         app=_fake_app_with_fleet(connected=False),
+        platform="win32",
+    )
+
+    assert result.row.state == IntegrationState.READY
+
+
+def test_setup_marks_pending_restart_when_fleet_prewarmed_without_routed_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A prewarmed namespace (``_namespace_clients`` populated by ``gact/mcp_readiness.py``'s
+    ``prepare_namespace`` -> ``_connect_namespace``) counts as an already-running fleet even
+    though ``_connected_namespaces`` -- stamped only on the FIRST ROUTED tool call -- is still
+    empty (#A5 review)."""
+
+    monkeypatch.setattr(
+        sandbox,
+        "_STATE",
+        sandbox.SandboxResult(
+            mechanism=sandbox.MECHANISM_NONE, active=False, reason="test_floor", details={}
+        ),
+    )
+    monkeypatch.setattr(sandbox, "_FENCE_PENDING_RESTART", False)
+    monkeypatch.setattr(sandbox_codex, "detect_codex", lambda **_kw: _fake_codex_detected())
+    monkeypatch.setattr(
+        sandbox_codex,
+        "codex_windows_gate",
+        lambda **_kw: (True, sandbox_codex.REASON_CODEX_WINDOWS_PROVISIONED),
+    )
+
+    executor = _FakeExecutor(connected=False, namespace_clients={"fs": object()})
+    result = run_sandbox_setup(
+        elevator=lambda _binary: (True, "elevated ok"),
+        verifier=lambda _b, _r, platform="win32": (
+            True,
+            sandbox_codex.REASON_CODEX_ENFORCEMENT_VERIFIED,
+        ),
+        gate=lambda *, platform: (False, sandbox_codex.REASON_CODEX_WINDOWS_UNPROVISIONED),
+        app=_fake_app_with_executor(executor),
+        platform="win32",
+    )
+
+    assert result.row.state == IntegrationState.DEGRADED
+    assert result.row.details["reason"] == sandbox.REASON_FENCE_PENDING_RESTART
+
+
+def test_setup_stays_ready_when_only_a_closed_executor_has_leftover_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A CLOSED executor's leftover ``_connected_namespaces``/``_namespace_clients`` must not
+    count as an already-running fleet (#A5 review)."""
+
+    monkeypatch.setattr(
+        sandbox,
+        "_STATE",
+        sandbox.SandboxResult(
+            mechanism=sandbox.MECHANISM_NONE, active=False, reason="test_floor", details={}
+        ),
+    )
+    monkeypatch.setattr(sandbox, "_FENCE_PENDING_RESTART", False)
+    monkeypatch.setattr(sandbox_codex, "detect_codex", lambda **_kw: _fake_codex_detected())
+    monkeypatch.setattr(
+        sandbox_codex,
+        "codex_windows_gate",
+        lambda **_kw: (True, sandbox_codex.REASON_CODEX_WINDOWS_PROVISIONED),
+    )
+
+    executor = _FakeExecutor(connected=True, namespace_clients={"fs": object()}, closed=True)
+    result = run_sandbox_setup(
+        elevator=lambda _binary: (True, "elevated ok"),
+        verifier=lambda _b, _r, platform="win32": (
+            True,
+            sandbox_codex.REASON_CODEX_ENFORCEMENT_VERIFIED,
+        ),
+        gate=lambda *, platform: (False, sandbox_codex.REASON_CODEX_WINDOWS_UNPROVISIONED),
+        app=_fake_app_with_executor(executor),
+        platform="win32",
     )
 
     assert result.row.state == IntegrationState.READY
@@ -271,13 +367,22 @@ def test_setup_stays_ready_when_no_fleet_already_running(monkeypatch: pytest.Mon
 # --------------------------------------------------------------------------- #
 
 
-def test_setup_conflict_when_already_running(tmp_path: Path) -> None:
+def test_setup_conflict_when_already_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A concurrent setup call gets a typed 409, never a second overlapping elevation.
 
     The lock is held from a background thread; the request thread's `run_sandbox_setup` must
     fail the non-blocking acquire immediately, before touching any provisioning collaborator.
+
+    The route's OWN live `sys.platform.startswith("win")` gate runs BEFORE it ever calls
+    `run_sandbox_setup` (see `routes/sandbox_setup.py`), so on a non-Windows CI runner this
+    would otherwise short-circuit straight to the typed 501 and never reach the lock at all --
+    forced to "win32" here so the conflict path is exercised the same on every OS (the lock
+    check itself is the very first thing `run_sandbox_setup` does, before touching `platform`).
     """
 
+    monkeypatch.setattr(sandbox_setup_routes.sys, "platform", "win32")
     held = threading.Event()
     release = threading.Event()
 

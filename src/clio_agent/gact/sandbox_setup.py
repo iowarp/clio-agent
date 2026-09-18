@@ -19,6 +19,7 @@ runs must never race each other or double-prompt. A second concurrent call gets 
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 from dataclasses import dataclass
 from typing import Any
@@ -84,13 +85,26 @@ def _fleet_already_running(app: Any) -> bool:
     fence, the already-running child is not covered by it.
 
     Walks the agent's default (no-workspace) executor plus every cached per-workspace executor
-    (``ClioAgent._workspace_state()``). Reads the private ``_connected_namespaces`` set via
-    ``getattr`` rather than a new public accessor: both ``SyncMCPToolExecutor``
-    (``tools/execution.py``) and ``AsyncMCPToolExecutor`` (``tools/mcp_executor.py``) sit exactly
-    at their #775 file-size ratchet baseline, so a new property cannot land in either without
-    shrinking something else first. Best-effort: any failure to introspect the agent is logged
-    and treated as "no fleet observed" — this signal only ever WIDENS an already-successful setup
-    to a more cautious DEGRADED, never blocks the setup itself.
+    (``ClioAgent._workspace_state()``). Reads the private ``_connected_namespaces`` /
+    ``_namespace_clients`` attributes via ``getattr`` rather than a new public accessor: both
+    ``SyncMCPToolExecutor`` (``tools/execution.py``) and ``AsyncMCPToolExecutor``
+    (``tools/mcp_executor.py``) sit exactly at their #775 file-size ratchet baseline, so a new
+    property cannot land in either without shrinking something else first. Best-effort: any
+    failure to introspect the agent is logged and treated as "no fleet observed" — this signal
+    only ever WIDENS an already-successful setup to a more cautious DEGRADED, never blocks the
+    setup itself.
+
+    Two signals count as "already running", either is sufficient:
+
+    * ``_connected_namespaces`` — stamped on a namespace's FIRST ROUTED tool call (#932).
+    * ``_namespace_clients`` — populated the moment a namespace's stdio child is actually
+      SPAWNED, which happens earlier: session prewarm (``gact/mcp_readiness.py``'s
+      ``prepare_namespace`` → ``_connect_namespace``) connects a namespace with no routed call
+      at all, so ``_connected_namespaces`` alone missed an already-spawned prewarmed fleet
+      (#A5 review).
+
+    An executor reporting itself ``closed`` is skipped entirely — its leftover client/namespace
+    bookkeeping describes a fleet that is no longer running, not one this fence must worry about.
     """
     agent = getattr(getattr(app, "state", None), "agent", None) if app is not None else None
     if agent is None:
@@ -109,8 +123,12 @@ def _fleet_already_running(app: Any) -> bool:
                 "sandbox fleet probe skipped reason=workspace_state_unreadable error=%r", exc
             )
     for executor in executors:
+        if getattr(executor, "closed", False):
+            continue
         async_executor = getattr(executor, "_async_executor", executor)
         if getattr(async_executor, "_connected_namespaces", None):
+            return True
+        if getattr(async_executor, "_namespace_clients", None):
             return True
     return False
 
@@ -121,16 +139,22 @@ def run_sandbox_setup(
     verifier: Any = None,
     gate: Any = None,
     app: Any = None,
+    platform: str = sys.platform,
 ) -> SandboxSetupResult:
     """Run the Codex Windows protected-execution setup, then re-report the doctor row.
 
     Delegates the actual provisioning to :func:`sandbox_cli.provision_codex_windows` — the SAME
     engine ``clio sandbox setup`` runs from the CLI — injectable with fakes so this seam is
     unit-testable without a real UAC elevation (``elevator``/``verifier``/``gate`` pass straight
-    through; off-Windows ``provision_codex_windows`` is already a typed no-op via its own
-    ``platform`` default, so this function needs no separate platform branch). After the run, the
-    confinement ladder is force-re-resolved (:func:`sandbox.reresolve_after_setup`) so the row
-    reflects the just-provisioned state rather than the cached boot resolve, then re-probed.
+    through). ``platform`` is forwarded to ``provision_codex_windows`` explicitly rather than
+    relying on ITS OWN ``platform: str = sys.platform`` default: that default is bound once, at
+    ``sandbox_cli`` module IMPORT time, so a test importing on a non-Windows CI runner can never
+    override it after the fact by monkeypatching ``sys.platform`` — only an explicit keyword
+    argument threaded through every call in the chain can. Production callers never pass it, so
+    behaviour there is unchanged (the route only reaches this function after its OWN live
+    ``sys.platform.startswith("win")`` check already passed). After the run, the confinement
+    ladder is force-re-resolved (:func:`sandbox.reresolve_after_setup`) so the row reflects the
+    just-provisioned state rather than the cached boot resolve, then re-probed.
 
     ``app`` (the FastAPI app, passed by the route) is used ONLY to check whether an MCP tool
     fleet already spawned in this process BEFORE the fence just activated (see
@@ -149,7 +173,7 @@ def run_sandbox_setup(
         before = sandbox.current_state()
         was_active_before = bool(before is not None and before.active)
         provision = sandbox_cli.provision_codex_windows(
-            elevator=elevator, verifier=verifier, gate=gate
+            elevator=elevator, verifier=verifier, gate=gate, platform=platform
         )
         after = sandbox.reresolve_after_setup()
         if not was_active_before and after.active and _fleet_already_running(app):

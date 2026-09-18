@@ -22,9 +22,12 @@ from __future__ import annotations
 
 import os
 import subprocess
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence
+
+import psutil
 
 UpdateCheckReason = Literal[
     "up_to_date",
@@ -108,13 +111,53 @@ def _stderr_tail(stderr: str, *, max_chars: int = 500) -> str:
 
 
 def _git_env() -> dict[str, str]:
-    """Environment for a probe subprocess: never prompt, never hang on auth."""
+    """Environment for a probe subprocess: never prompt, never hang on auth.
 
-    return {
-        **os.environ,
-        "GIT_TERMINAL_PROMPT": "0",
-        "GIT_SSH_COMMAND": "ssh -o BatchMode=yes",
-    }
+    ``GIT_SSH_COMMAND`` (or the older ``GIT_SSH``) is AUGMENTED, not overwritten:
+    a user with a custom SSH wrapper (a specific key/identity, a bastion) set one
+    for a reason, and clobbering it here would silently break their transport
+    while only fixing an unrelated prompt hang. ``-o BatchMode=yes`` is safe to
+    append to any ``ssh``-shaped command -- it is an ordinary repeatable option.
+    """
+
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    existing_ssh_command = (env.get("GIT_SSH_COMMAND") or env.get("GIT_SSH") or "").strip()
+    env["GIT_SSH_COMMAND"] = (
+        f"{existing_ssh_command} -o BatchMode=yes"
+        if existing_ssh_command
+        else "ssh -o BatchMode=yes"
+    )
+    return env
+
+
+def _kill_process_tree(pid: int) -> None:
+    """Kill a probe subprocess and every descendant, never just the immediate child.
+
+    On Windows the resolved ``git.exe`` spawns its OWN transport child
+    (``git-remote-https.exe`` / ``ssh.exe``) which inherits the parent's stdio
+    pipes; killing only the ``git.exe`` PID leaves that child running and
+    holding the pipes open, so ``Popen.communicate()`` blocks well past the
+    caller's timeout waiting for EOF that never comes (proven live: a 2s probe
+    timeout took ~25s to actually return). Enumerated via psutil (an existing
+    core dependency; same idiom as ``tools/relay_install_jobs.py``'s own
+    process-tree teardown) -- children killed before the parent, best-effort,
+    never raises into the caller.
+    """
+
+    children: list[psutil.Process] = []
+    parent: psutil.Process | None = None
+    with suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+        parent = psutil.Process(pid)
+        children = parent.children(recursive=True)
+    for child in children:
+        with suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+            child.kill()
+    if parent is not None:
+        with suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+            parent.kill()
+    with suppress(Exception):  # noqa: BLE001 - best-effort reap, never blocks the caller
+        psutil.wait_procs([*children, *([parent] if parent is not None else [])], timeout=5)
 
 
 def remote_head_commit(
@@ -124,8 +167,18 @@ def remote_head_commit(
 
     A local-path source (``Path(source).exists()``) is probed with
     ``git -C <path> rev-parse HEAD``; a remote source with
-    ``git ls-remote --exit-code <source> refs/heads/<ref> refs/tags/<ref>``
-    (``HEAD`` when ``ref`` is empty). Never clones, never writes.
+    ``git ls-remote --exit-code <source> refs/heads/<ref> refs/tags/<ref>
+    refs/tags/<ref>^{}`` (``HEAD`` when ``ref`` is empty). Never clones, never
+    writes.
+
+    The third pattern matters for an ANNOTATED tag: ``refs/tags/<ref>`` alone
+    resolves to the tag OBJECT's sha, not the commit it points at, so a
+    tag-pinned source would report a permanent false ``update_available``
+    (installed commit sha vs. tag-object sha never equal) even when fully up
+    to date. ``refs/tags/<ref>^{}`` is git's own "peel to commit" ref form and
+    resolves it explicitly; a lightweight tag has no such peeled line, so the
+    plain ``refs/tags/<ref>`` entry (already the commit sha there) is still the
+    fallback.
 
     Args:
         source: Git URL or local filesystem path.
@@ -148,22 +201,39 @@ def remote_head_commit(
     if is_local:
         command = ["git", "-C", str(local_path), "rev-parse", "HEAD"]
     else:
-        refs = [f"refs/heads/{ref}", f"refs/tags/{ref}"] if ref else ["HEAD"]
+        refs = (
+            [f"refs/heads/{ref}", f"refs/tags/{ref}", f"refs/tags/{ref}^{{}}"] if ref else ["HEAD"]
+        )
         command = ["git", "ls-remote", "--exit-code", source, *refs]
 
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             command,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout_s,
             env=_git_env(),
             **_popen_kwargs(),
         )
     except FileNotFoundError:
         return "", "git_unavailable", "git executable not found"
+
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_s)
     except subprocess.TimeoutExpired:
+        # `subprocess.run(..., timeout=)` on Windows only signals the immediate
+        # `git.exe` PID; a still-running transport grandchild (git-remote-https.exe
+        # / ssh.exe) keeps the inherited stdout/stderr pipes open, so the plain
+        # `run()` call blocks in its own internal `communicate()` for the FULL
+        # process lifetime of that grandchild rather than returning at
+        # `timeout_s` (proven live: a 2s timeout took ~25s to actually raise).
+        # Killing the whole tree before reaping is what makes the timeout real.
+        _kill_process_tree(process.pid)
+        with suppress(subprocess.TimeoutExpired):
+            process.communicate(timeout=5)
         return "", "timeout", f"git probe timed out after {timeout_s}s"
+
+    completed = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
     if is_local:
         if completed.returncode != 0:
@@ -193,13 +263,38 @@ def remote_head_commit(
             by_ref[parts[1]] = parts[0]
     commit = ""
     if ref:
-        commit = by_ref.get(f"refs/heads/{ref}") or by_ref.get(f"refs/tags/{ref}") or ""
+        # Prefer a branch, then an annotated tag's PEELED commit (`^{}`), then a
+        # lightweight tag's own sha -- see the annotated-tag note in the docstring.
+        commit = (
+            by_ref.get(f"refs/heads/{ref}")
+            or by_ref.get(f"refs/tags/{ref}^{{}}")
+            or by_ref.get(f"refs/tags/{ref}")
+            or ""
+        )
     else:
         commit = by_ref.get("HEAD", "")
     commit = commit or next(iter(by_ref.values()), "")
     if not commit:
         return "", "ls_remote_failed", "git ls-remote returned no output"
     return commit, "up_to_date", ""
+
+
+def _commits_match(installed: str, remote: str) -> bool:
+    """Whether ``installed`` and ``remote`` name the same commit, abbreviated-sha aware.
+
+    A pinned/installed commit is occasionally recorded abbreviated (a human-edited
+    config, or an older recorder) rather than the full 40-char sha ``git
+    ls-remote``/``rev-parse`` always returns; a strict ``==`` would then report a
+    permanent false ``update_available``. A 7-39 char lowercase-hex ``installed``
+    value is treated as a sha PREFIX of ``remote``; anything else (full sha, or not
+    hex at all) still requires exact equality.
+    """
+
+    if installed == remote:
+        return True
+    if 7 <= len(installed) < 40 and all(c in "0123456789abcdef" for c in installed):
+        return remote.startswith(installed)
+    return False
 
 
 def check_source_update(row: Mapping[str, Any], *, timeout_s: float) -> SourceUpdateStatus:
@@ -259,7 +354,7 @@ def check_source_update(row: Mapping[str, Any], *, timeout_s: float) -> SourceUp
             detail="",
         )
 
-    up_to_date = installed_commit == remote_commit
+    up_to_date = _commits_match(installed_commit, remote_commit)
     return SourceUpdateStatus(
         source_id=source_id,
         source=source,
