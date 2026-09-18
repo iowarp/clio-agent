@@ -416,12 +416,11 @@ from clio_agent.gact.routes.agents import (  # noqa: E402
 from clio_agent.gact.routes.async_processes import (  # noqa: E402
     register_async_process_routes,
 )
+from clio_agent.gact.routes.blueprint_updates import register_blueprint_updates_routes  # noqa: E402
 from clio_agent.gact.routes.blueprints import (  # noqa: E402
     register_blueprints_routes,
 )
-from clio_agent.gact.routes.catalog import (  # noqa: E402
-    register_catalog_routes,
-)
+from clio_agent.gact.routes.catalog import register_catalog_routes  # noqa: E402
 from clio_agent.gact.routes.context import (  # noqa: E402
     register_context_routes,
 )
@@ -2125,6 +2124,7 @@ def build_app(
     # routes/blueprints.py; the expert-pack routes are thin aliases of the same
     # lifecycle. The set-active route reaches the activation-metadata builder
     # and metadata-only active-id reader through ``deps``.
+    register_blueprint_updates_routes(app, deps)  # BEFORE the greedy {blueprint_id:path} below
     register_blueprints_routes(app, deps)
 
     # ---- /v1/expert-packs/* discovery + session attachment -----------
