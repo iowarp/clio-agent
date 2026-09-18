@@ -37,6 +37,7 @@ def build_wait_tool(callback: Callable[..., Any]) -> Any:
         callback,
         name="wait_agent_tasks",
         presentation="wait",
+        domain="agents",
         presentation_start=waiting_presentation,
         desc=callback.__doc__,
         title="Wait",

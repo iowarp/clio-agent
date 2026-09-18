@@ -495,15 +495,15 @@ def _enabled_external_mcp_dspy_tools(
 
             tool_fn.__name__ = tool_name
             tool_fn.__doc__ = description
-            # ``_run_external_mcp_tool_sync`` notifies the observer itself, so
-            # the construction is marked observed — the assembly seam must not
-            # add a second notification (exactly-once). ``title`` carries the
-            # upstream MCP tool's declared title (#1188), when present.
+            # ``_run_external_mcp_tool_sync`` notifies the observer itself, so the construction
+            # is marked observed — the assembly seam must not add a second notification
+            # (exactly-once). ``title`` carries the upstream MCP tool declared title (#1188).
             available[tool_name] = boundary_observed_tool(
                 tool_fn,
                 name=tool_name,
                 desc=description,
                 args=properties,
+                domain="agents",  # dynamic per-blueprint bridge, not a builtin catalog row (#1350)
                 title=title,
             )
             toolset_inventory.register_tool_source(sources, tool_name, str(server_id))

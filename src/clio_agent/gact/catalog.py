@@ -203,6 +203,77 @@ def _truthy_command_field(value: Any, default: bool) -> bool:
     return bool(value)
 
 
+def _catalog_stub() -> Any:
+    """Return a FRESH catalog-only placeholder callable; never executed.
+
+    A distinct function object per declared tool — never shared — so a native
+    tool's per-callable markers (:mod:`tool_instrumentation`'s
+    ``DOMAIN_ATTR``/``TITLE_ATTR``/``REPRESENTATION_ATTR``) can never
+    cross-contaminate between two catalog-only rows built off the same stub:
+    each call to this factory hands back its OWN closure.
+    """
+
+    def _stub(*_args: Any, **_kwargs: Any) -> str:
+        return ""
+
+    return _stub
+
+
+def _builtin_tool_declarations() -> list[tuple[str, str, str, Any]]:
+    """Declare the code-shipped tool surface as ``(name, title, description, tool_obj)``.
+
+    ``tool_obj`` is the constructed dspy/``ClioNativeTool`` for every declared
+    tool EXCEPT the four static gateway (fs/shell) names, where it is ``None``
+    — those run through the in-process MCP gateway rather than a directly
+    constructed ``dspy.Tool``, so their schema/domain come from
+    :mod:`clio_agent.tools.catalog` / :mod:`clio_agent.tools.gateway` instead
+    (see :mod:`clio_agent.gact.catalog_tool_schemas`).
+
+    ONE declaration pass, shared by :func:`_builtin_tools` (the plain sync
+    Tool-row builder every existing consumer uses) and
+    ``catalog_tool_schemas.builtin_tool_rows`` (the schema/domain-bearing
+    async builder for ``GET /v1/catalog/tools``) — they can never drift on
+    name/title/description.
+    """
+
+    from clio_agent.gact.agents.auto_tools import build_auto_react_tools  # noqa: PLC0415
+    from clio_agent.gact.agents.spawn_runtime_declarations import (  # noqa: PLC0415
+        assemble_spawn_runtime_tools,
+    )
+
+    seen: dict[str, tuple[str, str, str, Any]] = {}
+    main = _builtin_main_agent()
+    for tool_name in main.tools:
+        seen.setdefault(tool_name, (tool_name, tool_name.replace("_", " ").title(), "", None))
+    for tool in build_auto_react_tools(main):
+        _record_declaration(seen, tool)
+    for tool in assemble_spawn_runtime_tools(
+        main,
+        spawn_agent_task=_catalog_stub(),
+        wait_agent_tasks=_catalog_stub(),
+        spawn_agents_parallel=_catalog_stub(),
+        run_workflow=_catalog_stub(),
+        has_declared_children=False,
+        can_commission_blueprints=True,
+    ):
+        _record_declaration(seen, tool)
+    return list(seen.values())
+
+
+def _record_declaration(seen: dict[str, tuple[str, str, str, Any]], tool: Any) -> None:
+    """Add one constructed tool's declaration to ``seen``, first name wins."""
+
+    name = str(getattr(tool, "name", "") or "").strip()
+    if not name or name in seen:
+        return
+    seen[name] = (
+        name,
+        str(getattr(tool, "title", "") or ""),
+        str(getattr(tool, "desc", "") or getattr(tool, "description", "") or ""),
+        tool,
+    )
+
+
 def _builtin_tools() -> list[Tool]:
     """Return the code-shipped tool surface for a bare CLIO session.
 
@@ -212,59 +283,19 @@ def _builtin_tools() -> list[Tool]:
     endpoint and are deliberately not guessed here.
     """
 
-    from clio_agent.gact.agents.auto_tools import build_auto_react_tools  # noqa: PLC0415
-    from clio_agent.gact.agents.spawn_runtime_declarations import (  # noqa: PLC0415
-        assemble_spawn_runtime_tools,
-    )
-
-    def _catalog_stub(*_args: Any, **_kwargs: Any) -> str:
-        """Catalog-only placeholder; this declaration is never executed."""
-
-        return ""
-
-    seen: dict[str, Tool] = {}
-    main = _builtin_main_agent()
-    declarations: list[tuple[str, str, str]] = [
-        (tool_name, tool_name.replace("_", " ").title(), "") for tool_name in main.tools
-    ]
-    declarations.extend(
-        (
-            str(getattr(tool, "name", "")),
-            str(getattr(tool, "title", "") or ""),
-            str(getattr(tool, "desc", "") or getattr(tool, "description", "") or ""),
-        )
-        for tool in build_auto_react_tools(main)
-    )
-    declarations.extend(
-        (
-            str(getattr(tool, "name", "")),
-            str(getattr(tool, "title", "") or ""),
-            str(getattr(tool, "desc", "") or getattr(tool, "description", "") or ""),
-        )
-        for tool in assemble_spawn_runtime_tools(
-            main,
-            spawn_agent_task=_catalog_stub,
-            wait_agent_tasks=_catalog_stub,
-            spawn_agents_parallel=_catalog_stub,
-            run_workflow=_catalog_stub,
-            has_declared_children=False,
-            can_commission_blueprints=True,
-        )
-    )
-    for tool_name, title, description in declarations:
-        if not tool_name or tool_name in seen:
-            continue
-        seen[tool_name] = Tool(
-            id=tool_name,
+    return [
+        Tool(
+            id=name,
             source="builtin",
-            name=tool_name,
-            title=title or tool_name.replace("_", " ").title(),
+            name=name,
+            title=title or name.replace("_", " ").title(),
             description=description,
-            owner=_tool_owner_for_catalog(tool_name),
-            tags=_tool_tags_for_catalog(tool_name),
-            visible_to=_tool_visible_to_for_catalog(tool_name),
+            owner=_tool_owner_for_catalog(name),
+            tags=_tool_tags_for_catalog(name),
+            visible_to=_tool_visible_to_for_catalog(name),
         )
-    return list(seen.values())
+        for name, title, description, _tool in _builtin_tool_declarations()
+    ]
 
 
 def _tool_owner_for_catalog(tool_name: str) -> str:
@@ -295,3 +326,20 @@ def _tool_visible_to_for_catalog(tool_name: str) -> list[str]:
         return tool_visible_scopes(tool_name)
     except Exception:  # noqa: BLE001 - tool metadata lookup optional; empty on any failure
         return []
+
+
+def _tool_domain_for_catalog(tool_name: str) -> str | None:
+    """Return the static gateway domain for a catalog tool row, if declared.
+
+    Only the fs/shell :data:`clio_agent.tools.catalog.TOOL_CATALOG` rows carry
+    a domain here — every other builtin tool's domain comes from its own
+    constructed callable (:func:`clio_agent.gact.agents.tool_instrumentation.tool_domain`),
+    not this static lookup.
+    """
+    try:
+        from clio_agent.tools.catalog import get_tool_entry
+
+        entry = get_tool_entry(tool_name)
+        return entry.domain or None if entry else None
+    except Exception:  # noqa: BLE001 - tool metadata lookup optional; empty on any failure
+        return None

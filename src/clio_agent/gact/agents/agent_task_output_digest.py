@@ -277,6 +277,10 @@ def build_agent_task_output_tool() -> Any:
         get_agent_task_output,
         name=FETCH_FULL_OUTPUT_TOOL,
         presentation="task_output",
+        # The fourth task-collection tool alongside spawn/wait/observe (#1350):
+        # same registry, same gating, same "agents" family — not a distinct
+        # digest domain of its own.
+        domain="agents",
         desc=get_agent_task_output.__doc__,
         title="Collect",
         args={

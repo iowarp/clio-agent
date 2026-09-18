@@ -189,9 +189,22 @@ def test_catalog_tools_describes_bare_clio_without_blueprint_activation(
 
     resp = client.get("/v1/catalog/tools")
     assert resp.status_code == 200
-    names = {row["name"] for row in resp.json()["tools"]}
+    rows = resp.json()["tools"]
+    names = {row["name"] for row in rows}
     assert {"fs_read_file", "create_artifact", "memory_search_sessions"} <= names
     assert {"spawn_agent_task", "observe_agent_tasks", "wait_agent_tasks"} <= names
+
+    # #1350: every row carries a typed input/output schema and a declared
+    # domain -- the desktop Tools view groups/filters by these instead of a
+    # client-side name regex.
+    by_name = {row["name"]: row for row in rows}
+    for name in ("fs_read_file", "create_artifact", "spawn_agent_task"):
+        row = by_name[name]
+        assert row["input_schema"]["type"] == "object"
+        assert row["output_schema"]
+        assert row["domain"]
+    assert by_name["fs_read_file"]["domain"] == "workspace"
+    assert by_name["create_artifact"]["domain"] == "artifacts"
 
 
 def test_unified_tools_endpoint_exposes_inspector_metadata(client: TestClient) -> None:

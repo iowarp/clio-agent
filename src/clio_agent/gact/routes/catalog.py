@@ -39,12 +39,12 @@ from fastapi import FastAPI, HTTPException, Request
 
 from clio_agent.gact.agents.tool_instrumentation import mcp_tool_title
 from clio_agent.gact.catalog import (
-    _builtin_tools,
     _tool_owner_for_catalog,
     _tool_tags_for_catalog,
     _tool_visible_to_for_catalog,
     _truthy_command_field,
 )
+from clio_agent.gact.catalog_tool_schemas import builtin_tool_rows
 from clio_agent.gact.events import Event
 from clio_agent.gact.off_loop import emit_semantic_event_async, run_off_loop
 from clio_agent.gact.routes._body import json_body
@@ -85,7 +85,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.get("/v1/catalog/tools", response_model=ListToolsResponse)
     async def list_tools() -> ListToolsResponse:
-        return ListToolsResponse(tools=_builtin_tools())
+        return ListToolsResponse(tools=await builtin_tool_rows())
 
     @app.get("/v1/tools")
     async def list_tools_unified() -> dict[str, Any]:

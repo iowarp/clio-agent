@@ -725,6 +725,7 @@ def build_goal_status_tool() -> Any:
         goal_status,
         name="goal_status",
         presentation="goal",
+        domain="goals",
         desc=goal_status.__doc__,
         title="Goal Status",
         args={},

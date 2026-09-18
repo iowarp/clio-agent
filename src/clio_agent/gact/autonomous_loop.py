@@ -692,6 +692,7 @@ def build_loop_wakeup_tool() -> Any:
         loop_wakeup,
         name="loop_wakeup",
         presentation="loop",
+        domain="autonomy",
         desc=loop_wakeup.__doc__,
         title="Loop Wakeup",
         args={
