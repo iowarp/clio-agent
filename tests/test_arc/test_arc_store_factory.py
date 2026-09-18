@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import os
 import socket
+import threading
+import time
 
 import msgspec
 import pytest
@@ -253,6 +255,62 @@ def test_prepare_runtime_shutdown_prevents_late_reacquire(monkeypatch, tmp_path)
 
     with pytest.raises(runtime_stop.RuntimeShutdownInProgress, match="runtime is shutting down"):
         storage._ensure_runtime_daemon(object(), "", "error")
+
+
+def test_ensure_runtime_daemon_rechecks_latch_after_blocking_on_lock(monkeypatch, tmp_path):
+    """A caller blocked acquiring the spawn lock (behind a concurrent
+    ``release_runtime_client`` that currently holds it) must re-check the
+    shutdown latch AFTER it actually acquires the lock, not trust a stale
+    pre-lock read -- otherwise it would register + spawn a fresh daemon right
+    after the latch was set while it was waiting, defeating the latch."""
+    _isolate_clio_home(monkeypatch, tmp_path)
+    monkeypatch.setattr(storage, "_resolve_runtime_port", lambda _cfg: 4322)
+    monkeypatch.setattr(storage, "_runtime_alive", lambda _port: False)
+    registered: list[bool] = []
+    monkeypatch.setattr(storage, "_register_client", lambda: registered.append(True))
+    spawned: list[bool] = []
+    monkeypatch.setattr(
+        storage,
+        "_spawn_runtime_daemon",
+        lambda *a, **k: spawned.append(True),  # noqa: ARG005
+    )
+
+    holder_ready = threading.Event()
+    release_holder = threading.Event()
+
+    def _hold_lock() -> None:
+        with storage._runtime_spawn_lock():
+            holder_ready.set()
+            release_holder.wait(timeout=5.0)
+
+    holder = threading.Thread(target=_hold_lock, daemon=True)
+    holder.start()
+    assert holder_ready.wait(timeout=5.0), "lock holder thread never acquired the lock"
+
+    result: dict[str, BaseException] = {}
+
+    def _call_ensure() -> None:
+        try:
+            storage._ensure_runtime_daemon(object(), "", "error")
+        except BaseException as exc:  # noqa: BLE001 - captured across the thread boundary
+            result["error"] = exc
+
+    waiter = threading.Thread(target=_call_ensure, daemon=True)
+    waiter.start()
+    time.sleep(0.3)  # let the waiter actually start blocking on the held lock
+
+    # The latch is set WHILE the waiter is blocked on the lock -- this is the
+    # race: a pre-lock latch read would have missed this.
+    runtime_stop.prepare_runtime_shutdown()
+
+    release_holder.set()
+    holder.join(timeout=5.0)
+    waiter.join(timeout=5.0)
+
+    assert not waiter.is_alive()
+    assert isinstance(result.get("error"), runtime_stop.RuntimeShutdownInProgress)
+    assert registered == []
+    assert spawned == []
 
 
 def test_proc_create_time_and_pid_alive():

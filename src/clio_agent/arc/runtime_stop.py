@@ -49,6 +49,13 @@ logger = logging.getLogger(__name__)
 _RUNTIME_STOP_STALL_SECONDS = 10.0
 _RUNTIME_STOP_POLL_SECONDS = 0.1
 
+# "clio_run stop" reporting success (the helper process exiting) and the daemon's
+# listening socket actually closing are not perfectly atomic -- a genuine clean
+# stop can observe the helper exited a few polls before the port reads free. This
+# grace window (same poll cadence as the main loop) keeps that ordinary case from
+# being misclassified as helper_exit_kill (and hard-killed) on every run.
+_HELPER_EXIT_GRACE_SECONDS = 1.0
+
 StopPath = Literal[
     "clean_stop", "stall_kill", "helper_exit_kill", "launcher_missing_kill", "error_kill"
 ]
@@ -167,7 +174,20 @@ def stop_runtime_daemon(config_path: str, log_level: str) -> StopOutcome:
                             stop_process.wait(timeout=1.0)
                     break
                 if helper_status is not None:
-                    path = "helper_exit_kill"
+                    # The helper already exited; give the port a brief grace
+                    # window to actually free before conceding a hard kill.
+                    grace_deadline = time.monotonic() + _HELPER_EXIT_GRACE_SECONDS
+                    freed_during_grace = False
+                    while time.monotonic() < grace_deadline:
+                        if not _runtime_alive(runtime_port):
+                            freed_during_grace = True
+                            break
+                        time.sleep(_RUNTIME_STOP_POLL_SECONDS)
+                    if freed_during_grace:
+                        stopped = True
+                        path = "clean_stop"
+                    else:
+                        path = "helper_exit_kill"
                     break
                 if time.monotonic() >= stall_deadline:
                     logger.warning(

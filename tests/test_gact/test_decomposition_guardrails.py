@@ -106,7 +106,9 @@ from clio_agent.gact.app import build_app
 # ``/respond`` is the one door into the normalized interaction responder.
 # +1 session/call/block-scoped presentation-content GET, owned by routes/messages.py.
 # +1 read-only session work/history GET, owned by routes/schedules.py.
-EXPECTED_ROUTE_METHOD_PAIRS = 241
+# +1 POST /v1/desktop/shutdown, the desktop-managed lifecycle control
+# registered by routes/lifecycle.py::register_lifecycle_routes.
+EXPECTED_ROUTE_METHOD_PAIRS = 242
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

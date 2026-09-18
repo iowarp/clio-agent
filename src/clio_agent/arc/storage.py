@@ -39,12 +39,10 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Dict, Optional, Protocol, runtime_checkable
 
-# The clean-stop-with-pidfile-fallback sequence AND the shutdown latch it is
-# gated by live in the owner module arc/runtime_stop.py (file-size ratchet,
-# #775/#774), re-exported below for existing callers/tests. The module itself
-# is ALSO imported (not just its names) so ``_ensure_runtime_daemon`` reads the
-# latch flag live -- a ``from ... import <name>`` of a mutable module global
-# would freeze a stale copy at import time.
+# Clean-stop + the shutdown latch live in owner module arc/runtime_stop.py
+# (file-size ratchet, #775/#774), re-exported below. Also imported as a
+# MODULE (not just names) so ``_ensure_runtime_daemon`` reads the latch flag
+# live, not a stale copy frozen at import time.
 from clio_agent.arc import runtime_stop
 
 # CTE config generation + capacity policy (the bounded ram hot-tier cap) live in
@@ -376,8 +374,7 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
 # against PID reuse) on the next register/release — at most one warm instance, no leak.
 
 _client_registered = False  # process-level: are WE in the registry?
-# The shutdown latch (desktop Quit forbids late runtime reacquisition) lives in
-# arc/runtime_stop.py -- see the ``runtime_stop`` import above.
+# The shutdown latch (desktop Quit forbids late reacquisition) lives in runtime_stop.
 _active_config_path = ""  # stashed so atexit/shutdown can stop the right daemon
 _active_log_level = "error"
 
@@ -532,12 +529,15 @@ def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str
     THIS process as an attached client before returning, so no concurrent release can
     stop the daemon we are about to connect to. FAIL LOUD if a spawned daemon never
     binds the RPC port.
-    """
-    if runtime_stop._runtime_shutdown_requested:
-        raise RuntimeShutdownInProgress("clio-core runtime is shutting down")
 
+    The latch check is the first statement UNDER the lock: a caller blocked on the
+    lock (behind a concurrent ``release_runtime_client``) must re-check once it
+    holds it, or it could spawn right after the latch was set mid-wait.
+    """
     port = _resolve_runtime_port(config_path)
     with _runtime_spawn_lock():
+        if runtime_stop._runtime_shutdown_requested:
+            raise RuntimeShutdownInProgress("clio-core runtime is shutting down")
         _register_client()  # prunes nothing here; release-side prunes. We are now live.
         if _runtime_alive(port):
             return

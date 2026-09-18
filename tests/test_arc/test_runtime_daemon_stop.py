@@ -209,3 +209,65 @@ def test_stop_outcome_reports_stall_kill(
     assert outcome == runtime_stop.StopOutcome(stopped=False, path="stall_kill")
     assert calls == ["terminate", "wait:1.0"]
     assert killed == [True]
+
+
+def test_stop_runtime_daemon_grace_polls_before_helper_exit_kill(
+    fake_iowarp_core: types.SimpleNamespace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A helper that exits 0 while the port still reads bound for a couple of
+    polls must NOT be immediately hard-killed as ``helper_exit_kill`` -- the
+    post-exit grace window should catch the ordinary case where the port
+    frees a beat later than the helper's own exit."""
+
+    class ExitedProcess:
+        def poll(self) -> int:
+            return 0
+
+    calls = {"n": 0}
+
+    def fake_alive(port: int) -> bool:
+        calls["n"] += 1
+        return calls["n"] < 3  # alive, alive, then freed on the 3rd poll
+
+    monkeypatch.setattr(runtime_stop.subprocess, "Popen", lambda *a, **k: ExitedProcess())
+    monkeypatch.setattr(runtime_stop, "_resolve_runtime_port", lambda config_path: 65001)
+    monkeypatch.setattr(runtime_stop, "_runtime_alive", fake_alive)
+    monkeypatch.setattr(runtime_stop, "_RUNTIME_STOP_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(storage, "_kill_daemon_pidfile", lambda: pytest.fail("must not hard-kill"))
+    monkeypatch.setattr(storage, "_daemon_pidfile", lambda: tmp_path / "daemon.pid")
+
+    outcome = runtime_stop.stop_runtime_daemon("", "error")
+
+    assert outcome == runtime_stop.StopOutcome(stopped=True, path="clean_stop")
+    # 1: main-loop check (alive) -> 2: 1st grace poll (alive) -> 3: 2nd grace
+    # poll (freed) -> 4: the post-loop "confirm actually freed" re-check.
+    assert calls["n"] == 4
+
+
+def test_stop_runtime_daemon_reports_helper_exit_kill_when_grace_expires(
+    fake_iowarp_core: types.SimpleNamespace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the port never frees within the grace window, the run is genuinely
+    ``helper_exit_kill`` and must still fall back to a hard kill."""
+
+    class ExitedProcess:
+        def poll(self) -> int:
+            return 0
+
+    monkeypatch.setattr(runtime_stop.subprocess, "Popen", lambda *a, **k: ExitedProcess())
+    monkeypatch.setattr(runtime_stop, "_resolve_runtime_port", lambda config_path: 65001)
+    monkeypatch.setattr(runtime_stop, "_runtime_alive", lambda port: True)
+    monkeypatch.setattr(runtime_stop, "_HELPER_EXIT_GRACE_SECONDS", 0.03)
+    monkeypatch.setattr(runtime_stop, "_RUNTIME_STOP_POLL_SECONDS", 0.01)
+    killed: list[bool] = []
+    monkeypatch.setattr(storage, "_kill_daemon_pidfile", lambda: killed.append(True))
+    monkeypatch.setattr(storage, "_daemon_pidfile", lambda: tmp_path / "daemon.pid")
+
+    outcome = runtime_stop.stop_runtime_daemon("", "error")
+
+    assert outcome == runtime_stop.StopOutcome(stopped=False, path="helper_exit_kill")
+    assert killed == [True]

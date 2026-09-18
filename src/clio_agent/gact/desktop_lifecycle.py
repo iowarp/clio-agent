@@ -35,11 +35,26 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
+    import uvicorn
     from fastapi import FastAPI
 
 logger = logging.getLogger(__name__)
 
 _SHUTDOWN_SIGNAL_DELAY_SECONDS = 0.1
+
+# uvicorn's Server.shutdown() waits (up to this budget) for in-flight HTTP
+# connections to close BEFORE running the ASGI lifespan shutdown -- and the
+# desktop WebView always holds an open per-session SSE stream
+# (gact/routes/misc.py), which never closes on its own. Left at uvicorn's
+# default (None = wait forever), that wait never ends, the lifespan teardown
+# (turn drain + release_runtime_after_drain + atexit) never runs, and the
+# Rust supervisor's 30s GRACEFUL_SHUTDOWN_STALL force-kills the process,
+# leaking the shared clio-core daemon. Budget arithmetic against that 30s
+# window: 0.1s call_later delay + this 3s connection grace + the turn drain
+# (bounded by cooperative cancellation, not this) + the 10s clean-stop loop
+# (arc/runtime_stop.py::_RUNTIME_STOP_STALL_SECONDS) + agent-task executor
+# joins must all land under 30s; 3s leaves ample headroom for the rest.
+_DESKTOP_GRACEFUL_TIMEOUT_S = 3.0
 
 
 @dataclass(frozen=True)
@@ -53,10 +68,16 @@ class ShutdownRequestOutcome:
     exit_path: Literal["should_exit", "sigint"]
 
 
-def _request_server_exit(app: "FastAPI") -> None:
-    """Ask the owning uvicorn server to unwind, with a signal fallback."""
+def _request_server_exit(server: "uvicorn.Server | None") -> None:
+    """Ask the owning uvicorn server to unwind, with a signal fallback.
 
-    server = getattr(app.state, "uvicorn_server", None)
+    Takes the ALREADY-RESOLVED server (resolved once by the caller at signal
+    time), not ``app.state``, so the callback can never re-read
+    ``uvicorn_server`` as something different from what
+    :func:`request_desktop_shutdown` already decided and reported back over
+    HTTP as ``exit_path``.
+    """
+
     if server is not None:
         server.should_exit = True
         return
@@ -103,11 +124,14 @@ def request_desktop_shutdown(app: "FastAPI") -> ShutdownRequestOutcome:
     storage.prepare_runtime_shutdown()
     request_discovery_shutdown()
 
-    exit_path: Literal["should_exit", "sigint"] = (
-        "should_exit" if getattr(app.state, "uvicorn_server", None) is not None else "sigint"
-    )
+    # Resolve the server ONCE, here, and hand that same object to the delayed
+    # callback -- rather than letting it re-read ``app.state.uvicorn_server``
+    # later -- so the ``exit_path`` reported back over HTTP always matches
+    # what the callback actually does.
+    server = getattr(app.state, "uvicorn_server", None)
+    exit_path: Literal["should_exit", "sigint"] = "should_exit" if server is not None else "sigint"
     loop = asyncio.get_running_loop()
-    loop.call_later(_SHUTDOWN_SIGNAL_DELAY_SECONDS, _request_server_exit, app)
+    loop.call_later(_SHUTDOWN_SIGNAL_DELAY_SECONDS, _request_server_exit, server)
     return ShutdownRequestOutcome(exit_path=exit_path)
 
 
@@ -122,6 +146,13 @@ def serve_foreground(app: "FastAPI", *, host: str, port: int) -> None:
     cross-platform graceful-stop contract, so ``app.state.uvicorn_server``
     must be stamped before ``server.run()`` blocks.
 
+    Also bounds the graceful-connection wait uvicorn's ``Server.shutdown()``
+    runs BEFORE the ASGI lifespan shutdown to :data:`_DESKTOP_GRACEFUL_TIMEOUT_S`
+    -- left at uvicorn's default of "wait forever", the desktop WebView's
+    always-open SSE stream would keep that wait from ever ending, so the
+    lifespan teardown (turn drain, ``release_runtime_after_drain``, atexit)
+    would never run before the desktop supervisor force-kills the process.
+
     Args:
         app: The built GACT FastAPI app to serve.
         host: Bind host.
@@ -129,7 +160,14 @@ def serve_foreground(app: "FastAPI", *, host: str, port: int) -> None:
     """
     import uvicorn
 
-    server = uvicorn.Server(uvicorn.Config(app, host=host, port=port))
+    server = uvicorn.Server(
+        uvicorn.Config(
+            app,
+            host=host,
+            port=port,
+            timeout_graceful_shutdown=_DESKTOP_GRACEFUL_TIMEOUT_S,
+        )
+    )
     app.state.uvicorn_server = server
     server.run()
 
