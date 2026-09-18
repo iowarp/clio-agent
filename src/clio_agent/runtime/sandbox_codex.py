@@ -72,6 +72,15 @@ CODEX_MIN_SUPPORTED_VERSION = (0, 145, 0)
 #: The plain binary name (``codex``); win32 detection prefers the launchable ``.cmd``/``.exe``.
 CODEX_BINARY_NAME = "codex"
 
+#: The desktop-bundled codex payload's path, relative to the runtime root
+#: (``clio_agent.tools.desktop_mcp_runtime.resolve_bundled_runtime_root()``).
+_BUNDLED_CODEX_RELATIVE = ("python", "Lib", "site-packages", "codex_cli_bin", "bin", "codex.exe")
+
+#: Typed ``CodexDetection.source`` labels -- distinguishes the desktop-shipped binary from one
+#: resolved off PATH, so the row/logs can tell a fresh user install apart from the bundled one.
+CODEX_SOURCE_BUNDLED = "bundled"
+CODEX_SOURCE_PATH = "path"
+
 #: Typed reasons this module surfaces onto the ladder / doctor (no silent fallback).
 #: (``REASON_CODEX_PROFILE_REJECTED`` lives with the profile concern in
 #: :mod:`sandbox_codex_profile` and is re-exported above.)
@@ -101,13 +110,16 @@ class CodexDetection:
     ``version`` is parsed from ``codex --version`` (reliable, unlike srt's lying banner).
     ``reason`` is the typed ladder rung the verdict implies
     (:data:`REASON_CODEX_NOT_INSTALLED`, :data:`REASON_CODEX_VERSION_UNSUPPORTED`,
-    :data:`REASON_CODEX_DETECTED`).
+    :data:`REASON_CODEX_DETECTED`). ``source`` is :data:`CODEX_SOURCE_BUNDLED` when the desktop's
+    own shipped ``codex.exe`` was used, :data:`CODEX_SOURCE_PATH` when resolved off ``PATH``, or
+    ``""`` when nothing was found.
     """
 
     installed: bool
     binary_path: str
     version: str
     reason: str
+    source: str = ""
 
 
 def parse_version(version: str) -> tuple[int, int, int]:
@@ -167,32 +179,59 @@ def _read_codex_version(binary: str = "") -> str:
     return _parse_codex_version_banner(out.stdout or "")
 
 
+def _bundled_codex_root() -> Optional[Path]:
+    """The desktop bundle's runtime root, or ``None`` outside the bundled runtime.
+
+    Thin delegate to :func:`clio_agent.tools.desktop_mcp_runtime.resolve_bundled_runtime_root` —
+    the ancestor walk for ``runtime.json`` lives in exactly one place (no duplicated logic).
+    """
+    from clio_agent.tools.desktop_mcp_runtime import resolve_bundled_runtime_root  # noqa: PLC0415
+
+    return resolve_bundled_runtime_root()
+
+
 def detect_codex(
     *,
     which: Callable[[str], Optional[str]] = shutil.which,
     version_reader: Callable[[str], str] = _read_codex_version,
     platform: str = sys.platform,
+    bundled_root: Callable[[], Optional[Path]] = _bundled_codex_root,
 ) -> CodexDetection:
     """Probe for the codex runtime + its version. DETECTION ONLY.
 
     Never spawns a fence. Every dependency is injectable so the ladder is unit-testable without
-    a real codex install. On win32 the launchable ``codex.cmd``/``codex.exe`` are preferred over
-    the extensionless ``codex`` (a POSIX shim ``which`` returns first cannot be exec'd by
-    CreateProcess — the #1025 srt.cmd lesson). The returned :attr:`CodexDetection.reason` is the
-    typed ladder reason the missing/present/old fence implies.
+    a real codex install. The desktop bundles its own ``codex.exe`` (under the relocatable
+    runtime's ``python/Lib/site-packages/codex_cli_bin/bin/``, resolved via ``bundled_root`` —
+    defaults to :func:`_bundled_codex_root`); when this process runs from that bundled runtime
+    AND the bundled binary exists on disk, it is preferred FIRST (:data:`CODEX_SOURCE_BUNDLED`) —
+    a desktop install must not depend on the user separately installing codex on PATH. Otherwise
+    falls back to the ``which``-based PATH lookup (:data:`CODEX_SOURCE_PATH`). On win32 the
+    launchable ``codex.cmd``/``codex.exe`` are preferred over the extensionless ``codex`` (a
+    POSIX shim ``which`` returns first cannot be exec'd by CreateProcess — the #1025 srt.cmd
+    lesson). The returned :attr:`CodexDetection.reason` is the typed ladder reason the
+    missing/present/old fence implies.
     """
-    names = (
-        ("codex.cmd", "codex.exe", CODEX_BINARY_NAME)
-        if platform.startswith("win")
-        else (CODEX_BINARY_NAME,)
-    )
-    binary = next((p for p in (which(n) for n in names) if p), "")
+    root = bundled_root()
+    bundled_binary = Path(root, *_BUNDLED_CODEX_RELATIVE) if root is not None else None
+    if bundled_binary is not None and bundled_binary.is_file():
+        binary = str(bundled_binary)
+        source = CODEX_SOURCE_BUNDLED
+    else:
+        names = (
+            ("codex.cmd", "codex.exe", CODEX_BINARY_NAME)
+            if platform.startswith("win")
+            else (CODEX_BINARY_NAME,)
+        )
+        binary = next((p for p in (which(n) for n in names) if p), "")
+        source = CODEX_SOURCE_PATH
+
     if not binary:
         return CodexDetection(
             installed=False,
             binary_path="",
             version="",
             reason=REASON_CODEX_NOT_INSTALLED,
+            source="",
         )
     version = version_reader(binary) or ""
     reason = (
@@ -205,6 +244,7 @@ def detect_codex(
         binary_path=binary,
         version=version,
         reason=reason,
+        source=source,
     )
 
 
@@ -573,6 +613,8 @@ __all__ = [
     "CODEX_LAYER_KEEP",
     "CODEX_LAYER_PREFIX",
     "CODEX_MIN_SUPPORTED_VERSION",
+    "CODEX_SOURCE_BUNDLED",
+    "CODEX_SOURCE_PATH",
     "CODEX_WINDOWS_ACCOUNT_OFFLINE",
     "CODEX_WINDOWS_ACCOUNT_ONLINE",
     "CODEX_WINDOWS_MARKER_NAME",

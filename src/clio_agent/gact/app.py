@@ -457,12 +457,11 @@ from clio_agent.gact.routes.provider_models_refresh import (
 )
 from clio_agent.gact.routes.providers import register_providers_routes  # noqa: E402
 from clio_agent.gact.routes.relay import register_relay_routes  # noqa: E402
+from clio_agent.gact.routes.sandbox_setup import register_sandbox_setup_routes  # noqa: E402
 from clio_agent.gact.routes.schedules import (  # noqa: E402
     register_schedules_routes,
 )
-from clio_agent.gact.routes.session_defaults import (  # noqa: E402
-    register_session_defaults_routes,
-)
+from clio_agent.gact.routes.session_defaults import register_session_defaults_routes  # noqa: E402
 from clio_agent.gact.routes.sessions import register_sessions_routes  # noqa: E402
 from clio_agent.gact.routes.system import register_system_routes  # noqa: E402
 from clio_agent.gact.routes.trace import register_trace_routes  # noqa: E402
@@ -2196,6 +2195,7 @@ def build_app(
     # the wire/limit constants live in runtime/constants.py. It needs no
     # cross-concern seam from ``deps``.
     register_system_routes(app, deps)
+    register_sandbox_setup_routes(app)  # /v1/system/sandbox (+/setup) -- routes/sandbox_setup.py
     register_lifecycle_routes(app)
     register_relay_routes(app, deps)
 

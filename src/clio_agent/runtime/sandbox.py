@@ -458,6 +458,32 @@ def current_state() -> SandboxResult | None:
     return _STATE
 
 
+#: Typed reason logged when the ladder is force-re-resolved by a live setup run rather than the
+#: normal boot resolve (distinguishes the two call sites in the trace/log).
+REASON_RERESOLVED_AFTER_SETUP = "sandbox_reresolved_after_setup"
+
+
+def reresolve_after_setup(*, env: Optional[Mapping[str, str]] = None) -> SandboxResult:
+    """Force a fresh backend resolve after a live ``clio sandbox setup`` run (desktop trigger).
+
+    :func:`install_sandbox` caches ``_STATE`` at boot; the desktop's "Set up protected execution"
+    button provisions the Codex Windows fence and then needs the doctor row to reflect that
+    IMMEDIATELY, not on the next server restart. This is a thin explicit hook — not a second
+    resolve path — around :func:`install_sandbox`, kept as its own named function (rather than
+    callers reaching for ``install_sandbox`` directly) so a setup-triggered re-resolve is
+    distinguishable from the boot resolve in the log via :data:`REASON_RERESOLVED_AFTER_SETUP`.
+    """
+    result = install_sandbox(env=env)
+    logger.info(
+        "sandbox re-resolved reason=%s mechanism=%s active=%s row_reason=%s",
+        REASON_RERESOLVED_AFTER_SETUP,
+        result.mechanism,
+        result.active,
+        result.reason,
+    )
+    return result
+
+
 # Doctor probe: the ``sandbox`` row lives in the sandbox_doctor sibling (ratchet); re-exported.
 from clio_agent.runtime.sandbox_doctor import emit_boot_state_event, probe_sandbox  # noqa: E402
 
@@ -490,6 +516,8 @@ __all__ = [
     "wrap_confined",
     "install_sandbox",
     "current_state",
+    "REASON_RERESOLVED_AFTER_SETUP",
+    "reresolve_after_setup",
     "emit_boot_state_event",
     "probe_sandbox",
 ]

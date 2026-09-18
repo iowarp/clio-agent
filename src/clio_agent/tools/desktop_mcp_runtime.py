@@ -24,6 +24,25 @@ def desktop_mcp_log_file(namespace: str) -> Path | None:
     return log_dir / f"{safe_namespace}.log"
 
 
+def resolve_bundled_runtime_root() -> Path | None:
+    """Resolve the desktop bundle's runtime root (the dir holding ``runtime.json``), if any.
+
+    Walks up from ``sys.executable`` looking for the marker file the desktop installer writes
+    beside the relocatable python interpreter + its bundled ``bin``/``python`` trees. Returns
+    ``None`` outside the bundled desktop runtime (e.g. a dev checkout's venv, or a plain ``pip``
+    install) -- callers must treat that as "not bundled", never raise. Shared by
+    :func:`bundled_module_launcher` (the clio-kit MCP launcher) and
+    :func:`clio_agent.runtime.sandbox_codex.detect_codex` (the bundled ``codex.exe`` lookup) so
+    the ancestor walk exists in exactly one place.
+    """
+
+    executable = Path(sys.executable).resolve()
+    return next(
+        (parent for parent in executable.parents if (parent / "runtime.json").is_file()),
+        None,
+    )
+
+
 def bundled_module_launcher(
     command: str, args: Sequence[str]
 ) -> tuple[str, list[str], dict[str, str]] | None:
@@ -32,11 +51,7 @@ def bundled_module_launcher(
     if command != "clio-kit" or importlib.util.find_spec("clio_kit") is None:
         return None
 
-    executable = Path(sys.executable).resolve()
-    runtime_root = next(
-        (parent for parent in executable.parents if (parent / "runtime.json").is_file()),
-        None,
-    )
+    runtime_root = resolve_bundled_runtime_root()
     if runtime_root is None:
         return None
 
@@ -48,4 +63,5 @@ def bundled_module_launcher(
     env["CLIO_KIT_CACHE_DIR"] = os.environ.get(
         "CLIO_KIT_CACHE_DIR", str(Path.home() / ".clio" / "mcp-runtime")
     )
+    executable = Path(sys.executable).resolve()
     return str(executable), ["-c", "from clio_kit import cli; cli()", *args], env
