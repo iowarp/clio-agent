@@ -138,3 +138,74 @@ def test_stop_runtime_daemon_reaps_helper_as_soon_as_runtime_is_down(
     runtime_stop.stop_runtime_daemon("", "error")
 
     assert calls == ["terminate", "wait:1.0"]
+
+
+def test_stop_stall_budget_fits_desktop_supervisor_window() -> None:
+    """The desktop supervisor force-kills 30s after the 202 response
+
+    (``GRACEFUL_SHUTDOWN_STALL`` in the Rust supervisor). This stop attempt is
+    only ONE step inside that window -- the turn drain and agent-task executor
+    joins run around it -- so its own stall budget must leave real headroom,
+    not spend the whole 30s itself.
+    """
+    assert runtime_stop._RUNTIME_STOP_STALL_SECONDS < 30.0
+
+
+def test_stop_outcome_reports_clean_stop(
+    fake_iowarp_core: types.SimpleNamespace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeProcess:
+        def poll(self) -> int:
+            return 0
+
+    monkeypatch.setattr(runtime_stop.subprocess, "Popen", lambda *a, **k: FakeProcess())
+    monkeypatch.setattr(runtime_stop, "_resolve_runtime_port", lambda config_path: 65001)
+    monkeypatch.setattr(runtime_stop, "_runtime_alive", lambda port: False)
+    monkeypatch.setattr(storage, "_kill_daemon_pidfile", lambda: pytest.fail("must not hard-kill"))
+    monkeypatch.setattr(storage, "_daemon_pidfile", lambda: tmp_path / "daemon.pid")
+
+    outcome = runtime_stop.stop_runtime_daemon("", "error")
+
+    assert outcome == runtime_stop.StopOutcome(stopped=True, path="clean_stop")
+
+
+def test_stop_outcome_reports_stall_kill(
+    fake_iowarp_core: types.SimpleNamespace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A helper that never exits and a runtime that never frees its port must
+    report ``stall_kill`` once the (shortened, test-local) budget elapses."""
+
+    calls: list[str] = []
+
+    class NeverExitsProcess:
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            calls.append("terminate")
+
+        def wait(self, *, timeout: float) -> int:
+            calls.append(f"wait:{timeout}")
+            return 0
+
+        def kill(self) -> None:
+            calls.append("kill")
+
+    monkeypatch.setattr(runtime_stop.subprocess, "Popen", lambda *a, **k: NeverExitsProcess())
+    monkeypatch.setattr(runtime_stop, "_resolve_runtime_port", lambda config_path: 65001)
+    monkeypatch.setattr(runtime_stop, "_runtime_alive", lambda port: True)
+    monkeypatch.setattr(runtime_stop, "_RUNTIME_STOP_STALL_SECONDS", 0.05)
+    monkeypatch.setattr(runtime_stop, "_RUNTIME_STOP_POLL_SECONDS", 0.01)
+    killed: list[bool] = []
+    monkeypatch.setattr(storage, "_kill_daemon_pidfile", lambda: killed.append(True))
+    monkeypatch.setattr(storage, "_daemon_pidfile", lambda: tmp_path / "daemon.pid")
+
+    outcome = runtime_stop.stop_runtime_daemon("", "error")
+
+    assert outcome == runtime_stop.StopOutcome(stopped=False, path="stall_kill")
+    assert calls == ["terminate", "wait:1.0"]
+    assert killed == [True]

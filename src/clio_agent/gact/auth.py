@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import ipaddress
+import os
 from collections.abc import Callable
 from typing import Any
 
@@ -19,17 +20,26 @@ PeerAddressGetter = Callable[[Scope], str | None]
 
 
 def configured_bearer_token() -> str | None:
-    """Resolve the optional GACT bearer token from config, then the environment."""
+    """Resolve the optional GACT bearer token: config, then env, then the desktop launcher.
+
+    ``CLIO_AUTH_TOKEN`` is the desktop launcher's contract, not a GACT config
+    knob: the desktop shell mints a one-use token and exports it to the server
+    process it spawns (``external/gact-tui/desktop/sidecar-launcher/main.go``),
+    then authenticates its own privileged calls (e.g. desktop shutdown) with
+    it. This process must accept that same token as a valid bearer, so it is
+    the final fallback here.
+    """
 
     raw_value: Any = conf.resolve(
         "gact.auth.bearer_token",
         env="CLIO_GACT_BEARER_TOKEN",
         default=None,
     )
-    if raw_value is None:
-        return None
-    token = conf.as_str(raw_value)
-    return token or None
+    if raw_value is not None:
+        token = conf.as_str(raw_value)
+        if token:
+            return token
+    return os.environ.get("CLIO_AUTH_TOKEN", "").strip() or None
 
 
 def peer_address_from_scope(scope: Scope) -> str | None:

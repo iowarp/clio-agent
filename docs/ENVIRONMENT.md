@@ -313,7 +313,7 @@ These deliberately bypass the config store (a shared file must not be able to re
 | --- | --- | --- |
 | `ALCF_INFERENCE_TOKEN` | secret | `src/clio_agent/gact/routes/providers.py`, `src/clio_agent/providers/credentials.py` |
 | `CLIO_ARGONNE_TOKEN` | secret | `src/clio_agent/gact/routes/providers.py`, `src/clio_agent/providers/credentials.py` |
-| `CLIO_AUTH_TOKEN` | secret | `src/clio_agent/gact/__main__.py` |
+| `CLIO_AUTH_TOKEN` | secret | `src/clio_agent/gact/__main__.py`, `src/clio_agent/gact/auth.py` |
 | `CLIO_COLLABORA_URL` | unmigrated | `src/clio_agent/gact/documents/editors.py` |
 | `CLIO_CRED_<PROVIDER>_<ACCOUNT>` | secret | `src/clio_agent/providers/credentials.py` |
 | `CLIO_DESKTOP_BOOT_HEARTBEAT` | unmigrated | `src/clio_agent/gact/__main__.py`, `src/clio_agent/gact/routes/health_projection.py`, `src/clio_agent/tools/desktop_mcp_runtime.py` |

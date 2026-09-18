@@ -602,10 +602,14 @@ class ClioCoreStore:
         )
 
     # NOTE: there is deliberately NO instance ``release()`` method. The shared
-    # clio-core runtime is released exactly once, last-one-out, via the
-    # module-level :func:`release_runtime_client` registered with ``atexit`` in
-    # :meth:`_ensure_runtime`. See that method and the gact lifespan note in
-    # ``gact/app.py`` for why atexit — not a lifespan hook — owns shutdown.
+    # clio-core runtime is released via the module-level, idempotent (last-one-
+    # out, deregister-guarded) :func:`release_runtime_client`. A desktop-managed
+    # boot calls it deterministically, once, from the gact lifespan right after
+    # the turn drain settles (``desktop_lifecycle.release_runtime_after_drain``
+    # in ``gact/app.py``); ``atexit``, registered below in :meth:`_ensure_runtime`,
+    # is the general backstop for every OTHER exit path (bare CLI, a crash, a
+    # non-desktop server) -- a second call from atexit after the lifespan already
+    # ran is a safe no-op.
 
     @classmethod
     def _ensure_runtime(cls, config_path: str, log_level: str, settle_s: float) -> None:
@@ -646,14 +650,14 @@ class ClioCoreStore:
             cte.initialize_cte(config_path, cte.PoolQuery.Dynamic())  # "" => ~/.clio/clio.yaml
             cls._initialized = True
 
-            # Stash the params and register the last-one-out release with atexit.
-            # atexit is THE shutdown mechanism — not a duplicate/fallback. uvicorn
-            # handles SIGTERM by returning from its serve loop, so the interpreter
-            # exits normally and atexit fires ("I leave the TUI, everything gets
-            # released"). The gact lifespan hook DELIBERATELY does NOT call
-            # release_runtime_client (see gact/app.py lifespan note): doing so would
-            # wrongly stop the SHARED daemon on any app teardown that is not a
-            # process exit (e.g. a second app in the same process).
+            # Stash the params and register the last-one-out release with atexit,
+            # the general backstop for every exit path (plain CLI, a crash, a
+            # non-desktop server). A desktop-managed boot ALSO releases earlier
+            # and deterministically, from the gact lifespan right after the turn
+            # drain settles (desktop_lifecycle.release_runtime_after_drain in
+            # gact/app.py); release_runtime_client is deregister-guarded, so
+            # whichever of the two paths runs first does the real work and the
+            # other is a no-op.
             global _active_config_path, _active_log_level
             _active_config_path = config_path
             _active_log_level = log_level
