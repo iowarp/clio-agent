@@ -18,6 +18,8 @@ from clio_agent.tools.gateway import (
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+    from clio_agent.config import LMProviderConfig
+
 logger = logging.getLogger(__name__)
 
 #: #1227 D2 default: how long a discovered relay catalog is trusted before the
@@ -276,7 +278,7 @@ async def construct_agent_with_relay(
     app: FastAPI,
     *,
     arc: Any,
-    provider_config: Any,
+    provider_config: "LMProviderConfig | None" = None,
 ) -> Any:
     """Construct a first-time provider-bound agent with the selected LM config.
 
@@ -284,6 +286,10 @@ async def construct_agent_with_relay(
     ambient defaults.  On a fresh desktop profile that default is LM Studio, so a
     Codex or Claude selection otherwise waits through the local-provider retry
     loop before the selected provider is applied.
+
+    ``provider_config`` is optional (mirrors ``ClioAgent.__init__``): a caller
+    that has no resolved config yet (or wants ``ClioAgent``'s own ambient-default
+    resolution) may omit it, e.g. the deferred-boot construction path.
     """
 
     from clio_agent.agent import ClioAgent  # noqa: PLC0415

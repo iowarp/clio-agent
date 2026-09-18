@@ -986,7 +986,6 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 # copy is cheap (no expert re-wiring), preserving the hot-swap latency
                 # win over a from-scratch rebuild.
                 agent = _copy.copy(existing)
-                agent.rebind_lms(cfg)
             else:
                 # Build the first agent directly with the selected, handshake-applied
                 # provider.  Reading the ambient boot default here used to construct a
@@ -997,6 +996,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                     arc=_process_arc(app),
                     provider_config=cfg,
                 )
+            agent.rebind_lms(cfg)  # both paths need this cfg bound; done once, unconditionally
         except HTTPException:
             # Argonne auth path raises a structured 401 above; keep its
             # error code intact instead of flattening to a generic 400. No
