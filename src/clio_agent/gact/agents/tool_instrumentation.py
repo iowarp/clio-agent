@@ -61,7 +61,7 @@ import inspect
 import logging
 import threading
 from collections.abc import Callable, Iterable, Mapping
-from typing import Any, get_args
+from typing import Any, cast, get_args
 
 from clio_agent.gact.evidence import _bounded_tool_call_result
 from clio_agent.gact.types import ToolDomain
@@ -403,19 +403,31 @@ def rebuilt_tool(
     return dspy.Tool(func=func, name=name, desc=desc, args=args)
 
 
-def tool_domain(tool: Any) -> str | None:
-    """Return a constructed tool's declared domain (#1350), or ``None`` if undeclared.
+def tool_domain(tool: Any) -> ToolDomain | None:
+    """Return a constructed tool's declared domain (#1350), typed, or ``None`` if undeclared.
 
     Reads the marker :func:`native_tool` / :func:`boundary_observed_tool` stamp
     on the CALLABLE (:data:`DOMAIN_ATTR`) — accepts either the constructed
     ``dspy.Tool`` (unwraps its ``.func``) or a bare callable directly, the same
     dual shape :func:`declared_tool_title` et al. rely on elsewhere in this
-    module.
+    module. Construction already validates the stamped value against
+    :data:`TOOL_DOMAINS` (:func:`_validated_domain`), but a directly-set or
+    foreign attribute is not assumed trustworthy here either: an
+    out-of-vocabulary value is a typed, logged ``None`` — never a mistyped
+    plain ``str`` silently handed to a ``Tool(domain=...)`` wire model.
     """
 
     func = getattr(tool, "func", tool)
     value = getattr(func, DOMAIN_ATTR, None)
-    return str(value) if value else None
+    if not value:
+        return None
+    value_str = str(value)
+    if value_str not in TOOL_DOMAINS:
+        logger.warning(
+            "tool domain unrecognized reason=domain_not_in_TOOL_DOMAINS value=%r", value_str
+        )
+        return None
+    return cast("ToolDomain", value_str)
 
 
 # Per-thread one-shot declaration (owner ruling, wire semantics): a native tool

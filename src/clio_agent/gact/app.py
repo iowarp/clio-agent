@@ -648,7 +648,6 @@ from clio_agent.gact.agent_blueprints import (
 )
 from clio_agent.gact.catalog import (  # noqa: E402, F401
     _builtin_agents,
-    _builtin_tools,
     _command_search_roots,
     _load_command_files_from_disk,
     _normalize_file_command_id,

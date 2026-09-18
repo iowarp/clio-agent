@@ -9,13 +9,17 @@ the tool already carries:
   ``format_as_litellm_function_call()`` (the default-aware required-list DSPy
   schema every native tool already declares), or the in-process gateway's own
   MCP ``input_schema`` for the four static fs/shell rows that have no
-  directly-constructed tool object;
+  directly-constructed tool object — read via the synchronous, no-I/O
+  :func:`clio_agent.tools.gateway.list_builtin_tool_definitions` (memoized at
+  module scope, see :func:`_static_gateway_rows`), never the fully async
+  gateway-client listing;
 * ``output_schema`` — ``pydantic.TypeAdapter(<return annotation>).json_schema()``
   off the tool's own callable. No per-tool special-casing: a tool that returns
   a bare ``str`` already projects to ``{"type": "string"}`` this way, a
   ``dict[str, Any]`` to a permissive object schema. A callable with NO return
-  annotation is a genuine gap in the tool — :class:`ToolSchemaError` names it
-  rather than guessing a shape for it;
+  annotation, an UNRESOLVABLE forward-ref annotation, or an annotation
+  pydantic cannot build a schema for is a genuine gap in the tool —
+  :class:`ToolSchemaError` names it rather than guessing a shape for it;
 * ``domain`` — read back off the tool's own construction-time declaration
   (:func:`clio_agent.gact.agents.tool_instrumentation.tool_domain` for native
   tools; the static :mod:`clio_agent.tools.catalog` entry for the four
@@ -35,6 +39,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from pydantic import TypeAdapter
+from pydantic.errors import PydanticSchemaGenerationError
 
 from clio_agent.gact.agents.tool_instrumentation import tool_domain
 from clio_agent.gact.catalog import (
@@ -44,7 +49,7 @@ from clio_agent.gact.catalog import (
     _tool_tags_for_catalog,
     _tool_visible_to_for_catalog,
 )
-from clio_agent.gact.types import Tool
+from clio_agent.gact.types import Tool, ToolDomain
 
 #: Permissive fallback for a tool declaring no arguments (or whose gateway row
 #: carries no schema) — a genuine ``{}`` input is still "an object with no
@@ -118,30 +123,86 @@ def tool_output_schema(func: Callable[..., Any] | None, *, name: str) -> dict[st
     MISSING return annotation raises :class:`ToolSchemaError`
     (``return_annotation_missing:<name>``) rather than guessing a shape; the
     fix is to annotate the tool, not to special-case it here.
+
+    Two further failure modes are typed rather than left to escape as a raw
+    exception into the route: a ``TYPE_CHECKING``-only forward-ref annotation
+    ``typing.get_type_hints`` cannot resolve (``NameError``), and an
+    annotation pydantic genuinely cannot build a schema for — e.g.
+    ``Awaitable[...]`` or a DSPy ``Prediction`` — (``PydanticSchemaGenerationError``).
+    Both surface as :class:`ToolSchemaError`
+    (``return_annotation_unresolvable:<name>:<ExceptionType>``); the fix is
+    the same as a missing annotation — annotate the tool with a real,
+    resolvable, schema-representable type.
     """
 
     if func is None:
         raise ToolSchemaError(f"return_annotation_missing:{name}")
-    hints = typing.get_type_hints(func)
+    try:
+        hints = typing.get_type_hints(func)
+    except NameError as exc:
+        raise ToolSchemaError(
+            f"return_annotation_unresolvable:{name}:{type(exc).__name__}"
+        ) from exc
     if "return" not in hints:
         raise ToolSchemaError(f"return_annotation_missing:{name}")
-    return TypeAdapter(hints["return"]).json_schema()
+    try:
+        return TypeAdapter(hints["return"]).json_schema()
+    except PydanticSchemaGenerationError as exc:
+        raise ToolSchemaError(
+            f"return_annotation_unresolvable:{name}:{type(exc).__name__}"
+        ) from exc
+
+
+#: Memoized ``{name: {"description": ..., "input_schema": ...}}`` for the 4 static fs/shell
+#: rows. ``None`` until first computed. See :func:`_static_gateway_rows`.
+_STATIC_GATEWAY_ROWS: dict[str, dict[str, Any]] | None = None
+
+
+def _static_gateway_rows() -> dict[str, dict[str, Any]]:
+    """Return the 4 static fs/shell rows' description + input schema, computed ONCE.
+
+    ``GET /v1/catalog/tools`` used to call the fully async
+    :func:`clio_agent.tools.gateway.list_gateway_tools` on every request — a fresh event loop, an
+    in-memory FastMCP client per namespace, and psutil walks, off the request's own loop (the
+    ~20ms -> ~109ms regression #1350 review caught). The four fs/shell rows never change at
+    runtime, so instead this reads the synchronous, no-I/O
+    :func:`clio_agent.tools.gateway.list_builtin_tool_definitions` ONCE and caches the small
+    description/input-schema projection at module scope for every subsequent request.
+    """
+
+    global _STATIC_GATEWAY_ROWS
+    if _STATIC_GATEWAY_ROWS is None:
+        from clio_agent.tools.gateway import list_builtin_tool_definitions  # noqa: PLC0415
+
+        _STATIC_GATEWAY_ROWS = {
+            name: {
+                "description": getattr(mcp_tool, "description", "") or "",
+                "input_schema": getattr(mcp_tool, "input_schema", None),
+            }
+            for name, mcp_tool in list_builtin_tool_definitions().items()
+        }
+    return _STATIC_GATEWAY_ROWS
 
 
 async def builtin_tool_rows() -> list[Tool]:
     """Return the ``GET /v1/catalog/tools`` rows: builtin tools with schemas + domain."""
 
-    from clio_agent.tools.gateway import list_gateway_tools  # noqa: PLC0415
-
-    gateway_rows = {row["name"]: row for row in await list_gateway_tools()}
+    gateway_rows = _static_gateway_rows()
     gateway_funcs = _gateway_tool_funcs()
 
     rows: list[Tool] = []
     for name, title, description, tool_obj in _builtin_tool_declarations():
         gateway_row = gateway_rows.get(name)
+        if tool_obj is None and gateway_row is None:
+            # A static gateway (fs/shell) name with no matching gateway listing is a genuine
+            # gap -- the fs/shell server's tool list drifted from what this catalog expects.
+            # Never silently serve a blank/empty schema for it.
+            raise ToolSchemaError(f"gateway_listing_missing:{name}")
         func = getattr(tool_obj, "func", None) if tool_obj is not None else gateway_funcs.get(name)
         row_description = description or (gateway_row or {}).get("description") or ""
-        domain = tool_domain(tool_obj) if tool_obj is not None else _tool_domain_for_catalog(name)
+        domain: ToolDomain | None = (
+            tool_domain(tool_obj) if tool_obj is not None else _tool_domain_for_catalog(name)
+        )
         rows.append(
             Tool(
                 id=name,

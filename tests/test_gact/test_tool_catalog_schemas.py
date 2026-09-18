@@ -10,12 +10,14 @@ NAME. These tests lock the schema/domain projection
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable
 
 import pytest
 from fastapi.testclient import TestClient
 
+from clio_agent.gact import catalog_tool_schemas
 from clio_agent.gact.agents.tool_instrumentation import native_tool
 from clio_agent.gact.app import build_app
 from clio_agent.gact.catalog_tool_schemas import (
@@ -99,6 +101,77 @@ def test_output_schema_derived_from_return_annotation() -> None:
 
     with pytest.raises(ToolSchemaError, match="return_annotation_missing:no_func"):
         tool_output_schema(None, name="no_func")
+
+
+def test_output_schema_unresolvable_forward_ref_is_typed() -> None:
+    """A TYPE_CHECKING-only forward-ref return annotation is a typed error, never a raw
+    ``NameError`` escaping ``typing.get_type_hints`` into the route."""
+
+    def f() -> "DefinitelyNotARealType":  # noqa: F821 - intentionally undefined, that's the point
+        return None  # type: ignore[return-value]
+
+    with pytest.raises(ToolSchemaError, match="return_annotation_unresolvable:f:NameError"):
+        tool_output_schema(f, name="f")
+
+
+class _OpaqueReturnType:
+    """A module-level (so ``typing.get_type_hints`` can resolve the forward ref) plain class with
+    no pydantic-recognizable shape -- ``Awaitable[_OpaqueReturnType]`` cannot get a json schema."""
+
+
+def _returns_pydantic_unsupported_type() -> Awaitable[_OpaqueReturnType]:
+    raise NotImplementedError
+
+
+def test_output_schema_pydantic_unsupported_type_is_typed() -> None:
+    """A return annotation pydantic cannot build a schema for (e.g. ``Awaitable[...]``, or a DSPy
+    ``Prediction``) is a typed error, never a raw ``PydanticSchemaGenerationError``."""
+
+    with pytest.raises(
+        ToolSchemaError,
+        match="return_annotation_unresolvable:f:PydanticSchemaGenerationError",
+    ):
+        tool_output_schema(_returns_pydantic_unsupported_type, name="f")
+
+
+def test_builtin_tool_rows_raises_typed_error_on_missing_gateway_listing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A static gateway (fs/shell) row with no matching gateway listing is a typed error, never a
+    silently-blank input schema/description."""
+
+    monkeypatch.setattr(catalog_tool_schemas, "_static_gateway_rows", lambda: {})
+    with pytest.raises(ToolSchemaError, match="gateway_listing_missing:"):
+        asyncio.run(builtin_tool_rows())
+
+
+def test_builtin_tool_rows_never_calls_the_async_gateway_listing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ~20ms -> ~109ms regression fix: ``GET /v1/catalog/tools`` must not spin up the fully
+    async gateway client (fresh event loop + in-memory FastMCP client per namespace + psutil
+    walks) on every request — it reads the memoized, synchronous, no-I/O listing instead."""
+
+    import clio_agent.tools.gateway as gateway_module
+
+    def _must_not_run(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("list_gateway_tools must not run on the /v1/catalog/tools path")
+
+    monkeypatch.setattr(gateway_module, "list_gateway_tools", _must_not_run)
+    rows = asyncio.run(builtin_tool_rows())
+    assert rows
+
+
+def test_catalog_tools_route_is_fast_in_process(client: TestClient) -> None:
+    """``GET /v1/catalog/tools`` stays well under the ~50ms in-process budget once the memoized
+    static-row cache is warm -- no per-request event loop/FastMCP client round trip."""
+
+    client.get("/v1/catalog/tools")  # warm the memoized static-gateway-row cache once
+    start = time.perf_counter()
+    resp = client.get("/v1/catalog/tools")
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    assert resp.status_code == 200
+    assert elapsed_ms < 50, f"GET /v1/catalog/tools took {elapsed_ms:.1f}ms (budget 50ms)"
 
 
 def test_native_tool_rejects_unknown_domain() -> None:

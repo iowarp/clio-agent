@@ -8,14 +8,17 @@ helpers: none of them read the app's request-scoped contextvars.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 # SKILL.md discovery/parsing is owned by gact.skills (#917); since #918 skills
 # no longer materialize as agents — only the frontmatter parser is shared here.
 from clio_agent.gact.skills import _parse_skill_frontmatter
-from clio_agent.gact.types import AgentDef, Tool
+from clio_agent.gact.types import AgentDef, Tool, ToolDomain
+
+logger = logging.getLogger(__name__)
 
 
 def _builtin_agents() -> list[AgentDef]:
@@ -261,14 +264,23 @@ def _builtin_tool_declarations() -> list[tuple[str, str, str, Any]]:
 
 
 def _record_declaration(seen: dict[str, tuple[str, str, str, Any]], tool: Any) -> None:
-    """Add one constructed tool's declaration to ``seen``, first name wins."""
+    """Add one constructed tool's declaration to ``seen``, first name wins.
+
+    The declared title is read via
+    :func:`clio_agent.gact.agents.tool_instrumentation.declared_tool_title` (the curated-title
+    registry :func:`~clio_agent.gact.agents.tool_instrumentation.native_tool` populates) —
+    NOT ``getattr(tool, "title", "")``, which is always empty on a constructed
+    ``ClioNativeTool``/``dspy.Tool`` (neither carries a bare ``.title`` attribute).
+    """
 
     name = str(getattr(tool, "name", "") or "").strip()
     if not name or name in seen:
         return
+    from clio_agent.gact.agents.tool_instrumentation import declared_tool_title  # noqa: PLC0415
+
     seen[name] = (
         name,
-        str(getattr(tool, "title", "") or ""),
+        declared_tool_title(name) or "",
         str(getattr(tool, "desc", "") or getattr(tool, "description", "") or ""),
         tool,
     )
@@ -328,18 +340,39 @@ def _tool_visible_to_for_catalog(tool_name: str) -> list[str]:
         return []
 
 
-def _tool_domain_for_catalog(tool_name: str) -> str | None:
+def _tool_domain_for_catalog(tool_name: str) -> ToolDomain | None:
     """Return the static gateway domain for a catalog tool row, if declared.
 
     Only the fs/shell :data:`clio_agent.tools.catalog.TOOL_CATALOG` rows carry
     a domain here — every other builtin tool's domain comes from its own
     constructed callable (:func:`clio_agent.gact.agents.tool_instrumentation.tool_domain`),
-    not this static lookup.
+    not this static lookup. :class:`~clio_agent.tools.catalog.ToolCatalogEntry` keeps
+    ``domain`` as a plain ``str`` (that module is a leaf that must not import the pydantic wire
+    types), so this is where it is re-validated against the closed
+    :data:`~clio_agent.gact.agents.tool_instrumentation.TOOL_DOMAINS` vocabulary and cast to the
+    typed :data:`~clio_agent.gact.types.ToolDomain`.
     """
     try:
         from clio_agent.tools.catalog import get_tool_entry
-
-        entry = get_tool_entry(tool_name)
-        return entry.domain or None if entry else None
-    except Exception:  # noqa: BLE001 - tool metadata lookup optional; empty on any failure
+    except ImportError as exc:
+        logger.info(
+            "tool domain lookup skipped reason=tools_catalog_import_failed tool=%s error=%r",
+            tool_name,
+            exc,
+        )
         return None
+
+    entry = get_tool_entry(tool_name)
+    if entry is None or not entry.domain:
+        return None
+
+    from clio_agent.gact.agents.tool_instrumentation import TOOL_DOMAINS
+
+    if entry.domain not in TOOL_DOMAINS:
+        logger.warning(
+            "tool domain unrecognized reason=domain_not_in_TOOL_DOMAINS tool=%s domain=%r",
+            tool_name,
+            entry.domain,
+        )
+        return None
+    return cast("ToolDomain", entry.domain)

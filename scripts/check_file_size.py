@@ -482,7 +482,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # ``want_agent``) it reads; not in test_import_seams.SEAM_SYMBOLS so no re-export
     # shim was needed (its one call site now reads
     # ``agent_initialization.agent_not_available_error``).
-    "src/clio_agent/gact/app.py": 2471,  # relay wiring moved to gact/relay_wiring.py; +6 one-line provenance_wiring calls (#1247); #1333: two workspaces imports merged to one line each, netted against the #1334 F2 review's app.state.messages boot placeholder (see build_app)
+    "src/clio_agent/gact/app.py": 2470,  # relay wiring moved to gact/relay_wiring.py; +6 one-line provenance_wiring calls (#1247); #1333: two workspaces imports merged to one line each, netted against the #1334 F2 review's app.state.messages boot placeholder (see build_app); A3 review: dropped the unused `_builtin_tools` catalog re-export (2471 -> 2470), netted against the A6 sandbox-setup route registration (session_defaults import collapsed to one line to stay flat)
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
