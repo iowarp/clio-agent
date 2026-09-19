@@ -57,6 +57,18 @@ Download the installer for your OS from the
 `.msi`/`.exe` (Windows), `.dmg` (macOS), `.deb`/`.AppImage`/`.rpm` (Linux). Bundles
 clio-agent — nothing else to install.
 
+**Proving a release candidate's desktop lifecycle (Windows).** `scripts/
+live_verification/desktop_lifecycle_proof.py` drives the INSTALLED
+`clio-desktop.exe` over Chrome DevTools Protocol (WebView2 remote debugging)
+plus psutil process-tree evidence — launch, the "Keep CLIO running?" close
+dialog (Escape dismiss, "Keep running" to the tray, "Quit CLIO"), and
+single-instance relaunch — writing a screenshot + `report.json` per step
+under `out/live-verification/desktop_lifecycle_proof/`. See the script's own
+module docstring for the full step list and flags:
+```sh
+uv run python scripts/live_verification/desktop_lifecycle_proof.py --help
+```
+
 ## f) From source (contributors)
 ```sh
 git clone --recurse-submodules https://github.com/iowarp/clio-agent
