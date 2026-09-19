@@ -146,3 +146,14 @@ def test_capabilities_stays_offline(monkeypatch, client: TestClient) -> None:
     assert resp.status_code == 200, resp.text
     assert resp.json()["versions"] is not None
     assert calls == []
+
+
+def test_v3_capabilities_projection_carries_the_same_versions_block(client: TestClient) -> None:
+    """The desktop negotiates GACT 0.3; the v3 projection must carry ``versions`` too."""
+
+    v2 = client.get("/v1/capabilities").json()
+    v3 = client.get("/v1/capabilities", headers={"X-GACT-Version": "0.3"}).json()
+
+    assert v3.get("gact_versions") == ["0.3", "0.2"]
+    assert v3["versions"] == v2["versions"]
+    assert v3["versions"]["clio_agent"] == __version__

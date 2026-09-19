@@ -7,6 +7,7 @@ from typing import Any, Mapping
 from clio_agent import __version__ as clio_agent_version
 from clio_agent.gact.protocol.v3 import A2UI_V091, GACT_V2, GACT_V3, utcnow_iso
 from clio_agent.gact.providers.config import _effective_lm_config
+from clio_agent.gact.version_info import build_version_info
 
 
 def capabilities_to_v3(app: Any, flags: Any, *, replay_retention: int) -> dict[str, Any]:
@@ -92,6 +93,9 @@ def capabilities_to_v3(app: Any, flags: Any, *, replay_retention: int) -> dict[s
         "capabilities": capabilities,
         "degradations": degradations,
         "model_catalog": model_catalog,
+        # Same offline versions block the v2 model carries (agent, build, python, contract,
+        # marketplace pin) -- the desktop's About panel negotiates v3, so it must ride here too.
+        "versions": build_version_info().model_dump(),
         **(
             {
                 "active_model": {
