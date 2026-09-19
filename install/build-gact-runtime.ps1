@@ -259,39 +259,40 @@ $previousFileCapacity = $env:CLIO_ARC_CTE_FILE_CAPACITY
 # state lands is irrelevant to that, so keep it OFF the temp volume holding
 # the relocated copy (the build just wrote two ~1 GB trees there) and beside
 # $Out instead -- outside $Out so it can never reach the bundle. The file
-# tier is deliberately tiny: ARC's preflight requires
-# capacity + a 1 GiB free-space reserve, and a smoke asking for a 1 GiB
-# tier on a filled build volume fails as a LOUD degrade to LocalFS that
-# looks exactly like the prune casualty this check exists to catch.
+# tier is deliberately tiny because ARC's preflight demands
+# capacity + a 1 GiB free-space reserve on that volume, and a gigabyte-scale
+# request on a build volume buys nothing this gate is trying to prove: any
+# shortfall surfaces as a LOUD degrade to LocalFS indistinguishable from the
+# prune casualty the gate exists to catch.
 $smokeUser = (Join-Path ([System.IO.Path]::GetDirectoryName($Out)) 'gact-runtime-arc-smoke')
+$previousRuntimeStateDir = $env:CLIO_RUNTIME_STATE_DIR
 Remove-Item -LiteralPath $smokeUser -Recurse -Force -ErrorAction SilentlyContinue
 try {
   $env:CLIO_USER_DIR = $smokeUser
   $env:CLIO_ARC_CTE_FILE_CAPACITY = '64MB'
+  # Hermetic by explicit selection, not by degrade: the spawn lock, pidfile,
+  # client registry and daemon log default to the host-global ~/.clio, which
+  # on a build machine means sharing a daemon (and a log) with whatever else
+  # runs there. Point them at the smoke's own directory so this proves the
+  # RELOCATED IMAGE, and so the daemon log lands where the failure path looks.
+  $env:CLIO_RUNTIME_STATE_DIR = (Join-Path $smokeUser 'runtime-state')
   New-Item -ItemType Directory -Path $smokeUser -Force | Out-Null
+  New-Item -ItemType Directory -Path $env:CLIO_RUNTIME_STATE_DIR -Force | Out-Null
   # Diagnostic only: never fail the build because free space could not be read.
   $smokeFree = 'unknown'
   try {
     $smokeFree = "$([math]::Round((New-Object System.IO.DriveInfo((Get-Item $smokeUser).Root)).AvailableFreeSpace / 1GB, 2)) GB"
   } catch { }
   Write-Host "[build-gact-runtime] sanity (relocated ARC): initialize clio-core store (user dir $smokeUser, free $smokeFree)"
-  # NOT swallowed: a degrade prints its typed reason on stderr, and that
-  # reason is the whole diagnostic value of this gate.
-  Invoke-Native -Exe $relocPy -Args @(
-    '-c',
-    'from clio_agent.arc.storage import ClioCoreStore, make_arc_store; store = make_arc_store(backend="cte"); assert isinstance(store, ClioCoreStore), type(store).__name__'
-  )
-} catch {
-  $runtimeLog = Join-Path $smokeUser 'clio-runtime.log'
-  if (Test-Path -LiteralPath $runtimeLog) {
-    Write-Host "[build-gact-runtime] --- clio-runtime.log ---"
-    Get-Content -LiteralPath $runtimeLog -Tail 60 | ForEach-Object { Write-Host $_ }
-  } else {
-    Write-Host "[build-gact-runtime] no clio-runtime.log at $runtimeLog"
-  }
-  throw
+  # NOT swallowed: on a degrade the helper prints the typed reason, the stack
+  # from a wrapper-free re-run, and the daemon log. That output IS the gate's
+  # diagnostic value, and piping it away once already cost a release cycle.
+  Invoke-Native -Exe $relocPy -Args @((Join-Path $Source 'install/arc_smoke.py'))
 } finally {
   Remove-Item -LiteralPath $smokeUser -Recurse -Force -ErrorAction SilentlyContinue
+  if ($null -eq $previousRuntimeStateDir) {
+    Remove-Item Env:CLIO_RUNTIME_STATE_DIR -ErrorAction SilentlyContinue
+  } else { $env:CLIO_RUNTIME_STATE_DIR = $previousRuntimeStateDir }
   if ($null -eq $previousUserDir) { Remove-Item Env:CLIO_USER_DIR -ErrorAction SilentlyContinue }
   else { $env:CLIO_USER_DIR = $previousUserDir }
   if ($null -eq $previousFileCapacity) {
