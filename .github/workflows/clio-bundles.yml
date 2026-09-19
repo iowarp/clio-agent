@@ -295,6 +295,33 @@ jobs:
           src="${{ github.workspace }}/branding/clio/icons"
           dst="external/gact-tui/desktop/src-tauri/icons"
           cp -f "$src"/* "$dst"/
+      - name: Check CLIO installer art
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The CLIO overlay declares bundle.windows.nsis.headerImage /
+          # sidebarImage. NSIS takes those as uncompressed 24-bit BMPs at exact
+          # sizes; a wrong format does NOT fail the Tauri build, it only shows
+          # up as a broken page in the shipped installer. Guarded the same way
+          # as the icon check: an older gact-tui pin may not carry the script.
+          checker="external/gact-tui/desktop/scripts/check-installer-art.mjs"
+          if [ ! -f "$checker" ]; then
+            echo "check-installer-art.mjs not present in this gact-tui pin yet -- skipping installer-art check"
+          else
+            node "$checker" "${{ github.workspace }}/branding/clio/installer"
+          fi
+      - name: Apply CLIO installer art
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Same copy-over rationale as the icons: the overlay's relative
+          # "installer/..." paths resolve against desktop/src-tauri. Unguarded
+          # on purpose -- the overlay declares the art, so missing art must
+          # fail the build loudly rather than ship a default-looking installer.
+          src="${{ github.workspace }}/branding/clio/installer"
+          dst="external/gact-tui/desktop/src-tauri/installer"
+          mkdir -p "$dst"
+          cp -f "$src"/*.bmp "$dst"/
       - name: Tauri release build
         working-directory: external/gact-tui
         shell: bash
