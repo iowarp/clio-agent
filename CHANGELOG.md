@@ -27,6 +27,8 @@ auto-update alongside a set of desktop-panel and provider-handshake fixes.
   reported capabilities, instead of a fixed, potentially stale list.
 - Desktop bundles are now signed, and the app checks for and applies updates
   automatically.
+- The Windows installer now carries CLIO's own wizard artwork and application
+  icon instead of the packaging tool's defaults.
 
 ### Fixed
 
