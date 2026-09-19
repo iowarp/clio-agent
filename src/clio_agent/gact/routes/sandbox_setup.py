@@ -57,6 +57,27 @@ logger = logging.getLogger("clio_agent.gact.routes.sandbox_setup")
 REASON_SETUP_UNSUPPORTED = "sandbox_setup_unsupported"
 
 
+def sandbox_row_wire(row: Any) -> dict[str, Any]:
+    """Project the ``sandbox`` doctor row for the wire, ONE shape for every route.
+
+    The shared health projection has no sandbox-specific fields, so every body that carries the
+    row (GET, the 409/501 refusals and the setup verdict) adds the same three desktop-panel
+    conveniences: ``setup_in_progress`` (the setup lock), ``reason`` (the typed reason token
+    lifted out of ``details``) and ``codex_source`` (``bundled``/``path``/``None``). A single
+    projection means the client never sees a row that lacks a field another route emits.
+    """
+
+    wire = integration_to_wire(row).model_dump()
+    details = row.details if isinstance(row.details, dict) else {}
+    codex_details = details.get("codex")
+    wire["setup_in_progress"] = setup_in_progress()
+    wire["reason"] = str(details.get("reason", ""))
+    wire["codex_source"] = (
+        (codex_details.get("source") or None) if isinstance(codex_details, dict) else None
+    )
+    return wire
+
+
 def register_sandbox_setup_routes(app: FastAPI) -> None:
     """Register the ``sandbox`` row GET and the setup-trigger POST. Loopback-only, no extra auth."""
 
@@ -69,15 +90,7 @@ def register_sandbox_setup_routes(app: FastAPI) -> None:
         lifted out of ``details`` so the panel need not parse ``summary``), and ``codex_source``
         (``bundled``/``path``/``None`` from codex detection)."""
 
-        row = probe_sandbox()
-        wire = integration_to_wire(row).model_dump()
-        codex_details = row.details.get("codex") if isinstance(row.details, dict) else None
-        wire["setup_in_progress"] = setup_in_progress()
-        wire["reason"] = str(row.details.get("reason", "")) if isinstance(row.details, dict) else ""
-        wire["codex_source"] = (
-            (codex_details.get("source") or None) if isinstance(codex_details, dict) else None
-        )
-        return wire
+        return sandbox_row_wire(probe_sandbox())
 
     @app.post("/v1/system/sandbox/setup")
     async def post_sandbox_setup() -> JSONResponse:
@@ -96,7 +109,7 @@ def register_sandbox_setup_routes(app: FastAPI) -> None:
                     "status": sandbox_cli.STATUS_NOT_WINDOWS,
                     "reason": REASON_SETUP_UNSUPPORTED,
                     "elevated": False,
-                    "row": integration_to_wire(probe_sandbox()).model_dump(),
+                    "row": sandbox_row_wire(probe_sandbox()),
                 },
             )
         try:
@@ -109,7 +122,7 @@ def register_sandbox_setup_routes(app: FastAPI) -> None:
                     "status": exc.reason,
                     "reason": exc.reason,
                     "elevated": False,
-                    "row": integration_to_wire(probe_sandbox()).model_dump(),
+                    "row": sandbox_row_wire(probe_sandbox()),
                 },
             )
         return JSONResponse(
@@ -117,9 +130,9 @@ def register_sandbox_setup_routes(app: FastAPI) -> None:
                 "status": result.status,
                 "reason": result.reason,
                 "elevated": result.elevated,
-                "row": integration_to_wire(result.row).model_dump(),
+                "row": sandbox_row_wire(result.row),
             }
         )
 
 
-__all__ = ["REASON_SETUP_UNSUPPORTED", "register_sandbox_setup_routes"]
+__all__ = ["REASON_SETUP_UNSUPPORTED", "register_sandbox_setup_routes", "sandbox_row_wire"]

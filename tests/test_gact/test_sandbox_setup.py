@@ -428,6 +428,7 @@ def test_setup_conflict_when_already_running(
     assert resp.status_code == 409
     body = resp.json()
     assert body["reason"] == REASON_SETUP_IN_PROGRESS
+    assert body["row"]["setup_in_progress"] is True  # lock held: same shape as the GET
     assert body["row"]["name"] == "sandbox"
 
 
@@ -456,6 +457,10 @@ def test_setup_unsupported_off_windows(monkeypatch: pytest.MonkeyPatch, tmp_path
     assert body["reason"] == sandbox_setup_routes.REASON_SETUP_UNSUPPORTED
     assert body["elevated"] is False
     assert body["row"]["name"] == "sandbox"
+    # One projection for every route that carries the row: the refusal bodies must expose
+    # the same desktop-panel fields as the GET so the client never sees two row shapes.
+    assert set(body["row"]) >= {"setup_in_progress", "reason", "codex_source"}
+    assert body["row"]["setup_in_progress"] is False
 
 
 # --------------------------------------------------------------------------- #
