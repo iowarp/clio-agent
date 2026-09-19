@@ -6,7 +6,7 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
-## [0.9.4.1] - 2026-09-18
+## [0.9.4.1] - 2026-09-19
 
 This maintenance release repairs the bundled desktop first-launch path found
 during external-user verification of v0.9.4, and adds signed desktop
