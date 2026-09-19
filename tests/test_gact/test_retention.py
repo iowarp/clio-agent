@@ -168,8 +168,13 @@ def test_shared_tokens_bounded_end_to_end(app_client: TestClient, monkeypatch) -
     assert all("description" in e for e in evs)
 
 
-def test_context_frames_bounded_per_session_end_to_end(app_client: TestClient, monkeypatch) -> None:
+def test_context_frames_bounded_per_session_end_to_end(
+    app_client: TestClient,
+    monkeypatch,
+    host_agent_executor: object,
+) -> None:
     """Each turn records a context frame; the per-session list must be bounded."""
+    del host_agent_executor
     from clio_agent.gact.runtime import retention
 
     from .conftest import complete_turn

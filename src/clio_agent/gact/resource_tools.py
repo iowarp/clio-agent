@@ -452,6 +452,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
             resource_list,
             name="workspace_resource_list",
             presentation="resource",
+            domain="resources",
             title="List resources",
             representation="row",
             desc=(
@@ -464,6 +465,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
             resource_inspect,
             name="workspace_resource_inspect",
             presentation="resource",
+            domain="resources",
             title="Inspect",
             representation="row",
             desc=(
@@ -476,6 +478,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
             resource_wait,
             name="workspace_resource_wait",
             presentation="resource",
+            domain="resources",
             title="Await conversion",
             representation="row",
             desc=(
@@ -499,6 +502,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
             resource_read,
             name="workspace_resource_read",
             presentation="resource",
+            domain="resources",
             title="Read",
             representation="row",
             desc=(
@@ -517,6 +521,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
             resource_search,
             name="workspace_resource_search",
             presentation="resource",
+            domain="resources",
             title="Search",
             representation="row",
             desc=(
@@ -536,6 +541,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
             resource_structure,
             name="workspace_resource_structure",
             presentation="resource",
+            domain="resources",
             title="Inspect structure",
             representation="row",
             desc=(

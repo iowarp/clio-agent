@@ -8,14 +8,17 @@ helpers: none of them read the app's request-scoped contextvars.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 # SKILL.md discovery/parsing is owned by gact.skills (#917); since #918 skills
 # no longer materialize as agents — only the frontmatter parser is shared here.
 from clio_agent.gact.skills import _parse_skill_frontmatter
-from clio_agent.gact.types import AgentDef, Tool
+from clio_agent.gact.types import AgentDef, Tool, ToolDomain
+
+logger = logging.getLogger(__name__)
 
 
 def _builtin_agents() -> list[AgentDef]:
@@ -203,30 +206,108 @@ def _truthy_command_field(value: Any, default: bool) -> bool:
     return bool(value)
 
 
-def _builtin_tools() -> list[Tool]:
-    """Flatten the experts' curated tool lists into a single GACT
-    Tool catalog. Stable ids (same strings the experts reference),
-    backend flag `builtin`. The names MAY duplicate across experts
-    (e.g. read_file) — we dedupe by id so GET /v1/catalog/tools has
-    one row per distinct tool."""
+def _catalog_stub() -> Any:
+    """Return a FRESH catalog-only placeholder callable; never executed.
 
-    seen: dict[str, Tool] = {}
-    for agent in _builtin_agents():
-        if agent.tier not in {2, 3}:
-            continue
-        for tool_name in agent.tools:
-            if tool_name in seen:
-                continue
-            seen[tool_name] = Tool(
-                id=tool_name,
-                source="builtin",
-                name=tool_name,
-                title=tool_name.replace("_", " ").title(),
-                owner=_tool_owner_for_catalog(tool_name),
-                tags=_tool_tags_for_catalog(tool_name),
-                visible_to=_tool_visible_to_for_catalog(tool_name),
-            )
+    A distinct function object per declared tool — never shared — so a native
+    tool's per-callable markers (:mod:`tool_instrumentation`'s
+    ``DOMAIN_ATTR``/``TITLE_ATTR``/``REPRESENTATION_ATTR``) can never
+    cross-contaminate between two catalog-only rows built off the same stub:
+    each call to this factory hands back its OWN closure.
+    """
+
+    def _stub(*_args: Any, **_kwargs: Any) -> str:
+        return ""
+
+    return _stub
+
+
+def _builtin_tool_declarations() -> list[tuple[str, str, str, Any]]:
+    """Declare the code-shipped tool surface as ``(name, title, description, tool_obj)``.
+
+    ``tool_obj`` is the constructed dspy/``ClioNativeTool`` for every declared
+    tool EXCEPT the four static gateway (fs/shell) names, where it is ``None``
+    — those run through the in-process MCP gateway rather than a directly
+    constructed ``dspy.Tool``, so their schema/domain come from
+    :mod:`clio_agent.tools.catalog` / :mod:`clio_agent.tools.gateway` instead
+    (see :mod:`clio_agent.gact.catalog_tool_schemas`).
+
+    ONE declaration pass, shared by :func:`_builtin_tools` (the plain sync
+    Tool-row builder every existing consumer uses) and
+    ``catalog_tool_schemas.builtin_tool_rows`` (the schema/domain-bearing
+    async builder for ``GET /v1/catalog/tools``) — they can never drift on
+    name/title/description.
+    """
+
+    from clio_agent.gact.agents.auto_tools import build_auto_react_tools  # noqa: PLC0415
+    from clio_agent.gact.agents.spawn_runtime_declarations import (  # noqa: PLC0415
+        assemble_spawn_runtime_tools,
+    )
+
+    seen: dict[str, tuple[str, str, str, Any]] = {}
+    main = _builtin_main_agent()
+    for tool_name in main.tools:
+        seen.setdefault(tool_name, (tool_name, tool_name.replace("_", " ").title(), "", None))
+    for tool in build_auto_react_tools(main):
+        _record_declaration(seen, tool)
+    for tool in assemble_spawn_runtime_tools(
+        main,
+        spawn_agent_task=_catalog_stub(),
+        wait_agent_tasks=_catalog_stub(),
+        spawn_agents_parallel=_catalog_stub(),
+        run_workflow=_catalog_stub(),
+        has_declared_children=False,
+        can_commission_blueprints=True,
+    ):
+        _record_declaration(seen, tool)
     return list(seen.values())
+
+
+def _record_declaration(seen: dict[str, tuple[str, str, str, Any]], tool: Any) -> None:
+    """Add one constructed tool's declaration to ``seen``, first name wins.
+
+    The declared title is read via
+    :func:`clio_agent.gact.agents.tool_instrumentation.declared_tool_title` (the curated-title
+    registry :func:`~clio_agent.gact.agents.tool_instrumentation.native_tool` populates) —
+    NOT ``getattr(tool, "title", "")``, which is always empty on a constructed
+    ``ClioNativeTool``/``dspy.Tool`` (neither carries a bare ``.title`` attribute).
+    """
+
+    name = str(getattr(tool, "name", "") or "").strip()
+    if not name or name in seen:
+        return
+    from clio_agent.gact.agents.tool_instrumentation import declared_tool_title  # noqa: PLC0415
+
+    seen[name] = (
+        name,
+        declared_tool_title(name) or "",
+        str(getattr(tool, "desc", "") or getattr(tool, "description", "") or ""),
+        tool,
+    )
+
+
+def _builtin_tools() -> list[Tool]:
+    """Return the code-shipped tool surface for a bare CLIO session.
+
+    This is a product catalog, not a session-effective inventory: it includes
+    the workspace gateway, universal react tools, and root coordination tools.
+    Blueprint/session additions remain visible through the effective-toolset
+    endpoint and are deliberately not guessed here.
+    """
+
+    return [
+        Tool(
+            id=name,
+            source="builtin",
+            name=name,
+            title=title or name.replace("_", " ").title(),
+            description=description,
+            owner=_tool_owner_for_catalog(name),
+            tags=_tool_tags_for_catalog(name),
+            visible_to=_tool_visible_to_for_catalog(name),
+        )
+        for name, title, description, _tool in _builtin_tool_declarations()
+    ]
 
 
 def _tool_owner_for_catalog(tool_name: str) -> str:
@@ -257,3 +338,41 @@ def _tool_visible_to_for_catalog(tool_name: str) -> list[str]:
         return tool_visible_scopes(tool_name)
     except Exception:  # noqa: BLE001 - tool metadata lookup optional; empty on any failure
         return []
+
+
+def _tool_domain_for_catalog(tool_name: str) -> ToolDomain | None:
+    """Return the static gateway domain for a catalog tool row, if declared.
+
+    Only the fs/shell :data:`clio_agent.tools.catalog.TOOL_CATALOG` rows carry
+    a domain here — every other builtin tool's domain comes from its own
+    constructed callable (:func:`clio_agent.gact.agents.tool_instrumentation.tool_domain`),
+    not this static lookup. :class:`~clio_agent.tools.catalog.ToolCatalogEntry` keeps
+    ``domain`` as a plain ``str`` (that module is a leaf that must not import the pydantic wire
+    types), so this is where it is re-validated against the closed
+    :data:`~clio_agent.gact.agents.tool_instrumentation.TOOL_DOMAINS` vocabulary and cast to the
+    typed :data:`~clio_agent.gact.types.ToolDomain`.
+    """
+    try:
+        from clio_agent.tools.catalog import get_tool_entry
+    except ImportError as exc:
+        logger.info(
+            "tool domain lookup skipped reason=tools_catalog_import_failed tool=%s error=%r",
+            tool_name,
+            exc,
+        )
+        return None
+
+    entry = get_tool_entry(tool_name)
+    if entry is None or not entry.domain:
+        return None
+
+    from clio_agent.gact.agents.tool_instrumentation import TOOL_DOMAINS
+
+    if entry.domain not in TOOL_DOMAINS:
+        logger.warning(
+            "tool domain unrecognized reason=domain_not_in_TOOL_DOMAINS tool=%s domain=%r",
+            tool_name,
+            entry.domain,
+        )
+        return None
+    return cast("ToolDomain", entry.domain)

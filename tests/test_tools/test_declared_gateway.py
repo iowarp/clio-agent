@@ -102,6 +102,7 @@ def test_static_catalog_entries_win_over_derived(declared_server: FastMCP):
         owner="preexisting",
         tags=frozenset({"static"}),
         visible_to=frozenset({"preexisting"}),
+        domain="",
     )
     catalog = build_tool_catalog(gw, static_catalog=custom_static)
     assert catalog["demo_ping"].owner == "preexisting"

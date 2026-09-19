@@ -312,6 +312,10 @@ KEY_NOTES: dict[str, str] = {
         "Seconds a temporary `git clone --depth 1` of a remote blueprint source may run before "
         "timing out; raise for a large repo or slow link."
     ),
+    "gact.blueprint_source.ls_remote_timeout_s": (
+        "Seconds a read-only `git ls-remote`/`rev-parse` marketplace update check may run before "
+        "timing out; lower to keep the desktop versions panel snappy, raise for a slow link."
+    ),
     "gact.context_references.browse_limit_per_kind": (
         "Rows returned per reference kind when the picker opens with no query typed; raise to "
         "browse more of a large workspace at a glance."

@@ -16,7 +16,7 @@
   The runtime self-describes via a generic manifest (<out>\runtime.json,
   iowarp/gact-tui#311) so the desktop launcher needs zero knowledge of
   what's inside:
-    {"schema": 1, "exec": ["python/python.exe", "-m", "clio_agent.gact"]}
+    {"schema": 1, "exec": ["python/python.exe", "-m", "clio_agent.gact", "--no-agent"]}
 
   Console-script exes are DELETED after install: they embed absolute
   build paths and break on relocation -- `-m clio_agent.gact` is the only
@@ -109,7 +109,7 @@ $pyBinRel = 'python/python.exe'
 $pyBin = Join-Path $Out 'python\python.exe'
 if (-not (Test-Path $pyBin)) { throw "build-gact-runtime: $pyBinRel missing in dist" }
 
-# --- 2. install clio-agent (NO extras) directly into the dist ----------
+# --- 2. install clio-agent + the portable science launcher -------------
 if ($Source) {
   if (-not (Test-Path (Join-Path $Source 'pyproject.toml'))) {
     throw "build-gact-runtime: Source=$Source is not a clio-agent checkout"
@@ -118,12 +118,21 @@ if ($Source) {
 } else {
   $spec = "clio-agent @ git+https://github.com/iowarp/clio-agent.git@$Ref"
 }
-Write-Host "[build-gact-runtime] installing: $spec (no extras)"
+$clioKitSpec = 'clio-kit==2.10.6'
+Write-Host "[build-gact-runtime] installing: $spec + $clioKitSpec"
 Invoke-Native -Exe $uv.Source -Args @(
-    'pip', 'install', '--python', $pyBin, $spec,
+    'pip', 'install', '--python', $pyBin, $spec, $clioKitSpec,
     'dspy==3.3.0b1', 'fastmcp==4.0.0b5',
     'fastmcp-slim==4.0.0b5', 'fastmcp-tasks==4.0.0b5'
 )
+
+# clio-kit materializes each locked MCP server with uv on first use. Ship uv
+# beside the relocatable runtime instead of requiring a fresh desktop user to
+# install developer tooling or discover PATH configuration.
+$runtimeBin = Join-Path $Out 'bin'
+New-Item -ItemType Directory -Path $runtimeBin -Force | Out-Null
+Copy-Item -LiteralPath $uv.Source -Destination (Join-Path $runtimeBin 'uv.exe') -Force
+Copy-Item -LiteralPath $uv.Source -Destination (Join-Path $runtimeBin 'uvx.exe') -Force
 
 $sizeBefore = Get-DirSizeMB $Out
 Write-Host "[build-gact-runtime] size before prune: $sizeBefore MB"
@@ -177,24 +186,35 @@ if (Test-Path $scriptsDir) {
     ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
 }
 # distlib/setuptools launcher stubs under site-packages (t64.exe, w64-arm.exe,
-# ...) are dead weight (console scripts are deleted; -m is the entry) and the
-# release staging sweeps *.exe as installers. python.exe lives at the dist
-# root, untouched.
+# ...) are dead weight because console scripts are deleted and ``-m`` is the
+# GACT entry. Keep real packaged runtimes: the Codex SDK provider executable
+# and iowarp-core's native daemon/tools. Removing clio_run.exe leaves imports
+# healthy but silently forces ARC to degrade when the first agent is built.
 if (Test-Path $sitePkgs) {
+  $codexCli = Join-Path $sitePkgs 'codex_cli_bin\bin\codex.exe'
+  $iowarpCoreBin = Join-Path $sitePkgs 'iowarp_core\bin'
   Get-ChildItem -LiteralPath $sitePkgs -Recurse -File -Filter '*.exe' -ErrorAction SilentlyContinue |
+    Where-Object {
+      $_.FullName -ne $codexCli -and
+      -not $_.FullName.StartsWith($iowarpCoreBin, [System.StringComparison]::OrdinalIgnoreCase)
+    } |
     ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+  if (-not (Test-Path -LiteralPath $codexCli)) {
+    throw 'build-gact-runtime: packaged Codex provider executable is missing'
+  }
+  $clioCoreLauncher = Join-Path $iowarpCoreBin 'clio_run.exe'
+  if (-not (Test-Path -LiteralPath $clioCoreLauncher)) {
+    throw 'build-gact-runtime: packaged clio-core launcher is missing'
+  }
 }
 
-# Prepare imports in the release image, not on the user's first launch. The
-# prune above intentionally removes build-host caches; regenerate portable,
-# unchecked-hash bytecode after the tree has reached its final shape. `-s/-p`
-# keeps tracebacks independent of the GitHub runner's checkout path.
-Write-Host "[build-gact-runtime] compiling portable Python bytecode"
-Invoke-Native -Exe $pyBin -Args @(
-  '-m', 'compileall', '--invalidation-mode', 'unchecked-hash',
-  '-q', '-f', '-j', '0', '-s', (Resolve-Path $Out).Path,
-  '-p', 'gact-runtime', $pyRoot
-) | Out-Null
+# Prepare the real startup import graph in the release image, not on the
+# user's first launch. Compiling the entire distribution is both wasteful and
+# invalid: CPython ships non-imported Tcl demo files with syntax errors, while
+# some optional provider paths exceed Windows' legacy path limit.
+Write-Host "[build-gact-runtime] compiling portable startup bytecode"
+$precompiler = Join-Path $Source 'install/precompile_runtime.py'
+Invoke-Native -Exe $pyBin -Args @($precompiler, '--python-root', $pyRoot)
 $compiled = @(Get-ChildItem -LiteralPath $pyRoot -Recurse -File -Filter '*.pyc' -ErrorAction SilentlyContinue).Count
 if ($compiled -eq 0) {
   throw 'build-gact-runtime: bytecode preparation produced no .pyc files'
@@ -205,7 +225,7 @@ $sizeAfter = Get-DirSizeMB $Out
 Write-Host "[build-gact-runtime] size after prune:  $sizeAfter MB (was $sizeBefore MB)"
 
 # --- 4. generic runtime manifest ----------------------------------------
-$manifest = @{ schema = 1; exec = @($pyBinRel, '-m', 'clio_agent.gact') } |
+$manifest = @{ schema = 1; exec = @($pyBinRel, '-m', 'clio_agent.gact', '--no-agent') } |
   ConvertTo-Json -Compress
 [System.IO.File]::WriteAllText((Join-Path $Out 'runtime.json'), $manifest + "`n")
 Write-Host "[build-gact-runtime] manifest: $manifest"
@@ -223,6 +243,33 @@ Copy-Item -LiteralPath $Out -Destination $reloc -Recurse
 $relocPy = Join-Path $reloc 'python\python.exe'
 Write-Host "[build-gact-runtime] sanity (relocated): $relocPy -m clio_agent.gact --help"
 Invoke-Native -Exe $relocPy -Args @('-m', 'clio_agent.gact', '--help') | Out-Null
+Invoke-Native -Exe $relocPy -Args @('-c', 'from clio_kit import cli; cli()', '--help') | Out-Null
+$relocUv = Join-Path $reloc 'bin\uv.exe'
+Invoke-Native -Exe $relocUv -Args @('--version') | Out-Null
+# Imports and /v1/capabilities do not initialize ARC under --no-agent. Prove
+# the relocated image can launch clio-core and select the intended tiered
+# backend instead of degrading to LocalFS after installation.
+$relocCoreLauncher = Join-Path $reloc 'python\Lib\site-packages\iowarp_core\bin\clio_run.exe'
+if (-not (Test-Path -LiteralPath $relocCoreLauncher)) {
+  throw 'build-gact-runtime: relocated clio-core launcher is missing'
+}
+$previousUserDir = $env:CLIO_USER_DIR
+$previousFileCapacity = $env:CLIO_ARC_CTE_FILE_CAPACITY
+try {
+  $env:CLIO_USER_DIR = Join-Path $reloc 'smoke-user'
+  $env:CLIO_ARC_CTE_FILE_CAPACITY = '1GB'
+  Write-Host '[build-gact-runtime] sanity (relocated ARC): initialize clio-core store'
+  Invoke-Native -Exe $relocPy -Args @(
+    '-c',
+    'from clio_agent.arc.storage import ClioCoreStore, make_arc_store; store = make_arc_store(backend="cte"); assert isinstance(store, ClioCoreStore), type(store).__name__'
+  ) | Out-Null
+} finally {
+  if ($null -eq $previousUserDir) { Remove-Item Env:CLIO_USER_DIR -ErrorAction SilentlyContinue }
+  else { $env:CLIO_USER_DIR = $previousUserDir }
+  if ($null -eq $previousFileCapacity) {
+    Remove-Item Env:CLIO_ARC_CTE_FILE_CAPACITY -ErrorAction SilentlyContinue
+  } else { $env:CLIO_ARC_CTE_FILE_CAPACITY = $previousFileCapacity }
+}
 # --help only proves imports; BOOT the relocated copy and poll the API --
 # the only automated proof a prune casualty or loader problem would fail.
 $port = Get-Random -Minimum 24000 -Maximum 44000

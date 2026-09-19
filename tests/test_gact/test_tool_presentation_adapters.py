@@ -339,6 +339,7 @@ def test_declared_running_presenter_survives_wrapping_and_cannot_change_argument
         args={},
         presentation="wait",
         presentation_start=start,
+        domain="agents",
     )
     wrapped = rebuilt_tool(
         tool, lambda task_ids: "unchanged", name="start_probe", desc="probe", args={}

@@ -499,6 +499,12 @@ gact.blueprint_registry.url: "https://github.com/iowarp/clio-agent-marketplace.g
 # run before timing out; raise for a large repo or slow link.
 gact.blueprint_source.clone_timeout_s: 30.0
 
+# CLIO_BLUEPRINT_SOURCE_LS_REMOTE_TIMEOUT_S  (float)  <- src/clio_agent/gact/blueprint_update_check.py
+# Seconds a read-only `git ls-remote`/`rev-parse` marketplace update check
+# may run before timing out; lower to keep the desktop versions panel
+# snappy, raise for a slow link.
+gact.blueprint_source.ls_remote_timeout_s: 10.0
+
 # CLIO_GACT_CANCELLATION_GRACE_S  (float)  <- src/clio_agent/gact/routes/session_cancellation.py
 # Seconds a cooperative session cancel is given before the turn task is
 # hard-cancelled; raise to let a mid-tool-call turn unwind cleanly.

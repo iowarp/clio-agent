@@ -409,6 +409,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
         load_skill,
         name="load_skill",
         presentation="text",
+        domain="skills",
         title="Load skill",
         desc=(
             "Load the full procedure of one of this expert's declared skills "
@@ -475,6 +476,10 @@ def build_spawn_skill_task_tool(agent_def: "AgentDef", runtime: SkillRuntime) ->
         spawn_skill_task,
         name="spawn_skill_task",
         presentation="specialized",
+        # The skill-effect child launcher: gated on a declared skill's own
+        # frontmatter, so "skills" fits better than the generic spawn/wait/
+        # observe "agents" family (#1350).
+        domain="skills",
         title="Start child agent",
         representation="handoff",
         desc=(

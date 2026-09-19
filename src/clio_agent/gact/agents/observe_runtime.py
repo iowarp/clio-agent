@@ -478,6 +478,7 @@ def build_observe_tool() -> Any:
         observe_agent_tasks,
         name="observe_agent_tasks",
         presentation="tasks",
+        domain="agents",
         desc=observe_agent_tasks.__doc__,
         title="Observe",
         args={

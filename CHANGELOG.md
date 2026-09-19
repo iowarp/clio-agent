@@ -6,16 +6,65 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
-## [0.9.4.1] - 2026-09-16
+## [0.9.4.1] - 2026-09-18
 
 This maintenance release repairs the bundled desktop first-launch path found
-during external-user verification of v0.9.4.
+during external-user verification of v0.9.4, and adds signed desktop
+auto-update alongside a set of desktop-panel and provider-handshake fixes.
+
+### Added
+
+- The desktop Quit action now stops the shared local core only when the
+  quitting client is its last one, so a second open desktop window no longer
+  loses its backend out from under it.
+- Protected-execution (sandbox) setup can now be started from the desktop,
+  instead of requiring a separate elevated command.
+- Tool catalog rows now expose each tool's typed inputs/outputs and its
+  domain, instead of an opaque name-only listing.
+- A read-only marketplace update check reports when a newer version of a
+  registered agent-blueprint source is available, without installing it.
+- The desktop versions panel's blocks are now driven by the backend's
+  reported capabilities, instead of a fixed, potentially stale list.
+- Desktop bundles are now signed, and the app checks for and applies updates
+  automatically.
+- The Windows installer now carries CLIO's own wizard artwork and application
+  icon instead of the packaging tool's defaults.
 
 ### Fixed
 
+- A provider's first bind now carries the handshake-applied settings
+  (including the thinking-level echo), instead of only taking effect on a
+  later reconnect.
+- Desktop quit latency is reduced: LM Studio discovery is interrupted
+  immediately, and the stop-helper is reaped as soon as its port goes down
+  instead of waiting out a fixed timeout.
+- Installed blueprints are now found correctly through the Windows packaged
+  install path's alias.
 - Bundled desktop packaging now prepares Python bytecode before installation,
   so the first launch does not perform one-time import compilation or fall
   through to the manual service-address screen.
+- Bundled desktop startup now launches the local service without eagerly
+  selecting or authenticating a model provider; provider credentials are
+  validated only after the app is available and the user chooses a provider.
+- Windows bundles retain the Codex SDK's packaged executable while pruning
+  generated Python launcher stubs, so the Codex subscription provider remains
+  usable after installation.
+- Managed Windows desktop launches keep the local backend process tree hidden
+  while retaining its diagnostic boot log.
+- Managed desktop sessions use a stable app-data workspace instead of
+  inheriting whichever directory launched the executable.
+- Managed desktop state is isolated from CLI and test profiles while the full
+  marketplace blueprint catalog remains available on a fresh installation.
+- Agent-less desktop startup defers loading DSPy's model runtime until a real
+  tool is constructed, shortening the connection-critical launch path.
+- The desktop connection indicator now explains its current health or degraded
+  state on hover instead of relying on color alone.
+- Windows upgrades and uninstalls stop only the managed CLIO process tree before
+  replacing files, so the bundled runtime is removed cleanly; the standard
+  opt-in checkbox still controls whether user data is also removed.
+- Four-part CLIO maintenance versions such as `0.9.4.1` are translated to
+  numeric SemVer build metadata for Tauri while public tags and asset names
+  keep the CLIO release version.
 
 ## [0.9.4] - 2026-09-16
 

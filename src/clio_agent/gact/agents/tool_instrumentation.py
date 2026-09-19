@@ -61,11 +61,10 @@ import inspect
 import logging
 import threading
 from collections.abc import Callable, Iterable, Mapping
-from typing import Any
-
-import dspy
+from typing import Any, cast, get_args
 
 from clio_agent.gact.evidence import _bounded_tool_call_result
+from clio_agent.gact.types import ToolDomain
 from clio_agent.tools.execution import TOOL_OBSERVED_ATTR
 
 logger = logging.getLogger(__name__)
@@ -76,29 +75,36 @@ REPRESENTATION_ATTR = "_clio_tool_representation"
 TITLE_ATTR = "_clio_tool_title"
 PRESENTER_ATTR = "_clio_tool_result_presenter"
 START_PRESENTER_ATTR = "_clio_tool_start_presenter"
+# #1350: the tool's server-declared functional domain (desktop Tools view
+# grouping). Stamped the same way as REPRESENTATION_ATTR/TITLE_ATTR -- on the
+# callable, so it survives ``functools.wraps`` -- and read back via
+# :func:`tool_domain`.
+DOMAIN_ATTR = "_clio_tool_domain"
 _RESULT_PRESENTERS: dict[str, Any] = {}
 _START_PRESENTERS: dict[str, Callable[[Mapping[str, Any]], dict[str, Any]]] = {}
 _PRESENTER_KEYWORD_CONTAINERS: dict[str, tuple[str, ...]] = {}
 
 DEFAULT_REPRESENTATION = "row"
 TOOL_REPRESENTATIONS = frozenset({"row", "handoff", "chip"})
+TOOL_DOMAINS = frozenset(get_args(ToolDomain))
 
 TITLE_MAX_CHARS = 80
 
 
-class ClioNativeTool(dspy.Tool):
-    """DSPy tool whose JSON schema honors declared argument defaults."""
+_CLIO_NATIVE_TOOL_CLASS: Any = None
 
-    def format_as_litellm_function_call(self) -> dict[str, Any]:
-        """Return a LiteLLM schema that requires only arguments without defaults."""
 
-        formatted = super().format_as_litellm_function_call()
-        function_schema = formatted["function"]
-        properties = function_schema["parameters"]["properties"]
-        function_schema["parameters"]["required"] = [
-            arg_name for arg_name, arg_schema in properties.items() if "default" not in arg_schema
-        ]
-        return formatted
+def _clio_native_tool_class() -> Any:
+    """Return the CLIO DSPy Tool subclass without loading DSPy at UI boot."""
+
+    global _CLIO_NATIVE_TOOL_CLASS  # noqa: PLW0603
+    if _CLIO_NATIVE_TOOL_CLASS is not None:
+        return _CLIO_NATIVE_TOOL_CLASS
+
+    from clio_agent.gact.agents.dspy_native_tool import ClioNativeTool  # noqa: PLC0415
+
+    _CLIO_NATIVE_TOOL_CLASS = ClioNativeTool
+    return ClioNativeTool
 
 
 # name -> (representation, sanitized title). Populated at the assembly seam
@@ -278,6 +284,23 @@ def _validated_representation(representation: object, *, tool_name: str) -> str:
     return value
 
 
+def _validated_domain(domain: object, *, tool_name: str) -> str:
+    """Return a valid declared domain or raise a typed error (never coerce/default it).
+
+    Unlike ``representation`` there is no fallback value: every native/boundary
+    tool construction MUST name its domain explicitly (#1350) so a new tool can
+    never go ungrouped in the desktop Tools view by omission.
+    """
+
+    value = str(domain or "")
+    if value not in TOOL_DOMAINS:
+        raise ValueError(
+            f"tool {tool_name!r} declared unknown domain {value!r}; "
+            f"expected one of {sorted(TOOL_DOMAINS)}"
+        )
+    return value
+
+
 def native_tool(
     func: Callable[..., Any],
     *,
@@ -285,16 +308,21 @@ def native_tool(
     desc: str | None,
     args: dict[str, Any],
     presentation: Any,
+    domain: "ToolDomain",
     presentation_start: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None,
     title: str = "",
     representation: str = DEFAULT_REPRESENTATION,
 ) -> Any:
     """Construct a native ``dspy.Tool`` with its DECLARED presentation.
 
-    The declaration (curated ``title`` + ``representation``) is stamped on the
-    callable; the assembly seam (:func:`instrument_tools`) registers it for the
-    observer and wraps the callable with the observer notification. This is the
-    ONE sanctioned native construction path (CI guard baseline 0).
+    The declaration (curated ``title`` + ``representation`` + ``domain``) is
+    stamped on the callable; the assembly seam (:func:`instrument_tools`)
+    registers title/representation for the observer and wraps the callable
+    with the observer notification. ``domain`` is keyword-REQUIRED (#1350) —
+    no default, so a new native tool can never land ungrouped by omission; an
+    unknown value fails loudly (:func:`_validated_domain`) rather than being
+    silently coerced. This is the ONE sanctioned native construction path (CI
+    guard baseline 0).
     """
 
     from clio_agent.gact.agents.native_presenters import validate_declaration
@@ -304,7 +332,8 @@ def native_tool(
     setattr(func, START_PRESENTER_ATTR, presentation_start)
     setattr(func, REPRESENTATION_ATTR, _validated_representation(representation, tool_name=name))
     setattr(func, TITLE_ATTR, sanitize_tool_title(title))
-    return ClioNativeTool(func=func, name=name, desc=desc, args=args)
+    setattr(func, DOMAIN_ATTR, _validated_domain(domain, tool_name=name))
+    return _clio_native_tool_class()(func=func, name=name, desc=desc, args=args)
 
 
 def boundary_observed_tool(
@@ -313,6 +342,7 @@ def boundary_observed_tool(
     name: str,
     desc: str | None,
     args: dict[str, Any],
+    domain: "ToolDomain",
     title: str = "",
 ) -> Any:
     """Construct a ``dspy.Tool`` whose callable ALREADY notifies the observer.
@@ -320,6 +350,8 @@ def boundary_observed_tool(
     For callables whose execution path reaches ``notify_tool_observer`` itself
     (the external-MCP dynamic-agent tools in ``builders``). Marks the callable
     so the assembly seam never adds a second notification (exactly-once).
+    ``domain`` is keyword-REQUIRED (#1350), validated the same way
+    :func:`native_tool` validates it — no default, no silent coercion.
 
     ``title`` carries an upstream MCP tool's declared ``title`` (#1188 MCP
     half), sanitized through the same :func:`sanitize_tool_title` curated
@@ -330,6 +362,9 @@ def boundary_observed_tool(
 
     setattr(func, TOOL_OBSERVED_ATTR, True)
     setattr(func, TITLE_ATTR, sanitize_tool_title(title))
+    setattr(func, DOMAIN_ATTR, _validated_domain(domain, tool_name=name))
+    import dspy  # noqa: PLC0415
+
     return dspy.Tool(func=func, name=name, desc=desc, args=args)
 
 
@@ -347,7 +382,8 @@ def rebuilt_tool(
     blueprint recording wrapper) would otherwise DROP the inner callable's
     instrumentation markers — a re-wrapped boundary tool would get
     double-wrapped at the seam and notify twice. Propagates the observed /
-    representation / title markers from ``inner_tool``'s callable onto ``func``.
+    representation / title / domain markers from ``inner_tool``'s callable
+    onto ``func``.
     """
 
     inner_func = getattr(inner_tool, "func", None)
@@ -357,11 +393,41 @@ def rebuilt_tool(
         TITLE_ATTR,
         PRESENTER_ATTR,
         START_PRESENTER_ATTR,
+        DOMAIN_ATTR,
     ):
         value = getattr(inner_func, attr, None)
         if value is not None:
             setattr(func, attr, value)
+    import dspy  # noqa: PLC0415
+
     return dspy.Tool(func=func, name=name, desc=desc, args=args)
+
+
+def tool_domain(tool: Any) -> ToolDomain | None:
+    """Return a constructed tool's declared domain (#1350), typed, or ``None`` if undeclared.
+
+    Reads the marker :func:`native_tool` / :func:`boundary_observed_tool` stamp
+    on the CALLABLE (:data:`DOMAIN_ATTR`) — accepts either the constructed
+    ``dspy.Tool`` (unwraps its ``.func``) or a bare callable directly, the same
+    dual shape :func:`declared_tool_title` et al. rely on elsewhere in this
+    module. Construction already validates the stamped value against
+    :data:`TOOL_DOMAINS` (:func:`_validated_domain`), but a directly-set or
+    foreign attribute is not assumed trustworthy here either: an
+    out-of-vocabulary value is a typed, logged ``None`` — never a mistyped
+    plain ``str`` silently handed to a ``Tool(domain=...)`` wire model.
+    """
+
+    func = getattr(tool, "func", tool)
+    value = getattr(func, DOMAIN_ATTR, None)
+    if not value:
+        return None
+    value_str = str(value)
+    if value_str not in TOOL_DOMAINS:
+        logger.warning(
+            "tool domain unrecognized reason=domain_not_in_TOOL_DOMAINS value=%r", value_str
+        )
+        return None
+    return cast("ToolDomain", value_str)
 
 
 # Per-thread one-shot declaration (owner ruling, wire semantics): a native tool

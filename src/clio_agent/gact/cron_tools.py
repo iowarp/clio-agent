@@ -294,6 +294,7 @@ def build_cron_create_tool() -> Any:
         cron_create,
         name="cron_create",
         presentation="schedule_created",
+        domain="schedules",
         desc=cron_create.__doc__,
         title="Create schedule",
         args={
@@ -370,6 +371,7 @@ def build_cron_list_tool() -> Any:
         cron_list,
         name="cron_list",
         presentation="schedules",
+        domain="schedules",
         desc=cron_list.__doc__,
         title="List schedules",
         args={},
@@ -399,11 +401,7 @@ def build_cron_delete_tool() -> Any:
             declare_structured_content,
         )
 
-        message = (
-            "Schedule deleted."
-            if deleted
-            else "No matching schedule was found."
-        )
+        message = "Schedule deleted." if deleted else "No matching schedule was found."
         declare_structured_content(
             {"message": message, "schedule_id": clean_id, "deleted": deleted}
         )
@@ -413,6 +411,7 @@ def build_cron_delete_tool() -> Any:
         cron_delete,
         name="cron_delete",
         presentation="schedule_deleted",
+        domain="schedules",
         desc=cron_delete.__doc__,
         title="Delete schedule",
         args={

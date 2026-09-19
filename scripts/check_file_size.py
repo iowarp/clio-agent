@@ -159,7 +159,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # so they live here; the reusable guard helpers (guarded_store_rpc /
     # store_rpc_health_probe) were moved to the rpc_liveness owner module to hold the
     # growth down. Ratchet back below on the arc/storage decomposition (#714).
-    "src/clio_agent/arc/storage.py": 896,
+    # v0.9.4.1 slice A1: -84. The clean-stop-with-pidfile-fallback sequence
+    # (``_stop_runtime_daemon`` / ``_RUNTIME_STOP_STALL_SECONDS`` /
+    # ``_RUNTIME_STOP_POLL_SECONDS``) moved verbatim to the owner module
+    # arc/runtime_stop.py; storage.py keeps a thin ``_stop_runtime_daemon`` import
+    # alias (tests monkeypatch it) and ``release_runtime_client`` is unchanged.
+    "src/clio_agent/arc/storage.py": 869,
     # #737 S2 fold owner module. Crossed the 800 new-file cap restoring the FROZEN
     # arc.op reproducibility contract (§2 / GOAL.md DoD #4): the five working-set write
     # overrides now emit a per-op arc.op via _emit_op so arc.replay rebuilds the live
@@ -200,7 +205,13 @@ RATCHET_BASELINE: dict[str, int] = {
     # module agent_blueprint_refresh.py (this file is ratcheted, #774) and is
     # reached through the PEP 562 shim; only the one-line lazy import in
     # default_registry_metadata landed here, offset by two comment trims.
-    "src/clio_agent/gact/agent_blueprints.py": 1057,
+    # v0.9.4.1 slice A1: -30 (1082 -> 1052). ``_install_root`` and
+    # ``_relative_to_blueprint_root`` moved verbatim to the new owner module
+    # gact/blueprint_paths.py; both stay importable from here under their
+    # historical private names (module-level assignments) because
+    # agent_blueprint_refresh.py / agent_blueprint_sources.py already import
+    # ``_install_root`` directly from this module.
+    "src/clio_agent/gact/agent_blueprints.py": 1052,
     # #948 S4: +14 for the children-must-be-react hierarchy rule (a predict/CoT
     # parent would silently strand its children now that the settle loop routing
     # for it is deleted; typed validation error instead).
@@ -460,7 +471,18 @@ RATCHET_BASELINE: dict[str, int] = {
     # never disagree with what the runtime turn path actually executes). All
     # decision logic lives in the owner module; only the two wrapping calls
     # landed here.
-    "src/clio_agent/gact/app.py": 2493,  # relay wiring moved to gact/relay_wiring.py; +6 one-line provenance_wiring calls (#1247); #1333: two workspaces imports merged to one line each, netted against the #1334 F2 review's app.state.messages boot placeholder (see build_app)
+    # v0.9.4.1 slice A1: -22 (2493 -> 2471) net across two moves. (1)
+    # ``serve_foreground`` / ``release_runtime_after_drain`` / ``reset_for_boot`` /
+    # ``wake_for_shutdown`` moved to the new owner module gact/desktop_lifecycle.py
+    # (run_server's non-reload uvicorn.Server branch, the lifespan desktop-release
+    # block, and the lmstudio discovery boot/shutdown calls -- app.py now calls
+    # these through the ``desktop_lifecycle`` module). (2) ``_agent_not_available_error``
+    # moved to gact/agent_initialization.py, the module that already owns the exact
+    # deferred-construction state (``agent_construction_task`` / ``agent_init_error`` /
+    # ``want_agent``) it reads; not in test_import_seams.SEAM_SYMBOLS so no re-export
+    # shim was needed (its one call site now reads
+    # ``agent_initialization.agent_not_available_error``).
+    "src/clio_agent/gact/app.py": 2470,  # relay wiring moved to gact/relay_wiring.py; +6 one-line provenance_wiring calls (#1247); #1333: two workspaces imports merged to one line each, netted against the #1334 F2 review's app.state.messages boot placeholder (see build_app); A3 review: dropped the unused `_builtin_tools` catalog re-export (2471 -> 2470), netted against the A6 sandbox-setup route registration (session_defaults import collapsed to one line to stay flat)
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -620,7 +642,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # planning reads modalities out of; leaving the previous provider's snapshot
     # in place decided what bytes reached a model it never described. The catalog
     # itself is built in gact/provider_catalog.py; only the invalidation lands here.
-    "src/clio_agent/gact/routes/providers.py": 1339,
+    "src/clio_agent/gact/routes/providers.py": 1338,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (merged to develop with the size check red, baseline 1478 -> actual); ratchet
     # back below the pre-#947 count with the mcp_app_* owner-module split (see the
@@ -1106,7 +1128,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # AF-FOLD (PR #1298): ratcheted DOWN 817 -> 816. Credential redaction moved to
     # the owner module tools/mcp_redaction.py, which more than paid for the
     # ``declared`` pre-expansion field this file gained.
-    "src/clio_agent/tools/mcp_config.py": 816,
+    "src/clio_agent/tools/mcp_config.py": 815,
     # #1231 Part 1/2 (consumer half of the live-console feature): not previously
     # baselined -- this file was ALREADY 7 lines over the 800 cap before this
     # change (unbaselined pre-existing debt), i.e. 807 -> 820. Part 1 (+6 net):

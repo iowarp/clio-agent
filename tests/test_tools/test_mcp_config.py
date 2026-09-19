@@ -276,6 +276,73 @@ def test_transport_for_unresolved_command_fails_loud():
         transport_for(spec_from_declaration("geo", "definitely-not-a-real-binary-xyz123 run"))
 
 
+def test_transport_for_uses_bundled_clio_kit_module_without_console_shim(tmp_path, monkeypatch):
+    """A relocated desktop runtime launches clio-kit through its own Python."""
+    import os
+
+    import clio_agent.tools.mcp_config as mcp_config
+    from clio_agent.tools import desktop_mcp_runtime
+
+    runtime = tmp_path / "gact-runtime"
+    python = runtime / "python" / "python.exe"
+    bundled_bin = runtime / "bin"
+    python.parent.mkdir(parents=True)
+    bundled_bin.mkdir()
+    python.touch()
+    (runtime / "runtime.json").write_text("{}", encoding="utf-8")
+
+    real_which = mcp_config.shutil.which
+    monkeypatch.setattr(
+        mcp_config.shutil,
+        "which",
+        lambda command: None if command == "clio-kit" else real_which(command),
+    )
+    monkeypatch.setattr(desktop_mcp_runtime.importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(desktop_mcp_runtime.sys, "executable", str(python))
+
+    stdio = transport_for(spec_from_declaration("ndp", "clio-kit mcp-server ndp"))
+
+    assert stdio.command == str(python.resolve())
+    assert stdio.args == [
+        "-c",
+        "from clio_kit import cli; cli()",
+        "mcp-server",
+        "ndp",
+    ]
+    assert stdio.env["PATH"].split(os.pathsep)[0] == str(bundled_bin)
+    assert stdio.env["CLIO_KIT_CACHE_DIR"] == str(mcp_config.Path.home() / ".clio" / "mcp-runtime")
+
+
+def test_transport_for_prefers_bundled_clio_kit_over_ambient_shim(tmp_path, monkeypatch):
+    """A desktop runtime never launches another clio-kit found on user PATH."""
+    import clio_agent.tools.mcp_config as mcp_config
+    from clio_agent.tools import desktop_mcp_runtime
+
+    runtime = tmp_path / "gact-runtime"
+    python = runtime / "python" / "python.exe"
+    ambient = tmp_path / "ambient" / "clio-kit.exe"
+    python.parent.mkdir(parents=True)
+    ambient.parent.mkdir(parents=True)
+    python.touch()
+    ambient.touch()
+    (runtime / "runtime.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(mcp_config.shutil, "which", lambda command: str(ambient))
+    monkeypatch.setattr(desktop_mcp_runtime.importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(desktop_mcp_runtime.sys, "executable", str(python))
+
+    stdio = transport_for(spec_from_declaration("ndp", "clio-kit mcp-server ndp"))
+
+    assert stdio.command == str(python.resolve())
+    assert stdio.command != str(ambient)
+    assert stdio.args == [
+        "-c",
+        "from clio_kit import cli; cli()",
+        "mcp-server",
+        "ndp",
+    ]
+
+
 def test_transport_for_injects_dedicated_uv_cache_dir(tmp_path, monkeypatch):
     """stdio spawns get a dedicated UV_CACHE_DIR under the canonical user cache.
 
@@ -297,6 +364,32 @@ def test_transport_for_injects_dedicated_uv_cache_dir(tmp_path, monkeypatch):
     assert str(expected).startswith(str(paths.user_cache_dir()))
     # Created lazily at spawn.
     assert expected.is_dir()
+
+
+def test_transport_for_desktop_gives_stdio_child_valid_stderr(tmp_path, monkeypatch):
+    """Managed desktop MCP grandchildren write stderr to an inheritable file handle."""
+    from clio_agent import paths
+
+    monkeypatch.setenv("CLIO_USER_DIR", str(tmp_path))
+    monkeypatch.setenv("CLIO_DESKTOP_BOOT_HEARTBEAT", "1")
+
+    stdio = transport_for(
+        spec_from_declaration("geo/status", {"command": sys.executable, "args": ["-c", "pass"]})
+    )
+
+    assert stdio.log_file == paths.user_cache_dir() / "mcp-stdio" / "geo-status.log"
+    assert stdio.log_file.parent.is_dir()
+
+
+def test_transport_for_cli_keeps_stdio_stderr_on_console(monkeypatch):
+    """Non-desktop processes retain FastMCP's normal console stderr behavior."""
+    monkeypatch.delenv("CLIO_DESKTOP_BOOT_HEARTBEAT", raising=False)
+
+    stdio = transport_for(
+        spec_from_declaration("geo", {"command": sys.executable, "args": ["-c", "pass"]})
+    )
+
+    assert stdio.log_file is None
 
 
 def test_transport_for_declaration_uv_cache_dir_wins(tmp_path, monkeypatch):

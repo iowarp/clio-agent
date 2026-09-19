@@ -46,6 +46,7 @@ def test_variadic_arguments_are_projected_without_changing_observation(monkeypat
         args={"skill_id": {"type": "string"}},
         presentation=presenter,
         presentation_start=started,
+        domain="workspace",
     )
     instrument_tools([tool])
     assert tool.func(skill_id="example") is returned
@@ -66,6 +67,7 @@ def test_literal_mapping_parameter_is_not_flattened() -> None:
         desc="test",
         args={"kwargs": {"type": "object"}},
         presentation=presenter,
+        domain="workspace",
     )
     instrument_tools([tool])
     assert (

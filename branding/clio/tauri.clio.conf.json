@@ -5,7 +5,15 @@
   "app": {
     "windows": [
       {
-        "title": "CLIO Desktop"
+        "title": "CLIO Desktop",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 960,
+        "minHeight": 600,
+        "resizable": true,
+        "decorations": false,
+        "fullscreen": false,
+        "transparent": false
       }
     ]
   },
@@ -20,6 +28,23 @@
       "icons/icon.png",
       "icons/icon.ico",
       "icons/icon.icns"
-    ]
+    ],
+    "createUpdaterArtifacts": true,
+    "windows": {
+      "nsis": {
+        "headerImage": "installer/header.bmp",
+        "sidebarImage": "installer/sidebar.bmp",
+        "installerIcon": "icons/icon.ico"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": ["https://github.com/iowarp/clio-agent/releases/latest/download/latest.json"],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE3MTc3OEQyQ0YwQzg0RDcKUldUWGhBelAwbmdYcHdKU1FZWWZkMFNoOWVGbjVFdlViWFpldHFSeC9nYVI3MU1aUTBPd1YzM1QK",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

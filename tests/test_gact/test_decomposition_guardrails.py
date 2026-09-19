@@ -106,7 +106,18 @@ from clio_agent.gact.app import build_app
 # ``/respond`` is the one door into the normalized interaction responder.
 # +1 session/call/block-scoped presentation-content GET, owned by routes/messages.py.
 # +1 read-only session work/history GET, owned by routes/schedules.py.
-EXPECTED_ROUTE_METHOD_PAIRS = 241
+# +1 POST /v1/desktop/shutdown, the desktop-managed lifecycle control
+# registered by routes/lifecycle.py::register_lifecycle_routes.
+# 242 -> 244 (desktop protected-execution setup): +2 routes owned by the new
+# routes/sandbox_setup.py — GET /v1/system/sandbox (the `sandbox` doctor row
+# alone) and POST /v1/system/sandbox/setup (the desktop "Set up protected
+# execution" button, running the same clio sandbox setup provisioning flow).
+# 244 -> 246 (A4: read-only marketplace update check): +2 GET routes owned by
+# the new routes/blueprint_updates.py — GET
+# /v1/agent-blueprints/sources/updates (every registered source) and GET
+# /v1/agent-blueprints/sources/{source_id}/updates (one source), registered
+# ahead of the greedy blueprint {id:path} catch-all.
+EXPECTED_ROUTE_METHOD_PAIRS = 246
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

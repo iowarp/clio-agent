@@ -7,11 +7,36 @@ these names so historical import seams keep working; new code should import from
 
 from __future__ import annotations
 
+import threading
 from typing import List
 
 
 class LMStudioDiscoveryError(RuntimeError):
     """LM Studio model discovery failed before a usable chat model was found."""
+
+
+class LMStudioDiscoveryCancelled(LMStudioDiscoveryError):
+    """LM Studio discovery stopped because the owning CLIO process is shutting down."""
+
+
+_shutdown_requested = threading.Event()
+
+
+def reset_discovery_shutdown() -> None:
+    """Allow discovery work for a newly starting GACT server lifecycle."""
+
+    _shutdown_requested.clear()
+
+
+def request_discovery_shutdown() -> None:
+    """Interrupt retry waits so desktop shutdown never waits for discovery."""
+
+    _shutdown_requested.set()
+
+
+def _raise_if_shutdown_requested() -> None:
+    if _shutdown_requested.is_set():
+        raise LMStudioDiscoveryCancelled("LM Studio discovery cancelled during CLIO shutdown")
 
 
 def list_lm_studio_models(
@@ -36,12 +61,11 @@ def list_lm_studio_models(
     Returns:
         List of loaded model IDs.
     """
-    import time
-
     from clio_agent.providers.handshake import HandshakeContext, run_handshake_sync
 
     last_error: str | None = None
     for attempt in range(max_retries):
+        _raise_if_shutdown_requested()
         report = run_handshake_sync(
             HandshakeContext(
                 provider_id="lm_studio",
@@ -62,8 +86,8 @@ def list_lm_studio_models(
         if attempt == 0:
             print(f"Connecting to LM Studio at {base_url}...")
         print(f"   Waiting for a loaded model... (attempt {attempt + 1}/{max_retries})")
-        if attempt < max_retries - 1:
-            time.sleep(retry_delay)
+        if attempt < max_retries - 1 and _shutdown_requested.wait(retry_delay):
+            _raise_if_shutdown_requested()
 
     raise LMStudioDiscoveryError(
         f"LM Studio discovery failed at {base_url} after {max_retries} attempt(s): "

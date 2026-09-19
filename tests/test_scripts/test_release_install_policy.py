@@ -117,6 +117,8 @@ def test_release_builds_follow_the_current_gact_workspace_layout() -> None:
     assert '"$OUT" version >/dev/null 2>&1 || true' not in tui_builder
     assert 'release_version="${GITHUB_REF_NAME#v}"' in bundles
     assert "config.version = tauriVersion" in bundles
+    assert "`${maintenance[1]}+${maintenance[2]}`" in bundles
+    assert "+patch.${maintenance[2]}" not in bundles
     assert "config.bundle.windows.wix.version = releaseVersion" in bundles
     assert 'base="${base//$tauri_version/$release_version}"' in bundles
     assert "invalid CLIO release version" in bundles
@@ -125,16 +127,32 @@ def test_release_builds_follow_the_current_gact_workspace_layout() -> None:
 def test_bundled_runtime_is_precompiled_before_relocation_proof() -> None:
     """Official bundles pay Python compilation cost before installation."""
 
+    precompiler = _text("install/precompile_runtime.py")
+    assert "build_app()" in precompiler
+    assert "PycInvalidationMode.UNCHECKED_HASH" in precompiler
+
     for relative_path in (
         "install/build-gact-runtime.sh",
         "install/build-gact-runtime.ps1",
     ):
         script = _text(relative_path)
-        compile_step = script.index("compiling portable Python bytecode")
+        compile_step = script.index("compiling portable startup bytecode")
         relocation_proof = script.index("portability proof on the real object")
         assert compile_step < relocation_proof, relative_path
-        assert "unchecked-hash" in script, relative_path
+        assert "precompile_runtime.py" in script, relative_path
+        assert "'--no-agent'" in script or '"--no-agent"' in script, relative_path
         assert "within 30 seconds" in script, relative_path
+        assert "clio-kit==2.10.6" in script, relative_path
+        assert "from clio_kit import cli; cli()" in script, relative_path
+        assert "uvx" in script, relative_path
+
+    windows_builder = _text("install/build-gact-runtime.ps1")
+    assert "codex_cli_bin\\bin\\codex.exe" in windows_builder
+    assert "packaged Codex provider executable is missing" in windows_builder
+    assert "iowarp_core\\bin" in windows_builder
+    assert "packaged clio-core launcher is missing" in windows_builder
+    assert "initialize clio-core store" in windows_builder
+    assert "isinstance(store, ClioCoreStore)" in windows_builder
 
 
 def test_release_workflow_smokes_the_published_registry_tool() -> None:
@@ -213,3 +231,105 @@ def test_source_and_ci_sync_commands_keep_uv_stable_only() -> None:
         for line in contents.splitlines():
             if "uv sync" in line:
                 assert "--prerelease" not in line, relative_path
+
+
+def test_release_workflow_signs_and_publishes_the_update_manifest() -> None:
+    """Signed desktop auto-update plumbing (v0.9.4.1, #A7) is wired into clio-bundles.yml."""
+
+    bundles = _text(".github/workflows/clio-bundles.yml")
+
+    # (f) workflow_dispatch frozen-at-tag escape hatch, decoupled from the
+    # heavy build jobs (which stay push-only).
+    assert "workflow_dispatch:" in bundles
+    assert "tag:" in bundles
+    assert "if: github.event_name == 'push'" in bundles
+    assert "TAG: ${{ inputs.tag || github.ref_name }}" in bundles
+
+    # (a) the merge script no longer forces createUpdaterArtifacts off or
+    # strips the pubkey; it sets the per-variant update feed instead.
+    assert "config.bundle.createUpdaterArtifacts = false" not in bundles
+    assert "delete config.plugins.updater.pubkey" not in bundles
+    assert "latest-lite.json" in bundles
+    assert (
+        "`https://github.com/iowarp/clio-agent/releases/latest/download/${manifestName}`" in bundles
+    )
+
+    # (b) the Tauri build step signs with the repo secrets.
+    build_idx = bundles.index("name: Tauri release build")
+    stage_idx = bundles.index("name: Stage artifacts")
+    build_step = bundles[build_idx:stage_idx]
+    assert "TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" in build_step
+    assert (
+        "TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}"
+        in build_step
+    )
+
+    # (d) the macOS decorations assert is guarded, never fatal when the
+    # branded runner isn't pinned yet.
+    assert "Assert macOS traffic lights survive the brand overlay" in bundles
+    assert "run-tauri-branded.mjs not present in this gact-tui pin yet" in bundles
+
+    # (c) staging also produces + renames .sig / .app.tar.gz, and excludes
+    # .sig from the bundled payload floor.
+    stage_end_idx = bundles.index("uses: softprops/action-gh-release@v2", stage_idx)
+    stage_step = bundles[stage_idx:stage_end_idx]
+    assert "-iname '*.sig'" in stage_step
+    assert "-name '*.app.tar.gz'" in stage_step
+    assert "-maxdepth 2 -type f" in stage_step  # never sweep deb work files or runtime internals
+    assert "find \"$stage\" -type f -name '*-bundled.*' ! -name '*.sig' -print0" in stage_step
+    assert 'base="${base//$tauri_version/$release_version}"' in stage_step
+
+    # (e) release-check generates + uploads the manifest before the
+    # completeness check, which now reads $TAG (not $GITHUB_REF_NAME).
+    check_idx = bundles.index("name: release completeness")
+    manifest_idx = bundles.index("name: Generate signed Tauri update manifest", check_idx)
+    completeness_idx = bundles.index("name: Assert release asset completeness", manifest_idx)
+    assert check_idx < manifest_idx < completeness_idx
+    manifest_step = bundles[manifest_idx:completeness_idx]
+    assert 'gen_tauri_update_manifest.py --tag "$TAG" --variant bundled --out latest.json' in (
+        manifest_step
+    )
+    assert 'gen_tauri_update_manifest.py --tag "$TAG" --variant lite --out latest-lite.json' in (
+        manifest_step
+    )
+    assert 'gh release upload "$TAG" latest.json latest-lite.json --clobber' in manifest_step
+    assert 'gh release view "$TAG" --json assets' in bundles
+    assert 'gh release view "$GITHUB_REF_NAME"' not in bundles
+
+
+def test_release_completeness_expects_signed_updater_assets() -> None:
+    """check_release_completeness.py's EXPECTED_ASSETS covers the new signed-update assets."""
+
+    from scripts.check_release_completeness import EXPECTED_ASSETS
+
+    labels = {label for label, _ in EXPECTED_ASSETS}
+    for expected_label in (
+        "bundled nsis sig (x86_64 Windows)",
+        "bundled macOS updater bundle (aarch64)",
+        "bundled macOS updater sig (aarch64)",
+        "lite nsis sig (x86_64 Windows)",
+        "lite macOS updater bundle (aarch64)",
+        "lite macOS updater sig (aarch64)",
+        "lite macOS updater bundle (x86_64)",
+        "lite macOS updater sig (x86_64)",
+        "lite AppImage sig (x86_64 Linux)",
+        "lite AppImage sig (aarch64 Linux)",
+        "Tauri update manifest (bundled)",
+        "Tauri update manifest (lite)",
+    ):
+        assert expected_label in labels
+
+
+def test_clio_brand_overlay_declares_the_updater() -> None:
+    """The CLIO Tauri brand overlay ships its own updater endpoint + pubkey."""
+
+    import json
+
+    overlay = json.loads(_text("branding/clio/tauri.clio.conf.json"))
+    assert overlay["bundle"]["createUpdaterArtifacts"] is True
+    updater = overlay["plugins"]["updater"]
+    assert updater["endpoints"] == [
+        "https://github.com/iowarp/clio-agent/releases/latest/download/latest.json"
+    ]
+    assert updater["pubkey"]
+    assert updater["windows"]["installMode"] == "passive"

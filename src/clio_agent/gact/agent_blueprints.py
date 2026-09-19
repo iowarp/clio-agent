@@ -22,6 +22,7 @@ from typing import Any, Literal
 
 from clio_agent import conf
 from clio_agent.gact import skills as _skills
+from clio_agent.gact.blueprint_paths import install_root, relative_to_blueprint_root
 from clio_agent.gact.expert_packs import (
     ExpertPackDefinition,
     _fallback_expert_id,
@@ -33,6 +34,11 @@ from clio_agent.gact.expert_packs import (
 from clio_agent.gact.git_source import normalize_git_clone_source
 from clio_agent.gact.types import AgentDef
 from clio_agent.tools.catalog import TOOL_CATALOG
+
+# Historical private names kept importable here: agent_blueprint_refresh.py /
+# agent_blueprint_sources.py do ``from ...agent_blueprints import _install_root``.
+_install_root = install_root
+_relative_to_blueprint_root = relative_to_blueprint_root
 
 logger = logging.getLogger(__name__)
 
@@ -907,17 +913,6 @@ def read_install_metadata(root: Path) -> dict[str, str]:
     return rows
 
 
-def _install_root(*, home: Path, cwd: Path, scope: str) -> Path:
-    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
-
-    config_root = paths.user_config_dir_for(home, os.environ)
-    if scope == "global":
-        return config_root / "agent-blueprints"
-    if scope == "workspace":
-        return cwd / ".clio" / "agent-blueprints"
-    raise ValueError("scope must be global or workspace")
-
-
 def _install_candidates(source: Path, *, blueprint_id: str = "") -> list[Path]:
     candidates: list[Path] = []
     if (source / _BLUEPRINT_ROOT_NAME).exists():
@@ -978,7 +973,7 @@ def _load_blueprint_agents(
             if normalized in seen:
                 continue
             seen.add(normalized)
-            relative = "/" + normalized.relative_to(root_resolved).as_posix()
+            relative = "/" + _relative_to_blueprint_root(path, blueprint.root).as_posix()
             if (
                 path.name == _BLUEPRINT_ROOT_NAME
                 or "/prompts/" in relative

@@ -700,6 +700,7 @@ def test_get_lm_provider_when_configured_via_put(tmp_path: Path, monkeypatch) ->
     class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             fake_agent_constructed["called"] = True
+            fake_agent_constructed["provider_config"] = kwargs.get("provider_config")
             self.arc = type(
                 "ARC",
                 (),
@@ -761,6 +762,10 @@ def test_get_lm_provider_when_configured_via_put(tmp_path: Path, monkeypatch) ->
         assert body["model"] == "claude-haiku-4-5-20251001"
         assert body["context_length"] == 16384
         assert fake_agent_constructed["called"] is True
+        first_bind_config = fake_agent_constructed["provider_config"]
+        assert first_bind_config.provider == "openai"
+        assert first_bind_config.model == "claude-haiku-4-5-20251001"
+        assert first_bind_config.api_base == "http://127.0.0.1:3456/v1"
 
         # Subsequent GET reports the configured state.
         body = c.get("/v1/providers/lm").json()

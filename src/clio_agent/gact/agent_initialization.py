@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from clio_agent.gact.providers.profile_store import ProviderProfileStore
+from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.providers.lm_spec import spec_from_config
 
 logger = logging.getLogger(__name__)
@@ -18,6 +19,52 @@ AGENT_INIT_FAILED_REASON = "agent_init_failed"
 #: :func:`mark_agent_ready`. Named on the refusal so the client is told what
 #: actually recovers the retained work, rather than "restart the server".
 AGENT_INIT_RECOVERY_ACTIONS = ["rebind_lm_provider"]
+
+
+def agent_not_available_error(app: Any, sid: str) -> ErrorEnvelope:
+    """Return a typed error when no executable CLIO agent is ready for a turn."""
+
+    task = getattr(app.state, "agent_construction_task", None)
+    task_done = bool(getattr(task, "done", lambda: True)())
+    init_error = str(getattr(app.state, "agent_init_error", "") or "")
+    want_agent = bool(getattr(app.state, "want_agent", False))
+
+    if want_agent and not task_done:
+        status = "starting"
+        message = "CLIO is still starting its agent; no agent is ready to accept messages yet."
+        recoverable = True
+        recovery_actions = ["wait_for_agent_startup", "retry", "check_health"]
+    elif init_error:
+        status = "failed"
+        message = "CLIO agent startup failed; no agent is available to accept messages."
+        recoverable = True
+        recovery_actions = ["check_server_logs", "fix_lm_configuration", "restart_agent"]
+    else:
+        status = "not_configured"
+        message = (
+            "No executable CLIO agent is configured for this backend. Launch `clio-agent-gact` "
+            "with an LM provider configured before sending messages."
+        )
+        recoverable = False
+        recovery_actions = ["configure_lm_provider", "restart_agent"]
+
+    details: dict[str, Any] = {
+        "session_id": sid,
+        "agent_status": status,
+        "want_agent": want_agent,
+        "recovery_actions": recovery_actions,
+    }
+    if init_error:
+        details["agent_init_error"] = init_error
+
+    return ErrorEnvelope(
+        error=ErrorInfo(
+            error="agent_not_available",
+            message=message,
+            details=details,
+            recoverable=recoverable,
+        )
+    )
 
 
 def mark_agent_ready(app: Any, agent: Any) -> None:

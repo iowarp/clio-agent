@@ -146,51 +146,12 @@ def _web_dir() -> str:
     return conf.resolve("paths.web_dir", env="CLIO_WEB_DIR", default="", cast=conf.as_str).strip()
 
 
-def _agent_not_available_error(app: "FastAPI", sid: str) -> "ErrorEnvelope":
-    """Return a typed error when no executable CLIO agent is ready for a turn."""
-
-    task = getattr(app.state, "agent_construction_task", None)
-    task_done = bool(getattr(task, "done", lambda: True)())
-    init_error = str(getattr(app.state, "agent_init_error", "") or "")
-    want_agent = bool(getattr(app.state, "want_agent", False))
-
-    if want_agent and not task_done:
-        status = "starting"
-        message = "CLIO is still starting its agent; no agent is ready to accept messages yet."
-        recoverable = True
-        recovery_actions = ["wait_for_agent_startup", "retry", "check_health"]
-    elif init_error:
-        status = "failed"
-        message = "CLIO agent startup failed; no agent is available to accept messages."
-        recoverable = True
-        recovery_actions = ["check_server_logs", "fix_lm_configuration", "restart_agent"]
-    else:
-        status = "not_configured"
-        message = (
-            "No executable CLIO agent is configured for this backend. Launch `clio-agent-gact` "
-            "with an LM provider configured before sending messages."
-        )
-        recoverable = False
-        recovery_actions = ["configure_lm_provider", "restart_agent"]
-
-    details: dict[str, Any] = {
-        "session_id": sid,
-        "agent_status": status,
-        "want_agent": want_agent,
-        "recovery_actions": recovery_actions,
-    }
-    if init_error:
-        details["agent_init_error"] = init_error
-
-    return ErrorEnvelope(
-        error=ErrorInfo(
-            error="agent_not_available",
-            message=message,
-            details=details,
-            recoverable=recoverable,
-        )
-    )
-
+# ``_agent_not_available_error`` now lives in gact/agent_initialization.py
+# (#775/#774 file-size ratchet) -- it reads the exact deferred-construction
+# state (``agent_construction_task`` / ``agent_init_error`` / ``want_agent``)
+# that module already owns. Called at its one call site below as
+# ``agent_initialization.agent_not_available_error``; not re-exported here
+# because it is not in test_import_seams.SEAM_SYMBOLS (no other caller).
 
 # Session message-ledger + context-file helpers now live in
 # clio_agent.gact.session_store (#714 decomposition). Re-exported here so
@@ -299,7 +260,7 @@ def _enrich_cancellation_error_info(
 # (behavior-preserving extraction)                                              #
 # --------------------------------------------------------------------------- #
 # gact/_params.py -- user-agent generation-parameter parsing.
-from clio_agent.gact import provenance_wiring, relay_wiring  # noqa: E402
+from clio_agent.gact import desktop_lifecycle, provenance_wiring, relay_wiring  # noqa: E402
 from clio_agent.gact._params import (  # noqa: E402,F401
     _gact_turn_timeout_s,
     _semantic_trace_detail_level,
@@ -455,12 +416,11 @@ from clio_agent.gact.routes.agents import (  # noqa: E402
 from clio_agent.gact.routes.async_processes import (  # noqa: E402
     register_async_process_routes,
 )
+from clio_agent.gact.routes.blueprint_updates import register_blueprint_updates_routes  # noqa: E402
 from clio_agent.gact.routes.blueprints import (  # noqa: E402
     register_blueprints_routes,
 )
-from clio_agent.gact.routes.catalog import (  # noqa: E402
-    register_catalog_routes,
-)
+from clio_agent.gact.routes.catalog import register_catalog_routes  # noqa: E402
 from clio_agent.gact.routes.context import (  # noqa: E402
     register_context_routes,
 )
@@ -474,6 +434,7 @@ from clio_agent.gact.routes.expert_packs import (  # noqa: E402
 from clio_agent.gact.routes.interactions import (  # noqa: E402
     register_permission_and_interaction_routes,
 )
+from clio_agent.gact.routes.lifecycle import register_lifecycle_routes  # noqa: E402
 from clio_agent.gact.routes.mcp import (  # noqa: E402
     register_mcp_routes,
 )
@@ -495,12 +456,11 @@ from clio_agent.gact.routes.provider_models_refresh import (
 )
 from clio_agent.gact.routes.providers import register_providers_routes  # noqa: E402
 from clio_agent.gact.routes.relay import register_relay_routes  # noqa: E402
+from clio_agent.gact.routes.sandbox_setup import register_sandbox_setup_routes  # noqa: E402
 from clio_agent.gact.routes.schedules import (  # noqa: E402
     register_schedules_routes,
 )
-from clio_agent.gact.routes.session_defaults import (  # noqa: E402
-    register_session_defaults_routes,
-)
+from clio_agent.gact.routes.session_defaults import register_session_defaults_routes  # noqa: E402
 from clio_agent.gact.routes.sessions import register_sessions_routes  # noqa: E402
 from clio_agent.gact.routes.system import register_system_routes  # noqa: E402
 from clio_agent.gact.routes.trace import register_trace_routes  # noqa: E402
@@ -687,7 +647,6 @@ from clio_agent.gact.agent_blueprints import (
 )
 from clio_agent.gact.catalog import (  # noqa: E402, F401
     _builtin_agents,
-    _builtin_tools,
     _command_search_roots,
     _load_command_files_from_disk,
     _normalize_file_command_id,
@@ -829,6 +788,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     ``app.state.agent`` is stamped.
     """
 
+    desktop_lifecycle.reset_for_boot()
     app.state.started_at = time.time()
     app.state.mcp_app_loop = asyncio.get_running_loop()
     # #948 S1 (#662): anchor turn tasks to THIS app-lifetime loop, not whatever
@@ -879,6 +839,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     yield
 
+    # Agent construction runs on an executor thread. Cancelling its asyncio task
+    # does not stop that thread, and Python waits for executor workers at process
+    # exit. Wake provider discovery before cancelling the task so a missing LM
+    # Studio instance cannot add its entire retry window to Desktop Quit.
+    desktop_lifecycle.wake_for_shutdown()
+
     # #1334: no request is served on this loop any more, so the teardown flushes below
     # (the turn drain, the trace close) must LAND rather than be refused and dropped.
     loop_guard.begin_server_loop_drain(app.state.mcp_app_loop)
@@ -914,6 +880,16 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # they persist into are still alive (owner module does the cooperative-cancel +
     # bounded-grace + typed-reason drain).
     await drain_app_turns(app, logger)
+
+    # Desktop Quit must release the shared runtime before any later executor join can
+    # block on a provider/tool worker.  The turn drain above is the safety boundary:
+    # cooperative cancellation has been signalled and every asyncio turn task has
+    # settled or been hard-cancelled, so application work can no longer reacquire the
+    # runtime.  Releasing from the HTTP route itself was too early (an active turn
+    # could immediately spawn clio-core again); releasing at the very end was too
+    # late (a stuck executor join let the desktop supervisor kill Python first,
+    # skipping this cleanup and leaking clio-core).
+    await desktop_lifecycle.release_runtime_after_drain(app)
 
     # #948 S3/S4: shut down every per-depth agent-task pool (child forwards) off the
     # loop, symmetric to their lazy install. Without this their non-daemon workers
@@ -962,12 +938,6 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     _agent = getattr(app.state, "agent", None)
     await asyncio.get_running_loop().run_in_executor(None, lambda: shutdown_child_processes(_agent))
-    # NOTE: the shared clio-core runtime client is released (last-one-out stop) via the
-    # atexit hook registered in ClioCoreStore — NOT here. uvicorn handles SIGTERM by exiting
-    # the serve loop and returning normally, so the interpreter exits and atexit fires
-    # ("I leave the TUI, everything gets released"). Doing it in this lifespan hook would
-    # wrongly stop the SHARED daemon on any app teardown that is not a process exit
-    # (e.g. a second app in the same process), which the atexit path correctly avoids.
     loop_guard.unregister_server_loop(app.state.mcp_app_loop)  # #1334: strict again
 
 
@@ -2103,7 +2073,7 @@ def build_app(
         cancellation_attempt_summary=_cancellation_attempt_summary,
         active_lm_model_ref=_active_lm_model_ref,
         unsupported_model_ref_error=_unsupported_model_ref_error,
-        agent_not_available_error=_agent_not_available_error,
+        agent_not_available_error=agent_initialization.agent_not_available_error,
         ask_user_resume_text=_ask_user_resume_text,
         compact_exact_evidence_index=_compact_exact_evidence_index,
         install_tool_runtime_hooks=_install_tool_runtime_hooks,
@@ -2154,6 +2124,7 @@ def build_app(
     # routes/blueprints.py; the expert-pack routes are thin aliases of the same
     # lifecycle. The set-active route reaches the activation-metadata builder
     # and metadata-only active-id reader through ``deps``.
+    register_blueprint_updates_routes(app, deps)  # BEFORE the greedy {blueprint_id:path} below
     register_blueprints_routes(app, deps)
 
     # ---- /v1/expert-packs/* discovery + session attachment -----------
@@ -2223,6 +2194,8 @@ def build_app(
     # the wire/limit constants live in runtime/constants.py. It needs no
     # cross-concern seam from ``deps``.
     register_system_routes(app, deps)
+    register_sandbox_setup_routes(app)  # /v1/system/sandbox (+/setup) -- routes/sandbox_setup.py
+    register_lifecycle_routes(app)
     register_relay_routes(app, deps)
 
     # ---- /v1/sessions/{sid}/tasks + /v1/tasks/{tid} + memory/events + share ----
@@ -2418,12 +2391,16 @@ def run_server(
     ):
         app_to_run.state.want_agent = True
 
-    uvicorn.run(
-        app_to_run,
-        host=host,
-        port=port,
-        reload=reload,
-    )
+    if reload:
+        uvicorn.run(
+            app_to_run,
+            host=host,
+            port=port,
+            reload=True,
+        )
+        return
+
+    desktop_lifecycle.serve_foreground(app_to_run, host=host, port=port)
 
 
 def main() -> None:

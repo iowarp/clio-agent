@@ -104,6 +104,7 @@ def assemble_spawn_runtime_tools(
             spawn_agent_task,
             name="spawn_agent_task",
             presentation="specialized",
+            domain="agents",
             desc=spawn_agent_task.__doc__,
             title="Spawn Agent",
             representation="handoff",
@@ -143,6 +144,7 @@ def assemble_spawn_runtime_tools(
             spawn_agents_parallel,
             name="spawn_agents_parallel",
             presentation="specialized",
+            domain="agents",
             desc=spawn_agents_parallel.__doc__,
             title="Spawn Agents",
             representation="handoff",
@@ -184,6 +186,7 @@ def assemble_spawn_runtime_tools(
                 run_workflow,
                 name="run_workflow",
                 presentation="specialized",
+                domain="workflows",
                 desc=run_workflow.__doc__,
                 title="Run Workflow",
                 args={

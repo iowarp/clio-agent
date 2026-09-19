@@ -39,6 +39,12 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Dict, Optional, Protocol, runtime_checkable
 
+# Clean-stop + the shutdown latch live in owner module arc/runtime_stop.py
+# (file-size ratchet, #775/#774), re-exported below. Also imported as a
+# MODULE (not just names) so ``_ensure_runtime_daemon`` reads the latch flag
+# live, not a stale copy frozen at import time.
+from clio_agent.arc import runtime_stop
+
 # CTE config generation + capacity policy (the bounded ram hot-tier cap) live in
 # their own owner module (iowarp/clio-agent#774/#890); re-exported here so callers/
 # tests reaching ``storage._default_cte_dir`` / ``default_cte_config_path`` keep working.
@@ -73,7 +79,10 @@ from clio_agent.arc.rpc_liveness import (
     guarded_store_rpc,
     store_rpc_health_probe,
 )
-from clio_agent.arc.runtime_crash import clear_crash_record, watch_daemon_process
+from clio_agent.arc.runtime_crash import (
+    clear_crash_record,
+    watch_daemon_process,
+)
 
 # Per-OS spawn primitives live in owner module (#1148); re-exported for callers/tests.
 from clio_agent.arc.runtime_spawn import (  # noqa: F401 - re-exported for callers/tests
@@ -81,6 +90,12 @@ from clio_agent.arc.runtime_spawn import (  # noqa: F401 - re-exported for calle
     _dynamic_library_env_var,
     _runtime_launcher_path,
 )
+from clio_agent.arc.runtime_stop import (  # noqa: F401 - re-exported for callers/tests
+    RuntimeShutdownInProgress,
+    prepare_runtime_shutdown,
+    reset_runtime_shutdown,
+)
+from clio_agent.arc.runtime_stop import stop_runtime_daemon as _stop_runtime_daemon
 from clio_agent.runtime.stream_audit import stream_audit
 
 logger = logging.getLogger(__name__)
@@ -359,6 +374,7 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
 # against PID reuse) on the next register/release — at most one warm instance, no leak.
 
 _client_registered = False  # process-level: are WE in the registry?
+# The shutdown latch (desktop Quit forbids late reacquisition) lives in runtime_stop.
 _active_config_path = ""  # stashed so atexit/shutdown can stop the right daemon
 _active_log_level = "error"
 
@@ -487,59 +503,6 @@ def _kill_daemon_pidfile() -> None:
         pidfile.unlink()
 
 
-def _stop_runtime_daemon(config_path: str, log_level: str) -> None:
-    """Stop the shared daemon cleanly (``clio_run stop``), with a kill fallback.
-
-    Mirrors the spawn path: the launcher name (``.exe`` on Windows) comes from
-    ``_runtime_launcher_path`` and the shared-library env var (``PATH`` /
-    ``DYLD_LIBRARY_PATH`` / ``LD_LIBRARY_PATH``) from ``_dynamic_library_env_var``,
-    so the clean stop works on every platform the spawn does (issue #765).
-    """
-    stopped = False
-    try:
-        import iowarp_core  # noqa: PLC0415
-
-        exe = _runtime_launcher_path(iowarp_core)
-        if exe is None:
-            logger.warning(
-                "clean clio-core daemon stop unavailable "
-                "(reason=launcher_not_found bin_dir=%r); falling back to pidfile kill",
-                iowarp_core.get_bin_dir(),  # type: ignore[attr-defined]
-            )
-        else:
-            env = os.environ.copy()
-            lib_var = _dynamic_library_env_var()
-            env[lib_var] = (
-                iowarp_core.get_lib_dir() + os.pathsep + env.get(lib_var, "")  # type: ignore[attr-defined]
-            )
-            env.setdefault("CTP_LOG_LEVEL", log_level)
-            if config_path:
-                env["CLIO_SERVER_CONF"] = config_path
-            subprocess.run(  # noqa: S603 - fixed launcher path
-                [exe, "stop"],
-                env=env,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=20,
-                check=False,
-            )
-            stopped = True
-    except (subprocess.TimeoutExpired, OSError, ImportError) as exc:
-        logger.warning(
-            "clean clio-core daemon stop failed (reason=%s: %s); falling back to pidfile kill",
-            type(exc).__name__,
-            exc,
-        )
-        stopped = False
-    # Confirm the port actually freed; fall back to a direct kill if not.
-    if not stopped or _runtime_alive(_resolve_runtime_port(config_path)):
-        _kill_daemon_pidfile()
-    with contextlib.suppress(OSError):
-        _daemon_pidfile().unlink()
-    logger.info("released last clio-core client -> stopped shared runtime daemon")
-
-
 def release_runtime_client(config_path: str = "", log_level: str = "error") -> None:
     """Deregister this process; stop the shared daemon iff it was the last live client.
 
@@ -566,9 +529,15 @@ def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str
     THIS process as an attached client before returning, so no concurrent release can
     stop the daemon we are about to connect to. FAIL LOUD if a spawned daemon never
     binds the RPC port.
+
+    The latch check is the first statement UNDER the lock: a caller blocked on the
+    lock (behind a concurrent ``release_runtime_client``) must re-check once it
+    holds it, or it could spawn right after the latch was set mid-wait.
     """
     port = _resolve_runtime_port(config_path)
     with _runtime_spawn_lock():
+        if runtime_stop._runtime_shutdown_requested:
+            raise RuntimeShutdownInProgress("clio-core runtime is shutting down")
         _register_client()  # prunes nothing here; release-side prunes. We are now live.
         if _runtime_alive(port):
             return
@@ -633,10 +602,14 @@ class ClioCoreStore:
         )
 
     # NOTE: there is deliberately NO instance ``release()`` method. The shared
-    # clio-core runtime is released exactly once, last-one-out, via the
-    # module-level :func:`release_runtime_client` registered with ``atexit`` in
-    # :meth:`_ensure_runtime`. See that method and the gact lifespan note in
-    # ``gact/app.py`` for why atexit — not a lifespan hook — owns shutdown.
+    # clio-core runtime is released via the module-level, idempotent (last-one-
+    # out, deregister-guarded) :func:`release_runtime_client`. A desktop-managed
+    # boot calls it deterministically, once, from the gact lifespan right after
+    # the turn drain settles (``desktop_lifecycle.release_runtime_after_drain``
+    # in ``gact/app.py``); ``atexit``, registered below in :meth:`_ensure_runtime`,
+    # is the general backstop for every OTHER exit path (bare CLI, a crash, a
+    # non-desktop server) -- a second call from atexit after the lifespan already
+    # ran is a safe no-op.
 
     @classmethod
     def _ensure_runtime(cls, config_path: str, log_level: str, settle_s: float) -> None:
@@ -677,14 +650,14 @@ class ClioCoreStore:
             cte.initialize_cte(config_path, cte.PoolQuery.Dynamic())  # "" => ~/.clio/clio.yaml
             cls._initialized = True
 
-            # Stash the params and register the last-one-out release with atexit.
-            # atexit is THE shutdown mechanism — not a duplicate/fallback. uvicorn
-            # handles SIGTERM by returning from its serve loop, so the interpreter
-            # exits normally and atexit fires ("I leave the TUI, everything gets
-            # released"). The gact lifespan hook DELIBERATELY does NOT call
-            # release_runtime_client (see gact/app.py lifespan note): doing so would
-            # wrongly stop the SHARED daemon on any app teardown that is not a
-            # process exit (e.g. a second app in the same process).
+            # Stash the params and register the last-one-out release with atexit,
+            # the general backstop for every exit path (plain CLI, a crash, a
+            # non-desktop server). A desktop-managed boot ALSO releases earlier
+            # and deterministically, from the gact lifespan right after the turn
+            # drain settles (desktop_lifecycle.release_runtime_after_drain in
+            # gact/app.py); release_runtime_client is deregister-guarded, so
+            # whichever of the two paths runs first does the real work and the
+            # other is a no-op.
             global _active_config_path, _active_log_level
             _active_config_path = config_path
             _active_log_level = log_level

@@ -51,7 +51,9 @@ def annotations_are_read_only(annotations: Any) -> bool:
         return False
     if not _hints_well_typed(annotations):
         return False
-    return annotations.get("readOnlyHint") is True and annotations.get("destructiveHint") is not True
+    return (
+        annotations.get("readOnlyHint") is True and annotations.get("destructiveHint") is not True
+    )
 
 
 def classification_tags(annotations: Any) -> frozenset[str]:
@@ -82,10 +84,7 @@ def classification_tags(annotations: Any) -> frozenset[str]:
         isinstance(annotations, Mapping)
         and _hints_well_typed(annotations)
         and annotations.get("openWorldHint") is False
-        and (
-            annotations.get("destructiveHint") is True
-            or annotations.get("readOnlyHint") is False
-        )
+        and (annotations.get("destructiveHint") is True or annotations.get("readOnlyHint") is False)
     ):
         return frozenset({"write"})
     return frozenset()
@@ -128,6 +127,11 @@ class ToolCatalogEntry:
     owner: str
     tags: frozenset[str]
     visible_to: frozenset[str]
+    #: Server-declared functional grouping (#1350 desktop Tools view) — a
+    #: ``gact.types.ToolDomain`` value, kept as plain ``str`` here so this
+    #: leaf module never has to import the pydantic wire types. Required, no
+    #: default: a gateway row can never go ungrouped by omission.
+    domain: str
     planner_visible: bool = True
 
 
@@ -136,6 +140,7 @@ def _entry(
     owner: str,
     tags: Iterable[str],
     *,
+    domain: str,
     visible_to: Iterable[str] = (),
     planner_visible: bool = True,
 ) -> ToolCatalogEntry:
@@ -148,6 +153,7 @@ def _entry(
         owner=owner,
         tags=frozenset(tags),
         visible_to=frozenset(scopes),
+        domain=domain,
         planner_visible=planner_visible,
     )
 
@@ -164,6 +170,7 @@ def _builtin_entry(
     owner: str,
     tags: Iterable[str],
     *,
+    domain: str,
     visible_to: Iterable[str] = (),
     planner_visible: bool = True,
 ) -> ToolCatalogEntry:
@@ -175,7 +182,14 @@ def _builtin_entry(
     """
 
     projected = set(tags) | classification_tags(_BUILTIN_ANNOTATIONS.get(name))
-    return _entry(name, owner, projected, visible_to=visible_to, planner_visible=planner_visible)
+    return _entry(
+        name,
+        owner,
+        projected,
+        domain=domain,
+        visible_to=visible_to,
+        planner_visible=planner_visible,
+    )
 
 
 # Static base catalog: the universal in-process built-ins only (fs/shell). All
@@ -190,18 +204,20 @@ TOOL_CATALOG: dict[str, ToolCatalogEntry] = {
         "shell_bash",
         "utility",
         {"utility", "shell", "local", "diagnostic"},
+        domain="shell",
         visible_to={"chat"},
     ),
     "fs_propose_edit": _builtin_entry(
         "fs_propose_edit",
         "utility",
         {"workspace", "edit", "diff", "proposal"},
+        domain="workspace",
     ),
     "fs_read_file": _builtin_entry(
-        "fs_read_file", "workspace", {"workspace"}, planner_visible=False
+        "fs_read_file", "workspace", {"workspace"}, domain="workspace", planner_visible=False
     ),
     "fs_apply_edit_write": _builtin_entry(
-        "fs_apply_edit_write", "workspace", {"workspace"}, planner_visible=False
+        "fs_apply_edit_write", "workspace", {"workspace"}, domain="workspace", planner_visible=False
     ),
 }
 
