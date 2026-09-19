@@ -33,6 +33,7 @@ import contextlib
 import logging
 import os
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Iterator
@@ -336,15 +337,35 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
     log_path = state_dir / "clio-runtime.log"
     clear_crash_record(state_dir)  # fresh spawn, fresh slate (#1148)
     log_fh = open(log_path, "ab")  # noqa: SIM115 - handed to the detached child
-    try:
-        proc = subprocess.Popen(  # type: ignore[call-overload]  # noqa: S603 - fixed launcher path
+
+    def _spawn(*, breakaway: bool) -> "subprocess.Popen[bytes]":
+        return subprocess.Popen(  # type: ignore[call-overload]  # noqa: S603 - fixed launcher path
             [exe, "start"],
             env=env,
             stdin=subprocess.DEVNULL,
             stdout=log_fh,
             stderr=log_fh,
-            **_detached_popen_kwargs(),
+            **_detached_popen_kwargs(breakaway=breakaway),
         )
+
+    try:
+        try:
+            proc = _spawn(breakaway=True)
+        except PermissionError:
+            # ERROR_ACCESS_DENIED from CreateProcess: this process sits inside a
+            # Job Object that forbids breakaway (a CI runner, a sandbox, a managed
+            # desktop). Retrying without the flag is the only way to get a daemon
+            # at all, and it costs the #900 property -- the daemon now dies with
+            # the enclosing job instead of surviving a hard-kill -- so it is
+            # reported, never taken silently.
+            if not sys.platform.startswith("win"):
+                raise
+            logger.warning(
+                "clio-core daemon spawn could not break away from the enclosing "
+                "Job Object (reason=job_object_breakaway_denied); retrying attached. "
+                "The shared daemon will now exit when that job closes."
+            )
+            proc = _spawn(breakaway=False)
     finally:
         log_fh.close()
     # The daemon must die loudly in OUR channels (#1148): on abnormal exit the

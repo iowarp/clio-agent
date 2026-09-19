@@ -35,19 +35,33 @@ def _runtime_launcher_path(iowarp_core: object) -> Optional[str]:
     return None
 
 
-def _detached_popen_kwargs() -> "dict[str, Any]":
+def _detached_popen_kwargs(*, breakaway: bool = True) -> "dict[str, Any]":
     """Popen kwargs that detach the daemon so it outlives the spawning process.
 
     POSIX: ``setsid``. Windows: ``CREATE_NO_WINDOW`` in a new process group, NOT
     ``DETACHED_PROCESS``: no console breaks the daemon's ZeroMQ Winsock init (#870).
     ``CREATE_BREAKAWAY_FROM_JOB`` (#900) breaks the shared daemon OUT of the server's
-    ``KILL_ON_JOB_CLOSE`` Job Object so it survives a server hard-kill (the job sets
-    ``BREAKAWAY_OK``; the flag is ignored where no job is assigned).
+    ``KILL_ON_JOB_CLOSE`` Job Object so it survives a server hard-kill.
+
+    That flag is only free when no Job Object is assigned, or when the assigned one
+    permits breakaway. Inside a FOREIGN job that does not set ``BREAKAWAY_OK`` --
+    a GitHub Actions runner, a sandbox, a managed Windows desktop -- ``CreateProcess``
+    refuses the flag outright with ``ERROR_ACCESS_DENIED``. Callers that must spawn
+    anyway pass ``breakaway=False`` and accept that the daemon now dies with the
+    enclosing job; see ``storage._spawn_runtime_daemon``, which reports that
+    downgrade rather than taking it silently.
+
+    Args:
+        breakaway: Whether to request ``CREATE_BREAKAWAY_FROM_JOB`` (Windows only).
+
+    Returns:
+        Keyword arguments for :class:`subprocess.Popen`.
     """
     if sys.platform.startswith("win"):
         flags = 0
         flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
         flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
-        flags |= getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
+        if breakaway:
+            flags |= getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
         return {"creationflags": flags, "close_fds": True}
     return {"start_new_session": True, "close_fds": True}
