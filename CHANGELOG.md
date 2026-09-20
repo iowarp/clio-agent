@@ -4,6 +4,14 @@ All notable changes to clio-agent's GACT-contract surface are
 documented in this file. Internal changes that don't affect the
 TUI/HTTP surface aren't tracked here.
 
+## [0.9.4.11] - 2026-09-20
+
+### Fixed
+
+- Keep the native desktop workspace inside the height remaining below the
+  title bar, so Settings and version controls remain visible on short windows
+  and route content scrolls within the window.
+
 ## [0.9.4.10] - 2026-09-20
 
 This is the signed update target used to verify Desktop-only, CLIO-only, and
