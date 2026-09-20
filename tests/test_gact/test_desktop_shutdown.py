@@ -165,6 +165,7 @@ def test_lifespan_releases_runtime_after_turn_drain_for_desktop(tmp_path, monkey
 
     monkeypatch.setattr(gact_app, "drain_app_turns", fake_drain)
     monkeypatch.setattr("clio_agent.arc.storage.release_runtime_client", fake_release)
+    monkeypatch.setattr(desktop_lifecycle, "_app_owns_runtime_client", lambda _app: True)
     monkeypatch.setattr(
         desktop_lifecycle,
         "terminate_process_after_cleanup",
@@ -190,6 +191,7 @@ def test_lifespan_releases_runtime_when_not_desktop(tmp_path, monkeypatch) -> No
 
     monkeypatch.setattr(gact_app, "drain_app_turns", fake_drain)
     monkeypatch.setattr("clio_agent.arc.storage.release_runtime_client", fake_release)
+    monkeypatch.setattr(desktop_lifecycle, "_app_owns_runtime_client", lambda _app: True)
 
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=None)
 

@@ -131,10 +131,13 @@ def test_serve_foreground_lifespan_shutdown_runs_with_an_open_sse_stream() -> No
 
 
 @pytest.mark.asyncio
-async def test_release_runtime_after_drain_releases_when_flag_unset(monkeypatch) -> None:
+async def test_release_runtime_after_drain_releases_owned_runtime_when_flag_unset(
+    monkeypatch,
+) -> None:
     """A normal CLI/server shutdown releases ARC after the same safe turn drain."""
 
     app = FastAPI()
+    monkeypatch.setattr(desktop_lifecycle, "_app_owns_runtime_client", lambda _app: True)
     released: list[bool] = []
     monkeypatch.setattr(
         "clio_agent.arc.storage.release_runtime_client",
@@ -145,6 +148,38 @@ async def test_release_runtime_after_drain_releases_when_flag_unset(monkeypatch)
 
     assert result == "released"
     assert released == [True]
+
+
+@pytest.mark.asyncio
+async def test_release_runtime_after_drain_preserves_unowned_runtime(monkeypatch) -> None:
+    """An app without a CTE-backed ARC cannot release another in-process owner."""
+
+    app = FastAPI()
+    released: list[bool] = []
+    monkeypatch.setattr(
+        "clio_agent.arc.storage.release_runtime_client",
+        lambda: released.append(True),
+    )
+
+    result = await desktop_lifecycle.release_runtime_after_drain(app)
+
+    assert result == "not_owned"
+    assert released == []
+
+
+def test_app_owns_runtime_client_only_for_cte_backed_arc() -> None:
+    """Ownership follows the app's actual store, not a process-global attachment."""
+
+    from types import SimpleNamespace
+
+    from clio_agent.arc.storage import ClioCoreStore
+
+    app = FastAPI()
+    app.state.arc = SimpleNamespace(_store=object())
+    assert desktop_lifecycle._app_owns_runtime_client(app) is False
+
+    app.state.arc = SimpleNamespace(_store=object.__new__(ClioCoreStore))
+    assert desktop_lifecycle._app_owns_runtime_client(app) is True
 
 
 def test_terminate_process_after_cleanup_is_desktop_only(monkeypatch) -> None:

@@ -174,7 +174,21 @@ def serve_foreground(app: "FastAPI", *, host: str, port: int) -> None:
     server.run()
 
 
-async def release_runtime_after_drain(app: "FastAPI") -> Literal["released"]:
+def _app_owns_runtime_client(app: "FastAPI") -> bool:
+    """Return whether this app's ARC is backed by the shared clio-core runtime."""
+
+    arc = getattr(getattr(app, "state", None), "arc", None)
+    store = getattr(arc, "_store", None)
+    if store is None:
+        return False
+    from clio_agent.arc.storage import ClioCoreStore  # noqa: PLC0415
+
+    return isinstance(store, ClioCoreStore)
+
+
+async def release_runtime_after_drain(
+    app: "FastAPI",
+) -> Literal["released", "not_owned"]:
     """Release the shared clio-core runtime once the app turn drain has settled.
 
     Desktop Quit must release the shared runtime before any later executor join can
@@ -191,15 +205,26 @@ async def release_runtime_after_drain(app: "FastAPI") -> Literal["released"]:
     that ordinary path's clio-core daemon and client marker behind. The lifespan
     has the same safe boundary for both paths: requests have stopped and the turn
     drain immediately before this call has settled all work that could reacquire
-    ARC. Release unconditionally here; the client registry still preserves a
-    daemon that another live CLIO process is using.
+    ARC.
+
+    Ownership is app-specific, not merely process-global. Test processes and
+    embedders can host multiple FastAPI apps while another owner has attached the
+    process to clio-core. An app with no CTE-backed ARC must not deregister that
+    unrelated client and stop its daemon. A real desktop or CLI agent publishes
+    its CTE-backed ARC on ``app.state.arc``, so both production shutdown paths
+    still release deterministically here.
 
     Args:
         app: The FastAPI app completing its lifespan shutdown.
 
     Returns:
-        ``"released"`` after the idempotent runtime-client release has run.
+        ``"released"`` after the idempotent runtime-client release has run, or
+        ``"not_owned"`` when this app never acquired a CTE-backed ARC.
     """
+    if not _app_owns_runtime_client(app):
+        logger.info("runtime.release_after_drain outcome=not_owned")
+        return "not_owned"
+
     from clio_agent.arc.storage import release_runtime_client  # noqa: PLC0415
 
     await asyncio.to_thread(release_runtime_client)
