@@ -11,6 +11,9 @@ TUI/HTTP surface aren't tracked here.
 - ALCF sign-in now installs missing Argonne/Globus support quietly on the
   connected agent and forces a fresh interactive login, instead of ending with
   a manual `pip install` instruction or reusing a token the gateway rejected.
+- Provider catalogs now reuse their in-process snapshot, refresh in the
+  background without replacing usable picker rows, broadcast explicit model
+  refreshes to connected clients, and keep ready CLI-provider aliases usable.
 
 ## [0.9.4.2] - 2026-09-20
 

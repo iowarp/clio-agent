@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException, Request
 
+from clio_agent.gact.events import Event
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 if TYPE_CHECKING:
@@ -81,6 +82,19 @@ def register_provider_models_refresh_routes(app: FastAPI, deps: "GactDeps") -> N
                 )
 
         results = await model_discovery.refresh_all(presets=presets)
+        # The normalized catalog is a snapshot over the discovery overlay. A
+        # successful explicit refresh must retire that snapshot and wake every
+        # connected client; otherwise Settings can show the new provider truth
+        # while an already-open model picker keeps presenting the old one.
+        app.state.provider_catalog = None
+        for session in app.state.sessions.list():
+            app.state.bus.publish(
+                Event(
+                    type="provider_catalog.refreshed",
+                    session_id=session.id,
+                    payload={"results": results},
+                )
+            )
         return {"results": results}
 
 

@@ -160,9 +160,11 @@ def test_post_refresh_returns_the_discovery_results_verbatim(
     ]
     mock_refresh = AsyncMock(return_value=fake_results)
     monkeypatch.setattr("clio_agent.providers.model_discovery.refresh_all", mock_refresh)
+    client.app.state.provider_catalog = {"providers": [{"id": "stale"}]}
     resp = client.post("/v1/providers/models/refresh")
     assert resp.status_code == 200
     assert resp.json() == {"results": fake_results}
+    assert client.app.state.provider_catalog is None
     mock_refresh.assert_awaited_once()
     # No body -> presets=None (the default, configured-providers-only scan).
     assert mock_refresh.await_args.kwargs.get("presets") is None
