@@ -4,6 +4,14 @@ All notable changes to clio-agent's GACT-contract surface are
 documented in this file. Internal changes that don't affect the
 TUI/HTTP surface aren't tracked here.
 
+## [0.9.4.6] - 2026-09-20
+
+### Fixed
+
+- Managed bundled CLIO updates now use the runtime's shipped `bin/uv`
+  executable, so the individual CLIO and combined update actions perform the
+  requested upgrade instead of failing before launch.
+
 ## [0.9.4.5] - 2026-09-20
 
 ### Fixed
