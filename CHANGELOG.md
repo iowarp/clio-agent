@@ -4,10 +4,14 @@ All notable changes to clio-agent's GACT-contract surface are
 documented in this file. Internal changes that don't affect the
 TUI/HTTP surface aren't tracked here.
 
-## Unreleased
+## [0.9.4.3] - 2026-09-20
 
 ### Fixed
 
+- Desktop and agent releases now expose truthful, independently actionable
+  version state; the bundled Windows agent can update in place while desktop
+  updates use the signed lightweight installer, with a combined one-restart
+  path when both are behind.
 - ALCF sign-in now installs missing Argonne/Globus support quietly on the
   connected agent and forces a fresh interactive login, instead of ending with
   a manual `pip install` instruction or reusing a token the gateway rejected.

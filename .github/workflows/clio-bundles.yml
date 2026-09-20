@@ -410,14 +410,12 @@ jobs:
           // Signed auto-update (v0.9.4.1): the CLIO brand overlay already
           // sets bundle.createUpdaterArtifacts + plugins.updater.pubkey (the
           // CLIO minisign key) -- leave both exactly as the brand declared
-          // them. Only the update FEED differs per variant: bundled and lite
-          // installers are mutually exclusive upgrade paths that must never
-          // cross-offer each other's asset, so each variant gets its own
-          // manifest file (see gen_tauri_update_manifest.py / release-check).
+          // them. Every installed desktop consumes the lightweight updater:
+          // the initial bundled installer owns first-run provisioning, while
+          // later desktop and agent updates remain independently selectable.
           if (config.plugins?.updater) {
-            const manifestName = variant === "lite" ? "latest-lite.json" : "latest.json";
             config.plugins.updater.endpoints = [
-              `https://github.com/iowarp/clio-agent/releases/latest/download/${manifestName}`,
+              "https://github.com/iowarp/clio-agent/releases/latest/download/latest-lite.json",
             ];
           }
           fs.writeFileSync(outputPath, `${JSON.stringify(config, null, 2)}\n`);
@@ -605,7 +603,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          python3 scripts/gen_tauri_update_manifest.py --tag "$TAG" --variant bundled --out latest.json
+          # Existing bundled clients still request latest.json. Point that
+          # compatibility name at the lite installer so their first update
+          # also transitions to independent Desktop/CLIO lifecycle control.
+          python3 scripts/gen_tauri_update_manifest.py --tag "$TAG" --variant lite --out latest.json
           python3 scripts/gen_tauri_update_manifest.py --tag "$TAG" --variant lite --out latest-lite.json
           gh release upload "$TAG" latest.json latest-lite.json --clobber
       - name: Assert release asset completeness

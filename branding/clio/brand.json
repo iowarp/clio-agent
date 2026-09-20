@@ -37,6 +37,8 @@
     "detail": "CLIO backend"
   },
   "releaseUrl": "https://github.com/iowarp/clio-agent/releases",
+  "desktopReleaseUrl": "https://github.com/iowarp/clio-agent/releases",
+  "agentReleaseUrl": "https://github.com/iowarp/clio-agent/releases",
   "backend": {
     "mode": "managed",
     "sidecarName": "clio-agent",
