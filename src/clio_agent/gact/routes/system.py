@@ -29,6 +29,7 @@ from clio_agent.gact.composer_runtime import resource_capabilities
 from clio_agent.gact.context_references import CONTEXT_REFERENCE_CAPABILITY
 from clio_agent.gact.protocol_v3 import capabilities_to_v3, project_for_request
 from clio_agent.gact.provenance.child_projection import CHILD_ACTIVITY_PROJECTION_CAPABILITY
+from clio_agent.gact.providers.config import _effective_lm_config
 from clio_agent.gact.relay_status import relay_capabilities
 from clio_agent.gact.routes.health_projection import (
     desktop_provider_report,
@@ -335,10 +336,14 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         uptime = int(time.time() - app.state.started_at)
 
         try:
+            effective_lm = _effective_lm_config(app)
+            effective_provider_configured = bool(
+                effective_lm.get("provider") and effective_lm.get("model")
+            )
             report = await asyncio.to_thread(
                 collect_runtime_status,
                 api_state=IntegrationState.READY,
-                env=runtime_provider_probe_env(getattr(app.state, "lm_config", None)),
+                env=runtime_provider_probe_env(effective_lm),
                 lm_timeout=0.5,
                 # The full-box process census is served from a background cache
                 # below — a polled endpoint must not pay the ~10s cold psutil walk.
@@ -346,9 +351,10 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
             report = desktop_provider_report(
                 report,
-                lm_config=getattr(app.state, "lm_config", None),
+                lm_config=effective_lm if effective_provider_configured else None,
                 provider_configured=bool(
-                    runtime_provider_probe_env(None).get("CLIO_LM_PROVIDER", "").strip()
+                    effective_provider_configured
+                    or runtime_provider_probe_env(None).get("CLIO_LM_PROVIDER", "").strip()
                 ),
             )
             integrations = list(report.integrations)

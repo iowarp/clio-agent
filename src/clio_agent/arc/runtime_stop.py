@@ -42,11 +42,11 @@ from clio_agent.arc.runtime_spawn import _dynamic_library_env_var, _runtime_laun
 
 logger = logging.getLogger(__name__)
 
-# desktop supervisor budget (GRACEFUL_SHUTDOWN_STALL) is 30s total from the 202
-# response to a force-kill; this stop attempt is only ONE step inside that window
-# (the turn drain + agent-task executor joins run around it), so it must leave
-# headroom rather than spend the whole 30s itself.
-_RUNTIME_STOP_STALL_SECONDS = 10.0
+# A healthy local daemon normally releases its listening socket immediately.
+# Three seconds still gives the clean ``clio_run stop`` handshake substantial
+# room, while preventing a wedged helper from consuming a third of Desktop
+# Quit's native fallback window before the verified pidfile kill runs.
+_RUNTIME_STOP_STALL_SECONDS = 3.0
 _RUNTIME_STOP_POLL_SECONDS = 0.1
 
 # "clio_run stop" reporting success (the helper process exiting) and the daemon's

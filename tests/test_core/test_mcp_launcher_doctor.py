@@ -39,6 +39,27 @@ def test_present_launcher_yields_no_finding():
     assert findings == []
 
 
+def test_bundled_desktop_launcher_yields_no_finding(monkeypatch):
+    """A launcher provided by the portable desktop runtime is available without PATH."""
+    specs = _specs({"web": "clio-web-search-mcp --remote-url http://127.0.0.1:8089"})
+
+    import clio_agent.runtime.mcp_launcher as module
+
+    monkeypatch.setattr(
+        module,
+        "bundled_module_launcher",
+        lambda command, args: (
+            ("python.exe", ["-c", "run_web_search()", *args], {})
+            if command == "clio-web-search-mcp"
+            else None
+        ),
+    )
+
+    findings = probe_mcp_launchers(specs=specs, which=lambda _cmd: None)
+
+    assert findings == []
+
+
 def test_generic_missing_launcher_reports_actionable_finding():
     """A non-clio-kit missing launcher reports a generic actionable remediation."""
     specs = _specs({"weather": "weather-mcp serve"})

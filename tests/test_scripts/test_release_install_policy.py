@@ -12,7 +12,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_VERSION = "0.9.4.1"
+EXPECTED_VERSION = "0.9.4.2"
 EXPECTED_DSPY = "dspy==3.3.0b1"
 EXPECTED_FASTMCP = "fastmcp==4.0.0b5"
 EXPECTED_FASTMCP_SLIM = "fastmcp-slim==4.0.0b5"
@@ -50,6 +50,34 @@ def test_release_installers_explicitly_root_intentional_prereleases() -> None:
         assert "--prerelease" not in contents, relative_path
         for command in commands:
             assert command in contents, f"{relative_path} lacks narrow DSPy install: {command}"
+
+
+def test_launchers_root_runtime_and_cte_state_under_the_selected_install() -> None:
+    """Detached agents must not share stale host-global coordination paths."""
+
+    shell = _text("install/clio")
+    assert 'CLIO_DATA_DIR="${CLIO_DATA_DIR:-$CLIO_PREFIX/data}"' in shell
+    assert 'CLIO_ARC_CTE_DIR="${CLIO_ARC_CTE_DIR:-$CLIO_PREFIX/cte}"' in shell
+    assert 'CLIO_RUNTIME_STATE_DIR="${CLIO_RUNTIME_STATE_DIR:-$CLIO_PREFIX/runtime-state}"' in shell
+    assert 'port_file="$CLIO_PREFIX/clio-core.port"' in shell
+    assert 'export CLIO_CORE_PORT="$chosen"' in shell
+    assert "unset CLIO_PORT" in shell
+
+    powershell = _text("install/clio.ps1")
+    assert "$env:CLIO_DATA_DIR = Join-Path $Prefix 'data'" in powershell
+    assert "$env:CLIO_ARC_CTE_DIR = Join-Path $Prefix 'cte'" in powershell
+    assert "$env:CLIO_RUNTIME_STATE_DIR = Join-Path $Prefix 'runtime-state'" in powershell
+    assert "Remove-Item Env:CLIO_PORT" in powershell
+
+
+def test_posix_launcher_allows_active_turns_to_drain_before_force_kill() -> None:
+    """The fallback SIGKILL must not preempt runtime release during a busy stop."""
+
+    shell = _text("install/clio")
+    stop = shell[shell.index("stop_server() {") : shell.index("status_server() {")]
+    assert "for i in $(seq 1 120)" in stop
+    assert stop.index("kill -TERM") < stop.index("for i in $(seq 1 120)")
+    assert stop.index("for i in $(seq 1 120)") < stop.index("kill -9")
 
 
 def test_project_pins_intentional_prereleases_and_stable_litellm() -> None:
@@ -152,7 +180,10 @@ def test_bundled_runtime_is_precompiled_before_relocation_proof() -> None:
     assert "iowarp_core\\bin" in windows_builder
     assert "packaged clio-core launcher is missing" in windows_builder
     assert "initialize clio-core store" in windows_builder
-    assert "isinstance(store, ClioCoreStore)" in windows_builder
+    assert "install/arc_smoke.py" in windows_builder
+
+    arc_smoke = _text("install/arc_smoke.py")
+    assert "isinstance(store, ClioCoreStore)" in arc_smoke
 
 
 def test_release_workflow_smokes_the_published_registry_tool() -> None:

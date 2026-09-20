@@ -275,7 +275,12 @@ CHILD_CACHE_DIR_ENV_KEYS: tuple[str, ...] = (
 )
 
 
-def _child_cache_env(write_roots: Sequence[Path] | Sequence[str]) -> dict[str, str]:
+def _child_cache_env(
+    write_roots: Sequence[Path] | Sequence[str],
+    *,
+    state: SandboxResult,
+    profile: Profile,
+) -> dict[str, str]:
     """Cache/temp env redirect for a confined child (active fence + write territory only).
 
     Points the child's profile-cache / temp env vars (:data:`CHILD_CACHE_DIR_ENV_KEYS`) at a
@@ -289,6 +294,37 @@ def _child_cache_env(write_roots: Sequence[Path] | Sequence[str]) -> dict[str, s
     """
     if not write_roots:
         return {}
+    # Landlock ABI 1 cannot grant REFER. Redirecting TMP/XDG_CACHE_HOME into one
+    # synthetic child directory makes uv stage packages in one subdirectory and
+    # atomically rename them into another; the kernel then rejects that legitimate
+    # in-territory rename with EXDEV. This is the common Ubuntu 22.04 / HPC-kernel
+    # case (including Ares). Fleet territory already grants /tmp, CLIO's cache,
+    # and the uv/clio-kit platform cache directories, so keep their native paths
+    # on ABI 1 and redirect only FastMCP's otherwise-uncovered home into CLIO's
+    # granted cache. The write fence remains active; no new writable root is added.
+    if (
+        state.mechanism == MECHANISM_LANDLOCK
+        and int(state.details.get("landlock_abi") or 0) < 2
+        and profile == PROFILE_FLEET
+    ):
+        from clio_agent import paths  # noqa: PLC0415 - avoid import cycle
+
+        fastmcp_home = paths.user_cache_dir() / "fastmcp-child"
+        try:
+            fastmcp_home.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logger.warning(
+                "sandbox child-cache redirect skipped reason=child_cache_dir_create_failed "
+                "dir=%s error=%s: %s",
+                fastmcp_home,
+                type(exc).__name__,
+                exc,
+            )
+            return {"FASTMCP_CHECK_FOR_UPDATES": "off"}
+        return {
+            "FASTMCP_HOME": str(fastmcp_home),
+            "FASTMCP_CHECK_FOR_UPDATES": "off",
+        }
     cache_dir = Path(str(write_roots[0])).expanduser() / CHILD_CACHE_DIRNAME
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -398,7 +434,7 @@ def wrap_confined(
         # territory (write_roots[0]) so a real python/fastmcp MCP server does not crash
         # PermissionError writing its cache under the read-only fence. Active fence + write
         # territory ONLY — empty on the floor (env_overlay stays byte-identical there).
-        env_overlay.update(_child_cache_env(write_roots))
+        env_overlay.update(_child_cache_env(write_roots, state=resolved_state, profile=profile))
         cmd, arg_list = _compose_fence_prefix(
             resolved_state, profile, cmd, arg_list, write_roots, proxy_port=proxy_port
         )

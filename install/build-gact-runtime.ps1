@@ -121,9 +121,22 @@ if ($Source) {
 $clioKitSpec = 'clio-kit==2.10.6'
 Write-Host "[build-gact-runtime] installing: $spec + $clioKitSpec"
 Invoke-Native -Exe $uv.Source -Args @(
-    'pip', 'install', '--python', $pyBin, $spec, $clioKitSpec,
+    'pip', 'install', '--python', $pyBin, $spec, $clioKitSpec, 'globus-sdk>=3.0.0',
     'dspy==3.3.0b1', 'fastmcp==4.0.0b5',
     'fastmcp-slim==4.0.0b5', 'fastmcp-tasks==4.0.0b5'
+)
+
+# Web Search is the recommended installer-selected service. Install its
+# source-locked adapter into the main relocatable runtime now, rather than
+# making the first desktop connection build a 100-package environment.
+$webMcpProject = Join-Path $Out 'python\clio-kit-mcp-servers\web'
+if (-not (Test-Path (Join-Path $webMcpProject 'pyproject.toml'))) {
+  throw "build-gact-runtime: bundled CLIO Web Search MCP project missing at $webMcpProject"
+}
+Write-Host "[build-gact-runtime] installing bundled CLIO Web Search adapter"
+Invoke-Native -Exe $uv.Source -Args @(
+    'pip', 'install', '--python', $pyBin, $webMcpProject,
+    'fastmcp==4.0.0b5', 'fastmcp-slim==4.0.0b5', 'fastmcp-tasks==4.0.0b5'
 )
 
 # clio-kit materializes each locked MCP server with uv on first use. Ship uv

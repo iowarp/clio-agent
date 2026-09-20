@@ -131,12 +131,30 @@ def test_serve_foreground_lifespan_shutdown_runs_with_an_open_sse_stream() -> No
 
 
 @pytest.mark.asyncio
-async def test_release_runtime_after_drain_reports_not_desktop_when_flag_unset() -> None:
-    """No release, and an honest ``"not_desktop"`` report, when this process was
-    never a desktop-driven boot (``app.state.desktop_shutdown_requested`` unset)."""
+async def test_release_runtime_after_drain_releases_when_flag_unset(monkeypatch) -> None:
+    """A normal CLI/server shutdown releases ARC after the same safe turn drain."""
 
     app = FastAPI()
+    released: list[bool] = []
+    monkeypatch.setattr(
+        "clio_agent.arc.storage.release_runtime_client",
+        lambda: released.append(True),
+    )
 
     result = await desktop_lifecycle.release_runtime_after_drain(app)
 
-    assert result == "not_desktop"
+    assert result == "released"
+    assert released == [True]
+
+
+def test_terminate_process_after_cleanup_is_desktop_only(monkeypatch) -> None:
+    app = FastAPI()
+    exits: list[int] = []
+    monkeypatch.setattr(desktop_lifecycle.os, "_exit", exits.append)
+
+    assert desktop_lifecycle.terminate_process_after_cleanup(app) == "not_desktop"
+    assert exits == []
+
+    app.state.desktop_shutdown_requested = True
+    desktop_lifecycle.terminate_process_after_cleanup(app)
+    assert exits == [0]

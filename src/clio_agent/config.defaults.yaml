@@ -769,10 +769,10 @@ arc.clio_core_write_retry.backoff_factor: 3.0
 # give a transient pressure/restart condition more time to clear.
 arc.clio_core_write_retry.first_delay_s: 0.2
 
-# CLIO_CORE_PORT  (str)  <- src/clio_agent/arc/clio_core_liveness.py
+# CLIO_CORE_PORT  (str)  <- src/clio_agent/arc/clio_core_config.py
 # Overrides the clio-core RPC port the liveness prober and client dial; set
 # when clio-core is bound to a non-default port.
-# arc.core_port:  # default unset; resolved in code
+# arc.core_port:  # computed at runtime: str(_DEFAULT_CTE_CORE_PORT)
 
 # CLIO_ARC_CTE_DIR  (str)  <- src/clio_agent/arc/clio_core_config.py
 # Directory clio-core's CTE artifacts (config, file-tier data, logs) are

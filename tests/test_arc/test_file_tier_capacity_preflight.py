@@ -32,6 +32,12 @@ def _usage(free_bytes: int) -> _DiskUsage:
     return _DiskUsage(total=total, used=total - free_bytes, free=free_bytes)
 
 
+def _force_full_allocation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise the Windows full-allocation contract on every test host."""
+
+    monkeypatch.setattr(clio_core_file_capacity, "_file_tiers_grow_lazily", lambda: False)
+
+
 def _write_config(tmp_path: Path, capacities: tuple[str, ...]) -> tuple[Path, tuple[Path, ...]]:
     """Write one CTE core module with file tiers rooted under ``tmp_path``."""
 
@@ -64,6 +70,7 @@ def test_preflight_rejects_file_tier_that_cannot_fit_with_reserve(
     """The observed 50 GiB-on-a-full-volume shape fails before daemon spawn."""
 
     config, targets = _write_config(tmp_path, ("50GB",))
+    _force_full_allocation(monkeypatch)
     free_bytes = 256 * 1024**2
     monkeypatch.setattr(
         clio_core_file_capacity.shutil, "disk_usage", lambda _path: _usage(free_bytes)
@@ -88,6 +95,7 @@ def test_preflight_accepts_capacity_when_one_gib_reserve_remains(
     """A fresh tier passes when allocation plus the safety reserve fits exactly."""
 
     config, _targets = _write_config(tmp_path, ("2GB",))
+    _force_full_allocation(monkeypatch)
     monkeypatch.setattr(
         clio_core_file_capacity.shutil,
         "disk_usage",
@@ -106,6 +114,7 @@ def test_preflight_aggregates_file_tiers_on_the_same_filesystem(
     """Two tiers cannot each spend the same filesystem's free-byte balance."""
 
     config, targets = _write_config(tmp_path, ("2GB", "2GB"))
+    _force_full_allocation(monkeypatch)
     monkeypatch.setattr(
         clio_core_file_capacity.shutil,
         "disk_usage",
@@ -125,6 +134,7 @@ def test_preflight_reuses_a_fully_provisioned_node_backing_file(
     """An existing full-size ``_node0`` bdev does not need a second allocation."""
 
     config, (target,) = _write_config(tmp_path, ("2MB",))
+    _force_full_allocation(monkeypatch)
     backing = Path(f"{target}_node0")
     backing.write_bytes(b"\0" * (2 * 1024**2))
     monkeypatch.setattr(
@@ -146,6 +156,7 @@ def test_preflight_rejects_existing_undersized_node_backing_file(
     """clio-core reuses non-empty files, so an undersized one is a loud config error."""
 
     config, (target,) = _write_config(tmp_path, ("2MB",))
+    _force_full_allocation(monkeypatch)
     backing = Path(f"{target}_node0")
     backing.write_bytes(b"short")
     monkeypatch.setattr(
@@ -156,6 +167,47 @@ def test_preflight_rejects_existing_undersized_node_backing_file(
 
     with pytest.raises(ClioCoreFileCapacityError, match="smaller than capacity_limit"):
         preflight_file_tier_capacity(config)
+
+
+def test_sparse_posix_tier_treats_capacity_as_a_lazy_growth_ceiling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh sparse tier needs reserve space, not its whole configured ceiling."""
+
+    config, _targets = _write_config(tmp_path, ("50GB",))
+    monkeypatch.setattr(clio_core_file_capacity, "_file_tiers_grow_lazily", lambda: True)
+    monkeypatch.setattr(
+        clio_core_file_capacity.shutil,
+        "disk_usage",
+        lambda _path: _usage(2 * 1024**3),
+    )
+
+    (row,) = preflight_file_tier_capacity(config)
+
+    assert row.capacity_bytes == 50 * 1024**3
+    assert row.required_allocation_bytes == 0
+
+
+def test_sparse_posix_tier_reuses_an_expected_smaller_chunk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 1 GiB sparse chunk is valid below a larger configured growth ceiling."""
+
+    config, (target,) = _write_config(tmp_path, ("50GB",))
+    backing = Path(f"{target}_node0")
+    with backing.open("wb") as stream:
+        stream.truncate(1024**3)
+    monkeypatch.setattr(clio_core_file_capacity, "_file_tiers_grow_lazily", lambda: True)
+    monkeypatch.setattr(
+        clio_core_file_capacity.shutil,
+        "disk_usage",
+        lambda _path: _usage(2 * 1024**3),
+    )
+
+    (row,) = preflight_file_tier_capacity(config)
+
+    assert row.existing_bytes == 1024**3
+    assert row.required_allocation_bytes == 0
 
 
 def test_factory_loudly_degrades_before_clio_core_spawn_on_capacity_failure(
@@ -169,6 +221,7 @@ def test_factory_loudly_degrades_before_clio_core_spawn_on_capacity_failure(
     )
 
     config, _targets = _write_config(tmp_path, ("50GB",))
+    _force_full_allocation(monkeypatch)
     monkeypatch.setattr(
         clio_core_file_capacity.shutil,
         "disk_usage",

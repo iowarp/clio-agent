@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ def _web_spec(remote_url: str) -> dict[str, Any]:
         "name": "CLIO Web Search",
         "transport": "stdio",
         "command": "uvx",
+        "always_load": True,
         "args": [
             "--from",
             "clio-kit==2.10.5",
@@ -115,6 +117,7 @@ def test_user_mcp_configuration_persists_across_restart_and_preserves_siblings(
     assert document["custom_setting"] == "keep-me"
     assert document["mcp_servers"]["sibling"]["command"] == "sibling-command"
     assert document["mcp_servers"]["web"]["args"][-1] == "http://search.internal:8089"
+    assert document["mcp_servers"]["web"]["always_load"] is True
 
 
 def test_edit_replaces_named_server_without_duplicate_runtime_or_yaml_rows(
@@ -156,6 +159,49 @@ def test_edit_replaces_named_server_without_duplicate_runtime_or_yaml_rows(
     assert list(document["mcp_servers"]).count("web") == 1
     assert document["mcp_servers"]["web"]["args"][-1] == "http://second.internal:8089"
     assert app.state.external_mcp_servers == {}
+
+
+def test_saved_configuration_refreshes_the_running_agent_gateway(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """A connected service reaches new sessions without restarting CLIO."""
+
+    monkeypatch.setenv("CLIO_USER_DIR", str(tmp_path / "user"))
+
+    async def ready_probe(spec: Any) -> tuple[list[str], str | None]:
+        del spec
+        return ["web_search"], None
+
+    monkeypatch.setattr(
+        "clio_agent.gact.routes.mcp_configuration._probe_user_mcp_server", ready_probe
+    )
+    retired = threading.Event()
+
+    class _Executor:
+        def close(self) -> None:
+            retired.set()
+
+    class _Agent:
+        def __init__(self) -> None:
+            self.refreshes = 0
+
+        def refresh_declared_mcp_servers(self) -> _Executor:
+            self.refreshes += 1
+            return _Executor()
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    agent = _Agent()
+    app.state.agent = agent
+    with TestClient(app) as client:
+        saved = client.put(
+            "/v1/mcp/configuration/web",
+            json=_web_spec("http://remote.internal:8089"),
+        )
+        assert saved.status_code == 200, saved.text
+        assert retired.wait(1.0)
+
+    assert agent.refreshes == 1
 
 
 def test_unreachable_configuration_is_saved_and_remains_retryable_after_restart(

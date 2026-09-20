@@ -89,8 +89,20 @@ fi
 CLIO_KIT_SPEC="clio-kit==2.10.6"
 echo "[build-gact-runtime] installing: $SPEC + $CLIO_KIT_SPEC"
 uv pip install --python "$OUT/$PYBIN_REL" "$SPEC" "$CLIO_KIT_SPEC" \
+  "globus-sdk>=3.0.0" \
   "dspy==3.3.0b1" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5" \
   "fastmcp-tasks==4.0.0b5"
+
+# Install the source-locked Web Search MCP adapter now.  Connecting the
+# recommended service must not build a second Python environment on first use.
+WEB_MCP_PROJECT="$OUT/python/clio-kit-mcp-servers/web"
+[ -f "$WEB_MCP_PROJECT/pyproject.toml" ] || {
+  echo "build-gact-runtime: bundled Web Search MCP project missing at $WEB_MCP_PROJECT" >&2
+  exit 1
+}
+echo "[build-gact-runtime] installing bundled CLIO Web Search adapter"
+uv pip install --python "$OUT/$PYBIN_REL" "$WEB_MCP_PROJECT" \
+  "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5" "fastmcp-tasks==4.0.0b5"
 
 # clio-kit materializes each locked MCP server with uv on first use. Ship uv
 # beside the relocatable runtime instead of requiring a fresh desktop user to

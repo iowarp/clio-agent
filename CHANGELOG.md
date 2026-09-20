@@ -6,6 +6,45 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.4.2] - 2026-09-20
+
+This maintenance release completes the desktop infrastructure and remote
+deployment acceptance work begun in v0.9.4.1. It was live-verified by deploying
+CLIO and CLIO Web Search from the Windows desktop to Ares, connecting the
+service to that remote agent, and completing a Deep Research run through it.
+
+### Added
+
+- Remote deployments can keep CLIO data, runtime coordination, and clio-core
+  CTE state under an explicit persistent installation root.
+- Desktop-managed Web Search connections are stored as normal MCP
+  configuration, including their deployment identity and advertised tool
+  catalog.
+- Missing optional provider dependencies can be installed by the desktop
+  workflow instead of ending at an unactionable error.
+
+### Changed
+
+- The bundled Windows runtime is packed once for installation and unpacked
+  atomically on first managed boot, substantially reducing install and
+  uninstall time without moving initialization back into the user's first
+  agent launch.
+- Installed launchers root mutable agent and clio-core state under the selected
+  installation, including non-system drives on Windows and custom persistent
+  filesystems on Linux.
+- Active turns receive a graceful drain window before a forced shutdown, while
+  independent CLIO and MCP processes remain outside the desktop ownership tree.
+
+### Fixed
+
+- Desktop boot, shutdown, provider configuration, MCP fleet recovery, sandbox
+  reporting, and clio-core capacity checks now preserve the intended lifecycle
+  semantics across local and SSH-managed installations.
+- Codex-backed remote runs retain their provider configuration without
+  requiring an unrelated LM Studio endpoint.
+- The release bundle preinstalls the Web Search adapter and Argonne/Globus
+  support needed by installer-selected services and providers.
+
 ## [0.9.4.1] - 2026-09-19
 
 This maintenance release repairs the bundled desktop first-launch path found

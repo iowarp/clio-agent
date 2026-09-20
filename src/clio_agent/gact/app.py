@@ -939,6 +939,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     _agent = getattr(app.state, "agent", None)
     await asyncio.get_running_loop().run_in_executor(None, lambda: shutdown_child_processes(_agent))
     loop_guard.unregister_server_loop(app.state.mcp_app_loop)  # #1334: strict again
+    # Desktop owns this process and has now completed every explicit cleanup
+    # step. Do not let an abandoned default-executor provider worker keep the
+    # hidden process resident until the native supervisor's force-kill window.
+    desktop_lifecycle.terminate_process_after_cleanup(app)
 
 
 async def _construct_agent_async(app: "FastAPI") -> None:
@@ -2412,6 +2416,14 @@ def main() -> None:
     is fine for capability introspection but 503s on /messages.
     """
 
+    # The legacy ``clio-agent-gact`` console entry point imports this module
+    # directly, bypassing ``clio_agent.gact.__main__``. Keep its slow startup
+    # visible to the desktop supervisor as well so a healthy boot is not
+    # mistaken for a 30-second stall and terminated.
+    from clio_agent.gact.desktop_boot import start_desktop_boot_heartbeat
+
+    start_desktop_boot_heartbeat()
+
     parser = argparse.ArgumentParser(
         prog="clio-agent-gact",
         description="CLIO's GACT v0.2 REST + SSE server.",
@@ -2444,7 +2456,20 @@ def main() -> None:
             "deploy clio`, which always passes --cwd."
         ),
     )
+    parser.add_argument(
+        "--cleanup-runtime-after-crash",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     args = parser.parse_args()
+
+    if args.cleanup_runtime_after_crash:
+        from clio_agent.arc.storage import cleanup_runtime_after_client_crash
+
+        stopped = cleanup_runtime_after_client_crash(wait_timeout_seconds=10.0)
+        outcome = "completed" if stopped else "preserved live clients"
+        print(f"sidecar-progress: crash cleanup {outcome}", flush=True)
+        return
 
     run_server(
         host=args.host,

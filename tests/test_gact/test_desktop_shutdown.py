@@ -165,16 +165,21 @@ def test_lifespan_releases_runtime_after_turn_drain_for_desktop(tmp_path, monkey
 
     monkeypatch.setattr(gact_app, "drain_app_turns", fake_drain)
     monkeypatch.setattr("clio_agent.arc.storage.release_runtime_client", fake_release)
+    monkeypatch.setattr(
+        desktop_lifecycle,
+        "terminate_process_after_cleanup",
+        lambda _app: order.append("exit"),
+    )
 
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=None)
 
     with TestClient(app):
         app.state.desktop_shutdown_requested = True
 
-    assert order == ["drain", "release"]
+    assert order == ["drain", "release", "exit"]
 
 
-def test_lifespan_skips_release_when_not_desktop(tmp_path, monkeypatch) -> None:
+def test_lifespan_releases_runtime_when_not_desktop(tmp_path, monkeypatch) -> None:
     order: list[str] = []
 
     async def fake_drain(app, logger) -> None:  # noqa: ANN001 - test shim
@@ -191,7 +196,7 @@ def test_lifespan_skips_release_when_not_desktop(tmp_path, monkeypatch) -> None:
     with TestClient(app):
         pass  # desktop_shutdown_requested never set: a plain (non-desktop) boot
 
-    assert order == ["drain"]
+    assert order == ["drain", "release"]
 
 
 def test_reset_for_boot_clears_runtime_shutdown_latch() -> None:

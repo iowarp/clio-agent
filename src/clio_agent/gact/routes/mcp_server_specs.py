@@ -23,7 +23,13 @@ def stdio_server_spec(body: dict[str, Any]) -> dict[str, Any]:
         isinstance(key, str) and isinstance(value, str) for key, value in env.items()
     ):
         _bad_request("stdio transport 'env' must map names to string values")
-    return {"transport": "stdio", "command": command, "args": args, "env": env}
+    return {
+        "transport": "stdio",
+        "command": command,
+        "args": args,
+        "env": env,
+        "always_load": bool(body.get("always_load") or body.get("alwaysLoad")),
+    }
 
 
 def _bad_request(message: str) -> None:

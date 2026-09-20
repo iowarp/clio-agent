@@ -21,6 +21,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from clio_agent.runtime.status import IntegrationState, IntegrationStatus
+from clio_agent.tools.desktop_mcp_runtime import bundled_module_launcher
 from clio_agent.tools.mcp_config import MCPServerSpec
 
 WhichChecker = Callable[[str], str | None]
@@ -129,6 +130,14 @@ def probe_mcp_launchers(
         if spec.command in seen_commands:
             continue
         if which(spec.command) is not None:
+            continue
+        # The desktop's portable runtime deliberately launches a small set of
+        # preinstalled MCPs through its bundled interpreter instead of placing
+        # synthetic console scripts on the host PATH.  The real spawn path in
+        # ``mcp_config.transport_for`` resolves the same adapter here; treating
+        # it as missing makes a healthy, connected desktop service paint the
+        # whole Infrastructure view red.
+        if bundled_module_launcher(spec.command, spec.args) is not None:
             continue
         seen_commands.add(spec.command)
         findings.append(

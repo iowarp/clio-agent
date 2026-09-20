@@ -542,6 +542,47 @@ def release_runtime_client(config_path: str = "", log_level: str = "error") -> N
             _stop_runtime_daemon(config_path or _active_config_path, log_level)
 
 
+def cleanup_runtime_after_client_crash(
+    config_path: str = "",
+    log_level: str = "error",
+    *,
+    wait_timeout_seconds: float = 0.0,
+) -> bool:
+    """Prune dead runtime clients and stop the daemon when none remain.
+
+    The desktop launcher calls this in a fresh helper process only after its
+    managed agent exits abnormally. The crashed process cannot run its normal
+    ``atexit``/lifespan deregistration, so this path performs the same
+    last-client decision without pretending the helper itself was a client.
+    Live registrations are preserved, which keeps an independently running
+    CLIO process from losing the host-shared daemon.
+
+    Args:
+        config_path: Optional clio-core configuration used to resolve the
+            runtime port and clean-stop command.
+        log_level: Native runtime log level passed to the stop helper.
+        wait_timeout_seconds: How long to wait for a crashed client process to
+            disappear before preserving the runtime. Desktop's breakaway cleanup
+            helper uses this grace period while Windows reaps the launcher's Job
+            Object; ordinary callers retain the immediate decision by default.
+
+    Returns:
+        ``True`` when no live clients remained and a stop was requested;
+        otherwise ``False``.
+    """
+    deadline = time.monotonic() + max(wait_timeout_seconds, 0.0)
+    while True:
+        with _runtime_spawn_lock():
+            if not _live_client_pids():
+                _stop_runtime_daemon(
+                    config_path or os.environ.get("CLIO_SERVER_CONF", ""), log_level
+                )
+                return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(min(0.1, max(deadline - time.monotonic(), 0.0)))
+
+
 def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str) -> None:
     """Connect-or-spawn + register: ensure a shared daemon is up and count this client.
 

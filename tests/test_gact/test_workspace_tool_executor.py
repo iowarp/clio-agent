@@ -7,6 +7,8 @@ instance is created with ``__new__`` and only the per-workspace fields are set.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from clio_agent.agent import ClioAgent
 from clio_agent.tools.execution import tool_workspace_context
 from clio_agent.tools.workspace_root import canonical_workspace_root
@@ -69,6 +71,39 @@ def test_active_workspace_builds_and_caches_per_root(monkeypatch) -> None:
     assert other == f"executor:gateway:{beta}"
     assert built == [(alpha, False), (beta, False)]
     assert set(agent._workspace_tool_executors) == {alpha, beta}
+
+
+def test_workspace_executor_preserves_user_service_declarations_without_blueprint(
+    monkeypatch,
+) -> None:
+    """User MCP services remain mountable in ordinary workspace sessions."""
+
+    agent = _bare_agent()
+    agent._tool_definitions = {}
+    gateway = SimpleNamespace()
+    web_spec = SimpleNamespace(
+        transport="stdio",
+        command="clio-kit",
+        args=("mcp-server", "web"),
+        env={},
+        always_load=True,
+    )
+    executor = SimpleNamespace(_async_executor=SimpleNamespace())
+
+    monkeypatch.setattr(agent, "_build_tool_gateway", lambda **_kwargs: gateway)
+    monkeypatch.setattr("clio_agent.agent.namespace_specs", lambda _gateway: {"web": web_spec})
+    monkeypatch.setattr("clio_agent.agent.namespace_proxies", lambda _gateway: {})
+    monkeypatch.setattr(
+        "clio_agent.agent.create_sync_tool_executor", lambda _gateway, **_kwargs: executor
+    )
+    monkeypatch.setattr("clio_agent.tools.listing_cache.load_listing", lambda *_a, **_kw: None)
+
+    with tool_workspace_context("/ws/plain"):
+        resolved = agent._active_tool_executor()
+
+    assert resolved is executor
+    assert resolved._clio_namespace_specs == {"web": web_spec}
+    assert resolved._async_executor._clio_namespace_specs == {"web": web_spec}
 
 
 def test_blank_workspace_root_falls_back_to_default(monkeypatch) -> None:

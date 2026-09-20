@@ -97,6 +97,8 @@ def runtime_state_dir() -> Path:
 # no eviction pressure, no rc=13 class (owner: "data is in memory or is in
 # disk"). Disk stays effectively unbounded at the user's endpoint.
 _DEFAULT_CTE_CONFIG_TEMPLATE = """\
+networking:
+  port: {core_port}
 runtime:
   num_threads: 4
   conf_dir: "{conf_dir}"
@@ -128,6 +130,7 @@ compose:
 # storage arena. Owner ruling (2026-07-13): a desktop agent is told e.g. "use
 # 1GB of ram, and whatever you want of <disk>" — the budget IS the ceiling.
 _DEFAULT_CTE_RAM_CAPACITY = "1GB"
+_DEFAULT_CTE_CORE_PORT = 9413
 
 
 # The path suffix identifying the ram hot tier inside a clio-core ``compose`` block.
@@ -261,6 +264,26 @@ def _default_cte_ram_capacity() -> str:
     return raw
 
 
+def _default_cte_core_port() -> int:
+    """Return the per-install clio-core port written into generated configs."""
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle
+
+    raw = conf.resolve(
+        "arc.core_port",
+        env="CLIO_CORE_PORT",
+        default=str(_DEFAULT_CTE_CORE_PORT),
+        cast=conf.as_str,
+    ).strip()
+    try:
+        port = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"invalid clio-core port {raw!r}: expected an integer") from exc
+    # clio-core binds a small contiguous block beginning at this base port.
+    if port < 1_024 or port > 65_530:
+        raise ValueError(f"invalid clio-core port {port}: expected 1024..65530")
+    return port
+
+
 def default_cte_config_path() -> str:
     """Seed (if absent) and return the default clio-core CTE config path.
 
@@ -282,6 +305,7 @@ def default_cte_config_path() -> str:
             raise ValueError(f"memory budget must be > 0, got {budget!r}")
         cfg.write_text(
             _DEFAULT_CTE_CONFIG_TEMPLATE.format(
+                core_port=_default_cte_core_port(),
                 conf_dir=_cte_yaml_path(cte_dir / "conf"),
                 file_tier=_cte_yaml_path(cte_dir / "storage.bin"),
                 file_capacity=_default_cte_file_capacity(),

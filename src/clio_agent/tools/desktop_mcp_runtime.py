@@ -48,7 +48,15 @@ def bundled_module_launcher(
 ) -> tuple[str, list[str], dict[str, str]] | None:
     """Resolve bundled clio-kit through the relocatable runtime interpreter."""
 
-    if command != "clio-kit" or importlib.util.find_spec("clio_kit") is None:
+    modules = {
+        "clio-kit": ("clio_kit", "from clio_kit import cli; cli()"),
+        # The desktop runtime pre-installs the Web Search MCP adapter during
+        # packaging. Launch it directly: connecting must not download/build a
+        # second Python environment on first use or depend on ambient `uvx`.
+        "clio-web-search-mcp": ("web_mcp", "from web_mcp.server import main; main()"),
+    }
+    selected = modules.get(command)
+    if selected is None or importlib.util.find_spec(selected[0]) is None:
         return None
 
     runtime_root = resolve_bundled_runtime_root()
@@ -64,4 +72,4 @@ def bundled_module_launcher(
         "CLIO_KIT_CACHE_DIR", str(Path.home() / ".clio" / "mcp-runtime")
     )
     executable = Path(sys.executable).resolve()
-    return str(executable), ["-c", "from clio_kit import cli; cli()", *args], env
+    return str(executable), ["-c", selected[1], *args], env

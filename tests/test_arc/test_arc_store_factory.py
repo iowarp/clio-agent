@@ -369,6 +369,62 @@ def test_release_stops_daemon_when_last_and_is_idempotent(monkeypatch, tmp_path)
     assert calls == [1]  # idempotent (no double-stop)
 
 
+def test_crash_cleanup_stops_only_after_pruning_dead_clients(monkeypatch, tmp_path):
+    _isolate_clio_home(monkeypatch, tmp_path)
+    reg = storage._client_registry_dir()
+    reg.mkdir(parents=True)
+    (reg / "999999").write_text("0", encoding="utf-8")
+    stops: list[tuple[str, str]] = []
+    monkeypatch.setattr(storage, "_pid_alive", lambda _pid, _ctime: False)
+    monkeypatch.setattr(
+        storage,
+        "_stop_runtime_daemon",
+        lambda config, level: stops.append((config, level)),
+    )
+
+    assert storage.cleanup_runtime_after_client_crash("custom.yaml", "warning") is True
+    assert stops == [("custom.yaml", "warning")]
+    assert list(reg.iterdir()) == []
+
+
+def test_crash_cleanup_preserves_runtime_for_live_clients(monkeypatch, tmp_path):
+    _isolate_clio_home(monkeypatch, tmp_path)
+    reg = storage._client_registry_dir()
+    reg.mkdir(parents=True)
+    (reg / "123").write_text("1", encoding="utf-8")
+    monkeypatch.setattr(storage, "_pid_alive", lambda _pid, _ctime: True)
+    stops: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        storage,
+        "_stop_runtime_daemon",
+        lambda config, level: stops.append((config, level)),
+    )
+
+    assert storage.cleanup_runtime_after_client_crash() is False
+    assert stops == []
+
+
+def test_crash_cleanup_waits_for_crashed_client_to_disappear(monkeypatch, tmp_path):
+    _isolate_clio_home(monkeypatch, tmp_path)
+    reg = storage._client_registry_dir()
+    reg.mkdir(parents=True)
+    (reg / "123").write_text("1", encoding="utf-8")
+    alive_checks = iter((True, False))
+    monkeypatch.setattr(storage, "_pid_alive", lambda _pid, _ctime: next(alive_checks))
+    monkeypatch.setattr(storage.time, "sleep", lambda _seconds: None)
+    stops: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        storage,
+        "_stop_runtime_daemon",
+        lambda config, level: stops.append((config, level)),
+    )
+
+    assert storage.cleanup_runtime_after_client_crash(wait_timeout_seconds=1.0) is True
+    assert len(stops) == 1
+    assert stops[0][1] == "error"
+    assert list(reg.iterdir()) == []
+
+
 def test_ensure_runtime_registers_atexit_release(monkeypatch, tmp_path):
     """atexit is THE shutdown mechanism (#771): ``_ensure_runtime`` MUST register
     ``release_runtime_client`` with atexit so a clean interpreter exit (the SIGTERM /

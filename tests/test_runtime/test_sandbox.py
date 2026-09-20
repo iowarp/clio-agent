@@ -344,6 +344,41 @@ def test_wrap_confined_floor_sets_no_child_cache_env(tmp_path: Path, floor_sandb
     assert not (ws / sandbox.CHILD_CACHE_DIRNAME).exists()  # no dir touched on the floor
 
 
+def test_landlock_abi_one_fleet_keeps_native_uv_cache_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ABI 1 keeps uv temp/cache dirs native so its required renames do not hit EXDEV."""
+    from clio_agent import paths
+    from clio_agent.runtime import sandbox_net
+
+    cache = tmp_path / "clio-cache"
+    monkeypatch.setattr(paths, "user_cache_dir", lambda: cache)
+    monkeypatch.setattr(
+        sandbox_net,
+        "open_child_egress",
+        lambda state, roots: ("child_x", 4321, {}),
+    )
+    state = sandbox.SandboxResult(
+        mechanism=sandbox.MECHANISM_LANDLOCK,
+        active=True,
+        reason=sandbox.REASON_FENCE_ACTIVE,
+        details={"landlock_abi": 1},
+    )
+
+    confined = sandbox.wrap_confined(
+        "python",
+        ["-m", "web_mcp.server"],
+        write_roots=[str(tmp_path)],
+        profile=sandbox.PROFILE_FLEET,
+        state=state,
+    )
+
+    assert confined.env_overlay["FASTMCP_HOME"] == str(cache / "fastmcp-child")
+    assert confined.env_overlay["FASTMCP_CHECK_FOR_UPDATES"] == "off"
+    for key in ("XDG_CACHE_HOME", "TEMP", "TMP", "LOCALAPPDATA", "APPDATA"):
+        assert key not in confined.env_overlay
+
+
 # --------------------------------------------------------------------------- #
 # Seam wiring — the spawn-diet FINAL argv is what gets wrapped                  #
 # --------------------------------------------------------------------------- #
@@ -378,17 +413,23 @@ def test_transport_for_wraps_the_spawn_diet_final_argv(
     assert "setpriv" not in transport.command  # transport_for carries no pdeathsig today
 
 
-def test_transport_from_spec_matches_legacy_pdeathsig_exactly(floor_sandbox) -> None:
-    """The dict-spec seam produces the SAME argv the direct pdeathsig helper did (parity)."""
+def test_transport_from_spec_matches_legacy_pdeathsig_exactly(
+    floor_sandbox, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dict-spec seam preserves argv and builds a usable sanitized child env."""
     from clio_agent.tools.mcp_config import pdeathsig_wrapped_command, transport_from_spec
 
+    monkeypatch.setenv("PATH", "test-path")
+    monkeypatch.setenv("PYTHONPATH", "must-not-leak")
     transport = transport_from_spec(
         {"transport": "stdio", "command": "mytool", "args": ["--x", "1"], "env": {"A": "b"}}
     )
     legacy_cmd, legacy_args = pdeathsig_wrapped_command("mytool", ["--x", "1"])
     assert transport.command == legacy_cmd
     assert transport.args == legacy_args
-    assert transport.env == {"A": "b"}  # env preserved (no overlay on the floor)
+    assert transport.env["A"] == "b"
+    assert transport.env["PATH"] == "test-path"
+    assert "PYTHONPATH" not in transport.env
 
 
 # --------------------------------------------------------------------------- #

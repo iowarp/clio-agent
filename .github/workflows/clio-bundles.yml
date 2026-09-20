@@ -242,6 +242,10 @@ jobs:
         if: matrix.variant == 'bundled' && runner.os == 'Windows'
         shell: pwsh
         run: ./install/build-gact-runtime.ps1 -Out external/gact-tui/desktop/src-tauri/gact-runtime -Source $env:GITHUB_WORKSPACE
+      - name: Pack embedded clio-agent runtime (Windows)
+        if: matrix.variant == 'bundled' && runner.os == 'Windows'
+        shell: pwsh
+        run: ./install/pack-gact-runtime.ps1
       - name: Select CLIO brand (gact-tui config-file mechanism)
         shell: bash
         run: |
@@ -384,6 +388,16 @@ jobs:
                   brand,
                 )
               : brand;
+          // Windows NSIS must copy one compressed runtime payload, not emit
+          // 20,000+ File/Delete instructions for the Python distribution.
+          // Other platforms retain their existing exploded resource layout.
+          if (variant === "bundled" && process.env.RUNNER_OS === "Windows") {
+            config.bundle ??= {};
+            config.bundle.resources = [
+              "gact-runtime.tar.zst",
+              "gact-runtime.pack.json",
+            ];
+          }
           // CLIO-branded installers use the CLIO release identity. GACT keeps
           // its independent package version for its own releases and diagnostics.
           config.version = tauriVersion;
@@ -423,6 +437,14 @@ jobs:
           if [ "${{ matrix.variant }}" = "bundled" ] && [ ! -f "desktop/src-tauri/gact-runtime/runtime.json" ]; then
             echo "::error::runtime guard: gact-runtime/runtime.json missing (#909 - bundled variant would ship without its backend)"
             exit 1
+          fi
+          if [ "${{ matrix.variant }}" = "bundled" ] && [ "${{ runner.os }}" = "Windows" ]; then
+            [ -f "desktop/src-tauri/gact-runtime.tar.zst" ] \
+              || { echo "::error::runtime archive missing"; exit 1; }
+            [ -f "desktop/src-tauri/gact-runtime.pack.json" ] \
+              || { echo "::error::runtime pack manifest missing"; exit 1; }
+            jq -e '.bundle.resources == ["gact-runtime.tar.zst", "gact-runtime.pack.json"]' "$cfg" >/dev/null \
+              || { echo "::error::Windows bundle still enumerates the exploded runtime"; exit 1; }
           fi
           # Tauri only WARNS when the private key does not match the overlay's
           # pubkey, yet every client would reject the resulting signatures at

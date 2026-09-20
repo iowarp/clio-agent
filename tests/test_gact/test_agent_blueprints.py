@@ -3282,6 +3282,62 @@ def test_dynamic_agent_tools_include_enabled_agent_blueprint_mcp_tool(tmp_path: 
     assert [tool.name for tool in tools] == ["earthscope_query"]
 
 
+def test_root_agent_mounts_user_service_declared_always_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A connected global service is attached when a root session starts."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+
+    class _Tool:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+    class _Executor:
+        _clio_namespace_specs = {
+            "web": SimpleNamespace(always_load=True),
+            "blueprint_only": SimpleNamespace(always_load=False),
+        }
+
+        def __init__(self) -> None:
+            self.tools = [_Tool("fs_read_file")]
+            self.prepared: set[str] = set()
+
+        def to_dspy_tools(self) -> list[Any]:
+            return list(self.tools)
+
+        def is_namespace_prepared(self, namespace: str) -> bool:
+            return namespace in self.prepared
+
+    executor = _Executor()
+
+    def _mount(tool_executor: _Executor, namespace: str, spec: Any) -> dict[str, Any]:
+        del spec
+        assert namespace == "web"
+        tool_executor.prepared.add(namespace)
+        tool = _Tool("web_search")
+        tool_executor.tools.append(tool)
+        return {tool.name: tool}
+
+    monkeypatch.setattr(
+        "clio_agent.gact.mcp_readiness.mount_namespace_for_session",
+        _mount,
+    )
+    base_agent = SimpleNamespace(tool_executor=executor)
+    agent_def = AgentDef(
+        id="main",
+        source="builtin",
+        title="CLIO Main Agent",
+        tools=["fs_read_file"],
+    )
+
+    with _gact_app_context(app):
+        tools = _dynamic_agent_tools(base_agent, agent_def, {})
+
+    assert [tool.name for tool in tools] == ["fs_read_file", "web_search"]
+    assert executor.prepared == {"web"}
+
+
 def test_dynamic_agent_tools_degrades_one_unprojected_tool_instead_of_bricking(
     tmp_path: Path,
 ) -> None:

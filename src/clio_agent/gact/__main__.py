@@ -16,59 +16,10 @@ module load (``tests/test_gact/test_decomposition_guardrails.py``).
 
 from __future__ import annotations
 
-import os
-import sys
-import threading
-from urllib.error import URLError
-from urllib.request import Request, urlopen
-
-_DESKTOP_HEARTBEAT_ENV = "CLIO_DESKTOP_BOOT_HEARTBEAT"
-_HEARTBEAT_INTERVAL_SECONDS = 5.0
-
-
-def _argument_value(name: str, default: str) -> str:
-    """Return a command-line option value without constructing the full CLI."""
-
-    try:
-        return sys.argv[sys.argv.index(name) + 1]
-    except (ValueError, IndexError):
-        return default
-
-
-def _capabilities_ready() -> bool:
-    """Return whether this desktop-managed server is already accepting API calls."""
-
-    host = _argument_value("--host", "127.0.0.1")
-    port = _argument_value("--port", "8100")
-    request = Request(f"http://{host}:{port}/v1/capabilities")
-    if token := os.environ.get("CLIO_AUTH_TOKEN", "").strip():
-        request.add_header("Authorization", f"Bearer {token}")
-    try:
-        with urlopen(request, timeout=0.5) as response:  # noqa: S310 - loopback URL only
-            return response.status == 200
-    except (OSError, URLError):
-        return False
-
-
-def _start_desktop_boot_heartbeat() -> None:
-    """Report live desktop startup progress until the capabilities route responds."""
-
-    if os.environ.get(_DESKTOP_HEARTBEAT_ENV) != "1":
-        return
-
-    def _report() -> None:
-        interval = threading.Event()
-        while True:
-            print("sidecar-progress: backend startup is active", file=sys.stderr, flush=True)
-            if _capabilities_ready():
-                return
-            interval.wait(_HEARTBEAT_INTERVAL_SECONDS)
-
-    threading.Thread(target=_report, name="clio-desktop-boot-heartbeat", daemon=True).start()
-
+from clio_agent.gact.desktop_boot import start_desktop_boot_heartbeat
 
 if __name__ == "__main__":
-    _start_desktop_boot_heartbeat()
+    start_desktop_boot_heartbeat()
     from clio_agent.gact.app import main  # noqa: PLC0415 - entry-point-only import
 
     main()

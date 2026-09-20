@@ -15,11 +15,11 @@ supervisor process (not a bare terminal) is driving uvicorn's lifetime:
   discovery, and schedules uvicorn's exit) -- it never releases the shared
   clio-core runtime itself. Releasing from the request/response cycle risked
   releasing it while an in-flight turn could still reacquire it.
-* :func:`release_runtime_after_drain` -- the ONE place the shared clio-core
-  runtime is released for a desktop-managed boot: from the gact lifespan,
-  right after Desktop Quit's turn drain has settled, before any later
-  executor join can block on a provider/tool worker. ``atexit``
-  (``arc/storage.py``) stays the backstop for every other exit path.
+* :func:`release_runtime_after_drain` -- the ONE deterministic place the shared
+  clio-core runtime is released from the gact lifespan, right after the turn
+  drain has settled and before any later executor join can block on a
+  provider/tool worker. ``atexit`` (``arc/storage.py``) remains a crash/legacy
+  backstop, not the primary cleanup path for a normally stopped server.
 * :func:`reset_for_boot` / :func:`wake_for_shutdown` -- thin wrappers around
   the runtime shutdown latch and the LM Studio discovery shutdown flag so the
   app lifespan does not import ``arc.storage`` / ``providers.lmstudio_discovery``
@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
+import sys
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -51,7 +53,7 @@ _SHUTDOWN_SIGNAL_DELAY_SECONDS = 0.1
 # Rust supervisor's 30s GRACEFUL_SHUTDOWN_STALL force-kills the process,
 # leaking the shared clio-core daemon. Budget arithmetic against that 30s
 # window: 0.1s call_later delay + this 3s connection grace + the turn drain
-# (bounded by cooperative cancellation, not this) + the 10s clean-stop loop
+# (bounded by cooperative cancellation, not this) + the 3s clean-stop loop
 # (arc/runtime_stop.py::_RUNTIME_STOP_STALL_SECONDS) + agent-task executor
 # joins must all land under 30s; 3s leaves ample headroom for the rest.
 _DESKTOP_GRACEFUL_TIMEOUT_S = 3  # uvicorn types this as int | None
@@ -172,8 +174,8 @@ def serve_foreground(app: "FastAPI", *, host: str, port: int) -> None:
     server.run()
 
 
-async def release_runtime_after_drain(app: "FastAPI") -> Literal["released", "not_desktop"]:
-    """Release the shared clio-core runtime once the desktop turn drain has settled.
+async def release_runtime_after_drain(app: "FastAPI") -> Literal["released"]:
+    """Release the shared clio-core runtime once the app turn drain has settled.
 
     Desktop Quit must release the shared runtime before any later executor join can
     block on a provider/tool worker. The turn drain the caller runs beforehand is the
@@ -184,23 +186,53 @@ async def release_runtime_after_drain(app: "FastAPI") -> Literal["released", "no
     was too late (a stuck executor join let the desktop supervisor kill Python first,
     skipping this cleanup and leaking clio-core).
 
+    A normal ``clio stop`` sends SIGTERM rather than calling the desktop-only
+    shutdown route. Gating this release on ``desktop_shutdown_requested`` left
+    that ordinary path's clio-core daemon and client marker behind. The lifespan
+    has the same safe boundary for both paths: requests have stopped and the turn
+    drain immediately before this call has settled all work that could reacquire
+    ARC. Release unconditionally here; the client registry still preserves a
+    daemon that another live CLIO process is using.
+
     Args:
-        app: The FastAPI app whose ``state.desktop_shutdown_requested`` flag gates
-            the release.
+        app: The FastAPI app completing its lifespan shutdown.
 
     Returns:
-        ``"released"`` if the shared runtime client was released, ``"not_desktop"``
-        if this process was never a desktop-driven boot (the flag is unset).
+        ``"released"`` after the idempotent runtime-client release has run.
     """
-    if not getattr(app.state, "desktop_shutdown_requested", False):
-        logger.info("desktop.runtime_release outcome=not_desktop")
-        return "not_desktop"
-
     from clio_agent.arc.storage import release_runtime_client  # noqa: PLC0415
 
     await asyncio.to_thread(release_runtime_client)
-    logger.info("desktop.runtime_release outcome=released")
+    logger.info(
+        "runtime.release_after_drain outcome=released desktop_requested=%s",
+        bool(getattr(app.state, "desktop_shutdown_requested", False)),
+    )
     return "released"
+
+
+def terminate_process_after_cleanup(app: "FastAPI") -> Literal["not_desktop"]:
+    """Exit a desktop-managed server after its explicit cleanup has completed.
+
+    ``asyncio.run`` waits for default-executor workers during normal interpreter
+    shutdown. A provider call already abandoned by the turn drain can therefore
+    keep the hidden desktop process resident until the native supervisor's
+    30-second force-kill, even though the runtime and child processes are gone.
+    The desktop lifespan explicitly closes every owned resource before calling
+    this seam, so bypass the redundant executor/atexit wait at that point only.
+
+    Non-desktop servers keep normal interpreter shutdown semantics.
+    """
+    if not getattr(app.state, "desktop_shutdown_requested", False):
+        return "not_desktop"
+
+    logger.info("desktop.shutdown_complete outcome=exit")
+    logging.shutdown()
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (AttributeError, OSError):
+            pass
+    os._exit(0)
 
 
 def reset_for_boot() -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urljoin
@@ -18,6 +19,8 @@ from clio_agent.gact.routes.mcp_server_specs import stdio_server_spec
 from clio_agent.tools.mcp_config import transport_from_spec
 from clio_agent.tools.mcp_redaction import redact_mcp_spec
 from clio_agent.tools.mcp_runtime import make_mcp_client
+
+logger = logging.getLogger(__name__)
 
 
 def _configuration_name(value: str) -> str:
@@ -124,6 +127,33 @@ def _forget_ephemeral_duplicates(app: FastAPI, name: str) -> None:
         installed.pop(server_id, None)
 
 
+async def _refresh_agent_tool_gateway(app: FastAPI) -> None:
+    """Apply a saved user MCP change to new turns without restarting CLIO."""
+
+    agent = getattr(app.state, "agent", None)
+    refresh = getattr(agent, "refresh_declared_mcp_servers", None)
+    if not callable(refresh):
+        return
+    replaced = await asyncio.to_thread(refresh)
+    in_flight = [
+        task
+        for task in (getattr(app.state, "in_flight_turns", {}) or {}).values()
+        if isinstance(task, asyncio.Task) and not task.done()
+    ]
+
+    async def _retire() -> None:
+        if in_flight:
+            await asyncio.gather(*in_flight, return_exceptions=True)
+        close = getattr(replaced, "close", None)
+        if callable(close):
+            try:
+                await asyncio.to_thread(close)
+            except Exception as exc:  # noqa: BLE001 - replacement is already live
+                logger.warning("replaced MCP executor retirement failed: %r", exc)
+
+    asyncio.create_task(_retire())
+
+
 async def _configuration_row(name: str, spec: Mapping[str, Any] | None) -> dict[str, Any]:
     """Shape and live-probe one durable configuration row."""
 
@@ -188,6 +218,7 @@ def register_mcp_configuration_routes(app: FastAPI) -> None:
             _forget_ephemeral_duplicates(app, display_name)
         if key == "web":
             _sync_document_processor(app, _configured_web_remote_url(saved))
+        await _refresh_agent_tool_gateway(app)
         return await _configuration_row(key, saved)
 
     @app.delete("/v1/mcp/configuration/{name}")
@@ -200,6 +231,7 @@ def register_mcp_configuration_routes(app: FastAPI) -> None:
         _forget_ephemeral_duplicates(app, key)
         if key == "web":
             _sync_document_processor(app, "")
+        await _refresh_agent_tool_gateway(app)
         return {
             "name": key,
             "configured": False,

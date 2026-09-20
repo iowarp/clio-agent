@@ -12,6 +12,7 @@ monkeypatch.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -131,6 +132,45 @@ def test_health_probes_the_runtime_provider_binding(
     assert observed["CLIO_LM_PROVIDER"] == "codex"
     assert observed["CLIO_LM_API_BASE"] == "codex://sdk"
     assert observed["CLIO_LM_MODEL"] == "gpt-5.6-luna"
+
+
+def test_health_probes_the_persisted_provider_bound_to_the_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A provider loaded at boot must not fall back to the LM Studio probe."""
+
+    observed: dict[str, str] = {}
+
+    def _capture(**kwargs: Any) -> RuntimeReport:
+        observed.update(kwargs["env"])
+        return RuntimeReport(
+            integrations=[
+                IntegrationStatus(
+                    name="api",
+                    state=IntegrationState.READY,
+                    summary="ready",
+                )
+            ]
+        )
+
+    monkeypatch.setattr("clio_agent.gact.routes.system.collect_runtime_status", _capture)
+    agent = SimpleNamespace(
+        _provider_config=SimpleNamespace(
+            provider="codex",
+            api_base="codex://sdk",
+            model="gpt-5.6-sol",
+            codex_transport="sdk",
+        )
+    )
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+
+    response = TestClient(app).get("/v1/health")
+
+    assert response.status_code == 200
+    assert app.state.lm_config is None
+    assert observed["CLIO_LM_PROVIDER"] == "codex"
+    assert observed["CLIO_LM_API_BASE"] == "codex://sdk"
+    assert observed["CLIO_LM_MODEL"] == "gpt-5.6-sol"
 
 
 def test_health_does_not_treat_an_unselected_desktop_provider_as_an_outage(

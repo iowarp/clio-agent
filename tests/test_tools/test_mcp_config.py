@@ -217,12 +217,12 @@ def test_resolve_expert_servers_select_and_local():
 
 
 def test_transport_for():
-    import shutil
-
-    # The launcher is resolved to an ABSOLUTE path (``sh`` is universally on PATH).
-    stdio = transport_for(spec_from_declaration("ndp", "sh -c true"))
+    # The launcher is resolved to an ABSOLUTE path on every supported platform.
+    stdio = transport_for(
+        spec_from_declaration("ndp", {"command": sys.executable, "args": ["-c", "pass"]})
+    )
     assert not isinstance(stdio, str)
-    assert stdio.command == shutil.which("sh")
+    assert stdio.command == sys.executable
     assert str(transport_for(spec_from_declaration("n", "https://h/mcp")).url) == "https://h/mcp"
 
 
@@ -230,10 +230,11 @@ def test_transport_for_stdio_cwd(tmp_path):
     """stdio transports spawn in the given cwd; http transports ignore it."""
     work = tmp_path / "ws"
     work.mkdir()
-    stdio = transport_for(spec_from_declaration("ndp", "sh -c true"), cwd=str(work))
+    spec = spec_from_declaration("ndp", {"command": sys.executable, "args": ["-c", "pass"]})
+    stdio = transport_for(spec, cwd=str(work))
     assert getattr(stdio, "cwd", None) == str(work)
     # Default (no cwd) keeps the spawning process's directory.
-    default = transport_for(spec_from_declaration("ndp", "sh -c true"))
+    default = transport_for(spec)
     assert getattr(default, "cwd", None) is None
     # http ignores cwd entirely.
     http = transport_for(spec_from_declaration("n", "https://h/mcp"), cwd=str(work))
@@ -250,13 +251,15 @@ def test_transport_for_resolves_relative_launcher_to_absolute(tmp_path):
     Resolving to an absolute path up front (while still spawning IN ``cwd``) fixes it.
     """
     import os
-    import shutil
 
     work = tmp_path / "ws"
     work.mkdir()
-    stdio = transport_for(spec_from_declaration("ndp", "sh -c true"), cwd=str(work))
+    stdio = transport_for(
+        spec_from_declaration("ndp", {"command": sys.executable, "args": ["-c", "pass"]}),
+        cwd=str(work),
+    )
     assert os.path.isabs(stdio.command)
-    assert stdio.command == shutil.which("sh")
+    assert stdio.command == sys.executable
     assert stdio.cwd == str(work)  # still spawns in the workspace
 
 
@@ -356,7 +359,9 @@ def test_transport_for_injects_dedicated_uv_cache_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("CLIO_USER_DIR", str(tmp_path))
     monkeypatch.delenv("UV_CACHE_DIR", raising=False)
 
-    stdio = transport_for(spec_from_declaration("ndp", "sh -c true"))
+    stdio = transport_for(
+        spec_from_declaration("ndp", {"command": sys.executable, "args": ["-c", "pass"]})
+    )
 
     expected = paths.user_cache_dir() / "mcp-uv-cache"
     assert stdio.env["UV_CACHE_DIR"] == str(expected)
@@ -399,7 +404,11 @@ def test_transport_for_declaration_uv_cache_dir_wins(tmp_path, monkeypatch):
 
     spec = spec_from_declaration(
         "ndp",
-        {"command": "sh", "args": ["-c", "true"], "env": {"UV_CACHE_DIR": str(declared)}},
+        {
+            "command": sys.executable,
+            "args": ["-c", "pass"],
+            "env": {"UV_CACHE_DIR": str(declared)},
+        },
     )
     stdio = transport_for(spec)
 
@@ -417,7 +426,9 @@ def test_transport_for_injected_uv_cache_overrides_ambient(tmp_path, monkeypatch
     monkeypatch.setenv("CLIO_USER_DIR", str(tmp_path))
     monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "ambient-dev-cache"))
 
-    stdio = transport_for(spec_from_declaration("ndp", "sh -c true"))
+    stdio = transport_for(
+        spec_from_declaration("ndp", {"command": sys.executable, "args": ["-c", "pass"]})
+    )
 
     assert stdio.env["UV_CACHE_DIR"] == str(paths.user_cache_dir() / "mcp-uv-cache")
 
@@ -433,7 +444,8 @@ def test_transport_for_no_cwd_env_keeps_path():
     import os
 
     spec = spec_from_declaration(
-        "ndp", {"command": "sh", "args": ["-c", "true"], "env": {"MY_KEY": "v"}}
+        "ndp",
+        {"command": sys.executable, "args": ["-c", "pass"], "env": {"MY_KEY": "v"}},
     )
     stdio = transport_for(spec)
     assert stdio.cwd is None
@@ -534,6 +546,39 @@ def test_transport_from_spec_stdio_yields_stdio_transport() -> None:
 
     transport = transport_from_spec({"transport": "stdio", "command": "echo", "args": ["hi"]})
     assert isinstance(transport, StdioTransport)
+
+
+def test_transport_from_spec_uses_bundled_desktop_launcher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Saved MCP rows use the relocatable runtime, not ambient console shims."""
+
+    monkeypatch.setattr(
+        "clio_agent.tools.mcp_config.bundled_module_launcher",
+        lambda command, args: (
+            r"D:\CLIO\python\python.exe",
+            ["-c", "from web_mcp.server import main; main()", *args],
+            {"CLIO_KIT_CACHE_DIR": r"D:\CLIO\data\cache"},
+        )
+        if command == "clio-web-search-mcp"
+        else None,
+    )
+    transport = transport_from_spec(
+        {
+            "transport": "stdio",
+            "command": "clio-web-search-mcp",
+            "args": ["--remote-url", "http://127.0.0.1:8089"],
+        }
+    )
+
+    assert transport.command == r"D:\CLIO\python\python.exe"
+    assert list(transport.args) == [
+        "-c",
+        "from web_mcp.server import main; main()",
+        "--remote-url",
+        "http://127.0.0.1:8089",
+    ]
+    assert transport.env["CLIO_KIT_CACHE_DIR"] == r"D:\CLIO\data\cache"
 
 
 def test_transport_from_spec_unknown_transport_raises_typed_error() -> None:
