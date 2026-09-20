@@ -4,6 +4,11 @@ All notable changes to clio-agent's GACT-contract surface are
 documented in this file. Internal changes that don't affect the
 TUI/HTTP surface aren't tracked here.
 
+## [0.9.4.7] - 2026-09-20
+
+This is the signed update target used to verify Desktop-only, CLIO-only, and
+combined installed updates from v0.9.4.6.
+
 ## [0.9.4.6] - 2026-09-20
 
 ### Fixed
