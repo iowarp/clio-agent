@@ -317,6 +317,27 @@ async def test_noop_discover_models_unknown_provider_is_empty() -> None:
 
 
 @pytest.mark.asyncio
+async def test_noop_preserves_documented_claude_image_input() -> None:
+    """Static Claude aliases retain documented image input without claiming availability."""
+
+    ctx = HandshakeContext(
+        provider_id="claude_code",
+        provider_kind="claude_code",
+        api_base="claude-code://sdk",
+        allow_external_sources=False,
+    )
+    handshake = NoOpHandshake(provider=object())
+
+    models = await handshake.discover_models(FakeAsyncClient(), ctx)
+    sonnet = next(model for model in models if model["id"] == "sonnet")
+    profile = await handshake.discover_model_config(FakeAsyncClient(), ctx, sonnet)
+
+    assert sorted(profile.capabilities) == ["image", "text"]
+    assert profile.raw["capability_evidence"]["source"] == "provider_documentation"
+    assert profile.raw["capability_evidence"]["reason"] == "modality_documented"
+
+
+@pytest.mark.asyncio
 async def test_noop_full_handshake_ok_with_enriched_context() -> None:
     """A full ``handshake()`` over NoOp is OK, lists registry models, and the base
     enrichment fills each model's context window from the offline source cascade —

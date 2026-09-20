@@ -4,6 +4,24 @@ All notable changes to clio-agent's GACT-contract surface are
 documented in this file. Internal changes that don't affect the
 TUI/HTTP surface aren't tracked here.
 
+## Unreleased
+
+## [0.9.4.12] - 2026-09-20
+
+### Fixed
+
+- Apply the Deep Research execution mode as the real `deep-researcher`
+  blueprint over the selected base agent, including every spawned researcher
+  and critic, without changing the session's persistent base blueprint.
+- Allow an agent to re-version its own artifact when it authored the target
+  with an absolute workspace path.
+- Bundle Desktop v0.11.2.13 and CLIO Web Search v0.3.1 for reliable remote
+  general search and clean service shutdown.
+- Preserve the documented image-input capability of Claude Code aliases in the
+  provider catalog instead of reducing unrefreshed aliases to text-only.
+- Consolidate version status and direct updates into the workspace bottom bar,
+  and restore provider visibility management to the model picker's footer.
+
 ## [0.9.4.11] - 2026-09-20
 
 ### Fixed
