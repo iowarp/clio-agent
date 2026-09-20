@@ -553,6 +553,10 @@ def test_transport_from_spec_uses_bundled_desktop_launcher(
 ) -> None:
     """Saved MCP rows use the relocatable runtime, not ambient console shims."""
 
+    # This is the Windows desktop bundle contract.  On Linux the final command is
+    # deliberately wrapped by setpriv for parent-death cleanup, which is covered by
+    # the dedicated cross-platform tests below.
+    monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(
         "clio_agent.tools.desktop_mcp_runtime.bundled_module_launcher",
         lambda command, args: (

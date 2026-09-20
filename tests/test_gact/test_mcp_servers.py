@@ -435,6 +435,7 @@ def test_stdio_install_retains_environment_and_redacts_response(
             "command": "web-tools",
             "args": ["serve"],
             "env": expected_env,
+            "always_load": False,
         }
     ]
     assert stored_spec["env"] == expected_env
