@@ -180,17 +180,9 @@ def test_auth_provider_returns_interactive_argonne_instructions(
 ) -> None:
     """ALCF auth must launch/describe an interactive flow, not block the backend."""
 
-    import importlib.util
-
     from clio_agent.providers import argonne_auth
 
     popen_calls: list[list[str]] = []
-    original_find_spec = importlib.util.find_spec
-
-    def _find_spec(name: str, *args: Any, **kwargs: Any) -> Any:
-        if name == "globus_sdk":
-            return object()
-        return original_find_spec(name, *args, **kwargs)
 
     def _popen(cmd: list[str], *args: Any, **kwargs: Any) -> object:
         popen_calls.append(cmd)
@@ -198,7 +190,7 @@ def test_auth_provider_returns_interactive_argonne_instructions(
 
     # The auth_provider handler moved to routes/providers.py (#714); patch the
     # module-level importlib/subprocess/shutil it resolves there.
-    monkeypatch.setattr("clio_agent.gact.routes.providers.importlib.util.find_spec", _find_spec)
+    monkeypatch.setattr("clio_agent.gact.routes.providers.ensure_argonne_support", lambda: True)
     monkeypatch.setattr(
         argonne_auth,
         "check_auth_status",
@@ -216,6 +208,7 @@ def test_auth_provider_returns_interactive_argonne_instructions(
     body = resp.json()
     assert body["is_authenticated"] is False
     assert body["provider_id"] == "argonne_sophia"
+    assert "Installed ALCF sign-in support" in body["instructions"]
     assert "interactive terminal" in body["instructions"] or "Opened" in body["instructions"]
     if os.name == "nt":
         assert popen_calls
@@ -225,6 +218,32 @@ def test_auth_provider_returns_interactive_argonne_instructions(
         assert "clio_agent.providers.argonne_auth" in launched[-1]
         assert "--force" in launched[-1]
         assert "Read-Host" in launched[-1]
+
+
+def test_auth_provider_reports_argonne_support_install_failure(
+    tmp_path: Path,
+    monkeypatch: Any,
+    floor_sandbox: Any,
+) -> None:
+    """A failed self-repair must identify the connected agent and remain retryable."""
+
+    from clio_agent.providers.dependencies import ProviderDependencyInstallError
+
+    def _fail_install() -> bool:
+        raise ProviderDependencyInstallError("permission denied")
+
+    monkeypatch.setattr("clio_agent.gact.routes.providers.ensure_argonne_support", _fail_install)
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        response = c.post("/v1/providers/argonne_metis/auth", json={})
+
+    assert response.status_code == 503
+    error = response.json()["error"]
+    assert error["error"] == "dependency_install_failed"
+    assert error["recoverable"] is True
+    assert "connected agent" in error["message"]
+    assert "permission denied" in error["message"]
 
 
 def _patch_run_handshake(monkeypatch, report) -> None:
@@ -785,9 +804,7 @@ def test_get_lm_provider_when_configured_via_put(tmp_path: Path, monkeypatch) ->
         # lm_provider row). That surface is covered in test_doctor_integrations.
 
 
-def test_put_argonne_omits_client_output_cap_when_omitted(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_put_argonne_omits_client_output_cap_when_omitted(tmp_path: Path, monkeypatch) -> None:
     """TUI default save should not invent a finite output cap for ALCF."""
 
     captured: dict[str, Any] = {}

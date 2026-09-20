@@ -74,6 +74,10 @@ from clio_agent.gact.types import (
     LMProviderPreset,
     LMProviderRequest,
 )
+from clio_agent.providers.dependencies import (
+    ProviderDependencyInstallError,
+    ensure_argonne_support,
+)
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -266,21 +270,22 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             )
 
-        if importlib.util.find_spec("globus_sdk") is None:
+        try:
+            installed_support = await asyncio.to_thread(ensure_argonne_support)
+        except ProviderDependencyInstallError as exc:
             raise HTTPException(
                 status_code=503,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="dependency_missing",
+                        error="dependency_install_failed",
                         message=(
-                            "globus-sdk not installed. Install with "
-                            "'pip install clio-agent[argonne]' on the "
-                            "backend host and retry."
+                            "CLIO could not install ALCF sign-in support on the connected agent: "
+                            f"{exc}"
                         ),
                         recoverable=True,
                     )
                 ).model_dump(exclude_none=True),
-            )
+            ) from exc
 
         body = await json_body(request, route="POST /v1/providers/{provider_id}/auth")
         force = bool(body.get("force", False))
@@ -325,8 +330,9 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                     creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
                 )
                 instructions = (
-                    "Opened a persistent PowerShell window for ALCF Globus login. Complete the "
-                    "authorization code flow there, then press Ctrl+R here to refresh provider status. "
+                    ("Installed ALCF sign-in support on this agent. " if installed_support else "")
+                    + "Opened a persistent PowerShell window for ALCF Globus login. Complete the "
+                    "authorization code flow there, then select Refresh model catalog in CLIO. "
                     f"If no terminal appears, run: {manual_command}"
                 )
             else:
@@ -347,13 +353,23 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                     subprocess.Popen(args)  # noqa: S603
                     instructions = (
-                        "Opened a terminal for ALCF Globus login. Complete the "
-                        "authorization code flow there, then press Ctrl+R here to refresh provider status. "
+                        (
+                            "Installed ALCF sign-in support on this agent. "
+                            if installed_support
+                            else ""
+                        )
+                        + "Opened a terminal for ALCF Globus login. Complete the "
+                        "authorization code flow there, then select Refresh model catalog in CLIO. "
                         f"If no terminal appears, run: {manual_command}"
                     )
                 else:
                     instructions = (
-                        "Run this in an interactive terminal, then press Ctrl+R here: "
+                        (
+                            "Installed ALCF sign-in support on this agent. "
+                            if installed_support
+                            else ""
+                        )
+                        + "Run this in an interactive terminal, then select Refresh model catalog in CLIO: "
                         + manual_command
                     )
         except Exception as exc:

@@ -6,6 +6,12 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Fixed
+
+- ALCF sign-in now installs missing Argonne/Globus support quietly on the
+  connected agent and forces a fresh interactive login, instead of ending with
+  a manual `pip install` instruction or reusing a token the gateway rejected.
+
 ## [0.9.4.2] - 2026-09-20
 
 This maintenance release completes the desktop infrastructure and remote
