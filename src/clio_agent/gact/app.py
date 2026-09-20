@@ -260,7 +260,12 @@ def _enrich_cancellation_error_info(
 # (behavior-preserving extraction)                                              #
 # --------------------------------------------------------------------------- #
 # gact/_params.py -- user-agent generation-parameter parsing.
-from clio_agent.gact import desktop_lifecycle, provenance_wiring, relay_wiring  # noqa: E402
+from clio_agent.gact import (  # noqa: E402
+    desktop_boot,  # noqa: E402
+    desktop_lifecycle,
+    provenance_wiring,
+    relay_wiring,
+)
 from clio_agent.gact._params import (  # noqa: E402,F401
     _gact_turn_timeout_s,
     _semantic_trace_detail_level,
@@ -934,15 +939,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # the agent's MCP stdio executors + pooled SDK CLI transports now, with typed logging,
     # off the event loop (thread joins). A HARD kill skips this; the Job Object / pdeathsig
     # binding above is the backstop. The owner helper never raises.
-    from clio_agent.runtime.process_tree import shutdown_child_processes  # noqa: PLC0415
-
     _agent = getattr(app.state, "agent", None)
-    await asyncio.get_running_loop().run_in_executor(None, lambda: shutdown_child_processes(_agent))
-    loop_guard.unregister_server_loop(app.state.mcp_app_loop)  # #1334: strict again
-    # Desktop owns this process and has now completed every explicit cleanup
-    # step. Do not let an abandoned default-executor provider worker keep the
-    # hidden process resident until the native supervisor's force-kill window.
-    desktop_lifecycle.terminate_process_after_cleanup(app)
+    await desktop_lifecycle.finalize_desktop_shutdown(app, _agent)
 
 
 async def _construct_agent_async(app: "FastAPI") -> None:
@@ -2408,21 +2406,7 @@ def run_server(
 
 
 def main() -> None:
-    """Console-script entry point.
-
-    When ``CLIO_LM_PROVIDER`` is set the real ``ClioAgent`` is
-    instantiated + injected so POST /messages drives a real LM.
-    Otherwise the module-level ``app`` (no agent wired) runs, which
-    is fine for capability introspection but 503s on /messages.
-    """
-
-    # The legacy ``clio-agent-gact`` console entry point imports this module
-    # directly, bypassing ``clio_agent.gact.__main__``. Keep its slow startup
-    # visible to the desktop supervisor as well so a healthy boot is not
-    # mistaken for a 30-second stall and terminated.
-    from clio_agent.gact.desktop_boot import start_desktop_boot_heartbeat
-
-    start_desktop_boot_heartbeat()
+    """Run GACT, constructing the real agent when a provider is configured."""
 
     parser = argparse.ArgumentParser(
         prog="clio-agent-gact",
@@ -2456,19 +2440,8 @@ def main() -> None:
             "deploy clio`, which always passes --cwd."
         ),
     )
-    parser.add_argument(
-        "--cleanup-runtime-after-crash",
-        action="store_true",
-        help=argparse.SUPPRESS,
-    )
-    args = parser.parse_args()
-
-    if args.cleanup_runtime_after_crash:
-        from clio_agent.arc.storage import cleanup_runtime_after_client_crash
-
-        stopped = cleanup_runtime_after_client_crash(wait_timeout_seconds=10.0)
-        outcome = "completed" if stopped else "preserved live clients"
-        print(f"sidecar-progress: crash cleanup {outcome}", flush=True)
+    args = desktop_boot.parse_desktop_cli(parser)
+    if args is None:
         return
 
     run_server(

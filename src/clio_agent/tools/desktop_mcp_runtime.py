@@ -6,8 +6,9 @@ import importlib.util
 import os
 import re
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 
 def desktop_mcp_log_file(namespace: str) -> Path | None:
@@ -73,3 +74,45 @@ def bundled_module_launcher(
     )
     executable = Path(sys.executable).resolve()
     return str(executable), ["-c", selected[1], *args], env
+
+
+def prepare_desktop_stdio(
+    command: str,
+    args: Sequence[str],
+    env: Mapping[str, str] | None,
+) -> tuple[str, list[str], dict[str, str]]:
+    """Resolve a saved stdio declaration against the relocatable desktop runtime."""
+
+    from clio_agent.tools.mcp_environment import stdio_environment
+
+    resolved_args = [str(value) for value in args]
+    launcher = bundled_module_launcher(command, resolved_args)
+    launcher_env: dict[str, str] = {}
+    if launcher is not None:
+        command, resolved_args, launcher_env = launcher
+    child_env = stdio_environment(dict(env) if env else {})
+    child_env.update(launcher_env)
+    return command, resolved_args, child_env
+
+
+def attach_desktop_log(transport: Any, namespace: str) -> Any:
+    """Attach a managed desktop stderr sink when the transport supports one."""
+
+    desktop_log = desktop_mcp_log_file(namespace)
+    if desktop_log is not None and hasattr(transport, "log_file"):
+        transport.log_file = desktop_log
+    return transport
+
+
+def build_confined_stdio_transport(confined: Any, env: dict[str, str], namespace: str) -> Any:
+    """Build a confined FastMCP stdio transport with desktop logging attached."""
+
+    from fastmcp.client.transports import StdioTransport
+
+    transport = StdioTransport(
+        command=confined.command,
+        args=confined.args,
+        env=env,
+        **confined.popen_kwargs,
+    )
+    return attach_desktop_log(transport, namespace)

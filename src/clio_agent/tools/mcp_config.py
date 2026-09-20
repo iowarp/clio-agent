@@ -41,7 +41,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 import yaml
 
 from clio_agent.errors import MCP_YAML_DECLARATION_UNREADABLE
-from clio_agent.tools.desktop_mcp_runtime import bundled_module_launcher, desktop_mcp_log_file
+from clio_agent.tools import desktop_mcp_runtime as dmr
 from clio_agent.tools.mcp_cache import _mcp_uv_cache_dir
 from clio_agent.tools.mcp_config_values import optional_int
 from clio_agent.tools.mcp_environment import stdio_environment
@@ -586,7 +586,7 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
                 f"source={spec.source or 'unknown'}"
             )
         # Prefer the packaged module so an ambient shim cannot replace it.
-        bundled = bundled_module_launcher(spec.command, spec.args) if spec.command else None
+        bundled = dmr.bundled_module_launcher(spec.command, spec.args) if spec.command else None
         resolved = bundled[0] if bundled is not None else shutil.which(spec.command)
         resolved_args = list(spec.args)
         launcher_env: dict[str, str] = {}
@@ -670,7 +670,7 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
             cwd=cwd,
             **confined.popen_kwargs,
         )
-        desktop_log = desktop_mcp_log_file(spec.name)
+        desktop_log = dmr.desktop_mcp_log_file(spec.name)
         if desktop_log is not None and hasattr(transport, "log_file"):
             transport.log_file = desktop_log
         return transport
@@ -763,7 +763,6 @@ def transport_from_spec(spec: Mapping[str, Any]) -> Any:
     """
     from fastmcp.client.transports import (  # noqa: PLC0415
         SSETransport,
-        StdioTransport,
         StreamableHttpTransport,
     )
 
@@ -772,20 +771,9 @@ def transport_from_spec(spec: Mapping[str, Any]) -> Any:
         command = str(spec.get("command") or "").strip()
         if not command:
             raise MCPTransportError("stdio MCP transport spec requires a 'command'")
-        raw_args = [str(value) for value in (spec.get("args") or [])]
+        raw_args = spec.get("args") or []
         raw_env = spec.get("env") or None
-        # A saved desktop MCP declaration is a raw mapping, unlike an AGENT.md
-        # declaration, but it must still get the same relocatable-runtime
-        # resolution.  In particular, the installer deliberately deletes
-        # console-script shims because they contain build-host paths; launching
-        # a saved ``clio-kit`` command by name therefore either picked up an
-        # unrelated ambient install or died with the opaque ``Connection
-        # closed`` error.  Resolve the packaged module through the bundled
-        # interpreter before composing confinement.
-        bundled = bundled_module_launcher(command, raw_args)
-        launcher_env: dict[str, str] = {}
-        if bundled is not None:
-            command, raw_args, launcher_env = bundled
+        command, raw_args, base_env = dmr.prepare_desktop_stdio(command, raw_args, raw_env)
         # #975: the pdeathsig argv-prefix folds INTO the single confinement composer
         # (owner decision #974.5 — one prefix owner, no second site). pdeathsig=True
         # preserves the exact Linux setpriv behavior this dict-spec path had before; the
@@ -800,24 +788,11 @@ def transport_from_spec(spec: Mapping[str, Any]) -> Any:
             profile=sandbox.PROFILE_FLEET,
             pdeathsig=True,
         )
-        # Preserve the parent environment (minus Python injection variables),
-        # just like transport_for.  FastMCP treats an explicit env mapping as
-        # the child's complete environment on some SDK versions, so passing
-        # only declaration overrides loses PATH and the desktop runtime marker.
-        base_env = stdio_environment(dict(raw_env) if raw_env else {})
-        base_env.update(launcher_env)
         if confined.env_overlay:
             base_env.update(confined.env_overlay)
-        transport = StdioTransport(
-            command=confined.command,
-            args=confined.args,
-            env=base_env,
-            **confined.popen_kwargs,
+        return dmr.build_confined_stdio_transport(
+            confined, base_env, str(spec.get("name") or "configured")
         )
-        desktop_log = desktop_mcp_log_file(str(spec.get("name") or "configured"))
-        if desktop_log is not None and hasattr(transport, "log_file"):
-            transport.log_file = desktop_log
-        return transport
     if transport_kind in _HTTP_TRANSPORTS:
         url = str(spec.get("url") or "").strip()
         if not url:

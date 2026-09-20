@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+from argparse import SUPPRESS, ArgumentParser, Namespace
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
@@ -73,3 +74,31 @@ def start_desktop_boot_heartbeat() -> bool:
         daemon=True,
     ).start()
     return True
+
+
+def configure_desktop_cli(parser: ArgumentParser) -> None:
+    """Start desktop progress reporting and add its private recovery verb."""
+
+    start_desktop_boot_heartbeat()
+    parser.add_argument("--cleanup-runtime-after-crash", action="store_true", help=SUPPRESS)
+
+
+def handle_desktop_cli(args: Namespace) -> bool:
+    """Run a requested desktop recovery action and report whether it handled the CLI."""
+
+    if not args.cleanup_runtime_after_crash:
+        return False
+    from clio_agent.arc.storage import cleanup_runtime_after_client_crash
+
+    stopped = cleanup_runtime_after_client_crash(wait_timeout_seconds=10.0)
+    outcome = "completed" if stopped else "preserved live clients"
+    print(f"sidecar-progress: crash cleanup {outcome}", flush=True)
+    return True
+
+
+def parse_desktop_cli(parser: ArgumentParser) -> Namespace | None:
+    """Parse the desktop-aware CLI, returning ``None`` after a recovery action."""
+
+    configure_desktop_cli(parser)
+    args = parser.parse_args()
+    return None if handle_desktop_cli(args) else args

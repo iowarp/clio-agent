@@ -112,6 +112,68 @@ def reset_runtime_shutdown() -> None:
     _runtime_shutdown_requested = False
 
 
+def kill_daemon_pidfile() -> None:
+    """Terminate the PID-file daemon with PID-reuse protection."""
+
+    from clio_agent.arc import storage  # noqa: PLC0415 - avoid storage import cycle
+
+    pidfile = storage._daemon_pidfile()
+    try:
+        parts = pidfile.read_text(encoding="utf-8").split()
+    except OSError:
+        return
+    if not parts:
+        return
+    try:
+        pid = int(parts[0])
+    except ValueError:
+        return
+    recorded = None
+    if len(parts) > 1:
+        with contextlib.suppress(ValueError):
+            recorded = float(parts[1])
+    if not storage._pid_alive(pid, recorded):
+        with contextlib.suppress(OSError):
+            pidfile.unlink()
+        return
+    try:
+        import psutil  # noqa: PLC0415
+
+        proc = psutil.Process(pid)
+        proc.terminate()
+        try:
+            proc.wait(timeout=5.0)
+        except psutil.TimeoutExpired:
+            proc.kill()
+    except Exception:  # noqa: BLE001,S110 - already gone or inaccessible
+        pass
+    with contextlib.suppress(OSError):
+        pidfile.unlink()
+
+
+def cleanup_runtime_after_client_crash(
+    config_path: str = "",
+    log_level: str = "error",
+    *,
+    wait_timeout_seconds: float = 0.0,
+) -> bool:
+    """Prune crashed clients and stop clio-core only when none remain live."""
+
+    from clio_agent.arc import storage  # noqa: PLC0415 - avoid storage import cycle
+
+    deadline = time.monotonic() + max(wait_timeout_seconds, 0.0)
+    while True:
+        with storage._runtime_spawn_lock():
+            if not storage._live_client_pids():
+                storage._stop_runtime_daemon(
+                    config_path or os.environ.get("CLIO_SERVER_CONF", ""), log_level
+                )
+                return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(min(0.1, max(deadline - time.monotonic(), 0.0)))
+
+
 def stop_runtime_daemon(config_path: str, log_level: str) -> StopOutcome:
     """Stop the shared daemon cleanly (``clio_run stop``), with a kill fallback.
 

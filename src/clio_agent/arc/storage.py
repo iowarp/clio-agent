@@ -483,45 +483,9 @@ def _live_client_pids() -> "list[int]":
 
 
 def _kill_daemon_pidfile() -> None:
-    """Fallback teardown: terminate->kill the daemon recorded in the pidfile.
+    """Compatibility wrapper for the runtime-stop owner's PID-file cleanup."""
 
-    Best-effort and PID-reuse-guarded; used only if the clean ``clio_run stop`` path
-    fails or we (a non-spawner) have no IPC route. Absent pidfile == nothing to do.
-    psutil's terminate()/kill() are cross-platform (SIGTERM/SIGKILL on POSIX,
-    TerminateProcess on Windows).
-    """
-    pidfile = _daemon_pidfile()
-    try:
-        parts = pidfile.read_text(encoding="utf-8").split()
-    except OSError:
-        return
-    if not parts:
-        return
-    try:
-        pid = int(parts[0])
-    except ValueError:
-        return
-    recorded: Optional[float] = None
-    if len(parts) > 1:
-        with contextlib.suppress(ValueError):
-            recorded = float(parts[1])
-    if not _pid_alive(pid, recorded):
-        with contextlib.suppress(OSError):
-            pidfile.unlink()
-        return
-    try:
-        import psutil  # noqa: PLC0415
-
-        proc = psutil.Process(pid)
-        proc.terminate()
-        try:
-            proc.wait(timeout=5.0)
-        except psutil.TimeoutExpired:
-            proc.kill()
-    except Exception:  # noqa: BLE001,S110 - process already gone / no permission: best-effort
-        pass
-    with contextlib.suppress(OSError):
-        pidfile.unlink()
+    runtime_stop.kill_daemon_pidfile()
 
 
 def release_runtime_client(config_path: str = "", log_level: str = "error") -> None:
@@ -548,39 +512,11 @@ def cleanup_runtime_after_client_crash(
     *,
     wait_timeout_seconds: float = 0.0,
 ) -> bool:
-    """Prune dead runtime clients and stop the daemon when none remain.
+    """Prune crashed clients and stop clio-core only when none remain live."""
 
-    The desktop launcher calls this in a fresh helper process only after its
-    managed agent exits abnormally. The crashed process cannot run its normal
-    ``atexit``/lifespan deregistration, so this path performs the same
-    last-client decision without pretending the helper itself was a client.
-    Live registrations are preserved, which keeps an independently running
-    CLIO process from losing the host-shared daemon.
-
-    Args:
-        config_path: Optional clio-core configuration used to resolve the
-            runtime port and clean-stop command.
-        log_level: Native runtime log level passed to the stop helper.
-        wait_timeout_seconds: How long to wait for a crashed client process to
-            disappear before preserving the runtime. Desktop's breakaway cleanup
-            helper uses this grace period while Windows reaps the launcher's Job
-            Object; ordinary callers retain the immediate decision by default.
-
-    Returns:
-        ``True`` when no live clients remained and a stop was requested;
-        otherwise ``False``.
-    """
-    deadline = time.monotonic() + max(wait_timeout_seconds, 0.0)
-    while True:
-        with _runtime_spawn_lock():
-            if not _live_client_pids():
-                _stop_runtime_daemon(
-                    config_path or os.environ.get("CLIO_SERVER_CONF", ""), log_level
-                )
-                return True
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(min(0.1, max(deadline - time.monotonic(), 0.0)))
+    return runtime_stop.cleanup_runtime_after_client_crash(
+        config_path, log_level, wait_timeout_seconds=wait_timeout_seconds
+    )
 
 
 def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str) -> None:

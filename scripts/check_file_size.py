@@ -147,7 +147,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # comment lines explaining why the stamp is deliberately absent here.
     # MERGE (PR #1298 x #1310): 1030 -> 1032. Both campaigns' call-site lines
     # coexist; neither side's additions were dropped.
-    "src/clio_agent/agent.py": 1015,  # blueprint activation moved to gact/blueprint_activation.py
+    "src/clio_agent/agent.py": 994,  # MCP refresh moved to gact/mcp_gateway_refresh.py
     "src/clio_agent/arc/memory.py": 1340,  # #1339: the _events chunk writer cursor moved to arc/lane_chunking.py
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
@@ -164,7 +164,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # ``_RUNTIME_STOP_POLL_SECONDS``) moved verbatim to the owner module
     # arc/runtime_stop.py; storage.py keeps a thin ``_stop_runtime_daemon`` import
     # alias (tests monkeypatch it) and ``release_runtime_client`` is unchanged.
-    "src/clio_agent/arc/storage.py": 869,
+    "src/clio_agent/arc/storage.py": 867,
     # #737 S2 fold owner module. Crossed the 800 new-file cap restoring the FROZEN
     # arc.op reproducibility contract (§2 / GOAL.md DoD #4): the five working-set write
     # overrides now emit a per-op arc.op via _emit_op so arc.replay rebuilds the live
@@ -482,7 +482,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # ``want_agent``) it reads; not in test_import_seams.SEAM_SYMBOLS so no re-export
     # shim was needed (its one call site now reads
     # ``agent_initialization.agent_not_available_error``).
-    "src/clio_agent/gact/app.py": 2470,  # relay wiring moved to gact/relay_wiring.py; +6 one-line provenance_wiring calls (#1247); #1333: two workspaces imports merged to one line each, netted against the #1334 F2 review's app.state.messages boot placeholder (see build_app); A3 review: dropped the unused `_builtin_tools` catalog re-export (2471 -> 2470), netted against the A6 sandbox-setup route registration (session_defaults import collapsed to one line to stay flat)
+    "src/clio_agent/gact/app.py": 2468,  # desktop lifecycle/CLI details moved to focused owners
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -1128,7 +1128,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # AF-FOLD (PR #1298): ratcheted DOWN 817 -> 816. Credential redaction moved to
     # the owner module tools/mcp_redaction.py, which more than paid for the
     # ``declared`` pre-expansion field this file gained.
-    "src/clio_agent/tools/mcp_config.py": 815,
+    "src/clio_agent/tools/mcp_config.py": 811,
     # #1231 Part 1/2 (consumer half of the live-console feature): not previously
     # baselined -- this file was ALREADY 7 lines over the 800 cap before this
     # change (unbaselined pre-existing debt), i.e. 807 -> 820. Part 1 (+6 net):

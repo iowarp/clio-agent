@@ -554,7 +554,7 @@ def test_transport_from_spec_uses_bundled_desktop_launcher(
     """Saved MCP rows use the relocatable runtime, not ambient console shims."""
 
     monkeypatch.setattr(
-        "clio_agent.tools.mcp_config.bundled_module_launcher",
+        "clio_agent.tools.desktop_mcp_runtime.bundled_module_launcher",
         lambda command, args: (
             r"D:\CLIO\python\python.exe",
             ["-c", "from web_mcp.server import main; main()", *args],

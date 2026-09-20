@@ -8,10 +8,7 @@ compile registered dynamic agents into concrete DSPy modules:
 * Agent-Blueprint experts (:func:`_build_blueprint_dspy_module`) using predict,
   chain-of-thought, or ReAct modules.
 
-Supporting machinery covers tool/LM resolution, telemetry, non-ReAct schema repair,
-and child delegation. The retaining ReAct engine, resolution,
-and prompt composition remain in sibling modules; cross-concern helpers load lazily
-to preserve the strangler seam without a module cycle.
+Supporting tool/LM resolution lives here; retaining ReAct and prompts stay in siblings.
 """
 
 from __future__ import annotations
@@ -28,6 +25,7 @@ from typing import TYPE_CHECKING, Any, Literal, Optional, cast
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents import skill_runtime as _skill_runtime
 from clio_agent.gact.agents import toolset_inventory
+from clio_agent.gact.agents.always_load_tools import attach_always_load_tools
 from clio_agent.gact.agents.auto_tools import build_auto_react_tools
 from clio_agent.gact.agents.blueprint_tool_recording import (
     recorded_load_skill_tool as _recorded_load_skill_tool,
@@ -615,57 +613,6 @@ def _resolve_declared_tools_with_on_demand_mount(
     return available_tools, mount_failures
 
 
-def _resolve_always_load_tools(tool_executor: Any) -> tuple[dict[str, Any], dict[str, str]]:
-    """Mount and return tools explicitly declared for every root session.
-
-    ``always_load`` is the user-level service attachment contract.  Until this
-    boundary existed the flag was parsed and then ignored: Services could prove
-    Web Search ready while a newly started session still received only fs/shell.
-    Root agents inherit these tools; spawned specialists retain their curated
-    tool lists unless their own blueprint declares the tools explicitly.
-    """
-
-    from clio_agent.gact.mcp_readiness import (  # noqa: PLC0415
-        mount_failure_reason,
-        mount_namespace_for_session,
-    )
-
-    declared_specs: Mapping[str, Any] = getattr(tool_executor, "_clio_namespace_specs", None) or {}
-    namespaces = {
-        namespace
-        for namespace, spec in declared_specs.items()
-        if bool(getattr(spec, "always_load", False))
-    }
-    failures: dict[str, str] = {}
-    prepared = getattr(tool_executor, "is_namespace_prepared", None)
-    for namespace in sorted(namespaces):
-        if callable(prepared) and prepared(namespace):
-            continue
-        try:
-            mount_namespace_for_session(tool_executor, namespace, declared_specs[namespace])
-        except Exception as exc:  # noqa: BLE001 - one optional service must not brick the agent
-            failures[namespace] = mount_failure_reason(exc)
-            logger.warning(
-                "always_load_mcp_mount_failed namespace=%s reason=%s error=%s",
-                namespace,
-                failures[namespace],
-                exc,
-            )
-
-    prefixes = tuple(f"{namespace}_" for namespace in sorted(namespaces))
-    if not prefixes:
-        return {}, failures
-    return (
-        {
-            name: tool
-            for tool in tool_executor.to_dspy_tools()
-            for name in [str(getattr(tool, "name", "") or "")]
-            if name.startswith(prefixes)
-        },
-        failures,
-    )
-
-
 def _dynamic_agent_tools(
     base_agent: Any, agent_def: "AgentDef", sources: dict[str, str]
 ) -> list[Any]:
@@ -706,12 +653,7 @@ def _dynamic_agent_tools(
             tool_executor, gateway_requested
         )
         if not (agent_def.parent_id or ""):
-            always_load_tools, always_load_failures = _resolve_always_load_tools(tool_executor)
-            gateway_tools.update(always_load_tools)
-            mount_failures.update(always_load_failures)
-            requested_tools.extend(
-                name for name in always_load_tools if name not in requested_tools
-            )
+            attach_always_load_tools(tool_executor, gateway_tools, mount_failures, requested_tools)
         mounted = toolset_inventory.mounted_namespace_set(tool_executor)
         for name in gateway_tools:
             # prefix is real provenance only if mounted (finding [D]); else "gateway".

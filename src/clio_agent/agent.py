@@ -50,6 +50,12 @@ from clio_agent.errors import (
     CancellationError,
     RoutingError,
 )
+from clio_agent.gact.mcp_gateway_refresh import (
+    correlated_execution_client_factory as _correlated_execution_client_factory,
+)
+from clio_agent.gact.mcp_gateway_refresh import (
+    refresh_declared_mcp_servers as _refresh_declared_mcp_servers,
+)
 from clio_agent.registry.registry import AgentRegistry
 from clio_agent.signatures.main_agent_sig import ChatAgentSignature
 from clio_agent.tools.catalog import (
@@ -98,33 +104,6 @@ def cancellation_requested() -> bool:
 
     checker = _CANCELLATION_CHECKER.get()
     return bool(checker is not None and checker())
-
-
-def _correlated_execution_client_factory() -> Any:
-    """The executor client factory that carries CLIO's elicitation handler.
-
-    For a PROXY-routed namespace (no SEP-2663 tasks capability) the executor's
-    outer client is the one that drives the MRTR ``InputRequiredResult`` loop,
-    so it must carry the same correlated elicitation handler + capability
-    declaration ``build_gateway`` threads onto the backend/direct clients --
-    a bare ``make_mcp_client`` fails ``-32600 Elicitation not supported``
-    (#1325/#1113). The handler resolves its invocation from the correlation
-    record, so one shared factory is safe across namespaces.
-    """
-
-    from functools import partial  # noqa: PLC0415
-
-    from clio_agent.gact.elicitation_correlation import (  # noqa: PLC0415
-        correlated_capabilities,
-        make_correlated_handlers,
-    )
-    from clio_agent.tools.mcp_runtime import make_mcp_client  # noqa: PLC0415
-
-    return partial(
-        make_mcp_client,
-        handlers=make_correlated_handlers(),
-        capabilities=correlated_capabilities(),
-    )
 
 
 class ClioAgent(dspy.Module):
@@ -326,27 +305,9 @@ class ClioAgent(dspy.Module):
             print(f"[ClioAgent] ARC Memory initialized at {data_dir}/arc")
 
     def refresh_declared_mcp_servers(self) -> Any:
-        """Atomically rebuild the default gateway after user MCP configuration changes.
+        """Atomically rebuild the default gateway after MCP configuration changes."""
 
-        Returns the replaced executor so the route that initiated the refresh can
-        retire it after any turns already holding it have drained. Workspace
-        fleets are invalidated by the shared epoch and rebuild on their next use.
-        """
-
-        with self._tool_gateway_refresh_lock:
-            gateway = self._build_tool_gateway(set_catalog=True)
-            executor = create_sync_tool_executor(
-                gateway,
-                preloaded_tools=self._tool_definitions,
-                namespace_servers=namespace_proxies(gateway),
-                server_id="gateway:default",
-                client_factory=_correlated_execution_client_factory(),
-            )
-            replaced = self.tool_executor
-            self._relay_federation_epoch = getattr(self, "_relay_federation_epoch", 0) + 1
-            self._tool_gateway = gateway
-            self.tool_executor = executor
-            return replaced
+        return _refresh_declared_mcp_servers(self)
 
     def rebind_lms(self, provider_config: LMProviderConfig) -> None:
         """(Re)build the LM-dependent surface from a provider config.
