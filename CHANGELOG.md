@@ -4,6 +4,12 @@ All notable changes to clio-agent's GACT-contract surface are
 documented in this file. Internal changes that don't affect the
 TUI/HTTP surface aren't tracked here.
 
+## [0.9.4.4] - 2026-09-20
+
+This intentionally minimal follow-up is the live acceptance target for the
+independent Desktop-only, CLIO-only, and combined signed updater paths added in
+v0.9.4.3.
+
 ## [0.9.4.3] - 2026-09-20
 
 ### Fixed
