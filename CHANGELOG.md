@@ -4,6 +4,14 @@ All notable changes to clio-agent's GACT-contract surface are
 documented in this file. Internal changes that don't affect the
 TUI/HTTP surface aren't tracked here.
 
+## [0.9.4.9] - 2026-09-20
+
+### Fixed
+
+- Managed CLIO updates now replace stale package code and metadata left by
+  older bundled runtimes, purge cached bytecode, and verify the version Python
+  actually imports before reporting success.
+
 ## [0.9.4.8] - 2026-09-20
 
 ### Fixed
