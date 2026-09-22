@@ -378,6 +378,8 @@ def test_binary_workspace_reference_delivers_verified_remote_path(tmp_path: Path
     assert delivery["agent_host_path"] == str(target)
     assert "delivery=workspace-path" in enriched
     assert repr(str(target)) in enriched
+    assert "Use agent_host_path directly" in enriched
+    assert "Do not call workspace_resource_list" in enriched
     assert "delivery=metadata-only" not in enriched
 
 

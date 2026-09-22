@@ -196,8 +196,10 @@ def _workspace_path_block(part: Part, metadata: Mapping[str, Any]) -> str:
         f"workspace_path={delivery.get('workspace_path', part.ref_id)!r}; "
         f"agent_host_path={delivery.get('agent_host_path', '')!r}; "
         f"sha256={delivery.get('sha256', '')}. "
-        "The file is on the connected agent host and may be passed to workspace-scoped "
-        "filesystem, shell, document, or image tools."
+        "This is an existing workspace file, not an uploaded-resource catalog entry. "
+        "Use agent_host_path directly with workspace-scoped filesystem, shell, document, "
+        "or image tools. Do not call workspace_resource_list to locate it, and do not ask "
+        "the user to upload it again merely because it is absent from that resource catalog."
     )
 
 
