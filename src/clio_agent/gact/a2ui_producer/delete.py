@@ -52,6 +52,7 @@ def build_delete_a2ui_surface_tool() -> Any:
         name="delete_a2ui_surface",
         presentation="text",
         title="Delete UI element",
+        domain="surfaces",
         desc=delete_a2ui_surface.__doc__,
         args={
             "surface_id": {"type": "string", "description": "Existing live surface id to delete."}
