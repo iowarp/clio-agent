@@ -67,7 +67,9 @@ def test_init_degradation_no_record_yields_no_row():
 
 def test_init_degradation_sabotage_ready_would_go_red():
     """SABOTAGE guard: if the probe reported a recorded degrade as anything but DEGRADED."""
-    row = probe_clio_core_init_degradation(record=_degrade_record("clio_core_daemon_spawn_failed"))[0]
+    row = probe_clio_core_init_degradation(record=_degrade_record("clio_core_daemon_spawn_failed"))[
+        0
+    ]
     assert row.state is IntegrationState.DEGRADED
     assert row.details["reason"] == "clio_core_daemon_spawn_failed"
 
@@ -112,6 +114,7 @@ def test_probe_disk_only_default_is_ready(tmp_path):
     cfg = tmp_path / "cte.yaml"
     cfg.write_text(
         clio_core_config._DEFAULT_CTE_CONFIG_TEMPLATE.format(
+            core_port=9413,
             conf_dir="c",
             file_tier="f",
             file_capacity="50GB",
@@ -158,20 +161,26 @@ def test_probe_sabotage_ignoring_0g_would_go_green(tmp_path):
     80%-DRAM config as READY. The invariant is that a 0g cap is NEVER ready.
     """
     cfg = _write_cte_yaml(tmp_path, "0g")
-    row = probe_clio_core_ram_cap(env={"CLIO_ARC_STORE": "cte", "CLIO_ARC_STORE_CONFIG": str(cfg)})[0]
+    row = probe_clio_core_ram_cap(env={"CLIO_ARC_STORE": "cte", "CLIO_ARC_STORE_CONFIG": str(cfg)})[
+        0
+    ]
     assert row.state is not IntegrationState.READY
     # And a genuinely bounded cap on the same wire IS ready — proving the flag is
     # specific to 0g, not a blanket "always degraded".
     ok = _write_cte_yaml(tmp_path, "2GB")
     assert (
-        probe_clio_core_ram_cap(env={"CLIO_ARC_STORE": "cte", "CLIO_ARC_STORE_CONFIG": str(ok)})[0].state
+        probe_clio_core_ram_cap(env={"CLIO_ARC_STORE": "cte", "CLIO_ARC_STORE_CONFIG": str(ok)})[
+            0
+        ].state
         is IntegrationState.READY
     )
 
 
 def test_probe_unparseable_cap_is_misconfigured(tmp_path):
     cfg = _write_cte_yaml(tmp_path, "2gigs!")
-    row = probe_clio_core_ram_cap(env={"CLIO_ARC_STORE": "cte", "CLIO_ARC_STORE_CONFIG": str(cfg)})[0]
+    row = probe_clio_core_ram_cap(env={"CLIO_ARC_STORE": "cte", "CLIO_ARC_STORE_CONFIG": str(cfg)})[
+        0
+    ]
     assert row.state is IntegrationState.MISCONFIGURED
     assert row.details["reason"] == "ram_cap_unparseable"
 

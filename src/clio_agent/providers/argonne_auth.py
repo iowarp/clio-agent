@@ -35,7 +35,11 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 import sys
+import threading
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +83,25 @@ class GlobusAuthError(RuntimeError):
     """Auth flow failed (bad domain, network, expired refresh, …)."""
 
 
+@dataclass(frozen=True)
+class PendingAuthentication:
+    """Browser authorization flow waiting for its one-time Globus code."""
+
+    flow_id: str
+    authorization_url: str
+
+
+@dataclass
+class _PendingAuthenticationState:
+    client: Any
+    expires_at: float
+
+
+_AUTH_FLOW_TTL_SECONDS = 15 * 60
+_pending_authentications: dict[str, _PendingAuthenticationState] = {}
+_pending_authentications_lock = threading.Lock()
+
+
 # ---------------------------------------------------------------------------
 # Lazy globus-sdk loader
 # ---------------------------------------------------------------------------
@@ -113,8 +136,7 @@ def _domain_error_handler(app: Any, error: Any, *, allow_interactive: bool = Tru
     """
     if not allow_interactive:
         logger.warning(
-            "Globus auth error %r — interactive login disabled "
-            "(reason=argonne_login_required)",
+            "Globus auth error %r — interactive login disabled (reason=argonne_login_required)",
             error,
         )
         raise GlobusAuthError(
@@ -270,9 +292,77 @@ def check_auth_status() -> bool:
         return True
     except GlobusUnavailable:
         return False
-    except Exception as exc:  # noqa: BLE001 - probe failure logged (ALCF auth probe failed); treated as unauthenticated
+    except Exception as exc:  # noqa: BLE001 - auth probe failures are non-fatal
         logger.info("ALCF auth probe failed: %s", exc)
         return False
+
+
+def begin_authentication() -> PendingAuthentication:
+    """Start a remote-safe Globus login and return its browser URL.
+
+    The login client remains on the agent because its PKCE verifier is required
+    to exchange the authorization code.  Only an opaque flow id and the public
+    Globus URL cross the desktop API boundary.
+    """
+    globus_sdk = _require_globus()
+    client = globus_sdk.NativeAppAuthClient(
+        AUTH_CLIENT_ID,
+        app_name=APP_NAME,
+    )
+    client.oauth2_start_flow(
+        requested_scopes=[GATEWAY_SCOPE, "openid"],
+        refresh_tokens=True,
+        prefill_named_grant=APP_NAME,
+    )
+    authorization_url = client.oauth2_get_authorize_url(
+        session_required_single_domain=ALLOWED_DOMAINS
+    )
+    flow_id = secrets.token_urlsafe(32)
+    now = time.monotonic()
+    with _pending_authentications_lock:
+        expired = [
+            candidate
+            for candidate, state in _pending_authentications.items()
+            if state.expires_at <= now
+        ]
+        for candidate in expired:
+            _pending_authentications.pop(candidate, None)
+        _pending_authentications[flow_id] = _PendingAuthenticationState(
+            client=client,
+            expires_at=now + _AUTH_FLOW_TTL_SECONDS,
+        )
+    return PendingAuthentication(flow_id=flow_id, authorization_url=authorization_url)
+
+
+def complete_authentication(flow_id: str, authorization_code: str) -> None:
+    """Exchange a browser authorization code and persist refresh tokens.
+
+    Args:
+        flow_id: Opaque id returned by :func:`begin_authentication`.
+        authorization_code: One-time code displayed by Globus Auth.
+
+    Raises:
+        GlobusAuthError: The flow expired, the code is invalid, or token storage
+            failed.
+    """
+    normalized_flow_id = flow_id.strip()
+    normalized_code = authorization_code.strip()
+    if not normalized_flow_id or not normalized_code:
+        raise GlobusAuthError("The Globus authorization code is required.")
+
+    with _pending_authentications_lock:
+        state = _pending_authentications.pop(normalized_flow_id, None)
+    if state is None or state.expires_at <= time.monotonic():
+        raise GlobusAuthError("This Globus sign-in expired. Start sign-in again.")
+
+    try:
+        response = state.client.oauth2_exchange_code_for_tokens(normalized_code)
+        app = _build_user_app(force=False, allow_interactive=False)
+        app.token_storage.store_token_response(response)
+        authorizer = app.get_authorizer(GATEWAY_CLIENT_ID)
+        authorizer.ensure_valid_token()
+    except Exception as exc:
+        raise GlobusAuthError(f"Could not complete ALCF sign-in: {exc}") from exc
 
 
 def authenticate(force: bool = False) -> None:

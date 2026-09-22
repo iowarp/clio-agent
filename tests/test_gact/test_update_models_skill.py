@@ -41,11 +41,8 @@ def test_update_models_skill_body_names_the_refresh_tool_and_report_contract() -
     assert "added" in body and "removed" in body and "unchanged" in body
     assert "failed_reason" in body
     assert "rejected" in body  # #1211 review N3: rejected reasons are relayed too
-    # Owner ruling 2026-08-14 (cost-aware claude_code default): the skill must
-    # instruct reporting BOTH the CLI's own default and clio's served
-    # cost-policy default when they differ, never silently picking one.
-    assert "cli_default" in body
-    assert "cost policy" in body
+    assert "account/backend's discovered default" in body
+    assert "cli_default" not in body
 
 
 def test_refresh_provider_models_tool_exists_on_a_tier1_main_session() -> None:

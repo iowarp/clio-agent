@@ -15,7 +15,7 @@ __all__ = ["build_sdk_options", "require_claude_agent_sdk", "thinking_key"]
 
 
 def require_claude_agent_sdk() -> Any:
-    """Import the Claude Agent SDK or raise a typed unavailability error (#1107).
+    """Import the Claude Agent SDK, installing it once when absent.
 
     The single SDK-transport import/selection seam: every ``sdk`` path gets a
     typed reason (``ClaudeCodeCLIUnavailableError``) rather than a raw
@@ -26,16 +26,23 @@ def require_claude_agent_sdk() -> Any:
     """
     try:
         import claude_agent_sdk  # noqa: PLC0415
-    except ImportError as exc:
+    except ImportError:
+        from clio_agent.providers.claude_code_errors import (  # noqa: PLC0415
+            CLAUDE_CODE_INSTALL_FAILED_MESSAGE,
+        )
         from clio_agent.providers.claude_code_litellm import (  # noqa: PLC0415
             ClaudeCodeCLIUnavailableError,
         )
+        from clio_agent.providers.dependencies import (  # noqa: PLC0415
+            ProviderDependencyInstallError,
+            ensure_claude_code_support,
+        )
 
-        raise ClaudeCodeCLIUnavailableError(
-            "Claude Agent SDK transport (claude_code_transport='sdk') requires the "
-            "claude-agent-sdk package. Install the 'claude-code' extra "
-            "(uv sync --extra claude-code)."
-        ) from exc
+        try:
+            ensure_claude_code_support()
+            import claude_agent_sdk  # noqa: PLC0415
+        except (ImportError, ProviderDependencyInstallError) as install_exc:
+            raise ClaudeCodeCLIUnavailableError(CLAUDE_CODE_INSTALL_FAILED_MESSAGE) from install_exc
     return claude_agent_sdk
 
 

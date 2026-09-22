@@ -348,6 +348,83 @@ def test_static_catalog_rows_are_never_evidence() -> None:
     assert row["evidence"]["live"] is False
 
 
+def test_documented_claude_vision_survives_the_static_catalog_boundary() -> None:
+    """Known Claude image input is not erased while account availability stays candidate."""
+
+    preset = LMProviderPreset(
+        id="claude_code",
+        label="Claude Code",
+        provider="claude_code",
+        api_base="claude-code://sdk",
+        suggested_model="sonnet",
+    )
+    report = HandshakeReport(
+        provider_id="claude_code",
+        provider_kind="claude_code",
+        connectivity=ConnectivityState.OK,
+        auth=AuthState.NOT_REQUIRED,
+        models_source="static",
+        generated_at="2026-09-20T12:00:00+00:00",
+        models=(
+            ModelProfile(
+                id="sonnet",
+                capabilities=("text", "image"),
+                raw={
+                    "capability_evidence": {
+                        "source": "provider_documentation",
+                        "reason": "modality_documented",
+                    }
+                },
+            ),
+        ),
+    )
+
+    row = model_catalog_row(preset, report, report.models[0])
+
+    assert row["availability"] == "candidate"
+    assert row["modalities"] == ["image", "text"]
+    assert row["evidence"]["evidenced"] is False
+    assert row["evidence"]["modality_evidenced"] is True
+
+
+def test_planner_accepts_documented_claude_vision() -> None:
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            provider_catalog={
+                "providers": [
+                    {
+                        "id": "claude_code",
+                        "health": "ready",
+                        "models": [
+                            {
+                                "model_id": "sonnet",
+                                "availability": "candidate",
+                                "modalities": ["image", "text"],
+                                "evidence": {
+                                    "evidenced": False,
+                                    "modality_evidenced": True,
+                                    "source": "static",
+                                    "generated_at": "2026-09-20T12:00:00+00:00",
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+    )
+
+    planned = plan_resource_delivery(
+        app,
+        resource=_resource(media_type="image/png"),
+        message_id="m_documented",
+        model=ModelRef(provider_id="claude_code", model_id="sonnet"),
+    )
+
+    assert planned.representation == "native"
+    assert planned.evidence_source == "documented_catalog"
+
+
 def test_planner_accepts_overlay_evidence_and_keeps_its_probe_timestamp() -> None:
     """Delivery planning must accept persisted discovery evidence, dated honestly."""
 

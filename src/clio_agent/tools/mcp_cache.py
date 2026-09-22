@@ -64,6 +64,15 @@ __all__ = [
 _DEFAULT_MAX_BYTES = 2 * 1024**3  # 2 GiB
 _DEFAULT_MAX_AGE_DAYS = 14.0
 
+
+def _mcp_uv_cache_dir() -> Path:
+    """Return the clio-owned uv cache used by stdio MCP launchers."""
+
+    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
+
+    return paths.user_cache_dir() / "mcp-uv-cache"
+
+
 # uv builds ephemeral ``uvx``/``uv run --with`` environments under this subtree (the ``v*``
 # suffix is uv's cache-format version — matched by glob so a uv upgrade that bumps it does
 # not silently disable the prune). These are the unbounded, clio-owned growth this module

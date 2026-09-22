@@ -41,6 +41,8 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 import yaml
 
 from clio_agent.errors import MCP_YAML_DECLARATION_UNREADABLE
+from clio_agent.tools import desktop_mcp_runtime as dmr
+from clio_agent.tools.mcp_cache import _mcp_uv_cache_dir
 from clio_agent.tools.mcp_config_values import optional_int
 from clio_agent.tools.mcp_environment import stdio_environment
 
@@ -561,20 +563,6 @@ def pdeathsig_wrapped_command(command: str, args: Sequence[str]) -> tuple[str, l
     return setpriv, ["--pdeathsig", "SIGKILL", "--", command, *arg_list]
 
 
-def _mcp_uv_cache_dir() -> Path:
-    """Return the dedicated uv cache dir for MCP stdio spawns (under the user cache).
-
-    A clio-owned cache directory that ``uvx``/``uv run`` MCP launchers use instead of
-    the developer's ambient uv cache, isolating them from the concurrent-spawn archive
-    race and from ``uv cache prune/clean`` deleting ephemeral envs under a running
-    server (astral-sh/uv#11694). Resolved through :mod:`clio_agent.paths` so it honours
-    the canonical per-user cache location on every OS.
-    """
-    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
-
-    return paths.user_cache_dir() / "mcp-uv-cache"
-
-
 def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
     """Turn a spec into the ``server`` arg FastMCP's ``Client`` accepts.
 
@@ -597,7 +585,13 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
                 f"the stdio subprocess cannot start (chdir/artifacts-root ENOENT). "
                 f"source={spec.source or 'unknown'}"
             )
-        resolved = shutil.which(spec.command) if spec.command else None
+        # Prefer the packaged module so an ambient shim cannot replace it.
+        bundled = dmr.bundled_module_launcher(spec.command, spec.args) if spec.command else None
+        resolved = bundled[0] if bundled is not None else shutil.which(spec.command)
+        resolved_args = list(spec.args)
+        launcher_env: dict[str, str] = {}
+        if bundled is not None:
+            resolved, resolved_args, launcher_env = bundled
         if not resolved:
             raise MCPSpawnError(
                 f"MCP server {spec.name!r}: launcher command {spec.command!r} not found on "
@@ -607,6 +601,7 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
 
         # Preserve the host environment beneath explicit server overrides.
         env = stdio_environment(spec.env)
+        env.update(launcher_env)
         if cwd:
             # Pin clio-kit's artifacts root to the workspace so staged resources
             # and generated artifacts land in the workspace even when the
@@ -638,12 +633,12 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
         # inside spawn_diet.
         from clio_agent.tools import spawn_diet  # noqa: PLC0415
 
-        diet = spawn_diet.diet_transport_args(spec.name, resolved, tuple(spec.args), env)
+        diet = spawn_diet.diet_transport_args(spec.name, resolved, tuple(resolved_args), env)
         if diet is not None:
             diet_command, diet_args, env = diet
             final_command, final_args = diet_command, diet_args
         else:
-            final_command, final_args = resolved, list(spec.args)
+            final_command, final_args = resolved, resolved_args
         # #975: route the FINAL argv (post spawn-diet) through the single confinement
         # composer. Floor-first — the `fleet` profile resolves to passthrough this slice,
         # so command/args/env are byte-identical; only the recorded confinement intent
@@ -668,13 +663,17 @@ def transport_for(spec: MCPServerSpec, *, cwd: str | None = None) -> Any:
             from clio_agent.runtime.sandbox_net import register_namespace_child  # noqa: PLC0415
 
             register_namespace_child(cwd, spec.name, sandbox_net_child)
-        return StdioTransport(
+        transport = StdioTransport(
             command=confined.command,
             args=confined.args,
             env={**env, **confined.env_overlay},
             cwd=cwd,
             **confined.popen_kwargs,
         )
+        desktop_log = dmr.desktop_mcp_log_file(spec.name)
+        if desktop_log is not None and hasattr(transport, "log_file"):
+            transport.log_file = desktop_log
+        return transport
 
     from fastmcp.client.transports import StreamableHttpTransport  # noqa: PLC0415
 
@@ -764,7 +763,6 @@ def transport_from_spec(spec: Mapping[str, Any]) -> Any:
     """
     from fastmcp.client.transports import (  # noqa: PLC0415
         SSETransport,
-        StdioTransport,
         StreamableHttpTransport,
     )
 
@@ -775,6 +773,7 @@ def transport_from_spec(spec: Mapping[str, Any]) -> Any:
             raise MCPTransportError("stdio MCP transport spec requires a 'command'")
         raw_args = spec.get("args") or []
         raw_env = spec.get("env") or None
+        command, raw_args, base_env = dmr.prepare_desktop_stdio(command, raw_args, raw_env)
         # #975: the pdeathsig argv-prefix folds INTO the single confinement composer
         # (owner decision #974.5 — one prefix owner, no second site). pdeathsig=True
         # preserves the exact Linux setpriv behavior this dict-spec path had before; the
@@ -789,14 +788,10 @@ def transport_from_spec(spec: Mapping[str, Any]) -> Any:
             profile=sandbox.PROFILE_FLEET,
             pdeathsig=True,
         )
-        base_env = dict(raw_env) if raw_env else None
         if confined.env_overlay:
-            base_env = {**(base_env or {}), **confined.env_overlay}
-        return StdioTransport(
-            command=confined.command,
-            args=confined.args,
-            env=base_env,
-            **confined.popen_kwargs,
+            base_env.update(confined.env_overlay)
+        return dmr.build_confined_stdio_transport(
+            confined, base_env, str(spec.get("name") or "configured")
         )
     if transport_kind in _HTTP_TRANSPORTS:
         url = str(spec.get("url") or "").strip()

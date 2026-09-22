@@ -101,6 +101,11 @@ def model_catalog_row(
     """Return one normalized model row with explicit discovery evidence."""
 
     evidenced = report.models_source in EVIDENCED_CATALOG_SOURCES and report.ok
+    capability_evidence = profile.raw.get("capability_evidence") or {}
+    modality_evidenced = (
+        isinstance(capability_evidence, dict)
+        and capability_evidence.get("reason") == "modality_documented"
+    )
     return {
         "provider_id": preset.id,
         "provider_kind": preset.provider,
@@ -108,7 +113,7 @@ def model_catalog_row(
         "deployment": profile.raw.get("deployment") or profile.raw.get("owned_by") or "",
         "model_id": profile.id,
         "revision": str(profile.raw.get("revision") or profile.raw.get("version") or ""),
-        "modalities": _modalities(profile) if evidenced else ["text"],
+        "modalities": _modalities(profile) if evidenced or modality_evidenced else ["text"],
         "reasoning": {
             "supported": profile.is_reasoning,
             "parameter": profile.reasoning_param or "",
@@ -129,10 +134,11 @@ def model_catalog_row(
             or report.generated_at,
             "read_at": report.generated_at,
             "evidenced": evidenced,
+            "modality_evidenced": evidenced or modality_evidenced,
             # ``live`` now means what it says: this run probed the provider.
             "live": report.models_source == "live" and report.ok,
             "context_source": profile.context_source,
-            "capability_evidence": profile.raw.get("capability_evidence") or {},
+            "capability_evidence": capability_evidence,
         },
         "failure": report.error or "",
     }

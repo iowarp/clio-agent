@@ -13,7 +13,7 @@
 # The runtime self-describes via a generic manifest (<out>/runtime.json,
 # iowarp/gact-tui#311) so the desktop launcher needs zero knowledge of
 # what's inside:
-#   {"schema": 1, "exec": ["python/bin/python3.12", "-m", "clio_agent.gact"]}
+#   {"schema": 1, "exec": ["python/bin/python3.12", "-m", "clio_agent.gact", "--no-agent"]}
 #
 # Console scripts are DELETED after install: their shims embed absolute
 # build paths and break on relocation — `-m clio_agent.gact` is the only
@@ -76,7 +76,7 @@ find "$OUT/python" -maxdepth 3 -name EXTERNALLY-MANAGED -delete
 PYBIN_REL="python/bin/python${PYVER}"
 [ -x "$OUT/$PYBIN_REL" ] || { echo "build-gact-runtime: $PYBIN_REL missing in dist" >&2; exit 1; }
 
-# --- 2. install clio-agent (NO extras) directly into the dist ----------
+# --- 2. install clio-agent + the portable science launcher -------------
 if [ -n "${CLIO_AGENT_SOURCE:-}" ]; then
   [ -f "${CLIO_AGENT_SOURCE}/pyproject.toml" ] || {
     echo "build-gact-runtime: CLIO_AGENT_SOURCE=$CLIO_AGENT_SOURCE is not a clio-agent checkout" >&2
@@ -86,10 +86,31 @@ if [ -n "${CLIO_AGENT_SOURCE:-}" ]; then
 else
   SPEC="clio-agent @ ${REPO_URL}@${REF}"
 fi
-echo "[build-gact-runtime] installing: $SPEC (no extras)"
-uv pip install --python "$OUT/$PYBIN_REL" "$SPEC" \
+CLIO_KIT_SPEC="clio-kit==2.10.6"
+echo "[build-gact-runtime] installing: $SPEC + $CLIO_KIT_SPEC"
+uv pip install --python "$OUT/$PYBIN_REL" "$SPEC" "$CLIO_KIT_SPEC" \
+  "globus-sdk>=3.0.0" \
   "dspy==3.3.0b1" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5" \
   "fastmcp-tasks==4.0.0b5"
+
+# Install the source-locked Web Search MCP adapter now.  Connecting the
+# recommended service must not build a second Python environment on first use.
+WEB_MCP_PROJECT="$OUT/python/clio-kit-mcp-servers/web"
+[ -f "$WEB_MCP_PROJECT/pyproject.toml" ] || {
+  echo "build-gact-runtime: bundled Web Search MCP project missing at $WEB_MCP_PROJECT" >&2
+  exit 1
+}
+echo "[build-gact-runtime] installing bundled CLIO Web Search adapter"
+uv pip install --python "$OUT/$PYBIN_REL" "$WEB_MCP_PROJECT" \
+  "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5" "fastmcp-tasks==4.0.0b5"
+
+# clio-kit materializes each locked MCP server with uv on first use. Ship uv
+# beside the relocatable runtime instead of requiring a fresh desktop user to
+# install developer tooling or configure PATH.
+mkdir -p "$OUT/bin"
+cp "$(command -v uv)" "$OUT/bin/uv"
+cp "$(command -v uv)" "$OUT/bin/uvx"
+chmod +x "$OUT/bin/uv" "$OUT/bin/uvx"
 
 SIZE_BEFORE="$(dir_size_mb "$OUT")"
 echo "[build-gact-runtime] size before prune: ${SIZE_BEFORE} MB"
@@ -137,6 +158,20 @@ find "$OUT/python" -type f -name '*.exe' -delete
 # no-opped on macOS — the exact silent-fallback class this repo bans).
 find "$OUT/python" -type l ! -exec test -e {} ';' -delete
 
+# Prepare the real startup import graph in the release image, not on the
+# user's first launch. Compiling the entire distribution is both wasteful and
+# invalid: CPython ships non-imported Tcl demo files with syntax errors, while
+# some optional provider paths exceed Windows' legacy path limit.
+echo "[build-gact-runtime] compiling portable startup bytecode"
+"$OUT/$PYBIN_REL" "$CLIO_AGENT_SOURCE/install/precompile_runtime.py" \
+  --python-root "$OUT/python"
+COMPILED="$(find "$OUT/python" -type f -name '*.pyc' | wc -l | tr -d ' ')"
+if [ "${COMPILED:-0}" -eq 0 ]; then
+  echo "build-gact-runtime: bytecode preparation produced no .pyc files" >&2
+  exit 1
+fi
+echo "[build-gact-runtime] prepared $COMPILED bytecode files"
+
 SIZE_AFTER="$(dir_size_mb "$OUT")"
 echo "[build-gact-runtime] size after prune:  ${SIZE_AFTER} MB (was ${SIZE_BEFORE} MB)"
 
@@ -144,7 +179,7 @@ echo "[build-gact-runtime] size after prune:  ${SIZE_AFTER} MB (was ${SIZE_BEFOR
 cat >"$OUT/runtime.json" <<EOF
 {
   "schema": 1,
-  "exec": ["${PYBIN_REL}", "-m", "clio_agent.gact"]
+  "exec": ["${PYBIN_REL}", "-m", "clio_agent.gact", "--no-agent"]
 }
 EOF
 echo "[build-gact-runtime] manifest: $(cat "$OUT/runtime.json" | tr -d '\n' | tr -s ' ')"
@@ -161,14 +196,17 @@ RELOC="$(mktemp -d)/gact-runtime-relocated"
 cp -a "$OUT" "$RELOC"
 echo "[build-gact-runtime] sanity (relocated): $RELOC/$PYBIN_REL -m clio_agent.gact --help"
 "$RELOC/$PYBIN_REL" -m clio_agent.gact --help >/dev/null
+"$RELOC/$PYBIN_REL" -c 'from clio_kit import cli; cli()' --help >/dev/null
+"$RELOC/bin/uv" --version >/dev/null
 # --help only proves imports; BOOT the relocated copy and poll the API —
 # the only automated proof a prune casualty or loader problem would fail.
 PORT=$((RANDOM % 20000 + 24000))
 echo "[build-gact-runtime] sanity (relocated boot): /v1/capabilities on :$PORT"
 "$RELOC/$PYBIN_REL" -m clio_agent.gact --no-agent --host 127.0.0.1 --port "$PORT" >/dev/null 2>&1 &
 SRV=$!
+BOOT_STARTED="$(date +%s)"
 BOOT_OK=""
-for _ in $(seq 1 60); do
+for _ in $(seq 1 30); do
   if curl -fsS --max-time 2 "http://127.0.0.1:$PORT/v1/capabilities" >/dev/null 2>&1; then
     BOOT_OK=1
     break
@@ -179,8 +217,9 @@ kill "$SRV" 2>/dev/null || true
 wait "$SRV" 2>/dev/null || true
 rm -rf "$(dirname "$RELOC")"
 if [ -z "$BOOT_OK" ]; then
-  echo "build-gact-runtime: relocated runtime failed to serve /v1/capabilities" >&2
+  echo "build-gact-runtime: relocated runtime failed to serve /v1/capabilities within 30 seconds" >&2
   exit 1
 fi
+echo "[build-gact-runtime] relocated cold boot ready in $(( $(date +%s) - BOOT_STARTED ))s"
 
 echo "[build-gact-runtime] OK — portable runtime ready at $OUT (${SIZE_AFTER} MB)"

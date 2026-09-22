@@ -82,9 +82,23 @@ def test_watcher_writes_no_record_on_clean_exit(tmp_path: Path) -> None:
     assert not crash_record_path(tmp_path).exists()
 
 
-def test_liveness_error_names_the_crash(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_watcher_writes_no_record_on_managed_nonzero_exit(tmp_path: Path) -> None:
+    """A lifecycle-owned daemon stop is not a crash even when Windows returns 15."""
+
+    from clio_agent.arc.runtime_crash import (
+        crash_record_path,
+        expect_daemon_exit,
+        watch_daemon_process,
+    )
+
+    proc = subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(15)"])
+    expect_daemon_exit(proc.pid)
+    thread = watch_daemon_process(proc, log_path=tmp_path / "absent.log", state_dir=tmp_path)
+    thread.join(timeout=10)
+    assert not crash_record_path(tmp_path).exists()
+
+
+def test_liveness_error_names_the_crash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The 'daemon not listening' error carries the crash facts when a record exists."""
 
     from clio_agent.arc.clio_core_liveness import ClioCoreRuntimeLostError, LivenessGate

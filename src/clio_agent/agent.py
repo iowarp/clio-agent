@@ -50,6 +50,12 @@ from clio_agent.errors import (
     CancellationError,
     RoutingError,
 )
+from clio_agent.gact.mcp_gateway_refresh import (
+    correlated_execution_client_factory as _correlated_execution_client_factory,
+)
+from clio_agent.gact.mcp_gateway_refresh import (
+    refresh_declared_mcp_servers as _refresh_declared_mcp_servers,
+)
 from clio_agent.registry.registry import AgentRegistry
 from clio_agent.signatures.main_agent_sig import ChatAgentSignature
 from clio_agent.tools.catalog import (
@@ -98,33 +104,6 @@ def cancellation_requested() -> bool:
 
     checker = _CANCELLATION_CHECKER.get()
     return bool(checker is not None and checker())
-
-
-def _correlated_execution_client_factory() -> Any:
-    """The executor client factory that carries CLIO's elicitation handler.
-
-    For a PROXY-routed namespace (no SEP-2663 tasks capability) the executor's
-    outer client is the one that drives the MRTR ``InputRequiredResult`` loop,
-    so it must carry the same correlated elicitation handler + capability
-    declaration ``build_gateway`` threads onto the backend/direct clients --
-    a bare ``make_mcp_client`` fails ``-32600 Elicitation not supported``
-    (#1325/#1113). The handler resolves its invocation from the correlation
-    record, so one shared factory is safe across namespaces.
-    """
-
-    from functools import partial  # noqa: PLC0415
-
-    from clio_agent.gact.elicitation_correlation import (  # noqa: PLC0415
-        correlated_capabilities,
-        make_correlated_handlers,
-    )
-    from clio_agent.tools.mcp_runtime import make_mcp_client  # noqa: PLC0415
-
-    return partial(
-        make_mcp_client,
-        handlers=make_correlated_handlers(),
-        capabilities=correlated_capabilities(),
-    )
 
 
 class ClioAgent(dspy.Module):
@@ -299,6 +278,7 @@ class ClioAgent(dspy.Module):
         # discovery/heal merges _start_mcp_namespace_discovery starts below —
         # boot no longer waits for any declared namespace before returning.
         self._tool_definitions_lock = threading.Lock()
+        self._tool_gateway_refresh_lock = threading.Lock()
         self._mcp_namespace_healer: NamespaceDiscoveryHealer | None = None
         self._tool_gateway = self._build_tool_gateway(set_catalog=True)
         # #1281 F5 (adversarial review): create_sync_tool_executor's inner
@@ -323,6 +303,11 @@ class ClioAgent(dspy.Module):
         if self.verbose:
             print(f"[ClioAgent] Registered {self.registry.get_agent_count()} runtime agents")
             print(f"[ClioAgent] ARC Memory initialized at {data_dir}/arc")
+
+    def refresh_declared_mcp_servers(self) -> Any:
+        """Atomically rebuild the default gateway after MCP configuration changes."""
+
+        return _refresh_declared_mcp_servers(self)
 
     def rebind_lms(self, provider_config: LMProviderConfig) -> None:
         """(Re)build the LM-dependent surface from a provider config.
@@ -610,45 +595,39 @@ class ClioAgent(dspy.Module):
                 # until a tool call).
                 gateway = self._build_tool_gateway(cwd=root, blueprint_id=blueprint_id)
                 preloaded = self._tool_definitions
-                declared_specs: dict[str, Any] = {}
-                if blueprint_id:
-                    # #1237 owner ruling (2026-08-20): blueprint activation
-                    # mounts NOTHING eagerly. The OLD synchronous
-                    # discover_declared_tools_bounded() full-fleet pass here
-                    # blocked this workspace's FIRST resolve on EVERY declared
-                    # server cold-spawning — that only moved "load everything
-                    # at install" to "load everything at first use", not fix
-                    # it. Only a zero-I/O CACHE READ happens now: a namespace
-                    # listed recently (listing_cache, 24h TTL) is visible
-                    # immediately; a genuinely cold one is simply absent from
-                    # ``preloaded`` until a real need arrives, at which point
-                    # both builders.py's _dynamic_agent_tools (expert-tool
-                    # resolve) and mcp_executor.py's _route (dispatch-time
-                    # race) call tools.mcp_discovery.ensure_namespace — a
-                    # single-flight, liveness-driven on-demand mount that
-                    # merges its result into THIS SAME executor's live tool
-                    # table (AsyncMCPToolExecutor.merge_namespace_tools)
-                    # rather than ever rebuilding/evicting the fleet for it.
-                    declared_specs = dict(namespace_specs(gateway))
-                    from clio_agent.tools import listing_cache  # noqa: PLC0415
+                # Every per-workspace gateway includes user-configured MCP
+                # services, even when no Agent Blueprint is active.  Preserve
+                # those declarations on the resident executor so root-session
+                # services marked ``always_load`` can be mounted by the agent
+                # builder.  Previously this stamp was conditional on
+                # ``blueprint_id``; Services could report Web Search ready while
+                # a normal workspace run had no declared ``web`` namespace and
+                # therefore no executable ``web_*`` tools.
+                declared_specs = dict(namespace_specs(gateway))
+                # #1237 owner ruling (2026-08-20): activation mounts NOTHING
+                # eagerly. The OLD synchronous discovery pass blocked a
+                # workspace's first resolve on every cold server. Only a
+                # zero-I/O cache read happens here; a cold namespace remains
+                # absent until the builder or dispatch path mounts it on demand.
+                from clio_agent.tools import listing_cache  # noqa: PLC0415
 
-                    cached_tools: dict[str, Any] = {}
-                    for namespace, spec in declared_specs.items():
-                        if spec.transport != "stdio" or not spec.command:
-                            continue
-                        listed = listing_cache.load_listing(
-                            namespace, spec.command, tuple(spec.args), spec.env
+                cached_tools: dict[str, Any] = {}
+                for namespace, spec in declared_specs.items():
+                    if spec.transport != "stdio" or not spec.command:
+                        continue
+                    listed = listing_cache.load_listing(
+                        namespace, spec.command, tuple(spec.args), spec.env
+                    )
+                    if listed:
+                        cached_tools.update(
+                            {
+                                f"{namespace}_{tool.name}": tool.model_copy(
+                                    update={"name": f"{namespace}_{tool.name}"}
+                                )
+                                for tool in listed
+                            }
                         )
-                        if listed:
-                            cached_tools.update(
-                                {
-                                    f"{namespace}_{tool.name}": tool.model_copy(
-                                        update={"name": f"{namespace}_{tool.name}"}
-                                    )
-                                    for tool in listed
-                                }
-                            )
-                    preloaded = {**(preloaded or {}), **cached_tools}
+                preloaded = {**(preloaded or {}), **cached_tools}
                 executor = create_sync_tool_executor(
                     gateway,
                     preloaded_tools=preloaded,

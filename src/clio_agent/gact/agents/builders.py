@@ -8,10 +8,7 @@ compile registered dynamic agents into concrete DSPy modules:
 * Agent-Blueprint experts (:func:`_build_blueprint_dspy_module`) using predict,
   chain-of-thought, or ReAct modules.
 
-Supporting machinery covers tool/LM resolution, telemetry, non-ReAct schema repair,
-and child delegation. The retaining ReAct engine, resolution,
-and prompt composition remain in sibling modules; cross-concern helpers load lazily
-to preserve the strangler seam without a module cycle.
+Supporting tool/LM resolution lives here; retaining ReAct and prompts stay in siblings.
 """
 
 from __future__ import annotations
@@ -19,15 +16,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import threading
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal, Optional, cast
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents import skill_runtime as _skill_runtime
 from clio_agent.gact.agents import toolset_inventory
+from clio_agent.gact.agents.always_load_tools import attach_always_load_tools
 from clio_agent.gact.agents.auto_tools import build_auto_react_tools
 from clio_agent.gact.agents.blueprint_tool_recording import (
     recorded_load_skill_tool as _recorded_load_skill_tool,
@@ -42,7 +39,14 @@ from clio_agent.gact.agents.composition import (
     _runtime_active_workspace_context,
     _runtime_dynamic_agent_children_context,
 )
-from clio_agent.gact.agents.declared_native_tools import resolve_declared_native_tools
+from clio_agent.gact.agents.declared_native_tools import (
+    declared_view_image_capability,
+    resolve_declared_native_tools,
+)
+from clio_agent.gact.agents.invalid_tool_selection import (
+    _emit_invalid_tool_selection_event,
+    _invalid_tool_selection_from_exception,
+)
 from clio_agent.gact.agents.reactv2_submit import tool_names as _tool_names
 from clio_agent.gact.agents.resolution import _active_workflow_state_schema
 from clio_agent.gact.agents.runtime import (
@@ -55,15 +59,12 @@ from clio_agent.gact.agents.signatures import (
 from clio_agent.gact.agents.tool_executor_resolution import (
     resolve_active_base_agent_tool_executor,
 )
-from clio_agent.gact.events import Event
 from clio_agent.gact.permission_gate import (
     _external_mcp_permission_context,
     _invoke_permission_gate,
 )
 from clio_agent.gact.runtime.context_tokens import _resolve_expert_context_window
 from clio_agent.gact.runtime.globals import (
-    _active_semantic_trace_id,
-    _active_semantic_turn_id,
     _BlueprintTerminalWorkflowState,
     _emit_semantic_event,
     _llm_provider_payload,
@@ -495,15 +496,15 @@ def _enabled_external_mcp_dspy_tools(
 
             tool_fn.__name__ = tool_name
             tool_fn.__doc__ = description
-            # ``_run_external_mcp_tool_sync`` notifies the observer itself, so
-            # the construction is marked observed — the assembly seam must not
-            # add a second notification (exactly-once). ``title`` carries the
-            # upstream MCP tool's declared title (#1188), when present.
+            # ``_run_external_mcp_tool_sync`` notifies the observer itself, so the construction
+            # is marked observed — the assembly seam must not add a second notification
+            # (exactly-once). ``title`` carries the upstream MCP tool declared title (#1188).
             available[tool_name] = boundary_observed_tool(
                 tool_fn,
                 name=tool_name,
                 desc=description,
                 args=properties,
+                domain="agents",  # dynamic per-blueprint bridge, not a builtin catalog row (#1350)
                 title=title,
             )
             toolset_inventory.register_tool_source(sources, tool_name, str(server_id))
@@ -616,12 +617,18 @@ def _resolve_declared_tools_with_on_demand_mount(
 
 
 def _dynamic_agent_tools(
-    base_agent: Any, agent_def: "AgentDef", sources: dict[str, str]
+    base_agent: Any,
+    agent_def: "AgentDef",
+    sources: dict[str, str],
+    *,
+    supports_vision: bool = False,
 ) -> list[Any]:
     """Resolve the exact DSPy tools a tool-declaring dynamic agent may use."""
 
     requested_tools, available_tools, gateway_requested = resolve_declared_native_tools(
-        agent_def, sources
+        agent_def,
+        sources,
+        supports_vision=supports_vision,
     )
     tool_executor = None
     if gateway_requested:
@@ -654,6 +661,8 @@ def _dynamic_agent_tools(
         gateway_tools, mount_failures = _resolve_declared_tools_with_on_demand_mount(
             tool_executor, gateway_requested
         )
+        if not (agent_def.parent_id or ""):
+            attach_always_load_tools(tool_executor, gateway_tools, mount_failures, requested_tools)
         mounted = toolset_inventory.mounted_namespace_set(tool_executor)
         for name in gateway_tools:
             # prefix is real provenance only if mounted (finding [D]); else "gateway".
@@ -689,93 +698,6 @@ def _dynamic_agent_tools(
             app, agent_def.id, missing_tools, mount_failures=mount_failures
         )
     return [_recording_blueprint_tool(available_tools[name]) for name in resolved_tools]
-
-
-def _invalid_tool_selection_from_exception(
-    exc: BaseException,
-    *,
-    allowed_tools: Iterable[str],
-) -> str:
-    """Extract a rejected tool name from DSPy parser/validation errors."""
-
-    allowed = {str(name).strip() for name in allowed_tools if str(name).strip()}
-    message = str(exc)
-    candidates: list[str] = []
-    for pattern in (
-        r"next_tool_name\s+with\s+value\s+[`'\"]?([^`'\"\s,\)]+)",
-        r"tool_name\s+with\s+value\s+[`'\"]?([^`'\"\s,\)]+)",
-        r"[`'\"]([^`'\"]+)[`'\"]\s+is\s+not\s+one\s+of\s+\(",
-        r"invalid\s+tool\s+[`'\"]?([^`'\"\s,\)]+)",
-    ):
-        candidates.extend(match.group(1).strip() for match in re.finditer(pattern, message, re.I))
-    for candidate in candidates:
-        candidate = candidate.rstrip(".,;:")
-        if candidate and candidate not in allowed:
-            return candidate
-    return ""
-
-
-def _emit_invalid_tool_selection_event(
-    app: Any,
-    sid: str,
-    agent_def: "AgentDef",
-    *,
-    requested_tool: str,
-    allowed_tools: Iterable[str],
-    exc: BaseException,
-) -> None:
-    """Publish blocked invalid-tool selection evidence for live and durable traces."""
-
-    allowed = sorted({str(name).strip() for name in allowed_tools if str(name).strip()})
-    payload = {
-        "agent_id": agent_def.id,
-        "agent_title": agent_def.title,
-        "requested_tool": requested_tool,
-        "allowed_tools": allowed,
-        "tool_executed": False,
-        "recovery_status": "failed",
-        "error_type": type(exc).__name__,
-        "error_message": str(exc)[:1000],
-        "error_full": str(exc),
-    }
-    summary = (
-        f"Expert {agent_def.id!r} selected unavailable tool {requested_tool!r}; "
-        "CLIO blocked execution."
-    )
-    if hasattr(getattr(app, "state", None), "bus"):
-        app.state.bus.publish(
-            Event(
-                type="tool.selection.invalid",
-                session_id=sid,
-                payload={
-                    **payload,
-                    "turn_id": _active_semantic_turn_id(),
-                    "trace_id": _active_semantic_trace_id(),
-                },
-            )
-        )
-    _emit_semantic_event(
-        app,
-        sid,
-        "tool.selection.invalid",
-        turn_id=_active_semantic_turn_id(),
-        trace_id=_active_semantic_trace_id(),
-        status="failed",
-        summary=summary,
-        actor={"agent_id": agent_def.id, "role": "expert"},
-        subject={"requested_tool": requested_tool},
-        blueprint={
-            "source": agent_def.source,
-            "agent_id": agent_def.id,
-            "parent_id": agent_def.parent_id,
-            "tier": agent_def.tier,
-        },
-        provider={
-            "default_provider": agent_def.default_provider,
-            "default_model": agent_def.default_model,
-        },
-        payload=payload,
-    )
 
 
 def _tool_user_agent_max_iters(agent_def: "AgentDef", *, declared_children: int = 0) -> int:
@@ -1097,7 +1019,10 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 )
 
                 _declared_tools = _dynamic_agent_tools(
-                    base_agent, agent_def, (_sources := cast(dict[str, str], {}))
+                    base_agent,
+                    agent_def,
+                    (_sources := cast(dict[str, str], {})),
+                    supports_vision=declared_view_image_capability(self.config),
                 )
                 _spawn_tools = build_spawn_runtime_tools(
                     base_agent,
@@ -1453,7 +1378,10 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             self.config = self._resolved_spec.materialize(self._cred_resolver)
             self._provider_config = self.config
             self.tools = _dynamic_agent_tools(
-                base_agent, agent_def, (_sources := cast(dict[str, str], {}))
+                base_agent,
+                agent_def,
+                (_sources := cast(dict[str, str], {})),
+                supports_vision=declared_view_image_capability(self.config),
             )
             skill_rt = _skill_runtime.skill_runtime_for_agent(
                 _ctx.active_app(), agent_def, session_id=_ctx.active_session_id()

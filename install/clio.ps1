@@ -36,6 +36,13 @@ $ErrorActionPreference = 'Stop'
 if ($env:CLIO_PREFIX) { $Prefix = $env:CLIO_PREFIX } else { $Prefix = Join-Path $HOME 'AppData\Local\clio' }
 if ($env:CLIO_PORT)   { $Port   = [int]$env:CLIO_PORT } else { $Port = 17800 }
 if ($env:CLIO_BIN_DIR){ $BinDir = $env:CLIO_BIN_DIR } else { $BinDir = Join-Path $HOME 'AppData\Local\Microsoft\WindowsApps' }
+# Keep runtime state, CTE storage, and agent data with the selected install.
+# User overrides remain authoritative; these defaults prevent cross-install
+# coordination collisions and follow a non-system installation drive.
+if (-not $env:CLIO_DATA_DIR) { $env:CLIO_DATA_DIR = Join-Path $Prefix 'data' }
+if (-not $env:CLIO_ARC_CTE_DIR) { $env:CLIO_ARC_CTE_DIR = Join-Path $Prefix 'cte' }
+if (-not $env:CLIO_RUNTIME_STATE_DIR) { $env:CLIO_RUNTIME_STATE_DIR = Join-Path $Prefix 'runtime-state' }
+$env:PATH = "$BinDir;$env:PATH"
 
 $PidFile   = Join-Path $Prefix 'clio-server.pid'
 $ServerLog = Join-Path $Prefix 'clio-server.log'
@@ -124,10 +131,19 @@ function Start-Server {
     # The doubled outer quotes are the classic `cmd /c "..."` form so
     # cmd strips exactly one pair and parses the inner quotes itself.
     $inner = '""{0}" serve --port {1} > "{2}" 2> "{3}""' -f $ServerBin, $Port, $ServerLog, $ServerErr
-    $proc = Start-Process -FilePath $env:ComSpec `
-        -ArgumentList '/c', $inner `
-        -WorkingDirectory (Join-Path $Prefix 'clio-agent') `
-        -WindowStyle Hidden -PassThru
+    # CLIO_PORT is the HTTP API setting here, but clio-core also recognizes
+    # that generic environment variable for its native RPC listener. Do not
+    # let the runtime inherit it; --port already carries the API value.
+    $inheritedClioPort = $env:CLIO_PORT
+    Remove-Item Env:CLIO_PORT -ErrorAction SilentlyContinue
+    try {
+        $proc = Start-Process -FilePath $env:ComSpec `
+            -ArgumentList '/c', $inner `
+            -WorkingDirectory (Join-Path $Prefix 'clio-agent') `
+            -WindowStyle Hidden -PassThru
+    } finally {
+        if ($null -ne $inheritedClioPort) { $env:CLIO_PORT = $inheritedClioPort }
+    }
     Set-Content -Path $PidFile -Value $proc.Id -Encoding ascii
     # First-run startup is slow (ARC/LSM init + MCP server spawn) and can take
     # 30-60s; only fail after a generous window so a healthy-but-slow start

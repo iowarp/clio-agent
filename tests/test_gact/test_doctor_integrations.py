@@ -12,6 +12,7 @@ monkeypatch.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -25,7 +26,12 @@ from clio_agent.providers.handshake.model import (
     HandshakeReport,
     ModelProfile,
 )
-from clio_agent.runtime.status import RuntimeProbe
+from clio_agent.runtime.status import (
+    IntegrationState,
+    IntegrationStatus,
+    RuntimeProbe,
+    RuntimeReport,
+)
 
 HDF5_CAPS = [
     {"name": "hdf5_list_datasets"},
@@ -93,6 +99,124 @@ def _rows(body: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {r["name"]: r for r in body["integrations"]}
 
 
+def test_health_probes_the_runtime_provider_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A runtime Codex selection replaces the boot LM Studio doctor inputs."""
+
+    observed: dict[str, str] = {}
+
+    def _capture(**kwargs: Any) -> RuntimeReport:
+        observed.update(kwargs["env"])
+        return RuntimeReport(
+            integrations=[
+                IntegrationStatus(
+                    name="api",
+                    state=IntegrationState.READY,
+                    summary="ready",
+                )
+            ]
+        )
+
+    monkeypatch.setattr("clio_agent.gact.routes.system.collect_runtime_status", _capture)
+    app = build_app(sessions_path=tmp_path / "s.json")
+    app.state.lm_config = {
+        "provider": "codex",
+        "api_base": "codex://sdk",
+        "model": "gpt-5.6-luna",
+    }
+
+    response = TestClient(app).get("/v1/health")
+
+    assert response.status_code == 200
+    assert observed["CLIO_LM_PROVIDER"] == "codex"
+    assert observed["CLIO_LM_API_BASE"] == "codex://sdk"
+    assert observed["CLIO_LM_MODEL"] == "gpt-5.6-luna"
+
+
+def test_health_probes_the_persisted_provider_bound_to_the_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A provider loaded at boot must not fall back to the LM Studio probe."""
+
+    observed: dict[str, str] = {}
+
+    def _capture(**kwargs: Any) -> RuntimeReport:
+        observed.update(kwargs["env"])
+        return RuntimeReport(
+            integrations=[
+                IntegrationStatus(
+                    name="api",
+                    state=IntegrationState.READY,
+                    summary="ready",
+                )
+            ]
+        )
+
+    monkeypatch.setattr("clio_agent.gact.routes.system.collect_runtime_status", _capture)
+    agent = SimpleNamespace(
+        _provider_config=SimpleNamespace(
+            provider="codex",
+            api_base="codex://sdk",
+            model="gpt-5.6-sol",
+            codex_transport="sdk",
+        )
+    )
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+
+    response = TestClient(app).get("/v1/health")
+
+    assert response.status_code == 200
+    assert app.state.lm_config is None
+    assert observed["CLIO_LM_PROVIDER"] == "codex"
+    assert observed["CLIO_LM_API_BASE"] == "codex://sdk"
+    assert observed["CLIO_LM_MODEL"] == "gpt-5.6-sol"
+
+
+def test_health_does_not_treat_an_unselected_desktop_provider_as_an_outage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh desktop selects its provider in the composer, not at boot."""
+
+    monkeypatch.delenv("CLIO_LM_PROVIDER", raising=False)
+    monkeypatch.setenv("CLIO_DESKTOP_BOOT_HEARTBEAT", "1")
+
+    def _unselected_provider(**kwargs: Any) -> RuntimeReport:
+        return RuntimeReport(
+            integrations=[
+                IntegrationStatus(
+                    name="lm_provider",
+                    state=IntegrationState.UNAVAILABLE,
+                    summary="LM Studio is not reachable.",
+                    config_source="default:lm_studio",
+                    next_action="Start LM Studio.",
+                    required=True,
+                ),
+                IntegrationStatus(
+                    name="api",
+                    state=IntegrationState.READY,
+                    summary="ready",
+                    config_source="in-process",
+                    next_action="No action required.",
+                ),
+            ]
+        )
+
+    monkeypatch.setattr(
+        "clio_agent.gact.routes.system.collect_runtime_status",
+        _unselected_provider,
+    )
+    app = build_app(sessions_path=tmp_path / "s.json")
+
+    response = TestClient(app).get("/v1/health")
+
+    assert response.status_code == 200
+    lm = _rows(response.json())["lm_provider"]
+    assert lm["status"] == "ready"
+    assert lm["required"] is False
+    assert lm["summary"] == "Choose a language model when starting a session."
+
+
 def test_health_returns_probe_engine_rows_not_hand_rolled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -141,7 +265,9 @@ def test_widened_rows_carry_full_doctor_detail(
     assert arc["endpoint"]  # local arc dir surfaces as endpoint
 
 
-def test_down_clio_core_daemon_turns_health_503(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_down_clio_core_daemon_turns_health_503(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """clio-core backend + installed pkg + daemon NOT listening -> arc red -> 503."""
     clio_home = tmp_path / "clio-home"
     clio_home.mkdir()

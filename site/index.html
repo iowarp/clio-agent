@@ -32,7 +32,7 @@
       <div class="download-heading">
         <a class="release-badge" id="releaseBadge" href="https://github.com/iowarp/clio-agent/releases/latest" target="_blank" rel="noopener">
           <span class="release-dot" aria-hidden="true"></span>
-          <span data-release-label>CLIO v0.9.4</span>
+          <span data-release-label>CLIO v0.9.4.1</span>
         </a>
         <p class="eyebrow">Desktop</p>
         <h1>Download CLIO.</h1>
@@ -42,7 +42,9 @@
       <div class="os-grid os-grid-first" id="osGrid">
         <div class="os-card" data-os="windows" id="osCardWindows">
           <span class="os-badge">Your platform</span>
-          <div class="os-mark">⊞</div>
+          <div class="os-mark" aria-hidden="true">
+            <img class="os-brand-icon os-brand-icon--windows" src="assets/platform-icons/windows.svg" alt="" />
+          </div>
           <h2 class="os-name">Windows</h2>
           <p class="os-arch">64-bit bundled app</p>
           <div class="os-actions">
@@ -54,7 +56,9 @@
 
         <div class="os-card" data-os="macos" id="osCardMacos">
           <span class="os-badge">Your platform</span>
-          <div class="os-mark">●</div>
+          <div class="os-mark" aria-hidden="true">
+            <img class="os-brand-icon os-brand-icon--apple" src="assets/platform-icons/apple.svg" alt="" />
+          </div>
           <h2 class="os-name">macOS</h2>
           <p class="os-arch">Apple Silicon bundled app</p>
           <div class="os-actions">
@@ -66,7 +70,9 @@
 
         <div class="os-card" data-os="linux" id="osCardLinux">
           <span class="os-badge">Your platform</span>
-          <div class="os-mark">⌁</div>
+          <div class="os-mark" aria-hidden="true">
+            <img class="os-brand-icon os-brand-icon--linux" src="assets/platform-icons/linux.svg" alt="" />
+          </div>
           <h2 class="os-name">Linux</h2>
           <p class="os-arch">AppImage, .deb, or .rpm</p>
           <div class="os-actions">
@@ -89,8 +95,8 @@
     <section class="release-strip" aria-label="Release components">
       <div class="wrap release-strip-inner">
         <span>Current release</span>
-        <strong data-release-label>CLIO v0.9.4</strong>
-        <span>GACT v0.11.1</span>
+        <strong data-release-label>CLIO v0.9.4.1</strong>
+        <span>GACT v0.11.2.1</span>
         <span>Marketplace v0.6.3</span>
         <a href="https://github.com/iowarp/clio-agent/releases/latest" target="_blank" rel="noopener">Release notes →</a>
       </div>
@@ -161,8 +167,8 @@
         <article class="access-card">
           <span class="access-kicker">Containers</span>
           <h3>Run the web stack with Docker.</h3>
-          <div class="code" id="dockerWebCommand" data-copy="docker run --rm -p 8080:80 ghcr.io/iowarp/clio-web:0.9.4">
-            <pre><span class="prompt">$ </span>docker run --rm -p 8080:80 ghcr.io/iowarp/clio-web:<span data-release-version>0.9.4</span></pre>
+          <div class="code" id="dockerWebCommand" data-copy="docker run --rm -p 8080:80 ghcr.io/iowarp/clio-web:0.9.4.1">
+            <pre><span class="prompt">$ </span>docker run --rm -p 8080:80 ghcr.io/iowarp/clio-web:<span data-release-version>0.9.4.1</span></pre>
             <button class="copy-btn" type="button" aria-label="Copy command" title="Copy command"></button>
           </div>
           <p class="hint">Open <code>http://localhost:8080</code>. Headless API and TUI images are also published with each release.</p>

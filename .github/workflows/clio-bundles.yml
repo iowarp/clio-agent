@@ -4,6 +4,17 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: >-
+          Frozen-at-tag escape hatch: an already-released tag (e.g. v0.9.4.1)
+          to regenerate the Tauri update manifest / release-completeness
+          check for, without re-running the desktop/web/tui/installers
+          builds. Checked out explicitly rather than relying on whichever
+          ref this workflow run was launched from.
+        required: true
+        type: string
 
 env:
   PNPM_VERSION: "9.15.9"
@@ -12,6 +23,10 @@ env:
 jobs:
   installers:
     name: installer scripts
+    # Full-build jobs run only for a real tag push; workflow_dispatch is the
+    # frozen-at-tag escape hatch for release-check's manifest/completeness
+    # work on an ALREADY-released tag, not a rebuild trigger.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -30,6 +45,7 @@ jobs:
 
   tui:
     name: tui · ${{ matrix.goos }}-${{ matrix.goarch }}
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -68,6 +84,7 @@ jobs:
 
   web:
     name: web bundle
+    if: github.event_name == 'push'
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -112,6 +129,7 @@ jobs:
 
   desktop:
     name: desktop · ${{ matrix.variant }} · ${{ matrix.os }} / ${{ matrix.target }}
+    if: github.event_name == 'push'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     permissions:
@@ -142,13 +160,13 @@ jobs:
             bundle-args: "--no-bundle"
           - target: aarch64-apple-darwin
             os: macos-14
-            bundle-args: "--bundles dmg --target aarch64-apple-darwin"
+            bundle-args: "--bundles app,dmg --target aarch64-apple-darwin"
           # Intel macOS: GitHub is retiring the x86 `macos-13` runners, so
           # cross-compile the x86_64 target ON an Apple-Silicon `macos-14` runner
           # (the rust toolchain step installs the x86_64-apple-darwin target).
           - target: x86_64-apple-darwin
             os: macos-14
-            bundle-args: "--bundles dmg --target x86_64-apple-darwin"
+            bundle-args: "--bundles app,dmg --target x86_64-apple-darwin"
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
             bundle-args: "--bundles deb,appimage,rpm"
@@ -224,6 +242,10 @@ jobs:
         if: matrix.variant == 'bundled' && runner.os == 'Windows'
         shell: pwsh
         run: ./install/build-gact-runtime.ps1 -Out external/gact-tui/desktop/src-tauri/gact-runtime -Source $env:GITHUB_WORKSPACE
+      - name: Pack embedded clio-agent runtime (Windows)
+        if: matrix.variant == 'bundled' && runner.os == 'Windows'
+        shell: pwsh
+        run: ./install/pack-gact-runtime.ps1
       - name: Select CLIO brand (gact-tui config-file mechanism)
         shell: bash
         run: |
@@ -252,6 +274,21 @@ jobs:
             echo "::error::brand assert: CLIO marker absent from $dist (neutral web build)"
             exit 1
           fi
+      - name: Check CLIO icon set completeness
+        shell: bash
+        run: |
+          set -euo pipefail
+          # gact-tui's check-brand-icons.mjs (desktop `check-icons` script)
+          # asserts a complete Tauri icon set (32/128/128@2x/icon.png >=512/
+          # icon.ico with a 256px frame/icon.icns). Guarded: an older pinned
+          # gact-tui commit may not carry the script yet, in which case this
+          # is a no-op, never a build failure.
+          checker="external/gact-tui/desktop/scripts/check-brand-icons.mjs"
+          if [ ! -f "$checker" ]; then
+            echo "check-brand-icons.mjs not present in this gact-tui pin yet -- skipping icon-set check"
+          else
+            node "$checker" "${{ github.workspace }}/branding/clio/icons"
+          fi
       - name: Apply CLIO icons
         shell: bash
         run: |
@@ -262,9 +299,47 @@ jobs:
           src="${{ github.workspace }}/branding/clio/icons"
           dst="external/gact-tui/desktop/src-tauri/icons"
           cp -f "$src"/* "$dst"/
+      - name: Check CLIO installer art
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The CLIO overlay declares bundle.windows.nsis.headerImage /
+          # sidebarImage. NSIS takes those as uncompressed 24-bit BMPs at exact
+          # sizes; a wrong format does NOT fail the Tauri build, it only shows
+          # up as a broken page in the shipped installer. Guarded the same way
+          # as the icon check: an older gact-tui pin may not carry the script.
+          checker="external/gact-tui/desktop/scripts/check-installer-art.mjs"
+          if [ ! -f "$checker" ]; then
+            echo "check-installer-art.mjs not present in this gact-tui pin yet -- skipping installer-art check"
+          else
+            node "$checker" "${{ github.workspace }}/branding/clio/installer"
+          fi
+      - name: Apply CLIO installer art
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Same copy-over rationale as the icons: the overlay's relative
+          # "installer/..." paths resolve against desktop/src-tauri. Unguarded
+          # on purpose -- the overlay declares the art, so missing art must
+          # fail the build loudly rather than ship a default-looking installer.
+          src="${{ github.workspace }}/branding/clio/installer"
+          dst="external/gact-tui/desktop/src-tauri/installer"
+          mkdir -p "$dst"
+          cp -f "$src"/*.bmp "$dst"/
       - name: Tauri release build
         working-directory: external/gact-tui
         shell: bash
+        env:
+          # Signed desktop auto-update (v0.9.4.1): the CLIO brand overlay
+          # declares plugins.updater (endpoints + pubkey) and
+          # bundle.createUpdaterArtifacts: true, so a Tauri build with these
+          # secrets present produces a `.sig` alongside each update-capable
+          # payload (NSIS exe / macOS .app.tar.gz / AppImage). Because the
+          # overlay declares a pubkey, a build WITHOUT the private key is a
+          # hard Tauri error ("A public key has been found, but no private
+          # key") -- intended: a release must never ship unsigned updates.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           brand="${{ github.workspace }}/branding/clio/tauri.clio.conf.json"
@@ -277,9 +352,18 @@ jobs:
           const fs = require("node:fs");
           const [variant, brandPath, outputPath, releaseVersion] = process.argv.slice(2);
 
-          if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(releaseVersion)) {
+          if (!/^\d+\.\d+\.\d+(?:\.\d+|-[0-9A-Za-z.-]+)?$/.test(releaseVersion)) {
             throw new Error(`invalid CLIO release version: ${releaseVersion}`);
           }
+
+          // Tauri requires SemVer while CLIO maintenance releases use a
+          // fourth numeric component. Preserve the public vX.Y.Z.N identity
+          // in tags/assets and encode N as numeric SemVer build metadata
+          // internally. Tauri's Windows bundlers reject nonnumeric metadata.
+          const maintenance = releaseVersion.match(/^(\d+\.\d+\.\d+)\.(\d+)$/);
+          const tauriVersion = maintenance
+            ? `${maintenance[1]}+${maintenance[2]}`
+            : releaseVersion;
 
           const isObject = (value) =>
             value !== null && typeof value === "object" && !Array.isArray(value);
@@ -304,13 +388,35 @@ jobs:
                   brand,
                 )
               : brand;
+          // Windows NSIS must copy one compressed runtime payload, not emit
+          // 20,000+ File/Delete instructions for the Python distribution.
+          // Other platforms retain their existing exploded resource layout.
+          if (variant === "bundled" && process.env.RUNNER_OS === "Windows") {
+            config.bundle ??= {};
+            config.bundle.resources = [
+              "gact-runtime.tar.zst",
+              "gact-runtime.pack.json",
+            ];
+          }
           // CLIO-branded installers use the CLIO release identity. GACT keeps
           // its independent package version for its own releases and diagnostics.
-          config.version = releaseVersion;
+          config.version = tauriVersion;
           config.bundle ??= {};
-          config.bundle.createUpdaterArtifacts = false;
+          if (maintenance) {
+            config.bundle.windows ??= {};
+            config.bundle.windows.wix ??= {};
+            config.bundle.windows.wix.version = releaseVersion;
+          }
+          // Signed auto-update (v0.9.4.1): the CLIO brand overlay already
+          // sets bundle.createUpdaterArtifacts + plugins.updater.pubkey (the
+          // CLIO minisign key) -- leave both exactly as the brand declared
+          // them. Every installed desktop consumes the lightweight updater:
+          // the initial bundled installer owns first-run provisioning, while
+          // later desktop and agent updates remain independently selectable.
           if (config.plugins?.updater) {
-            delete config.plugins.updater.pubkey;
+            config.plugins.updater.endpoints = [
+              "https://github.com/iowarp/clio-agent/releases/latest/download/latest-lite.json",
+            ];
           }
           fs.writeFileSync(outputPath, `${JSON.stringify(config, null, 2)}\n`);
           NODE
@@ -330,27 +436,104 @@ jobs:
             echo "::error::runtime guard: gact-runtime/runtime.json missing (#909 - bundled variant would ship without its backend)"
             exit 1
           fi
-          pnpm --filter @clio/desktop tauri build --config "$cfg" ${{ matrix.bundle-args }}
+          if [ "${{ matrix.variant }}" = "bundled" ] && [ "${{ runner.os }}" = "Windows" ]; then
+            [ -f "desktop/src-tauri/gact-runtime.tar.zst" ] \
+              || { echo "::error::runtime archive missing"; exit 1; }
+            [ -f "desktop/src-tauri/gact-runtime.pack.json" ] \
+              || { echo "::error::runtime pack manifest missing"; exit 1; }
+            jq -e '.bundle.resources == ["gact-runtime.tar.zst", "gact-runtime.pack.json"]' "$cfg" >/dev/null \
+              || { echo "::error::Windows bundle still enumerates the exploded runtime"; exit 1; }
+          fi
+          # Tauri only WARNS when the private key does not match the overlay's
+          # pubkey, yet every client would reject the resulting signatures at
+          # update time. Promote that warning to a hard failure.
+          build_log="$RUNNER_TEMP/tauri-build.log"
+          pnpm --filter @clio/desktop tauri build --config "$cfg" ${{ matrix.bundle-args }} 2>&1 | tee "$build_log"
+          if grep -q "does not match the public key" "$build_log"; then
+            echo "::error::updater signing key does not match the brand pubkey" >&2
+            exit 1
+          fi
+      - name: Assert macOS traffic lights survive the brand overlay
+        if: runner.os == 'macOS'
+        working-directory: external/gact-tui
+        shell: bash
+        run: |
+          set -euo pipefail
+          # gact-tui's branded runner (desktop/scripts/run-tauri-branded.mjs)
+          # intercepts our --config and re-merges it with tauri.macos.conf.json
+          # LAST on darwin, restoring native traffic lights over the CLIO
+          # brand's decorations:false. This assert is forward-looking: an
+          # older pinned gact-tui without that runner never writes the merged
+          # overlay file, so this is a no-op then, never a build failure —
+          # but once the runner IS present, a merged config that still has
+          # decorations:false is a real regression (custom chrome with no
+          # window controls on macOS) and must fail loud.
+          runner_script="desktop/scripts/run-tauri-branded.mjs"
+          merged="desktop/src-tauri/gen/tauri-brand-merged.conf.json"
+          if [ ! -f "$runner_script" ]; then
+            echo "run-tauri-branded.mjs not present in this gact-tui pin yet -- skipping macOS decorations assert"
+          elif [ ! -f "$merged" ]; then
+            echo "run-tauri-branded.mjs present but wrote no merged overlay ($merged) -- skipping macOS decorations assert"
+          else
+            jq -e '.app.windows[0].decorations == true' "$merged" >/dev/null \
+              || { echo "::error::macOS decorations assert: $merged does not restore native traffic lights (app.windows[0].decorations != true)"; exit 1; }
+          fi
       - name: Stage artifacts
         shell: bash
         run: |
           set -euo pipefail
           stage="$RUNNER_TEMP/clio-desktop-stage"
           mkdir -p "$stage"
+          release_version="${GITHUB_REF_NAME#v}"
+          tauri_version="$release_version"
+          if [[ "$release_version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.([0-9]+)$ ]]; then
+            tauri_version="${BASH_REMATCH[1]}+${BASH_REMATCH[2]}"
+          fi
           root="external/gact-tui/desktop/src-tauri/target/release/bundle"
           if [ -d "external/gact-tui/desktop/src-tauri/target/${{ matrix.target }}/release/bundle" ]; then
             root="external/gact-tui/desktop/src-tauri/target/${{ matrix.target }}/release/bundle"
           fi
-          if [ -d "$root" ]; then
-            find "$root" -type f \( -iname '*.exe' -o -iname '*.msi' -o -iname '*.dmg' -o -iname '*.deb' -o -iname '*.AppImage' -o -iname '*.rpm' \) -print0 |
-              while IFS= read -r -d '' f; do
-                base="$(basename "$f")"
-                if [ "${{ matrix.variant }}" = "bundled" ]; then
+          # Compute one built artifact's staged filename: normalize the tauri
+          # build-metadata version back to the public release version,
+          # disambiguate the otherwise-unversioned macOS updater bundle
+          # (<App>.app.tar.gz[.sig], the SAME name from every darwin target)
+          # by target triple, then (bundled variant only) insert the
+          # `-bundled` token before the TRUE extension -- handling the
+          # compound `.app.tar.gz` suffix and its detached `.sig` specially
+          # so a signature always names the SAME base as its payload.
+          stage_name() {
+            local base
+            base="$(basename "$1")"
+            base="${base//$tauri_version/$release_version}"
+            case "$base" in
+              *.app.tar.gz.sig) base="${base%.app.tar.gz.sig}-${{ matrix.target }}.app.tar.gz.sig" ;;
+              *.app.tar.gz)     base="${base%.app.tar.gz}-${{ matrix.target }}.app.tar.gz" ;;
+            esac
+            if [ "${{ matrix.variant }}" = "bundled" ]; then
+              case "$base" in
+                *.app.tar.gz.sig) base="${base%.app.tar.gz.sig}-bundled.app.tar.gz.sig" ;;
+                *.app.tar.gz)     base="${base%.app.tar.gz}-bundled.app.tar.gz" ;;
+                *.sig)
+                  local inner iext istem
+                  inner="${base%.sig}"
+                  iext="${inner##*.}"
+                  istem="${inner%.*}"
+                  base="${istem}-bundled.${iext}.sig"
+                  ;;
+                *)
+                  local ext stem
                   ext="${base##*.}"
                   stem="${base%.*}"
                   base="${stem}-bundled.${ext}"
-                fi
-                cp "$f" "$stage/$base"
+                  ;;
+              esac
+            fi
+            printf '%s\n' "$base"
+          }
+          if [ -d "$root" ]; then
+            find "$root" -maxdepth 2 -type f \( -iname '*.exe' -o -iname '*.msi' -o -iname '*.dmg' -o -iname '*.deb' -o -iname '*.AppImage' -o -iname '*.rpm' -o -iname '*.sig' -o -name '*.app.tar.gz' \) -print0 |
+              while IFS= read -r -d '' f; do
+                cp "$f" "$stage/$(stage_name "$f")"
               done
           else
             root="external/gact-tui/desktop/src-tauri/target/release"
@@ -365,6 +548,8 @@ jobs:
           # runtime, so it is much larger than the ~10-20 MB lite Tauri bundle.
           # A bundled artifact under the floor means the runtime never got
           # embedded (the connect-mode regression behind #841) -- fail loudly.
+          # `.sig` files are excluded: a detached signature is a few hundred
+          # bytes by design and would always trip the floor.
           if [ "${{ matrix.variant }}" = "bundled" ]; then
             floor_mb="${BUNDLED_PAYLOAD_FLOOR_MB:-60}"
             floor=$((floor_mb * 1024 * 1024))
@@ -376,7 +561,7 @@ jobs:
                 echo "::error::payload assert: $(basename "$f") is ${size}B, under the ${floor_mb} MB bundled floor (runtime not embedded)"
                 exit 1
               fi
-            done < <(find "$stage" -type f -name '*-bundled.*' -print0)
+            done < <(find "$stage" -type f -name '*-bundled.*' ! -name '*.sig' -print0)
             if [ "$staged" -eq 0 ]; then
               echo "::error::payload assert: bundled variant staged no *-bundled.* artifact"
               exit 1
@@ -394,22 +579,42 @@ jobs:
     name: release completeness
     needs: [desktop, web, tui, installers]
     # Run even when a matrix leg failed: a silently-dropped bundle (the v0.5.17
-    # aarch64 bundled .dmg, #841 F-15) is exactly the case this must catch.
+    # aarch64 bundled .dmg, #841 F-15) is exactly the case this must catch. Also
+    # runs standalone on workflow_dispatch (needs: jobs above are then skipped,
+    # not failed, which always() tolerates) -- the frozen-at-tag escape hatch.
     if: always()
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      # workflow_dispatch's explicit tag input wins (the frozen-at-tag escape
+      # hatch); a real tag push falls back to the triggering ref, which for a
+      # `push: tags: v*` event IS the tag name.
+      TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Generate signed Tauri update manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Existing bundled clients still request latest.json. Point that
+          # compatibility name at the lite installer so their first update
+          # also transitions to independent Desktop/CLIO lifecycle control.
+          python3 scripts/gen_tauri_update_manifest.py --tag "$TAG" --variant lite --out latest.json
+          python3 scripts/gen_tauri_update_manifest.py --tag "$TAG" --variant lite --out latest-lite.json
+          gh release upload "$TAG" latest.json latest-lite.json --clobber
       - name: Assert release asset completeness
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release view "$GITHUB_REF_NAME" --json assets -q '.assets[].name' \
+          gh release view "$TAG" --json assets -q '.assets[].name' \
             | python3 scripts/check_release_completeness.py
       - name: Backstop release notes from CHANGELOG
         # action-gh-release creates the release page with only the tag/commit
@@ -421,11 +626,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          python3 scripts/release_notes_from_changelog.py "$GITHUB_REF_NAME" > /tmp/notes.md || {
-            echo "no CHANGELOG section for $GITHUB_REF_NAME; leaving release body untouched"; exit 0; }
-          BODY_LEN=$(gh release view "$GITHUB_REF_NAME" --json body -q '.body' | wc -c)
+          python3 scripts/release_notes_from_changelog.py "$TAG" > /tmp/notes.md || {
+            echo "no CHANGELOG section for $TAG; leaving release body untouched"; exit 0; }
+          BODY_LEN=$(gh release view "$TAG" --json body -q '.body' | wc -c)
           if [ "$BODY_LEN" -lt 200 ]; then
-            gh release edit "$GITHUB_REF_NAME" --notes-file /tmp/notes.md
+            gh release edit "$TAG" --notes-file /tmp/notes.md
             echo "backstop notes applied (previous body was ${BODY_LEN} bytes)"
           else
             echo "body already curated (${BODY_LEN} bytes); not touching it"

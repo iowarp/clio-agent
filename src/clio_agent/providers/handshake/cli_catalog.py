@@ -49,11 +49,12 @@ staleness-window) trade-off, not an oversight.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 from typing import Any
 
-from clio_agent.providers.handshake.base import HandshakeContext
-from clio_agent.providers.handshake.model import ModelProfile
+from clio_agent.providers.handshake.base import ConnectivityResult, HandshakeContext
+from clio_agent.providers.handshake.model import AuthState, ConnectivityState, ModelProfile
 from clio_agent.providers.handshake.noop import NoOpHandshake
 
 logger = logging.getLogger(__name__)
@@ -204,4 +205,87 @@ class CliCatalogHandshake(NoOpHandshake):
         return await super().enrich_capabilities(profile, ctx)
 
 
-__all__ = ["CliCatalogHandshake"]
+class CodexCatalogHandshake(CliCatalogHandshake):
+    """Codex catalog handshake gated by verified subscription credentials."""
+
+    async def check_connectivity(self, client: Any, ctx: HandshakeContext) -> ConnectivityResult:
+        """Reject synthetic readiness until a fresh SDK catalog check exists."""
+
+        del client
+        if importlib.util.find_spec("openai_codex") is None:
+            return ConnectivityResult(
+                connectivity=ConnectivityState.UNREACHABLE,
+                auth=AuthState.MISSING,
+                error="official openai-codex Python SDK is not installed",
+            )
+        from clio_agent.providers import model_discovery  # noqa: PLC0415
+        from clio_agent.providers.codex_credential_home import (  # noqa: PLC0415
+            codex_credentials_present,
+        )
+
+        if not codex_credentials_present():
+            return ConnectivityResult(
+                connectivity=ConnectivityState.SKIPPED,
+                auth=AuthState.MISSING,
+                error="Codex sign-in is required on the connected agent",
+            )
+        try:
+            overlay = model_discovery.overlay_models_wire(ctx.provider_id, ctx.provider_kind)
+        except model_discovery.OverlayMalformedError as exc:
+            return ConnectivityResult(
+                connectivity=ConnectivityState.UNREACHABLE,
+                auth=AuthState.DEFERRED,
+                error=f"Codex model catalog is invalid: {exc}",
+            )
+        if overlay and overlay.get("models") and not overlay.get("staleness"):
+            return ConnectivityResult(
+                connectivity=ConnectivityState.OK,
+                auth=AuthState.OK,
+            )
+        return ConnectivityResult(
+            connectivity=ConnectivityState.SKIPPED,
+            auth=AuthState.DEFERRED,
+            error="Codex credentials are present but have not been validated",
+        )
+
+
+class ClaudeCodeCatalogHandshake(CliCatalogHandshake):
+    """Claude Code handshake gated by installed SDK and a fresh live probe."""
+
+    async def check_connectivity(self, client: Any, ctx: HandshakeContext) -> ConnectivityResult:
+        """Reject synthetic readiness until Claude Code answers a live probe."""
+
+        del client
+        from clio_agent.providers.claude_code_errors import (  # noqa: PLC0415
+            CLAUDE_CODE_NOT_INSTALLED_MESSAGE,
+        )
+
+        if importlib.util.find_spec("claude_agent_sdk") is None:
+            return ConnectivityResult(
+                connectivity=ConnectivityState.UNREACHABLE,
+                auth=AuthState.MISSING,
+                error=CLAUDE_CODE_NOT_INSTALLED_MESSAGE,
+            )
+        from clio_agent.providers import model_discovery  # noqa: PLC0415
+
+        try:
+            overlay = model_discovery.overlay_models_wire(ctx.provider_id, ctx.provider_kind)
+        except model_discovery.OverlayMalformedError as exc:
+            return ConnectivityResult(
+                connectivity=ConnectivityState.UNREACHABLE,
+                auth=AuthState.DEFERRED,
+                error=f"Claude Code model catalog is invalid: {exc}",
+            )
+        if overlay and overlay.get("models") and not overlay.get("staleness"):
+            return ConnectivityResult(
+                connectivity=ConnectivityState.OK,
+                auth=AuthState.OK,
+            )
+        return ConnectivityResult(
+            connectivity=ConnectivityState.SKIPPED,
+            auth=AuthState.DEFERRED,
+            error="Claude Code is installed but has not been verified. Check the provider to sign in.",
+        )
+
+
+__all__ = ["ClaudeCodeCatalogHandshake", "CliCatalogHandshake", "CodexCatalogHandshake"]

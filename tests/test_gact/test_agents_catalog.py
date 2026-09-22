@@ -182,20 +182,29 @@ def test_list_agents_unknown_tier_returns_empty(client: TestClient) -> None:
     assert resp.json() == {"agents": []}
 
 
-def test_catalog_tools_is_empty_with_no_blueprint_installed_or_activated(
+def test_catalog_tools_describes_bare_clio_without_blueprint_activation(
     client: TestClient,
 ) -> None:
-    """``/v1/catalog/tools`` has no session concept (the route takes no
-    session_id) -- it can only ever reflect the code-shipped catalog, never a
-    particular session's activation. ``catalog._builtin_tools()`` flattens
-    tier-2/3 CURATED per-expert tool lists (RULE 5); the ONE code-shipped agent
-    (``catalog._builtin_main_agent``) is tier 1 with the raw native tool
-    surface, not a curated sub-expert list, so there is nothing to flatten.
-    """
+    """The session-less catalog reports the code-shipped bare CLIO surface."""
 
     resp = client.get("/v1/catalog/tools")
     assert resp.status_code == 200
-    assert resp.json()["tools"] == []
+    rows = resp.json()["tools"]
+    names = {row["name"] for row in rows}
+    assert {"fs_read_file", "create_artifact", "memory_search_sessions"} <= names
+    assert {"spawn_agent_task", "observe_agent_tasks", "wait_agent_tasks"} <= names
+
+    # #1350: every row carries a typed input/output schema and a declared
+    # domain -- the desktop Tools view groups/filters by these instead of a
+    # client-side name regex.
+    by_name = {row["name"]: row for row in rows}
+    for name in ("fs_read_file", "create_artifact", "spawn_agent_task"):
+        row = by_name[name]
+        assert row["input_schema"]["type"] == "object"
+        assert row["output_schema"]
+        assert row["domain"]
+    assert by_name["fs_read_file"]["domain"] == "workspace"
+    assert by_name["create_artifact"]["domain"] == "artifacts"
 
 
 def test_unified_tools_endpoint_exposes_inspector_metadata(client: TestClient) -> None:

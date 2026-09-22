@@ -51,10 +51,8 @@ compose:
 
 # The conformant DESKTOP shape (#906 memory budget): bounded ceiling with 2x
 # spill headroom above the tier limit, big final layer.
-_BOUNDED_CONFIG = (
-    _INCIDENT_CONFIG
-    .replace('capacity: "0g"', 'capacity: "2GB"')
-    .replace('capacity_limit: "0g"', 'capacity_limit: "1GB"')
+_BOUNDED_CONFIG = _INCIDENT_CONFIG.replace('capacity: "0g"', 'capacity: "2GB"').replace(
+    'capacity_limit: "0g"', 'capacity_limit: "1GB"'
 )
 
 
@@ -159,10 +157,8 @@ def test_doctor_row_carries_bdev_capacity(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 # The exact broken shape from the incident hand-fix: ALL THREE fields bounded.
-_ALL_BOUNDED_CONFIG = (
-    _BOUNDED_CONFIG
-    .replace('capacity: "2GB"', 'capacity: "1GB"')
-    .replace('capacity_limit: "50GB"', 'capacity_limit: "1GB"')
+_ALL_BOUNDED_CONFIG = _BOUNDED_CONFIG.replace('capacity: "2GB"', 'capacity: "1GB"').replace(
+    'capacity_limit: "50GB"', 'capacity_limit: "1GB"'
 )
 
 
@@ -182,14 +178,10 @@ def test_all_bounded_topology_warns_typed(
     assert "TWO ram" in msg
     assert "cannot absorb one full hot-tier spill" in msg
     # The ram tier itself is correctly bounded — no ram_uncapped warning.
-    assert not [
-        r for r in caplog.records if "clio_core_ram_uncapped" in r.getMessage()
-    ]
+    assert not [r for r in caplog.records if "clio_core_ram_uncapped" in r.getMessage()]
 
 
-def test_correct_topology_is_silent(
-    tmp_path: Path, caplog: "logging.LogCaptureFixture"
-) -> None:
+def test_correct_topology_is_silent(tmp_path: Path, caplog: "logging.LogCaptureFixture") -> None:
     # Generator-shaped desktop budget: ceiling 2GB (bounded, 2x headroom),
     # tier 1GB, final tier 50GB (a LARGE bound stands in for "unbounded"
     # until clio-core accepts 0 on non-ram tiers).
@@ -222,6 +214,7 @@ def test_memory_budget_is_the_arena_and_data_is_disk_only() -> None:
     from clio_agent.arc.clio_core_config import _DEFAULT_CTE_CONFIG_TEMPLATE
 
     rendered = _DEFAULT_CTE_CONFIG_TEMPLATE.format(
+        core_port=9413,
         conf_dir="c",
         file_tier="f",
         file_capacity="50GB",
@@ -257,5 +250,21 @@ def test_generated_default_config_is_topology_conformant(tmp_path, monkeypatch) 
         assert cap.bdev_capacity == "1GB"  # arena = the default 1GB budget
         assert cap.cap is None  # disk-only: no ram data tier
         assert not caplog_records, [r.getMessage() for r in caplog_records]
+    finally:
+        conf.reload()
+
+
+def test_generated_default_config_uses_the_install_runtime_port(tmp_path, monkeypatch) -> None:
+    """A shared host can assign each user's installation its own daemon port block."""
+
+    monkeypatch.setenv("CLIO_ARC_CTE_DIR", str(tmp_path / "cte"))
+    monkeypatch.setenv("CLIO_CORE_PORT", "23145")
+    from clio_agent import conf
+    from clio_agent.arc.clio_core_config import default_cte_config_path
+
+    conf.reload()
+    try:
+        generated = Path(default_cte_config_path()).read_text(encoding="utf-8")
+        assert "networking:\n  port: 23145\n" in generated
     finally:
         conf.reload()

@@ -866,10 +866,9 @@ def build_tool_catalog(
         return merged
 
     visibility = _expert_visibility(experts)
-    # Exclusive ownership (finding 1): when tools are not supplied, derive them
-    # through ``list_tool_definitions`` — a per-namespace listing over
-    # LISTING-OWNED transports — never a composite ``Client(gateway)`` pass that
-    # would connect (and, pre-fix, poison) the shared proxy transports.
+    # Exclusive ownership (finding 1): when tools are not supplied, derive them through
+    # ``list_tool_definitions`` — a per-namespace listing over LISTING-OWNED transports —
+    # never a composite ``Client(gateway)`` pass that would poison the shared proxies.
     listed = tools if tools is not None else list(list_tool_definitions(declared_gateway).values())
     for tool in listed:
         name = tool.name
@@ -890,6 +889,7 @@ def build_tool_catalog(
             owner=namespace,
             tags=frozenset(tags),
             visible_to=frozenset(scopes),
+            domain="",  # declared-MCP tool: outside the fixed builtin ToolDomain set (#1350)
             planner_visible="planner" in scopes,
         )
     return merged

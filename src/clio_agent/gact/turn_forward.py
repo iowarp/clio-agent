@@ -43,10 +43,10 @@ from clio_agent.gact.agents.resolution import (
     _agent_definition_uses_blueprint_runtime,
     _resolve_runtime_dynamic_agent,
     _runtime_active_agent_blueprint_agent_ids,
-    _runtime_active_agent_blueprint_id,
-    _runtime_active_agent_blueprint_path,
     _runtime_active_agent_blueprint_root_id,
     _runtime_active_agent_blueprint_rows,
+    _runtime_effective_agent_blueprint_id,
+    _runtime_effective_agent_blueprint_path,
 )
 from clio_agent.gact.catalog import _builtin_main_agent
 from clio_agent.gact.evidence import _dynamic_agent_runtime_provenance
@@ -195,7 +195,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
     bringup_timing.timer_for_session(state.app, state.sid).start_phase("blueprint.resolve")
     session_agent_id = _session_agent_id(state.sess)
     state.active_agent_id = state.turn_agent_id or session_agent_id
-    active_blueprint_id = _runtime_active_agent_blueprint_id(state.app, state.sid)
+    active_blueprint_id = _runtime_effective_agent_blueprint_id(state.app, state.sid)
     active_blueprint_root_id = _runtime_active_agent_blueprint_root_id(state.app, state.sid)
     active_blueprint_agent_ids = _runtime_active_agent_blueprint_agent_ids(state.app, state.sid)
     if (
@@ -241,7 +241,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
         not active_blueprint_root_id
         and state.active_agent_id in _EXECUTABLE_SESSION_AGENT_IDS
         and not active_blueprint_id
-        and _runtime_active_agent_blueprint_path(state.app, state.sid) is None
+        and _runtime_effective_agent_blueprint_path(state.app, state.sid) is None
     )
     if run_builtin_main:
         state.active_agent_id = "main"

@@ -97,9 +97,7 @@ def _search_result(
         response = response.model_copy(
             update={
                 "searched_sessions": [
-                    candidate
-                    for candidate in response.searched_sessions
-                    if candidate != session_id
+                    candidate for candidate in response.searched_sessions if candidate != session_id
                 ],
                 "hits": [hit for hit in response.hits if hit.session_id != session_id],
             }
@@ -307,6 +305,7 @@ def build_memory_search_tool(agent_def: Any) -> Any:
         memory_search_sessions,
         name="memory_search_sessions",
         presentation="memory",
+        domain="memory",
         title="Search memory",
         representation="row",
         desc=(
@@ -344,6 +343,7 @@ def build_memory_summary_tool(agent_def: Any) -> Any:
         memory_read_session_summary,
         name="memory_read_session_summary",
         presentation="memory",
+        domain="memory",
         title="Read session summary",
         representation="row",
         desc="Read a bounded summary of one retained session without returning its full transcript.",
@@ -375,6 +375,7 @@ def build_memory_context_frame_tool(agent_def: Any) -> Any:
         memory_read_context_frame,
         name="memory_read_context_frame",
         presentation="memory",
+        domain="memory",
         title="Read context frame",
         representation="row",
         desc=(

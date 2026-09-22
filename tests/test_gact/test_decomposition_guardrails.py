@@ -109,7 +109,23 @@ from clio_agent.gact.app import build_app
 # +2 A2UI catalog discovery GETs (installed + session-scoped), owned by
 # gact/a2ui_catalogs/routes/a2ui_catalogs.py and registered from routes/a2ui.py
 # (docs/design/a2ui-compat-campaign-2026-09.md S2).
-EXPECTED_ROUTE_METHOD_PAIRS = 244
+# +1 POST /v1/desktop/shutdown, the desktop-managed lifecycle control
+# registered by routes/lifecycle.py::register_lifecycle_routes.
+# 242 -> 244 (desktop protected-execution setup): +2 routes owned by the new
+# routes/sandbox_setup.py — GET /v1/system/sandbox (the `sandbox` doctor row
+# alone) and POST /v1/system/sandbox/setup (the desktop "Set up protected
+# execution" button, running the same clio sandbox setup provisioning flow).
+# 244 -> 246 (A4: read-only marketplace update check): +2 GET routes owned by
+# the new routes/blueprint_updates.py — GET
+# /v1/agent-blueprints/sources/updates (every registered source) and GET
+# /v1/agent-blueprints/sources/{source_id}/updates (one source), registered
+# ahead of the greedy blueprint {id:path} catch-all.
+# 246 -> 262 (CLIO-owned infrastructure): +16 HTTP method pairs for targets,
+# reusable transports, durable service operations, external connections, and
+# lifecycle inspection. The WebSocket transport attachment is not an HTTP pair.
+# Develop adds A2UI catalog discovery and its session capability route on top
+# of the release's 262 method pairs.
+EXPECTED_ROUTE_METHOD_PAIRS = 265
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

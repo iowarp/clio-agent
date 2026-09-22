@@ -131,7 +131,7 @@ def discover_codex(*, timeout: float = 20.0) -> ProviderDiscoveryResult:
         )
     default_model = next(
         (str(row.id) for row in rows if row.is_default),
-        str(discovered[0]["id"]),
+        "",
     )
     return ProviderDiscoveryResult(
         provider="codex",

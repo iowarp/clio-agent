@@ -5,6 +5,7 @@ without redeploying the GACT process.
 from __future__ import annotations
 
 import os
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -35,6 +36,33 @@ def _patch_doctor(monkeypatch: Any, probe: RuntimeProbe) -> None:
         )
 
     monkeypatch.setattr("clio_agent.gact.routes.system.collect_runtime_status", _fake)
+
+
+def _write_codex_auth(tmp_path: Path, monkeypatch: Any) -> None:
+    """Install non-empty local Codex credentials for readiness tests."""
+
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir(exist_ok=True)
+    (codex_home / "auth.json").write_text('{"token":"test"}', encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+
+def test_service_startup_schedules_subscription_catalog_refresh(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """A production-style lifespan refreshes catalogs without delaying startup."""
+    from clio_agent.providers.model_discovery import refresh as md_refresh
+
+    called = threading.Event()
+
+    async def _refresh() -> None:
+        called.set()
+
+    monkeypatch.setattr(md_refresh, "refresh_subscription_catalogs_at_startup", _refresh)
+    app = build_app(sessions_path=tmp_path / "s.json")
+    app.state.refresh_provider_catalog_on_startup = True
+    with TestClient(app):
+        assert called.wait(3.0)
 
 
 class _RebindLMStub:
@@ -86,12 +114,212 @@ def test_get_lm_provider_unconfigured(tmp_path: Path) -> None:
     with TestClient(app) as c:
         body = c.get("/v1/providers/lm").json()
         assert body["configured"] is False
+        assert body["provider_id"] == ""
+        assert body["provider"] == ""
+        assert body["model"] == ""
         # Presets always shipped — TUI uses them to populate the picker.
         ids = {p["id"] for p in body["presets"]}
         assert "openai" in ids
         assert "openrouter" in ids
         assert "lm_studio" in ids
         assert "codex" in ids
+
+
+def test_get_lm_provider_reports_codex_sign_in_required(tmp_path: Path, monkeypatch: Any) -> None:
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex-home"))
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        body = client.get("/v1/providers/lm").json()
+
+    codex = next(preset for preset in body["presets"] if preset["id"] == "codex")
+    assert codex["auth_method"] == "subscription"
+    assert codex["status"] == "auth_required"
+    assert codex["is_authenticated"] is False
+    assert codex["suggested_model"] == ""
+
+
+def test_get_lm_provider_requires_live_codex_check(tmp_path: Path, monkeypatch: Any) -> None:
+    _write_codex_auth(tmp_path, monkeypatch)
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        body = client.get("/v1/providers/lm").json()
+
+    codex = next(preset for preset in body["presets"] if preset["id"] == "codex")
+    assert codex["status"] == "auth_check_required"
+    assert codex["is_authenticated"] is False
+    assert codex["suggested_model"] == ""
+
+
+def test_codex_provider_check_validates_sdk_and_adopts_live_default(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    _write_codex_auth(tmp_path, monkeypatch)
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    from clio_agent.providers import model_discovery
+
+    calls: list[list[str]] = []
+
+    async def _refresh(*, presets: list[Any], only_configured: bool = True) -> list[dict[str, Any]]:
+        del only_configured
+        calls.append([preset.id for preset in presets])
+        result = model_discovery.ProviderDiscoveryResult(
+            provider="codex",
+            discovered=[{"id": "gpt-live", "name": "GPT Live", "description": ""}],
+            source=model_discovery.CODEX_SOURCE,
+            default_model="gpt-live",
+        )
+        return [model_discovery.record_refresh(result)]
+
+    monkeypatch.setattr(model_discovery, "refresh_all", _refresh)
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        checked = client.get("/v1/providers/codex/handshake?refresh=true").json()
+        configured = client.get("/v1/providers/lm").json()
+
+    assert calls == [["codex"]]
+    assert checked["connectivity"] == "ok"
+    assert checked["auth"] == "ok"
+    assert [model["id"] for model in checked["models"]] == ["gpt-live"]
+    codex = next(preset for preset in configured["presets"] if preset["id"] == "codex")
+    assert codex["status"] == "ready"
+    assert codex["is_authenticated"] is True
+    assert codex["suggested_model"] == "gpt-live"
+
+
+def test_codex_provider_check_does_not_probe_without_credentials(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex-home"))
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    from clio_agent.providers import model_discovery
+
+    async def _unexpected_refresh(**kwargs: Any) -> list[dict[str, Any]]:
+        raise AssertionError(f"refresh should not run: {kwargs}")
+
+    monkeypatch.setattr(model_discovery, "refresh_all", _unexpected_refresh)
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        checked = client.get("/v1/providers/codex/handshake?refresh=true").json()
+
+    assert checked["connectivity"] == "skipped"
+    assert checked["auth"] == "missing"
+    assert checked["models"] == []
+
+
+def test_codex_provider_check_reports_rejected_credentials_cleanly(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    _write_codex_auth(tmp_path, monkeypatch)
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    from clio_agent.providers import model_discovery
+    from clio_agent.providers.codex_errors import CODEX_AUTHENTICATION_ERROR_MESSAGE
+
+    async def _refresh(*, presets: list[Any], only_configured: bool = True) -> list[dict[str, Any]]:
+        del presets, only_configured
+        return [
+            {
+                "provider": "codex",
+                "discovered": [],
+                "failed_reason": (
+                    "Codex Python SDK model discovery failed: unexpected status 401 Unauthorized: "
+                    "Missing bearer or basic authentication in header"
+                ),
+            }
+        ]
+
+    monkeypatch.setattr(model_discovery, "refresh_all", _refresh)
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        checked = client.get("/v1/providers/codex/handshake?refresh=true").json()
+
+    assert checked["connectivity"] == "ok"
+    assert checked["auth"] == "rejected"
+    assert checked["error"] == CODEX_AUTHENTICATION_ERROR_MESSAGE
+    assert checked["models"] == []
+
+
+def test_get_lm_provider_reports_claude_code_install_required(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    import importlib.util
+
+    original = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name: None if name == "claude_agent_sdk" else original(name),
+    )
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        body = client.get("/v1/providers/lm").json()
+
+    claude = next(preset for preset in body["presets"] if preset["id"] == "claude_code")
+    assert claude["auth_method"] == "subscription"
+    assert claude["status"] == "install_required"
+    assert claude["is_authenticated"] is False
+    assert claude["suggested_model"] == ""
+
+
+def test_install_claude_code_support_endpoint(tmp_path: Path, monkeypatch: Any) -> None:
+    calls: list[bool] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.routes.providers.ensure_claude_code_support",
+        lambda: calls.append(True) or True,
+    )
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        response = client.post("/v1/providers/claude_code/install")
+
+    assert response.status_code == 200
+    assert response.json()["installed"] is True
+    assert calls == [True]
+
+
+def test_claude_code_provider_check_adopts_only_live_models(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    import importlib.util
+
+    from clio_agent.providers import model_discovery
+
+    original = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name: object() if name == "claude_agent_sdk" else original(name),
+    )
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+
+    async def _refresh(*, presets: list[Any], only_configured: bool = True) -> list[dict[str, Any]]:
+        del only_configured
+        assert [preset.id for preset in presets] == ["claude_code"]
+        result = model_discovery.ProviderDiscoveryResult(
+            provider="claude_code",
+            discovered=[{"id": "sonnet", "name": "Claude Sonnet", "description": ""}],
+            source=model_discovery.CLAUDE_CODE_SOURCE,
+            default_model="sonnet",
+        )
+        return [model_discovery.record_refresh(result)]
+
+    monkeypatch.setattr(model_discovery, "refresh_all", _refresh)
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        checked = client.get("/v1/providers/claude_code/handshake?refresh=true").json()
+        configured = client.get("/v1/providers/lm").json()
+
+    assert checked["connectivity"] == "ok"
+    assert checked["auth"] == "ok"
+    assert [model["id"] for model in checked["models"]] == ["sonnet"]
+    claude = next(preset for preset in configured["presets"] if preset["id"] == "claude_code")
+    assert claude["status"] == "ready"
+    assert claude["is_authenticated"] is True
+    assert claude["suggested_model"] == "sonnet"
 
 
 def test_effective_lm_config_reports_claude_code_transport() -> None:
@@ -173,58 +401,80 @@ def test_get_lm_provider_reports_argonne_refresh_failure(tmp_path: Path, monkeyp
     assert "could not be refreshed" in sophia["status_message"]
 
 
-def test_auth_provider_returns_interactive_argonne_instructions(
+def test_auth_provider_starts_and_completes_browser_argonne_flow(
     tmp_path: Path,
     monkeypatch: Any,
     floor_sandbox: Any,
 ) -> None:
-    """ALCF auth must launch/describe an interactive flow, not block the backend."""
-
-    import importlib.util
+    """ALCF auth must stay in-app while storing tokens on the connected agent."""
 
     from clio_agent.providers import argonne_auth
 
-    popen_calls: list[list[str]] = []
-    original_find_spec = importlib.util.find_spec
-
-    def _find_spec(name: str, *args: Any, **kwargs: Any) -> Any:
-        if name == "globus_sdk":
-            return object()
-        return original_find_spec(name, *args, **kwargs)
-
-    def _popen(cmd: list[str], *args: Any, **kwargs: Any) -> object:
-        popen_calls.append(cmd)
-        return object()
-
-    # The auth_provider handler moved to routes/providers.py (#714); patch the
-    # module-level importlib/subprocess/shutil it resolves there.
-    monkeypatch.setattr("clio_agent.gact.routes.providers.importlib.util.find_spec", _find_spec)
+    monkeypatch.setattr("clio_agent.gact.routes.providers.ensure_argonne_support", lambda: True)
     monkeypatch.setattr(
         argonne_auth,
-        "check_auth_status",
-        lambda: (_ for _ in ()).throw(AssertionError("auth button must not probe token status")),
+        "begin_authentication",
+        lambda: argonne_auth.PendingAuthentication(
+            flow_id="flow-123",
+            authorization_url="https://auth.globus.org/v2/oauth2/authorize",
+        ),
     )
-    monkeypatch.setattr("clio_agent.gact.routes.providers.subprocess.Popen", _popen)
-    if os.name != "nt":
-        monkeypatch.setattr("clio_agent.gact.routes.providers.shutil.which", lambda name: None)
+    completed: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        argonne_auth,
+        "complete_authentication",
+        lambda flow_id, code: completed.append((flow_id, code)),
+    )
 
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
-        resp = c.post("/v1/providers/argonne_sophia/auth", json={"force": True})
+        start = c.post("/v1/providers/argonne_sophia/auth", json={"action": "start"})
+        complete = c.post(
+            "/v1/providers/argonne_sophia/auth",
+            json={
+                "action": "complete",
+                "flow_id": "flow-123",
+                "authorization_code": "code-456",
+            },
+        )
 
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
+    assert start.status_code == 200, start.text
+    body = start.json()
     assert body["is_authenticated"] is False
     assert body["provider_id"] == "argonne_sophia"
-    assert "interactive terminal" in body["instructions"] or "Opened" in body["instructions"]
-    if os.name == "nt":
-        assert popen_calls
-        launched = popen_calls[0]
-        assert launched[0].lower().endswith(("powershell.exe", "pwsh.exe"))
-        assert "-NoExit" in launched
-        assert "clio_agent.providers.argonne_auth" in launched[-1]
-        assert "--force" in launched[-1]
-        assert "Read-Host" in launched[-1]
+    assert body["flow_id"] == "flow-123"
+    assert body["authorization_url"].startswith("https://auth.globus.org/")
+    assert "Installed ALCF sign-in support" in body["instructions"]
+    assert "terminal" not in body["instructions"].lower()
+    assert complete.status_code == 200, complete.text
+    assert complete.json()["is_authenticated"] is True
+    assert completed == [("flow-123", "code-456")]
+
+
+def test_auth_provider_reports_argonne_support_install_failure(
+    tmp_path: Path,
+    monkeypatch: Any,
+    floor_sandbox: Any,
+) -> None:
+    """A failed self-repair must identify the connected agent and remain retryable."""
+
+    from clio_agent.providers.dependencies import ProviderDependencyInstallError
+
+    def _fail_install() -> bool:
+        raise ProviderDependencyInstallError("permission denied")
+
+    monkeypatch.setattr("clio_agent.gact.routes.providers.ensure_argonne_support", _fail_install)
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        response = c.post("/v1/providers/argonne_metis/auth", json={})
+
+    assert response.status_code == 503
+    error = response.json()["error"]
+    assert error["error"] == "dependency_install_failed"
+    assert error["recoverable"] is True
+    assert "connected agent" in error["message"]
+    assert "permission denied" in error["message"]
 
 
 def _patch_run_handshake(monkeypatch, report) -> None:
@@ -362,19 +612,102 @@ def test_provider_model_catalog_unavailable_live_provider_has_no_static(
     assert body.get("error")
 
 
-def test_provider_model_catalog_keeps_static_cli_candidates(tmp_path: Path) -> None:
-    """CLI providers (codex/claude_code) expose an editable static candidate catalog."""
+def test_provider_model_catalog_requires_verified_cli_provider(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Claude candidates stay visibly unverified; Codex has no static models."""
+    from clio_agent.providers.model_discovery import claude_code_catalog
+
+    monkeypatch.setattr(
+        claude_code_catalog,
+        "cached_claude_code_candidates",
+        lambda: ([{"id": "claude-opus-5-5", "name": "Claude Opus 5.5"}], ""),
+    )
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
         codex = c.get("/v1/providers/codex/models").json()
         claude = c.get("/v1/providers/claude_code/models").json()
 
-    assert codex["source"] == "static_catalog"
-    assert {row["id"] for row in codex["models"]} >= {"gpt-5.5", "gpt-5.1"}
-    assert claude["source"] == "static_catalog"
-    # "fable" is the CLI's own current default alias (#1211 review D4) -- listed
-    # alongside the other documented aliases so a fresh install already shows it.
-    assert {row["id"] for row in claude["models"]} == {"fable", "sonnet", "opus", "haiku"}
+    assert codex["source"] == "unavailable"
+    assert codex["models"] == []
+    assert claude["source"] == "github_catalog"
+    assert claude["models"] == [
+        {"id": "claude-opus-5-5", "name": "Claude Opus 5.5", "availability": "candidate"}
+    ]
+    assert claude["default_model"] == ""
+
+
+def test_codex_model_catalog_reads_startup_snapshot(tmp_path: Path, monkeypatch: Any) -> None:
+    """Ordinary reads use the last startup/explicit SDK check, not a new process."""
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    _write_codex_auth(tmp_path, monkeypatch)
+    from clio_agent.providers import model_discovery
+
+    model_discovery.record_refresh(
+        model_discovery.ProviderDiscoveryResult(
+            provider="codex",
+            discovered=[{"id": "old", "name": "Old"}],
+            source=model_discovery.CODEX_SOURCE,
+            default_model="old",
+        )
+    )
+    calls = 0
+
+    async def _refresh(*, presets: Any) -> list[dict[str, Any]]:
+        nonlocal calls
+        assert presets[0].id == "codex"
+        calls += 1
+        return [
+            model_discovery.record_refresh(
+                model_discovery.ProviderDiscoveryResult(
+                    provider="codex",
+                    discovered=[{"id": f"model-{calls}", "name": f"Model {calls}"}],
+                    source=model_discovery.CODEX_SOURCE,
+                    default_model=f"model-{calls}",
+                )
+            )
+        ]
+
+    monkeypatch.setattr(model_discovery, "refresh_all", _refresh)
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        first = c.get("/v1/providers/codex/models").json()
+        second = c.get("/v1/providers/codex/models").json()
+    assert [row["id"] for row in first["models"]] == ["old"]
+    assert [row["id"] for row in second["models"]] == ["old"]
+    assert second["default_model"] == "old"
+    assert calls == 0
+
+
+def test_codex_model_catalog_failure_does_not_show_old_models(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    _write_codex_auth(tmp_path, monkeypatch)
+    from clio_agent.providers import model_discovery
+
+    model_discovery.record_refresh(
+        model_discovery.ProviderDiscoveryResult(
+            provider="codex",
+            discovered=[{"id": "old", "name": "Old"}],
+            source=model_discovery.CODEX_SOURCE,
+            default_model="old",
+        )
+    )
+
+    model_discovery.record_refresh(
+        model_discovery.ProviderDiscoveryResult(
+            provider="codex",
+            discovered=[],
+            source=model_discovery.CODEX_SOURCE,
+            failed_reason="Codex credentials expired",
+        )
+    )
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        body = c.get("/v1/providers/codex/models").json()
+    assert body["models"] == []
+    assert body["source"] == "unavailable"
 
 
 def test_provider_list_default_model_follows_overlay_once_refreshed(
@@ -384,6 +717,7 @@ def test_provider_list_default_model_follows_overlay_once_refreshed(
     overlay's discovered default (once a refresh has run), not the stale static
     ``suggested_model`` the account may already reject (#1184)."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    _write_codex_auth(tmp_path, monkeypatch)
     from clio_agent.providers import model_discovery
 
     model_discovery.record_refresh(
@@ -411,20 +745,30 @@ def test_provider_list_default_model_falls_back_to_static_without_overlay(
     with TestClient(app) as c:
         rows = c.get("/v1/providers").json()["providers"]
     codex_row = next(r for r in rows if r["id"] == "codex")
-    assert codex_row["default_model"] == "gpt-5.5"  # the frozen static suggested_model
+    assert codex_row["default_model"] == ""
 
 
-def test_provider_list_default_model_claude_code_follows_cost_policy_not_cli_default(
+def test_provider_list_default_model_claude_code_follows_account_default(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
-    """Owner ruling 2026-08-14 (failing-first): the CLI's own bare default
-    resolves to the premium ``fable`` tier, but clio must never silently
-    default a user onto it -- the SERVED picker default for claude_code stays
-    ``sonnet`` (a deliberate cost policy) even once a refresh has discovered
-    fable as the CLI's live choice. Codex is unaffected: its own overlay
-    default still wins verbatim (populated in the same test as the twin)."""
+    """Both subscription providers expose their account-discovered defaults."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    _write_codex_auth(tmp_path, monkeypatch)
     from clio_agent.providers import model_discovery
+    from clio_agent.providers.model_discovery import claude_code_catalog
+
+    monkeypatch.setattr(
+        claude_code_catalog,
+        "cached_claude_code_candidates",
+        lambda: (
+            [
+                {"id": "fable", "name": "Fable"},
+                {"id": "sonnet", "name": "Sonnet"},
+                {"id": "opus", "name": "Opus"},
+            ],
+            "",
+        ),
+    )
 
     model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
@@ -438,8 +782,7 @@ def test_provider_list_default_model_claude_code_follows_cost_policy_not_cli_def
             default_model="fable",  # the CLI's own bare-default choice
         )
     )
-    # Codex unaffected twin: its own overlay default is untouched by the
-    # claude_code-only cost policy.
+    # Codex twin: its own account-discovered overlay default also wins.
     model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
             provider="codex",
@@ -448,6 +791,12 @@ def test_provider_list_default_model_claude_code_follows_cost_policy_not_cli_def
             default_model="gpt-5.6-sol",
         )
     )
+
+    async def _fresh_claude_models(*, presets: Any) -> list[dict[str, Any]]:
+        assert presets[0].id == "claude_code"
+        return [{"provider": "claude_code", "discovered": [{"id": "fable"}]}]
+
+    monkeypatch.setattr(model_discovery, "refresh_all", _fresh_claude_models)
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
         rows = c.get("/v1/providers").json()["providers"]
@@ -455,24 +804,19 @@ def test_provider_list_default_model_claude_code_follows_cost_policy_not_cli_def
         codex_detail = c.get("/v1/providers/codex").json()
     claude_row = next(r for r in rows if r["id"] == "claude_code")
     codex_row = next(r for r in rows if r["id"] == "codex")
-    assert claude_row["default_model"] == "sonnet"
-    assert claude_detail["default_model"] == "sonnet"
+    assert claude_row["default_model"] == "fable"
+    assert claude_detail["default_model"] == "fable"
     assert codex_row["default_model"] == "gpt-5.6-sol"
     assert codex_detail["default_model"] == "gpt-5.6-sol"
-    # The overlay-diagnostic route surfaces the honest CLI choice alongside
-    # the policy default, never silently dropping it.
     models_resp = c.get("/v1/providers/claude_code/models").json()
-    assert models_resp["default_model"] == "sonnet"
-    assert models_resp["cli_default"] == "fable"
+    assert models_resp["default_model"] == "fable"
+    assert "cli_default" not in models_resp
 
 
-def test_put_lm_provider_omitted_model_claude_code_binds_sonnet_cost_policy_default(
+def test_put_lm_provider_omitted_model_claude_code_binds_account_default(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
-    """Owner ruling 2026-08-14 (failing-first): an omitted-model claude_code
-    bind must resolve to the cost-policy default (sonnet), never the CLI's own
-    premium bare default (fable) even once a refresh has recorded fable as the
-    live CLI choice."""
+    """An omitted Claude model binds the verified account default."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     from clio_agent.providers import model_discovery
 
@@ -522,8 +866,8 @@ def test_put_lm_provider_omitted_model_claude_code_binds_sonnet_cost_policy_defa
             json={"provider": "claude_code", "api_base": "claude-code://sdk", "model": ""},
         )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["model"] == "sonnet"
-    assert captured["cfg"].model == "sonnet"
+    assert resp.json()["model"] == "fable"
+    assert captured["cfg"].model == "fable"
 
 
 def test_put_lm_provider_omitted_model_binds_the_overlay_default(
@@ -533,6 +877,7 @@ def test_put_lm_provider_omitted_model_binds_the_overlay_default(
     through the overlay's discovered default once a refresh has run, not the
     stale static ``suggested_model`` (#1184's rejected pins)."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    _write_codex_auth(tmp_path, monkeypatch)
     from clio_agent.providers import model_discovery
 
     model_discovery.record_refresh(
@@ -700,6 +1045,7 @@ def test_get_lm_provider_when_configured_via_put(tmp_path: Path, monkeypatch) ->
     class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             fake_agent_constructed["called"] = True
+            fake_agent_constructed["provider_config"] = kwargs.get("provider_config")
             self.arc = type(
                 "ARC",
                 (),
@@ -761,6 +1107,10 @@ def test_get_lm_provider_when_configured_via_put(tmp_path: Path, monkeypatch) ->
         assert body["model"] == "claude-haiku-4-5-20251001"
         assert body["context_length"] == 16384
         assert fake_agent_constructed["called"] is True
+        first_bind_config = fake_agent_constructed["provider_config"]
+        assert first_bind_config.provider == "openai"
+        assert first_bind_config.model == "claude-haiku-4-5-20251001"
+        assert first_bind_config.api_base == "http://127.0.0.1:3456/v1"
 
         # Subsequent GET reports the configured state.
         body = c.get("/v1/providers/lm").json()
@@ -780,9 +1130,7 @@ def test_get_lm_provider_when_configured_via_put(tmp_path: Path, monkeypatch) ->
         # lm_provider row). That surface is covered in test_doctor_integrations.
 
 
-def test_put_argonne_omits_client_output_cap_when_omitted(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_put_argonne_omits_client_output_cap_when_omitted(tmp_path: Path, monkeypatch) -> None:
     """TUI default save should not invent a finite output cap for ALCF."""
 
     captured: dict[str, Any] = {}
@@ -985,6 +1333,18 @@ def test_put_lm_provider_rejects_removed_codex_transport(tmp_path: Path, monkeyp
     """A manual app-server bind 400s; the default uses the official SDK."""
     captured: dict[str, Any] = {}
     monkeypatch.delenv("CLIO_CODEX_TRANSPORT", raising=False)
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    _write_codex_auth(tmp_path, monkeypatch)
+    from clio_agent.providers import model_discovery
+
+    model_discovery.record_refresh(
+        model_discovery.ProviderDiscoveryResult(
+            provider="codex",
+            discovered=[{"id": "gpt-5.5", "name": "GPT-5.5", "description": ""}],
+            source=model_discovery.CODEX_SOURCE,
+            default_model="gpt-5.5",
+        )
+    )
 
     class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -1057,6 +1417,17 @@ def test_put_lm_provider_rejects_removed_claude_code_transport(tmp_path: Path, m
     """v0.8.0: a claude_code bind naming the deleted exec transport 400s typed;
     an explicit sdk transport still applies to claude_code_transport."""
     monkeypatch.delenv("CLIO_CLAUDE_CODE_TRANSPORT", raising=False)
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    from clio_agent.providers import model_discovery
+
+    model_discovery.record_refresh(
+        model_discovery.ProviderDiscoveryResult(
+            provider="claude_code",
+            discovered=[{"id": "haiku", "name": "Haiku", "description": ""}],
+            source=model_discovery.CLAUDE_CODE_SOURCE,
+            default_model="haiku",
+        )
+    )
     captured: dict[str, Any] = {}
 
     class _StubAgent(_RebindLMStub):
@@ -1153,6 +1524,15 @@ def test_put_lm_provider_defaults_claude_code_to_sdk_transport(tmp_path: Path, m
         return type("FakeLM", (), {"history": []})()
 
     monkeypatch.setattr("clio_agent.config.create_lm", _stub_create_lm)
+    monkeypatch.setattr(
+        "clio_agent.providers.model_discovery.overlay_models_wire",
+        lambda *_args: {
+            "models": [{"id": "haiku", "name": "Claude Haiku"}],
+            "source": "claude_code_alias_probe",
+            "default_model": "haiku",
+            "generated_at": "2026-09-22T12:00:00+00:00",
+        },
+    )
 
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:

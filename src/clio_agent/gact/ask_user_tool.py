@@ -219,6 +219,7 @@ def build_ask_user_tool(agent_def: Any) -> Any:
         ask_user,
         name="ask_user",
         presentation="specialized",
+        domain="interaction",
         desc=ask_user.__doc__,
         title="Ask User",
         args={

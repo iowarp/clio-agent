@@ -59,6 +59,23 @@ EXPECTED_ASSETS: list[tuple[str, str]] = [
     ("lite AppImage (aarch64 Linux)", r"_aarch64\.AppImage$"),
     ("lite rpm (x86_64 Linux)", r"\.x86_64\.rpm$"),
     ("lite rpm (aarch64 Linux)", r"\.aarch64\.rpm$"),
+    # Signed updater payloads + detached signatures (v0.9.4.1 auto-update).
+    # Tauri's updater only signs the NSIS exe on Windows, the raw
+    # .app.tar.gz on macOS, and the AppImage on Linux -- never the
+    # .msi/.dmg/.deb/.rpm human installers, and the bundled variant never
+    # builds an AppImage at all (see gen_tauri_update_manifest.py).
+    ("bundled nsis sig (x86_64 Windows)", r"_x64-setup-bundled\.exe\.sig$"),
+    ("bundled macOS updater bundle (aarch64)", r"aarch64-apple-darwin-bundled\.app\.tar\.gz$"),
+    ("bundled macOS updater sig (aarch64)", r"aarch64-apple-darwin-bundled\.app\.tar\.gz\.sig$"),
+    ("lite nsis sig (x86_64 Windows)", r"_x64-setup\.exe\.sig$"),
+    ("lite macOS updater bundle (aarch64)", r"aarch64-apple-darwin\.app\.tar\.gz$"),
+    ("lite macOS updater sig (aarch64)", r"aarch64-apple-darwin\.app\.tar\.gz\.sig$"),
+    ("lite macOS updater bundle (x86_64)", r"x86_64-apple-darwin\.app\.tar\.gz$"),
+    ("lite macOS updater sig (x86_64)", r"x86_64-apple-darwin\.app\.tar\.gz\.sig$"),
+    ("lite AppImage sig (x86_64 Linux)", r"_amd64\.AppImage\.sig$"),
+    ("lite AppImage sig (aarch64 Linux)", r"_aarch64\.AppImage\.sig$"),
+    ("Tauri update manifest (bundled)", r"^latest\.json$"),
+    ("Tauri update manifest (lite)", r"^latest-lite\.json$"),
     # CLIO TUI binaries (one per OS/arch; installer scripts fetch these).
     ("tui darwin-amd64", r"^clio-tui-darwin-amd64$"),
     ("tui darwin-arm64", r"^clio-tui-darwin-arm64$"),

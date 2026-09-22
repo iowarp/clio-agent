@@ -420,10 +420,10 @@ class _UnsupportedModelRefError(Protocol):
 class _AgentNotAvailableError(Protocol):
     """Callable seam building the typed error when no executable agent is ready.
 
-    ``_agent_not_available_error`` (in :mod:`clio_agent.gact.app`) inspects the
-    agent-construction task/state to return a starting/failed/not-configured
-    envelope. The retry route and the POST-message turn path both raise it; it
-    stays single-sourced in ``gact.app`` and travels here.
+    ``agent_not_available_error`` (in :mod:`clio_agent.gact.agent_initialization`)
+    inspects the agent-construction task/state to return a starting/failed/
+    not-configured envelope. The retry route and the POST-message turn path
+    both raise it; it stays single-sourced there and travels here.
     """
 
     def __call__(self, app: "FastAPI", sid: str) -> "ErrorEnvelope": ...

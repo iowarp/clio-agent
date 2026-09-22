@@ -14,6 +14,7 @@ import sys
 
 import pytest
 
+from clio_agent.providers import dependencies
 from clio_agent.providers.claude_code_litellm import ClaudeCodeCLIUnavailableError
 from clio_agent.providers.claude_code_options import require_claude_agent_sdk
 
@@ -21,6 +22,11 @@ from clio_agent.providers.claude_code_options import require_claude_agent_sdk
 def _force_sdk_absent(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make ``import claude_agent_sdk`` raise ImportError regardless of install state."""
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", None)
+
+    def _fail_install() -> bool:
+        raise dependencies.ProviderDependencyInstallError("offline")
+
+    monkeypatch.setattr(dependencies, "ensure_claude_code_support", _fail_install)
 
 
 def test_require_sdk_raises_typed_error_not_importerror(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -30,13 +36,12 @@ def test_require_sdk_raises_typed_error_not_importerror(monkeypatch: pytest.Monk
         require_claude_agent_sdk()
 
     message = str(excinfo.value)
-    # The reason names the missing package + install path (not a raw trace).
-    assert "claude-agent-sdk" in message.lower()
-    assert "claude-code" in message.lower()
-    assert "claude-agent-sdk" in message
-    # It is a typed error, and its cause is the underlying ImportError.
+    assert message == (
+        "CLIO could not install Claude Code support. "
+        "Check the connected agent's internet connection and try again."
+    )
     assert isinstance(excinfo.value, ClaudeCodeCLIUnavailableError)
-    assert isinstance(excinfo.value.__cause__, ImportError)
+    assert isinstance(excinfo.value.__cause__, dependencies.ProviderDependencyInstallError)
 
 
 def test_selecting_sdk_transport_stream_yields_typed_error(
@@ -56,7 +61,7 @@ def test_selecting_sdk_transport_stream_yields_typed_error(
 
     with pytest.raises(ClaudeCodeCLIUnavailableError) as excinfo:
         asyncio.run(_drive())
-    assert "claude-agent-sdk" in str(excinfo.value).lower()
+    assert "could not install Claude Code support" in str(excinfo.value)
 
 
 def test_sdk_pool_complete_yields_typed_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -69,4 +74,4 @@ def test_sdk_pool_complete_yields_typed_error(monkeypatch: pytest.MonkeyPatch) -
     session = _SdkSession()
     with pytest.raises(ClaudeCodeCLIUnavailableError) as excinfo:
         session.complete(prompt="hi", model="claude-x", timeout=5.0, cwd=None)
-    assert "claude-agent-sdk" in str(excinfo.value).lower()
+    assert "could not install Claude Code support" in str(excinfo.value)

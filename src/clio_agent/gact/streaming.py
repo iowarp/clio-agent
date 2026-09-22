@@ -443,10 +443,27 @@ def _describe_stream_exc(exc: BaseException) -> str:
     in ``.exceptions``. Recurse into the leaves so the captured detail names the
     actual provider/transport error instead of the wrapper.
     """
+    from clio_agent.providers.claude_code_errors import (  # noqa: PLC0415
+        CLAUDE_CODE_INSTALL_FAILED_MESSAGE,
+        contains_claude_code_dependency_error,
+    )
+    from clio_agent.providers.codex_errors import (  # noqa: PLC0415
+        CODEX_AUTHENTICATION_ERROR_MESSAGE,
+        contains_codex_authentication_error,
+    )
+
+    if contains_codex_authentication_error(exc):
+        return CODEX_AUTHENTICATION_ERROR_MESSAGE
+    if contains_claude_code_dependency_error(exc):
+        return CLAUDE_CODE_INSTALL_FAILED_MESSAGE
     group = getattr(exc, "exceptions", None)
     if group:
-        leaves = "; ".join(_describe_stream_exc(sub) for sub in group)
-        return f"{type(exc).__name__}[{leaves}]"
+        leaves = [_describe_stream_exc(sub) for sub in group]
+        if CODEX_AUTHENTICATION_ERROR_MESSAGE in leaves:
+            return CODEX_AUTHENTICATION_ERROR_MESSAGE
+        if CLAUDE_CODE_INSTALL_FAILED_MESSAGE in leaves:
+            return CLAUDE_CODE_INSTALL_FAILED_MESSAGE
+        return f"{type(exc).__name__}[{'; '.join(leaves)}]"
     return f"{type(exc).__name__}: {exc}"
 
 
@@ -740,6 +757,25 @@ async def _try_streamed_forward(
                         pass
     except Exception as exc:
         detail = _describe_stream_exc(exc)
+        from clio_agent.providers.claude_code_errors import (  # noqa: PLC0415
+            CLAUDE_CODE_INSTALL_FAILED_MESSAGE,
+        )
+        from clio_agent.providers.codex_errors import (  # noqa: PLC0415
+            CODEX_AUTHENTICATION_ERROR_MESSAGE,
+        )
+
+        if detail in {
+            CODEX_AUTHENTICATION_ERROR_MESSAGE,
+            CLAUDE_CODE_INSTALL_FAILED_MESSAGE,
+        }:
+            if not emitted_any:
+                _record_stream_fallback(
+                    app,
+                    sid,
+                    "stream_failed_before_output",
+                    detail,
+                )
+            raise _StreamingOutputError(detail) from exc
         if emitted_any:
             raise _StreamingOutputError(
                 f"live streaming failed after emitting output: {detail}"

@@ -45,9 +45,17 @@ set -euo pipefail
 CLIO_PREFIX="${CLIO_PREFIX:-$HOME/.local/share/clio}"
 CLIO_PORT="${CLIO_PORT:-17800}"
 CLIO_BIN_DIR="${CLIO_BIN_DIR:-$HOME/.local/bin}"
-# clio-agent is tool-source agnostic: marketplace packs declare their own MCP
-# servers (e.g. `uvx clio-kit@<ver> mcp-server <name>`), which uvx fetches/caches
-# on demand — so the launcher sets NO CLIO_KIT_PATH and has no clio-kit coupling.
+# Keep every installation-owned runtime surface under the selected prefix.
+# This matters on shared login/HPC hosts: the old defaults placed clio-core's
+# lock, client registry, and CTE files in host-global user paths, so an unrelated
+# agent could leave stale coordination state that made a fresh install time out.
+export CLIO_DATA_DIR="${CLIO_DATA_DIR:-$CLIO_PREFIX/data}"
+export CLIO_ARC_CTE_DIR="${CLIO_ARC_CTE_DIR:-$CLIO_PREFIX/cte}"
+export CLIO_RUNTIME_STATE_DIR="${CLIO_RUNTIME_STATE_DIR:-$CLIO_PREFIX/runtime-state}"
+export PATH="$CLIO_BIN_DIR:$PATH"
+# The installer provisions supported MCP launchers into CLIO_BIN_DIR. Ensure a
+# detached server inherits that directory even when it was started through a
+# non-interactive SSH session whose login profile did not extend PATH.
 # File access defaults to clio's active workspace + /tmp (the file policy injects
 # the workspace root); set CLIO_ALLOWED_ROOTS only to deliberately widen that.
 PIDFILE="$CLIO_PREFIX/clio-server.pid"
@@ -63,6 +71,55 @@ CLIO_BRAND_NAME="${GACT_BRAND_NAME:-CLIO}"
 WEB_DIR="$CLIO_PREFIX/clio-agent/web"
 CLIO_VENV="$CLIO_PREFIX/clio-agent/.venv"
 UPDATE_STAMP="$CLIO_PREFIX/.update-checked"
+
+# clio-core binds a cluster of host TCP ports. Port 9413 cannot be shared by
+# different users on a university login node, even though their files and POSIX
+# shared-memory namespaces are separate. Persist one free block per CLIO install;
+# subsequent agents under that prefix intentionally share the same daemon.
+resolve_core_port() {
+  [[ -n "${CLIO_CORE_PORT:-}" ]] && return 0
+  local port_file="$CLIO_PREFIX/clio-core.port" chosen=""
+  if [[ -f "$port_file" ]]; then
+    chosen="$(cat "$port_file" 2>/dev/null || true)"
+    [[ "$chosen" =~ ^[0-9]+$ ]] || chosen=""
+  fi
+  if [[ -z "$chosen" ]]; then
+    mkdir -p "$CLIO_PREFIX"
+    chosen="$("$CLIO_VENV/bin/python" - "$CLIO_PREFIX" <<'PY'
+import hashlib
+import os
+from pathlib import Path
+import socket
+import sys
+
+prefix = str(Path(sys.argv[1]).expanduser().resolve())
+identity = f"{os.getuid()}:{prefix}".encode()
+slots = 4_000
+start = int.from_bytes(hashlib.sha256(identity).digest()[:4], "big") % slots
+for offset in range(slots):
+    base = 12_000 + 5 * ((start + offset) % slots)
+    sockets = []
+    try:
+        for port in range(base, base + 5):
+            sock = socket.socket()
+            sock.bind(("127.0.0.1", port))
+            sockets.append(sock)
+    except OSError:
+        pass
+    else:
+        print(base)
+        break
+    finally:
+        for sock in sockets:
+            sock.close()
+else:
+    raise SystemExit("no free clio-core port block found")
+PY
+)" || { err "could not reserve a clio-core port block"; return 1; }
+    printf '%s\n' "$chosen" >"$port_file"
+  fi
+  export CLIO_CORE_PORT="$chosen"
+}
 
 GREEN='\033[0;32m'; YELLOW='\033[0;33m'; RED='\033[0;31m'; RESET='\033[0m'
 say()  { printf "${GREEN}==>${RESET} %s\n" "$*"; }
@@ -168,6 +225,7 @@ start_server() {
     err "is CLIO installed? run the installer or set CLIO_PREFIX."
     return 1
   fi
+  resolve_core_port
   say "Starting CLIO server on :$CLIO_PORT (log: $SERVER_LOG)"
   # setsid runs the server as its own session/process-group leader (PGID == PID)
   # so stop_server can group-kill the server AND every MCP child it spawns (the
@@ -176,7 +234,16 @@ start_server() {
   # never blocks on a read.
   (
     cd "$CLIO_PREFIX/clio-agent" &&
-    exec setsid "$SERVER_BIN" serve --port "$CLIO_PORT" >"$SERVER_LOG" 2>&1 </dev/null
+    api_port="$CLIO_PORT" &&
+    # Installed user tools such as clio-kit normally live beside this
+    # launcher. Login shells add that directory, but detached GUI/SSH starts
+    # often do not; make the managed server see the same tools explicitly.
+    export PATH="$CLIO_BIN_DIR:$PATH" &&
+    # CLIO_PORT belongs to this launcher/API. clio-core also recognizes that
+    # generic name for its native RPC listener, so leaking it would make the
+    # runtime steal the HTTP API port. The agent already receives --port.
+    unset CLIO_PORT &&
+    exec setsid "$SERVER_BIN" serve --port "$api_port" >"$SERVER_LOG" 2>&1 </dev/null
   ) &
   echo $! >"$PIDFILE"
   SERVER_WAS_STARTED=1
@@ -206,8 +273,13 @@ stop_server() {
   # group (negative PID) so none are orphaned. Fall back to a plain PID kill for a
   # server started outside this launcher (not a group leader).
   kill -TERM -"$p" 2>/dev/null || kill -TERM "$p" 2>/dev/null || true
+  # A running turn is cancelled and drained before the agent releases its
+  # shared clio-core client.  Five seconds was shorter than that normal path:
+  # the launcher could SIGKILL Python while it was still in lifespan teardown,
+  # orphaning clio-core.  Match the desktop supervisor's 30-second graceful
+  # budget; the loop still returns immediately as soon as the server exits.
   local i
-  for i in $(seq 1 20); do
+  for i in $(seq 1 120); do
     kill -0 "$p" 2>/dev/null || break
     sleep 0.25
   done

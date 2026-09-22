@@ -137,7 +137,22 @@ def test_load_skill_returns_body_and_bundled_listing(pack: Path) -> None:
     tool = build_load_skill_tool(_agent(pack), rt)
     out = tool.func(skill_id="quality-rubric")
     assert "SECRET_PROCEDURE_MARKER" in out
+    assert f"Skill directory (use as SKILL_ROOT): {pack / 'skills' / 'quality-rubric'}" in out
     assert "references/checklist.md" in out
+
+
+def test_load_skill_hides_private_environments_and_bytecode(pack: Path) -> None:
+    skill = pack / "skills" / "quality-rubric"
+    (skill / ".venv" / "Lib").mkdir(parents=True)
+    (skill / ".venv" / "Lib" / "private.py").write_text("private", encoding="utf-8")
+    (skill / "scripts" / "__pycache__").mkdir(parents=True)
+    (skill / "scripts" / "__pycache__" / "helper.pyc").write_bytes(b"bytecode")
+
+    out = build_load_skill_tool(_agent(pack), _runtime(pack)).func(skill_id="quality-rubric")
+
+    assert ".venv" not in out
+    assert "__pycache__" not in out
+    assert ".pyc" not in out
 
 
 def test_load_skill_reads_fresh_from_disk(pack: Path) -> None:
@@ -177,8 +192,8 @@ def test_load_skill_bundled_file_and_traversal_twin(pack: Path) -> None:
 
 def test_load_skill_declares_typed_structured_content_for_body(pack: Path, monkeypatch) -> None:
     """load_skill gets wait_agent_tasks's OWN treatment: a ``message`` naming what
-    loaded + its line count FIRST, then the skill id/scope facts. The BODY stays the
-    model-facing return UNCHANGED (asserted separately above)."""
+    loaded + its line count FIRST, then the skill id/scope facts. The model-facing
+    return also names the resolved skill directory for executable helpers."""
 
     declared: list[dict] = []
     monkeypatch.setattr(
@@ -189,7 +204,8 @@ def test_load_skill_declares_typed_structured_content_for_body(pack: Path, monke
     tool = build_load_skill_tool(_agent(pack), rt)
     out = tool.func(skill_id="quality-rubric")
 
-    assert "SECRET_PROCEDURE_MARKER" in out  # model-facing body unchanged
+    assert "SECRET_PROCEDURE_MARKER" in out
+    assert "Skill directory (use as SKILL_ROOT):" in out
     assert len(declared) == 1
     shape = declared[0]
     assert next(iter(shape)) == "message"

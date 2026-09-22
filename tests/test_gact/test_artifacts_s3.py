@@ -818,9 +818,32 @@ def test_content_write_reversions_own_registered_artifact(tmp_path, monkeypatch)
         Proposal(name="report.md", kind="report", content="v2 changed\n"),
         workspace_id="ws1",
     )
-    assert second.accepted and second.created
-    assert second.version.version == 2
+    assert second.accepted and second.created and second.version.version == 2
     assert (tmp_path / "report.md").read_text(encoding="utf-8") == "v2 changed\n"
+
+
+def test_content_write_reversions_own_registered_artifact_from_absolute_name(tmp_path, monkeypatch):
+    """An absolute write target shares the basename identity used by the registry."""
+
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    app, sess, _ = _make_app(tmp_path)
+    target = tmp_path / "report.md"
+    first = promote_proposal(
+        app,
+        sess.id,
+        Proposal(name=str(target), kind="report", content="v1\n"),
+        workspace_id="ws1",
+    )
+    assert first.accepted and first.created and first.version.version == 1
+
+    second = promote_proposal(
+        app,
+        sess.id,
+        Proposal(name=str(target), kind="report", content="v2 changed\n"),
+        workspace_id="ws1",
+    )
+    assert second.accepted and second.created and second.version.version == 2
+    assert target.read_text(encoding="utf-8") == "v2 changed\n"
 
 
 def test_content_write_refused_in_plan_mode(tmp_path, monkeypatch):
@@ -854,9 +877,7 @@ def test_registered_artifact_publication_allowed_in_architect_mode(tmp_path, mon
     assert (tmp_path / "research-report.md").read_text(encoding="utf-8") == "# Findings\n"
 
 
-def test_user_deny_blocks_registered_artifact_publication_in_architect_mode(
-    tmp_path, monkeypatch
-):
+def test_user_deny_blocks_registered_artifact_publication_in_architect_mode(tmp_path, monkeypatch):
     """Architect publication remains subordinate to an explicit user permission deny."""
     monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
     app, sess, _ = _make_app(

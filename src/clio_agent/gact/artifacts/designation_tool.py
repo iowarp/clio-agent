@@ -84,6 +84,7 @@ def build_create_artifact_tool(agent_def: "AgentDef") -> Any:
         create_artifact,
         name="create_artifact",
         presentation="artifact",
+        domain="artifacts",
         title="Create Artifact",
         representation="chip",
         desc=(

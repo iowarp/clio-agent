@@ -32,6 +32,14 @@ CRASH_RECORD_NAME = "clio-runtime-crash.json"
 #: unbounded payloads in error details.
 _LOG_TAIL_LINES = 30
 
+# ``clio_run stop`` terminates the daemon with a non-zero platform status on
+# Windows (observed as 15).  The watcher cannot infer intent from that status
+# alone: the same status could also come from an external termination.  Record
+# the lifecycle-owned stop request before invoking the launcher so only that
+# exact daemon exit is treated as expected.
+_expected_exit_pids: set[int] = set()
+_expected_exit_lock = threading.Lock()
+
 
 class _WaitableProcess(Protocol):
     """The slice of ``subprocess.Popen`` the watcher needs (tests use real Popen)."""
@@ -95,6 +103,23 @@ def _exit_code_hex(exit_code: int) -> str:
     return f"0x{exit_code & 0xFFFFFFFF:08X}"
 
 
+def expect_daemon_exit(pid: int) -> None:
+    """Mark ``pid`` as intentionally stopping through the managed lifecycle."""
+
+    with _expected_exit_lock:
+        _expected_exit_pids.add(pid)
+
+
+def _consume_expected_exit(pid: int) -> bool:
+    """Return and clear whether ``pid`` has a lifecycle-owned stop request."""
+
+    with _expected_exit_lock:
+        if pid not in _expected_exit_pids:
+            return False
+        _expected_exit_pids.remove(pid)
+        return True
+
+
 def summarize_crash(record: dict[str, Any]) -> str:
     """One-line human summary used inside liveness error messages."""
 
@@ -122,7 +147,7 @@ def watch_daemon_process(
 
     def _watch() -> None:
         exit_code = proc.wait()
-        if exit_code == 0:
+        if exit_code == 0 or _consume_expected_exit(proc.pid):
             return
         record = {
             "pid": proc.pid,

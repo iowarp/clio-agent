@@ -854,8 +854,10 @@ details.card .card-body .hint { margin-top: 12px; }
 .home-v2 .os-card { min-height: 350px; padding: 28px; border-radius: 18px; background: linear-gradient(145deg, rgba(23,28,34,.96), rgba(15,18,23,.96)); border-color: #272e37; cursor: pointer; }
 .home-v2 .os-card:hover { transform: translateY(-3px); border-color: rgba(240,138,63,.48); box-shadow: 0 22px 48px rgba(0,0,0,.25); }
 .home-v2 .os-card.is-detected { border-color: rgba(22,184,180,.55); box-shadow: inset 0 0 0 1px rgba(22,184,180,.15); }
-.home-v2 .os-card.is-detected .os-badge { background: rgba(22,184,180,.12); color: #8ee5dc; border-color: rgba(22,184,180,.28); }
-.os-mark { width: 46px; height: 46px; display: grid; place-items: center; margin-bottom: 28px; border-radius: 12px; background: #0c0f13; border: 1px solid #2b323b; color: #cfd5dc; font-size: 25px; }
+.home-v2 .os-card.is-detected .os-badge { background: #103536; color: #8ee5dc; border-color: rgba(22,184,180,.42); }
+.os-mark { width: 46px; height: 46px; display: grid; place-items: center; margin-bottom: 28px; border-radius: 12px; background: #0c0f13; border: 1px solid #2b323b; color: #cfd5dc; }
+.os-brand-icon { width: 27px; height: 27px; display: block; }
+.os-brand-icon--apple, .os-brand-icon--linux { filter: invert(88%) sepia(5%) saturate(227%) hue-rotate(169deg) brightness(96%) contrast(91%); }
 .home-v2 .os-name { font-size: 26px; }
 .home-v2 .os-arch { color: var(--muted); margin-top: 5px; }
 .home-v2 .os-actions { margin-top: auto; }

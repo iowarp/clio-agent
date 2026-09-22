@@ -221,7 +221,22 @@ def new_turn_state(
     # app/session here -- not only inside the narrow dynamic-agent forward
     # wrappers -- makes active_app()/active_session_id() reliable on the executor
     # rail for ALL turn paths, incl. the CLIO orchestrator forward (#735 3).
-    _ctx.set_turn_identity(app=app, session_id=sid, turn_id=turn_id, trace_id=trace_id)
+    behavior = user_msg.metadata.get("behavior") if isinstance(user_msg.metadata, dict) else None
+    execution_mode = str(behavior.get("execution_mode") or "") if isinstance(behavior, dict) else ""
+    execution_blueprint_id = ""
+    if execution_mode == "deep_research":
+        from clio_agent.gact.message_contract import (  # noqa: PLC0415
+            DEEP_RESEARCH_BLUEPRINT_ID,
+        )
+
+        execution_blueprint_id = DEEP_RESEARCH_BLUEPRINT_ID
+    _ctx.set_turn_identity(
+        app=app,
+        session_id=sid,
+        turn_id=turn_id,
+        trace_id=trace_id,
+        execution_blueprint_id=execution_blueprint_id,
+    )
     from clio_agent.gact.app import _dspy_images_from_parts  # noqa: PLC0415
     from clio_agent.gact.messaging import _dspy_files_from_parts  # noqa: PLC0415
     from clio_agent.gact.native_delivery_outcome import (  # noqa: PLC0415

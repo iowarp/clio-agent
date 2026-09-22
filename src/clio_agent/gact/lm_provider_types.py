@@ -31,7 +31,7 @@ class LMProviderPreset(BaseModel):
     suggested_model: str
     requires_api_key: bool = True
     api_key_env: str = ""
-    auth_method: Literal["none", "api_key", "oauth"] = "api_key"
+    auth_method: Literal["none", "api_key", "oauth", "subscription"] = "api_key"
     is_authenticated: bool = False
     description: str = ""
     status: Literal[

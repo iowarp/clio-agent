@@ -33,6 +33,229 @@ TUI/HTTP surface aren't tracked here.
   destination (the agent, a permission gate, or a run) is declared by the
   catalog rather than hard-coded.
 
+
+## [0.9.4.14] - 2026-09-22
+
+### Fixed
+
+- Bundle Desktop v0.11.2.15 with front-door SSH jump-route editing, native
+  interactive OpenSSH authentication semantics, and a real connection test
+  that uses the deployment transport.
+
+## [0.9.4.13] - 2026-09-22
+
+### Added
+
+- Make the active CLIO instance the durable owner of infrastructure targets,
+  service records, external endpoints, lifecycle operations, progress, logs,
+  connection strategies, and configurable installation roots.
+- Materialize uploaded sources as safe working copies in the active workspace
+  and provide executable visual PDF inspection workflows for agents.
+
+### Changed
+
+- Delegate only interactive SSH authentication and byte transport to Desktop,
+  using the system OpenSSH client so host-key prompts, passwords, Kerberos,
+  security keys, ProxyJump chains, Duo, and rolling passwords remain native.
+- Render remote files by media type and keep binary/PDF previews outside the
+  agent loop so workspace browsing cannot block an active session.
+
+### Fixed
+
+- Reuse one SSH connection for probes, lifecycle operations, and private
+  forwards; restore transports after network loss without redeploying services
+  or replaying destructive operations.
+- Select loopback, directly reachable TCP/HTTPS, or SSH forwarding from the
+  active CLIO's perspective and keep managed deployments distinct from
+  connection-only external services.
+- Keep composer behavior menus mutually exclusive, synchronize provider/model
+  changes across live sessions, and preserve structured remote `@` references.
+
+## [0.9.4.12] - 2026-09-20
+
+### Fixed
+
+- Apply the Deep Research execution mode as the real `deep-researcher`
+  blueprint over the selected base agent, including every spawned researcher
+  and critic, without changing the session's persistent base blueprint.
+- Allow an agent to re-version its own artifact when it authored the target
+  with an absolute workspace path.
+- Bundle Desktop v0.11.2.13 and CLIO Web Search v0.3.1 for reliable remote
+  general search and clean service shutdown.
+- Preserve the documented image-input capability of Claude Code aliases in the
+  provider catalog instead of reducing unrefreshed aliases to text-only.
+- Consolidate version status and direct updates into the workspace bottom bar,
+  and restore provider visibility management to the model picker's footer.
+
+## [0.9.4.11] - 2026-09-20
+
+### Fixed
+
+- Keep the native desktop workspace inside the height remaining below the
+  title bar, so Settings and version controls remain visible on short windows
+  and route content scrolls within the window.
+
+## [0.9.4.10] - 2026-09-20
+
+This is the signed update target used to verify Desktop-only, CLIO-only, and
+combined installed updates from the repaired v0.9.4.9 updater.
+
+## [0.9.4.9] - 2026-09-20
+
+### Fixed
+
+- Managed CLIO updates now replace stale package code and metadata left by
+  older bundled runtimes, purge cached bytecode, and verify the version Python
+  actually imports before reporting success.
+
+## [0.9.4.8] - 2026-09-20
+
+### Fixed
+
+- Keep the workspace navigation footer visible on short desktop windows so
+  Settings and the version/update control stay reachable while the workspace
+  list scrolls independently.
+
+## [0.9.4.7] - 2026-09-20
+
+This is the signed update target used to verify Desktop-only, CLIO-only, and
+combined installed updates from v0.9.4.6.
+
+## [0.9.4.6] - 2026-09-20
+
+### Fixed
+
+- Managed bundled CLIO updates now use the runtime's shipped `bin/uv`
+  executable, so the individual CLIO and combined update actions perform the
+  requested upgrade instead of failing before launch.
+
+## [0.9.4.5] - 2026-09-20
+
+### Fixed
+
+- Keep the desktop's compact version and update control visible beside
+  Settings, including on shorter windows.
+
+## [0.9.4.4] - 2026-09-20
+
+This intentionally minimal follow-up is the live acceptance target for the
+independent Desktop-only, CLIO-only, and combined signed updater paths added in
+v0.9.4.3.
+
+## [0.9.4.3] - 2026-09-20
+
+### Fixed
+
+- Desktop and agent releases now expose truthful, independently actionable
+  version state; the bundled Windows agent can update in place while desktop
+  updates use the signed lightweight installer, with a combined one-restart
+  path when both are behind.
+- ALCF sign-in now installs missing Argonne/Globus support quietly on the
+  connected agent and forces a fresh interactive login, instead of ending with
+  a manual `pip install` instruction or reusing a token the gateway rejected.
+- Provider catalogs now reuse their in-process snapshot, refresh in the
+  background without replacing usable picker rows, broadcast explicit model
+  refreshes to connected clients, and keep ready CLI-provider aliases usable.
+
+## [0.9.4.2] - 2026-09-20
+
+This maintenance release completes the desktop infrastructure and remote
+deployment acceptance work begun in v0.9.4.1. It was live-verified by deploying
+CLIO and CLIO Web Search from the Windows desktop to Ares, connecting the
+service to that remote agent, and completing a Deep Research run through it.
+
+### Added
+
+- Remote deployments can keep CLIO data, runtime coordination, and clio-core
+  CTE state under an explicit persistent installation root.
+- Desktop-managed Web Search connections are stored as normal MCP
+  configuration, including their deployment identity and advertised tool
+  catalog.
+- Missing optional provider dependencies can be installed by the desktop
+  workflow instead of ending at an unactionable error.
+
+### Changed
+
+- The bundled Windows runtime is packed once for installation and unpacked
+  atomically on first managed boot, substantially reducing install and
+  uninstall time without moving initialization back into the user's first
+  agent launch.
+- Installed launchers root mutable agent and clio-core state under the selected
+  installation, including non-system drives on Windows and custom persistent
+  filesystems on Linux.
+- Active turns receive a graceful drain window before a forced shutdown, while
+  independent CLIO and MCP processes remain outside the desktop ownership tree.
+
+### Fixed
+
+- Desktop boot, shutdown, provider configuration, MCP fleet recovery, sandbox
+  reporting, and clio-core capacity checks now preserve the intended lifecycle
+  semantics across local and SSH-managed installations.
+- Codex-backed remote runs retain their provider configuration without
+  requiring an unrelated LM Studio endpoint.
+- The release bundle preinstalls the Web Search adapter and Argonne/Globus
+  support needed by installer-selected services and providers.
+
+## [0.9.4.1] - 2026-09-19
+
+This maintenance release repairs the bundled desktop first-launch path found
+during external-user verification of v0.9.4, and adds signed desktop
+auto-update alongside a set of desktop-panel and provider-handshake fixes.
+
+### Added
+
+- The desktop Quit action now stops the shared local core only when the
+  quitting client is its last one, so a second open desktop window no longer
+  loses its backend out from under it.
+- Protected-execution (sandbox) setup can now be started from the desktop,
+  instead of requiring a separate elevated command.
+- Tool catalog rows now expose each tool's typed inputs/outputs and its
+  domain, instead of an opaque name-only listing.
+- A read-only marketplace update check reports when a newer version of a
+  registered agent-blueprint source is available, without installing it.
+- The desktop versions panel's blocks are now driven by the backend's
+  reported capabilities, instead of a fixed, potentially stale list.
+- Desktop bundles are now signed, and the app checks for and applies updates
+  automatically.
+- The Windows installer now carries CLIO's own wizard artwork and application
+  icon instead of the packaging tool's defaults.
+
+### Fixed
+
+- A provider's first bind now carries the handshake-applied settings
+  (including the thinking-level echo), instead of only taking effect on a
+  later reconnect.
+- Desktop quit latency is reduced: LM Studio discovery is interrupted
+  immediately, and the stop-helper is reaped as soon as its port goes down
+  instead of waiting out a fixed timeout.
+- Installed blueprints are now found correctly through the Windows packaged
+  install path's alias.
+- Bundled desktop packaging now prepares Python bytecode before installation,
+  so the first launch does not perform one-time import compilation or fall
+  through to the manual service-address screen.
+- Bundled desktop startup now launches the local service without eagerly
+  selecting or authenticating a model provider; provider credentials are
+  validated only after the app is available and the user chooses a provider.
+- Windows bundles retain the Codex SDK's packaged executable while pruning
+  generated Python launcher stubs, so the Codex subscription provider remains
+  usable after installation.
+- Managed Windows desktop launches keep the local backend process tree hidden
+  while retaining its diagnostic boot log.
+- Managed desktop sessions use a stable app-data workspace instead of
+  inheriting whichever directory launched the executable.
+- Managed desktop state is isolated from CLI and test profiles while the full
+  marketplace blueprint catalog remains available on a fresh installation.
+- Agent-less desktop startup defers loading DSPy's model runtime until a real
+  tool is constructed, shortening the connection-critical launch path.
+- The desktop connection indicator now explains its current health or degraded
+  state on hover instead of relying on color alone.
+- Windows upgrades and uninstalls stop only the managed CLIO process tree before
+  replacing files, so the bundled runtime is removed cleanly; the standard
+  opt-in checkbox still controls whether user data is also removed.
+- Four-part CLIO maintenance versions such as `0.9.4.1` are translated to
+  numeric SemVer build metadata for Tauri while public tags and asset names
+  keep the CLIO release version.
+
 ## [0.9.4] - 2026-09-16
 
 This patch release completes the v0.9.3 publication by repairing the CLIO TUI

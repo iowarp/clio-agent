@@ -281,9 +281,9 @@ async def test_noop_makes_zero_network_calls() -> None:
     zero network traffic on the probe client.
     """
     ctx = HandshakeContext(
-        provider_id="codex",
-        provider_kind="codex",
-        api_base="",
+        provider_id="claude_code",
+        provider_kind="claude_code",
+        api_base="claude-code://sdk",
         allow_external_sources=False,
     )
     client = FakeAsyncClient()
@@ -294,8 +294,7 @@ async def test_noop_makes_zero_network_calls() -> None:
     assert conn.auth is AuthState.NOT_REQUIRED
 
     models = await handshake.discover_models(client, ctx)
-    # The codex registry catalog declares candidate model ids.
-    assert {m["id"] for m in models} >= {"gpt-5.5", "gpt-5.1"}
+    assert {m["id"] for m in models} == {"fable", "sonnet", "opus", "haiku"}
 
     profile = await handshake.discover_model_config(client, ctx, {"id": "x"})
     assert profile.id == "x"
@@ -317,10 +316,29 @@ async def test_noop_discover_models_unknown_provider_is_empty() -> None:
 
 
 @pytest.mark.asyncio
-async def test_noop_full_handshake_ok_with_enriched_context() -> None:
-    """A full ``handshake()`` over NoOp is OK, lists registry models, and the base
-    enrichment fills each model's context window from the offline source cascade —
-    all without a single HTTP call to the provider (iowarp/clio-agent#740)."""
+async def test_noop_preserves_documented_claude_image_input() -> None:
+    """Static Claude aliases retain documented image input without claiming availability."""
+
+    ctx = HandshakeContext(
+        provider_id="claude_code",
+        provider_kind="claude_code",
+        api_base="claude-code://sdk",
+        allow_external_sources=False,
+    )
+    handshake = NoOpHandshake(provider=object())
+
+    models = await handshake.discover_models(FakeAsyncClient(), ctx)
+    sonnet = next(model for model in models if model["id"] == "sonnet")
+    profile = await handshake.discover_model_config(FakeAsyncClient(), ctx, sonnet)
+
+    assert sorted(profile.capabilities) == ["image", "text"]
+    assert profile.raw["capability_evidence"]["source"] == "provider_documentation"
+    assert profile.raw["capability_evidence"]["reason"] == "modality_documented"
+
+
+@pytest.mark.asyncio
+async def test_noop_full_handshake_lists_static_candidates_without_network() -> None:
+    """A generic no-auth CLI handshake lists candidates without claiming liveness."""
 
     class _NoNetClient(FakeAsyncClient):
         async def get(self, url: str, headers: dict[str, str] | None = None) -> FakeResponse:
@@ -330,19 +348,17 @@ async def test_noop_full_handshake_ok_with_enriched_context() -> None:
     handshake._open_client = _const_client(_NoNetClient())  # type: ignore[method-assign]
 
     ctx = HandshakeContext(
-        provider_id="codex",
-        provider_kind="codex",
-        api_base="",
+        provider_id="claude_code",
+        provider_kind="claude_code",
+        api_base="claude-code://sdk",
         allow_external_sources=True,
     )
     report = await handshake.handshake(ctx)
     assert report.connectivity is ConnectivityState.OK
     assert report.auth is AuthState.NOT_REQUIRED
     by_id = {m.id: m for m in report.models}
-    assert {"gpt-5.5", "gpt-5.5-codex", "gpt-5.1"} <= set(by_id)
-    # Every candidate model carries a resolved context window (no None leaks).
-    for model in report.models:
-        assert model.context_window and model.context_window > 0
+    assert {"fable", "sonnet", "opus", "haiku"} == set(by_id)
+    assert report.models_source == "static"
 
 
 def _const_client(client: Any) -> Any:

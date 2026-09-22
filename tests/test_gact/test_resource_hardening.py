@@ -532,12 +532,15 @@ def test_delete_removes_the_resource_and_announces_it(tmp_path: Path) -> None:
         sid = _session_in(client, workspace_id)
         resource = _upload(client, workspace_id, name="gone.md", content=b"# bye\n")
         root = app.state.resource_store.root / workspace_id / resource["id"]
+        workspace_copy = Path(str(resource["workspace_path"]))
         assert root.exists()
+        assert workspace_copy.exists()
 
         deleted = client.delete(f"/v1/workspaces/{workspace_id}/resources/{resource['id']}")
 
         assert deleted.status_code == 204, deleted.text
         assert not root.exists()
+        assert not workspace_copy.exists()
         gone = client.get(f"/v1/workspaces/{workspace_id}/resources/{resource['id']}")
         assert gone.status_code == 404
         announced = _workspace_events(app, sid, "resource.deleted")

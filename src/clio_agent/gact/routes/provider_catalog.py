@@ -22,6 +22,10 @@ def register_normalized_provider_catalog_routes(app: FastAPI, deps: "GactDeps") 
 
     @app.get("/v1/provider-catalog")
     async def provider_catalog(refresh: bool = False) -> dict[str, object]:
+        cached = getattr(app.state, "provider_catalog", None)
+        if not refresh and isinstance(cached, dict):
+            return cached
+
         providers = await asyncio.gather(
             *(discover_provider(preset, refresh=refresh) for preset in as_lm_presets())
         )

@@ -379,9 +379,12 @@ PROVIDERS: tuple[Provider, ...] = (
         # Codex does not use an HTTP base. This is an identity marker only;
         # the official Python SDK owns its pinned runtime.
         api_base="codex://sdk",
-        suggested_model="gpt-5.5",
+        # Codex model entitlement is account-specific and changes independently
+        # of CLIO releases. Never auto-select a compiled-in candidate; a
+        # successful SDK catalog check supplies the account's live default.
+        suggested_model="",
         requires_api_key=False,
-        auth_method="none",
+        auth_method="subscription",
         is_kind_default=True,
         supports_vision=True,
         supports_live_catalog=False,
@@ -416,9 +419,11 @@ PROVIDERS: tuple[Provider, ...] = (
         provider_kind="claude_code",
         litellm_prefix="claude_code",
         api_base="claude-code://sdk",
-        suggested_model="sonnet",
+        # Model entitlement and the account default are discovered by a live
+        # Claude Code probe. Static aliases are candidates, never defaults.
+        suggested_model="",
         requires_api_key=False,
-        auth_method="none",
+        auth_method="subscription",
         is_kind_default=True,
         supports_vision=True,
         supports_live_catalog=False,
@@ -450,21 +455,25 @@ PROVIDERS: tuple[Provider, ...] = (
                 "fable",
                 "Claude Fable (Claude Code alias)",
                 "Candidate Claude Code alias; not guaranteed by account entitlement.",
+                ("text", "image"),
             ),
             ModelEntry(
                 "haiku",
                 "Claude Haiku (Claude Code alias)",
                 "Candidate Claude Code alias; not guaranteed by account entitlement.",
+                ("text", "image"),
             ),
             ModelEntry(
                 "sonnet",
                 "Claude Sonnet (Claude Code alias)",
                 "Candidate Claude Code alias; not guaranteed by account entitlement.",
+                ("text", "image"),
             ),
             ModelEntry(
                 "opus",
                 "Claude Opus (Claude Code alias)",
                 "Candidate Claude Code alias; not guaranteed by account entitlement.",
+                ("text", "image"),
             ),
         ),
     ),

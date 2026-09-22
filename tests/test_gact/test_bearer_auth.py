@@ -78,7 +78,11 @@ def test_loopback_request_keeps_trust_socket_access(tmp_path: Path, address: str
     assert response.status_code == 200
 
 
-def test_remote_request_is_unchanged_without_configured_token(tmp_path: Path) -> None:
+def test_remote_request_is_unchanged_without_configured_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("CLIO_AUTH_TOKEN", raising=False)
     app = _build_test_app(tmp_path, bearer_token=None)
 
     with TestClient(app) as client:
@@ -113,6 +117,30 @@ def test_bearer_token_uses_environment_fallback(
 ) -> None:
     delete_config("gact.auth.bearer_token")
     monkeypatch.setenv("CLIO_GACT_BEARER_TOKEN", _BEARER_TOKEN)
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=None)
+    app.state.peer_address_getter = lambda _scope: _REMOTE_ADDRESS
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/v1/capabilities",
+            headers={"Authorization": f"Bearer {_BEARER_TOKEN}"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["auth"]["current"] == "bearer"
+
+
+def test_bearer_token_falls_back_to_desktop_launcher_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``CLIO_AUTH_TOKEN`` is the desktop launcher's contract (it exports that
+    env var to the server process it spawns, then authenticates its own
+    privileged calls with it) -- distinct from, and a fallback behind, the
+    ``gact.auth.bearer_token`` config / ``CLIO_GACT_BEARER_TOKEN`` env pair."""
+    delete_config("gact.auth.bearer_token")
+    monkeypatch.delenv("CLIO_GACT_BEARER_TOKEN", raising=False)
+    monkeypatch.setenv("CLIO_AUTH_TOKEN", _BEARER_TOKEN)
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=None)
     app.state.peer_address_getter = lambda _scope: _REMOTE_ADDRESS
 

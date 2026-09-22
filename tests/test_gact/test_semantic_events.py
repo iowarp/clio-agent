@@ -308,6 +308,7 @@ def test_tool_observer_stamps_curated_title_on_call_events(tmp_path: Path) -> No
         desc="rank",
         args={},
         title="Rank stations",
+        domain="workspace",
     )
     instrument_tools([tool])
 

@@ -41,15 +41,66 @@ _V0517_ASSETS: list[str] = [
     "CLIO.Desktop_0.7.1_x64_en-US.msi",
 ]
 
-# The complete listing = v0.5.17 plus the one asset it dropped.
-_COMPLETE_ASSETS: list[str] = [*_V0517_ASSETS, "CLIO.Desktop_0.7.1_aarch64-bundled.dmg"]
+# The signed updater payloads + detached signatures + manifests added for
+# v0.9.4.1 auto-update (#A7) -- v0.5.17 predates all of these, so they are
+# kept as a separate fixture rather than folded into the "real snapshot"
+# _V0517_ASSETS list above.
+_SIGNING_ASSETS: list[str] = [
+    "CLIO.Desktop_0.7.1_x64-setup-bundled.exe.sig",
+    "CLIO.Desktop-aarch64-apple-darwin-bundled.app.tar.gz",
+    "CLIO.Desktop-aarch64-apple-darwin-bundled.app.tar.gz.sig",
+    "CLIO.Desktop_0.7.1_x64-setup.exe.sig",
+    "CLIO.Desktop-aarch64-apple-darwin.app.tar.gz",
+    "CLIO.Desktop-aarch64-apple-darwin.app.tar.gz.sig",
+    "CLIO.Desktop-x86_64-apple-darwin.app.tar.gz",
+    "CLIO.Desktop-x86_64-apple-darwin.app.tar.gz.sig",
+    "CLIO.Desktop_0.7.1_amd64.AppImage.sig",
+    "CLIO.Desktop_0.7.1_aarch64.AppImage.sig",
+    "latest.json",
+    "latest-lite.json",
+]
+
+# The complete listing = v0.5.17 plus the one asset it dropped, plus the
+# signing-era assets it predates.
+_COMPLETE_ASSETS: list[str] = [
+    *_V0517_ASSETS,
+    "CLIO.Desktop_0.7.1_aarch64-bundled.dmg",
+    *_SIGNING_ASSETS,
+]
 
 
-def test_v0517_flags_only_the_missing_bundled_dmg() -> None:
-    """The v0.5.17 listing is missing exactly the aarch64 bundled .dmg."""
+# The exact EXPECTED_ASSETS labels the signed-updater feature (v0.9.4.1
+# auto-update, #A7) introduced -- must track check_release_completeness.py's
+# EXPECTED_ASSETS additions 1:1.
+_SIGNING_LABELS: set[str] = {
+    "bundled nsis sig (x86_64 Windows)",
+    "bundled macOS updater bundle (aarch64)",
+    "bundled macOS updater sig (aarch64)",
+    "lite nsis sig (x86_64 Windows)",
+    "lite macOS updater bundle (aarch64)",
+    "lite macOS updater sig (aarch64)",
+    "lite macOS updater bundle (x86_64)",
+    "lite macOS updater sig (x86_64)",
+    "lite AppImage sig (x86_64 Linux)",
+    "lite AppImage sig (aarch64 Linux)",
+    "Tauri update manifest (bundled)",
+    "Tauri update manifest (lite)",
+}
+
+
+def test_signing_assets_fixture_matches_the_signing_labels() -> None:
+    """_SIGNING_ASSETS satisfies exactly _SIGNING_LABELS -- the two fixtures stay in sync."""
+    missing_labels = {label for label, _ in find_missing(_SIGNING_ASSETS)}
+    assert missing_labels & _SIGNING_LABELS == set()
+
+
+def test_v0517_flags_only_the_missing_bundled_dmg_and_predates_signing() -> None:
+    """The v0.5.17 listing is missing the aarch64 bundled .dmg (its own era's gap) plus every
+    signed-updater asset the later v0.9.4.1 auto-update slice introduced (v0.5.17 shipped with
+    none of those)."""
     missing = find_missing(_V0517_ASSETS)
-    labels = [label for label, _ in missing]
-    assert labels == ["bundled dmg (aarch64 macOS)"]
+    labels = {label for label, _ in missing}
+    assert labels == {"bundled dmg (aarch64 macOS)"} | _SIGNING_LABELS
 
 
 def test_complete_listing_has_no_gaps() -> None:

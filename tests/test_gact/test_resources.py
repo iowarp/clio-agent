@@ -303,6 +303,34 @@ def test_resumable_upload_computes_server_identity_and_survives_restart(tmp_path
         assert record["detection_source"] == "utf8_and_extension"
         assert record["mime_mismatch"] is True
         assert record["sha256"] == hashlib.sha256(content).hexdigest()
+        workspace_copy = Path(str(record["workspace_path"]))
+        assert (
+            workspace_copy
+            == (
+                tmp_path / "workspace" / ".clio" / "inputs" / str(record["id"]) / "notes.md"
+            ).resolve()
+        )
+        assert workspace_copy.read_bytes() == content
+        stored = restarted.state.resource_store.get(workspace_id, str(record["id"]))
+        assert stored is not None
+        custody = restarted.state.resource_store.content_path(stored)
+        assert workspace_copy != custody
+        source_entry = next(
+            entry
+            for entry in client.get(f"/v1/workspaces/{workspace_id}/files").json()["entries"]
+            if entry.get("resource_id") == record["id"]
+        )
+        assert source_entry["path"] == f".clio/inputs/{record['id']}/notes.md"
+        assert source_entry["display_path"] == f"Sources/{record['id']}/notes.md"
+        assert source_entry["type"] == "file"
+        assert source_entry["internal"] is False
+        assert source_entry["source"] == "managed_input"
+        assert source_entry["resource_id"] == record["id"]
+        assert source_entry["size"] == len(content)
+        assert source_entry["media_type"] == "text/markdown"
+
+        workspace_copy.write_bytes(b"mutable workspace edit\n")
+        assert custody.read_bytes() == content
         assert client.get(created["upload_url"]).content == content
 
 
@@ -449,9 +477,12 @@ def test_workspace_deletion_cascades_resource_bytes_and_index(tmp_path: Path) ->
             media_type="text/markdown",
         )
         resource_root = app.state.resource_store.root / workspace_id / str(record["id"])
+        workspace_copy = Path(str(record["workspace_path"]))
         assert resource_root.exists()
+        assert workspace_copy.exists()
         assert client.delete(f"/v1/workspaces/{workspace_id}").status_code == 204
         assert not resource_root.exists()
+        assert not workspace_copy.exists()
         assert app.state.resource_store.list(workspace_id) == []
 
 
@@ -1185,6 +1216,8 @@ def test_resource_context_is_private_from_transcript_and_points_agent_to_tools(
         stored = app.state.resource_store.get(workspace_id, str(resource["id"]))
         assert stored is not None
         assert str(app.state.resource_store.content_path(stored)) not in prompt
+        assert str(resource["workspace_path"]) in prompt
+        assert "Filesystem tools may read or transform that copy" in prompt
 
         messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
         user = next(row for row in messages if row["id"] == "resource_private_context")
@@ -1194,6 +1227,35 @@ def test_resource_context_is_private_from_transcript_and_points_agent_to_tools(
         assert visible_text == "Summarize the attachment"
         assert "private runtime context" not in visible_text
         assert "private attachment content" not in visible_text
+
+
+def test_ready_resource_copies_to_another_agent_owned_workspace(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=FakeClioAgent(answer="unused"))
+    with TestClient(app) as client:
+        source_workspace = _workspace(client, tmp_path / "source", "source")
+        destination_workspace = _workspace(client, tmp_path / "destination", "destination")
+        source = _upload(
+            client,
+            source_workspace,
+            name="paper.pdf",
+            content=b"%PDF-1.4\nsource",
+            media_type="application/pdf",
+        )
+
+        response = client.post(
+            f"/v1/workspaces/{source_workspace}/resources/{source['id']}/copy",
+            json={"destination_workspace_id": destination_workspace},
+        )
+
+        assert response.status_code == 201, response.text
+        copied = response.json()
+        assert copied["id"] != source["id"]
+        assert copied["workspace_id"] == destination_workspace
+        assert copied["sha256"] == source["sha256"]
+        copied_path = Path(str(copied["workspace_path"]))
+        assert copied_path.is_relative_to(tmp_path / "destination")
+        assert copied_path.read_bytes() == b"%PDF-1.4\nsource"
+        assert copied_path != Path(str(source["workspace_path"]))
 
 
 def test_resource_context_exposes_durable_local_conversion_task_before_remote_job(

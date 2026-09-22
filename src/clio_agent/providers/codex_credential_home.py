@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import logging
 import os
 import shutil
@@ -55,6 +56,43 @@ _CODEX_HOME_OWNER = ".clio-owner-pid"
 _CODEX_HOME_PREFIX = "clio-codex-sdk-"
 #: Staging prefix, deliberately NOT matched by :data:`_CODEX_HOME_PREFIX`'s glob.
 _CODEX_HOME_STAGING_PREFIX = "clio-codex-stage-"
+
+
+def codex_auth_path() -> Path:
+    """Return the authentication file used by the official Codex SDK."""
+
+    configured_home = os.environ.get("CODEX_HOME", "").strip()
+    source_home = Path(configured_home) if configured_home else Path.home() / ".codex"
+    return source_home / "auth.json"
+
+
+def codex_credentials_present(path: Path | None = None) -> bool:
+    """Return whether Codex has non-empty, readable authentication material.
+
+    This is only a local presence check. Provider readiness still requires a
+    successful SDK request; an existing file is never proof that it works.
+    """
+
+    try:
+        payload = json.loads((path or codex_auth_path()).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+
+    def _contains_credential(value: object, key: str = "") -> bool:
+        normalized_key = key.casefold()
+        if isinstance(value, str):
+            return bool(value.strip()) and (
+                "token" in normalized_key or "api_key" in normalized_key
+            )
+        if isinstance(value, dict):
+            return any(
+                _contains_credential(item, str(item_key)) for item_key, item in value.items()
+            )
+        if isinstance(value, list):
+            return any(_contains_credential(item, key) for item in value)
+        return False
+
+    return isinstance(payload, dict) and _contains_credential(payload)
 
 
 def _capacity_error() -> Exception:
@@ -160,9 +198,7 @@ class IsolatedCodexHome:
     """
 
     def __init__(self) -> None:
-        configured_home = os.environ.get("CODEX_HOME", "").strip()
-        source_home = Path(configured_home) if configured_home else Path.home() / ".codex"
-        self._source_auth = source_home / "auth.json"
+        self._source_auth = codex_auth_path()
         self._temporary_home: Path | None = None
         self._seed_digest = ""
 

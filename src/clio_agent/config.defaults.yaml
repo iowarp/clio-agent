@@ -499,6 +499,12 @@ gact.blueprint_registry.url: "https://github.com/iowarp/clio-agent-marketplace.g
 # run before timing out; raise for a large repo or slow link.
 gact.blueprint_source.clone_timeout_s: 30.0
 
+# CLIO_BLUEPRINT_SOURCE_LS_REMOTE_TIMEOUT_S  (float)  <- src/clio_agent/gact/blueprint_update_check.py
+# Seconds a read-only `git ls-remote`/`rev-parse` marketplace update check
+# may run before timing out; lower to keep the desktop versions panel
+# snappy, raise for a slow link.
+gact.blueprint_source.ls_remote_timeout_s: 10.0
+
 # CLIO_GACT_CANCELLATION_GRACE_S  (float)  <- src/clio_agent/gact/routes/session_cancellation.py
 # Seconds a cooperative session cancel is given before the turn task is
 # hard-cancelled; raise to let a mid-tool-call turn unwind cleanly.
@@ -763,10 +769,10 @@ arc.clio_core_write_retry.backoff_factor: 3.0
 # give a transient pressure/restart condition more time to clear.
 arc.clio_core_write_retry.first_delay_s: 0.2
 
-# CLIO_CORE_PORT  (str)  <- src/clio_agent/arc/clio_core_liveness.py
+# CLIO_CORE_PORT  (str)  <- src/clio_agent/arc/clio_core_config.py
 # Overrides the clio-core RPC port the liveness prober and client dial; set
 # when clio-core is bound to a non-default port.
-# arc.core_port:  # default unset; resolved in code
+# arc.core_port:  # computed at runtime: str(_DEFAULT_CTE_CORE_PORT)
 
 # CLIO_ARC_CTE_DIR  (str)  <- src/clio_agent/arc/clio_core_config.py
 # Directory clio-core's CTE artifacts (config, file-tier data, logs) are

@@ -62,6 +62,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_AUTOCOMPACT_PCT` | `autocompact.pct` | str | `0.85` | `src/clio_agent/gact/runtime/context_tokens.py` |
 | `CLIO_BLUEPRINT_REGISTRY_URL` | `gact.blueprint_registry.url` | str | `https://github.com/iowarp/clio-agent-marketplace.git` | `src/clio_agent/gact/agent_blueprints.py` |
 | `CLIO_BLUEPRINT_SOURCE_CLONE_TIMEOUT_S` | `gact.blueprint_source.clone_timeout_s` | float | `30.0` | `src/clio_agent/gact/agent_blueprint_sources.py` |
+| `CLIO_BLUEPRINT_SOURCE_LS_REMOTE_TIMEOUT_S` | `gact.blueprint_source.ls_remote_timeout_s` | float | `10.0` | `src/clio_agent/gact/blueprint_update_check.py` |
 | `CLIO_CAPTURE_REASONING` | `runtime.capture_reasoning` | bool | `true` | `src/clio_agent/gact/usage.py` |
 | `CLIO_CHILD_FORWARD_DEADLINE_S` | `agents.child_forward_deadline_s` | float | `DEFAULT_ELICITATION_TIMEOUT_S` _(computed)_ | `src/clio_agent/gact/child_forward.py` |
 | `CLIO_CLAUDE_CODE_MAX_CONCURRENT_PROCESSES` | `providers.claude_code.max_concurrent_processes` | float | `4.0` | `src/clio_agent/providers/claude_code_stream_bounds.py` |
@@ -88,7 +89,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_CONTEXT_REFERENCE_SNAPSHOT_STRING_CHARS` | `gact.context_references.snapshot_string_chars` | int | `4000` | `src/clio_agent/gact/context_reference_evidence.py` |
 | `CLIO_CONTEXT_REFERENCE_SUMMARY_EXCERPT_CHARS` | `gact.context_references.summary_excerpt_chars` | int | `600` | `src/clio_agent/gact/context_references.py` |
 | `CLIO_CONTEXT_REFERENCE_SUMMARY_MESSAGES` | `gact.context_references.summary_messages` | int | `5` | `src/clio_agent/gact/context_references.py` |
-| `CLIO_CORE_PORT` | `arc.core_port` | str | _(unset)_ | `src/clio_agent/arc/clio_core_liveness.py` |
+| `CLIO_CORE_PORT` | `arc.core_port` | str | `str(_DEFAULT_CTE_CORE_PORT)` _(computed)_ | `src/clio_agent/arc/clio_core_config.py` |
 | `CLIO_CTX_MAX_BYTES` | `limits.context_inline_bytes` | int | `32768` | `src/clio_agent/gact/runtime/constants.py` |
 | `CLIO_DATA_DIR` | `paths.data_dir` | str | `.clio/agent` | `src/clio_agent/runtime/status.py` |
 | `CLIO_DEBUG` | `debug.level` | str | `low` | `src/clio_agent/runtime/trace.py` |
@@ -313,12 +314,15 @@ These deliberately bypass the config store (a shared file must not be able to re
 | --- | --- | --- |
 | `ALCF_INFERENCE_TOKEN` | secret | `src/clio_agent/gact/routes/providers.py`, `src/clio_agent/providers/credentials.py` |
 | `CLIO_ARGONNE_TOKEN` | secret | `src/clio_agent/gact/routes/providers.py`, `src/clio_agent/providers/credentials.py` |
+| `CLIO_AUTH_TOKEN` | secret | `src/clio_agent/gact/auth.py`, `src/clio_agent/gact/desktop_boot.py` |
 | `CLIO_COLLABORA_URL` | unmigrated | `src/clio_agent/gact/documents/editors.py` |
 | `CLIO_CRED_<PROVIDER>_<ACCOUNT>` | secret | `src/clio_agent/providers/credentials.py` |
+| `CLIO_DESKTOP_BOOT_HEARTBEAT` | unmigrated | `src/clio_agent/gact/desktop_boot.py`, `src/clio_agent/gact/routes/health_projection.py`, `src/clio_agent/tools/desktop_mcp_runtime.py` |
+| `CLIO_DESKTOP_MANAGED` | unmigrated | `src/clio_agent/gact/routes/lifecycle.py` |
 | `CLIO_DOCUMENT_TYPST_FONT` | unmigrated | `src/clio_agent/gact/documents/renditions.py` |
 | `CLIO_ENV_FILE` | bootstrap | `src/clio_agent/config.py` |
 | `CLIO_GACT_PUBLIC_URL` | unmigrated | `src/clio_agent/gact/documents/editors.py` |
-| `CLIO_KIT_CACHE_DIR` | unmigrated | `src/clio_agent/runtime/disk_gc.py` |
+| `CLIO_KIT_CACHE_DIR` | unmigrated | `src/clio_agent/runtime/disk_gc.py`, `src/clio_agent/tools/desktop_mcp_runtime.py` |
 | `CLIO_LM_API_KEY` | secret | `src/clio_agent/config.py`, `src/clio_agent/gact/routes/providers.py`, `src/clio_agent/providers/model_discovery/overlay.py`, `src/clio_agent/runtime/status.py` |
 | `CLIO_ONLYOFFICE_JWT_SECRET` | unmigrated | `src/clio_agent/gact/documents/editors.py` |
 | `CLIO_ONLYOFFICE_URL` | unmigrated | `src/clio_agent/gact/documents/editors.py` |

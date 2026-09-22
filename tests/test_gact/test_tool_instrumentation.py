@@ -253,6 +253,7 @@ def test_stale_declaration_from_before_this_call_never_attaches_to_it(
                     presentation="text",
                     desc="d",
                     args={"task": {"type": "string"}},
+                    domain="workspace",
                 )
             ]
         )
@@ -338,6 +339,7 @@ def test_row_tool_lands_tool_parts_with_curated_title(tmp_path: Path) -> None:
                     desc=rank_stations.__doc__,
                     title="Rank stations",
                     args={"city": {"type": "string"}},
+                    domain="workspace",
                 )
             ]
         )
@@ -414,6 +416,7 @@ def test_handoff_representation_notifies_but_appends_no_tool_parts(tmp_path: Pat
                     title="Declared action",
                     representation="handoff",
                     args={"task": {"type": "string"}},
+                    domain="agents",
                 )
             ]
         )
@@ -469,6 +472,7 @@ def test_chip_representation_notifies_and_still_appends_tool_parts(tmp_path: Pat
                     title="Declared action",
                     representation="chip",
                     args={"task": {"type": "string"}},
+                    domain="artifacts",
                 )
             ]
         )
@@ -552,7 +556,12 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(tmp_path: Path)
         (row_tool,) = instrument_tools(
             [
                 native_tool(
-                    plain_native, name="plain_native", presentation="text", desc="plain", args={}
+                    plain_native,
+                    name="plain_native",
+                    presentation="text",
+                    desc="plain",
+                    args={},
+                    domain="workspace",
                 )
             ]
         )
@@ -804,7 +813,12 @@ def test_external_mcp_tool_row_annotations_title_fallback() -> None:
         return ""
 
     tool = boundary_observed_tool(
-        f, name="hdf5_open_file", desc="d", args={}, title=mcp_tool_title(tool_row)
+        f,
+        name="hdf5_open_file",
+        desc="d",
+        args={},
+        title=mcp_tool_title(tool_row),
+        domain="agents",
     )
     instrument_tools([tool])
     assert declared_tool_title("hdf5_open_file") == "Open HDF5 File"
@@ -820,14 +834,16 @@ def test_boundary_observed_tool_curates_a_title_when_given() -> None:
     def f() -> str:
         return ""
 
-    tool = boundary_observed_tool(f, name="ext_rank", desc="d", args={}, title="Rank\tstations")
+    tool = boundary_observed_tool(
+        f, name="ext_rank", desc="d", args={}, title="Rank\tstations", domain="agents"
+    )
     instrument_tools([tool])
     assert declared_tool_title("ext_rank") == "Rank stations"
 
     def g() -> str:
         return ""
 
-    untitled = boundary_observed_tool(g, name="ext_untitled", desc="d", args={})
+    untitled = boundary_observed_tool(g, name="ext_untitled", desc="d", args={}, domain="agents")
     instrument_tools([untitled])
     assert declared_tool_title("ext_untitled") == ""
 
@@ -956,8 +972,25 @@ def test_invalid_representation_is_a_typed_error() -> None:
 
     with pytest.raises(ValueError, match="unknown representation"):
         native_tool(
-            f, name="f", presentation="text", desc="", args={}, title="", representation="banner"
+            f,
+            name="f",
+            presentation="text",
+            desc="",
+            args={},
+            title="",
+            representation="banner",
+            domain="workspace",
         )
+
+
+def test_invalid_domain_is_a_typed_error() -> None:
+    """An unknown domain fails LOUDLY at declaration (never coerced or defaulted)."""
+
+    def f() -> str:
+        return ""
+
+    with pytest.raises(ValueError, match="unknown domain"):
+        native_tool(f, name="f", presentation="text", desc="", args={}, domain="nonexistent")
 
 
 # --------------------------------------------------------------------------- #

@@ -31,6 +31,9 @@ MODALITY_SOURCES: dict[str, str] = {
         "one claude_code CLI turn carrying a known image and PDF whose content the "
         "reply must quote back"
     ),
+    "provider_documentation": (
+        "the provider's published model capability documentation and CLIO's native transport"
+    ),
 }
 
 #: Typed modality-evidence reasons. Every discovered row carries exactly one.
@@ -38,6 +41,10 @@ MODALITY_EVIDENCE_REASONS: dict[str, str] = {
     "modality_reported": (
         "the provider reported this model's input modalities explicitly; the recorded "
         "capabilities are exactly what it said"
+    ),
+    "modality_documented": (
+        "the provider documents this model family as accepting the recorded input modalities, "
+        "and CLIO's native provider transport supports those input blocks"
     ),
     "modality_unreported": (
         "the provider omitted input modalities for this model. The SDK's schema default "

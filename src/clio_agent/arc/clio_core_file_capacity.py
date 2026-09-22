@@ -1,14 +1,14 @@
 """Init-time filesystem-capacity gate for clio-core CTE file tiers.
 
-clio-core creates each file bdev at its full ``capacity_limit`` before it can
-register that target with CTE. A failed allocation does not currently fail daemon
-startup; it leaves a port-listening runtime with zero targets, and the first ARC
-write fails later as ``PutBlob rc=11``. This module owns the read-only preflight
-that rejects that state before daemon spawn.
+Windows allocates a file bdev at its full ``capacity_limit`` before registration.
+POSIX clio-core grows sparse backing files lazily in 1 GiB units, so the configured
+capacity is a ceiling rather than an up-front allocation. This module preserves a
+free-space reserve for both shapes without rejecting a valid sparse Linux tier.
 """
 
 from __future__ import annotations
 
+import os
 import shutil
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -22,6 +22,12 @@ from clio_agent.arc.init_degradation import CLIO_CORE_FILE_CAPACITY_UNAVAILABLE
 # Preserve capacity for CTE's 32 MiB transaction log, ARC metadata, and normal host
 # operation. A fixed GiB is deterministic and does not grow with an archival tier.
 _FILE_TIER_FREE_SPACE_RESERVE_BYTES = 1 * 1024**3
+
+
+def _file_tiers_grow_lazily() -> bool:
+    """Return whether this host uses clio-core's sparse, chunked file growth."""
+
+    return os.name != "nt"
 
 
 class ClioCoreFileCapacityError(RuntimeError):
@@ -150,9 +156,10 @@ def _configured_file_tiers(config_path: Path) -> list[tuple[Path, int]]:
 def inspect_file_tier_capacities(config_path: str | Path) -> tuple[FileTierCapacity, ...]:
     """Inspect allocation requirements for every configured CTE file tier.
 
-    clio-core appends ``_node0`` to the configured path for the local daemon. A
-    non-empty backing file is reused rather than truncated; an undersized non-empty
-    file is rejected because clio-core would reuse it without growing it.
+    clio-core appends ``_node0`` to the configured path for the local daemon. On
+    POSIX, a smaller sparse file is the expected lazy-growth representation. On
+    Windows, an undersized non-empty file is rejected because the runtime reuses it
+    without completing the configured allocation.
 
     Args:
         config_path: Exact CTE YAML file being initialized.
@@ -171,7 +178,8 @@ def inspect_file_tier_capacities(config_path: str | Path) -> tuple[FileTierCapac
         backing = Path(f"{target}_node0")
         filesystem_path = _closest_existing_directory(backing.parent)
         existing_bytes = backing.stat().st_size if backing.is_file() else 0
-        if 0 < existing_bytes < capacity_bytes:
+        lazy_growth = _file_tiers_grow_lazily()
+        if not lazy_growth and 0 < existing_bytes < capacity_bytes:
             raise ClioCoreFileCapacityError(
                 config_path=config,
                 filesystem_path=filesystem_path,
@@ -194,7 +202,9 @@ def inspect_file_tier_capacities(config_path: str | Path) -> tuple[FileTierCapac
                 filesystem_device=filesystem_path.stat().st_dev,
                 capacity_bytes=capacity_bytes,
                 existing_bytes=existing_bytes,
-                required_allocation_bytes=capacity_bytes if existing_bytes == 0 else 0,
+                required_allocation_bytes=(
+                    0 if lazy_growth or existing_bytes > 0 else capacity_bytes
+                ),
             )
         )
     return tuple(rows)

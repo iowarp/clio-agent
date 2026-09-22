@@ -14,7 +14,12 @@ no-cycle invariant: siblings never import ``clio_agent.gact.app`` at
 module load (``tests/test_gact/test_decomposition_guardrails.py``).
 """
 
+from __future__ import annotations
+
+from clio_agent.gact.desktop_boot import start_desktop_boot_heartbeat
+
 if __name__ == "__main__":
+    start_desktop_boot_heartbeat()
     from clio_agent.gact.app import main  # noqa: PLC0415 - entry-point-only import
 
     main()

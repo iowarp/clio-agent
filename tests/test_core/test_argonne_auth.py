@@ -171,3 +171,84 @@ def test_authenticate_validates_access_token(monkeypatch) -> None:
     argonne_auth.authenticate(force=True)
 
     assert calls == [True]
+
+
+def test_browser_auth_flow_exchanges_code_and_stores_tokens_on_agent(monkeypatch) -> None:
+    """The desktop gets only a URL/id; the agent exchanges and stores the token."""
+
+    class _NativeClient:
+        instances: list["_NativeClient"] = []
+
+        def __init__(self, client_id: str, *, app_name: str) -> None:
+            self.client_id = client_id
+            self.app_name = app_name
+            self.start_kwargs: dict[str, Any] = {}
+            self.url_kwargs: dict[str, Any] = {}
+            self.codes: list[str] = []
+            self.instances.append(self)
+
+        def oauth2_start_flow(self, **kwargs: Any) -> None:
+            self.start_kwargs = kwargs
+
+        def oauth2_get_authorize_url(self, **kwargs: Any) -> str:
+            self.url_kwargs = kwargs
+            return "https://auth.globus.org/v2/oauth2/authorize?state=opaque"
+
+        def oauth2_exchange_code_for_tokens(self, code: str) -> object:
+            self.codes.append(code)
+            return {"token": "response"}
+
+    class _BrowserGlobus:
+        NativeAppAuthClient = _NativeClient
+
+    class _Storage:
+        def __init__(self) -> None:
+            self.responses: list[object] = []
+
+        def store_token_response(self, response: object) -> None:
+            self.responses.append(response)
+
+    class _ValidAuthorizer:
+        def __init__(self) -> None:
+            self.validated = False
+
+        def ensure_valid_token(self) -> None:
+            self.validated = True
+
+    storage = _Storage()
+    authorizer = _ValidAuthorizer()
+
+    class _StorageApp:
+        token_storage = storage
+
+        def get_authorizer(self, resource_server: str) -> _ValidAuthorizer:
+            assert resource_server == argonne_auth.GATEWAY_CLIENT_ID
+            return authorizer
+
+    monkeypatch.setattr(argonne_auth, "_require_globus", lambda: _BrowserGlobus)
+    monkeypatch.setattr(argonne_auth, "_build_user_app", lambda **kwargs: _StorageApp())
+    argonne_auth._pending_authentications.clear()
+
+    pending = argonne_auth.begin_authentication()
+
+    assert pending.authorization_url.startswith("https://auth.globus.org/")
+    client = _NativeClient.instances[-1]
+    assert client.start_kwargs["requested_scopes"] == [argonne_auth.GATEWAY_SCOPE, "openid"]
+    assert client.start_kwargs["refresh_tokens"] is True
+    assert client.url_kwargs["session_required_single_domain"] == argonne_auth.ALLOWED_DOMAINS
+
+    argonne_auth.complete_authentication(pending.flow_id, "  one-time-code  ")
+
+    assert client.codes == ["one-time-code"]
+    assert storage.responses == [{"token": "response"}]
+    assert authorizer.validated is True
+    assert pending.flow_id not in argonne_auth._pending_authentications
+
+
+def test_browser_auth_rejects_unknown_or_expired_flow() -> None:
+    """An authorization code cannot be applied without its agent-held PKCE flow."""
+
+    argonne_auth._pending_authentications.clear()
+
+    with pytest.raises(argonne_auth.GlobusAuthError, match="expired"):
+        argonne_auth.complete_authentication("missing", "one-time-code")

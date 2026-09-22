@@ -6,6 +6,12 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+# The desktop's Deep Research execution mode is a product-level overlay.  Keep
+# the marketplace artifact id at the message-contract boundary so every client
+# (desktop, REST, queued promotion) selects the same real coordinator rather
+# than merely changing routing flags on whichever base agent happens to be open.
+DEEP_RESEARCH_BLUEPRINT_ID = "deep-researcher"
+
 from clio_agent.gact.types import AgentRef, ModelRef, Part
 
 

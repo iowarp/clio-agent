@@ -30,6 +30,34 @@ logger = logging.getLogger(__name__)
 REFRESH_PER_PROVIDER_DEADLINE_S = 90.0
 
 
+async def refresh_subscription_catalogs_at_startup() -> None:
+    """Populate Codex and Claude catalogs once, off the server's boot path."""
+
+    from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
+    from clio_agent.providers.model_discovery.claude_code_catalog import (  # noqa: PLC0415
+        ClaudeCodeCatalogError,
+        refresh_claude_code_candidates,
+    )
+
+    presets = [
+        preset
+        for provider_id in ("codex", "claude_code")
+        if (preset := get_provider(provider_id)) is not None and is_provider_configured(preset)
+    ]
+    if not any(preset.provider_kind == "claude_code" for preset in presets):
+        try:
+            await asyncio.to_thread(refresh_claude_code_candidates)
+        except ClaudeCodeCatalogError as exc:
+            logger.warning("Claude Code model catalog unavailable at startup: %s", exc)
+    if presets:
+        results = await refresh_all(presets=presets)
+        for result in results:
+            if failure := result.get("failed_reason"):
+                logger.warning(
+                    "%s model discovery failed at startup: %s", result["provider"], failure
+                )
+
+
 def is_provider_configured(preset: Provider) -> bool:
     """Whether ``preset`` has usable auth/binary presence to attempt a refresh probe.
 
@@ -39,7 +67,7 @@ def is_provider_configured(preset: Provider) -> bool:
     spend its (bounded) wall-clock on providers nobody has set up:
 
     * codex: the official Python SDK is a required dependency.
-    * claude_code: the CLI used by its SDK must be on PATH.
+    * claude_code: the Claude Agent SDK and its bundled CLI must be installed.
     * argonne: a stored Globus token must exist.
     * any other ``requires_api_key`` kind: its resolved API key must be non-empty.
     * local/no-auth kinds (lm_studio, ollama, local vLLM): always configured —
@@ -50,10 +78,18 @@ def is_provider_configured(preset: Provider) -> bool:
         try:
             import openai_codex  # noqa: F401,PLC0415
 
-            return True
+            from clio_agent.providers.codex_credential_home import (  # noqa: PLC0415
+                codex_credentials_present,
+            )
+
+            return codex_credentials_present()
         except ImportError:
             return False
     if preset.provider_kind == "claude_code":
+        import importlib.util  # noqa: PLC0415
+
+        if importlib.util.find_spec("claude_agent_sdk") is None:
+            return False
         from clio_agent.providers.model_discovery.claude_code import (  # noqa: PLC0415
             _resolve_claude_binary,
         )
@@ -88,8 +124,8 @@ async def refresh_all(
     #1211 review R3) is honored verbatim, un-filtered — the caller named exactly
     what they want probed.
 
-    Runs one discovery coroutine per preset (SDK catalog for codex, CLI alias
-    probes for claude_code,
+    Runs one discovery coroutine per preset (SDK catalog for codex, remote
+    GitHub candidates plus CLI model probes for claude_code,
     the live handshake for everything else) via ``asyncio.gather`` so wall-clock
     is bounded by the SLOWEST single provider, not their sum. Each provider's
     coroutine is ADDITIONALLY capped at :data:`REFRESH_PER_PROVIDER_DEADLINE_S`
@@ -108,10 +144,18 @@ async def refresh_all(
     if presets is None and only_configured:
         all_presets = [p for p in all_presets if is_provider_configured(p)]
 
+    explicit_presets = presets is not None
+
     async def _discover(preset: Provider) -> ProviderDiscoveryResult:
         if preset.provider_kind == "codex":
             return await asyncio.to_thread(discover_codex)
         if preset.provider_kind == "claude_code":
+            if explicit_presets:
+                from clio_agent.providers.dependencies import (  # noqa: PLC0415
+                    ensure_claude_code_support,
+                )
+
+                await asyncio.to_thread(ensure_claude_code_support)
             return await asyncio.to_thread(discover_claude_code)
         return await discover_http(preset, api_key=resolve_cloud_api_key(preset.provider_kind))
 
@@ -200,8 +244,8 @@ def build_refresh_provider_models_tool() -> Any:
 
     def refresh_provider_models() -> dict[str, Any]:
         """Refresh the LM provider model catalogs against each account's REAL
-        current state (codex's live model list, claude_code's alias
-        probe-validation, every configured HTTP backend's live models
+        current state (codex's live model list, claude_code's remote-catalog
+        candidate validation, every configured HTTP backend's live models
         endpoint) and report what changed. Returns
         ``{"results": [{"provider", "discovered", "source", "default_model",
         "added", "removed", "unchanged", "failed_reason"?, "rejected"?}, ...]}``
@@ -215,6 +259,7 @@ def build_refresh_provider_models_tool() -> Any:
         refresh_provider_models,
         name="refresh_provider_models",
         presentation="model_catalog",
+        domain="providers",
         desc=refresh_provider_models.__doc__,
         title="Refresh Provider Models",
         args={},
@@ -227,4 +272,5 @@ __all__ = [
     "is_provider_configured",
     "refresh_all",
     "refresh_all_sync",
+    "refresh_subscription_catalogs_at_startup",
 ]

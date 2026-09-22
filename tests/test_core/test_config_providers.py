@@ -162,10 +162,10 @@ class TestLMProviderConfig:
             LMProviderConfig(provider="codex", codex_transport="telepathy")  # type: ignore[arg-type]
 
     def test_claude_code_defaults(self):
-        """Claude Code should not require an API key."""
+        """Claude Code needs no API key and has no synthetic model default."""
         config = LMProviderConfig(provider="claude_code")
         assert config.api_base == "claude-code://sdk"
-        assert config.model == "sonnet"
+        assert config.model == ""
         assert config.api_key == ""
         assert config.claude_code_transport == "sdk"  # sdk is the default (best config)
 
@@ -738,6 +738,15 @@ class TestListLmStudioModels:
 
     _PATCH = "clio_agent.providers.handshake.run_handshake_sync"
 
+    @pytest.fixture(autouse=True)
+    def _reset_shutdown_signal(self):
+        """Keep the process-global shutdown signal isolated between tests."""
+        from clio_agent.providers.lmstudio_discovery import reset_discovery_shutdown
+
+        reset_discovery_shutdown()
+        yield
+        reset_discovery_shutdown()
+
     @staticmethod
     def _report(*, ok: bool, models: tuple[str, ...] = (), error: str | None = None):
         """Minimal stand-in for a HandshakeReport (only the fields the wrapper reads)."""
@@ -803,3 +812,29 @@ class TestListLmStudioModels:
         assert ctx.provider_kind == "lm_studio"
         assert ctx.api_base == "http://192.168.86.143:1234/v1"
         assert ctx.allow_external_sources is False
+
+    def test_shutdown_interrupts_discovery_before_another_probe(self):
+        """Desktop Quit stops an in-progress retry loop without waiting its deadline."""
+        from clio_agent.providers.lmstudio_discovery import (
+            LMStudioDiscoveryCancelled,
+            list_lm_studio_models,
+            request_discovery_shutdown,
+        )
+
+        rep = self._report(ok=True, models=())
+
+        def request_shutdown(_delay: float) -> bool:
+            request_discovery_shutdown()
+            return True
+
+        with (
+            patch(self._PATCH, return_value=rep) as mock_hs,
+            patch(
+                "clio_agent.providers.lmstudio_discovery._shutdown_requested.wait",
+                side_effect=request_shutdown,
+            ),
+            pytest.raises(LMStudioDiscoveryCancelled, match="cancelled during CLIO shutdown"),
+        ):
+            list_lm_studio_models(max_retries=10, retry_delay=30)
+
+        assert mock_hs.call_count == 1

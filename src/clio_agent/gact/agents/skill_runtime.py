@@ -312,9 +312,9 @@ def _declare_load_skill_structured_content(
 ) -> None:
     """Declare ``load_skill``'s typed wire payload (P5 wire semantics — the
     ``wait_agent_tasks`` treatment): a ``message`` naming what loaded + its
-    line count FIRST, then the id/scope/path facts. The BODY itself stays the
-    model-facing return unchanged (:func:`load_skill`'s own text) — this only
-    curates the wire's presentation, never a second copy of the content."""
+    line count FIRST, then the id/scope/path facts. The model-facing return also
+    names the resolved skill directory so executable helpers are addressable
+    without guessing an installation path; this payload curates the UI wire."""
 
     from clio_agent.gact.agents.tool_instrumentation import (  # noqa: PLC0415
         declare_structured_content,
@@ -558,8 +558,11 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
                     rel = str(p.relative_to(root)).replace("\\", "/")
                     if not p.is_file() or p.resolve(strict=False) == skill_md:
                         continue
-                    if any(part.startswith(".") for part in rel.split("/")):
-                        continue  # dotfiles/.git etc. are not part of the skill surface
+                    parts = rel.split("/")
+                    if any(part.startswith(".") or part == "__pycache__" for part in parts):
+                        continue  # private envs, VCS files, and bytecode caches are not skill assets
+                    if p.suffix in {".pyc", ".pyo"}:
+                        continue
                     if rel in bundled:
                         continue  # already listed from a higher-precedence root
                     bundled.append(rel)
@@ -578,12 +581,13 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
         _declare_load_skill_structured_content(
             skill_id=skill_id, scope=ref.scope, path=ref.path, text=body, bundled_files=bundled
         )
-        return f"# Skill: {skill_id}\n{body}{listing}"
+        return f"# Skill: {skill_id}\nSkill directory (use as SKILL_ROOT): {skill_dir}\n{body}{listing}"
 
     return native_tool(
         load_skill,
         name="load_skill",
         presentation="text",
+        domain="skills",
         title="Load skill",
         desc=(
             "Load the full procedure of one of this expert's declared skills "
@@ -650,6 +654,10 @@ def build_spawn_skill_task_tool(agent_def: "AgentDef", runtime: SkillRuntime) ->
         spawn_skill_task,
         name="spawn_skill_task",
         presentation="specialized",
+        # The skill-effect child launcher: gated on a declared skill's own
+        # frontmatter, so "skills" fits better than the generic spawn/wait/
+        # observe "agents" family (#1350).
+        domain="skills",
         title="Start child agent",
         representation="handoff",
         desc=(

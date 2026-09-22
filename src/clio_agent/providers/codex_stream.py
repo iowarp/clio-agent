@@ -51,10 +51,18 @@ from clio_agent.providers.codex_audit import (
     emit_raw_event,
 )
 from clio_agent.providers.codex_credential_home import IsolatedCodexHome
+from clio_agent.providers.codex_errors import normalize_codex_error_message
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_SDK_PROGRESS_TIMEOUT_S = 120.0
+
+# Desktop Quit must not leave the hidden CLIO process chain resident while an
+# already-cancelled Codex transport takes its ordinary request timeout to
+# notice that the child has gone away. The owner loop is a daemon thread and
+# the desktop supervisor still owns the process tree, so shutdown gets a short
+# best-effort disconnect window followed by an immediate loop stop.
+_SDK_SHUTDOWN_TIMEOUT_S = 2.0
 
 #: The requested per-turn ceiling every LiteLLM entry point passes in when the
 #: caller supplies no ``timeout``. It is a CEILING, not the operative deadline:
@@ -260,7 +268,9 @@ def _raise_failed_turn(event: Any) -> None:
     if str(status) != "failed":
         return
     error = getattr(turn, "error", None)
-    message = str(getattr(error, "message", "") or "Codex SDK turn failed")
+    message = normalize_codex_error_message(
+        str(getattr(error, "message", "") or "Codex SDK turn failed")
+    )
     raise CodexSDKError(message)
 
 
@@ -513,13 +523,22 @@ class CodexSDKClient:
             return
         try:
             if loop.is_running():
-                asyncio.run_coroutine_threadsafe(self._reset_client(), loop).result(timeout=15)
+                asyncio.run_coroutine_threadsafe(self._reset_client(), loop).result(
+                    timeout=_SDK_SHUTDOWN_TIMEOUT_S
+                )
         except Exception:  # noqa: BLE001 - teardown is best effort and logged
             logger.warning("Codex SDK client teardown failed", exc_info=True)
         finally:
-            loop.call_soon_threadsafe(loop.stop)
+            if loop.is_running():
+                loop.call_soon_threadsafe(loop.stop)
             if thread is not None:
-                thread.join(timeout=15)
+                thread.join(timeout=_SDK_SHUTDOWN_TIMEOUT_S)
+                if thread.is_alive():
+                    logger.warning(
+                        "Codex SDK owner loop did not stop within %.1fs; "
+                        "continuing process teardown",
+                        _SDK_SHUTDOWN_TIMEOUT_S,
+                    )
 
 
 _SDK_CLIENT = CodexSDKClient()

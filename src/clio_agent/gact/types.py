@@ -78,6 +78,7 @@ class Integration(BaseModel):
     config_source: Optional[str] = None
     next_action: Optional[str] = None
     endpoint: Optional[str] = None
+    required: bool = True
 
 
 class HealthResponse(BaseModel):
@@ -121,6 +122,30 @@ class Extension(BaseModel):
     docs: str = ""
 
 
+class MarketplaceVersion(BaseModel):
+    """The default marketplace's registry pin (mirrors a source-ledger row, #A5)."""
+
+    source: str
+    ref: str
+    pinned_commit: str
+    installed_commit: str
+    source_id: str
+
+
+class VersionInfo(BaseModel):
+    """``versions`` on ``GET /v1/capabilities`` (desktop Versions panel, #A5).
+
+    Built best-effort by ``gact/version_info.py::build_version_info`` — an
+    unresolvable field types as ``"unknown"``, never raises.
+    """
+
+    clio_agent: str
+    backend_build: str
+    python: str
+    gact_contract: str
+    marketplace: Optional[MarketplaceVersion] = None
+
+
 class Capabilities(BaseModel):
     """GET /v1/capabilities — SPEC §3.3."""
 
@@ -131,6 +156,7 @@ class Capabilities(BaseModel):
     auth: AuthInfo = Field(default_factory=AuthInfo)
     extensions: list[Extension] = Field(default_factory=list)
     relay: dict[str, Any] = Field(default_factory=dict)
+    versions: Optional[VersionInfo] = None  # additive (#A5)
 
 
 # ---------------------------------------------------------------------------
@@ -649,6 +675,33 @@ class ListAgentsResponse(BaseModel):
     agents: list[AgentDef]
 
 
+#: A tool's server-declared functional grouping (#1350 desktop Tools view):
+#: the domain the built-in catalog groups/filters by, instead of the client
+#: guessing one from the tool NAME via a regex. Declared once, at construction
+#: (``tool_instrumentation.native_tool`` / ``boundary_observed_tool``, or the
+#: static gateway ``ToolCatalogEntry`` for fs/shell), never inferred here.
+ToolDomain = Literal[
+    "workspace",
+    "shell",
+    "artifacts",
+    "planning",
+    "tasks",
+    "schedules",
+    "autonomy",
+    "goals",
+    "alerts",
+    "resources",
+    "surfaces",
+    "providers",
+    "memory",
+    "agents",
+    "workflows",
+    "skills",
+    "messaging",
+    "interaction",
+]
+
+
 class Tool(BaseModel):
     """SPEC §4.6 (subset). The gateway surfaces a curated set per
     expert; we flatten them into a single catalog for GET
@@ -663,6 +716,12 @@ class Tool(BaseModel):
     owner: str = ""
     tags: list[str] = Field(default_factory=list)
     visible_to: list[str] = Field(default_factory=list)
+    # #1350: typed inputs/outputs + domain grouping for the desktop Tools view.
+    # Additive-only on the wire (default {} / None), so existing clients that
+    # never read these fields see no shape change.
+    input_schema: dict[str, Any] = Field(default_factory=dict)
+    output_schema: dict[str, Any] = Field(default_factory=dict)
+    domain: Optional[ToolDomain] = None
 
 
 class ListToolsResponse(BaseModel):

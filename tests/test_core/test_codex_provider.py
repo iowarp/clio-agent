@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -19,6 +20,7 @@ from clio_agent.providers.claude_code_cancel import (
     abort_session_streams,
     active_stream_sessions,
 )
+from clio_agent.providers.codex_errors import CODEX_AUTHENTICATION_ERROR_MESSAGE
 from clio_agent.providers.codex_litellm import (
     CodexLLM,
     CodexUnsupportedMultimodalError,
@@ -44,6 +46,57 @@ def test_messages_serialize_without_losing_roles() -> None:
         {"role": "system", "content": "be terse"},
         {"role": "user", "content": "ping"},
     ]
+
+
+def test_sdk_shutdown_bounds_disconnect_and_thread_join(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A wedged SDK cleanup must not keep Desktop Quit hidden for 30 seconds."""
+
+    observed: dict[str, Any] = {}
+
+    class FakeLoop:
+        def is_running(self) -> bool:
+            return True
+
+        def stop(self) -> None:
+            observed["stopped"] = True
+
+        def call_soon_threadsafe(self, callback: Any) -> None:
+            observed["stop_scheduled"] = callback == self.stop
+
+    class FakeThread:
+        def join(self, timeout: float) -> None:
+            observed["join_timeout"] = timeout
+
+        def is_alive(self) -> bool:
+            return True
+
+    class FakeFuture:
+        def result(self, timeout: float) -> None:
+            observed["disconnect_timeout"] = timeout
+            raise TimeoutError("wedged disconnect")
+
+    def fake_submit(coro: Any, _loop: Any) -> FakeFuture:
+        coro.close()
+        return FakeFuture()
+
+    client = codex_stream.CodexSDKClient()
+    client._loop = FakeLoop()  # type: ignore[assignment]
+    client._thread = FakeThread()  # type: ignore[assignment]
+    monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", fake_submit)
+
+    with caplog.at_level(logging.WARNING):
+        client.close_blocking()
+
+    assert observed == {
+        "disconnect_timeout": codex_stream._SDK_SHUTDOWN_TIMEOUT_S,
+        "stop_scheduled": True,
+        "join_timeout": codex_stream._SDK_SHUTDOWN_TIMEOUT_S,
+    }
+    assert "continuing process teardown" in caplog.text
+    assert client._loop is None
+    assert client._thread is None
 
 
 def test_multimodal_input_fails_instead_of_being_dropped() -> None:
@@ -161,6 +214,38 @@ def test_unknown_sdk_informational_item_is_typed_skip(caplog: pytest.LogCaptureF
     with caplog.at_level(logging.INFO):
         codex_stream._validate_bare_lm_event(_event("item/started", item=item))
     assert "reason=codex_sdk_informational_item_skipped" in caplog.text
+
+
+def test_failed_turn_missing_auth_uses_actionable_message() -> None:
+    raw_message = (
+        "unexpected status 401 Unauthorized: Missing bearer or basic authentication "
+        "in header, url: https://api.openai.com/v1/responses"
+    )
+    turn = SimpleNamespace(
+        status=SimpleNamespace(value="failed"),
+        error=SimpleNamespace(message=raw_message),
+    )
+
+    with pytest.raises(
+        codex_stream.CodexSDKError,
+        match=re.escape(CODEX_AUTHENTICATION_ERROR_MESSAGE),
+    ) as exc_info:
+        codex_stream._raise_failed_turn(_event("turn/completed", turn=turn))
+
+    rendered = str(exc_info.value)
+    assert rendered == CODEX_AUTHENTICATION_ERROR_MESSAGE
+    assert "api.openai.com" not in rendered
+    assert "Missing bearer" not in rendered
+
+
+def test_failed_turn_preserves_non_authentication_error() -> None:
+    turn = SimpleNamespace(
+        status=SimpleNamespace(value="failed"),
+        error=SimpleNamespace(message="model is unavailable"),
+    )
+
+    with pytest.raises(codex_stream.CodexSDKError, match="model is unavailable"):
+        codex_stream._raise_failed_turn(_event("turn/completed", turn=turn))
 
 
 def test_sdk_home_reaps_orphan_and_caps_live_copies(
