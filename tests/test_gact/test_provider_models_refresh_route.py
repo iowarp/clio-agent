@@ -12,6 +12,7 @@ discovery mechanisms themselves are covered in
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
@@ -37,17 +38,38 @@ def _write_overlay(tmp_path: Path, data: dict[str, Any]) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_get_models_overlay_absent_falls_back_to_static(client: TestClient) -> None:
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _codex_signed_in(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Present (unvalidated) Codex credentials in an isolated CODEX_HOME."""
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir(exist_ok=True)
+    (codex_home / "auth.json").write_text('{"token":"test"}', encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+
+def test_get_models_unverified_codex_is_unavailable_not_static(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Subscription availability: with no SDK-validated catalog, Codex reports
+    ``unavailable`` with a reason instead of the frozen static pins, which named
+    models an unverified account might not be able to use."""
+    _codex_signed_in(tmp_path, monkeypatch)
     body = client.get("/v1/providers/codex/models").json()
-    assert body["source"] == "static_catalog"
-    ids = {m["id"] for m in body["models"]}
-    # The frozen static candidate list (#1184's stale pins), unaffected by
-    # this change per the #1211 non-goal (static catalog stays as fallback).
-    assert {"gpt-5.5", "gpt-5.5-codex", "gpt-5.1"} <= ids
+    assert body["source"] == "unavailable"
+    assert body["models"] == []
+    assert body["error"]
+    # SABOTAGE-sensitive: reverting to the static fallback would serve these.
+    assert "gpt-5.5" not in {m.get("id") for m in body["models"]}
 
 
-def test_get_models_overlay_present_is_served_verbatim(client: TestClient, tmp_path: Path) -> None:
-    """The core overlay-first contract: a refreshed list overrides the static one."""
+def test_get_models_overlay_present_is_served_verbatim(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The core overlay-first contract: a fresh, validated list is served as-is."""
+    _codex_signed_in(tmp_path, monkeypatch)
     _write_overlay(
         tmp_path,
         {
@@ -58,7 +80,7 @@ def test_get_models_overlay_present_is_served_verbatim(client: TestClient, tmp_p
                 ],
                 "source": "codex_sdk",
                 "default_model": "gpt-5.6-sol",
-                "generated_at": "2026-08-14T00:00:00+00:00",
+                "generated_at": _now(),
             }
         },
     )
@@ -83,7 +105,25 @@ def test_get_models_malformed_overlay_is_typed_500_not_silent_fallback(
     assert body["error"]["error"] == "overlay_malformed"
 
 
-def test_get_models_overlay_serves_for_claude_code_too(client: TestClient, tmp_path: Path) -> None:
+def test_get_models_claude_code_marks_verified_catalog_models_available(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    claude_sdk_installed: Any,
+) -> None:
+    """Claude Code lists the published catalog's candidates and marks the ones a
+    fresh account-verified overlay confirmed as ``available``; the overlay's
+    default is kept only when it is both verified and a published candidate."""
+    from clio_agent.providers.model_discovery import claude_code_catalog
+
+    monkeypatch.setattr(
+        claude_code_catalog,
+        "cached_claude_code_candidates",
+        lambda: (
+            [{"id": "fable", "name": "Claude Fable"}, {"id": "haiku", "name": "Claude Haiku"}],
+            "",
+        ),
+    )
     _write_overlay(
         tmp_path,
         {
@@ -91,12 +131,17 @@ def test_get_models_overlay_serves_for_claude_code_too(client: TestClient, tmp_p
                 "models": [{"id": "fable", "name": "Claude Fable", "description": "d"}],
                 "source": "claude_code_alias_probe",
                 "default_model": "fable",
+                "generated_at": _now(),
             }
         },
     )
     body = client.get("/v1/providers/claude_code/models").json()
-    assert body["source"] == "claude_code_alias_probe"
-    assert body["models"] == [{"id": "fable", "name": "Claude Fable", "description": "d"}]
+    assert body["source"] == "github_catalog"
+    availability = {m["id"]: m["availability"] for m in body["models"]}
+    # SABOTAGE-sensitive: an unverified overlay would mark both as candidates.
+    assert availability == {"fable": "available", "haiku": "candidate"}
+    assert body["default_model"] == "fable"
+    assert "error" not in body
 
 
 def test_get_models_http_provider_overlay_is_never_served_ahead_of_live_handshake(

@@ -17,7 +17,10 @@ from clio_agent.providers.codex_errors import (
     contains_codex_authentication_error,
 )
 
-# Priority order: when an exception group carries both, Codex auth wins.
+# Leaf-scan order for an exception group that matched nothing at the top
+# level. The top-level check already recurses for Claude Code (its detector
+# walks ``.exceptions``) but not for Codex auth, so a group holding both kinds
+# of leaf reports the Claude Code message.
 CLI_PROVIDER_FAILURE_MESSAGES: tuple[str, ...] = (
     CODEX_AUTHENTICATION_ERROR_MESSAGE,
     CLAUDE_CODE_INSTALL_FAILED_MESSAGE,
