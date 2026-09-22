@@ -91,8 +91,10 @@ _CLI_TRANSPORT_BINARIES: dict[str, tuple[str, str]] = {
 
 def _codex_auth_path() -> Path:
     """Return the official SDK authentication file location."""
-    configured = os.environ.get("CODEX_HOME", "").strip()
-    return (Path(configured) if configured else Path.home() / ".codex") / "auth.json"
+
+    from clio_agent.providers.codex_credential_home import codex_auth_path  # noqa: PLC0415
+
+    return codex_auth_path()
 
 
 def _bundled_codex_path() -> Path | None:
@@ -127,7 +129,11 @@ def _probe_codex_sdk(
         missing.append("sdk_module_absent")
     if bundled_binary is None or not bundled_binary.is_file():
         missing.append("bundled_binary_absent")
-    if not auth_path.is_file():
+    from clio_agent.providers.codex_credential_home import (  # noqa: PLC0415
+        codex_credentials_present,
+    )
+
+    if not codex_credentials_present(auth_path):
         missing.append("auth_absent")
     if missing:
         return IntegrationStatus(
@@ -143,14 +149,17 @@ def _probe_codex_sdk(
         )
     return IntegrationStatus(
         name="lm_provider",
-        state=IntegrationState.READY,
-        summary="Codex official Python SDK, bundled runtime, and authentication are ready.",
+        state=IntegrationState.DEGRADED,
+        summary=(
+            "Codex SDK, bundled runtime, and credentials are present, but authentication "
+            "has not been verified with the provider."
+        ),
         config_source=source,
-        next_action="No action required.",
+        next_action="Run Check provider in Settings to validate Codex and discover live models.",
         endpoint=config.api_base,
         auth_mode=auth_mode,
         capabilities=["chat-completions", "sdk-transport"],
-        details=details,
+        details={**details, "reason": "auth_unverified"},
         required=True,
     )
 
@@ -211,23 +220,57 @@ def probe_cli_transport(
     }
 
     if config.provider == "claude_code" and importlib.util.find_spec("claude_agent_sdk") is None:
+        from clio_agent.providers.claude_code_errors import (  # noqa: PLC0415
+            CLAUDE_CODE_NOT_INSTALLED_MESSAGE,
+        )
+
         return IntegrationStatus(
             name="lm_provider",
             state=IntegrationState.UNAVAILABLE,
-            summary=(
-                "Claude Code sdk transport selected but the `claude_agent_sdk` package "
-                "is not installed; the provider cannot start its SDK transport."
-            ),
+            summary=CLAUDE_CODE_NOT_INSTALLED_MESSAGE,
             config_source=source,
-            next_action="Install the Claude transport with `uv sync --extra claude-code`.",
+            next_action="Install Claude Code support from Models, then check the provider.",
             endpoint=config.api_base,
             auth_mode=auth_mode,
             details={**details, "reason": "sdk_package_absent", "sdk_package": "claude_agent_sdk"},
             required=True,
         )
 
-    resolved = which(binary)
+    if config.provider == "claude_code":
+        from clio_agent.providers.model_discovery.claude_code import (  # noqa: PLC0415
+            ClaudeCodeCLIUnavailableError,
+            _resolve_claude_binary,
+        )
+
+        try:
+            resolved = _resolve_claude_binary()
+        except ClaudeCodeCLIUnavailableError:
+            resolved = None
+    else:
+        resolved = which(binary)
     if resolved:
+        if config.provider == "claude_code":
+            from clio_agent.providers import model_discovery  # noqa: PLC0415
+
+            try:
+                overlay = model_discovery.overlay_models_wire(
+                    config.provider_id or config.provider,
+                    config.provider,
+                )
+            except model_discovery.OverlayMalformedError:
+                overlay = None
+            if not (overlay and overlay.get("models") and not overlay.get("staleness")):
+                return IntegrationStatus(
+                    name="lm_provider",
+                    state=IntegrationState.DEGRADED,
+                    summary="Claude Code is installed but has not been verified.",
+                    config_source=source,
+                    next_action="Open Models and check Claude Code to verify sign-in.",
+                    endpoint=config.api_base,
+                    auth_mode=auth_mode,
+                    details={**details, "cli_path": resolved, "reason": "auth_check_required"},
+                    required=True,
+                )
         return IntegrationStatus(
             name="lm_provider",
             state=IntegrationState.READY,

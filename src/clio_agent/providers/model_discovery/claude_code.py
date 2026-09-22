@@ -1,8 +1,8 @@
-"""claude_code model-catalog discovery: no enumeration exists, so refresh
-probe-validates the documented CLI alias vocabulary (iowarp/clio-agent#1211)."""
+"""Claude Code model discovery using the maintained remote candidate catalog."""
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -11,6 +11,10 @@ import subprocess
 from typing import Any
 
 from clio_agent import conf
+from clio_agent.providers.model_discovery.claude_code_catalog import (
+    ClaudeCodeCatalogError,
+    refresh_claude_code_candidates,
+)
 from clio_agent.providers.model_discovery.modality_evidence import modality_evidence
 from clio_agent.providers.model_discovery.overlay import (
     CLAUDE_CODE_SOURCE,
@@ -21,16 +25,6 @@ from clio_agent.providers.model_discovery.probe_assets import (
     ProbeChallenge,
     build_probe_challenge,
 )
-
-#: The documented Claude Code CLI model aliases (verified live via ``claude --help``
-#: 2.1.228: "--model <model> ... Provide an alias for the latest model (e.g.
-#: 'fable', 'opus', or 'sonnet')..."). ``fable`` is the CLI's own CURRENT default
-#: (verified empirically 2026-08-14: a bare ``claude -p`` call with no ``--model``
-#: resolves to ``claude-fable-5``) — probed first, and :func:`discover_claude_code`
-#: also runs one bare (no ``--model``) call to learn which alias that resolves to,
-#: so the reported default follows the CLI's own choice rather than a guess
-#: (#1211: "the CLI's own default, not our guess").
-CLAUDE_CODE_ALIAS_CANDIDATES: tuple[str, ...] = ("fable", "opus", "sonnet", "haiku")
 
 #: Per-probe timeout for one claude_code CLI call (#1211 review R2/R3: the OLD
 #: 60s-per-probe default gave a 5-probe (1 bare + 4 aliases) worst case of 300s.
@@ -186,6 +180,13 @@ def _resolve_claude_binary() -> str:
     Prefers the Windows ``.cmd`` shim because a bare ``shutil.which`` can return
     an un-executable wrapper on Windows.
     """
+    sdk_spec = importlib.util.find_spec("claude_agent_sdk")
+    sdk_origin = getattr(sdk_spec, "origin", None)
+    if sdk_origin:
+        bundled_name = "claude.exe" if os.name == "nt" else "claude"
+        bundled = os.path.join(os.path.dirname(sdk_origin), "_bundled", bundled_name)
+        if os.path.isfile(bundled):
+            return bundled
     if os.name == "nt":
         cmd_path = shutil.which("claude.cmd") or shutil.which("claude.exe")
         if cmd_path:
@@ -193,8 +194,8 @@ def _resolve_claude_binary() -> str:
     path = shutil.which("claude")
     if not path:
         raise ClaudeCodeCLIUnavailableError(
-            "`claude` not found on PATH. Install Claude Code and run `claude login` "
-            "once per machine."
+            "Claude Code runtime is unavailable. Install Claude Code support and sign in "
+            "once on the connected agent."
         )
     return path
 
@@ -325,40 +326,32 @@ def _probe_alias(binary: str, alias: str | None, *, timeout: float) -> dict[str,
 
 def discover_claude_code(
     *,
-    candidates: tuple[str, ...] = CLAUDE_CODE_ALIAS_CANDIDATES,
+    candidates: tuple[str, ...] | None = None,
     timeout: float = CLAUDE_CODE_PROBE_TIMEOUT_S,
 ) -> ProviderDiscoveryResult:
-    """Refresh claude_code's alias catalog by probe-validating each documented alias.
+    """Fetch current model IDs, then validate them against the signed-in CLI.
 
-    No enumeration endpoint exists for this channel (#1211 comment) — the catalog
-    rows ARE the CLI's documented ``--model`` alias vocabulary, and "refresh"
-    means running one trivial turn per alias and recording which ones the
-    account currently accepts. Sequential (each is a real, billed API call).
-
-    Runs one extra BARE call (no ``--model``) first to learn the CLI's own
-    current default by resolved-canonical-id match, so ``default_model`` follows
-    the CLI's choice rather than a guess (#1211); if that bare probe itself is
-    inconclusive/rejected, ``default_model`` falls back to the first validated
-    alias and ``default_model_reason`` records why (#1211 review N5).
-
-    A REJECTED alias (a definitive "the account does not serve this" signal) is
-    recorded in ``rejected`` (informational) without failing the whole provider,
-    as long as at least one alias validates. An INCONCLUSIVE probe (timeout /
-    429 / 5xx / launch failure / bad response — transient noise, never a
-    rejection) — on the bare probe OR any alias — aborts the WHOLE call with a
-    typed ``failed_reason`` (``discovered=[]``), so ``record_refresh`` keeps
-    the provider's PRIOR overlay list untouched rather than silently narrowing
-    it (#1211 review D3). The loop exits on the FIRST inconclusive probe rather
-    than always running all candidates, bounding the common-case latency well
-    under the ``len(candidates) + 1`` worst case.
-
-    A multimodal probe that comes back inconclusive is retried ONCE as a
-    text-only turn before that abort. A CLI or account that cannot carry
-    attachments is a MODALITY fact, not a reason to reject the model or sink
-    discovery: the alias still validates, its modalities are recorded as
-    typed-unreported, and the abort is reserved for a probe that could not
-    answer at all.
+    Claude Code offers no account model-enumeration endpoint. The maintained
+    GitHub catalog supplies candidates, never availability: each model requires
+    a real (potentially billed) CLI probe. The bare CLI invocation identifies
+    the account's default. If it matches no verified model, no default is
+    selected. A transient catalog or CLI failure returns a typed failure and
+    never promotes a cached list to current availability.
     """
+    if candidates is None:
+        try:
+            catalog = refresh_claude_code_candidates()
+        except ClaudeCodeCatalogError as exc:
+            return ProviderDiscoveryResult(
+                provider="claude_code",
+                discovered=[],
+                source=CLAUDE_CODE_SOURCE,
+                failed_reason=str(exc),
+            )
+    else:
+        # An explicit list is used by diagnostic callers and bounded live tests.
+        catalog = [{"id": item, "name": item} for item in candidates]
+
     try:
         binary = _resolve_claude_binary()
     except ClaudeCodeCLIUnavailableError as exc:
@@ -379,47 +372,47 @@ def discover_claude_code(
     discovered: list[dict[str, Any]] = []
     rejected: list[dict[str, str]] = []
     default_model = ""
-    for alias in candidates:
-        probe = _probe_alias(binary, alias, timeout=timeout)
+    for candidate in catalog:
+        model_id = candidate["id"]
+        probe = _probe_alias(binary, model_id, timeout=timeout)
         if probe["outcome"] == "inconclusive":
             return ProviderDiscoveryResult(
                 provider="claude_code",
                 discovered=[],
                 source=CLAUDE_CODE_SOURCE,
-                failed_reason=f"alias {alias!r} probe inconclusive: {probe['reason']}",
+                failed_reason=f"model {model_id!r} probe inconclusive: {probe['reason']}",
             )
         if probe["outcome"] == "accepted":
             resolved = probe["resolved_model"]
             discovered.append(
                 {
-                    "id": alias,
-                    "name": f"Claude {alias.capitalize()} (Claude Code alias)",
+                    "id": model_id,
+                    "name": candidate["name"],
                     "description": (
-                        f"Resolves to {resolved}." if resolved else "Validated Claude Code alias."
+                        f"Resolves to {resolved}." if resolved else "Validated Claude Code model."
                     ),
                     "capabilities": list(probe.get("capabilities") or []),
                     "capability_evidence": probe.get("capability_evidence") or {},
                 }
             )
             if cli_default_canonical and resolved == cli_default_canonical:
-                default_model = alias
+                default_model = model_id
         else:  # "rejected" -- definitive, informational, never aborts the provider
-            rejected.append({"id": alias, "reason": probe["reason"]})
+            rejected.append({"id": model_id, "reason": probe["reason"]})
 
     if not discovered:
-        reasons = "; ".join(f"{r['id']}: {r['reason']}" for r in rejected) or "no aliases validated"
+        reasons = "; ".join(f"{r['id']}: {r['reason']}" for r in rejected) or "no models validated"
         return ProviderDiscoveryResult(
             provider="claude_code", discovered=[], source=CLAUDE_CODE_SOURCE, failed_reason=reasons
         )
     default_model_reason = ""
     if not default_model:
-        default_model = discovered[0]["id"]
         default_model_reason = (
-            f"bare CLI-default probe was {bare['outcome']} ({bare['reason']}); falling back to "
-            "the first validated alias"
+            f"bare CLI-default probe was {bare['outcome']} ({bare['reason']}); "
+            "no account default was discovered"
             if bare["outcome"] != "accepted"
-            else "bare CLI-default probe resolved to a model id no validated alias matched; "
-            "falling back to the first validated alias"
+            else "bare CLI-default probe resolved to a model id not in the validated catalog; "
+            "no account default was discovered"
         )
     discovered = attach_context_limits(discovered, "claude_code")
     return ProviderDiscoveryResult(
@@ -433,7 +426,6 @@ def discover_claude_code(
 
 
 __all__ = [
-    "CLAUDE_CODE_ALIAS_CANDIDATES",
     "CLAUDE_CODE_PROBE_TIMEOUT_S",
     "ClaudeCodeCLIUnavailableError",
     "discover_claude_code",

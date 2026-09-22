@@ -27,6 +27,40 @@ from clio_agent.providers.catalog import get_provider
 from clio_agent.providers.model_discovery import claude_code as md_claude_code
 
 
+@pytest.mark.asyncio
+async def test_startup_refreshes_configured_cli_and_remote_claude_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.providers.model_discovery import claude_code_catalog
+    from clio_agent.providers.model_discovery import refresh as md_refresh
+
+    seen: list[str] = []
+    monkeypatch.setattr(md_refresh, "is_provider_configured", lambda preset: preset.id == "codex")
+    monkeypatch.setattr(
+        claude_code_catalog,
+        "refresh_claude_code_candidates",
+        lambda: seen.append("github") or [],
+    )
+
+    async def _refresh(*, presets: Any) -> list[dict[str, Any]]:
+        seen.extend(preset.id for preset in presets)
+        return []
+
+    monkeypatch.setattr(md_refresh, "refresh_all", _refresh)
+    await md_refresh.refresh_subscription_catalogs_at_startup()
+    assert seen == ["github", "codex"]
+
+
+@pytest.fixture(autouse=True)
+def _stub_claude_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Legacy alias-probe cases use a deterministic candidate source."""
+    monkeypatch.setattr(
+        md_claude_code,
+        "refresh_claude_code_candidates",
+        lambda: [{"id": alias, "name": alias} for alias in ("fable", "opus", "sonnet", "haiku")],
+    )
+
+
 @pytest.fixture(autouse=True)
 def _stub_context_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every ``discover_*`` success path calls ``attach_context_limits`` (#1211
@@ -398,15 +432,10 @@ def test_record_refresh_persists_default_model_reason(
     assert overlay["claude_code"]["default_model_reason"] == "bare probe inconclusive; falling back"
 
 
-def test_record_refresh_claude_code_served_default_is_cost_policy_not_cli_default(
+def test_record_refresh_claude_code_serves_the_account_discovered_default(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Owner ruling 2026-08-14 (failing-first): the CLI's own bare default can
-    resolve to the premium ``fable`` tier; the overlay's SERVED default_model
-    for claude_code must be the cost-policy value (``sonnet``) instead, with
-    the CLI's honest choice preserved alongside it as ``cli_default`` (never
-    dropped) -- both in the write (the persisted overlay) and the returned
-    wire row (the /update-models delta)."""
+    """A verified account default wins over every compiled-in candidate."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     wire = model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
@@ -419,19 +448,18 @@ def test_record_refresh_claude_code_served_default_is_cost_policy_not_cli_defaul
             default_model="fable",
         )
     )
-    assert wire["default_model"] == "sonnet"
-    assert wire["cli_default"] == "fable"
+    assert wire["default_model"] == "fable"
+    assert "cli_default" not in wire
     overlay = model_discovery.read_overlay()
-    assert overlay["claude_code"]["default_model"] == "sonnet"
-    assert overlay["claude_code"]["cli_default"] == "fable"
-    assert model_discovery.overlay_default_model("claude_code", "claude_code") == "sonnet"
+    assert overlay["claude_code"]["default_model"] == "fable"
+    assert "cli_default" not in overlay["claude_code"]
+    assert model_discovery.overlay_default_model("claude_code", "claude_code") == "fable"
 
 
-def test_record_refresh_claude_code_keeps_cli_default_when_it_already_is_sonnet(
+def test_record_refresh_claude_code_keeps_discovered_sonnet_default(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """When the CLI's own default already IS the cost-policy model, cli_default
-    and default_model agree -- no surprising divergence for the common case."""
+    """A discovered Sonnet default is served without synthetic metadata."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     wire = model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
@@ -442,16 +470,13 @@ def test_record_refresh_claude_code_keeps_cli_default_when_it_already_is_sonnet(
         )
     )
     assert wire["default_model"] == "sonnet"
-    assert wire["cli_default"] == "sonnet"
+    assert "cli_default" not in wire
 
 
 def test_record_refresh_claude_code_falls_back_when_sonnet_unavailable(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The cost policy never points the default at a model the account doesn't
-    actually serve: if ``sonnet`` never validated for this account, the
-    overlay's served default_model stays the CLI's own (best-available)
-    choice rather than a broken override."""
+    """The account-discovered default is kept when Sonnet is unavailable."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     wire = model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
@@ -462,15 +487,13 @@ def test_record_refresh_claude_code_falls_back_when_sonnet_unavailable(
         )
     )
     assert wire["default_model"] == "opus"
-    assert wire["cli_default"] == "opus"
+    assert "cli_default" not in wire
 
 
-def test_record_refresh_codex_never_gains_a_cli_default_field(
+def test_record_refresh_codex_has_only_one_discovered_default(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The cost policy (and its cli_default bookkeeping) is claude_code-only --
-    codex keeps following its own account default verbatim, no cli_default
-    key at all (#1211 review, owner ruling 2026-08-14)."""
+    """Codex follows its account default without synthetic alternatives."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     wire = model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
@@ -608,6 +631,18 @@ def test_discover_codex_success_reports_default_and_source(monkeypatch: pytest.M
     assert result.source == "codex_sdk"
     assert all(m["capabilities"] == ["text", "image"] for m in result.discovered)
     assert all(m["capability_evidence"]["reason"] == "modality_reported" for m in result.discovered)
+    assert stub.closed is True
+
+
+def test_discover_codex_does_not_guess_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    from clio_agent.providers.model_discovery import codex as md_codex
+
+    stub = _StubCodex(rows=[_codex_model("gpt-5.6-sol")])
+    monkeypatch.setattr(md_codex, "AsyncCodex", lambda *_args, **_kwargs: stub)
+
+    result = model_discovery.discover_codex()
+    assert [model["id"] for model in result.discovered] == ["gpt-5.6-sol"]
+    assert result.default_model == ""
     assert stub.closed is True
 
 
@@ -1221,9 +1256,9 @@ def test_discover_claude_code_bare_probe_failure_falls_back_with_typed_reason(
 
     result = model_discovery.discover_claude_code(timeout=5.0)
     assert result.failed_reason is None
-    assert result.default_model == "fable"  # first validated alias, in candidate order
+    assert result.default_model == ""  # an unknown default must not become a guess
     assert result.default_model_reason != ""
-    assert "no validated alias matched" in result.default_model_reason
+    assert "no account default was discovered" in result.default_model_reason
 
 
 # --------------------------------------------------------------------------- #
@@ -1272,9 +1307,17 @@ async def test_discover_http_no_models_is_typed_reason(monkeypatch: pytest.Monke
 # --------------------------------------------------------------------------- #
 
 
-def test_is_provider_configured_codex_uses_required_sdk() -> None:
+def test_is_provider_configured_codex_requires_sdk_and_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     preset = get_provider("codex")
     assert preset is not None
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing"))
+    assert model_discovery.is_provider_configured(preset) is False
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    (codex_home / "auth.json").write_text('{"token":"test"}', encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
     assert model_discovery.is_provider_configured(preset) is True
 
 

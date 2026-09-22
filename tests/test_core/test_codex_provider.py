@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -19,6 +20,7 @@ from clio_agent.providers.claude_code_cancel import (
     abort_session_streams,
     active_stream_sessions,
 )
+from clio_agent.providers.codex_errors import CODEX_AUTHENTICATION_ERROR_MESSAGE
 from clio_agent.providers.codex_litellm import (
     CodexLLM,
     CodexUnsupportedMultimodalError,
@@ -212,6 +214,38 @@ def test_unknown_sdk_informational_item_is_typed_skip(caplog: pytest.LogCaptureF
     with caplog.at_level(logging.INFO):
         codex_stream._validate_bare_lm_event(_event("item/started", item=item))
     assert "reason=codex_sdk_informational_item_skipped" in caplog.text
+
+
+def test_failed_turn_missing_auth_uses_actionable_message() -> None:
+    raw_message = (
+        "unexpected status 401 Unauthorized: Missing bearer or basic authentication "
+        "in header, url: https://api.openai.com/v1/responses"
+    )
+    turn = SimpleNamespace(
+        status=SimpleNamespace(value="failed"),
+        error=SimpleNamespace(message=raw_message),
+    )
+
+    with pytest.raises(
+        codex_stream.CodexSDKError,
+        match=re.escape(CODEX_AUTHENTICATION_ERROR_MESSAGE),
+    ) as exc_info:
+        codex_stream._raise_failed_turn(_event("turn/completed", turn=turn))
+
+    rendered = str(exc_info.value)
+    assert rendered == CODEX_AUTHENTICATION_ERROR_MESSAGE
+    assert "api.openai.com" not in rendered
+    assert "Missing bearer" not in rendered
+
+
+def test_failed_turn_preserves_non_authentication_error() -> None:
+    turn = SimpleNamespace(
+        status=SimpleNamespace(value="failed"),
+        error=SimpleNamespace(message="model is unavailable"),
+    )
+
+    with pytest.raises(codex_stream.CodexSDKError, match="model is unavailable"):
+        codex_stream._raise_failed_turn(_event("turn/completed", turn=turn))
 
 
 def test_sdk_home_reaps_orphan_and_caps_live_copies(

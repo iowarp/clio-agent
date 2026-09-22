@@ -14,7 +14,7 @@ ProviderKind = Literal[
     "codex",
     "claude_code",
 ]
-AuthMethod = Literal["none", "api_key", "oauth"]
+AuthMethod = Literal["none", "api_key", "oauth", "subscription"]
 
 
 @dataclass(frozen=True)

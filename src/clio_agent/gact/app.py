@@ -841,6 +841,15 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         agent_task = asyncio.create_task(_construct_agent_async(app))
         app.state.agent_construction_task = agent_task
 
+    provider_catalog_task: Optional[asyncio.Task] = None
+    if getattr(app.state, "refresh_provider_catalog_on_startup", False):
+        from clio_agent.providers.model_discovery.refresh import (  # noqa: PLC0415
+            refresh_subscription_catalogs_at_startup,
+        )
+
+        provider_catalog_task = asyncio.create_task(refresh_subscription_catalogs_at_startup())
+        app.state.provider_catalog_startup_task = provider_catalog_task
+
     yield
 
     # Agent construction runs on an executor thread. Cancelling its asyncio task
@@ -869,7 +878,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # left running it could fire a due schedule mid-drain and leave a zombie turn
     # the drain never saw. (drain() also re-snapshots to catch any stray late spawn.)
     lm_config_task = getattr(app.state, "lm_config_task", None)
-    for t in (task, agent_task, lm_config_task):
+    for t in (task, agent_task, lm_config_task, provider_catalog_task):
         if t is None:
             continue
         if getattr(t, "done", lambda: False)():
@@ -2386,6 +2395,7 @@ def run_server(
     # immediately, beating gact-tui's 3-second deploy probe. POST /messages
     # 503s until app.state.agent is stamped by the background task.
     app_to_run: FastAPI = build_app()
+    app_to_run.state.refresh_provider_catalog_on_startup = True
     if (
         not no_agent
         and conf.resolve("lm.provider", env="CLIO_LM_PROVIDER", default="", cast=conf.as_str) != ""

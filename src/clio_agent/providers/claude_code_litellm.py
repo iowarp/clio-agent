@@ -184,7 +184,7 @@ async def _astream_sdk(
     # instead of a raw ImportError trace when the SDK is absent/uninstallable.
     from clio_agent.providers.claude_code_options import require_claude_agent_sdk  # noqa: PLC0415
 
-    require_claude_agent_sdk()
+    await asyncio.to_thread(require_claude_agent_sdk)
     from claude_agent_sdk import (  # noqa: PLC0415
         AssistantMessage,
         ClaudeSDKClient,

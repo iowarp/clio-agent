@@ -14,6 +14,7 @@ unchanged.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import logging
 from pathlib import Path
 from typing import Any
@@ -21,8 +22,14 @@ from typing import Any
 import pytest
 
 from clio_agent.providers.handshake.base import HandshakeContext
-from clio_agent.providers.handshake.cli_catalog import CliCatalogHandshake
+from clio_agent.providers.handshake.cli_catalog import (
+    ClaudeCodeCatalogHandshake,
+    CliCatalogHandshake,
+    CodexCatalogHandshake,
+)
+from clio_agent.providers.handshake.model import AuthState, ConnectivityState
 from clio_agent.providers.model_discovery import (
+    CLAUDE_CODE_SOURCE,
     CODEX_SOURCE,
     ProviderDiscoveryResult,
     record_refresh,
@@ -36,6 +43,115 @@ def _ctx(provider_id: str = "codex", provider_kind: str = "codex") -> HandshakeC
         api_base="codex://sdk",
         allow_external_sources=True,
     )
+
+
+def _codex_auth(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "codex-home"
+    home.mkdir(exist_ok=True)
+    (home / "auth.json").write_text('{"token":"test"}', encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(home))
+
+
+def _codex_sdk_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name: object() if name == "openai_codex" else original(name),
+    )
+
+
+def test_codex_handshake_requires_credentials(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing"))
+    _codex_sdk_present(monkeypatch)
+    report = asyncio.run(CodexCatalogHandshake(provider=None).handshake(_ctx()))
+    assert report.connectivity is ConnectivityState.SKIPPED
+    assert report.auth is AuthState.MISSING
+    assert report.models == ()
+
+
+def test_codex_handshake_requires_a_live_verification(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _codex_auth(tmp_path, monkeypatch)
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    _codex_sdk_present(monkeypatch)
+    report = asyncio.run(CodexCatalogHandshake(provider=None).handshake(_ctx()))
+    assert report.connectivity is ConnectivityState.SKIPPED
+    assert report.auth is AuthState.DEFERRED
+    assert report.models == ()
+
+
+def test_codex_handshake_ready_only_after_verified_catalog(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _codex_auth(tmp_path, monkeypatch)
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    _codex_sdk_present(monkeypatch)
+    record_refresh(
+        ProviderDiscoveryResult(
+            provider="codex",
+            discovered=[{"id": "gpt-live", "name": "GPT Live", "description": ""}],
+            source=CODEX_SOURCE,
+            default_model="gpt-live",
+        )
+    )
+    report = asyncio.run(CodexCatalogHandshake(provider=None).handshake(_ctx()))
+    assert report.connectivity is ConnectivityState.OK
+    assert report.auth is AuthState.OK
+    assert [model.id for model in report.models] == ["gpt-live"]
+
+
+def test_claude_code_handshake_requires_the_sdk(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    original = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name: None if name == "claude_agent_sdk" else original(name),
+    )
+    report = asyncio.run(
+        ClaudeCodeCatalogHandshake(provider=None).handshake(_ctx("claude_code", "claude_code"))
+    )
+    assert report.connectivity is ConnectivityState.UNREACHABLE
+    assert report.auth is AuthState.MISSING
+    assert report.models == ()
+
+
+def test_claude_code_handshake_ready_only_after_live_probe(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    original = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name: object() if name == "claude_agent_sdk" else original(name),
+    )
+    pending = asyncio.run(
+        ClaudeCodeCatalogHandshake(provider=None).handshake(_ctx("claude_code", "claude_code"))
+    )
+    assert pending.connectivity is ConnectivityState.SKIPPED
+    assert pending.auth is AuthState.DEFERRED
+
+    record_refresh(
+        ProviderDiscoveryResult(
+            provider="claude_code",
+            discovered=[{"id": "sonnet", "name": "Claude Sonnet", "description": ""}],
+            source=CLAUDE_CODE_SOURCE,
+            default_model="sonnet",
+        )
+    )
+    ready = asyncio.run(
+        ClaudeCodeCatalogHandshake(provider=None).handshake(_ctx("claude_code", "claude_code"))
+    )
+    assert ready.connectivity is ConnectivityState.OK
+    assert ready.auth is AuthState.OK
+    assert [model.id for model in ready.models] == ["sonnet"]
 
 
 # --------------------------------------------------------------------------- #

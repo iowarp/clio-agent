@@ -162,10 +162,10 @@ class TestLMProviderConfig:
             LMProviderConfig(provider="codex", codex_transport="telepathy")  # type: ignore[arg-type]
 
     def test_claude_code_defaults(self):
-        """Claude Code should not require an API key."""
+        """Claude Code needs no API key and has no synthetic model default."""
         config = LMProviderConfig(provider="claude_code")
         assert config.api_base == "claude-code://sdk"
-        assert config.model == "sonnet"
+        assert config.model == ""
         assert config.api_key == ""
         assert config.claude_code_transport == "sdk"  # sdk is the default (best config)
 

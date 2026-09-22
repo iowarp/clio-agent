@@ -39,7 +39,6 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import os
-import shutil
 import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -75,6 +74,7 @@ from clio_agent.gact.types import (
 from clio_agent.providers.dependencies import (
     ProviderDependencyInstallError,
     ensure_argonne_support,
+    ensure_claude_code_support,
 )
 
 if TYPE_CHECKING:
@@ -137,6 +137,82 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     _PROVIDER_MODELS: dict[str, list[dict[str, str]]] = _build_provider_models()
 
+    def _codex_readiness(*, ignore_startup: bool = False) -> tuple[str, str, bool, str]:
+        """Return status, message, verified flag, and live default for Codex."""
+
+        if importlib.util.find_spec("openai_codex") is None:
+            return (
+                "unavailable",
+                "official openai-codex Python SDK is not installed",
+                False,
+                "",
+            )
+        from clio_agent.providers.codex_credential_home import (  # noqa: PLC0415
+            codex_credentials_present,
+        )
+
+        if not codex_credentials_present():
+            return (
+                "auth_required",
+                "Codex sign-in is required on the connected agent",
+                False,
+                "",
+            )
+        startup_check = getattr(app.state, "provider_catalog_startup_task", None)
+        if not ignore_startup and startup_check is not None and not startup_check.done():
+            return "auth_check_required", "Codex models are being checked", False, ""
+        from clio_agent.providers import model_discovery  # noqa: PLC0415
+
+        try:
+            overlay = model_discovery.overlay_models_wire("codex", "codex")
+        except model_discovery.OverlayMalformedError as exc:
+            return "unavailable", f"Codex model catalog is invalid: {exc}", False, ""
+        if overlay and overlay.get("models") and not overlay.get("staleness"):
+            return (
+                "ready",
+                "Codex credentials validated by the SDK",
+                True,
+                str(overlay.get("default_model") or ""),
+            )
+        return (
+            "auth_check_required",
+            "Codex credentials are present but have not been validated",
+            False,
+            "",
+        )
+
+    def _claude_code_readiness(*, ignore_startup: bool = False) -> tuple[str, str, bool, str]:
+        """Return status, message, verified flag, and live default for Claude Code."""
+
+        from clio_agent.providers.claude_code_errors import (  # noqa: PLC0415
+            CLAUDE_CODE_NOT_INSTALLED_MESSAGE,
+        )
+
+        if importlib.util.find_spec("claude_agent_sdk") is None:
+            return "install_required", CLAUDE_CODE_NOT_INSTALLED_MESSAGE, False, ""
+        startup_check = getattr(app.state, "provider_catalog_startup_task", None)
+        if not ignore_startup and startup_check is not None and not startup_check.done():
+            return "auth_check_required", "Claude Code models are being checked", False, ""
+        from clio_agent.providers import model_discovery  # noqa: PLC0415
+
+        try:
+            overlay = model_discovery.overlay_models_wire("claude_code", "claude_code")
+        except model_discovery.OverlayMalformedError as exc:
+            return "unavailable", f"Claude Code model catalog is invalid: {exc}", False, ""
+        if overlay and overlay.get("models") and not overlay.get("staleness"):
+            return (
+                "ready",
+                "Claude Code sign-in and models verified",
+                True,
+                str(overlay.get("default_model") or ""),
+            )
+        return (
+            "auth_check_required",
+            "Claude Code is installed but has not been verified. Check the provider to sign in.",
+            False,
+            "",
+        )
+
     def _provider_auth_state(preset: "LMProviderPreset") -> tuple[list[str], bool]:
         """Return (auth_methods, is_authenticated) for a preset.
 
@@ -147,9 +223,16 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
           AND globus-sdk is importable.
         - cloud (requires_api_key=True): api_key auth; authenticated when
           the matching env var is set.
-        - local (lm_studio/ollama/codex): no auth required;
-          surface as ``["none"]``, always authenticated.
+        - codex: subscription credentials must exist and have a fresh successful
+          SDK catalog check.
+        - local (lm_studio/ollama): no auth required.
         """
+        if preset.provider == "codex":
+            _, _, verified, _ = _codex_readiness()
+            return ["subscription"], verified
+        if preset.provider == "claude_code":
+            _, _, verified, _ = _claude_code_readiness()
+            return ["subscription"], verified
         if preset.provider == "argonne":
             authed = False
             try:
@@ -178,13 +261,13 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         review D2), the frozen static ``suggested_model`` otherwise. Once a
         refresh has run, this follows the CLI's/account's OWN live default
         (e.g. codex's ``gpt-5.6-sol``) instead of a snapshot that may already be
-        rejected (#1184) -- EXCEPT claude_code, whose overlay-served default is
-        a deliberate cost policy ("sonnet", never the CLI's own premium bare
-        default) applied once, at the overlay-write boundary
-        (:func:`clio_agent.providers.model_discovery.overlay.record_refresh`,
-        owner ruling 2026-08-14); this function is unaware of the distinction
-        and stays correct either way because it only ever reads the overlay's
-        already-policy-applied ``default_model`` back."""
+        rejected (#1184). CLI-provider candidates are never automatic defaults;
+        only a fresh account discovery supplies one."""
+        if preset.provider in {"codex", "claude_code"}:
+            readiness = _codex_readiness if preset.provider == "codex" else _claude_code_readiness
+            _, _, verified, default_model = readiness()
+            return default_model if verified else ""
+
         from clio_agent.providers import model_discovery  # noqa: PLC0415
 
         overlay_default = model_discovery.overlay_default_model(preset.id, preset.provider)
@@ -330,22 +413,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.get("/v1/providers/{provider_id}/models")
     async def list_provider_models(provider_id: str, api_base: str = "") -> dict[str, Any]:
-        """Per-provider model catalog: CLI kinds are overlay-first; HTTP kinds always live.
-
-        Resolves the preset (by id, then by bare kind). For the CLI provider
-        kinds ONLY (codex/claude_code — #1211 review D5; they have no live
-        ``/models`` endpoint of their own, so there is nothing more current to
-        prefer over it) — when ``POST /v1/providers/models/refresh`` (#1211) has
-        successfully discovered models, that overlay is served verbatim, ahead
-        of the static candidate catalog. A malformed on-disk overlay is a typed
-        500 for those two kinds, never a silent ``{}`` (the #1202 lesson). HTTP-
-        backed providers NEVER serve their overlay entry here (even though
-        ``POST .../refresh`` does populate one, for the added/removed/unchanged
-        delta) — they always run the unified async handshake (passive auth —
-        browsing never triggers interactive OAuth): a live provider that fails
-        reports ``source="unavailable"`` with the reason rather than stale
-        choices. Unknown provider ids return a 404.
-        """
+        """Read the startup catalog; explicit provider checks own live verification."""
         from clio_agent.providers import model_discovery  # noqa: PLC0415
         from clio_agent.providers.handshake import (  # noqa: PLC0415
             HandshakeContext,
@@ -373,6 +441,9 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             return {"models": models, "source": "static_catalog"}
 
         if preset.provider in {"codex", "claude_code"}:
+            _, message, verified, _ = (
+                _codex_readiness() if preset.provider == "codex" else _claude_code_readiness()
+            )
             try:
                 overlay = model_discovery.overlay_models_wire(preset.id, preset.provider)
             except model_discovery.OverlayMalformedError as exc:
@@ -384,11 +455,46 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                         )
                     ).model_dump(exclude_none=True),
                 ) from exc
-            if overlay is not None:
+            if preset.provider == "claude_code":
+                from clio_agent.providers.model_discovery.claude_code_catalog import (  # noqa: PLC0415
+                    cached_claude_code_candidates,
+                )
+
+                candidates, catalog_error = cached_claude_code_candidates()
+                if candidates is None or catalog_error:
+                    return {
+                        "models": [],
+                        "source": "unavailable",
+                        "error": catalog_error or "Claude Code model catalog has not loaded yet",
+                    }
+                verified_models = (
+                    {row["id"]: row for row in (overlay or {}).get("models", [])}
+                    if verified
+                    else {}
+                )
+                models = [
+                    {
+                        **verified_models.get(row["id"], row),
+                        "availability": (
+                            "available" if row["id"] in verified_models else "candidate"
+                        ),
+                    }
+                    for row in candidates
+                ]
+                default_model = str((overlay or {}).get("default_model") or "")
+                if default_model not in verified_models or default_model not in {
+                    row["id"] for row in candidates
+                }:
+                    default_model = ""
+                return {
+                    "models": models,
+                    "source": "github_catalog",
+                    "default_model": default_model,
+                    **({"error": message} if not verified else {}),
+                }
+            if verified and overlay is not None:
                 return overlay
-            static = _PROVIDER_MODELS.get(preset.id) or _PROVIDER_MODELS.get(preset.provider)
-            if static:
-                return {"models": static, "source": "static_catalog"}
+            return {"models": [], "source": "unavailable", "error": message}
 
         ctx = HandshakeContext(
             provider_id=preset.id,
@@ -400,15 +506,43 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         )
         report = await run_handshake(ctx)
         wire = report.to_models_wire()
-        # CLI providers (codex / claude_code) have no live ``/models`` endpoint, so
-        # they expose an editable static candidate catalog. A *live* provider that
-        # failed reports ``unavailable`` + the reason rather than showing stale
-        # static choices — surfacing the problem, never silently lying with a cache.
-        if not wire.get("models") and preset.provider in {"codex", "claude_code"}:
-            static = _PROVIDER_MODELS.get(preset.id) or _PROVIDER_MODELS.get(preset.provider)
-            if static:
-                return {"models": static, "source": "static_catalog"}
         return wire
+
+    @app.post("/v1/providers/{provider_id}/install")
+    async def install_provider_support(provider_id: str) -> dict[str, Any]:
+        """Install optional runtime support for a provider on the connected agent."""
+
+        preset = next((p for p in _LM_PRESETS if p.id == provider_id), None)
+        if preset is None:
+            raise HTTPException(status_code=404, detail=f"unknown provider: {provider_id}")
+        if preset.provider != "claude_code":
+            raise HTTPException(
+                status_code=405,
+                detail=f"provider '{provider_id}' has no installable runtime support",
+            )
+        from clio_agent.providers.claude_code_errors import (  # noqa: PLC0415
+            CLAUDE_CODE_INSTALL_FAILED_MESSAGE,
+        )
+
+        try:
+            installed = await asyncio.to_thread(ensure_claude_code_support)
+        except ProviderDependencyInstallError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="claude_code_install_failed",
+                        message=CLAUDE_CODE_INSTALL_FAILED_MESSAGE,
+                        details={"diagnostic": str(exc)},
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
+        return {
+            "provider_id": preset.id,
+            "installed": installed,
+            "instructions": "Claude Code support is installed. Check the provider to verify sign-in.",
+        }
 
     @app.get("/v1/providers/{provider_id}/handshake")
     async def provider_handshake(
@@ -442,6 +576,87 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
+        if preset.provider == "codex":
+            status, message, verified, _ = _codex_readiness()
+            if refresh and status in {"auth_check_required", "ready"}:
+                from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
+                from clio_agent.providers.codex_errors import (  # noqa: PLC0415
+                    CODEX_AUTHENTICATION_ERROR_MESSAGE,
+                    contains_codex_authentication_error,
+                )
+
+                provider = get_provider(preset.id)
+                results = (
+                    await model_discovery.refresh_all(presets=[provider])
+                    if provider is not None
+                    else []
+                )
+                result = results[0] if results else {}
+                failure = str(result.get("failed_reason") or "")
+                if failure:
+                    auth_failure = contains_codex_authentication_error(failure)
+                    return {
+                        "models": [],
+                        "source": "unavailable",
+                        "error": (CODEX_AUTHENTICATION_ERROR_MESSAGE if auth_failure else failure),
+                        "connectivity": "ok" if auth_failure else "unreachable",
+                        "auth": "rejected" if auth_failure else "deferred",
+                        "latency_ms": None,
+                        "generated_at": str(result.get("generated_at") or ""),
+                    }
+                status, message, verified, _ = _codex_readiness(ignore_startup=True)
+            if not verified:
+                return {
+                    "models": [],
+                    "source": "unavailable",
+                    "error": message,
+                    "connectivity": "skipped",
+                    "auth": "missing" if status == "auth_required" else "deferred",
+                    "latency_ms": None,
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                }
+        if preset.provider == "claude_code":
+            status, message, verified, _ = _claude_code_readiness()
+            if refresh:
+                from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
+                from clio_agent.providers.claude_code_errors import (  # noqa: PLC0415
+                    CLAUDE_CODE_INSTALL_FAILED_MESSAGE,
+                    contains_claude_code_dependency_error,
+                )
+
+                provider = get_provider(preset.id)
+                results = (
+                    await model_discovery.refresh_all(presets=[provider])
+                    if provider is not None
+                    else []
+                )
+                result = results[0] if results else {}
+                failure = str(result.get("failed_reason") or "")
+                if failure:
+                    return {
+                        "models": [],
+                        "source": "unavailable",
+                        "error": (
+                            CLAUDE_CODE_INSTALL_FAILED_MESSAGE
+                            if contains_claude_code_dependency_error(failure)
+                            else failure
+                        ),
+                        "connectivity": "unreachable",
+                        "auth": "deferred",
+                        "latency_ms": None,
+                        "generated_at": str(result.get("generated_at") or ""),
+                    }
+                status, message, verified, _ = _claude_code_readiness(ignore_startup=True)
+            if not verified:
+                return {
+                    "models": [],
+                    "source": "unavailable",
+                    "error": message,
+                    "connectivity": "unreachable" if status == "install_required" else "skipped",
+                    "auth": "missing" if status == "install_required" else "deferred",
+                    "latency_ms": None,
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                }
         ctx = HandshakeContext(
             provider_id=preset.id,
             provider_kind=preset.provider,
@@ -468,20 +683,6 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             "anthropic": "ANTHROPIC_API_KEY",
             "openrouter": "OPENROUTER_API_KEY",
         }.get(preset.id, "CLIO_LM_API_KEY")
-
-    def _which_cli(*names: str) -> str | None:
-        """Resolve a local CLI across POSIX names and Windows shims."""
-
-        for name in names:
-            found = shutil.which(name)
-            if found:
-                return found
-            if os.name == "nt" and not name.lower().endswith((".cmd", ".exe")):
-                for suffix in (".cmd", ".exe"):
-                    found = shutil.which(name + suffix)
-                    if found:
-                        return found
-        return None
 
     def _preset_with_status(preset: LMProviderPreset) -> LMProviderPreset:
         update: dict[str, Any] = {}
@@ -529,24 +730,18 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 return preset.model_copy(update=update)
             update["is_authenticated"] = True
         if preset.provider == "codex":
-            if importlib.util.find_spec("openai_codex") is not None:
-                update["status"] = "ready"
-                update["status_message"] = "Codex SDK installed; authentication checked on use"
-                update["is_authenticated"] = True
-            else:
-                update["status"] = "unavailable"
-                update["status_message"] = "official openai-codex Python SDK is not installed"
-                update["is_authenticated"] = False
+            status, message, verified, default_model = _codex_readiness()
+            update["status"] = status
+            update["status_message"] = message
+            update["is_authenticated"] = verified
+            update["suggested_model"] = default_model
             return preset.model_copy(update=update)
         if preset.provider == "claude_code":
-            if _which_cli("claude"):
-                update["status"] = "ready"
-                update["status_message"] = "Claude Agent SDK ready; authentication checked on use"
-                update["is_authenticated"] = True
-            else:
-                update["status"] = "unavailable"
-                update["status_message"] = "Claude Code runtime not found on PATH"
-                update["is_authenticated"] = False
+            status, message, verified, default_model = _claude_code_readiness()
+            update["status"] = status
+            update["status_message"] = message
+            update["is_authenticated"] = verified
+            update["suggested_model"] = default_model
             return preset.model_copy(update=update)
         if not preset.supports_live_catalog:
             update["status"] = "ready"
@@ -580,7 +775,13 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         # fills only the identity + sampling fields the spec carries and never
         # feeds the model-ref / vision route gates (those read _effective_lm_config).
         default_spec = _default_profile_spec(app)
-        if default_spec is not None:
+        has_boot_or_live_provider = bool(
+            cfg.get("provider_id")
+            or cfg.get("provider")
+            or app.state.agent is not None
+            or getattr(app.state, "want_agent", False)
+        )
+        if default_spec is not None and has_boot_or_live_provider:
             for key in (
                 "provider_id",
                 "provider",
@@ -866,6 +1067,52 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 codex_transport=(req.transport or "sdk") if is_codex else "sdk",  # type: ignore[arg-type]  # LMProviderConfig validates
                 claude_code_transport=(req.transport or "sdk") if is_cc else "sdk",  # type: ignore[arg-type]  # LMProviderConfig validates; deleted values 400 typed
             )
+            if is_cc:
+                status, message, verified, default_model = _claude_code_readiness()
+                if not verified:
+                    from clio_agent.providers import model_discovery  # noqa: PLC0415
+                    from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
+
+                    provider = get_provider(req.provider_id or req.provider)
+                    if provider is not None:
+                        await model_discovery.refresh_all(presets=[provider])
+                    status, message, verified, default_model = _claude_code_readiness()
+                if not verified:
+                    raise HTTPException(
+                        status_code=503 if status in {"install_required", "unavailable"} else 401,
+                        detail=ErrorEnvelope(
+                            error=ErrorInfo(
+                                error=(
+                                    "claude_code_install_required"
+                                    if status == "install_required"
+                                    else "claude_code_auth_required"
+                                ),
+                                message=message,
+                                recoverable=True,
+                            )
+                        ).model_dump(exclude_none=True),
+                    )
+                if not req.model and default_model:
+                    cfg.model = default_model
+            if is_codex:
+                status, message, verified, default_model = _codex_readiness()
+                if not verified:
+                    raise HTTPException(
+                        status_code=(
+                            401 if status in {"auth_required", "auth_check_required"} else 503
+                        ),
+                        detail=ErrorEnvelope(
+                            error=ErrorInfo(
+                                error="codex_auth_required"
+                                if status in {"auth_required", "auth_check_required"}
+                                else "codex_unavailable",
+                                message=message,
+                                recoverable=True,
+                            )
+                        ).model_dump(exclude_none=True),
+                    )
+                if not req.model and default_model:
+                    cfg.model = default_model
             # Per-provider handshake: discover connectivity + per-model config and
             # fold it into cfg — context-aware max_tokens (replacing the static ALCF
             # 4096 cap on 128-256K-context models), reasoning/tool capability flags,
