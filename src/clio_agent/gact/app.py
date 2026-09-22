@@ -433,9 +433,8 @@ from clio_agent.gact.routes.deps import GactDeps  # noqa: E402
 from clio_agent.gact.routes.diffs import (  # noqa: E402
     register_diffs_routes,
 )
-from clio_agent.gact.routes.expert_packs import (  # noqa: E402
-    register_expert_packs_routes,
-)
+from clio_agent.gact.routes.expert_packs import register_expert_packs_routes  # noqa: E402
+from clio_agent.gact.routes.infrastructure import register_infrastructure_routes  # noqa: E402
 from clio_agent.gact.routes.interactions import (  # noqa: E402
     register_permission_and_interaction_routes,
 )
@@ -2199,7 +2198,7 @@ def build_app(
     register_sandbox_setup_routes(app)  # /v1/system/sandbox (+/setup) -- routes/sandbox_setup.py
     register_lifecycle_routes(app)
     register_relay_routes(app, deps)
-
+    register_infrastructure_routes(app, session_store_path.parent)
     # ---- /v1/sessions/{sid}/tasks + /v1/tasks/{tid} + memory/events + share ----
     # + /v1/shared/{token} + /v1/sessions/{sid}/events SSE: the misc session-
     # adjacent surfaces are owned by routes/misc.py; the task-delete route reaches

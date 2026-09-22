@@ -6,6 +6,35 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.4.13] - 2026-09-22
+
+### Added
+
+- Make the active CLIO instance the durable owner of infrastructure targets,
+  service records, external endpoints, lifecycle operations, progress, logs,
+  connection strategies, and configurable installation roots.
+- Materialize uploaded sources as safe working copies in the active workspace
+  and provide executable visual PDF inspection workflows for agents.
+
+### Changed
+
+- Delegate only interactive SSH authentication and byte transport to Desktop,
+  using the system OpenSSH client so host-key prompts, passwords, Kerberos,
+  security keys, ProxyJump chains, Duo, and rolling passwords remain native.
+- Render remote files by media type and keep binary/PDF previews outside the
+  agent loop so workspace browsing cannot block an active session.
+
+### Fixed
+
+- Reuse one SSH connection for probes, lifecycle operations, and private
+  forwards; restore transports after network loss without redeploying services
+  or replaying destructive operations.
+- Select loopback, directly reachable TCP/HTTPS, or SSH forwarding from the
+  active CLIO's perspective and keep managed deployments distinct from
+  connection-only external services.
+- Keep composer behavior menus mutually exclusive, synchronize provider/model
+  changes across live sessions, and preserve structured remote `@` references.
+
 ## [0.9.4.12] - 2026-09-20
 
 ### Fixed

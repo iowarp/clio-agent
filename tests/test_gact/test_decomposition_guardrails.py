@@ -117,7 +117,10 @@ from clio_agent.gact.app import build_app
 # /v1/agent-blueprints/sources/updates (every registered source) and GET
 # /v1/agent-blueprints/sources/{source_id}/updates (one source), registered
 # ahead of the greedy blueprint {id:path} catch-all.
-EXPECTED_ROUTE_METHOD_PAIRS = 246
+# 246 -> 262 (CLIO-owned infrastructure): +16 HTTP method pairs for targets,
+# reusable transports, durable service operations, external connections, and
+# lifecycle inspection. The WebSocket transport attachment is not an HTTP pair.
+EXPECTED_ROUTE_METHOD_PAIRS = 262
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
