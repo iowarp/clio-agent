@@ -295,9 +295,11 @@ def _resolve_file(
         "media_type": media_type,
         "navigation": {"workspace_id": workspace_id, "path": part.ref_id},
         "delivery": {
-            "mode": "inline_text" if media_type.startswith("text/") else "metadata",
+            "mode": "inline_text" if media_type.startswith("text/") else "workspace_path",
             "sha256": actual_sha,
             "size_bytes": size,
+            "workspace_path": part.ref_id,
+            "agent_host_path": str(path),
         },
         "provenance": {"source": "workspace_file_repository", "path": part.ref_id},
     }

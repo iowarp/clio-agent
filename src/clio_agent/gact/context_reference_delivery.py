@@ -185,6 +185,22 @@ def _metadata_block(part: Part, metadata: Mapping[str, Any]) -> str:
     )
 
 
+def _workspace_path_block(part: Part, metadata: Mapping[str, Any]) -> str:
+    """Expose a verified binary workspace file as an agent-usable path."""
+
+    delivery = metadata["delivery"]
+    return (
+        f"### {part.ref_kind}: {part.label} "
+        f"[{part.ref_id}@{part.revision}]\n"
+        f"media_type={metadata['media_type']}; delivery=workspace-path; "
+        f"workspace_path={delivery.get('workspace_path', part.ref_id)!r}; "
+        f"agent_host_path={delivery.get('agent_host_path', '')!r}; "
+        f"sha256={delivery.get('sha256', '')}. "
+        "The file is on the connected agent host and may be passed to workspace-scoped "
+        "filesystem, shell, document, or image tools."
+    )
+
+
 def _reference_block(app: "FastAPI", workspace_id: str, part: Part) -> str:
     if part.ref_kind in SUMMARY_REFERENCE_KINDS:
         metadata, stale = _summary_delivery(app, workspace_id, part)
@@ -192,6 +208,8 @@ def _reference_block(app: "FastAPI", workspace_id: str, part: Part) -> str:
     canonical, metadata = _resolve_part_sync(app, workspace_id, part, enforce_revision=True)
     if metadata["delivery"]["mode"] == "inline_text":
         return _inline_block(app, workspace_id, canonical, metadata)
+    if canonical.ref_kind == "workspace_file" and metadata["delivery"]["mode"] == "workspace_path":
+        return _workspace_path_block(canonical, metadata)
     return _metadata_block(canonical, metadata)
 
 

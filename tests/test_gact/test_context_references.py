@@ -341,6 +341,46 @@ def test_workspace_file_search_uses_registered_root_not_process_cwd(
     assert [row["id"] for row in results] == ["registered.md"]
 
 
+def test_binary_workspace_reference_delivers_verified_remote_path(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    target = tmp_path / "a" / "Lake data α.pdf"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"%PDF-1.7\nremote")
+    session = app.state.sessions.get("sess_a")
+    assert session is not None
+    resolved = asyncio.run(
+        authorize_context_reference_parts(
+            app,
+            session,
+            [
+                Part(
+                    type="context_ref",
+                    ref_kind="workspace_file",
+                    ref_id="Lake data α.pdf",
+                )
+            ],
+        )
+    )
+    message = Message(
+        id="msg_binary_path",
+        session_id="sess_a",
+        role="user",
+        created_at="2026-09-02T12:00:00+00:00",
+        updated_at="2026-09-02T12:00:00+00:00",
+        parts=resolved,
+    )
+
+    enriched = enrich_with_context_references(app, "sess_a", "inspect", message)
+
+    delivery = resolved[0].metadata["context_reference"]["delivery"]
+    assert delivery["mode"] == "workspace_path"
+    assert delivery["workspace_path"] == "Lake data α.pdf"
+    assert delivery["agent_host_path"] == str(target)
+    assert "delivery=workspace-path" in enriched
+    assert repr(str(target)) in enriched
+    assert "delivery=metadata-only" not in enriched
+
+
 def test_resource_search_prefers_a_readable_name_for_duplicate_content(tmp_path: Path) -> None:
     app = _app(tmp_path)
     content_hash = "a" * 64

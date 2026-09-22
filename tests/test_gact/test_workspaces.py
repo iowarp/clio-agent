@@ -147,7 +147,7 @@ def test_workspace_file_read_returns_plain_text_not_json(tmp_path: Path) -> None
     resp = c.get("/v1/workspaces/ws_default/files/read", params={"path": "notes.md"})
 
     assert resp.status_code == 200
-    assert resp.headers["content-type"].startswith("text/plain")
+    assert resp.headers["content-type"].startswith("text/markdown")
     assert resp.text == "hello picker\n"
     assert resp.content == b"hello picker\n"
 
@@ -202,6 +202,27 @@ def test_workspace_file_read_serves_png_as_raw_bytes(tmp_path: Path) -> None:
     assert resp.headers["content-type"] == "image/png"
     assert resp.content == png_bytes
     assert int(resp.headers["content-length"]) == len(png_bytes)
+
+
+def test_workspace_file_listing_reports_media_type_and_pdf_supports_ranges(tmp_path: Path) -> None:
+    c = _client(tmp_path)
+    c.app.state.workspaces.update("ws_default", root_path=str(tmp_path))
+    pdf = b"%PDF-1.7\n0123456789"
+    (tmp_path / "remote paper.pdf").write_bytes(pdf)
+
+    listing = c.get("/v1/workspaces/ws_default/files")
+    entry = next(row for row in listing.json()["entries"] if row["path"] == "remote paper.pdf")
+    assert entry["media_type"] == "application/pdf"
+
+    response = c.get(
+        "/v1/workspaces/ws_default/files/read",
+        params={"path": "remote paper.pdf"},
+        headers={"Range": "bytes=0-7"},
+    )
+    assert response.status_code == 206
+    assert response.content == pdf[:8]
+    assert response.headers["accept-ranges"] == "bytes"
+    assert response.headers["content-range"] == f"bytes 0-7/{len(pdf)}"
 
 
 def test_workspace_file_read_sniffs_unknown_binary_as_octet_stream(tmp_path: Path) -> None:

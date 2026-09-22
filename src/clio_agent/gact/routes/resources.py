@@ -9,6 +9,7 @@ than carrying second copies with their own bounds and readiness gates.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -29,6 +30,7 @@ from clio_agent.gact.resource_lifecycle import (
     schedule_processing,
     submit_processing,
 )
+from clio_agent.gact.resource_materialization import materialize_resource_for_app
 from clio_agent.gact.resource_processing import ResourceConverterUnavailable
 from clio_agent.gact.resource_tools import (
     ResourceQueryError,
@@ -195,6 +197,22 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
         payload["processing"] = app.state.resource_processing_store.state(record).model_dump()
         return payload
 
+    async def materialize(record: ResourceRecord) -> ResourceRecord:
+        """Ensure a ready upload has an independent copy in this workspace."""
+
+        if record.state != "ready":
+            return record
+        try:
+            return await asyncio.to_thread(materialize_resource_for_app, app, record)
+        except (OSError, ValueError) as exc:
+            raise _error(
+                409,
+                "resource_materialization_failed",
+                f"uploaded source could not be materialized in the workspace: {exc}",
+                workspace_id=record.workspace_id,
+                resource_id=record.id,
+            ) from exc
+
     def lifecycle_payload(
         record: ResourceRecord, *, workspace_id: str, idempotent_replay: bool
     ) -> dict[str, Any]:
@@ -214,9 +232,12 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
     async def list_resources(workspace_id: str) -> dict[str, Any]:
         _workspace(app, workspace_id)
         resources = app.state.resource_store.list(workspace_id)
+        materialized: list[ResourceRecord] = []
         for record in resources:
+            record = await materialize(record)
             await refresh_processing(app, record)
-        return {"resources": [resource_wire(row) for row in resources]}
+            materialized.append(record)
+        return {"resources": [resource_wire(row) for row in materialized]}
 
     @app.get("/v1/workspaces/{workspace_id}/resource-deliveries")
     async def list_resource_deliveries(workspace_id: str) -> dict[str, Any]:
@@ -260,6 +281,7 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
             ) from exc
         except (TypeError, ValueError) as exc:
             raise _error(400, "invalid_request", str(exc)) from exc
+        record = await materialize(record)
         payload = lifecycle_payload(
             record, workspace_id=workspace_id, idempotent_replay=idempotent_replay
         )
@@ -325,6 +347,7 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
                 current=exc.record.to_wire(),
             ) from exc
         if updated.state == "ready":
+            updated = await materialize(updated)
             emit_workspace_event(
                 app,
                 workspace_id,
@@ -346,8 +369,64 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
     @app.get("/v1/workspaces/{workspace_id}/resources/{resource_id}")
     async def get_resource(workspace_id: str, resource_id: str) -> dict[str, Any]:
         record = _resource(app, workspace_id, resource_id)
+        record = await materialize(record)
         await refresh_processing(app, record)
         return resource_wire(record)
+
+    @app.post(
+        "/v1/workspaces/{workspace_id}/resources/{resource_id}/copy",
+        status_code=201,
+    )
+    async def copy_resource(
+        workspace_id: str,
+        resource_id: str,
+        request: Request,
+        background_tasks: BackgroundTasks,
+    ) -> dict[str, Any]:
+        """Copy a source into another workspace owned by this connected agent."""
+
+        source = _resource(app, workspace_id, resource_id)
+        body = await json_body(
+            request,
+            route="POST /v1/workspaces/{workspace_id}/resources/{resource_id}/copy",
+        )
+        destination_workspace_id = str(body.get("destination_workspace_id") or "").strip()
+        if not destination_workspace_id:
+            raise _error(400, "invalid_request", "destination_workspace_id is required")
+        _workspace(app, destination_workspace_id)
+        if destination_workspace_id == workspace_id:
+            raise _error(
+                409,
+                "same_workspace",
+                "resource already belongs to this workspace",
+                workspace_id=workspace_id,
+            )
+        try:
+            copied = await asyncio.to_thread(
+                app.state.resource_store.copy_ready,
+                workspace_id,
+                source.id,
+                destination_workspace_id,
+            )
+            copied = await materialize(copied)
+        except KeyError as exc:
+            raise _error(404, "not_found", f"resource not found: {resource_id}") from exc
+        except ResourceConflictError as exc:
+            raise _error(409, "resource_not_ready", str(exc)) from exc
+        except HTTPException:
+            await asyncio.to_thread(
+                app.state.resource_store.delete, destination_workspace_id, copied.id
+            )
+            raise
+        payload = lifecycle_payload(
+            copied,
+            workspace_id=destination_workspace_id,
+            idempotent_replay=False,
+        )
+        emit_workspace_event(app, destination_workspace_id, "resource.created", payload)
+        emit_workspace_event(app, destination_workspace_id, "resource.ready", payload)
+        schedule_processing(app, copied, background_tasks)
+        return payload
 
     @app.get("/v1/workspaces/{workspace_id}/resources/{resource_id}/content")
     async def get_resource_content(workspace_id: str, resource_id: str) -> FileResponse:
