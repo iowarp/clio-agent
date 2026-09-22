@@ -191,7 +191,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # self-explaining "prompt≈N tokens > context M" error before the server sees the
     # request, replacing an opaque HTTP 400. Ratchet down as the adapters module is
     # further decomposed per #714/#767.
-    "src/clio_agent/lm/adapters.py": 836,
+    "src/clio_agent/lm/adapters.py": 813,
     # 2026-08-04 (78f81d6f, unrelated to the P5 wire-semantics wave): +43 for
     # validate_agent_blueprint_path's new runtime_tool_names parameter -- pack
     # validation only knew builtins + pack mcp_servers namespaces, so an expert
@@ -274,7 +274,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # HeaderMismatch, SEP-2578) -- the retry logic itself lives in the owner
     # module tools/mcp_header_mismatch.py; only the lazy import + call-site swap
     # land here.
-    "src/clio_agent/gact/agents/builders.py": 1619,
+    "src/clio_agent/gact/agents/builders.py": 1547,
     # NEW entry (#1282, C1-S2 D1): crossed the flat 800 cap (797 -> 884) for
     # the #1275 fix's ONE chokepoint. Two pieces: (1) __init__ wraps every
     # tool callable this loop will ever run (MCP-bridged, instrumented

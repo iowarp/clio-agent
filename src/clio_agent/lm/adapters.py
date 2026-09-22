@@ -185,35 +185,12 @@ def _lenient_chat_adapter_cls() -> Any:
     from dspy.adapters.utils import parse_value  # noqa: PLC0415
     from dspy.utils.exceptions import AdapterParseError  # noqa: PLC0415
 
-    class LenientChatAdapter(dspy.ChatAdapter):  # type: ignore[name-defined]
+    from clio_agent.gact.agents.reactv2 import HistoryPreparationMixin  # noqa: PLC0415
+
+    class LenientChatAdapter(HistoryPreparationMixin, dspy.ChatAdapter):  # type: ignore[name-defined]
         """ChatAdapter that recovers a structured output field a model emitted as a
         Python constructor-repr (``Model(field=...)``) instead of JSON. The happy
         path is unchanged; recovery only runs when the strict parse fails."""
-
-        def format_conversation_history(self, signature, history_field_name, inputs):  # type: ignore[no-untyped-def]
-            """Source the ReActV2 History prefix from the materialized ARC live plane.
-
-            The V2 read seam (#901 S2, design B): before the stock formatter runs,
-            point the ``dspy.History`` input at ARC's materialized render (see
-            ``clio_agent.gact.agents.reactv2.override_history_inputs_from_arc``), so
-            ARC is the single wire source and out-of-band ARC edits change the next
-            prompt. A no-op for any signature without a ``dspy.History`` field — in
-            clio that is exclusively the ReActV2 react signature — so the classic
-            (History-less) wire path is byte-identical and unaffected. When ARC is not
-            the source (disabled / no scope / empty / read failure) the passed-in
-            History renders unchanged, so a standalone V2 loop still works.
-            ``override_history_inputs_from_arc`` is fully guarded internally (a read
-            failure records a typed reason and no-ops), so no blind swallow is needed
-            here — an unexpected raise is a real bug that must surface, not hide.
-            """
-            from clio_agent.gact.agents.reactv2 import (  # noqa: PLC0415
-                override_history_inputs_from_arc,
-            )
-
-            override_history_inputs_from_arc(
-                inputs, history_field_name, tuple(signature.input_fields)
-            )
-            return super().format_conversation_history(signature, history_field_name, inputs)
 
         def format_assistant_message_content(self, signature, message, missing_field_message=None):  # type: ignore[no-untyped-def]
             """Render NO assistant turn for an output-less history event (#901 S2).
@@ -717,7 +694,9 @@ def _strict_guided_json_adapter_cls() -> Any:
     dspy = _dspy()
     from dspy.utils.exceptions import LMError  # noqa: PLC0415
 
-    class StrictGuidedJSONAdapter(dspy.JSONAdapter):  # type: ignore[name-defined]
+    from clio_agent.gact.agents.reactv2 import HistoryPreparationMixin  # noqa: PLC0415
+
+    class StrictGuidedJSONAdapter(HistoryPreparationMixin, dspy.JSONAdapter):  # type: ignore[name-defined]
         def _call_preprocess(self, lm, lm_kwargs, signature, inputs):  # type: ignore[no-untyped-def]
             processed = super()._call_preprocess(lm, lm_kwargs, signature, inputs)
             # DSPy's JSONAdapter defaults native function calling ON. When the
@@ -828,9 +807,7 @@ def create_chat_adapter(config: LMProviderConfig) -> Any:
     provider_id = str(getattr(config, "provider_id", "") or getattr(config, "provider", ""))
     if provider_id not in {"codex", "claude_code"}:
         adapter._clio_context_window = int(  # type: ignore[attr-defined]
-            getattr(config, "chosen_context", None)
-            or getattr(config, "context_window", None)
-            or 0
+            getattr(config, "chosen_context", None) or getattr(config, "context_window", None) or 0
         )
         adapter._clio_model = str(getattr(config, "model", "") or "")  # type: ignore[attr-defined]
     return adapter
