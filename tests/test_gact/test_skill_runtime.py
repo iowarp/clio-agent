@@ -299,6 +299,7 @@ def test_default_root_auto_declares_workspace_skills_on_real_runtime_rows(
         "planning",
         "present-interactive-analysis",
         "update-models",
+        "work-with-pdfs",
     ]
     # DELETED SEAM regression pin: the retired "listing seam" stamp
     # (metadata["source_blueprint"] == "default_registry") -- the tag
@@ -322,9 +323,41 @@ def test_default_root_auto_declares_workspace_skills_on_real_runtime_rows(
     assert effective_declared_skills(other_root, catalog) == []
 
 
+def test_builtin_main_loads_pdf_workflow_and_vision_tool(tmp_path: Path) -> None:
+    """A bare session can load the shipped PDF procedure and inspect page images."""
+
+    from clio_agent.gact.agents.declared_native_tools import resolve_declared_native_tools
+    from clio_agent.gact.agents.skill_runtime import SkillRuntime, skills_prompt_block
+    from clio_agent.gact.catalog import _builtin_main_agent
+
+    agent = _builtin_main_agent()
+    assert agent.skills == ["work-with-pdfs"]
+    assert "view_image" in agent.tools
+
+    catalog = SkillCatalog(home=tmp_path / "home", cwd=tmp_path / "workspace")
+    runtime = SkillRuntime(resolutions=catalog.resolve_declared(agent.skills))
+    resolution = runtime.resolved["work-with-pdfs"]
+    assert resolution.skill is not None and resolution.skill.scope == "builtin"
+    assert "Call load_skill" in skills_prompt_block(runtime)
+    loaded = build_load_skill_tool(agent, runtime).func(skill_id="work-with-pdfs")
+    assert "Engineering drawings and diagrams" in loaded
+    assert "scripts/prepare_pdf.py" in loaded
+    assert (Path(resolution.skill.dir) / "scripts" / "prepare_pdf.py").is_file()
+
+    requested_text, available_text, _ = resolve_declared_native_tools(
+        agent, {}, supports_vision=False
+    )
+    requested_image, available_image, _ = resolve_declared_native_tools(
+        agent, {}, supports_vision=True
+    )
+    assert "view_image" not in requested_text
+    assert "view_image" not in available_text
+    assert "view_image" in requested_image
+    assert "view_image" in available_image
+
+
 def test_interactive_analysis_skill_is_when_why_guidance_with_no_prop_lore() -> None:
-    """S4: the shipped presentation skill points at catalog skills for shapes and
-    keeps ONLY when/why guidance -- no component property lore lives here anymore."""
+    """The presentation skill points to catalog skills without duplicating prop lore."""
 
     from clio_agent.gact.agents import skill_runtime
 

@@ -70,7 +70,8 @@ def _builtin_main_agent() -> AgentDef:
         specialization="orchestrator",
         module={"kind": "react"},
         prompt_id="clio.chat",
-        tools=sorted(TOOL_CATALOG),
+        tools=sorted({*TOOL_CATALOG, "view_image"}),
+        skills=["work-with-pdfs"],
         metadata={"definition_kind": "builtin_main"},
     )
 
