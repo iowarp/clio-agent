@@ -6,6 +6,14 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.4.14] - 2026-09-22
+
+### Fixed
+
+- Bundle Desktop v0.11.2.15 with front-door SSH jump-route editing, native
+  interactive OpenSSH authentication semantics, and a real connection test
+  that uses the deployment transport.
+
 ## [0.9.4.13] - 2026-09-22
 
 ### Added
