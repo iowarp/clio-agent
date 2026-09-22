@@ -54,6 +54,12 @@ class TurnContext:
     turn_id: str = ""  # _ACTIVE_GACT_TURN_ID
     trace_id: str = ""  # _ACTIVE_GACT_TRACE_ID
     tool_session_id: str = ""  # _ACTIVE_TOOL_SESSION_ID
+    # Optional Agent Blueprint selected by this message's execution mode.  This
+    # is deliberately turn-scoped: Deep Research layers its coordinator over
+    # the session's chosen base blueprint without rewriting that persistent
+    # choice.  Child sessions inherit the effective blueprint from the resolved
+    # coordinator's provenance.
+    execution_blueprint_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -147,6 +153,12 @@ def active_trace_id() -> str:
 def active_tool_session_id() -> str:
     """``_ACTIVE_TOOL_SESSION_ID.get()``."""
     return _RUNTIME.get().turn.tool_session_id
+
+
+def active_execution_blueprint_id() -> str:
+    """Return the Agent Blueprint temporarily selected for this turn."""
+
+    return _RUNTIME.get().turn.execution_blueprint_id
 
 
 def active_react_scope() -> str:
@@ -303,6 +315,7 @@ def set_turn_identity(
     session_id: str,
     turn_id: str,
     trace_id: str,
+    execution_blueprint_id: str = "",
 ) -> None:
     """Establish the whole turn layer at once. BARE set, NO token.
 
@@ -322,6 +335,7 @@ def set_turn_identity(
                 turn_id=turn_id,
                 trace_id=trace_id,
                 tool_session_id=cur.turn.tool_session_id,
+                execution_blueprint_id=execution_blueprint_id,
             ),
         )
     )

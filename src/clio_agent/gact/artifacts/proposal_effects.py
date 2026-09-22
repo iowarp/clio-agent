@@ -27,7 +27,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
-from clio_agent.gact.artifacts.minting import _contained
+from clio_agent.gact.artifacts.minting import _contained, artifact_name_for_path
 from clio_agent.gact.artifacts.records import IdentityEvidence, Mechanism
 from clio_agent.gact.artifacts.registry import get_registry
 
@@ -195,7 +195,13 @@ def _gate_content_write(
 
     # (a) Overwrite guard — never silently clobber a non-owned existing file.
     if proposal.name and target is not None:
-        if target.exists() and not _own_registered_target(app, workspace_id, proposal.name, target):
+        # ``promote_proposal`` deliberately normalizes the durable artifact
+        # identity to the target basename.  Apply that same normalization here:
+        # callers may author to an absolute workspace path, and a subsequent
+        # correction must re-version the artifact that the first call minted
+        # instead of being misclassified as an unrelated user file.
+        artifact_name = artifact_name_for_path(proposal.name)
+        if target.exists() and not _own_registered_target(app, workspace_id, artifact_name, target):
             return _rejected(
                 proposal.name,
                 RejectionReason.WOULD_OVERWRITE,

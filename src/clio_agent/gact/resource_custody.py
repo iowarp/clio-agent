@@ -71,6 +71,7 @@ class ResourceRecord(BaseModel):
     created_at: str = Field(default_factory=_now_iso)
     updated_at: str = Field(default_factory=_now_iso)
     completed_at: str = ""
+    workspace_path: str = ""
 
     @property
     def mime_mismatch(self) -> bool:
@@ -262,6 +263,7 @@ class ResourceStore:
             self._records[record.id] = record
             if declared_size == 0:
                 record = self._finalize_locked(record)
+                self._records[record.id] = record
             self._flush_locked()
             return record.model_copy(deep=True), False
 
@@ -332,6 +334,55 @@ class ResourceStore:
                 reverse=True,
             )
 
+    def set_workspace_path(self, resource_id: str, workspace_path: str) -> ResourceRecord:
+        """Persist the agent-usable working-copy path for one ready resource."""
+
+        with self._lock:
+            record = self._require_locked(resource_id)
+            if record.state != "ready":
+                raise ResourceConflictError("resource content is not ready", record)
+            record = record.model_copy(
+                update={"workspace_path": workspace_path, "updated_at": _now_iso()}
+            )
+            self._records[resource_id] = record
+            self._flush_locked()
+            return record.model_copy(deep=True)
+
+    def copy_ready(
+        self, source_workspace_id: str, resource_id: str, destination_workspace_id: str
+    ) -> ResourceRecord:
+        """Copy one immutable resource into another workspace under a new identity."""
+
+        with self._lock:
+            source = self._require_locked(resource_id)
+            if source.workspace_id != source_workspace_id:
+                raise KeyError(resource_id)
+            if source.state != "ready":
+                raise ResourceConflictError("resource content is not ready", source)
+            now = _now_iso()
+            copied = source.model_copy(
+                update={
+                    "id": "res_" + uuid.uuid4().hex,
+                    "workspace_id": destination_workspace_id,
+                    "client_upload_id": "",
+                    "workspace_path": "",
+                    "created_at": now,
+                    "updated_at": now,
+                    "completed_at": now,
+                }
+            )
+            destination_dir = self._revision_dir(copied)
+            try:
+                destination_dir.mkdir(parents=True, exist_ok=False)
+                shutil.copyfile(self.content_path(source), destination_dir / "original")
+                self._records[copied.id] = copied
+                self._flush_locked()
+            except (OSError, TypeError, ValueError):
+                shutil.rmtree(destination_dir.parent, ignore_errors=True)
+                self._records.pop(copied.id, None)
+                raise
+            return copied.model_copy(deep=True)
+
     def delete(self, workspace_id: str, resource_id: str) -> bool:
         """Delete the original, upload residue, derivatives, and index record.
 
@@ -351,6 +402,18 @@ class ResourceStore:
             record = self._records.get(resource_id)
             if record is None or record.workspace_id != workspace_id:
                 return False
+            from clio_agent.gact.resource_materialization import (  # noqa: PLC0415
+                remove_materialized_resource,
+            )
+
+            try:
+                remove_materialized_resource(record)
+            except OSError as exc:
+                raise ResourceDeleteError(
+                    f"resource workspace copy could not be removed: {exc}",
+                    record.model_copy(deep=True),
+                    type(exc).__name__,
+                ) from exc
             resource_root = self.root / workspace_id / resource_id
             if resource_root.exists():
                 try:
@@ -377,11 +440,16 @@ class ResourceStore:
         """
 
         with self._lock:
-            ids = [
-                resource_id
-                for resource_id, record in self._records.items()
-                if record.workspace_id == workspace_id
+            records = [
+                record for record in self._records.values() if record.workspace_id == workspace_id
             ]
+            from clio_agent.gact.resource_materialization import (  # noqa: PLC0415
+                remove_materialized_resource,
+            )
+
+            for record in records:
+                remove_materialized_resource(record)
+            ids = [record.id for record in records]
             workspace_root = self.root / workspace_id
             if workspace_root.exists():
                 shutil.rmtree(workspace_root)

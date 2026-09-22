@@ -5,8 +5,8 @@ drives:
 
 * ``GET /v1/providers`` + ``GET /v1/providers/{provider_id}`` (SPEC §6.12) -- the
   generic provider catalog (one row per preset) and the per-provider detail row.
-* ``POST /v1/providers/{provider_id}/auth`` -- kick off provider-specific auth
-  (Globus OAuth for ALCF/argonne in an interactive terminal; 405 hint otherwise).
+* ``POST /v1/providers/{provider_id}/auth`` -- start or complete provider-specific
+  auth (browser-based Globus OAuth for ALCF/argonne; 405 hint otherwise).
 * ``GET /v1/providers/{provider_id}/models`` + ``.../handshake`` -- the per-provider
   model catalog and connectivity/auth/per-model handshake via the unified async
   handshake (passive auth -- browsing never triggers interactive OAuth).
@@ -40,8 +40,6 @@ import asyncio
 import importlib.util
 import os
 import shutil
-import subprocess
-import sys
 import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -230,12 +228,10 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
     async def auth_provider(provider_id: str, request: Request) -> dict[str, Any]:
         """SPEC §6.12 — kick off provider-specific auth.
 
-        For argonne_*, this launches the Globus OAuth flow in an
-        interactive terminal where the user can visit the URL and
-        paste the generated code. This endpoint must not validate or
-        refresh cached tokens inline: expired Globus sessions can
-        block waiting for terminal input, which would freeze the TUI
-        request instead of giving the user an actionable login path.
+        For argonne_*, ``action=start`` returns the Globus login URL and an
+        opaque flow id. ``action=complete`` exchanges the one-time code on the
+        connected agent, where the refresh token must live. This works for both
+        local and remote agents without trying to open a terminal on that host.
 
         Other providers (cloud / local) use api_key / no-auth and
         return 405 with a hint pointing to PUT /v1/providers/lm.
@@ -288,97 +284,34 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             ) from exc
 
         body = await json_body(request, route="POST /v1/providers/{provider_id}/auth")
-        force = bool(body.get("force", False))
-
-        command = [
-            sys.executable,
-            "-m",
-            "clio_agent.providers.argonne_auth",
-            "authenticate",
-        ]
-        if force:
-            command.append("--force")
-        manual_command = " ".join(command)
+        action = str(body.get("action", "start")).strip().lower()
         try:
-            if os.name == "nt":
-                powershell = (
-                    shutil.which("pwsh.exe") or shutil.which("powershell.exe") or "powershell.exe"
+            from clio_agent.providers import argonne_auth  # noqa: PLC0415
+
+            if action == "complete":
+                flow_id = str(body.get("flow_id", ""))
+                authorization_code = str(body.get("authorization_code", ""))
+                await asyncio.to_thread(
+                    argonne_auth.complete_authentication,
+                    flow_id,
+                    authorization_code,
                 )
-                command_literal = " ".join(
-                    f"'{part.replace(chr(39), chr(39) + chr(39))}'" for part in command
-                )
-                ps_script = (
-                    "$Host.UI.RawUI.WindowTitle = 'CLIO ALCF Globus Login'; "
-                    "Write-Host 'CLIO ALCF Globus login'; "
-                    f"Write-Host 'Running: {manual_command.replace(chr(39), chr(39) + chr(39))}'; "
-                    "Write-Host ''; "
-                    f"& {command_literal}; "
-                    "$exitCode = $LASTEXITCODE; "
-                    "Write-Host ''; "
-                    "Write-Host ('Auth helper exited with code ' + $exitCode); "
-                    "Read-Host 'Press Enter to close this window'"
-                )
-                subprocess.Popen(  # noqa: S603
-                    [
-                        powershell,
-                        "-NoExit",
-                        "-ExecutionPolicy",
-                        "Bypass",
-                        "-Command",
-                        ps_script,
-                    ],
-                    creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
-                )
-                instructions = (
-                    ("Installed ALCF sign-in support on this agent. " if installed_support else "")
-                    + "Opened a persistent PowerShell window for ALCF Globus login. Complete the "
-                    "authorization code flow there, then select Refresh model catalog in CLIO. "
-                    f"If no terminal appears, run: {manual_command}"
-                )
-            else:
-                terminal = next(
-                    (
-                        shutil.which(name)
-                        for name in ("x-terminal-emulator", "gnome-terminal", "konsole", "xterm")
-                        if shutil.which(name)
-                    ),
-                    None,
-                )
-                if terminal:
-                    term_name = os.path.basename(terminal)
-                    args = (
-                        [terminal, "--", *command]
-                        if term_name == "gnome-terminal"
-                        else [terminal, "-e", *command]
-                    )
-                    subprocess.Popen(args)  # noqa: S603
-                    instructions = (
-                        (
-                            "Installed ALCF sign-in support on this agent. "
-                            if installed_support
-                            else ""
-                        )
-                        + "Opened a terminal for ALCF Globus login. Complete the "
-                        "authorization code flow there, then select Refresh model catalog in CLIO. "
-                        f"If no terminal appears, run: {manual_command}"
-                    )
-                else:
-                    instructions = (
-                        (
-                            "Installed ALCF sign-in support on this agent. "
-                            if installed_support
-                            else ""
-                        )
-                        + "Run this in an interactive terminal, then select Refresh model catalog in CLIO: "
-                        + manual_command
-                    )
+                return {
+                    "is_authenticated": True,
+                    "provider_id": provider_id,
+                    "instructions": "ALCF sign-in complete. Available models are refreshing.",
+                }
+            if action != "start":
+                raise ValueError(f"unknown authentication action: {action}")
+
+            pending = await asyncio.to_thread(argonne_auth.begin_authentication)
         except Exception as exc:
             raise HTTPException(
                 status_code=502,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
                         error="argonne_auth_failed",
-                        message=f"Could not launch interactive Globus authentication: {exc}",
+                        message=f"Could not complete Globus authentication: {exc}",
                         recoverable=True,
                     )
                 ).model_dump(exclude_none=True),
@@ -387,7 +320,12 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         return {
             "is_authenticated": False,
             "provider_id": provider_id,
-            "instructions": instructions,
+            "instructions": (
+                ("Installed ALCF sign-in support on this agent. " if installed_support else "")
+                + "Continue in Globus, then paste the authorization code here."
+            ),
+            "authorization_url": pending.authorization_url,
+            "flow_id": pending.flow_id,
         }
 
     @app.get("/v1/providers/{provider_id}/models")

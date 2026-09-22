@@ -144,6 +144,52 @@ REMOTE BLUEPRINT ORCHESTRATOR MARKER.
     )
 
 
+def _write_deep_research_blueprint(root: Path) -> None:
+    """Write the execution-mode blueprint used by the desktop Deep Research control."""
+
+    (root / "experts").mkdir(parents=True)
+    root.joinpath("AGENT.md").write_text(
+        """---
+id: deep-researcher
+version: 0.1.0
+title: Deep Researcher
+root_expert: main
+---
+Turn-scoped deep research layer.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("experts", "main.md").write_text(
+        """---
+id: main
+title: Deep Research Coordinator
+tier: 1
+module:
+  kind: react
+children:
+  - researcher
+  - critic
+---
+DEEP RESEARCH COORDINATOR MARKER.
+""",
+        encoding="utf-8",
+    )
+    for agent_id in ("researcher", "critic"):
+        root.joinpath("experts", f"{agent_id}.md").write_text(
+            f"""---
+id: {agent_id}
+title: {agent_id.title()}
+parent: main
+tier: 2
+module:
+  kind: react
+---
+{agent_id.upper()} MARKER.
+""",
+            encoding="utf-8",
+        )
+
+
 def _write_default_registry_blueprint(config_dir: Path) -> Path:
     # ``config_dir`` is the resolved per-user config root (the value
     # ``CLIO_USER_DIR`` resolves to for both ``user_config_dir`` and
@@ -2846,6 +2892,91 @@ def test_active_agent_blueprint_drives_turn_runtime_and_overrides_builtin_ids(
     assert assistant["metadata"]["agent_runtime"]["agent_id"] == "data"
     assert assistant["metadata"]["agent_runtime"]["source"] == "expert_pack"
     assert assistant["metadata"]["agent_runtime"]["pack"]["id"] == "remote-data"
+
+
+def test_deep_research_execution_mode_applies_deep_researcher_over_base_blueprint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deep Research is a turn layer, not merely architect routing on the base agent."""
+
+    workspace = tmp_path / "workspace"
+    _write_data_root_blueprint(workspace / ".clio" / "agent-blueprints" / "remote-data")
+    _write_deep_research_blueprint(workspace / ".clio" / "agent-blueprints" / "deep-researcher")
+    calls: list[dict[str, str]] = []
+
+    async def no_stream(*args, **kwargs):
+        return None
+
+    def fake_blueprint_runner(base_agent, agent_def, question, session_id, cancel_requested=None):
+        del base_agent, cancel_requested
+        calls.append(
+            {
+                "agent_id": agent_def.id,
+                "blueprint_id": str(agent_def.metadata.get("agent_blueprint_id") or ""),
+                "question": question,
+                "session_id": session_id,
+            }
+        )
+        return SimpleNamespace(
+            answer=f"runtime from {agent_def.metadata.get('agent_blueprint_id')}",
+            selected_expert=agent_def.id,
+            routing_rationale="execution mode blueprint",
+            route_source="agent_blueprint",
+            error_info=None,
+        )
+
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", no_stream)
+    monkeypatch.setattr("clio_agent.gact.app._run_blueprint_dspy_agent", fake_blueprint_runner)
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "base", "workspace_id": wid},
+        ).json()["id"]
+        activated = client.post(
+            f"/v1/sessions/{sid}/agent-blueprint",
+            json={"blueprint_id": "remote-data"},
+        )
+        assert activated.status_code == 200, activated.text
+
+        assistant = complete_turn(
+            client,
+            sid,
+            "research this",
+            json_override={
+                "behavior": {
+                    "confirmation_policy": "ask",
+                    "execution_mode": "deep_research",
+                    "reasoning_effort": "medium",
+                }
+            },
+        )
+        active_after = client.get(f"/v1/sessions/{sid}/agent-blueprint").json()
+        execute_assistant = complete_turn(client, sid, "ordinary work")
+
+    assert calls[0] == {
+        "agent_id": "main",
+        "blueprint_id": "deep-researcher",
+        "question": "research this",
+        "session_id": sid,
+    }
+    assert calls[1]["agent_id"] == "data"
+    assert calls[1]["blueprint_id"] == "remote-data"
+    assert calls[1]["question"].endswith("ordinary work")
+    assert calls[1]["session_id"] == sid
+    assert assistant["metadata"]["agent_runtime"]["pack"]["id"] == "deep-researcher"
+    assert execute_assistant["metadata"]["agent_runtime"]["pack"]["id"] == "remote-data"
+    assert active_after["active_agent_blueprint_id"] == "remote-data"
 
 
 def test_agent_blueprint_mcp_descriptor_installs_disabled(tmp_path: Path) -> None:

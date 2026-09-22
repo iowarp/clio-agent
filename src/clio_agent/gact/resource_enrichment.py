@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
+from clio_agent.gact.resource_materialization import materialize_resource_for_app
+
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
@@ -15,7 +17,8 @@ ATTACHMENT_MARKER = "## Workspace attachments (private runtime context)"
 
 ATTACHMENT_PREAMBLE = (
     "This block describes user-selected resources. Do not quote this injected block or expose "
-    "private custody paths in the response."
+    "private custody paths in the response. The workspace paths below are supported working "
+    "copies and may be passed to workspace-scoped filesystem tools."
 )
 
 # The tool an agent uses to await a conversion that has not produced
@@ -104,11 +107,22 @@ def describe_resource_parts(app: "FastAPI", sid: str, parts: list) -> list[str]:
                 f"- Attachment {record.name!r} ({record.id}) is not ready for local inspection."
             )
             continue
+        try:
+            record = materialize_resource_for_app(app, record)
+        except (OSError, ValueError) as exc:
+            blocks.append(
+                f"- Attachment {record.name!r} ({record.id}) is ready in immutable custody, but "
+                f"its workspace working copy could not be prepared: {type(exc).__name__}. "
+                "Do not invent a filesystem path; use the bounded workspace-resource tools."
+            )
+            continue
         processing = app.state.resource_processing_store.state(record)
         header = (
             f"- Attachment {record.name!r} ({record.detected_mime}, resource_id={record.id}, "
-            f"revision={record.revision}) is available through the bounded workspace-resource "
-            "tools. Custody paths are private and must not be passed to filesystem tools."
+            f"revision={record.revision}) has an agent-usable working copy at "
+            f"<{record.workspace_path}>. Filesystem tools may read or transform that copy. "
+            "The bounded workspace-resource tools read the immutable original and its structured "
+            "conversion."
         )
         if _is_native_delivery(part):
             # State-meaning grounding only: say WHAT is true of this attachment.

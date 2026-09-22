@@ -173,51 +173,54 @@ def test_get_lm_provider_reports_argonne_refresh_failure(tmp_path: Path, monkeyp
     assert "could not be refreshed" in sophia["status_message"]
 
 
-def test_auth_provider_returns_interactive_argonne_instructions(
+def test_auth_provider_starts_and_completes_browser_argonne_flow(
     tmp_path: Path,
     monkeypatch: Any,
     floor_sandbox: Any,
 ) -> None:
-    """ALCF auth must launch/describe an interactive flow, not block the backend."""
+    """ALCF auth must stay in-app while storing tokens on the connected agent."""
 
     from clio_agent.providers import argonne_auth
 
-    popen_calls: list[list[str]] = []
-
-    def _popen(cmd: list[str], *args: Any, **kwargs: Any) -> object:
-        popen_calls.append(cmd)
-        return object()
-
-    # The auth_provider handler moved to routes/providers.py (#714); patch the
-    # module-level importlib/subprocess/shutil it resolves there.
     monkeypatch.setattr("clio_agent.gact.routes.providers.ensure_argonne_support", lambda: True)
     monkeypatch.setattr(
         argonne_auth,
-        "check_auth_status",
-        lambda: (_ for _ in ()).throw(AssertionError("auth button must not probe token status")),
+        "begin_authentication",
+        lambda: argonne_auth.PendingAuthentication(
+            flow_id="flow-123",
+            authorization_url="https://auth.globus.org/v2/oauth2/authorize",
+        ),
     )
-    monkeypatch.setattr("clio_agent.gact.routes.providers.subprocess.Popen", _popen)
-    if os.name != "nt":
-        monkeypatch.setattr("clio_agent.gact.routes.providers.shutil.which", lambda name: None)
+    completed: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        argonne_auth,
+        "complete_authentication",
+        lambda flow_id, code: completed.append((flow_id, code)),
+    )
 
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
-        resp = c.post("/v1/providers/argonne_sophia/auth", json={"force": True})
+        start = c.post("/v1/providers/argonne_sophia/auth", json={"action": "start"})
+        complete = c.post(
+            "/v1/providers/argonne_sophia/auth",
+            json={
+                "action": "complete",
+                "flow_id": "flow-123",
+                "authorization_code": "code-456",
+            },
+        )
 
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
+    assert start.status_code == 200, start.text
+    body = start.json()
     assert body["is_authenticated"] is False
     assert body["provider_id"] == "argonne_sophia"
+    assert body["flow_id"] == "flow-123"
+    assert body["authorization_url"].startswith("https://auth.globus.org/")
     assert "Installed ALCF sign-in support" in body["instructions"]
-    assert "interactive terminal" in body["instructions"] or "Opened" in body["instructions"]
-    if os.name == "nt":
-        assert popen_calls
-        launched = popen_calls[0]
-        assert launched[0].lower().endswith(("powershell.exe", "pwsh.exe"))
-        assert "-NoExit" in launched
-        assert "clio_agent.providers.argonne_auth" in launched[-1]
-        assert "--force" in launched[-1]
-        assert "Read-Host" in launched[-1]
+    assert "terminal" not in body["instructions"].lower()
+    assert complete.status_code == 200, complete.text
+    assert complete.json()["is_authenticated"] is True
+    assert completed == [("flow-123", "code-456")]
 
 
 def test_auth_provider_reports_argonne_support_install_failure(

@@ -6,8 +6,122 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.4.14] - 2026-09-22
+
 ### Fixed
 
+- Bundle Desktop v0.11.2.15 with front-door SSH jump-route editing, native
+  interactive OpenSSH authentication semantics, and a real connection test
+  that uses the deployment transport.
+
+## [0.9.4.13] - 2026-09-22
+
+### Added
+
+- Make the active CLIO instance the durable owner of infrastructure targets,
+  service records, external endpoints, lifecycle operations, progress, logs,
+  connection strategies, and configurable installation roots.
+- Materialize uploaded sources as safe working copies in the active workspace
+  and provide executable visual PDF inspection workflows for agents.
+
+### Changed
+
+- Delegate only interactive SSH authentication and byte transport to Desktop,
+  using the system OpenSSH client so host-key prompts, passwords, Kerberos,
+  security keys, ProxyJump chains, Duo, and rolling passwords remain native.
+- Render remote files by media type and keep binary/PDF previews outside the
+  agent loop so workspace browsing cannot block an active session.
+
+### Fixed
+
+- Reuse one SSH connection for probes, lifecycle operations, and private
+  forwards; restore transports after network loss without redeploying services
+  or replaying destructive operations.
+- Select loopback, directly reachable TCP/HTTPS, or SSH forwarding from the
+  active CLIO's perspective and keep managed deployments distinct from
+  connection-only external services.
+- Keep composer behavior menus mutually exclusive, synchronize provider/model
+  changes across live sessions, and preserve structured remote `@` references.
+
+## [0.9.4.12] - 2026-09-20
+
+### Fixed
+
+- Apply the Deep Research execution mode as the real `deep-researcher`
+  blueprint over the selected base agent, including every spawned researcher
+  and critic, without changing the session's persistent base blueprint.
+- Allow an agent to re-version its own artifact when it authored the target
+  with an absolute workspace path.
+- Bundle Desktop v0.11.2.13 and CLIO Web Search v0.3.1 for reliable remote
+  general search and clean service shutdown.
+- Preserve the documented image-input capability of Claude Code aliases in the
+  provider catalog instead of reducing unrefreshed aliases to text-only.
+- Consolidate version status and direct updates into the workspace bottom bar,
+  and restore provider visibility management to the model picker's footer.
+
+## [0.9.4.11] - 2026-09-20
+
+### Fixed
+
+- Keep the native desktop workspace inside the height remaining below the
+  title bar, so Settings and version controls remain visible on short windows
+  and route content scrolls within the window.
+
+## [0.9.4.10] - 2026-09-20
+
+This is the signed update target used to verify Desktop-only, CLIO-only, and
+combined installed updates from the repaired v0.9.4.9 updater.
+
+## [0.9.4.9] - 2026-09-20
+
+### Fixed
+
+- Managed CLIO updates now replace stale package code and metadata left by
+  older bundled runtimes, purge cached bytecode, and verify the version Python
+  actually imports before reporting success.
+
+## [0.9.4.8] - 2026-09-20
+
+### Fixed
+
+- Keep the workspace navigation footer visible on short desktop windows so
+  Settings and the version/update control stay reachable while the workspace
+  list scrolls independently.
+
+## [0.9.4.7] - 2026-09-20
+
+This is the signed update target used to verify Desktop-only, CLIO-only, and
+combined installed updates from v0.9.4.6.
+
+## [0.9.4.6] - 2026-09-20
+
+### Fixed
+
+- Managed bundled CLIO updates now use the runtime's shipped `bin/uv`
+  executable, so the individual CLIO and combined update actions perform the
+  requested upgrade instead of failing before launch.
+
+## [0.9.4.5] - 2026-09-20
+
+### Fixed
+
+- Keep the desktop's compact version and update control visible beside
+  Settings, including on shorter windows.
+
+## [0.9.4.4] - 2026-09-20
+
+This intentionally minimal follow-up is the live acceptance target for the
+independent Desktop-only, CLIO-only, and combined signed updater paths added in
+v0.9.4.3.
+
+## [0.9.4.3] - 2026-09-20
+
+### Fixed
+
+- Desktop and agent releases now expose truthful, independently actionable
+  version state; the bundled Windows agent can update in place while desktop
+  updates use the signed lightweight installer, with a combined one-restart
+  path when both are behind.
 - ALCF sign-in now installs missing Argonne/Globus support quietly on the
   connected agent and forces a fresh interactive login, instead of ending with
   a manual `pip install` instruction or reusing a token the gateway rejected.

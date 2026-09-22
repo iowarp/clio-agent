@@ -31,7 +31,12 @@ from clio_agent.gact.types import Message, Part
 
 
 @contextmanager
-def _active_turn(app: Any, session_id: str = "sess_x") -> Iterator[None]:
+def _active_turn(
+    app: Any,
+    session_id: str = "sess_x",
+    *,
+    execution_blueprint_id: str = "",
+) -> Iterator[None]:
     """Bind BOTH the app and the turn session id the spawn tools read.
 
     ``_tool_session_context`` binds ``turn.tool_session_id``, but the spawn-runtime
@@ -42,6 +47,14 @@ def _active_turn(app: Any, session_id: str = "sess_x") -> Iterator[None]:
     with _gact_app_context(app):
         token = ctx.set_session_id(session_id)
         try:
+            if execution_blueprint_id:
+                ctx.set_turn_identity(
+                    app=app,
+                    session_id=session_id,
+                    turn_id="turn_execution_overlay",
+                    trace_id="trace_execution_overlay",
+                    execution_blueprint_id=execution_blueprint_id,
+                )
             yield
         finally:
             ctx.reset(token)
@@ -53,10 +66,10 @@ class _Agent:
 
 
 class _Def:
-    def __init__(self, agent_id: str) -> None:
+    def __init__(self, agent_id: str, *, blueprint_id: str = "bp") -> None:
         self.id = agent_id
         self.parent_id = "" if agent_id == "main" else "main"
-        self.metadata = {"agent_blueprint_id": "bp"}
+        self.metadata = {"agent_blueprint_id": blueprint_id}
 
 
 class _InvokeSpy:
@@ -364,6 +377,67 @@ def test_spawn_agent_task_success_emits_delegation_started_and_returns_task(monk
     }
 
 
+def test_turn_execution_blueprint_scope_is_stamped_on_declared_child(monkeypatch) -> None:
+    """A Deep Research child must not fall back to the session's base blueprint."""
+
+    app = _fake_app()
+    parent = app.state.sessions.seed(
+        "sess_x",
+        metadata={"active_agent_blueprint_id": "base-agent"},
+    )
+    parent.workspace_id = "ws_remote"
+    parent.mode = "architect"
+    deep_scope = {
+        "active_agent_blueprint_id": "deep-researcher",
+        "active_agent_blueprint_name": "Deep Researcher",
+        "active_agent_blueprint_version": "0.1.0",
+        "active_agent_blueprint_scope": "global",
+        "active_agent_blueprint_definition_path": "/blueprints/deep-researcher/AGENT.md",
+        "active_agent_blueprint_path": "",
+        "active_expert_pack_id": "",
+        "active_expert_pack_name": "",
+        "active_expert_pack_version": "",
+        "active_expert_pack_path": "",
+        "expert_pack_id": "",
+    }
+    monkeypatch.setattr(
+        "clio_agent.gact.spawn_context.resolve_installed_blueprint_target",
+        lambda app, blueprint_id, workspace_id="": (
+            "main",
+            deep_scope,
+            "Deep Researcher",
+        ),
+    )
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.resolution._runtime_declared_child_ids",
+        lambda app, parent_id, session_id="": {"researcher"},
+    )
+    spy = _InvokeSpy()
+    app.state.expert_invoker = spy
+    _capture_emits(monkeypatch)
+
+    with _active_turn(app, execution_blueprint_id="deep-researcher"):
+        from clio_agent.gact.agents import spawn_runtime
+
+        tools = {
+            tool.name: tool
+            for tool in spawn_runtime.build_spawn_runtime_tools(
+                _Agent(),
+                _Def("main", blueprint_id="deep-researcher"),
+            )
+        }
+        result = json.loads(
+            tools["spawn_agent_task"].func(agent="researcher", task="gather evidence")
+        )
+
+    assert result["task_id"] == "task_via_invoker"
+    assert len(spy.specs) == 1
+    spec = spy.specs[0]
+    assert spec.child_expert_id == "researcher"
+    assert spec.target_blueprint_id == ""
+    assert spec.session_scope_metadata == deep_scope
+
+
 def test_spawn_agent_task_commissions_installed_blueprint_root(monkeypatch) -> None:
     app = _fake_app()
     emitted = _capture_emits(monkeypatch)
@@ -649,12 +723,8 @@ def test_wait_agent_tasks_returns_and_emits_children_in_recorded_completion_orde
     app = _fake_app(
         registry,
         messages={
-            "child_later": [
-                _assistant_message("msg_later", "child_later", "long investigation")
-            ],
-            "child_earlier": [
-                _assistant_message("msg_earlier", "child_earlier", "short review")
-            ],
+            "child_later": [_assistant_message("msg_later", "child_later", "long investigation")],
+            "child_earlier": [_assistant_message("msg_earlier", "child_earlier", "short review")],
         },
     )
     _capture_emits(monkeypatch)
@@ -662,9 +732,7 @@ def test_wait_agent_tasks_returns_and_emits_children_in_recorded_completion_orde
 
     with _active_turn(app):
         tools = _tools_by_name(app, "main", {"data_expert"}, monkeypatch)
-        result = json.loads(
-            tools["wait_agent_tasks"].func(task_ids=["task_later", "task_earlier"])
-        )
+        result = json.loads(tools["wait_agent_tasks"].func(task_ids=["task_later", "task_earlier"]))
 
     assert [row["task_id"] for row in result["results"]] == [
         "task_earlier",

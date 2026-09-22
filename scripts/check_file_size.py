@@ -191,7 +191,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # self-explaining "prompt≈N tokens > context M" error before the server sees the
     # request, replacing an opaque HTTP 400. Ratchet down as the adapters module is
     # further decomposed per #714/#767.
-    "src/clio_agent/lm/adapters.py": 836,
+    "src/clio_agent/lm/adapters.py": 813,
     # 2026-08-04 (78f81d6f, unrelated to the P5 wire-semantics wave): +43 for
     # validate_agent_blueprint_path's new runtime_tool_names parameter -- pack
     # validation only knew builtins + pack mcp_servers namespaces, so an expert
@@ -274,7 +274,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # HeaderMismatch, SEP-2578) -- the retry logic itself lives in the owner
     # module tools/mcp_header_mismatch.py; only the lazy import + call-site swap
     # land here.
-    "src/clio_agent/gact/agents/builders.py": 1619,
+    "src/clio_agent/gact/agents/builders.py": 1547,
     # NEW entry (#1282, C1-S2 D1): crossed the flat 800 cap (797 -> 884) for
     # the #1275 fix's ONE chokepoint. Two pieces: (1) __init__ wraps every
     # tool callable this loop will ever run (MCP-bridged, instrumented
@@ -371,7 +371,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # route and the executing agent can never disagree. Genuinely new
     # decision logic (not a call-site wrap), hence living here rather than in
     # a caller.
-    "src/clio_agent/gact/agents/resolution.py": 842,
+    "src/clio_agent/gact/agents/resolution.py": 832,
     # NEW entry (C1-S7, #1309 gate-review F1/F3): crossed the flat 800 cap
     # (795 -> 820) for two new optional TaskSpec fields (tool_allowlist /
     # agent_elicitation_depth) and the metadata_patch lines that stamp them
@@ -642,7 +642,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # planning reads modalities out of; leaving the previous provider's snapshot
     # in place decided what bytes reached a model it never described. The catalog
     # itself is built in gact/provider_catalog.py; only the invalidation lands here.
-    "src/clio_agent/gact/routes/providers.py": 1338,
+    "src/clio_agent/gact/routes/providers.py": 1292,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (merged to develop with the size check red, baseline 1478 -> actual); ratchet
     # back below the pre-#947 count with the mcp_app_* owner-module split (see the

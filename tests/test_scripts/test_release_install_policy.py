@@ -12,7 +12,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_VERSION = "0.9.4.2"
+EXPECTED_VERSION = "0.9.4.14"
 EXPECTED_DSPY = "dspy==3.3.0b1"
 EXPECTED_FASTMCP = "fastmcp==4.0.0b5"
 EXPECTED_FASTMCP_SLIM = "fastmcp-slim==4.0.0b5"
@@ -277,12 +277,12 @@ def test_release_workflow_signs_and_publishes_the_update_manifest() -> None:
     assert "TAG: ${{ inputs.tag || github.ref_name }}" in bundles
 
     # (a) the merge script no longer forces createUpdaterArtifacts off or
-    # strips the pubkey; it sets the per-variant update feed instead.
+    # strips the pubkey; every installed variant uses the lightweight feed.
     assert "config.bundle.createUpdaterArtifacts = false" not in bundles
     assert "delete config.plugins.updater.pubkey" not in bundles
     assert "latest-lite.json" in bundles
     assert (
-        "`https://github.com/iowarp/clio-agent/releases/latest/download/${manifestName}`" in bundles
+        "https://github.com/iowarp/clio-agent/releases/latest/download/latest-lite.json" in bundles
     )
 
     # (b) the Tauri build step signs with the repo secrets.
@@ -317,7 +317,7 @@ def test_release_workflow_signs_and_publishes_the_update_manifest() -> None:
     completeness_idx = bundles.index("name: Assert release asset completeness", manifest_idx)
     assert check_idx < manifest_idx < completeness_idx
     manifest_step = bundles[manifest_idx:completeness_idx]
-    assert 'gen_tauri_update_manifest.py --tag "$TAG" --variant bundled --out latest.json' in (
+    assert 'gen_tauri_update_manifest.py --tag "$TAG" --variant lite --out latest.json' in (
         manifest_step
     )
     assert 'gen_tauri_update_manifest.py --tag "$TAG" --variant lite --out latest-lite.json' in (
@@ -360,7 +360,7 @@ def test_clio_brand_overlay_declares_the_updater() -> None:
     assert overlay["bundle"]["createUpdaterArtifacts"] is True
     updater = overlay["plugins"]["updater"]
     assert updater["endpoints"] == [
-        "https://github.com/iowarp/clio-agent/releases/latest/download/latest.json"
+        "https://github.com/iowarp/clio-agent/releases/latest/download/latest-lite.json"
     ]
     assert updater["pubkey"]
     assert updater["windows"]["installMode"] == "passive"

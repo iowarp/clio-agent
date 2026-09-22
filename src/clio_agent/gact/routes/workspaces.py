@@ -21,21 +21,20 @@ module never loads :mod:`clio_agent.gact.app`.
 
 from __future__ import annotations
 
+import asyncio
 import os
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 from clio_agent.gact.composer_runtime import delete_workspace_resources
 from clio_agent.gact.protocol_v3 import project_for_request, workspace_to_v3
 from clio_agent.gact.routes._body import json_body
-from clio_agent.gact.routes.workspace_file_policy import (
-    is_internal_workspace_file_directory,
-    is_textual_workspace_file,
-    skip_workspace_file_directory,
+from clio_agent.gact.routes.workspace_file_listing import (
+    collect_workspace_file_entries,
+    workspace_file_media_type,
 )
 from clio_agent.gact.routes.workspace_grant_delete import register_workspace_grant_delete_route
 from clio_agent.gact.routes.workspace_root_materialization import materialize_workspace_root
@@ -531,83 +530,13 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         if not root.is_dir():
             return {"entries": []}
 
-        # File policy decides whether symlinks are walkable; everything
-        # else (size cap, allowed-roots) is enforced at read-time, not
-        # listing-time.
-        allow_symlinks = False
-        try:
-            from clio_agent.tools.file_policy import FileAccessPolicy  # noqa: PLC0415
-
-            policy = FileAccessPolicy.from_mapping(os.environ)
-            allow_symlinks = policy.allow_symlinks
-        except Exception as exc:  # noqa: BLE001 - failure recorded via trace.event
-            trace.event(
-                "WORKSPACE",
-                "file policy unavailable for %s (%s); symlinks stay excluded",
-                wid,
-                exc,
-            )
-
-        entries: list[dict[str, Any]] = []
-        cap = _FILE_PICKER_LIMIT
-        internal_cap = _INTERNAL_FILE_PICKER_LIMIT
-
-        def _walk(d: Path) -> None:
-            nonlocal cap, internal_cap
-            if cap <= 0:
-                return
-            try:
-                raw_children = list(d.iterdir())
-            except (OSError, PermissionError):
-                return
-            # Don't stat-sort up front — a single un-statable child
-            # (broken symlink, restricted unix socket in /tmp) raises
-            # mid-key-eval and drops the entire list. Sort by name only;
-            # we'll check is_dir per-entry behind a try.
-            raw_children.sort(key=lambda p: p.name)
-            for child in raw_children:
-                if cap <= 0:
-                    return
-                name = child.name
-                rel = str(child.relative_to(root))
-                if is_internal_workspace_file_directory(name):
-                    if internal_cap > 0:
-                        entries.append({"path": rel, "type": "dir", "internal": True})
-                        internal_cap -= 1
-                    continue
-                if skip_workspace_file_directory(name):
-                    continue
-                try:
-                    if child.is_symlink() and not allow_symlinks:
-                        continue
-                    is_dir = child.is_dir()
-                except OSError:
-                    # Unreadable entry — skip rather than abort the whole
-                    # walk. Common in /tmp where other users' sockets
-                    # are 0600 and trip stat's permission check.
-                    continue
-                entry: dict[str, Any] = {
-                    "path": rel,
-                    "type": "dir" if is_dir else "file",
-                    "internal": False,
-                }
-                if not is_dir:
-                    try:
-                        st = child.stat()
-                        entry["size"] = st.st_size
-                        entry["modified"] = (
-                            datetime.fromtimestamp(st.st_mtime, tz=timezone.utc)
-                            .isoformat()
-                            .replace("+00:00", "Z")
-                        )
-                    except OSError:
-                        pass
-                entries.append(entry)
-                cap -= 1
-                if is_dir:
-                    _walk(child)
-
-        _walk(root)
+        entries = await collect_workspace_file_entries(
+            app,
+            wid,
+            root,
+            limit=_FILE_PICKER_LIMIT,
+            internal_limit=_INTERNAL_FILE_PICKER_LIMIT,
+        )
         return {"entries": entries}
 
     @app.get("/v1/workspaces/{wid}/repo_map")
@@ -760,8 +689,8 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             )
         try:
-            data = target.read_bytes()
-        except Exception as exc:
+            media_type = await asyncio.to_thread(workspace_file_media_type, target)
+        except OSError as exc:
             raise HTTPException(
                 status_code=500,
                 detail=ErrorEnvelope(
@@ -772,17 +701,14 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             ) from exc
-        if is_textual_workspace_file(target.name, data):
-            return Response(
-                content=data.decode("utf-8", errors="replace"),
-                media_type="text/plain; charset=utf-8",
-            )
-        import mimetypes  # noqa: PLC0415
-
-        guessed, _ = mimetypes.guess_type(target.name)
-        return Response(
-            content=data,
-            media_type=guessed or "application/octet-stream",
+        # Starlette's FileResponse streams from a worker thread and implements
+        # RFC range requests. PDF.js can therefore render page one of a remote
+        # document without CLIO reading the entire file into the event loop.
+        return FileResponse(
+            path=target,
+            media_type=media_type,
+            filename=target.name,
+            content_disposition_type="inline",
         )
 
     from clio_agent.gact.routes.references import register_reference_routes  # noqa: PLC0415

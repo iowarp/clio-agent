@@ -270,7 +270,9 @@ def _modalities(values: Any) -> set[str]:
 #: alias probe) served through the passive handshake. Both were produced by
 #: asking the provider. Anything else -- notably ``unavailable`` -- is not
 #: evidence and can never justify handing the model an attachment's bytes.
-EVIDENCED_MODALITY_SOURCES: frozenset[str] = frozenset({"live_handshake", "discovery_overlay"})
+EVIDENCED_MODALITY_SOURCES: frozenset[str] = frozenset(
+    {"live_handshake", "discovery_overlay", "documented_catalog"}
+)
 
 #: HandshakeReport.models_source -> the delivery-plan evidence label it earns.
 _EVIDENCE_LABEL_BY_SOURCE: dict[str, str] = {
@@ -304,7 +306,13 @@ def _catalog_modalities(app: Any, model: ModelRef) -> tuple[set[str], str, str]:
             for row in provider["models"]
             if isinstance(row, dict)
             and row.get("model_id") == model.model_id
-            and row.get("availability") == "available"
+            and (
+                row.get("availability") == "available"
+                or (
+                    isinstance(row.get("evidence"), dict)
+                    and row["evidence"].get("modality_evidenced") is True
+                )
+            )
         ),
         None,
     )
@@ -314,13 +322,20 @@ def _catalog_modalities(app: Any, model: ModelRef) -> tuple[set[str], str, str]:
     # ``evidenced`` covers both a live probe and a persisted discovery run; the
     # older ``live`` key is honoured for a catalog payload written before the
     # distinction existed, so an in-flight app's cached dict is not misread.
-    evidenced = evidence.get("evidenced")
+    evidenced = evidence.get("modality_evidenced")
+    if evidenced is None:
+        evidenced = evidence.get("evidenced")
     if evidenced is None:
         evidenced = evidence.get("live") is True
     generated_at = str(evidence.get("generated_at") or "")
     if evidenced is not True:
         return {"text"}, "unavailable", generated_at
-    label = _EVIDENCE_LABEL_BY_SOURCE.get(str(evidence.get("source") or ""), "live_handshake")
+    source = str(evidence.get("source") or "")
+    label = (
+        "documented_catalog"
+        if source == "static"
+        else _EVIDENCE_LABEL_BY_SOURCE.get(source, "live_handshake")
+    )
     return _modalities(profile.get("modalities")), label, generated_at
 
 
@@ -342,6 +357,15 @@ def _live_modalities(app: Any, model: ModelRef) -> tuple[set[str], str, str]:
                 profile.evidence_generated_at
                 or getattr(report, "evidence_generated_at", "")
                 or report.generated_at,
+            )
+    if report is not None and report.ok and report.models_source == "static":
+        profile = report.model(model.model_id)
+        evidence = profile.raw.get("capability_evidence") if profile is not None else None
+        if isinstance(evidence, dict) and evidence.get("reason") == "modality_documented":
+            return (
+                _modalities(profile.capabilities),
+                "documented_catalog",
+                report.evidence_generated_at or report.generated_at,
             )
     return _catalog_modalities(app, model)
 
