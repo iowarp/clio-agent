@@ -269,7 +269,7 @@ def test_get_lm_provider_reports_claude_code_install_required(
 def test_install_claude_code_support_endpoint(tmp_path: Path, monkeypatch: Any) -> None:
     calls: list[bool] = []
     monkeypatch.setattr(
-        "clio_agent.gact.routes.providers.ensure_claude_code_support",
+        "clio_agent.gact.routes.provider_catalog_routes.ensure_claude_code_support",
         lambda: calls.append(True) or True,
     )
     app = build_app(sessions_path=tmp_path / "s.json")
@@ -410,7 +410,9 @@ def test_auth_provider_starts_and_completes_browser_argonne_flow(
 
     from clio_agent.providers import argonne_auth
 
-    monkeypatch.setattr("clio_agent.gact.routes.providers.ensure_argonne_support", lambda: True)
+    monkeypatch.setattr(
+        "clio_agent.gact.routes.provider_catalog_routes.ensure_argonne_support", lambda: True
+    )
     monkeypatch.setattr(
         argonne_auth,
         "begin_authentication",
@@ -463,7 +465,9 @@ def test_auth_provider_reports_argonne_support_install_failure(
     def _fail_install() -> bool:
         raise ProviderDependencyInstallError("permission denied")
 
-    monkeypatch.setattr("clio_agent.gact.routes.providers.ensure_argonne_support", _fail_install)
+    monkeypatch.setattr(
+        "clio_agent.gact.routes.provider_catalog_routes.ensure_argonne_support", _fail_install
+    )
 
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
@@ -749,7 +753,9 @@ def test_provider_list_default_model_falls_back_to_static_without_overlay(
 
 
 def test_provider_list_default_model_claude_code_follows_account_default(
-    tmp_path: Path, monkeypatch: Any
+    tmp_path: Path,
+    monkeypatch: Any,
+    claude_sdk_installed: Any,
 ) -> None:
     """Both subscription providers expose their account-discovered defaults."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
@@ -814,7 +820,9 @@ def test_provider_list_default_model_claude_code_follows_account_default(
 
 
 def test_put_lm_provider_omitted_model_claude_code_binds_account_default(
-    tmp_path: Path, monkeypatch: Any
+    tmp_path: Path,
+    monkeypatch: Any,
+    claude_sdk_installed: Any,
 ) -> None:
     """An omitted Claude model binds the verified account default."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
@@ -1413,7 +1421,9 @@ def test_put_lm_provider_rejects_removed_codex_transport(tmp_path: Path, monkeyp
     assert app.state.provider_profiles.default.transport == "sdk"
 
 
-def test_put_lm_provider_rejects_removed_claude_code_transport(tmp_path: Path, monkeypatch) -> None:
+def test_put_lm_provider_rejects_removed_claude_code_transport(
+    tmp_path: Path, monkeypatch, claude_sdk_installed: Any
+) -> None:
     """v0.8.0: a claude_code bind naming the deleted exec transport 400s typed;
     an explicit sdk transport still applies to claude_code_transport."""
     monkeypatch.delenv("CLIO_CLAUDE_CODE_TRANSPORT", raising=False)
@@ -1494,7 +1504,9 @@ def test_put_lm_provider_rejects_removed_claude_code_transport(tmp_path: Path, m
     assert app.state.provider_profiles.default.transport == "sdk"
 
 
-def test_put_lm_provider_defaults_claude_code_to_sdk_transport(tmp_path: Path, monkeypatch) -> None:
+def test_put_lm_provider_defaults_claude_code_to_sdk_transport(
+    tmp_path: Path, monkeypatch, claude_sdk_installed: Any
+) -> None:
     """Claude Code should use the streaming-capable SDK path unless exec is explicit."""
     monkeypatch.delenv("CLIO_CLAUDE_CODE_TRANSPORT", raising=False)
     captured: dict[str, Any] = {}

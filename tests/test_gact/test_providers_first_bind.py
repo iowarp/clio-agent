@@ -110,7 +110,9 @@ def _pristine_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_claude_code_then_codex_first_bind_never_runs_lm_studio_discovery(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    claude_sdk_installed: Any,
 ) -> None:
     """A pristine-install claude_code bind must never touch LM Studio
     discovery -- the first-bind path must construct ``ClioAgent`` off the
@@ -122,6 +124,24 @@ def test_claude_code_then_codex_first_bind_never_runs_lm_studio_discovery(
     _pristine_env(monkeypatch)
     _patch_hermetic_bind_network(monkeypatch)
     _forbid_lm_studio_discovery(monkeypatch)
+    # A codex bind requires present credentials AND an SDK-validated catalog
+    # (subscription availability check). Pin both in tmp_path so the result
+    # never depends on the host's real ~/.codex sign-in.
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    (codex_home / "auth.json").write_text('{"token":"test"}', encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    from clio_agent.providers import model_discovery
+
+    model_discovery.record_refresh(
+        model_discovery.ProviderDiscoveryResult(
+            provider="codex",
+            discovered=[{"id": "gpt-5.6-sol", "name": "Sol", "description": ""}],
+            source=model_discovery.CODEX_SOURCE,
+            default_model="gpt-5.6-sol",
+        )
+    )
 
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
@@ -150,7 +170,7 @@ def test_claude_code_then_codex_first_bind_never_runs_lm_studio_discovery(
             json={
                 "provider": "codex",
                 "api_base": "codex://sdk",
-                "model": "sonnet",
+                "model": "gpt-5.6-sol",
                 "api_key": "x",
                 "temperature": 0.0,
                 "max_tokens": 0,
@@ -163,7 +183,7 @@ def test_claude_code_then_codex_first_bind_never_runs_lm_studio_discovery(
         body2 = resp2.json()
         assert body2["configured"] is True
         assert body2["provider"] == "codex"
-        assert body2["model"] == "sonnet"
+        assert body2["model"] == "gpt-5.6-sol"
 
 
 def test_lm_studio_empty_model_first_bind_still_discovers(
