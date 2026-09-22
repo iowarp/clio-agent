@@ -61,6 +61,8 @@ from clio_agent.gact.native_model_inputs import (
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.providers.config import _provider_runtime_kind
 from clio_agent.gact.stream_chunks import _chunk_reasoning_text, _chunk_text
+from clio_agent.gact.stream_failures import CLI_PROVIDER_FAILURE_MESSAGES
+from clio_agent.gact.stream_failures import describe_stream_exc as _describe_stream_exc
 from clio_agent.gact.stream_fallbacks import (
     peek_stream_fallback as _peek_stream_fallback,  # noqa: F401
 )
@@ -434,39 +436,6 @@ def _stream_response_prefix(field_name: str, previous_field_name: str) -> str:
 _REASONING_HEARTBEAT_S = 1.0
 
 
-def _describe_stream_exc(exc: BaseException) -> str:
-    """Format a streaming exception for logging, UNWRAPPING ``ExceptionGroup``.
-
-    ``streamify`` runs the agent forward inside an anyio task group, so a failure
-    surfaces as ``ExceptionGroup`` whose ``str()`` is only the opaque wrapper
-    ("unhandled errors in a TaskGroup (1 sub-exception)") — the real cause lives
-    in ``.exceptions``. Recurse into the leaves so the captured detail names the
-    actual provider/transport error instead of the wrapper.
-    """
-    from clio_agent.providers.claude_code_errors import (  # noqa: PLC0415
-        CLAUDE_CODE_INSTALL_FAILED_MESSAGE,
-        contains_claude_code_dependency_error,
-    )
-    from clio_agent.providers.codex_errors import (  # noqa: PLC0415
-        CODEX_AUTHENTICATION_ERROR_MESSAGE,
-        contains_codex_authentication_error,
-    )
-
-    if contains_codex_authentication_error(exc):
-        return CODEX_AUTHENTICATION_ERROR_MESSAGE
-    if contains_claude_code_dependency_error(exc):
-        return CLAUDE_CODE_INSTALL_FAILED_MESSAGE
-    group = getattr(exc, "exceptions", None)
-    if group:
-        leaves = [_describe_stream_exc(sub) for sub in group]
-        if CODEX_AUTHENTICATION_ERROR_MESSAGE in leaves:
-            return CODEX_AUTHENTICATION_ERROR_MESSAGE
-        if CLAUDE_CODE_INSTALL_FAILED_MESSAGE in leaves:
-            return CLAUDE_CODE_INSTALL_FAILED_MESSAGE
-        return f"{type(exc).__name__}[{'; '.join(leaves)}]"
-    return f"{type(exc).__name__}: {exc}"
-
-
 async def _try_streamed_forward(
     app: "FastAPI",
     enriched_text: str,
@@ -757,17 +726,7 @@ async def _try_streamed_forward(
                         pass
     except Exception as exc:
         detail = _describe_stream_exc(exc)
-        from clio_agent.providers.claude_code_errors import (  # noqa: PLC0415
-            CLAUDE_CODE_INSTALL_FAILED_MESSAGE,
-        )
-        from clio_agent.providers.codex_errors import (  # noqa: PLC0415
-            CODEX_AUTHENTICATION_ERROR_MESSAGE,
-        )
-
-        if detail in {
-            CODEX_AUTHENTICATION_ERROR_MESSAGE,
-            CLAUDE_CODE_INSTALL_FAILED_MESSAGE,
-        }:
+        if detail in CLI_PROVIDER_FAILURE_MESSAGES:
             if not emitted_any:
                 _record_stream_fallback(
                     app,

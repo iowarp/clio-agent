@@ -645,7 +645,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # planning reads modalities out of; leaving the previous provider's snapshot
     # in place decided what bytes reached a model it never described. The catalog
     # itself is built in gact/provider_catalog.py; only the invalidation lands here.
-    "src/clio_agent/gact/routes/providers.py": 1292,
+    # Ratchet down 1292 -> 1172: the per-provider auth/models/install/handshake
+    # routes moved verbatim to gact/routes/provider_catalog_routes.py, which
+    # also absorbed the subscription-readiness growth from e0c66ff5.
+    "src/clio_agent/gact/routes/providers.py": 1172,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (merged to develop with the size check red, baseline 1478 -> actual); ratchet
     # back below the pre-#947 count with the mcp_app_* owner-module split (see the
@@ -727,7 +730,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # re-export lines the historical `from gact.streaming import ...` seam needs.
     # #1334: 925 -> 885, the pooled-provider off-loop hop (run_off_loop) replaced
     # an inline blocking predicate check on the server loop thread.
-    "src/clio_agent/gact/streaming.py": 885,
+    # Ratchet down 885 -> 880: streamed-failure description (ExceptionGroup
+    # unwrap + CLI-provider auth/install classification) moved to the owner
+    # module gact/stream_failures.py.
+    "src/clio_agent/gact/streaming.py": 880,
     # #948 S5: +2 to read the RUN-KEYED tap-dedup bucket under an in-process module
     # variant (context.run_keyed_scope; bare invoking_expert still owns attribution).
     # merge(main->develop): +10 (932 -> 942) integrating main's #964 structured
