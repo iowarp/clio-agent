@@ -2177,6 +2177,18 @@ def test_unsatisfied_clio_agent_floor_uses_explicit_running_version_override() -
     assert unsatisfied_clio_agent_floor(metadata, running_version="0.10.0") == ""
 
 
+def test_unsatisfied_clio_agent_floor_orders_four_part_patch_versions() -> None:
+    """0.9.4.x patch releases compare numerically, including across the 0.9.5 line."""
+    from clio_agent.gact.agent_blueprint_requires import unsatisfied_clio_agent_floor
+
+    metadata = {"requires": {"clio_agent": ">=0.9.4.15"}}
+    assert unsatisfied_clio_agent_floor(metadata, running_version="0.9.4.14") == ">=0.9.4.15"
+    assert unsatisfied_clio_agent_floor(metadata, running_version="0.9.4.9") == ">=0.9.4.15"
+    assert unsatisfied_clio_agent_floor(metadata, running_version="0.9.4.15") == ""
+    assert unsatisfied_clio_agent_floor(metadata, running_version="0.9.4.16") == ""
+    assert unsatisfied_clio_agent_floor(metadata, running_version="0.9.5") == ""
+
+
 def test_validate_agent_blueprint_path_disables_on_unsatisfied_requires_floor(
     tmp_path: Path,
 ) -> None:

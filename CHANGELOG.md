@@ -6,6 +6,29 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.4.15] — 2026-09-23
+
+### Added
+
+- `view_pdf`: an agent on a PDF-capable model can attach a workspace PDF, or a
+  page range of it, natively to its next step. Offered only when the model's
+  discovered capabilities include `pdf` (today the Claude Code models; Codex
+  reports text and image only). The built-in `work-with-pdfs` skill reads with
+  it when available and falls back to conversion and rendered pages otherwise.
+
+### Fixed
+
+- Claude Code can be selected again with a current account. Its models,
+  capabilities and default come from CLIO's published catalog (Fable 5.1,
+  Sonnet 5, Haiku 4.5; default Sonnet 5), and sign-in is checked once with
+  `claude auth status` instead of probing every model through the SDK.
+- Shell commands run until they exit instead of being killed after 5 to 30
+  seconds; a model can still pass its own timeout, and cancelling a turn stops
+  the command and everything it started.
+- `GET /v1/catalog/tools` no longer fails with a server error for the built-in
+  agent's declared native tools.
+- The A2UI update and delete surface tools build correctly again.
+
 ### Changed
 
 - CLIO implements A2UI v0.9.1: the official message, capability, data-model and
