@@ -1540,7 +1540,7 @@ def test_put_lm_provider_defaults_claude_code_to_sdk_transport(
         "clio_agent.providers.model_discovery.overlay_models_wire",
         lambda *_args: {
             "models": [{"id": "haiku", "name": "Claude Haiku"}],
-            "source": "claude_code_alias_probe",
+            "source": "claude_code_catalog",
             "default_model": "haiku",
             "generated_at": "2026-09-22T12:00:00+00:00",
         },

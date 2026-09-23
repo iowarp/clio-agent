@@ -105,6 +105,6 @@ def test_claude_code_support_installs_the_sdk_into_the_active_runtime(
             "install",
             "--python",
             str(python),
-            "claude-agent-sdk>=0.2.110",
+            "claude-agent-sdk==0.2.156",
         ]
     ]
