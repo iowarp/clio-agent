@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 _LOCK = threading.Lock()
 
 CODEX_SOURCE = "codex_sdk"
-CLAUDE_CODE_SOURCE = "claude_code_alias_probe"
+CLAUDE_CODE_SOURCE = "claude_code_catalog"
 HTTP_SOURCE = "live_handshake"
 
 #: Typed staleness reasons, in the ``stream_fallback`` reason-catalog style: the
@@ -161,9 +161,12 @@ class ProviderDiscoveryResult:
     #: validated model. No candidate is promoted to default in that case.
     default_model_reason: str = ""
     failed_reason: str | None = None
-    #: Individually-rejected candidates on an otherwise-successful probe (e.g. one
-    #: claude_code alias 404s while the others validate) — informational, never
-    #: silently dropped.
+    #: Individually-rejected candidates on an otherwise-successful discovery run
+    #: — informational, never silently dropped. Currently unused by any in-tree
+    #: provider (claude_code trusts the maintained catalog directly rather than
+    #: probing per-candidate rejections); kept as a typed extension point for a
+    #: future discovery mechanism that can invalidate individual candidates
+    #: without failing the whole refresh.
     rejected: list[dict[str, str]] = field(default_factory=list)
     generated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 

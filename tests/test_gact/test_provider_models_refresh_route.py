@@ -129,7 +129,7 @@ def test_get_models_claude_code_marks_verified_catalog_models_available(
         {
             "claude_code": {
                 "models": [{"id": "fable", "name": "Claude Fable", "description": "d"}],
-                "source": "claude_code_alias_probe",
+                "source": "claude_code_catalog",
                 "default_model": "fable",
                 "generated_at": _now(),
             }
@@ -194,7 +194,7 @@ def test_post_refresh_returns_the_discovery_results_verbatim(
         {
             "provider": "claude_code",
             "discovered": [],
-            "source": "claude_code_alias_probe",
+            "source": "claude_code_catalog",
             "default_model": "",
             "generated_at": "2026-08-14T00:00:00+00:00",
             "added": [],

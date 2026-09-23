@@ -83,9 +83,10 @@ class CliCatalogHandshake(NoOpHandshake):
     """:class:`NoOpHandshake` variant whose model list prefers the refresh overlay."""
 
     #: The overlay carries the capabilities an explicit discovery run evidenced
-    #: (the Codex SDK's reported input modalities, the claude_code native probe),
-    #: so this provider kind HAS a modality-evidence system -- absence of a
-    #: modality here means "not evidenced yet", never "nobody could ask".
+    #: (the Codex SDK's reported input modalities, the maintained claude_code
+    #: catalog's declared capabilities), so this provider kind HAS a
+    #: modality-evidence system -- absence of a modality here means "not
+    #: evidenced yet", never "nobody could ask".
     reports_input_modalities = True
 
     async def discover_models(self, client: Any, ctx: HandshakeContext) -> list[dict[str, Any]]:

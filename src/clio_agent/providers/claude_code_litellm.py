@@ -91,11 +91,11 @@ CLAUDE_BINARY_NAME = "claude"
 DEFAULT_TRANSPORT = "sdk"
 
 #: A ``ResultMessage.api_error_status`` of 404 is the ONLY definitive
-#: model-rejection signal claude_code exposes (#1184, #1211 review A3/D3) --
-#: matches the discovery-side probe classifier in
-#: ``providers.model_discovery.claude_code._CLAUDE_REJECTION_STATUS``. Any
+#: model-rejection signal claude_code exposes (#1184, #1211 review A3/D3). Any
 #: other ``is_error`` status (429/5xx/None) stays on the existing generic
 #: error path -- transient noise must never be misclassified as a rejection.
+#: Model discovery no longer probes per-model status; it trusts the maintained
+#: catalog instead (see ``providers.model_discovery.claude_code_catalog``).
 CLAUDE_CODE_REJECTION_STATUS = 404
 
 

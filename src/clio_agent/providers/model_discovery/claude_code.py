@@ -1,19 +1,39 @@
-"""Claude Code model discovery using the maintained remote candidate catalog."""
+"""Claude Code model discovery: the maintained catalog plus one CLI sign-in check.
+
+Per owner ruling, Claude Code model existence, per-model input-modality
+capabilities, and the account default come ONLY from the trusted GitHub
+catalog document (:mod:`.claude_code_catalog`), acquired at startup and on
+explicit provider verification -- exactly like Codex's model list is acquired
+from the official SDK. CLIO does not probe models through the SDK/CLI to learn
+what exists or what a model can do: there are no per-model probes, no bare-
+default probe, and no multimodal probe.
+
+The catalog is silent on whether Claude Code is INSTALLED or SIGNED IN on this
+machine, so discovery separately runs exactly one small check: ``<binary> auth
+status``. The Claude Code CLI prints JSON like ``{"loggedIn": true,
+"authMethod": "claude.ai", "apiProvider": "firstParty", ...}`` (verified on CLI
+2.1.276 and 2.1.280); ``loggedIn is True`` is the only signal this module
+trusts. The binary is resolved by :func:`_resolve_claude_binary`, the SAME
+binary the Claude Agent SDK itself uses -- the runtime always talks to Claude
+Code through the SDK, never a system-CLI preference, so this check must
+resolve identically or it would validate a different binary than the one that
+actually runs.
+"""
 
 from __future__ import annotations
 
 import importlib.util
 import json
 import os
-import re
 import shutil
 import subprocess
 from typing import Any
 
 from clio_agent import conf
 from clio_agent.providers.model_discovery.claude_code_catalog import (
+    ClaudeCodeCatalog,
     ClaudeCodeCatalogError,
-    refresh_claude_code_candidates,
+    refresh_claude_code_catalog,
 )
 from clio_agent.providers.model_discovery.modality_evidence import modality_evidence
 from clio_agent.providers.model_discovery.overlay import (
@@ -21,157 +41,27 @@ from clio_agent.providers.model_discovery.overlay import (
     ProviderDiscoveryResult,
     attach_context_limits,
 )
-from clio_agent.providers.model_discovery.probe_assets import (
-    ProbeChallenge,
-    build_probe_challenge,
-)
 
-#: Per-probe timeout for one claude_code CLI call (#1211 review R2/R3: the OLD
-#: 60s-per-probe default gave a 5-probe (1 bare + 4 aliases) worst case of 300s.
-#: The native image/PDF proof can take longer than the former text-only probe;
-#: 30s preserves a bounded failure while covering observed cold SDK startup.
-#: ``discover_claude_code`` also exits its loop on the FIRST inconclusive probe
-#: rather than always running all 5, so the common-case worst case is much
-#: tighter than ``5 * timeout``.
+#: Seconds the ``<binary> auth status`` sign-in check may run before it is
+#: abandoned as inconclusive.
 #:
-#: Configuration, not a compiled-in constant: cold SDK startup is a property of
-#: the operator's machine and account, so an install that needs longer raises
-#: ``providers.claude_code.probe_timeout_s`` /
-#: ``CLIO_CLAUDE_CODE_PROBE_TIMEOUT_S`` rather than patching this file. Resolved
-#: at import (like ``gact/runtime/constants.py``'s ``_CTX_MAX_BYTES``) because it
-#: is also this module's public default argument.
-CLAUDE_CODE_PROBE_TIMEOUT_S: float = conf.resolve(
-    "providers.claude_code.probe_timeout_s",
-    env="CLIO_CLAUDE_CODE_PROBE_TIMEOUT_S",
-    default=30.0,
+#: Configuration, not a compiled-in constant: a slow host, or a Claude Code CLI
+#: cold-starting its own credential check, is a property of the operator's
+#: machine, so an install that needs longer raises
+#: ``providers.claude_code.auth_status_timeout_s`` /
+#: ``CLIO_CLAUDE_CODE_AUTH_STATUS_TIMEOUT_S`` rather than patching this file.
+#: Resolved at import (like ``gact/runtime/constants.py``'s ``_CTX_MAX_BYTES``)
+#: because it is also this module's public default argument.
+CLAUDE_CODE_AUTH_STATUS_TIMEOUT_S: float = conf.resolve(
+    "providers.claude_code.auth_status_timeout_s",
+    env="CLIO_CLAUDE_CODE_AUTH_STATUS_TIMEOUT_S",
+    default=20.0,
     cast=conf.as_float,
 )
 
-#: The text-only probe: validates the ALIAS alone, and says nothing about
-#: modalities. Used as the M3 fallback when the multimodal turn cannot run.
-_TEXT_PROBE_PROMPT = "Reply with the single word: ok."
-
-#: The multimodal probe prompt. It names exactly what a genuine reply must
-#: contain, and gives the model an explicit way to say an attachment did not
-#: arrive -- so "I could not see it" is an answer, not a parse failure.
-_NATIVE_PROBE_PROMPT = (
-    "Two attachments are included with this message: one image and one PDF. Each "
-    "shows a single four-digit number. Reply with exactly one line and nothing "
-    "else:\nIMAGE: <the number in the image>; PDF: <the number in the PDF>\n"
-    "If an attachment did not reach you, write NONE in its place."
-)
-
-#: Parses ``IMAGE: 1234; PDF: 5678`` out of a reply, tolerating case, spacing and
-#: surrounding prose. Each modality is matched independently, so a reply that
-#: gets one right and one wrong evidences exactly one.
-_PROBE_TOKEN_RE = re.compile(r"\b(IMAGE|PDF)\b\s*[:=]\s*([A-Za-z0-9]+)", re.IGNORECASE)
-
-#: Rejection is a DEFINITIVE model-not-available signal -- the only api_error_status
-#: this probe treats as "the account does not serve this model" (#1211 review D3).
-#: Verified live, CLI 2.1.228: an unknown ``--model`` value comes back
-#: ``{"is_error": true, "api_error_status": 404, "result": "There's an issue with
-#: the selected model (X)..."}``.
-_CLAUDE_REJECTION_STATUS = 404
-
 
 class ClaudeCodeCLIUnavailableError(RuntimeError):
-    """Raised when the ``claude`` binary isn't on PATH at probe time."""
-
-
-def _probe_input(challenge: ProbeChallenge | None) -> str:
-    """Build one Claude stream-json user message for a probe turn.
-
-    ``challenge`` present -> the native image + PDF blocks plus the prompt that
-    demands their codes back. ``None`` -> the text-only fallback turn, which
-    validates the alias and claims nothing about modalities.
-    """
-
-    content: list[dict[str, Any]] = []
-    if challenge is not None:
-        content += [
-            {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": "image/png",
-                    "data": challenge.image_b64,
-                },
-            },
-            {
-                "type": "document",
-                "source": {
-                    "type": "base64",
-                    "media_type": "application/pdf",
-                    "data": challenge.pdf_b64,
-                },
-            },
-        ]
-    content.append(
-        {"type": "text", "text": _NATIVE_PROBE_PROMPT if challenge else _TEXT_PROBE_PROMPT}
-    )
-    payload = {
-        "type": "user",
-        "session_id": "",
-        "parent_tool_use_id": None,
-        "message": {"role": "user", "content": content},
-    }
-    return json.dumps(payload, separators=(",", ":")) + "\n"
-
-
-def _evidenced_modalities(
-    reply: str, challenge: ProbeChallenge
-) -> tuple[list[str], dict[str, Any]]:
-    """Return ``(capabilities, capability_evidence)`` for one native probe reply.
-
-    Each modality is judged INDEPENDENTLY on whether the reply quotes back that
-    attachment's own code, so a CLI that forwards the image but strips the PDF is
-    recorded as image-capable and pdf-unreported rather than as either extreme.
-    ``text`` is always evidenced — the model answered.
-    """
-
-    tokens = {
-        match.group(1).lower(): match.group(2) for match in _PROBE_TOKEN_RE.finditer(reply or "")
-    }
-    expected = {"image": challenge.image_code, "pdf": challenge.pdf_code}
-    capabilities = ["text"]
-    unevidenced: list[str] = []
-    for modality, code in expected.items():
-        if tokens.get(modality, "").strip().lower() == code.lower():
-            capabilities.append(modality)
-        else:
-            unevidenced.append(modality)
-    if not unevidenced:
-        return capabilities, modality_evidence(
-            source="claude_code_native_probe", reason="modality_reported"
-        )
-    return capabilities, modality_evidence(
-        source="claude_code_native_probe",
-        reason="modality_probe_unevidenced",
-        unevidenced=unevidenced,
-        detail=f"reply did not quote the attached code(s): {(reply or '')[:200]!r}",
-    )
-
-
-def _result_payload(stdout: str) -> dict[str, Any] | None:
-    """Read a result envelope from either legacy JSON or stream-json output."""
-
-    try:
-        payload = json.loads(stdout)
-    except ValueError:
-        payload = None
-    if isinstance(payload, dict) and (
-        payload.get("type") == "result" or "is_error" in payload or "modelUsage" in payload
-    ):
-        return payload
-    result: dict[str, Any] | None = None
-    for line in stdout.splitlines():
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(row, dict) and row.get("type") == "result":
-            result = row
-    return result
+    """Raised when the ``claude`` binary isn't on PATH at discovery time."""
 
 
 def _resolve_claude_binary() -> str:
@@ -200,147 +90,92 @@ def _resolve_claude_binary() -> str:
     return path
 
 
-def _probe_claude(
-    binary: str,
-    alias: str | None,
-    *,
-    timeout: float,
-    challenge: ProbeChallenge | None = None,
-) -> dict[str, Any]:
-    """Run one probe turn against ``alias`` (or the CLI default).
+def _auth_status(binary: str, *, timeout: float) -> tuple[bool, str]:
+    """Run ``<binary> auth status`` exactly once; return ``(signed_in, failed_reason)``.
 
-    ``challenge`` present -> the native image + PDF turn whose reply must quote
-    both codes back; ``None`` -> the text-only turn that validates the alias and
-    claims nothing about modalities.
-
-    Never raises. Returns ``{"outcome", "resolved_model", "reason",
-    "capabilities", "capability_evidence"}`` where ``outcome`` is one of:
-
-    * ``"accepted"`` — the alias/model resolved and answered; ``resolved_model``
-      carries its RESOLVED canonical model id (``modelUsage`` key), which is how
-      :func:`discover_claude_code` learns the CLI's live default without guessing.
-    * ``"rejected"`` — a DEFINITIVE signal the account does not serve this model
-      (``api_error_status == 404`` in the CLI's own JSON error envelope). The
-      ONLY outcome that may narrow a provider's overlay.
-    * ``"inconclusive"`` — anything else that kept this probe from answering
-      cleanly: a timeout, a launch failure, a non-JSON response, or an
-      ``is_error`` body with any OTHER status (429/5xx/absent — rate limit,
-      server error, or an unrecognised shape). NEVER treated as a rejection
-      (#1211 review D3) — the caller must keep the provider's prior overlay
-      list untouched rather than silently narrow it based on transient noise.
-
-    Exit code is NOT a reliable signal — a rejected model still exits 0 with
-    ``is_error: true`` in the body.
+    Never raises. This is the ONLY sign-in signal this module trusts:
+    ``signed_in`` is True exactly when the CLI's own JSON reply sets
+    ``loggedIn: true``. Every other outcome -- a timeout, a launch failure,
+    non-JSON output, or ``loggedIn`` false/absent -- is a typed
+    ``failed_reason`` with ``signed_in=False``. This function makes NO claim
+    about which models exist or what they can do; that is the catalog's job.
     """
-    args = [
-        binary,
-        "-p",
-        "--input-format",
-        "stream-json",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-    ]
-    if alias:
-        args += ["--model", alias]
+    args = [binary, "auth", "status"]
+    kwargs: dict[str, Any] = {}
+    if os.name == "nt":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         proc = subprocess.run(  # noqa: S603 - fixed argv, no shell, no user-controlled input
             args,
-            input=_probe_input(challenge),
             capture_output=True,
             text=True,
             timeout=timeout,
             check=False,
+            **kwargs,
         )
     except subprocess.TimeoutExpired:
-        return {
-            "outcome": "inconclusive",
-            "resolved_model": "",
-            "reason": f"probe timed out after {timeout}s",
-        }
+        return False, f"Claude Code auth status check timed out after {timeout}s"
     except OSError as exc:
-        return {
-            "outcome": "inconclusive",
-            "resolved_model": "",
-            "reason": f"probe failed to launch: {exc}",
-        }
-    payload = _result_payload(proc.stdout)
-    if payload is None:
-        return {
-            "outcome": "inconclusive",
-            "resolved_model": "",
-            "reason": f"non-JSON response (exit={proc.returncode}): {proc.stdout[:200]!r}",
-        }
-    if payload.get("is_error"):
-        status = payload.get("api_error_status")
-        reason = str(payload.get("result") or f"api_error_status={status}")
-        outcome = "rejected" if status == _CLAUDE_REJECTION_STATUS else "inconclusive"
-        return {"outcome": outcome, "resolved_model": "", "reason": reason}
-    resolved = next(iter(payload.get("modelUsage") or {}), "")
-    if challenge is None:
-        # A text-only turn evidences the ALIAS, nothing more. Stamping image/pdf
-        # here (the old behaviour, on ANY non-error reply) was pure fabrication:
-        # a CLI that stripped the attachments answered identically.
-        capabilities = ["text"]
-        evidence = modality_evidence(
-            source="claude_code_native_probe",
-            reason="modality_probe_unavailable",
-            unevidenced=["image", "pdf"],
+        return False, f"Claude Code auth status check failed to launch: {exc}"
+    try:
+        payload = json.loads(proc.stdout)
+    except ValueError:
+        detail = (proc.stdout or proc.stderr or "")[:200]
+        return False, f"Claude Code auth status returned non-JSON output: {detail!r}"
+    if not isinstance(payload, dict) or payload.get("loggedIn") is not True:
+        return False, (
+            "Claude Code is installed but not signed in on the connected agent; sign in "
+            "with `claude auth login`, then check the provider again"
         )
-    else:
-        capabilities, evidence = _evidenced_modalities(str(payload.get("result") or ""), challenge)
-    return {
-        "outcome": "accepted",
-        "resolved_model": str(resolved),
-        "reason": "",
-        "capabilities": capabilities,
-        "capability_evidence": evidence,
-    }
+    return True, ""
 
 
-def _probe_alias(binary: str, alias: str | None, *, timeout: float) -> dict[str, Any]:
-    """Probe one alias multimodally, falling back to a text-only turn (M3).
+def _explicit_catalog(candidates: tuple[str, ...]) -> ClaudeCodeCatalog:
+    """Build a catalog stand-in for an explicit id list (diagnostic callers only).
 
-    A multimodal probe that cannot answer must NOT reject the model or sink the
-    whole discovery run: an account or CLI build that cannot carry attachments is
-    a modality fact about that model, not evidence it is unavailable. So an
-    inconclusive native turn is retried once as text-only; when THAT validates,
-    the alias is accepted with text-only capabilities and a typed
-    ``modality_probe_unavailable`` reason carrying the native failure. Only a
-    probe that could not answer at all stays inconclusive.
-
-    A REJECTION (a definitive 404) is returned as-is and never retried — the
-    account does not serve the model, and no fallback changes that.
+    No capability can be claimed for an id that bypassed the maintained
+    catalog, so each row carries text-only capabilities with a typed
+    unevidenced marker -- never a guess.
     """
-
-    native = _probe_claude(binary, alias, timeout=timeout, challenge=build_probe_challenge())
-    if native["outcome"] != "inconclusive":
-        return native
-    fallback = _probe_claude(binary, alias, timeout=timeout, challenge=None)
-    if fallback["outcome"] != "accepted":
-        return native
-    evidence = dict(fallback.get("capability_evidence") or {})
-    evidence["detail"] = f"native probe was inconclusive: {native['reason']}"
-    return {**fallback, "capability_evidence": evidence}
+    return ClaudeCodeCatalog(
+        models=[
+            {
+                "id": item,
+                "name": item,
+                "capabilities": ["text"],
+                "capability_evidence": modality_evidence(
+                    source="claude_code_catalog",
+                    reason="modality_uncataloged",
+                    unevidenced=("image", "pdf"),
+                ),
+            }
+            for item in candidates
+        ],
+        default_model="",
+        default_model_reason="",
+    )
 
 
 def discover_claude_code(
     *,
     candidates: tuple[str, ...] | None = None,
-    timeout: float = CLAUDE_CODE_PROBE_TIMEOUT_S,
+    timeout: float = CLAUDE_CODE_AUTH_STATUS_TIMEOUT_S,
 ) -> ProviderDiscoveryResult:
-    """Fetch current model IDs, then validate them against the signed-in CLI.
+    """Trust the maintained catalog for models; verify sign-in with one CLI call.
 
-    Claude Code offers no account model-enumeration endpoint. The maintained
-    GitHub catalog supplies candidates, never availability: each model requires
-    a real (potentially billed) CLI probe. The bare CLI invocation identifies
-    the account's default. If it matches no verified model, no default is
-    selected. A transient catalog or CLI failure returns a typed failure and
-    never promotes a cached list to current availability.
+    Claude Code offers no account model-enumeration endpoint, and per owner
+    ruling CLIO does not manufacture one via per-model probing: the maintained
+    GitHub catalog (:mod:`.claude_code_catalog`) is the single source of model
+    ids, their input-modality capabilities, and the account default -- the same
+    trust model as Codex's SDK-reported catalog. This function's only live
+    check is whether Claude Code is installed and signed in on this machine
+    (:func:`_resolve_claude_binary` + one ``auth status`` call); a transient
+    catalog or CLI failure returns a typed failure and never promotes a cached
+    list to current availability.
     """
     if candidates is None:
         try:
-            catalog = refresh_claude_code_candidates()
+            catalog = refresh_claude_code_catalog()
         except ClaudeCodeCatalogError as exc:
             return ProviderDiscoveryResult(
                 provider="claude_code",
@@ -350,7 +185,7 @@ def discover_claude_code(
             )
     else:
         # An explicit list is used by diagnostic callers and bounded live tests.
-        catalog = [{"id": item, "name": item} for item in candidates]
+        catalog = _explicit_catalog(candidates)
 
     try:
         binary = _resolve_claude_binary()
@@ -359,74 +194,27 @@ def discover_claude_code(
             provider="claude_code", discovered=[], source=CLAUDE_CODE_SOURCE, failed_reason=str(exc)
         )
 
-    bare = _probe_alias(binary, None, timeout=timeout)
-    if bare["outcome"] == "inconclusive":
+    signed_in, failed_reason = _auth_status(binary, timeout=timeout)
+    if not signed_in:
         return ProviderDiscoveryResult(
             provider="claude_code",
             discovered=[],
             source=CLAUDE_CODE_SOURCE,
-            failed_reason=f"bare CLI-default probe inconclusive: {bare['reason']}",
+            failed_reason=failed_reason,
         )
-    cli_default_canonical = bare["resolved_model"] if bare["outcome"] == "accepted" else ""
 
-    discovered: list[dict[str, Any]] = []
-    rejected: list[dict[str, str]] = []
-    default_model = ""
-    for candidate in catalog:
-        model_id = candidate["id"]
-        probe = _probe_alias(binary, model_id, timeout=timeout)
-        if probe["outcome"] == "inconclusive":
-            return ProviderDiscoveryResult(
-                provider="claude_code",
-                discovered=[],
-                source=CLAUDE_CODE_SOURCE,
-                failed_reason=f"model {model_id!r} probe inconclusive: {probe['reason']}",
-            )
-        if probe["outcome"] == "accepted":
-            resolved = probe["resolved_model"]
-            discovered.append(
-                {
-                    "id": model_id,
-                    "name": candidate["name"],
-                    "description": (
-                        f"Resolves to {resolved}." if resolved else "Validated Claude Code model."
-                    ),
-                    "capabilities": list(probe.get("capabilities") or []),
-                    "capability_evidence": probe.get("capability_evidence") or {},
-                }
-            )
-            if cli_default_canonical and resolved == cli_default_canonical:
-                default_model = model_id
-        else:  # "rejected" -- definitive, informational, never aborts the provider
-            rejected.append({"id": model_id, "reason": probe["reason"]})
-
-    if not discovered:
-        reasons = "; ".join(f"{r['id']}: {r['reason']}" for r in rejected) or "no models validated"
-        return ProviderDiscoveryResult(
-            provider="claude_code", discovered=[], source=CLAUDE_CODE_SOURCE, failed_reason=reasons
-        )
-    default_model_reason = ""
-    if not default_model:
-        default_model_reason = (
-            f"bare CLI-default probe was {bare['outcome']} ({bare['reason']}); "
-            "no account default was discovered"
-            if bare["outcome"] != "accepted"
-            else "bare CLI-default probe resolved to a model id not in the validated catalog; "
-            "no account default was discovered"
-        )
-    discovered = attach_context_limits(discovered, "claude_code")
+    discovered = attach_context_limits([dict(model) for model in catalog.models], "claude_code")
     return ProviderDiscoveryResult(
         provider="claude_code",
         discovered=discovered,
         source=CLAUDE_CODE_SOURCE,
-        default_model=default_model,
-        default_model_reason=default_model_reason,
-        rejected=rejected,
+        default_model=catalog.default_model,
+        default_model_reason=catalog.default_model_reason,
     )
 
 
 __all__ = [
-    "CLAUDE_CODE_PROBE_TIMEOUT_S",
+    "CLAUDE_CODE_AUTH_STATUS_TIMEOUT_S",
     "ClaudeCodeCLIUnavailableError",
     "discover_claude_code",
 ]

@@ -124,9 +124,9 @@ async def refresh_all(
     #1211 review R3) is honored verbatim, un-filtered — the caller named exactly
     what they want probed.
 
-    Runs one discovery coroutine per preset (SDK catalog for codex, remote
-    GitHub candidates plus CLI model probes for claude_code,
-    the live handshake for everything else) via ``asyncio.gather`` so wall-clock
+    Runs one discovery coroutine per preset (SDK catalog for codex, the
+    maintained GitHub catalog plus one CLI sign-in check for claude_code, the
+    live handshake for everything else) via ``asyncio.gather`` so wall-clock
     is bounded by the SLOWEST single provider, not their sum. Each provider's
     coroutine is ADDITIONALLY capped at :data:`REFRESH_PER_PROVIDER_DEADLINE_S`
     (#1211 review R2/R3) — a wedged subprocess or a hung network call can never
@@ -244,9 +244,9 @@ def build_refresh_provider_models_tool() -> Any:
 
     def refresh_provider_models() -> dict[str, Any]:
         """Refresh the LM provider model catalogs against each account's REAL
-        current state (codex's live model list, claude_code's remote-catalog
-        candidate validation, every configured HTTP backend's live models
-        endpoint) and report what changed. Returns
+        current state (codex's live model list, claude_code's maintained
+        catalog plus a CLI sign-in check, every configured HTTP backend's live
+        models endpoint) and report what changed. Returns
         ``{"results": [{"provider", "discovered", "source", "default_model",
         "added", "removed", "unchanged", "failed_reason"?, "rejected"?}, ...]}``
         — one row per configured provider. A provider whose probe failed keeps

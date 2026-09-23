@@ -27,10 +27,7 @@ from typing import Any
 #: names WHICH surface was consulted, and the reason says what it yielded.
 MODALITY_SOURCES: dict[str, str] = {
     "codex_sdk_input_modalities": ("the Codex Python SDK's model row (``Model.input_modalities``)"),
-    "claude_code_native_probe": (
-        "one claude_code CLI turn carrying a known image and PDF whose content the "
-        "reply must quote back"
-    ),
+    "claude_code_catalog": "CLIO's maintained Claude Code model catalog document",
     "provider_documentation": (
         "the provider's published model capability documentation and CLIO's native transport"
     ),
@@ -51,14 +48,13 @@ MODALITY_EVIDENCE_REASONS: dict[str, str] = {
         "was NOT adopted as evidence, so no non-text modality is recorded and the typed "
         "negative can fire; re-run discovery once the provider reports the field"
     ),
-    "modality_probe_unevidenced": (
-        "a live multimodal probe ran but the reply did not quote back the attached "
-        "content, so the attachment may never have reached the model; the unevidenced "
-        "modalities are not recorded as capabilities"
+    "modality_cataloged": (
+        "the maintained Claude Code catalog declares these input modalities for the model"
     ),
-    "modality_probe_unavailable": (
-        "the multimodal probe could not run (or failed) and a text-only probe validated "
-        "the model instead, so every non-text modality is unreported rather than assumed"
+    "modality_uncataloged": (
+        "the maintained Claude Code catalog does not declare this model's input modalities, "
+        "so only text is recorded as a capability; no non-text modality is assumed until the "
+        "catalog documents it"
     ),
 }
 

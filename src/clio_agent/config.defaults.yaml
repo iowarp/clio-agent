@@ -196,16 +196,15 @@ lm.provider: "lm_studio"
 # models needing fuller sampling than the temp-0 default.
 # lm.top_p:  # default unset; resolved in code
 
+# CLIO_CLAUDE_CODE_AUTH_STATUS_TIMEOUT_S  (float)  <- src/clio_agent/providers/model_discovery/claude_code.py
+# Seconds the Claude Code `auth status` sign-in check may run before it is
+# abandoned as inconclusive; raise on hosts where cold CLI startup is slow.
+providers.claude_code.auth_status_timeout_s: 20.0
+
 # CLIO_CLAUDE_CODE_MAX_CONCURRENT_PROCESSES  (float)  <- src/clio_agent/providers/claude_code_stream_bounds.py
 # Process-wide cap on concurrently-connected claude CLI subprocesses; a
 # connect beyond it waits, raise for more concurrent sessions.
 providers.claude_code.max_concurrent_processes: 4.0
-
-# CLIO_CLAUDE_CODE_PROBE_TIMEOUT_S  (float)  <- src/clio_agent/providers/model_discovery/claude_code.py
-# Seconds one Claude Code model-discovery probe call may run before it is
-# abandoned as inconclusive; raise on hosts where cold CLI/SDK startup is
-# slow.
-providers.claude_code.probe_timeout_s: 30.0
 
 # CLIO_CLAUDE_CODE_SESSION_REUSE  (bool)  <- src/clio_agent/providers/claude_code_sessions.py
 # Keeps a pooled/reused SDK connection per scope instead of a fresh client

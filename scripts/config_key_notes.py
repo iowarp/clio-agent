@@ -801,9 +801,9 @@ KEY_NOTES: dict[str, str] = {
         "Keeps a pooled/reused SDK connection per scope instead of a fresh client per call; set "
         "false to restore pre-#891 fresh-connect behavior."
     ),
-    "providers.claude_code.probe_timeout_s": (
-        "Seconds one Claude Code model-discovery probe call may run before it is abandoned as "
-        "inconclusive; raise on hosts where cold CLI/SDK startup is slow."
+    "providers.claude_code.auth_status_timeout_s": (
+        "Seconds the Claude Code `auth status` sign-in check may run before it is abandoned as "
+        "inconclusive; raise on hosts where cold CLI startup is slow."
     ),
     "providers.claude_code.stateful_capacity": (
         "Max live Claude Code stateful-session entries before LRU eviction; raise on a host "
