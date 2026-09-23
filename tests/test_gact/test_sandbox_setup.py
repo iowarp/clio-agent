@@ -411,7 +411,10 @@ def test_setup_conflict_when_already_running(
     def _hold_lock() -> None:
         SETUP_LOCK.acquire()
         held.set()
-        release.wait(timeout=5)
+        # Held until the test releases it (always, in `finally`): a bounded
+        # hold let the lock lapse while build_app + TestClient startup ran on a
+        # loaded CI runner, and the request then got 200 instead of 409.
+        release.wait()
         SETUP_LOCK.release()
 
     holder = threading.Thread(target=_hold_lock, daemon=True)
@@ -499,7 +502,10 @@ def test_get_sandbox_row_reports_setup_in_progress_while_locked(tmp_path: Path) 
     def _hold_lock() -> None:
         SETUP_LOCK.acquire()
         held.set()
-        release.wait(timeout=5)
+        # Held until the test releases it (always, in `finally`): a bounded
+        # hold let the lock lapse while build_app + TestClient startup ran on a
+        # loaded CI runner, and the request then got 200 instead of 409.
+        release.wait()
         SETUP_LOCK.release()
 
     holder = threading.Thread(target=_hold_lock, daemon=True)
