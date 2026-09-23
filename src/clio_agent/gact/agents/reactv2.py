@@ -621,8 +621,10 @@ def prepare_history_inputs(
         inputs, history_field_name, input_field_names
     )
     from clio_agent.gact.view_image_tool import hydrate_view_image_results  # noqa: PLC0415
+    from clio_agent.gact.view_pdf_tool import hydrate_view_pdf_results  # noqa: PLC0415
 
     hydrate_view_image_results(inputs, history_field_name)
+    hydrate_view_pdf_results(inputs, history_field_name)
     return sourced_from_arc
 
 
@@ -641,8 +643,11 @@ class HistoryPreparationMixin:
         from clio_agent.gact.view_image_tool import (  # noqa: PLC0415
             promote_view_image_tool_messages,
         )
+        from clio_agent.gact.view_pdf_tool import (  # noqa: PLC0415
+            promote_view_pdf_tool_messages,
+        )
 
-        return promote_view_image_tool_messages(messages)
+        return promote_view_pdf_tool_messages(promote_view_image_tool_messages(messages))
 
 
 def _gather_static_inputs(

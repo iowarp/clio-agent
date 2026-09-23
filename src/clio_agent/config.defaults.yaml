@@ -390,6 +390,12 @@ limits.tool_result_chars: 12000
 # long-running turns, lower to fail stuck turns faster.
 limits.turn_timeout_s: 900.0
 
+# CLIO_VIEW_PDF_MAX_PAGES  (int)  <- src/clio_agent/gact/view_pdf_tool.py
+# Max pages the view_pdf native tool may attach in one call; raise for a
+# provider with a higher per-request page ceiling, lower to force smaller
+# page ranges.
+limits.view_pdf_max_pages: 100
+
 # ==========================================================================
 # Agents, workflows and scheduling
 # ==========================================================================

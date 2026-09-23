@@ -70,7 +70,7 @@ def _builtin_main_agent() -> AgentDef:
         specialization="orchestrator",
         module={"kind": "react"},
         prompt_id="clio.chat",
-        tools=sorted({*TOOL_CATALOG, "view_image"}),
+        tools=sorted({*TOOL_CATALOG, "view_image", "view_pdf"}),
         skills=["work-with-pdfs"],
         metadata={"definition_kind": "builtin_main"},
     )
@@ -250,9 +250,12 @@ def _builtin_tool_declarations() -> list[tuple[str, str, str, Any]]:
 
     seen: dict[str, tuple[str, str, str, Any]] = {}
     main = _builtin_main_agent()
-    # Declared native tools (e.g. view_image) are constructed in-process, not
-    # listed by the gateway; the catalog describes the full declared surface.
-    _, native_tools, _ = resolve_declared_native_tools(main, {}, supports_vision=True)
+    # Declared native tools (e.g. view_image, view_pdf) are constructed
+    # in-process, not listed by the gateway; the catalog describes the full
+    # declared surface.
+    _, native_tools, _ = resolve_declared_native_tools(
+        main, {}, supports_vision=True, supports_pdf=True
+    )
     for tool in native_tools.values():
         _record_declaration(seen, tool)
     for tool_name in main.tools:

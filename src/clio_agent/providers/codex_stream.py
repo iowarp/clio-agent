@@ -100,6 +100,7 @@ BARE_LM_FEATURES: dict[str, bool] = {
     "multi_agent": False,
     "shell_tool": False,
     "view_image": False,
+    "view_pdf": False,
     "workspace_dependencies": False,
 }
 BARE_LM_CONFIG_OVERRIDES = (

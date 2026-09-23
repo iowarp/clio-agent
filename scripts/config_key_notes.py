@@ -572,6 +572,10 @@ KEY_NOTES: dict[str, str] = {
         "Seconds a turn may run with no progress before it is timed out; raise for long-running "
         "turns, lower to fail stuck turns faster."
     ),
+    "limits.view_pdf_max_pages": (
+        "Max pages the view_pdf native tool may attach in one call; raise for a provider with a "
+        "higher per-request page ceiling, lower to force smaller page ranges."
+    ),
     "lm.api_base": (
         "Overrides the LM provider's default API base URL; set to point at a non-default endpoint "
         "for a provider (custom LM Studio/OpenAI host)."
