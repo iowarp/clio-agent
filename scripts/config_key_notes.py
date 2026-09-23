@@ -576,6 +576,10 @@ KEY_NOTES: dict[str, str] = {
         "Max pages the view_pdf native tool may attach in one call; raise for a provider with a "
         "higher per-request page ceiling, lower to force smaller page ranges."
     ),
+    "limits.view_pdf_source_max_bytes": (
+        "Pre-parse byte ceiling on a view_pdf SOURCE file, checked before it is read or parsed; "
+        "raise to allow reading pages from a larger source document."
+    ),
     "lm.api_base": (
         "Overrides the LM provider's default API base URL; set to point at a non-default endpoint "
         "for a provider (custom LM Studio/OpenAI host)."

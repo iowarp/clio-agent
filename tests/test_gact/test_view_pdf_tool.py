@@ -114,6 +114,56 @@ def test_view_pdf_refuses_a_non_pdf_file(tmp_path: Path) -> None:
     assert exc_info.value.reason == "view_pdf_not_pdf"
 
 
+def test_view_pdf_refuses_an_empty_pdf(tmp_path: Path) -> None:
+    """A structurally valid but 0-page PDF has nothing to attach."""
+
+    buffer = io.BytesIO()
+    PdfWriter().write(buffer)
+    (tmp_path / "empty.pdf").write_bytes(buffer.getvalue())
+    tool = build_view_pdf_tool()
+
+    with tool_workspace_context(tmp_path), pytest.raises(ViewPdfError) as exc_info:
+        tool(path="empty.pdf", pages="")
+
+    assert exc_info.value.reason == "view_pdf_empty"
+
+
+def test_view_pdf_refuses_an_encrypted_pdf(tmp_path: Path) -> None:
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    writer.encrypt(user_password="secret", owner_password="ownersecret")
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    (tmp_path / "locked.pdf").write_bytes(buffer.getvalue())
+    tool = build_view_pdf_tool()
+
+    with tool_workspace_context(tmp_path), pytest.raises(ViewPdfError) as exc_info:
+        tool(path="locked.pdf", pages="")
+
+    assert exc_info.value.reason == "view_pdf_encrypted"
+
+
+def test_view_pdf_reads_a_permission_only_encrypted_pdf(tmp_path: Path) -> None:
+    """No user password: pypdf decrypts it transparently -- content is readable.
+
+    Must NOT be refused just because ``is_encrypted`` is true; only a PDF
+    pypdf genuinely cannot decrypt gets ``view_pdf_encrypted``.
+    """
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    writer.encrypt(user_password="", owner_password="ownersecret")
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    (tmp_path / "permissions-only.pdf").write_bytes(buffer.getvalue())
+    tool = build_view_pdf_tool()
+
+    with tool_workspace_context(tmp_path):
+        result = tool(path="permissions-only.pdf", pages="")
+
+    assert result["page_count"] == 1
+
+
 @pytest.mark.parametrize(
     "pages",
     ["0", "-1", "3-1", "abc", "1,,2", "1-", "-3", "99"],
@@ -183,6 +233,38 @@ def test_view_pdf_refuses_an_oversized_document(tmp_path: Path) -> None:
         tool(path="doc.pdf", pages="")
 
     assert exc_info.value.reason == "view_pdf_too_large"
+
+
+def test_view_pdf_refuses_a_source_file_over_the_preparse_ceiling(tmp_path: Path) -> None:
+    _write_pdf(tmp_path, "doc.pdf", 5)
+    on_disk_size = (tmp_path / "doc.pdf").stat().st_size
+    set_config("limits.view_pdf_source_max_bytes", on_disk_size - 1)
+    tool = build_view_pdf_tool()
+
+    with tool_workspace_context(tmp_path), pytest.raises(ViewPdfError) as exc_info:
+        tool(path="doc.pdf", pages="")
+
+    assert exc_info.value.reason == "view_pdf_source_too_large"
+
+
+def test_preparse_source_ceiling_fires_before_the_file_is_read_or_parsed(
+    tmp_path: Path,
+) -> None:
+    """A cheap stat() guard: it must refuse even a non-PDF before content is read.
+
+    If the guard ran AFTER media detection instead, this would fail as
+    ``view_pdf_not_pdf`` rather than ``view_pdf_source_too_large``.
+    """
+
+    garbage = tmp_path / "huge.pdf"
+    garbage.write_bytes(b"not a pdf" * 100)
+    set_config("limits.view_pdf_source_max_bytes", garbage.stat().st_size - 1)
+    tool = build_view_pdf_tool()
+
+    with tool_workspace_context(tmp_path), pytest.raises(ViewPdfError) as exc_info:
+        tool(path="huge.pdf", pages="")
+
+    assert exc_info.value.reason == "view_pdf_source_too_large"
 
 
 def test_view_pdf_hydrates_the_pdf_without_mutating_retained_history(tmp_path: Path) -> None:

@@ -623,8 +623,16 @@ def prepare_history_inputs(
     from clio_agent.gact.view_image_tool import hydrate_view_image_results  # noqa: PLC0415
     from clio_agent.gact.view_pdf_tool import hydrate_view_pdf_results  # noqa: PLC0415
 
-    hydrate_view_image_results(inputs, history_field_name)
-    hydrate_view_pdf_results(inputs, history_field_name)
+    # One shared running total across BOTH native-attachment kinds for this
+    # one provider request: an image-heavy step and a PDF can each stay under
+    # the aggregate ceiling on their own while their sum exceeds it.
+    native_attachment_bytes = [0]
+    hydrate_view_image_results(
+        inputs, history_field_name, running_total_bytes=native_attachment_bytes
+    )
+    hydrate_view_pdf_results(
+        inputs, history_field_name, running_total_bytes=native_attachment_bytes
+    )
     return sourced_from_arc
 
 

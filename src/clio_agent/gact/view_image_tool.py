@@ -130,13 +130,26 @@ def _hydrate_descriptor(value: Mapping[str, Any]) -> tuple[Any, int]:
     return dspy.Image(url=f"data:{media_type};base64,{encoded}"), len(data)
 
 
-def hydrate_view_image_results(inputs: dict[str, Any], history_field_name: str) -> int:
+def hydrate_view_image_results(
+    inputs: dict[str, Any],
+    history_field_name: str,
+    *,
+    running_total_bytes: list[int] | None = None,
+) -> int:
     """Hydrate retained view-image descriptors in one DSPy History input.
 
     The source ``dspy.History`` is replaced rather than mutated.  This keeps the
     durable/in-memory trajectory descriptor-only while the returned history sent
     to the provider contains real image blocks.  Returns the number of hydrated
     images; unrelated history values are byte-for-byte equivalent.
+
+    ``running_total_bytes`` is a one-element mutable box shared with sibling
+    hydration passes (:func:`clio_agent.gact.view_pdf_tool.hydrate_view_pdf_results`)
+    for the SAME provider request, so ``check_total_bytes`` bounds every native
+    attachment kind together rather than each kind separately -- an
+    image-heavy step and a PDF in the same step could each stay under the
+    aggregate ceiling on its own while their sum exceeded it. Defaults to a
+    fresh, unshared counter for a standalone call.
     """
 
     import dspy  # noqa: PLC0415
@@ -147,7 +160,7 @@ def hydrate_view_image_results(inputs: dict[str, Any], history_field_name: str) 
         return 0
 
     image_count = 0
-    total_bytes = 0
+    total_bytes = running_total_bytes if running_total_bytes is not None else [0]
     messages: list[dict[str, Any]] = []
     for original in history.messages:
         message = dict(original)
@@ -164,8 +177,8 @@ def hydrate_view_image_results(inputs: dict[str, Any], history_field_name: str) 
                 hydrated_results.append(result)
                 continue
             image, byte_length = _hydrate_descriptor(result.value)
-            total_bytes += byte_length
-            check_total_bytes(total_bytes)
+            total_bytes[0] += byte_length
+            check_total_bytes(total_bytes[0])
             hydrated_results.append(result.model_copy(update={"value": image}))
             image_count += 1
             changed = True

@@ -52,14 +52,22 @@ def _provider_runtime_kind(provider_id: str) -> str:
     return provider_id
 
 
-def _with_vision_capability(app: "FastAPI", cfg: dict[str, Any]) -> dict[str, Any]:
-    """Stamp the derived image-input capability and the arm it came from.
+def _with_native_capability_flags(app: "FastAPI", cfg: dict[str, Any]) -> dict[str, Any]:
+    """Stamp the derived vision/PDF input capabilities and the arm each came from.
 
     Applied on EVERY return path of :func:`_effective_lm_config`, including the
-    unconfigured one, so the field the vision gate reads is always present. It
-    used to be read straight off the config dict -- a key no production writer
-    ever set -- so the gate always fell through to a provider-name allowlist and
-    the catalog's own ``supports_vision`` flags could never reach it.
+    unconfigured one, so the fields the vision/PDF gates read are always
+    present. ``supports_vision`` used to be read straight off the config dict
+    -- a key no production writer ever set -- so the gate always fell through
+    to a provider-name allowlist and the catalog's own ``supports_vision``
+    flags could never reach it.
+
+    ``supports_pdf``/``supports_pdf_source`` are stamped the SAME way, for the
+    same reason: without this, :func:`_pdf_capability`'s typed reason (the
+    :data:`PDF_CAPABILITY_REASONS` catalog) had zero consumers and the PDF
+    capability decision never reached the effective config or the wire, so
+    ``view_pdf`` could silently disappear from an agent's tool list with no
+    way to see why.
     """
 
     supports_vision, vision_source = _vision_capability(
@@ -69,6 +77,13 @@ def _with_vision_capability(app: "FastAPI", cfg: dict[str, Any]) -> dict[str, An
     )
     cfg["supports_vision"] = supports_vision
     cfg["supports_vision_source"] = vision_source
+    supports_pdf, pdf_source = _pdf_capability(
+        app,
+        str(cfg.get("provider_id") or cfg.get("provider") or ""),
+        str(cfg.get("model") or ""),
+    )
+    cfg["supports_pdf"] = supports_pdf
+    cfg["supports_pdf_source"] = pdf_source
     return cfg
 
 
@@ -91,7 +106,7 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
     agent = getattr(app.state, "agent", None)
     provider_config = getattr(agent, "_provider_config", None)
     if provider_config is None:
-        return _with_vision_capability(app, cfg)
+        return _with_native_capability_flags(app, cfg)
 
     for key in (
         "provider_id",
@@ -136,7 +151,7 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
         # No-silent-fallback (#772): surface the degraded display with a typed
         # reason instead of omitting the field silently.
         cfg["thinking_effective"] = f"unavailable (reason=display_derivation_failed: {exc})"
-    return _with_vision_capability(app, cfg)
+    return _with_native_capability_flags(app, cfg)
 
 
 def _default_profile_spec(app: "FastAPI") -> Any:

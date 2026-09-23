@@ -43,6 +43,16 @@ VIEW_PDF_MEDIA_TYPE = "application/pdf"
 #: for 200K-context models. A longer document must be read in ranges.
 _DEFAULT_VIEW_PDF_MAX_PAGES = 100
 
+#: Default pre-parse ceiling on the SOURCE file, checked via a cheap ``stat()``
+#: before any bytes are read or handed to pypdf. Deliberately far above
+#: ``resources.native_document_max_bytes`` (the SENT-bytes ceiling that bounds
+#: the SLICE :func:`_workspace_pdf` returns): a long, legitimate PDF read a
+#: few pages at a time is exactly the point of the ``pages`` argument, so the
+#: source file may be much bigger than any one call's output. This guard only
+#: catches a pathologically large source before pypdf pays the cost of
+#: reading and fully parsing it.
+_DEFAULT_VIEW_PDF_SOURCE_MAX_BYTES = 512 * 1024 * 1024
+
 
 class ViewPdfError(ValueError):
     """A typed refusal raised when a workspace PDF cannot be safely viewed."""
@@ -63,6 +73,22 @@ def view_pdf_max_pages() -> int:
             "limits.view_pdf_max_pages",
             env="CLIO_VIEW_PDF_MAX_PAGES",
             default=_DEFAULT_VIEW_PDF_MAX_PAGES,
+            cast=conf.as_int,
+        ),
+    )
+
+
+def view_pdf_source_max_bytes() -> int:
+    """Pre-parse byte ceiling on the SOURCE PDF file (default 512 MiB)."""
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    return max(
+        1,
+        conf.resolve(
+            "limits.view_pdf_source_max_bytes",
+            env="CLIO_VIEW_PDF_SOURCE_MAX_BYTES",
+            default=_DEFAULT_VIEW_PDF_SOURCE_MAX_BYTES,
             cast=conf.as_int,
         ),
     )
@@ -144,16 +170,35 @@ def _parse_pages(pages: str, page_count: int) -> list[int]:
 
 
 def _pdf_page_count(data: bytes, *, label: str) -> int:
+    """Return the page count, refusing an unreadable, encrypted, or empty PDF.
+
+    A permission-only encrypted PDF (no user password; pypdf decrypts it
+    transparently) reads normally here. ``FileNotDecryptedError`` fires only
+    when pypdf genuinely could not decrypt the content -- that gets its OWN
+    typed reason (``view_pdf_encrypted``) rather than folding into the generic
+    ``view_pdf_not_pdf``, since it is caught first (it subclasses
+    ``PdfReadError``, so ordering here is load-bearing).
+    """
+
     from pypdf import PdfReader  # noqa: PLC0415 - keep UI/bootstrap imports light
-    from pypdf.errors import PdfReadError  # noqa: PLC0415
+    from pypdf.errors import FileNotDecryptedError, PdfReadError  # noqa: PLC0415
 
     try:
         reader = PdfReader(io.BytesIO(data))
-        return len(reader.pages)
+        page_count = len(reader.pages)
+    except FileNotDecryptedError as exc:
+        raise ViewPdfError(
+            "view_pdf_encrypted",
+            f"{label} is encrypted/password-protected; view_pdf cannot read its pages "
+            "without the password. Decrypt the PDF before attaching it.",
+        ) from exc
     except (PdfReadError, ValueError) as exc:
         raise ViewPdfError(
             "view_pdf_not_pdf", f"{label} could not be parsed as a PDF: {exc}"
         ) from exc
+    if page_count == 0:
+        raise ViewPdfError("view_pdf_empty", f"{label} has 0 pages; there is nothing to attach.")
+    return page_count
 
 
 def _slice_pdf_pages(data: bytes, page_numbers: list[int]) -> bytes:
@@ -205,6 +250,20 @@ def _workspace_pdf(path: str, pages: str) -> tuple[Path, Path, bytes, int, bytes
             "view_pdf_outside_workspace",
             "view_pdf can only inspect files inside the active CLIO workspace.",
         ) from exc
+
+    # Cheap stat() before any bytes are read or parsed -- refuses a
+    # pathologically large source without paying for the read + pypdf parse,
+    # even though only the (usually much smaller) requested-page SLICE is
+    # checked against the sent-bytes ceiling below.
+    source_size = resolved.stat().st_size
+    source_max = view_pdf_source_max_bytes()
+    if source_size > source_max:
+        raise ViewPdfError(
+            "view_pdf_source_too_large",
+            f"{relative.as_posix()} is {source_size} bytes, over the {source_max}-byte "
+            "pre-parse source-file ceiling; view_pdf refuses to read and parse a source "
+            "this large. Split or otherwise shrink the file before attaching it.",
+        )
 
     data = resolved.read_bytes()
     media_type, _source = detect_media_type(resolved.name, data[:4096])
@@ -272,13 +331,23 @@ def _hydrate_descriptor(value: Mapping[str, Any]) -> tuple[Any, int]:
     )
 
 
-def hydrate_view_pdf_results(inputs: dict[str, Any], history_field_name: str) -> int:
+def hydrate_view_pdf_results(
+    inputs: dict[str, Any],
+    history_field_name: str,
+    *,
+    running_total_bytes: list[int] | None = None,
+) -> int:
     """Hydrate retained view-pdf descriptors in one DSPy History input.
 
     The source ``dspy.History`` is replaced rather than mutated, mirroring
     :func:`clio_agent.gact.view_image_tool.hydrate_view_image_results`. Returns
     the number of hydrated PDFs; unrelated history values are byte-for-byte
     equivalent.
+
+    ``running_total_bytes`` is a one-element mutable box shared with
+    :func:`clio_agent.gact.view_image_tool.hydrate_view_image_results` for the
+    SAME provider request -- see that function's docstring for why the two
+    kinds must share one aggregate counter rather than each checking its own.
     """
 
     import dspy  # noqa: PLC0415
@@ -289,7 +358,7 @@ def hydrate_view_pdf_results(inputs: dict[str, Any], history_field_name: str) ->
         return 0
 
     pdf_count = 0
-    total_bytes = 0
+    total_bytes = running_total_bytes if running_total_bytes is not None else [0]
     messages: list[dict[str, Any]] = []
     for original in history.messages:
         message = dict(original)
@@ -306,8 +375,8 @@ def hydrate_view_pdf_results(inputs: dict[str, Any], history_field_name: str) ->
                 hydrated_results.append(result)
                 continue
             pdf_file, byte_length = _hydrate_descriptor(result.value)
-            total_bytes += byte_length
-            check_total_bytes(total_bytes)
+            total_bytes[0] += byte_length
+            check_total_bytes(total_bytes[0])
             hydrated_results.append(result.model_copy(update={"value": pdf_file}))
             pdf_count += 1
             changed = True
@@ -414,4 +483,5 @@ __all__ = [
     "hydrate_view_pdf_results",
     "promote_view_pdf_tool_messages",
     "view_pdf_max_pages",
+    "view_pdf_source_max_bytes",
 ]

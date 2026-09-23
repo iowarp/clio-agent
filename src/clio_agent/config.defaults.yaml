@@ -396,6 +396,12 @@ limits.turn_timeout_s: 900.0
 # page ranges.
 limits.view_pdf_max_pages: 100
 
+# CLIO_VIEW_PDF_SOURCE_MAX_BYTES  (int)  <- src/clio_agent/gact/view_pdf_tool.py
+# Pre-parse byte ceiling on a view_pdf SOURCE file, checked before it is
+# read or parsed; raise to allow reading pages from a larger source
+# document.
+limits.view_pdf_source_max_bytes: 536870912
+
 # ==========================================================================
 # Agents, workflows and scheduling
 # ==========================================================================
