@@ -6,6 +6,8 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.4.16] — 2026-09-23
+
 ### Fixed
 
 - Updating CLIO from the desktop no longer leaves a service that cannot start.
@@ -16,8 +18,12 @@ TUI/HTTP surface aren't tracked here.
   "launcher exited early" when it reconnected. New runtimes are built with
   checked precompiled files and keep their package records. A runtime already
   updated in place repairs itself the first time the new version starts: it
-  removes the outdated precompiled files and package records and writes what
-  it removed to the desktop's startup log.
+  removes the outdated precompiled files, package records and files the old
+  versions left behind, and writes what it removed to the desktop's startup
+  log.
+- The desktop (gact-tui 0.11.2.17) now checks that an updated CLIO service
+  loads before reporting the update as done, and reports a failed update with
+  the error instead of failing later when it reconnects.
 
 ## [0.9.4.15] — 2026-09-23
 
