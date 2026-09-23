@@ -279,10 +279,10 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SERVER_CONF` | `arc.server_conf` | str | _(unset)_ | `src/clio_agent/arc/clio_core_liveness.py` |
 | `CLIO_SESSIONS_PATH` | `paths.sessions` | str | _(unset)_ | `src/clio_agent/gact/sessions.py` |
 | `CLIO_SHELL_DEFAULT_OUTPUT_BYTES` | `limits.shell_default_output_bytes` | int | `16384` | `src/clio_agent/tools/servers/shell_server.py` |
-| `CLIO_SHELL_DEFAULT_TIMEOUT_S` | `limits.shell_default_timeout_s` | float | `5.0` | `src/clio_agent/tools/servers/shell_server.py` |
+| `CLIO_SHELL_DEFAULT_TIMEOUT_S` | `limits.shell_default_timeout_s` | float | `0.0` | `src/clio_agent/tools/servers/shell_server.py` |
 | `CLIO_SHELL_MAX_COMMAND_CHARS` | `limits.shell_max_command_chars` | int | `4000` | `src/clio_agent/tools/servers/shell_server.py` |
 | `CLIO_SHELL_MAX_OUTPUT_BYTES` | `limits.shell_max_output_bytes` | int | `131072` | `src/clio_agent/tools/servers/shell_server.py` |
-| `CLIO_SHELL_MAX_TIMEOUT_S` | `limits.shell_max_timeout_s` | float | `30.0` | `src/clio_agent/tools/servers/shell_server.py` |
+| `CLIO_SHELL_MAX_TIMEOUT_S` | `limits.shell_max_timeout_s` | float | `0.0` | `src/clio_agent/tools/servers/shell_server.py` |
 | `CLIO_SPOTTER_BLUEPRINT_ID` | `spotter.watcher_blueprint_id` | str | `spotter-ai` | `src/clio_agent/gact/spotter_watcher.py` |
 | `CLIO_SPOTTER_CLEARANCE_PROGRESS_TIMEOUT_S` | `spotter.clearance_progress_timeout_s` | float | `180.0` | `src/clio_agent/gact/spotter_clearance.py` |
 | `CLIO_SPOTTER_EXPERT_ID` | `spotter.watcher_expert_id` | str | `spotter_watcher` | `src/clio_agent/gact/spotter_watcher.py` |
