@@ -211,7 +211,8 @@
               "fs_apply_edit_write",
               "fs_propose_edit",
               "fs_read_file",
-              "shell_bash"
+              "shell_bash",
+              "view_image"
             ]
           },
           "prompt_resolution": {
