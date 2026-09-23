@@ -50,7 +50,14 @@ def precompile_startup_modules(python_root: Path) -> int:
             cfile=str(cache_path),
             dfile=display_path.as_posix(),
             doraise=True,
-            invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,
+            # CHECKED_HASH, never UNCHECKED_HASH: the desktop upgrades this
+            # runtime in place with ``uv pip install``, which rewrites sources
+            # but cannot remove bytecode it did not write. Unchecked bytecode
+            # then keeps executing the previous release's dependencies
+            # (0.9.4.14 -> 0.9.4.15 stale clio_schemas ImportError). A source
+            # hash is portable across relocation like the unchecked form, and
+            # Python recompiles any module whose source changed.
+            invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH,
         )
     return len(sources)
 

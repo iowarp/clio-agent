@@ -12,7 +12,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_VERSION = "0.9.4.15"
+EXPECTED_VERSION = "0.9.4.16"
 EXPECTED_DSPY = "dspy==3.3.0b1"
 EXPECTED_FASTMCP = "fastmcp==4.0.0b5"
 EXPECTED_FASTMCP_SLIM = "fastmcp-slim==4.0.0b5"
@@ -157,13 +157,19 @@ def test_bundled_runtime_is_precompiled_before_relocation_proof() -> None:
 
     precompiler = _text("install/precompile_runtime.py")
     assert "build_app()" in precompiler
-    assert "PycInvalidationMode.UNCHECKED_HASH" in precompiler
+    # Checked, never unchecked: the desktop upgrades the runtime in place and
+    # unchecked bytecode kept running the previous release's dependencies.
+    assert "invalidation_mode=py_compile.PycInvalidationMode.CHECKED_HASH" in precompiler
+    assert "invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH" not in precompiler
 
     for relative_path in (
         "install/build-gact-runtime.sh",
         "install/build-gact-runtime.ps1",
     ):
         script = _text(relative_path)
+        # RECORD lets `uv pip install` uninstall the previous version in place.
+        assert "RECORD' -delete" not in script, relative_path
+        assert "Join-Path $_.FullName 'RECORD'" not in script, relative_path
         compile_step = script.index("compiling portable startup bytecode")
         relocation_proof = script.index("portability proof on the real object")
         assert compile_step < relocation_proof, relative_path
