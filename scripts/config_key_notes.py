@@ -545,8 +545,8 @@ KEY_NOTES: dict[str, str] = {
         "commands with verbose output."
     ),
     "limits.shell_default_timeout_s": (
-        "Default wall-clock seconds a shell command may run when the caller specifies no timeout; "
-        "raise for slower default commands."
+        "Seconds a shell command may run when the caller passes no timeout; 0 (default) means "
+        "no timeout: the command runs until it exits or the turn is cancelled."
     ),
     "limits.shell_max_command_chars": (
         "Max character length of a shell command string the tool accepts; raise for scripts that "
@@ -557,8 +557,8 @@ KEY_NOTES: dict[str, str] = {
         "caller cap; raise for large output."
     ),
     "limits.shell_max_timeout_s": (
-        "Hard ceiling in seconds on the timeout a shell tool call may request; raise for "
-        "legitimately long-running shell operations."
+        "Optional operator ceiling in seconds on any shell command; 0 (default) means no "
+        "ceiling. When set, a call without a timeout runs up to this ceiling."
     ),
     "limits.tool_result_chars": (
         "Character bound on the transcript/evidence-metadata preview of a tool result; raise to "

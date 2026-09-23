@@ -227,3 +227,187 @@ def test_translate_windows_paths_for_bash() -> None:
     assert (
         translated == 'head -5 "/mnt/d/Libraries/Documents/projects/data.csv" > /mnt/d/tmp/out.csv'
     )
+
+
+def _spawn_tree_command(pid_file: Path, parent_sleep_s: int) -> str:
+    """A command whose shell starts a grandchild python that records its pid and sleeps."""
+
+    workdir = pid_file.parent
+    child = workdir / "tree_child.py"
+    child.write_text(
+        "import os, sys, time\n"
+        "open(sys.argv[1], 'w').write(str(os.getpid()))\n"
+        "time.sleep(120)\n",
+        encoding="utf-8",
+    )
+    parent = workdir / "tree_parent.py"
+    parent.write_text(
+        "import subprocess, sys, time\n"
+        "subprocess.Popen([sys.executable, sys.argv[1], sys.argv[2]])\n"
+        f"time.sleep({parent_sleep_s})\n",
+        encoding="utf-8",
+    )
+    if os.name == "nt":
+        return f"& '{sys.executable}' '{parent}' '{child}' '{pid_file}'"
+    return f"'{sys.executable}' '{parent}' '{child}' '{pid_file}'"
+
+
+def _wait_for_pid(pid_file: Path, timeout_s: float = 20.0) -> int:
+    import time
+
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if pid_file.exists() and pid_file.read_text().strip():
+            return int(pid_file.read_text())
+        time.sleep(0.1)
+    raise AssertionError("grandchild never recorded its pid")
+
+
+def _pid_gone(pid: int, timeout_s: float = 10.0) -> bool:
+    import time
+
+    import psutil
+
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        try:
+            if psutil.Process(pid).status() == psutil.STATUS_ZOMBIE:
+                return True
+        except psutil.NoSuchProcess:
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def _shell_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CLIO_ALLOWED_ROOTS", str(tmp_path))
+    conf.reload()
+
+
+def _sleep_command(seconds: float) -> str:
+    code = f"import time; time.sleep({seconds}); print('DONE')"
+    if os.name == "nt":
+        return f"& '{sys.executable}' -c \"{code}\""
+    return f"'{sys.executable}' -c \"{code}\""
+
+
+@pytest.mark.asyncio
+async def test_shell_bash_has_no_timeout_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A command with no timeout_s runs to completion; the old 5s default killed it."""
+
+    _shell_env(tmp_path, monkeypatch)
+    try:
+        async with Client(shell_server) as client:
+            result = await client.call_tool(
+                "bash", {"command": _sleep_command(6.5), "cwd": str(tmp_path)}
+            )
+    finally:
+        conf.reload()
+    data = _parse_result(result)
+    assert data["timed_out"] is False
+    assert data["exit_code"] == 0
+    assert data["stdout"].strip() == "DONE"
+
+
+@pytest.mark.asyncio
+async def test_shell_bash_explicit_timeout_kills_the_whole_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A model-requested timeout is honored and reaps grandchildren, not just the shell."""
+
+    _shell_env(tmp_path, monkeypatch)
+    pid_file = tmp_path / "grandchild.pid"
+    try:
+        async with Client(shell_server) as client:
+            result = await client.call_tool(
+                "bash",
+                {
+                    "command": _spawn_tree_command(pid_file, parent_sleep_s=120),
+                    "cwd": str(tmp_path),
+                    "timeout_s": 8,
+                },
+            )
+    finally:
+        conf.reload()
+    data = _parse_result(result)
+    assert data["timed_out"] is True
+    assert _pid_gone(_wait_for_pid(pid_file))
+
+
+@pytest.mark.asyncio
+async def test_shell_bash_cancellation_kills_the_whole_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no timeout, a cancelled turn must still stop the command and its children."""
+
+    _shell_env(tmp_path, monkeypatch)
+    pid_file = tmp_path / "grandchild.pid"
+    try:
+        async with Client(shell_server) as client:
+            call = asyncio.create_task(
+                client.call_tool(
+                    "bash",
+                    {
+                        "command": _spawn_tree_command(pid_file, parent_sleep_s=120),
+                        "cwd": str(tmp_path),
+                    },
+                )
+            )
+            grandchild = await asyncio.to_thread(_wait_for_pid, pid_file)
+            call.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await call
+            assert await asyncio.to_thread(_pid_gone, grandchild)
+    finally:
+        conf.reload()
+
+
+@pytest.mark.asyncio
+async def test_shell_bash_rejects_negative_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _shell_env(tmp_path, monkeypatch)
+    try:
+        async with Client(shell_server) as client:
+            result = await client.call_tool(
+                "bash",
+                {"command": _sleep_command(0), "cwd": str(tmp_path), "timeout_s": -1},
+            )
+    finally:
+        conf.reload()
+    data = _parse_result(result)
+    assert data["error"]["code"] == "invalid_timeout"
+
+
+@pytest.mark.asyncio
+async def test_shell_bash_operator_ceiling_bounds_unspecified_and_larger_timeouts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An operator ceiling caps a call without timeout_s and refuses a larger request."""
+
+    import importlib
+
+    module = importlib.import_module("clio_agent.tools.servers.shell_server")
+    monkeypatch.setattr(module, "_MAX_TIMEOUT_S", 3.0)
+    _shell_env(tmp_path, monkeypatch)
+    try:
+        async with Client(shell_server) as client:
+            capped = _parse_result(
+                await client.call_tool(
+                    "bash", {"command": _sleep_command(30), "cwd": str(tmp_path)}
+                )
+            )
+            refused = _parse_result(
+                await client.call_tool(
+                    "bash",
+                    {"command": _sleep_command(0), "cwd": str(tmp_path), "timeout_s": 10},
+                )
+            )
+    finally:
+        conf.reload()
+    assert capped["timed_out"] is True
+    assert capped["timeout_s"] == 3.0
+    assert refused["error"]["code"] == "invalid_timeout"

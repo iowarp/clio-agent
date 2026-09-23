@@ -354,9 +354,10 @@ limits.plan_review_chars: 256000
 limits.shell_default_output_bytes: 16384
 
 # CLIO_SHELL_DEFAULT_TIMEOUT_S  (float)  <- src/clio_agent/tools/servers/shell_server.py
-# Default wall-clock seconds a shell command may run when the caller
-# specifies no timeout; raise for slower default commands.
-limits.shell_default_timeout_s: 5.0
+# Seconds a shell command may run when the caller passes no timeout; 0
+# (default) means no timeout: the command runs until it exits or the turn is
+# cancelled.
+limits.shell_default_timeout_s: 0.0
 
 # CLIO_SHELL_MAX_COMMAND_CHARS  (int)  <- src/clio_agent/tools/servers/shell_server.py
 # Max character length of a shell command string the tool accepts; raise for
@@ -369,9 +370,10 @@ limits.shell_max_command_chars: 4000
 limits.shell_max_output_bytes: 131072
 
 # CLIO_SHELL_MAX_TIMEOUT_S  (float)  <- src/clio_agent/tools/servers/shell_server.py
-# Hard ceiling in seconds on the timeout a shell tool call may request;
-# raise for legitimately long-running shell operations.
-limits.shell_max_timeout_s: 30.0
+# Optional operator ceiling in seconds on any shell command; 0 (default)
+# means no ceiling. When set, a call without a timeout runs up to this
+# ceiling.
+limits.shell_max_timeout_s: 0.0
 
 # CLIO_TOOL_RESULT_CHARS  (int)  <- src/clio_agent/gact/evidence.py
 # Character bound on the transcript/evidence-metadata preview of a tool
