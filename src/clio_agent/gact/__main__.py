@@ -17,9 +17,13 @@ module load (``tests/test_gact/test_decomposition_guardrails.py``).
 from __future__ import annotations
 
 from clio_agent.gact.desktop_boot import start_desktop_boot_heartbeat
+from clio_agent.gact.runtime_bytecode_repair import repair_bundled_runtime_bytecode
 
 if __name__ == "__main__":
     start_desktop_boot_heartbeat()
+    # Before ANY dependency import: an in-place-upgraded bundled runtime can
+    # still hold the previous release's unchecked bytecode.
+    repair_bundled_runtime_bytecode()
     from clio_agent.gact.app import main  # noqa: PLC0415 - entry-point-only import
 
     main()
