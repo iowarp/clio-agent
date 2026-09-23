@@ -166,12 +166,9 @@ if (Test-Path $sitePkgs) {
       if (Test-Path $td) { Remove-Item -LiteralPath $td -Recurse -Force -ErrorAction SilentlyContinue }
     }
   }
-  # *.dist-info/RECORD bloat (not needed at runtime)
-  Get-ChildItem -LiteralPath $sitePkgs -Directory -Filter '*.dist-info' -ErrorAction SilentlyContinue |
-    ForEach-Object {
-      $rec = Join-Path $_.FullName 'RECORD'
-      if (Test-Path $rec) { Remove-Item -LiteralPath $rec -Force -ErrorAction SilentlyContinue }
-    }
+  # *.dist-info/RECORD is KEPT: the desktop upgrades this runtime in place
+  # with `uv pip install`, and without RECORD uv cannot uninstall the old
+  # version -- stale modules and duplicate metadata survive the upgrade.
 
   # Installer-hostile filenames (NSIS aborts on parens/brackets -- the
   # litellm benchmark-data lesson from the 0.7.0 gact-tui release).

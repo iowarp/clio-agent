@@ -6,6 +6,19 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Fixed
+
+- Updating CLIO from the desktop no longer leaves a service that cannot start.
+  The bundled runtime shipped precompiled files that Python never rechecked
+  against their source, and without the package records an in-place update
+  needs to remove the previous version. After the update from 0.9.4.14 to
+  0.9.4.15 the dependencies kept running their old code, and the desktop showed
+  "launcher exited early" when it reconnected. New runtimes are built with
+  checked precompiled files and keep their package records. A runtime already
+  updated in place repairs itself the first time the new version starts: it
+  removes the outdated precompiled files and package records and writes what
+  it removed to the desktop's startup log.
+
 ## [0.9.4.15] — 2026-09-23
 
 ### Added
