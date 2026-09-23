@@ -241,12 +241,20 @@ def _builtin_tool_declarations() -> list[tuple[str, str, str, Any]]:
     """
 
     from clio_agent.gact.agents.auto_tools import build_auto_react_tools  # noqa: PLC0415
+    from clio_agent.gact.agents.declared_native_tools import (  # noqa: PLC0415
+        resolve_declared_native_tools,
+    )
     from clio_agent.gact.agents.spawn_runtime_declarations import (  # noqa: PLC0415
         assemble_spawn_runtime_tools,
     )
 
     seen: dict[str, tuple[str, str, str, Any]] = {}
     main = _builtin_main_agent()
+    # Declared native tools (e.g. view_image) are constructed in-process, not
+    # listed by the gateway; the catalog describes the full declared surface.
+    _, native_tools, _ = resolve_declared_native_tools(main, {}, supports_vision=True)
+    for tool in native_tools.values():
+        _record_declaration(seen, tool)
     for tool_name in main.tools:
         seen.setdefault(tool_name, (tool_name, tool_name.replace("_", " ").title(), "", None))
     for tool in build_auto_react_tools(main):
