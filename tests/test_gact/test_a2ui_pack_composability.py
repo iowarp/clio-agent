@@ -41,6 +41,7 @@ from clio_schemas.a2ui.v0_9_1.capabilities import A2UIClientCapabilities
 from fastapi.testclient import TestClient
 
 from clio_agent import paths
+from clio_agent.gact import agent_blueprint_requires
 from clio_agent.gact import context as gact_context
 from clio_agent.gact.a2ui_capabilities import remember_client_capabilities, select_catalog
 from clio_agent.gact.a2ui_catalogs.builtin import basic_catalog_id
@@ -72,6 +73,20 @@ _INSTRUCTIONS_PATH = PACK_ROOT / "catalogs" / "earthscope-stations" / "instructi
 # --------------------------------------------------------------------------- #
 
 
+def _pack_floor_version() -> str:
+    """The lowest clio-agent version the real pack's floor admits."""
+
+    from packaging.specifiers import SpecifierSet
+
+    from clio_agent import __version__
+    from clio_agent.gact.agent_blueprints import parse_agent_blueprint_root
+
+    requires = parse_agent_blueprint_root(PACK_ROOT, scope="session").metadata.get("requires")
+    floor = str((requires or {}).get("clio_agent") or "")
+    minimums = [spec.version for spec in SpecifierSet(floor) if spec.operator in {">=", "=="}]
+    return minimums[0] if minimums else __version__
+
+
 def _install_isolated_earthscope_pack(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[Path, Path, dict[str, Any]]:
@@ -98,6 +113,14 @@ def _install_isolated_earthscope_pack(
     monkeypatch.chdir(cwd)
     monkeypatch.setenv("CLIO_USER_DIR", str(tmp_path / "user-config"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    # The pack's ``requires.clio_agent`` floor names the release that ships this
+    # runtime, so a pre-release checkout is below it by construction. These tests
+    # exercise catalog composability, not the floor (test_agent_blueprints.py
+    # covers the floor), so run at EXACTLY the pack's declared minimum.
+    floor_version = _pack_floor_version()
+    monkeypatch.setattr(
+        agent_blueprint_requires, "_running_clio_agent_version", lambda: floor_version
+    )
 
     result = install_agent_blueprint(
         source=str(PACK_ROOT),

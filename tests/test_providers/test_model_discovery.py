@@ -1408,6 +1408,12 @@ async def test_refresh_all_default_scan_filters_to_configured_providers(
 ) -> None:
     """#1211 review R2: with no explicit presets, only configured providers are probed."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    # Codex counts as configured only with credentials present; pin them in
+    # tmp_path instead of depending on the host's real ~/.codex sign-in.
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    (codex_home / "auth.json").write_text('{"token":"test"}', encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)

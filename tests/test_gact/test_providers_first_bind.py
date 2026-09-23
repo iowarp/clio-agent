@@ -124,9 +124,9 @@ def test_claude_code_then_codex_first_bind_never_runs_lm_studio_discovery(
     _pristine_env(monkeypatch)
     _patch_hermetic_bind_network(monkeypatch)
     _forbid_lm_studio_discovery(monkeypatch)
-    # A codex bind requires present credentials AND an SDK-validated catalog
-    # (subscription availability check). Pin both in tmp_path so the result
-    # never depends on the host's real ~/.codex sign-in.
+    # Subscription binds require a validated catalog (and, for codex, present
+    # credentials). Pin them in tmp_path so the result never depends on the
+    # host's real sign-ins or model cache.
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     codex_home = tmp_path / "codex-home"
     codex_home.mkdir()
@@ -134,6 +134,14 @@ def test_claude_code_then_codex_first_bind_never_runs_lm_studio_discovery(
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     from clio_agent.providers import model_discovery
 
+    model_discovery.record_refresh(
+        model_discovery.ProviderDiscoveryResult(
+            provider="claude_code",
+            discovered=[{"id": "sonnet", "name": "Sonnet", "description": ""}],
+            source=model_discovery.CLAUDE_CODE_SOURCE,
+            default_model="sonnet",
+        )
+    )
     model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
             provider="codex",
