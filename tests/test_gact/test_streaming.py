@@ -30,6 +30,8 @@ from clio_agent.gact.app import (
     build_app,
 )
 from clio_agent.gact.types import AgentDef
+from clio_agent.providers.claude_code_errors import CLAUDE_CODE_INSTALL_FAILED_MESSAGE
+from clio_agent.providers.codex_errors import CODEX_AUTHENTICATION_ERROR_MESSAGE
 from tests._config_layer import set_config
 
 # #948 S4b: turns that POST through the engine now run the default blueprint react
@@ -931,6 +933,86 @@ def test_pre_stream_failure_surfaces_error_without_sync_rerun(
     assert (
         "RuntimeError" in completed_messages[-1].payload["metadata"]["stream_fallback"]["message"]
     )
+
+
+def test_codex_missing_auth_surfaces_clean_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
+) -> None:
+    async def fail_before_chunk(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        raise ExceptionGroup(
+            "provider stream failed",
+            [
+                RuntimeError(
+                    "[cdx-gpt-5.5] unexpected status 401 Unauthorized: "
+                    "Missing bearer or basic authentication in header, "
+                    "url: https://api.openai.com/v1/responses"
+                )
+            ],
+        )
+        yield "unreachable"
+
+    def fake_streamify(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        return fail_before_chunk
+
+    streamify_module = importlib.import_module("dspy.streaming.streamify")
+    monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
+    app = build_app(
+        sessions_path=tmp_path / "s.json",
+        agent=_DspyAgent("sync fallback should not run"),
+    )
+    client = enter_client(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+
+    client.post(
+        f"/v1/sessions/{sid}/messages",
+        json={"parts": [{"type": "text", "text": "stream me"}]},
+    )
+    _wait_for_turn_settlement(app, sid)
+
+    messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+    assistant = [message for message in messages if message["role"] == "assistant"][-1]
+    assert assistant["error_info"]["message"] == CODEX_AUTHENTICATION_ERROR_MESSAGE
+    assert "live streaming failed" not in assistant["error_info"]["message"]
+    assert "api.openai.com" not in assistant["error_info"]["message"]
+
+
+def test_claude_code_missing_sdk_surfaces_clean_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
+) -> None:
+    async def fail_before_chunk(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        raise ExceptionGroup(
+            "provider stream failed",
+            [ModuleNotFoundError("No module named 'claude_agent_sdk'")],
+        )
+        yield "unreachable"
+
+    def fake_streamify(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        return fail_before_chunk
+
+    streamify_module = importlib.import_module("dspy.streaming.streamify")
+    monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
+    app = build_app(
+        sessions_path=tmp_path / "s.json",
+        agent=_DspyAgent("sync fallback should not run"),
+    )
+    client = enter_client(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+
+    client.post(
+        f"/v1/sessions/{sid}/messages",
+        json={"parts": [{"type": "text", "text": "stream me"}]},
+    )
+    _wait_for_turn_settlement(app, sid)
+
+    messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+    assistant = [message for message in messages if message["role"] == "assistant"][-1]
+    assert assistant["error_info"]["message"] == CLAUDE_CODE_INSTALL_FAILED_MESSAGE
+    assert "live streaming failed" not in assistant["error_info"]["message"]
+    assert "Traceback" not in assistant["error_info"]["message"]
 
 
 def test_a_turn_that_outlives_the_post_still_settles_with_its_real_outcome(

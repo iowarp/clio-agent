@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Literal, Optional, cast
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
 
+from clio_agent.gact.a2ui_capabilities import catalog_ids_for_resolved_blueprint
 from clio_agent.gact.agent_blueprint_files import (
     BlueprintPathEscapesRootError,
     is_textual_blueprint_file,
@@ -74,6 +75,23 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
+
+
+def _invalidate_a2ui_catalogs(app: FastAPI) -> None:
+    """Drop cached A2UI pack-catalog discovery after a blueprint mutation (S2 campaign doc)."""
+    catalogs = getattr(app.state, "a2ui_catalogs", None)
+    if catalogs is not None:
+        catalogs.invalidate()
+
+
+def _mutation_error(status: int, code: str, message: str) -> HTTPException:
+    """One-line HTTPException builder for the install/update/delete except blocks."""
+    return HTTPException(
+        status_code=status,
+        detail=ErrorEnvelope(
+            error=ErrorInfo(error=code, message=message, recoverable=True)
+        ).model_dump(exclude_none=True),
+    )
 
 
 def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
@@ -308,10 +326,9 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                     "agent_blueprint": blueprint.to_wire(),
                     "agents": [row.model_dump(exclude_none=True) for row in agents],
                     "mcp_descriptors": load_mcp_descriptors(
-                        blueprint.root,
-                        scope=blueprint.scope,
-                        blueprint_id=blueprint.id,
+                        blueprint.root, scope=blueprint.scope, blueprint_id=blueprint.id
                     ),
+                    "a2ui_capabilities": catalog_ids_for_resolved_blueprint(app, blueprint),
                 }
         raise HTTPException(
             status_code=404,
@@ -395,8 +412,13 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             )
         cwd = _runtime_workspace_catalog_cwd(app, workspace_id=str(req.get("workspace_id") or ""))
+        from clio_agent.gact.agent_blueprint_requires import (  # noqa: PLC0415
+            AgentBlueprintInstallRefused,
+            install_refusal_http_exception,
+        )
+
         try:
-            return install_agent_blueprint(
+            result = install_agent_blueprint(
                 source=source,
                 scope=scope,  # type: ignore[arg-type]
                 cwd=cwd or Path.cwd(),
@@ -405,17 +427,15 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                 pinned_commit=str(
                     req.get("pinned_commit") or source_row.get("pinned_commit") or ""
                 ),
+                app=app,
             )
+            _invalidate_a2ui_catalogs(app)
+            return result
+        except AgentBlueprintInstallRefused as exc:
+            raise install_refusal_http_exception(exc) from exc
         except (OSError, ValueError, subprocess.CalledProcessError) as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="validation_error",
-                        message=f"agent blueprint install failed: {exc}",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
+            raise _mutation_error(
+                400, "validation_error", f"agent blueprint install failed: {exc}"
             ) from exc
 
     @app.post("/v1/agent-blueprints/{blueprint_id:path}/update")
@@ -438,21 +458,16 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         cwd = _runtime_workspace_catalog_cwd(app, workspace_id=str(body.get("workspace_id") or ""))
         try:
-            return update_installed_agent_blueprint(
+            result = update_installed_agent_blueprint(
                 blueprint_id=blueprint_id,
                 scope=scope,  # type: ignore[arg-type]
                 cwd=cwd or Path.cwd(),
             )
+            _invalidate_a2ui_catalogs(app)
+            return result
         except (OSError, ValueError, subprocess.CalledProcessError) as exc:
-            raise HTTPException(
-                status_code=400,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="validation_error",
-                        message=f"agent blueprint update failed: {exc}",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
+            raise _mutation_error(
+                400, "validation_error", f"agent blueprint update failed: {exc}"
             ) from exc
 
     @app.delete("/v1/agent-blueprints/{blueprint_id:path}")
@@ -485,30 +500,17 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id)
         try:
-            return uninstall_agent_blueprint(
+            result = uninstall_agent_blueprint(
                 blueprint_id=blueprint_id,
                 scope=scope,  # type: ignore[arg-type]
                 cwd=cwd or Path.cwd(),
             )
+            _invalidate_a2ui_catalogs(app)
+            return result
         except OSError as exc:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=str(exc),
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from exc
+            raise _mutation_error(404, "not_found", str(exc)) from exc
 
-    # ---- /v1/expert-packs/* — thin aliases of the agent-blueprint lifecycle
-    # (iowarp/clio-agent#663). A blueprint (structured workflow with a root
-    # orchestrator) and a pack (loose collection of experts) share ONE
-    # install/update/delete engine; the installed row's ``kind`` field
-    # distinguishes them. These delegate to the blueprint route handlers so
-    # there is exactly one implementation, one provenance model, one set of
-    # structured error envelopes.
+    # ---- /v1/expert-packs/* (#663): thin aliases, one install/update/delete engine.
     @app.post("/v1/expert-packs/install", status_code=201)
     async def install_expert_pack_route(req: dict[str, Any]) -> dict[str, Any]:
         """Install an expert pack from a source URL/path/ref into workspace or
@@ -588,8 +590,7 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                 ).model_dump(exclude_none=True),
             )
         sid = f"agent_blueprint_mcp_{blueprint_id}_{descriptor_id}"
-        if not hasattr(app.state, "external_mcp_servers"):
-            app.state.external_mcp_servers = {}
+        app.state.external_mcp_servers = getattr(app.state, "external_mcp_servers", {})
         spec: dict[str, Any] = {"transport": descriptor.get("transport")}
         if descriptor.get("command"):
             spec["command"] = descriptor["command"]
@@ -645,11 +646,7 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                             "description": getattr(live_tool, "description", "")
                             or declared.get("description")
                             or "",
-                            # #1188 MCP half: carry the upstream tool's declared
-                            # title (Tool.title, else ToolAnnotations.title) through
-                            # so the dspy-tool bridge
-                            # (builders._enabled_external_mcp_dspy_tools) can curate
-                            # Part.tool_title from it, when present.
+                            # #1188: the upstream tool's declared title, when present.
                             "title": mcp_tool_title(live_tool) or declared.get("title") or "",
                             "status": "ready",
                             "enabled": True,
@@ -793,27 +790,21 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                 scope="session",
                 runtime_tool_names=runtime_tool_names_for_validation(app),
             )
-            if not validation.get("enabled", False):
-                raise HTTPException(
-                    status_code=400,
-                    detail=ErrorEnvelope(
-                        error=ErrorInfo(
-                            error="validation_error",
-                            message="agent blueprint path is invalid",
-                            details={
-                                "path": blueprint_path,
-                                "validation_errors": validation.get("validation_errors", []),
-                            },
-                            recoverable=True,
-                        )
-                    ).model_dump(exclude_none=True),
-                )
             blueprint_wire = validation["agent_blueprint"]
+            if not validation.get("enabled", False):
+                from clio_agent.gact.agent_blueprint_requires import (  # noqa: PLC0415
+                    path_activation_invalid_http_exception,
+                )
+
+                raise path_activation_invalid_http_exception(
+                    validation, blueprint_path, blueprint_wire, app=app, session_id=sid
+                )
             install_root = Path(str(blueprint_wire.get("root") or blueprint_path)).expanduser()
             activation_metadata = deps.agent_blueprint_activation_metadata(
                 blueprint_wire=blueprint_wire,
                 install_root=install_root,
                 scope="session",
+                session_id=sid,
             )
             updated = app.state.sessions.update(
                 sid,
@@ -856,6 +847,7 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                 blueprint_wire=blueprint_wire,
                 install_root=blueprint.root,
                 scope=blueprint.scope,
+                session_id=sid,
             )
             updated = app.state.sessions.update(
                 sid,

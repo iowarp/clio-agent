@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from fastapi.testclient import TestClient
 
+from clio_agent.gact.a2ui_catalogs.builtin import workspace_catalog_id
 from clio_agent.gact.app import build_app
-from clio_agent.gact.protocol_v3 import CLIO_A2UI_CATALOG_ID
 from clio_agent.gact.types import Message, Part
+
+CLIO_A2UI_CATALOG_ID = workspace_catalog_id()
+A2UI_HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
 
 
 def _message(message_id: str, sid: str, text: str) -> Message:
@@ -132,3 +136,57 @@ def test_deleting_an_a2ui_message_preserves_its_ready_surface(tmp_path: Path) ->
             "preserved_by": "message_delete",
         }
         assert app.state.sessions.get(sid).message_count == len(app.state.messages[sid])
+
+
+def test_deleting_an_a2ui_action_message_preserves_its_record(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """S8 (issue #1374 deliverable 4): deleting the transcript message an
+    ``a2ui_action`` record lives on must preserve the record, not silently
+    drop it -- the SAME ``_PRESERVED_A2UI_PART_TYPES`` set message_delete's
+    preservation call already shares with undo/rewind covers this."""
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        sid = client.post("/v1/sessions", json={"title": "action delete"}).json()["id"]
+        app.state.a2ui_store.apply_batch(sid, _a2ui_batch("delete_surface"))
+
+        def _spawn(coro: Any, **_kwargs: Any) -> None:
+            coro.close()
+
+        monkeypatch.setattr(app.state.turn_runner, "spawn", _spawn)
+        action_response = client.post(
+            f"/v1/sessions/{sid}/a2ui/actions",
+            headers=A2UI_HEADERS,
+            json={
+                "message": {
+                    "version": "v0.9.1",
+                    "action": {
+                        "name": "form.submit",
+                        "surfaceId": "delete_surface",
+                        "sourceComponentId": "root",
+                        "timestamp": "2026-05-20T00:01:00Z",
+                        "context": {"x": 1},
+                    },
+                }
+            },
+        )
+        assert action_response.status_code == 200, action_response.text
+        action_id = action_response.json()["action_id"]
+        target = app.state.messages[sid][-1].id
+        assert app.state.messages[sid][-1].parts[0].type == "a2ui_action"
+
+        resp = client.delete(f"/v1/sessions/{sid}/messages/{target}")
+
+        assert resp.status_code == 204
+        assert [m.id for m in app.state.messages[sid]] != [target]
+        surface = app.state.a2ui_store.get(sid, "delete_surface")
+        assert surface is not None
+        [record] = surface.actions
+        assert record["id"] == action_id
+        assert app.state.messages[sid][-1].metadata == {
+            "synthetic": "a2ui_preservation",
+            "preserved_by": "message_delete",
+        }
+        preserved_types = {part.type for part in app.state.messages[sid][-1].parts}
+        assert "a2ui_action" in preserved_types

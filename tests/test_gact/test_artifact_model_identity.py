@@ -182,7 +182,7 @@ def test_model_artifact_uri_drives_a2ui_time_series_preview(boundary, tmp_path: 
     """The whole point: the merged id builds a VALID ``clio.time-series.v1`` dataUri
     and that dataUri resolves against the bounded table-preview route."""
 
-    from clio_schemas.a2ui_v091 import TimeSeriesComponent
+    from clio_schemas.a2ui.v0_9_1.bounded_components import TimeSeriesComponent
 
     client, _app, _wid, _sid, executor = boundary
     observed = json.loads(

@@ -41,7 +41,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from clio_agent.gact.a2ui_tools import build_create_a2ui_surface_tool
+from clio_agent.gact.a2ui_producer import (
+    build_create_a2ui_surface_tool,
+    build_delete_a2ui_surface_tool,
+    build_update_a2ui_components_tool,
+    build_update_a2ui_data_model_tool,
+)
 from clio_agent.gact.action_cards import build_raise_alert_card_tool
 from clio_agent.gact.artifacts.proposals import build_create_artifact_tool
 from clio_agent.gact.autonomous_loop import build_loop_wakeup_tool
@@ -93,9 +98,17 @@ def build_auto_react_tools(agent_def: Any) -> list[Any]:
     if not (getattr(agent_def, "parent_id", "") or ""):
         # Root compatibility: still automatic unless explicitly declared (the
         # declared-native resolver already attached the same tool). Children get
-        # it only through an explicit blueprint tools declaration.
-        if "create_a2ui_surface" not in declared:
-            tools.append(build_create_a2ui_surface_tool())
+        # it only through an explicit blueprint tools declaration. All four
+        # producer tools (S4) travel together -- a root agent that can create a
+        # surface can also revise/delete it without a separate declaration.
+        for name, build in (
+            ("create_a2ui_surface", build_create_a2ui_surface_tool),
+            ("update_a2ui_components", build_update_a2ui_components_tool),
+            ("update_a2ui_data_model", build_update_a2ui_data_model_tool),
+            ("delete_a2ui_surface", build_delete_a2ui_surface_tool),
+        ):
+            if name not in declared:
+                tools.append(build())
         tools.append(build_refresh_provider_models_tool())
         tools.extend(build_memory_tools(agent_def))
     return tools

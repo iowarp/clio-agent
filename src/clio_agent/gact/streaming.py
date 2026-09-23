@@ -61,6 +61,8 @@ from clio_agent.gact.native_model_inputs import (
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.providers.config import _provider_runtime_kind
 from clio_agent.gact.stream_chunks import _chunk_reasoning_text, _chunk_text
+from clio_agent.gact.stream_failures import CLI_PROVIDER_FAILURE_MESSAGES
+from clio_agent.gact.stream_failures import describe_stream_exc as _describe_stream_exc
 from clio_agent.gact.stream_fallbacks import (
     peek_stream_fallback as _peek_stream_fallback,  # noqa: F401
 )
@@ -434,22 +436,6 @@ def _stream_response_prefix(field_name: str, previous_field_name: str) -> str:
 _REASONING_HEARTBEAT_S = 1.0
 
 
-def _describe_stream_exc(exc: BaseException) -> str:
-    """Format a streaming exception for logging, UNWRAPPING ``ExceptionGroup``.
-
-    ``streamify`` runs the agent forward inside an anyio task group, so a failure
-    surfaces as ``ExceptionGroup`` whose ``str()`` is only the opaque wrapper
-    ("unhandled errors in a TaskGroup (1 sub-exception)") — the real cause lives
-    in ``.exceptions``. Recurse into the leaves so the captured detail names the
-    actual provider/transport error instead of the wrapper.
-    """
-    group = getattr(exc, "exceptions", None)
-    if group:
-        leaves = "; ".join(_describe_stream_exc(sub) for sub in group)
-        return f"{type(exc).__name__}[{leaves}]"
-    return f"{type(exc).__name__}: {exc}"
-
-
 async def _try_streamed_forward(
     app: "FastAPI",
     enriched_text: str,
@@ -740,6 +726,15 @@ async def _try_streamed_forward(
                         pass
     except Exception as exc:
         detail = _describe_stream_exc(exc)
+        if detail in CLI_PROVIDER_FAILURE_MESSAGES:
+            if not emitted_any:
+                _record_stream_fallback(
+                    app,
+                    sid,
+                    "stream_failed_before_output",
+                    detail,
+                )
+            raise _StreamingOutputError(detail) from exc
         if emitted_any:
             raise _StreamingOutputError(
                 f"live streaming failed after emitting output: {detail}"

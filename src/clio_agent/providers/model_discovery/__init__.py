@@ -12,20 +12,26 @@ of, one submodule per concern (kept split to respect the #775 file-size ratchet)
   enrichment persisted at refresh time (#1211 review D4).
 * :mod:`.codex` — Codex discovery via the official Python SDK model catalog,
   verified live against codex-cli 0.147.0 (see :func:`discover_codex`).
-* :mod:`.claude_code` — claude_code discovery via per-alias probe-validation (no
-  enumeration endpoint exists for this channel) — a rejected alias comes back as
-  a typed 404-shaped error in the CLI's own JSON envelope, the universal
-  probe-validation oracle; a TRANSIENT probe failure (timeout/429/5xx/launch
-  failure) is NEVER treated as a rejection (#1211 review D3).
+* :mod:`.claude_code_catalog` — the maintained GitHub catalog document
+  (:data:`~clio_agent.providers.model_discovery.claude_code_catalog.CLAUDE_CODE_CATALOG_URL`):
+  the single source of Claude Code model ids, per-model input-modality
+  capabilities, and the account default. Never a bundled fallback.
+* :mod:`.claude_code` — claude_code discovery: trusts the maintained catalog
+  for everything model-shaped, and separately runs exactly one ``auth status``
+  CLI call to learn whether Claude Code is installed and signed in on this
+  machine (no per-model probing, no bare-default probe, no multimodal probe).
 * :mod:`.http` — HTTP-backed providers reuse the existing live handshake `/models`
   path.
 * :mod:`.refresh` — the concurrent, deadline-bounded, configured-providers-only
   refresh action (#1211 review R2/R3) and the ``refresh_provider_models`` agent
   tool (#1211 review R6, expert-pool-primary doctrine).
 
-``GET /v1/providers/{id}/models`` (:mod:`clio_agent.gact.routes.providers`) serves
-the overlay ahead of the static fallback for the CLI provider kinds ONLY —
-HTTP-backed providers always keep their live handshake path (#1211 review D5).
+At service startup and on explicit checks, Codex refreshes through its SDK and
+Claude Code refreshes through the maintained GitHub catalog plus one CLI
+sign-in check. ``GET /v1/providers/{id}/models``
+(:mod:`clio_agent.gact.routes.providers`) reads that verified state without
+launching new checks. HTTP-backed providers keep their live handshake path
+(#1211 review D5).
 The passive handshake seam (:mod:`clio_agent.providers.handshake.cli_catalog`)
 consults the overlay — never live-reprobes it.
 
@@ -39,8 +45,7 @@ degrading to ``{}`` (the #1202 ``_read_mcp_yaml`` lesson).
 from __future__ import annotations
 
 from clio_agent.providers.model_discovery.claude_code import (
-    CLAUDE_CODE_ALIAS_CANDIDATES,
-    CLAUDE_CODE_PROBE_TIMEOUT_S,
+    CLAUDE_CODE_AUTH_STATUS_TIMEOUT_S,
     ClaudeCodeCLIUnavailableError,
     discover_claude_code,
 )
@@ -54,7 +59,6 @@ from clio_agent.providers.model_discovery.modality_evidence import (
     reported_modalities,
 )
 from clio_agent.providers.model_discovery.overlay import (
-    CLAUDE_CODE_COST_DEFAULT_MODEL,
     CLAUDE_CODE_SOURCE,
     CODEX_SOURCE,
     HTTP_SOURCE,
@@ -81,9 +85,7 @@ from clio_agent.providers.model_discovery.refresh import (
 )
 
 __all__ = [
-    "CLAUDE_CODE_ALIAS_CANDIDATES",
-    "CLAUDE_CODE_COST_DEFAULT_MODEL",
-    "CLAUDE_CODE_PROBE_TIMEOUT_S",
+    "CLAUDE_CODE_AUTH_STATUS_TIMEOUT_S",
     "CLAUDE_CODE_SOURCE",
     "CODEX_SOURCE",
     "HTTP_SOURCE",

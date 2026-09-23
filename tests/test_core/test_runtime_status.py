@@ -201,8 +201,10 @@ def _http_get_must_not_run(*args, **kwargs):
     raise AssertionError("HTTP GET must not run for a CLI/SDK pseudo-scheme provider (#899)")
 
 
-def test_lm_provider_sdk_transport_ready_when_cli_present(tmp_path, monkeypatch):
-    """SDK transport (claude-code://sdk) -> READY when the `claude` CLI is on PATH (#899).
+def test_lm_provider_sdk_transport_requires_live_verification_when_cli_present(
+    tmp_path, monkeypatch
+):
+    """Installed Claude support is not READY until a live provider check succeeds.
 
     The probe must be transport-aware: it never HTTP-GETs the pseudo-scheme (which
     yields 'No connection adapters'); it probes the CLI the transport spawns.
@@ -217,6 +219,7 @@ def test_lm_provider_sdk_transport_ready_when_cli_present(tmp_path, monkeypatch)
         "find_spec",
         lambda name: object() if name == "claude_agent_sdk" else None,
     )
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     probe = RuntimeProbe(
         env={"CLIO_DATA_DIR": str(tmp_path), "CLIO_LM_PROVIDER": "claude_code"},
         http_get=_http_get_must_not_run,
@@ -224,7 +227,8 @@ def test_lm_provider_sdk_transport_ready_when_cli_present(tmp_path, monkeypatch)
 
     status = probe.probe_lm_provider()
 
-    assert status.state == IntegrationState.READY
+    assert status.state == IntegrationState.DEGRADED
+    assert status.details["reason"] == "auth_check_required"
     assert status.details["transport"] == "sdk"
     assert status.details["cli_binary"] == "claude"
 
@@ -246,7 +250,7 @@ def test_lm_provider_sdk_transport_unavailable_when_sdk_package_absent(tmp_path,
 
     assert status.state == IntegrationState.UNAVAILABLE
     assert status.details["reason"] == "sdk_package_absent"
-    assert "uv sync --extra claude-code" in status.next_action
+    assert "Install Claude Code support" in status.next_action
 
 
 def test_lm_provider_sdk_transport_unavailable_when_cli_absent(tmp_path, monkeypatch):
@@ -280,7 +284,7 @@ def test_codex_doctor_uses_sdk_bundle_and_auth_not_path(tmp_path, monkeypatch):
     binary = tmp_path / "codex-bundled"
     binary.write_text("runtime", encoding="utf-8")
     auth = tmp_path / "auth.json"
-    auth.write_text("{}", encoding="utf-8")
+    auth.write_text('{"token":"test"}', encoding="utf-8")
     monkeypatch.setattr(lm_provider_probe, "_bundled_codex_path", lambda: binary)
     monkeypatch.setattr(lm_provider_probe, "_codex_auth_path", lambda: auth)
     monkeypatch.setattr(
@@ -296,9 +300,10 @@ def test_codex_doctor_uses_sdk_bundle_and_auth_not_path(tmp_path, monkeypatch):
     )
     status = probe.probe_lm_provider()
 
-    assert status.state == IntegrationState.READY
+    assert status.state == IntegrationState.DEGRADED
     assert status.details["bundled_binary"] == str(binary)
     assert status.details["auth_path"] == str(auth)
+    assert status.details["reason"] == "auth_unverified"
 
 
 def test_codex_doctor_reports_missing_auth(tmp_path, monkeypatch):

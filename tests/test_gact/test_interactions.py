@@ -13,6 +13,7 @@ from dspy.utils.dummies import DummyLM
 from fastapi.testclient import TestClient
 
 from clio_agent.gact import context as gact_context
+from clio_agent.gact.a2ui_catalogs.builtin import workspace_catalog_id
 from clio_agent.gact.agent_initialization import mark_agent_ready, record_init_failure
 from clio_agent.gact.agent_tasks import AgentTask
 from clio_agent.gact.agents.auto_tools import build_auto_react_tools
@@ -25,13 +26,13 @@ from clio_agent.gact.elicitation_bridge import (
     invocation_with_request_correlation,
 )
 from clio_agent.gact.loop_inbox import InboxEvent, LoopInbox
-from clio_agent.gact.protocol_v3 import CLIO_A2UI_CATALOG_ID
 from clio_agent.gact.types import AgentDef, UserQuestion, UserQuestionOption
 from clio_agent.gact.user_question_ledger import record_user_question
 from clio_agent.tools.mcp_handlers import MCPInvocationContext
 from clio_agent.tools.mcp_task_records import TaskKey, TaskRecord, resolve_store
 
 HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
+CLIO_A2UI_CATALOG_ID = workspace_catalog_id()
 
 
 def test_agent_init_failure_surfaces_a_deferred_question_resume() -> None:
@@ -571,9 +572,18 @@ def test_mcp_task_request_id_correlates_hyphenated_task_exactly(tmp_path) -> Non
     assert correlated.input_key == "output_format"
 
 
-def test_child_a2ui_interaction_routes_to_owning_surface(tmp_path) -> None:
+def test_child_a2ui_interaction_routes_to_owning_surface(tmp_path, monkeypatch) -> None:
+    """S5: ``form.submit`` is an ordinary agent-destination event now -- it
+    starts a fresh idle turn on the CHILD session rather than echoing its
+    context back (the deleted ``result["submitted"]`` shape)."""
+
     app = build_app(sessions_path=tmp_path / "sessions.json")
     root, child = _root_and_child(app)
+
+    def _spawn(coro, **_kwargs):  # noqa: ANN001, ANN002
+        coro.close()
+
+    monkeypatch.setattr(app.state.turn_runner, "spawn", _spawn)
     create = {
         "version": "v0.9.1",
         "createSurface": {"surfaceId": "child-form", "catalogId": CLIO_A2UI_CATALOG_ID},
@@ -634,8 +644,16 @@ def test_child_a2ui_interaction_routes_to_owning_surface(tmp_path) -> None:
             headers=HEADERS,
             json={"message": action},
         )
-        assert responded.status_code == 200
-        assert responded.json()["result"]["submitted"] == {"value": "x"}
+        assert responded.status_code == 200, responded.text
+        result = responded.json()["result"]
+        assert result["delivery"] == "start"
+        assert result["state"] == "delivered"
+        surface = app.state.a2ui_store.get(child, "child-form")
+        assert surface is not None
+        [record] = surface.actions
+        assert record["envelope"]["action"]["context"] == {"value": "x"}
+        assert record["correlation"]["interaction_id"] == row["id"]
+        assert record["correlation"]["owner_session_id"] == child
 
 
 def test_capabilities_advertise_normalized_interactions(tmp_path) -> None:

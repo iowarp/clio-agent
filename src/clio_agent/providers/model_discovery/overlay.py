@@ -37,21 +37,8 @@ logger = logging.getLogger(__name__)
 _LOCK = threading.Lock()
 
 CODEX_SOURCE = "codex_sdk"
-CLAUDE_CODE_SOURCE = "claude_code_alias_probe"
+CLAUDE_CODE_SOURCE = "claude_code_catalog"
 HTTP_SOURCE = "live_handshake"
-
-#: Owner ruling 2026-08-14: claude_code's SERVED/BOUND default is a deliberate
-#: cost policy, not the CLI's own choice. A bare ``claude -p`` (no ``--model``)
-#: resolves to ``claude-fable-5`` -- the most expensive tier -- and clio must
-#: never silently default a user onto it. "sonnet" (documented alias, second
-#: from the top) is the policy default instead. This affects ONLY the
-#: unrequested/omitted-model case for claude_code; fable stays fully available
-#: for explicit selection, and codex is unaffected (keeps following its own
-#: account default). See :func:`record_refresh`, which is the single seam that
-#: applies this -- the overlay's ``default_model`` is always "what clio
-#: serves", and the CLI's own (still-recorded, honest) choice lives alongside
-#: it under ``cli_default``.
-CLAUDE_CODE_COST_DEFAULT_MODEL = "sonnet"
 
 #: Typed staleness reasons, in the ``stream_fallback`` reason-catalog style: the
 #: code is the queryable fact, the sentence is what a human reads. The overlay is
@@ -170,16 +157,16 @@ class ProviderDiscoveryResult:
     discovered: list[dict[str, Any]]
     source: str
     default_model: str = ""
-    #: Set when the default_model above is a FALLBACK (first validated
-    #: candidate) rather than a CLI-verified match — e.g. the bare
-    #: no-``--model`` probe that identifies the CLI's own live default was
-    #: itself inconclusive/rejected (#1211 review N5). Empty when
-    #: ``default_model`` is CLI-verified.
+    #: Explanation when the CLI's own default could not be matched to a
+    #: validated model. No candidate is promoted to default in that case.
     default_model_reason: str = ""
     failed_reason: str | None = None
-    #: Individually-rejected candidates on an otherwise-successful probe (e.g. one
-    #: claude_code alias 404s while the others validate) — informational, never
-    #: silently dropped.
+    #: Individually-rejected candidates on an otherwise-successful discovery run
+    #: — informational, never silently dropped. Currently unused by any in-tree
+    #: provider (claude_code trusts the maintained catalog directly rather than
+    #: probing per-candidate rejections); kept as a typed extension point for a
+    #: future discovery mechanism that can invalidate individual candidates
+    #: without failing the whole refresh.
     rejected: list[dict[str, str]] = field(default_factory=list)
     generated_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
@@ -255,7 +242,9 @@ def overlay_models_wire(provider_id: str, provider_kind: str) -> dict[str, Any] 
     wire: dict[str, Any] = {
         "models": models,
         "source": str(entry.get("source") or "overlay"),
-        "default_model": str(entry.get("default_model") or ""),
+        # Migrate overlays written by the retired Claude cost-policy layer:
+        # ``cli_default`` contains the actual account-discovered default.
+        "default_model": str(entry.get("cli_default") or entry.get("default_model") or ""),
         "generated_at": str(entry.get("generated_at") or ""),
     }
     staleness = entry_staleness(entry)
@@ -263,8 +252,6 @@ def overlay_models_wire(provider_id: str, provider_kind: str) -> dict[str, Any] 
         wire["staleness"] = staleness
     if entry.get("rejected"):
         wire["rejected"] = entry["rejected"]
-    if entry.get("cli_default"):
-        wire["cli_default"] = entry["cli_default"]
     return wire
 
 
@@ -286,7 +273,7 @@ def overlay_default_model(provider_id: str, provider_kind: str) -> str:
     entry = db.get(provider_id) or db.get(provider_kind)
     if not isinstance(entry, dict):
         return ""
-    return str(entry.get("default_model") or "")
+    return str(entry.get("cli_default") or entry.get("default_model") or "")
 
 
 def resolve_cloud_api_key(provider_kind: str) -> str:
@@ -380,22 +367,10 @@ def record_refresh(result: ProviderDiscoveryResult) -> dict[str, Any]:
                 entry["rejected"] = result.rejected  # #1211 N3: persisted, not just in the wire row
             else:
                 entry.pop("rejected", None)
-            # Owner ruling 2026-08-14 (cost-aware default): claude_code's SERVED
-            # default_model is the policy value, not the CLI's raw choice -- the
-            # CLI's own honest default rides along under cli_default (never
-            # dropped) for the /update-models delta report + observability. Only
-            # overrides when the policy model actually validated for this account
-            # (never points the default at something the account doesn't serve);
-            # codex and every other provider kind are untouched.
-            if result.provider == "claude_code":
-                entry["cli_default"] = result.default_model
-                if any(
-                    isinstance(m, dict) and m.get("id") == CLAUDE_CODE_COST_DEFAULT_MODEL
-                    for m in result.discovered
-                ):
-                    entry["default_model"] = CLAUDE_CODE_COST_DEFAULT_MODEL
-            else:
-                entry.pop("cli_default", None)
+            # A live provider check owns the default. Compiled-in aliases are
+            # candidates only and must never silently replace the account's
+            # discovered choice.
+            entry.pop("cli_default", None)
             new_ids = {str(m["id"]) for m in result.discovered if m.get("id")}
         db[result.provider] = entry
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -427,16 +402,10 @@ def record_refresh(result: ProviderDiscoveryResult) -> dict[str, Any]:
         wire["default_model_reason"] = entry["default_model_reason"]
     if entry.get("rejected"):
         wire["rejected"] = entry["rejected"]
-    # The CLI's own honest default (claude_code only -- #1211 cost-policy
-    # ruling 2026-08-14), distinct from the served ``default_model`` above so
-    # the /update-models delta can report both explicitly.
-    if entry.get("cli_default"):
-        wire["cli_default"] = entry["cli_default"]
     return wire
 
 
 __all__ = [
-    "CLAUDE_CODE_COST_DEFAULT_MODEL",
     "CLAUDE_CODE_SOURCE",
     "CODEX_SOURCE",
     "HTTP_SOURCE",

@@ -27,6 +27,63 @@ from clio_agent.providers.catalog import get_provider
 from clio_agent.providers.model_discovery import claude_code as md_claude_code
 
 
+@pytest.mark.asyncio
+async def test_startup_refreshes_configured_cli_and_remote_claude_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.providers.model_discovery import claude_code_catalog
+    from clio_agent.providers.model_discovery import refresh as md_refresh
+
+    seen: list[str] = []
+    monkeypatch.setattr(md_refresh, "is_provider_configured", lambda preset: preset.id == "codex")
+    monkeypatch.setattr(
+        claude_code_catalog,
+        "refresh_claude_code_candidates",
+        lambda: seen.append("github") or [],
+    )
+
+    async def _refresh(*, presets: Any) -> list[dict[str, Any]]:
+        seen.extend(preset.id for preset in presets)
+        return []
+
+    monkeypatch.setattr(md_refresh, "refresh_all", _refresh)
+    await md_refresh.refresh_subscription_catalogs_at_startup()
+    assert seen == ["github", "codex"]
+
+
+@pytest.fixture(autouse=True)
+def _stub_claude_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Discovery tests default to a deterministic catalog snapshot.
+
+    Individual ``discover_claude_code`` tests override this again with their
+    own ``refresh_claude_code_catalog`` stub; this only keeps tests that don't
+    care about the catalog (e.g. the overlay/record_refresh section above)
+    from ever making a real network call if something imports this module.
+    """
+    from clio_agent.providers.model_discovery.claude_code_catalog import ClaudeCodeCatalog
+
+    monkeypatch.setattr(
+        md_claude_code,
+        "refresh_claude_code_catalog",
+        lambda: ClaudeCodeCatalog(
+            models=[
+                {
+                    "id": alias,
+                    "name": alias,
+                    "capabilities": ["text", "image", "pdf"],
+                    "capability_evidence": {
+                        "source": "claude_code_catalog",
+                        "reason": "modality_cataloged",
+                    },
+                }
+                for alias in ("fable", "opus", "sonnet", "haiku")
+            ],
+            default_model="sonnet",
+            default_model_reason="",
+        ),
+    )
+
+
 @pytest.fixture(autouse=True)
 def _stub_context_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every ``discover_*`` success path calls ``attach_context_limits`` (#1211
@@ -398,15 +455,10 @@ def test_record_refresh_persists_default_model_reason(
     assert overlay["claude_code"]["default_model_reason"] == "bare probe inconclusive; falling back"
 
 
-def test_record_refresh_claude_code_served_default_is_cost_policy_not_cli_default(
+def test_record_refresh_claude_code_serves_the_account_discovered_default(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Owner ruling 2026-08-14 (failing-first): the CLI's own bare default can
-    resolve to the premium ``fable`` tier; the overlay's SERVED default_model
-    for claude_code must be the cost-policy value (``sonnet``) instead, with
-    the CLI's honest choice preserved alongside it as ``cli_default`` (never
-    dropped) -- both in the write (the persisted overlay) and the returned
-    wire row (the /update-models delta)."""
+    """A verified account default wins over every compiled-in candidate."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     wire = model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
@@ -419,19 +471,18 @@ def test_record_refresh_claude_code_served_default_is_cost_policy_not_cli_defaul
             default_model="fable",
         )
     )
-    assert wire["default_model"] == "sonnet"
-    assert wire["cli_default"] == "fable"
+    assert wire["default_model"] == "fable"
+    assert "cli_default" not in wire
     overlay = model_discovery.read_overlay()
-    assert overlay["claude_code"]["default_model"] == "sonnet"
-    assert overlay["claude_code"]["cli_default"] == "fable"
-    assert model_discovery.overlay_default_model("claude_code", "claude_code") == "sonnet"
+    assert overlay["claude_code"]["default_model"] == "fable"
+    assert "cli_default" not in overlay["claude_code"]
+    assert model_discovery.overlay_default_model("claude_code", "claude_code") == "fable"
 
 
-def test_record_refresh_claude_code_keeps_cli_default_when_it_already_is_sonnet(
+def test_record_refresh_claude_code_keeps_discovered_sonnet_default(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """When the CLI's own default already IS the cost-policy model, cli_default
-    and default_model agree -- no surprising divergence for the common case."""
+    """A discovered Sonnet default is served without synthetic metadata."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     wire = model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
@@ -442,16 +493,13 @@ def test_record_refresh_claude_code_keeps_cli_default_when_it_already_is_sonnet(
         )
     )
     assert wire["default_model"] == "sonnet"
-    assert wire["cli_default"] == "sonnet"
+    assert "cli_default" not in wire
 
 
 def test_record_refresh_claude_code_falls_back_when_sonnet_unavailable(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The cost policy never points the default at a model the account doesn't
-    actually serve: if ``sonnet`` never validated for this account, the
-    overlay's served default_model stays the CLI's own (best-available)
-    choice rather than a broken override."""
+    """The account-discovered default is kept when Sonnet is unavailable."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     wire = model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
@@ -462,15 +510,13 @@ def test_record_refresh_claude_code_falls_back_when_sonnet_unavailable(
         )
     )
     assert wire["default_model"] == "opus"
-    assert wire["cli_default"] == "opus"
+    assert "cli_default" not in wire
 
 
-def test_record_refresh_codex_never_gains_a_cli_default_field(
+def test_record_refresh_codex_has_only_one_discovered_default(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The cost policy (and its cli_default bookkeeping) is claude_code-only --
-    codex keeps following its own account default verbatim, no cli_default
-    key at all (#1211 review, owner ruling 2026-08-14)."""
+    """Codex follows its account default without synthetic alternatives."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     wire = model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
@@ -611,6 +657,18 @@ def test_discover_codex_success_reports_default_and_source(monkeypatch: pytest.M
     assert stub.closed is True
 
 
+def test_discover_codex_does_not_guess_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    from clio_agent.providers.model_discovery import codex as md_codex
+
+    stub = _StubCodex(rows=[_codex_model("gpt-5.6-sol")])
+    monkeypatch.setattr(md_codex, "AsyncCodex", lambda *_args, **_kwargs: stub)
+
+    result = model_discovery.discover_codex()
+    assert [model["id"] for model in result.discovered] == ["gpt-5.6-sol"]
+    assert result.default_model == ""
+    assert stub.closed is True
+
+
 def test_discover_codex_omitted_input_modalities_records_no_image_capability(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -691,362 +749,108 @@ def test_discover_codex_zero_models_is_typed_reason(monkeypatch: pytest.MonkeyPa
 
 
 # --------------------------------------------------------------------------- #
-# discover_claude_code -- mocked at the CLI boundary (subprocess.run + binary).
+# discover_claude_code -- mocked at the maintained-catalog boundary
+# (refresh_claude_code_catalog) and the CLI sign-in boundary (subprocess.run).
+# Per owner ruling, model existence/capabilities/defaults come ONLY from the
+# catalog; the CLI is consulted for exactly one thing: `auth status`.
 # --------------------------------------------------------------------------- #
 
 
-def _challenge_codes(probe_input: str) -> tuple[str, str]:
-    """Read the codes the probe actually rendered into its two attachments.
+def _catalog(*, default_model: str = "sonnet", default_model_reason: str = "") -> Any:
+    from clio_agent.providers.model_discovery.claude_code_catalog import ClaudeCodeCatalog
 
-    The fake CLI answers with THESE, so a passing probe proves the reply quoted
-    the attachment content back -- the whole point of the discriminating probe.
-    A test that hardcoded the answer would pass for a CLI that stripped both
-    attachments, which is exactly the failure the probe exists to catch.
-    """
-
-    import base64
-
-    content = json.loads(probe_input)["message"]["content"]
-    by_type = {part["type"]: part for part in content}
-    image_png = base64.b64decode(by_type["image"]["source"]["data"])
-    pdf_bytes = base64.b64decode(by_type["document"]["source"]["data"])
-    return _read_png_code(image_png), _read_pdf_code(pdf_bytes)
-
-
-def _read_pdf_code(pdf_bytes: bytes) -> str:
-    """Pull the four digits the probe PDF prints, straight from its content stream."""
-
-    import re
-
-    match = re.search(rb"\((\d{4})\)\s*Tj", pdf_bytes)
-    assert match is not None, "probe PDF carried no printed code"
-    return match.group(1).decode("ascii")
-
-
-def _read_png_code(png_bytes: bytes) -> str:
-    """Decode the probe PNG and read its digits back through the glyph table.
-
-    This is the machine-readable stand-in for a vision model actually LOOKING at
-    the image: it re-derives the code from the rendered pixels, so a broken
-    renderer fails the test instead of silently producing an unreadable image.
-    """
-
-    import struct
-    import zlib
-
-    from clio_agent.providers.model_discovery import probe_assets
-
-    width, height = struct.unpack(">II", png_bytes[16:24])
-    idat = b""
-    offset = 8
-    while offset < len(png_bytes):
-        length = struct.unpack(">I", png_bytes[offset : offset + 4])[0]
-        tag = png_bytes[offset + 4 : offset + 8]
-        if tag == b"IDAT":
-            idat += png_bytes[offset + 8 : offset + 8 + length]
-        offset += 12 + length
-    raw = zlib.decompress(idat)
-    stride = width * 3 + 1
-    rows = [raw[i * stride + 1 : (i + 1) * stride] for i in range(height)]
-
-    scale = probe_assets._SCALE
-    margin = probe_assets._MARGIN
-    glyph_w, glyph_h = probe_assets._GLYPH_WIDTH, probe_assets._GLYPH_HEIGHT
-    gap = probe_assets._GLYPH_GAP
-    cells_wide = (width - 2 * margin) // scale
-    digits = (cells_wide + gap) // (glyph_w + gap)
-
-    def _cell(row: int, column: int) -> str:
-        y = margin + row * scale + scale // 2
-        x = margin + column * scale + scale // 2
-        return "#" if rows[y][x * 3] == 0 else "."
-
-    inverse = {glyph: digit for digit, glyph in probe_assets._DIGIT_GLYPHS.items()}
-    code = ""
-    for index in range(digits):
-        base = index * (glyph_w + gap)
-        glyph = tuple(
-            "".join(_cell(row, base + column) for column in range(glyph_w))
-            for row in range(glyph_h)
-        )
-        code += inverse[glyph]
-    return code
-
-
-def _fake_claude_run(responses: dict[str | None, dict[str, Any]]) -> Any:
-    """A CLI that DID show the model the attachments: it answers their codes."""
-
-    def _run(args: list[str], **kwargs: Any) -> Any:
-        alias = args[args.index("--model") + 1] if "--model" in args else None
-        payload = dict(responses[alias])
-        probe_input = kwargs.get("input") or ""
-        if '"type":"image"' in probe_input and "result" not in payload:
-            image_code, pdf_code = _challenge_codes(probe_input)
-            payload["result"] = f"IMAGE: {image_code}; PDF: {pdf_code}"
-        return SimpleNamespace(stdout=json.dumps(payload), stderr="", returncode=0)
-
-    return _run
-
-
-def test_discover_claude_code_all_aliases_validate_default_follows_bare_probe(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(md_claude_code, "_resolve_claude_binary", lambda: "claude")
-    responses = {
-        None: {"is_error": False, "modelUsage": {"claude-fable-5": {}}},
-        "fable": {"is_error": False, "modelUsage": {"claude-fable-5": {}}},
-        "opus": {"is_error": False, "modelUsage": {"claude-opus-4-6-20251001": {}}},
-        "sonnet": {"is_error": False, "modelUsage": {"claude-sonnet-4-6-20251001": {}}},
-        "haiku": {"is_error": False, "modelUsage": {"claude-haiku-4-5-20251001": {}}},
-    }
-    monkeypatch.setattr(md_claude_code.subprocess, "run", _fake_claude_run(responses))
-
-    result = model_discovery.discover_claude_code(timeout=5.0)
-    assert result.failed_reason is None
-    assert {m["id"] for m in result.discovered} == {"fable", "opus", "sonnet", "haiku"}
-    # The bare (no --model) probe resolved to claude-fable-5, matching the "fable"
-    # alias's own resolution -- the CLI's own default, not a guess.
-    assert result.default_model == "fable"
-    assert result.default_model_reason == ""
-    assert result.rejected == []
-    # Evidenced, not asserted against a constant: the fake CLI answered with the
-    # codes the probe rendered, so these capabilities came from the reply.
-    assert all(
-        sorted(model["capabilities"]) == ["image", "pdf", "text"] for model in result.discovered
-    )
-    assert all(
-        model["capability_evidence"]["reason"] == "modality_reported" for model in result.discovered
+    return ClaudeCodeCatalog(
+        models=[
+            {
+                "id": alias,
+                "name": alias.title(),
+                "capabilities": ["text", "image", "pdf"],
+                "capability_evidence": {
+                    "source": "claude_code_catalog",
+                    "reason": "modality_cataloged",
+                },
+            }
+            for alias in ("fable", "sonnet", "haiku")
+        ],
+        default_model=default_model,
+        default_model_reason=default_model_reason,
     )
 
 
-def _probe_cli(reply_for: Any, *, capture: dict[str, Any] | None = None) -> Any:
-    """A fake ``claude`` whose reply is computed from the probe input it received."""
+def _fake_auth_status_run(*, logged_in: bool = True, stdout: str | None = None) -> Any:
+    """A fake ``subprocess.run`` for the ``auth status`` sign-in check."""
 
     def _run(args: list[str], **kwargs: Any) -> Any:
-        probe_input = kwargs.get("input") or ""
-        if capture is not None:
-            capture["args"] = args
-            capture["input"] = probe_input
-        result = {
-            "type": "result",
-            "is_error": False,
-            "modelUsage": {"claude-sonnet-5": {}},
-            "result": reply_for(probe_input),
-        }
-        return SimpleNamespace(
-            stdout="\n".join([json.dumps({"type": "system"}), json.dumps(result)]),
-            stderr="",
-            returncode=0,
-        )
-
-    return _run
-
-
-def test_probe_claude_evidences_both_modalities_from_the_reply(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A reply that quotes BOTH attachment codes evidences both modalities."""
-
-    seen: dict[str, Any] = {}
-
-    def _reply(probe_input: str) -> str:
-        image_code, pdf_code = _challenge_codes(probe_input)
-        return f"IMAGE: {image_code}; PDF: {pdf_code}"
-
-    monkeypatch.setattr(md_claude_code.subprocess, "run", _probe_cli(_reply, capture=seen))
-
-    probe = md_claude_code._probe_alias("claude", "sonnet", timeout=5.0)
-
-    assert probe["outcome"] == "accepted"
-    assert sorted(probe["capabilities"]) == ["image", "pdf", "text"]
-    assert probe["capability_evidence"]["reason"] == "modality_reported"
-    assert seen["args"][seen["args"].index("--input-format") + 1] == "stream-json"
-    content = json.loads(seen["input"])["message"]["content"]
-    assert [part["type"] for part in content] == ["image", "document", "text"]
-    assert content[0]["source"]["media_type"] == "image/png"
-    assert content[1]["source"]["media_type"] == "application/pdf"
-
-
-def test_probe_claude_refuses_to_credit_a_reply_that_never_saw_the_attachments(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The old probe's exact failure: a CLI that strips attachments still answers.
-
-    ``ok`` was accepted as proof of image AND pdf input. It now evidences neither.
-    """
-
-    monkeypatch.setattr(md_claude_code.subprocess, "run", _probe_cli(lambda _input: "ok"))
-
-    probe = md_claude_code._probe_alias("claude", "sonnet", timeout=5.0)
-
-    assert probe["outcome"] == "accepted"
-    assert probe["capabilities"] == ["text"]
-    evidence = probe["capability_evidence"]
-    assert evidence["reason"] == "modality_probe_unevidenced"
-    assert evidence["unevidenced"] == ["image", "pdf"]
-
-
-def test_probe_claude_evidences_each_modality_independently(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A CLI that forwards the image but strips the PDF is recorded as exactly that."""
-
-    def _reply(probe_input: str) -> str:
-        image_code, _pdf_code = _challenge_codes(probe_input)
-        return f"IMAGE: {image_code}; PDF: NONE"
-
-    monkeypatch.setattr(md_claude_code.subprocess, "run", _probe_cli(_reply))
-
-    probe = md_claude_code._probe_alias("claude", "sonnet", timeout=5.0)
-
-    assert sorted(probe["capabilities"]) == ["image", "text"]
-    assert probe["capability_evidence"]["unevidenced"] == ["pdf"]
-
-
-def test_probe_claude_does_not_credit_a_guessed_code(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A plausible-looking answer that is not THIS probe's code evidences nothing."""
-
-    monkeypatch.setattr(
-        md_claude_code.subprocess, "run", _probe_cli(lambda _input: "IMAGE: 0000; PDF: 0000")
-    )
-
-    probe = md_claude_code._probe_alias("claude", "haiku", timeout=5.0)
-
-    # A one-in-ten-thousand collision would make this flaky, so the codes are
-    # regenerated per probe and the two are always distinct -- one guess cannot
-    # satisfy both.
-    assert "pdf" not in probe["capabilities"] or "image" not in probe["capabilities"]
-
-
-def test_a_probe_that_cannot_carry_attachments_falls_back_to_text_only(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """M3: a failed multimodal turn is a MODALITY fact, not a model rejection."""
-
-    calls: list[str] = []
-
-    def _run(args: list[str], **kwargs: Any) -> Any:
-        probe_input = kwargs.get("input") or ""
-        native = '"type":"image"' in probe_input
-        calls.append("native" if native else "text")
-        if native:
-            return SimpleNamespace(
-                stdout=json.dumps(
-                    {
-                        "type": "result",
-                        "is_error": True,
-                        "api_error_status": 400,
-                        "result": "stream-json input with attachments is unsupported",
-                    }
-                ),
-                stderr="",
-                returncode=0,
+        payload = (
+            stdout
+            if stdout is not None
+            else json.dumps(
+                {"loggedIn": logged_in, "authMethod": "claude.ai", "apiProvider": "firstParty"}
             )
-        return SimpleNamespace(
-            stdout=json.dumps(
-                {
-                    "type": "result",
-                    "is_error": False,
-                    "modelUsage": {"claude-sonnet-5": {}},
-                    "result": "ok",
-                }
-            ),
-            stderr="",
-            returncode=0,
         )
+        return SimpleNamespace(stdout=payload, stderr="", returncode=0)
 
-    monkeypatch.setattr(md_claude_code.subprocess, "run", _run)
-
-    probe = md_claude_code._probe_alias("claude", "sonnet", timeout=5.0)
-
-    assert calls == ["native", "text"]
-    # The MODEL is still available -- discovery is not sunk and nothing is rejected.
-    assert probe["outcome"] == "accepted"
-    assert probe["resolved_model"] == "claude-sonnet-5"
-    assert probe["capabilities"] == ["text"]
-    evidence = probe["capability_evidence"]
-    assert evidence["reason"] == "modality_probe_unavailable"
-    assert evidence["unevidenced"] == ["image", "pdf"]
-    assert "unsupported" in evidence["detail"]
+    return _run
 
 
-def test_a_definitive_rejection_is_never_retried_as_text_only(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A 404 says the account does not serve the model; no fallback changes that."""
-
-    calls: list[str] = []
-
-    def _run(args: list[str], **kwargs: Any) -> Any:
-        calls.append("probe")
-        return SimpleNamespace(
-            stdout=json.dumps(
-                {
-                    "type": "result",
-                    "is_error": True,
-                    "api_error_status": 404,
-                    "result": "There's an issue with the selected model (nope).",
-                }
-            ),
-            stderr="",
-            returncode=0,
-        )
-
-    monkeypatch.setattr(md_claude_code.subprocess, "run", _run)
-
-    probe = md_claude_code._probe_alias("claude", "nope", timeout=5.0)
-
-    assert probe["outcome"] == "rejected"
-    assert calls == ["probe"]
-
-
-def test_discover_claude_code_one_alias_rejected_others_still_validate(
+def test_discover_claude_code_signed_in_reports_catalog_capabilities_and_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(md_claude_code, "_resolve_claude_binary", lambda: "claude")
-    responses: dict[str | None, dict[str, Any]] = {
-        None: {"is_error": False, "modelUsage": {"claude-sonnet-4-6-20251001": {}}},
-        "fable": {
-            "is_error": True,
-            "api_error_status": 404,
-            "result": "There's an issue with the selected model (fable).",
-        },
-        "opus": {"is_error": False, "modelUsage": {"claude-opus-4-6-20251001": {}}},
-        "sonnet": {"is_error": False, "modelUsage": {"claude-sonnet-4-6-20251001": {}}},
-        "haiku": {"is_error": False, "modelUsage": {"claude-haiku-4-5-20251001": {}}},
-    }
-    monkeypatch.setattr(md_claude_code.subprocess, "run", _fake_claude_run(responses))
+    monkeypatch.setattr(md_claude_code, "refresh_claude_code_catalog", lambda: _catalog())
+    monkeypatch.setattr(md_claude_code.subprocess, "run", _fake_auth_status_run())
 
     result = model_discovery.discover_claude_code(timeout=5.0)
+
     assert result.failed_reason is None
-    assert {m["id"] for m in result.discovered} == {"opus", "sonnet", "haiku"}
-    assert result.rejected == [
-        {"id": "fable", "reason": "There's an issue with the selected model (fable)."}
-    ]
+    assert {m["id"] for m in result.discovered} == {"fable", "sonnet", "haiku"}
     assert result.default_model == "sonnet"
+    assert result.default_model_reason == ""
+    assert all(sorted(m["capabilities"]) == ["image", "pdf", "text"] for m in result.discovered)
+    assert all(
+        m["capability_evidence"]["reason"] == "modality_cataloged" for m in result.discovered
+    )
 
 
-def test_discover_claude_code_every_alias_rejected_is_typed_failure(
+def test_discover_claude_code_catalog_without_default_reports_typed_reason(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(md_claude_code, "_resolve_claude_binary", lambda: "claude")
-    responses = {
-        alias: {"is_error": True, "api_error_status": 404, "result": f"{alias} gone"}
-        for alias in (None, "fable", "opus", "sonnet", "haiku")
-    }
-    monkeypatch.setattr(md_claude_code.subprocess, "run", _fake_claude_run(responses))
+    monkeypatch.setattr(
+        md_claude_code,
+        "refresh_claude_code_catalog",
+        lambda: _catalog(
+            default_model="", default_model_reason="the maintained catalog names no default model"
+        ),
+    )
+    monkeypatch.setattr(md_claude_code.subprocess, "run", _fake_auth_status_run())
 
+    result = model_discovery.discover_claude_code(timeout=5.0)
+
+    assert result.failed_reason is None
+    assert result.default_model == ""
+    assert result.default_model_reason == "the maintained catalog names no default model"
+
+
+def test_discover_claude_code_catalog_fetch_failure_is_typed_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from clio_agent.providers.model_discovery.claude_code_catalog import ClaudeCodeCatalogError
+
+    def _boom() -> Any:
+        raise ClaudeCodeCatalogError("Could not fetch Claude Code model catalog: boom")
+
+    monkeypatch.setattr(md_claude_code, "refresh_claude_code_catalog", _boom)
     result = model_discovery.discover_claude_code(timeout=5.0)
     assert result.discovered == []
-    assert result.failed_reason is not None
-    assert "fable" in result.failed_reason
+    assert "Could not fetch" in (result.failed_reason or "")
 
 
 def test_discover_claude_code_cli_unavailable_is_typed_reason(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(md_claude_code, "refresh_claude_code_catalog", lambda: _catalog())
+
     def _boom() -> str:
         raise model_discovery.ClaudeCodeCLIUnavailableError("claude not on PATH")
 
@@ -1056,63 +860,120 @@ def test_discover_claude_code_cli_unavailable_is_typed_reason(
     assert "claude not on PATH" in (result.failed_reason or "")
 
 
-def test_probe_claude_non_json_response_is_inconclusive(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _run(args: list[str], **_kw: Any) -> Any:
-        return SimpleNamespace(stdout="not json at all", stderr="", returncode=1)
-
-    monkeypatch.setattr(md_claude_code.subprocess, "run", _run)
-    probe = md_claude_code._probe_claude("claude", "sonnet", timeout=5.0)
-    assert probe["outcome"] == "inconclusive"
-    assert "non-JSON" in probe["reason"]
-
-
-def test_probe_claude_404_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
-    """#1211 review D3: a 404 model-rejection envelope is the ONLY outcome that
-    counts as a definitive rejection."""
-
-    def _run(args: list[str], **_kw: Any) -> Any:
-        payload = {"is_error": True, "api_error_status": 404, "result": "issue with the model"}
-        return SimpleNamespace(stdout=json.dumps(payload), stderr="", returncode=0)
-
-    monkeypatch.setattr(md_claude_code.subprocess, "run", _run)
-    probe = md_claude_code._probe_claude("claude", "bogus", timeout=5.0)
-    assert probe["outcome"] == "rejected"
-
-
-@pytest.mark.parametrize("status", [429, 500, 503, None])
-def test_probe_claude_non_404_error_status_is_inconclusive_not_rejected(
-    monkeypatch: pytest.MonkeyPatch, status: int | None
+def test_discover_claude_code_never_invokes_a_model_probe_only_auth_status(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """#1211 review D3: transient noise (rate limit, server error, an
-    unrecognised is_error shape) must NEVER be classified as a rejection."""
+    """SABOTAGE-sensitive: discovery calls the CLI EXACTLY once, with EXACTLY
+    ``[binary, "auth", "status"]`` -- never a per-model or bare-default probe."""
+    monkeypatch.setattr(md_claude_code, "_resolve_claude_binary", lambda: "claude")
+    monkeypatch.setattr(md_claude_code, "refresh_claude_code_catalog", lambda: _catalog())
 
-    def _run(args: list[str], **_kw: Any) -> Any:
-        payload = {"is_error": True, "api_error_status": status, "result": "transient"}
-        return SimpleNamespace(stdout=json.dumps(payload), stderr="", returncode=0)
+    calls: list[list[str]] = []
+
+    def _run(args: list[str], **kwargs: Any) -> Any:
+        calls.append(list(args))
+        return SimpleNamespace(
+            stdout=json.dumps({"loggedIn": True, "authMethod": "claude.ai"}),
+            stderr="",
+            returncode=0,
+        )
 
     monkeypatch.setattr(md_claude_code.subprocess, "run", _run)
-    probe = md_claude_code._probe_claude("claude", "sonnet", timeout=5.0)
-    assert probe["outcome"] == "inconclusive"
+
+    result = model_discovery.discover_claude_code(timeout=5.0)
+
+    assert result.failed_reason is None
+    assert calls == [["claude", "auth", "status"]]
 
 
-def test_probe_claude_timeout_is_inconclusive(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_discover_claude_code_not_logged_in_is_typed_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(md_claude_code, "_resolve_claude_binary", lambda: "claude")
+    monkeypatch.setattr(md_claude_code, "refresh_claude_code_catalog", lambda: _catalog())
+    monkeypatch.setattr(md_claude_code.subprocess, "run", _fake_auth_status_run(logged_in=False))
+
+    result = model_discovery.discover_claude_code(timeout=5.0)
+
+    assert result.discovered == []
+    assert "not signed in" in (result.failed_reason or "")
+    assert "claude auth login" in (result.failed_reason or "")
+
+
+def test_discover_claude_code_auth_status_missing_logged_in_key_is_typed_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``loggedIn`` absent (not merely false) is ALSO not signed in -- never assumed."""
+    monkeypatch.setattr(md_claude_code, "_resolve_claude_binary", lambda: "claude")
+    monkeypatch.setattr(md_claude_code, "refresh_claude_code_catalog", lambda: _catalog())
+    monkeypatch.setattr(
+        md_claude_code.subprocess,
+        "run",
+        _fake_auth_status_run(stdout=json.dumps({"authMethod": "claude.ai"})),
+    )
+
+    result = model_discovery.discover_claude_code(timeout=5.0)
+
+    assert result.discovered == []
+    assert "not signed in" in (result.failed_reason or "")
+
+
+def test_discover_claude_code_auth_status_non_json_is_typed_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(md_claude_code, "_resolve_claude_binary", lambda: "claude")
+    monkeypatch.setattr(md_claude_code, "refresh_claude_code_catalog", lambda: _catalog())
+    monkeypatch.setattr(
+        md_claude_code.subprocess, "run", _fake_auth_status_run(stdout="not json at all")
+    )
+
+    result = model_discovery.discover_claude_code(timeout=5.0)
+
+    assert result.discovered == []
+    assert "non-JSON" in (result.failed_reason or "")
+
+
+def test_discover_claude_code_auth_status_timeout_is_typed_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import subprocess as real_subprocess
 
-    def _run(args: list[str], **kw: Any) -> Any:
-        raise real_subprocess.TimeoutExpired(cmd=args, timeout=kw.get("timeout", 5.0))
+    monkeypatch.setattr(md_claude_code, "_resolve_claude_binary", lambda: "claude")
+    monkeypatch.setattr(md_claude_code, "refresh_claude_code_catalog", lambda: _catalog())
+
+    def _run(args: list[str], **kwargs: Any) -> Any:
+        raise real_subprocess.TimeoutExpired(cmd=args, timeout=kwargs.get("timeout", 5.0))
 
     monkeypatch.setattr(md_claude_code.subprocess, "run", _run)
-    probe = md_claude_code._probe_claude("claude", "sonnet", timeout=5.0)
-    assert probe["outcome"] == "inconclusive"
-    assert "timed out" in probe["reason"]
+
+    result = model_discovery.discover_claude_code(timeout=5.0)
+
+    assert result.discovered == []
+    assert "timed out" in (result.failed_reason or "")
 
 
-def test_discover_claude_code_alias_timeout_does_not_remove_it_keeps_prior_list(
+def test_discover_claude_code_auth_status_oserror_is_typed_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(md_claude_code, "_resolve_claude_binary", lambda: "claude")
+    monkeypatch.setattr(md_claude_code, "refresh_claude_code_catalog", lambda: _catalog())
+
+    def _run(args: list[str], **kwargs: Any) -> Any:
+        raise OSError("no such file or directory")
+
+    monkeypatch.setattr(md_claude_code.subprocess, "run", _run)
+
+    result = model_discovery.discover_claude_code(timeout=5.0)
+
+    assert result.discovered == []
+    assert "failed to launch" in (result.failed_reason or "")
+
+
+def test_discover_claude_code_auth_status_failure_keeps_prior_overlay_untouched(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """#1211 review D3 failing-first: a timeout on ONE alias must NOT produce
-    removed:[alias] -- the whole provider aborts with failed_reason instead,
-    keeping the overlay's prior list untouched."""
+    """A failed sign-in check must not clear the overlay's prior good list --
+    the same no-silent-fallback contract a catalog-fetch failure gets."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
@@ -1127,103 +988,42 @@ def test_discover_claude_code_alias_timeout_does_not_remove_it_keeps_prior_list(
     )
 
     monkeypatch.setattr(md_claude_code, "_resolve_claude_binary", lambda: "claude")
-    import subprocess as real_subprocess
-
-    def _run(args: list[str], **kw: Any) -> Any:
-        alias = args[args.index("--model") + 1] if "--model" in args else None
-        if alias == "opus":
-            raise real_subprocess.TimeoutExpired(cmd=args, timeout=kw.get("timeout", 5.0))
-        payload = {"is_error": False, "modelUsage": {f"claude-{alias or 'default'}": {}}}
-        return SimpleNamespace(stdout=json.dumps(payload), stderr="", returncode=0)
-
-    monkeypatch.setattr(md_claude_code.subprocess, "run", _run)
+    monkeypatch.setattr(md_claude_code, "refresh_claude_code_catalog", lambda: _catalog())
+    monkeypatch.setattr(md_claude_code.subprocess, "run", _fake_auth_status_run(logged_in=False))
 
     result = model_discovery.discover_claude_code(timeout=5.0)
     assert result.discovered == []
     assert result.failed_reason is not None
-    assert "opus" in result.failed_reason
-
-    wire = model_discovery.record_refresh(result)
-    assert wire["removed"] == []  # "opus" must NOT be reported removed
-    assert set(wire["unchanged"]) == {"sonnet", "opus"}  # the prior list, untouched
-
-
-def test_discover_claude_code_bare_probe_timeout_aborts_provider_overlay_intact(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """#1211 review D3 gap (claude_code.py:167-174): the BARE (no --model)
-    probe itself being inconclusive must ALSO abort the whole provider with a
-    typed failed_reason -- before any alias is even probed -- and the prior
-    overlay entry must be left completely intact (never narrowed), mirroring
-    the per-alias-timeout coverage above."""
-    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
-    model_discovery.record_refresh(
-        model_discovery.ProviderDiscoveryResult(
-            provider="claude_code",
-            discovered=[
-                {"id": "sonnet", "name": "Sonnet", "description": ""},
-                {"id": "opus", "name": "Opus", "description": ""},
-            ],
-            source=model_discovery.CLAUDE_CODE_SOURCE,
-            default_model="sonnet",
-        )
-    )
-
-    monkeypatch.setattr(md_claude_code, "_resolve_claude_binary", lambda: "claude")
-    import subprocess as real_subprocess
-
-    calls: list[str | None] = []
-
-    def _run(args: list[str], **kw: Any) -> Any:
-        alias = args[args.index("--model") + 1] if "--model" in args else None
-        calls.append(alias)
-        if alias is None:
-            raise real_subprocess.TimeoutExpired(cmd=args, timeout=kw.get("timeout", 5.0))
-        payload = {"is_error": False, "modelUsage": {f"claude-{alias}": {}}}
-        return SimpleNamespace(stdout=json.dumps(payload), stderr="", returncode=0)
-
-    monkeypatch.setattr(md_claude_code.subprocess, "run", _run)
-
-    result = model_discovery.discover_claude_code(timeout=5.0)
-    assert result.discovered == []
-    assert result.failed_reason is not None
-    assert "bare CLI-default probe inconclusive" in result.failed_reason
-    # The loop never started probing ALIASES -- only the bare call, twice: the
-    # native turn and its M3 text-only retry, which timed out the same way. A
-    # probe that cannot answer at all still aborts; the retry only rescues the
-    # case where the model answers but cannot carry attachments.
-    assert calls == [None, None]
 
     wire = model_discovery.record_refresh(result)
     assert wire["removed"] == []
-    assert wire["added"] == []
-    assert set(wire["unchanged"]) == {"sonnet", "opus"}  # the prior list, fully intact
+    assert set(wire["unchanged"]) == {"sonnet", "opus"}
     overlay = model_discovery.read_overlay()
     assert {m["id"] for m in overlay["claude_code"]["models"]} == {"sonnet", "opus"}
     assert overlay["claude_code"]["failed_reason"] == result.failed_reason
 
 
-def test_discover_claude_code_bare_probe_failure_falls_back_with_typed_reason(
+def test_discover_claude_code_explicit_candidates_bypass_the_network_catalog(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """#1211 review N5: when the bare default-probe itself succeeds but its
-    resolved id matches no validated alias, default_model falls back to the
-    first validated alias and default_model_reason explains why."""
+    """Diagnostic callers can bypass the network catalog with an explicit id list;
+    an id that bypassed the catalog carries no evidenced non-text capability."""
     monkeypatch.setattr(md_claude_code, "_resolve_claude_binary", lambda: "claude")
-    responses = {
-        None: {"is_error": False, "modelUsage": {"claude-unmatched-id": {}}},
-        "fable": {"is_error": False, "modelUsage": {"claude-fable-5": {}}},
-        "opus": {"is_error": False, "modelUsage": {"claude-opus-4-6-20251001": {}}},
-        "sonnet": {"is_error": False, "modelUsage": {"claude-sonnet-4-6-20251001": {}}},
-        "haiku": {"is_error": False, "modelUsage": {"claude-haiku-4-5-20251001": {}}},
-    }
-    monkeypatch.setattr(md_claude_code.subprocess, "run", _fake_claude_run(responses))
+    monkeypatch.setattr(md_claude_code.subprocess, "run", _fake_auth_status_run())
 
-    result = model_discovery.discover_claude_code(timeout=5.0)
+    def _boom() -> Any:
+        raise AssertionError("must not fetch the network catalog when candidates is given")
+
+    monkeypatch.setattr(md_claude_code, "refresh_claude_code_catalog", _boom)
+
+    result = model_discovery.discover_claude_code(candidates=("haiku",), timeout=5.0)
+
     assert result.failed_reason is None
-    assert result.default_model == "fable"  # first validated alias, in candidate order
-    assert result.default_model_reason != ""
-    assert "no validated alias matched" in result.default_model_reason
+    assert [m["id"] for m in result.discovered] == ["haiku"]
+    assert result.discovered[0]["capabilities"] == ["text"]
+    evidence = result.discovered[0]["capability_evidence"]
+    assert evidence["reason"] == "modality_uncataloged"
+    assert result.default_model == ""
 
 
 # --------------------------------------------------------------------------- #
@@ -1272,9 +1072,17 @@ async def test_discover_http_no_models_is_typed_reason(monkeypatch: pytest.Monke
 # --------------------------------------------------------------------------- #
 
 
-def test_is_provider_configured_codex_uses_required_sdk() -> None:
+def test_is_provider_configured_codex_requires_sdk_and_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     preset = get_provider("codex")
     assert preset is not None
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing"))
+    assert model_discovery.is_provider_configured(preset) is False
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    (codex_home / "auth.json").write_text('{"token":"test"}', encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
     assert model_discovery.is_provider_configured(preset) is True
 
 
@@ -1365,6 +1173,12 @@ async def test_refresh_all_default_scan_filters_to_configured_providers(
 ) -> None:
     """#1211 review R2: with no explicit presets, only configured providers are probed."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    # Codex counts as configured only with credentials present; pin them in
+    # tmp_path instead of depending on the host's real ~/.codex sign-in.
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    (codex_home / "auth.json").write_text('{"token":"test"}', encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
@@ -1609,25 +1423,23 @@ def test_discover_codex_live() -> None:
 @pytest.mark.live
 @pytest.mark.skipif(
     os.environ.get("CLIO_RUN_LIVE") != "1",
-    reason="live claude CLI probe: set CLIO_RUN_LIVE=1 (needs `claude` on PATH + `claude login`; "
-    "billed API call)",
+    reason="live claude_code discovery: set CLIO_RUN_LIVE=1 (needs `claude` on PATH + "
+    "`claude auth login`; no LM cost -- a real GitHub catalog fetch plus one "
+    "`claude auth status` call, never a model probe)",
 )
-def test_discover_claude_code_live_single_alias() -> None:
-    """Real native image/PDF probe -- bounded to one alias (a billed call)."""
-    result = model_discovery.discover_claude_code(candidates=("haiku",), timeout=60.0)
+def test_discover_claude_code_live_reads_catalog_and_checks_sign_in() -> None:
+    """Real GitHub catalog fetch + one real ``claude auth status`` call."""
+    result = model_discovery.discover_claude_code(timeout=30.0)
     assert result.failed_reason is None, result.failed_reason
-    assert [m["id"] for m in result.discovered] == ["haiku"]
-    # Whatever the live CLI evidenced, the row must SAY which reason produced it
-    # rather than carrying an unexplained constant.
-    evidence = result.discovered[0]["capability_evidence"]
-    assert evidence["reason"] in {
-        "modality_reported",
-        "modality_probe_unevidenced",
-        "modality_probe_unavailable",
-    }
-    assert "text" in result.discovered[0]["capabilities"]
-    if evidence["reason"] == "modality_reported":
-        assert sorted(result.discovered[0]["capabilities"]) == ["image", "pdf", "text"]
+    assert result.discovered, "the maintained catalog returned zero models"
+    # The catalog is the sole source of capabilities -- every row must carry
+    # a typed evidence record naming which catalog reason produced it.
+    for model in result.discovered:
+        assert "text" in model["capabilities"]
+        assert model["capability_evidence"]["reason"] in {
+            "modality_cataloged",
+            "modality_uncataloged",
+        }
 
 
 # --------------------------------------------------------------------------- #

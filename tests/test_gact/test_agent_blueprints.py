@@ -118,6 +118,54 @@ Inspect variant evidence.
     )
 
 
+def _write_blueprint_disabled_for_a_non_floor_reason(
+    root: Path, blueprint_id: str = "disabled-pack"
+) -> None:
+    """Same 2-expert shape as :func:`_write_blueprint`, but disabled via a
+    malformed ``workflow_state`` (not the ``requires.clio_agent`` floor) --
+    the S8 review round 3 item B probe."""
+
+    (root / "experts").mkdir(parents=True)
+    root.joinpath("AGENT.md").write_text(
+        f"""---
+id: {blueprint_id}
+version: 0.1.0
+title: Disabled Agent
+root_expert: root
+workflow_state:
+  sections:
+    acquisition:
+      status_ranks: "nope"
+---
+Disabled domain agent.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("experts", "root.md").write_text(
+        """---
+id: root
+title: Disabled Root
+tier: 1
+prompt_id: disabled.root
+---
+Coordinate work.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("experts", "variant.md").write_text(
+        """---
+id: variant
+title: Variant Expert
+parent_id: root
+tier: 2
+prompt_id: disabled.variant
+---
+Inspect evidence.
+""",
+        encoding="utf-8",
+    )
+
+
 def _write_data_root_blueprint(root: Path, blueprint_id: str = "remote-data") -> None:
     (root / "experts").mkdir(parents=True)
     root.joinpath("AGENT.md").write_text(
@@ -142,6 +190,52 @@ REMOTE BLUEPRINT ORCHESTRATOR MARKER.
 """,
         encoding="utf-8",
     )
+
+
+def _write_deep_research_blueprint(root: Path) -> None:
+    """Write the execution-mode blueprint used by the desktop Deep Research control."""
+
+    (root / "experts").mkdir(parents=True)
+    root.joinpath("AGENT.md").write_text(
+        """---
+id: deep-researcher
+version: 0.1.0
+title: Deep Researcher
+root_expert: main
+---
+Turn-scoped deep research layer.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("experts", "main.md").write_text(
+        """---
+id: main
+title: Deep Research Coordinator
+tier: 1
+module:
+  kind: react
+children:
+  - researcher
+  - critic
+---
+DEEP RESEARCH COORDINATOR MARKER.
+""",
+        encoding="utf-8",
+    )
+    for agent_id in ("researcher", "critic"):
+        root.joinpath("experts", f"{agent_id}.md").write_text(
+            f"""---
+id: {agent_id}
+title: {agent_id.title()}
+parent: main
+tier: 2
+module:
+  kind: react
+---
+{agent_id.upper()} MARKER.
+""",
+            encoding="utf-8",
+        )
 
 
 def _write_default_registry_blueprint(config_dir: Path) -> Path:
@@ -1994,6 +2088,578 @@ def test_agent_blueprint_activation_replaces_default_agent_graph(tmp_path: Path)
     assert agents["variant"]["metadata"]["agent_blueprint_id"] == "genomics"
 
 
+# ---- S8 (issue #1374): requires.clio_agent server-floor enforcement ---------------
+
+
+def _write_blueprint_requiring(root: Path, *, blueprint_id: str, clio_agent_specifier: str) -> None:
+    """Same shape as :func:`_write_blueprint`, plus a ``requires.clio_agent`` floor."""
+
+    (root / "experts").mkdir(parents=True)
+    root.joinpath("AGENT.md").write_text(
+        f"""---
+id: {blueprint_id}
+version: 0.1.0
+title: Genomics Agent
+root_expert: root
+requires:
+  clio_agent: "{clio_agent_specifier}"
+---
+Genomics domain agent.
+""",
+        encoding="utf-8",
+    )
+    root.joinpath("experts", "root.md").write_text(
+        """---
+id: root
+title: Genomics Root
+tier: 1
+prompt_id: genomics.root
+---
+Coordinate genomics work.
+""",
+        encoding="utf-8",
+    )
+
+
+def test_unsatisfied_clio_agent_floor_reports_the_declared_specifier() -> None:
+    from clio_agent import __version__ as running_version
+    from clio_agent.gact.agent_blueprint_requires import unsatisfied_clio_agent_floor
+
+    # The exact marketplace S7 scenario the issue names: a pack declaring the
+    # floor the S2-S5 A2UI producer work landed under, checked against
+    # WHATEVER this server actually reports as its own running version (kept
+    # relative so this test does not silently stop exercising the failure
+    # path the day the running version happens to cross 0.9.5).
+    assert (
+        unsatisfied_clio_agent_floor({"requires": {"clio_agent": f">{running_version}.1"}})
+        == f">{running_version}.1"
+    )
+
+
+def test_unsatisfied_clio_agent_floor_satisfied_is_empty() -> None:
+    from clio_agent.gact.agent_blueprint_requires import unsatisfied_clio_agent_floor
+
+    assert unsatisfied_clio_agent_floor({"requires": {"clio_agent": ">=0.1.0"}}) == ""
+
+
+def test_unsatisfied_clio_agent_floor_absent_requires_is_empty() -> None:
+    from clio_agent.gact.agent_blueprint_requires import unsatisfied_clio_agent_floor
+
+    assert unsatisfied_clio_agent_floor({}) == ""
+    assert unsatisfied_clio_agent_floor({"requires": {}}) == ""
+    assert unsatisfied_clio_agent_floor({"requires": "not-a-mapping"}) == ""  # type: ignore[dict-item]
+
+
+def test_unsatisfied_clio_agent_floor_malformed_specifier_is_a_typed_problem() -> None:
+    """S8 review fix: a malformed PEP 440 specifier used to be silently
+    treated as "no floor to enforce" (a silent fallback). It is now a
+    distinct typed reason (blueprint_requires_unparseable, ⚑ #2: schema-
+    validate is allowed) — a format-only surfacing of the pack author's own
+    malformed declaration, never a fabricated semantic decision."""
+
+    from clio_agent.gact.agent_blueprint_requires import (
+        BLUEPRINT_REQUIRES_UNPARSEABLE,
+        _floor_reason,
+        unsatisfied_clio_agent_floor,
+    )
+
+    metadata = {"requires": {"clio_agent": "not a specifier!!"}}
+    assert unsatisfied_clio_agent_floor(metadata) == "not a specifier!!"
+    assert _floor_reason(metadata) == (BLUEPRINT_REQUIRES_UNPARSEABLE, "not a specifier!!")
+
+
+def test_unsatisfied_clio_agent_floor_uses_explicit_running_version_override() -> None:
+    from clio_agent.gact.agent_blueprint_requires import unsatisfied_clio_agent_floor
+
+    metadata = {"requires": {"clio_agent": ">=0.9.5"}}
+    assert unsatisfied_clio_agent_floor(metadata, running_version="0.9.4") == ">=0.9.5"
+    assert unsatisfied_clio_agent_floor(metadata, running_version="0.9.5") == ""
+    assert unsatisfied_clio_agent_floor(metadata, running_version="0.10.0") == ""
+
+
+def test_unsatisfied_clio_agent_floor_orders_four_part_patch_versions() -> None:
+    """0.9.4.x patch releases compare numerically, including across the 0.9.5 line."""
+    from clio_agent.gact.agent_blueprint_requires import unsatisfied_clio_agent_floor
+
+    metadata = {"requires": {"clio_agent": ">=0.9.4.15"}}
+    assert unsatisfied_clio_agent_floor(metadata, running_version="0.9.4.14") == ">=0.9.4.15"
+    assert unsatisfied_clio_agent_floor(metadata, running_version="0.9.4.9") == ">=0.9.4.15"
+    assert unsatisfied_clio_agent_floor(metadata, running_version="0.9.4.15") == ""
+    assert unsatisfied_clio_agent_floor(metadata, running_version="0.9.4.16") == ""
+    assert unsatisfied_clio_agent_floor(metadata, running_version="0.9.5") == ""
+
+
+def test_validate_agent_blueprint_path_disables_on_unsatisfied_requires_floor(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "future-pack"
+    _write_blueprint_requiring(root, blueprint_id="future-pack", clio_agent_specifier=">=99.0.0")
+
+    body = validate_agent_blueprint_path(root)
+
+    assert body["enabled"] is False
+    assert any(
+        "blueprint_requires_newer_clio_agent" in error for error in body["validation_errors"]
+    )
+
+
+def test_validate_agent_blueprint_path_satisfied_requires_floor_stays_enabled(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "old-floor-pack"
+    _write_blueprint_requiring(root, blueprint_id="old-floor-pack", clio_agent_specifier=">=0.1.0")
+
+    body = validate_agent_blueprint_path(root)
+
+    assert body["enabled"] is True
+    assert not any("blueprint_requires_newer_clio_agent" in e for e in body["validation_errors"])
+
+
+def test_install_agent_blueprint_refuses_unsatisfied_requires_floor(tmp_path: Path) -> None:
+    """S8 review fix: install used to gate only on ``parse_agent_blueprint_root(
+    ...).enabled``, which never ran the floor check (it lived only in
+    ``validate_agent_blueprint_path``) -- a pack over the floor installed 201
+    with ``validation_errors: []``. The floor is now folded into
+    ``parse_agent_blueprint_root`` itself, so install refuses it exactly like
+    any other invalid pack (strict/explicit-install contract: raises)."""
+
+    from clio_agent.gact.agent_blueprints import install_agent_blueprint
+
+    source_dir = tmp_path / "future-pack-src"
+    _write_blueprint_requiring(
+        source_dir, blueprint_id="future-pack", clio_agent_specifier=">=99.0.0"
+    )
+
+    with pytest.raises(ValueError, match="blueprint_requires_newer_clio_agent"):
+        install_agent_blueprint(
+            source=str(source_dir),
+            scope="global",
+            cwd=tmp_path / "cwd",
+            home=tmp_path / "home",
+        )
+
+
+def test_install_route_refusal_carries_the_typed_code_machine_readably(tmp_path: Path) -> None:
+    """Focused re-review of #1374 item 5: the install ROUTE used to map every
+    ``install_agent_blueprint`` refusal (this one included) to a bare
+    ``error: "validation_error"`` with the actual typed code (here
+    ``blueprint_requires_newer_clio_agent``) buried only inside the free-form
+    ``message`` string -- a caller could not branch on it without parsing
+    prose. It now carries ``details.validation_errors`` (same list shape the
+    by-path session-activation branch already returns) AND
+    ``details.codes`` (the closed set of known typed reason codes found in
+    that list), machine-readable without any string parsing.
+
+    **Sabotage:** revert the route's except clause to the bare
+    ``_mutation_error`` call -> ``details`` carries no ``codes`` key -> red.
+    """
+
+    workspace = tmp_path / "workspace"
+    source_dir = tmp_path / "future-pack-src"
+    _write_blueprint_requiring(
+        source_dir, blueprint_id="future-pack", clio_agent_specifier=">=99.0.0"
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        response = client.post(
+            "/v1/agent-blueprints/install",
+            json={"source": str(source_dir), "scope": "workspace", "workspace_id": wid},
+        )
+
+    assert response.status_code == 400, response.text
+    error = response.json()["error"]
+    assert error["error"] == "validation_error"
+    details = error["details"]
+    assert details["codes"] == ["blueprint_requires_newer_clio_agent"]
+    assert any("blueprint_requires_newer_clio_agent" in e for e in details["validation_errors"])
+
+
+def test_install_agent_blueprint_skip_invalid_skips_unsatisfied_requires_floor(
+    tmp_path: Path,
+) -> None:
+    from clio_agent.gact.agent_blueprints import install_agent_blueprint
+
+    source_dir = tmp_path / "future-pack-src"
+    _write_blueprint_requiring(
+        source_dir, blueprint_id="future-pack", clio_agent_specifier=">=99.0.0"
+    )
+
+    result = install_agent_blueprint(
+        source=str(source_dir),
+        scope="global",
+        cwd=tmp_path / "cwd",
+        home=tmp_path / "home",
+        skip_invalid=True,
+    )
+
+    assert result["installed"] == []
+    [skipped] = result["skipped"]
+    assert skipped["id"] == "future-pack"
+    assert any("blueprint_requires_newer_clio_agent" in e for e in skipped["validation_errors"])
+
+
+def test_discover_agent_blueprints_listing_shows_unsatisfied_requires_floor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S8 review fix: ``GET /v1/agent-blueprints`` (``discover_agent_
+    blueprints``) used to show ``enabled: true, validation_errors: []`` for
+    an over-the-floor pack -- only session activation refused it. Both now
+    read the SAME ``parse_agent_blueprint_root`` result. Written directly to
+    the install root (not through ``install_agent_blueprint``, which now
+    refuses an over-the-floor pack outright) to prove the LISTING path
+    itself catches a pack that landed on disk some other way (a hand-copied
+    pack, or one installed by an older server build)."""
+
+    # Bootstrap disabled (unit isolation, no network): this test only cares
+    # whether a pack already on disk shows its floor problem in the listing.
+    monkeypatch.setenv("CLIO_AGENT_DISABLE_DEFAULT_REGISTRY_BOOTSTRAP", "1")
+    config_dir = tmp_path / "store" / "clio-agent"
+    monkeypatch.setenv("CLIO_USER_DIR", str(config_dir))
+    home = tmp_path / "home"
+    root = config_dir / "agent-blueprints" / "future-pack"
+    _write_blueprint_requiring(root, blueprint_id="future-pack", clio_agent_specifier=">=99.0.0")
+
+    rows = discover_agent_blueprints(home=home, cwd=tmp_path / "cwd")
+
+    [row] = [r for r in rows if r.id == "future-pack"]
+    assert row.enabled is False
+    assert any("blueprint_requires_newer_clio_agent" in e for e in row.validation_errors)
+
+
+def test_agent_blueprint_detail_route_never_duplicates_the_floor_error_per_row(
+    tmp_path: Path,
+) -> None:
+    """Focused re-review of #1374 item 4: the dedup a prior fix landed lived
+    only inside ``validate_agent_blueprint_path``'s own error aggregation --
+    ``GET /v1/agent-blueprints/{id}``'s ``agents[]`` rows (built through
+    ``load_agent_blueprints``/``validate_agent_hierarchy``/
+    ``parse_expert_file``, a DIFFERENT path) still showed the SAME
+    blueprint-level ``requires.clio_agent`` floor error once per expert row.
+    Two expert rows here means the pre-fix tree would show the floor error
+    THREE times total (once at blueprint level, once per row); fixed at the
+    source (``parse_expert_file`` no longer copies a pack's
+    ``validation_errors`` onto a row at all), so it shows exactly once,
+    at blueprint level, regardless of how many rows the pack declares."""
+
+    workspace = tmp_path / "workspace"
+    root = workspace / ".clio" / "agent-blueprints" / "future-pack"
+    _write_blueprint_requiring(root, blueprint_id="future-pack", clio_agent_specifier=">=99.0.0")
+    root.joinpath("experts", "variant.md").write_text(
+        """---
+id: variant
+title: Variant Expert
+parent_id: root
+tier: 2
+prompt_id: genomics.variant
+---
+Inspect variant evidence.
+""",
+        encoding="utf-8",
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        detail = client.get("/v1/agent-blueprints/future-pack", params={"workspace_id": wid})
+
+    assert detail.status_code == 200, detail.text
+    body = detail.json()
+    blueprint_errors = body["agent_blueprint"]["validation_errors"]
+    assert sum("blueprint_requires_newer_clio_agent" in e for e in blueprint_errors) == 1
+
+    agent_rows = body["agents"]
+    assert {row["id"] for row in agent_rows} == {"root", "variant"}
+    for row in agent_rows:
+        row_errors = row.get("validation_errors") or []
+        assert not any("blueprint_requires_newer_clio_agent" in e for e in row_errors), (
+            f"row {row['id']!r} must never inherit the blueprint-level floor error: {row_errors}"
+        )
+        assert "pack_validation_errors" not in (row.get("metadata") or {})
+
+
+def test_agent_blueprint_detail_route_disables_rows_for_a_non_floor_disabled_blueprint(
+    tmp_path: Path,
+) -> None:
+    """S8 review round 3 (issue #1374 item B, HIGH): "deleting a filter means
+    deleting what it pointed at" -- item 4's fix (removing ``parse_expert_
+    file``'s copy of ``pack.validation_errors`` onto a row) also silently
+    deleted what that copy FED: ``row.enabled = not errors`` used to see a
+    blueprint-level problem through that copy alone. A blueprint disabled
+    for a NON-floor reason (a malformed ``workflow_state`` here) must still
+    disable every row it owns, WITHOUT the error TEXT being duplicated onto
+    them (item 4's dedup stays fixed).
+
+    **Sabotage:** revert ``parse_expert_file``'s ``enabled`` computation to
+    ignore ``pack.enabled`` -> both rows show ``enabled: True`` despite the
+    blueprint itself being disabled -> red."""
+
+    workspace = tmp_path / "workspace"
+    root = workspace / ".clio" / "agent-blueprints" / "disabled-pack"
+    _write_blueprint_disabled_for_a_non_floor_reason(root, blueprint_id="disabled-pack")
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        detail = client.get("/v1/agent-blueprints/disabled-pack", params={"workspace_id": wid})
+
+    assert detail.status_code == 200, detail.text
+    body = detail.json()
+    assert body["agent_blueprint"]["enabled"] is False
+    blueprint_errors = body["agent_blueprint"]["validation_errors"]
+    assert any("invalid workflow_state schema" in e for e in blueprint_errors)
+
+    agent_rows = body["agents"]
+    assert {row["id"] for row in agent_rows} == {"root", "variant"}
+    for row in agent_rows:
+        assert row["enabled"] is False, f"row {row['id']!r} must inherit the pack's disablement"
+        row_errors = row.get("validation_errors") or []
+        assert not any("invalid workflow_state schema" in e for e in row_errors), (
+            f"row {row['id']!r} must never DUPLICATE the blueprint's own error text: {row_errors}"
+        )
+
+
+def test_list_agents_disables_rows_for_a_non_floor_disabled_blueprint(tmp_path: Path) -> None:
+    """S8 review round 3 (issue #1374 item B, HIGH): ``GET /v1/agents``
+    re-resolves a session's active blueprint LIVE from disk on every call
+    (``_runtime_active_agent_blueprint_rows`` -> ``load_agent_blueprints`` ->
+    ``parse_expert_file``, keyed only on ``session.metadata[
+    "active_agent_blueprint_id"]``) -- it must show a pack's rows as
+    disabled the moment the pack ON DISK becomes disabled, regardless of
+    whether it was enabled at activation time. Activation itself now
+    refuses a disabled pack outright (the previous test), so this sets the
+    session's active id directly -- the realistic case this route must
+    defend against is a pack edited AFTER a session already activated it.
+
+    **Sabotage:** same ``parse_expert_file`` regression as the detail-route
+    test -- red for the same reason.
+    """
+
+    workspace = tmp_path / "workspace"
+    root = workspace / ".clio" / "agent-blueprints" / "disabled-pack"
+    _write_blueprint_disabled_for_a_non_floor_reason(root, blueprint_id="disabled-pack")
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "disabled-pack", "workspace_id": wid},
+        ).json()["id"]
+        app.state.sessions.update(
+            sid, metadata_patch={"active_agent_blueprint_id": "disabled-pack"}
+        )
+        listed = client.get("/v1/agents", params={"session_id": sid})
+
+    assert listed.status_code == 200, listed.text
+    rows = {row["id"]: row for row in listed.json()["agents"] if row["id"] in {"root", "variant"}}
+    assert set(rows) == {"root", "variant"}
+    for row_id, row in rows.items():
+        assert row["enabled"] is False, f"row {row_id!r} must inherit the pack's disablement"
+
+
+def test_session_activation_by_id_refuses_a_non_floor_disabled_blueprint(tmp_path: Path) -> None:
+    """S8 review round 3 (issue #1374 item B, HIGH): by-ID activation had NO
+    ``blueprint.enabled`` gate at all -- a blueprint disabled for a NON-floor
+    reason (unlike the floor, which already refused via ``requires_floor_
+    activation_error``) returned 200 and activated normally.
+
+    **Sabotage:** remove the ``refuse_disabled_blueprint`` call from
+    ``agent_blueprint_activation_metadata`` -> 200 instead of 400 -> red.
+    """
+
+    from clio_agent.gact.blueprint_activation import blueprint_resolution_reasons
+
+    workspace = tmp_path / "workspace"
+    root = workspace / ".clio" / "agent-blueprints" / "disabled-pack"
+    _write_blueprint_disabled_for_a_non_floor_reason(root, blueprint_id="disabled-pack")
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "disabled-pack", "workspace_id": wid},
+        ).json()["id"]
+        activated = client.post(
+            f"/v1/sessions/{sid}/agent-blueprint",
+            json={"blueprint_id": "disabled-pack"},
+        )
+
+        assert activated.status_code == 400, activated.text
+        detail = activated.json()["error"]
+        assert detail["error"] == "validation_error"
+        assert detail["details"]["codes"] == [], "not a floor case -- no floor code applies"
+        assert any(
+            "invalid workflow_state schema" in e for e in detail["details"]["validation_errors"]
+        )
+
+        reasons = blueprint_resolution_reasons(app, sid)
+        assert any(r["reason"] == "active_blueprint_disabled" for r in reasons)
+
+
+def test_session_activation_by_id_refuses_unsatisfied_requires_floor(tmp_path: Path) -> None:
+    from clio_agent.gact.blueprint_activation import blueprint_resolution_reasons
+
+    workspace = tmp_path / "workspace"
+    blueprint = workspace / ".clio" / "agent-blueprints" / "future-pack"
+    _write_blueprint_requiring(
+        blueprint, blueprint_id="future-pack", clio_agent_specifier=">=99.0.0"
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "future-pack", "workspace_id": wid},
+        ).json()["id"]
+        activated = client.post(
+            f"/v1/sessions/{sid}/agent-blueprint",
+            json={"blueprint_id": "future-pack"},
+        )
+
+        assert activated.status_code == 400, activated.text
+        detail = activated.json()["error"]
+        assert detail["error"] == "blueprint_requires_newer_clio_agent"
+        assert detail["details"]["requires_clio_agent"] == ">=99.0.0"
+
+        reasons = blueprint_resolution_reasons(app, sid)
+        assert any(r["reason"] == "blueprint_requires_newer_clio_agent" for r in reasons)
+
+
+def test_session_activation_by_path_refuses_unsatisfied_requires_floor(tmp_path: Path) -> None:
+    """The explicit-path branch has no separate floor check (S8 review fix):
+    the floor is folded into ``parse_agent_blueprint_root``'s own
+    ``enabled``/``validation_errors``, so ``validate_agent_blueprint_path``
+    already disables the blueprint and the route's PRE-EXISTING generic
+    "agent blueprint path is invalid" refusal fires -- the typed
+    ``blueprint_requires_newer_clio_agent`` reason shows up INSIDE
+    ``details.validation_errors``, not as the top-level error code (that
+    stays reserved for the installed-id branch, which has no upstream
+    validate_agent_blueprint_path pass to rely on).
+
+    Focused re-review item 6: this refusal must ALSO reach the SAME
+    ``blueprint.resolution.degraded`` reason ledger the by-id branch's
+    refusal reaches (``agent_blueprint_activation_metadata``'s own docstring
+    claims both branches are "identically defended" -- true of the CHECK,
+    but the by-path branch never actually called ``record_requires_floor_
+    reason`` before this fix, since its own upstream refusal short-circuits
+    before that seam ever runs)."""
+
+    from clio_agent.gact.blueprint_activation import blueprint_resolution_reasons
+
+    workspace = tmp_path / "workspace"
+    blueprint_root = tmp_path / "future-path-pack"
+    _write_blueprint_requiring(
+        blueprint_root, blueprint_id="future-path-pack", clio_agent_specifier=">=99.0.0"
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "future-path-pack", "workspace_id": wid},
+        ).json()["id"]
+        activated = client.post(
+            f"/v1/sessions/{sid}/agent-blueprint",
+            json={"path": str(blueprint_root)},
+        )
+
+        assert activated.status_code == 400, activated.text
+        detail = activated.json()["error"]
+        assert detail["error"] == "validation_error"
+        assert any(
+            "blueprint_requires_newer_clio_agent" in e
+            for e in detail["details"]["validation_errors"]
+        )
+
+        reasons = blueprint_resolution_reasons(app, sid)
+        assert any(r["reason"] == "blueprint_requires_newer_clio_agent" for r in reasons), (
+            "by-path activation must reach the SAME reason ledger by-id does"
+        )
+
+
+def test_session_activation_satisfied_requires_floor_succeeds(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    blueprint = workspace / ".clio" / "agent-blueprints" / "current-pack"
+    _write_blueprint_requiring(
+        blueprint, blueprint_id="current-pack", clio_agent_specifier=">=0.1.0"
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "current-pack", "workspace_id": wid},
+        ).json()["id"]
+        activated = client.post(
+            f"/v1/sessions/{sid}/agent-blueprint",
+            json={"blueprint_id": "current-pack"},
+        )
+
+        assert activated.status_code == 200, activated.text
+
+
 def test_agent_blueprint_root_runtime_context_lists_declared_children(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     blueprint = workspace / ".clio" / "agent-blueprints" / "genomics"
@@ -2848,6 +3514,91 @@ def test_active_agent_blueprint_drives_turn_runtime_and_overrides_builtin_ids(
     assert assistant["metadata"]["agent_runtime"]["pack"]["id"] == "remote-data"
 
 
+def test_deep_research_execution_mode_applies_deep_researcher_over_base_blueprint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deep Research is a turn layer, not merely architect routing on the base agent."""
+
+    workspace = tmp_path / "workspace"
+    _write_data_root_blueprint(workspace / ".clio" / "agent-blueprints" / "remote-data")
+    _write_deep_research_blueprint(workspace / ".clio" / "agent-blueprints" / "deep-researcher")
+    calls: list[dict[str, str]] = []
+
+    async def no_stream(*args, **kwargs):
+        return None
+
+    def fake_blueprint_runner(base_agent, agent_def, question, session_id, cancel_requested=None):
+        del base_agent, cancel_requested
+        calls.append(
+            {
+                "agent_id": agent_def.id,
+                "blueprint_id": str(agent_def.metadata.get("agent_blueprint_id") or ""),
+                "question": question,
+                "session_id": session_id,
+            }
+        )
+        return SimpleNamespace(
+            answer=f"runtime from {agent_def.metadata.get('agent_blueprint_id')}",
+            selected_expert=agent_def.id,
+            routing_rationale="execution mode blueprint",
+            route_source="agent_blueprint",
+            error_info=None,
+        )
+
+    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", no_stream)
+    monkeypatch.setattr("clio_agent.gact.app._run_blueprint_dspy_agent", fake_blueprint_runner)
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=SimpleNamespace())
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        sid = client.post(
+            "/v1/sessions",
+            json={"title": "base", "workspace_id": wid},
+        ).json()["id"]
+        activated = client.post(
+            f"/v1/sessions/{sid}/agent-blueprint",
+            json={"blueprint_id": "remote-data"},
+        )
+        assert activated.status_code == 200, activated.text
+
+        assistant = complete_turn(
+            client,
+            sid,
+            "research this",
+            json_override={
+                "behavior": {
+                    "confirmation_policy": "ask",
+                    "execution_mode": "deep_research",
+                    "reasoning_effort": "medium",
+                }
+            },
+        )
+        active_after = client.get(f"/v1/sessions/{sid}/agent-blueprint").json()
+        execute_assistant = complete_turn(client, sid, "ordinary work")
+
+    assert calls[0] == {
+        "agent_id": "main",
+        "blueprint_id": "deep-researcher",
+        "question": "research this",
+        "session_id": sid,
+    }
+    assert calls[1]["agent_id"] == "data"
+    assert calls[1]["blueprint_id"] == "remote-data"
+    assert calls[1]["question"].endswith("ordinary work")
+    assert calls[1]["session_id"] == sid
+    assert assistant["metadata"]["agent_runtime"]["pack"]["id"] == "deep-researcher"
+    assert execute_assistant["metadata"]["agent_runtime"]["pack"]["id"] == "remote-data"
+    assert active_after["active_agent_blueprint_id"] == "remote-data"
+
+
 def test_agent_blueprint_mcp_descriptor_installs_disabled(tmp_path: Path) -> None:
     root = tmp_path / "marketplace" / "earth"
     _write_blueprint(root, blueprint_id="earth")
@@ -2939,6 +3690,37 @@ Use an undeclared external tool.
 
     assert body["enabled"] is False
     assert "unknown tool reference: missing_external_tool" in "\n".join(body["validation_errors"])
+
+
+def test_validate_agent_tool_references_accepts_producer_and_memory_tools_rejects_bogus() -> None:
+    """S4 adversarial-review item 6: the builtin-tools allowlist covers the
+    three new A2UI producer tools alongside ask_user and every memory tool,
+    and still refuses a name none of that set (or an MCP declaration)
+    covers."""
+
+    from clio_agent.gact.agent_blueprints import _validate_agent_tool_references
+    from clio_agent.gact.types import AgentDef
+
+    row = AgentDef(
+        id="visual",
+        title="Visual",
+        tools=[
+            "ask_user",
+            "create_a2ui_surface",
+            "update_a2ui_components",
+            "update_a2ui_data_model",
+            "delete_a2ui_surface",
+            "memory_search_sessions",
+            "memory_read_session_summary",
+            "memory_read_context_frame",
+            "bogus_tool",
+        ],
+    )
+
+    [validated] = _validate_agent_tool_references([row], mcp_descriptors=[])
+
+    assert validated.validation_errors == ["unknown tool reference: bogus_tool"]
+    assert validated.enabled is False
 
 
 def test_agent_blueprint_mcp_descriptor_requires_explicit_enablement(tmp_path: Path) -> None:
@@ -4003,6 +4785,332 @@ def test_uninstalled_pack_is_not_resurrected_by_the_sync(
     reset_registry_sync_for_tests()
     assert ensure_default_registry_bootstrap(home=home, cwd=cwd) == ""
     assert extra_install.joinpath("AGENT.md").exists(), "explicit reinstall clears the tombstone"
+
+
+# ---- S8 (issue #1363 umbrella, live-gate finding 3): checksum-mismatch reinstall ---
+
+
+def test_registry_sync_updates_installed_pack_when_source_checksum_differs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The live-harness bug: an already-installed pack id used to be skipped
+    forever regardless of whether the LOCAL marketplace checkout's content
+    (e.g. a version bump) moved past what is installed. A source checksum
+    that differs from the installed one now reinstalls instead of silently
+    serving the stale copy.
+
+    **Sabotage:** revert to the bare "folder exists -> skip" check -> the
+    installed AGENT.md keeps its ORIGINAL content -> red.
+    """
+
+    from clio_agent.gact.agent_blueprint_refresh import (
+        reset_registry_sync_for_tests,
+        sync_local_registry_packs,
+    )
+    from clio_agent.gact.agent_blueprints import install_agent_blueprint
+
+    registry_dir = tmp_path / "local-registry"
+    extra_dir = registry_dir / "extra-pack"
+    extra_dir.mkdir(parents=True)
+    extra_dir.joinpath("AGENT.md").write_text(_EXTRA_PACK_MD, encoding="utf-8")
+
+    install_root, home = _prepare_default_store(tmp_path, monkeypatch)
+    cwd = tmp_path / "cwd"
+    install_agent_blueprint(
+        source=str(registry_dir), scope="global", cwd=cwd, home=home, blueprint_id="extra-pack"
+    )
+    installed_agent_md = install_root.parent / "extra-pack" / "AGENT.md"
+    assert installed_agent_md.read_text(encoding="utf-8") == _EXTRA_PACK_MD
+
+    # The source registry moved on (a pack content update, e.g. a version bump)
+    # while the install root kept the OLD snapshot.
+    updated_pack_md = _EXTRA_PACK_MD.replace("version: 0.1.0", "version: 0.2.0")
+    assert updated_pack_md != _EXTRA_PACK_MD
+    extra_dir.joinpath("AGENT.md").write_text(updated_pack_md, encoding="utf-8")
+
+    reset_registry_sync_for_tests()
+    diagnostic = sync_local_registry_packs(source=str(registry_dir), home=home, cwd=cwd, pinned="")
+
+    assert diagnostic == ""
+    assert installed_agent_md.read_text(encoding="utf-8") == updated_pack_md, (
+        "an installed pack must update when the SOURCE checksum changed, never "
+        "serve a stale copy silently"
+    )
+
+
+def test_registry_sync_never_clobbers_local_edits_even_when_source_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A user (or the blueprint file-write route) editing the INSTALLED copy in
+    place must never be clobbered by the registry sync, even when the source
+    ALSO changed in the meantime -- ``local_edits_present`` outranks
+    ``source_checksum_changed``.
+
+    **Sabotage:** compare only source-vs-installed checksums (drop the
+    recorded-vs-on-disk local-edit check) -> the user's edit is overwritten
+    -> red.
+    """
+
+    from clio_agent.gact.agent_blueprint_refresh import (
+        reset_registry_sync_for_tests,
+        sync_local_registry_packs,
+    )
+    from clio_agent.gact.agent_blueprints import install_agent_blueprint
+
+    registry_dir = tmp_path / "local-registry"
+    extra_dir = registry_dir / "extra-pack"
+    extra_dir.mkdir(parents=True)
+    extra_dir.joinpath("AGENT.md").write_text(_EXTRA_PACK_MD, encoding="utf-8")
+
+    install_root, home = _prepare_default_store(tmp_path, monkeypatch)
+    cwd = tmp_path / "cwd"
+    install_agent_blueprint(
+        source=str(registry_dir), scope="global", cwd=cwd, home=home, blueprint_id="extra-pack"
+    )
+    installed_agent_md = install_root.parent / "extra-pack" / "AGENT.md"
+
+    # The user hand-edits the INSTALLED copy (e.g. via the blueprint file-write
+    # route) -- its on-disk checksum now drifts from what ``.clio-install.md``
+    # recorded at install time.
+    user_edited_md = _EXTRA_PACK_MD.replace(
+        "A minimal single-agent pack.", "A minimal single-agent pack. User note added."
+    )
+    installed_agent_md.write_text(user_edited_md, encoding="utf-8")
+
+    # The source ALSO changed, independently of the user's edit.
+    extra_dir.joinpath("AGENT.md").write_text(
+        _EXTRA_PACK_MD.replace("version: 0.1.0", "version: 0.2.0"), encoding="utf-8"
+    )
+
+    reset_registry_sync_for_tests()
+    diagnostic = sync_local_registry_packs(source=str(registry_dir), home=home, cwd=cwd, pinned="")
+
+    assert diagnostic == ""
+    assert installed_agent_md.read_text(encoding="utf-8") == user_edited_md, (
+        "local edits must never be clobbered by the registry sync"
+    )
+
+
+def test_registry_sync_is_a_noop_when_source_and_install_already_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unchanged source and an unedited install is genuinely nothing to do —
+    the fast, common case stays cheap (no reinstall churn on every boot)."""
+
+    from clio_agent.gact.agent_blueprint_refresh import (
+        reset_registry_sync_for_tests,
+        sync_local_registry_packs,
+    )
+    from clio_agent.gact.agent_blueprints import install_agent_blueprint
+
+    registry_dir = tmp_path / "local-registry"
+    extra_dir = registry_dir / "extra-pack"
+    extra_dir.mkdir(parents=True)
+    extra_dir.joinpath("AGENT.md").write_text(_EXTRA_PACK_MD, encoding="utf-8")
+
+    install_root, home = _prepare_default_store(tmp_path, monkeypatch)
+    cwd = tmp_path / "cwd"
+    install_agent_blueprint(
+        source=str(registry_dir), scope="global", cwd=cwd, home=home, blueprint_id="extra-pack"
+    )
+    installed_agent_md = install_root.parent / "extra-pack" / "AGENT.md"
+    installed_mtime = installed_agent_md.stat().st_mtime_ns
+
+    reset_registry_sync_for_tests()
+    diagnostic = sync_local_registry_packs(source=str(registry_dir), home=home, cwd=cwd, pinned="")
+
+    assert diagnostic == ""
+    assert installed_agent_md.stat().st_mtime_ns == installed_mtime, (
+        "unchanged pack must not reinstall"
+    )
+
+
+# ---- S8 review round (issue #1374 item 3): install-route overwrite audit -----------
+
+
+def test_install_route_overwrite_with_changed_source_reports_replaced(tmp_path: Path) -> None:
+    """An install-route re-install whose source content changed used to
+    return 201 with a new checksum and no structured audit trail. It now
+    reports ``replaced: {previous_checksum, checksum}`` on the row, and
+    records a typed reason that reaches the same ledger the boot-time sync
+    path uses (never only a logger.info call).
+
+    **Sabotage:** drop the ``previous_checksum`` capture (read it AFTER the
+    rmtree/copytree instead of before) -> it always reads the NEW checksum
+    -> ``replaced`` is never reported -> red.
+    """
+
+    from clio_agent.gact.agent_blueprint_refresh import recorded_blueprint_install_reasons
+    from clio_agent.gact.agent_blueprints import install_agent_blueprint
+
+    source_dir = tmp_path / "overwrite-pack-src"
+    source_dir.mkdir()
+    source_dir.joinpath("AGENT.md").write_text(
+        _EXTRA_PACK_MD.replace("extra-pack", "overwrite-pack"), encoding="utf-8"
+    )
+    cwd = tmp_path / "cwd"
+    home = tmp_path / "home"
+
+    first = install_agent_blueprint(source=str(source_dir), scope="global", cwd=cwd, home=home)
+    assert "replaced" not in first["installed"][0], "a fresh install has nothing to replace"
+    first_checksum = first["installed"][0]["install"]["checksum"]
+
+    source_dir.joinpath("AGENT.md").write_text(
+        _EXTRA_PACK_MD.replace("extra-pack", "overwrite-pack").replace(
+            "A minimal single-agent pack.", "A minimal single-agent pack. Changed."
+        ),
+        encoding="utf-8",
+    )
+    second = install_agent_blueprint(source=str(source_dir), scope="global", cwd=cwd, home=home)
+
+    row = second["installed"][0]
+    second_checksum = row["install"]["checksum"]
+    assert second_checksum != first_checksum
+    assert row["replaced"] == {"previous_checksum": first_checksum, "checksum": second_checksum}
+
+    reasons = recorded_blueprint_install_reasons()
+    matching = [
+        r
+        for r in reasons
+        if r["reason"] == "source_checksum_changed" and r["blueprint_id"] == "overwrite-pack"
+    ]
+    assert matching, "the overwrite must reach the typed reason ledger, not only a logger call"
+    assert matching[-1]["installed_checksum"] == first_checksum
+    assert matching[-1]["source_checksum"] == second_checksum
+
+
+def test_install_route_overwrite_with_unchanged_source_reports_no_replaced(
+    tmp_path: Path,
+) -> None:
+    from clio_agent.gact.agent_blueprints import install_agent_blueprint
+
+    source_dir = tmp_path / "stable-pack-src"
+    source_dir.mkdir()
+    source_dir.joinpath("AGENT.md").write_text(
+        _EXTRA_PACK_MD.replace("extra-pack", "stable-pack"), encoding="utf-8"
+    )
+    cwd = tmp_path / "cwd"
+    home = tmp_path / "home"
+
+    install_agent_blueprint(source=str(source_dir), scope="global", cwd=cwd, home=home)
+    second = install_agent_blueprint(source=str(source_dir), scope="global", cwd=cwd, home=home)
+
+    assert "replaced" not in second["installed"][0]
+
+
+def test_boot_sync_reinstall_reaches_the_same_typed_reason_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The boot-time registry-sync reinstall path (``_reinstall_reason``,
+    already covered functionally by
+    ``test_registry_sync_updates_installed_pack_when_source_checksum_differs``)
+    now records through the SAME ledger the install route uses, not only
+    ``logger.info`` -- both paths converge on one typed reason name/shape."""
+
+    from clio_agent.gact.agent_blueprint_refresh import (
+        record_blueprint_install_reason,
+        recorded_blueprint_install_reasons,
+        reset_registry_sync_for_tests,
+        sync_local_registry_packs,
+    )
+    from clio_agent.gact.agent_blueprints import install_agent_blueprint
+
+    registry_dir = tmp_path / "local-registry"
+    extra_dir = registry_dir / "ledger-pack"
+    extra_dir.mkdir(parents=True)
+    extra_dir.joinpath("AGENT.md").write_text(
+        _EXTRA_PACK_MD.replace("extra-pack", "ledger-pack"), encoding="utf-8"
+    )
+
+    install_root, home = _prepare_default_store(tmp_path, monkeypatch)
+    cwd = tmp_path / "cwd"
+    install_agent_blueprint(
+        source=str(registry_dir), scope="global", cwd=cwd, home=home, blueprint_id="ledger-pack"
+    )
+
+    extra_dir.joinpath("AGENT.md").write_text(
+        _EXTRA_PACK_MD.replace("extra-pack", "ledger-pack").replace(
+            "version: 0.1.0", "version: 0.2.0"
+        ),
+        encoding="utf-8",
+    )
+    # A sentinel row proves the ring is the SAME object the sync path writes
+    # to (not a coincidentally-identically-shaped separate one).
+    record_blueprint_install_reason("source_checksum_changed", blueprint_id="__sentinel__")
+
+    reset_registry_sync_for_tests()
+    assert sync_local_registry_packs(source=str(registry_dir), home=home, cwd=cwd, pinned="") == ""
+
+    reasons = recorded_blueprint_install_reasons()
+    ids = [r["blueprint_id"] for r in reasons if r["reason"] == "source_checksum_changed"]
+    assert "__sentinel__" in ids
+    assert "ledger-pack" in ids
+
+
+def test_install_route_reason_reaches_a_semantic_event(tmp_path: Path) -> None:
+    """Focused re-review of #1374 item 6: ``record_blueprint_install_reason``
+    used to reach ``trace``/an API ONLY via ``stream_audit``, itself a no-op
+    unless ``CLIO_STREAM_AUDIT_LOG`` is set -- an install-route overwrite was
+    invisible outside this module's own in-process ring by default. The
+    install ROUTE now threads ``app`` through so a genuine overwrite reaches
+    a ``blueprint.install.reason`` semantic event too, exactly like
+    ``blueprint_activation._record_resolution_reason`` does for an
+    activation refusal -- proven here by capturing what actually reaches
+    ``app.state.semantic_event_sink``, not merely the in-process ring.
+
+    **Sabotage:** drop the ``app=app`` threading (route -> install_agent_
+    blueprint -> install_row -> record_blueprint_install_reason) -> no
+    semantic event fires -> red.
+    """
+
+    workspace = tmp_path / "workspace"
+    source_dir = tmp_path / "semantic-pack-src"
+    source_dir.mkdir()
+    source_dir.joinpath("AGENT.md").write_text(
+        _EXTRA_PACK_MD.replace("extra-pack", "semantic-pack"), encoding="utf-8"
+    )
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    fired: list[Any] = []
+    original_emit = app.state.semantic_event_sink.emit
+
+    def _capturing_emit(event: Any) -> Any:
+        fired.append(event)
+        return original_emit(event)
+
+    app.state.semantic_event_sink.emit = _capturing_emit
+
+    with TestClient(app) as client:
+        wid = client.post(
+            "/v1/workspaces",
+            json={
+                "name": "Workspace",
+                "root_path": str(workspace),
+                "storage_root": str(workspace / ".clio"),
+            },
+        ).json()["id"]
+        first = client.post(
+            "/v1/agent-blueprints/install",
+            json={"source": str(source_dir), "scope": "workspace", "workspace_id": wid},
+        )
+        assert first.status_code == 201, first.text
+
+        source_dir.joinpath("AGENT.md").write_text(
+            _EXTRA_PACK_MD.replace("extra-pack", "semantic-pack").replace(
+                "A minimal single-agent pack.", "A minimal single-agent pack. Changed."
+            ),
+            encoding="utf-8",
+        )
+        second = client.post(
+            "/v1/agent-blueprints/install",
+            json={"source": str(source_dir), "scope": "workspace", "workspace_id": wid},
+        )
+        assert second.status_code == 201, second.text
+
+    matching = [e for e in fired if e.event_type == "blueprint.install.reason"]
+    assert matching, "an overwrite with a changed source must emit a semantic event"
+    assert matching[-1].payload["reason"] == "source_checksum_changed"
+    assert matching[-1].payload["blueprint_id"] == "semantic-pack"
 
 
 def test_install_all_skips_invalid_pack_only_when_asked(

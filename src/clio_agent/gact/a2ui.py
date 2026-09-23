@@ -1,22 +1,32 @@
-"""Validated, transcript-projected A2UI surface state for GACT 0.3."""
+"""Validated, transcript-projected A2UI surface state for GACT 0.3.
+
+Catalog resolution and per-component/safety validation live in
+``gact/a2ui_catalogs/`` (docs/design/a2ui-compat-campaign-2026-09.md S2);
+this module owns the message envelope, the surface fold, and the transcript
+replay projection, all now consuming a ``CatalogResolver`` instead of
+trusting one hard-coded catalog id.
+"""
 
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Mapping
-from urllib.parse import urlsplit
 
-from clio_schemas import A2UIClientActionMessage, A2UIComponent, trusted_component_names
-from pydantic import ValidationError
+from clio_schemas import A2UIClientMessage
+from pydantic import ValidationError as _PydanticValidationError
 
-from clio_agent.gact.protocol.constants import (
-    A2UI_V091,
-    A2UI_V091_WIRE,
-    CLIO_A2UI_CATALOG_ID,
+from clio_agent.gact.a2ui_catalogs.registry import CatalogEntry, CatalogResolver
+from clio_agent.gact.a2ui_catalogs.validation import (
+    A2UIEventContextInvalidError,
+    A2UIFunctionNotInCatalogError,
+    A2UIValidationError,
+    validate_components,
+    validate_event_context,
+    validate_value,
 )
+from clio_agent.gact.protocol.constants import A2UI_V091, A2UI_V091_WIRE, A2UI_WIRE_VERSIONS
 
 
 def utcnow_iso() -> str:
@@ -51,7 +61,7 @@ def max_a2ui_string_chars() -> int:
     """Character ceiling for any single string inside an A2UI payload.
 
     Config: ``a2ui.max_string_chars`` / ``CLIO_A2UI_MAX_STRING_CHARS``
-    (default 16384). Resolved once per validated component and threaded through
+    (default 16384). Resolved once per validated message and threaded through
     the recursive walk, never re-resolved per node.
     """
 
@@ -84,35 +94,6 @@ def max_a2ui_messages() -> int:
     )
 
 
-SERVER_ACTIONS = frozenset(
-    {"agent.submit", "approval.respond", "form.submit", "run.retry", "run.cancel"}
-)
-CLIENT_ACTIONS = frozenset({"artifact.open", "data.select", "workflow.focus"})
-
-_FORBIDDEN_KEYS = frozenset(
-    {
-        "css",
-        "style",
-        "styles",
-        "html",
-        "rawHtml",
-        "dangerouslySetInnerHTML",
-        "srcdoc",
-        "script",
-        "imports",
-        "command",
-        "commands",
-        "eventHandlers",
-        "onClick",
-        "onChange",
-    }
-)
-
-
-class A2UIValidationError(ValueError):
-    """Raised when an A2UI message crosses the trusted catalog boundary."""
-
-
 class A2UITranscriptFrozenError(A2UIValidationError):
     """Raised when a settled transcript can no longer accept an A2UI part.
 
@@ -120,6 +101,51 @@ class A2UITranscriptFrozenError(A2UIValidationError):
     would land in is closed, so the producer is told ``transcript_frozen``
     rather than being handed a validation message it cannot act on.
     """
+
+
+class A2UICatalogUnknownError(A2UIValidationError):
+    """Raised when a ``catalogId`` does not resolve in the installed registry.
+
+    Carries ``catalog_id`` so a caller can attach the typed
+    ``a2ui_catalog_unknown`` reason (production) — or, on transcript replay
+    (``project_a2ui_parts``), fold the surface to ``state="unknown"`` with
+    ``a2ui_catalog_unavailable`` instead of quarantining it.
+    """
+
+    def __init__(self, catalog_id: str) -> None:
+        self.catalog_id = catalog_id
+        super().__init__(f"A2UI catalog is not known: {catalog_id or '<empty>'}")
+
+
+class A2UICatalogNotProducibleError(A2UIValidationError):
+    """Raised when a catalog is installed but not producible in this session."""
+
+    def __init__(self, catalog_id: str) -> None:
+        self.catalog_id = catalog_id
+        super().__init__(f"A2UI catalog is not producible in this session: {catalog_id}")
+
+
+class _MemoizedCatalogResolver:
+    """Wraps a ``CatalogResolver``, resolving each distinct id ONCE per instance.
+
+    ``project_a2ui_parts`` folds every message in a transcript through this;
+    a long-lived surface's ``updateComponents``/``updateDataModel`` messages
+    all name the SAME catalog id, so without this a 200-message surface
+    re-queried the (already cached, but still a dict-scan-plus-lock) registry
+    200 times for an answer that cannot change within one fold call.
+    """
+
+    __slots__ = ("_cache", "_inner")
+
+    def __init__(self, inner: CatalogResolver) -> None:
+        self._inner = inner
+        self._cache: dict[tuple[str, str], CatalogEntry | None] = {}
+
+    def get(self, catalog_id: str, protocol_version: str = A2UI_V091) -> CatalogEntry | None:
+        key = (catalog_id, protocol_version)
+        if key not in self._cache:
+            self._cache[key] = self._inner.get(catalog_id, protocol_version)
+        return self._cache[key]
 
 
 @dataclass
@@ -141,6 +167,12 @@ class A2UISurfaceRecord:
     evicted_messages: int = 0
     created_at: str = field(default_factory=utcnow_iso)
     updated_at: str = field(default_factory=utcnow_iso)
+    # S5 (docs/design/a2ui-compat-campaign-2026-09.md): this surface's action
+    # lifecycle records, oldest first, one entry per DISTINCT ``a2ui_action``
+    # id (a record's own state transitions fold to its latest snapshot -- see
+    # ``gact/a2ui_actions/record.py::fold_action_records``). Populated by
+    # ``A2UIStore._project``, never written here.
+    actions: list[dict[str, Any]] = field(default_factory=list)
 
     def to_wire(self) -> dict[str, Any]:
         """Return the normalized frontend surface representation."""
@@ -150,8 +182,13 @@ class A2UISurfaceRecord:
 
 
 def _message_operation(message: Mapping[str, Any]) -> tuple[str, Mapping[str, Any]]:
-    if message.get("version") != A2UI_V091_WIRE:
-        raise A2UIValidationError(f"A2UI message version must be {A2UI_V091_WIRE}")
+    # The official envelope's "version" enum is ["v0.9", "v0.9.1"] -- both are
+    # accepted and persisted verbatim (never rewritten to A2UI_V091_WIRE); the
+    # x-a2ui-version NEGOTIATION header is the separate, unchanged 0.9.1 check.
+    if message.get("version") not in A2UI_WIRE_VERSIONS:
+        raise A2UIValidationError(
+            f"A2UI message version must be one of {sorted(A2UI_WIRE_VERSIONS)}"
+        )
     operations = [
         key
         for key in ("createSurface", "updateComponents", "updateDataModel", "deleteSurface")
@@ -167,185 +204,33 @@ def _message_operation(message: Mapping[str, Any]) -> tuple[str, Mapping[str, An
     return operations[0], payload
 
 
-_URL_KEYS = frozenset({"url", "uri", "datauri"})
-
-
-def _validate_url(value: str) -> None:
-    parsed = urlsplit(value)
-    if parsed.scheme.lower() not in {"https", "artifact", "resource"}:
-        raise A2UIValidationError("A2UI URLs must use an allowed non-executable scheme")
-
-
-def _validate_action(value: Any) -> None:
-    """Require the official event-only Action envelope accepted by the renderer."""
-
-    if not isinstance(value, Mapping) or set(value) != {"event"}:
-        raise A2UIValidationError(
-            'A2UI action must have the shape {"event": {"name": ..., "context": ...}}'
-        )
-    event = value.get("event")
-    if not isinstance(event, Mapping) or not set(event).issubset({"name", "context"}):
-        raise A2UIValidationError("A2UI event action contains unknown properties")
-    action = str(event.get("name") or "")
-    if action not in SERVER_ACTIONS | CLIENT_ACTIONS:
-        raise A2UIValidationError(f"A2UI action is not registered: {action}")
-    context = event.get("context")
-    if context is not None and not isinstance(context, Mapping):
-        raise A2UIValidationError("A2UI event action context must be an object")
-    context_keys = set(context or {})
-    required_context: dict[str, tuple[frozenset[str], str]] = {
-        "agent.submit": (
-            frozenset({"text", "prompt"}),
-            "A2UI agent.submit action requires context.text or context.prompt",
-        ),
-        "approval.respond": (
-            frozenset({"permission_id", "action"}),
-            "A2UI approval.respond action requires context.permission_id and context.action",
-        ),
-        "run.retry": (
-            frozenset({"message_id"}),
-            "A2UI run.retry action requires context.message_id",
-        ),
-    }
-    requirement = required_context.get(action)
-    if requirement is None:
-        return
-    keys, message = requirement
-    if action == "agent.submit":
-        if not context_keys.intersection(keys):
-            raise A2UIValidationError(message)
-    elif not keys.issubset(context_keys):
-        raise A2UIValidationError(message)
-
-
-def _validate_value(
-    value: Any,
+def validate_server_message(
+    message: Mapping[str, Any],
     *,
-    key: str = "",
-    depth: int = 0,
-    max_string: int | None = None,
-    free_form: bool = False,
-) -> None:
-    """Walk one A2UI value, enforcing the catalog's structural + safety rules.
+    catalogs: CatalogResolver,
+    catalog_entry: CatalogEntry | None = None,
+    producible: "frozenset[str] | None" = None,
+) -> tuple[str, str]:
+    """Validate an official server-to-client message and return operation/id.
 
-    ``free_form`` marks a subtree that is an action/event ``context`` — arbitrary
-    producer/client DATA, not renderable structure. The SAFETY rules (forbidden
-    presentation keys, function calls, url literals, string/nesting bounds) still
-    apply there; only the STRUCTURAL Action-envelope rules are lifted. Without
-    that distinction ``approval.respond`` was unroutable: its own required
-    ``context.action`` ("allow") was read as a malformed Action envelope, so every
-    approval action 422'd on both the ``/a2ui/actions`` route and the normalized
-    interaction responder.
+    Args:
+        message: One raw server-to-client envelope.
+        catalogs: Resolver over every installed catalog (builtin ∪ packs).
+        catalog_entry: The surface's already-resolved catalog, for
+            ``updateComponents``/``updateDataModel``/``deleteSurface`` on an
+            EXISTING surface (a surface's catalog is fixed for its
+            lifetime — the caller looks it up from the surface record).
+            Ignored for ``createSurface``, which resolves its own catalog
+            from the message's ``catalogId``.
+        producible: When given, gates ``createSurface.catalogId`` to this
+            set (production doors only — replay passes ``None``).
+
+    Raises:
+        A2UICatalogUnknownError: If a referenced catalogId is not installed.
+        A2UICatalogNotProducibleError: If ``producible`` is given and the
+            catalog is installed but not in it.
+        A2UIValidationError: On any other structural or safety violation.
     """
-
-    if max_string is None:
-        # Resolved ONCE at the top of the walk and threaded down: the recursion
-        # visits every string node, which is no place for a config lookup.
-        max_string = max_a2ui_string_chars()
-    if depth > MAX_A2UI_DEPTH:
-        raise A2UIValidationError("A2UI value exceeds the nesting limit")
-    if isinstance(value, str):
-        if len(value) > max_string:
-            raise A2UIValidationError("A2UI string exceeds the size limit")
-        if key.lower() in _URL_KEYS:
-            _validate_url(value)
-        return
-    if isinstance(value, list):
-        for item in value:
-            _validate_value(
-                item, key=key, depth=depth + 1, max_string=max_string, free_form=free_form
-            )
-        return
-    if not isinstance(value, Mapping):
-        return
-    if set(value) == {"path"}:
-        binding_path = value.get("path")
-        if not isinstance(binding_path, str) or not binding_path.startswith("/"):
-            raise A2UIValidationError("A2UI data bindings must use JSON Pointer paths")
-    # Both envelope shapes that carry a free-form payload — the ``event`` inside a
-    # component's action and the client action message itself — pair ``name`` with
-    # ``context``. Everything under that ``context`` is producer/client data.
-    carries_action_context = "name" in value and "context" in value
-    for child_key, child_value in value.items():
-        if not isinstance(child_key, str):
-            raise A2UIValidationError("A2UI object keys must be strings")
-        if child_key in _FORBIDDEN_KEYS:
-            raise A2UIValidationError(f"A2UI property is prohibited: {child_key}")
-        if (
-            child_key.lower() in _URL_KEYS
-            and child_value is not None
-            and not isinstance(child_value, str)
-        ):
-            # A data binding or function call resolves in the renderer, after
-            # this boundary ran, so the scheme allowlist would never see the URL
-            # it ends up fetching. Require the literal instead.
-            raise A2UIValidationError(
-                f"A2UI {child_key} must be a literal string so its scheme can be checked"
-            )
-        if child_key == "functionCall" or child_key == "call":
-            raise A2UIValidationError("A2UI client function calls are not trusted")
-        if child_key == "action" and not free_form:
-            _validate_action(child_value)
-        if child_key == "event" and not free_form and isinstance(child_value, Mapping):
-            action = str(child_value.get("name") or "")
-            if action not in SERVER_ACTIONS | CLIENT_ACTIONS:
-                raise A2UIValidationError(f"A2UI action is not registered: {action}")
-        _validate_value(
-            child_value,
-            key=child_key,
-            depth=depth + 1,
-            max_string=max_string,
-            free_form=free_form or (carries_action_context and child_key == "context"),
-        )
-
-
-def _validate_accessibility(component: Mapping[str, Any], component_name: str) -> None:
-    """Mirror the official renderer's accessibility object at the server boundary.
-
-    ``@a2ui/web_core`` defines ``accessibility`` as an object containing optional
-    dynamic ``label`` and ``description`` strings.  Accept literal strings and
-    JSON-Pointer bindings; client function calls remain prohibited by CLIO's
-    trusted-catalog policy.  Keeping this check server-side prevents a producer
-    from receiving a false success for a surface the renderer must reject.
-    """
-
-    if "accessibility" not in component:
-        return
-    accessibility = component.get("accessibility")
-    if not isinstance(accessibility, Mapping):
-        raise A2UIValidationError(f"A2UI {component_name} accessibility must be an object")
-    unknown = set(accessibility) - {"label", "description"}
-    if unknown:
-        raise A2UIValidationError(
-            f"A2UI {component_name} accessibility contains unknown properties: {sorted(unknown)}"
-        )
-    for key, value in accessibility.items():
-        if isinstance(value, str):
-            continue
-        if (
-            not isinstance(value, Mapping)
-            or set(value) != {"path"}
-            or not isinstance(value.get("path"), str)
-            or not value["path"].startswith("/")
-        ):
-            raise A2UIValidationError(
-                f'A2UI {component_name} accessibility.{key} must be a string or {{"path": "/..."}}'
-            )
-
-
-def _component_validation_error(component_name: str, exc: ValidationError) -> str:
-    """Translate schema failures into stable CLIO boundary errors."""
-
-    for error in exc.errors():
-        location = tuple(error.get("loc", ()))
-        for coordinate in ("latitude", "longitude"):
-            if coordinate in location:
-                return f"A2UI map point {coordinate} is outside its valid range"
-    return f"A2UI {component_name} component shape is invalid: {exc.errors()}"
-
-
-def validate_server_message(message: Mapping[str, Any]) -> tuple[str, str]:
-    """Validate an official server-to-client message and return operation/id."""
 
     encoded = json.dumps(message, separators=(",", ":")).encode()
     if len(encoded) > max_a2ui_message_bytes():
@@ -366,55 +251,102 @@ def validate_server_message(message: Mapping[str, Any]) -> tuple[str, str]:
     if not surface_id or len(surface_id) > 128:
         raise A2UIValidationError("A2UI surfaceId is required and bounded to 128 characters")
     if operation == "createSurface":
-        if payload.get("catalogId") != CLIO_A2UI_CATALOG_ID:
-            raise A2UIValidationError("A2UI catalog is not trusted")
+        catalog_id = str(payload.get("catalogId") or "")
+        resolved = catalogs.get(catalog_id, A2UI_V091)
+        if resolved is None:
+            raise A2UICatalogUnknownError(catalog_id)
+        if producible is not None and catalog_id not in producible:
+            raise A2UICatalogNotProducibleError(catalog_id)
+        catalog_entry = resolved
     if operation == "updateComponents":
-        components = payload.get("components")
-        if not isinstance(components, list) or not 1 <= len(components) <= MAX_A2UI_COMPONENTS:
-            raise A2UIValidationError("A2UI components must be a non-empty bounded list")
-        for component in components:
-            if not isinstance(component, Mapping):
-                raise A2UIValidationError("A2UI component must be an object")
-            component_name = str(component.get("component") or "")
-            if component_name not in trusted_component_names():
-                raise A2UIValidationError(f"A2UI component is not trusted: {component_name}")
-            _validate_accessibility(component, component_name)
-            _validate_value(component)
-            try:
-                A2UIComponent.model_validate(component)
-            except ValidationError as exc:
-                raise A2UIValidationError(_component_validation_error(component_name, exc)) from exc
-            if component_name == "clio.mermaid.v1":
-                source = component.get("source")
-                if isinstance(source, str) and re.search(
-                    r"<|%%\{|\bclick\b|\bhref\b|javascript:|data:text/html|url\s*\(",
-                    source,
-                    re.IGNORECASE,
-                ):
-                    raise A2UIValidationError(
-                        "A2UI Mermaid source contains an executable or HTML directive"
-                    )
+        if catalog_entry is None:
+            raise A2UIValidationError("A2UI updateComponents requires a resolved surface catalog")
+        validate_components(
+            catalog_entry, payload.get("components"), max_components=MAX_A2UI_COMPONENTS
+        )
     if operation == "updateDataModel":
+        # Optional per the official schema: omitted (or "/") means the WHOLE
+        # data model; when present it must be an absolute JSON Pointer.
         path = payload.get("path")
-        if not isinstance(path, str) or not path.startswith("/"):
+        if path is not None and (not isinstance(path, str) or not path.startswith("/")):
             raise A2UIValidationError("A2UI updateDataModel path must be a JSON Pointer")
-    _validate_value(payload)
+    validate_value(
+        payload,
+        entry=catalog_entry,
+        max_depth=MAX_A2UI_DEPTH,
+        max_string=max_a2ui_string_chars(),
+    )
     return operation, surface_id
 
 
-def validate_client_action(message: Mapping[str, Any], *, surface_id: str) -> dict[str, Any]:
-    """Validate the official 0.9.1 client action envelope."""
+def validate_client_action(
+    message: Mapping[str, Any],
+    *,
+    surface_id: str,
+    catalog_entry: CatalogEntry | None = None,
+) -> dict[str, Any]:
+    """Validate the official 0.9.1 client action envelope.
+
+    Args:
+        message: The raw client-to-server envelope.
+        surface_id: The route's surface id; the action must target it.
+        catalog_entry: The surface's resolved catalog, used to look up the
+            action's sidecar-declared destination (defaults to ``"agent"``
+            when the catalog carries no explicit route for this name, or when
+            no entry is supplied). Stored on the returned action as
+            ``destination`` for the dispatcher to consume (S5), alongside
+            ``declared`` (whether the sidecar named this event explicitly, vs.
+            falling through to the "agent" default) so a caller can tell
+            "undeclared, defaulted" apart from "explicitly routed to agent",
+            and ``operation`` (the sidecar's declared ``"cancel"``/``"retry"``
+            for a ``destination: "run"`` route, ``None`` otherwise). The
+            resolved sidecar ``route`` itself (or ``None``) is ALSO stored
+            verbatim as ``route`` (S5b) so
+            ``a2ui_actions.narration.narration_for`` can read its declared
+            ``narration`` template without re-resolving the catalog.
+    """
 
     try:
-        parsed = A2UIClientActionMessage.model_validate(message)
-    except ValidationError as exc:
+        parsed = A2UIClientMessage.model_validate(message)
+    except _PydanticValidationError as exc:
         raise A2UIValidationError(
             f"A2UI client message must be a {A2UI_V091_WIRE} action: {exc.errors()}"
         ) from exc
+    if parsed.action is None:
+        raise A2UIValidationError("A2UI client message must carry an action, not an error report")
     action = parsed.action.model_dump(mode="json")
     if action.get("surfaceId") != surface_id:
         raise A2UIValidationError("A2UI action surface does not match the route")
-    _validate_value(action)
+    validate_value(
+        action,
+        entry=catalog_entry,
+        max_depth=MAX_A2UI_DEPTH,
+        max_string=max_a2ui_string_chars(),
+    )
+    route = (
+        catalog_entry.sidecar.events.get(str(action.get("name") or ""))
+        if catalog_entry is not None
+        else None
+    )
+    if route is not None and route.context_schema is not None:
+        # Adversarial S7 review finding #12: the sidecar's declared
+        # ``context_schema`` was compiled/carried but never enforced --
+        # validate the RESOLVED context against it before this action is
+        # ever persisted or delivered. A2UIEventContextInvalidError propagates
+        # to the dispatcher (typed 422 ``a2ui_event_context_invalid``).
+        validate_event_context(route.context_schema, action.get("context") or {})
+    action["destination"] = route.destination if route is not None else "agent"
+    action["declared"] = route is not None
+    # S5: the sidecar's declared ``operation`` ("cancel"/"retry"), required by
+    # clio-schemas 0.3.1 for every ``destination: "run"`` route and forbidden
+    # otherwise -- the dispatcher reads this to pick the run owner without
+    # re-deriving it from the action name.
+    action["operation"] = route.operation if route is not None else None
+    # S5b (clio-schemas 0.3.2): the resolved route itself, verbatim -- lets
+    # the dispatcher render `route.narration` (when the sidecar declares one)
+    # without a second catalog lookup. `None` when no route exists, exactly
+    # like `declared` above.
+    action["route"] = route
     return action
 
 
@@ -462,26 +394,45 @@ def _apply_staged_message(
     session_id: str,
     message: Mapping[str, Any],
     *,
+    catalogs: CatalogResolver,
+    producible: "frozenset[str] | None",
     deleted_in_batch: set[str],
     run_id: str,
     message_id: str,
     part_id: str,
     observed_at: str,
+    created_surface_ids: "set[str] | None" = None,
 ) -> tuple[str, str, A2UISurfaceRecord]:
-    """Apply one validated message to an uncommitted projection."""
+    """Apply one validated message to an uncommitted projection.
 
-    operation, surface_id = validate_server_message(message)
+    ``created_surface_ids`` (S8, #1374 item 2): a ``createSurface`` (fresh OR
+    recreating a deleted id) adds ``surface_id`` to it, when given -- lets
+    ``A2UIStore``'s incremental fold know which surfaces need their action
+    history re-attached (``record.py::fold_action_records``'s
+    ``reattach_surface_ids``) even with no new action part this call.
+    """
+
+    _, peek_payload = _message_operation(message)
+    peek_surface_id = str(peek_payload.get("surfaceId") or "")
+    key = (session_id, peek_surface_id)
+    surface = surfaces.get(key)
+    catalog_entry: CatalogEntry | None = None
+    if surface is not None and surface.state != "deleted":
+        catalog_entry = catalogs.get(surface.catalog_id, A2UI_V091)
+        if catalog_entry is None:
+            raise A2UICatalogUnknownError(surface.catalog_id)
+    operation, surface_id = validate_server_message(
+        message, catalogs=catalogs, catalog_entry=catalog_entry, producible=producible
+    )
     if surface_id in deleted_in_batch:
         raise A2UIValidationError("A2UI deleteSurface is terminal within a message batch")
-    key = (session_id, surface_id)
-    surface = surfaces.get(key)
     if operation == "createSurface":
         if surface is not None and surface.state != "deleted":
             raise A2UIValidationError("A2UI surface already exists")
         surface = A2UISurfaceRecord(
             id=surface_id,
             session_id=session_id,
-            catalog_id=CLIO_A2UI_CATALOG_ID,
+            catalog_id=str(peek_payload.get("catalogId") or ""),
             run_id=run_id,
             message_id=message_id,
             part_id=part_id,
@@ -489,6 +440,8 @@ def _apply_staged_message(
             updated_at=observed_at,
         )
         surfaces[key] = surface
+        if created_surface_ids is not None:
+            created_surface_ids.add(surface_id)
     elif surface is None:
         raise A2UIValidationError("A2UI surface does not exist in this session")
     elif surface.state == "deleted":
@@ -520,6 +473,13 @@ def _apply_staged_message(
     surface.messages.append(dict(message))
     surface.revision += 1
     surface.updated_at = observed_at
+    # The repair-exhausted error is scoped to ONE revision (record.py's
+    # fold_action_records: valid only while correlation.revision == surface.
+    # revision); this message just bumped that revision, so a stale error
+    # must not survive onto it -- fold_action_records re-sets it in the same
+    # pass if a FRESH exhausted record at the new revision says so (S8, #1374
+    # item 1: a from-scratch fold never leaves this stale in the first place).
+    surface.error = ""
     if operation == "deleteSurface":
         surface.state = "deleted"
         deleted_in_batch.add(surface_id)
@@ -557,11 +517,14 @@ def _fold_batch(
     session_id: str,
     messages: list[Mapping[str, Any]],
     *,
+    catalogs: CatalogResolver,
+    producible: "frozenset[str] | None" = None,
     run_id: str,
     message_id: str,
     part_id: str,
     observed_at: str,
     capture: bool,
+    created_surface_ids: "set[str] | None" = None,
 ) -> list[tuple[str, str, A2UISurfaceRecord]]:
     """Fold one ordered batch into ``surfaces`` in place.
 
@@ -569,12 +532,16 @@ def _fold_batch(
         surfaces: Working projection, mutated as the batch applies.
         session_id: Session the batch belongs to.
         messages: The ordered batch.
+        catalogs: Resolver over every installed catalog.
+        producible: Session-producible catalog ids, or ``None`` to skip the
+            producibility gate (replay).
         run_id: Correlated run id recorded on a created surface.
         message_id: Correlated message id recorded on a created surface.
         part_id: Transcript part id recorded on a created surface.
         observed_at: Timestamp stamped on every record this batch touches.
         capture: Snapshot each applied record (publication needs the per-message
             state); readers that discard the result pass ``False``.
+        created_surface_ids: Forwarded to :func:`_apply_staged_message`.
 
     Returns:
         One ``(operation, surface_id, record)`` row per applied message.
@@ -591,11 +558,14 @@ def _fold_batch(
             surfaces,
             session_id,
             message,
+            catalogs=catalogs,
+            producible=producible,
             deleted_in_batch=deleted_in_batch,
             run_id=run_id,
             message_id=message_id,
             part_id=part_id,
             observed_at=observed_at,
+            created_surface_ids=created_surface_ids,
         )
         applied.append((operation, surface_id, _copy_record(record) if capture else record))
     return applied
@@ -606,6 +576,8 @@ def apply_batch(
     session_id: str,
     messages: list[Mapping[str, Any]],
     *,
+    catalogs: CatalogResolver,
+    producible: "frozenset[str] | None" = None,
     run_id: str = "",
     message_id: str = "",
     part_id: str = "",
@@ -618,11 +590,23 @@ def apply_batch(
 
     if not messages:
         raise A2UIValidationError("A2UI message batch must not be empty")
-    staged = {key: _copy_record(record) for key, record in surfaces.items()}
+    # Copy only the keys THIS batch can touch (S8, issue #1374 item B) --
+    # deep-copying every surface in the session on every write was itself an
+    # O(session surface count) cost per call, on top of the fold's own O(new
+    # parts) cost. A key this batch never names is never mutated by
+    # ``_fold_batch``, so sharing its record object with the caller's own
+    # (about to be replaced) projection state is safe.
+    touched = _batch_surface_keys(session_id, messages)
+    staged = dict(surfaces)
+    for key in touched:
+        if key in staged:
+            staged[key] = _copy_record(staged[key])
     applied = _fold_batch(
         staged,
         session_id,
         messages,
+        catalogs=catalogs,
+        producible=producible,
         run_id=run_id,
         message_id=message_id,
         part_id=part_id,
@@ -632,14 +616,77 @@ def apply_batch(
     return staged, applied
 
 
+def _unknown_catalog_stub(
+    key: tuple[str, str],
+    existing: A2UISurfaceRecord | None,
+    *,
+    catalog_id: str,
+    messages: list[Mapping[str, Any]],
+    part_id: str,
+    observed_at: str,
+) -> A2UISurfaceRecord:
+    """Build the ``state="unknown"`` stand-in for a surface whose catalog vanished.
+
+    Never quarantined, never dropped (docs/design/a2ui-compat-campaign-2026-09.md
+    S2): the raw messages this part carried are appended so a future reinstall
+    of the catalog could, in principle, recover the surface.
+    """
+
+    _, surface_id = key
+    if existing is None:
+        return A2UISurfaceRecord(
+            id=surface_id,
+            session_id=key[0],
+            catalog_id=catalog_id,
+            state="unknown",
+            messages=[dict(m) for m in messages],
+            part_id=part_id,
+            created_at=observed_at,
+            updated_at=observed_at,
+        )
+    return replace(
+        existing,
+        state="unknown",
+        messages=[*existing.messages, *(dict(m) for m in messages)],
+        updated_at=observed_at,
+    )
+
+
 def project_a2ui_parts(
     parts: list[Any],
     session_id: str,
+    *,
+    catalogs: CatalogResolver,
+    existing_surfaces: dict[tuple[str, str], A2UISurfaceRecord] | None = None,
+    existing_degradations: list[dict[str, str]] | None = None,
+    created_surface_ids: "set[str] | None" = None,
 ) -> tuple[dict[tuple[str, str], A2UISurfaceRecord], list[dict[str, str]]]:
-    """Fold persisted A2UI parts and quarantine unknown or invalid records."""
+    """Fold persisted A2UI parts and quarantine unknown or invalid records.
 
-    surfaces: dict[tuple[str, str], A2UISurfaceRecord] = {}
-    degradations: list[dict[str, str]] = []
+    A part whose surface's catalog is no longer installed is a special case:
+    it folds to ``state="unknown"`` with a typed ``a2ui_catalog_unavailable``
+    degradation instead of being quarantined — the surface (and its raw
+    messages) is never dropped, only marked unrenderable until the catalog
+    reappears.
+
+    ``existing_surfaces``/``existing_degradations`` (S8, issue #1374 item B):
+    an INCREMENTAL fold seam for ``A2UIStore``'s projection cache. When
+    given, folding starts from THIS state (mutated and returned) instead of
+    empty dicts -- a caller that already folded parts A..K and passes only
+    NEW parts K+1..N here gets the SAME result as folding A..N from scratch,
+    in O(new parts) instead of O(all parts). Every existing call site (this
+    module's own tests, ``a2ui_actions/record.py``, ``protocol/v3/
+    message.py``) omits both and keeps its current full-fold-from-scratch
+    behavior unchanged.
+
+    ``created_surface_ids`` (S8, #1374 item 2): collects, when given, every
+    surface id a ``createSurface`` in ``parts`` established (a rolled-back
+    attempt excluded). See ``_apply_staged_message``.
+    """
+
+    surfaces = existing_surfaces if existing_surfaces is not None else {}
+    degradations = existing_degradations if existing_degradations is not None else []
+    catalogs = _MemoizedCatalogResolver(catalogs)
     for raw_part in parts:
         part = raw_part.to_wire() if hasattr(raw_part, "to_wire") else raw_part
         if not isinstance(part, Mapping) or part.get("type") != "a2ui":
@@ -669,28 +716,57 @@ def project_a2ui_parts(
             continue
         raw_metadata = part.get("metadata")
         metadata: Mapping[str, Any] = raw_metadata if isinstance(raw_metadata, Mapping) else {}
+        recorded_at = str(metadata.get("recorded_at") or utcnow_iso())
         # Fold in place and keep only the records this batch can touch, so one
         # read stays linear in the transcript instead of copying every surface
         # once per part. A rejected batch is rolled back to that snapshot.
+        touched = _batch_surface_keys(session_id, messages)
         snapshot = {
-            key: (_copy_record(surfaces[key]) if key in surfaces else None)
-            for key in _batch_surface_keys(session_id, messages)
+            key: (_copy_record(surfaces[key]) if key in surfaces else None) for key in touched
         }
         try:
             _fold_batch(
                 surfaces,
                 session_id,
                 messages,
+                catalogs=catalogs,
+                producible=None,
                 run_id=str(metadata.get("run_id") or ""),
                 message_id=str(metadata.get("message_id") or ""),
                 part_id=part_id,
-                observed_at=str(metadata.get("recorded_at") or utcnow_iso()),
+                observed_at=recorded_at,
                 capture=False,
+                created_surface_ids=created_surface_ids,
+            )
+        except A2UICatalogUnknownError as exc:
+            for key, record in snapshot.items():
+                if record is None:
+                    surfaces.pop(key, None)
+                else:
+                    surfaces[key] = record
+            for key in touched:
+                surfaces[key] = _unknown_catalog_stub(
+                    key,
+                    surfaces.get(key),
+                    catalog_id=exc.catalog_id,
+                    messages=messages,
+                    part_id=part_id,
+                    observed_at=recorded_at,
+                )
+            degradations.append(
+                {
+                    "code": "a2ui_catalog_unavailable",
+                    "reason": str(exc),
+                    "part_id": part_id,
+                    "protocol_version": protocol_version,
+                }
             )
         except A2UIValidationError as exc:
             for key, record in snapshot.items():
                 if record is None:
                     surfaces.pop(key, None)
+                    if created_surface_ids is not None:
+                        created_surface_ids.discard(key[1])  # rolled back; never took
                 else:
                     surfaces[key] = record
             degradations.append(
@@ -705,8 +781,10 @@ def project_a2ui_parts(
 
 
 __all__ = [
-    "CLIENT_ACTIONS",
-    "SERVER_ACTIONS",
+    "A2UICatalogNotProducibleError",
+    "A2UICatalogUnknownError",
+    "A2UIEventContextInvalidError",
+    "A2UIFunctionNotInCatalogError",
     "A2UISurfaceRecord",
     "A2UITranscriptFrozenError",
     "A2UIValidationError",
@@ -715,7 +793,6 @@ __all__ = [
     "max_a2ui_messages",
     "max_a2ui_string_chars",
     "project_a2ui_parts",
-    "trusted_component_names",
     "validate_client_action",
     "validate_server_message",
 ]

@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 from clio_agent import conf
 from clio_agent.gact.resource_custody import ResourceRecord
 from clio_agent.gact.resource_lifecycle import refresh_processing
+from clio_agent.gact.resource_materialization import materialize_resource_for_app
 from clio_agent.gact.resource_processing import resource_processing_task_id
 from clio_agent.gact.resource_processing_bounds import processing_poll_interval_s
 
@@ -140,7 +141,10 @@ def _read_text(path: Path) -> str:
 def list_workspace_resources(app: "FastAPI", workspace_id: str) -> dict[str, Any]:
     """Return bounded metadata for resources owned by one workspace."""
 
-    rows = app.state.resource_store.list(workspace_id)
+    rows = [
+        materialize_resource_for_app(app, row) if row.state == "ready" else row
+        for row in app.state.resource_store.list(workspace_id)
+    ]
     limit = max(1, list_max_records())
     return {
         "workspace_id": workspace_id,
@@ -155,6 +159,8 @@ def inspect_workspace_resource(
     """Return custody, processing, derivative, and delivery metadata."""
 
     record = _record(app, workspace_id, resource_id)
+    if record.state == "ready":
+        record = materialize_resource_for_app(app, record)
     processing = app.state.resource_processing_store.state(record)
     manifest = app.state.resource_processing_store.manifest(record) or {}
     derivatives = [
@@ -507,7 +513,8 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
             representation="row",
             desc=(
                 "Read a bounded textual upload or named Docling textual derivative. Use this "
-                "instead of filesystem tools because uploaded-resource custody paths are private."
+                "for immutable source or conversion text; the resource's workspace_path is the "
+                "separate working copy for filesystem tools."
             ),
             args={
                 "resource_id": {"type": "string", "description": "Immutable resource id."},

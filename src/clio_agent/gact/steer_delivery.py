@@ -104,6 +104,16 @@ def compose_steer_block(app: "FastAPI", sid: str, event: "InboxEvent") -> str:
         sections.append(steer_text)
     if not sections:
         return ""
+    # A2UI compat S5: an a2ui-originated steer (no ``steer_message_id`` -- see
+    # ``mark_steer_consumed``'s docstring) is surfaced into the live turn
+    # exactly once, right here, so THIS is where "the steer that carried the
+    # record starts executing." A no-op for every ordinary steer.
+    if not event.steer_message_id:
+        from clio_agent.gact.a2ui_actions.record import (  # noqa: PLC0415
+            mark_a2ui_action_consumed,
+        )
+
+        mark_a2ui_action_consumed(app, sid, event.metadata)
     return USER_STEER_MARKER + "\n\n" + "\n\n".join(sections)
 
 

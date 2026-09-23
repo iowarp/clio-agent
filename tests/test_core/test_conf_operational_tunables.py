@@ -40,11 +40,11 @@ def _fresh_store():
 
 
 def _create_message(surface_id: str = "surface_1") -> dict[str, Any]:
-    from clio_agent.gact.protocol_v3 import CLIO_A2UI_CATALOG_ID
+    from clio_agent.gact.a2ui_catalogs.builtin import workspace_catalog_id
 
     return {
         "version": "v0.9.1",
-        "createSurface": {"surfaceId": surface_id, "catalogId": CLIO_A2UI_CATALOG_ID},
+        "createSurface": {"surfaceId": surface_id, "catalogId": workspace_catalog_id()},
     }
 
 
@@ -59,13 +59,14 @@ def test_a2ui_message_retention_bound_is_configurable() -> None:
     """``gact.ledger_retention.a2ui_messages.max`` bounds retained surface messages."""
 
     from clio_agent.gact.a2ui import apply_batch, max_a2ui_messages
+    from clio_agent.gact.a2ui_catalogs.registry import CatalogRegistry
 
     set_config("gact", {"ledger_retention": {"a2ui_messages": {"max": 4}}})
     assert max_a2ui_messages() == 4
 
     messages = [_create_message()]
     messages.extend(_data_message(index) for index in range(10))
-    surfaces, _ = apply_batch({}, "sess_cfg", messages)
+    surfaces, _ = apply_batch({}, "sess_cfg", messages, catalogs=CatalogRegistry())
 
     surface = surfaces[("sess_cfg", "surface_1")]
     assert len(surface.messages) == 4
@@ -81,12 +82,13 @@ def test_a2ui_message_byte_bound_is_configurable() -> None:
         max_a2ui_message_bytes,
         validate_server_message,
     )
+    from clio_agent.gact.a2ui_catalogs.registry import CatalogRegistry
 
     set_config("a2ui", {"max_message_bytes": 64})
     assert max_a2ui_message_bytes() == 64
 
     with pytest.raises(A2UIValidationError, match="byte limit"):
-        validate_server_message(_create_message())
+        validate_server_message(_create_message(), catalogs=CatalogRegistry())
 
 
 def test_a2ui_string_bound_is_configurable() -> None:
@@ -97,19 +99,23 @@ def test_a2ui_string_bound_is_configurable() -> None:
         max_a2ui_string_chars,
         validate_server_message,
     )
+    from clio_agent.gact.a2ui_catalogs.builtin import workspace_catalog_id
+    from clio_agent.gact.a2ui_catalogs.registry import CatalogRegistry
 
     set_config("a2ui", {"max_string_chars": 8})
     assert max_a2ui_string_chars() == 8
 
+    catalogs = CatalogRegistry()
+    workspace_entry = catalogs.get(workspace_catalog_id())
     message = {
         "version": "v0.9.1",
         "updateComponents": {
             "surfaceId": "surface_1",
-            "components": [{"component": "Text", "text": "x" * 64}],
+            "components": [{"id": "root", "component": "Text", "text": "x" * 64}],
         },
     }
     with pytest.raises(A2UIValidationError, match="size limit"):
-        validate_server_message(message)
+        validate_server_message(message, catalogs=catalogs, catalog_entry=workspace_entry)
 
 
 # --------------------------------------------------------------------------- #

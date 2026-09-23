@@ -30,6 +30,7 @@ from clio_agent.providers.handshake.model import (
     ConnectivityState,
     ModelProfile,
 )
+from clio_agent.providers.model_discovery.modality_evidence import modality_evidence
 
 
 class NoOpHandshake(ProviderHandshake):
@@ -80,7 +81,17 @@ class NoOpHandshake(ProviderHandshake):
         if provider is None:
             return []
         return [
-            {"id": entry.id, "name": entry.name, "description": entry.description}
+            {
+                "id": entry.id,
+                "name": entry.name,
+                "description": entry.description,
+                "capabilities": list(entry.documented_modalities),
+                "capability_evidence": (
+                    modality_evidence(source="provider_documentation", reason="modality_documented")
+                    if entry.documented_modalities
+                    else {}
+                ),
+            }
             for entry in provider.model_catalog
             if getattr(entry, "id", "")
         ]
@@ -94,4 +105,15 @@ class NoOpHandshake(ProviderHandshake):
         :meth:`ProviderHandshake.enrich_capabilities` step fills them from the
         source cascade.
         """
-        return ModelProfile(id=str(raw.get("id", "")).strip(), raw=dict(raw))
+        capabilities = raw.get("capabilities")
+        return ModelProfile(
+            id=str(raw.get("id", "")).strip(),
+            capabilities=tuple(
+                str(value).strip()
+                for value in capabilities
+                if isinstance(value, str) and value.strip()
+            )
+            if isinstance(capabilities, list)
+            else (),
+            raw=dict(raw),
+        )

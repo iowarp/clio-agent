@@ -137,6 +137,42 @@ def _blueprint_block(parent: "AgentDef", child_id: str) -> dict[str, str]:
     }
 
 
+def _execution_blueprint_child_scope(
+    app: Any,
+    session_id: str,
+    agent_def: "AgentDef",
+) -> dict[str, Any] | None:
+    """Return activation metadata for an execution-mode blueprint child.
+
+    A turn-scoped overlay (currently Deep Research) deliberately does not
+    rewrite the parent session's persistent base blueprint.  Child sessions are
+    durable, however, so they cannot inherit that ephemeral context variable;
+    stamp the overlay's validated activation metadata onto each internal child
+    instead.  Ordinary blueprint runs still inherit their existing session
+    metadata verbatim.
+    """
+
+    execution_blueprint_id = _ctx.active_execution_blueprint_id().strip()
+    definition_blueprint_id = str(
+        getattr(agent_def, "metadata", {}).get("agent_blueprint_id") or ""
+    ).strip()
+    if not execution_blueprint_id or execution_blueprint_id != definition_blueprint_id:
+        return None
+
+    from clio_agent.gact.spawn_context import (  # noqa: PLC0415
+        resolve_installed_blueprint_target,
+    )
+
+    parent_session = app.state.sessions.get(session_id)
+    workspace_id = str(getattr(parent_session, "workspace_id", "") or "")
+    _root_id, scope, _display_name = resolve_installed_blueprint_target(
+        app,
+        execution_blueprint_id,
+        workspace_id=workspace_id,
+    )
+    return scope
+
+
 def _persist_delegation_reported(app: Any, task: Any) -> None:
     """Persist the once-per-task report flag to the child-session metadata so a
     boot-rebuilt registry does not re-emit the terminal event. Best-effort: a gone
@@ -397,6 +433,8 @@ def build_spawn_runtime_tools(
             child_id, target_scope, target_display_name, target_blueprint_id = (
                 resolve_commission_target(app, session_id, agent, blueprint_id)
             )
+            if target_scope is None:
+                target_scope = _execution_blueprint_child_scope(app, session_id, agent_def)
             briefing, evidence_task_ids = resolve_input_task_evidence(
                 app, session_id, task, input_task_ids
             )

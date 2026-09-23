@@ -14,13 +14,14 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from clio_agent.gact.a2ui_catalogs.builtin import workspace_catalog_id
 from clio_agent.gact.app import build_app
 from clio_agent.gact.ask_user_tool import arm_ask_user_deadline
-from clio_agent.gact.protocol_v3 import CLIO_A2UI_CATALOG_ID
 from clio_agent.gact.types import UserQuestion
 from tests._config_layer import set_config
 
 HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
+CLIO_A2UI_CATALOG_ID = workspace_catalog_id()
 
 
 def _armed_question(app: object, sid: str, question_id: str, *, ttl_s: int = 3600) -> UserQuestion:
@@ -139,7 +140,8 @@ def _a2ui_surface(client: TestClient, sid: str, surface_id: str) -> dict[str, ob
 def test_approval_respond_context_action_is_data_not_a_nested_action_envelope() -> None:
     """``approval.respond`` was unroutable: its own context.action failed validation."""
 
-    from clio_agent.gact.a2ui import A2UIValidationError, _validate_value, validate_client_action
+    from clio_agent.gact.a2ui import A2UIValidationError, validate_client_action
+    from clio_agent.gact.a2ui_catalogs.validation import validate_value
 
     message = {
         "version": "v0.9.1",
@@ -157,7 +159,7 @@ def test_approval_respond_context_action_is_data_not_a_nested_action_envelope() 
     # The SAFETY rules still apply inside a free-form action context.
     for unsafe in ({"style": "x"}, {"call": "x"}, {"url": "http://evil"}):
         with pytest.raises(A2UIValidationError):
-            _validate_value(
+            validate_value(
                 {
                     "id": "b",
                     "component": "Button",
@@ -167,7 +169,10 @@ def test_approval_respond_context_action_is_data_not_a_nested_action_envelope() 
                             "context": {"permission_id": "p", "action": "allow", **unsafe},
                         }
                     },
-                }
+                },
+                entry=None,
+                max_depth=20,
+                max_string=16 * 1024,
             )
 
 
@@ -211,9 +216,14 @@ def test_a2ui_approval_respond_refuses_a_permission_outside_its_session_scope(
 def test_a2ui_approval_respond_still_resolves_its_own_session_permission(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from clio_agent.gact.routes import a2ui as a2ui_routes
+    # S5 moved the ``permission`` destination's resolve_permission call out of
+    # routes/a2ui.py into the owner dispatcher (docs/design/a2ui-compat-
+    # campaign-2026-09.md S5) -- the seam to audit is now
+    # gact.a2ui_actions.dispatcher, which imports resolve_permission directly
+    # and calls it via run_off_loop from ``_deliver_permission``.
+    from clio_agent.gact.a2ui_actions import dispatcher as a2ui_dispatcher
 
-    original = a2ui_routes.resolve_permission
+    original = a2ui_dispatcher.resolve_permission
     called_off_loop: list[bool] = []
 
     def audited_resolve(*args: Any, **kwargs: Any) -> dict[str, Any] | None:
@@ -225,7 +235,7 @@ def test_a2ui_approval_respond_still_resolves_its_own_session_permission(
             called_off_loop.append(False)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(a2ui_routes, "resolve_permission", audited_resolve)
+    monkeypatch.setattr(a2ui_dispatcher, "resolve_permission", audited_resolve)
     app = build_app(sessions_path=tmp_path / "sessions.json")
     owner = app.state.sessions.create(workspace_id="ws_default", title="owner")
     app.state.permissions["perm_other"] = {

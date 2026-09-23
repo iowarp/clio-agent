@@ -117,7 +117,7 @@ def _patch_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(
         "clio_agent.gact.agents.builders._dynamic_agent_tools",
-        lambda base_agent, agent_def, sources: [],
+        lambda base_agent, agent_def, sources, **capabilities: [],
     )
 
     # Child rows resolve deterministically for the children-context render. Since

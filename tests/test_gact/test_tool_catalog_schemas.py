@@ -79,6 +79,21 @@ def test_gateway_builtins_carry_gateway_description_and_schema() -> None:
         assert row.output_schema, name
 
 
+def test_view_pdf_row_declares_domain_and_page_range_schema() -> None:
+    """The declared native ``view_pdf`` row carries a workspace domain and its
+    ``path``/``pages`` input schema — the catalog resolves it with
+    ``supports_pdf=True`` even though no live model is bound (#1350 gate)."""
+
+    rows = {row.name: row for row in _rows()}
+    row = rows["view_pdf"]
+    assert row.domain == "workspace"
+    assert row.description
+    properties = row.input_schema.get("properties", {})
+    assert "path" in properties
+    assert "pages" in properties
+    assert row.output_schema
+
+
 def test_output_schema_derived_from_return_annotation() -> None:
     """No per-tool special-casing: a plain ``str`` return projects to {"type": "string"}."""
 

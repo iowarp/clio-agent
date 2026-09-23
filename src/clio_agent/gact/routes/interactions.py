@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from starlette.concurrency import run_in_threadpool
 
 from clio_agent import conf
-from clio_agent.gact.a2ui import SERVER_ACTIONS
+from clio_agent.gact.a2ui_actions.record import last_action_wire
 from clio_agent.gact.mcp_task_store import app_task_store
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.permission_delivery import attended_session_id
@@ -337,7 +337,14 @@ def _permission_interaction(app: FastAPI, row: Mapping[str, Any]) -> PendingInte
 
 
 def _surface_actions(surface: Mapping[str, Any]) -> list[str]:
-    """Return registered server action names declared by a folded surface."""
+    """Return every action name a folded surface's messages declare.
+
+    Pre-S2 this filtered against a closed ``SERVER_ACTIONS`` Literal; the
+    catalog file is now the allowlist (docs/design/a2ui-compat-campaign-
+    2026-09.md S2) and ANY non-empty event name is a legal action, so this
+    just reports what the surface actually offers rather than re-deriving a
+    trust decision the server already made at ``updateComponents`` time.
+    """
 
     found: set[str] = set()
 
@@ -346,7 +353,7 @@ def _surface_actions(surface: Mapping[str, Any]) -> list[str]:
             event = value.get("event")
             if isinstance(event, Mapping):
                 name = str(event.get("name") or "")
-                if name in SERVER_ACTIONS:
+                if name:
                     found.add(name)
             for child in value.values():
                 visit(child)
@@ -358,26 +365,18 @@ def _surface_actions(surface: Mapping[str, Any]) -> list[str]:
     return sorted(found)
 
 
-def _surface_last_action(surface: Mapping[str, Any]) -> dict[str, Any]:
-    """Return the ``/lastAction`` the dispatcher wrote back, if the surface has one.
+def _latest_action_record(surface: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Return this surface's most recent ``a2ui_action`` record, if any (S5).
 
-    ``dispatch_action`` acknowledges every accepted action by folding an
-    ``updateDataModel`` at ``/lastAction`` into the surface. That fold IS the
-    server's record that this surface was responded to, so the projection reads it
-    rather than reporting every action-bearing surface ``pending`` forever.
+    ``A2UIStore``'s S5 fold (``gact/a2ui_actions/record.py::
+    fold_action_records``) already orders ``surface["actions"]`` oldest first
+    and keeps only each record's LATEST snapshot -- this just takes the last
+    entry, the durable, idempotent, correlated record replacing the deleted
+    ``/lastAction`` data-model ack this projection used to read.
     """
 
-    latest: dict[str, Any] = {}
-    for message in surface.get("messages") or []:
-        if not isinstance(message, Mapping):
-            continue
-        update = message.get("updateDataModel")
-        if not isinstance(update, Mapping) or str(update.get("path") or "") != "/lastAction":
-            continue
-        value = update.get("value")
-        if isinstance(value, Mapping):
-            latest = dict(value)
-    return latest
+    actions = surface.get("actions") or []
+    return dict(actions[-1]) if actions else None
 
 
 def _a2ui_interactions(
@@ -402,16 +401,23 @@ def _a2ui_interactions(
         if surface.get("state") == "deleted" or not actions:
             continue
         surface_id = str(surface.get("id") or "")
-        last_action = _surface_last_action(surface)
-        # A responded surface is SETTLED. It used to keep projecting ``pending``
-        # forever, so an attention lane showed a surface the user had already
-        # submitted, indefinitely and unboundedly. The action list is NOT cleared:
-        # a surface can legitimately be acted on again (a chat-like agent.submit),
-        # so the row states what happened rather than foreclosing what is offered.
-        settled = bool(last_action)
+        latest_record = _latest_action_record(surface)
+        # A responded surface is SETTLED once its latest record has actually
+        # DELIVERED or been CONSUMED by a turn (S5) -- a ``received`` or
+        # ``failed`` record is not a real answer, so the row stays pending.
+        # It used to keep projecting ``pending`` forever once settled, so an
+        # attention lane showed a surface the user had already submitted,
+        # indefinitely and unboundedly. The action list is NOT cleared: a
+        # surface can legitimately be acted on again (a chat-like
+        # agent.submit), so the row states what happened rather than
+        # foreclosing what is offered.
+        settled = latest_record is not None and latest_record.get("state") in {
+            "delivered",
+            "consumed",
+        }
         payload: dict[str, Any] = {"revision": surface.get("revision", 0)}
-        if settled:
-            payload["last_action"] = last_action
+        if latest_record is not None:
+            payload["last_action"] = last_action_wire(latest_record)
         rows.append(
             PendingInteraction(
                 id=f"a2ui:{owner}:{surface_id}",

@@ -41,6 +41,16 @@ from clio_agent.gact.agents.composition import (
     _apply_prompt_registry_to_agent,
     _prompt_render_context,
 )
+from clio_agent.gact.agents.execution_blueprint import (
+    runtime_active_agent_blueprint_id as _runtime_active_agent_blueprint_id,
+)
+from clio_agent.gact.agents.execution_blueprint import (
+    runtime_active_agent_blueprint_path as _runtime_active_agent_blueprint_path,
+)
+from clio_agent.gact.agents.execution_blueprint import (
+    runtime_effective_agent_blueprint_id,
+    runtime_effective_agent_blueprint_path,
+)
 from clio_agent.gact.catalog import _builtin_agents
 from clio_agent.gact.expert_packs import (
     load_expert_packs,
@@ -204,40 +214,20 @@ def _runtime_workspace_catalog_cwd(
     return Path(root_path).expanduser() if root_path else None
 
 
-def _runtime_active_agent_blueprint_id(app: "FastAPI", session_id: str = "") -> str:
-    """The session's EXPLICITLY activated blueprint id — never an implicit one.
-
-    A session that activated nothing gets no blueprint. The retired implicit
-    fallback (a discoverable ``DEFAULT_AGENT_BLUEPRINT_ID`` silently became the
-    session's agent set) meant a bare session inherited a full expert hierarchy
-    it never asked for — the owner's ruling (2026-08-05): a session with no
-    blueprint selected must not resolve one. Activation is the only path
-    (``POST /v1/sessions/{sid}/agent-blueprint`` or the workspace
-    manifest), and an unbound session runs the plain built-in main.
-    """
-
-    if not session_id:
-        return ""
-    sess = app.state.sessions.get(session_id)
-    if sess is None:
-        return ""
-    metadata = getattr(sess, "metadata", {}) or {}
-    if not isinstance(metadata, Mapping):
-        return ""
-    return str(metadata.get("active_agent_blueprint_id") or "").strip()
+def _runtime_effective_agent_blueprint_id(app: "FastAPI", session_id: str = "") -> str:
+    return runtime_effective_agent_blueprint_id(
+        app,
+        session_id,
+        active_resolver=_runtime_active_agent_blueprint_id,
+    )
 
 
-def _runtime_active_agent_blueprint_path(app: "FastAPI", session_id: str = "") -> Path | None:
-    if not session_id:
-        return None
-    sess = app.state.sessions.get(session_id)
-    if sess is None:
-        return None
-    metadata = getattr(sess, "metadata", {}) or {}
-    if not isinstance(metadata, Mapping):
-        return None
-    raw = str(metadata.get("active_agent_blueprint_path") or "").strip()
-    return Path(raw).expanduser() if raw else None
+def _runtime_effective_agent_blueprint_path(app: "FastAPI", session_id: str = "") -> Path | None:
+    return runtime_effective_agent_blueprint_path(
+        app,
+        session_id,
+        active_resolver=_runtime_active_agent_blueprint_path,
+    )
 
 
 def _active_workflow_state_schema(
@@ -267,8 +257,8 @@ def _active_workflow_state_schema(
         # a blueprint to, so the generic engine is the honest answer (mirrors the
         # defensive ``getattr(app, "state", None)`` style of the ledger helpers).
         return GENERIC_WORKFLOW_STATE_SCHEMA
-    blueprint_id = _runtime_active_agent_blueprint_id(app, session_id)
-    blueprint_path = _runtime_active_agent_blueprint_path(app, session_id)
+    blueprint_id = _runtime_effective_agent_blueprint_id(app, session_id)
+    blueprint_path = _runtime_effective_agent_blueprint_path(app, session_id)
     cache = per_app_dict("workflow_state_schemas", app=app)
     key = (blueprint_id, str(blueprint_path or ""))
     cached = cache.get(session_id)
@@ -667,8 +657,8 @@ def _runtime_active_agent_blueprint_rows(
     if not session_id:
         return []
     cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id, session_id=session_id)
-    active_blueprint_id = _runtime_active_agent_blueprint_id(app, session_id)
-    active_blueprint_path = _runtime_active_agent_blueprint_path(app, session_id)
+    active_blueprint_id = _runtime_effective_agent_blueprint_id(app, session_id)
+    active_blueprint_path = _runtime_effective_agent_blueprint_path(app, session_id)
     if active_blueprint_path is not None:
         rows = load_agent_blueprint_path(active_blueprint_path, scope="session")
     elif active_blueprint_id:

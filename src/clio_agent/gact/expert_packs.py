@@ -256,11 +256,7 @@ def parse_expert_file(
         _parse_module_variant(module, agent_id=expert_id or "expert")
     except ValueError as variant_exc:
         errors.append(str(variant_exc))
-    for field_name, values in {
-        "tools": tools,
-        "skills": skills,
-        "commands": commands,
-    }.items():
+    for field_name, values in {"tools": tools, "skills": skills, "commands": commands}.items():
         for value in values:
             if not _REF_ID_RE.fullmatch(value):
                 errors.append(f"invalid {field_name} reference: {value}")
@@ -270,6 +266,7 @@ def parse_expert_file(
         "expert_scope": scope,
         "expert_layout": "expert_markdown",
         "definition_path": path.as_posix(),
+        "a2ui_catalogs": _list_field(meta, "a2ui_catalogs"),
     }
     if skills:
         # Resolution-checked (#917): typed per-id diagnostic on the row; never disables.
@@ -287,9 +284,7 @@ def parse_expert_file(
                 "pack_enabled": pack.enabled,
             }
         )
-        if pack.validation_errors:
-            metadata["pack_validation_errors"] = list(pack.validation_errors)
-            errors.extend(pack.validation_errors)
+        # A blueprint-level error is never copied onto a row (#1374 item 4).
     for key in ("fallback_tier", "model_fallback", "delegation_policy"):
         if meta.get(key):
             metadata[key] = str(meta[key]).strip()
@@ -302,7 +297,12 @@ def parse_expert_file(
     if workflow := _mapping_field(meta, "workflow"):
         metadata["workflow"] = workflow  # declaration home (no new AgentDef field, #948 S5)
     enabled_meta = str(meta["enabled"] if "enabled" in meta else "true").strip().lower()
-    enabled = enabled_meta not in {"false", "0", "no", "off"} and not errors
+    # A disabled pack (#1374 item B) disables every row, sans error-text copy.
+    enabled = (
+        enabled_meta not in {"false", "0", "no", "off"}
+        and not errors
+        and (pack is None or pack.enabled)
+    )
     return AgentDef(
         id=expert_id,
         source="expert_pack",
@@ -349,11 +349,8 @@ def validate_expert_hierarchy(
     }
     child_parent = {row.id: row.parent_id for row in rows if row.parent_id}
     cycle_ids = _cycle_ids(child_parent)
-    # #948 S4: children are reachable ONLY via the spawn-runtime tools, and only
-    # react modules carry tools — a predict/chain_of_thought expert with declared
-    # children would silently strand them (the settle loop that used to route for
-    # it is deleted). Typed validation error; no legacy pathway survives under
-    # any configuration.
+    # #948 S4: only react modules carry tools; a predict/CoT expert with
+    # declared children would silently strand them -- typed error instead.
     parent_ids_in_use = {row.parent_id for row in rows if row.parent_id}
     out: list[AgentDef] = []
     for row in rows:
@@ -520,9 +517,8 @@ def _pick(
 
 
 def _expert_files(root: Path) -> list[Path]:
-    # Exclusions test the ROOT-RELATIVE path (like the blueprint scanner), so a
-    # pack installed under a dir named prompts/commands/skills keeps its experts;
-    # skills/ holds SKILL.md bodies (owner: gact.skills, #917), not experts.
+    # Exclusions test the ROOT-RELATIVE path, so a dir named prompts/commands/
+    # skills keeps its experts (skills/ holds SKILL.md bodies, #917, not experts).
     def _included(path: Path) -> bool:
         try:
             relative = "/" + path.resolve().relative_to(root.resolve()).as_posix()

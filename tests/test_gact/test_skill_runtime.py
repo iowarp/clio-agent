@@ -9,6 +9,7 @@ The default-registry root expert auto-declares workspace skills.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -23,6 +24,7 @@ from clio_agent.gact.agents.skill_runtime import (
     skill_runtime_for_agent,
     skill_runtime_spawns_subagents,
 )
+from clio_agent.gact.app import build_app
 from clio_agent.gact.skills import SkillCatalog
 from clio_agent.gact.types import AgentDef
 
@@ -135,7 +137,22 @@ def test_load_skill_returns_body_and_bundled_listing(pack: Path) -> None:
     tool = build_load_skill_tool(_agent(pack), rt)
     out = tool.func(skill_id="quality-rubric")
     assert "SECRET_PROCEDURE_MARKER" in out
+    assert f"Skill directory (use as SKILL_ROOT): {pack / 'skills' / 'quality-rubric'}" in out
     assert "references/checklist.md" in out
+
+
+def test_load_skill_hides_private_environments_and_bytecode(pack: Path) -> None:
+    skill = pack / "skills" / "quality-rubric"
+    (skill / ".venv" / "Lib").mkdir(parents=True)
+    (skill / ".venv" / "Lib" / "private.py").write_text("private", encoding="utf-8")
+    (skill / "scripts" / "__pycache__").mkdir(parents=True)
+    (skill / "scripts" / "__pycache__" / "helper.pyc").write_bytes(b"bytecode")
+
+    out = build_load_skill_tool(_agent(pack), _runtime(pack)).func(skill_id="quality-rubric")
+
+    assert ".venv" not in out
+    assert "__pycache__" not in out
+    assert ".pyc" not in out
 
 
 def test_load_skill_reads_fresh_from_disk(pack: Path) -> None:
@@ -175,8 +192,8 @@ def test_load_skill_bundled_file_and_traversal_twin(pack: Path) -> None:
 
 def test_load_skill_declares_typed_structured_content_for_body(pack: Path, monkeypatch) -> None:
     """load_skill gets wait_agent_tasks's OWN treatment: a ``message`` naming what
-    loaded + its line count FIRST, then the skill id/scope facts. The BODY stays the
-    model-facing return UNCHANGED (asserted separately above)."""
+    loaded + its line count FIRST, then the skill id/scope facts. The model-facing
+    return also names the resolved skill directory for executable helpers."""
 
     declared: list[dict] = []
     monkeypatch.setattr(
@@ -187,7 +204,8 @@ def test_load_skill_declares_typed_structured_content_for_body(pack: Path, monke
     tool = build_load_skill_tool(_agent(pack), rt)
     out = tool.func(skill_id="quality-rubric")
 
-    assert "SECRET_PROCEDURE_MARKER" in out  # model-facing body unchanged
+    assert "SECRET_PROCEDURE_MARKER" in out
+    assert "Skill directory (use as SKILL_ROOT):" in out
     assert len(declared) == 1
     shape = declared[0]
     assert next(iter(shape)) == "message"
@@ -281,6 +299,7 @@ def test_default_root_auto_declares_workspace_skills_on_real_runtime_rows(
         "planning",
         "present-interactive-analysis",
         "update-models",
+        "work-with-pdfs",
     ]
     # DELETED SEAM regression pin: the retired "listing seam" stamp
     # (metadata["source_blueprint"] == "default_registry") -- the tag
@@ -304,8 +323,41 @@ def test_default_root_auto_declares_workspace_skills_on_real_runtime_rows(
     assert effective_declared_skills(other_root, catalog) == []
 
 
-def test_interactive_analysis_skill_keeps_station_selection_agent_bound() -> None:
-    """The shipped map recipe must preserve a human choice into the next turn."""
+def test_builtin_main_loads_pdf_workflow_and_vision_tool(tmp_path: Path) -> None:
+    """A bare session can load the shipped PDF procedure and inspect page images."""
+
+    from clio_agent.gact.agents.declared_native_tools import resolve_declared_native_tools
+    from clio_agent.gact.agents.skill_runtime import SkillRuntime, skills_prompt_block
+    from clio_agent.gact.catalog import _builtin_main_agent
+
+    agent = _builtin_main_agent()
+    assert agent.skills == ["work-with-pdfs"]
+    assert "view_image" in agent.tools
+
+    catalog = SkillCatalog(home=tmp_path / "home", cwd=tmp_path / "workspace")
+    runtime = SkillRuntime(resolutions=catalog.resolve_declared(agent.skills))
+    resolution = runtime.resolved["work-with-pdfs"]
+    assert resolution.skill is not None and resolution.skill.scope == "builtin"
+    assert "Call load_skill" in skills_prompt_block(runtime)
+    loaded = build_load_skill_tool(agent, runtime).func(skill_id="work-with-pdfs")
+    assert "Engineering drawings and diagrams" in loaded
+    assert "scripts/prepare_pdf.py" in loaded
+    assert (Path(resolution.skill.dir) / "scripts" / "prepare_pdf.py").is_file()
+
+    requested_text, available_text, _ = resolve_declared_native_tools(
+        agent, {}, supports_vision=False
+    )
+    requested_image, available_image, _ = resolve_declared_native_tools(
+        agent, {}, supports_vision=True
+    )
+    assert "view_image" not in requested_text
+    assert "view_image" not in available_text
+    assert "view_image" in requested_image
+    assert "view_image" in available_image
+
+
+def test_interactive_analysis_skill_is_when_why_guidance_with_no_prop_lore() -> None:
+    """The presentation skill points to catalog skills without duplicating prop lore."""
 
     from clio_agent.gact.agents import skill_runtime
 
@@ -317,11 +369,16 @@ def test_interactive_analysis_skill_keeps_station_selection_agent_bound() -> Non
     )
     body = skill_path.read_text(encoding="utf-8")
 
-    assert "component: ChoicePicker" in body
-    assert "value: {path: /selectedStationIds}" in body
-    assert "name: agent.submit" in body
-    assert "selected_station_ids: {path: /selectedStationIds}" in body
-    assert "selectedStationIds: [leading-id]" in body
+    # Preserves the "a human choice must be delivered to the agent" guidance...
+    assert "local visual state only" in body
+    assert "submit action" in body
+    # ...but never as a concrete component/prop recipe (deleted, S4).
+    assert "```yaml" not in body
+    assert "component: ChoicePicker" not in body
+    assert "selectedStationIds" not in body
+    # Points at catalog skills as the source of truth for exact shapes.
+    assert 'load_skill("a2ui-catalog-<slug>")' in body
+    assert 'file="catalog.json#/components/<Name>")' in body
 
 
 def test_flat_skill_has_no_bundled_files(scratch_flat: None, tmp_path: Path) -> None:
@@ -457,3 +514,326 @@ def test_predict_builder_wires_bodies(pack: Path, monkeypatch: pytest.MonkeyPatc
     )
     assert "SECRET_PROCEDURE_MARKER" in module.system_prompt
     assert module.tools == []
+
+
+# ---- S4: load_skill JSON pointer fragment support --------------------------------
+
+
+def test_load_skill_file_fragment_resolves_a_json_pointer(pack: Path) -> None:
+    catalog = {
+        "components": {
+            "Button": {
+                "type": "object",
+                "properties": {
+                    "action": {"$ref": "common_types.json#/$defs/Action"},
+                    "component": {"const": "Button"},
+                },
+            }
+        }
+    }
+    (pack / "skills" / "quality-rubric" / "catalog.json").write_text(
+        json.dumps(catalog), encoding="utf-8"
+    )
+    rt = _runtime(pack)
+    tool = build_load_skill_tool(_agent(pack), rt)
+
+    out = tool.func(skill_id="quality-rubric", file="catalog.json#/components/Button")
+
+    assert '"const": "Button"' in out
+    assert "common_types.json#/$defs/Action" in out
+
+
+def test_load_skill_file_fragment_unresolvable_lists_available_keys(pack: Path) -> None:
+    catalog = {"components": {"Button": {"type": "object"}}}
+    (pack / "skills" / "quality-rubric" / "catalog.json").write_text(
+        json.dumps(catalog), encoding="utf-8"
+    )
+    rt = _runtime(pack)
+    tool = build_load_skill_tool(_agent(pack), rt)
+
+    with pytest.raises(ValueError) as excinfo:
+        tool.func(skill_id="quality-rubric", file="catalog.json#/components/Missing")
+
+    assert "Button" in str(excinfo.value)
+    assert "does not resolve" in str(excinfo.value)
+
+
+def test_load_skill_file_fragment_requires_json(pack: Path) -> None:
+    rt = _runtime(pack)
+    tool = build_load_skill_tool(_agent(pack), rt)
+
+    with pytest.raises(ValueError) as excinfo:
+        tool.func(skill_id="quality-rubric", file="references/checklist.md#/x")
+
+    assert "fragment" in str(excinfo.value)
+
+
+def test_load_skill_file_fragment_requires_absolute_pointer(pack: Path) -> None:
+    (pack / "skills" / "quality-rubric" / "catalog.json").write_text("{}", encoding="utf-8")
+    rt = _runtime(pack)
+    tool = build_load_skill_tool(_agent(pack), rt)
+
+    with pytest.raises(ValueError) as excinfo:
+        tool.func(skill_id="quality-rubric", file="catalog.json#components")
+
+    assert "absolute" in str(excinfo.value)
+
+
+def test_load_skill_file_without_fragment_is_unaffected(pack: Path) -> None:
+    """No ``#`` in ``file`` is the pre-existing, unchanged path."""
+
+    rt = _runtime(pack)
+    tool = build_load_skill_tool(_agent(pack), rt)
+
+    assert tool.func(skill_id="quality-rubric", file="references/checklist.md") == "THE CHECKLIST"
+
+
+# ---- S4: catalogs disclosed as skill directories ----------------------------------
+
+
+def test_root_agent_with_no_blueprint_declares_the_two_builtin_catalog_skills(
+    tmp_path: Path,
+) -> None:
+    """Golden: tier 1 gains exactly one line per producible catalog, nothing else."""
+
+    from clio_agent.gact.a2ui_catalogs.builtin import load_builtin_catalogs
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="root")
+    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+
+    rt = skill_runtime_for_agent(app, root, session_id=session.id)
+
+    basic, workspace = load_builtin_catalogs()
+    assert list(rt.resolved) == ["a2ui-catalog-basic", "a2ui-catalog-clio-workspace"]
+    lines = rt.prompt_block.splitlines()
+    assert lines[0] == "## Skills available to you"
+    assert lines[2:] == [
+        f"- a2ui-catalog-basic: {basic.file['description']}",
+        f"- a2ui-catalog-clio-workspace: {workspace.file['description']}",
+    ]
+
+
+def test_catalog_skill_body_generator_runs_once_across_twenty_turns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Perf fix (CI investigation, PR #1375): skill_runtime_for_agent's
+    tier-2 pass (skill_bodies_context) reads EVERY resolved skill's body on
+    every call, even for a react expert that only ever uses prompt_block --
+    without the checksum-keyed cache in a2ui_catalogs/skills.py, a session
+    with two auto-declared catalog skills regenerated both bodies on every
+    single turn build. Twenty builds must render each catalog's body ONCE."""
+
+    from clio_agent.gact.a2ui_catalogs import skills as cat_skills_mod
+
+    # The cache is process-global, keyed by content checksum (mirrors
+    # registry.py's compiled_validators/_VALIDATOR_CACHE) -- an earlier test
+    # in the same session may have already warmed it for these same builtin
+    # catalogs. Start this test from a known-cold state for a deterministic
+    # count instead of asserting on residual state from test order.
+    cat_skills_mod._BODY_CACHE.clear()
+
+    render_calls: list[str] = []
+    original = cat_skills_mod._render_catalog_skill_body
+
+    def counting(entry: Any) -> str:
+        render_calls.append(entry.checksum)
+        return original(entry)
+
+    monkeypatch.setattr(cat_skills_mod, "_render_catalog_skill_body", counting)
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="root")
+    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+
+    for _ in range(20):
+        skill_runtime_for_agent(app, root, session_id=session.id)
+
+    # Two producible builtin catalogs (basic, clio-workspace) -- one render
+    # call per DISTINCT checksum across all twenty builds, never twenty.
+    assert len(render_calls) == len(set(render_calls)) == 2
+
+
+_FIXTURE_A2UI_PACK = Path(__file__).resolve().parents[1] / "fixtures" / "a2ui_packs" / "minimal"
+
+
+def test_pack_blueprint_session_declares_three_catalog_skills(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="root")
+    app.state.sessions.update(
+        session.id,
+        metadata_patch={
+            "active_agent_blueprint_id": "a2ui-minimal-pack",
+            "active_agent_blueprint_path": str(_FIXTURE_A2UI_PACK),
+        },
+    )
+    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+
+    rt = skill_runtime_for_agent(app, root, session_id=session.id)
+
+    assert list(rt.resolved) == [
+        "a2ui-catalog-basic",
+        "a2ui-catalog-clio-workspace",
+        "a2ui-catalog-minimal",
+    ]
+
+
+def test_producer_tool_declaration_auto_declares_catalog_skills_for_a_child(
+    tmp_path: Path,
+) -> None:
+    """A non-root expert gets catalog skills too, purely from declaring a producer tool."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="child")
+    child = AgentDef(
+        id="visual",
+        title="Visual",
+        parent_id="root",
+        module={"kind": "react"},
+        tools=["create_a2ui_surface"],
+    )
+
+    rt = skill_runtime_for_agent(app, child, session_id=session.id)
+
+    assert "a2ui-catalog-basic" in rt.resolved
+    assert "a2ui-catalog-clio-workspace" in rt.resolved
+
+
+def test_catalog_scope_records_a_typed_scan_error_when_session_scoped_but_no_registry(
+    tmp_path: Path,
+) -> None:
+    """Adversarial-review fix: an app IS present (a real request/session
+    context) but no session id / no a2ui_catalogs registry -- this is a
+    degradation, not the app-less unit "nothing to disclose" case, and must
+    be recorded to scan_errors instead of returning [] silently."""
+
+    from types import SimpleNamespace
+
+    stub_app = SimpleNamespace(state=SimpleNamespace())  # no a2ui_catalogs attribute
+    catalog = SkillCatalog(app=stub_app, session_id="sess_x")
+
+    refs = catalog._catalog_refs()
+
+    assert refs == []
+    assert catalog.scan_errors == [
+        {"scope": "catalog", "error": "a2ui_catalog_registry_unavailable"}
+    ]
+
+
+def test_catalog_scope_app_less_unit_case_stays_silent(tmp_path: Path) -> None:
+    """The documented ONE silent case: no app at all (a bare SkillCatalog(),
+    as most of this test file's own fixtures build) is not a degradation --
+    there is no session to scope producibility to in the first place."""
+
+    catalog = SkillCatalog(cwd=tmp_path)
+
+    refs = catalog._catalog_refs()
+
+    assert refs == []
+    assert catalog.scan_errors == []
+
+
+def test_plain_child_with_no_producer_tool_gets_no_catalog_skills(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="child")
+    child = AgentDef(id="plain", title="Plain", parent_id="root", module={"kind": "react"})
+
+    rt = skill_runtime_for_agent(app, child, session_id=session.id)
+
+    assert rt.resolved == {}
+
+
+def test_load_skill_on_an_undeclared_catalog_skill_is_the_existing_not_declared_error(
+    tmp_path: Path,
+) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="child")
+    child = AgentDef(id="plain", title="Plain", parent_id="root", module={"kind": "react"})
+    rt = skill_runtime_for_agent(app, child, session_id=session.id)
+    tool = build_load_skill_tool(child, rt)
+
+    with pytest.raises(ValueError) as excinfo:
+        tool.func(skill_id="a2ui-catalog-basic")
+
+    assert "unknown skill" in str(excinfo.value)
+
+
+def test_catalog_skill_body_carries_instructions_index_and_load_skill_call(
+    tmp_path: Path,
+) -> None:
+    from clio_agent.gact.a2ui_catalogs.builtin import load_builtin_catalogs
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="root")
+    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    rt = skill_runtime_for_agent(app, root, session_id=session.id)
+    tool = build_load_skill_tool(root, rt)
+
+    body = tool.func(skill_id="a2ui-catalog-clio-workspace")
+
+    _, workspace = load_builtin_catalogs()
+    assert workspace.instructions.strip() in body
+    assert "## Components" in body
+    assert "`clio.status.v1`" in body
+    assert (
+        'load_skill("a2ui-catalog-clio-workspace", file="catalog.json#/components/<Name>")' in body
+    )
+
+
+def test_catalog_skill_component_file_matches_the_validated_catalog(tmp_path: Path) -> None:
+    """The loaded component schema is read from the SAME file the server validates
+    against (S2's allowlist), never a second maintained copy."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="root")
+    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    rt = skill_runtime_for_agent(app, root, session_id=session.id)
+    tool = build_load_skill_tool(root, rt)
+
+    out = tool.func(skill_id="a2ui-catalog-basic", file="catalog.json#/components/Button")
+
+    assert '"const": "Button"' in out
+    assert "common_types.json#/$defs/Action" in out
+
+
+def test_catalog_skill_basic_exposes_both_sidecar_and_catalog_file_roots(
+    tmp_path: Path,
+) -> None:
+    """Adversarial-review fix: the Basic catalog's asymmetric layout (sidecar
+    files in one directory, catalog.json in another) must not hide either
+    root from load_skill -- both the sidecar's instructions.md and the
+    catalog file's own component schemas must be reachable."""
+
+    from clio_agent.gact.a2ui_catalogs.builtin import load_builtin_catalogs
+    from clio_agent.gact.app import build_app
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="root")
+    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    rt = skill_runtime_for_agent(app, root, session_id=session.id)
+    tool = build_load_skill_tool(root, rt)
+
+    basic, _ = load_builtin_catalogs()
+    instructions = tool.func(skill_id="a2ui-catalog-basic", file="instructions.md")
+    component = tool.func(skill_id="a2ui-catalog-basic", file="catalog.json#/components/Button")
+
+    assert instructions.strip() == basic.instructions.strip()
+    assert '"const": "Button"' in component
+
+
+def test_catalog_skill_fragment_trailer_distinguishes_local_from_standard_refs(
+    tmp_path: Path,
+) -> None:
+    from clio_agent.gact.app import build_app
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="root")
+    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    rt = skill_runtime_for_agent(app, root, session_id=session.id)
+    tool = build_load_skill_tool(root, rt)
+
+    out = tool.func(skill_id="a2ui-catalog-clio-workspace", file="catalog.json#/components/Button")
+
+    assert "Local refs (load via file=): catalog.json#/$defs/CatalogComponentCommon" in out
+    assert "Standard refs (not loadable here):" in out
+    assert "common_types.json#/$defs/Action" in out

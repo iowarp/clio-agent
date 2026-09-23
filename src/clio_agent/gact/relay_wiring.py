@@ -275,21 +275,21 @@ async def relay_agent_kwargs(app: FastAPI) -> dict[str, Any]:
 
 
 async def construct_agent_with_relay(
-    app: FastAPI,
-    *,
-    arc: Any,
-    provider_config: "LMProviderConfig | None" = None,
+    app: FastAPI, *, arc: Any, provider_config: LMProviderConfig | None = None
 ) -> Any:
-    """Construct a first-time provider-bound agent with the selected LM config.
+    """Construct a first-time provider-bound agent with the retained relay owners.
 
-    The first runtime provider bind must not construct a throwaway agent from the
-    ambient defaults.  On a fresh desktop profile that default is LM Studio, so a
-    Codex or Claude selection otherwise waits through the local-provider retry
-    loop before the selected provider is applied.
-
-    ``provider_config`` is optional (mirrors ``ClioAgent.__init__``): a caller
-    that has no resolved config yet (or wants ``ClioAgent``'s own ambient-default
-    resolution) may omit it, e.g. the deferred-boot construction path.
+    Args:
+        app: The serving GACT application (source of the retained relay owners).
+        arc: The one per-process ARC to inject (see ``ClioAgent.__init__``).
+        provider_config: The REQUESTED provider config for this bind (the
+            handler's handshake-applied ``cfg``), forwarded straight to
+            ``ClioAgent.__init__``. Without this, the constructor falls back to
+            ``load_config_from_env()`` -- the ambient boot provider, defaulting
+            to lm_studio -- and runs LM Studio discovery against it even when
+            the caller asked for a different provider (the first-bind
+            discovery-before-rebind defect, #1363). ``None`` keeps the
+            standalone CLI / test baseline (env-sourced config) unchanged.
     """
 
     from clio_agent.agent import ClioAgent  # noqa: PLC0415
@@ -297,12 +297,7 @@ async def construct_agent_with_relay(
     relay_kwargs = await relay_agent_kwargs(app)
     return await asyncio.get_running_loop().run_in_executor(
         None,
-        lambda: ClioAgent(
-            verbose=False,
-            arc=arc,
-            provider_config=provider_config,
-            **relay_kwargs,
-        ),
+        lambda: ClioAgent(verbose=False, arc=arc, provider_config=provider_config, **relay_kwargs),
     )
 
 

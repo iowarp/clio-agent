@@ -1,0 +1,17 @@
+{
+  "catalogId": "https://example.test/a2ui/catalogs/minimal",
+  "protocolVersion": "0.9.1",
+  "trust": {
+    "source": "pack"
+  },
+  "implements": {
+    "MinimalText": {
+      "kernel": "Text"
+    },
+    "MinimalButton": {
+      "kernel": "Button"
+    }
+  },
+  "events": {},
+  "instructions": "instructions.md"
+}

@@ -12,6 +12,10 @@ import threading
 from pathlib import Path
 
 _ARGONNE_REQUIREMENT = "globus-sdk>=3.0.0"
+# Exactly the locked SDK (uv.lock). An open floor would resolve the newest
+# release, and claude-agent-sdk 0.2.157 ships no Windows wheel: its sdist
+# installs without the bundled Claude Code CLI the SDK transport runs.
+_CLAUDE_CODE_REQUIREMENT = "claude-agent-sdk==0.2.156"
 _INSTALL_TIMEOUT_SECONDS = 180
 _INSTALL_LOCK = threading.Lock()
 
@@ -34,11 +38,11 @@ def _uv_executable(python_executable: str) -> str | None:
     return shutil.which(uv_name)
 
 
-def _install_command(python_executable: str) -> list[str]:
+def _install_command(python_executable: str, requirement: str) -> list[str]:
     uv = _uv_executable(python_executable)
     if uv:
-        return [uv, "pip", "install", "--python", python_executable, _ARGONNE_REQUIREMENT]
-    return [python_executable, "-m", "pip", "install", _ARGONNE_REQUIREMENT]
+        return [uv, "pip", "install", "--python", python_executable, requirement]
+    return [python_executable, "-m", "pip", "install", requirement]
 
 
 def _bounded_install_error(result: subprocess.CompletedProcess[str]) -> str:
@@ -46,23 +50,24 @@ def _bounded_install_error(result: subprocess.CompletedProcess[str]) -> str:
     return detail[-1200:]
 
 
-def ensure_argonne_support(*, python_executable: str | None = None) -> bool:
-    """Ensure the active backend can run ALCF's Globus authentication.
+def _ensure_dependency(
+    *,
+    module_name: str,
+    requirement: str,
+    display_name: str,
+    python_executable: str | None,
+) -> bool:
+    """Install one fixed optional dependency into the active backend runtime."""
 
-    Returns ``True`` when support was installed during this call and ``False``
-    when it was already present. The fixed dependency spec prevents request
-    data from reaching the package installer.
-    """
-
-    if _module_available("globus_sdk"):
+    if _module_available(module_name):
         return False
 
     executable = python_executable or sys.executable
     with _INSTALL_LOCK:
-        if _module_available("globus_sdk"):
+        if _module_available(module_name):
             return False
 
-        command = _install_command(executable)
+        command = _install_command(executable, requirement)
         try:
             if os.name == "nt":
                 result = subprocess.run(  # noqa: S603
@@ -83,18 +88,50 @@ def ensure_argonne_support(*, python_executable: str | None = None) -> bool:
                 )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise ProviderDependencyInstallError(
-                f"could not start the ALCF support installer: {exc}"
+                f"could not start the {display_name} installer: {exc}"
             ) from exc
 
         if result.returncode != 0:
             raise ProviderDependencyInstallError(
-                "ALCF support installation failed: " + _bounded_install_error(result)
+                f"{display_name} installation failed: " + _bounded_install_error(result)
             )
 
         importlib.invalidate_caches()
-        if not _module_available("globus_sdk"):
+        if not _module_available(module_name):
             raise ProviderDependencyInstallError(
-                "ALCF support installation completed, but globus-sdk is still unavailable "
-                f"to {executable}."
+                f"{display_name} installation completed, but {requirement} is still "
+                f"unavailable to {executable}."
             )
         return True
+
+
+def ensure_argonne_support(*, python_executable: str | None = None) -> bool:
+    """Ensure the active backend can run ALCF's Globus authentication.
+
+    Returns ``True`` when support was installed during this call and ``False``
+    when it was already present. The fixed dependency spec prevents request
+    data from reaching the package installer.
+    """
+
+    return _ensure_dependency(
+        module_name="globus_sdk",
+        requirement=_ARGONNE_REQUIREMENT,
+        display_name="ALCF support",
+        python_executable=python_executable,
+    )
+
+
+def ensure_claude_code_support(*, python_executable: str | None = None) -> bool:
+    """Ensure the active backend contains the Claude Agent SDK.
+
+    Returns ``True`` when this call installed the SDK and ``False`` when it was
+    already available. Only CLIO's fixed, audited requirement reaches the
+    installer.
+    """
+
+    return _ensure_dependency(
+        module_name="claude_agent_sdk",
+        requirement=_CLAUDE_CODE_REQUIREMENT,
+        display_name="Claude Code support",
+        python_executable=python_executable,
+    )

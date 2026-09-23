@@ -433,9 +433,8 @@ from clio_agent.gact.routes.deps import GactDeps  # noqa: E402
 from clio_agent.gact.routes.diffs import (  # noqa: E402
     register_diffs_routes,
 )
-from clio_agent.gact.routes.expert_packs import (  # noqa: E402
-    register_expert_packs_routes,
-)
+from clio_agent.gact.routes.expert_packs import register_expert_packs_routes  # noqa: E402
+from clio_agent.gact.routes.infrastructure import register_infrastructure_routes  # noqa: E402
 from clio_agent.gact.routes.interactions import (  # noqa: E402
     register_permission_and_interaction_routes,
 )
@@ -648,7 +647,6 @@ from clio_agent.gact.agent_blueprints import (
     discover_agent_blueprints,
     load_agent_blueprint_path,
     load_agent_blueprints,
-    read_install_metadata,
 )
 from clio_agent.gact.catalog import (  # noqa: E402, F401
     _builtin_agents,
@@ -842,6 +840,15 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         agent_task = asyncio.create_task(_construct_agent_async(app))
         app.state.agent_construction_task = agent_task
 
+    provider_catalog_task: Optional[asyncio.Task] = None
+    if getattr(app.state, "refresh_provider_catalog_on_startup", False):
+        from clio_agent.providers.model_discovery.refresh import (  # noqa: PLC0415
+            refresh_subscription_catalogs_at_startup,
+        )
+
+        provider_catalog_task = asyncio.create_task(refresh_subscription_catalogs_at_startup())
+        app.state.provider_catalog_startup_task = provider_catalog_task
+
     yield
 
     # Agent construction runs on an executor thread. Cancelling its asyncio task
@@ -870,7 +877,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # left running it could fire a due schedule mid-drain and leave a zombie turn
     # the drain never saw. (drain() also re-snapshots to catch any stray late spawn.)
     lm_config_task = getattr(app.state, "lm_config_task", None)
-    for t in (task, agent_task, lm_config_task):
+    for t in (task, agent_task, lm_config_task, provider_catalog_task):
         if t is None:
             continue
         if getattr(t, "done", lambda: False)():
@@ -1865,28 +1872,22 @@ def build_app(
         blueprint_wire: Mapping[str, Any],
         install_root: Path | None,
         scope: str,
+        session_id: str = "",
     ) -> dict[str, str]:
-        install = read_install_metadata(install_root) if install_root is not None else {}
-        return {
-            "active_agent_blueprint_id": str(blueprint_wire.get("id") or ""),
-            "active_agent_blueprint_name": str(
-                blueprint_wire.get("name")
-                or blueprint_wire.get("display_name")
-                or blueprint_wire.get("title")
-                or ""
-            ),
-            "active_agent_blueprint_version": str(blueprint_wire.get("version") or ""),
-            "active_agent_blueprint_scope": scope,
-            "active_agent_blueprint_definition_path": str(
-                blueprint_wire.get("definition_path") or ""
-            ),
-            "active_agent_blueprint_source": str(install.get("source") or ""),
-            "active_agent_blueprint_source_kind": str(install.get("source_kind") or ""),
-            "active_agent_blueprint_ref": str(install.get("ref") or ""),
-            "active_agent_blueprint_commit": str(install.get("commit") or ""),
-            "active_agent_blueprint_checksum": str(install.get("checksum") or ""),
-            "active_agent_blueprint_installed_at": str(install.get("installed_at") or ""),
-        }
+        # Body moved to gact/blueprint_activation.py (S8 review, issue #1374):
+        # that module owns the blueprint.resolution.degraded reason ledger the
+        # requires.clio_agent floor check (raised from inside it) needs.
+        from clio_agent.gact.blueprint_activation import (  # noqa: PLC0415
+            agent_blueprint_activation_metadata as _impl,
+        )
+
+        return _impl(
+            blueprint_wire=blueprint_wire,
+            install_root=install_root,
+            scope=scope,
+            app=app,
+            session_id=session_id,
+        )
 
     def _session_agent_overlay(session_id: str = "") -> dict[str, Any]:
         if not session_id:
@@ -2199,7 +2200,7 @@ def build_app(
     register_sandbox_setup_routes(app)  # /v1/system/sandbox (+/setup) -- routes/sandbox_setup.py
     register_lifecycle_routes(app)
     register_relay_routes(app, deps)
-
+    register_infrastructure_routes(app, session_store_path.parent)
     # ---- /v1/sessions/{sid}/tasks + /v1/tasks/{tid} + memory/events + share ----
     # + /v1/shared/{token} + /v1/sessions/{sid}/events SSE: the misc session-
     # adjacent surfaces are owned by routes/misc.py; the task-delete route reaches
@@ -2387,6 +2388,7 @@ def run_server(
     # immediately, beating gact-tui's 3-second deploy probe. POST /messages
     # 503s until app.state.agent is stamped by the background task.
     app_to_run: FastAPI = build_app()
+    app_to_run.state.refresh_provider_catalog_on_startup = True
     if (
         not no_agent
         and conf.resolve("lm.provider", env="CLIO_LM_PROVIDER", default="", cast=conf.as_str) != ""

@@ -196,16 +196,15 @@ lm.provider: "lm_studio"
 # models needing fuller sampling than the temp-0 default.
 # lm.top_p:  # default unset; resolved in code
 
+# CLIO_CLAUDE_CODE_AUTH_STATUS_TIMEOUT_S  (float)  <- src/clio_agent/providers/model_discovery/claude_code.py
+# Seconds the Claude Code `auth status` sign-in check may run before it is
+# abandoned as inconclusive; raise on hosts where cold CLI startup is slow.
+providers.claude_code.auth_status_timeout_s: 20.0
+
 # CLIO_CLAUDE_CODE_MAX_CONCURRENT_PROCESSES  (float)  <- src/clio_agent/providers/claude_code_stream_bounds.py
 # Process-wide cap on concurrently-connected claude CLI subprocesses; a
 # connect beyond it waits, raise for more concurrent sessions.
 providers.claude_code.max_concurrent_processes: 4.0
-
-# CLIO_CLAUDE_CODE_PROBE_TIMEOUT_S  (float)  <- src/clio_agent/providers/model_discovery/claude_code.py
-# Seconds one Claude Code model-discovery probe call may run before it is
-# abandoned as inconclusive; raise on hosts where cold CLI/SDK startup is
-# slow.
-providers.claude_code.probe_timeout_s: 30.0
 
 # CLIO_CLAUDE_CODE_SESSION_REUSE  (bool)  <- src/clio_agent/providers/claude_code_sessions.py
 # Keeps a pooled/reused SDK connection per scope instead of a fresh client
@@ -355,9 +354,10 @@ limits.plan_review_chars: 256000
 limits.shell_default_output_bytes: 16384
 
 # CLIO_SHELL_DEFAULT_TIMEOUT_S  (float)  <- src/clio_agent/tools/servers/shell_server.py
-# Default wall-clock seconds a shell command may run when the caller
-# specifies no timeout; raise for slower default commands.
-limits.shell_default_timeout_s: 5.0
+# Seconds a shell command may run when the caller passes no timeout; 0
+# (default) means no timeout: the command runs until it exits or the turn is
+# cancelled.
+limits.shell_default_timeout_s: 0.0
 
 # CLIO_SHELL_MAX_COMMAND_CHARS  (int)  <- src/clio_agent/tools/servers/shell_server.py
 # Max character length of a shell command string the tool accepts; raise for
@@ -370,9 +370,10 @@ limits.shell_max_command_chars: 4000
 limits.shell_max_output_bytes: 131072
 
 # CLIO_SHELL_MAX_TIMEOUT_S  (float)  <- src/clio_agent/tools/servers/shell_server.py
-# Hard ceiling in seconds on the timeout a shell tool call may request;
-# raise for legitimately long-running shell operations.
-limits.shell_max_timeout_s: 30.0
+# Optional operator ceiling in seconds on any shell command; 0 (default)
+# means no ceiling. When set, a call without a timeout runs up to this
+# ceiling.
+limits.shell_max_timeout_s: 0.0
 
 # CLIO_TOOL_RESULT_CHARS  (int)  <- src/clio_agent/gact/evidence.py
 # Character bound on the transcript/evidence-metadata preview of a tool
@@ -388,6 +389,18 @@ limits.tool_result_chars: 12000
 # Seconds a turn may run with no progress before it is timed out; raise for
 # long-running turns, lower to fail stuck turns faster.
 limits.turn_timeout_s: 900.0
+
+# CLIO_VIEW_PDF_MAX_PAGES  (int)  <- src/clio_agent/gact/view_pdf_tool.py
+# Max pages the view_pdf native tool may attach in one call; raise for a
+# provider with a higher per-request page ceiling, lower to force smaller
+# page ranges.
+limits.view_pdf_max_pages: 100
+
+# CLIO_VIEW_PDF_SOURCE_MAX_BYTES  (int)  <- src/clio_agent/gact/view_pdf_tool.py
+# Pre-parse byte ceiling on a view_pdf SOURCE file, checked before it is
+# read or parsed; raise to allow reading pages from a larger source
+# document.
+limits.view_pdf_source_max_bytes: 536870912
 
 # ==========================================================================
 # Agents, workflows and scheduling

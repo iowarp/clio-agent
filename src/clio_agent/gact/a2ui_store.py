@@ -14,6 +14,7 @@ from clio_agent.gact.a2ui import (
     project_a2ui_parts,
     utcnow_iso,
 )
+from clio_agent.gact.a2ui_actions.record import ActionFoldState, fold_action_records
 from clio_agent.gact.events import Event, EventBus
 from clio_agent.gact.protocol.constants import A2UI_V091
 
@@ -23,6 +24,39 @@ if TYPE_CHECKING:
     from clio_agent.gact.parts import Part
 
 _PersistPart = Callable[["Part"], bool]
+
+
+@dataclass
+class _ProjectionCache:
+    """One session's incrementally-foldable A2UI projection (S8, issue
+    #1374 item B).
+
+    Self-verifying, not hook-driven: rather than requiring every ledger-
+    mutating code path (undo/rewind/delete/preservation-reattach/
+    compaction/restart/...) to remember an explicit "invalidate this
+    session" call — a design that silently serves STALE data the first time
+    a future code path forgets one — :meth:`A2UIStore._project` checks
+    reality on every call instead. ``folded_a2ui_ids``/``folded_action_ids``
+    are the ORDERED tuples of part ids already folded into ``surfaces``; a
+    cache is reusable only when the CURRENT causally-ordered part sequence
+    is a pure EXTENSION of these (verified by tuple slice equality) AND
+    ``registry_generation``/``blueprint_identity`` still match. Anything
+    else — a part removed, reordered, a late-arriving part whose stamp
+    sorts before the cached high-water mark, a pack install/uninstall, or
+    the session switching its active blueprint — is NOT a pure extension
+    and triggers a full refold from scratch, recorded as a typed
+    ``a2ui_projection_cache_invalidated`` reason (never a silent stale
+    serve).
+    """
+
+    surfaces: dict[tuple[str, str], A2UISurfaceRecord]
+    degradations: list[dict[str, str]]
+    action_degradations: list[dict[str, str]]
+    action_state: ActionFoldState
+    folded_a2ui_ids: tuple[str, ...]
+    folded_action_ids: tuple[str, ...]
+    registry_generation: int
+    blueprint_identity: tuple[str, str]
 
 
 @dataclass(frozen=True)
@@ -73,6 +107,11 @@ class A2UIStore:
         self._bus = bus
         self._session_locks: dict[str, RLock] = {}
         self._session_locks_guard = Lock()
+        # S8 review round (issue #1374 item B): per-session incremental
+        # projection cache -- see ``_ProjectionCache``. In-memory only, gone
+        # on process restart (a fresh process folds from the persisted
+        # ledger on first touch, same as before this cache existed).
+        self._projection_cache: dict[str, _ProjectionCache] = {}
 
     def _session_lock(self, session_id: str) -> RLock:
         """Return the per-session lock serializing this store's producers.
@@ -95,6 +134,48 @@ class A2UIStore:
                 self._session_locks[session_id] = lock
             return lock
 
+    def forget_session(self, session_id: str) -> None:
+        """Drop this session's projection cache AND lock -- session DELETE ONLY.
+
+        ``DELETE /v1/sessions/{sid}`` never pruned either -- a per-session-
+        ever-created leak this store's OWN ``_ProjectionCache`` addition
+        would otherwise widen. Called from the session-delete route,
+        alongside ``CatalogRegistry.forget_session``.
+
+        NEVER call this from a resident-ledger EVICTION hook (S8 review
+        round 3, issue #1374 item A) -- see :meth:`forget_projection`, the
+        eviction-safe half of what this used to do unconditionally.
+        """
+
+        with self._session_locks_guard:
+            self._session_locks.pop(session_id, None)
+        self._projection_cache.pop(session_id, None)
+
+    def forget_projection(self, session_id: str) -> None:
+        """Drop ONLY this session's projection cache entry, never its lock.
+
+        S8 review round 3, issue #1374 item A (HIGH): a resident-ledger
+        EVICTION (``resident_ledgers.py``'s ``on_evict`` hook), unlike a
+        session DELETE, can fire for a session that is mid-write on ANOTHER
+        thread right now -- ``ResidentLedgerSet._evict``'s victim is picked
+        from every RESIDENT session during cap enforcement, not scoped to
+        the session a caller is currently touching. The old ``forget_session``
+        call from this hook popped ``_session_locks[session_id]`` too: the
+        next ``_session_lock`` call then minted a FRESH ``RLock`` while the
+        in-flight writer still held the ORIGINAL one, letting a second
+        writer enter the session's critical section concurrently -- exactly
+        the idempotency check-then-persist race that lock exists to
+        prevent. Only a genuine session DELETE, which no writer can outlive,
+        may remove the lock (:meth:`forget_session`). The projection cache
+        is always safe to drop underneath an in-flight write: ``_project``
+        re-reads ``self._projection_cache.get(session_id)`` fresh on every
+        call, inside the (unchanged) lock, so a concurrent drop here just
+        means that call's next read is a full refold instead of a cache
+        hit -- never a torn or duplicated write.
+        """
+
+        self._projection_cache.pop(session_id, None)
+
     def _all_part_ids(self, session_id: str) -> set[str]:
         """Return every part id already recorded for ``session_id``."""
 
@@ -109,8 +190,8 @@ class A2UIStore:
         ids.discard("")
         return ids
 
-    def _parts(self, session_id: str) -> list[Any]:
-        """Return this session's A2UI parts in causal (recorded) order.
+    def _parts(self, session_id: str, *, part_type: str = "a2ui") -> list[Any]:
+        """Return this session's A2UI(-family) parts in causal (recorded) order.
 
         The persisted ledger and the in-flight live parts are two views of one
         turn: a tool-produced surface lives only in ``live_assistant_parts``
@@ -137,7 +218,7 @@ class A2UIStore:
         seen: set[str] = set()
         carried = ""
         for part in candidates:
-            if getattr(part, "type", "") != "a2ui":
+            if getattr(part, "type", "") != part_type:
                 continue
             part_id = str(getattr(part, "id", "") or "")
             if part_id and part_id in seen:
@@ -151,10 +232,154 @@ class A2UIStore:
         stamped.sort(key=lambda row: (row[0], row[1]))
         return [row[2] for row in stamped]
 
+    def _blueprint_identity(self, session_id: str) -> tuple[str, str]:
+        """This session's OWN active-blueprint identity: ``(path, id)``.
+
+        Cache-key component (S8, issue #1374 item B): a session switching
+        its active blueprint changes what its producible/resolvable catalog
+        set is WITHOUT touching a single message or bumping
+        ``CatalogRegistry.generation`` (no pack was installed/uninstalled) --
+        so an already-cached projection must be treated as invalidated when
+        this identity changes, exactly like a registry generation bump.
+        """
+
+        from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+            _runtime_active_agent_blueprint_id,
+            _runtime_active_agent_blueprint_path,
+        )
+
+        path = _runtime_active_agent_blueprint_path(self._app, session_id)
+        return (
+            str(path) if path is not None else "",
+            _runtime_active_agent_blueprint_id(self._app, session_id),
+        )
+
     def _project(
         self, session_id: str
     ) -> tuple[dict[tuple[str, str], A2UISurfaceRecord], list[dict[str, str]]]:
-        return project_a2ui_parts(self._parts(session_id), session_id)
+        """Fold this session's ``a2ui``/``a2ui_action`` parts, incrementally.
+
+        See :class:`_ProjectionCache`. Locked per session (the same lock
+        ``apply_batch_outcome``/``persist_action_part`` already hold when
+        THEY call this, reentrant, so this closes the cache's own read/write
+        race for the read-only callers -- ``get``/``list_wire``/
+        ``projection_degradations`` -- that never held any lock before.
+        """
+
+        with self._session_lock(session_id):
+            from clio_agent.gact.a2ui_catalogs.activation import (  # noqa: PLC0415
+                session_catalog_resolver,
+            )
+
+            registry = getattr(self._app.state, "a2ui_catalogs", None)
+            registry_generation = registry.generation if registry is not None else 0
+            blueprint_identity = self._blueprint_identity(session_id)
+
+            a2ui_parts = self._parts(session_id, part_type="a2ui")
+            action_parts = self._action_parts(session_id)
+            a2ui_ids = tuple(str(getattr(p, "id", "") or "") for p in a2ui_parts)
+            action_ids = tuple(str(getattr(p, "id", "") or "") for p in action_parts)
+
+            cache = self._projection_cache.get(session_id)
+            reusable = (
+                cache is not None
+                and cache.registry_generation == registry_generation
+                and cache.blueprint_identity == blueprint_identity
+                and a2ui_ids[: len(cache.folded_a2ui_ids)] == cache.folded_a2ui_ids
+                and action_ids[: len(cache.folded_action_ids)] == cache.folded_action_ids
+            )
+
+            new_degradations: list[dict[str, str]]
+            if reusable:
+                assert cache is not None  # narrows for mypy; `reusable` already proved it
+                new_a2ui_parts = a2ui_parts[len(cache.folded_a2ui_ids) :]
+                new_action_parts = action_parts[len(cache.folded_action_ids) :]
+                surfaces = cache.surfaces
+                degradations = cache.degradations
+                action_degradations = cache.action_degradations
+                action_state = cache.action_state
+                new_degradations = []
+                # S8 review round (issue #1374, focused re-review item 2):
+                # created_surface_ids collects any id a createSurface in
+                # new_a2ui_parts just (re)established -- including recreating
+                # a previously-DELETED id, which builds a brand-new record
+                # with empty actions. A from-scratch fold always re-attaches
+                # that id's whole action history afterward (its action pass
+                # runs once, over every action part, at the end); this
+                # incremental fold must force the same reattachment even when
+                # no NEW action part arrived this call, from the already-
+                # cached action_state -- never a silent identity-loses-
+                # history gap.
+                created_surface_ids: set[str] = set()
+                if new_a2ui_parts:
+                    before = len(degradations)
+                    surfaces, degradations = project_a2ui_parts(
+                        new_a2ui_parts,
+                        session_id,
+                        catalogs=session_catalog_resolver(self._app, session_id),
+                        existing_surfaces=surfaces,
+                        existing_degradations=degradations,
+                        created_surface_ids=created_surface_ids,
+                    )
+                    new_degradations.extend(degradations[before:])
+                if new_action_parts or created_surface_ids:
+                    before = len(action_degradations)
+                    action_degradations = list(action_degradations)
+                    action_degradations.extend(
+                        fold_action_records(
+                            new_action_parts,
+                            session_id,
+                            surfaces,
+                            state=action_state,
+                            reattach_surface_ids=created_surface_ids,
+                        )
+                    )
+                    new_degradations.extend(action_degradations[before:])
+            else:
+                if cache is not None:
+                    # A real cache existed and is NOT a pure extension of
+                    # reality -- never silently trust it; typed + recorded.
+                    if registry is not None:
+                        registry.record_session_reason(
+                            session_id, "a2ui_projection_cache_invalidated"
+                        )
+                surfaces, degradations = project_a2ui_parts(
+                    a2ui_parts,
+                    session_id,
+                    catalogs=session_catalog_resolver(self._app, session_id),
+                )
+                action_state = ActionFoldState()
+                action_degradations = fold_action_records(
+                    action_parts, session_id, surfaces, state=action_state
+                )
+                new_degradations = [*degradations, *action_degradations]
+
+            # a2ui_catalog_unavailable is declared in the typed reason catalog;
+            # record it ONCE per degradation (adversarial S2 review found it
+            # missing entirely; a later review found the naive fix re-recorded
+            # every degradation on every fold -- only NEWLY discovered ones
+            # reach the ledger now, exactly once).
+            if registry is not None:
+                for degradation in new_degradations:
+                    if degradation.get("code") == "a2ui_catalog_unavailable":
+                        registry.record_session_reason(
+                            session_id,
+                            "a2ui_catalog_unavailable",
+                            part_id=degradation.get("part_id", ""),
+                            detail=degradation.get("reason", ""),
+                        )
+
+            self._projection_cache[session_id] = _ProjectionCache(
+                surfaces=surfaces,
+                degradations=degradations,
+                action_degradations=action_degradations,
+                action_state=action_state,
+                folded_a2ui_ids=a2ui_ids,
+                folded_action_ids=action_ids,
+                registry_generation=registry_generation,
+                blueprint_identity=blueprint_identity,
+            )
+            return surfaces, [*degradations, *action_degradations]
 
     @property
     def load_degradation(self) -> dict[str, str] | None:
@@ -225,6 +450,51 @@ class A2UIStore:
                     )
                 )
         return announced
+
+    def _action_parts(self, session_id: str) -> list[Any]:
+        """Return this session's ``a2ui_action`` parts in causal order (S5)."""
+
+        return self._parts(session_id, part_type="a2ui_action")
+
+    def persist_action_part(
+        self, session_id: str, part: "Part", *, idempotency_key: str = ""
+    ) -> dict[str, Any] | None:
+        """Persist one ``a2ui_action`` lifecycle snapshot (S5), atomically.
+
+        The SAME durable writer :meth:`apply_batch_outcome` uses for a surface
+        part -- an action record rides the identical transcript ledger, never
+        a new store (RULE 4). When ``idempotency_key`` is given (a NEW
+        ``received`` record only -- a transition snapshot never passes one),
+        the idempotency lookup over this session's already-persisted action
+        records and the persist itself happen under the SAME per-session
+        lock :meth:`apply_batch_outcome` uses, closing the race a caller-side
+        check-then-persist could not (adversarial review finding #1,
+        BLOCKING): two concurrent submissions of the same key can no longer
+        both observe "no existing record" and both persist.
+
+        Returns:
+            The EXISTING record's wire dict when ``idempotency_key`` already
+            matches a persisted record on this surface (nothing new
+            written), or ``None`` once ``part`` has been freshly persisted.
+        """
+
+        from clio_agent.gact.a2ui_actions.record import (  # noqa: PLC0415
+            find_by_idempotency_key,
+        )
+
+        with self._session_lock(session_id):
+            if idempotency_key:
+                surface_id = str(getattr(part, "surface_id", "") or "")
+                surface = self.get(session_id, surface_id)
+                existing = (
+                    find_by_idempotency_key(surface.actions, idempotency_key)
+                    if surface is not None
+                    else None
+                )
+                if existing is not None:
+                    return existing
+            self._persist_part(session_id, part)
+            return None
 
     def _persist_part(self, session_id: str, part: "Part") -> bool:
         from clio_agent.gact.part_atom_minter import run_transcript_job  # noqa: PLC0415
@@ -319,6 +589,10 @@ class A2UIStore:
 
         from uuid import uuid4  # noqa: PLC0415
 
+        from clio_agent.gact.a2ui_catalogs.activation import (  # noqa: PLC0415
+            session_catalog_resolver,
+            session_producible_catalog_ids,
+        )
         from clio_agent.gact.parts import Part  # noqa: PLC0415
 
         with self._session_lock(session_id):
@@ -332,10 +606,18 @@ class A2UIStore:
                 )
             current, _ = self._project(session_id)
             timestamp = utcnow_iso()
+            # Every production door (HTTP POST /messages, create_a2ui_surface)
+            # routes through here, so the session-producible gate lives in ONE
+            # place: a createSurface against an installed-but-inactive pack
+            # catalog is refused with a2ui_catalog_not_producible regardless of
+            # which door it came through.
+            producible = frozenset(session_producible_catalog_ids(self._app, session_id))
             folded, applied = apply_batch(
                 current,
                 session_id,
                 messages,
+                catalogs=session_catalog_resolver(self._app, session_id),
+                producible=producible,
                 run_id=run_id,
                 message_id=message_id,
                 part_id=persisted_part_id,

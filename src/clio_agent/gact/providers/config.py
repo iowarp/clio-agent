@@ -52,14 +52,22 @@ def _provider_runtime_kind(provider_id: str) -> str:
     return provider_id
 
 
-def _with_vision_capability(app: "FastAPI", cfg: dict[str, Any]) -> dict[str, Any]:
-    """Stamp the derived image-input capability and the arm it came from.
+def _with_native_capability_flags(app: "FastAPI", cfg: dict[str, Any]) -> dict[str, Any]:
+    """Stamp the derived vision/PDF input capabilities and the arm each came from.
 
     Applied on EVERY return path of :func:`_effective_lm_config`, including the
-    unconfigured one, so the field the vision gate reads is always present. It
-    used to be read straight off the config dict -- a key no production writer
-    ever set -- so the gate always fell through to a provider-name allowlist and
-    the catalog's own ``supports_vision`` flags could never reach it.
+    unconfigured one, so the fields the vision/PDF gates read are always
+    present. ``supports_vision`` used to be read straight off the config dict
+    -- a key no production writer ever set -- so the gate always fell through
+    to a provider-name allowlist and the catalog's own ``supports_vision``
+    flags could never reach it.
+
+    ``supports_pdf``/``supports_pdf_source`` are stamped the SAME way, for the
+    same reason: without this, :func:`_pdf_capability`'s typed reason (the
+    :data:`PDF_CAPABILITY_REASONS` catalog) had zero consumers and the PDF
+    capability decision never reached the effective config or the wire, so
+    ``view_pdf`` could silently disappear from an agent's tool list with no
+    way to see why.
     """
 
     supports_vision, vision_source = _vision_capability(
@@ -69,6 +77,13 @@ def _with_vision_capability(app: "FastAPI", cfg: dict[str, Any]) -> dict[str, An
     )
     cfg["supports_vision"] = supports_vision
     cfg["supports_vision_source"] = vision_source
+    supports_pdf, pdf_source = _pdf_capability(
+        app,
+        str(cfg.get("provider_id") or cfg.get("provider") or ""),
+        str(cfg.get("model") or ""),
+    )
+    cfg["supports_pdf"] = supports_pdf
+    cfg["supports_pdf_source"] = pdf_source
     return cfg
 
 
@@ -91,7 +106,7 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
     agent = getattr(app.state, "agent", None)
     provider_config = getattr(agent, "_provider_config", None)
     if provider_config is None:
-        return _with_vision_capability(app, cfg)
+        return _with_native_capability_flags(app, cfg)
 
     for key in (
         "provider_id",
@@ -136,7 +151,7 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
         # No-silent-fallback (#772): surface the degraded display with a typed
         # reason instead of omitting the field silently.
         cfg["thinking_effective"] = f"unavailable (reason=display_derivation_failed: {exc})"
-    return _with_vision_capability(app, cfg)
+    return _with_native_capability_flags(app, cfg)
 
 
 def _default_profile_spec(app: "FastAPI") -> Any:
@@ -303,6 +318,63 @@ def _active_lm_supports_vision(app: "FastAPI") -> bool:
     """Return whether the active provider/model can receive image parts."""
 
     return bool(_effective_lm_config(app).get("supports_vision"))
+
+
+#: Typed provenance for the active LM's PDF-document answer, mirroring
+#: :data:`VISION_CAPABILITY_REASONS`. PDF has no registry-level static default
+#: (see :func:`_pdf_capability`), so its no-evidence-system reason text differs.
+PDF_CAPABILITY_REASONS: dict[str, str] = {
+    "live_modality_evidence": (
+        "the provider catalog holds discovery evidence for this exact provider/model and "
+        "that evidence names (or omits) PDF document input"
+    ),
+    "catalog_default_no_modality_evidence_system": (
+        "this provider kind exposes no per-model modality evidence system, and PDF input has "
+        "no static provider-registry default (unlike vision); it is refused until modality "
+        "evidence exists"
+    ),
+    "modality_evidence_unavailable": (
+        "this provider kind CAN evidence input modalities but none has been recorded for this "
+        "model yet; the capability is unproven, so PDF parts are refused rather than assumed. "
+        "Run an explicit model refresh to evidence it"
+    ),
+    "no_active_model": (
+        "no provider/model is bound, so there is nothing whose capability could be evidenced"
+    ),
+}
+
+
+def _pdf_capability(app: "FastAPI", provider_id: str, model_id: str) -> tuple[bool, str]:
+    """Resolve PDF-document input capability for one provider/model, with a typed reason.
+
+    Mirrors :func:`_vision_capability` exactly, consulting the SAME live
+    modality evidence and checking ``"pdf"`` instead of ``"image"``. Unlike
+    vision, no provider-registry row carries a static ``supports_pdf``
+    default — PDF input is a newer, less commonly documented capability — so
+    the no-evidence-system fallback answers ``False`` rather than trusting an
+    undocumented transport-level default.
+    """
+
+    if not provider_id or not model_id:
+        return False, "no_active_model"
+    from clio_agent.gact.resource_delivery import (  # noqa: PLC0415 - avoid import cycle
+        EVIDENCED_MODALITY_SOURCES,
+        live_model_modalities,
+    )
+    from clio_agent.gact.types import ModelRef  # noqa: PLC0415
+
+    modalities, evidence, _generated_at = live_model_modalities(
+        app, ModelRef(provider_id=provider_id, model_id=model_id)
+    )
+    if evidence in EVIDENCED_MODALITY_SOURCES:
+        return "pdf" in modalities, "live_modality_evidence"
+
+    from clio_agent.providers.handshake import reports_input_modalities  # noqa: PLC0415
+
+    kind = _provider_runtime_kind(provider_id)
+    if reports_input_modalities(kind):
+        return False, "modality_evidence_unavailable"
+    return False, "catalog_default_no_modality_evidence_system"
 
 
 def _image_part_error(

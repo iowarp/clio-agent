@@ -5,3 +5,19 @@ install/clio   text eol=lf
 
 # Batch files are Windows-only; keep CRLF.
 *.cmd          text eol=crlf
+
+# Vendored A2UI conformance corpus + catalog fixtures are checksummed against
+# an upstream manifest (tests/test_gact/test_a2ui_corpus_conformance.py) --
+# an autocrlf-converted checkout (default on many Windows git installs)
+# silently rewrites LF to CRLF and breaks every hash, which looks like a
+# vendoring bug but is a checkout artifact. Force LF so the bytes always
+# match the manifest regardless of the client's core.autocrlf.
+tests/fixtures/a2ui_corpus/**   text eol=lf
+tests/fixtures/a2ui_packs/**    text eol=lf
+# S8 (issue #1374): the vendored v0.9.2 replay transcript is a Message/Part
+# JSON list read back through MessageStore._load_file, so it needs the same
+# byte-stability guarantee as the corpus/pack fixtures above.
+tests/fixtures/a2ui_transcripts/**   text eol=lf
+# S8 review round (issue #1374 item 9): vendored gact-tui transport header
+# sets / capability bodies, same byte-stability guarantee.
+tests/fixtures/a2ui_client_metadata/**   text eol=lf

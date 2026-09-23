@@ -23,9 +23,15 @@ def capabilities_to_v3(app: Any, flags: Any, *, replay_retention: int) -> dict[s
         {key: value for key, value in raw_flags.items() if key.startswith("x_clio_")}
     )
     replay_supported = bool(replay_retention > 0 and getattr(app.state, "bus", None) is not None)
+    from clio_agent.gact.a2ui_capabilities import agent_capabilities  # noqa: PLC0415
+
     capabilities.update(
         {
             "a2ui": getattr(app.state, "a2ui_store", None) is not None,
+            # The official {"v0.9": {supportedCatalogIds, acceptsInlineCatalogs}}
+            # object, server-wide scope (no session id): every INSTALLED catalog,
+            # not narrowed to any one session's producible set (S3).
+            "a2ui_capabilities": agent_capabilities(app, None),
             "replay": replay_supported,
             "workspace_display_names": bool(capabilities.get("workspaces")),
             "scoped_events": bool(raw_flags.get("x_clio_semantic_events")),

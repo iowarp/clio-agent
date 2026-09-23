@@ -1,6 +1,6 @@
 [project]
 name = "clio-agent"
-version = "0.9.4.2"
+version = "0.9.4.15"
 description = "CLIO Agent — Autonomous AI agent framework for scientific data management. Part of the IOWarp platform."
 authors = [
     { name = "Jaime Cernuda", email = "jcernudagarcia@illinoistech.edu" },
@@ -49,8 +49,16 @@ dependencies = [
     "fastmcp==4.0.0b5",  # 2026-07-28 line (#1107); b1->b5 beta-track hardening bump (#1285
     # C1-S5 item 5, LAST commit -- everything else verified green on b1 first).
     "fastmcp-tasks==4.0.0b5",
-    "clio-schemas==0.2.3",
+    "clio-schemas==0.3.2",
     "pydantic>=2.12,<2.14",
+    # A2UI catalog validation: official catalog.json files are validated at runtime
+    # with Draft 2020-12 (docs/design/a2ui-compat-campaign-2026-09.md, S2).
+    "jsonschema>=4.23",
+    # Agent Blueprint `requires: {clio_agent: ">=X"}` server-floor enforcement
+    # (docs/design/a2ui-compat-campaign-2026-09.md, S8): PEP 440 specifier
+    # parsing. Already present transitively (pip/fastapi's own tree); declared
+    # explicitly now that first-party code imports it directly.
+    "packaging>=24.0",
     "requests>=2.31.0",
     "h5py>=3.10.0",
     "pyarrow>=14.0.0",
@@ -134,7 +142,7 @@ claude-code = [
     # bound; the full import surface is verified under mcp 2.0.0 by
     # tests and the compat matrix doc. The live SDK-session smoke runs at the
     # P0 phase gate.
-    "claude-agent-sdk>=0.2.110",
+    "claude-agent-sdk>=0.2.156",
 ]
 
 flowcept = [
@@ -216,6 +224,7 @@ python_functions = ["test_*"]
 asyncio_mode = "auto"  # SSE tests use async httpx
 markers = [
     "integration: marks tests requiring full-stack/external runtime behavior",
+    "real_dependency_installer: exercises providers.dependencies' installer itself (subprocess stubbed); exempt from the suite-wide no-real-install guard",
     "benchmark: marks long real-provider stress benchmark tests",
     "real_case: end-to-end live CLIO blueprint case (a tier above unit/integration; needs CLIO_RUN_LIVE=1)",
     "live: hits a live gact server + external provider (slow; skipped unless CLIO_RUN_LIVE=1)",
@@ -274,4 +283,11 @@ also_copy = ["src/clio_agent/", "tests/"]
 override-dependencies = ["mcp>=2.0.0"]
 
 [tool.uv.sources]
-clio-schemas = { git = "https://github.com/iowarp/clio-schemas.git", rev = "f99450067e498de25c28764e15ecad1a88b7d595" }
+# A2UI compat S5b: clio-schemas 0.3.2 (docs/design/a2ui-compat-campaign-2026-09.md).
+# Patch bump: CatalogSidecar.events[<name>].narration (a template over the
+# resolved context, placeholders validated against context_schema.properties)
+# and clio_schemas.a2ui.sidecar.render_narration(route, context) -> str | None
+# let the pack author declare an event's meaning instead of clio inferring it
+# from prose. Pinned to main @ d68c72c8393bc155c22de0c66d1ee6ee5e5d46c0;
+# see `git -C <clio-schemas checkout> rev-parse origin/main`.
+clio-schemas = { git = "https://github.com/iowarp/clio-schemas.git", rev = "d68c72c8393bc155c22de0c66d1ee6ee5e5d46c0" }

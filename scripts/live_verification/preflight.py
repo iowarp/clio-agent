@@ -14,11 +14,9 @@ Checks:
   - the marketplace submodule + the deep-researcher pack present
   - ``runtime/mcp_launcher.py``'s own doctor probes (declared MCP launchers on
     PATH; mcp.yaml declarations parse cleanly) run directly, in-process
-  - claude_code provider PRESENCE (the ``claude``/``claude.cmd`` binary on
-    PATH via the same resolver ``providers/model_discovery/claude_code.py``
-    uses to probe-validate models -- deliberately calling ONLY the
-    presence-check half, never ``_probe_claude`` (which spawns a real
-    ``claude -p`` turn); this script never invokes a model)
+  - claude_code provider PRESENCE (the Claude Code binary the SDK runs,
+    via ``providers/model_discovery/claude_code.py``'s resolver; this script
+    never invokes a model or the ``auth status`` sign-in check)
   - the four legs' default ports are free
   - CLIO_KIT_PATH guidance: the effective value (env or the harness default
     ``~/clio-kit``) and whether that directory exists (informational only --
@@ -153,8 +151,7 @@ def check_mcp_launcher_probes() -> dict[str, Any]:
 
 
 def check_claude_code_presence() -> dict[str, Any]:
-    """Binary-on-PATH presence ONLY -- never invokes a model (never calls
-    ``_probe_claude``, which spawns a real ``claude -p`` turn)."""
+    """Binary presence ONLY -- never invokes a model or the sign-in check."""
 
     from clio_agent.providers.model_discovery.claude_code import (
         ClaudeCodeCLIUnavailableError,

@@ -1,0 +1,11 @@
+{
+  "_provenance": "S8 review round (issue #1374 item 9). The explicit JS-authored header set is vendored verbatim from external/gact-tui/web/src/lib/transport/browser-transport.ts's private headers() method (BrowserClioTransport, ~line 191): {Accept, Content-Type, X-GACT-Version, X-A2UI-Version, optional Authorization}. A real browser request ALSO carries an Origin header the JS layer never sets -- attached by the browser engine itself from window.location.origin for the gact-tui dev server, one of gact/cors.py's own _DEFAULT_ORIGINS. 'origin' below names the representative dev-server value; the other four are the literal, byte-for-byte header set the transport constructs.",
+  "transport": "browser",
+  "origin": "http://localhost:5173",
+  "headers": {
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+    "X-GACT-Version": "0.3",
+    "X-A2UI-Version": "0.9.1"
+  }
+}

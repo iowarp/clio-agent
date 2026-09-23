@@ -65,8 +65,8 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_BLUEPRINT_SOURCE_LS_REMOTE_TIMEOUT_S` | `gact.blueprint_source.ls_remote_timeout_s` | float | `10.0` | `src/clio_agent/gact/blueprint_update_check.py` |
 | `CLIO_CAPTURE_REASONING` | `runtime.capture_reasoning` | bool | `true` | `src/clio_agent/gact/usage.py` |
 | `CLIO_CHILD_FORWARD_DEADLINE_S` | `agents.child_forward_deadline_s` | float | `DEFAULT_ELICITATION_TIMEOUT_S` _(computed)_ | `src/clio_agent/gact/child_forward.py` |
+| `CLIO_CLAUDE_CODE_AUTH_STATUS_TIMEOUT_S` | `providers.claude_code.auth_status_timeout_s` | float | `20.0` | `src/clio_agent/providers/model_discovery/claude_code.py` |
 | `CLIO_CLAUDE_CODE_MAX_CONCURRENT_PROCESSES` | `providers.claude_code.max_concurrent_processes` | float | `4.0` | `src/clio_agent/providers/claude_code_stream_bounds.py` |
-| `CLIO_CLAUDE_CODE_PROBE_TIMEOUT_S` | `providers.claude_code.probe_timeout_s` | float | `30.0` | `src/clio_agent/providers/model_discovery/claude_code.py` |
 | `CLIO_CLAUDE_CODE_SESSION_REUSE` | `providers.claude_code.session_reuse` | bool | `true` | `src/clio_agent/providers/claude_code_sessions.py` |
 | `CLIO_CLAUDE_CODE_STATEFUL_CAPACITY` | `providers.claude_code.stateful_capacity` | float | `128.0` | `src/clio_agent/providers/claude_code_stateful.py` |
 | `CLIO_CLAUDE_CODE_STREAM_IDLE_TTL_S` | `providers.claude_code.stream_idle_ttl_s` | float | `15.0` | `src/clio_agent/providers/claude_code_stream_bounds.py` |
@@ -279,10 +279,10 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SERVER_CONF` | `arc.server_conf` | str | _(unset)_ | `src/clio_agent/arc/clio_core_liveness.py` |
 | `CLIO_SESSIONS_PATH` | `paths.sessions` | str | _(unset)_ | `src/clio_agent/gact/sessions.py` |
 | `CLIO_SHELL_DEFAULT_OUTPUT_BYTES` | `limits.shell_default_output_bytes` | int | `16384` | `src/clio_agent/tools/servers/shell_server.py` |
-| `CLIO_SHELL_DEFAULT_TIMEOUT_S` | `limits.shell_default_timeout_s` | float | `5.0` | `src/clio_agent/tools/servers/shell_server.py` |
+| `CLIO_SHELL_DEFAULT_TIMEOUT_S` | `limits.shell_default_timeout_s` | float | `0.0` | `src/clio_agent/tools/servers/shell_server.py` |
 | `CLIO_SHELL_MAX_COMMAND_CHARS` | `limits.shell_max_command_chars` | int | `4000` | `src/clio_agent/tools/servers/shell_server.py` |
 | `CLIO_SHELL_MAX_OUTPUT_BYTES` | `limits.shell_max_output_bytes` | int | `131072` | `src/clio_agent/tools/servers/shell_server.py` |
-| `CLIO_SHELL_MAX_TIMEOUT_S` | `limits.shell_max_timeout_s` | float | `30.0` | `src/clio_agent/tools/servers/shell_server.py` |
+| `CLIO_SHELL_MAX_TIMEOUT_S` | `limits.shell_max_timeout_s` | float | `0.0` | `src/clio_agent/tools/servers/shell_server.py` |
 | `CLIO_SPOTTER_BLUEPRINT_ID` | `spotter.watcher_blueprint_id` | str | `spotter-ai` | `src/clio_agent/gact/spotter_watcher.py` |
 | `CLIO_SPOTTER_CLEARANCE_PROGRESS_TIMEOUT_S` | `spotter.clearance_progress_timeout_s` | float | `180.0` | `src/clio_agent/gact/spotter_clearance.py` |
 | `CLIO_SPOTTER_EXPERT_ID` | `spotter.watcher_expert_id` | str | `spotter_watcher` | `src/clio_agent/gact/spotter_watcher.py` |
@@ -298,6 +298,8 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SUMMARIZER_TRANSPORT` | `summarizer.transport` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
 | `CLIO_TOOL_RESULT_CHARS` | `limits.tool_result_chars` | int | `12000` | `src/clio_agent/gact/evidence.py` |
 | `CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS` | `limits.transient_provider_retry_delays` | list | _(unset)_ | `src/clio_agent/agent.py` |
+| `CLIO_VIEW_PDF_MAX_PAGES` | `limits.view_pdf_max_pages` | int | `100` | `src/clio_agent/gact/view_pdf_tool.py` |
+| `CLIO_VIEW_PDF_SOURCE_MAX_BYTES` | `limits.view_pdf_source_max_bytes` | int | `536870912` | `src/clio_agent/gact/view_pdf_tool.py` |
 | `CLIO_WEB_DIR` | `paths.web_dir` | str | _(unset)_ | `src/clio_agent/gact/app.py` |
 | `CLIO_WINDOWS_SHELL_BACKEND` | `tools.shell.windows_backend` | str | `powershell` | `src/clio_agent/tools/servers/shell_server.py` |
 | `CLIO_WORKFLOW_STEP_INACTIVITY_S` | `workflows.step_inactivity_s` | float | `120.0` | `src/clio_agent/gact/workflow_step_watch.py` |

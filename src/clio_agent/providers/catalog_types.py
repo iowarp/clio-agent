@@ -14,7 +14,7 @@ ProviderKind = Literal[
     "codex",
     "claude_code",
 ]
-AuthMethod = Literal["none", "api_key", "oauth"]
+AuthMethod = Literal["none", "api_key", "oauth", "subscription"]
 
 
 @dataclass(frozen=True)
@@ -39,6 +39,7 @@ class ModelEntry:
     id: str
     name: str
     description: str = ""
+    documented_modalities: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -55,14 +55,18 @@ SHELL_TOOL_ANNOTATIONS: dict[str, dict[str, Any]] = {"shell_bash": _BASH_ANNOTAT
 _POSIX_TEXT_TOOLS = ("cut", "sed", "awk", "grep")
 
 # Operational caps — resolved file → env → default (see clio_agent.conf).
+# Timeouts: 0 means none. A command runs until it exits (a conversion, a batch
+# job, a long `df`), the human cancels the turn, or the MODEL passes its own
+# positive ``timeout_s``. An operator may still set a ceiling via
+# ``limits.shell_max_timeout_s``; no ceiling is imposed by default.
 _DEFAULT_TIMEOUT_S = conf.resolve(
     "limits.shell_default_timeout_s",
     env="CLIO_SHELL_DEFAULT_TIMEOUT_S",
-    default=5.0,
+    default=0.0,
     cast=conf.as_float,
 )
 _MAX_TIMEOUT_S = conf.resolve(
-    "limits.shell_max_timeout_s", env="CLIO_SHELL_MAX_TIMEOUT_S", default=30.0, cast=conf.as_float
+    "limits.shell_max_timeout_s", env="CLIO_SHELL_MAX_TIMEOUT_S", default=0.0, cast=conf.as_float
 )
 _DEFAULT_MAX_OUTPUT_BYTES = conf.resolve(
     "limits.shell_default_output_bytes",
@@ -267,7 +271,7 @@ def build_shell_tool_description(facts: ShellEnvFacts) -> str:
             "CSV, or columnar work (column selection, filtering, joins) use the pandas "
             "MCP tool when available instead of shell text pipelines — it is portable and "
             "spawns no VM. The working directory must be inside CLIO_ALLOWED_ROOTS; the "
-            "command runs in a subprocess with a strict timeout and output cap."
+            "command runs until it exits unless you pass timeout_s, and its output is capped."
         )
     return (
         f"Run ONE local shell command on a {facts.system_label} host and return stdout, "
@@ -276,8 +280,8 @@ def build_shell_tool_description(facts: ShellEnvFacts) -> str:
         "Paths use POSIX conventions (forward slashes). For large tabular, CSV, or "
         "columnar work (column selection, filtering, joins) prefer the pandas MCP tool "
         "when available over ad-hoc text pipelines. The working directory must be inside "
-        "CLIO_ALLOWED_ROOTS; the command runs in a subprocess with a strict timeout and "
-        "output cap."
+        "CLIO_ALLOWED_ROOTS; the command runs until it exits unless you pass timeout_s, and "
+        "its output is capped."
     )
 
 
@@ -345,6 +349,24 @@ async def _read_process_stream(
     return "".join(text_chunks), truncated
 
 
+def _kill_process_tree(pid: int) -> None:
+    """Kill ``pid`` and every descendant (``uv run`` and shells spawn children)."""
+
+    import psutil  # noqa: PLC0415
+
+    try:
+        root = psutil.Process(pid)
+        victims = [*root.children(recursive=True), root]
+    except psutil.NoSuchProcess:
+        return
+    for proc in victims:
+        try:
+            proc.kill()
+        except psutil.NoSuchProcess:
+            continue
+    psutil.wait_procs(victims, timeout=5)
+
+
 @shell_server.tool(description=_SHELL_TOOL_DESCRIPTION, annotations=_BASH_ANNOTATIONS)
 async def bash(
     ctx: Context,
@@ -358,8 +380,10 @@ async def bash(
     The model-facing description is computed at server build from the host
     (:data:`_SHELL_TOOL_DESCRIPTION`) so it names the real platform, effective
     shell, and POSIX-tool availability (#898); this docstring is the developer
-    reference. The command runs in a subprocess with a strict timeout and output
-    cap; the working directory must be inside ``CLIO_ALLOWED_ROOTS``.
+    reference. The command runs until it exits unless ``timeout_s`` is positive
+    (or an operator ceiling applies); its output is capped and the working
+    directory must be inside ``CLIO_ALLOWED_ROOTS``. A cancelled turn or a
+    timeout kills the command's whole process tree.
     """
 
     if not isinstance(command, str) or not command.strip():
@@ -379,12 +403,15 @@ async def bash(
         timeout = float(timeout_s)
     except (TypeError, ValueError):
         return _error("invalid_timeout", "timeout_s must be a number.")
-    if timeout <= 0 or timeout > _MAX_TIMEOUT_S:
+    if timeout < 0 or (_MAX_TIMEOUT_S > 0 and timeout > _MAX_TIMEOUT_S):
+        ceiling = f" and <= {_MAX_TIMEOUT_S:g}" if _MAX_TIMEOUT_S > 0 else ""
         return _error(
             "invalid_timeout",
-            f"timeout_s must be > 0 and <= {_MAX_TIMEOUT_S:g}.",
+            f"timeout_s must be >= 0{ceiling} (0 means no timeout).",
             details={"received": timeout_s, "max_timeout_s": _MAX_TIMEOUT_S},
         )
+    if timeout == 0 and _MAX_TIMEOUT_S > 0:
+        timeout = _MAX_TIMEOUT_S
     if not isinstance(max_output_bytes, int) or isinstance(max_output_bytes, bool):
         return _error("invalid_max_output", "max_output_bytes must be an integer.")
     if max_output_bytes <= 0 or max_output_bytes > _MAX_OUTPUT_BYTES:
@@ -457,11 +484,15 @@ async def bash(
     )
     timed_out = False
     try:
-        await asyncio.wait_for(process.wait(), timeout=timeout)
+        await asyncio.wait_for(process.wait(), timeout=timeout or None)
     except TimeoutError:
         timed_out = True
-        process.kill()
+        await asyncio.to_thread(_kill_process_tree, process.pid)
         await process.wait()
+    except asyncio.CancelledError:
+        # The turn was cancelled (the human stopped it): never orphan the command.
+        _kill_process_tree(process.pid)
+        raise
     stdout_result, stderr_result = await asyncio.gather(stdout_task, stderr_task)
     stdout, stdout_truncated = stdout_result
     stderr, stderr_truncated = stderr_result

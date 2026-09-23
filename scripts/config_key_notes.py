@@ -545,8 +545,8 @@ KEY_NOTES: dict[str, str] = {
         "commands with verbose output."
     ),
     "limits.shell_default_timeout_s": (
-        "Default wall-clock seconds a shell command may run when the caller specifies no timeout; "
-        "raise for slower default commands."
+        "Seconds a shell command may run when the caller passes no timeout; 0 (default) means "
+        "no timeout: the command runs until it exits or the turn is cancelled."
     ),
     "limits.shell_max_command_chars": (
         "Max character length of a shell command string the tool accepts; raise for scripts that "
@@ -557,8 +557,8 @@ KEY_NOTES: dict[str, str] = {
         "caller cap; raise for large output."
     ),
     "limits.shell_max_timeout_s": (
-        "Hard ceiling in seconds on the timeout a shell tool call may request; raise for "
-        "legitimately long-running shell operations."
+        "Optional operator ceiling in seconds on any shell command; 0 (default) means no "
+        "ceiling. When set, a call without a timeout runs up to this ceiling."
     ),
     "limits.tool_result_chars": (
         "Character bound on the transcript/evidence-metadata preview of a tool result; raise to "
@@ -571,6 +571,14 @@ KEY_NOTES: dict[str, str] = {
     "limits.turn_timeout_s": (
         "Seconds a turn may run with no progress before it is timed out; raise for long-running "
         "turns, lower to fail stuck turns faster."
+    ),
+    "limits.view_pdf_max_pages": (
+        "Max pages the view_pdf native tool may attach in one call; raise for a provider with a "
+        "higher per-request page ceiling, lower to force smaller page ranges."
+    ),
+    "limits.view_pdf_source_max_bytes": (
+        "Pre-parse byte ceiling on a view_pdf SOURCE file, checked before it is read or parsed; "
+        "raise to allow reading pages from a larger source document."
     ),
     "lm.api_base": (
         "Overrides the LM provider's default API base URL; set to point at a non-default endpoint "
@@ -801,9 +809,9 @@ KEY_NOTES: dict[str, str] = {
         "Keeps a pooled/reused SDK connection per scope instead of a fresh client per call; set "
         "false to restore pre-#891 fresh-connect behavior."
     ),
-    "providers.claude_code.probe_timeout_s": (
-        "Seconds one Claude Code model-discovery probe call may run before it is abandoned as "
-        "inconclusive; raise on hosts where cold CLI/SDK startup is slow."
+    "providers.claude_code.auth_status_timeout_s": (
+        "Seconds the Claude Code `auth status` sign-in check may run before it is abandoned as "
+        "inconclusive; raise on hosts where cold CLI startup is slow."
     ),
     "providers.claude_code.stateful_capacity": (
         "Max live Claude Code stateful-session entries before LRU eviction; raise on a host "

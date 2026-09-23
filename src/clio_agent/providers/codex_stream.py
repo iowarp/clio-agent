@@ -51,6 +51,7 @@ from clio_agent.providers.codex_audit import (
     emit_raw_event,
 )
 from clio_agent.providers.codex_credential_home import IsolatedCodexHome
+from clio_agent.providers.codex_errors import normalize_codex_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +100,7 @@ BARE_LM_FEATURES: dict[str, bool] = {
     "multi_agent": False,
     "shell_tool": False,
     "view_image": False,
+    "view_pdf": False,
     "workspace_dependencies": False,
 }
 BARE_LM_CONFIG_OVERRIDES = (
@@ -267,7 +269,9 @@ def _raise_failed_turn(event: Any) -> None:
     if str(status) != "failed":
         return
     error = getattr(turn, "error", None)
-    message = str(getattr(error, "message", "") or "Codex SDK turn failed")
+    message = normalize_codex_error_message(
+        str(getattr(error, "message", "") or "Codex SDK turn failed")
+    )
     raise CodexSDKError(message)
 
 

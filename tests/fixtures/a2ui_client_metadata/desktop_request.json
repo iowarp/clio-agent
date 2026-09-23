@@ -1,0 +1,11 @@
+{
+  "_provenance": "S8 review round (issue #1374 item 9). The explicit JS-authored header set is vendored verbatim from external/gact-tui/web/src/lib/transport/tauri-transport.ts's private headers() method (TauriClioTransport, ~line 235): {Accept, Content-Type, X-GACT-Version, X-A2UI-Version, optional Authorization} -- byte-for-byte identical to the browser transport's own set. NO Origin header, ever: desktop/src-tauri/src/gact_http.rs's own module doc states the WebView origin (http://tauri.localhost) is cross-origin to the local sidecar and clio emits no Access-Control-Allow-Origin, so a vanilla fetch() would be CORS-blocked -- gact_http is a Rust command that performs the request with the `ureq` native HTTP client instead (no CORS layer, no browser-style auto-attached Origin header). This fixture's 'origin' field is the WebView's OWN window.location.origin (never sent as a request header) for reference only.",
+  "transport": "desktop",
+  "origin": "http://tauri.localhost",
+  "headers": {
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+    "X-GACT-Version": "0.3",
+    "X-A2UI-Version": "0.9.1"
+  }
+}
