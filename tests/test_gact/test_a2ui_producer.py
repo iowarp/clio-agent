@@ -495,3 +495,26 @@ def test_producer_tool_docstrings_are_at_most_ten_lines_with_no_prop_lore() -> N
         assert len(lines) <= 10, f"{tool.name} docstring has {len(lines)} lines: {doc!r}"
         for banned in banned_substrings:
             assert banned not in doc, f"{tool.name} docstring still names {banned!r}"
+
+
+def test_every_producer_tool_builds_in_the_surfaces_domain() -> None:
+    """Merge regression: ``native_tool`` made ``domain`` keyword-required on the
+    release line while three producer builders never passed it, so building the
+    update/delete tools raised ``TypeError`` and only mypy noticed. Every
+    producer tool must construct and carry the ``surfaces`` domain."""
+    from clio_agent.gact.a2ui_producer import (
+        build_create_a2ui_surface_tool,
+        build_delete_a2ui_surface_tool,
+        build_update_a2ui_components_tool,
+        build_update_a2ui_data_model_tool,
+    )
+    from clio_agent.gact.agents.tool_instrumentation import DOMAIN_ATTR
+
+    for build in (
+        build_create_a2ui_surface_tool,
+        build_update_a2ui_components_tool,
+        build_update_a2ui_data_model_tool,
+        build_delete_a2ui_surface_tool,
+    ):
+        tool = build()
+        assert getattr(tool.func, DOMAIN_ATTR) == "surfaces", tool.name

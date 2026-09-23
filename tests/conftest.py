@@ -165,6 +165,48 @@ def floor_sandbox(monkeypatch):
     return floor
 
 
+@pytest.fixture(autouse=True)
+def _no_real_provider_dependency_install(request, monkeypatch):
+    """Refuse real optional-dependency installs (claude-agent-sdk, globus-sdk).
+
+    Claude Code model refresh and SDK selection self-repair by pip-installing the
+    SDK into the running interpreter. Unguarded, one test's refresh mutated the
+    suite venv mid-run, so tests that implicitly needed the SDK passed or failed
+    by collection order. Every test now sees the typed installer failure; tests
+    that exercise the installer itself (with ``subprocess.run`` stubbed) opt out
+    with ``@pytest.mark.real_dependency_installer``.
+    """
+    if request.node.get_closest_marker("real_dependency_installer"):
+        return
+    from clio_agent.providers import dependencies as _dependencies
+
+    def _refuse(_python_executable: str, requirement: str) -> list[str]:
+        raise _dependencies.ProviderDependencyInstallError(
+            f"real dependency installs are disabled in tests: {requirement}"
+        )
+
+    monkeypatch.setattr(_dependencies, "_install_command", _refuse)
+
+
+@pytest.fixture
+def claude_sdk_installed(monkeypatch):
+    """Make ``find_spec("claude_agent_sdk")`` succeed without the real SDK.
+
+    Claude Code readiness and binding gate on the SDK being importable. Tests
+    that pin bind/default semantics declare that precondition here instead of
+    depending on the suite venv's install state (CI syncs without the
+    claude-code extra, and real installs are refused suite-wide).
+    """
+    import importlib.machinery as _machinery
+    import sys as _sys
+    from types import ModuleType as _ModuleType
+
+    sdk = _ModuleType("claude_agent_sdk")
+    sdk.__spec__ = _machinery.ModuleSpec("claude_agent_sdk", None)
+    monkeypatch.setitem(_sys.modules, "claude_agent_sdk", sdk)
+    return sdk
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _clio_private_cte_daemon():
     """Point this suite run's cte-leg tests at a PRIVATE clio-core daemon.

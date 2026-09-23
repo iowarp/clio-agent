@@ -12,6 +12,8 @@ import pytest
 
 from clio_agent.providers import dependencies
 
+pytestmark = pytest.mark.real_dependency_installer
+
 
 def test_argonne_support_is_a_noop_when_globus_is_available(monkeypatch: Any) -> None:
     """An already prepared backend must not invoke a package installer."""
