@@ -12,6 +12,7 @@ retention helper module does not exist, so importing it raises ImportError.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,8 +35,18 @@ class _FakeAgent:
 
 
 @pytest.fixture()
-def app_client(tmp_path: Path) -> TestClient:
-    return TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=_FakeAgent()))
+def app_client(tmp_path: Path) -> Iterator[TestClient]:
+    # ENTERED so the lifespan runs and ``TurnRunner.bind_loop`` anchors every turn to
+    # the app-lifetime loop. An un-entered TestClient gives each request a transient
+    # anyio portal whose loop is torn down (``Runner.close`` -> ``_cancel_all_tasks``)
+    # the moment the POST returns, delivering ``CancelledError`` to the turn task while
+    # it awaits its off-loop prologue; on a loaded runner the still-queued executor
+    # job is cancelled before it starts, so no context frame is ever recorded and the
+    # end-to-end eviction assertion below fails (the intermittent CI failure).
+    with TestClient(
+        build_app(sessions_path=tmp_path / "sessions.json", agent=_FakeAgent())
+    ) as client:
+        yield client
 
 
 # --------------------------------------------------------------------------- #

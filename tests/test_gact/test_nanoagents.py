@@ -31,11 +31,14 @@ def _client(tmp_path: Path, spawns) -> TestClient:
 
 
 def test_no_spawns_no_children(tmp_path: Path) -> None:
-    client = _client(tmp_path, spawns=[])
-    sid = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
-    client.post(
-        f"/v1/sessions/{sid}/messages",
-        json={"parts": [{"type": "text", "text": "hi"}]},
-    )
-    all_sessions = client.get("/v1/sessions").json()["sessions"]
+    # ENTERED: an un-entered TestClient gives this POST its own transient anyio
+    # portal, which tears down (cancelling the still-running turn) the instant the
+    # ack lands -- before the assertion below can trust the session state settled.
+    with _client(tmp_path, spawns=[]) as client:
+        sid = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
+        client.post(
+            f"/v1/sessions/{sid}/messages",
+            json={"parts": [{"type": "text", "text": "hi"}]},
+        )
+        all_sessions = client.get("/v1/sessions").json()["sessions"]
     assert all(s["parent_session_id"] == "" for s in all_sessions)

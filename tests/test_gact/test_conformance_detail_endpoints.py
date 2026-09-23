@@ -39,11 +39,14 @@ def _client(tmp_path: Path, diffs: list[dict[str, Any]] | None = None) -> TestCl
 
 
 def test_message_detail_returns_stored_message(tmp_path: Path) -> None:
-    client = _client(tmp_path)
-    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
-    assistant = complete_turn(client, sid, "hello")
+    # ENTERED: complete_turn drives a real POST /messages turn; an un-entered
+    # TestClient's per-request transient portal is torn down (cancelling the turn)
+    # the instant the ack lands, before the assistant reply ever settles.
+    with _client(tmp_path) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        assistant = complete_turn(client, sid, "hello")
 
-    resp = client.get(f"/v1/sessions/{sid}/messages/{assistant['id']}")
+        resp = client.get(f"/v1/sessions/{sid}/messages/{assistant['id']}")
 
     assert resp.status_code == 200
     body = resp.json()
