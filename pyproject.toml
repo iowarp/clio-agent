@@ -142,7 +142,7 @@ claude-code = [
     # bound; the full import surface is verified under mcp 2.0.0 by
     # tests and the compat matrix doc. The live SDK-session smoke runs at the
     # P0 phase gate.
-    "claude-agent-sdk>=0.2.110",
+    "claude-agent-sdk>=0.2.156",
 ]
 
 flowcept = [
