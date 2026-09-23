@@ -272,7 +272,13 @@ RATCHET_BASELINE: dict[str, int] = {
     # HeaderMismatch, SEP-2578) -- the retry logic itself lives in the owner
     # module tools/mcp_header_mismatch.py; only the lazy import + call-site swap
     # land here.
-    "src/clio_agent/gact/agents/builders.py": 1547,
+    # view_pdf (feat/view-pdf): -1. The two dynamic-agent tool-resolution call
+    # sites now thread `**declared_native_capabilities(self.config)` (a single
+    # merged supports_vision/supports_pdf mapping from the owner module
+    # declared_native_tools.py) instead of one `supports_vision=...` kwarg each,
+    # and `_dynamic_agent_tools` forwards `**capabilities` generically -- net a
+    # one-line ratchet-down despite gaining PDF-capability threading.
+    "src/clio_agent/gact/agents/builders.py": 1546,
     # NEW entry (#1282, C1-S2 D1): crossed the flat 800 cap (797 -> 884) for
     # the #1275 fix's ONE chokepoint. Two pieces: (1) __init__ wraps every
     # tool callable this loop will ever run (MCP-bridged, instrumented

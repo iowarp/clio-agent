@@ -298,6 +298,8 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SUMMARIZER_TRANSPORT` | `summarizer.transport` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
 | `CLIO_TOOL_RESULT_CHARS` | `limits.tool_result_chars` | int | `12000` | `src/clio_agent/gact/evidence.py` |
 | `CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS` | `limits.transient_provider_retry_delays` | list | _(unset)_ | `src/clio_agent/agent.py` |
+| `CLIO_VIEW_PDF_MAX_PAGES` | `limits.view_pdf_max_pages` | int | `100` | `src/clio_agent/gact/view_pdf_tool.py` |
+| `CLIO_VIEW_PDF_SOURCE_MAX_BYTES` | `limits.view_pdf_source_max_bytes` | int | `536870912` | `src/clio_agent/gact/view_pdf_tool.py` |
 | `CLIO_WEB_DIR` | `paths.web_dir` | str | _(unset)_ | `src/clio_agent/gact/app.py` |
 | `CLIO_WINDOWS_SHELL_BACKEND` | `tools.shell.windows_backend` | str | `powershell` | `src/clio_agent/tools/servers/shell_server.py` |
 | `CLIO_WORKFLOW_STEP_INACTIVITY_S` | `workflows.step_inactivity_s` | float | `120.0` | `src/clio_agent/gact/workflow_step_watch.py` |

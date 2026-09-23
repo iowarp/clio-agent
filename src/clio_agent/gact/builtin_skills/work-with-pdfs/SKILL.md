@@ -9,6 +9,21 @@ Use this skill when a PDF must be read, reviewed, compared, or used as evidence.
 Do not treat extracted text as evidence about layout, figures, equations, scans,
 or handwriting.
 
+## Native PDF reading
+
+If the `view_pdf` tool is available, the connected model can read PDFs
+natively. Call it with the workspace path to attach the document to the next
+model step; both its text and page images reach the model directly, with no
+conversion step. For a long document, read it a page range at a time (the
+`pages` argument, e.g. `"1-50"`) rather than the whole file in one call — a
+whole-document call past the configured page ceiling is refused and reports
+the document's page count so the range can be chosen. Prefer `view_pdf` over
+the conversion-and-render workflow below whenever it is available.
+
+If `view_pdf` is absent, the active model has no evidenced native PDF
+capability. Use the conversion + rendered-page + `view_image` workflow
+described in the rest of this skill instead.
+
 ## Resolve evidence, not accessibility
 
 Every PDF supplied to the turn has a usable path on the connected agent:

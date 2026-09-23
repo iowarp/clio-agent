@@ -18,6 +18,7 @@ from clio_agent.gact.memory_tools import (
     build_memory_summary_tool,
 )
 from clio_agent.gact.view_image_tool import build_view_image_tool
+from clio_agent.gact.view_pdf_tool import build_view_pdf_tool
 
 
 def declared_view_image_capability(config: Any) -> bool:
@@ -38,16 +39,54 @@ def declared_view_image_capability(config: Any) -> bool:
     return supported
 
 
+def declared_view_pdf_capability(config: Any) -> bool:
+    """Return the evidenced PDF-document capability for one compiled agent profile."""
+
+    from clio_agent.gact import context  # noqa: PLC0415
+
+    app = context.active_app()
+    if app is None:
+        return bool(getattr(config, "supports_pdf", False))
+    from clio_agent.gact.providers.config import _pdf_capability  # noqa: PLC0415
+
+    supported, _reason = _pdf_capability(
+        app,
+        str(getattr(config, "provider_id", "") or ""),
+        str(getattr(config, "model", "") or ""),
+    )
+    return supported
+
+
+def declared_native_capabilities(config: Any) -> dict[str, bool]:
+    """Return the evidenced native-tool capability flags for one compiled agent profile.
+
+    Bundles :func:`declared_view_image_capability` and
+    :func:`declared_view_pdf_capability` into one ``**kwargs``-shaped mapping so
+    a call site threads every declared native capability with one expression
+    rather than growing one keyword argument per capability.
+    """
+
+    return {
+        "supports_vision": declared_view_image_capability(config),
+        "supports_pdf": declared_view_pdf_capability(config),
+    }
+
+
 def resolve_declared_native_tools(
     agent_def: Any,
     sources: dict[str, str],
     *,
     supports_vision: bool = False,
+    supports_pdf: bool = False,
 ) -> tuple[list[str], dict[str, Any], list[str]]:
     """Return requested names, native implementations, and gateway remainder."""
 
     declared = [str(name).strip() for name in agent_def.tools if str(name).strip()]
-    requested = [name for name in declared if name != "view_image" or supports_vision]
+    requested = [
+        name
+        for name in declared
+        if (name != "view_image" or supports_vision) and (name != "view_pdf" or supports_pdf)
+    ]
     available: dict[str, Any] = {}
     builders = {
         "ask_user": lambda: build_ask_user_tool(agent_def),
@@ -61,6 +100,8 @@ def resolve_declared_native_tools(
     }
     if supports_vision:
         builders["view_image"] = build_view_image_tool
+    if supports_pdf:
+        builders["view_pdf"] = build_view_pdf_tool
     for name, build in builders.items():
         if name not in requested:
             continue
@@ -70,4 +111,9 @@ def resolve_declared_native_tools(
     return requested, available, gateway_requested
 
 
-__all__ = ["declared_view_image_capability", "resolve_declared_native_tools"]
+__all__ = [
+    "declared_native_capabilities",
+    "declared_view_image_capability",
+    "declared_view_pdf_capability",
+    "resolve_declared_native_tools",
+]

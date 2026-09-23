@@ -40,7 +40,7 @@ from clio_agent.gact.agents.composition import (
     _runtime_dynamic_agent_children_context,
 )
 from clio_agent.gact.agents.declared_native_tools import (
-    declared_view_image_capability,
+    declared_native_capabilities,
     resolve_declared_native_tools,
 )
 from clio_agent.gact.agents.invalid_tool_selection import (
@@ -620,15 +620,14 @@ def _dynamic_agent_tools(
     base_agent: Any,
     agent_def: "AgentDef",
     sources: dict[str, str],
-    *,
-    supports_vision: bool = False,
+    **capabilities: bool,
 ) -> list[Any]:
     """Resolve the exact DSPy tools a tool-declaring dynamic agent may use."""
 
     requested_tools, available_tools, gateway_requested = resolve_declared_native_tools(
         agent_def,
         sources,
-        supports_vision=supports_vision,
+        **capabilities,
     )
     tool_executor = None
     if gateway_requested:
@@ -1022,7 +1021,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     base_agent,
                     agent_def,
                     (_sources := cast(dict[str, str], {})),
-                    supports_vision=declared_view_image_capability(self.config),
+                    **declared_native_capabilities(self.config),
                 )
                 _spawn_tools = build_spawn_runtime_tools(
                     base_agent,
@@ -1381,7 +1380,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                 base_agent,
                 agent_def,
                 (_sources := cast(dict[str, str], {})),
-                supports_vision=declared_view_image_capability(self.config),
+                **declared_native_capabilities(self.config),
             )
             skill_rt = _skill_runtime.skill_runtime_for_agent(
                 _ctx.active_app(), agent_def, session_id=_ctx.active_session_id()
