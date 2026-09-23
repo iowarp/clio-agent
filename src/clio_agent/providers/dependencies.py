@@ -12,7 +12,10 @@ import threading
 from pathlib import Path
 
 _ARGONNE_REQUIREMENT = "globus-sdk>=3.0.0"
-_CLAUDE_CODE_REQUIREMENT = "claude-agent-sdk>=0.2.110"
+# Exactly the locked SDK (uv.lock). An open floor would resolve the newest
+# release, and claude-agent-sdk 0.2.157 ships no Windows wheel: its sdist
+# installs without the bundled Claude Code CLI the SDK transport runs.
+_CLAUDE_CODE_REQUIREMENT = "claude-agent-sdk==0.2.156"
 _INSTALL_TIMEOUT_SECONDS = 180
 _INSTALL_LOCK = threading.Lock()
 
