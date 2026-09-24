@@ -114,6 +114,16 @@ def test_codex_maps_level_to_codex_reasoning_effort() -> None:
     assert resolve_thinking("codex", "high", 0).sdk_thinking is None
 
 
+def test_codex_maps_max_and_ultra_efforts() -> None:
+    """Newer Codex models report 'max'/'ultra' efforts (#1436) -- not dropped."""
+    plan_max = resolve_thinking("codex", "max", 0)
+    assert plan_max.supported is True
+    assert plan_max.litellm_kwargs == {"codex_reasoning_effort": "max"}
+    plan_ultra = resolve_thinking("codex", "ultra", 0)
+    assert plan_ultra.supported is True
+    assert plan_ultra.litellm_kwargs == {"codex_reasoning_effort": "ultra"}
+
+
 def test_explicit_budget_override_wins_for_budget_providers() -> None:
     """A level + explicit budget: the explicit budget replaces the level default."""
     plan = resolve_thinking("claude_code", "high", 5000)

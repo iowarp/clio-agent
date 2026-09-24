@@ -45,6 +45,16 @@ def test_codex_without_reported_efforts_offers_nothing() -> None:
     assert reasoning["source"] == "codex_sdk_unreported"
 
 
+def test_codex_offers_max_and_ultra_efforts_the_sdk_reports() -> None:
+    """A model reporting 'max'/'ultra' (#1436) offers them -- not dropped as unmapped."""
+    reasoning = model_reasoning(
+        "codex", _codex_profile(["medium", "high", "xhigh", "max", "ultra"], "high")
+    )
+    assert reasoning["levels"] == ["medium", "high", "xhigh", "max", "ultra"]
+    assert reasoning["default"] == "high"
+    assert "reason" not in reasoning
+
+
 _CLI_EFFORT = ["low", "medium", "high", "xhigh", "max"]
 
 
@@ -319,6 +329,41 @@ def test_claude_code_alias_resolves_to_its_overlay_row() -> None:
     assert model_effort_levels("claude_code", "sonnet") == tuple(_CLI_EFFORT)
     assert model_effort_levels("claude_code", "claude-sonnet-5") == tuple(_CLI_EFFORT)
     assert model_effort_levels("claude_code", "haiku") is None
+
+
+def test_resolve_configured_model_id_follows_the_cli_alias() -> None:
+    """A configured claude_code alias ('sonnet') resolves to its catalog id.
+
+    GET /v1/providers/lm reports the configured alias as `model`; a client
+    matching that value against the catalog's full model ids (e.g.
+    'claude-sonnet-5') needs the same resolution the provider itself uses --
+    not a hand-typed table -- to find the row's reasoning levels.
+    """
+    from clio_agent.providers.model_discovery import ProviderDiscoveryResult, record_refresh
+    from clio_agent.providers.reasoning_levels import resolve_configured_model_id
+
+    record_refresh(
+        ProviderDiscoveryResult(
+            provider="claude_code",
+            discovered=[
+                {
+                    "id": "claude-sonnet-5",
+                    "name": "Sonnet",
+                    "supported_effort_levels": _CLI_EFFORT,
+                    "cli_values": ["sonnet"],
+                }
+            ],
+            source="claude_code_catalog",
+        )
+    )
+    assert resolve_configured_model_id("claude_code", "sonnet") == "claude-sonnet-5"
+    # Already a real id: unchanged.
+    assert resolve_configured_model_id("claude_code", "claude-sonnet-5") == "claude-sonnet-5"
+    # Unknown alias / no discovery yet: falls back to the input unchanged.
+    assert resolve_configured_model_id("claude_code", "haiku") == "haiku"
+    # Non-aliasing providers: always unchanged.
+    assert resolve_configured_model_id("codex", "gpt-5.6-sol") == "gpt-5.6-sol"
+    assert resolve_configured_model_id("claude_code", "") == ""
 
 
 def test_default_source_names_a_clio_shipped_default() -> None:

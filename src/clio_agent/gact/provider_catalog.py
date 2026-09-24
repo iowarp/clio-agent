@@ -120,6 +120,10 @@ def model_catalog_row(
         "deployment": profile.raw.get("deployment") or profile.raw.get("owned_by") or "",
         "model_id": profile.id,
         "revision": str(profile.raw.get("revision") or profile.raw.get("version") or ""),
+        # The CLI values (e.g. claude_code's "sonnet") that select this row --
+        # the same resolution the provider itself uses (claude_code_effort.py),
+        # never a hand-typed table. Empty for providers with no alias concept.
+        "aliases": [str(a) for a in profile.raw.get("cli_values") or [] if str(a).strip()],
         "modalities": _modalities(profile) if evidenced or modality_evidenced else ["text"],
         # The levels a person can actually choose for THIS model, derived from
         # provider truth and restricted to what resolve_thinking maps.
