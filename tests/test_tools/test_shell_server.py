@@ -12,6 +12,7 @@ import pytest
 from fastmcp import Client
 
 from clio_agent import conf
+from clio_agent.tools.execution import tool_workspace_context
 from clio_agent.tools.servers.shell_server import (
     ShellEnvFacts,
     _detect_shell_env,
@@ -137,6 +138,43 @@ async def test_shell_bash_runs_simple_command(
 
 
 @pytest.mark.asyncio
+async def test_shell_bash_pins_default_cwd_to_active_workspace_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """C3: a managed backend process can outlive its boot-time cwd and serve a
+    session bound to a different workspace (e.g. desktop's launcher-inherited
+    cwd vs. the active session's workspace root). When the model omits an
+    explicit ``cwd``, the shell tool must run in the ACTIVE SESSION'S workspace
+    root, never wherever the OS process happened to boot — the desktop bug
+    that put ~10 ``sensor_readings_*.md`` files in the install directory
+    instead of the workspace."""
+
+    workspace_root = tmp_path / "workspace"
+    boot_time_cwd = tmp_path / "install-dir"
+    workspace_root.mkdir()
+    boot_time_cwd.mkdir()
+    monkeypatch.chdir(boot_time_cwd)
+
+    if os.name == "nt":
+        command = f"& '{sys.executable}' -c \"import os; print(os.getcwd())\""
+    else:
+        command = f"'{sys.executable}' -c \"import os; print(os.getcwd())\""
+
+    with tool_workspace_context(str(workspace_root)):
+        async with Client(shell_server) as client:
+            result = await client.call_tool(
+                "bash",
+                {"command": command, "timeout_s": 5},
+            )
+
+    data = _parse_result(result)
+    assert data["exit_code"] == 0
+    assert Path(data["stdout"].strip()).resolve() == workspace_root.resolve()
+    assert Path(data["cwd"]).resolve() == workspace_root.resolve()
+    assert Path(data["cwd"]).resolve() != boot_time_cwd.resolve()
+
+
+@pytest.mark.asyncio
 async def test_shell_bash_streams_typed_terminal_chunks_before_completion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -235,9 +273,7 @@ def _spawn_tree_command(pid_file: Path, parent_sleep_s: int) -> str:
     workdir = pid_file.parent
     child = workdir / "tree_child.py"
     child.write_text(
-        "import os, sys, time\n"
-        "open(sys.argv[1], 'w').write(str(os.getpid()))\n"
-        "time.sleep(120)\n",
+        "import os, sys, time\nopen(sys.argv[1], 'w').write(str(os.getpid()))\ntime.sleep(120)\n",
         encoding="utf-8",
     )
     parent = workdir / "tree_parent.py"

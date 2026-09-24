@@ -425,7 +425,13 @@ def _coerce_path(filepath: str, *, field: str) -> Path:
         )
     path = Path(filepath).expanduser()
     if not path.is_absolute():
-        path = Path.cwd() / path
+        # Pin a relative fs_read/fs_write/fs_edit path to the active session's
+        # workspace root (when a tool call has one bound) rather than the OS
+        # process's own cwd. The managed backend process outlives its boot-time
+        # cwd and can serve multiple workspaces, so Path.cwd() is only a
+        # last-resort fallback for the app-less CLI grounding path.
+        base = _active_workspace_root() or Path.cwd()
+        path = base / path
     return path
 
 
