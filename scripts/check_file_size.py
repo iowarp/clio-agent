@@ -936,7 +936,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # providers/session_lifecycle.py -- only the threaded kwarg is here.
     # 862 -> 866 (#1333): acompletion runs the blocking pool bridge off the loop (+1 import,
     # +2 comment, +1 to_thread call); the bridge itself stays in claude_code_sdk_pool.py.
-    "src/clio_agent/providers/claude_code_litellm.py": 866,
+    # 866 -> 864 (U1 #775): the astreaming usage/cost extraction moved to the
+    # shared claude_code_bridge.sdk_result_usage; a module-level import replaced
+    # the two local ClaudeCodeLLM helper aliases (net shrink despite the new call).
+    "src/clio_agent/providers/claude_code_litellm.py": 864,
     # (process_census.py's entry retired: 711 lines, back under the flat 800 cap.)
     # NEW entry (#1305 review round): crossed the flat 800 cap (800 -> 825)
     # for the F2/F4/F6b fixes an adversarial review demanded on
@@ -971,7 +974,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # Ratchet back with the #714/#767 decomposition.
     # MERGE (PR #1298 x #1310): 863 -> 879. Both campaigns' stream-entry lifecycle
     # additions coexist; neither side's hardening was dropped.
-    "src/clio_agent/providers/claude_code_sessions.py": 879,
+    # 879 -> 874 (U1 #775): _streaming_chunk's token/cost field conversion moved
+    # to the shared claude_code_bridge.usage_chunk_fields (also used by the
+    # blocking transport), so the real-cost passthrough fix shrank this file.
+    "src/clio_agent/providers/claude_code_sessions.py": 874,
     # #900: +2 for wiring probe_process_tree into the doctor collect().
     # owner ruling 2026-07-14: +3 for the DEGRADED-by-policy local-ARC doctor row.
     # #947 DEBT (recorded 2026-07-18, #948 S4): residual over the pre-#947 count

@@ -24,6 +24,7 @@ import uuid
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
+from clio_agent.providers import claude_code_bridge as _bridge
 from clio_agent.providers._cli_provider import (
     messages_to_prompt,
     raise_model_rejected,
@@ -35,9 +36,6 @@ from clio_agent.providers.claude_code_audit import (
     emit_request_trace,
 )
 from clio_agent.providers.claude_code_audit import trace_json as _trace_json
-from clio_agent.providers.claude_code_bridge import (
-    build_model_response as _build_model_response,
-)
 from clio_agent.providers.claude_code_multimodal import (
     messages_to_claude_input,
     native_input_summary,
@@ -420,8 +418,8 @@ async def _astream_sdk(
                     len(final_text),
                     emitted_partial,
                 )
-                if isinstance(getattr(msg, "usage", None), dict):
-                    final_usage = msg.usage or {}
+                if usage := _bridge.sdk_result_usage(msg):
+                    final_usage = usage
                 if getattr(msg, "stop_reason", None):
                     final_reason = str(msg.stop_reason)
             elif isinstance(msg, ResultMessage):
@@ -436,8 +434,8 @@ async def _astream_sdk(
                         "subtype": getattr(msg, "subtype", None),
                     }
                 )
-                if isinstance(getattr(msg, "usage", None), dict):
-                    final_usage = msg.usage or {}
+                if usage := _bridge.sdk_result_usage(msg):
+                    final_usage = usage
                 if getattr(msg, "stop_reason", None):
                     final_reason = str(msg.stop_reason)
                 if not final_text and getattr(msg, "result", None):
@@ -669,7 +667,7 @@ class ClaudeCodeLLM(CustomLLM):
                 }
             ),
         )
-        return _build_model_response(text=text, model=clean_model, usage_payload=usage)
+        return _bridge.build_model_response(text=text, model=clean_model, usage_payload=usage)
 
     async def acompletion(
         self,

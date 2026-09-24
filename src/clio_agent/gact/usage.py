@@ -173,8 +173,18 @@ def _usage_from_history_slice(start: Any, app: Optional["FastAPI"] = None) -> di
             entry_cache_read, entry_cache_write, _ = _usage_cache_tokens(usage)
             cache_read += entry_cache_read
             cache_write += entry_cache_write
-            entry_cost = float(usage.get("cost_usd") or usage.get("total_cost") or 0.0)
-            if entry_cost:
+            # dspy.clients.base_lm records a REAL provider/subscription cost as
+            # the history entry's own top-level "cost" (from the LM response's
+            # ``_hidden_params["response_cost"]``) -- a SIBLING of "usage", not
+            # nested inside it. That's the primary, authoritative source; the
+            # nested usage["cost_usd"]/["total_cost"] fallback covers upstream
+            # OpenAI-compatible proxies that stick their own cost field onto
+            # the usage block instead (iowarp/clio-agent#8).
+            entry_cost_raw = entry.get("cost")
+            if entry_cost_raw is None:
+                entry_cost_raw = usage.get("cost_usd") or usage.get("total_cost")
+            entry_cost = float(entry_cost_raw or 0.0)
+            if entry_cost_raw is not None:
                 cost_reported = True
             raw_cost += entry_cost
             last_model = entry.get("model") or last_model
@@ -446,13 +456,22 @@ def _usage_from_dspy_history() -> dict[str, Any]:
     input_tok = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
     output_tok = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
     cache_read, cache_write, _ = _usage_cache_tokens(usage)
-    raw_cost = float(usage.get("cost_usd") or usage.get("total_cost") or 0.0)
-    cost_known = raw_cost != 0.0
+    # dspy.clients.base_lm records a REAL provider/subscription cost as the
+    # history entry's own top-level "cost" (from the LM response's
+    # ``_hidden_params["response_cost"]``) -- a SIBLING of "usage", not nested
+    # inside it. Primary source; the nested usage["cost_usd"]/["total_cost"]
+    # fallback covers upstream OpenAI-compatible proxies that stick their own
+    # cost field onto the usage block instead (iowarp/clio-agent#8).
+    entry_cost_raw = last.get("cost") if isinstance(last, dict) else getattr(last, "cost", None)
+    if entry_cost_raw is None:
+        entry_cost_raw = usage.get("cost_usd") or usage.get("total_cost")
+    raw_cost = float(entry_cost_raw or 0.0)
+    cost_known = entry_cost_raw is not None
     # iowarp/clio-agent#8: some OpenAI-compatible proxies don't pass
     # cost_usd through, so the upstream usage dict reports zero. Fall
     # back to a per-token price table keyed by the LM's model id when
     # raw_cost == 0.
-    if raw_cost == 0.0:
+    if raw_cost == 0.0 and not cost_known:
         model = ""
         if isinstance(last, dict):
             model = last.get("model") or last.get("response", {}).get("model", "") or ""

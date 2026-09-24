@@ -58,6 +58,7 @@ import time
 from collections.abc import AsyncIterator
 from typing import Any
 
+from clio_agent.providers.claude_code_bridge import usage_chunk_fields
 from clio_agent.providers.claude_code_cancel import (
     register_sdk_stream,
     unregister_sdk_stream,
@@ -154,18 +155,12 @@ def _streaming_chunk(
     finish_reason: str | None = None,
     usage_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build a LiteLLM-compatible streaming chunk (streaming-transport helper)."""
-    usage: dict[str, int] | None = None
-    if usage_payload is not None:
-        prompt_tokens = int(usage_payload.get("input_tokens", 0) or 0)
-        prompt_tokens += int(usage_payload.get("cache_creation_input_tokens", 0) or 0)
-        prompt_tokens += int(usage_payload.get("cache_read_input_tokens", 0) or 0)
-        completion_tokens = int(usage_payload.get("output_tokens", 0) or 0)
-        usage = {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": prompt_tokens + completion_tokens,
-        }
+    """Build a LiteLLM-compatible streaming chunk (streaming-transport helper).
+
+    Token/cost field conversion is shared with the blocking transport --
+    see :func:`clio_agent.providers.claude_code_bridge.usage_chunk_fields`.
+    """
+    usage = usage_chunk_fields(usage_payload) if usage_payload is not None else None
     return {
         "text": text,
         "is_finished": is_finished,

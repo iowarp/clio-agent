@@ -18,6 +18,7 @@ import uuid
 from collections import OrderedDict
 from typing import Any
 
+from clio_agent.providers.claude_code_bridge import sdk_result_usage
 from clio_agent.providers.claude_code_multimodal import sdk_prompt
 from clio_agent.providers.claude_code_options import build_sdk_options, thinking_key
 
@@ -98,9 +99,10 @@ class _SdkSession:
             if isinstance(msg, AssistantMessage):
                 parts.extend(b.text for b in msg.content if isinstance(b, TextBlock))
             elif isinstance(msg, ResultMessage):
-                u = getattr(msg, "usage", None)
-                if isinstance(u, dict):
-                    usage = u
+                # #775: real usage AND the SDK's own real cost (total_cost_usd) --
+                # see sdk_result_usage for the model_usage fallback + no-fabricated-
+                # zero contract shared with the streaming transport.
+                usage = sdk_result_usage(msg)
                 if getattr(msg, "is_error", False):
                     status = getattr(msg, "api_error_status", None)
                     if status == CLAUDE_CODE_REJECTION_STATUS:
