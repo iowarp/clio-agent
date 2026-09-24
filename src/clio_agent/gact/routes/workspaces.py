@@ -36,6 +36,7 @@ from clio_agent.gact.routes.workspace_file_listing import (
     collect_workspace_file_entries,
     workspace_file_media_type,
 )
+from clio_agent.gact.routes.workspace_file_policy import is_internal_workspace_file_directory
 from clio_agent.gact.routes.workspace_grant_delete import register_workspace_grant_delete_route
 from clio_agent.gact.routes.workspace_root_materialization import materialize_workspace_root
 from clio_agent.gact.types import (
@@ -54,7 +55,6 @@ if TYPE_CHECKING:
 # of entries so a giant repo cannot lock the picker for seconds, and skip
 # cost-walking dirs (VCS metadata, caches, build output, vendored deps).
 _FILE_PICKER_LIMIT = 5000
-_INTERNAL_FILE_PICKER_LIMIT = 32
 _GRANTOR_USER = "user"
 
 
@@ -504,7 +504,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
     # filesystem walk runs.
 
     @app.get("/v1/workspaces/{wid}/files")
-    async def list_workspace_files(wid: str) -> dict[str, Any]:
+    async def list_workspace_files(wid: str, include_hidden: bool = True) -> dict[str, Any]:
         """SPEC §6.9 — list files under a workspace's root_path.
 
         Returns ``{"entries": [{"path", "type", "size", "modified"}, …]}``
@@ -512,6 +512,11 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         labels. Type is "file" or "dir"; the picker filters dirs
         client-side. Hard-capped at _FILE_PICKER_LIMIT to keep large
         repos from blocking the modal.
+
+        ``include_hidden`` (default ``true``) controls dotfiles/dot-directories,
+        ``.clio`` included — there is no server-side reason to hide a workspace's
+        own agent state from its own Files view. Pass ``false`` to power a
+        client-side "Hide dot files and folders" preference.
         """
 
         ws = app.state.workspaces.get(wid)
@@ -535,7 +540,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
             wid,
             root,
             limit=_FILE_PICKER_LIMIT,
-            internal_limit=_INTERNAL_FILE_PICKER_LIMIT,
+            include_hidden=include_hidden,
         )
         return {"entries": entries}
 
@@ -567,9 +572,20 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
             "type": "dir",
             "children": [],
         }
+        # The repo-map contract endpoint keeps its historic scope (only CLIO's own
+        # ``.clio``/``.clio-*`` service storage excluded) rather than the Files view's
+        # new dotfile toggle, so a repo full of ordinary dotfiles (.github, .editorconfig)
+        # keeps showing here exactly as it always has.
         body = await list_workspace_files(wid)
         entries = body.get("entries", [])
-        visible_entries = [entry for entry in entries if not entry.get("internal", False)]
+        visible_entries = [
+            entry
+            for entry in entries
+            if not any(
+                is_internal_workspace_file_directory(part)
+                for part in Path(str(entry.get("path") or "")).parts
+            )
+        ]
         nodes_by_path: dict[str, dict[str, Any]] = {"": tree}
         token_estimate = 0
         for entry in visible_entries:

@@ -152,18 +152,71 @@ def test_workspace_file_read_returns_plain_text_not_json(tmp_path: Path) -> None
     assert resp.content == b"hello picker\n"
 
 
-def test_workspace_file_listing_marks_service_storage_without_spending_visible_cap(
+def test_workspace_file_listing_walks_into_dot_directories_by_default(
     tmp_path: Path,
-    monkeypatch: MonkeyPatch,
 ) -> None:
+    """Owner ruling: the Files view shows ALL dot files/folders, .clio included —
+    there is no reason to hide a workspace's own agent state from itself."""
+
     c = _client(tmp_path)
     project = tmp_path / "project"
     project.mkdir()
     c.app.state.workspaces.update("ws_default", root_path=str(project))
-    for internal_root in (project / ".clio", project / ".clio-child-cache"):
-        internal_root.mkdir()
-        for index in range(8):
-            (internal_root / f"internal-{index}.json").write_text("{}", encoding="utf-8")
+    (project / ".clio").mkdir()
+    (project / ".clio" / "state.json").write_text("{}", encoding="utf-8")
+    (project / ".clio-child-cache").mkdir()
+    (project / ".clio-child-cache" / "cache.json").write_text("{}", encoding="utf-8")
+    (project / "report.md").write_text("visible", encoding="utf-8")
+
+    response = c.get("/v1/workspaces/ws_default/files")
+
+    assert response.status_code == 200
+    entries = response.json()["entries"]
+    assert [(entry["path"], entry["type"], entry["internal"]) for entry in entries] == [
+        (str(Path(".clio")), "dir", False),
+        (str(Path(".clio") / "state.json"), "file", False),
+        (str(Path(".clio-child-cache")), "dir", False),
+        (str(Path(".clio-child-cache") / "cache.json"), "file", False),
+        ("report.md", "file", False),
+    ]
+
+
+def test_workspace_file_listing_include_hidden_false_hides_dotfiles(
+    tmp_path: Path,
+) -> None:
+    """The optional client toggle ("Hide dot files and folders", default off) maps to
+    ``include_hidden=false`` and hides every dotfile/dot-directory, not just .clio."""
+
+    c = _client(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    c.app.state.workspaces.update("ws_default", root_path=str(project))
+    (project / ".clio").mkdir()
+    (project / ".clio" / "state.json").write_text("{}", encoding="utf-8")
+    (project / ".env").write_text("SECRET=1", encoding="utf-8")
+    (project / "report.md").write_text("visible", encoding="utf-8")
+
+    response = c.get("/v1/workspaces/ws_default/files", params={"include_hidden": "false"})
+
+    assert response.status_code == 200
+    entries = response.json()["entries"]
+    assert [entry["path"] for entry in entries] == ["report.md"]
+
+
+def test_workspace_file_listing_caps_still_apply_inside_dot_directories(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Descending into .clio spends the SAME budget as everything else — no separate
+    unbounded allowance, so a huge .clio cannot lock the picker."""
+
+    c = _client(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    c.app.state.workspaces.update("ws_default", root_path=str(project))
+    (project / ".clio").mkdir()
+    for index in range(8):
+        (project / ".clio" / f"internal-{index}.json").write_text("{}", encoding="utf-8")
     (project / "report.md").write_text("visible", encoding="utf-8")
     monkeypatch.setattr(workspace_routes, "_FILE_PICKER_LIMIT", 3)
 
@@ -171,18 +224,33 @@ def test_workspace_file_listing_marks_service_storage_without_spending_visible_c
 
     assert response.status_code == 200
     entries = response.json()["entries"]
-    assert [
-        (entry["path"], entry["type"], entry["internal"], entry.get("size")) for entry in entries
-    ] == [
-        (".clio", "dir", True, None),
-        (".clio-child-cache", "dir", True, None),
-        ("report.md", "file", False, 7),
-    ]
+    assert len(entries) == 3
+    # report.md never gets reached: the cap is spent walking .clio first.
+    assert "report.md" not in [entry["path"] for entry in entries]
+
+
+def test_workspace_repo_map_still_excludes_only_clio_service_storage(
+    tmp_path: Path,
+) -> None:
+    """repo_map keeps its historic, narrower scope: only .clio/.clio-* is excluded, so an
+    ordinary dotfile like .editorconfig still appears (unlike the new Files-view toggle)."""
+
+    c = _client(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    c.app.state.workspaces.update("ws_default", root_path=str(project))
+    (project / ".clio").mkdir()
+    (project / ".clio" / "state.json").write_text("{}", encoding="utf-8")
+    (project / ".editorconfig").write_text("root = true", encoding="utf-8")
+    (project / "report.md").write_text("visible", encoding="utf-8")
 
     repo_map = c.get("/v1/workspaces/ws_default/repo_map")
 
     assert repo_map.status_code == 200
-    assert [child["path"] for child in repo_map.json()["tree"]["children"]] == ["report.md"]
+    child_paths = [child["path"] for child in repo_map.json()["tree"]["children"]]
+    assert ".editorconfig" in child_paths
+    assert "report.md" in child_paths
+    assert ".clio" not in child_paths
 
 
 def test_workspace_file_read_serves_png_as_raw_bytes(tmp_path: Path) -> None:

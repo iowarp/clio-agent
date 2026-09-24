@@ -10,11 +10,9 @@ from typing import Any
 
 from fastapi import FastAPI
 
+from clio_agent.gact.resource_materialization import MANAGED_INPUT_DIRECTORY
 from clio_agent.gact.resource_mime import detect_media_type
-from clio_agent.gact.routes.workspace_file_policy import (
-    is_internal_workspace_file_directory,
-    skip_workspace_file_directory,
-)
+from clio_agent.gact.routes.workspace_file_policy import skip_workspace_file_directory
 from clio_agent.runtime import trace
 
 
@@ -32,9 +30,19 @@ async def collect_workspace_file_entries(
     root: Path,
     *,
     limit: int,
-    internal_limit: int,
+    include_hidden: bool = True,
 ) -> list[dict[str, Any]]:
-    """Walk ``root`` off-loop and project managed inputs as visible Sources."""
+    """Walk ``root`` off-loop and project managed inputs as visible Sources.
+
+    ``.clio`` (agent state, sessions, uploaded-input copies) is walked like any other
+    directory when ``include_hidden`` is true (the default, per owner ruling: there is
+    no reason to hide it from the Files view). The one exception is
+    ``MANAGED_INPUT_DIRECTORY`` (``.clio/inputs``): its contents are surfaced below as
+    friendly ``Sources/<resource_id>/<name>`` entries, so the raw subtree is skipped here
+    to avoid showing the same uploaded file twice under two different paths.
+    When ``include_hidden`` is false, any dotfile or dot-directory (not just ``.clio``)
+    is skipped, powering the client's "Hide dot files and folders" setting.
+    """
 
     allow_symlinks = False
     try:
@@ -52,10 +60,9 @@ async def collect_workspace_file_entries(
 
     entries: list[dict[str, Any]] = []
     remaining = limit
-    remaining_internal = internal_limit
 
     def walk(directory: Path) -> None:
-        nonlocal remaining, remaining_internal
+        nonlocal remaining
         if remaining <= 0:
             return
         try:
@@ -66,13 +73,14 @@ async def collect_workspace_file_entries(
             if remaining <= 0:
                 return
             name = child.name
-            relative = str(child.relative_to(root))
-            if is_internal_workspace_file_directory(name):
-                if remaining_internal > 0:
-                    entries.append({"path": relative, "type": "dir", "internal": True})
-                    remaining_internal -= 1
-                continue
+            relative_path = child.relative_to(root)
+            relative = str(relative_path)
             if skip_workspace_file_directory(name):
+                continue
+            if relative_path == MANAGED_INPUT_DIRECTORY:
+                # Surfaced separately below as Sources/<resource_id>/<name>.
+                continue
+            if not include_hidden and name.startswith("."):
                 continue
             try:
                 if child.is_symlink() and not allow_symlinks:
