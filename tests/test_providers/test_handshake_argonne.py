@@ -407,3 +407,141 @@ async def test_full_handshake_monkeypatched_discovery(
     assert nemotron.context_window == 262144
     assert nemotron.is_reasoning is True
     assert report.model("openai/gpt-oss-120b").context_window == 65536
+
+
+# --------------------------------------------------------------------------- #
+# ALCF 401 during discovery -> typed reauthentication reason (live-check fix)
+# --------------------------------------------------------------------------- #
+
+#: ALCF's own "high-assurance timeout" 401 body, verified live against the
+#: real inference API.
+_ALCF_HIGH_ASSURANCE_BODY = {
+    "error": {
+        "code": "unauthorized",
+        "message": (
+            "Error: Permission denied from internal policies. This is likely due "
+            "to a high-assurance timeout. Please logout ... and re-authenticate ..."
+        ),
+    }
+}
+
+
+class _Fake401Client(_FakeClient):
+    """A models call rejected with ALCF's real 401 shape; /jobs still serves."""
+
+    async def get(self, url: str, headers: dict[str, str] | None = None) -> _FakeResponse:
+        self.calls.append(url)
+        if url.endswith("/models"):
+            return _FakeResponse(_ALCF_HIGH_ASSURANCE_BODY, status_code=401)
+        return await super().get(url, headers)
+
+
+@pytest.mark.asyncio
+async def test_discover_models_raises_typed_reauth_on_401() -> None:
+    from clio_agent.providers.handshake.base import DiscoveryAuthRejected
+
+    client = _Fake401Client({})
+    hs = ArgonneHandshake(provider=None)
+    with pytest.raises(DiscoveryAuthRejected) as excinfo:
+        await hs.discover_models(client, _sophia_context())
+    assert excinfo.value.reason == "argonne_reauthentication_required"
+    assert "high-assurance timeout" in excinfo.value.detail
+
+
+@pytest.mark.asyncio
+async def test_full_handshake_reports_reauth_required_not_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 401 must downgrade auth (health stops reporting ready), never stay OK.
+
+    ``check_connectivity`` resolves the (syntactically valid) Globus token with
+    no network call and reports OK; only ``discover_models`` actually reaches
+    ALCF's ``/models`` and sees the policy rejection. The end-to-end report
+    must carry that downgrade, not the connectivity phase's stale OK.
+    """
+    monkeypatch.setenv("CLIO_ARGONNE_TOKEN", "stale-but-globus-valid-token")
+
+    async def _fake_discover(
+        self: ArgonneHandshake, client: Any, ctx: HandshakeContext
+    ) -> list[dict[str, Any]]:
+        from clio_agent.providers.handshake.base import DiscoveryAuthRejected
+
+        raise DiscoveryAuthRejected(
+            "argonne_reauthentication_required",
+            _ALCF_HIGH_ASSURANCE_BODY["error"]["message"],
+        )
+
+    monkeypatch.setattr(ArgonneHandshake, "discover_models", _fake_discover)
+
+    hs = ArgonneHandshake(provider=None)
+    ctx = HandshakeContext(
+        provider_id="argonne",
+        provider_kind="argonne",
+        api_base=SOPHIA_API_BASE,
+        auth_mode="passive",
+    )
+    report = await hs.handshake(ctx)
+
+    assert report.connectivity is ConnectivityState.OK
+    assert report.auth is AuthState.REJECTED
+    assert report.models == ()
+    assert report.error is not None
+    assert report.error.startswith("argonne_reauthentication_required:")
+    assert "high-assurance timeout" in report.error
+    assert report.ok is False
+
+
+@pytest.mark.asyncio
+async def test_any_401_body_without_alcf_shape_is_still_typed() -> None:
+    """Any ALCF 401/403 on discovery is typed, not a generic HTTP string."""
+    from clio_agent.providers.handshake.base import DiscoveryAuthRejected
+
+    class _PlainForbiddenClient(_FakeClient):
+        async def get(self, url: str, headers: dict[str, str] | None = None) -> _FakeResponse:
+            self.calls.append(url)
+            if url.endswith("/models"):
+                return _FakeResponse({"detail": "Forbidden"}, status_code=403)
+            return await super().get(url, headers)
+
+    hs = ArgonneHandshake(provider=None)
+    with pytest.raises(DiscoveryAuthRejected) as excinfo:
+        await hs.discover_models(_PlainForbiddenClient({}), _sophia_context())
+    assert excinfo.value.reason == "argonne_reauthentication_required"
+    assert excinfo.value.detail  # never empty/generic
+
+
+# --------------------------------------------------------------------------- #
+# globus-sdk not installed -> its own typed reason, distinct from a stored
+# token that fails to refresh
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_missing_globus_sdk_is_its_own_typed_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(argonne_auth, "tokens_exist", lambda: True)
+
+    def _boom(_force: bool = False, *, allow_interactive: bool = True) -> str:
+        raise argonne_auth.GlobusUnavailable(
+            "Argonne / ALCF provider requires the 'globus-sdk' package. "
+            "Install with:  pip install 'clio-agent[argonne]'"
+        )
+
+    monkeypatch.setattr(argonne_auth, "get_access_token", _boom)
+
+    hs = ArgonneHandshake(provider=None)
+    ctx = HandshakeContext(
+        provider_id="argonne",
+        provider_kind="argonne",
+        api_base=SOPHIA_API_BASE,
+        auth_mode="passive",
+    )
+    result = await hs.check_connectivity(_FakeClient({}), ctx)
+
+    assert result.auth is AuthState.DEFERRED
+    assert result.error is not None
+    assert result.error.startswith("argonne_sdk_missing:")
+    assert "globus-sdk" in result.error
+
+    report = await ArgonneHandshake(provider=None).handshake(ctx)
+    assert report.error is not None
+    assert report.error.startswith("argonne_sdk_missing:")

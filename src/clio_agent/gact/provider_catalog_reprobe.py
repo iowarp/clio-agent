@@ -12,6 +12,13 @@ providers until a live answer replaces them:
   :data:`REPROBE_STEADY_S` (10min) while anything is still stale. The loop
   stops as soon as no provider in the snapshot is stale (a live answer
   arrived, or a refresh replaced the entry) or the snapshot was retired.
+* **Never on a reason only sign-in fixes.** A provider stuck on a
+  :data:`NO_AUTO_REPROBE_REASONS` reason (ALCF's ``argonne_reauthentication_required``)
+  is excluded from every attempt AND from the loop's own stop condition: no
+  amount of retrying on a timer produces a different answer, and a completed
+  sign-in already invalidates the provider so the very next catalog read
+  re-discovers it -- a background timer would just re-fail the same way every
+  10 minutes forever.
 * **Diagnosable.** Every attempt logs a typed ``provider_catalog_reprobe_attempt``
   line per provider with its outcome and the live failure it saw.
 * **Never clobbers newer truth.** A result is merged only if nothing re-wrote
@@ -42,6 +49,12 @@ REPROBE_TASK_ATTR = "provider_catalog_reprobe_task"
 REPROBE_BACKOFF_S: tuple[float, ...] = (5.0, 30.0, 120.0)
 REPROBE_STEADY_S = 600.0
 
+#: Live-failure reasons a timer retry cannot fix -- only a credential change
+#: does (a completed sign-in already invalidates the provider, so the very
+#: next catalog read re-discovers it with no reprobe needed). Retrying these
+#: on the steady 10-minute cadence forever would just re-fail the same way.
+NO_AUTO_REPROBE_REASONS: frozenset[str] = frozenset({"argonne_reauthentication_required"})
+
 
 #: Consecutive failed attempts per provider logged at INFO; later ones at DEBUG
 #: (the steady 10-minute retries of a down provider would otherwise flood INFO).
@@ -58,6 +71,33 @@ def _live_failure(record: dict[str, Any]) -> str:
     if isinstance(staleness, dict) and staleness.get("live_failure"):
         return str(staleness["live_failure"])
     return str(record.get("failure") or "")
+
+
+def _needs_reauth(record: dict[str, Any]) -> bool:
+    """Whether ``record``'s live failure is a reason only a fresh sign-in fixes."""
+
+    reason = _live_failure(record).split(":", 1)[0].strip()
+    return reason in NO_AUTO_REPROBE_REASONS
+
+
+def _reprobe_target_ids(payload: Any) -> list[str]:
+    """Stale provider ids worth an automatic timed re-probe.
+
+    Excludes providers stuck on a :data:`NO_AUTO_REPROBE_REASONS` reason --
+    retrying those on a timer cannot help, and a completed sign-in already
+    invalidates the provider so the next read re-discovers it immediately.
+    """
+
+    if not isinstance(payload, dict):
+        return []
+    return [
+        str(provider.get("id") or "")
+        for provider in payload.get("providers") or []
+        if isinstance(provider, dict)
+        and provider.get("id")
+        and snapshot.is_stale(provider)
+        and not _needs_reauth(provider)
+    ]
 
 
 async def _attempt(
@@ -112,10 +152,10 @@ async def reprobe_until_live(app: "FastAPI") -> None:
 
     attempt = 0
     failures: dict[str, int] = {}
-    while snapshot.stale_provider_ids(getattr(app.state, "provider_catalog", None)):
+    while _reprobe_target_ids(getattr(app.state, "provider_catalog", None)):
         await asyncio.sleep(_delay(attempt))
         attempt += 1
-        stale = snapshot.stale_provider_ids(getattr(app.state, "provider_catalog", None))
+        stale = _reprobe_target_ids(getattr(app.state, "provider_catalog", None))
         if not stale:
             return
         try:
@@ -133,7 +173,7 @@ async def reprobe_until_live(app: "FastAPI") -> None:
 def schedule_stale_reprobe(app: "FastAPI", payload: dict[str, Any]) -> asyncio.Task | None:
     """Start the re-probe loop when ``payload`` serves a stale provider and none runs."""
 
-    if not snapshot.stale_provider_ids(payload):
+    if not _reprobe_target_ids(payload):
         return None
     running = getattr(app.state, REPROBE_TASK_ATTR, None)
     if isinstance(running, asyncio.Task) and not running.done():
@@ -144,6 +184,7 @@ def schedule_stale_reprobe(app: "FastAPI", payload: dict[str, Any]) -> asyncio.T
 
 
 __all__ = [
+    "NO_AUTO_REPROBE_REASONS",
     "REPROBE_BACKOFF_S",
     "REPROBE_STEADY_S",
     "REPROBE_TASK_ATTR",
