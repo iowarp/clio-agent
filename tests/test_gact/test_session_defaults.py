@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import _clear_session_model_refs, build_app
@@ -33,6 +34,7 @@ def test_session_defaults_persist_and_apply_only_when_fields_are_omitted(tmp_pat
         "routing_mode": "auto",
         "approval_mode": "ask",
         "blueprint_id": "",
+        "degradations": [],
     }
 
     updated = client.patch(
@@ -185,9 +187,38 @@ def test_legacy_forced_medium_is_migrated_to_unset(tmp_path: Path) -> None:
 
     assert store.get().effort is None
     assert store.get().mode == "plan"
+    assert [row["reason"] for row in store.degradations] == [
+        "session_defaults_legacy_effort_cleared"
+    ]
     # One-time migration: the file itself no longer carries the legacy level.
     assert json.loads(path.read_text(encoding="utf-8"))["effort"] is None
     assert SessionDefaultsStore(path).get().effort is None
+
+
+@pytest.mark.parametrize("legacy", ["off", "low", "high"])
+def test_legacy_non_default_effort_is_kept_as_the_users(tmp_path: Path, legacy: str) -> None:
+    """Only the old forced 'medium' is cleared; any other level was a person's pick."""
+    import json
+
+    path = tmp_path / "session_defaults.json"
+    path.write_text(json.dumps({"effort": legacy}), encoding="utf-8")
+
+    store = SessionDefaultsStore(path)
+
+    assert (store.get().effort, store.get().effort_source) == (legacy, "user")
+    assert store.degradations == []
+
+
+def test_cleared_legacy_effort_is_reported_by_the_api(tmp_path: Path) -> None:
+    import json
+
+    (tmp_path / "session-defaults.json").write_text(
+        json.dumps({"effort": "medium"}), encoding="utf-8"
+    )
+    client = _client(tmp_path / "sessions.json")
+    body = client.get("/v1/session-defaults").json()
+    assert body["effort"] is None
+    assert body["degradations"][0]["reason"] == "session_defaults_legacy_effort_cleared"
 
 
 def test_user_picked_default_effort_survives_reload(tmp_path: Path) -> None:
