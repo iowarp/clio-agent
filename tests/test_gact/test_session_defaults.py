@@ -27,6 +27,7 @@ def test_session_defaults_persist_and_apply_only_when_fields_are_omitted(tmp_pat
         "model_id": "",
         # No fixed level: new sessions start on the selected model's own default.
         "effort": None,
+        "effort_source": None,
         "mode": "edit",
         "edit_mode": "diff",
         "routing_mode": "auto",
@@ -171,3 +172,51 @@ def test_session_default_effort_can_be_reset_to_the_model_default(tmp_path: Path
     )
     assert created.status_code == 201
     assert created.json().get("effort") is None
+
+
+def test_legacy_forced_medium_is_migrated_to_unset(tmp_path: Path) -> None:
+    """Old builds force-wrote effort=medium with no source; it must not take effect."""
+    import json
+
+    path = tmp_path / "session_defaults.json"
+    path.write_text(json.dumps({"effort": "medium", "mode": "plan"}), encoding="utf-8")
+
+    store = SessionDefaultsStore(path)
+
+    assert store.get().effort is None
+    assert store.get().mode == "plan"
+    # One-time migration: the file itself no longer carries the legacy level.
+    assert json.loads(path.read_text(encoding="utf-8"))["effort"] is None
+    assert SessionDefaultsStore(path).get().effort is None
+
+
+def test_user_picked_default_effort_survives_reload(tmp_path: Path) -> None:
+    from clio_agent.gact.session_defaults import UpdateSessionDefaultsRequest
+
+    path = tmp_path / "session_defaults.json"
+    SessionDefaultsStore(path).update(UpdateSessionDefaultsRequest(effort="max"))
+    reloaded = SessionDefaultsStore(path).get()
+    assert reloaded.effort == "max"
+    assert reloaded.effort_source == "user"
+
+
+def test_legacy_session_metadata_effort_is_read_as_unset() -> None:
+    from types import SimpleNamespace
+
+    from clio_agent.gact.protocol.v3.session import session_to_v3
+
+    def _session(metadata: dict[str, object]) -> SimpleNamespace:
+        return SimpleNamespace(
+            id="sess_legacy",
+            title="t",
+            workspace_id="ws",
+            status="idle",
+            metadata=metadata,
+            model=None,
+            parent_session_id="",
+        )
+
+    legacy = session_to_v3(_session({"effort": "medium"}))
+    assert "effort" not in legacy
+    chosen = session_to_v3(_session({"effort": "max", "effort_source": "user"}))
+    assert chosen["effort"] == "max"

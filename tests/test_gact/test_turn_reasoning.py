@@ -152,3 +152,59 @@ def test_anthropic_adaptive_model_message_effort_sends_reasoning_effort(
 def test_codex_message_minimal_effort_is_sent() -> None:
     base = LMProviderConfig(provider="codex", model="gpt-5.5")
     assert _lm_kwargs(base, "minimal")["codex_reasoning_effort"] == "minimal"
+
+
+def _parent_app(provider_id: str, model_id: str, level: str = "max", source: str = "per_message"):
+    from clio_agent.gact.turn_reasoning import record_turn_reasoning
+
+    app = SimpleNamespace(state=SimpleNamespace(lm_config={}, agent=None))
+    record_turn_reasoning(
+        app,  # type: ignore[arg-type]
+        "sess_parent",
+        {
+            "model": {"provider_id": provider_id, "model_id": model_id},
+            "reasoning": {"requested_level": level, "source": source},
+        },
+    )
+    return app
+
+
+def test_child_on_the_same_model_inherits_the_parent_message_level() -> None:
+    app = _parent_app("claude_code", "claude-fable-5-1")
+    child = AgentDef(
+        id="child", title="Child", default_provider="claude_code", default_model="claude-fable-5-1"
+    )
+    session = SimpleNamespace(parent_session_id="sess_parent")
+
+    resolved = apply_turn_reasoning(_message(None), child, app=app, session=session)  # type: ignore[arg-type]
+
+    assert resolved.parameters["thinking_level"] == "max"
+    assert resolved.metadata["turn_reasoning_source"] == "parent_message"
+    assert resolved.metadata["turn_reasoning_inheritance"] == {"inherited": True}
+
+
+def test_child_on_a_different_model_records_why_it_did_not_inherit() -> None:
+    app = _parent_app("claude_code", "claude-fable-5-1")
+    child = AgentDef(
+        id="child", title="Child", default_provider="argonne_metis", default_model="gpt-oss-120b"
+    )
+    session = SimpleNamespace(parent_session_id="sess_parent")
+
+    resolved = apply_turn_reasoning(_message(None), child, app=app, session=session)  # type: ignore[arg-type]
+
+    assert "thinking_level" not in resolved.parameters
+    assert resolved.metadata["turn_reasoning_inheritance"] == {
+        "inherited": False,
+        "reason": "different_model",
+        "parent_level": "max",
+    }
+
+
+def test_child_does_not_inherit_a_global_level() -> None:
+    app = _parent_app("codex", "gpt-5.5", level="high", source="global")
+    child = AgentDef(id="child", title="Child", default_provider="codex", default_model="gpt-5.5")
+    session = SimpleNamespace(parent_session_id="sess_parent")
+
+    resolved = apply_turn_reasoning(_message(None), child, app=app, session=session)  # type: ignore[arg-type]
+
+    assert resolved is child

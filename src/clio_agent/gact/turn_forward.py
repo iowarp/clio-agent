@@ -68,7 +68,7 @@ from clio_agent.gact.streaming import (
     _run_dynamic_agent_compat,
     _try_streamed_forward_compat,
 )
-from clio_agent.gact.turn_reasoning import apply_turn_reasoning
+from clio_agent.gact.turn_reasoning import apply_turn_reasoning, record_turn_reasoning
 from clio_agent.gact.turn_stream import emit_chunk
 from clio_agent.gact.turn_watchdog import await_turn_work, cancel_requested
 
@@ -313,7 +313,9 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
         dynamic_agent = _apply_turn_model_selection(state, dynamic_agent)
         # The message's own reasoning effort overrides the configured level for
         # this turn only (a local agent copy; see gact.turn_reasoning).
-        dynamic_agent = apply_turn_reasoning(state.user_msg, dynamic_agent)
+        dynamic_agent = apply_turn_reasoning(
+            state.user_msg, dynamic_agent, app=state.app, session=state.sess
+        )
         state.prompt_resolution = dict(dynamic_agent.metadata.get("prompt_resolution") or {})
         state.dynamic_agent_used = dynamic_agent
         runner = _blueprint_runner_for_agent(dynamic_agent)
@@ -332,6 +334,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
             dynamic_agent,
             execution_mode=execution_mode,
         )
+        record_turn_reasoning(state.app, state.sid, state.agent_runtime)
         await emit_semantic_event_async(
             state.app,
             state.sid,

@@ -1931,6 +1931,8 @@ def test_post_message_reasoning_effort_is_applied_and_recorded(
 
     from .conftest import complete_turn
 
+    # A real active provider, so the recorded level is the provider-mapped one.
+    client.app.state.lm_config = {"provider_id": "openai", "provider": "openai", "model": "gpt-5"}
     sid = _create_session(client)
     with_effort = complete_turn(
         client,
@@ -1951,7 +1953,9 @@ def test_post_message_reasoning_effort_is_applied_and_recorded(
     reasoning = with_effort["metadata"]["agent_runtime"]["reasoning"]
     assert reasoning["requested_level"] == "high"
     assert reasoning["source"] == "per_message"
-    assert reasoning["effective_level"] in {"high", "unsupported"}
+    assert reasoning["effective_level"] == "high"
+    assert reasoning["provider"] == "openai"
+    assert reasoning["lm_kwargs"] == {"reasoning_effort": "high"}
     assert without["metadata"]["agent_runtime"]["reasoning"]["source"] != "per_message"
     assert messages["msg_effort"]["metadata"]["behavior"]["reasoning_effort"] == "high"
     # Unset is absent -- never a fabricated "medium" that would override the setting.

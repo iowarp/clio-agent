@@ -50,6 +50,7 @@ from clio_agent.gact.runtime.globals import (
     _new_question_id,
 )
 from clio_agent.gact.runtime.retention import enforce_dict_bound
+from clio_agent.gact.session_defaults import apply_default_effort
 from clio_agent.gact.session_descendants import purge_session_tasks
 from clio_agent.gact.types import (
     AnswerUserQuestionRequest,
@@ -122,8 +123,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         defaults = app.state.session_defaults.get()
         supplied = req.model_fields_set
         metadata = dict(req.metadata)
-        if defaults.effort and not {"effort", "thinking_level"} & set(metadata):
-            metadata["effort"] = defaults.effort
+        apply_default_effort(metadata, defaults)  # provenance-stamped starting level
         if defaults.blueprint_id and "active_agent_blueprint_id" not in metadata:
             metadata["active_agent_blueprint_id"] = defaults.blueprint_id
         if "model" in supplied:
