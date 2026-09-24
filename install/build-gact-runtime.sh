@@ -77,18 +77,39 @@ PYBIN_REL="python/bin/python${PYVER}"
 [ -x "$OUT/$PYBIN_REL" ] || { echo "build-gact-runtime: $PYBIN_REL missing in dist" >&2; exit 1; }
 
 # --- 2. install clio-agent + the portable science launcher -------------
+# CHECKOUT always ends up a local clio-agent tree with its OWN pyproject.toml +
+# uv.lock -- CLIO_AGENT_SOURCE directly, or a fresh clone of CLIO_REF otherwise
+# -- so step 2b can export that EXACT lock as a constraint file. Without this,
+# `uv pip install <spec> ...` below is an unlocked resolve against whatever is
+# on PyPI at build time: the incident this fixes shipped iowarp-core 2.2.1 in a
+# bundle while uv.lock (and CI) were still on 2.1.0.
+CLEANUP_CHECKOUT=""
 if [ -n "${CLIO_AGENT_SOURCE:-}" ]; then
   [ -f "${CLIO_AGENT_SOURCE}/pyproject.toml" ] || {
     echo "build-gact-runtime: CLIO_AGENT_SOURCE=$CLIO_AGENT_SOURCE is not a clio-agent checkout" >&2
     exit 1
   }
-  SPEC="${CLIO_AGENT_SOURCE}"
+  CHECKOUT="${CLIO_AGENT_SOURCE}"
+  SPEC="${CHECKOUT}"
 else
-  SPEC="clio-agent @ ${REPO_URL}@${REF}"
+  CHECKOUT="$(mktemp -d)/clio-agent-ref-checkout"
+  CLEANUP_CHECKOUT="$CHECKOUT"
+  echo "[build-gact-runtime] cloning clio-agent@$REF to export its lock"
+  git clone --quiet --depth 1 --branch "$REF" "${REPO_URL#git+}" "$CHECKOUT"
+  SPEC="${CHECKOUT}"
 fi
+trap '[ -z "$CLEANUP_CHECKOUT" ] || rm -rf "$(dirname "$CLEANUP_CHECKOUT")"' EXIT
+
+# --- 2b. export uv.lock as a constraint so the resolve below cannot drift ---
+CONSTRAINTS="$OUT/.lock-constraints.txt"
+echo "[build-gact-runtime] exporting $CHECKOUT/uv.lock as an install constraint"
+uv export --project "$CHECKOUT" --frozen --no-hashes --extra argonne --no-emit-project \
+  -o "$CONSTRAINTS" 2>&1 | tail -5
+[ -s "$CONSTRAINTS" ] || { echo "build-gact-runtime: uv export produced no constraints" >&2; exit 1; }
+
 CLIO_KIT_SPEC="clio-kit==2.10.6"
-echo "[build-gact-runtime] installing: $SPEC + $CLIO_KIT_SPEC"
-uv pip install --python "$OUT/$PYBIN_REL" "$SPEC" "$CLIO_KIT_SPEC" \
+echo "[build-gact-runtime] installing: $SPEC + $CLIO_KIT_SPEC (locked)"
+uv pip install --python "$OUT/$PYBIN_REL" --constraint "$CONSTRAINTS" "$SPEC" "$CLIO_KIT_SPEC" \
   "globus-sdk>=3.0.0" \
   "dspy==3.3.0b1" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5" \
   "fastmcp-tasks==4.0.0b5"
@@ -101,8 +122,14 @@ WEB_MCP_PROJECT="$OUT/python/clio-kit-mcp-servers/web"
   exit 1
 }
 echo "[build-gact-runtime] installing bundled CLIO Web Search adapter"
-uv pip install --python "$OUT/$PYBIN_REL" "$WEB_MCP_PROJECT" \
+uv pip install --python "$OUT/$PYBIN_REL" --constraint "$CONSTRAINTS" "$WEB_MCP_PROJECT" \
   "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5" "fastmcp-tasks==4.0.0b5"
+rm -f "$CONSTRAINTS"
+
+# check_bundle_matches_lock.py is the automated proof this constraint actually
+# took effect (release-time backstop, not a substitute for it) -- run from the
+# CI workflow right after this script, against $CHECKOUT/uv.lock (the exact
+# tree this runtime was built from).
 
 # clio-kit materializes each locked MCP server with uv on first use. Ship uv
 # beside the relocatable runtime instead of requiring a fresh desktop user to
