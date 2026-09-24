@@ -196,10 +196,6 @@ class _SdkSessionPool:
     for the O(1) session lookup/creation, never across a completion.
     """
 
-    #: LRU cap on pooled sessions. Per-message reasoning levels key a session
-    #: per level, and every session holds a ``claude`` CLI connection.
-    MAX_SESSIONS = 4
-
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._sessions: OrderedDict[tuple[str, str | None, str | None], _SdkSession] = OrderedDict()
@@ -209,11 +205,20 @@ class _SdkSessionPool:
     ) -> _SdkSession:
         """Return (creating if needed) the session bound to ``(model, cwd, thinking)``.
 
-        Least-recently-used sessions beyond :attr:`MAX_SESSIONS` are closed (outside
-        the pool lock; ``close`` waits for an in-flight completion) with the typed
-        reason ``claude_code_sdk_session_evicted``.
+        Per-message reasoning levels key a session per level and each holds a
+        ``claude`` CLI connection, so the pool is capped at
+        ``providers.claude_code.max_base_connections``. Only IDLE sessions are
+        evicted, least recently used first (typed ``claude_code_sdk_session_evicted``),
+        and they are closed off-thread so the caller never waits on another
+        session. When every session is busy the pool overflows temporarily (typed
+        ``claude_code_pool_over_cap``) and shrinks on a later lookup once one is idle.
         """
 
+        from clio_agent.providers.claude_code_stream_bounds import (  # noqa: PLC0415
+            max_idle_base_connections,
+        )
+
+        cap = max_idle_base_connections()
         key = (model, cwd, thinking_id)
         evicted: list[tuple[tuple[str, str | None, str | None], _SdkSession]] = []
         with self._lock:
@@ -222,17 +227,29 @@ class _SdkSessionPool:
                 session = _SdkSession()
                 self._sessions[key] = session
             self._sessions.move_to_end(key)
-            while len(self._sessions) > self.MAX_SESSIONS:
-                evicted.append(self._sessions.popitem(last=False))
+            for old_key in list(self._sessions):
+                if len(self._sessions) <= cap:
+                    break
+                old = self._sessions[old_key]
+                if old_key != key and not old._lock.locked():  # noqa: SLF001 - pool owns sessions
+                    evicted.append((old_key, self._sessions.pop(old_key)))
+            over_cap = len(self._sessions) > cap
+        if over_cap:
+            logger.info(
+                "claude_code sdk pool: reason=claude_code_pool_over_cap sessions=%d cap=%d "
+                "(every other session is busy; evicted when one goes idle)",
+                len(self._sessions),
+                cap,
+            )
         for old_key, old_session in evicted:
             logger.info(
                 "claude_code sdk pool: reason=claude_code_sdk_session_evicted model=%s "
                 "thinking=%s cap=%d",
                 old_key[0],
                 old_key[2],
-                self.MAX_SESSIONS,
+                cap,
             )
-            old_session.close()
+            threading.Thread(target=old_session.close, daemon=True).start()
         return session
 
     def complete(

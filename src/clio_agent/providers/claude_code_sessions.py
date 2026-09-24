@@ -700,9 +700,9 @@ class ClaudeStreamClientPool:
         own connection idling) should be reclaimed first. The shared base entry
         (``scope=""``) is never swept.
         """
-        for evicted_key, evicted_entry in sweep_stream_entries(self, scoped=bool(scope)):
-            reap_idle_stream_entry(evicted_key, evicted_entry)
         key = (model, cwd, thinking_key(thinking), scope or "")
+        for evicted_key, evicted_entry in sweep_stream_entries(self, bool(scope), key):
+            reap_idle_stream_entry(evicted_key, evicted_entry)
         with self._guard:
             entry = self._entries.get(key)
             if entry is None:
