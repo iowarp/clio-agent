@@ -159,3 +159,33 @@ def test_v3_session_projection_reports_unknown_cost_as_null(tmp_path: Path) -> N
         assert row["tokens_input"] == 300
         assert row["tokens_output"] == 90
         assert row["cost_usd"] is None
+
+
+def test_v2_session_endpoint_also_reports_unknown_cost_as_null(tmp_path: Path) -> None:
+    """The legacy (no X-GACT-Version header) GET /v1/sessions/{sid} must follow
+    cost_known too -- a live browser check against it (no v3 header) showed
+    cost_usd: 0.0 for a session with real tokens and no cost source, which is
+    exactly the fabricated-zero this projection is supposed to refuse."""
+
+    pred = _PredNoCostSource(tokens={"input": 300, "output": 90, "cache_read": 0, "cache_write": 0})
+    with _client(tmp_path, pred) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        _turn(client, sid)
+
+        row = client.get(f"/v1/sessions/{sid}").json()
+        assert row["tokens_input"] == 300
+        assert row["tokens_output"] == 90
+        assert row["cost_usd"] is None
+
+
+def test_v2_session_endpoint_reports_a_known_cost_as_a_real_number(tmp_path: Path) -> None:
+    pred = _Pred(
+        tokens={"input": 100, "output": 50, "cache_read": 0, "cache_write": 0},
+        cost_usd=0.0032,
+    )
+    with _client(tmp_path, pred) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        _turn(client, sid)
+
+        row = client.get(f"/v1/sessions/{sid}").json()
+        assert row["cost_usd"] == pytest.approx(0.0032)

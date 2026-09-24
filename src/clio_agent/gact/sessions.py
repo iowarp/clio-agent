@@ -231,6 +231,12 @@ class Session:
         wire["mode"] = normalize_stored_mode(self.mode)
         wire["status"] = normalize_stored_status(self.status)
         wire.pop("approval_profile", None)
+        # cost_known is bookkeeping, not part of the wire contract -- it
+        # decides whether cost_usd is a real number or null, never rides
+        # along itself (#775: no turn ever reporting a cost must read as
+        # unknown here too, matching the v3 projection's cost_known check).
+        if not wire.pop("cost_known", False):
+            wire["cost_usd"] = None
         return wire
 
 

@@ -469,7 +469,7 @@ class Session(BaseModel):
     agent: AgentRef = Field(default_factory=AgentRef)
     tokens_input: int = 0
     tokens_output: int = 0
-    cost_usd: float = 0.0
+    cost_usd: Optional[float] = None  # null when SessionRecord.cost_known is False
     # capabilities.plan_mode + edit_modes. P1.1 #1063 deleted the unenforced ``chat`` mode (== edit).
     mode: Literal["plan", "edit", "architect"] = "edit"
     edit_mode: Literal["diff", "whole", "patch"] = "diff"
