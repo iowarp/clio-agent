@@ -125,7 +125,14 @@ def test_declared_native_tools_are_selective_and_root_a2ui_remains_compatible() 
     ]
     assert "ask_user" not in {tool.name for tool in build_auto_react_tools(plain_child)}
     assert "create_a2ui_surface" not in {tool.name for tool in build_auto_react_tools(plain_child)}
-    assert "create_a2ui_surface" in {tool.name for tool in build_auto_react_tools(root)}
+    # v15 S8: a root gets the producer tools only when its agent resolves at
+    # least one declared catalog.
+    assert "create_a2ui_surface" in {
+        tool.name for tool in build_auto_react_tools(root, a2ui_producers=True)
+    }
+    assert "create_a2ui_surface" not in {
+        tool.name for tool in build_auto_react_tools(root, a2ui_producers=False)
+    }
 
 
 def test_ask_user_runtime_tool_injects_owner_task_and_attended_correlation(

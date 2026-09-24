@@ -26,6 +26,7 @@ from typing import Any
 
 import pytest
 
+from clio_agent.gact import agent_blueprint_requires
 from clio_agent.gact.agents import resolution
 from clio_agent.gact.agents.resolution import _active_workflow_state_schema
 from clio_agent.gact.expert_packs import _parse_frontmatter
@@ -72,6 +73,10 @@ def test_resolver_returns_typed_schema_for_earthscope_session_without_fallback(
     stays empty (the loud generic-fallback path must NOT fire).
     """
     app: Any = SimpleNamespace(state=SimpleNamespace())
+    # The pack's requires.clio_agent floor names the release that ships this
+    # runtime, so a pre-release checkout is below it by construction; this test
+    # is about the workflow schema, not the floor (test_agent_blueprints covers it).
+    monkeypatch.setattr(agent_blueprint_requires, "_running_clio_agent_version", lambda: "0.9.4.17")
     monkeypatch.setattr(
         resolution,
         "_runtime_active_agent_blueprint_id",

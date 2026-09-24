@@ -537,7 +537,10 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(tmp_path: Path)
     app, client, sid = _observing_app(tmp_path)
     try:
         agent_def = SimpleNamespace(id="tester")
-        auto_tools = {t.name: t for t in instrument_tools(build_auto_react_tools(agent_def))}
+        auto_tools = {
+            t.name: t
+            for t in instrument_tools(build_auto_react_tools(agent_def, a2ui_producers=True))
+        }
         # The A2UI producer triad (S4) needs a real client-capabilities
         # advertisement to select a catalog at all; advertise the builtin
         # workspace catalog so create_a2ui_surface below actually creates

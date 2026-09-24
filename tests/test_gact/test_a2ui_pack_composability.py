@@ -44,7 +44,7 @@ from clio_agent import paths
 from clio_agent.gact import agent_blueprint_requires
 from clio_agent.gact import context as gact_context
 from clio_agent.gact.a2ui_capabilities import remember_client_capabilities, select_catalog
-from clio_agent.gact.a2ui_catalogs.builtin import basic_catalog_id
+from clio_agent.gact.a2ui_catalogs.builtin import basic_catalog_id, workspace_catalog_id
 from clio_agent.gact.a2ui_producer import build_create_a2ui_surface_tool
 from clio_agent.gact.agent_blueprints import install_agent_blueprint
 from clio_agent.gact.agents.skill_runtime import build_load_skill_tool, skill_runtime_for_agent
@@ -63,6 +63,7 @@ PACK_ROOT = (
 PACK_BLUEPRINT_ID = "earthscope-single-agent"
 PACK_CATALOG_ID = "https://iowarp.ai/a2ui/catalogs/earthscope-stations/v1"
 BASIC_CATALOG_ID = basic_catalog_id()
+WORKSPACE_CATALOG_ID = workspace_catalog_id()
 CATALOG_SKILL_ID = "a2ui-catalog-earthscope-stations"
 
 _INSTRUCTIONS_PATH = PACK_ROOT / "catalogs" / "earthscope-stations" / "instructions.md"
@@ -150,10 +151,13 @@ def _activated_session(
 
 
 def _advertise_pack_first(app: Any, session_id: str) -> None:
-    """Advertise client capabilities listing the pack catalog first."""
+    """Advertise client capabilities listing the pack catalog first.
+
+    The client also renders clio-workspace and Basic, as a real client does.
+    """
 
     caps = A2UIClientCapabilities.model_validate(
-        {"v0.9": {"supportedCatalogIds": [PACK_CATALOG_ID, BASIC_CATALOG_ID]}}
+        {"v0.9": {"supportedCatalogIds": [PACK_CATALOG_ID, WORKSPACE_CATALOG_ID, BASIC_CATALOG_ID]}}
     )
     remember_client_capabilities(app, session_id, caps)
 
@@ -221,7 +225,9 @@ def _create_example_surface(
         surface_id=surface_id,
         components=components,
         data_model=update_data_model["updateDataModel"]["value"],
-        catalog_id="",
+        # clio-workspace is EarthScope's default catalog (v15 S8), so a station
+        # surface names its own catalog -- the id instructions.md states.
+        catalog_id=str(create_block["createSurface"]["catalogId"]),
     )
     return result, surface_id
 
@@ -303,24 +309,55 @@ def test_pack_catalog_listed_in_server_wide_capabilities(
     assert PACK_CATALOG_ID in ids
 
 
-def test_client_capabilities_listing_pack_first_selects_it(
+def test_unnamed_selection_follows_the_agent_order_not_the_client_order(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """EarthScope declares clio-workspace first (v15 S8); the client listing the
+    pack catalog first does not change the agent's default."""
+
     _client, app, sid = _activated_session(tmp_path, monkeypatch)
     _advertise_pack_first(app, sid)
 
-    selection = select_catalog(app, sid)
+    assert select_catalog(app, sid).catalog_id == WORKSPACE_CATALOG_ID
+    named = select_catalog(app, sid, preferred=PACK_CATALOG_ID)
+    assert named.catalog_id == PACK_CATALOG_ID
+    assert named.reason is None
 
-    assert selection.catalog_id == PACK_CATALOG_ID
-    assert selection.reason is None
+
+def test_generated_station_skill_states_the_catalog_json_catalog_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The station catalogId reaches the model through the GENERATED catalog
+    skill (never hand-typed prose): it equals catalog.json's own id and says the
+    station catalog is not EarthScope's default (clio-workspace is)."""
+
+    from clio_agent.gact.skills import SkillCatalog
+
+    _client, app, sid = _activated_session(tmp_path, monkeypatch)
+    catalog_id = json.loads(
+        (PACK_ROOT / "catalogs" / "earthscope-stations" / "catalog.json").read_text(
+            encoding="utf-8"
+        )
+    )["catalogId"]
+
+    refs = {ref.id: ref for ref in SkillCatalog(app=app, session_id=sid)._catalog_refs()}
+    body = refs[CATALOG_SKILL_ID].body_provider()
+
+    assert catalog_id == PACK_CATALOG_ID
+    assert f"Catalog id: `{catalog_id}`" in body
+    assert "This is not this agent's default catalog" in body
+    assert (
+        "This is this agent's default catalog"
+        in refs["a2ui-catalog-clio-workspace"].body_provider()
+    )
 
 
 # --------------------------------------------------------------------------- #
-# Producer tool: the worked example, empty catalog_id                        #
+# Producer tool: the worked example, naming its catalog                       #
 # --------------------------------------------------------------------------- #
 
 
-def test_create_surface_from_worked_example_with_empty_catalog_id(
+def test_create_surface_from_worked_example_naming_its_catalog(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _client, app, sid = _activated_session(tmp_path, monkeypatch)

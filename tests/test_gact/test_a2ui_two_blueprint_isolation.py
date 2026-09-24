@@ -100,9 +100,11 @@ def test_producible_sets_differ_per_session_same_workspace(tmp_path: Path) -> No
     producible_a = set(session_producible_catalog_ids(app, sid_a))
     producible_b = set(session_producible_catalog_ids(app, sid_b))
 
-    builtins = {BASIC_ID, WORKSPACE_ID_CATALOG}
-    assert producible_a == builtins | {MINIMAL_CATALOG_ID}
-    assert producible_b == builtins | {SECOND_CATALOG_ID}
+    # v15 S8: each fixture pack declares only its own catalog, and nothing is
+    # implicit -- the builtins are producible only for an agent that lists them.
+    assert producible_a == {MINIMAL_CATALOG_ID}
+    assert producible_b == {SECOND_CATALOG_ID}
+    assert not {BASIC_ID, WORKSPACE_ID_CATALOG} & (producible_a | producible_b)
     assert MINIMAL_CATALOG_ID not in producible_b
     assert SECOND_CATALOG_ID not in producible_a
 
