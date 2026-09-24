@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import threading
 import uuid
@@ -40,8 +41,33 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# Windows forbids these in a filename outright (POSIX allows all but ``/`` and
+# NUL). This server materializes resources into a real workspace directory on
+# whatever OS it runs on (`resource_materialization.py`), and a name only
+# Windows rejects must be caught HERE rather than surfacing later as an
+# OSError from that copy — see the S2 hardening: that used to run again on
+# every GET, so one bad name 409'd the whole resource list for the workspace.
+_WINDOWS_FORBIDDEN_CHARACTERS = frozenset('<>:"/\\|?*')
+# Reserved device stems, matched case-insensitively against the name's
+# portion before its FIRST dot (Windows reserves "con.txt" too, not just "con").
+_WINDOWS_RESERVED_STEMS = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{digit}" for digit in range(1, 10)}
+    | {f"LPT{digit}" for digit in range(1, 10)}
+)
+# A drive letter (``C:``, ``C:foo.txt``) is meaningless as a plain filename and,
+# joined onto a workspace root with :mod:`pathlib`, can silently discard that
+# root instead of raising — reject it by shape, with its own message, rather
+# than relying on the generic forbidden-character check below to catch the ':'.
+_DRIVE_LIKE_PATTERN = re.compile(r"^[A-Za-z]:")
+
+
 def _safe_name(value: str) -> str:
-    """Return a display-only filename with path components removed."""
+    """Return a display-only filename with path components removed.
+
+    The result must be creatable as a real file on every platform this server
+    runs on, Windows included, regardless of the platform serving the request.
+    """
 
     normalized = value.replace("\\", "/").strip()
     name = normalized.rsplit("/", 1)[-1]
@@ -49,7 +75,38 @@ def _safe_name(value: str) -> str:
         raise ValueError("resource name must identify one file")
     if any(ord(character) < 32 for character in name):
         raise ValueError("resource name contains control characters")
-    return name[:255]
+    name = name[:255]
+    if _DRIVE_LIKE_PATTERN.match(name):
+        raise ValueError("resource name looks like a drive path, not a filename")
+    forbidden = sorted(
+        {character for character in name if character in _WINDOWS_FORBIDDEN_CHARACTERS}
+    )
+    if forbidden:
+        raise ValueError(
+            "resource name contains characters forbidden on Windows: " + "".join(forbidden)
+        )
+    if name != name.rstrip(". "):
+        raise ValueError(
+            "resource name cannot end with a dot or space (Windows strips these silently)"
+        )
+    if name.split(".", 1)[0].upper() in _WINDOWS_RESERVED_STEMS:
+        raise ValueError("resource name uses a device name reserved on Windows")
+    return name
+
+
+class ResourceMaterialization(BaseModel):
+    """Typed outcome of copying a ready resource into the workspace's file tree.
+
+    Recorded on the resource itself instead of raised as a request-ending
+    error: materialization now runs only when an upload becomes ready
+    (create-complete, final PATCH, or a ready copy), never on GET, so a
+    failure for one resource is visible on that resource without ever
+    breaking GET for the rest of the workspace (the no-silent-fallback rule —
+    the reason must reach the API, not just a log line).
+    """
+
+    state: Literal["pending", "ready", "failed"] = "pending"
+    reason: str = ""
 
 
 class ResourceRecord(BaseModel):
@@ -72,6 +129,7 @@ class ResourceRecord(BaseModel):
     updated_at: str = Field(default_factory=_now_iso)
     completed_at: str = ""
     workspace_path: str = ""
+    materialization: ResourceMaterialization = Field(default_factory=ResourceMaterialization)
 
     @property
     def mime_mismatch(self) -> bool:
@@ -348,6 +406,26 @@ class ResourceStore:
             self._flush_locked()
             return record.model_copy(deep=True)
 
+    def set_materialization(
+        self, resource_id: str, materialization: ResourceMaterialization
+    ) -> ResourceRecord:
+        """Record one materialization attempt's outcome, success or failure.
+
+        Unlike :meth:`set_workspace_path`, this never raises for a resource
+        that failed to materialize — recording that failure IS the point, so
+        the caller (a create/PATCH/copy route, never a GET route) can still
+        return the resource with the failure attached instead of 409ing.
+        """
+
+        with self._lock:
+            record = self._require_locked(resource_id)
+            record = record.model_copy(
+                update={"materialization": materialization, "updated_at": _now_iso()}
+            )
+            self._records[resource_id] = record
+            self._flush_locked()
+            return record.model_copy(deep=True)
+
     def copy_ready(
         self, source_workspace_id: str, resource_id: str, destination_workspace_id: str
     ) -> ResourceRecord:
@@ -469,6 +547,7 @@ __all__ = [
     "ResourceConflictError",
     "ResourceDeleteError",
     "ResourceLimitError",
+    "ResourceMaterialization",
     "ResourceRecord",
     "ResourceStore",
     "quarantine_corrupt_index",

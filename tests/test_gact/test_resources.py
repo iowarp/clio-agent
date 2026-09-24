@@ -16,7 +16,7 @@ from clio_agent.gact.app import build_app
 from clio_agent.gact.messaging import _dspy_files_from_parts, _dspy_images_from_parts
 from clio_agent.gact.parts import Part
 from clio_agent.gact.protocol.v3.message import part_to_v3_block
-from clio_agent.gact.resource_custody import ResourceLimitError, ResourceStore
+from clio_agent.gact.resource_custody import ResourceLimitError, ResourceStore, _safe_name
 from clio_agent.gact.resource_enrichment import (
     PROCESSING_QUERY_TOOL,
     describe_resource_parts,
@@ -1574,3 +1574,164 @@ def test_bounded_resource_read_returns_original_text_without_custody_path(
         assert result["representation"] == "original"
         assert result["truncated"] is False
         assert "path" not in result
+
+
+# ---------------------------------------------------------------------------
+# S2 hardening: materialization moves off GET, and _safe_name rejects names
+# Windows forbids. gact-tui root cause B's secondary risk was that GET
+# /resources re-materialized (copied bytes for) every resource on every read,
+# so one resource with a bad name 409'd the whole workspace's list.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "unsafe_name",
+    [
+        "bad<name.txt",
+        "bad>name.txt",
+        'bad"name.txt',
+        "bad|name.txt",
+        "bad?name.txt",
+        "bad*name.txt",
+        "a:b.txt",
+        "C:",
+        "C:evil.txt",
+        "notes.",
+        "notes. ",
+        "CON",
+        "con.txt",
+        "NUL",
+        "com1.log",
+        "LPT9",
+        "\x07bell.txt",
+    ],
+)
+def test_safe_name_rejects_names_windows_forbids(unsafe_name: str) -> None:
+    with pytest.raises(ValueError):
+        _safe_name(unsafe_name)
+
+
+@pytest.mark.parametrize(
+    "safe_name",
+    ["notes.md", "data (1).csv", "report_final.v2.pdf", "no-dots", "console.log"],
+)
+def test_safe_name_accepts_ordinary_names(safe_name: str) -> None:
+    assert _safe_name(safe_name) == safe_name
+
+
+def test_safe_name_normalizes_incidental_surrounding_whitespace() -> None:
+    """A bare trailing/leading space is trimmed, not rejected.
+
+    This is format-only normalization, not a semantic decision: Windows would
+    silently strip the same trailing space when the file is actually created,
+    so trimming it here keeps the recorded name matching what materialization
+    (resource_materialization.py) will actually write to disk, rather than
+    letting the two silently diverge.
+    """
+
+    assert _safe_name("notes ") == "notes"
+    assert _safe_name(" notes.md") == "notes.md"
+
+
+def test_create_resource_rejects_a_windows_unsafe_name_with_400(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=FakeClioAgent(answer="unused"))
+    with TestClient(app) as client:
+        workspace_id = _workspace(client, tmp_path / "workspace")
+
+        response = client.post(
+            f"/v1/workspaces/{workspace_id}/resources",
+            json={"name": "con.txt", "size": 4, "media_type": "text/plain"},
+        )
+
+        assert response.status_code == 400, response.text
+        assert response.json()["error"]["error"] == "invalid_request"
+
+
+def test_a_resource_with_a_bad_name_does_not_break_get_resources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One resource's materialization failure must never 409 the whole list.
+
+    Regression for gact-tui S2 (root cause B, secondary risk): GET
+    /workspaces/{id}/resources re-materialized every resource on every read
+    and raised 409 on the first failure, so one bad-named resource made the
+    entire list unreadable. The failure is now recorded as a typed
+    ``materialization`` state on that one resource, and every other resource
+    still lists and reads fine.
+    """
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=FakeClioAgent(answer="unused"))
+    with TestClient(app) as client:
+        workspace_id = _workspace(client, tmp_path / "workspace")
+
+        good = _upload(
+            client, workspace_id, name="notes.md", content=b"hello", media_type="text/markdown"
+        )
+        assert good["materialization"]["state"] == "ready"
+        assert good["workspace_path"]
+
+        # Simulate a resource that reached "ready" carrying a name _safe_name
+        # rejects today -- legacy data from before this hardening shipped, or
+        # any future path that skips it -- by bypassing _safe_name for one
+        # create. managed_input_relative_path() then refuses to materialize it.
+        monkeypatch.setattr("clio_agent.gact.resource_custody._safe_name", lambda value: value)
+        bad = client.post(
+            f"/v1/workspaces/{workspace_id}/resources",
+            json={"name": "nested/evil.txt", "size": 4, "media_type": "text/plain"},
+        ).json()
+        appended = client.patch(bad["upload_url"], headers={"Upload-Offset": "0"}, content=b"evil")
+        assert appended.status_code == 204
+        monkeypatch.undo()
+
+        listed = client.get(f"/v1/workspaces/{workspace_id}/resources")
+        assert listed.status_code == 200, listed.text
+        rows = {row["id"]: row for row in listed.json()["resources"]}
+        assert rows[good["id"]]["materialization"]["state"] == "ready"
+        assert rows[bad["id"]]["materialization"]["state"] == "failed"
+        assert rows[bad["id"]]["materialization"]["reason"]
+        # The bytes are still in custody and the resource is still usable --
+        # only its workspace-tree mirror copy failed.
+        assert rows[bad["id"]]["state"] == "ready"
+
+        single = client.get(f"/v1/workspaces/{workspace_id}/resources/{bad['id']}")
+        assert single.status_code == 200, single.text
+        assert single.json()["materialization"]["state"] == "failed"
+
+
+def test_get_resources_never_materializes_or_copies_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GET (list and single) must never re-run materialization or copy bytes.
+
+    Materialization is now a create-complete / final-PATCH / ready-copy-only
+    operation. A GET that still triggered it would duplicate the filesystem
+    copy on every read and reintroduce the whole-list 409 this slice removes.
+    """
+
+    import clio_agent.gact.routes.resources as resources_module
+
+    calls: list[str] = []
+    original = resources_module.materialize_resource_for_app
+
+    def _spy(app: Any, record: Any) -> Any:
+        calls.append(record.id)
+        return original(app, record)
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=FakeClioAgent(answer="unused"))
+    with TestClient(app) as client:
+        workspace_id = _workspace(client, tmp_path / "workspace")
+        resource = _upload(
+            client, workspace_id, name="notes.md", content=b"hello", media_type="text/markdown"
+        )
+        assert resource["materialization"]["state"] == "ready"
+
+        monkeypatch.setattr(resources_module, "materialize_resource_for_app", _spy)
+        calls.clear()
+
+        for _ in range(3):
+            listed = client.get(f"/v1/workspaces/{workspace_id}/resources")
+            assert listed.status_code == 200, listed.text
+            single = client.get(f"/v1/workspaces/{workspace_id}/resources/{resource['id']}")
+            assert single.status_code == 200, single.text
+
+        assert calls == []
