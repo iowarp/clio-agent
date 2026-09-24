@@ -32,6 +32,8 @@ class LMProviderPreset(BaseModel):
     requires_api_key: bool = True
     api_key_env: str = ""
     auth_method: Literal["none", "api_key", "oauth", "subscription"] = "api_key"
+    #: Sign-in service name for the sign-in detail ("Globus Auth"); never part of ``label``.
+    auth_label: str = ""
     is_authenticated: bool = False
     description: str = ""
     status: Literal[
@@ -72,6 +74,9 @@ class LMProviderInfo(BaseModel):
     is_reasoning: bool = False
     native_tool_calling: bool = False
     thinking_level: str | None = None
+    #: ``"user"`` when a person set ``thinking_level``; ``None`` for a shipped or
+    #: provider default -- clients show those as defaults, not as a choice.
+    thinking_level_source: str | None = None
     thinking_effective: str = ""
     thinking_budget: int = 0
     transport: Literal["sdk"] | None = None
@@ -113,5 +118,5 @@ class LMProviderRequest(BaseModel):
     parallel: int = 0
     turn_timeout_s: float = 0.0
     transport: str | None = None
-    thinking_level: Literal["off", "low", "medium", "high"] | None = None
+    thinking_level: Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"] | None = None
     thinking_budget: int = 0

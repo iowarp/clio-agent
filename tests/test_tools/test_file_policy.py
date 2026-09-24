@@ -15,6 +15,68 @@ def test_validate_read_allows_file_under_allowed_root(tmp_path):
     assert result == data_file.resolve()
 
 
+def test_validate_read_defaults_relative_paths_to_the_active_workspace_root(tmp_path, monkeypatch):
+    """C3: a relative fs_read/fs_write/fs_edit path must resolve against the
+    SESSION'S active workspace root (bound per tool call via
+    ``clio_agent.tools.execution.tool_workspace_context``), not the OS process's
+    own cwd — the same class of bug fixed for the shell tool's default cwd."""
+    from clio_agent.tools.execution import tool_workspace_context
+
+    workspace_root = tmp_path / "workspace"
+    process_cwd = tmp_path / "install-dir"
+    workspace_root.mkdir()
+    process_cwd.mkdir()
+    (workspace_root / "notes.md").write_text("from workspace", encoding="utf-8")
+    (process_cwd / "notes.md").write_text("from process cwd", encoding="utf-8")
+    monkeypatch.chdir(process_cwd)
+    policy = FileAccessPolicy(allowed_roots=(workspace_root, process_cwd))
+
+    with tool_workspace_context(str(workspace_root)):
+        resolved = policy.validate_read("notes.md")
+
+    assert resolved == (workspace_root / "notes.md").resolve()
+
+
+def test_validate_write_defaults_relative_paths_to_the_active_workspace_root(tmp_path, monkeypatch):
+    from clio_agent.tools.execution import tool_workspace_context
+
+    workspace_root = tmp_path / "workspace"
+    process_cwd = tmp_path / "install-dir"
+    workspace_root.mkdir()
+    process_cwd.mkdir()
+    monkeypatch.chdir(process_cwd)
+    policy = FileAccessPolicy(allowed_roots=(workspace_root, process_cwd))
+
+    with tool_workspace_context(str(workspace_root)):
+        resolved = policy.validate_write("output.md")
+
+    assert resolved == (workspace_root / "output.md").resolve()
+
+
+def test_coerce_path_falls_back_to_process_cwd_with_a_typed_reason_when_unbound(
+    tmp_path, monkeypatch
+):
+    """No silent fallback: a relative path with NO active workspace root bound
+    still resolves (the app-less CLI grounding path legitimately has none), but
+    the fallback to the OS process's own cwd is recorded, not silent."""
+    monkeypatch.chdir(tmp_path)
+    events: list[tuple[object, ...]] = []
+    orig_event = file_policy.trace.event
+
+    def _spy(tag, fmt, *args):
+        events.append((tag, fmt, *args))
+        orig_event(tag, fmt, *args)
+
+    monkeypatch.setattr(file_policy.trace, "event", _spy)
+    policy = FileAccessPolicy(allowed_roots=(tmp_path,))
+    (tmp_path / "notes.md").write_text("from cwd", encoding="utf-8")
+
+    resolved = policy.validate_read("notes.md")
+
+    assert resolved == (tmp_path / "notes.md").resolve()
+    assert any("reason=no_active_workspace_root" in fmt for _tag, fmt, *_rest in events), events
+
+
 def test_validate_read_rejects_outside_allowed_roots(tmp_path):
     allowed = tmp_path / "allowed"
     allowed.mkdir()

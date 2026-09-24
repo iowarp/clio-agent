@@ -252,6 +252,73 @@ async def test_passive_with_stored_token_skips_deferred(
     assert result.connectivity is ConnectivityState.SKIPPED
     assert result.auth is AuthState.DEFERRED
     assert client.calls == []
+    # The failed lookup is a typed, queryable reason -- not a silent None.
+    assert result.error is not None
+    assert result.error.startswith("argonne_stored_token_unusable:")
+    assert "offline: cannot refresh" in result.error
+
+
+@pytest.mark.asyncio
+async def test_passive_stored_token_empty_is_typed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stored sign-in that hands back an empty token reports its own reason."""
+    monkeypatch.setattr(argonne_auth, "tokens_exist", lambda: True)
+    monkeypatch.setattr(
+        argonne_auth, "get_access_token", lambda _force=False, *, allow_interactive=True: ""
+    )
+
+    hs = ArgonneHandshake(provider=None)
+    ctx = HandshakeContext(
+        provider_id="argonne",
+        provider_kind="argonne",
+        api_base=SOPHIA_API_BASE,
+        auth_mode="passive",
+    )
+    result = await hs.check_connectivity(_FakeClient({}), ctx)
+
+    assert result.auth is AuthState.DEFERRED
+    assert result.error is not None
+    assert result.error.startswith("argonne_stored_token_empty:")
+
+
+@pytest.mark.asyncio
+async def test_passive_no_stored_sign_in_carries_no_error() -> None:
+    """Plain signed-out state is AuthState.MISSING, not a failure message."""
+    hs = ArgonneHandshake(provider=None)
+    ctx = HandshakeContext(
+        provider_id="argonne",
+        provider_kind="argonne",
+        api_base=SOPHIA_API_BASE,
+        auth_mode="passive",
+    )
+    result = await hs.check_connectivity(_FakeClient({}), ctx)
+
+    assert result.auth is AuthState.MISSING
+    assert result.error is None
+
+
+@pytest.mark.asyncio
+async def test_passive_stored_token_failure_reaches_the_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The typed reason survives the whole handshake into ``HandshakeReport.error``."""
+    monkeypatch.setattr(argonne_auth, "tokens_exist", lambda: True)
+
+    def _fail(_force: bool = False, *, allow_interactive: bool = True) -> str:
+        raise RuntimeError("globus_sdk missing")
+
+    monkeypatch.setattr(argonne_auth, "get_access_token", _fail)
+    report = await ArgonneHandshake(provider=None).handshake(
+        HandshakeContext(
+            provider_id="argonne_metis",
+            provider_kind="argonne",
+            api_base=SOPHIA_API_BASE,
+            auth_mode="passive",
+        )
+    )
+
+    assert report.models == ()
+    assert report.error is not None
+    assert report.error.startswith("argonne_stored_token_unusable:")
 
 
 @pytest.mark.asyncio

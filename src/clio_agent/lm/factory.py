@@ -213,6 +213,7 @@ def _thinking_kwargs(config: LMProviderConfig) -> dict:
     ``ClaudeAgentOptions`` (LiteLLM ignores ``reasoning_effort`` on that
     transport, which is why the old mapping was a silent no-op there).
     """
+    from clio_agent.providers.reasoning_levels import model_effort_levels  # noqa: PLC0415
     from clio_agent.providers.thinking import (  # noqa: PLC0415
         log_unsupported_thinking,
         resolve_thinking,
@@ -222,6 +223,8 @@ def _thinking_kwargs(config: LMProviderConfig) -> dict:
         config.provider,
         getattr(config, "thinking_level", None),
         int(getattr(config, "thinking_budget", 0) or 0),
+        # The model's own reported effort levels decide effort vs budget.
+        effort_levels=model_effort_levels(config.provider, config.model or ""),
     )
     if not plan.supported:
         # No silent no-op: a requested level with no provider mapping is recorded

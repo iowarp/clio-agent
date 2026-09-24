@@ -46,6 +46,20 @@ def invalidate(key: tuple[str, str] | None = None) -> None:
         _cache.pop(key, None)
 
 
+def invalidate_provider(provider_id: str) -> int:
+    """Drop every cached report for ``provider_id`` (all ``api_base`` variants).
+
+    Used when the provider's credential state changed out of band — a completed
+    sign-in or an explicit "Check provider" — so the next read re-probes instead
+    of serving a report produced under the old credential. Returns how many
+    entries were dropped.
+    """
+    stale = [key for key in _cache if key[0] == provider_id]
+    for key in stale:
+        _cache.pop(key, None)
+    return len(stale)
+
+
 async def cached_or_run(
     key: tuple[str, str],
     runner: Callable[[], Awaitable[HandshakeReport]],
