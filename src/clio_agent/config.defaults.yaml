@@ -1608,3 +1608,9 @@ spotter.watcher_blueprint_id: "spotter-ai"
 # Expert id within the watcher blueprint SPOTTER arms as the standing
 # watcher; change alongside watcher_blueprint_id for a custom expert.
 spotter.watcher_expert_id: "spotter_watcher"
+
+# ==========================================================================
+# Unassigned -- add these to scripts/config_key_notes.py
+
+# CLIO_RELEASE_MANIFEST_URL  (str)  <- src/clio_agent/gact/routes/latest_release.py
+system.release_manifest_url: "https://github.com/iowarp/clio-agent/releases/latest/download/latest-lite.json"
