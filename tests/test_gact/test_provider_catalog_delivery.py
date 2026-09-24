@@ -82,6 +82,42 @@ def test_catalog_uses_modalities_only_from_current_live_evidence() -> None:
     assert static["evidence"]["live"] is False
 
 
+def test_catalog_row_carries_claude_code_cli_aliases() -> None:
+    """A claude_code row exposes the CLI aliases that select it (e.g. 'sonnet').
+
+    Without this, a client matching the configured model against the catalog
+    by id alone cannot find an alias-configured model's row, and hides its
+    reasoning selector (#1436).
+    """
+    preset = LMProviderPreset(
+        id="claude_code",
+        label="Claude Code",
+        provider="claude_code",
+        api_base="claude-code://sdk",
+        suggested_model="claude-sonnet-5",
+    )
+    report = HandshakeReport(
+        provider_id="claude_code",
+        provider_kind="claude_code",
+        connectivity=ConnectivityState.OK,
+        auth=AuthState.OK,
+        models_source="overlay",
+        generated_at="2026-09-24T00:00:00+00:00",
+        models=(
+            ModelProfile(
+                id="claude-sonnet-5",
+                raw={"cli_values": ["sonnet"], "supported_effort_levels": ["low", "high"]},
+            ),
+        ),
+    )
+    row = model_catalog_row(preset, report, report.models[0])
+    assert row["aliases"] == ["sonnet"]
+
+    # A provider with no alias concept reports an empty list, never omits the key.
+    plain = model_catalog_row(_preset(), _report(), _report().models[0])
+    assert plain["aliases"] == []
+
+
 def test_live_codex_sdk_catalog_advertises_its_typed_image_input() -> None:
     preset = LMProviderPreset(
         id="codex",

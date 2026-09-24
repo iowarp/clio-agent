@@ -405,6 +405,26 @@ def record_refresh(result: ProviderDiscoveryResult) -> dict[str, Any]:
     return wire
 
 
+def update_entry_fields(provider: str, fields: Mapping[str, Any]) -> None:
+    """Merge ``fields`` into one provider's existing overlay entry (atomic write).
+
+    For small per-entry facts that are not a discovery result (e.g. a last-good
+    list's ``confirmed_at``). A missing entry is left alone; a malformed overlay
+    propagates :class:`OverlayMalformedError`, never silently rewritten.
+    """
+    path = overlay_path()
+    with _LOCK:
+        db = read_overlay()
+        entry = db.get(provider)
+        if not isinstance(entry, dict):
+            return
+        db[provider] = {**entry, **fields}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
+        tmp.write_text(json.dumps(db, indent=1, sort_keys=True), encoding="utf-8")
+        tmp.replace(path)
+
+
 __all__ = [
     "CLAUDE_CODE_SOURCE",
     "CODEX_SOURCE",
@@ -422,4 +442,5 @@ __all__ = [
     "read_overlay",
     "record_refresh",
     "resolve_cloud_api_key",
+    "update_entry_fields",
 ]

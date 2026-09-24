@@ -6,6 +6,61 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.4.17] — 2026-09-24
+
+### Changed
+
+- Which A2UI catalogs an agent can produce against is now declared per agent.
+  An agent's `a2ui_catalogs` is the complete list, in preference order, and
+  nothing is implicit: the builtin `clio-workspace` and `basic` catalogs are
+  available only to agents that list them by name, next to pack catalogs
+  declared as `name: relative/dir`. A surface that names no catalog gets the
+  first listed catalog the client supports, so it no longer defaults to Basic.
+  `GET /v1/sessions/{sid}/a2ui/capabilities`, the session catalog route (whose
+  producible rows now come first, in the agent's order), the agent rows'
+  `a2ui_capabilities`, the catalog skills, and the producer tools all follow
+  that list. An agent that lists no catalogs gets no A2UI producer tools and no
+  catalog skills, and the session records `a2ui_no_catalogs_declared`. Basic
+  is still installed and still renders existing surfaces. An unknown builtin
+  name, a missing catalog directory, or two declarations of one name with
+  different origins is a validation error. The built-in agent a session runs
+  when no Agent Blueprint is active declares `clio-workspace`, and every
+  shipped marketplace agent declares at least `clio-workspace`. The generated
+  catalog skills state each catalog's id and which one is the agent's default.
+- After an upgrade, the first start re-installs the default registry packs you
+  have not edited, so installed packs pick up the new catalog declarations.
+  Edited packs are left alone, and a failed re-install is retried on the next
+  start.
+
+### Fixed
+
+- The A2UI catalog list omits empty sidecar fields instead of sending them as
+  `null`, which made clients reject every catalog and show created surfaces as
+  unavailable.
+- A resource is copied into the workspace once, when its upload completes,
+  instead of on every listing. A failed copy is recorded on that resource
+  (`materialization`) and no longer fails the whole listing. Names that are
+  unsafe as Windows filenames are mapped rather than rejected.
+- `GET /v1/workspaces/{wid}/files` lists dot folders, `.clio` included, after
+  the user's own entries, and reports `truncated` from the real walk. It
+  accepts `include_hidden` and `exclude_service_storage`. Reading CLIO's own
+  sandbox cache or the workspace `.clio/config.yaml` is refused.
+- Shell and file tools default to the active workspace root, not the server's
+  own working directory.
+- Provider catalog: a provider's last confirmed models are kept and served
+  stale while a live check is retried in the background. ALCF sign-in and
+  "Check provider" refresh that provider. An ALCF answer that requires a new
+  sign-in reports `argonne_reauthentication_required` and no longer looks
+  ready, and a missing Globus package reports `argonne_sdk_missing`.
+- Reasoning: each model reports its real levels, default, and source,
+  including Claude effort levels up to `max` and Codex `minimal`, `max` and
+  `ultra`. A message's `reasoning_effort` is applied to its turn, recorded in
+  its provenance, and inherited by spawned children on the same model. A
+  stored level counts only when a person chose it, and catalog rows carry
+  model aliases with `resolved_model_id` on the LM configuration.
+- Provider display names no longer include the sign-in method; it is reported
+  separately as `auth_label`.
+
 ## [0.9.4.16] — 2026-09-23
 
 ### Fixed

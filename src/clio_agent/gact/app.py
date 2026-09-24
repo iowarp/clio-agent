@@ -814,9 +814,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.sandbox = install_sandbox()
 
-    # Reap proven CLIO orphans before the MCP-cache peer-liveness check; a
-    # surviving orphan otherwise defers pruning indefinitely. Keep the order
-    # real while running blocking cleanup off-loop with typed logging.
+    # Reap proven CLIO orphans before the MCP-cache liveness check (order matters, off-loop).
+    from clio_agent.gact import default_registry_migration as _registry_resync  # noqa: PLC0415
     from clio_agent.gact.routes.system import _prime_orphan_scan_cache  # noqa: PLC0415
     from clio_agent.providers.codex_credential_home import (  # noqa: PLC0415
         _reap_orphaned_codex_homes,
@@ -829,6 +828,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         await boot_prune_off_loop()
 
     app.state.mcp_cache_prune_task = asyncio.create_task(_reap_orphans_then_prune_mcp_cache())
+    app.state.registry_resync = _registry_resync.start_in_background(app)  # v15 S8, a thread
 
     task: Optional[asyncio.Task] = None
     if getattr(app.state, "schedules", None) is not None:
@@ -872,12 +872,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     await asyncio.to_thread(app.state.document_store.close)
     # #948 S1 (#662): quiesce the internal turn-PRODUCERS (the scheduler tick, the
     # agent-construction and lm-config tasks) BEFORE draining turns, so nothing can
-    # spawn a fresh turn into the drain window. The scheduler is the one live
-    # producer post-yield (request callers are gone once uvicorn stops serving);
-    # left running it could fire a due schedule mid-drain and leave a zombie turn
-    # the drain never saw. (drain() also re-snapshots to catch any stray late spawn.)
+    # spawn a fresh turn into the drain window. The scheduler (the live post-yield
+    # producer) could otherwise fire mid-drain and leave a zombie turn the drain
+    # never saw (drain() re-snapshots too); the catalog re-probe loop stops here.
     lm_config_task = getattr(app.state, "lm_config_task", None)
-    for t in (task, agent_task, lm_config_task, provider_catalog_task):
+    reprobe_task = getattr(app.state, "provider_catalog_reprobe_task", None)
+    for t in (task, agent_task, lm_config_task, provider_catalog_task, reprobe_task):
         if t is None:
             continue
         if getattr(t, "done", lambda: False)():

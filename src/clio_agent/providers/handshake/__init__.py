@@ -22,6 +22,7 @@ from clio_agent.providers.handshake import cache
 from clio_agent.providers.handshake.argonne import ArgonneHandshake
 from clio_agent.providers.handshake.base import (
     ConnectivityResult,
+    DiscoveryAuthRejected,
     HandshakeContext,
     ProviderHandshake,
 )
@@ -47,6 +48,7 @@ __all__ = [
     "ProviderHandshake",
     "HandshakeContext",
     "ConnectivityResult",
+    "DiscoveryAuthRejected",
     "HandshakeReport",
     "ModelProfile",
     "ConnectivityState",

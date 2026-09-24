@@ -212,7 +212,7 @@ class TestDerivedViews:
     def test_local_vllm_is_not_labeled_as_alcf_provider(self) -> None:
         provider = get_provider("argonne_local_vllm")
         assert provider is not None
-        assert provider.label == "vLLM (localhost)"
+        assert provider.label == "vLLM"
         assert "ALCF" not in provider.label
 
 

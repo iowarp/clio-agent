@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any
 from clio_agent import conf
 from clio_agent.gact.resource_custody import ResourceRecord
 from clio_agent.gact.resource_lifecycle import refresh_processing
-from clio_agent.gact.resource_materialization import materialize_resource_for_app
+from clio_agent.gact.resource_materialization import materialize_once
 from clio_agent.gact.resource_processing import resource_processing_task_id
 from clio_agent.gact.resource_processing_bounds import processing_poll_interval_s
 
@@ -139,12 +139,15 @@ def _read_text(path: Path) -> str:
 
 
 def list_workspace_resources(app: "FastAPI", workspace_id: str) -> dict[str, Any]:
-    """Return bounded metadata for resources owned by one workspace."""
+    """Return bounded metadata for resources owned by one workspace.
 
-    rows = [
-        materialize_resource_for_app(app, row) if row.state == "ready" else row
-        for row in app.state.resource_store.list(workspace_id)
-    ]
+    A ready-touch point: unlike the HTTP GET routes, this is the agent's own
+    read of its resources, so it retries any resource still ``pending`` or
+    ``failed`` materialization (a legacy record, or one whose earlier attempt
+    failed) via :func:`materialize_once`, which never raises per-row.
+    """
+
+    rows = [materialize_once(app, row) for row in app.state.resource_store.list(workspace_id)]
     limit = max(1, list_max_records())
     return {
         "workspace_id": workspace_id,
@@ -156,11 +159,15 @@ def list_workspace_resources(app: "FastAPI", workspace_id: str) -> dict[str, Any
 def inspect_workspace_resource(
     app: "FastAPI", workspace_id: str, resource_id: str
 ) -> dict[str, Any]:
-    """Return custody, processing, derivative, and delivery metadata."""
+    """Return custody, processing, derivative, and delivery metadata.
+
+    A ready-touch point: retries materialization via :func:`materialize_once`
+    (never raises) rather than the HTTP GET routes' behavior of never
+    touching it at all.
+    """
 
     record = _record(app, workspace_id, resource_id)
-    if record.state == "ready":
-        record = materialize_resource_for_app(app, record)
+    record = materialize_once(app, record)
     processing = app.state.resource_processing_store.state(record)
     manifest = app.state.resource_processing_store.manifest(record) or {}
     derivatives = [

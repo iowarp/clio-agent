@@ -6,7 +6,9 @@ catalog document (:mod:`.claude_code_catalog`), acquired at startup and on
 explicit provider verification -- exactly like Codex's model list is acquired
 from the official SDK. CLIO does not probe models through the SDK/CLI to learn
 what exists or what a model can do: there are no per-model probes, no bare-
-default probe, and no multimodal probe.
+default probe, and no multimodal probe. The one exception is per-model effort
+levels, which only the CLI knows: :mod:`.claude_code_effort` reads them from the
+CLI's ``initialize`` model list (no model turn) and annotates the catalog rows.
 
 The catalog is silent on whether Claude Code is INSTALLED or SIGNED IN on this
 machine, so discovery separately runs exactly one small check: ``<binary> auth
@@ -30,6 +32,7 @@ import subprocess
 from typing import Any
 
 from clio_agent import conf
+from clio_agent.providers.model_discovery import claude_code_effort
 from clio_agent.providers.model_discovery.claude_code_catalog import (
     ClaudeCodeCatalog,
     ClaudeCodeCatalogError,
@@ -203,7 +206,14 @@ def discover_claude_code(
             failed_reason=failed_reason,
         )
 
-    discovered = attach_context_limits([dict(model) for model in catalog.models], "claude_code")
+    # Per-model effort levels come from the CLI's own model catalog (one SDK
+    # initialize read, no model turn); the maintained catalog still decides
+    # which models exist.
+    cli_models, effort_failure = claude_code_effort.read_cli_model_catalog()
+    rows = claude_code_effort.attach_effort_levels(
+        [dict(model) for model in catalog.models], cli_models, effort_failure
+    )
+    discovered = attach_context_limits(rows, "claude_code")
     return ProviderDiscoveryResult(
         provider="claude_code",
         discovered=discovered,

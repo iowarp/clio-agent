@@ -53,6 +53,7 @@ stays inside the recorded budget.
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -63,6 +64,8 @@ if TYPE_CHECKING:
         ClaudeStreamClientPool,
         _StreamClientEntry,
     )
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "CONNECT_WAIT_REASONS",
@@ -75,6 +78,7 @@ __all__ = [
     "scopes_for_session",
     "stream_idle_ttl_s",
     "sweep_idle_scoped_entries",
+    "sweep_stream_entries",
 ]
 
 
@@ -432,3 +436,70 @@ def scopes_for_session(pool: "ClaudeStreamClientPool", session_id: str) -> set[s
         return set()
     with pool._guard:  # noqa: SLF001 - this module is claude_code_sessions' owner-split sibling
         return pool._session_scopes.pop(session_id, None) or set()  # noqa: SLF001
+
+
+def max_idle_base_connections() -> int:
+    """Cap on pooled BASE (unscoped) entries -- one per ``(model, cwd, thinking)``.
+
+    Per-message reasoning levels key a connection per level, so without a cap the
+    shared entries would grow with every model x level a person tries, each
+    holding a ``claude`` CLI subprocess. Resolved via
+    ``providers.claude_code.max_base_connections`` /
+    ``CLIO_CLAUDE_CODE_MAX_BASE_CONNECTIONS`` (default 4).
+    """
+    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+
+    return max(
+        1,
+        int(
+            conf.resolve(
+                "providers.claude_code.max_base_connections",
+                env="CLIO_CLAUDE_CODE_MAX_BASE_CONNECTIONS",
+                default=4,
+                cast=conf.as_int,
+            )
+        ),
+    )
+
+
+def sweep_stream_entries(
+    pool: "ClaudeStreamClientPool",
+    scoped: bool,
+    requested: tuple[str, str | None, str | None, str] | None = None,
+) -> list[tuple[tuple[str, str | None, str | None, str], "_StreamClientEntry"]]:
+    """Every entry ``entry_for`` should reap before handing out ``requested``.
+
+    The idle scope-keyed sweep (only for a scoped request, as before) plus the
+    least-recently-used IDLE base entries beyond :func:`max_idle_base_connections`.
+    A slot is reserved only when ``requested`` is a NEW base entry; the requested
+    entry itself and any in-flight entry are never evicted. Every evicted entry is
+    marked ``_dead`` (the F6b lifecycle rule) so a caller still holding it cannot
+    reconnect outside the pool. Base evictions log ``claude_code_base_entry_evicted``.
+    """
+    evicted = sweep_idle_scoped_entries(pool) if scoped else []
+    cap = max_idle_base_connections()
+    with pool._guard:  # noqa: SLF001 - this module is claude_code_sessions' owner-split sibling
+        base = [(key, entry) for key, entry in pool._entries.items() if not key[3]]  # noqa: SLF001
+        idle = sorted(
+            (
+                (entry.idle_for(), key, entry)
+                for key, entry in base
+                if key != requested and entry.idle_for() is not None
+            ),
+            key=lambda item: -(item[0] or 0.0),
+        )
+        creating_base = requested is not None and not requested[3] and requested not in dict(base)
+        excess = len(base) - (cap - 1 if creating_base else cap)
+        for _idle, key, entry in idle[: max(0, excess)]:
+            del pool._entries[key]  # noqa: SLF001
+            evicted.append((key, entry))
+            logger.info(
+                "claude_code stream pool: reason=claude_code_base_entry_evicted model=%s "
+                "thinking=%s cap=%d",
+                key[0],
+                key[2],
+                cap,
+            )
+        for _key, entry in evicted:
+            entry._dead = True  # noqa: SLF001 - refuse a late connect outside the pool (F6b)
+    return evicted

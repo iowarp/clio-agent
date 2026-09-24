@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class LMProviderConfigurationField(BaseModel):
@@ -32,6 +32,8 @@ class LMProviderPreset(BaseModel):
     requires_api_key: bool = True
     api_key_env: str = ""
     auth_method: Literal["none", "api_key", "oauth", "subscription"] = "api_key"
+    #: Sign-in service name for the sign-in detail ("Globus Auth"); never part of ``label``.
+    auth_label: str = ""
     is_authenticated: bool = False
     description: str = ""
     status: Literal[
@@ -64,6 +66,10 @@ class LMProviderInfo(BaseModel):
     provider: str = ""
     api_base: str = ""
     model: str = ""
+    #: The catalog model id ``model`` actually resolves to (claude_code CLI
+    #: aliases like "sonnet" -> "claude-sonnet-5"); equal to ``model`` when the
+    #: provider has no alias concept or none is known yet.
+    resolved_model_id: str = ""
     temperature: float = 0.0
     max_tokens: int = 0
     context_length: int = 0
@@ -72,6 +78,9 @@ class LMProviderInfo(BaseModel):
     is_reasoning: bool = False
     native_tool_calling: bool = False
     thinking_level: str | None = None
+    #: ``"user"`` when a person set ``thinking_level``; ``None`` for a shipped or
+    #: provider default -- clients show those as defaults, not as a choice.
+    thinking_level_source: str | None = None
     thinking_effective: str = ""
     thinking_budget: int = 0
     transport: Literal["sdk"] | None = None
@@ -81,6 +90,23 @@ class LMProviderInfo(BaseModel):
     operation_id: str = ""
     provider_options: dict[str, str] = Field(default_factory=dict)
     presets: list[LMProviderPreset] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _resolve_model_alias(self) -> "LMProviderInfo":
+        """Auto-derive ``resolved_model_id`` when a caller does not set it.
+
+        Keeps the alias resolution (claude_code CLI values like "sonnet" ->
+        "claude-sonnet-5") in the ONE place that owns it
+        (``resolve_configured_model_id``) instead of every route that builds
+        an ``LMProviderInfo`` having to remember to call it.
+        """
+        if not self.resolved_model_id and self.model:
+            from clio_agent.providers.reasoning_levels import (  # noqa: PLC0415
+                resolve_configured_model_id,
+            )
+
+            self.resolved_model_id = resolve_configured_model_id(self.provider, self.model)
+        return self
 
 
 class LMProviderRequest(BaseModel):
@@ -113,5 +139,7 @@ class LMProviderRequest(BaseModel):
     parallel: int = 0
     turn_timeout_s: float = 0.0
     transport: str | None = None
-    thinking_level: Literal["off", "low", "medium", "high"] | None = None
+    thinking_level: (
+        Literal["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] | None
+    ) = None
     thinking_budget: int = 0

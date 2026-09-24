@@ -189,6 +189,9 @@ def purge_session_tasks(app: "FastAPI", session_id: str) -> list[str]:
     gone. Returns the purged task ids.
     """
 
+    from clio_agent.gact.turn_reasoning import forget_session_reasoning  # noqa: PLC0415
+
+    forget_session_reasoning(app, session_id)
     registry = getattr(app.state, "agent_task_registry", None)
     if registry is None:
         return []

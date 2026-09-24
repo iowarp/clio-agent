@@ -91,7 +91,7 @@ PROVIDERS: tuple[Provider, ...] = (
     # ----- local-only ------------------------------------------------
     Provider(
         id="lm_studio",
-        label="LM Studio (localhost)",
+        label="LM Studio",
         description=(
             "Locally-hosted models via LM Studio. Clear the model "
             "field to auto-discover the loaded model from "
@@ -119,7 +119,7 @@ PROVIDERS: tuple[Provider, ...] = (
     ),
     Provider(
         id="ollama",
-        label="Ollama (localhost)",
+        label="Ollama",
         description="Locally-hosted models via Ollama.",
         provider_kind="ollama",
         litellm_prefix="ollama_chat",
@@ -367,7 +367,7 @@ PROVIDERS: tuple[Provider, ...] = (
     ),
     Provider(
         id="codex",
-        label="OpenAI Codex (subscription)",
+        label="OpenAI Codex",
         description=(
             "Uses the official OpenAI Codex Python SDK so calls reuse "
             "your ChatGPT / Codex subscription instead of paying "
@@ -409,7 +409,7 @@ PROVIDERS: tuple[Provider, ...] = (
     ),
     Provider(
         id="claude_code",
-        label="Claude Code (subscription)",
+        label="Claude Code",
         description=(
             "Uses the Claude Agent SDK with Claude Code subscription auth "
             "instead of direct Anthropic API keys. Authenticate Claude Code "
@@ -484,7 +484,7 @@ PROVIDERS: tuple[Provider, ...] = (
     # LMProviderConfig.__post_init__.
     Provider(
         id="argonne_sophia",
-        label="ALCF Sophia (Globus Auth)",
+        label="ALCF Sophia",
         description=(
             "Argonne's Sophia inference gateway (vLLM, OpenAI-"
             "compatible). Auth is a Globus access token minted on "
@@ -498,6 +498,7 @@ PROVIDERS: tuple[Provider, ...] = (
         suggested_model="openai/gpt-oss-120b",
         requires_api_key=False,
         auth_method="oauth",
+        auth_label="Globus Auth",
         max_tokens_default=4096,
         strip_openai_prefix=False,
         is_kind_default=True,
@@ -506,7 +507,7 @@ PROVIDERS: tuple[Provider, ...] = (
     ),
     Provider(
         id="argonne_metis",
-        label="ALCF Metis (Globus Auth)",
+        label="ALCF Metis",
         description=(
             "Argonne's Metis inference gateway (FastCoE 'api' "
             "framework, OpenAI-compatible chat-completions). Useful "
@@ -523,6 +524,7 @@ PROVIDERS: tuple[Provider, ...] = (
         suggested_model="gpt-oss-120b",
         requires_api_key=False,
         auth_method="oauth",
+        auth_label="Globus Auth",
         supports_vision=True,
         max_tokens_default=4096,
         strip_openai_prefix=False,
@@ -530,7 +532,7 @@ PROVIDERS: tuple[Provider, ...] = (
     ),
     Provider(
         id="vllm",
-        label="vLLM (localhost)",
+        label="vLLM",
         description=(
             "Any local OpenAI-compatible vLLM server. No Globus needed; "
             "the server commonly accepts the literal 'EMPTY' API key. "
@@ -681,6 +683,7 @@ def as_lm_presets() -> list[Any]:
             requires_api_key=p.requires_api_key,
             api_key_env=p.api_key_env or "",
             auth_method=p.auth_method,
+            auth_label=p.auth_label,
             is_authenticated=p.auth_method == "none",
             description=p.description,
             supports_live_catalog=p.supports_live_catalog,

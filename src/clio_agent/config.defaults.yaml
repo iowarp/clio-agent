@@ -201,6 +201,12 @@ lm.provider: "lm_studio"
 # abandoned as inconclusive; raise on hosts where cold CLI startup is slow.
 providers.claude_code.auth_status_timeout_s: 20.0
 
+# CLIO_CLAUDE_CODE_MAX_BASE_CONNECTIONS  (int)  <- src/clio_agent/providers/claude_code_stream_bounds.py
+# Max idle shared Claude Code connections (one per model and reasoning
+# level) kept pooled before the least recently used is closed; raise if you
+# switch levels often.
+providers.claude_code.max_base_connections: 4
+
 # CLIO_CLAUDE_CODE_MAX_CONCURRENT_PROCESSES  (float)  <- src/clio_agent/providers/claude_code_stream_bounds.py
 # Process-wide cap on concurrently-connected claude CLI subprocesses; a
 # connect beyond it waits, raise for more concurrent sessions.

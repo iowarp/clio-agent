@@ -1571,6 +1571,77 @@ def test_put_lm_provider_defaults_claude_code_to_sdk_transport(
     assert app.state.provider_profiles.default.transport == "sdk"
 
 
+def test_lm_provider_reports_resolved_model_id_for_a_claude_code_alias(
+    tmp_path: Path, monkeypatch, claude_sdk_installed: Any
+) -> None:
+    """A configured claude_code alias ('sonnet') resolves to its full catalog id.
+
+    Without ``resolved_model_id``, a client matching the configured `model`
+    against the catalog's full model ids (e.g. 'claude-sonnet-5') cannot find
+    the row and hides its reasoning selector (#1436).
+    """
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    from clio_agent.providers import model_discovery
+
+    model_discovery.record_refresh(
+        model_discovery.ProviderDiscoveryResult(
+            provider="claude_code",
+            discovered=[
+                {
+                    "id": "claude-sonnet-5",
+                    "name": "Sonnet",
+                    "description": "",
+                    "cli_values": ["sonnet"],
+                }
+            ],
+            source=model_discovery.CLAUDE_CODE_SOURCE,
+            default_model="claude-sonnet-5",
+        )
+    )
+    class _StubAgent(_RebindLMStub):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.arc = type(
+                "ARC",
+                (),
+                {
+                    "get_cache_stats": lambda self: {
+                        "hits": 0,
+                        "misses": 0,
+                        "hit_rate": 0.0,
+                        "capacity": 10,
+                    }
+                },
+            )()
+
+        def forward(self, *args: Any, **kwargs: Any) -> Any:
+            return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
+
+    monkeypatch.setattr("clio_agent.agent.ClioAgent", _StubAgent)
+    monkeypatch.setattr(
+        "clio_agent.config.create_lm", lambda cfg: type("FakeLM", (), {"history": []})()
+    )
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        resp = c.put(
+            "/v1/providers/lm",
+            json={
+                "provider": "claude_code",
+                "api_base": "claude-code://sdk",
+                "model": "sonnet",
+                "transport": "sdk",
+            },
+        )
+        get_body = c.get("/v1/providers/lm").json()
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["model"] == "sonnet"
+    assert body["resolved_model_id"] == "claude-sonnet-5"
+    assert get_body["model"] == "sonnet"
+    assert get_body["resolved_model_id"] == "claude-sonnet-5"
+
+
 def test_put_lm_provider_applies_lm_studio_context_length(tmp_path: Path, monkeypatch) -> None:
     """LM Studio context length is a model-load setting, not a chat completion param."""
 
@@ -2118,9 +2189,11 @@ def test_put_lm_provider_accepts_thinking_level(tmp_path: Path, monkeypatch) -> 
 def test_put_lm_provider_rejects_invalid_thinking_level(tmp_path: Path) -> None:
     """A junk thinking_level is a structured 422 at the boundary — never ignored (#895).
 
-    The ``Literal["off","low","medium","high"]`` on ``LMProviderRequest`` makes
-    FastAPI reject an out-of-vocabulary level before the handler runs, so an
-    unsupported value can never be silently dropped or bound.
+    The ``Literal[...]`` on ``LMProviderRequest`` makes FastAPI reject an
+    out-of-vocabulary level before the handler runs, so an unsupported value
+    can never be silently dropped or bound. "extreme" (not "ultra" -- #1436
+    added that as a real, if openai-unsupported, level) is junk no provider
+    will ever report.
     """
 
     app = build_app(sessions_path=tmp_path / "s.json")
@@ -2132,7 +2205,7 @@ def test_put_lm_provider_rejects_invalid_thinking_level(tmp_path: Path) -> None:
                 "api_base": "http://127.0.0.1:3456/v1",
                 "model": "gpt-5.5",
                 "api_key": "x",
-                "thinking_level": "ultra",
+                "thinking_level": "extreme",
             },
         )
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from clio_agent.gact.protocol.v3 import utcnow_iso
+from clio_agent.gact.session_defaults import session_effort
 
 _SESSION_STATE = {
     "idle": "completed",
@@ -50,7 +51,7 @@ def session_to_v3(session: Any) -> dict[str, Any]:
     optional = {
         "provider_id": model.get("provider_id"),
         "model_id": model.get("model_id"),
-        "effort": metadata.get("effort") or metadata.get("thinking_level"),
+        "effort": session_effort(metadata),
         "branch": metadata.get("branch") or metadata.get("git_branch"),
         "parent_session_id": getattr(session, "parent_session_id", ""),
         "agent_id": agent_id,

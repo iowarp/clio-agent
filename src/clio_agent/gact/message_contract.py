@@ -18,7 +18,12 @@ from clio_agent.gact.types import AgentRef, ModelRef, Part
 class MessageBehavior(BaseModel):
     """User-selected behavior captured with a message or queued item."""
 
-    reasoning_effort: Literal["off", "low", "medium", "high", "xhigh"] = "medium"
+    #: The message's own thinking level, applied to this turn only
+    #: (``gact.turn_reasoning``). ``None`` means "use the configured level" -- a
+    #: fabricated default here would silently override the user's setting.
+    reasoning_effort: Optional[
+        Literal["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+    ] = None
     execution_mode: Literal["execute", "plan", "deep_research"] = "execute"
     confirmation_policy: Literal["ask", "auto-edits", "bypass", "ai-review", "spotter-ai"] = "ask"
 

@@ -60,8 +60,15 @@ def _stub_claude_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
     care about the catalog (e.g. the overlay/record_refresh section above)
     from ever making a real network call if something imports this module.
     """
+    from clio_agent.providers.model_discovery import claude_code_effort
     from clio_agent.providers.model_discovery.claude_code_catalog import ClaudeCodeCatalog
 
+    # Never spawn the real Claude Code CLI for its initialize model list.
+    monkeypatch.setattr(
+        claude_code_effort,
+        "read_cli_model_catalog",
+        lambda *_a, **_k: ([], "claude_code_cli_model_catalog_unavailable: test stub"),
+    )
     monkeypatch.setattr(
         md_claude_code,
         "refresh_claude_code_catalog",
@@ -654,6 +661,9 @@ def test_discover_codex_success_reports_default_and_source(monkeypatch: pytest.M
     assert result.source == "codex_sdk"
     assert all(m["capabilities"] == ["text", "image"] for m in result.discovered)
     assert all(m["capability_evidence"]["reason"] == "modality_reported" for m in result.discovered)
+    # The account's own per-model reasoning efforts are persisted verbatim.
+    assert all(m["supported_reasoning_efforts"] == ["medium"] for m in result.discovered)
+    assert all(m["default_reasoning_effort"] == "medium" for m in result.discovered)
     assert stub.closed is True
 
 
@@ -1567,3 +1577,67 @@ def test_an_uncatalogued_staleness_reason_is_refused() -> None:
 
     with pytest.raises(ValueError, match="Unknown overlay staleness reason"):
         md_overlay._staleness_reason("silently_probably_fine")
+
+
+def test_discover_claude_code_attaches_cli_effort_levels(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Per-model effort levels come from the CLI initialize model list (real shape)."""
+    from clio_agent.providers.model_discovery import claude_code_effort
+    from clio_agent.providers.model_discovery.claude_code_catalog import ClaudeCodeCatalog
+
+    cli_models = [
+        {
+            "value": "sonnet",
+            "resolvedModel": "claude-sonnet-5",
+            "supportsEffort": True,
+            "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"],
+            "supportsAdaptiveThinking": True,
+        },
+        {"value": "haiku", "resolvedModel": "claude-haiku-4-5-20251001"},
+        {
+            "value": "claude-fable-5-1[1m]",
+            "resolvedModel": "claude-fable-5-1",
+            "supportsEffort": True,
+            "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"],
+        },
+    ]
+    monkeypatch.setattr(
+        claude_code_effort, "read_cli_model_catalog", lambda *_a, **_k: (cli_models, "")
+    )
+    monkeypatch.setattr(md_claude_code, "_resolve_claude_binary", lambda: "claude")
+    monkeypatch.setattr(md_claude_code.subprocess, "run", _fake_auth_status_run())
+    ids = ("claude-sonnet-5", "claude-haiku-4-5-20251001", "claude-fable-5-1")
+    monkeypatch.setattr(
+        md_claude_code,
+        "refresh_claude_code_catalog",
+        lambda: ClaudeCodeCatalog(
+            models=[
+                {"id": model_id, "name": model_id, "capabilities": ["text"]} for model_id in ids
+            ],
+            default_model="claude-sonnet-5",
+            default_model_reason="",
+        ),
+    )
+
+    result = model_discovery.discover_claude_code(timeout=5.0)
+    rows = {row["id"]: row for row in result.discovered}
+
+    assert rows["claude-sonnet-5"]["supported_effort_levels"] == [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    ]
+    assert rows["claude-sonnet-5"]["cli_values"] == ["sonnet"]
+    assert rows["claude-fable-5-1"]["cli_values"] == ["claude-fable-5-1[1m]"]
+    assert rows["claude-haiku-4-5-20251001"]["supported_effort_levels"] == []
+    assert "effort_evidence_failure" not in rows["claude-sonnet-5"]
+
+
+def test_failed_cli_effort_read_is_typed_on_every_row() -> None:
+    from clio_agent.providers.model_discovery.claude_code_effort import attach_effort_levels
+
+    failure = "claude_code_cli_model_catalog_unavailable: x"
+    rows = attach_effort_levels([{"id": "claude-sonnet-5"}], [], failure)
+    assert rows[0]["effort_evidence_failure"] == failure
+    assert "supported_effort_levels" not in rows[0]

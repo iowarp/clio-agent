@@ -26,11 +26,14 @@ Reaching them requires a short-lived Globus bearer token tied to an
 
 from __future__ import annotations
 
+import logging
 import os
+from dataclasses import dataclass
 from typing import Any
 
 from clio_agent.providers.handshake.base import (
     ConnectivityResult,
+    DiscoveryAuthRejected,
     HandshakeContext,
     ProviderHandshake,
 )
@@ -47,6 +50,81 @@ _TOKEN_ENV_VARS: tuple[str, ...] = ("CLIO_ARGONNE_TOKEN", "ALCF_INFERENCE_TOKEN"
 #: The gateway path segment that separates the public root from the
 #: per-cluster routing (``.../resource_server/<cluster>/<framework>/v1``).
 _RESOURCE_SERVER = "/resource_server"
+
+logger = logging.getLogger(__name__)
+
+#: Typed reasons the passive token lookup reports instead of a bare ``None``
+#: (no-silent-fallback): the code is the queryable fact, the sentence is what a
+#: person reads. ``argonne_token_missing`` is the ordinary signed-out state and
+#: is carried by ``AuthState.MISSING`` alone; the other two mean a stored sign-in
+#: exists but could not be used, which used to vanish into ``DEFERRED``.
+PASSIVE_TOKEN_REASONS: dict[str, str] = {
+    "argonne_token_missing": (
+        "no ALCF token is set in the environment and no Globus sign-in is stored"
+    ),
+    "argonne_stored_token_unusable": (
+        "a Globus sign-in is stored but could not produce an access token without signing in again"
+    ),
+    "argonne_stored_token_empty": "the stored Globus sign-in returned an empty access token",
+    "argonne_sdk_missing": (
+        "the 'argonne' extra (globus-sdk) is not installed, so the stored Globus "
+        "sign-in cannot be used"
+    ),
+}
+
+#: ALCF's inference API's own 401/403 body, e.g. the "high-assurance timeout"
+#: policy rejection: {"error": {"code": "unauthorized", "message": "..."}}.
+_ALCF_REAUTH_REASON = "argonne_reauthentication_required"
+
+
+@dataclass(frozen=True)
+class PassiveTokenLookup:
+    """Outcome of the passive (never interactive) ALCF token lookup.
+
+    Attributes:
+        token: The bearer token, or ``None`` when none is usable right now.
+        reason: A :data:`PASSIVE_TOKEN_REASONS` code when ``token`` is ``None``.
+        detail: The underlying error text for an unusable stored sign-in.
+    """
+
+    token: str | None
+    reason: str = ""
+    detail: str = ""
+
+    @property
+    def error(self) -> str | None:
+        """Typed, human-readable failure for a stored-but-unusable sign-in, else ``None``."""
+
+        if self.token is not None or self.reason in {"", "argonne_token_missing"}:
+            return None
+        message = f"{self.reason}: {PASSIVE_TOKEN_REASONS[self.reason]}"
+        return f"{message} ({self.detail})" if self.detail else message
+
+
+def _alcf_error_detail(response: Any) -> str:
+    """Extract ALCF's own error message from a 401/403 ``/models`` response.
+
+    ALCF's usual shape is ``{"error": {"code": "unauthorized", "message":
+    "Error: Permission denied from internal policies. This is likely due to a
+    high-assurance timeout. Please logout ... and re-authenticate ..."}}`` --
+    the "high-assurance timeout" case is the common one this exists for. Any
+    other 401/403 body still yields a typed reason: the raw text when the body
+    isn't that shape, never a bare HTTP status.
+    """
+
+    try:
+        payload = response.json()
+    except Exception:  # noqa: BLE001 - non-JSON body: fall back to raw text
+        return str(getattr(response, "text", "") or f"HTTP {response.status_code}")
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            return str(error["message"])
+        if isinstance(error, str) and error:
+            return error
+        if payload.get("message"):
+            return str(payload["message"])
+    return str(payload)
 
 
 class ArgonneHandshake(ProviderHandshake):
@@ -84,31 +162,47 @@ class ArgonneHandshake(ProviderHandshake):
         return gateway_root, cluster
 
     @staticmethod
-    def _resolve_passive_token() -> str | None:
+    def _resolve_passive_token() -> PassiveTokenLookup:
         """Resolve a bearer token without any interactive or network OAuth flow.
 
-        Checks the environment first, then an already-stored Globus token.
-        Returns ``None`` when nothing is available — the caller must then report
-        ``SKIPPED`` rather than probe.
+        Checks the environment first, then an already-stored Globus token. When
+        nothing is usable the lookup carries a typed :data:`PASSIVE_TOKEN_REASONS`
+        code — a stored sign-in that fails to produce a token is reported (and
+        logged) rather than collapsed into a bare ``None``.
         """
         for var in _TOKEN_ENV_VARS:
             value = os.environ.get(var)
             if value:
-                return value.strip()
+                return PassiveTokenLookup(token=value.strip())
         # Fall back to an already-stored Globus token. ``tokens_exist`` is a
         # cheap on-disk check that does not import globus-sdk; only when a token
         # is present do we ask for it (force_refresh=False never prompts).
         from clio_agent.providers import argonne_auth  # noqa: PLC0415
 
         if not argonne_auth.tokens_exist():
-            return None
+            return PassiveTokenLookup(token=None, reason="argonne_token_missing")
         try:
             token = argonne_auth.get_access_token(False, allow_interactive=False)
-        except Exception:  # noqa: BLE001 - offline-invalid token treated as deferred (see comment)
+        except argonne_auth.GlobusUnavailable as exc:
+            # Distinct from an unusable stored token: no amount of re-signing-in
+            # helps here -- the 'argonne' extra itself is not installed.
+            lookup = PassiveTokenLookup(token=None, reason="argonne_sdk_missing", detail=str(exc))
+            logger.warning("argonne passive token lookup failed: %s", lookup.error)
+            return lookup
+        except Exception as exc:  # noqa: BLE001 - any refresh failure becomes a typed reason
             # A stored token that fails to validate offline (expired refresh,
-            # missing globus-sdk) is treated as "deferred, not usable now".
-            return None
-        return token or None
+            # network) is "deferred, not usable now" -- and the reason travels
+            # with it instead of vanishing.
+            lookup = PassiveTokenLookup(
+                token=None, reason="argonne_stored_token_unusable", detail=str(exc)
+            )
+            logger.warning("argonne passive token lookup failed: %s", lookup.error)
+            return lookup
+        if not token:
+            lookup = PassiveTokenLookup(token=None, reason="argonne_stored_token_empty")
+            logger.warning("argonne passive token lookup failed: %s", lookup.error)
+            return lookup
+        return PassiveTokenLookup(token=token)
 
     async def check_connectivity(self, client: Any, ctx: HandshakeContext) -> ConnectivityResult:
         """Auth-mode-aware, OAuth-safe connectivity probe.
@@ -135,7 +229,8 @@ class ArgonneHandshake(ProviderHandshake):
                 auth=AuthState.OK,
                 auth_header={"Authorization": f"Bearer {provided}"},
             )
-        token = self._resolve_passive_token()
+        lookup = self._resolve_passive_token()
+        token = lookup.token
 
         if token is None and ctx.auth_mode == "active":
             # Active bind: allow a non-interactive refresh. This may use a
@@ -159,6 +254,7 @@ class ArgonneHandshake(ProviderHandshake):
             return ConnectivityResult(
                 connectivity=ConnectivityState.SKIPPED,
                 auth=AuthState.DEFERRED if stored else AuthState.MISSING,
+                error=lookup.error,
             )
 
         return ConnectivityResult(
@@ -180,6 +276,8 @@ class ArgonneHandshake(ProviderHandshake):
         headers = self._auth_header(ctx)
 
         models_resp = await client.get(f"{gateway_root}/{cluster}/models", headers=headers)
+        if models_resp.status_code in (401, 403):
+            raise DiscoveryAuthRejected(_ALCF_REAUTH_REASON, _alcf_error_detail(models_resp))
         models_resp.raise_for_status()
         rows = models_resp.json()
         if not isinstance(rows, list):
@@ -279,7 +377,7 @@ class ArgonneHandshake(ProviderHandshake):
             return dict(carried)
         if ctx.api_key:
             return {"Authorization": f"Bearer {ctx.api_key}"}
-        token = self._resolve_passive_token()
+        token = self._resolve_passive_token().token
         if token:
             return {"Authorization": f"Bearer {token}"}
         return {}
