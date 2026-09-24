@@ -872,12 +872,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     await asyncio.to_thread(app.state.document_store.close)
     # #948 S1 (#662): quiesce the internal turn-PRODUCERS (the scheduler tick, the
     # agent-construction and lm-config tasks) BEFORE draining turns, so nothing can
-    # spawn a fresh turn into the drain window. The scheduler is the one live
-    # producer post-yield (request callers are gone once uvicorn stops serving);
-    # left running it could fire a due schedule mid-drain and leave a zombie turn
-    # the drain never saw. (drain() also re-snapshots to catch any stray late spawn.)
+    # spawn a fresh turn into the drain window. The scheduler (the live post-yield
+    # producer) could otherwise fire mid-drain and leave a zombie turn the drain
+    # never saw (drain() re-snapshots too); the catalog re-probe loop stops here.
     lm_config_task = getattr(app.state, "lm_config_task", None)
-    for t in (task, agent_task, lm_config_task, provider_catalog_task):
+    reprobe_task = getattr(app.state, "provider_catalog_reprobe_task", None)
+    for t in (task, agent_task, lm_config_task, provider_catalog_task, reprobe_task):
         if t is None:
             continue
         if getattr(t, "done", lambda: False)():

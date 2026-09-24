@@ -292,6 +292,9 @@ def test_last_good_entry_is_reprobed_and_replaced_in_background(
         return _record(preset.id, source="live")
 
     monkeypatch.setattr("clio_agent.gact.provider_catalog_snapshot.discover_provider", _discover)
+    monkeypatch.setattr(
+        "clio_agent.gact.provider_catalog_reprobe.REPROBE_BACKOFF_S", (0.0, 0.0, 0.0)
+    )
 
     async def _run() -> dict[str, Any]:
         served = await read_catalog(app)
@@ -353,3 +356,138 @@ def test_targeted_refresh_without_a_snapshot_forces_only_that_provider(
     assert forced == ["argonne_metis"]
     ids = [row["id"] for row in response.json()["providers"]]
     assert ids == [preset.id for preset in as_lm_presets()]
+
+
+class _ScriptedHandshake:
+    """A provider handshake returning scripted reports (the cache stays REAL)."""
+
+    def __init__(self, reports: list[HandshakeReport]) -> None:
+        self.reports = reports
+        self.calls = 0
+
+    async def handshake(self, ctx: object) -> HandshakeReport:
+        self.calls += 1
+        return self.reports[min(self.calls - 1, len(self.reports) - 1)]
+
+
+def _reprobe_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scripted: _ScriptedHandshake):
+    from clio_agent.gact import provider_catalog_reprobe, provider_catalog_snapshot
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    monkeypatch.setattr(provider_catalog_snapshot, "as_lm_presets", lambda: [_metis()])
+    monkeypatch.setattr(
+        "clio_agent.providers.handshake.get_handshake_for", lambda *_a, **_k: scripted
+    )
+    monkeypatch.setattr(provider_catalog_reprobe, "REPROBE_BACKOFF_S", (0.0, 0.0, 0.0))
+    monkeypatch.setattr(provider_catalog_reprobe, "REPROBE_STEADY_S", 0.0)
+    handshake_cache.invalidate()
+    return app
+
+
+def test_reprobe_bypasses_the_cached_failure_and_stops_when_live(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The 30s handshake cache caches failures; the re-probe must really re-check."""
+    import logging
+
+    from clio_agent.gact.provider_catalog_snapshot import read_catalog
+
+    assert model_discovery.persist_live_catalog("argonne_metis", _live_report())
+    scripted = _ScriptedHandshake([_skipped_report(), _skipped_report(), _live_report()])
+    app = _reprobe_app(tmp_path, monkeypatch, scripted)
+    caplog.set_level(logging.INFO, logger="clio_agent.gact.provider_catalog_reprobe")
+
+    async def _run() -> dict[str, object]:
+        served = await read_catalog(app)
+        await app.state.provider_catalog_reprobe_task
+        return served
+
+    served = asyncio.run(_run())
+
+    assert served["providers"][0]["freshness"]["source"] == "last_good"
+    # boot probe + one failed re-probe + the live one: every attempt hit the provider.
+    assert scripted.calls == 3
+    assert app.state.provider_catalog["providers"][0]["freshness"]["source"] == "live"
+    assert app.state.provider_catalog_reprobe_task.done()
+    attempts = [
+        r.getMessage()
+        for r in caplog.records
+        if "provider_catalog_reprobe_attempt" in r.getMessage()
+    ]
+    assert "outcome=still_stale" in attempts[0]
+    assert "argonne_stored_token_unusable" in attempts[0]
+    assert "outcome=live" in attempts[-1]
+    handshake_cache.invalidate()
+
+
+def test_reprobe_backoff_schedule() -> None:
+    from clio_agent.gact import provider_catalog_reprobe as reprobe
+
+    assert [reprobe._delay(n) for n in range(5)] == [5.0, 30.0, 120.0, 600.0, 600.0]
+
+
+def test_older_reprobe_never_merges_over_a_newer_refresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.gact import provider_catalog_reprobe, provider_catalog_snapshot
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    stale = _record("argonne_metis", source="last_good")
+    provider_catalog_snapshot.commit(
+        app, {"catalog_id": "active", "providers": [stale]}, ["argonne_metis"]
+    )
+    newer = _record("argonne_metis", source="live")
+    newer["name"] = "newer refresh"
+
+    async def _discover(ids: list[str], *, refresh: bool) -> list[dict[str, Any]]:
+        # A refresh lands while this re-probe attempt is in flight.
+        provider_catalog_snapshot.commit(
+            app, {"catalog_id": "active", "providers": [newer]}, ["argonne_metis"]
+        )
+        return [_record("argonne_metis", source="live")]
+
+    monkeypatch.setattr(provider_catalog_snapshot, "discover", _discover)
+    asyncio.run(provider_catalog_reprobe._attempt(app, 1, ["argonne_metis"]))
+
+    assert app.state.provider_catalog["providers"][0]["name"] == "newer refresh"
+
+
+def test_invalidation_during_a_read_is_kept_for_the_next_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.gact import provider_catalog_snapshot
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    monkeypatch.setattr(provider_catalog_snapshot, "as_lm_presets", lambda: [_metis()])
+
+    async def _discover(ids: list[str], *, refresh: bool) -> list[dict[str, Any]]:
+        provider_catalog_snapshot.invalidate_provider(app, "argonne_metis")
+        return [_record(pid) for pid in ids]
+
+    monkeypatch.setattr(provider_catalog_snapshot, "discover", _discover)
+    asyncio.run(provider_catalog_snapshot.read_catalog(app))
+
+    assert "argonne_metis" in app.state.provider_catalog_invalidated
+
+
+def test_lifespan_shutdown_cancels_the_reprobe_task(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    holder: dict[str, asyncio.Task] = {}
+
+    with TestClient(app) as client:
+
+        async def _start() -> None:
+            holder["task"] = asyncio.create_task(asyncio.sleep(3600))
+            app.state.provider_catalog_reprobe_task = holder["task"]
+
+        client.portal.call(_start)
+
+    assert holder["task"].cancelled()
+
+
+def test_unchanged_last_good_list_is_not_rewritten() -> None:
+    assert model_discovery.persist_live_catalog("argonne_metis", _live_report()) is True
+    path = model_discovery.overlay_path()
+    before = path.stat().st_mtime_ns
+    assert model_discovery.persist_live_catalog("argonne_metis", _live_report()) is False
+    assert path.stat().st_mtime_ns == before

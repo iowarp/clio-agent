@@ -90,6 +90,8 @@ def profile_rows(report: HandshakeReport) -> list[dict[str, Any]]:
 def persist_live_catalog(provider_id: str, report: HandshakeReport) -> bool:
     """Persist ``report``'s models as the provider's last good list; return whether written.
 
+    The overlay is rewritten only when the model list actually changed.
+
     Only a report that really probed the provider and answered with models is
     persisted. An overlay that cannot be read-modify-written is logged with a
     typed reason and left untouched (the live answer is still served this time).
@@ -99,6 +101,19 @@ def persist_live_catalog(provider_id: str, report: HandshakeReport) -> bool:
         return False
     rows = profile_rows(report)
     if not rows:
+        return False
+    try:
+        previous = read_overlay().get(provider_id)
+    except OverlayMalformedError:
+        previous = None  # record_refresh below surfaces the malformed file, typed
+    if (
+        isinstance(previous, dict)
+        and previous.get("source") == HTTP_SOURCE
+        and previous.get("models") == rows
+        and not previous.get("failed_reason")
+    ):
+        # Unchanged list: no rewrite (the overlay file is shared by every
+        # provider). Its generated_at stays the first discovery of this list.
         return False
     result = ProviderDiscoveryResult(provider=provider_id, discovered=rows, source=HTTP_SOURCE)
     if report.generated_at:
