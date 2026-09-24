@@ -813,6 +813,10 @@ KEY_NOTES: dict[str, str] = {
         "Seconds the Claude Code `auth status` sign-in check may run before it is abandoned as "
         "inconclusive; raise on hosts where cold CLI startup is slow."
     ),
+    "providers.claude_code.max_base_connections": (
+        "Max idle shared Claude Code connections (one per model and reasoning level) kept "
+        "pooled before the least recently used is closed; raise if you switch levels often."
+    ),
     "providers.claude_code.stateful_capacity": (
         "Max live Claude Code stateful-session entries before LRU eviction; raise on a host "
         "running many concurrent stateful sessions."
