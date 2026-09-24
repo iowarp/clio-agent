@@ -107,7 +107,9 @@ def is_provider_configured(preset: Provider) -> bool:
         except Exception:  # noqa: BLE001 - argonne unavailability means "not configured"
             return False
     if preset.requires_api_key:
-        return bool(resolve_cloud_api_key(preset.provider_kind))
+        # provider_id, not provider_kind (Part 3): kind-keyed resolution would
+        # give a same-kind sibling's env var to a provider with its own.
+        return bool(resolve_cloud_api_key(preset.id))
     return True
 
 
@@ -157,7 +159,7 @@ async def refresh_all(
 
                 await asyncio.to_thread(ensure_claude_code_support)
             return await asyncio.to_thread(discover_claude_code)
-        return await discover_http(preset, api_key=resolve_cloud_api_key(preset.provider_kind))
+        return await discover_http(preset, api_key=resolve_cloud_api_key(preset.id))
 
     async def _one(preset: Provider) -> ProviderDiscoveryResult:
         try:

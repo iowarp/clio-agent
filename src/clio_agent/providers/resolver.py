@@ -256,7 +256,15 @@ def _build_key_less_skeleton(spec: "LMSpec") -> tuple["LMProviderConfig", str]:
     provider = spec.provider
     kwargs: dict[str, Any] = {
         "provider": provider,
-        "provider_id": spec.provider_id or provider,
+        # Leave provider_id EMPTY rather than defaulting it to the kind: an
+        # explicit provider_id is an identity claim and gets no kind_default
+        # fallback (Part 3), so passing the kind here as a stand-in would
+        # reject a legitimate no-id LMSpec (e.g. provider="argonne", which has
+        # no preset of that id -- only argonne_sophia/argonne_metis). Leaving
+        # it empty lets LMProviderConfig.__post_init__'s own bare-kind
+        # convenience resolution apply, exactly as if the caller had passed
+        # only ``provider=`` directly.
+        "provider_id": spec.provider_id,
         "api_base": spec.api_base,
         "model": spec.model,
         "provider_options": dict(spec.provider_options),
@@ -308,7 +316,12 @@ def _fold_handshake(
     try:
         report = run_handshake_sync(
             HandshakeContext(
-                provider_id=spec.provider_id or spec.provider,
+                # config.provider_id, not spec.provider_id or spec.provider: the
+                # skeleton already carries the RESOLVED identity (Part 3) --
+                # e.g. "argonne_sophia", never the bare kind "argonne" a
+                # kind-only LMSpec would otherwise leak into the handshake
+                # cache key.
+                provider_id=config.provider_id,
                 provider_kind=spec.provider,
                 api_base=config.api_base,
                 api_key="",

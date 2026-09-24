@@ -28,12 +28,16 @@ from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.events import Event
 from clio_agent.gact.provider_catalog import discover_provider
+from clio_agent.providers.api_base import normalize as _normalize_api_base
 from clio_agent.providers.catalog import as_lm_presets
 from clio_agent.providers.handshake import cache as handshake_cache
+from clio_agent.providers.identity import EndpointKey, endpoint_key
 from clio_agent.providers.model_discovery import LAST_GOOD_CATALOG_SOURCE
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
+    from clio_agent.gact.types import LMProviderPreset
 
 logger = logging.getLogger(__name__)
 
@@ -66,23 +70,39 @@ def _pending(app: "FastAPI") -> set[str]:
     return pending
 
 
-def provider_seq(app: "FastAPI", provider_id: str) -> int:
-    """The sequence number of the last snapshot write covering ``provider_id`` (0: never)."""
+def provider_seq(app: "FastAPI", provider_id: str, api_base: str) -> int:
+    """The sequence number of the last snapshot write for this ``(provider_id,
+    api_base)`` endpoint identity (0: never) -- see :mod:`clio_agent.providers.identity`."""
 
     seqs = getattr(app.state, _SEQ_ATTR, None)
-    return int(seqs.get(provider_id, 0)) if isinstance(seqs, dict) else 0
+    if not isinstance(seqs, dict):
+        return 0
+    return int(seqs.get(endpoint_key(provider_id, api_base), 0))
 
 
 def commit(app: "FastAPI", payload: dict[str, Any], provider_ids: list[str]) -> None:
-    """Install ``payload`` as the snapshot and stamp the providers it re-evidenced."""
+    """Install ``payload`` as the snapshot and stamp the providers it re-evidenced.
+
+    Each id is stamped under its endpoint identity -- ``(provider_id,
+    normalized api_base)``, the api_base its OWN record in ``payload`` was
+    actually discovered against -- so a provider whose configured endpoint
+    changes stamps a different key rather than overwriting the freshness
+    ledger for its old one (model-capabilities brief Part 3).
+    """
 
     seqs = getattr(app.state, _SEQ_ATTR, None)
     if not isinstance(seqs, dict):
         seqs = {}
         setattr(app.state, _SEQ_ATTR, seqs)
     stamp = next(_SEQUENCE)
+    by_id = {
+        str(record.get("id")): record
+        for record in payload.get("providers") or []
+        if isinstance(record, dict)
+    }
     for provider_id in provider_ids:
-        seqs[provider_id] = stamp
+        api_base = str(by_id.get(provider_id, {}).get("endpoint") or "")
+        seqs[endpoint_key(provider_id, api_base)] = stamp
     app.state.provider_catalog = payload
 
 
@@ -143,12 +163,16 @@ def _configured_preset_override(app: "FastAPI") -> tuple[str, Any] | None:
     default port would have answered (#1418 cause C).
 
     Returns ``(provider_id, overridden_preset)``, or ``None`` when nothing is
-    bound or the bound endpoint matches the catalog default already. Full
-    ``(provider_id, api_base)`` keyed multi-endpoint discovery is slice P3;
-    this covers the one endpoint a person can have bound today, which is
-    already invalidated wholesale on rebind (``app.state.provider_catalog =
-    None`` in the ``PUT`` handler), so this only has to pick the right base
-    for the rebuild that follows.
+    bound or the bound endpoint matches the catalog default already (compared
+    normalized -- Part 3 -- so a cosmetic difference like a trailing slash
+    never reads as an override). This app runs one active LM at a time, so
+    there is still only ever one relevant api_base per provider_id; what Part
+    3 adds is that the freshness ledger (:func:`provider_seq` / :func:`commit`)
+    is keyed on that api_base too, not just the id, so a rebind's discovery
+    can never be mistaken for stale evidence of the id's PREVIOUS endpoint.
+    A rebind also still invalidates the whole snapshot wholesale
+    (``app.state.provider_catalog = None`` in the ``PUT`` handler); this only
+    has to pick the right base for the rebuild that follows.
     """
     cfg = getattr(app.state, "lm_config", None) or {}
     provider_id = str(cfg.get("provider_id") or "")
@@ -156,9 +180,24 @@ def _configured_preset_override(app: "FastAPI") -> tuple[str, Any] | None:
     if not provider_id or not api_base:
         return None
     preset = next((p for p in as_lm_presets() if p.id == provider_id), None)
-    if preset is None or preset.api_base == api_base:
+    if preset is None or _normalize_api_base(preset.api_base) == _normalize_api_base(api_base):
         return None
     return provider_id, preset.model_copy(update={"api_base": api_base})
+
+
+def _resolve_presets(app: "FastAPI") -> dict[str, "LMProviderPreset"]:
+    """Every catalog preset, with the actively bound provider's api_base override applied.
+
+    The single source both :func:`discover` and the freshness-ledger seq
+    lookups use for "what api_base is this provider_id's identity right now",
+    so the two stay consistent (:func:`_configured_preset_override`).
+    """
+
+    presets = {preset.id: preset for preset in as_lm_presets()}
+    override = _configured_preset_override(app)
+    if override is not None:
+        presets[override[0]] = override[1]
+    return presets
 
 
 async def discover(
@@ -171,10 +210,7 @@ async def discover(
     :func:`_configured_preset_override`.
     """
 
-    presets = {preset.id: preset for preset in as_lm_presets()}
-    override = _configured_preset_override(app)
-    if override is not None:
-        presets[override[0]] = override[1]
+    presets = _resolve_presets(app)
     return list(
         await asyncio.gather(
             *(
@@ -187,13 +223,15 @@ async def discover(
 
 
 def _keep_newer(
-    app: "FastAPI", records: list[dict[str, Any]], seqs: dict[str, int]
+    app: "FastAPI", records: list[dict[str, Any]], seqs: dict[EndpointKey, int]
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Swap in the CURRENT entry for any provider re-written while ``records`` was awaited.
 
     Returns the records to install and the ids they newly evidence: a provider
-    whose sequence moved (a background re-probe answered meanwhile) keeps that
-    newer entry and is not re-stamped.
+    whose sequence moved (a background re-probe answered meanwhile, or its
+    configured endpoint changed underneath this read) keeps that newer entry
+    and is not re-stamped. ``seqs`` is keyed by endpoint identity
+    (:func:`provider_seq`), captured before discovery ran.
     """
     current = getattr(app.state, "provider_catalog", None)
     newer = {
@@ -205,7 +243,9 @@ def _keep_newer(
     stamped: list[str] = []
     for record in records:
         provider_id = str(record.get("id") or "")
-        if provider_seq(app, provider_id) != seqs.get(provider_id, 0) and provider_id in newer:
+        api_base = str(record.get("endpoint") or "")
+        key = endpoint_key(provider_id, api_base)
+        if provider_seq(app, provider_id, api_base) != seqs.get(key, 0) and provider_id in newer:
             kept.append(newer[provider_id])
         else:
             kept.append(record)
@@ -244,7 +284,12 @@ async def read_catalog(
     # Only the invalidations seen NOW are answered by this read; one that
     # arrives while discovery is awaited stays pending for the next read.
     taken = set(pending)
-    seqs = {pid: provider_seq(app, pid) for pid in preset_ids}
+    presets = _resolve_presets(app)
+    seqs = {
+        endpoint_key(pid, presets[pid].api_base): provider_seq(app, pid, presets[pid].api_base)
+        for pid in preset_ids
+        if pid in presets
+    }
     if not isinstance(cached, dict) and provider_id:
         # No snapshot yet (boot, or retired by a model refresh): build it from
         # cached handshakes, forcing only the provider that was asked about.

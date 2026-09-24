@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from clio_agent.providers.catalog import as_cloud_api_key_env
+from clio_agent.providers.catalog import get_provider
 
 logger = logging.getLogger(__name__)
 
@@ -276,9 +276,20 @@ def overlay_default_model(provider_id: str, provider_kind: str) -> str:
     return str(entry.get("cli_default") or entry.get("default_model") or "")
 
 
-def resolve_cloud_api_key(provider_kind: str) -> str:
-    """Resolve a cloud provider's API key: its dedicated env var, else ``CLIO_LM_API_KEY``."""
-    env_name = as_cloud_api_key_env().get(provider_kind, "")
+def resolve_cloud_api_key(provider_id: str) -> str:
+    """Resolve a cloud provider's API key: its dedicated env var, else ``CLIO_LM_API_KEY``.
+
+    Keyed by ``provider_id``, never by ``provider_kind``: nine catalog
+    providers share the kind ``"openai"`` (llama.cpp, vLLM, OpenRouter, Azure
+    OpenAI, ...), and resolving by kind previously gave openrouter and
+    nvidia_nim the literal OpenAI provider's ``OPENAI_API_KEY`` instead of
+    their own ``OPENROUTER_API_KEY`` / ``NVIDIA_NIM_API_KEY`` (model-
+    capabilities brief Part 3). An unrecognized ``provider_id`` has no
+    dedicated env var and falls through to the generic ``CLIO_LM_API_KEY``,
+    same as a recognized provider with none declared.
+    """
+    provider = get_provider(provider_id)
+    env_name = (provider.api_key_env or "") if provider is not None else ""
     key = os.environ.get(env_name, "") if env_name else ""
     return key or os.environ.get("CLIO_LM_API_KEY", "")
 
