@@ -1,10 +1,10 @@
 """Test helper: bind a session to an agent that declares A2UI catalogs.
 
 v15 S8 made an agent's ``a2ui_catalogs`` the complete allowlist of catalogs
-it may produce against, so a bare session (no active blueprint) produces
-nothing. Tests that exercise surface production against the builtin catalogs
-path-activate the ``a2ui-builtins-pack`` fixture, which declares
-``[clio-workspace, basic]``.
+it may produce against. A bare session (no active blueprint) runs the builtin
+main, which declares only ``clio-workspace``. Tests that also need Basic, or
+a particular declaration order, path-activate a fixture pack: the
+``a2ui-builtins-pack`` fixture declares ``[clio-workspace, basic]``.
 """
 
 from __future__ import annotations

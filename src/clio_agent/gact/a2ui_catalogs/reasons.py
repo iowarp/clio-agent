@@ -287,6 +287,14 @@ _A2UI_CATALOG_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
             "is disclosed"
         ),
     },
+    "a2ui_declaration_missing_after_upgrade": {
+        "severity": "warning",
+        "detail": (
+            "an installed Agent Blueprint declares no a2ui_catalogs (typically a "
+            "pre-S8 snapshot the upgrade re-sync skipped) -- it has no catalogs until "
+            "it is updated or its a2ui_catalogs list is added"
+        ),
+    },
     "a2ui_no_catalogs_resolved": {
         "severity": "warning",
         "detail": (

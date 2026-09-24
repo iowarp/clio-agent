@@ -165,10 +165,21 @@ server activation):
 not re-sync a remote registry, so an upgraded box could keep pre-S8 pack
 snapshots. `gact/default_registry_migration.py` re-installs the unedited
 default-registry packs once whenever the running clio-agent version differs
-from the version recorded at the last sync. Locally edited packs are left
-alone (`default_registry_pack_locally_edited`), packs from another source too
-(`default_registry_pack_foreign_source`); a failed re-sync records
-`default_registry_migration_failed` and is retried on the next boot.
+from the version recorded at the last sync. It runs on a startup thread (never
+on a request), under a non-blocking cross-process file lock
+(`default_registry_migration_busy` when another process holds it), and swaps
+each pack in atomically (staged beside the install root, the old copy restored
+on any failure). Packs that are locally edited
+(`default_registry_pack_locally_edited`), from another source
+(`default_registry_pack_foreign_source`), deliberately pinned
+(`default_registry_pack_pinned`) or user-uninstalled are left alone. Any
+failure is `default_registry_migration_failed`, never an exception; the same
+version is retried after 1 h, 6 h, then every 24 h, and a new version (an
+"Update all" restart) immediately. An installed blueprint that still declares
+no catalogs shows the `a2ui_declaration_missing_after_upgrade` notice on its
+agent and blueprint list rows and in `clio doctor`; nothing adds catalogs
+for it implicitly. A session bound to a blueprint that does not resolve reports
+`a2ui_blueprint_unresolved` (not "declares nothing").
 
 An agent's `a2ui_catalogs` is the **complete** allowlist of catalogs it may
 produce against. Nothing is implicit: the builtins are producible only for

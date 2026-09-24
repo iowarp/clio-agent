@@ -241,7 +241,37 @@ def with_a2ui_capabilities(app: "FastAPI", row: Any, session_id: str = "") -> An
         ids = list(resolve_agent_catalogs([builtin_main_catalog_source()]).catalog_ids)
     else:
         ids = blueprint_a2ui_capability_ids(app, agent_blueprint_id, session_id=session_id)
-    return row.model_copy(update={"metadata": {**row.metadata, "a2ui_capabilities": ids}})
+    metadata = {**row.metadata, "a2ui_capabilities": ids}
+    notice = _row_declaration_notice(app, agent_blueprint_id, session_id)
+    if notice is not None:
+        metadata["a2ui_notice"] = notice
+    return row.model_copy(update={"metadata": metadata})
+
+
+def _row_declaration_notice(
+    app: "FastAPI", agent_blueprint_id: str, session_id: str
+) -> dict[str, str] | None:
+    """The user-visible missing-declaration notice for a row's blueprint, if any."""
+
+    if not agent_blueprint_id:
+        return None
+    from clio_agent.gact.a2ui_catalogs.activation import _active_blueprint  # noqa: PLC0415
+    from clio_agent.gact.a2ui_catalogs.declarations import (  # noqa: PLC0415
+        a2ui_declaration_notice,
+    )
+
+    registry: "CatalogRegistry | None" = getattr(app.state, "a2ui_catalogs", None)
+    blueprint = None
+    if session_id:
+        candidate = _active_blueprint(app, session_id)
+        if candidate is not None and candidate.id == agent_blueprint_id:
+            blueprint = candidate
+    if blueprint is None and registry is not None:
+        blueprint = next(
+            (row for row in registry.discovered_blueprints() if row.id == agent_blueprint_id),
+            None,
+        )
+    return a2ui_declaration_notice(blueprint) if blueprint is not None else None
 
 
 __all__ = [

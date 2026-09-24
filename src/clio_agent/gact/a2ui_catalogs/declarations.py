@@ -126,6 +126,9 @@ class CatalogDeclarationSource:
         install_checksum: The unit's own install checksum, stamped onto the
             directory-origin entries it loads.
         parse_errors: Typed issues found while parsing the raw declaration.
+        unresolved: The unit is bound but could not be loaded (a session's
+            blueprint id that resolves to nothing), so what it declares is
+            unknown -- distinct from a unit that declares nothing.
     """
 
     unit_kind: DeclaringUnitKind
@@ -134,6 +137,7 @@ class CatalogDeclarationSource:
     declarations: tuple[CatalogDeclaration, ...] = ()
     install_checksum: str = ""
     parse_errors: tuple[CatalogDeclarationIssue, ...] = ()
+    unresolved: bool = False
 
 
 @dataclass(frozen=True)
@@ -152,6 +156,7 @@ class ResolvedCatalogs:
     declared: bool = False
     issues: tuple[CatalogDeclarationIssue, ...] = field(default_factory=tuple)
     attempted: bool = False
+    unresolved: bool = False
 
     @property
     def catalog_ids(self) -> tuple[str, ...]:
@@ -176,6 +181,8 @@ class ResolvedCatalogs:
 
         if self.entries:
             return None
+        if self.unresolved:
+            return "a2ui_blueprint_unresolved"
         return "a2ui_no_catalogs_resolved" if self.attempted else "a2ui_no_catalogs_declared"
 
 
@@ -313,6 +320,31 @@ def blueprint_catalog_source(blueprint: Any) -> CatalogDeclarationSource:
     )
 
 
+#: Guidance shown to the user for an agent that declares no A2UI catalogs.
+MISSING_DECLARATION_GUIDANCE = (
+    "This agent predates per-agent A2UI catalogs, so it cannot create interactive "
+    "views. Update it, or add an a2ui_catalogs list (for example `- clio-workspace`) "
+    "to its AGENT.md."
+)
+
+
+def a2ui_declaration_notice(blueprint: Any) -> dict[str, str] | None:
+    """A user-visible notice for a blueprint that declares no ``a2ui_catalogs``.
+
+    Such an agent has no catalogs under the strict rule (nothing is implicit);
+    typically it is an installed snapshot the upgrade re-sync skipped (locally
+    edited, foreign source, pinned, or the re-sync failed). Returns ``None``
+    for a blueprint that declares its catalogs (even an explicit empty list).
+    """
+
+    if blueprint_catalog_source(blueprint).declared:
+        return None
+    return {
+        "reason": "a2ui_declaration_missing_after_upgrade",
+        "detail": MISSING_DECLARATION_GUIDANCE,
+    }
+
+
 def _load_declaration(
     declaration: CatalogDeclaration, source: CatalogDeclarationSource
 ) -> tuple["CatalogEntry | None", list[str]]:
@@ -357,6 +389,7 @@ def resolve_agent_catalogs(
     by_catalog_id: dict[str, str] = {}
     declared = False
     attempted = False
+    unresolved = any(source.unresolved for source in sources)
     for source in sources:
         declared = declared or source.declared
         attempted = attempted or bool(source.declarations or source.parse_errors)
@@ -407,11 +440,17 @@ def resolve_agent_catalogs(
                 detail=item.detail,
             )
     return ResolvedCatalogs(
-        entries=tuple(entries), declared=declared, issues=tuple(issues), attempted=attempted
+        entries=tuple(entries),
+        declared=declared,
+        issues=tuple(issues),
+        attempted=attempted,
+        unresolved=unresolved,
     )
 
 
 __all__ = [
+    "MISSING_DECLARATION_GUIDANCE",
+    "a2ui_declaration_notice",
     "CatalogDeclaration",
     "CatalogDeclarationIssue",
     "CatalogDeclarationSource",

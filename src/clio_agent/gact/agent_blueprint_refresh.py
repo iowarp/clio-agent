@@ -127,13 +127,18 @@ def ensure_default_registry_bootstrap(
     pinned = DEFAULT_REGISTRY_COMMIT.strip()
     source = default_registry_install_source()
     root = _install_root(home=home, cwd=cwd, scope="global") / default_agent_blueprint_id()
-    sync_diagnostic = sync_local_registry_packs(source=source, home=home, cwd=cwd, pinned=pinned)
+    # The version-change re-sync (default_registry_migration) runs on a startup
+    # thread, never here on the discovery path; this per-boot local sync shares
+    # its cross-process lock and skips (typed) while another process holds it.
     from clio_agent.gact import default_registry_migration as _migration  # noqa: PLC0415
 
-    if (root / _BLUEPRINT_ROOT_NAME).exists():
-        sync_diagnostic = sync_diagnostic or _migration.migrate_default_registry_on_version_change(
-            source=source, home=home, cwd=cwd, ref=DEFAULT_REGISTRY_REF, pinned=pinned
+    with _migration.registry_install_lock(root.parent) as held:
+        sync_diagnostic = (
+            sync_local_registry_packs(source=source, home=home, cwd=cwd, pinned=pinned)
+            if held
+            else _migration.lock_busy_diagnostic()
         )
+    if (root / _BLUEPRINT_ROOT_NAME).exists():
         # #948 S4b upgrade path: an installed-but-invalid default blueprint (a
         # pre-migration chain_of_thought/predict root disabled by validation) is
         # a dead end that never self-heals.
@@ -175,7 +180,7 @@ def ensure_default_registry_bootstrap(
             f"{DEFAULT_AGENT_BLUEPRINT_ID}: {detail}"
         )
     _record_default_registry_source(source=source, home=home, cwd=cwd, pinned=pinned)
-    _migration.record_sync_version(root.parent, _migration.running_clio_agent_version())
+    _migration.record_first_run_version(root.parent)
     return sync_diagnostic
 
 

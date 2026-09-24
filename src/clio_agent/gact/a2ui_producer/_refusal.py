@@ -90,6 +90,11 @@ _DEFAULT_HINTS: dict[str, str] = {
         "none of this agent's declared A2UI catalogs could be loaded, so it "
         "cannot create surfaces; answer in prose, do not retry"
     ),
+    "a2ui_blueprint_unresolved": (
+        "this session's agent blueprint could not be loaded, so its catalogs are "
+        "unknown right now; answer in prose for now -- this can change once the "
+        "blueprint is repaired or re-activated"
+    ),
     "a2ui_preferred_catalog_not_selectable": (
         "omit catalog_id to auto-select instead, or pass one present in "
         "BOTH this result's client_supported_catalog_ids and "
@@ -173,7 +178,7 @@ def catalog_selection_refusal(
 ) -> dict[str, Any]:
     """Build the fully-worded refusal for a failed :func:`select_catalog` outcome.
 
-    ``create_a2ui_surface`` funnels five distinct selection failures through
+    ``create_a2ui_surface`` funnels six distinct selection failures through
     one call site; each reads its own ``detail`` stating exactly what is true
     about the session's negotiated capabilities rather than one reused
     generic sentence (S8, issue #1374 live-gate comment).
@@ -190,6 +195,11 @@ def catalog_selection_refusal(
         detail = (
             "this session's agent declares a2ui_catalogs, but none of them "
             "resolved to a loadable catalog"
+        )
+    elif reason == "a2ui_blueprint_unresolved":
+        detail = (
+            "this session's bound agent blueprint did not resolve to an installed or "
+            "path-activated blueprint, so its declared catalogs are unavailable"
         )
     elif reason == "a2ui_client_capabilities_unknown":
         detail = (

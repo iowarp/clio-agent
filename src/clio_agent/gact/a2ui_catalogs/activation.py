@@ -123,23 +123,35 @@ def session_declaration_sources(app: "FastAPI", session_id: str) -> list[Any]:
     runs (``catalog.builtin_main_catalog_source``, its own explicit
     declaration). A bound blueprint that does not resolve contributes nothing
     (its typed reason is recorded) rather than falling back to the builtin
-    main. Agent-plugins 1.0 appends one source per plugin here; no consumer
+    main; it yields one ``unresolved`` source, so the typed empty reason is
+    ``a2ui_blueprint_unresolved``. Agent-plugins 1.0 appends one source per plugin here; no consumer
     changes (the forward shape in ``declarations.py``).
     """
 
     from clio_agent.gact.a2ui_catalogs.declarations import (  # noqa: PLC0415
+        CatalogDeclarationSource,
         blueprint_catalog_source,
     )
     from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
         _runtime_effective_agent_blueprint_id,
     )
 
-    if not _runtime_effective_agent_blueprint_id(app, session_id):
+    blueprint_id = _runtime_effective_agent_blueprint_id(app, session_id)
+    if not blueprint_id:
         from clio_agent.gact.catalog import builtin_main_catalog_source  # noqa: PLC0415
 
         return [builtin_main_catalog_source()]
     blueprint = _active_blueprint(app, session_id)
-    return [blueprint_catalog_source(blueprint)] if blueprint is not None else []
+    if blueprint is None:
+        return [
+            CatalogDeclarationSource(
+                unit_kind="blueprint",
+                unit_id=f"blueprint:{blueprint_id}",
+                declared=False,
+                unresolved=True,
+            )
+        ]
+    return [blueprint_catalog_source(blueprint)]
 
 
 def resolve_session_catalogs(app: "FastAPI", session_id: str) -> "ResolvedCatalogs":

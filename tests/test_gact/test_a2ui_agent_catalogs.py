@@ -532,3 +532,67 @@ def test_generated_catalog_skills_state_catalog_id_and_default_role(tmp_path: Pa
     assert f"Catalog id: `{BASIC_ID}`" in basic
     assert "This is not this agent's default catalog" in basic
     assert f'catalog_id="{BASIC_ID}"' in basic
+
+
+# --------------------------------------------------------------------------- #
+# A bound blueprint that does not resolve is not "declares nothing"           #
+# --------------------------------------------------------------------------- #
+
+
+def test_unresolved_bound_blueprint_reports_its_own_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app, sid = _app_session(tmp_path)
+    app.state.sessions.update(sid, metadata_patch={"active_agent_blueprint_id": "gone-pack"})
+    monkeypatch.setattr(gact_context, "active_app", lambda: app)
+    monkeypatch.setattr(gact_context, "active_session_id", lambda: sid)
+    _advertise(app, sid, [WORKSPACE_ID])
+
+    assert session_producible_catalog_ids(app, sid) == []
+    assert select_catalog(app, sid, record=False).reason == "a2ui_blueprint_unresolved"
+    result = build_create_a2ui_surface_tool()(
+        surface_id="s", components=[{"id": "root", "component": "Text", "text": "x"}]
+    )
+    assert result["reason"] == "a2ui_blueprint_unresolved"
+    assert "do not retry" not in result["hint"]
+
+
+# --------------------------------------------------------------------------- #
+# A blueprint with no declaration is surfaced to the user                     #
+# --------------------------------------------------------------------------- #
+
+
+def test_undeclared_blueprint_carries_a_user_visible_notice(tmp_path: Path) -> None:
+    from clio_agent.gact.a2ui_catalogs.doctor import probe_a2ui_declarations
+    from clio_agent.gact.agent_blueprints import parse_agent_blueprint_root
+    from clio_agent.gact.routes.blueprint_catalog import _with_a2ui_notice
+
+    undeclared = parse_agent_blueprint_root(UNDECLARED_PACK, scope="session")
+    declared = parse_agent_blueprint_root(FIXTURE_PACKS / "builtins", scope="session")
+
+    row = _with_a2ui_notice(undeclared)
+    assert row["a2ui_notice"]["reason"] == "a2ui_declaration_missing_after_upgrade"
+    assert "a2ui_catalogs" in row["a2ui_notice"]["detail"]
+    assert "a2ui_notice" not in _with_a2ui_notice(declared)
+
+    status = probe_a2ui_declarations([undeclared, declared])
+    assert status.state.value == "degraded"
+    assert status.details["blueprints"] == ["a2ui-undeclared-pack"]
+    assert probe_a2ui_declarations([declared]).state.value == "ready"
+
+
+def test_agent_row_of_an_undeclared_blueprint_carries_the_notice(tmp_path: Path) -> None:
+    from clio_agent.gact.a2ui_capabilities import with_a2ui_capabilities
+
+    app, sid = _undeclared_session(tmp_path)
+    row = AgentDef(
+        id="root",
+        title="Root",
+        module={"kind": "react"},
+        metadata={"agent_blueprint_id": "a2ui-undeclared-pack"},
+    )
+
+    projected = with_a2ui_capabilities(app, row, sid)
+
+    assert projected.metadata["a2ui_capabilities"] == []
+    assert projected.metadata["a2ui_notice"]["reason"] == "a2ui_declaration_missing_after_upgrade"
