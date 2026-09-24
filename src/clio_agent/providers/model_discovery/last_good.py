@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from clio_agent.providers.handshake.model import HandshakeReport, ModelProfile
@@ -29,6 +30,7 @@ from clio_agent.providers.model_discovery.overlay import (
     ProviderDiscoveryResult,
     read_overlay,
     record_refresh,
+    update_entry_fields,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,12 +64,57 @@ _PROFILE_FIELDS: tuple[str, ...] = (
 )
 
 
+#: How stale the PERSISTED ``confirmed_at`` may get before a live confirmation
+#: rewrites it. Keeps it accurate to the hour across restarts without a disk
+#: write per discovery; this process's own value is always exact.
+CONFIRMED_AT_PERSIST_INTERVAL_S = 3600.0
+
+#: provider id -> ISO time of this process's latest live confirmation.
+_CONFIRMED_IN_PROCESS: dict[str, str] = {}
+
+
 @dataclass(frozen=True)
 class LastGoodCatalog:
-    """A persisted live model list and when it was discovered."""
+    """A persisted live model list, when it was discovered and last confirmed."""
 
     profiles: tuple[ModelProfile, ...]
     generated_at: str
+    #: When a live check last answered with this list (>= ``generated_at``).
+    confirmed_at: str = ""
+
+
+def _parse(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _latest(*values: str) -> str:
+    dated = [(parsed, value) for value in values if value and (parsed := _parse(value))]
+    return max(dated)[1] if dated else ""
+
+
+def _note_confirmation(provider_id: str, previous: dict[str, Any], confirmed_at: str) -> None:
+    """Record a live confirmation: exact in memory, persisted at most hourly."""
+
+    _CONFIRMED_IN_PROCESS[provider_id] = _latest(
+        confirmed_at, _CONFIRMED_IN_PROCESS.get(provider_id, "")
+    )
+    stored = _parse(str(previous.get("confirmed_at") or previous.get("generated_at") or ""))
+    now = _parse(confirmed_at)
+    if stored is not None and now is not None:
+        if (now - stored).total_seconds() < CONFIRMED_AT_PERSIST_INTERVAL_S:
+            return
+    try:
+        update_entry_fields(provider_id, {"confirmed_at": confirmed_at})
+    except OverlayMalformedError as exc:
+        logger.warning(
+            "last-good confirmation not persisted: reason=overlay_malformed provider=%s error=%s",
+            provider_id,
+            exc,
+        )
 
 
 def profile_rows(report: HandshakeReport) -> list[dict[str, Any]]:
@@ -113,7 +160,12 @@ def persist_live_catalog(provider_id: str, report: HandshakeReport) -> bool:
         and not previous.get("failed_reason")
     ):
         # Unchanged list: no rewrite (the overlay file is shared by every
-        # provider). Its generated_at stays the first discovery of this list.
+        # provider); only its confirmation time moves forward.
+        _note_confirmation(
+            provider_id,
+            previous,
+            report.generated_at or datetime.now(timezone.utc).isoformat(),
+        )
         return False
     result = ProviderDiscoveryResult(provider=provider_id, discovered=rows, source=HTTP_SOURCE)
     if report.generated_at:
@@ -121,6 +173,7 @@ def persist_live_catalog(provider_id: str, report: HandshakeReport) -> bool:
         result.generated_at = report.generated_at
     try:
         record_refresh(result)
+        update_entry_fields(provider_id, {"confirmed_at": result.generated_at})
     except OverlayMalformedError as exc:
         logger.warning(
             "last-good catalog not persisted: reason=overlay_malformed provider=%s error=%s",
@@ -128,6 +181,7 @@ def persist_live_catalog(provider_id: str, report: HandshakeReport) -> bool:
             exc,
         )
         return False
+    _CONFIRMED_IN_PROCESS[provider_id] = result.generated_at
     return True
 
 
@@ -187,7 +241,14 @@ def last_good_catalog(provider_id: str) -> LastGoodCatalog | None:
     )
     if not profiles:
         return None
-    return LastGoodCatalog(profiles=profiles, generated_at=generated_at)
+    confirmed_at = _latest(
+        _CONFIRMED_IN_PROCESS.get(provider_id, ""),
+        str(entry.get("confirmed_at") or ""),
+        generated_at,
+    )
+    return LastGoodCatalog(
+        profiles=profiles, generated_at=generated_at, confirmed_at=confirmed_at or generated_at
+    )
 
 
 def last_good_staleness(catalog: LastGoodCatalog, report: HandshakeReport) -> dict[str, Any]:
@@ -200,6 +261,8 @@ def last_good_staleness(catalog: LastGoodCatalog, report: HandshakeReport) -> di
         "reason": "last_good_catalog_served",
         "description": LAST_GOOD_REASONS["last_good_catalog_served"],
         "generated_at": catalog.generated_at,
+        # When a live check last answered with this list -- the date a person reads.
+        "confirmed_at": catalog.confirmed_at or catalog.generated_at,
         "live_failure": live_failure,
     }
 

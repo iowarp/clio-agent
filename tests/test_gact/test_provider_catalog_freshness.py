@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,14 @@ from clio_agent.providers.handshake.model import (
 )
 
 METIS_BASE = "https://inference-api.alcf.anl.gov/resource_server/metis/api/v1"
+
+
+@pytest.fixture(autouse=True)
+def _fresh_confirmations(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each test starts with no in-process last-good confirmations."""
+    from clio_agent.providers.model_discovery import last_good
+
+    monkeypatch.setattr(last_good, "_CONFIRMED_IN_PROCESS", {}, raising=False)
 
 
 def _metis() -> LMProviderPreset:
@@ -471,18 +480,23 @@ def test_invalidation_during_a_read_is_kept_for_the_next_read(
 
 
 def test_lifespan_shutdown_cancels_the_reprobe_task(tmp_path: Path) -> None:
+    """Shutdown itself cancels the task -- checked on the SAME loop, before it closes.
+
+    (A TestClient portal cancels leftover tasks when its loop closes, which would
+    hide a missing cancel; driving the lifespan directly does not.)
+    """
     app = build_app(sessions_path=tmp_path / "sessions.json")
-    holder: dict[str, asyncio.Task] = {}
 
-    with TestClient(app) as client:
+    async def _run() -> asyncio.Task:
+        async with app.router.lifespan_context(app):
+            task = asyncio.create_task(asyncio.sleep(3600))
+            app.state.provider_catalog_reprobe_task = task
+            await asyncio.sleep(0)
+        # Lifespan exited; this loop is still running and owns the task.
+        assert task.done(), "lifespan shutdown left the re-probe task running"
+        return task
 
-        async def _start() -> None:
-            holder["task"] = asyncio.create_task(asyncio.sleep(3600))
-            app.state.provider_catalog_reprobe_task = holder["task"]
-
-        client.portal.call(_start)
-
-    assert holder["task"].cancelled()
+    assert asyncio.run(_run()).cancelled()
 
 
 def test_unchanged_last_good_list_is_not_rewritten() -> None:
@@ -491,3 +505,48 @@ def test_unchanged_last_good_list_is_not_rewritten() -> None:
     before = path.stat().st_mtime_ns
     assert model_discovery.persist_live_catalog("argonne_metis", _live_report()) is False
     assert path.stat().st_mtime_ns == before
+
+
+def test_last_confirmed_tracks_every_live_confirmation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unchanged list is not rewritten, but its confirmation time moves forward."""
+    from clio_agent.providers.model_discovery import last_good
+
+    first = _live_report()
+    assert model_discovery.persist_live_catalog("argonne_metis", first)
+    later = replace(first, generated_at="2026-09-22T18:30:00+00:00")
+    assert model_discovery.persist_live_catalog("argonne_metis", later) is False  # list unchanged
+
+    catalog = model_discovery.last_good_catalog("argonne_metis")
+    assert catalog is not None
+    assert catalog.generated_at == "2026-09-22T10:00:00+00:00"  # first discovery
+    assert catalog.confirmed_at == "2026-09-22T18:30:00+00:00"  # exact in this process
+    # Persisted too (the stored value was > 1h old), so a restart still knows it.
+    stored = json.loads(model_discovery.overlay_path().read_text(encoding="utf-8"))
+    assert stored["argonne_metis"]["confirmed_at"] == "2026-09-22T18:30:00+00:00"
+
+    # Within the hour: exact in memory, no disk write.
+    path = model_discovery.overlay_path()
+    before = path.stat().st_mtime_ns
+    soon = replace(first, generated_at="2026-09-22T18:50:00+00:00")
+    model_discovery.persist_live_catalog("argonne_metis", soon)
+    assert path.stat().st_mtime_ns == before
+    assert model_discovery.last_good_catalog("argonne_metis").confirmed_at == (
+        "2026-09-22T18:50:00+00:00"
+    )
+    # After a restart (in-memory value gone) the persisted hour-accurate value is used.
+    monkeypatch.setattr(last_good, "_CONFIRMED_IN_PROCESS", {}, raising=False)
+    assert model_discovery.last_good_catalog("argonne_metis").confirmed_at == (
+        "2026-09-22T18:30:00+00:00"
+    )
+
+
+def test_served_last_good_carries_confirmed_at(monkeypatch: pytest.MonkeyPatch) -> None:
+    reports = [_live_report(), _skipped_report()]
+
+    async def _handshake(*_args: object, **_kwargs: object) -> HandshakeReport:
+        return reports.pop(0)
+
+    monkeypatch.setattr("clio_agent.gact.provider_catalog.run_handshake", _handshake)
+    asyncio.run(discover_provider(_metis()))
+    served = asyncio.run(discover_provider(_metis()))
+    assert served["freshness"]["staleness"]["confirmed_at"] == "2026-09-22T10:00:00+00:00"
