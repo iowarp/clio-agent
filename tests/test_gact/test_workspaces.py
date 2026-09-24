@@ -362,23 +362,103 @@ def test_workspace_file_read_refuses_workspace_secret_config(tmp_path: Path) -> 
     assert str(Path(".clio") / "config.yaml") in [entry["path"] for entry in listing]
 
 
-def test_workspace_file_read_refuses_credential_like_filenames_anywhere(tmp_path: Path) -> None:
-    """Name-based, not content-sniffed: any *token*/*credential* filename is refused
-    as a raw-byte serve wherever it lives in the workspace."""
+def test_workspace_file_read_allows_ordinary_files_that_merely_mention_tokens(
+    tmp_path: Path,
+) -> None:
+    """Review follow-up: no keyword/heuristic name matching (CLAUDE.md superseding
+    principle #1/#2). tokenizer.json, tokenizer_config.json, tokenize.py, and
+    credentials.md are ordinary workspace files — the refusal list is an EXPLICIT
+    set scoped to CLIO's own storage, not a substring match on "token"/"credential"."""
 
     c = _client(tmp_path)
     project = tmp_path / "project"
     project.mkdir()
     c.app.state.workspaces.update("ws_default", root_path=str(project))
-    (project / "my_api_token.txt").write_text("sk-live-abc", encoding="utf-8")
+    for name in ("tokenizer.json", "tokenizer_config.json", "tokenize.py", "credentials.md"):
+        (project / name).write_text("not a secret", encoding="utf-8")
+
+    for name in ("tokenizer.json", "tokenizer_config.json", "tokenize.py", "credentials.md"):
+        response = c.get("/v1/workspaces/ws_default/files/read", params={"path": name})
+        assert response.status_code == 200, name
+
+
+def test_workspace_file_read_ignores_config_yaml_nested_below_the_workspace_root(
+    tmp_path: Path,
+) -> None:
+    """Only the WORKSPACE ROOT's .clio/config.yaml is CLIO's own — a config.yaml
+    that happens to live inside a user's own nested project is an ordinary file."""
+
+    c = _client(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    c.app.state.workspaces.update("ws_default", root_path=str(project))
+    nested = project / "vendor" / ".clio" / "config.yaml"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("not CLIO's own config", encoding="utf-8")
 
     response = c.get(
         "/v1/workspaces/ws_default/files/read",
-        params={"path": "my_api_token.txt"},
+        params={"path": str(Path("vendor") / ".clio" / "config.yaml")},
     )
 
-    assert response.status_code == 403
-    assert response.json()["error"]["details"]["reason"] == "credential_like_filename"
+    assert response.status_code == 200
+
+
+def test_workspace_file_read_refusals_are_case_insensitive(tmp_path: Path) -> None:
+    """macOS APFS and Windows are case-insensitive filesystems: .CLIO/CONFIG.YAML
+    and .CLIO-CHILD-CACHE must be refused exactly like their lowercase spellings."""
+
+    c = _client(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    c.app.state.workspaces.update("ws_default", root_path=str(project))
+    (project / ".CLIO").mkdir()
+    (project / ".CLIO" / "CONFIG.YAML").write_text("lm:\n  api_key: sk-test\n", encoding="utf-8")
+    cache_dir = project / ".CLIO-CHILD-CACHE"
+    cache_dir.mkdir()
+    (cache_dir / "secret.json").write_text("{}", encoding="utf-8")
+
+    config_response = c.get(
+        "/v1/workspaces/ws_default/files/read",
+        params={"path": str(Path(".CLIO") / "CONFIG.YAML")},
+    )
+    cache_response = c.get(
+        "/v1/workspaces/ws_default/files/read",
+        params={"path": str(Path(".CLIO-CHILD-CACHE") / "secret.json")},
+    )
+
+    assert config_response.status_code == 403
+    assert config_response.json()["error"]["details"]["reason"] == "workspace_secret_config"
+    assert cache_response.status_code == 403
+    assert cache_response.json()["error"]["details"]["reason"] == "sandbox_child_cache"
+
+
+def test_workspace_files_exclude_service_storage_hides_only_clio_not_other_dotfiles(
+    tmp_path: Path,
+) -> None:
+    """The `@`-picker / artifact-path-resolution fallback pass
+    exclude_service_storage=true, not include_hidden=false: .clio is excluded but
+    an ordinary dotfile like .gitignore stays @-mentionable."""
+
+    c = _client(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    c.app.state.workspaces.update("ws_default", root_path=str(project))
+    (project / ".clio").mkdir()
+    (project / ".clio" / "state.json").write_text("{}", encoding="utf-8")
+    (project / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    (project / "report.md").write_text("visible", encoding="utf-8")
+
+    response = c.get(
+        "/v1/workspaces/ws_default/files",
+        params={"exclude_service_storage": "true"},
+    )
+
+    assert response.status_code == 200
+    paths = [entry["path"] for entry in response.json()["entries"]]
+    assert ".gitignore" in paths
+    assert "report.md" in paths
+    assert ".clio" not in paths
 
 
 def test_workspace_file_read_serves_png_as_raw_bytes(tmp_path: Path) -> None:

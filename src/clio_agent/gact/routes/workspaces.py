@@ -504,19 +504,29 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
     # filesystem walk runs.
 
     @app.get("/v1/workspaces/{wid}/files")
-    async def list_workspace_files(wid: str, include_hidden: bool = True) -> dict[str, Any]:
+    async def list_workspace_files(
+        wid: str, include_hidden: bool = True, exclude_service_storage: bool = False
+    ) -> dict[str, Any]:
         """SPEC §6.9 — list files under a workspace's root_path.
 
-        Returns ``{"entries": [{"path", "type", "size", "modified"}, …]}``
-        with paths relative to root_path so the TUI can show short
-        labels. Type is "file" or "dir"; the picker filters dirs
-        client-side. Hard-capped at _FILE_PICKER_LIMIT to keep large
-        repos from blocking the modal.
+        Returns ``{"entries": [...], "truncated": bool}`` with paths relative to
+        root_path so the TUI can show short labels. Type is "file" or "dir"; the
+        picker filters dirs client-side. Hard-capped at _FILE_PICKER_LIMIT to keep
+        large repos from blocking the modal; ``truncated`` is computed from the
+        real, capped walk.
 
-        ``include_hidden`` (default ``true``) controls dotfiles/dot-directories,
-        ``.clio`` included — there is no server-side reason to hide a workspace's
-        own agent state from its own Files view. Pass ``false`` to power a
-        client-side "Hide dot files and folders" preference.
+        ``include_hidden`` (default ``true``) controls EVERY dotfile/dot-directory
+        generically — there is no server-side reason to hide a workspace's own
+        agent state from its own Files view. Pass ``false`` to power a client-side
+        "Hide dot files and folders" preference.
+
+        ``exclude_service_storage`` (default ``false``) instead excludes ONLY
+        CLIO's own ``.clio``/``.clio-*`` service storage, up front during the
+        walk, leaving ordinary dotfiles (``.gitignore``, ``.github/workflows/``)
+        visible regardless of ``include_hidden``. This is what the `@`-picker and
+        artifact-path-resolution fallback use — they must never surface a
+        workspace's own agent state, but excluding EVERY dotfile there would also
+        hide files those surfaces are explicitly for referencing.
         """
 
         ws = app.state.workspaces.get(wid)
@@ -541,6 +551,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
             root,
             limit=_FILE_PICKER_LIMIT,
             include_hidden=include_hidden,
+            exclude_service_storage=exclude_service_storage,
         )
         return {"entries": walk.entries, "truncated": walk.truncated}
 

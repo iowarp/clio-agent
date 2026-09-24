@@ -141,7 +141,9 @@ async def collect_workspace_file_entries(
                 "type": "dir" if is_directory else "file",
                 "internal": False,
             }
-            redacted_contents = is_directory and name == CHILD_CACHE_DIRNAME
+            # Casefolded: stable on case-insensitive filesystems (macOS APFS,
+            # Windows) — the same directory the read-redaction check refuses.
+            redacted_contents = is_directory and name.casefold() == CHILD_CACHE_DIRNAME.casefold()
             if redacted_contents:
                 entry["redacted"] = "sandbox_child_cache"
             if not is_directory:
