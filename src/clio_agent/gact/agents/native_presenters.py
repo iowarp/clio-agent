@@ -6,9 +6,13 @@ declaration families are owned by sibling modules (#1333 ratchet payment,
 ``native_presenters_memory.py``) so this module stays under the file-size cap.
 Only ``build_wait_tool``, ``waiting_presentation``, ``validate_declaration``, and
 ``native_presentation`` are imported elsewhere — every other name here is either a
-private helper for the declarations kept in this module (``text``, ``model_catalog``,
-``fields:``) or a re-export kept for monkeypatch compatibility (see
-``native_presenters_memory.py``'s module docstring).
+private helper for the declarations kept in this module (``text``, ``model_catalog``)
+or a re-export kept for monkeypatch compatibility (see
+``native_presenters_memory.py``'s module docstring). The generic ``fields:a,b,c``
+declaration (one text row per field) was deleted with its last two callers,
+``view_image``/``view_pdf`` (U3, superseded by the ``workspace_file`` block in
+``native_presenters_workspace_file.py``); a future tool can declare a plain
+callable presenter instead of reviving it.
 """
 
 from __future__ import annotations
@@ -133,23 +137,6 @@ def _model_catalog_presentation(row: Mapping[str, Any]) -> tuple[str, list[dict[
     return summary, blocks
 
 
-def _fields_presentation(declaration: str, row: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Render the ``fields:a,b,c`` generic declaration as one text block per field."""
-
-    blocks: list[dict[str, Any]] = []
-    for field in declaration.removeprefix("fields:").split(","):
-        value = row.get(field)
-        if isinstance(value, str | int | float | bool) and value != "":
-            blocks.append(
-                {
-                    "id": field,
-                    "type": "text",
-                    "text": f"{field.replace('_', ' ').capitalize()}: {value}",
-                }
-            )
-    return blocks
-
-
 def native_presentation(
     declaration: str, args: Mapping[str, Any], result: Any, structured: Any
 ) -> dict[str, Any]:
@@ -198,8 +185,6 @@ def native_presentation(
         summary, blocks, header_action, presentation_status, subject = present_memory_family(
             declaration, args, result, row, summary
         )
-    elif declaration.startswith("fields:"):
-        blocks = _fields_presentation(declaration, row)
     elif declaration != "specialized":
         raise ValueError(f"Unknown native presentation declaration: {declaration}")
 
@@ -239,7 +224,5 @@ def validate_declaration(value: str | Presenter) -> None:
         "message",
         "goal",
     }:
-        return
-    if isinstance(value, str) and value.startswith("fields:") and value[7:]:
         return
     raise ValueError("Every native tool must declare result presentation semantics")
