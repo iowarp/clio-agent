@@ -15,6 +15,7 @@ import atexit
 import logging
 import threading
 import uuid
+from collections import OrderedDict
 from typing import Any
 
 from clio_agent.providers.claude_code_multimodal import sdk_prompt
@@ -195,22 +196,44 @@ class _SdkSessionPool:
     for the O(1) session lookup/creation, never across a completion.
     """
 
+    #: LRU cap on pooled sessions. Per-message reasoning levels key a session
+    #: per level, and every session holds a ``claude`` CLI connection.
+    MAX_SESSIONS = 4
+
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._sessions: dict[tuple[str, str | None, str | None], _SdkSession] = {}
+        self._sessions: OrderedDict[tuple[str, str | None, str | None], _SdkSession] = OrderedDict()
 
     def _session_for(
         self, model: str, cwd: str | None, thinking_id: str | None = None
     ) -> _SdkSession:
-        """Return (creating if needed) the session bound to ``(model, cwd, thinking)``."""
+        """Return (creating if needed) the session bound to ``(model, cwd, thinking)``.
+
+        Least-recently-used sessions beyond :attr:`MAX_SESSIONS` are closed (outside
+        the pool lock; ``close`` waits for an in-flight completion) with the typed
+        reason ``claude_code_sdk_session_evicted``.
+        """
 
         key = (model, cwd, thinking_id)
+        evicted: list[tuple[tuple[str, str | None, str | None], _SdkSession]] = []
         with self._lock:
             session = self._sessions.get(key)
             if session is None:
                 session = _SdkSession()
                 self._sessions[key] = session
-            return session
+            self._sessions.move_to_end(key)
+            while len(self._sessions) > self.MAX_SESSIONS:
+                evicted.append(self._sessions.popitem(last=False))
+        for old_key, old_session in evicted:
+            logger.info(
+                "claude_code sdk pool: reason=claude_code_sdk_session_evicted model=%s "
+                "thinking=%s cap=%d",
+                old_key[0],
+                old_key[2],
+                self.MAX_SESSIONS,
+            )
+            old_session.close()
+        return session
 
     def complete(
         self,

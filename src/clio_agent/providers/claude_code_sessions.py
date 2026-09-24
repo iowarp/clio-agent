@@ -87,6 +87,7 @@ from clio_agent.providers.claude_code_stream_bounds import (
     reap_idle_stream_entry,
     stream_idle_ttl_s,
     sweep_idle_scoped_entries,
+    sweep_stream_entries,
 )
 from clio_agent.runtime.stream_audit import stream_audit, stream_audit_enabled
 
@@ -699,9 +700,8 @@ class ClaudeStreamClientPool:
         own connection idling) should be reclaimed first. The shared base entry
         (``scope=""``) is never swept.
         """
-        if scope:
-            for evicted_key, evicted_entry in sweep_idle_scoped_entries(self):
-                reap_idle_stream_entry(evicted_key, evicted_entry)
+        for evicted_key, evicted_entry in sweep_stream_entries(self, scoped=bool(scope)):
+            reap_idle_stream_entry(evicted_key, evicted_entry)
         key = (model, cwd, thinking_key(thinking), scope or "")
         with self._guard:
             entry = self._entries.get(key)
