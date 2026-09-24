@@ -61,6 +61,10 @@ class Provider:
     api_key_default: str = ""
     requires_api_key: bool = True
     auth_method: AuthMethod = "api_key"
+    #: Product name of the sign-in service (e.g. "Globus Auth"). It belongs in
+    #: the sign-in detail, never in ``label``, which is the provider's one
+    #: canonical display name.
+    auth_label: str = ""
     api_key_env: str | None = None
     supports_live_catalog: bool = True
     supports_vision: bool = False

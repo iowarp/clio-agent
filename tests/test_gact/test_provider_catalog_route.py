@@ -53,7 +53,7 @@ def test_provider_catalog_refresh_bypasses_the_snapshot(
             "name": "Fresh",
             "kind": "test",
             "endpoint": "",
-            "configuration_url": "/settings/providers/fresh",
+            "configuration_url": "/settings/providers?provider=fresh",
             "connectivity": "ok",
             "auth": "not_required",
             "health": "ready",

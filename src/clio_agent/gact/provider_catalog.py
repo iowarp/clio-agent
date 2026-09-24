@@ -229,7 +229,11 @@ async def discover_provider(preset: LMProviderPreset, *, refresh: bool = False) 
         "name": preset.label,
         "kind": preset.provider,
         "endpoint": preset.api_base,
-        "configuration_url": f"/settings/providers/{preset.id}",
+        # The one canonical display name; the sign-in service is separate detail.
+        "auth_method": preset.auth_method,
+        "auth_label": preset.auth_label,
+        # The client's real provider-settings route (a query, not a path segment).
+        "configuration_url": f"/settings/providers?provider={preset.id}",
         "connectivity": report.connectivity.value,
         "auth": report.auth.value,
         "health": "ready" if report.ok and not bootstrap_failure else "unavailable",

@@ -305,3 +305,25 @@ def test_last_good_entry_is_reprobed_and_replaced_in_background(
     current = app.state.provider_catalog["providers"][1]
     assert current["freshness"]["source"] == "live"
     assert [event.type for event in published] == ["provider_catalog.refreshed"]
+
+
+def test_catalog_names_are_canonical_and_sign_in_is_separate_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One label source: the catalog ``name`` is clean; the sign-in service is detail (J)."""
+    from clio_agent.providers.catalog import as_lm_presets
+
+    async def _handshake(*_args: object, **_kwargs: object) -> HandshakeReport:
+        return _skipped_report()
+
+    monkeypatch.setattr("clio_agent.gact.provider_catalog.run_handshake", _handshake)
+    presets = {preset.id: preset for preset in as_lm_presets()}
+    for provider_id, name in (("argonne_metis", "ALCF Metis"), ("argonne_sophia", "ALCF Sophia")):
+        record = asyncio.run(discover_provider(presets[provider_id]))
+        assert record["name"] == name
+        assert record["auth_method"] == "oauth"
+        assert record["auth_label"] == "Globus Auth"
+        assert record["configuration_url"] == f"/settings/providers?provider={provider_id}"
+    assert all(
+        "(" not in preset.label for preset in presets.values() if preset.provider == "argonne"
+    )

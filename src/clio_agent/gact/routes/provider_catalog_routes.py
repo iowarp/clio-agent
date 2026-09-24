@@ -138,7 +138,8 @@ def register_provider_catalog_routes(
             "provider_id": provider_id,
             "instructions": (
                 ("Installed ALCF sign-in support on this agent. " if installed_support else "")
-                + "Continue in Globus, then paste the authorization code here."
+                + f"Continue in {preset.auth_label or 'Globus'}, then paste the authorization "
+                "code here."
             ),
             "authorization_url": pending.authorization_url,
             "flow_id": pending.flow_id,

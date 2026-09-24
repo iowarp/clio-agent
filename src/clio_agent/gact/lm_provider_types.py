@@ -32,6 +32,8 @@ class LMProviderPreset(BaseModel):
     requires_api_key: bool = True
     api_key_env: str = ""
     auth_method: Literal["none", "api_key", "oauth", "subscription"] = "api_key"
+    #: Sign-in service name for the sign-in detail ("Globus Auth"); never part of ``label``.
+    auth_label: str = ""
     is_authenticated: bool = False
     description: str = ""
     status: Literal[
