@@ -6,6 +6,8 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.4.17] — 2026-09-24
+
 ### Changed
 
 - Which A2UI catalogs an agent can produce against is now declared per agent.
@@ -29,6 +31,35 @@ TUI/HTTP surface aren't tracked here.
   have not edited, so installed packs pick up the new catalog declarations.
   Edited packs are left alone, and a failed re-install is retried on the next
   start.
+
+### Fixed
+
+- The A2UI catalog list omits empty sidecar fields instead of sending them as
+  `null`, which made clients reject every catalog and show created surfaces as
+  unavailable.
+- A resource is copied into the workspace once, when its upload completes,
+  instead of on every listing. A failed copy is recorded on that resource
+  (`materialization`) and no longer fails the whole listing. Names that are
+  unsafe as Windows filenames are mapped rather than rejected.
+- `GET /v1/workspaces/{wid}/files` lists dot folders, `.clio` included, after
+  the user's own entries, and reports `truncated` from the real walk. It
+  accepts `include_hidden` and `exclude_service_storage`. Reading CLIO's own
+  sandbox cache or the workspace `.clio/config.yaml` is refused.
+- Shell and file tools default to the active workspace root, not the server's
+  own working directory.
+- Provider catalog: a provider's last confirmed models are kept and served
+  stale while a live check is retried in the background. ALCF sign-in and
+  "Check provider" refresh that provider. An ALCF answer that requires a new
+  sign-in reports `argonne_reauthentication_required` and no longer looks
+  ready, and a missing Globus package reports `argonne_sdk_missing`.
+- Reasoning: each model reports its real levels, default, and source,
+  including Claude effort levels up to `max` and Codex `minimal`, `max` and
+  `ultra`. A message's `reasoning_effort` is applied to its turn, recorded in
+  its provenance, and inherited by spawned children on the same model. A
+  stored level counts only when a person chose it, and catalog rows carry
+  model aliases with `resolved_model_id` on the LM configuration.
+- Provider display names no longer include the sign-in method; it is reported
+  separately as `auth_label`.
 
 ## [0.9.4.16] — 2026-09-23
 
