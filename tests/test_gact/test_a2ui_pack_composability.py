@@ -324,10 +324,32 @@ def test_unnamed_selection_follows_the_agent_order_not_the_client_order(
     assert named.reason is None
 
 
-def test_instructions_state_the_catalog_id_a_station_surface_names() -> None:
-    text = _instructions_text()
-    assert f"`{PACK_CATALOG_ID}`" in text
-    assert "`create_a2ui_surface`'s `catalog_id`" in text
+def test_generated_station_skill_states_the_catalog_json_catalog_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The station catalogId reaches the model through the GENERATED catalog
+    skill (never hand-typed prose): it equals catalog.json's own id and says the
+    station catalog is not EarthScope's default (clio-workspace is)."""
+
+    from clio_agent.gact.skills import SkillCatalog
+
+    _client, app, sid = _activated_session(tmp_path, monkeypatch)
+    catalog_id = json.loads(
+        (PACK_ROOT / "catalogs" / "earthscope-stations" / "catalog.json").read_text(
+            encoding="utf-8"
+        )
+    )["catalogId"]
+
+    refs = {ref.id: ref for ref in SkillCatalog(app=app, session_id=sid)._catalog_refs()}
+    body = refs[CATALOG_SKILL_ID].body_provider()
+
+    assert catalog_id == PACK_CATALOG_ID
+    assert f"Catalog id: `{catalog_id}`" in body
+    assert "This is not this agent's default catalog" in body
+    assert (
+        "This is this agent's default catalog"
+        in refs["a2ui-catalog-clio-workspace"].body_provider()
+    )
 
 
 # --------------------------------------------------------------------------- #

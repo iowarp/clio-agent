@@ -587,7 +587,6 @@ def test_durable_defer_busy_folds_into_loop_inbox(
     assert app.state.sessions.get(sess.id).mode == "edit"  # transition still fired
 
 
-@pytest.mark.usefixtures("a2ui_builtin_catalogs")
 def test_clear_context_announces_every_surface_it_deletes(tmp_path: Path) -> None:
     app = _make_app(tmp_path)
     sess = _plan_session(app, tmp_path)

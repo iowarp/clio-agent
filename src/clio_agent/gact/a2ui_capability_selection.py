@@ -216,7 +216,8 @@ def catalog_ids_for_resolved_blueprint(app: "FastAPI", blueprint: Any) -> list[s
         resolve_agent_catalogs,
     )
 
-    return list(resolve_agent_catalogs([blueprint_catalog_source(blueprint)]).catalog_ids)
+    resolved = resolve_agent_catalogs([blueprint_catalog_source(blueprint)], record=True)
+    return list(resolved.catalog_ids)
 
 
 def with_a2ui_capabilities(app: "FastAPI", row: Any, session_id: str = "") -> Any:
@@ -230,7 +231,16 @@ def with_a2ui_capabilities(app: "FastAPI", row: Any, session_id: str = "") -> An
     """
 
     agent_blueprint_id = str(row.metadata.get("agent_blueprint_id") or "")
-    ids = blueprint_a2ui_capability_ids(app, agent_blueprint_id, session_id=session_id)
+    if not agent_blueprint_id and row.metadata.get("definition_kind") == "builtin_main":
+        # The code-shipped builtin main declares its own catalogs (v15 S8).
+        from clio_agent.gact.a2ui_catalogs.declarations import (  # noqa: PLC0415
+            resolve_agent_catalogs,
+        )
+        from clio_agent.gact.catalog import builtin_main_catalog_source  # noqa: PLC0415
+
+        ids = list(resolve_agent_catalogs([builtin_main_catalog_source()]).catalog_ids)
+    else:
+        ids = blueprint_a2ui_capability_ids(app, agent_blueprint_id, session_id=session_id)
     return row.model_copy(update={"metadata": {**row.metadata, "a2ui_capabilities": ids}})
 
 

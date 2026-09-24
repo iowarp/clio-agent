@@ -20,7 +20,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from clio_agent.gact.a2ui_catalogs.reasons import record_a2ui_catalog_reason
+from clio_agent.gact.a2ui_catalogs.reasons import (
+    record_a2ui_catalog_reason,
+    record_a2ui_catalog_reason_once,
+)
 from clio_agent.gact.protocol.constants import A2UI_V091
 
 if TYPE_CHECKING:
@@ -30,8 +33,26 @@ if TYPE_CHECKING:
     from clio_agent.gact.a2ui_catalogs.registry import CatalogEntry, CatalogResolver
 
 
+def _record_once(app: "FastAPI", session_id: str, reason: str, **fields: Any) -> None:
+    """Record a re-derived resolution reason once per (session, reason, fields)."""
+
+    key = tuple(sorted((name, str(value)) for name, value in fields.items()))
+    registry = getattr(getattr(app, "state", None), "a2ui_catalogs", None)
+    if registry is not None:
+        registry.record_session_reason_once(session_id, reason, key=key, **fields)
+    else:
+        record_a2ui_catalog_reason_once(
+            (session_id, reason, *key), reason, session_id=session_id, **fields
+        )
+
+
 def _active_blueprint(app: "FastAPI", session_id: str) -> Any | None:
     """Return the session's active blueprint definition, or ``None``.
+
+    Resolves the EFFECTIVE blueprint: a live turn's execution overlay (a
+    deep-research turn runs the deep-researcher blueprint,
+    ``turn_state.py``) wins over the stored ``active_agent_blueprint_id``,
+    so that turn's catalogs are the executing agent's own.
 
     Path-first (an explicitly activated on-disk pack decides outright), then
     the installed registry for the session's bound blueprint id — the same
@@ -45,32 +66,31 @@ def _active_blueprint(app: "FastAPI", session_id: str) -> Any | None:
     """
 
     from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
-        _runtime_active_agent_blueprint_id,
-        _runtime_active_agent_blueprint_path,
+        _runtime_effective_agent_blueprint_id,
+        _runtime_effective_agent_blueprint_path,
     )
 
-    blueprint_id = _runtime_active_agent_blueprint_id(app, session_id)
+    blueprint_id = _runtime_effective_agent_blueprint_id(app, session_id)
     if not blueprint_id:
         return None
-    blueprint_path = _runtime_active_agent_blueprint_path(app, session_id)
+    blueprint_path = _runtime_effective_agent_blueprint_path(app, session_id)
     from clio_agent.gact.agent_blueprints import parse_agent_blueprint_root  # noqa: PLC0415
 
     if blueprint_path is not None:
         try:
             blueprint = parse_agent_blueprint_root(blueprint_path, scope="session")
         except Exception as exc:  # noqa: BLE001 - typed, recorded, never silent
-            record_a2ui_catalog_reason(
+            _record_once(
+                app,
+                session_id,
                 "a2ui_blueprint_discovery_failed",
                 blueprint_id=blueprint_id,
-                session_id=session_id,
                 detail=str(exc),
             )
             return None
         if blueprint.id == blueprint_id and blueprint.enabled:
             return blueprint
-        record_a2ui_catalog_reason(
-            "a2ui_blueprint_unresolved", blueprint_id=blueprint_id, session_id=session_id
-        )
+        _record_once(app, session_id, "a2ui_blueprint_unresolved", blueprint_id=blueprint_id)
         return None
     registry = getattr(app.state, "a2ui_catalogs", None)
     if registry is not None:
@@ -81,33 +101,43 @@ def _active_blueprint(app: "FastAPI", session_id: str) -> Any | None:
         try:
             blueprints = discover_agent_blueprints()
         except Exception as exc:  # noqa: BLE001 - typed, recorded, never silent
-            record_a2ui_catalog_reason(
+            _record_once(
+                app,
+                session_id,
                 "a2ui_blueprint_discovery_failed",
                 blueprint_id=blueprint_id,
-                session_id=session_id,
                 detail=str(exc),
             )
             return None
     match = next((row for row in blueprints if row.id == blueprint_id and row.enabled), None)
     if match is None:
-        record_a2ui_catalog_reason(
-            "a2ui_blueprint_unresolved", blueprint_id=blueprint_id, session_id=session_id
-        )
+        _record_once(app, session_id, "a2ui_blueprint_unresolved", blueprint_id=blueprint_id)
     return match
 
 
 def session_declaration_sources(app: "FastAPI", session_id: str) -> list[Any]:
     """Return the session agent's ordered catalog declaration sources.
 
-    Today at most one: the session's active blueprint. Agent-plugins 1.0
-    appends one source per plugin here; no consumer changes (the forward
-    shape in ``declarations.py``).
+    Today exactly one unit declares: the session's effective Agent Blueprint,
+    or -- when none is active -- the code-shipped builtin main the session then
+    runs (``catalog.builtin_main_catalog_source``, its own explicit
+    declaration). A bound blueprint that does not resolve contributes nothing
+    (its typed reason is recorded) rather than falling back to the builtin
+    main. Agent-plugins 1.0 appends one source per plugin here; no consumer
+    changes (the forward shape in ``declarations.py``).
     """
 
     from clio_agent.gact.a2ui_catalogs.declarations import (  # noqa: PLC0415
         blueprint_catalog_source,
     )
+    from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+        _runtime_effective_agent_blueprint_id,
+    )
 
+    if not _runtime_effective_agent_blueprint_id(app, session_id):
+        from clio_agent.gact.catalog import builtin_main_catalog_source  # noqa: PLC0415
+
+        return [builtin_main_catalog_source()]
     blueprint = _active_blueprint(app, session_id)
     return [blueprint_catalog_source(blueprint)] if blueprint is not None else []
 
@@ -125,7 +155,17 @@ def resolve_session_catalogs(app: "FastAPI", session_id: str) -> "ResolvedCatalo
         resolve_agent_catalogs,
     )
 
-    return resolve_agent_catalogs(session_declaration_sources(app, session_id))
+    resolved = resolve_agent_catalogs(session_declaration_sources(app, session_id))
+    for issue in resolved.issues:
+        _record_once(
+            app,
+            session_id,
+            issue.reason,
+            catalog=issue.name,
+            unit=issue.unit_id,
+            detail=issue.detail,
+        )
+    return resolved
 
 
 def session_producible_catalog_ids(app: "FastAPI", session_id: str) -> list[str]:
@@ -173,8 +213,8 @@ def session_a2ui_producers_enabled(app: Any, session_id: str) -> bool:
     reason = resolve_session_catalogs(app, session_id).empty_reason()
     if reason is None:
         return True
-    registry.record_session_reason(session_id, reason)
-    trace.event("A2UI", "producer tools withheld for %s: %s", session_id, reason)
+    if registry.record_session_reason_once(session_id, reason):
+        trace.event("A2UI", "producer tools withheld for %s: %s", session_id, reason)
     return False
 
 

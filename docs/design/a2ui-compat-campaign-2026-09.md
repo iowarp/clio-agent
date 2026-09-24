@@ -280,9 +280,12 @@ different origin) is a typed error, never a silent override. Every consumer
 (producibility, capabilities, selection, the skill index, producer-tool
 attachment, the catalog routes, the session catalog resolver) derives from
 `activation.resolve_session_catalogs`. The shipped agents list their
-catalogs explicitly in the marketplace: every shipped agent lists
-`clio-workspace` (EarthScope lists it first, then `earthscope-stations`,
-whose instructions state the catalogId a station surface names), and every
-shipped pack requires clio-agent 0.9.4.17 or newer.
+catalogs explicitly: the code-shipped builtin main declares
+`[clio-workspace]`, and every marketplace agent lists `clio-workspace`
+(EarthScope lists it first, then `earthscope-stations`; the generated catalog
+skill states each catalogId and which catalog is the default). Only
+EarthScope, which names a pack catalog, requires clio-agent 0.9.4.17. A
+version-change re-sync (`default_registry_migration.py`) brings upgraded
+boxes' unedited registry packs forward.
 The binding contract is in `docs/gact/a2ui-binding.md`, "The per-agent
 allowlist".

@@ -23,10 +23,6 @@ from clio_agent.gact.a2ui_catalogs.builtin import workspace_catalog_id
 from clio_agent.gact.app import build_app
 from clio_agent.gact.parts import Part
 
-# Surface mechanics, not catalog policy: bare sessions resolve the builtin
-# catalogs (tests/test_gact/conftest.py::a2ui_builtin_catalogs, v15 S8).
-pytestmark = pytest.mark.usefixtures("a2ui_builtin_catalogs")
-
 HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
 
 

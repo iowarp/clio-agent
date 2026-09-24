@@ -3,16 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.a2ui_catalogs.builtin import workspace_catalog_id
 from clio_agent.gact.app import build_app
 from clio_agent.gact.types import Message, Part
-
-# Surface mechanics, not catalog policy: bare sessions resolve the builtin
-# catalogs (tests/test_gact/conftest.py::a2ui_builtin_catalogs, v15 S8).
-pytestmark = pytest.mark.usefixtures("a2ui_builtin_catalogs")
 
 CLIO_A2UI_CATALOG_ID = workspace_catalog_id()
 A2UI_HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}

@@ -224,6 +224,8 @@ class CatalogRegistry:
         # accumulating across the session's whole lifetime (bounded memory
         # is release-gating; same doctrine as ``_narration_undeclared_seen``).
         self._producer_refusal_state: dict[str, tuple[str, dict[str, int]]] = {}
+        # v15 S8: keys ``record_session_reason_once`` already recorded, per session.
+        self._session_once_keys: dict[str, set[tuple[Any, ...]]] = {}
 
     def record_session_reason(self, session_id: str, reason: str, **fields: Any) -> dict[str, Any]:
         """Record a typed catalog reason AND append it to ``session_id``'s ledger.
@@ -247,6 +249,35 @@ class CatalogRegistry:
             )
             ring.append(row)
         return row
+
+    def record_session_reason_once(
+        self, session_id: str, reason: str, *, key: tuple[Any, ...] = (), **fields: Any
+    ) -> bool:
+        """Record ``reason`` for ``session_id`` once per ``(reason, *key)``.
+
+        For a condition re-derived on every call (the session's catalog
+        resolution runs per request and per turn build), so the session
+        ledger, the audit stream and the log carry it once instead of once per
+        call. Bounded per session at the ledger's ring size; past that, further
+        distinct keys are still recorded, just no longer deduplicated.
+
+        Returns:
+            ``True`` iff this call recorded the reason.
+        """
+
+        from clio_agent.gact.a2ui_catalogs.reasons import (  # noqa: PLC0415
+            A2UI_CATALOG_REASON_RING_MAXLEN,
+        )
+
+        once_key = (reason, *key)
+        with self._session_reasons_lock:
+            seen = self._session_once_keys.setdefault(session_id, set())
+            if once_key in seen:
+                return False
+            if len(seen) < A2UI_CATALOG_REASON_RING_MAXLEN:
+                seen.add(once_key)
+        self.record_session_reason(session_id, reason, **fields)
+        return True
 
     def record_narration_undeclared_once(self, session_id: str, event_name: str) -> bool:
         """Record ``a2ui_event_narration_undeclared`` for ``event_name``, once.
@@ -345,6 +376,7 @@ class CatalogRegistry:
             self._session_reasons.pop(session_id, None)
             self._narration_undeclared_seen.pop(session_id, None)
             self._producer_refusal_state.pop(session_id, None)
+            self._session_once_keys.pop(session_id, None)
 
     def invalidate(self) -> None:
         """Drop the cached discovery + pack-catalog list.

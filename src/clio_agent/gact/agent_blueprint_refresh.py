@@ -128,7 +128,12 @@ def ensure_default_registry_bootstrap(
     source = default_registry_install_source()
     root = _install_root(home=home, cwd=cwd, scope="global") / default_agent_blueprint_id()
     sync_diagnostic = sync_local_registry_packs(source=source, home=home, cwd=cwd, pinned=pinned)
+    from clio_agent.gact import default_registry_migration as _migration  # noqa: PLC0415
+
     if (root / _BLUEPRINT_ROOT_NAME).exists():
+        sync_diagnostic = sync_diagnostic or _migration.migrate_default_registry_on_version_change(
+            source=source, home=home, cwd=cwd, ref=DEFAULT_REGISTRY_REF, pinned=pinned
+        )
         # #948 S4b upgrade path: an installed-but-invalid default blueprint (a
         # pre-migration chain_of_thought/predict root disabled by validation) is
         # a dead end that never self-heals.
@@ -170,6 +175,7 @@ def ensure_default_registry_bootstrap(
             f"{DEFAULT_AGENT_BLUEPRINT_ID}: {detail}"
         )
     _record_default_registry_source(source=source, home=home, cwd=cwd, pinned=pinned)
+    _migration.record_sync_version(root.parent, _migration.running_clio_agent_version())
     return sync_diagnostic
 
 
@@ -310,7 +316,12 @@ _SYNC_LOCK = threading.Lock()
 def reset_registry_sync_for_tests() -> None:
     """Clear the once-per-process sync gate (test isolation)."""
 
+    from clio_agent.gact.default_registry_migration import (  # noqa: PLC0415
+        reset_default_registry_migration_for_tests,
+    )
+
     _SYNC_COMPLETED_FOR.clear()
+    reset_default_registry_migration_for_tests()
 
 
 #: Bounded ring of recorded blueprint-install reasons, queryable after the
@@ -459,17 +470,12 @@ def _reinstall_reason(existing_root: Path, candidate: Path) -> str | None:
 
     if not (existing_root / _BLUEPRINT_ROOT_NAME).exists():
         return "missing_from_install_root"
-    recorded_checksum = str(read_install_metadata(existing_root).get("checksum") or "").strip()
-    installed_tree_checksum = _tree_checksum(existing_root)
-    if recorded_checksum and installed_tree_checksum != recorded_checksum:
-        logger.info(
-            "registry_pack_skipped reason=local_edits_present id=%s "
-            "recorded_checksum=%s installed_tree_checksum=%s",
-            existing_root.name,
-            recorded_checksum,
-            installed_tree_checksum,
-        )
+    from clio_agent.gact.default_registry_migration import pack_locally_edited  # noqa: PLC0415
+
+    if pack_locally_edited(existing_root):
+        logger.info("registry_pack_skipped reason=local_edits_present id=%s", existing_root.name)
         return None
+    installed_tree_checksum = _tree_checksum(existing_root)
     source_checksum = _tree_checksum(candidate)
     if installed_tree_checksum == source_checksum:
         return None

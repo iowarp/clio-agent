@@ -9,7 +9,6 @@ from types import SimpleNamespace
 from typing import Any
 
 import dspy
-import pytest
 from dspy.utils.dummies import DummyLM
 from fastapi.testclient import TestClient
 
@@ -580,7 +579,6 @@ def test_mcp_task_request_id_correlates_hyphenated_task_exactly(tmp_path) -> Non
     assert correlated.input_key == "output_format"
 
 
-@pytest.mark.usefixtures("a2ui_builtin_catalogs")
 def test_child_a2ui_interaction_routes_to_owning_surface(tmp_path, monkeypatch) -> None:
     """S5: ``form.submit`` is an ordinary agent-destination event now -- it
     starts a fresh idle turn on the CHILD session rather than echoing its

@@ -161,6 +161,15 @@ server activation):
 
 ### The per-agent allowlist (v15 S8)
 
+**Upgrades.** A deployed install clones the marketplace on first run and does
+not re-sync a remote registry, so an upgraded box could keep pre-S8 pack
+snapshots. `gact/default_registry_migration.py` re-installs the unedited
+default-registry packs once whenever the running clio-agent version differs
+from the version recorded at the last sync. Locally edited packs are left
+alone (`default_registry_pack_locally_edited`), packs from another source too
+(`default_registry_pack_foreign_source`); a failed re-sync records
+`default_registry_migration_failed` and is retried on the next boot.
+
 An agent's `a2ui_catalogs` is the **complete** allowlist of catalogs it may
 produce against. Nothing is implicit: the builtins are producible only for
 an agent that lists them, exactly like a pack's own catalog.
@@ -176,14 +185,27 @@ a2ui_catalogs:
   the catalog skill index, and `select_catalog` all follow it. (Before S8
   these lists were sorted alphabetically by `catalogId`, which made Basic
   the default for a surface that named no catalog.)
-- **No declaration, no A2UI.** An agent that declares nothing has no
-  producible catalogs. A root agent then gets no producer tools
+- **The builtin main declares too.** A session with no active Agent
+  Blueprint runs the code-shipped builtin main, which declares
+  `[clio-workspace]` in its own definition
+  (`gact/catalog.py::BUILTIN_MAIN_A2UI_CATALOGS`,
+  `builtin_main_catalog_source`) -- a declaration like any other, not an
+  implicit add-all. A bound blueprint that does not resolve contributes
+  nothing (typed `a2ui_blueprint_unresolved`) rather than falling back to it.
+- **The executing agent decides.** Resolution follows the live turn's
+  execution overlay (a deep-research turn runs the deep-researcher
+  blueprint), not only the stored `active_agent_blueprint_id`.
+- **No declaration, no A2UI.** An agent that declares nothing (no
+  `a2ui_catalogs`, or an explicit `a2ui_catalogs: []`) has no producible
+  catalogs. A root agent then gets no producer tools
   (`agents/auto_tools.py`), no catalog skill is disclosed, and the typed
   reason `a2ui_no_catalogs_declared` is recorded on the session ledger and
   the trace. An agent whose declarations resolve to nothing records
   `a2ui_no_catalogs_resolved`. A child's producer tools still come only from
   an explicit `tools:` declaration; a child that declares them in such a
-  session gets a typed refusal with the same reason.
+  session gets a typed refusal with the same reason. Resolution runs on every
+  request and turn build, so each issue and each empty-resolution reason is
+  recorded once per (session, reason, catalog), not once per call.
 - **Basic stays installed.** Basic is still in the registry and still
   renders, but only an agent that lists `basic` can produce against it.
 - **Validation.** An unknown builtin name, a malformed entry, a pack
@@ -229,7 +251,10 @@ disclosed as a generated skill id `a2ui-catalog-<slug>`
 (`gact/a2ui_catalogs/skills.py`), auto-declared onto any expert that declares
 a producer tool or is a root agent (`agents/skill_runtime.py`), in the
 agent's declared order. An agent with no declared catalogs gets no catalog
-skill lines at all. Its body is
+skill lines at all. Each generated body states the catalog's own `catalogId`
+and whether it is this agent's default (its first declared catalog); a
+non-default catalog's body gives the exact `catalog_id` to pass. Pack
+`instructions.md` files never hand-type their catalogId. Its body is
 the catalog's own `instructions.md` plus a generated component/function/event
 index; the exact schema for one component comes from
 `load_skill("a2ui-catalog-<slug>", file="catalog.json#/components/<Name>")`
@@ -265,7 +290,7 @@ a2ui_catalogs:
 
 (the builtin workspace catalog first, as the default for general views, then
 its own catalog; since v15 S8 the list is the agent's complete allowlist; a
-station surface names its catalog, whose id the catalog's `instructions.md`
+station surface names its catalog, whose id the generated catalog skill
 states), and `experts/main.md` lists the same
 names under its own `a2ui_catalogs:` so the root expert gets the generated
 skills `a2ui-catalog-earthscope-stations` and `a2ui-catalog-clio-workspace`. Installing the pack (`install_agent_blueprint`,

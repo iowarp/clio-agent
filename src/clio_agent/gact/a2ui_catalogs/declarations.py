@@ -53,7 +53,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from clio_agent.gact.a2ui_catalogs.reasons import record_a2ui_catalog_reason
+from clio_agent.gact.a2ui_catalogs.reasons import record_a2ui_catalog_reason_once
 
 if TYPE_CHECKING:
     from clio_agent.gact.a2ui_catalogs.registry import CatalogEntry
@@ -61,9 +61,10 @@ if TYPE_CHECKING:
 #: Where one declared catalog comes from.
 CatalogOrigin = Literal["builtin", "directory"]
 
-#: The kind of unit that declared a source. ``"plugin"`` joins with
-#: agent-plugins 1.0; nothing downstream switches on it.
-DeclaringUnitKind = Literal["blueprint"]
+#: The kind of unit that declared a source: an Agent Blueprint, or a
+#: code-shipped agent (the builtin main, ``catalog.builtin_main_catalog_source``).
+#: ``"plugin"`` joins with agent-plugins 1.0; nothing downstream switches on it.
+DeclaringUnitKind = Literal["blueprint", "builtin_agent"]
 
 
 @dataclass(frozen=True)
@@ -143,11 +144,14 @@ class ResolvedCatalogs:
         entries: The loaded catalogs, in preference (declaration) order.
         declared: Whether ANY source declared ``a2ui_catalogs``.
         issues: Every typed parse/resolution issue, in encounter order.
+        attempted: Whether any source declared at least one ENTRY (well-formed
+            or not). An explicit ``a2ui_catalogs: []`` declares nothing.
     """
 
     entries: tuple["CatalogEntry", ...] = ()
     declared: bool = False
     issues: tuple[CatalogDeclarationIssue, ...] = field(default_factory=tuple)
+    attempted: bool = False
 
     @property
     def catalog_ids(self) -> tuple[str, ...]:
@@ -172,7 +176,7 @@ class ResolvedCatalogs:
 
         if self.entries:
             return None
-        return "a2ui_no_catalogs_resolved" if self.declared else "a2ui_no_catalogs_declared"
+        return "a2ui_no_catalogs_resolved" if self.attempted else "a2ui_no_catalogs_declared"
 
 
 def builtin_catalog_names() -> tuple[str, ...]:
@@ -328,7 +332,7 @@ def _load_declaration(
 
 
 def resolve_agent_catalogs(
-    sources: Sequence[CatalogDeclarationSource], *, record: bool = True
+    sources: Sequence[CatalogDeclarationSource], *, record: bool = False
 ) -> ResolvedCatalogs:
     """Resolve an agent's catalogs as the ordered union of its declaration sources.
 
@@ -336,9 +340,11 @@ def resolve_agent_catalogs(
         sources: The agent's declaration sources, in precedence order. Today
             this is at most one (the active blueprint); agent-plugins add
             more without changing any consumer.
-        record: Whether to write each issue to the typed reason ledger.
-            Validation (which reports issues as errors itself) passes
-            ``False``.
+        record: Whether to write each issue to the typed reason ledger,
+            once per (unit, reason, catalog) for the process. Session callers
+            leave it ``False`` and record per session instead
+            (``activation.resolve_session_catalogs``); validation reports
+            issues as errors itself.
 
     Returns:
         The ordered, deduplicated resolution. Conflicts and load failures are
@@ -350,8 +356,10 @@ def resolve_agent_catalogs(
     by_name: dict[str, tuple[tuple[str, str], str]] = {}
     by_catalog_id: dict[str, str] = {}
     declared = False
+    attempted = False
     for source in sources:
         declared = declared or source.declared
+        attempted = attempted or bool(source.declarations or source.parse_errors)
         issues.extend(source.parse_errors)
         for declaration in source.declarations:
             prior = by_name.get(declaration.name)
@@ -391,10 +399,16 @@ def resolve_agent_catalogs(
             entries.append(entry)
     if record:
         for item in issues:
-            record_a2ui_catalog_reason(
-                item.reason, catalog=item.name, unit=item.unit_id, detail=item.detail
+            record_a2ui_catalog_reason_once(
+                (item.unit_id, item.reason, item.name),
+                item.reason,
+                catalog=item.name,
+                unit=item.unit_id,
+                detail=item.detail,
             )
-    return ResolvedCatalogs(entries=tuple(entries), declared=declared, issues=tuple(issues))
+    return ResolvedCatalogs(
+        entries=tuple(entries), declared=declared, issues=tuple(issues), attempted=attempted
+    )
 
 
 __all__ = [

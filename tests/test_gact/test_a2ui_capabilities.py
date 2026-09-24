@@ -221,15 +221,15 @@ def test_agent_capabilities_server_wide_matches_official_shape(tmp_path: Path) -
     assert set(validated.v0_9.supportedCatalogIds) >= {BASIC_ID, WORKSPACE_ID}
 
 
-def test_agent_capabilities_session_scoped_is_empty_with_no_blueprint(
+def test_agent_capabilities_session_scoped_is_the_builtin_main_declaration(
     tmp_path: Path,
 ) -> None:
-    """v15 S8: nothing is implicit -- an agent that declares no catalogs has none."""
+    """v15 S8: a bare session runs the builtin main, which declares clio-workspace."""
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="t")
     wire = agent_capabilities(app, session.id)
-    assert wire["v0.9"]["supportedCatalogIds"] == []
+    assert wire["v0.9"]["supportedCatalogIds"] == [WORKSPACE_ID]
 
 
 def test_agent_capabilities_session_scoped_follows_declared_order(tmp_path: Path) -> None:
@@ -526,13 +526,12 @@ def test_session_capabilities_route_unknown_session_404(client: TestClient) -> N
     assert resp.status_code == 404
 
 
-@pytest.mark.usefixtures("a2ui_builtin_catalogs")
 def test_session_capabilities_route_shape(client: TestClient) -> None:
     sid = _create_session(client)
     resp = client.get(f"/v1/sessions/{sid}/a2ui/capabilities")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["agent"]["v0.9"]["supportedCatalogIds"] == [WORKSPACE_ID, BASIC_ID]
+    assert body["agent"]["v0.9"]["supportedCatalogIds"] == [WORKSPACE_ID]
     assert body["client"] is None
     assert body["selection"]["reason"] == "a2ui_client_capabilities_unknown"
 
@@ -622,7 +621,6 @@ def test_post_message_valid_capabilities_are_remembered(client: TestClient) -> N
     assert stored == {"v0.9": {"supportedCatalogIds": [BASIC_ID]}}
 
 
-@pytest.mark.usefixtures("a2ui_builtin_catalogs")
 def test_post_message_data_model_is_carried_through_renamed(client: TestClient) -> None:
     sid = _create_session(client)
     create = client.post(
@@ -681,7 +679,6 @@ def test_action_route_rejects_unknown_top_level_fields(client: TestClient) -> No
     assert resp.status_code == 422
 
 
-@pytest.mark.usefixtures("a2ui_builtin_catalogs")
 def test_action_route_accepts_and_remembers_metadata(client: TestClient) -> None:
     sid = _create_session(client)
     create = client.post(
@@ -724,7 +721,6 @@ def test_action_route_accepts_and_remembers_metadata(client: TestClient) -> None
     assert stored == {"v0.9": {"supportedCatalogIds": [WORKSPACE_ID]}}
 
 
-@pytest.mark.usefixtures("a2ui_builtin_catalogs")
 def test_action_route_malformed_capabilities_422(client: TestClient) -> None:
     sid = _create_session(client)
     create = client.post(
@@ -775,8 +771,10 @@ def test_agent_rows_carry_a2ui_capabilities(client: TestClient) -> None:
     for row in rows:
         ids = row["metadata"]["a2ui_capabilities"]
         assert isinstance(ids, list)
-        if not row["metadata"].get("agent_blueprint_id"):
-            assert ids == []  # v15 S8: no declaring blueprint, no catalogs
+        if row["metadata"].get("definition_kind") == "builtin_main":
+            assert ids == [WORKSPACE_ID]  # v15 S8: the builtin main's own declaration
+        elif not row["metadata"].get("agent_blueprint_id"):
+            assert ids == []  # no declaring unit, no catalogs
 
 
 def test_agent_detail_route_carries_a2ui_capabilities(client: TestClient) -> None:
@@ -786,7 +784,9 @@ def test_agent_detail_route_carries_a2ui_capabilities(client: TestClient) -> Non
     assert resp.status_code == 200
     metadata = resp.json()["metadata"]
     assert isinstance(metadata["a2ui_capabilities"], list)
-    if not metadata.get("agent_blueprint_id"):
+    if metadata.get("definition_kind") == "builtin_main":
+        assert metadata["a2ui_capabilities"] == [WORKSPACE_ID]
+    elif not metadata.get("agent_blueprint_id"):
         assert metadata["a2ui_capabilities"] == []
 
 
@@ -880,7 +880,6 @@ def test_steer_door_valid_capabilities_remembered_on_child_session(
     }
 
 
-@pytest.mark.usefixtures("a2ui_builtin_catalogs")
 def test_steer_door_data_model_checked_against_the_childs_own_surfaces(
     running_child_client: tuple[TestClient, str],
 ) -> None:

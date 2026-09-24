@@ -56,6 +56,7 @@ BASIC_ID = basic_catalog_id()
 MINIMAL_ID = "https://example.test/a2ui/catalogs/minimal"
 MARKETPLACE = Path(__file__).resolve().parents[2] / "external" / "clio-agent-marketplace"
 EARTHSCOPE_ID = "https://iowarp.ai/a2ui/catalogs/earthscope-stations/v1"
+UNDECLARED_PACK = FIXTURE_PACKS / "undeclared"
 PRODUCER_TOOLS = {
     "create_a2ui_surface",
     "update_a2ui_components",
@@ -72,6 +73,14 @@ def _app_session(tmp_path: Path) -> tuple[Any, str]:
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="per-agent catalogs")
     return app, session.id
+
+
+def _undeclared_session(tmp_path: Path) -> tuple[Any, str]:
+    """A session bound to an agent whose blueprint declares no ``a2ui_catalogs``."""
+
+    app, sid = _app_session(tmp_path)
+    bind_session_blueprint(app, sid, UNDECLARED_PACK, "a2ui-undeclared-pack")
+    return app, sid
 
 
 def _advertise(app: Any, session_id: str, catalog_ids: list[str]) -> None:
@@ -186,6 +195,12 @@ def test_no_declaration_resolves_to_nothing_with_its_own_reason() -> None:
     assert resolve_agent_catalogs([undeclared]).empty_reason() == "a2ui_no_catalogs_declared"
 
 
+def test_explicit_empty_list_is_no_catalogs_declared() -> None:
+    empty = _source("blueprint:a", [], FIXTURE_PACKS)
+    assert empty.declared is True
+    assert resolve_agent_catalogs([empty]).empty_reason() == "a2ui_no_catalogs_declared"
+
+
 def test_legacy_mapping_form_is_pack_local_only_in_written_order() -> None:
     source = _source("blueprint:a", {"minimal": "catalogs/minimal"}, FIXTURE_PACKS / "minimal")
     assert resolve_agent_catalogs([source], record=False).catalog_ids == (MINIMAL_ID,)
@@ -239,7 +254,7 @@ def test_validation_accepts_builtins_and_pack_catalogs_together(tmp_path: Path) 
 def test_undeclared_agent_has_no_catalogs_no_tools_and_a_typed_reason(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    app, sid = _app_session(tmp_path)
+    app, sid = _undeclared_session(tmp_path)
     monkeypatch.setattr(gact_context, "active_app", lambda: app)
     monkeypatch.setattr(gact_context, "active_session_id", lambda: sid)
 
@@ -258,7 +273,7 @@ def test_undeclared_agent_producer_refuses_with_the_typed_reason(
 ) -> None:
     """A child that declared the tool explicitly still has nothing to produce against."""
 
-    app, sid = _app_session(tmp_path)
+    app, sid = _undeclared_session(tmp_path)
     monkeypatch.setattr(gact_context, "active_app", lambda: app)
     monkeypatch.setattr(gact_context, "active_session_id", lambda: sid)
     _advertise(app, sid, [WORKSPACE_ID, BASIC_ID])
@@ -406,7 +421,7 @@ def test_capabilities_and_catalogs_routes_follow_declared_order(tmp_path: Path) 
 
 
 def test_undeclared_session_routes_report_no_producible_catalogs(tmp_path: Path) -> None:
-    app, sid = _app_session(tmp_path)
+    app, sid = _undeclared_session(tmp_path)
     with TestClient(app) as client:
         caps = client.get(f"/v1/sessions/{sid}/a2ui/capabilities", headers=HEADERS)
         catalogs = client.get(f"/v1/sessions/{sid}/a2ui/catalogs", headers=HEADERS)
@@ -422,3 +437,98 @@ def test_one_resolution_backs_every_consumer(tmp_path: Path) -> None:
     resolved = resolve_session_catalogs(app, sid)
     assert list(resolved.catalog_ids) == session_producible_catalog_ids(app, sid)
     assert agent_capabilities(app, sid)["v0.9"]["supportedCatalogIds"] == list(resolved.catalog_ids)
+
+
+# --------------------------------------------------------------------------- #
+# The builtin main (a bare session's agent) declares clio-workspace           #
+# --------------------------------------------------------------------------- #
+
+
+def test_default_session_with_no_blueprint_produces_clio_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The REAL default path: a session created over HTTP with no blueprint runs
+    the code-shipped builtin main, whose own declaration is ``[clio-workspace]``."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        created = client.post("/v1/sessions", json={"title": "default"})
+        assert created.status_code in (200, 201), created.text
+        sid = created.json()["id"]
+        caps = client.get(f"/v1/sessions/{sid}/a2ui/capabilities", headers=HEADERS)
+    assert caps.json()["agent"]["v0.9"]["supportedCatalogIds"] == [WORKSPACE_ID]
+    assert session_producible_catalog_ids(app, sid) == [WORKSPACE_ID]
+    assert session_a2ui_producers_enabled(app, sid) is True
+    monkeypatch.setattr(gact_context, "active_app", lambda: app)
+    monkeypatch.setattr(gact_context, "active_session_id", lambda: sid)
+    names = {getattr(tool, "name", "") for tool in build_auto_react_tools(_root_agent())}
+    assert PRODUCER_TOOLS <= names
+
+
+# --------------------------------------------------------------------------- #
+# The live-turn execution overlay decides, not only the stored blueprint      #
+# --------------------------------------------------------------------------- #
+
+
+def test_execution_overlay_blueprint_decides_the_turns_catalogs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deep-research turn executes a different blueprint than the stored one
+    (``turn_state.py``); its catalogs are the executing blueprint's own."""
+
+    from clio_agent.gact.agent_blueprints import parse_agent_blueprint_root
+
+    app, sid = _app_session(tmp_path)
+    overlay = parse_agent_blueprint_root(FIXTURE_PACKS / "builtins", scope="session")
+    monkeypatch.setattr(app.state.a2ui_catalogs, "discovered_blueprints", lambda: [overlay])
+    assert session_producible_catalog_ids(app, sid) == [WORKSPACE_ID]  # builtin main
+
+    monkeypatch.setattr(gact_context, "active_session_id", lambda: sid)
+    monkeypatch.setattr(gact_context, "active_execution_blueprint_id", lambda: overlay.id)
+
+    assert session_producible_catalog_ids(app, sid) == [WORKSPACE_ID, BASIC_ID]
+
+
+# --------------------------------------------------------------------------- #
+# Resolution issues are recorded once, not once per call                      #
+# --------------------------------------------------------------------------- #
+
+
+def test_resolution_issue_is_recorded_once_per_session(tmp_path: Path) -> None:
+    app, sid = _app_session(tmp_path)
+    broken = tmp_path / "broken"
+    shutil.copytree(FIXTURE_PACKS / "builtins", broken)
+    agent_md = broken / "AGENT.md"
+    agent_md.write_text(
+        agent_md.read_text(encoding="utf-8").replace("  - basic\n", "  - bassic\n"),
+        encoding="utf-8",
+    )
+    bind_session_blueprint(app, sid, broken, "a2ui-builtins-pack")
+
+    for _ in range(5):
+        assert session_producible_catalog_ids(app, sid) == [WORKSPACE_ID]
+
+    assert _reasons(app, sid).count("a2ui_catalog_builtin_unknown") == 1
+
+
+# --------------------------------------------------------------------------- #
+# The generated catalog skill states each catalog's id and default role       #
+# --------------------------------------------------------------------------- #
+
+
+def test_generated_catalog_skills_state_catalog_id_and_default_role(tmp_path: Path) -> None:
+    from clio_agent.gact.skills import SkillCatalog
+
+    app, sid = _app_session(tmp_path)
+    bind_builtin_catalogs(app, sid)  # declares [clio-workspace, basic]
+
+    refs = SkillCatalog(app=app, session_id=sid)._catalog_refs()
+    bodies = {ref.id: ref.body_provider() for ref in refs}
+
+    workspace = bodies["a2ui-catalog-clio-workspace"]
+    basic = bodies["a2ui-catalog-basic"]
+    assert f"Catalog id: `{WORKSPACE_ID}`" in workspace
+    assert "This is this agent's default catalog" in workspace
+    assert f"Catalog id: `{BASIC_ID}`" in basic
+    assert "This is not this agent's default catalog" in basic
+    assert f'catalog_id="{BASIC_ID}"' in basic

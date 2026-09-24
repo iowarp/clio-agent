@@ -21,9 +21,14 @@ TUI/HTTP surface aren't tracked here.
   catalog skills, and the session records `a2ui_no_catalogs_declared`. Basic
   is still installed and still renders existing surfaces. An unknown builtin
   name, a missing catalog directory, or two declarations of one name with
-  different origins is a validation error. Every shipped marketplace agent
-  declares at least `clio-workspace` and requires this release (clio-agent-marketplace,
-  `requires: clio_agent >= 0.9.4.17`).
+  different origins is a validation error. The built-in agent a session runs
+  when no Agent Blueprint is active declares `clio-workspace`, and every
+  shipped marketplace agent declares at least `clio-workspace`. The generated
+  catalog skills state each catalog's id and which one is the agent's default.
+- After an upgrade, the first start re-installs the default registry packs you
+  have not edited, so installed packs pick up the new catalog declarations.
+  Edited packs are left alone, and a failed re-install is retried on the next
+  start.
 
 ## [0.9.4.16] — 2026-09-23
 

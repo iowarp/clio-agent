@@ -507,7 +507,6 @@ def test_chip_representation_notifies_and_still_appends_tool_parts(tmp_path: Pat
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.usefixtures("a2ui_builtin_catalogs")
 def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(tmp_path: Path) -> None:
     """Drive the real react-runtime observed-call path for every tool
     auto-attached to a dynamic react expert (``auto_tools.build_auto_react_tools``:

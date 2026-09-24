@@ -118,30 +118,50 @@ def _event_lines(entry: "CatalogEntry") -> list[str]:
 #: react expert that only ever uses ``prompt_block``), so an auto-declared
 #: catalog skill regenerated its body on EVERY turn build before this cache
 #: existed -- measured 40 regenerations across 20 builds (2 catalogs x 20).
-_BODY_CACHE: dict[str, str] = {}
+_BODY_CACHE: dict[tuple[str, bool], str] = {}
 _BODY_CACHE_LOCK = threading.Lock()
 
 
-def generate_catalog_skill_body(entry: "CatalogEntry") -> str:
+def generate_catalog_skill_body(entry: "CatalogEntry", *, is_default: bool = False) -> str:
     """Render (or return the cached) generated ``SKILL.md`` text.
 
     Frontmatter (``name``/``description`` from the catalog file's own
-    ``title``/``description``), then the sidecar ``instructions.md`` verbatim,
-    then a generated index (components, functions, declared events), then the
-    exact ``load_skill(...)`` call for one component's schema -- never the
+    ``title``/``description``), then the catalog's own ``catalogId`` and
+    whether it is this agent's default catalog (v15 S8: its first declared
+    one), then the sidecar ``instructions.md`` verbatim, then a generated
+    index (components, functions, declared events), then the exact
+    ``load_skill(...)`` call for one component's schema -- never the
     component shapes themselves (the catalog file is the allowlist, S2).
+    Cached by ``(checksum, is_default)``.
     """
 
+    key = (entry.checksum, is_default)
     with _BODY_CACHE_LOCK:
-        cached = _BODY_CACHE.get(entry.checksum)
+        cached = _BODY_CACHE.get(key)
     if cached is not None:
         return cached
-    rendered = _render_catalog_skill_body(entry)
+    rendered = _render_catalog_skill_body(entry, is_default=is_default)
     with _BODY_CACHE_LOCK:
-        return _BODY_CACHE.setdefault(entry.checksum, rendered)
+        return _BODY_CACHE.setdefault(key, rendered)
 
 
-def _render_catalog_skill_body(entry: "CatalogEntry") -> str:
+def _catalog_identity_lines(entry: "CatalogEntry", *, is_default: bool) -> list[str]:
+    """The catalog's id and its role for this agent (generated, never hand-typed)."""
+
+    if is_default:
+        role = (
+            "This is this agent's default catalog: a surface created with an empty "
+            "`catalog_id` uses it."
+        )
+    else:
+        role = (
+            "This is not this agent's default catalog: a surface created with an "
+            f'empty `catalog_id` does not use it, so pass `catalog_id="{entry.catalog_id}"`.'
+        )
+    return [f"Catalog id: `{entry.catalog_id}`", "", role, ""]
+
+
+def _render_catalog_skill_body(entry: "CatalogEntry", *, is_default: bool = False) -> str:
     """The actual, uncached rendering (see :func:`generate_catalog_skill_body`)."""
 
     file = entry.file
@@ -156,6 +176,7 @@ def _render_catalog_skill_body(entry: "CatalogEntry") -> str:
         "",
         f"# {title}",
         "",
+        *_catalog_identity_lines(entry, is_default=is_default),
         entry.instructions.strip(),
     ]
     lines.extend(_component_lines(file))
@@ -176,7 +197,7 @@ def _render_catalog_skill_body(entry: "CatalogEntry") -> str:
     return "\n".join(lines).strip() + "\n"
 
 
-def _catalog_skill_ref(entry: "CatalogEntry") -> SkillRef:
+def _catalog_skill_ref(entry: "CatalogEntry", *, is_default: bool = False) -> SkillRef:
     # PRIMARY root = the sidecar directory (entry.root_path): holds
     # catalog.clio.json + instructions.md for every catalog, and catalog.json
     # too for every catalog EXCEPT the vendored Basic catalog, whose
@@ -207,7 +228,7 @@ def _catalog_skill_ref(entry: "CatalogEntry") -> SkillRef:
         source=entry.source,
         layout="skill_md",
         meta={"name": skill_id, "description": description},
-        body_provider=functools.partial(generate_catalog_skill_body, entry),
+        body_provider=functools.partial(generate_catalog_skill_body, entry, is_default=is_default),
     )
 
 
@@ -219,13 +240,14 @@ def discover_catalog_skill_refs(entries: "list[CatalogEntry]") -> list[SkillRef]
     session's resolved catalogs -- the agent's own declared allowlist, via
     :func:`~clio_agent.gact.a2ui_catalogs.activation.
     resolve_session_catalogs`) -- this function only ever RENDERS entries
-    into skill refs, never decides producibility (a bare
+    into skill refs (the FIRST entry is the agent's default catalog, since the
+    resolution is in declared preference order), never decides producibility (a bare
     ``registry.installed()`` walk would miss a path-activated pack the
     app-level registry's own discovery never sees, silently under-declaring
     catalog skills for exactly that session).
     """
 
-    return [_catalog_skill_ref(entry) for entry in entries]
+    return [_catalog_skill_ref(entry, is_default=index == 0) for index, entry in enumerate(entries)]
 
 
 __all__ = [

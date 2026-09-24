@@ -45,6 +45,28 @@ def _builtin_agents() -> list[AgentDef]:
     return [_builtin_main_agent()]
 
 
+#: The builtin main's A2UI catalog declaration (v15 S8): the code-shipped agent
+#: declares its catalogs like any shipped agent does -- an explicit list, never
+#: an implicit "every builtin". ``a2ui_catalogs.activation`` turns it into the
+#: session's declaration source when no Agent Blueprint is active.
+BUILTIN_MAIN_A2UI_CATALOGS: tuple[str, ...] = ("clio-workspace",)
+
+
+def builtin_main_catalog_source() -> Any:
+    """The builtin main's A2UI catalog declaration source (a builtin-agent unit)."""
+
+    from clio_agent.gact.a2ui_catalogs.declarations import (  # noqa: PLC0415
+        parse_catalog_declarations,
+    )
+
+    return parse_catalog_declarations(
+        list(BUILTIN_MAIN_A2UI_CATALOGS),
+        unit_kind="builtin_agent",
+        unit_id="builtin:main",
+        root=Path(),
+    )
+
+
 def _builtin_main_agent() -> AgentDef:
     """The in-code react ``main`` a session with NO activated Agent Blueprint runs.
 
@@ -72,7 +94,10 @@ def _builtin_main_agent() -> AgentDef:
         prompt_id="clio.chat",
         tools=sorted({*TOOL_CATALOG, "view_image", "view_pdf"}),
         skills=["work-with-pdfs"],
-        metadata={"definition_kind": "builtin_main"},
+        metadata={
+            "definition_kind": "builtin_main",
+            "a2ui_catalogs": list(BUILTIN_MAIN_A2UI_CATALOGS),
+        },
     )
 
 

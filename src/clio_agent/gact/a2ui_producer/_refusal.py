@@ -69,9 +69,9 @@ _DEFAULT_HINTS: dict[str, str] = {
         "from this session's producible catalogs instead of naming one"
     ),
     "a2ui_catalog_not_producible": (
-        "the active agent blueprint does not declare this catalog; call "
-        "create_a2ui_surface with an empty catalog_id to auto-select one "
-        "that is producible"
+        "this agent does not declare this catalog; call create_a2ui_surface "
+        "with an empty catalog_id to use this agent's first declared catalog "
+        "the client supports"
     ),
     # The reason named in the issue's live-gate evidence: 14 identical
     # refusals in one turn because this hint used to be empty.

@@ -36,17 +36,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from clio_agent.gact.a2ui import project_a2ui_parts
 from clio_agent.gact.a2ui_actions.record import fold_action_records
 
 from .test_a2ui_actions import _error_envelope, _stub_spawn
 from .test_a2ui_v3 import HEADERS, _create_message, _session_client
-
-# Surface mechanics, not catalog policy: bare sessions resolve the builtin
-# catalogs (tests/test_gact/conftest.py::a2ui_builtin_catalogs, v15 S8).
-pytestmark = pytest.mark.usefixtures("a2ui_builtin_catalogs")
 
 
 def _update_message(surface_id: str, text: str) -> dict[str, Any]:
