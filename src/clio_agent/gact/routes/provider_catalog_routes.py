@@ -9,6 +9,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 
+from clio_agent.gact.provider_catalog_snapshot import invalidate_provider
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, LMProviderPreset
 from clio_agent.providers.dependencies import (
@@ -106,10 +107,15 @@ def register_provider_catalog_routes(
                     flow_id,
                     authorization_code,
                 )
+                # The Globus tokens are shared by every ALCF cluster, so every
+                # argonne provider's catalog evidence was produced under the old
+                # (signed-out) credential; the next catalog read re-probes them.
+                for argonne_preset in (p for p in _LM_PRESETS if p.provider == "argonne"):
+                    invalidate_provider(app, argonne_preset.id)
                 return {
                     "is_authenticated": True,
                     "provider_id": provider_id,
-                    "instructions": "ALCF sign-in complete. Available models are refreshing.",
+                    "instructions": "ALCF sign-in complete. Checking available models.",
                 }
             if action != "start":
                 raise ValueError(f"unknown authentication action: {action}")
@@ -303,6 +309,10 @@ def register_provider_catalog_routes(
                     )
                 ).model_dump(exclude_none=True),
             )
+        if refresh:
+            # An explicit check is new evidence: the catalog snapshot must not keep
+            # serving what the provider looked like before it.
+            invalidate_provider(app, preset.id)
         if preset.provider == "codex":
             status, message, verified, _ = _codex_readiness()
             if refresh and status in {"auth_check_required", "ready"}:

@@ -8,6 +8,8 @@ static guesses.
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -74,6 +76,10 @@ async def _ensure_codex_live_catalog(preset: LMProviderPreset) -> str:
 #: produced by asking the provider. ``static`` is the frozen registry snapshot
 #: and is never evidence.
 EVIDENCED_CATALOG_SOURCES: frozenset[str] = frozenset({"live", "overlay"})
+
+#: Provider kinds whose catalog is the discovery overlay itself (no HTTP probe).
+#: Every other kind is probed live and keeps a last-good list for empty probes.
+_CLI_CATALOG_KINDS: frozenset[str] = frozenset({"codex", "claude_code"})
 
 
 def _modalities(profile: ModelProfile) -> list[str]:
@@ -161,6 +167,34 @@ def _overlay_staleness(preset: LMProviderPreset) -> dict[str, Any]:
     return staleness if isinstance(staleness, dict) else {}
 
 
+async def _with_last_good(
+    preset: LMProviderPreset, report: HandshakeReport
+) -> tuple[HandshakeReport, dict[str, Any]]:
+    """Persist a live answer as last-good, or serve the last-good list for an empty probe.
+
+    Returns the report to project (unchanged, or carrying the last-good profiles
+    under ``models_source="last_good"``) and the typed staleness marker for the
+    latter. Last-good rows are never ``evidenced`` -- ``report.ok`` is false for an
+    empty probe -- so they surface as candidates until a live probe answers.
+    """
+
+    if preset.provider in _CLI_CATALOG_KINDS:
+        return report, {}
+    if report.models:
+        await asyncio.to_thread(model_discovery.persist_live_catalog, preset.id, report)
+        return report, {}
+    last_good = await asyncio.to_thread(model_discovery.last_good_catalog, preset.id)
+    if last_good is None:
+        return report, {}
+    served = replace(
+        report,
+        models=last_good.profiles,
+        models_source=model_discovery.LAST_GOOD_CATALOG_SOURCE,
+        evidence_generated_at=last_good.generated_at,
+    )
+    return served, model_discovery.last_good_staleness(last_good, report)
+
+
 async def discover_provider(preset: LMProviderPreset, *, refresh: bool = False) -> dict[str, Any]:
     """Run one passive handshake and return a normalized provider record."""
 
@@ -176,9 +210,11 @@ async def discover_provider(preset: LMProviderPreset, *, refresh: bool = False) 
         ),
         force=refresh or preset.id == "codex",
     )
+    report, staleness = await _with_last_good(preset, report)
     models = report.models
     failure = report.error or bootstrap_failure
-    staleness = _overlay_staleness(preset)
+    if not staleness:
+        staleness = _overlay_staleness(preset) if preset.provider in _CLI_CATALOG_KINDS else {}
     if preset.id == "codex" and report.models_source not in EVIDENCED_CATALOG_SOURCES:
         # Static Codex ids are compatibility candidates for legacy clients,
         # never evidence that the current account can actually select them.
