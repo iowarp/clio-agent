@@ -156,7 +156,10 @@ def test_workspace_file_listing_walks_into_dot_directories_by_default(
     tmp_path: Path,
 ) -> None:
     """Owner ruling: the Files view shows ALL dot files/folders, .clio included —
-    there is no reason to hide a workspace's own agent state from itself."""
+    there is no reason to hide a workspace's own agent state from itself. Non-dot
+    entries walk first at every level (report.md before .clio), and
+    .clio-child-cache lists as a bare, redacted folder — see the security-hygiene
+    tests below for why."""
 
     c = _client(tmp_path)
     project = tmp_path / "project"
@@ -172,13 +175,16 @@ def test_workspace_file_listing_walks_into_dot_directories_by_default(
 
     assert response.status_code == 200
     entries = response.json()["entries"]
-    assert [(entry["path"], entry["type"], entry["internal"]) for entry in entries] == [
-        (str(Path(".clio")), "dir", False),
-        (str(Path(".clio") / "state.json"), "file", False),
-        (str(Path(".clio-child-cache")), "dir", False),
-        (str(Path(".clio-child-cache") / "cache.json"), "file", False),
-        ("report.md", "file", False),
+    assert [
+        (entry["path"], entry["type"], entry["internal"], entry.get("redacted"))
+        for entry in entries
+    ] == [
+        ("report.md", "file", False, None),
+        (str(Path(".clio")), "dir", False, None),
+        (str(Path(".clio") / "state.json"), "file", False, None),
+        (str(Path(".clio-child-cache")), "dir", False, "sandbox_child_cache"),
     ]
+    assert response.json()["truncated"] is False
 
 
 def test_workspace_file_listing_include_hidden_false_hides_dotfiles(
@@ -203,12 +209,16 @@ def test_workspace_file_listing_include_hidden_false_hides_dotfiles(
     assert [entry["path"] for entry in entries] == ["report.md"]
 
 
-def test_workspace_file_listing_caps_still_apply_inside_dot_directories(
+def test_workspace_file_listing_does_not_let_a_huge_dot_directory_starve_user_files(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """Descending into .clio spends the SAME budget as everything else — no separate
-    unbounded allowance, so a huge .clio cannot lock the picker."""
+    """HIGH (S3 review): .clio/.clio-child-cache can hold thousands of files
+    (transcripts, ARC state, artifacts). Sorting purely by name walked dot entries
+    FIRST (ASCII '.' sorts before letters/digits), so a huge .clio spent the whole
+    cap before ever reaching the user's own files — report.md would silently never
+    appear. Non-dot entries must always walk first, at every level, and a real
+    truncation must still be reported honestly."""
 
     c = _client(tmp_path)
     project = tmp_path / "project"
@@ -223,10 +233,10 @@ def test_workspace_file_listing_caps_still_apply_inside_dot_directories(
     response = c.get("/v1/workspaces/ws_default/files")
 
     assert response.status_code == 200
-    entries = response.json()["entries"]
-    assert len(entries) == 3
-    # report.md never gets reached: the cap is spent walking .clio first.
-    assert "report.md" not in [entry["path"] for entry in entries]
+    body = response.json()
+    paths = [entry["path"] for entry in body["entries"]]
+    assert "report.md" in paths
+    assert body["truncated"] is True
 
 
 def test_workspace_repo_map_still_excludes_only_clio_service_storage(
@@ -251,6 +261,124 @@ def test_workspace_repo_map_still_excludes_only_clio_service_storage(
     assert ".editorconfig" in child_paths
     assert "report.md" in child_paths
     assert ".clio" not in child_paths
+
+
+def test_workspace_repo_map_truncated_reflects_the_real_walk_not_a_post_filter_count(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """HIGH (S3 review): repo_map used to walk with .clio included, THEN filter it
+    out, THEN compute truncated from the filtered length — a huge .clio could burn
+    the whole cap, leave the user's files half-shown, and still report
+    truncated=False because the leftover (filtered) count looked small. Excluding
+    service storage must happen up front, during the walk itself, so truncated
+    reflects what actually got walked."""
+
+    c = _client(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    c.app.state.workspaces.update("ws_default", root_path=str(project))
+    (project / ".clio").mkdir()
+    for index in range(20):
+        (project / ".clio" / f"internal-{index}.json").write_text("{}", encoding="utf-8")
+    (project / "report.md").write_text("visible", encoding="utf-8")
+    (project / "notes.md").write_text("also visible", encoding="utf-8")
+    monkeypatch.setattr(workspace_routes, "_FILE_PICKER_LIMIT", 3)
+
+    repo_map = c.get("/v1/workspaces/ws_default/repo_map").json()
+
+    child_paths = [child["path"] for child in repo_map["tree"]["children"]]
+    assert "report.md" in child_paths
+    assert "notes.md" in child_paths
+    assert ".clio" not in child_paths
+    assert repo_map["truncated"] is False
+
+
+def test_workspace_file_listing_shows_child_cache_folder_but_not_its_contents(
+    tmp_path: Path,
+) -> None:
+    """Security hygiene (S3 review): .clio-child-cache is the redirected
+    APPDATA/TEMP/XDG_CACHE_HOME home for sandboxed MCP child processes and may
+    hold package- or provider-credential caches. The owner ruling to show dot
+    folders means its EXISTENCE is not hidden, but its contents are never walked —
+    the entry carries a typed ``redacted`` reason instead of a silent omission."""
+
+    c = _client(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    c.app.state.workspaces.update("ws_default", root_path=str(project))
+    (project / ".clio-child-cache").mkdir()
+    (project / ".clio-child-cache" / "npm-auth-token.json").write_text("{}", encoding="utf-8")
+
+    response = c.get("/v1/workspaces/ws_default/files")
+
+    entries = response.json()["entries"]
+    assert [(entry["path"], entry["type"], entry.get("redacted")) for entry in entries] == [
+        (str(Path(".clio-child-cache")), "dir", "sandbox_child_cache")
+    ]
+
+
+def test_workspace_file_read_refuses_child_cache_contents(tmp_path: Path) -> None:
+    """The listing shows .clio-child-cache exists; GET /files/read still refuses to
+    serve raw bytes from under it, by path, regardless of the listing's cap."""
+
+    c = _client(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    c.app.state.workspaces.update("ws_default", root_path=str(project))
+    cache_dir = project / ".clio-child-cache"
+    cache_dir.mkdir()
+    (cache_dir / "secret.json").write_text('{"token": "abc"}', encoding="utf-8")
+
+    response = c.get(
+        "/v1/workspaces/ws_default/files/read",
+        params={"path": ".clio-child-cache/secret.json"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["details"]["reason"] == "sandbox_child_cache"
+
+
+def test_workspace_file_read_refuses_workspace_secret_config(tmp_path: Path) -> None:
+    """.clio/config.yaml's secret tier is env-only by policy (conf.py), but that is a
+    writer-side convention, not an enforced constraint on the file's contents —
+    refuse serving it as raw bytes regardless. The listing still names it."""
+
+    c = _client(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    c.app.state.workspaces.update("ws_default", root_path=str(project))
+    (project / ".clio").mkdir()
+    (project / ".clio" / "config.yaml").write_text("lm:\n  api_key: sk-test\n", encoding="utf-8")
+
+    response = c.get(
+        "/v1/workspaces/ws_default/files/read",
+        params={"path": ".clio/config.yaml"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["details"]["reason"] == "workspace_secret_config"
+    listing = c.get("/v1/workspaces/ws_default/files").json()["entries"]
+    assert str(Path(".clio") / "config.yaml") in [entry["path"] for entry in listing]
+
+
+def test_workspace_file_read_refuses_credential_like_filenames_anywhere(tmp_path: Path) -> None:
+    """Name-based, not content-sniffed: any *token*/*credential* filename is refused
+    as a raw-byte serve wherever it lives in the workspace."""
+
+    c = _client(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    c.app.state.workspaces.update("ws_default", root_path=str(project))
+    (project / "my_api_token.txt").write_text("sk-live-abc", encoding="utf-8")
+
+    response = c.get(
+        "/v1/workspaces/ws_default/files/read",
+        params={"path": "my_api_token.txt"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["details"]["reason"] == "credential_like_filename"
 
 
 def test_workspace_file_read_serves_png_as_raw_bytes(tmp_path: Path) -> None:

@@ -36,7 +36,7 @@ from clio_agent.gact.routes.workspace_file_listing import (
     collect_workspace_file_entries,
     workspace_file_media_type,
 )
-from clio_agent.gact.routes.workspace_file_policy import is_internal_workspace_file_directory
+from clio_agent.gact.routes.workspace_file_policy import workspace_read_redaction_reason
 from clio_agent.gact.routes.workspace_grant_delete import register_workspace_grant_delete_route
 from clio_agent.gact.routes.workspace_root_materialization import materialize_workspace_root
 from clio_agent.gact.types import (
@@ -533,16 +533,16 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         root = Path(ws.root_path or os.getcwd()).expanduser()
         if not root.is_dir():
-            return {"entries": []}
+            return {"entries": [], "truncated": False}
 
-        entries = await collect_workspace_file_entries(
+        walk = await collect_workspace_file_entries(
             app,
             wid,
             root,
             limit=_FILE_PICKER_LIMIT,
             include_hidden=include_hidden,
         )
-        return {"entries": entries}
+        return {"entries": walk.entries, "truncated": walk.truncated}
 
     @app.get("/v1/workspaces/{wid}/repo_map")
     async def workspace_repo_map(wid: str) -> dict[str, Any]:
@@ -572,23 +572,26 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
             "type": "dir",
             "children": [],
         }
-        # The repo-map contract endpoint keeps its historic scope (only CLIO's own
-        # ``.clio``/``.clio-*`` service storage excluded) rather than the Files view's
-        # new dotfile toggle, so a repo full of ordinary dotfiles (.github, .editorconfig)
-        # keeps showing here exactly as it always has.
-        body = await list_workspace_files(wid)
-        entries = body.get("entries", [])
-        visible_entries = [
-            entry
-            for entry in entries
-            if not any(
-                is_internal_workspace_file_directory(part)
-                for part in Path(str(entry.get("path") or "")).parts
-            )
-        ]
+        if not root.is_dir():
+            return {"tree": tree, "tokens": 0, "truncated": False}
+        # The repo-map contract endpoint keeps its historic, narrower scope (only
+        # CLIO's own .clio/.clio-* service storage excluded, ordinary dotfiles like
+        # .github/.editorconfig still shown) — unlike the Files view's generic
+        # dotfile toggle. The exclusion happens UP FRONT, during the walk itself
+        # (exclude_service_storage=True), never as a post-walk filter: filtering
+        # afterwards would let a huge .clio spend the whole cap before any user file
+        # is reached, then report an honest-looking truncated=False computed from
+        # the leftover (filtered) count instead of the real, capped walk.
+        walk = await collect_workspace_file_entries(
+            app,
+            wid,
+            root,
+            limit=_FILE_PICKER_LIMIT,
+            exclude_service_storage=True,
+        )
         nodes_by_path: dict[str, dict[str, Any]] = {"": tree}
         token_estimate = 0
-        for entry in visible_entries:
+        for entry in walk.entries:
             path = str(entry.get("path") or "")
             if not path:
                 continue
@@ -611,7 +614,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
         return {
             "tree": tree,
             "tokens": token_estimate,
-            "truncated": len(visible_entries) >= _FILE_PICKER_LIMIT,
+            "truncated": walk.truncated,
         }
 
     @app.get("/v1/workspaces/{wid}/files/read")
@@ -655,7 +658,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
             ) from None
         # Refuse path-traversal: target must be at-or-below root.
         try:
-            target.relative_to(root)
+            relative_target = target.relative_to(root)
         except ValueError:
             raise HTTPException(
                 status_code=403,
@@ -667,6 +670,24 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             ) from None
+        # Security review (S3 follow-up): the LISTING shows .clio in full (owner
+        # ruling — no reason to hide a workspace's own state from itself), but the
+        # raw-byte SERVE is a narrower boundary. Refuse a sandboxed child's
+        # redirected cache and anything credential-shaped by NAME, never by
+        # sniffing content that a renamed file could trivially evade.
+        redaction_reason = workspace_read_redaction_reason(relative_target)
+        if redaction_reason is not None:
+            raise HTTPException(
+                status_code=403,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="redacted",
+                        message=f"refusing to serve raw bytes for {path}: {redaction_reason}",
+                        recoverable=False,
+                        details={"reason": redaction_reason},
+                    )
+                ).model_dump(exclude_none=True),
+            )
         if not target.is_file():
             raise HTTPException(
                 status_code=404,
