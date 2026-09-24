@@ -40,7 +40,18 @@ def _catalog_summary(entry: "CatalogEntry") -> dict[str, Any]:
         "checksum": entry.checksum,
         "componentNames": sorted(entry.file.get("components", {})),
         "functionNames": sorted(entry.file.get("functions", {})),
-        "sidecar": entry.sidecar.model_dump(mode="json"),
+        # S1 (iowarp/clio-agent, A2UI catalog contract): the wire contract is
+        # "absent, never null" -- an unset optional sidecar field (e.g. an
+        # `implements` entry's `presets`, an `events` route's `context_schema`/
+        # `operation`/`narration`) must be OMITTED, not serialised as JSON
+        # `null`. Without `exclude_none`, every builtin catalog's `implements`
+        # map dumps `"presets": null` for each of its ~30 unaliased components,
+        # and every declared event dumps `"context_schema": null` /
+        # `"operation": null` / `"narration": null` when unset -- a client zod
+        # schema using `.optional()` (which rejects an explicit `null`) then
+        # fails to parse the WHOLE catalog list, silently emptying the
+        # client's registry (gact-tui's catalog-registry.ts).
+        "sidecar": entry.sidecar.model_dump(mode="json", exclude_none=True),
     }
 
 

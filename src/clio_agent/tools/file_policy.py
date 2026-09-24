@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from clio_agent.runtime import trace
+
 DEFAULT_MAX_FILE_SIZE_BYTES = 1 << 30
 _SIZE_PATTERN = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([kmgt]?i?b?)?\s*$", re.IGNORECASE)
 _SIZE_MULTIPLIERS = {
@@ -425,7 +427,28 @@ def _coerce_path(filepath: str, *, field: str) -> Path:
         )
     path = Path(filepath).expanduser()
     if not path.is_absolute():
-        path = Path.cwd() / path
+        # Pin a relative fs_read/fs_write/fs_edit path to the active session's
+        # workspace root (when a tool call has one bound) rather than the OS
+        # process's own cwd. The managed backend process outlives its boot-time
+        # cwd and can serve multiple workspaces, so Path.cwd() is only a
+        # last-resort fallback for the app-less CLI grounding path.
+        workspace_root = _active_workspace_root()
+        if workspace_root is not None:
+            base = workspace_root
+        else:
+            # No silent fallback: a managed session with no bound workspace root
+            # falling back to the OS process's own cwd (the install directory, on
+            # desktop) is exactly the failure mode this pin exists to avoid. The
+            # app-less CLI grounding path legitimately has no workspace bound, so
+            # this stays a typed trace event rather than a hard error.
+            trace.event(
+                "TOOLS",
+                "relative %s fallback reason=no_active_workspace_root cwd=%s",
+                field,
+                Path.cwd(),
+            )
+            base = Path.cwd()
+        path = base / path
     return path
 
 

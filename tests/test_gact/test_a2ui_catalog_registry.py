@@ -594,6 +594,67 @@ def test_session_catalogs_route_404s_on_unknown_session(tmp_path: Path) -> None:
     assert response.status_code == 404
 
 
+def _assert_no_json_null(value: Any, path: str = "$") -> None:
+    """Recursively fail if a JSON ``null`` appears anywhere under ``value``."""
+
+    if value is None:
+        pytest.fail(f"unexpected JSON null at {path} -- wire contract is absent, never null")
+    if isinstance(value, dict):
+        for key, child in value.items():
+            _assert_no_json_null(child, f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            _assert_no_json_null(child, f"{path}[{index}]")
+
+
+def test_installed_catalogs_route_sidecar_has_no_null_anywhere(tmp_path: Path) -> None:
+    """S1 A2UI catalog contract: "absent, never null" (docs/design bug A).
+
+    Before ``exclude_none=True`` on ``entry.sidecar.model_dump(...)``
+    (``a2ui_catalogs/routes/a2ui_catalogs.py``), every builtin catalog's
+    ``implements`` map serialises its unset ``presets`` field as JSON
+    ``null`` (once per unaliased component -- 18 times for Basic, 30 for the
+    CLIO workspace catalog), and every declared ``events`` route serialises
+    its unset ``context_schema``/``operation``/``narration`` fields the same
+    way. A client zod schema built with ``.optional()`` (which REJECTS an
+    explicit ``null``) then fails to parse the WHOLE catalog list and
+    silently empties its registry (gact-tui's ``catalog-registry.ts``) -- the
+    exact root cause of "Interactive surface unavailable" on the default
+    agent even though the producer tool reports ``created: true``. Entered
+    via ``with TestClient(app) as c`` against the real route, not a
+    hand-built dict, so this exercises the actual served bytes.
+    """
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        response = client.get("/v1/a2ui/catalogs")
+
+    assert response.status_code == 200
+    rows = response.json()["catalogs"]
+    assert {row["catalogId"] for row in rows} == {basic_catalog_id(), workspace_catalog_id()}
+    for row in rows:
+        # Both builtins declare a non-empty `implements` map with at least
+        # one entry that omits `presets` -- if this ever stopped being true
+        # the null-serialisation bug would go unexercised without failing.
+        assert row["sidecar"]["implements"], row["catalogId"]
+        _assert_no_json_null(row["sidecar"], path=f"$.catalogs[{row['catalogId']}].sidecar")
+
+
+def test_session_catalogs_route_sidecar_has_no_null_anywhere(tmp_path: Path) -> None:
+    """Same "absent, never null" contract on the session-scoped route."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    with TestClient(app) as client:
+        session = app.state.sessions.create(workspace_id="ws_default", title="A2UI null-sidecar")
+        response = client.get(f"/v1/sessions/{session.id}/a2ui/catalogs")
+
+    assert response.status_code == 200
+    rows = response.json()["catalogs"]
+    assert rows
+    for row in rows:
+        _assert_no_json_null(row["sidecar"], path=f"$.catalogs[{row['catalogId']}].sidecar")
+
+
 # --------------------------------------------------------------------------- #
 # Adversarial review follow-ups: reason retrievability, declared destination,
 # per-expert subset validation, UAX#31 warning, catalog-fixed-per-surface,

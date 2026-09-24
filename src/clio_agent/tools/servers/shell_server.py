@@ -26,6 +26,7 @@ from typing import Any
 from fastmcp import Context, FastMCP
 
 from clio_agent import conf
+from clio_agent.runtime import trace
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
 
 shell_server = FastMCP("shell")
@@ -105,9 +106,42 @@ def _error(code: str, message: str, *, details: dict[str, Any] | None = None) ->
 
 
 def _resolve_cwd(cwd: str | None) -> Path:
-    """Resolve and validate a shell working directory."""
+    """Resolve and validate a shell working directory.
 
-    raw = Path(cwd).expanduser() if cwd else Path.cwd()
+    An explicit ``cwd`` argument always wins. Otherwise this pins to the active
+    session's workspace root (bound per tool call by
+    ``clio_agent.tools.execution.tool_workspace_context``) rather than the OS
+    process's own current directory. A single managed backend process outlives
+    its boot-time cwd and can serve sessions across multiple workspaces, so
+    falling back to ``Path.cwd()`` let commands without an explicit ``cwd``
+    run outside the session's own workspace (iowarp/clio-agent — desktop
+    ``sensor_readings_*.md`` files landing in the install directory instead of
+    the workspace). ``Path.cwd()`` remains the last-resort fallback for the
+    app-less CLI grounding path where no workspace is bound.
+    """
+
+    if cwd:
+        raw = Path(cwd).expanduser()
+    else:
+        from clio_agent.tools.execution import (  # noqa: PLC0415 - avoid import cycle
+            get_active_tool_workspace_root,
+        )
+
+        active_root = get_active_tool_workspace_root()
+        if active_root:
+            raw = Path(active_root)
+        else:
+            # No silent fallback: a managed session with no bound workspace root
+            # falling back to the OS process's own cwd (the install directory, on
+            # desktop) is exactly the failure mode this function exists to avoid.
+            # The app-less CLI grounding path legitimately has no workspace bound,
+            # so this stays a typed trace event rather than a hard error.
+            trace.event(
+                "TOOLS",
+                "shell cwd fallback reason=no_active_workspace_root cwd=%s",
+                Path.cwd(),
+            )
+            raw = Path.cwd()
     try:
         resolved = raw.resolve(strict=True)
     except FileNotFoundError as exc:
