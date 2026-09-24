@@ -170,6 +170,20 @@ async def read_catalog(
         raise UnknownCatalogProviderError(provider_id)
     cached = getattr(app.state, "provider_catalog", None)
     pending = _pending(app)
+    if not isinstance(cached, dict) and provider_id:
+        # No snapshot yet (boot, or retired by a model refresh): build it from
+        # cached handshakes, forcing only the provider that was asked about.
+        others, targeted = await asyncio.gather(
+            _discover([pid for pid in preset_ids if pid != provider_id], refresh=False),
+            _discover([provider_id], refresh=refresh),
+        )
+        by_id = {str(record.get("id")): record for record in [*others, *targeted]}
+        payload = _payload([by_id[pid] for pid in preset_ids if pid in by_id])
+        pending.clear()
+        app.state.provider_catalog = payload
+        _publish(app, payload)
+        schedule_stale_reprobe(app, payload)
+        return payload
     if not isinstance(cached, dict) or (refresh and not provider_id):
         payload = _payload(await _discover(preset_ids, refresh=refresh))
         pending.clear()

@@ -327,3 +327,29 @@ def test_catalog_names_are_canonical_and_sign_in_is_separate_detail(
     assert all(
         "(" not in preset.label for preset in presets.values() if preset.provider == "argonne"
     )
+
+
+def test_targeted_refresh_without_a_snapshot_forces_only_that_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A model refresh retires the snapshot; a targeted re-read must not re-probe everyone."""
+    from clio_agent.providers.catalog import as_lm_presets
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    app.state.provider_catalog = None
+    forced: list[str] = []
+
+    async def _discover(preset: LMProviderPreset, *, refresh: bool = False) -> dict[str, Any]:
+        if refresh:
+            forced.append(preset.id)
+        return _record(preset.id)
+
+    monkeypatch.setattr("clio_agent.gact.provider_catalog_snapshot.discover_provider", _discover)
+
+    with TestClient(app) as client:
+        response = client.get("/v1/provider-catalog?refresh=true&provider=argonne_metis")
+
+    assert response.status_code == 200
+    assert forced == ["argonne_metis"]
+    ids = [row["id"] for row in response.json()["providers"]]
+    assert ids == [preset.id for preset in as_lm_presets()]
