@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
@@ -174,7 +175,7 @@ def apply_default_effort(metadata: dict[str, object], defaults: SessionDefaults)
         metadata.setdefault("effort_source", EFFORT_SOURCE_USER)
 
 
-def session_effort(metadata: dict[str, object]) -> str | None:
+def session_effort(metadata: Mapping[str, object]) -> str | None:
     """A session's starting level, only when a person chose it.
 
     Legacy sessions carry a force-written ``effort`` with no source; read-time
