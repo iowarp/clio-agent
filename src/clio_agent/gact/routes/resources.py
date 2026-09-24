@@ -30,7 +30,7 @@ from clio_agent.gact.resource_lifecycle import (
     schedule_processing,
     submit_processing,
 )
-from clio_agent.gact.resource_materialization import materialize_resource_for_app
+from clio_agent.gact.resource_materialization import materialize_once as _materialize_once
 from clio_agent.gact.resource_processing import ResourceConverterUnavailable
 from clio_agent.gact.resource_tools import (
     ResourceQueryError,
@@ -197,21 +197,17 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
         payload["processing"] = app.state.resource_processing_store.state(record).model_dump()
         return payload
 
-    async def materialize(record: ResourceRecord) -> ResourceRecord:
-        """Ensure a ready upload has an independent copy in this workspace."""
+    async def materialize_once(record: ResourceRecord) -> ResourceRecord:
+        """Materialize a JUST-READIED upload's workspace-input copy, off-thread.
 
-        if record.state != "ready":
-            return record
-        try:
-            return await asyncio.to_thread(materialize_resource_for_app, app, record)
-        except (OSError, ValueError) as exc:
-            raise _error(
-                409,
-                "resource_materialization_failed",
-                f"uploaded source could not be materialized in the workspace: {exc}",
-                workspace_id=record.workspace_id,
-                resource_id=record.id,
-            ) from exc
+        Called only at the moment an upload becomes ready — create-complete
+        (a zero-byte resource), the final PATCH chunk, or a ready copy — and
+        NEVER from a GET route (see ``resource_materialization.materialize_once``,
+        the single shared owner of this logic, also used by the agent's own
+        resource tools and per-turn attachment enrichment).
+        """
+
+        return await asyncio.to_thread(_materialize_once, app, record)
 
     def lifecycle_payload(
         record: ResourceRecord, *, workspace_id: str, idempotent_replay: bool
@@ -230,14 +226,23 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.get("/v1/workspaces/{workspace_id}/resources")
     async def list_resources(workspace_id: str) -> dict[str, Any]:
+        """List resources without ever materializing or copying files.
+
+        Materialization happens once, only when an upload becomes ready
+        (create-complete / final PATCH / ready copy) — never here. Reading
+        the list must never depend on the filesystem write that
+        materialization performs, and a materialization failure recorded on
+        one resource (``materialization.state == "failed"``) must never keep
+        the rest of the workspace's resources from listing.
+        """
+
         _workspace(app, workspace_id)
         resources = app.state.resource_store.list(workspace_id)
-        materialized: list[ResourceRecord] = []
+        refreshed: list[ResourceRecord] = []
         for record in resources:
-            record = await materialize(record)
             await refresh_processing(app, record)
-            materialized.append(record)
-        return {"resources": [resource_wire(row) for row in materialized]}
+            refreshed.append(record)
+        return {"resources": [resource_wire(row) for row in refreshed]}
 
     @app.get("/v1/workspaces/{workspace_id}/resource-deliveries")
     async def list_resource_deliveries(workspace_id: str) -> dict[str, Any]:
@@ -281,7 +286,7 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
             ) from exc
         except (TypeError, ValueError) as exc:
             raise _error(400, "invalid_request", str(exc)) from exc
-        record = await materialize(record)
+        record = await materialize_once(record)
         payload = lifecycle_payload(
             record, workspace_id=workspace_id, idempotent_replay=idempotent_replay
         )
@@ -347,7 +352,7 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
                 current=exc.record.to_wire(),
             ) from exc
         if updated.state == "ready":
-            updated = await materialize(updated)
+            updated = await materialize_once(updated)
             emit_workspace_event(
                 app,
                 workspace_id,
@@ -368,8 +373,9 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.get("/v1/workspaces/{workspace_id}/resources/{resource_id}")
     async def get_resource(workspace_id: str, resource_id: str) -> dict[str, Any]:
+        """Read one resource without materializing or copying files (see list_resources)."""
+
         record = _resource(app, workspace_id, resource_id)
-        record = await materialize(record)
         await refresh_processing(app, record)
         return resource_wire(record)
 
@@ -408,7 +414,7 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
                 source.id,
                 destination_workspace_id,
             )
-            copied = await materialize(copied)
+            copied = await materialize_once(copied)
         except KeyError as exc:
             raise _error(404, "not_found", f"resource not found: {resource_id}") from exc
         except ResourceConflictError as exc:

@@ -41,7 +41,19 @@ def _now_iso() -> str:
 
 
 def _safe_name(value: str) -> str:
-    """Return a display-only filename with path components removed."""
+    """Return a display-only filename with path components removed.
+
+    This is deliberately permissive about characters that are perfectly
+    normal at the display layer (this becomes ``ResourceRecord.name``, shown
+    to the user and the model as-is) but unsafe as a literal filename on
+    Windows — "Q3: notes?.md" is an ordinary thing to name an attachment and
+    must not 400. Windows-specific sanitization happens exactly once, only
+    where a name actually becomes an on-disk path component
+    (:func:`windows_safe_filename`, used by
+    ``resource_materialization.managed_input_relative_path``) — and it maps
+    unsafe characters rather than rejecting them, so a name can never block
+    an upload (S2 hardening: sanitize, never reject).
+    """
 
     normalized = value.replace("\\", "/").strip()
     name = normalized.rsplit("/", 1)[-1]
@@ -50,6 +62,60 @@ def _safe_name(value: str) -> str:
     if any(ord(character) < 32 for character in name):
         raise ValueError("resource name contains control characters")
     return name[:255]
+
+
+# Windows forbids these in a filename outright (POSIX allows all but ``/`` and
+# NUL). ``/`` and ``\`` are included even though `_safe_name` above already
+# strips path components from a *well-formed* value — this is the backstop
+# for a record constructed some other way (a legacy index, a future bypass),
+# and it neutralizes rather than raises, matching the rest of this function.
+_WINDOWS_FORBIDDEN_CHARACTERS = frozenset('<>:"/\\|?*')
+# Reserved device stems, matched case-insensitively against the name's
+# portion before its FIRST dot (Windows reserves "con.txt" too, not just "con").
+_WINDOWS_RESERVED_STEMS = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{digit}" for digit in range(1, 10)}
+    | {f"LPT{digit}" for digit in range(1, 10)}
+)
+
+
+def windows_safe_filename(name: str) -> str:
+    """Sanitize ``name`` into something safe to create as a real file on Windows.
+
+    NEVER rejects — every character or shape Windows forbids is replaced or
+    reworked, not refused: a forbidden character (this also neutralizes a
+    drive letter like ``C:``, since ``:`` is one of them) becomes ``_``,
+    trailing dots/spaces (which Windows silently strips, which could
+    otherwise let two differently-named uploads collide on disk) are
+    trimmed, and a reserved device stem (``CON``, ``NUL``, ...) is prefixed
+    with ``_``. This is the ONLY place a resource name is transformed for
+    the filesystem; ``ResourceRecord.name`` (the display name) is untouched.
+    """
+
+    sanitized = "".join(
+        "_" if character in _WINDOWS_FORBIDDEN_CHARACTERS else character for character in name
+    )
+    sanitized = sanitized.rstrip(". ")
+    stem, dot, rest = sanitized.partition(".")
+    if stem.upper() in _WINDOWS_RESERVED_STEMS:
+        sanitized = f"_{stem}{dot}{rest}"
+    sanitized = sanitized[:255]
+    return sanitized or "_"
+
+
+class ResourceMaterialization(BaseModel):
+    """Typed outcome of copying a ready resource into the workspace's file tree.
+
+    Recorded on the resource itself instead of raised as a request-ending
+    error: materialization now runs only when an upload becomes ready
+    (create-complete, final PATCH, or a ready copy), never on GET, so a
+    failure for one resource is visible on that resource without ever
+    breaking GET for the rest of the workspace (the no-silent-fallback rule —
+    the reason must reach the API, not just a log line).
+    """
+
+    state: Literal["pending", "ready", "failed"] = "pending"
+    reason: str = ""
 
 
 class ResourceRecord(BaseModel):
@@ -72,6 +138,7 @@ class ResourceRecord(BaseModel):
     updated_at: str = Field(default_factory=_now_iso)
     completed_at: str = ""
     workspace_path: str = ""
+    materialization: ResourceMaterialization = Field(default_factory=ResourceMaterialization)
 
     @property
     def mime_mismatch(self) -> bool:
@@ -348,6 +415,26 @@ class ResourceStore:
             self._flush_locked()
             return record.model_copy(deep=True)
 
+    def set_materialization(
+        self, resource_id: str, materialization: ResourceMaterialization
+    ) -> ResourceRecord:
+        """Record one materialization attempt's outcome, success or failure.
+
+        Unlike :meth:`set_workspace_path`, this never raises for a resource
+        that failed to materialize — recording that failure IS the point, so
+        the caller (a create/PATCH/copy route, never a GET route) can still
+        return the resource with the failure attached instead of 409ing.
+        """
+
+        with self._lock:
+            record = self._require_locked(resource_id)
+            record = record.model_copy(
+                update={"materialization": materialization, "updated_at": _now_iso()}
+            )
+            self._records[resource_id] = record
+            self._flush_locked()
+            return record.model_copy(deep=True)
+
     def copy_ready(
         self, source_workspace_id: str, resource_id: str, destination_workspace_id: str
     ) -> ResourceRecord:
@@ -366,6 +453,12 @@ class ResourceStore:
                     "workspace_id": destination_workspace_id,
                     "client_upload_id": "",
                     "workspace_path": "",
+                    # The copy has never been materialized into the DESTINATION
+                    # workspace — inheriting the source's "ready" materialization
+                    # here (model_copy carries every field not overridden) would
+                    # make materialize_once() skip it as already-done despite
+                    # the empty workspace_path just above.
+                    "materialization": ResourceMaterialization(),
                     "created_at": now,
                     "updated_at": now,
                     "completed_at": now,
@@ -469,7 +562,9 @@ __all__ = [
     "ResourceConflictError",
     "ResourceDeleteError",
     "ResourceLimitError",
+    "ResourceMaterialization",
     "ResourceRecord",
     "ResourceStore",
     "quarantine_corrupt_index",
+    "windows_safe_filename",
 ]

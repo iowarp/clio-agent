@@ -7,26 +7,38 @@ consume or transform an upload without ever mutating the custody original.
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from clio_agent.gact.resource_custody import ResourceMaterialization, windows_safe_filename
+
 if TYPE_CHECKING:
     from clio_agent.gact.resource_custody import ResourceRecord, ResourceStore
+
+logger = logging.getLogger(__name__)
 
 MANAGED_INPUT_DIRECTORY = Path(".clio") / "inputs"
 
 
 def managed_input_relative_path(record: "ResourceRecord") -> Path:
-    """Return the collision-safe workspace-relative path for ``record``."""
+    """Return the collision-safe workspace-relative path for ``record``.
+
+    The resource's own ``id`` namespaces every upload into its own directory,
+    so the name only has to be a safe FILENAME within that directory, never
+    unique on its own. ``record.name`` is the user's original, unsanitized
+    display name (see ``resource_custody._safe_name``) — :func:`
+    windows_safe_filename` maps it into a real filename here, so a name like
+    "Q3: notes?.md" still gets a distinct working copy instead of ever having
+    failed to upload (S2 hardening: names are sanitized, never rejected).
+    """
 
     if not record.id.startswith("res_") or not record.id.removeprefix("res_").isalnum():
         raise ValueError("resource id is not safe for workspace materialization")
-    if Path(record.name).name != record.name:
-        raise ValueError("resource name is not safe for workspace materialization")
-    return MANAGED_INPUT_DIRECTORY / record.id / record.name
+    return MANAGED_INPUT_DIRECTORY / record.id / windows_safe_filename(record.name)
 
 
 def materialize_resource(
@@ -85,7 +97,7 @@ def remove_materialized_resource(record: "ResourceRecord") -> None:
     inputs_dir = resource_dir.parent
     clio_dir = inputs_dir.parent
     if (
-        target.name != record.name
+        target.name != windows_safe_filename(record.name)
         or resource_dir.name != record.id
         or inputs_dir.name != "inputs"
         or clio_dir.name != ".clio"
@@ -97,9 +109,66 @@ def remove_materialized_resource(record: "ResourceRecord") -> None:
         inputs_dir.rmdir()
 
 
+def materialize_once(app: Any, record: "ResourceRecord") -> "ResourceRecord":
+    """Materialize (or retry materializing) one ready resource's workspace copy.
+
+    The SINGLE owner of "attempt this resource's workspace-input copy and
+    record what happened". Every caller that touches a ready resource outside
+    a plain GET — the HTTP create/PATCH/copy routes, the agent's
+    resource-listing/inspect tools (``resource_tools.py``), and per-turn
+    attachment enrichment (``resource_enrichment.py``) — routes through here
+    rather than calling :func:`materialize_resource_for_app` directly, or a
+    per-resource failure breaks whatever iterated over many resources at once
+    (S2 hardening).
+
+    Skips the actual attempt once a resource is known-ready
+    (``materialization.state == "ready"``) — that state is only ever set
+    after THIS function confirmed the copy, so re-checking it here would just
+    repeat ``materialize_resource``'s own cheap early-return. Otherwise
+    (``pending`` — including every legacy record whose stored index predates
+    this field, which defaults here — or ``failed``) it (re)attempts
+    unconditionally: a legacy record with no ``workspace_path`` gets
+    materialized for the first time, and a previously-failed one gets a
+    fresh attempt (the failure may have been transient, or its custody
+    original may since have become reachable again).
+
+    A plain GET (list or single) must NEVER call this — that is precisely
+    the bug this exists to fix: GET used to re-materialize every resource on
+    every read, so it never sees a ``pending``/``failed`` resource move to
+    ``ready`` on its own. The next ready-touch point (turn enrichment, the
+    agent's own listing, or an explicit copy) is what retries it.
+
+    NEVER raises: a failure is recorded as a typed ``materialization`` state
+    on the resource and returned, so the caller can carry on to the next
+    resource instead of one failure aborting everything.
+    """
+
+    if record.state != "ready":
+        return record
+    if record.materialization.state == "ready":
+        return record
+    try:
+        materialize_resource_for_app(app, record)
+    except (OSError, ValueError) as exc:
+        logger.warning(
+            "resource materialization failed reason=resource_materialization_failed "
+            "workspace_id=%s resource_id=%s error=%s",
+            record.workspace_id,
+            record.id,
+            exc,
+        )
+        return app.state.resource_store.set_materialization(
+            record.id, ResourceMaterialization(state="failed", reason=str(exc))
+        )
+    return app.state.resource_store.set_materialization(
+        record.id, ResourceMaterialization(state="ready")
+    )
+
+
 __all__ = [
     "MANAGED_INPUT_DIRECTORY",
     "managed_input_relative_path",
+    "materialize_once",
     "materialize_resource",
     "materialize_resource_for_app",
     "remove_materialized_resource",

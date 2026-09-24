@@ -16,7 +16,13 @@ from clio_agent.gact.app import build_app
 from clio_agent.gact.messaging import _dspy_files_from_parts, _dspy_images_from_parts
 from clio_agent.gact.parts import Part
 from clio_agent.gact.protocol.v3.message import part_to_v3_block
-from clio_agent.gact.resource_custody import ResourceLimitError, ResourceStore
+from clio_agent.gact.resource_custody import (
+    ResourceLimitError,
+    ResourceMaterialization,
+    ResourceStore,
+    _safe_name,
+    windows_safe_filename,
+)
 from clio_agent.gact.resource_enrichment import (
     PROCESSING_QUERY_TOOL,
     describe_resource_parts,
@@ -1585,3 +1591,412 @@ def test_bounded_resource_read_returns_original_text_without_custody_path(
         assert result["representation"] == "original"
         assert result["truncated"] is False
         assert "path" not in result
+
+
+# ---------------------------------------------------------------------------
+# S2 hardening: materialization moves off GET and is unified behind one
+# never-raising, state-updating, retrying owner (materialize_once); names
+# are SANITIZED, never rejected. gact-tui root cause B's secondary risk was
+# that GET /resources re-materialized (copied bytes for) every resource on
+# every read and raised on the first failure, so one bad resource broke the
+# whole workspace's resource list.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "notes.md",
+        "data (1).csv",
+        "report_final.v2.pdf",
+        "no-dots",
+        "console.log",
+        "Q3: notes?.md",
+        "bad<name.txt",
+        "bad>name.txt",
+        'bad"name.txt',
+        "bad|name.txt",
+        "bad?name.txt",
+        "bad*name.txt",
+        "a:b.txt",
+        "C:",
+        "C:evil.txt",
+        "notes.",
+        "CON",
+        "con.txt",
+        "NUL",
+        "com1.log",
+        "LPT9",
+    ],
+)
+def test_safe_name_preserves_names_only_windows_forbids(name: str) -> None:
+    """The display name is never rejected, or altered, for being Windows-unsafe.
+
+    _safe_name only rejects a name that cannot identify any single file at
+    all (empty, ".", "..", or containing control characters — see the
+    still-rejected cases below) or that still carries a path component after
+    the last "/" is taken. Everything else, including every character or
+    shape Windows forbids in a real filename, passes through UNCHANGED as
+    the display name — "Q3: notes?.md" is an ordinary thing to name an
+    attachment and must not 400. windows_safe_filename (below) is what
+    sanitizes a name for the filesystem, not this function.
+    """
+
+    assert _safe_name(name) == name
+
+
+@pytest.mark.parametrize("invalid_name", ["", ".", "..", "\x07bell.txt", "notes\x00.md"])
+def test_safe_name_still_rejects_names_that_identify_no_file(invalid_name: str) -> None:
+    """The basic protections _safe_name always had are untouched by S2.
+
+    A name that cannot identify one real file at all, or that carries an
+    unprintable control character, is still refused outright — sanitizing
+    those into something plausible would be inventing a name the user never
+    gave, which is a different failure mode than "Windows dislikes this
+    character".
+    """
+
+    with pytest.raises(ValueError):
+        _safe_name(invalid_name)
+
+
+def test_safe_name_normalizes_incidental_surrounding_whitespace() -> None:
+    """A bare leading/trailing space is trimmed, not preserved.
+
+    This is a pre-existing, format-only normalization (unrelated to the
+    Windows-character sanitizing question): a name's outer whitespace was
+    always trimmed before path-splitting, so "notes. " becomes "notes."
+    (only the trailing SPACE is whitespace; the dot is untouched here).
+    """
+
+    assert _safe_name("notes ") == "notes"
+    assert _safe_name(" notes.md") == "notes.md"
+    assert _safe_name("notes. ") == "notes."
+
+
+@pytest.mark.parametrize(
+    ("unsafe_name", "expected"),
+    [
+        ("bad<name.txt", "bad_name.txt"),
+        ("bad>name.txt", "bad_name.txt"),
+        ('bad"name.txt', "bad_name.txt"),
+        ("bad|name.txt", "bad_name.txt"),
+        ("bad?name.txt", "bad_name.txt"),
+        ("bad*name.txt", "bad_name.txt"),
+        ("a:b.txt", "a_b.txt"),
+        ("C:", "C_"),
+        ("C:evil.txt", "C_evil.txt"),
+        ("notes.", "notes"),
+        ("notes. ", "notes"),
+        ("notes ", "notes"),
+        ("CON", "_CON"),
+        ("con.txt", "_con.txt"),
+        ("NUL", "_NUL"),
+        ("com1.log", "_com1.log"),
+        ("LPT9", "_LPT9"),
+        ("Q3: notes?.md", "Q3_ notes_.md"),
+        ("nested/evil.txt", "nested_evil.txt"),
+        ("nested\\evil.txt", "nested_evil.txt"),
+        ("notes.md", "notes.md"),
+        ("...", "_"),
+    ],
+)
+def test_windows_safe_filename_sanitizes_rather_than_rejects(
+    unsafe_name: str, expected: str
+) -> None:
+    assert windows_safe_filename(unsafe_name) == expected
+
+
+def test_create_resource_accepts_a_windows_unsafe_display_name(tmp_path: Path) -> None:
+    """No 400 for a name Windows would refuse as a literal filename.
+
+    The display name is preserved verbatim; only the on-disk working copy
+    gets a sanitized filename.
+    """
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=FakeClioAgent(answer="unused"))
+    with TestClient(app) as client:
+        workspace_id = _workspace(client, tmp_path / "workspace")
+
+        resource = _upload(
+            client,
+            workspace_id,
+            name="Q3: notes?.md",
+            content=b"hello",
+            media_type="text/markdown",
+        )
+
+        assert resource["name"] == "Q3: notes?.md"
+        assert resource["materialization"]["state"] == "ready"
+        workspace_copy = Path(str(resource["workspace_path"]))
+        assert workspace_copy.name == "Q3_ notes_.md"
+        assert workspace_copy.read_bytes() == b"hello"
+
+
+def test_a_resource_whose_materialization_fails_does_not_break_get_resources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One resource's materialization failure must never 409 the whole list.
+
+    Regression for gact-tui S2 (root cause B, secondary risk): GET
+    /workspaces/{id}/resources re-materialized every resource on every read
+    and raised 409 on the first failure, so one failing resource made the
+    entire list unreadable. The failure is now recorded as a typed
+    ``materialization`` state on that one resource, and every other resource
+    still lists and reads fine. Names are sanitized rather than rejected now
+    (windows_safe_filename), so the fault is injected directly rather than
+    relying on a name-shaped failure.
+    """
+
+    import clio_agent.gact.resource_materialization as materialization_module
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=FakeClioAgent(answer="unused"))
+    with TestClient(app) as client:
+        workspace_id = _workspace(client, tmp_path / "workspace")
+
+        good = _upload(
+            client, workspace_id, name="notes.md", content=b"hello", media_type="text/markdown"
+        )
+        assert good["materialization"]["state"] == "ready"
+        assert good["workspace_path"]
+
+        created = client.post(
+            f"/v1/workspaces/{workspace_id}/resources",
+            json={"name": "cursed.md", "size": 4, "media_type": "text/markdown"},
+        ).json()
+        original_materialize = materialization_module.materialize_resource_for_app
+
+        def _fail_for_cursed(app: Any, record: Any) -> Any:
+            if record.id == created["id"]:
+                raise OSError("simulated disk failure")
+            return original_materialize(app, record)
+
+        monkeypatch.setattr(
+            materialization_module, "materialize_resource_for_app", _fail_for_cursed
+        )
+        appended = client.patch(
+            created["upload_url"], headers={"Upload-Offset": "0"}, content=b"evil"
+        )
+        assert appended.status_code == 204
+        monkeypatch.undo()
+
+        listed = client.get(f"/v1/workspaces/{workspace_id}/resources")
+        assert listed.status_code == 200, listed.text
+        rows = {row["id"]: row for row in listed.json()["resources"]}
+        assert rows[good["id"]]["materialization"]["state"] == "ready"
+        assert rows[created["id"]]["materialization"]["state"] == "failed"
+        assert "simulated disk failure" in rows[created["id"]]["materialization"]["reason"]
+        # The bytes are still in custody and the resource is still usable --
+        # only its workspace-tree mirror copy failed.
+        assert rows[created["id"]]["state"] == "ready"
+
+        single = client.get(f"/v1/workspaces/{workspace_id}/resources/{created['id']}")
+        assert single.status_code == 200, single.text
+        assert single.json()["materialization"]["state"] == "failed"
+
+
+def test_get_resources_never_materializes_or_copies_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GET (list and single) must never re-run materialization or copy bytes.
+
+    Materialization is now a create-complete / final-PATCH / ready-copy /
+    agent-ready-touch-point-only operation. A GET that still triggered it
+    would duplicate the filesystem copy on every read and reintroduce the
+    whole-list 409 this slice removes.
+    """
+
+    import clio_agent.gact.resource_materialization as materialization_module
+
+    calls: list[str] = []
+    original = materialization_module.materialize_resource_for_app
+
+    def _spy(app: Any, record: Any) -> Any:
+        calls.append(record.id)
+        return original(app, record)
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=FakeClioAgent(answer="unused"))
+    with TestClient(app) as client:
+        workspace_id = _workspace(client, tmp_path / "workspace")
+        resource = _upload(
+            client, workspace_id, name="notes.md", content=b"hello", media_type="text/markdown"
+        )
+        assert resource["materialization"]["state"] == "ready"
+
+        monkeypatch.setattr(materialization_module, "materialize_resource_for_app", _spy)
+        calls.clear()
+
+        for _ in range(3):
+            listed = client.get(f"/v1/workspaces/{workspace_id}/resources")
+            assert listed.status_code == 200, listed.text
+            single = client.get(f"/v1/workspaces/{workspace_id}/resources/{resource['id']}")
+            assert single.status_code == 200, single.text
+
+        assert calls == []
+
+
+def test_failed_materialization_is_retried_at_the_next_agent_touch_point(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed materialization gets a fresh attempt at the next ready-touch point.
+
+    GET list/get-one never retry (moving materialization off them is the
+    whole point of this slice), but the agent's own resource-listing tool is
+    a ready-touch point and DOES retry, via the same never-raising
+    materialize_once.
+    """
+
+    import clio_agent.gact.resource_materialization as materialization_module
+
+    def _always_fail(app: Any, record: Any) -> Any:
+        raise OSError("disk unavailable")
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=FakeClioAgent(answer="unused"))
+    with TestClient(app) as client:
+        workspace_id = _workspace(client, tmp_path / "workspace")
+        created = client.post(
+            f"/v1/workspaces/{workspace_id}/resources",
+            json={"name": "flaky.md", "size": 4, "media_type": "text/markdown"},
+        ).json()
+
+        original_materialize = materialization_module.materialize_resource_for_app
+        monkeypatch.setattr(materialization_module, "materialize_resource_for_app", _always_fail)
+        appended = client.patch(
+            created["upload_url"], headers={"Upload-Offset": "0"}, content=b"text"
+        )
+        assert appended.status_code == 204
+
+        via_get = client.get(f"/v1/workspaces/{workspace_id}/resources/{created['id']}").json()
+        assert via_get["materialization"]["state"] == "failed"
+
+        # GET alone must never retry, even while the fault would otherwise clear.
+        monkeypatch.setattr(
+            materialization_module, "materialize_resource_for_app", original_materialize
+        )
+        via_get_again = client.get(
+            f"/v1/workspaces/{workspace_id}/resources/{created['id']}"
+        ).json()
+        assert via_get_again["materialization"]["state"] == "failed"
+
+        # The agent's own listing IS a ready-touch point.
+        listed = list_workspace_resources(app, workspace_id)
+        healed = next(row for row in listed["resources"] if row["id"] == created["id"])
+        assert healed["materialization"]["state"] == "ready"
+        assert healed["workspace_path"]
+
+
+def test_legacy_pending_resource_is_materialized_at_the_next_agent_touch_point(
+    tmp_path: Path,
+) -> None:
+    """A resource whose stored index predates the `materialization` field
+    defaults to "pending" forever unless something retries it. GET never
+    does (S2); the agent's own resource listing is a ready-touch point that
+    does, and heals it.
+    """
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=FakeClioAgent(answer="unused"))
+    with TestClient(app) as client:
+        workspace_id = _workspace(client, tmp_path / "workspace")
+        resource = _upload(
+            client, workspace_id, name="legacy.md", content=b"hello", media_type="text/markdown"
+        )
+        assert resource["materialization"]["state"] == "ready"
+
+        # Simulate a legacy record: its workspace-tree copy is gone and its
+        # materialization was never tracked (defaults to "pending", exactly
+        # like a record loaded from an index written before this field
+        # existed).
+        Path(resource["workspace_path"]).unlink()
+        app.state.resource_store.set_materialization(
+            resource["id"], ResourceMaterialization(state="pending")
+        )
+
+        via_get = client.get(f"/v1/workspaces/{workspace_id}/resources/{resource['id']}").json()
+        assert via_get["materialization"]["state"] == "pending"
+        assert not Path(resource["workspace_path"]).exists()
+
+        listed = list_workspace_resources(app, workspace_id)
+        healed = next(row for row in listed["resources"] if row["id"] == resource["id"])
+        assert healed["materialization"]["state"] == "ready"
+        assert Path(healed["workspace_path"]).read_bytes() == b"hello"
+
+
+def test_inspect_workspace_resource_retries_materialization(tmp_path: Path) -> None:
+    """inspect_workspace_resource is also a ready-touch point."""
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=FakeClioAgent(answer="unused"))
+    with TestClient(app) as client:
+        workspace_id = _workspace(client, tmp_path / "workspace")
+        resource = _upload(
+            client, workspace_id, name="legacy.md", content=b"hello", media_type="text/markdown"
+        )
+        Path(resource["workspace_path"]).unlink()
+        app.state.resource_store.set_materialization(
+            resource["id"], ResourceMaterialization(state="failed", reason="disk unavailable")
+        )
+
+        inspected = inspect_workspace_resource(app, workspace_id, str(resource["id"]))
+
+        assert inspected["resource"]["materialization"]["state"] == "ready"
+        assert Path(inspected["resource"]["workspace_path"]).read_bytes() == b"hello"
+
+
+def test_turn_enrichment_records_and_retries_materialization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Per-turn attachment enrichment is a ready-touch point too.
+
+    describe_resource_parts used to call the underlying copy directly and
+    only ever reported a failure within that one turn's prompt -- it never
+    updated the resource's own state, so nothing else could learn about (or
+    retry) the failure. Routing through materialize_once means the failure
+    is recorded on the resource, and a later touch point (including a
+    subsequent turn) can heal it.
+    """
+
+    import clio_agent.gact.resource_materialization as materialization_module
+
+    app = build_app(sessions_path=tmp_path / "sessions.json", agent=FakeClioAgent(answer="unused"))
+    with TestClient(app) as client:
+        workspace_id = _workspace(client, tmp_path / "workspace")
+        created = client.post(
+            f"/v1/workspaces/{workspace_id}/resources",
+            json={"name": "flaky.md", "size": 4, "media_type": "text/markdown"},
+        ).json()
+
+        original_materialize = materialization_module.materialize_resource_for_app
+
+        def _always_fail(app: Any, record: Any) -> Any:
+            raise OSError("disk unavailable")
+
+        monkeypatch.setattr(materialization_module, "materialize_resource_for_app", _always_fail)
+        appended = client.patch(
+            created["upload_url"], headers={"Upload-Offset": "0"}, content=b"text"
+        )
+        assert appended.status_code == 204
+
+        sid = client.post(
+            "/v1/sessions", json={"title": "flaky", "workspace_id": workspace_id}
+        ).json()["id"]
+        part = Part(
+            type="resource_ref",
+            resource_id=created["id"],
+            resource_revision=str(created["revision"]),
+            name=created["name"],
+        )
+
+        blocks = describe_resource_parts(app, sid, [part])
+        assert "could not be prepared" in blocks[0]
+        assert "disk unavailable" in blocks[0]
+        stored = app.state.resource_store.get(workspace_id, created["id"])
+        assert stored is not None
+        assert stored.materialization.state == "failed"
+
+        monkeypatch.setattr(
+            materialization_module, "materialize_resource_for_app", original_materialize
+        )
+        blocks_again = describe_resource_parts(app, sid, [part])
+        assert "has an agent-usable working copy" in blocks_again[0]
+        stored_again = app.state.resource_store.get(workspace_id, created["id"])
+        assert stored_again is not None
+        assert stored_again.materialization.state == "ready"
