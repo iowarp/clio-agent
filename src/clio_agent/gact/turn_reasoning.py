@@ -24,9 +24,11 @@ turn ran on a PER-MESSAGE level, the child inherits that level if -- and only
 if -- it resolves to the same provider and model as the parent turn (a level is
 a property of one model's effort scale; ``max`` on Fable means nothing on
 gpt-oss). Otherwise the child runs on its own/global level and its provenance
-records ``inherited: false, reason: "different_model"``. The parent's turn
-level is kept per session by :func:`record_turn_reasoning` (in memory, like the
-turn itself) and read by the child's turn through ``session.parent_session_id``.
+records ``inherited: false, reason: "different_model"``. The parent's level is
+kept per parent TURN by :func:`record_turn_reasoning` (in memory, bounded, pruned
+with its session) and the child finds it through the ``parent_turn_id`` its
+AgentTask captured at spawn -- so a later turn of the parent cannot change what
+an already-spawned background child inherits.
 """
 
 from __future__ import annotations
@@ -55,7 +57,10 @@ def message_reasoning_effort(user_msg: "Message") -> str:
 #: ``AgentDef.metadata`` key recording whether a child inherited its parent's level.
 TURN_REASONING_INHERITANCE_KEY = "turn_reasoning_inheritance"
 
-_TURN_REASONING_BY_SESSION = "turn_reasoning_by_session"
+_TURN_REASONING_BY_TURN = "turn_reasoning_by_turn"
+
+#: Parent-turn records kept in memory (oldest dropped first).
+TURN_REASONING_CAPACITY = 512
 
 
 def _turn_model(app: "FastAPI | None", agent_def: "AgentDef") -> tuple[str, str]:
@@ -79,30 +84,51 @@ def _with_level(agent_def: "AgentDef", level: str, **meta: Any) -> "AgentDef":
     return agent_def.model_copy(update={"parameters": parameters, "metadata": metadata})
 
 
-def record_turn_reasoning(app: "FastAPI", session_id: str, runtime: dict[str, Any]) -> None:
-    """Remember the level a session's current turn runs on, for children it spawns."""
-
-    registry = getattr(app.state, _TURN_REASONING_BY_SESSION, None)
+def _registry(app: "FastAPI") -> dict[str, dict[str, str]]:
+    registry = getattr(app.state, _TURN_REASONING_BY_TURN, None)
     if not isinstance(registry, dict):
         registry = {}
-        setattr(app.state, _TURN_REASONING_BY_SESSION, registry)
+        setattr(app.state, _TURN_REASONING_BY_TURN, registry)
+    return registry
+
+
+def record_turn_reasoning(
+    app: "FastAPI", session_id: str, turn_id: str, runtime: dict[str, Any]
+) -> None:
+    """Remember the level a turn runs on, for the children it spawns."""
+
+    registry = _registry(app)
     raw_model, raw_reasoning = runtime.get("model"), runtime.get("reasoning")
     model: dict[str, Any] = raw_model if isinstance(raw_model, dict) else {}
     reasoning: dict[str, Any] = raw_reasoning if isinstance(raw_reasoning, dict) else {}
-    registry[session_id] = {
+    registry[turn_id] = {
+        "session_id": session_id,
         "provider_id": str(model.get("provider_id") or ""),
         "model_id": str(model.get("model_id") or ""),
         "level": str(reasoning.get("requested_level") or ""),
         "source": str(reasoning.get("source") or ""),
     }
+    while len(registry) > TURN_REASONING_CAPACITY:
+        registry.pop(next(iter(registry)))
 
 
-def _parent_turn_reasoning(app: "FastAPI | None", session: Any) -> dict[str, str] | None:
-    parent_id = str(getattr(session, "parent_session_id", "") or "")
-    if app is None or not parent_id:
+def forget_session_reasoning(app: "FastAPI", session_id: str) -> None:
+    """Drop the turn records of a deleted session."""
+
+    registry = _registry(app)
+    for turn_id in [t for t, row in registry.items() if row.get("session_id") == session_id]:
+        registry.pop(turn_id, None)
+
+
+def _parent_turn_reasoning(app: "FastAPI | None", user_msg: "Message") -> dict[str, str] | None:
+    metadata = user_msg.metadata if isinstance(user_msg.metadata, dict) else {}
+    task_id = str(metadata.get("agent_task_id") or "")
+    tasks = getattr(getattr(app, "state", None), "agent_task_registry", None)
+    task = tasks.get(task_id) if task_id and tasks is not None else None
+    parent_turn_id = str(getattr(task, "parent_turn_id", "") or "")
+    if app is None or not parent_turn_id:
         return None
-    registry = getattr(app.state, _TURN_REASONING_BY_SESSION, None)
-    record = registry.get(parent_id) if isinstance(registry, dict) else None
+    record = _registry(app).get(parent_turn_id)
     if not isinstance(record, dict) or not record.get("level"):
         return None
     # Only a level the parent's MESSAGE chose is inherited; an agent/global level
@@ -130,7 +156,8 @@ def apply_turn_reasoning(
     level = message_reasoning_effort(user_msg)
     if level:
         return _with_level(agent_def, level, **{TURN_REASONING_SOURCE_KEY: "per_message"})
-    parent = _parent_turn_reasoning(app, session)
+    del session  # the parent turn is found through the child's AgentTask
+    parent = _parent_turn_reasoning(app, user_msg)
     if parent is None:
         return agent_def
     if _turn_model(app, agent_def) == (parent["provider_id"], parent["model_id"]):
@@ -219,6 +246,7 @@ __all__ = [
     "TURN_REASONING_INHERITANCE_KEY",
     "TURN_REASONING_SOURCE_KEY",
     "apply_turn_reasoning",
+    "forget_session_reasoning",
     "record_turn_reasoning",
     "message_reasoning_effort",
     "turn_reasoning_provenance",

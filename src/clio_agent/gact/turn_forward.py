@@ -334,7 +334,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
             dynamic_agent,
             execution_mode=execution_mode,
         )
-        record_turn_reasoning(state.app, state.sid, state.agent_runtime)
+        record_turn_reasoning(state.app, state.sid, state.turn_id, state.agent_runtime)
         await emit_semantic_event_async(
             state.app,
             state.sid,

@@ -74,6 +74,9 @@ class LMProviderInfo(BaseModel):
     is_reasoning: bool = False
     native_tool_calling: bool = False
     thinking_level: str | None = None
+    #: ``"user"`` when a person set ``thinking_level``; ``None`` for a shipped or
+    #: provider default -- clients show those as defaults, not as a choice.
+    thinking_level_source: str | None = None
     thinking_effective: str = ""
     thinking_budget: int = 0
     transport: Literal["sdk"] | None = None

@@ -209,6 +209,7 @@ def test_catalog_row_carries_the_model_levels() -> None:
         "parameter": "openai_gptoss",
         "levels": ["low", "medium", "high"],
         "default": "medium",
+        "default_source": "provider",
         "source": "served_model_reasoning_parser",
     }
 
@@ -318,3 +319,11 @@ def test_claude_code_alias_resolves_to_its_overlay_row() -> None:
     assert model_effort_levels("claude_code", "sonnet") == tuple(_CLI_EFFORT)
     assert model_effort_levels("claude_code", "claude-sonnet-5") == tuple(_CLI_EFFORT)
     assert model_effort_levels("claude_code", "haiku") is None
+
+
+def test_default_source_names_a_clio_shipped_default() -> None:
+    effort = {"supported_effort_levels": ["low", "medium", "high", "xhigh", "max"]}
+    sonnet = model_reasoning("claude_code", ModelProfile(id="claude-sonnet-5", raw=effort))
+    assert (sonnet["default"], sonnet["default_source"]) == ("low", "clio_shipped")
+    opus = model_reasoning("claude_code", ModelProfile(id="claude-opus-5", raw=effort))
+    assert (opus["default"], opus["default_source"]) == ("high", "provider")

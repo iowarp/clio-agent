@@ -154,19 +154,37 @@ def test_codex_message_minimal_effort_is_sent() -> None:
     assert _lm_kwargs(base, "minimal")["codex_reasoning_effort"] == "minimal"
 
 
-def _parent_app(provider_id: str, model_id: str, level: str = "max", source: str = "per_message"):
+def _record(
+    app: Any, turn_id: str, provider_id: str, model_id: str, level: str, source: str
+) -> None:
     from clio_agent.gact.turn_reasoning import record_turn_reasoning
 
-    app = SimpleNamespace(state=SimpleNamespace(lm_config={}, agent=None))
     record_turn_reasoning(
-        app,  # type: ignore[arg-type]
+        app,
         "sess_parent",
+        turn_id,
         {
             "model": {"provider_id": provider_id, "model_id": model_id},
             "reasoning": {"requested_level": level, "source": source},
         },
     )
+
+
+def _parent_app(provider_id: str, model_id: str, level: str = "max", source: str = "per_message"):
+    tasks = {"task_1": SimpleNamespace(parent_turn_id="turn_parent_1")}
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            lm_config={}, agent=None, agent_task_registry=SimpleNamespace(get=tasks.get)
+        )
+    )
+    _record(app, "turn_parent_1", provider_id, model_id, level, source)
     return app
+
+
+def _child_message() -> Message:
+    message = _message(None)
+    message.metadata["agent_task_id"] = "task_1"
+    return message
 
 
 def test_child_on_the_same_model_inherits_the_parent_message_level() -> None:
@@ -174,13 +192,26 @@ def test_child_on_the_same_model_inherits_the_parent_message_level() -> None:
     child = AgentDef(
         id="child", title="Child", default_provider="claude_code", default_model="claude-fable-5-1"
     )
-    session = SimpleNamespace(parent_session_id="sess_parent")
 
-    resolved = apply_turn_reasoning(_message(None), child, app=app, session=session)  # type: ignore[arg-type]
+    resolved = apply_turn_reasoning(_child_message(), child, app=app)  # type: ignore[arg-type]
 
     assert resolved.parameters["thinking_level"] == "max"
     assert resolved.metadata["turn_reasoning_source"] == "parent_message"
     assert resolved.metadata["turn_reasoning_inheritance"] == {"inherited": True}
+
+
+def test_a_later_parent_turn_cannot_change_a_spawned_childs_level() -> None:
+    """Inheritance is keyed by the parent TURN captured at spawn, not the session."""
+    app = _parent_app("claude_code", "claude-fable-5-1", level="max")
+    # The parent moves on: its next turn runs on a different level.
+    _record(app, "turn_parent_2", "claude_code", "claude-fable-5-1", "low", "per_message")
+    child = AgentDef(
+        id="child", title="Child", default_provider="claude_code", default_model="claude-fable-5-1"
+    )
+
+    resolved = apply_turn_reasoning(_child_message(), child, app=app)  # type: ignore[arg-type]
+
+    assert resolved.parameters["thinking_level"] == "max"
 
 
 def test_child_on_a_different_model_records_why_it_did_not_inherit() -> None:
@@ -188,9 +219,8 @@ def test_child_on_a_different_model_records_why_it_did_not_inherit() -> None:
     child = AgentDef(
         id="child", title="Child", default_provider="argonne_metis", default_model="gpt-oss-120b"
     )
-    session = SimpleNamespace(parent_session_id="sess_parent")
 
-    resolved = apply_turn_reasoning(_message(None), child, app=app, session=session)  # type: ignore[arg-type]
+    resolved = apply_turn_reasoning(_child_message(), child, app=app)  # type: ignore[arg-type]
 
     assert "thinking_level" not in resolved.parameters
     assert resolved.metadata["turn_reasoning_inheritance"] == {
@@ -203,25 +233,72 @@ def test_child_on_a_different_model_records_why_it_did_not_inherit() -> None:
 def test_child_does_not_inherit_a_global_level() -> None:
     app = _parent_app("codex", "gpt-5.5", level="high", source="global")
     child = AgentDef(id="child", title="Child", default_provider="codex", default_model="gpt-5.5")
-    session = SimpleNamespace(parent_session_id="sess_parent")
 
-    resolved = apply_turn_reasoning(_message(None), child, app=app, session=session)  # type: ignore[arg-type]
+    resolved = apply_turn_reasoning(_child_message(), child, app=app)  # type: ignore[arg-type]
 
     assert resolved is child
 
 
-def test_put_lm_keeps_the_configured_level_unless_explicitly_changed() -> None:
-    """Applying a model change must not silently clear the chosen global level."""
+def test_deleting_a_session_prunes_its_turn_records() -> None:
+    from clio_agent.gact.session_descendants import purge_session_tasks
+
+    app = _parent_app("codex", "gpt-5.5")
+    app.state.agent_task_registry = None
+    purge_session_tasks(app, "sess_parent")  # type: ignore[arg-type]
+    assert app.state.turn_reasoning_by_turn == {}
+
+
+def _lm_app(**lm_config: Any) -> Any:
+    return SimpleNamespace(state=SimpleNamespace(lm_config=lm_config, agent=None))
+
+
+def test_put_lm_keeps_only_a_user_level_and_only_on_the_same_model() -> None:
+    """A shipped default is not a choice, and no level follows the person to another model."""
+    from clio_agent.gact.lm_provider_types import LMProviderRequest
+    from clio_agent.gact.providers.config import requested_thinking_level, thinking_level_record
+
+    def put(**fields: Any) -> LMProviderRequest:
+        return LMProviderRequest(provider="claude_code", api_base="", **fields)
+
+    # sonnet's shipped "low" is recorded with no source...
+    sonnet_default = _lm_app(provider="claude_code", model="sonnet", thinking_level="low")
+    # ...so moving to opus with the level omitted does NOT carry it over.
+    assert requested_thinking_level(sonnet_default, put(model="opus")) is None
+    assert requested_thinking_level(sonnet_default, put(model="sonnet")) is None
+
+    chosen = _lm_app(
+        provider="claude_code",
+        model="opus",
+        thinking_level="max",
+        user_thinking_level="max",
+        thinking_level_source="user",
+    )
+    assert requested_thinking_level(chosen, put(model="opus")) == "max"  # same model: kept
+    assert requested_thinking_level(chosen, put(model="sonnet")) is None  # other model: unset
+    other = LMProviderRequest(provider="lm_studio", api_base="", model="opus")
+    assert requested_thinking_level(chosen, other) is None  # other provider: unset
+    assert requested_thinking_level(chosen, put(model="opus", thinking_level=None)) is None
+    assert requested_thinking_level(chosen, put(model="opus", thinking_level="low")) == "low"
+    assert thinking_level_record(chosen, put(model="opus", thinking_level="low")) == {
+        "user_thinking_level": "low",
+        "thinking_level_source": "user",
+    }
+    assert thinking_level_record(sonnet_default, put(model="opus")) == {
+        "user_thinking_level": None,
+        "thinking_level_source": None,
+    }
+
+
+def test_sonnet_to_opus_apply_runs_opus_on_its_own_default() -> None:
+    """End to end on the real config: sonnet ships low; opus must not inherit it."""
     from clio_agent.gact.lm_provider_types import LMProviderRequest
     from clio_agent.gact.providers.config import requested_thinking_level
 
-    app = SimpleNamespace(state=SimpleNamespace(lm_config={"thinking_level": "high"}, agent=None))
-    omitted = LMProviderRequest(provider="codex", api_base="", model="gpt-5.5")
-    cleared = LMProviderRequest(provider="codex", api_base="", model="gpt-5.5", thinking_level=None)
-    changed = LMProviderRequest(
-        provider="codex", api_base="", model="gpt-5.5", thinking_level="max"
+    sonnet = LMProviderConfig(provider="claude_code", model="sonnet")
+    assert sonnet.thinking_level == "low"  # shipped default
+    app = _lm_app(provider="claude_code", model="sonnet", thinking_level=sonnet.thinking_level)
+    req = LMProviderRequest(provider="claude_code", api_base="", model="opus")
+    opus = LMProviderConfig(
+        provider="claude_code", model="opus", thinking_level=requested_thinking_level(app, req)
     )
-
-    assert requested_thinking_level(app, omitted) == "high"  # type: ignore[arg-type]
-    assert requested_thinking_level(app, cleared) is None  # type: ignore[arg-type]
-    assert requested_thinking_level(app, changed) == "max"  # type: ignore[arg-type]
+    assert opus.thinking_level is None

@@ -233,11 +233,17 @@ def model_reasoning(provider_kind: str, profile: ModelProfile) -> dict[str, Any]
         if level in levels
         and resolve_thinking(provider_kind, level, 0, effort_levels=effort).supported
     ]
+    default = default if default in mapped else ""
+    shipped = shipped_default_level(provider_kind, profile.id, None, 0) or ""
     block: dict[str, Any] = {
         "supported": bool(mapped) or profile.is_reasoning,
         "parameter": profile.reasoning_param or "",
         "levels": mapped,
-        "default": default if default in mapped else "",
+        "default": default,
+        # Who picks the default: CLIO's shipped per-model default (sonnet/haiku
+        # via Claude Code ship "low") or the provider/model itself. Clients must
+        # not call a shipped default "the model default".
+        "default_source": ("clio_shipped" if default == shipped else "provider") if default else "",
         "source": source,
     }
     if reason:

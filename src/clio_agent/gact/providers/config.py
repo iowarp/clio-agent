@@ -157,18 +157,46 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
     return _with_native_capability_flags(app, cfg)
 
 
-def requested_thinking_level(app: "FastAPI", req: Any) -> str | None:
-    """The global thinking level a ``PUT /v1/providers/lm`` binds.
+#: The only provenance a configured global thinking level carries over with:
+#: a person set it with an explicit ``thinking_level`` on ``PUT /v1/providers/lm``.
+THINKING_LEVEL_SOURCE_USER = "user"
 
-    An explicit value (``null`` included: back to the provider/model default) is
-    the person's choice; an OMITTED field keeps the level already configured, so
-    applying a model change never silently clears a chosen level.
+
+def requested_thinking_level(app: "FastAPI", req: Any) -> str | None:
+    """The person's global thinking level for a ``PUT /v1/providers/lm``.
+
+    * An explicit value is the person's choice (``null`` clears it back to the
+      provider/model default).
+    * An OMITTED field carries over only a level a person set before
+      (``thinking_level_source == "user"``) and only when the provider and model
+      are unchanged. A level is a property of one model's effort scale, and a
+      shipped per-model default (``shipped_default_level``: sonnet ships ``low``)
+      is not a choice -- carrying either to another model would pin it there.
+    * A stored level with no source (older builds, boot config) is not a choice.
+
+    ``None`` lets ``LMProviderConfig`` apply the new model's shipped default.
     """
 
     if "thinking_level" in getattr(req, "model_fields_set", set()):
         return req.thinking_level
-    level = _effective_lm_config(app).get("thinking_level")
-    return str(level) if level else None
+    previous = getattr(app.state, "lm_config", None) or {}
+    if previous.get("thinking_level_source") != THINKING_LEVEL_SOURCE_USER:
+        return None
+    same_model = (previous.get("provider_id") or previous.get("provider")) == (
+        req.provider_id or req.provider
+    ) and previous.get("model") == req.model
+    level = previous.get("user_thinking_level")
+    return str(level) if same_model and level else None
+
+
+def thinking_level_record(app: "FastAPI", req: Any) -> dict[str, Any]:
+    """The provenance fields the bound ``lm_config`` stores for this PUT."""
+
+    level = requested_thinking_level(app, req)
+    return {
+        "user_thinking_level": level,
+        "thinking_level_source": THINKING_LEVEL_SOURCE_USER if level else None,
+    }
 
 
 def _default_profile_spec(app: "FastAPI") -> Any:
