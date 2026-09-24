@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from clio_agent.providers.api_base import native_root
 from clio_agent.providers.handshake.base import (
     ConnectivityResult,
     HandshakeContext,
@@ -38,25 +39,13 @@ class LMStudioHandshake(ProviderHandshake):
     #: ``tool_use``), so this backend really can evidence input modalities.
     reports_input_modalities = True
 
-    @staticmethod
-    def _root(api_base: str) -> str:
-        """Return the host root for ``api_base`` by stripping a trailing ``/v1``.
-
-        ``http://host:1234/v1`` -> ``http://host:1234``. Any trailing slashes are
-        normalised away first so ``.../v1/`` is handled too.
-        """
-        base = api_base.rstrip("/")
-        if base.endswith("/v1"):
-            base = base[: -len("/v1")]
-        return base
-
     async def check_connectivity(self, client: Any, ctx: HandshakeContext) -> ConnectivityResult:
         """Probe LM Studio; native ``/api/v0/models`` first, OpenAI ``/models`` fallback.
 
         Either endpoint answering marks the backend reachable. LM Studio requires
         no credential, so auth is always :data:`AuthState.NOT_REQUIRED`.
         """
-        root = self._root(ctx.api_base)
+        root = native_root(ctx.api_base)
         base = ctx.api_base.rstrip("/")
         urls = (f"{root}/api/v0/models", f"{base}/models")
         last_error: str | None = None
@@ -80,7 +69,7 @@ class LMStudioHandshake(ProviderHandshake):
 
     async def discover_models(self, client: Any, ctx: HandshakeContext) -> list[dict[str, Any]]:
         """Return the raw rows from ``{root}/api/v0/models`` (the ``data`` array)."""
-        root = self._root(ctx.api_base)
+        root = native_root(ctx.api_base)
         response = await client.get(f"{root}/api/v0/models")
         response.raise_for_status()
         payload = response.json()
