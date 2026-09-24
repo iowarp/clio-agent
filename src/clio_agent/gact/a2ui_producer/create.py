@@ -25,9 +25,8 @@ def build_create_a2ui_surface_tool() -> Any:
 
         ``surface_id`` selects the surface: reuse an id from a prior result's
         ``session_surface_ids`` to revise it in place; any other id creates a
-        new one (the result's ``created`` reports which happened). For a new
-        surface, ``catalog_id`` is a preference that must also be client-
-        advertised; leave it empty to auto-select instead.
+        new one (the result's ``created`` reports which happened). A new
+        surface uses ``catalog_id``, or this agent's default catalog if empty.
 
         Component shapes and guidance: load_skill("a2ui-catalog-<slug>");
         one component: load_skill(..., file="catalog.json#/components/<Name>").
@@ -140,9 +139,10 @@ def build_create_a2ui_surface_tool() -> Any:
             "catalog_id": {
                 "type": "string",
                 "description": (
-                    "Preferred catalog id for a NEW surface (must be both client-"
-                    "advertised and producible, or the call is refused); empty "
-                    "auto-selects the client's preferred producible catalog."
+                    "Catalog id for a NEW surface (must be both client-"
+                    "advertised and one this agent declares, or the call is "
+                    "refused); empty selects this agent's first declared catalog "
+                    "the client supports."
                 ),
             },
         },

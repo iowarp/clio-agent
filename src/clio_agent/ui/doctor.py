@@ -25,9 +25,11 @@ def run_doctor(json_output: bool = False) -> int:
     hosts at ``/v1/health`` directly, via
     :func:`clio_agent.runtime.status.collect_runtime_status`.
     """
+    from clio_agent.gact.a2ui_catalogs.doctor import probe_a2ui_declarations  # noqa: PLC0415
     from clio_agent.runtime.status import collect_runtime_status  # noqa: PLC0415
 
     report = collect_runtime_status()
+    report.integrations.append(probe_a2ui_declarations())
     if json_output:
         print(json.dumps(report.to_dict(), indent=2))
     else:

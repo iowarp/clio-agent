@@ -327,7 +327,7 @@ def parse_agent_blueprint_root(root: Path, *, scope: str) -> AgentBlueprintDefin
             "compatibility": _mapping_field(meta, "compatibility"),
             "requires": requirements,
             "mcp_servers": _mapping_field(meta, "mcp_servers"),
-            "a2ui_catalogs": _mapping_field(meta, "a2ui_catalogs"),  # sibling of mcp_servers (S2)
+            "a2ui_catalogs": meta.get("a2ui_catalogs"),  # verbatim: a2ui_catalogs/declarations.py
             "includes": _list_field(meta, "includes"),
             "blueprint": meta.get("blueprint") if isinstance(meta.get("blueprint"), dict) else {},
             # Raw pack-declared workflow_state vocabulary (#646/#648, Phase C).

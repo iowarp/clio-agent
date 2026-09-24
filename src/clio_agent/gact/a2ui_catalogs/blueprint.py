@@ -7,9 +7,12 @@ Cloned from ``gact/blueprint_activation.py``'s ``blueprint_server_map`` /
 .. code-block:: yaml
 
     a2ui_catalogs:
-      earthscope: catalogs/earthscope
+      - earthscope: catalogs/earthscope
+      - clio-workspace
 
-exactly as it declares ``mcp_servers`` — and ships them at
+-- its COMPLETE catalog allowlist, in preference order (v15 S8; parsing and
+the ordered union over declaration sources live in ``declarations.py``) --
+and ships each pack-local one at
 ``<pack>/catalogs/<name>/{catalog.json, catalog.clio.json, instructions.md}``.
 ``install_agent_blueprint`` already copies the whole pack tree (including
 ``catalogs/``); this module reads it back, validates it, and turns it into
@@ -35,17 +38,23 @@ _CATALOG_FILES = ("catalog.json", "catalog.clio.json", "instructions.md")
 
 
 def blueprint_catalog_map(blueprint: Any) -> dict[str, str]:
-    """Return one blueprint's declared ``{name: relative_dir}`` catalog map.
+    """Return one blueprint's PACK-LOCAL catalogs as ``{name: directory}``.
 
-    Mirrors ``blueprint_activation.blueprint_server_map``'s shape for
-    ``mcp_servers``: the raw ``a2ui_catalogs`` frontmatter mapping, string-
-    keyed and string-valued, or ``{}`` when the blueprint declares none.
+    Only directory-origin declarations (the catalogs the pack itself ships);
+    a builtin referenced by name is not part of the pack. Order is the
+    declared order. Parsing lives in
+    :func:`~clio_agent.gact.a2ui_catalogs.declarations.blueprint_catalog_source`.
     """
 
-    raw = blueprint.metadata.get("a2ui_catalogs")
-    if not isinstance(raw, dict):
-        return {}
-    return {str(name): str(reldir) for name, reldir in raw.items()}
+    from clio_agent.gact.a2ui_catalogs.declarations import (  # noqa: PLC0415
+        blueprint_catalog_source,
+    )
+
+    return {
+        row.name: str(row.directory)
+        for row in blueprint_catalog_source(blueprint).declarations
+        if row.origin == "directory" and row.directory is not None
+    }
 
 
 def _checksum(file: dict[str, Any]) -> str:
@@ -71,12 +80,21 @@ def _non_uax31_names(file: dict[str, Any]) -> list[str]:
 def catalog_pack_dir(blueprint: Any, name: str) -> Path:
     """Return the on-disk directory for one of a blueprint's declared catalogs."""
 
-    reldir = blueprint_catalog_map(blueprint).get(name, f"catalogs/{name}")
-    return Path(blueprint.root) / reldir
+    declared = blueprint_catalog_map(blueprint).get(name)
+    return Path(declared) if declared else Path(blueprint.root) / "catalogs" / name
 
 
-def _load_one(blueprint: Any, name: str, reldir: str) -> tuple[CatalogEntry | None, list[str]]:
-    """Load and validate one pack catalog. Returns ``(entry_or_none, errors)``.
+def load_catalog_directory(
+    root: Path, name: str, *, install_checksum: str = ""
+) -> tuple[CatalogEntry | None, list[str]]:
+    """Load and validate one catalog directory. Returns ``(entry_or_none, errors)``.
+
+    ``root`` is the catalog directory itself, already resolved against its
+    declaring unit (``declarations.CatalogDeclaration.directory``);
+    ``install_checksum`` is the declaring unit's own install checksum
+    (``.clio-install.md``), stamped like ``blueprint_server_map``'s
+    ``CLIO_BLUEPRINT_INSTALL_CHECKSUM`` so a consumer can tell "this catalog
+    came from pack version X" without re-hashing the catalog file.
 
     Every structural failure (missing file, schema-invalid ``CatalogFile`` /
     ``CatalogSidecar``, an ``implements[*].kernel`` naming a component no
@@ -85,7 +103,6 @@ def _load_one(blueprint: Any, name: str, reldir: str) -> tuple[CatalogEntry | No
     name is recorded as a WARNING reason only (0.9.1 tolerates it).
     """
 
-    root = Path(blueprint.root) / reldir
     errors: list[str] = []
     missing = [name for name in _CATALOG_FILES if not (root / name).is_file()]
     if missing:
@@ -128,51 +145,56 @@ def _load_one(blueprint: Any, name: str, reldir: str) -> tuple[CatalogEntry | No
         source="blueprint",
         root_path=root,
         checksum=_checksum(file),
-        install_checksum=_blueprint_install_checksum(blueprint),
+        install_checksum=install_checksum,
         name=name,
     )
     return entry, []
-
-
-def _blueprint_install_checksum(blueprint: Any) -> str:
-    """The owning pack's OWN install checksum (``.clio-install.md``), not the
-    catalog file's content checksum -- stamped like
-    ``blueprint_activation.blueprint_server_map``'s
-    ``CLIO_BLUEPRINT_INSTALL_CHECKSUM`` env var, so a consumer can tell "this
-    catalog came from pack version X" without re-hashing the catalog file."""
-
-    install = blueprint.metadata.get("install")
-    return str(install.get("checksum") or "") if isinstance(install, dict) else ""
 
 
 def validate_blueprint_catalogs(blueprint: Any) -> list[str]:
     """Return every a2ui-catalog validation error for one blueprint (empty if clean).
 
     Called from ``agent_blueprints.validate_agent_blueprint_path`` so a pack
-    with a malformed or unimplemented catalog is refused at install/validate
-    time, matching how ``_validate_agent_tool_references`` refuses an
-    undeclared MCP tool reference.
+    with a malformed entry, an unknown builtin name, a missing or invalid
+    catalog directory, or a conflicting declaration is refused at
+    install/validate time, matching how ``_validate_agent_tool_references``
+    refuses an undeclared MCP tool reference. Runs the SAME resolution the
+    runtime uses (``declarations.resolve_agent_catalogs``), so validation and
+    producibility can never disagree about what a declaration means.
     """
 
-    errors: list[str] = []
-    for name, reldir in blueprint_catalog_map(blueprint).items():
-        _, load_errors = _load_one(blueprint, name, reldir)
-        errors.extend(load_errors)
-    return errors
+    from clio_agent.gact.a2ui_catalogs.declarations import (  # noqa: PLC0415
+        blueprint_catalog_source,
+        resolve_agent_catalogs,
+    )
+
+    resolved = resolve_agent_catalogs([blueprint_catalog_source(blueprint)], record=False)
+    return [issue.message() for issue in resolved.issues]
 
 
 def load_blueprint_catalogs(blueprint: Any) -> list[CatalogEntry]:
-    """Return the successfully-loaded catalog entries one blueprint declares.
+    """Return the successfully-loaded PACK-LOCAL catalog entries one blueprint ships.
 
-    A catalog that fails validation is dropped (its reason was already
-    recorded by :func:`_load_one`) rather than raised — a registry read must
-    never crash the server over one broken pack; ``validate_agent_blueprint_path``
-    is the door that refuses installing/enabling such a pack in the first place.
+    Directory-origin declarations only (a builtin referenced by name is
+    already in the registry). A catalog that fails validation is dropped
+    (its reason was already recorded by :func:`load_catalog_directory`)
+    rather than raised -- a registry read must never crash the server over
+    one broken pack; ``validate_agent_blueprint_path`` is the door that
+    refuses installing/enabling such a pack in the first place.
     """
 
+    from clio_agent.gact.a2ui_catalogs.declarations import (  # noqa: PLC0415
+        blueprint_catalog_source,
+    )
+
+    source = blueprint_catalog_source(blueprint)
     entries: list[CatalogEntry] = []
-    for name, reldir in blueprint_catalog_map(blueprint).items():
-        entry, errors = _load_one(blueprint, name, reldir)
+    for row in source.declarations:
+        if row.origin != "directory" or row.directory is None:
+            continue
+        entry, errors = load_catalog_directory(
+            row.directory, row.name, install_checksum=source.install_checksum
+        )
         if entry is not None and not errors:
             entries.append(entry)
     return entries
@@ -232,8 +254,12 @@ def blueprint_and_expert_a2ui_catalog_errors(blueprint: Any, experts: list[Any])
     ``a2ui_catalogs: [names]`` subset check.
     """
 
+    from clio_agent.gact.a2ui_catalogs.declarations import (  # noqa: PLC0415
+        blueprint_catalog_source,
+    )
+
     errors = validate_blueprint_catalogs(blueprint)
-    declared_catalog_names = set(blueprint_catalog_map(blueprint))
+    declared_catalog_names = {row.name for row in blueprint_catalog_source(blueprint).declarations}
     for row in experts:
         expert_catalogs = row.metadata.get("a2ui_catalogs")
         if isinstance(expert_catalogs, list) and expert_catalogs:
@@ -252,6 +278,7 @@ __all__ = [
     "catalog_pack_dir",
     "load_all_blueprint_catalogs",
     "load_blueprint_catalogs",
+    "load_catalog_directory",
     "validate_blueprint_catalogs",
     "validate_expert_a2ui_catalogs",
 ]

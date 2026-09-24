@@ -233,13 +233,12 @@ class SkillCatalog:
     def _catalog_refs(self) -> list[SkillRef]:
         """Return the generated A2UI-catalog skills (S4), cached per instance.
 
-        Resolves this SESSION's full producible set -- builtins ∪
-        globally-installed packs ∪ the session's own PATH-activated pack --
-        through the same resolver the producer tools validate against
+        Discloses exactly this SESSION's resolved catalogs -- the agent's own
+        declared allowlist, in declared order (v15 S8; no builtin is
+        implicit) -- from the same resolution producibility uses
         (:func:`~clio_agent.gact.a2ui_catalogs.activation.
-        session_catalog_resolver`), so a path-activated pack catalog is
-        disclosed as a skill exactly when it is actually producible, never
-        only when it happens to also be globally installed. Deferred import
+        resolve_session_catalogs`), so a catalog is disclosed as a skill
+        exactly when it is actually producible. Deferred import
         (see the module docstring): this is the one place
         :mod:`clio_agent.gact.skills` reaches into ``a2ui_catalogs``.
 
@@ -272,21 +271,14 @@ class SkillCatalog:
             self._catalog_cache = []
             return self._catalog_cache
         from clio_agent.gact.a2ui_catalogs.activation import (  # noqa: PLC0415
-            session_catalog_resolver,
-            session_producible_catalog_ids,
+            resolve_session_catalogs,
         )
         from clio_agent.gact.a2ui_catalogs.skills import (  # noqa: PLC0415
             discover_catalog_skill_refs,
         )
 
-        resolver = session_catalog_resolver(self._app, self._session_id)
-        entries = [
-            resolver.get(catalog_id)
-            for catalog_id in session_producible_catalog_ids(self._app, self._session_id)
-        ]
-        self._catalog_cache = discover_catalog_skill_refs(
-            [entry for entry in entries if entry is not None]
-        )
+        resolved = resolve_session_catalogs(self._app, self._session_id)
+        self._catalog_cache = discover_catalog_skill_refs(list(resolved.entries))
         return self._catalog_cache
 
     def discover_pack(self, pack_root: Path) -> list[SkillRef]:

@@ -40,8 +40,8 @@ _A2UI_CATALOG_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
     "a2ui_catalog_not_producible": {
         "severity": "warning",
         "detail": (
-            "the catalog is installed but not in this session's producible set — it "
-            "belongs to a pack the session's active blueprint did not declare"
+            "the catalog is installed but not in this session's producible set — the "
+            "session's agent does not list it in its a2ui_catalogs"
         ),
     },
     "a2ui_catalog_file_invalid": {
@@ -84,8 +84,9 @@ _A2UI_CATALOG_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
     "a2ui_blueprint_discovery_failed": {
         "severity": "warning",
         "detail": (
-            "Agent Blueprint discovery raised while resolving A2UI catalogs -- the "
-            "session/registry degrades to builtins only, not silently to a stale list"
+            "Agent Blueprint discovery raised while resolving A2UI catalogs -- that "
+            "blueprint's declared catalogs are unavailable (no builtin is added in "
+            "their place), not silently replaced by a stale list"
         ),
     },
     "a2ui_blueprint_unresolved": {
@@ -275,6 +276,54 @@ _A2UI_CATALOG_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
             "instead of incrementally folded"
         ),
     },
+    # Per-agent catalog allowlist (v15 S8, declarations.py): an agent's
+    # ``a2ui_catalogs`` is the COMPLETE list of catalogs it may produce
+    # against -- nothing is implicit, builtins included.
+    "a2ui_no_catalogs_declared": {
+        "severity": "info",
+        "detail": (
+            "the session's agent declares no a2ui_catalogs -- it has no producible "
+            "catalogs, so no A2UI producer tools are attached and no catalog skill "
+            "is disclosed"
+        ),
+    },
+    "a2ui_declaration_missing_after_upgrade": {
+        "severity": "warning",
+        "detail": (
+            "an installed Agent Blueprint declares no a2ui_catalogs (typically a "
+            "pre-S8 snapshot the upgrade re-sync skipped) -- it has no catalogs until "
+            "it is updated or its a2ui_catalogs list is added"
+        ),
+    },
+    "a2ui_no_catalogs_resolved": {
+        "severity": "warning",
+        "detail": (
+            "the session's agent declares a2ui_catalogs, but none of them resolved "
+            "to a loadable catalog -- it has no producible catalogs"
+        ),
+    },
+    "a2ui_catalog_builtin_unknown": {
+        "severity": "warning",
+        "detail": (
+            "an a2ui_catalogs entry names a builtin catalog this server does not "
+            "ship -- the entry is refused, never guessed at"
+        ),
+    },
+    "a2ui_catalog_declaration_invalid": {
+        "severity": "warning",
+        "detail": (
+            "an a2ui_catalogs entry is malformed (not a builtin name or a single "
+            "name: directory mapping) or its catalog directory does not load"
+        ),
+    },
+    "a2ui_catalog_declaration_conflict": {
+        "severity": "warning",
+        "detail": (
+            "two a2ui_catalogs declarations use the same name (or the same catalogId) "
+            "with a different origin -- the later one is refused, never a silent "
+            "override of the earlier one"
+        ),
+    },
 }
 
 #: Ring size shared by this global ledger AND ``CatalogRegistry``'s per-session
@@ -323,6 +372,35 @@ def record_a2ui_catalog_reason(reason: str, **fields: Any) -> dict[str, Any]:
     return payload
 
 
+#: Keys already recorded by :func:`record_a2ui_catalog_reason_once` (bounded:
+#: the oldest keys fall out, so a key may be recorded again after that).
+_ONCE_KEYS: "deque[tuple[Any, ...]]" = deque(maxlen=A2UI_CATALOG_REASON_RING_MAXLEN)
+_ONCE_KEY_SET: set[tuple[Any, ...]] = set()
+
+
+def record_a2ui_catalog_reason_once(
+    key: tuple[Any, ...], reason: str, **fields: Any
+) -> dict[str, Any] | None:
+    """Record ``reason`` the first time ``key`` is seen; later calls are no-ops.
+
+    For a condition re-derived on every call (a declaration issue found each
+    time a session resolves its catalogs), so the ledger and the log carry it
+    once rather than once per request.
+
+    Returns:
+        The recorded row, or ``None`` when ``key`` was already recorded.
+    """
+
+    with _A2UI_CATALOG_REASONS_LOCK:
+        if key in _ONCE_KEY_SET:
+            return None
+        if len(_ONCE_KEYS) == _ONCE_KEYS.maxlen:
+            _ONCE_KEY_SET.discard(_ONCE_KEYS[0])
+        _ONCE_KEYS.append(key)
+        _ONCE_KEY_SET.add(key)
+    return record_a2ui_catalog_reason(reason, **fields)
+
+
 def recorded_a2ui_catalog_reasons() -> list[dict[str, Any]]:
     """Return a snapshot of every recorded A2UI catalog reason (queryable audit)."""
 
@@ -333,5 +411,6 @@ def recorded_a2ui_catalog_reasons() -> list[dict[str, Any]]:
 __all__ = [
     "A2UI_CATALOG_REASON_RING_MAXLEN",
     "record_a2ui_catalog_reason",
+    "record_a2ui_catalog_reason_once",
     "recorded_a2ui_catalog_reasons",
 ]

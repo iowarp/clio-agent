@@ -34,6 +34,15 @@ git push origin main && git push origin vX.Y.Z
 cd ../..
 ```
 
+**Rollout order when a release changes what packs must declare** (e.g. 0.9.4.17's
+per-agent `a2ui_catalogs`): the marketplace change must be on marketplace `main`
+BEFORE any clio-agent artifact of that release is built. Deployed installs
+re-sync their unedited default-registry packs from the registry once per
+clio-agent version change (`gact/default_registry_migration.py`) and record the
+version on success, so an artifact that ships ahead of the marketplace would
+record the new version against the OLD packs and not re-sync them again until
+the next version.
+
 ### 2. Pin submodules in clio-agent
 ```sh
 git -C external/gact-tui fetch origin --tags && git -C external/gact-tui checkout vA.B.C   # the aligned gact-tui release

@@ -36,6 +36,8 @@ from clio_agent.gact.app import build_app
 from clio_agent.gact.parts import Part
 from clio_agent.gact.types import Message
 
+from .a2ui_catalog_binding import bind_builtin_catalogs
+
 HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
 
 FIXTURE_PACK = Path(__file__).resolve().parents[1] / "fixtures" / "a2ui_packs" / "minimal"
@@ -847,6 +849,7 @@ def test_basic_surface_rejects_a_workspace_only_component(tmp_path: Path) -> Non
     cannot later accept a clio.* (workspace-only) component."""
 
     client, sid = _session_client(tmp_path)
+    bind_builtin_catalogs(client.app, sid)  # v15 S8: basic only when declared
     create_on_basic = {
         "version": "v0.9.1",
         "createSurface": {"surfaceId": "surface_1", "catalogId": basic_catalog_id()},
