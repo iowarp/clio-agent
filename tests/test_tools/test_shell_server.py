@@ -16,6 +16,7 @@ from clio_agent.tools.execution import tool_workspace_context
 from clio_agent.tools.servers.shell_server import (
     ShellEnvFacts,
     _detect_shell_env,
+    _resolve_cwd,
     _translate_windows_paths_for_bash,
     build_shell_tool_description,
     shell_server,
@@ -174,6 +175,56 @@ async def test_shell_bash_pins_default_cwd_to_active_workspace_root(
     assert Path(data["cwd"]).resolve() != boot_time_cwd.resolve()
 
 
+def test_tool_session_context_resolves_the_real_session_workspace_root(
+    tmp_path: Path,
+) -> None:
+    """C3, production path: the pin proven directly above via a manually-bound
+    ``tool_workspace_context`` must be fed by the SAME resolution a live GACT turn
+    actually uses — ``clio_agent.gact.runtime.globals._tool_session_context`` —
+    which derives the workspace root from a REAL ``app.state.sessions`` /
+    ``app.state.workspaces`` lookup, never a directly-set contextvar, before
+    binding ``tool_workspace_context``.
+
+    Deliberately does not drive a real ``bash`` call through the full MCP +
+    permission-gate stack: ``build_app()``'s default gate denies an unapproved
+    ``shell_bash`` call, and working around that turned this into a
+    multi-minute, gate-plumbing-heavy integration test for a fact this test
+    proves directly and in milliseconds — that the production session/workspace
+    lookup feeds ``get_active_tool_workspace_root()`` the right value. Composed
+    with ``test_shell_bash_pins_default_cwd_to_active_workspace_root`` above
+    (which proves ``_resolve_cwd`` trusts that same accessor), the full chain is
+    covered without the gate/subprocess overhead.
+    """
+
+    import contextvars
+
+    from clio_agent.gact import context as _ctx
+    from clio_agent.gact.app import build_app
+    from clio_agent.gact.runtime.globals import _tool_session_context
+    from clio_agent.tools.execution import get_active_tool_workspace_root
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    workspace = app.state.workspaces.create(name="prod-ws", root_path=str(workspace_root))
+    session = app.state.sessions.create(workspace_id=workspace.id, title="prod-path")
+
+    observed: dict[str, str] = {}
+
+    def turn_body() -> None:
+        # Bare set, isolated to this Context (matches
+        # test_tool_runtime_seam.py's convention) so it cannot leak app/session
+        # identity into a later test sharing this process.
+        _ctx.set_turn_identity(app=app, session_id=session.id, turn_id="t1", trace_id="tr1")
+        with _tool_session_context(session.id):
+            observed["root"] = get_active_tool_workspace_root()
+
+    contextvars.copy_context().run(turn_body)
+
+    assert Path(observed["root"]).resolve() == workspace_root.resolve()
+
+
 @pytest.mark.asyncio
 async def test_shell_bash_streams_typed_terminal_chunks_before_completion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -224,6 +275,35 @@ async def test_shell_bash_streams_typed_terminal_chunks_before_completion(
     assert "FIRST" in "".join(chunk["text"] for chunk in chunks)
     data = _parse_result(result)
     assert data["stdout"] == "FIRST\nSECOND\n"
+
+
+def test_resolve_cwd_falls_back_to_process_cwd_with_a_typed_reason_when_unbound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No silent fallback: with no active workspace root bound (the app-less CLI
+    grounding path legitimately has none), _resolve_cwd still falls back to the
+    OS process's own cwd, but the fallback is recorded, not silent."""
+    # sys.modules, not `import clio_agent.tools.servers.shell_server as x` or
+    # `from clio_agent.tools.servers import shell_server`: the servers package's
+    # own __init__.py does `from .shell_server import shell_server` (the FastMCP
+    # instance), which clobbers the `shell_server` SUBMODULE attribute on the
+    # `clio_agent.tools.servers` package object with that instance — any
+    # attribute-access import path resolves to the instance, not the module.
+    shell_server_mod = sys.modules["clio_agent.tools.servers.shell_server"]
+    monkeypatch.chdir(tmp_path)
+    events: list[tuple[object, ...]] = []
+    orig_event = shell_server_mod.trace.event
+
+    def _spy(tag, fmt, *args):
+        events.append((tag, fmt, *args))
+        orig_event(tag, fmt, *args)
+
+    monkeypatch.setattr(shell_server_mod.trace, "event", _spy)
+
+    resolved = _resolve_cwd(None)
+
+    assert resolved == tmp_path.resolve()
+    assert any("reason=no_active_workspace_root" in fmt for _tag, fmt, *_rest in events), events
 
 
 @pytest.mark.asyncio

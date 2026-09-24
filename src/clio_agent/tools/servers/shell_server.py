@@ -26,6 +26,7 @@ from typing import Any
 from fastmcp import Context, FastMCP
 
 from clio_agent import conf
+from clio_agent.runtime import trace
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
 
 shell_server = FastMCP("shell")
@@ -127,7 +128,20 @@ def _resolve_cwd(cwd: str | None) -> Path:
         )
 
         active_root = get_active_tool_workspace_root()
-        raw = Path(active_root) if active_root else Path.cwd()
+        if active_root:
+            raw = Path(active_root)
+        else:
+            # No silent fallback: a managed session with no bound workspace root
+            # falling back to the OS process's own cwd (the install directory, on
+            # desktop) is exactly the failure mode this function exists to avoid.
+            # The app-less CLI grounding path legitimately has no workspace bound,
+            # so this stays a typed trace event rather than a hard error.
+            trace.event(
+                "TOOLS",
+                "shell cwd fallback reason=no_active_workspace_root cwd=%s",
+                Path.cwd(),
+            )
+            raw = Path.cwd()
     try:
         resolved = raw.resolve(strict=True)
     except FileNotFoundError as exc:
