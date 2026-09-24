@@ -41,6 +41,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from clio_agent.gact import context as _ctx
+from clio_agent.gact.a2ui_catalogs.activation import session_a2ui_producers_enabled
 from clio_agent.gact.a2ui_producer import (
     build_create_a2ui_surface_tool,
     build_delete_a2ui_surface_tool,
@@ -59,7 +61,7 @@ from clio_agent.gact.todos import build_write_todos_tool
 from clio_agent.providers.model_discovery import build_refresh_provider_models_tool
 
 
-def build_auto_react_tools(agent_def: Any) -> list[Any]:
+def build_auto_react_tools(agent_def: Any, *, a2ui_producers: bool | None = None) -> list[Any]:
     """Return the auto-attached tool list for one react expert (order-stable).
 
     Order is fixed so the react prompt's tool prefix stays byte-stable across builds — a
@@ -67,6 +69,16 @@ def build_auto_react_tools(agent_def: Any) -> list[Any]:
     ``refresh_provider_models`` is appended ONLY for a tier-1 MAIN session (no
     ``parent_id`` — never a spawned Tier-2/3 child): see the module docstring for why a
     billed action is scoped this way instead of joining the universal list above.
+
+    Args:
+        agent_def: The expert being built.
+        a2ui_producers: Whether a ROOT agent gets the four A2UI producer tools.
+            ``None`` (every turn build) derives it from the live turn's session:
+            only when the agent resolves at least one declared A2UI catalog
+            (v15 S8, ``a2ui_catalogs.activation.session_a2ui_producers_enabled``,
+            which records the typed reason when it withholds them). ``True`` is
+            for a caller DESCRIBING the declarable surface with no session in
+            scope (``catalog._builtin_tool_declarations``).
     """
 
     tools = [
@@ -96,18 +108,24 @@ def build_auto_react_tools(agent_def: Any) -> list[Any]:
     ]
     declared = {str(name).strip() for name in (getattr(agent_def, "tools", None) or [])}
     if not (getattr(agent_def, "parent_id", "") or ""):
-        # Root compatibility: still automatic unless explicitly declared (the
-        # declared-native resolver already attached the same tool). Children get
-        # it only through an explicit blueprint tools declaration. All four
+        # Root compatibility: automatic unless explicitly declared (the
+        # declared-native resolver already attached the same tool) -- but ONLY
+        # when the agent declares at least one A2UI catalog (v15 S8: an agent
+        # with no catalogs has nothing to produce against). Children get them
+        # only through an explicit blueprint tools declaration. All four
         # producer tools (S4) travel together -- a root agent that can create a
         # surface can also revise/delete it without a separate declaration.
+        if a2ui_producers is None:
+            a2ui_producers = session_a2ui_producers_enabled(
+                _ctx.active_app(), _ctx.active_session_id()
+            )
         for name, build in (
             ("create_a2ui_surface", build_create_a2ui_surface_tool),
             ("update_a2ui_components", build_update_a2ui_components_tool),
             ("update_a2ui_data_model", build_update_a2ui_data_model_tool),
             ("delete_a2ui_surface", build_delete_a2ui_surface_tool),
         ):
-            if name not in declared:
+            if a2ui_producers and name not in declared:
                 tools.append(build())
         tools.append(build_refresh_provider_models_tool())
         tools.extend(build_memory_tools(agent_def))

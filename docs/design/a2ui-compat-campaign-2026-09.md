@@ -258,3 +258,30 @@ never conflated:
 The marketplace pack itself (draft PR [#70](https://github.com/iowarp/clio-agent-marketplace/pull/70)
 on branch `feat/a2ui-compat` @ `e9f6bef`, CI green) is not yet mergeable: it declares
 `requires: {clio_agent: ">=0.9.4.15"}` (lowered from `>=0.9.5` by owner ruling 2026-09-23); clio-agent 0.9.4.15 is the first release that satisfies it.
+
+## Follow-up: per-agent catalog allowlists (v15 S8, clio-agent 0.9.4.17)
+
+Owner ruling: which catalogs an agent may use is declared per agent, and
+nothing is implicit. An agent's `a2ui_catalogs` became its **complete**,
+ordered allowlist. Entries name a builtin (`clio-workspace`, `basic`) or a
+pack-local catalog (`name: relative/dir`). The written order is the
+preference order; it replaced the accidental alphabetical sort that made
+unnamed surfaces default to Basic. An agent with no declaration has no
+catalogs, no producer tools, and no catalog skill lines, and records the typed
+reason `a2ui_no_catalogs_declared`. Basic stays installed and renderable, but
+only agents that list it can produce against it.
+
+Resolution is written for the agent-plugins future: an ordered union over
+declaration sources (`gact/a2ui_catalogs/declarations.py::
+resolve_agent_catalogs`). Today there is one source, the active blueprint.
+Each plugin becomes another source, with no change to consumers. A
+declaration is self-contained (name plus origin), and a conflict (same name,
+different origin) is a typed error, never a silent override. Every consumer
+(producibility, capabilities, selection, the skill index, producer-tool
+attachment, the catalog routes, the session catalog resolver) derives from
+`activation.resolve_session_catalogs`. The shipped agents list their
+catalogs explicitly in the marketplace (base-agent, factorio-flat and
+spotter-ai list `clio-workspace`; EarthScope lists `earthscope-stations`,
+then `clio-workspace`), and those packs require clio-agent 0.9.4.17 or newer.
+The binding contract is in `docs/gact/a2ui-binding.md`, "The per-agent
+allowlist".

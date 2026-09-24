@@ -6,6 +6,25 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Changed
+
+- Which A2UI catalogs an agent can produce against is now declared per agent.
+  An agent's `a2ui_catalogs` is the complete list, in preference order, and
+  nothing is implicit: the builtin `clio-workspace` and `basic` catalogs are
+  available only to agents that list them by name, next to pack catalogs
+  declared as `name: relative/dir`. A surface that names no catalog gets the
+  first listed catalog the client supports, so it no longer defaults to Basic.
+  `GET /v1/sessions/{sid}/a2ui/capabilities`, the session catalog route (whose
+  producible rows now come first, in the agent's order), the agent rows'
+  `a2ui_capabilities`, the catalog skills, and the producer tools all follow
+  that list. An agent that lists no catalogs gets no A2UI producer tools and no
+  catalog skills, and the session records `a2ui_no_catalogs_declared`. Basic
+  is still installed and still renders existing surfaces. An unknown builtin
+  name, a missing catalog directory, or two declarations of one name with
+  different origins is a validation error. The shipped marketplace agents
+  declare their catalogs and require this release (clio-agent-marketplace,
+  `requires: clio_agent >= 0.9.4.17`).
+
 ## [0.9.4.16] — 2026-09-23
 
 ### Fixed

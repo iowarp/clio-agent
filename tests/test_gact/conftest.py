@@ -274,3 +274,35 @@ def complete_turn(
         time.sleep(poll_interval)
 
     raise TimeoutError(f"turn for user message {user_id!r} did not settle within {timeout:g}s")
+
+
+@pytest.fixture
+def a2ui_builtin_catalogs(monkeypatch):
+    """Give every session WITHOUT an active blueprint the builtin catalogs.
+
+    v15 S8 made an agent's ``a2ui_catalogs`` its complete allowlist, so a bare
+    ``build_app`` session (no active blueprint) produces nothing. Suites that
+    exercise surface MECHANICS (store folds, actions, durability, rollback)
+    rather than catalog POLICY opt into this fixture by name: such a session
+    resolves as if its agent declared ``[clio-workspace, basic]`` (the
+    ``a2ui-builtins-pack`` fixture). A session that DOES have an active
+    blueprint resolves normally. Catalog-policy tests
+    (``test_a2ui_agent_catalogs.py``) never use it.
+    """
+
+    from clio_agent.gact.a2ui_catalogs import activation
+    from clio_agent.gact.a2ui_catalogs.declarations import blueprint_catalog_source
+    from clio_agent.gact.agent_blueprints import parse_agent_blueprint_root
+
+    from .a2ui_catalog_binding import BUILTINS_PACK
+
+    builtins_source = blueprint_catalog_source(
+        parse_agent_blueprint_root(BUILTINS_PACK, scope="session")
+    )
+    declared_sources = activation.session_declaration_sources
+
+    def _sources(app, session_id):
+        sources = declared_sources(app, session_id)
+        return sources if sources else [builtins_source]
+
+    monkeypatch.setattr(activation, "session_declaration_sources", _sources)

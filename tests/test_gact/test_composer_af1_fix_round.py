@@ -20,6 +20,10 @@ from clio_agent.gact.ask_user_tool import arm_ask_user_deadline
 from clio_agent.gact.types import UserQuestion
 from tests._config_layer import set_config
 
+# Surface mechanics, not catalog policy: bare sessions resolve the builtin
+# catalogs (tests/test_gact/conftest.py::a2ui_builtin_catalogs, v15 S8).
+pytestmark = pytest.mark.usefixtures("a2ui_builtin_catalogs")
+
 HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
 CLIO_A2UI_CATALOG_ID = workspace_catalog_id()
 

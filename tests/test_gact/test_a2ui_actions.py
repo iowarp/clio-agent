@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 
@@ -28,6 +29,10 @@ from clio_agent.gact.types import Message, Part
 
 from .test_a2ui_v3 import HEADERS, WORKSPACE_CATALOG_ID, _create_message, _session_client
 from .test_loop_inbox_1036 import _active_turn
+
+# Surface mechanics, not catalog policy: bare sessions resolve the builtin
+# catalogs (tests/test_gact/conftest.py::a2ui_builtin_catalogs, v15 S8).
+pytestmark = pytest.mark.usefixtures("a2ui_builtin_catalogs")
 
 
 def _stub_spawn(app: Any, monkeypatch: MonkeyPatch) -> list[Any]:

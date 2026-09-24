@@ -4,8 +4,9 @@ campaign-2026-09.md).
 The owner's ruling: producer guidance is progressive disclosure "just like we
 do with skills" -- one index line always in context, full component schemas
 loaded on demand. Rather than inventing a second disclosure mechanism, every
-installed A2UI catalog (builtin ∪ blueprint-declared pack) is exposed to the
-existing skill runtime (:mod:`clio_agent.gact.skills`) as a GENERATED skill:
+A2UI catalog (builtin or blueprint-declared pack) can be exposed to the
+existing skill runtime (:mod:`clio_agent.gact.skills`) as a GENERATED skill
+(disclosed to a session only when its agent declares that catalog, v15 S8):
 id ``a2ui-catalog-<slug>`` (``a2ui-catalog-basic``, ``a2ui-catalog-clio-
 workspace``, or ``a2ui-catalog-<pack-declared-name>``), a body assembled from
 the catalog's own files (never written to disk), and a bundled-file root
@@ -215,12 +216,9 @@ def discover_catalog_skill_refs(entries: "list[CatalogEntry]") -> list[SkillRef]
 
     The CALLER resolves which entries are in scope
     (:func:`clio_agent.gact.skills.SkillCatalog._catalog_refs` passes this
-    session's full PRODUCIBLE set -- builtins ∪ globally-installed packs ∪
-    the session's own PATH-activated pack, via
+    session's resolved catalogs -- the agent's own declared allowlist, via
     :func:`~clio_agent.gact.a2ui_catalogs.activation.
-    session_producible_catalog_ids` /
-    :func:`~clio_agent.gact.a2ui_catalogs.activation.
-    session_catalog_resolver`) -- this function only ever RENDERS entries
+    resolve_session_catalogs`) -- this function only ever RENDERS entries
     into skill refs, never decides producibility (a bare
     ``registry.installed()`` walk would miss a path-activated pack the
     app-level registry's own discovery never sees, silently under-declaring

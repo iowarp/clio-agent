@@ -327,10 +327,12 @@ def agent_capabilities(app: "FastAPI", session_id: str | None) -> dict[str, Any]
     Args:
         app: The FastAPI app carrying ``app.state.a2ui_catalogs``.
         session_id: A session to scope ``supportedCatalogIds`` to its
-            PRODUCIBLE set (builtin ∪ active blueprint's declared catalogs),
-            or ``None`` for the server-wide capability (every INSTALLED
-            catalog, builtin ∪ every discovered pack) -- the shape
-            ``GET /v1/capabilities`` (no session in scope) advertises.
+            PRODUCIBLE set -- exactly the catalogs the session's agent
+            declares, in its declared preference order (v15 S8; no builtin
+            is implicit) -- or ``None`` for the server-wide capability
+            (every INSTALLED catalog in registry order, builtins then
+            discovered packs; no agent is in scope, so the order states no
+            preference) -- the shape ``GET /v1/capabilities`` advertises.
 
     Returns:
         A plain dict (``by_alias=True`` dump) validated round-trip through
@@ -342,7 +344,8 @@ def agent_capabilities(app: "FastAPI", session_id: str | None) -> dict[str, Any]
         ids = session_producible_catalog_ids(app, session_id)
     else:
         registry: "CatalogRegistry | None" = getattr(app.state, "a2ui_catalogs", None)
-        ids = sorted({entry.catalog_id for entry in registry.installed()}) if registry else []
+        installed = registry.installed() if registry else []
+        ids = list(dict.fromkeys(entry.catalog_id for entry in installed))
     model = A2UIAgentCapabilities.model_validate(
         {"v0.9": {"supportedCatalogIds": ids, "acceptsInlineCatalogs": False}}
     )

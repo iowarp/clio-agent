@@ -33,6 +33,8 @@ from clio_agent.gact.a2ui_catalogs.builtin import basic_catalog_id, workspace_ca
 from clio_agent.gact.agent_message_transport import message_in_process
 from clio_agent.gact.app import build_app
 
+from .a2ui_catalog_binding import bind_builtin_catalogs
+
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 A2UI_HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
@@ -219,13 +221,23 @@ def test_agent_capabilities_server_wide_matches_official_shape(tmp_path: Path) -
     assert set(validated.v0_9.supportedCatalogIds) >= {BASIC_ID, WORKSPACE_ID}
 
 
-def test_agent_capabilities_session_scoped_is_builtin_only_with_no_blueprint(
+def test_agent_capabilities_session_scoped_is_empty_with_no_blueprint(
     tmp_path: Path,
 ) -> None:
+    """v15 S8: nothing is implicit -- an agent that declares no catalogs has none."""
+
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="t")
     wire = agent_capabilities(app, session.id)
-    assert set(wire["v0.9"]["supportedCatalogIds"]) == {BASIC_ID, WORKSPACE_ID}
+    assert wire["v0.9"]["supportedCatalogIds"] == []
+
+
+def test_agent_capabilities_session_scoped_follows_declared_order(tmp_path: Path) -> None:
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="t")
+    bind_builtin_catalogs(app, session.id)
+    wire = agent_capabilities(app, session.id)
+    assert wire["v0.9"]["supportedCatalogIds"] == [WORKSPACE_ID, BASIC_ID]
 
 
 # --------------------------------------------------------------------------- #
@@ -236,33 +248,38 @@ def test_agent_capabilities_session_scoped_is_builtin_only_with_no_blueprint(
 def test_select_catalog_no_advertisement_is_typed_unknown(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="t")
+    bind_builtin_catalogs(app, session.id)
     selection = select_catalog(app, session.id)
     assert selection == CatalogSelection(
         catalog_id=None,
         reason="a2ui_client_capabilities_unknown",
-        producible_catalog_ids=(BASIC_ID, WORKSPACE_ID),
+        producible_catalog_ids=(WORKSPACE_ID, BASIC_ID),
     )
     assert not selection.ok
     reasons = app.state.a2ui_catalogs.session_reasons(session.id)
     assert any(row["reason"] == "a2ui_client_capabilities_unknown" for row in reasons)
 
 
-def test_select_catalog_honours_client_preference_order(tmp_path: Path) -> None:
+def test_select_catalog_follows_the_agent_declared_order(tmp_path: Path) -> None:
+    """v15 S8: the agent's declared order decides, not the client's list order."""
+
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="t")
+    bind_builtin_catalogs(app, session.id)  # declares [clio-workspace, basic]
     caps = parse_client_capabilities(
-        {"a2uiClientCapabilities": {"v0.9": {"supportedCatalogIds": [WORKSPACE_ID, BASIC_ID]}}}
+        {"a2uiClientCapabilities": {"v0.9": {"supportedCatalogIds": [BASIC_ID, WORKSPACE_ID]}}}
     )
     assert caps is not None
     remember_client_capabilities(app, session.id, caps)
     selection = select_catalog(app, session.id)
     assert selection.ok
-    assert selection.catalog_id == WORKSPACE_ID  # first client-preferred, producible
+    assert selection.catalog_id == WORKSPACE_ID  # first declared, client-supported
 
 
 def test_select_catalog_no_intersection_is_typed_no_match(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="t")
+    bind_builtin_catalogs(app, session.id)
     caps = parse_client_capabilities(
         {"a2uiClientCapabilities": {"v0.9": {"supportedCatalogIds": ["some/other-catalog"]}}}
     )
@@ -278,6 +295,7 @@ def test_select_catalog_no_intersection_is_typed_no_match(tmp_path: Path) -> Non
 def test_select_catalog_preferred_wins_only_when_in_both_sets(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="t")
+    bind_builtin_catalogs(app, session.id)
     caps = parse_client_capabilities(
         {"a2uiClientCapabilities": {"v0.9": {"supportedCatalogIds": [WORKSPACE_ID, BASIC_ID]}}}
     )
@@ -338,10 +356,14 @@ def test_session_requested_send_data_model_false_with_no_surfaces(tmp_path: Path
 # --------------------------------------------------------------------------- #
 
 
-def test_blueprint_a2ui_capability_ids_falls_back_to_builtins(tmp_path: Path) -> None:
+def test_blueprint_a2ui_capability_ids_is_empty_without_a_declaring_blueprint(
+    tmp_path: Path,
+) -> None:
+    """v15 S8: no blueprint (or an unresolved one) declares nothing -- no builtins."""
+
     app = build_app(sessions_path=tmp_path / "sessions.json")
-    assert set(blueprint_a2ui_capability_ids(app, "")) == {BASIC_ID, WORKSPACE_ID}
-    assert set(blueprint_a2ui_capability_ids(app, "no-such-blueprint")) == {BASIC_ID, WORKSPACE_ID}
+    assert blueprint_a2ui_capability_ids(app, "") == []
+    assert blueprint_a2ui_capability_ids(app, "no-such-blueprint") == []
 
 
 # --------------------------------------------------------------------------- #
@@ -504,12 +526,13 @@ def test_session_capabilities_route_unknown_session_404(client: TestClient) -> N
     assert resp.status_code == 404
 
 
+@pytest.mark.usefixtures("a2ui_builtin_catalogs")
 def test_session_capabilities_route_shape(client: TestClient) -> None:
     sid = _create_session(client)
     resp = client.get(f"/v1/sessions/{sid}/a2ui/capabilities")
     assert resp.status_code == 200
     body = resp.json()
-    assert set(body["agent"]["v0.9"]["supportedCatalogIds"]) == {BASIC_ID, WORKSPACE_ID}
+    assert body["agent"]["v0.9"]["supportedCatalogIds"] == [WORKSPACE_ID, BASIC_ID]
     assert body["client"] is None
     assert body["selection"]["reason"] == "a2ui_client_capabilities_unknown"
 
@@ -599,6 +622,7 @@ def test_post_message_valid_capabilities_are_remembered(client: TestClient) -> N
     assert stored == {"v0.9": {"supportedCatalogIds": [BASIC_ID]}}
 
 
+@pytest.mark.usefixtures("a2ui_builtin_catalogs")
 def test_post_message_data_model_is_carried_through_renamed(client: TestClient) -> None:
     sid = _create_session(client)
     create = client.post(
@@ -657,6 +681,7 @@ def test_action_route_rejects_unknown_top_level_fields(client: TestClient) -> No
     assert resp.status_code == 422
 
 
+@pytest.mark.usefixtures("a2ui_builtin_catalogs")
 def test_action_route_accepts_and_remembers_metadata(client: TestClient) -> None:
     sid = _create_session(client)
     create = client.post(
@@ -699,6 +724,7 @@ def test_action_route_accepts_and_remembers_metadata(client: TestClient) -> None
     assert stored == {"v0.9": {"supportedCatalogIds": [WORKSPACE_ID]}}
 
 
+@pytest.mark.usefixtures("a2ui_builtin_catalogs")
 def test_action_route_malformed_capabilities_422(client: TestClient) -> None:
     sid = _create_session(client)
     create = client.post(
@@ -748,7 +774,9 @@ def test_agent_rows_carry_a2ui_capabilities(client: TestClient) -> None:
     assert rows, "no agent rows returned"
     for row in rows:
         ids = row["metadata"]["a2ui_capabilities"]
-        assert set(ids) >= {BASIC_ID, WORKSPACE_ID}
+        assert isinstance(ids, list)
+        if not row["metadata"].get("agent_blueprint_id"):
+            assert ids == []  # v15 S8: no declaring blueprint, no catalogs
 
 
 def test_agent_detail_route_carries_a2ui_capabilities(client: TestClient) -> None:
@@ -756,8 +784,10 @@ def test_agent_detail_route_carries_a2ui_capabilities(client: TestClient) -> Non
     agent_id = listed[0]["id"]
     resp = client.get(f"/v1/agents/{agent_id}")
     assert resp.status_code == 200
-    ids = resp.json()["metadata"]["a2ui_capabilities"]
-    assert set(ids) >= {BASIC_ID, WORKSPACE_ID}
+    metadata = resp.json()["metadata"]
+    assert isinstance(metadata["a2ui_capabilities"], list)
+    if not metadata.get("agent_blueprint_id"):
+        assert metadata["a2ui_capabilities"] == []
 
 
 # --------------------------------------------------------------------------- #
@@ -850,6 +880,7 @@ def test_steer_door_valid_capabilities_remembered_on_child_session(
     }
 
 
+@pytest.mark.usefixtures("a2ui_builtin_catalogs")
 def test_steer_door_data_model_checked_against_the_childs_own_surfaces(
     running_child_client: tuple[TestClient, str],
 ) -> None:
@@ -995,5 +1026,6 @@ def test_agent_blueprint_detail_route_carries_a2ui_capabilities(
 
     detail = client.get("/v1/agent-blueprints/a2ui-minimal-pack", params={"workspace_id": wid})
     assert detail.status_code == 200, detail.text
-    assert _PACK_CATALOG_ID in detail.json()["a2ui_capabilities"]
-    assert BASIC_ID in detail.json()["a2ui_capabilities"]
+    # v15 S8: exactly what the blueprint declares (the fixture lists only its
+    # own catalog), never the builtins implicitly.
+    assert detail.json()["a2ui_capabilities"] == [_PACK_CATALOG_ID]

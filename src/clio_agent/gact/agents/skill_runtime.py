@@ -135,13 +135,15 @@ def _producible_a2ui_catalog_skill_ids(catalog: SkillCatalog) -> list[str]:
 
     Reads ``catalog``'s OWN ``catalog`` scope (:meth:`SkillCatalog.
     _catalog_refs`) rather than re-deriving producibility here -- that is
-    already the session-correct set (builtins ∪ globally-installed packs ∪
-    the session's own path-activated pack), computed once and cached on the
+    already the session-correct set (the agent's declared allowlist, from
+    ``activation.resolve_session_catalogs``), computed once and cached on the
     SAME catalog instance :func:`effective_declared_skills` goes on to
-    ``resolve_declared`` against.
+    ``resolve_declared`` against. Kept in the agent's declared preference
+    order (v15 S8), so the index lists the preferred catalog first; an agent
+    that declares no catalogs gets no catalog index lines at all.
     """
 
-    return sorted(ref.id for ref in catalog._catalog_refs())
+    return [ref.id for ref in catalog._catalog_refs()]
 
 
 def effective_declared_skills(

@@ -153,11 +153,69 @@ server activation):
   is what `GET /v1/a2ui/catalogs` and `GET /v1/capabilities`'s
   `a2ui_capabilities` (no session in scope) answer.
 - **Producible** (`a2ui_catalogs.activation.session_producible_catalog_ids`):
-  the narrower set ONE session may actually `createSurface` against — the
-  two builtins plus whatever the session's own active blueprint declares. An
-  installed-but-inactive pack's catalog still resolves for validation
-  (replay of an old surface never breaks) but is not producible in a session
-  that never activated that pack.
+  the narrower set ONE session may actually `createSurface` against —
+  exactly the catalogs the session's agent declares, in its declared order.
+  An installed-but-undeclared catalog (a builtin the agent did not list, or
+  an inactive pack's catalog) still resolves for validation (replay of an
+  old surface never breaks) but is not producible in that session.
+
+### The per-agent allowlist (v15 S8)
+
+An agent's `a2ui_catalogs` is the **complete** allowlist of catalogs it may
+produce against. Nothing is implicit: the builtins are producible only for
+an agent that lists them, exactly like a pack's own catalog.
+
+```yaml
+a2ui_catalogs:
+  - earthscope-stations: catalogs/earthscope-stations   # pack-local: name: relative/dir
+  - clio-workspace                                      # builtin, by name (or basic)
+```
+
+- **Order is preference.** The written order is the agent's preference
+  order: `supportedCatalogIds`, the session catalog route's producible rows,
+  the catalog skill index, and `select_catalog` all follow it. (Before S8
+  these lists were sorted alphabetically by `catalogId`, which made Basic
+  the default for a surface that named no catalog.)
+- **No declaration, no A2UI.** An agent that declares nothing has no
+  producible catalogs. A root agent then gets no producer tools
+  (`agents/auto_tools.py`), no catalog skill is disclosed, and the typed
+  reason `a2ui_no_catalogs_declared` is recorded on the session ledger and
+  the trace. An agent whose declarations resolve to nothing records
+  `a2ui_no_catalogs_resolved`. A child's producer tools still come only from
+  an explicit `tools:` declaration; a child that declares them in such a
+  session gets a typed refusal with the same reason.
+- **Basic stays installed.** Basic is still in the registry and still
+  renders, but only an agent that lists `basic` can produce against it.
+- **Validation.** An unknown builtin name, a malformed entry, a pack
+  directory that is missing or does not load, or a conflicting declaration
+  is a validation error at blueprint validate, install, and activation
+  (`a2ui_catalogs/blueprint.py::validate_blueprint_catalogs`, which runs the
+  same resolution the runtime uses). The legacy mapping form
+  (`name: relative/dir` entries under a mapping) is still read, as pack-local
+  catalogs only, in written order.
+
+**One resolution.** Every consumer that decides producibility or disclosure
+derives from `a2ui_catalogs.activation.resolve_session_catalogs`: session
+producibility, the agent capability advertisement, `select_catalog`, the
+catalog skill index (`skills.SkillCatalog._catalog_refs`), producer-tool
+attachment, the session catalog and capability routes, and the session
+catalog resolver the action dispatcher resolves a surface's catalog through.
+
+**Forward shape: resolution over declaration sources.** Agent-plugins 1.0
+will replace blueprints, and an agent will be a concatenation of plugins,
+each declaring its own catalogs. So resolution is written as an ordered
+union over declaration sources, not over "the blueprint":
+`a2ui_catalogs/declarations.py::resolve_agent_catalogs(sources) ->
+ResolvedCatalogs`. Today there is exactly one source (the active
+blueprint's `a2ui_catalogs`, `session_declaration_sources`); each plugin
+becomes one more `CatalogDeclarationSource` and no consumer changes. Each
+`CatalogDeclaration` is self-contained: its name plus its origin (a
+builtin, or a directory already resolved against its own declaring unit's
+root). The merge keeps source order, then declaration order; the same name
+with the same origin is deduplicated; the same name with a different origin,
+or two names resolving to one `catalogId`, is the typed
+`a2ui_catalog_declaration_conflict` and the later declaration is refused —
+never a silent override.
 
 `GET /v1/sessions/{sid}/a2ui/capabilities`'s `agent` field and every
 `a2ui_capabilities` row on `GET /v1/agents` / `GET /v1/agents/{id}` use the
@@ -169,7 +227,9 @@ This document is the wire/negotiation contract; it is never where a model
 learns a component's properties. Each of a session's producible catalogs is
 disclosed as a generated skill id `a2ui-catalog-<slug>`
 (`gact/a2ui_catalogs/skills.py`), auto-declared onto any expert that declares
-a producer tool or is a root agent (`agents/skill_runtime.py`). Its body is
+a producer tool or is a root agent (`agents/skill_runtime.py`), in the
+agent's declared order. An agent with no declared catalogs gets no catalog
+skill lines at all. Its body is
 the catalog's own `instructions.md` plus a generated component/function/event
 index; the exact schema for one component comes from
 `load_skill("a2ui-catalog-<slug>", file="catalog.json#/components/<Name>")`
@@ -199,12 +259,14 @@ like an MCP server:
 
 ```yaml
 a2ui_catalogs:
-  earthscope-stations: catalogs/earthscope-stations
+  - earthscope-stations: catalogs/earthscope-stations
+  - clio-workspace
 ```
 
-and `experts/main.md` lists the catalog under its own `a2ui_catalogs:` so the
-root expert gets the generated skill `a2ui-catalog-earthscope-stations`
-alongside the two builtins. Installing the pack (`install_agent_blueprint`,
+(its own catalog first, then the builtin workspace catalog; since v15 S8 the
+list is the agent's complete allowlist), and `experts/main.md` lists the same
+names under its own `a2ui_catalogs:` so the root expert gets the generated
+skills `a2ui-catalog-earthscope-stations` and `a2ui-catalog-clio-workspace`. Installing the pack (`install_agent_blueprint`,
 the same path an MCP server's declaration takes) registers the catalog under
 `(catalogId, "0.9.1")`; activating the blueprint in a session makes it
 **producible** there (see "Producible vs. installed" above) — nothing else
@@ -239,10 +301,17 @@ list" — `gact/a2ui_capabilities.py::select_catalog(app, session_id, preferred=
    the caller did not ask for. The reason carries the preferred id and the
    client-supported ∩ producible intersection, so a caller can tell "asked
    for X, got nothing" from "asked for X, silently got Y."
-3. With no `preferred` given, walk the client's `supportedCatalogIds` **in
-   the client's own preference order** and return the first id that is in
-   this session's PRODUCIBLE set.
+3. With no `preferred` given, walk this session's PRODUCIBLE catalogs **in
+   the agent's declared preference order** (v15 S8) and return the first one
+   the client advertises in `supportedCatalogIds`. A surface that names no
+   catalog therefore gets the agent's first declared catalog the client can
+   render, never Basic by accident.
 4. Zero intersection -> typed `a2ui_catalog_no_client_match`.
+
+Before any of this, an agent with no producible catalogs returns
+`a2ui_no_catalogs_declared` (nothing declared) or `a2ui_no_catalogs_resolved`
+(declarations resolved to nothing): no client advertisement could change the
+outcome.
 
 `select_catalog` always **returns** a `CatalogSelection` (never raises); a
 producer tool (S4) is the one that turns an unsuccessful selection into a
@@ -282,20 +351,23 @@ always resolve it from the addressed surface's own record.
   agent capabilities>, "client": <last remembered client capabilities, or
   null>, "selection": <CatalogSelection, or the typed no-advertisement
   reason>}`.
-- `GET /v1/a2ui/catalogs` / `GET /v1/sessions/{sid}/a2ui/catalogs` (S2,
-  unchanged by this slice) — the client's registry source: every installed
-  catalog, with the session route adding the producibility verdict per row.
+- `GET /v1/a2ui/catalogs` / `GET /v1/sessions/{sid}/a2ui/catalogs` (S2) —
+  the client's registry source: every installed catalog, with the session
+  route adding the producibility verdict per row. The session route lists
+  the producible rows first, in the agent's declared order (v15 S8), then
+  every other installed catalog; a client that advertises its rows in order
+  therefore advertises the agent's preference.
 - `GET /v1/agents`, `GET /v1/agents/{id}` — each row's `metadata` gains
-  `a2ui_capabilities`: that row's OWN declaring blueprint's catalogs ∪ the
-  builtins (not the caller session's active blueprint — a listing enumerates
+  `a2ui_capabilities`: that row's OWN declaring blueprint's resolved
+  catalogs, in declared order (not the caller session's active blueprint — a listing enumerates
   every agent, most of which are not the session's current one). Resolution
   mirrors S2's own session activation (path-activated blueprints included,
   not only installed ones); an unresolved `agent_blueprint_id` records the
-  typed `a2ui_blueprint_unresolved` reason rather than silently falling back
-  to builtins with no signal.
+  typed `a2ui_blueprint_unresolved` reason and reports no catalogs. A row
+  with no blueprint declares nothing and reports none.
 - `GET /v1/agent-blueprints/{id}` — the detail response gains top-level
-  `a2ui_capabilities`: that ONE blueprint's declared catalog ids ∪ the
-  builtins.
+  `a2ui_capabilities`: that ONE blueprint's resolved catalog ids, in
+  declared order.
 
 ## Sub-agent stripping
 
@@ -357,7 +429,12 @@ per-session history cannot grow unbounded (bounded memory is release-gating):
 | `a2ui_client_capabilities_unknown` | selection attempted, no advertisement yet |
 | `a2ui_preferred_catalog_not_selectable` | `preferred` not in client-supported ∩ producible |
 | `a2ui_catalog_no_client_match` | selection attempted, zero intersection |
-| `a2ui_blueprint_unresolved` | (S2, reused) a row's `agent_blueprint_id` did not resolve via path-activation or the installed registry -- its `a2ui_capabilities` falls back to builtins-only |
+| `a2ui_blueprint_unresolved` | (S2, reused) a row's `agent_blueprint_id` did not resolve via path-activation or the installed registry -- its `a2ui_capabilities` is empty |
+| `a2ui_no_catalogs_declared` | (v15 S8) the session's agent declares no `a2ui_catalogs` -- no producer tools, no catalog skills, selection refuses |
+| `a2ui_no_catalogs_resolved` | (v15 S8) the agent declares `a2ui_catalogs` but none resolved to a loadable catalog |
+| `a2ui_catalog_builtin_unknown` | (v15 S8) an entry names a builtin this server does not ship |
+| `a2ui_catalog_declaration_invalid` | (v15 S8) an entry is malformed, or its catalog directory does not load |
+| `a2ui_catalog_declaration_conflict` | (v15 S8) the same name (or `catalogId`) declared with a different origin -- the later declaration is refused |
 | `a2ui_data_model_foreign_surface` | (S5) `a2uiClientDataModel` named a surfaceId this session never created -- that entry is dropped, the rest of the request still proceeds |
 | `a2ui_action_duplicate` | (S5) an action resubmitted the same idempotency key -- the existing record is returned, nothing re-delivered |
 | `a2ui_waiting_user_uncorrelated` | (S5) the session is `waiting_user` but no pending question correlates to the action's surface or `context.question_id` -- refused 409 |

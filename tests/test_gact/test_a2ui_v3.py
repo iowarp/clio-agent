@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch, raises
 
@@ -29,6 +30,10 @@ from clio_agent.gact.parts import Part
 from clio_agent.gact.protocol.constants import A2UI_V091
 from clio_agent.gact.protocol.v3.message import transcript_entities
 from clio_agent.gact.types import Message
+
+# Surface mechanics, not catalog policy: bare sessions resolve the builtin
+# catalogs (tests/test_gact/conftest.py::a2ui_builtin_catalogs, v15 S8).
+pytestmark = pytest.mark.usefixtures("a2ui_builtin_catalogs")
 
 HEADERS = {
     "X-GACT-Version": "0.3",

@@ -55,7 +55,7 @@ from clio_agent.gact.a2ui_capabilities import (
 from clio_agent.gact.a2ui_catalogs.builtin import basic_catalog_id, workspace_catalog_id
 from clio_agent.gact.app import build_app
 
-pytestmark = pytest.mark.usefixtures("host_agent_executor")
+pytestmark = pytest.mark.usefixtures("host_agent_executor", "a2ui_builtin_catalogs")
 
 BASIC_ID = basic_catalog_id()
 WORKSPACE_ID = workspace_catalog_id()

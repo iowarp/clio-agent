@@ -28,6 +28,8 @@ from clio_agent.gact.app import build_app
 from clio_agent.gact.skills import SkillCatalog
 from clio_agent.gact.types import AgentDef
 
+from .a2ui_catalog_binding import bind_builtin_catalogs
+
 BODY = "STEP ONE: inspect. STEP TWO: judge. SECRET_PROCEDURE_MARKER."
 
 
@@ -591,12 +593,8 @@ def test_load_skill_file_without_fragment_is_unaffected(pack: Path) -> None:
 # ---- S4: catalogs disclosed as skill directories ----------------------------------
 
 
-def test_root_agent_with_no_blueprint_declares_the_two_builtin_catalog_skills(
-    tmp_path: Path,
-) -> None:
-    """Golden: tier 1 gains exactly one line per producible catalog, nothing else."""
-
-    from clio_agent.gact.a2ui_catalogs.builtin import load_builtin_catalogs
+def test_root_agent_with_no_blueprint_declares_no_catalog_skills(tmp_path: Path) -> None:
+    """v15 S8: an agent that declares no catalogs gets no catalog index lines."""
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="root")
@@ -604,13 +602,31 @@ def test_root_agent_with_no_blueprint_declares_the_two_builtin_catalog_skills(
 
     rt = skill_runtime_for_agent(app, root, session_id=session.id)
 
+    assert not [skill_id for skill_id in rt.resolved if skill_id.startswith("a2ui-catalog-")]
+    assert "a2ui-catalog-" not in rt.prompt_block
+
+
+def test_root_agent_declares_one_catalog_skill_line_per_declared_catalog_in_order(
+    tmp_path: Path,
+) -> None:
+    """Golden: tier 1 gains exactly one line per declared catalog, in declared order."""
+
+    from clio_agent.gact.a2ui_catalogs.builtin import load_builtin_catalogs
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="root")
+    bind_builtin_catalogs(app, session.id)  # declares [clio-workspace, basic]
+    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+
+    rt = skill_runtime_for_agent(app, root, session_id=session.id)
+
     basic, workspace = load_builtin_catalogs()
-    assert list(rt.resolved) == ["a2ui-catalog-basic", "a2ui-catalog-clio-workspace"]
+    assert list(rt.resolved) == ["a2ui-catalog-clio-workspace", "a2ui-catalog-basic"]
     lines = rt.prompt_block.splitlines()
     assert lines[0] == "## Skills available to you"
     assert lines[2:] == [
-        f"- a2ui-catalog-basic: {basic.file['description']}",
         f"- a2ui-catalog-clio-workspace: {workspace.file['description']}",
+        f"- a2ui-catalog-basic: {basic.file['description']}",
     ]
 
 
@@ -644,6 +660,7 @@ def test_catalog_skill_body_generator_runs_once_across_twenty_turns(
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="root")
+    bind_builtin_catalogs(app, session.id)
     root = AgentDef(id="root", title="Root", module={"kind": "react"})
 
     for _ in range(20):
@@ -657,7 +674,9 @@ def test_catalog_skill_body_generator_runs_once_across_twenty_turns(
 _FIXTURE_A2UI_PACK = Path(__file__).resolve().parents[1] / "fixtures" / "a2ui_packs" / "minimal"
 
 
-def test_pack_blueprint_session_declares_three_catalog_skills(tmp_path: Path) -> None:
+def test_pack_blueprint_session_declares_only_its_own_catalog_skill(tmp_path: Path) -> None:
+    """v15 S8: the fixture pack lists only its own catalog -- no builtin skills."""
+
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="root")
     app.state.sessions.update(
@@ -671,11 +690,7 @@ def test_pack_blueprint_session_declares_three_catalog_skills(tmp_path: Path) ->
 
     rt = skill_runtime_for_agent(app, root, session_id=session.id)
 
-    assert list(rt.resolved) == [
-        "a2ui-catalog-basic",
-        "a2ui-catalog-clio-workspace",
-        "a2ui-catalog-minimal",
-    ]
+    assert list(rt.resolved) == ["a2ui-catalog-minimal"]
 
 
 def test_producer_tool_declaration_auto_declares_catalog_skills_for_a_child(
@@ -685,6 +700,7 @@ def test_producer_tool_declaration_auto_declares_catalog_skills_for_a_child(
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
     session = app.state.sessions.create(workspace_id="ws_default", title="child")
+    bind_builtin_catalogs(app, session.id)
     child = AgentDef(
         id="visual",
         title="Visual",
@@ -758,6 +774,7 @@ def test_load_skill_on_an_undeclared_catalog_skill_is_the_existing_not_declared_
     assert "unknown skill" in str(excinfo.value)
 
 
+@pytest.mark.usefixtures("a2ui_builtin_catalogs")
 def test_catalog_skill_body_carries_instructions_index_and_load_skill_call(
     tmp_path: Path,
 ) -> None:
@@ -780,6 +797,7 @@ def test_catalog_skill_body_carries_instructions_index_and_load_skill_call(
     )
 
 
+@pytest.mark.usefixtures("a2ui_builtin_catalogs")
 def test_catalog_skill_component_file_matches_the_validated_catalog(tmp_path: Path) -> None:
     """The loaded component schema is read from the SAME file the server validates
     against (S2's allowlist), never a second maintained copy."""
@@ -796,6 +814,7 @@ def test_catalog_skill_component_file_matches_the_validated_catalog(tmp_path: Pa
     assert "common_types.json#/$defs/Action" in out
 
 
+@pytest.mark.usefixtures("a2ui_builtin_catalogs")
 def test_catalog_skill_basic_exposes_both_sidecar_and_catalog_file_roots(
     tmp_path: Path,
 ) -> None:
@@ -821,6 +840,7 @@ def test_catalog_skill_basic_exposes_both_sidecar_and_catalog_file_roots(
     assert '"const": "Button"' in component
 
 
+@pytest.mark.usefixtures("a2ui_builtin_catalogs")
 def test_catalog_skill_fragment_trailer_distinguishes_local_from_standard_refs(
     tmp_path: Path,
 ) -> None:

@@ -389,6 +389,7 @@ def test_representative_basic_catalog_messages_validate(message: dict[str, Any])
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.usefixtures("a2ui_builtin_catalogs")
 def test_declared_function_call_passes_and_undeclared_fails(tmp_path: Path) -> None:
     client, sid = _session_client(tmp_path)
     registry = client.app.state.a2ui_catalogs
@@ -482,6 +483,7 @@ def test_undeclared_function_call_maps_to_typed_wire_error_code(tmp_path: Path) 
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.usefixtures("a2ui_builtin_catalogs")
 def test_map_latitude_out_of_range_names_pointer(tmp_path: Path) -> None:
     client, sid = _session_client(tmp_path)
     invalid = {
@@ -573,6 +575,7 @@ def test_installed_catalogs_route_lists_both_builtins(tmp_path: Path) -> None:
         assert "producible" not in row  # session-less: no producibility verdict
 
 
+@pytest.mark.usefixtures("a2ui_builtin_catalogs")
 def test_session_catalogs_route_reports_producibility_and_full_shape(tmp_path: Path) -> None:
     client, sid = _session_client(tmp_path)
 
@@ -692,6 +695,7 @@ def test_replay_catalog_unavailable_is_recorded_in_the_retrievable_session_ledge
     assert any(row["reason"] == "a2ui_catalog_unavailable" for row in reasons)
 
 
+@pytest.mark.usefixtures("a2ui_builtin_catalogs")
 def test_declared_agent_destination_is_not_recorded_as_undeclared(tmp_path: Path) -> None:
     """An event name the sidecar routes to a non-default destination is
     DECLARED; only a name the sidecar never mentions gets the
@@ -842,6 +846,7 @@ def test_dotted_pack_component_name_records_uax31_warning_not_an_error(tmp_path:
     assert matches[-1]["severity"] == "info"
 
 
+@pytest.mark.usefixtures("a2ui_builtin_catalogs")
 def test_basic_surface_rejects_a_workspace_only_component(tmp_path: Path) -> None:
     """A surface's catalog is fixed for its lifetime: a Basic-catalog surface
     cannot later accept a clio.* (workspace-only) component."""

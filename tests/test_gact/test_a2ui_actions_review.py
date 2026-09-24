@@ -20,6 +20,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import pytest
 from pytest import MonkeyPatch
 
 from clio_agent.gact.a2ui_catalogs.builtin import workspace_catalog_id
@@ -27,6 +28,10 @@ from clio_agent.gact.app import build_app
 from clio_agent.gact.protocol.constants import A2UI_V091
 
 from .test_a2ui_v3 import HEADERS, _create_message, _session_client
+
+# Surface mechanics, not catalog policy: bare sessions resolve the builtin
+# catalogs (tests/test_gact/conftest.py::a2ui_builtin_catalogs, v15 S8).
+pytestmark = pytest.mark.usefixtures("a2ui_builtin_catalogs")
 
 WORKSPACE_CATALOG_ID = workspace_catalog_id()
 

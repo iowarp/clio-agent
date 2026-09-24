@@ -3,10 +3,13 @@
 ``CatalogRegistry.get``/``.installed()`` answer "does this id resolve" for
 EVERY installed catalog (builtin ∪ every discovered pack). Producibility is
 narrower: a session may only mint a ``createSurface`` against a catalog its
-OWN active blueprint declared (plus the two builtins, always available). An
-installed-but-inactive pack's catalog resolves (so replay of an old surface
-never breaks) but is not producible in a session that never activated that
-pack — mirrors ``blueprint_activation.resolve_active_blueprint_servers`` /
+OWN agent declared (v15 S8: the agent's ``a2ui_catalogs`` is the COMPLETE
+allowlist -- the builtins are producible only when listed, and an agent that
+declares nothing produces nothing). :func:`resolve_session_catalogs` is the
+ONE resolution every producibility/disclosure consumer derives from. An
+installed-but-undeclared catalog still resolves (so replay of an old surface
+never breaks) but is not producible -- the active blueprint resolution
+mirrors ``blueprint_activation.resolve_active_blueprint_servers`` /
 ``blueprint_mcp_servers``'s path-first-then-installed resolution exactly, so
 the two "what can this session use" answers (MCP servers, A2UI catalogs)
 follow one decision.
@@ -23,6 +26,7 @@ from clio_agent.gact.protocol.constants import A2UI_V091
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+    from clio_agent.gact.a2ui_catalogs.declarations import ResolvedCatalogs
     from clio_agent.gact.a2ui_catalogs.registry import CatalogEntry, CatalogResolver
 
 
@@ -92,40 +96,86 @@ def _active_blueprint(app: "FastAPI", session_id: str) -> Any | None:
     return match
 
 
+def session_declaration_sources(app: "FastAPI", session_id: str) -> list[Any]:
+    """Return the session agent's ordered catalog declaration sources.
+
+    Today at most one: the session's active blueprint. Agent-plugins 1.0
+    appends one source per plugin here; no consumer changes (the forward
+    shape in ``declarations.py``).
+    """
+
+    from clio_agent.gact.a2ui_catalogs.declarations import (  # noqa: PLC0415
+        blueprint_catalog_source,
+    )
+
+    blueprint = _active_blueprint(app, session_id)
+    return [blueprint_catalog_source(blueprint)] if blueprint is not None else []
+
+
+def resolve_session_catalogs(app: "FastAPI", session_id: str) -> "ResolvedCatalogs":
+    """Return the ONE catalog resolution for ``session_id``'s agent.
+
+    Producibility (:func:`session_producible_catalog_ids`), the capability
+    advertisement, catalog selection, the catalog skill index, producer-tool
+    attachment and the catalog routes all derive from this -- the ordered,
+    deduplicated union of the agent's declaration sources.
+    """
+
+    from clio_agent.gact.a2ui_catalogs.declarations import (  # noqa: PLC0415
+        resolve_agent_catalogs,
+    )
+
+    return resolve_agent_catalogs(session_declaration_sources(app, session_id))
+
+
 def session_producible_catalog_ids(app: "FastAPI", session_id: str) -> list[str]:
     """Return the catalog ids ``session_id`` may CREATE a surface against.
 
-    Always includes both builtin catalogs (Basic, CLIO workspace) plus every
-    catalog the session's active blueprint declares. A session with no
-    active blueprint gets the builtins only.
+    Exactly the catalogs the session's agent declares, in its declared
+    (preference) order -- no builtin is implicit. A session whose agent
+    declares nothing (or has no active blueprint) gets none.
 
     Args:
         app: The FastAPI app carrying ``app.state.a2ui_catalogs``.
         session_id: The session to resolve producibility for.
 
     Returns:
-        Sorted, deduplicated catalog ids.
+        Declared-order, deduplicated catalog ids.
     """
 
-    from clio_agent.gact.a2ui_catalogs.blueprint import (  # noqa: PLC0415
-        blueprint_catalog_map,
-        load_blueprint_catalogs,
-    )
-
-    registry = getattr(app.state, "a2ui_catalogs", None)
-    if registry is None:
+    if getattr(app.state, "a2ui_catalogs", None) is None:
         record_a2ui_catalog_reason(
             "a2ui_catalog_unavailable",
             session_id=session_id,
             detail="app.state.a2ui_catalogs is not set; producibility degrades to no catalogs",
         )
-        ids: set[str] = set()
-    else:
-        ids = {entry.catalog_id for entry in registry.builtin()}
-    blueprint = _active_blueprint(app, session_id)
-    if blueprint is not None and blueprint_catalog_map(blueprint):
-        ids.update(entry.catalog_id for entry in load_blueprint_catalogs(blueprint))
-    return sorted(ids)
+        return []
+    return list(resolve_session_catalogs(app, session_id).catalog_ids)
+
+
+def session_a2ui_producers_enabled(app: Any, session_id: str) -> bool:
+    """Whether a ROOT agent in ``session_id`` gets the A2UI producer tools.
+
+    True only when the agent resolves at least one catalog. Otherwise the
+    typed reason (``a2ui_no_catalogs_declared`` when nothing is declared,
+    ``a2ui_no_catalogs_resolved`` when declarations resolve to nothing) is
+    recorded on the session ledger and the trace -- never a silent omission.
+    Without an app or session there is nothing to resolve against, which is
+    traced the same way.
+    """
+
+    from clio_agent.runtime import trace  # noqa: PLC0415
+
+    registry = getattr(getattr(app, "state", None), "a2ui_catalogs", None)
+    if registry is None or not session_id:
+        trace.event("A2UI", "producer tools withheld: no app/session catalog context")
+        return False
+    reason = resolve_session_catalogs(app, session_id).empty_reason()
+    if reason is None:
+        return True
+    registry.record_session_reason(session_id, reason)
+    trace.event("A2UI", "producer tools withheld for %s: %s", session_id, reason)
+    return False
 
 
 @dataclass(frozen=True)
@@ -150,30 +200,24 @@ class _SessionCatalogResolver:
         found = self.base.get(catalog_id, protocol_version)
         if found is not None:
             return found
-        blueprint = _active_blueprint(self.app, self.session_id)
-        if blueprint is None:
-            return None
-        from clio_agent.gact.a2ui_catalogs.blueprint import load_blueprint_catalogs  # noqa: PLC0415
-
-        return next(
-            (
-                entry
-                for entry in load_blueprint_catalogs(blueprint)
-                if entry.catalog_id == catalog_id and entry.protocol_version == protocol_version
-            ),
-            None,
-        )
+        return resolve_session_catalogs(self.app, self.session_id).get(catalog_id, protocol_version)
 
 
 def session_catalog_resolver(app: "FastAPI", session_id: str) -> "CatalogResolver":
     """Return the catalog resolver a production door should validate against.
 
     The app-level registry (``app.state.a2ui_catalogs``) plus, when the
-    catalogId it names is not otherwise installed, the session's own
-    PATH-activated blueprint's declared catalogs.
+    catalogId it names is not otherwise installed, the session's own resolved
+    catalogs (which is how a PATH-activated pack's catalog resolves).
     """
 
     return _SessionCatalogResolver(base=app.state.a2ui_catalogs, app=app, session_id=session_id)
 
 
-__all__ = ["session_catalog_resolver", "session_producible_catalog_ids"]
+__all__ = [
+    "resolve_session_catalogs",
+    "session_a2ui_producers_enabled",
+    "session_catalog_resolver",
+    "session_declaration_sources",
+    "session_producible_catalog_ids",
+]

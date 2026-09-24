@@ -82,6 +82,14 @@ _DEFAULT_HINTS: dict[str, str] = {
         "this session's client renders no catalog this session can "
         "produce; answer in prose, do not retry"
     ),
+    "a2ui_no_catalogs_declared": (
+        "this agent declares no A2UI catalogs, so it cannot create surfaces; "
+        "answer in prose, do not retry"
+    ),
+    "a2ui_no_catalogs_resolved": (
+        "none of this agent's declared A2UI catalogs could be loaded, so it "
+        "cannot create surfaces; answer in prose, do not retry"
+    ),
     "a2ui_preferred_catalog_not_selectable": (
         "omit catalog_id to auto-select instead, or pass one present in "
         "BOTH this result's client_supported_catalog_ids and "
@@ -165,7 +173,7 @@ def catalog_selection_refusal(
 ) -> dict[str, Any]:
     """Build the fully-worded refusal for a failed :func:`select_catalog` outcome.
 
-    ``create_a2ui_surface`` funnels three distinct selection failures through
+    ``create_a2ui_surface`` funnels five distinct selection failures through
     one call site; each reads its own ``detail`` stating exactly what is true
     about the session's negotiated capabilities rather than one reused
     generic sentence (S8, issue #1374 live-gate comment).
@@ -173,7 +181,17 @@ def catalog_selection_refusal(
 
     reason = selection.reason
     assert reason is not None, "catalog_selection_refusal requires a failed selection"
-    if reason == "a2ui_client_capabilities_unknown":
+    if reason == "a2ui_no_catalogs_declared":
+        detail = (
+            "this session's agent declares no a2ui_catalogs, so it has no catalog "
+            "to create a surface against"
+        )
+    elif reason == "a2ui_no_catalogs_resolved":
+        detail = (
+            "this session's agent declares a2ui_catalogs, but none of them "
+            "resolved to a loadable catalog"
+        )
+    elif reason == "a2ui_client_capabilities_unknown":
         detail = (
             "this session's client has not advertised a2uiClientCapabilities "
             "yet, so no client catalog preference exists to select from"

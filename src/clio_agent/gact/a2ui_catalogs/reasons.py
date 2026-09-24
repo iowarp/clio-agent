@@ -275,6 +275,46 @@ _A2UI_CATALOG_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
             "instead of incrementally folded"
         ),
     },
+    # Per-agent catalog allowlist (v15 S8, declarations.py): an agent's
+    # ``a2ui_catalogs`` is the COMPLETE list of catalogs it may produce
+    # against -- nothing is implicit, builtins included.
+    "a2ui_no_catalogs_declared": {
+        "severity": "info",
+        "detail": (
+            "the session's agent declares no a2ui_catalogs -- it has no producible "
+            "catalogs, so no A2UI producer tools are attached and no catalog skill "
+            "is disclosed"
+        ),
+    },
+    "a2ui_no_catalogs_resolved": {
+        "severity": "warning",
+        "detail": (
+            "the session's agent declares a2ui_catalogs, but none of them resolved "
+            "to a loadable catalog -- it has no producible catalogs"
+        ),
+    },
+    "a2ui_catalog_builtin_unknown": {
+        "severity": "warning",
+        "detail": (
+            "an a2ui_catalogs entry names a builtin catalog this server does not "
+            "ship -- the entry is refused, never guessed at"
+        ),
+    },
+    "a2ui_catalog_declaration_invalid": {
+        "severity": "warning",
+        "detail": (
+            "an a2ui_catalogs entry is malformed (not a builtin name or a single "
+            "name: directory mapping) or its catalog directory does not load"
+        ),
+    },
+    "a2ui_catalog_declaration_conflict": {
+        "severity": "warning",
+        "detail": (
+            "two a2ui_catalogs declarations use the same name (or the same catalogId) "
+            "with a different origin -- the later one is refused, never a silent "
+            "override of the earlier one"
+        ),
+    },
 }
 
 #: Ring size shared by this global ledger AND ``CatalogRegistry``'s per-session
