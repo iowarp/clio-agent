@@ -329,6 +329,17 @@ def test_resumable_upload_computes_server_identity_and_survives_restart(tmp_path
         assert source_entry["size"] == len(content)
         assert source_entry["media_type"] == "text/markdown"
 
+        # The .clio walk now descends into everything EXCEPT .clio/inputs (owner
+        # ruling: show all dot files/folders, but the managed-input subtree is
+        # already surfaced above as a friendly Sources/<id>/<name> entry, so it
+        # must not also show up a second time under its raw .clio/inputs path).
+        all_entries = client.get(f"/v1/workspaces/{workspace_id}/files").json()["entries"]
+        matching_paths = [
+            entry["path"] for entry in all_entries if entry["path"] == source_entry["path"]
+        ]
+        assert matching_paths == [source_entry["path"]]
+        assert not any(entry["path"] == ".clio/inputs" for entry in all_entries)
+
         workspace_copy.write_bytes(b"mutable workspace edit\n")
         assert custody.read_bytes() == content
         assert client.get(created["upload_url"]).content == content
