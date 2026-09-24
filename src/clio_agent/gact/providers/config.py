@@ -157,6 +157,20 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
     return _with_native_capability_flags(app, cfg)
 
 
+def requested_thinking_level(app: "FastAPI", req: Any) -> str | None:
+    """The global thinking level a ``PUT /v1/providers/lm`` binds.
+
+    An explicit value (``null`` included: back to the provider/model default) is
+    the person's choice; an OMITTED field keeps the level already configured, so
+    applying a model change never silently clears a chosen level.
+    """
+
+    if "thinking_level" in getattr(req, "model_fields_set", set()):
+        return req.thinking_level
+    level = _effective_lm_config(app).get("thinking_level")
+    return str(level) if level else None
+
+
 def _default_profile_spec(app: "FastAPI") -> Any:
     """Return the per-app profile store's default :class:`LMSpec`, or ``None``.
 

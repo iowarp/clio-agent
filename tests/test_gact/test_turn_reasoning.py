@@ -208,3 +208,20 @@ def test_child_does_not_inherit_a_global_level() -> None:
     resolved = apply_turn_reasoning(_message(None), child, app=app, session=session)  # type: ignore[arg-type]
 
     assert resolved is child
+
+
+def test_put_lm_keeps_the_configured_level_unless_explicitly_changed() -> None:
+    """Applying a model change must not silently clear the chosen global level."""
+    from clio_agent.gact.lm_provider_types import LMProviderRequest
+    from clio_agent.gact.providers.config import requested_thinking_level
+
+    app = SimpleNamespace(state=SimpleNamespace(lm_config={"thinking_level": "high"}, agent=None))
+    omitted = LMProviderRequest(provider="codex", api_base="", model="gpt-5.5")
+    cleared = LMProviderRequest(provider="codex", api_base="", model="gpt-5.5", thinking_level=None)
+    changed = LMProviderRequest(
+        provider="codex", api_base="", model="gpt-5.5", thinking_level="max"
+    )
+
+    assert requested_thinking_level(app, omitted) == "high"  # type: ignore[arg-type]
+    assert requested_thinking_level(app, cleared) is None  # type: ignore[arg-type]
+    assert requested_thinking_level(app, changed) == "max"  # type: ignore[arg-type]
