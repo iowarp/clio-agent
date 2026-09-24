@@ -46,6 +46,7 @@ from clio_agent.gact.types import (
     ListWorkspacesResponse,
     Workspace,
 )
+from clio_agent.gact.workspace_watch import WorkspaceWatchRegistry
 from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
@@ -244,6 +245,13 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
     direct-destructive-action guard through ``deps`` rather than any
     ``build_app`` local.
     """
+
+    # F1: one OS-level file-change watcher per workspace root (workspace_watch.py),
+    # started/stopped by the SSE subscribe hook (routes/misc.py) and torn down here
+    # on delete. Constructed at route-registration time (this runs once, synchronously,
+    # from build_app) rather than in app.py's lifespan -- app.py is at its documented
+    # line-count ratchet and this concern owns its own lifecycle end-to-end.
+    app.state.workspace_watch = WorkspaceWatchRegistry()
 
     # ---- /v1/workspaces -------------------------
 
@@ -488,6 +496,7 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
             reason="user_requested_workspace_delete",
         )
         delete_workspace_resources(app, wid)
+        await app.state.workspace_watch.remove(wid)
         app.state.workspaces.delete(wid)
         return Response(status_code=204)
 
@@ -553,7 +562,17 @@ def register_workspaces_routes(app: FastAPI, deps: "GactDeps") -> None:
             include_hidden=include_hidden,
             exclude_service_storage=exclude_service_storage,
         )
-        return {"entries": walk.entries, "truncated": walk.truncated}
+        return {
+            "entries": walk.entries,
+            "truncated": walk.truncated,
+            # F1: honest live-update health -- {"active": true}, {"active": false}
+            # (no subscriber yet, not a failure), or {"active": false, "reason":
+            # "workspace_watch_unavailable", "detail": "..."} when the OS watch
+            # itself could not start (permission, unsupported filesystem). The
+            # client shows a hover card + leans on the manual Refresh button only
+            # in that last, typed-reason case.
+            "live_updates": app.state.workspace_watch.status(wid),
+        }
 
     @app.get("/v1/workspaces/{wid}/repo_map")
     async def workspace_repo_map(wid: str) -> dict[str, Any]:

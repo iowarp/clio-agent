@@ -87,6 +87,12 @@ dependencies = [
     "fastapi>=0.140",
     "uvicorn>=0.24.0",
     "sse-starlette>=1.6.0",
+    # Workspace file-change watcher (gact/workspace_watch.py, F1): the OS
+    # change-notification bridge (ReadDirectoryChangesW / inotify / FSEvents) via
+    # the Rust `notify` crate. Already present transitively through fastmcp's
+    # `server` extra; declared explicitly now that first-party code imports it
+    # directly, rather than relying on an incidental transitive resolution.
+    "watchfiles>=1.0.0",
     # clio_agent.sdk (#799) — the typed GACT client imports httpx directly
     # (already present transitively via fastmcp/dspy; declared so the SDK
     # does not lean on someone else's dependency tree).

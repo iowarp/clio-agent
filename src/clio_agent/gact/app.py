@@ -857,6 +857,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Studio instance cannot add its entire retry window to Desktop Quit.
     desktop_lifecycle.wake_for_shutdown()
 
+    # F1 (workspace file watcher): stop every resident watcher task up front --
+    # independent of turn/session state, so its OS notification handles are
+    # released before the rest of teardown runs. Owner module workspace_watch.py.
+    await app.state.workspace_watch.shutdown()
+
     # #1334: no request is served on this loop any more, so the teardown flushes below
     # (the turn drain, the trace close) must LAND rather than be refused and dropped.
     loop_guard.begin_server_loop_drain(app.state.mcp_app_loop)

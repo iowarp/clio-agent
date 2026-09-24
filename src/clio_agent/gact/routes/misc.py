@@ -40,6 +40,7 @@ from clio_agent.gact.runtime.constants import GACT_BACKEND_VERSION
 from clio_agent.gact.runtime.globals import _format_sse
 from clio_agent.gact.runtime.retention import enforce_dict_bound
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Session
+from clio_agent.gact.workspace_watch import resolve_workspace_root
 from clio_agent.runtime.stream_audit import stream_audit
 
 # Connection-preamble events (server.connected / session.snapshot) carry this
@@ -503,6 +504,18 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
                 _sse_wire_tap(sid, _frame, gap)
                 yield _frame
                 last_event_id = 0
+            # F1: this connection is exactly a "live subscriber" for the session's
+            # workspace (owner spec) -- acquire the workspace's file-change watcher
+            # for the connection's lifetime and release it in `finally` below.
+            # Multiple sessions in the same workspace share one refcounted watcher
+            # (workspace_watch.WorkspaceWatchRegistry); a workspace with no root yet
+            # (or a root that has vanished) simply never starts one.
+            watch_workspace_id = str(getattr(sess_snapshot, "workspace_id", "") or "")
+            watch_root = (
+                resolve_workspace_root(app, watch_workspace_id) if watch_workspace_id else None
+            )
+            if watch_root is not None:
+                await app.state.workspace_watch.acquire(app, watch_workspace_id, watch_root)
             sub = app.state.bus.subscribe(sid, last_event_id=last_event_id)
             heartbeat_task: Optional[asyncio.Task] = None
             try:
@@ -528,6 +541,8 @@ def register_misc_routes(app: FastAPI, deps: "GactDeps") -> None:
             finally:
                 if heartbeat_task is not None:
                     heartbeat_task.cancel()
+                if watch_root is not None:
+                    await app.state.workspace_watch.release(app, watch_workspace_id)
 
         return StreamingResponse(
             event_stream(),

@@ -477,7 +477,16 @@ RATCHET_BASELINE: dict[str, int] = {
     # landed here.
     # Desktop lifecycle and agent-initialization owners from release combine
     # with develop's activation extraction and provider startup refresh.
-    "src/clio_agent/gact/app.py": 2470,
+    # F1 (workspace file watcher, #1422-adjacent): +5 (2470 -> 2475) for the one
+    # shutdown call site `_lifespan` needs to stop every resident watcher task
+    # before the rest of teardown runs -- FastAPI 0.141 dropped `add_event_handler`/
+    # `on_event`, so the custom `lifespan=` context manager is the ONLY place an
+    # ASGI shutdown hook can land; there is no way to register this from another
+    # module. All watcher construction, refcounting, filtering, debouncing, and the
+    # typed-unavailable-reason handling live in the owner module
+    # gact/workspace_watch.py; only the one `await ...shutdown()` call plus its
+    # three-line rationale comment are here.
+    "src/clio_agent/gact/app.py": 2475,
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg

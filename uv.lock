@@ -466,6 +466,7 @@ dependencies = [
     { name = "tzdata" },
     { name = "tzlocal" },
     { name = "uvicorn" },
+    { name = "watchfiles" },
 ]
 
 [package.optional-dependencies]
@@ -567,6 +568,7 @@ requires-dist = [
     { name = "tzdata", specifier = ">=2024.1" },
     { name = "tzlocal", specifier = ">=5.2" },
     { name = "uvicorn", specifier = ">=0.24.0" },
+    { name = "watchfiles", specifier = ">=1.0.0" },
 ]
 provides-extras = ["optimizers", "adios", "argonne", "claude-code", "flowcept", "dev", "all"]
 
