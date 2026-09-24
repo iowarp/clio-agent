@@ -43,6 +43,27 @@ class ConnectivityResult:
     auth_header: dict[str, str] = field(default_factory=dict)
 
 
+class DiscoveryAuthRejected(Exception):
+    """A provider rejected the credential only once model listing was attempted.
+
+    ``check_connectivity`` for some providers (Argonne/ALCF) resolves a token
+    without a network call, so a token that is syntactically present but
+    rejected by the provider's own policy (e.g. ALCF's "high-assurance
+    timeout") is invisible until ``discover_models`` actually calls the
+    ``/models`` endpoint. Raising this from ``discover_models`` downgrades the
+    resulting :class:`~clio_agent.providers.handshake.model.HandshakeReport`'s
+    ``auth`` to :data:`AuthState.REJECTED` (instead of leaving the connectivity
+    phase's stale ``OK``), so ``report.ok`` is False and health stops reporting
+    ``ready`` — the typed ``reason``/``detail`` become the report's ``error``
+    instead of a bare HTTP status string.
+    """
+
+    def __init__(self, reason: str, detail: str = "") -> None:
+        self.reason = reason
+        self.detail = detail
+        super().__init__(f"{reason}: {detail}" if detail else reason)
+
+
 @dataclass
 class HandshakeContext:
     """Inputs to a handshake.
@@ -114,6 +135,14 @@ class ProviderHandshake(abc.ABC):
                 ctx.extra["auth_header"] = conn.auth_header
             try:
                 raw_models = await self.discover_models(client, ctx)
+            except DiscoveryAuthRejected as exc:
+                return self._report(
+                    ctx,
+                    ConnectivityState.OK,
+                    AuthState.REJECTED,
+                    error=str(exc),
+                    started=started,
+                )
             except Exception as exc:  # noqa: BLE001 - surfaced in HandshakeReport.error
                 return self._report(
                     ctx,

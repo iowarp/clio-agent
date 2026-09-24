@@ -51,7 +51,9 @@ class SessionDefaults(BaseModel):
     model_id: str = Field(default="", max_length=256)
     #: Starting thinking level for new sessions. ``None`` means "the selected
     #: model's own default": a fixed level here would override every model.
-    effort: Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"] | None = None
+    effort: Literal["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] | None = (
+        None
+    )
     #: ``"user"`` when a person picked ``effort``; written only by :meth:`update`.
     effort_source: Literal["user"] | None = None
     mode: Literal["plan", "edit", "architect"] = "edit"
@@ -68,7 +70,9 @@ class UpdateSessionDefaultsRequest(BaseModel):
 
     provider_id: str | None = Field(default=None, max_length=128)
     model_id: str | None = Field(default=None, max_length=256)
-    effort: Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"] | None = None
+    effort: Literal["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] | None = (
+        None
+    )
     mode: Literal["plan", "edit", "architect"] | None = None
     edit_mode: Literal["diff", "whole", "patch"] | None = None
     routing_mode: Literal["auto", "chat", "experts", "reasoning_only"] | None = None

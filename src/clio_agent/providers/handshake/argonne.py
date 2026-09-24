@@ -33,6 +33,7 @@ from typing import Any
 
 from clio_agent.providers.handshake.base import (
     ConnectivityResult,
+    DiscoveryAuthRejected,
     HandshakeContext,
     ProviderHandshake,
 )
@@ -65,7 +66,15 @@ PASSIVE_TOKEN_REASONS: dict[str, str] = {
         "a Globus sign-in is stored but could not produce an access token without signing in again"
     ),
     "argonne_stored_token_empty": "the stored Globus sign-in returned an empty access token",
+    "argonne_sdk_missing": (
+        "the 'argonne' extra (globus-sdk) is not installed, so the stored Globus "
+        "sign-in cannot be used"
+    ),
 }
+
+#: ALCF's inference API's own 401/403 body, e.g. the "high-assurance timeout"
+#: policy rejection: {"error": {"code": "unauthorized", "message": "..."}}.
+_ALCF_REAUTH_REASON = "argonne_reauthentication_required"
 
 
 @dataclass(frozen=True)
@@ -90,6 +99,32 @@ class PassiveTokenLookup:
             return None
         message = f"{self.reason}: {PASSIVE_TOKEN_REASONS[self.reason]}"
         return f"{message} ({self.detail})" if self.detail else message
+
+
+def _alcf_error_detail(response: Any) -> str:
+    """Extract ALCF's own error message from a 401/403 ``/models`` response.
+
+    ALCF's usual shape is ``{"error": {"code": "unauthorized", "message":
+    "Error: Permission denied from internal policies. This is likely due to a
+    high-assurance timeout. Please logout ... and re-authenticate ..."}}`` --
+    the "high-assurance timeout" case is the common one this exists for. Any
+    other 401/403 body still yields a typed reason: the raw text when the body
+    isn't that shape, never a bare HTTP status.
+    """
+
+    try:
+        payload = response.json()
+    except Exception:  # noqa: BLE001 - non-JSON body: fall back to raw text
+        return str(getattr(response, "text", "") or f"HTTP {response.status_code}")
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            return str(error["message"])
+        if isinstance(error, str) and error:
+            return error
+        if payload.get("message"):
+            return str(payload["message"])
+    return str(payload)
 
 
 class ArgonneHandshake(ProviderHandshake):
@@ -148,10 +183,16 @@ class ArgonneHandshake(ProviderHandshake):
             return PassiveTokenLookup(token=None, reason="argonne_token_missing")
         try:
             token = argonne_auth.get_access_token(False, allow_interactive=False)
+        except argonne_auth.GlobusUnavailable as exc:
+            # Distinct from an unusable stored token: no amount of re-signing-in
+            # helps here -- the 'argonne' extra itself is not installed.
+            lookup = PassiveTokenLookup(token=None, reason="argonne_sdk_missing", detail=str(exc))
+            logger.warning("argonne passive token lookup failed: %s", lookup.error)
+            return lookup
         except Exception as exc:  # noqa: BLE001 - any refresh failure becomes a typed reason
             # A stored token that fails to validate offline (expired refresh,
-            # missing globus-sdk, network) is "deferred, not usable now" -- and
-            # the reason travels with it instead of vanishing.
+            # network) is "deferred, not usable now" -- and the reason travels
+            # with it instead of vanishing.
             lookup = PassiveTokenLookup(
                 token=None, reason="argonne_stored_token_unusable", detail=str(exc)
             )
@@ -235,6 +276,8 @@ class ArgonneHandshake(ProviderHandshake):
         headers = self._auth_header(ctx)
 
         models_resp = await client.get(f"{gateway_root}/{cluster}/models", headers=headers)
+        if models_resp.status_code in (401, 403):
+            raise DiscoveryAuthRejected(_ALCF_REAUTH_REASON, _alcf_error_detail(models_resp))
         models_resp.raise_for_status()
         rows = models_resp.json()
         if not isinstance(rows, list):

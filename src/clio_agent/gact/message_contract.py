@@ -22,7 +22,7 @@ class MessageBehavior(BaseModel):
     #: (``gact.turn_reasoning``). ``None`` means "use the configured level" -- a
     #: fabricated default here would silently override the user's setting.
     reasoning_effort: Optional[
-        Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+        Literal["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
     ] = None
     execution_mode: Literal["execute", "plan", "deep_research"] = "execute"
     confirmation_policy: Literal["ask", "auto-edits", "bypass", "ai-review", "spotter-ai"] = "ask"

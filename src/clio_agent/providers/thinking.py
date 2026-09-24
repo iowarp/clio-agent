@@ -53,10 +53,10 @@ from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
-ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
 
 #: Every external level, in ascending order (``None``/unset means "provider default").
-LEVEL_ORDER: tuple[str, ...] = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
+LEVEL_ORDER: tuple[str, ...] = ("off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 
 #: Valid external levels (``None``/unset means "provider default").
 THINKING_LEVELS: frozenset[str] = frozenset(LEVEL_ORDER)
@@ -69,6 +69,8 @@ LEVEL_BUDGET: dict[str, int] = {"low": 2048, "medium": 8192, "high": 24576}
 _BUDGET_LEVELS: frozenset[str] = frozenset({"off", "low", "medium", "high"})
 
 #: Codex effort vocabulary (the SDK's ``ReasoningEffort``). ``off`` → ``none``.
+#: ``max``/``ultra`` are reported by newer models (#1436) -- every effort the
+#: SDK defines gets a clio level; none are dropped.
 _CODEX_EFFORT: dict[str, str] = {
     "off": "none",
     "minimal": "minimal",
@@ -76,6 +78,8 @@ _CODEX_EFFORT: dict[str, str] = {
     "medium": "medium",
     "high": "high",
     "xhigh": "xhigh",
+    "max": "max",
+    "ultra": "ultra",
 }
 
 #: The levels each provider's transport can express at all. A model's own

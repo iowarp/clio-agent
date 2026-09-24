@@ -39,7 +39,8 @@ from clio_agent.providers.thinking import LEVEL_ORDER, resolve_thinking, shipped
 
 logger = logging.getLogger(__name__)
 
-#: Codex ``ReasoningEffort`` values -> clio thinking levels.
+#: Codex ``ReasoningEffort`` values -> clio thinking levels. ``max``/``ultra``
+#: are reported by newer models (#1436) and map onto themselves like ``xhigh``.
 _CODEX_TO_LEVEL: dict[str, str] = {
     "none": "off",
     "minimal": "minimal",
@@ -47,6 +48,8 @@ _CODEX_TO_LEVEL: dict[str, str] = {
     "medium": "medium",
     "high": "high",
     "xhigh": "xhigh",
+    "max": "max",
+    "ultra": "ultra",
 }
 
 _BUDGET_LADDER: tuple[str, ...] = ("off", "low", "medium", "high")
@@ -129,6 +132,26 @@ def _claude_code_row(model: str) -> dict[str, Any] | None:
         if bare == row.get("id") or bare in aliases or model in aliases:
             return row
     return None
+
+
+def resolve_configured_model_id(provider_kind: str, model: str) -> str:
+    """Return the full catalog model id a configured ``model`` resolves to.
+
+    Only claude_code reports CLI aliases today (e.g. ``sonnet`` ->
+    ``claude-sonnet-5``); every other provider's configured ``model`` already
+    IS its catalog id, so it is returned unchanged. Uses the same overlay row
+    lookup the catalog's reasoning levels come from (:func:`_claude_code_row`)
+    -- the provider's own resolution, not a hand-typed table -- so a client
+    can find a configured alias's catalog row (and its reasoning levels)
+    without knowing the mapping itself. Falls back to ``model`` unchanged when
+    no overlay row matches (no discovery has run yet, or an unknown alias).
+    """
+
+    if provider_kind != "claude_code" or not model:
+        return model
+    row = _claude_code_row(model)
+    resolved = str((row or {}).get("id") or "")
+    return resolved or model
 
 
 def model_effort_levels(
@@ -251,4 +274,4 @@ def model_reasoning(provider_kind: str, profile: ModelProfile) -> dict[str, Any]
     return block
 
 
-__all__ = ["model_effort_levels", "model_reasoning"]
+__all__ = ["model_effort_levels", "model_reasoning", "resolve_configured_model_id"]
