@@ -167,8 +167,8 @@ an agent that lists them, exactly like a pack's own catalog.
 
 ```yaml
 a2ui_catalogs:
-  - earthscope-stations: catalogs/earthscope-stations   # pack-local: name: relative/dir
   - clio-workspace                                      # builtin, by name (or basic)
+  - earthscope-stations: catalogs/earthscope-stations   # pack-local: name: relative/dir
 ```
 
 - **Order is preference.** The written order is the agent's preference
@@ -259,12 +259,14 @@ like an MCP server:
 
 ```yaml
 a2ui_catalogs:
-  - earthscope-stations: catalogs/earthscope-stations
   - clio-workspace
+  - earthscope-stations: catalogs/earthscope-stations
 ```
 
-(its own catalog first, then the builtin workspace catalog; since v15 S8 the
-list is the agent's complete allowlist), and `experts/main.md` lists the same
+(the builtin workspace catalog first, as the default for general views, then
+its own catalog; since v15 S8 the list is the agent's complete allowlist; a
+station surface names its catalog, whose id the catalog's `instructions.md`
+states), and `experts/main.md` lists the same
 names under its own `a2ui_catalogs:` so the root expert gets the generated
 skills `a2ui-catalog-earthscope-stations` and `a2ui-catalog-clio-workspace`. Installing the pack (`install_agent_blueprint`,
 the same path an MCP server's declaration takes) registers the catalog under

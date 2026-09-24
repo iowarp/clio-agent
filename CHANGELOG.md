@@ -21,8 +21,8 @@ TUI/HTTP surface aren't tracked here.
   catalog skills, and the session records `a2ui_no_catalogs_declared`. Basic
   is still installed and still renders existing surfaces. An unknown builtin
   name, a missing catalog directory, or two declarations of one name with
-  different origins is a validation error. The shipped marketplace agents
-  declare their catalogs and require this release (clio-agent-marketplace,
+  different origins is a validation error. Every shipped marketplace agent
+  declares at least `clio-workspace` and requires this release (clio-agent-marketplace,
   `requires: clio_agent >= 0.9.4.17`).
 
 ## [0.9.4.16] — 2026-09-23

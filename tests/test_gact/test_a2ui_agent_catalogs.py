@@ -303,7 +303,7 @@ def test_base_agent_gets_exactly_clio_workspace(
     assert catalog_skills == ["a2ui-catalog-clio-workspace"]
 
 
-def test_earthscope_gets_its_own_catalog_then_clio_workspace(
+def test_earthscope_gets_clio_workspace_then_its_own_catalog(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _at_pack_floor(monkeypatch)
@@ -312,10 +312,10 @@ def test_earthscope_gets_its_own_catalog_then_clio_workspace(
         app, sid, MARKETPLACE / "earthscope-single-agent", "earthscope-single-agent"
     )
 
-    assert session_producible_catalog_ids(app, sid) == [EARTHSCOPE_ID, WORKSPACE_ID]
+    assert session_producible_catalog_ids(app, sid) == [WORKSPACE_ID, EARTHSCOPE_ID]
     assert agent_capabilities(app, sid)["v0.9"]["supportedCatalogIds"] == [
-        EARTHSCOPE_ID,
         WORKSPACE_ID,
+        EARTHSCOPE_ID,
     ]
 
 
@@ -323,7 +323,8 @@ def test_shipped_marketplace_packs_validate_with_their_declarations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _at_pack_floor(monkeypatch)
-    for pack in ("base-agent", "earthscope-single-agent", "factorio-flat"):
+    for agent_md in sorted(MARKETPLACE.glob("*/AGENT.md")):
+        pack = agent_md.parent.name
         result = validate_agent_blueprint_path(MARKETPLACE / pack, scope="session")
         # Runtime-tool references (view_image, ...) need a live app; this test is
         # about the catalog declarations, which must add no error of their own.
