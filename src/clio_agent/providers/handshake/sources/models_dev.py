@@ -5,15 +5,17 @@ every model it tracks, including each model's ``limit.context``. This is the mos
 authoritative, broadly-covering source clio has, so the factory consults it first
 (models.dev -> marketplace -> static).
 
-Fetch / cache / offline policy:
+Fetch / cache / offline policy is owned by the generic
+:mod:`clio_agent.providers.fetched_catalog` mechanism (disk cache with a TTL and
+ETag under ``paths.user_cache_dir()/catalogs/models-dev.json``, atomic writes,
+last-good-never-cleared on a failed fetch or a failed validation). This module
+supplies only the models.dev-specific parts: the URL, the TTL, and how to parse
+and index one ``models.json`` document.
 
-* The catalog is fetched from :data:`MODELS_DEV_URL` and cached to a local JSON
-  file under the clio data dir with a TTL (default 24h).
-* A fresh-enough cache short-circuits the network.
-* **Offline-safe:** any fetch failure falls back to the last cached copy if one
-  exists, else a miss — a handshake must never fail because models.dev is down.
-* Nothing is fetched at import time; the network is only touched lazily on first
-  lookup when the cache is stale/absent.
+**Offline-safe:** any fetch failure or invalid document falls back to the last
+cached copy if one exists, else a miss — a handshake must never fail because
+models.dev is down. Nothing is fetched at import time; the network is only
+touched lazily on first lookup when the cache is stale/absent.
 
 The id matching mirrors the published key shape ``"<vendor>/<id>"`` and tolerates
 provider ids that drop or echo the vendor — see
@@ -24,10 +26,11 @@ from __future__ import annotations
 
 import json
 import os
-import time
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from clio_agent.providers.fetched_catalog import FetchedCatalog, FetchedCatalogUnavailable
 from clio_agent.providers.handshake.sources._normalize import (
     iter_id_candidates,
     normalize_id,
@@ -42,79 +45,47 @@ DEFAULT_TTL_S = 24 * 60 * 60.0
 #: HTTP fetch timeout in seconds — short; a slow models.dev must not stall a handshake.
 _FETCH_TIMEOUT_S = 6.0
 
-
-def _data_dir() -> Path:
-    """Per-user OS-correct cache dir for the (regenerable) models.dev catalog.
-
-    The catalog is a global, regenerable cache shared across workspaces, so it lives in
-    the OS cache dir (Linux ~/.cache, macOS ~/Library/Caches, Windows %LOCALAPPDATA%),
-    not a workspace ``.clio/agent``."""
-    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle at module load
-
-    return paths.user_cache_dir()
+#: Cap a models.dev document at 16 MiB — generous for a catalog of this shape,
+#: but still a hard ceiling against a misbehaving/compromised upstream.
+_MAX_BYTES = 16 * 1024 * 1024
 
 
 def default_cache_path() -> Path:
-    """Return the default models.dev cache file path under the data dir."""
-    return _data_dir() / "models_dev.json"
+    """Return the default models.dev cache file path (fetched_catalog's disk cache)."""
+    return _catalog(ttl_s=DEFAULT_TTL_S).cache_path
 
 
-def _parse_catalog(text: str) -> dict[str, Any] | None:
-    """Parse a models.dev JSON document into its top-level mapping, or None."""
-    try:
-        data = json.loads(text)
-    except (json.JSONDecodeError, ValueError):
-        return None
+def _parse_catalog(payload: bytes) -> dict[str, Any]:
+    """Parse+validate a models.dev JSON document into its top-level mapping.
+
+    Raises:
+        ValueError: The payload is not valid JSON, or not a JSON object.
+    """
+    data = json.loads(payload.decode("utf-8"))
     if not isinstance(data, dict):
-        return None
+        raise ValueError("models.dev catalog is not a JSON object")
     return data
 
 
-def _load_cache(cache_path: Path) -> dict[str, Any] | None:
-    """Return the parsed cached catalog, or None if absent/unreadable."""
-    try:
-        text = cache_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return None
-    return _parse_catalog(text)
+@lru_cache(maxsize=8)
+def _catalog(*, ttl_s: float) -> FetchedCatalog[dict[str, Any]]:
+    """Return the (process-singleton, per-``ttl_s``) :class:`FetchedCatalog`.
 
+    Memoised so every caller shares one instance -- and therefore one refresh
+    lock and one view of the disk cache -- rather than each call building a
+    throwaway ``FetchedCatalog`` whose lock protects nothing.
 
-def _cache_is_fresh(cache_path: Path, ttl_s: float) -> bool:
-    """Return True if ``cache_path`` exists and is younger than ``ttl_s``."""
-    try:
-        mtime = cache_path.stat().st_mtime
-    except OSError:
-        return False
-    return (time.time() - mtime) <= ttl_s
-
-
-def _write_cache(cache_path: Path, text: str) -> None:
-    """Best-effort atomic write of the catalog to the cache; never raises."""
-    try:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = cache_path.with_suffix(cache_path.suffix + ".tmp")
-        tmp.write_text(text, encoding="utf-8")
-        tmp.replace(cache_path)
-    except OSError:
-        pass
-
-
-def _fetch_catalog() -> str | None:
-    """Fetch the raw models.dev document over HTTP, or None on any failure.
-
-    Synchronous and dependency-light by design: this source is consulted from a
-    sync factory and must degrade silently when offline.
+    No bundled fallback: models.dev ships nothing with the package, so a total
+    cold start with no network is a plain miss (see :func:`_load_models_dev`).
     """
-    try:
-        import httpx  # noqa: PLC0415
-
-        response = httpx.get(MODELS_DEV_URL, timeout=_FETCH_TIMEOUT_S)
-        response.raise_for_status()
-        return response.text
-    except Exception:  # noqa: BLE001 - fetch failure -> caller uses the cached copy (see comment)
-        # Any error (offline, DNS, timeout, HTTP status, import) -> caller falls
-        # back to the last cached copy.
-        return None
+    return FetchedCatalog(
+        "models-dev",
+        MODELS_DEV_URL,
+        parse=_parse_catalog,
+        ttl_s=ttl_s,
+        max_bytes=_MAX_BYTES,
+        timeout_s=_FETCH_TIMEOUT_S,
+    )
 
 
 def _load_models_dev(
@@ -126,16 +97,15 @@ def _load_models_dev(
     """Return the models.dev catalog mapping, using cache/network per policy.
 
     This is the test seam: pass ``path`` to load a catalog directly from a file
-    (e.g. a captured fixture) with no network access at all.
+    (e.g. a captured fixture) with no network access and no cache involvement at
+    all — the pure offline test path.
 
-    Resolution order:
-
-    1. If ``path`` is given, load and return that file's catalog (no fetch, no
-       cache TTL) — the offline test path.
-    2. Otherwise, if the default cache is fresh, return it.
-    3. Otherwise try to fetch; on success, refresh the cache and return it.
-    4. On fetch failure, fall back to the last cached copy if present.
-    5. Total miss -> ``{}``.
+    Otherwise resolution is delegated to :class:`~clio_agent.providers.fetched_catalog.FetchedCatalog`:
+    a fresh disk cache short-circuits the network; a stale/absent cache tries to
+    fetch (when ``allow_fetch``); a failed fetch or a failed validation falls
+    back to the last good disk copy; a total miss (no cache, no bundled source,
+    fetch failed/disabled) returns ``{}`` rather than raising — models.dev being
+    unreachable must never fail a handshake.
 
     Args:
         path: Optional explicit catalog file to load (test seam / override).
@@ -146,29 +116,16 @@ def _load_models_dev(
         The catalog mapping (``{"<vendor>/<id>": {...}}``), possibly empty.
     """
     if path is not None:
-        catalog = _load_cache(Path(path))
-        return catalog or {}
+        try:
+            return _parse_catalog(Path(path).read_bytes())
+        except (OSError, ValueError):
+            return {}
 
-    cache_path = default_cache_path()
-
-    if _cache_is_fresh(cache_path, ttl_s):
-        cached = _load_cache(cache_path)
-        if cached is not None:
-            return cached
-
-    if allow_fetch:
-        text = _fetch_catalog()
-        if text is not None:
-            parsed = _parse_catalog(text)
-            if parsed is not None:
-                _write_cache(cache_path, text)
-                return parsed
-
-    # Fetch failed or disallowed — fall back to any cached copy, even if stale.
-    stale = _load_cache(cache_path)
-    if stale is not None:
-        return stale
-    return {}
+    try:
+        result = _catalog(ttl_s=ttl_s).get(allow_fetch=allow_fetch)
+    except FetchedCatalogUnavailable:
+        return {}
+    return result.data
 
 
 def _extract_context(entry: object) -> int | None:
