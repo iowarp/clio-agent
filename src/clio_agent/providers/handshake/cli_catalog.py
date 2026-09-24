@@ -137,6 +137,10 @@ class CliCatalogHandshake(NoOpHandshake):
                     # selectable thinking levels from them.
                     "supported_reasoning_efforts": list(m.get("supported_reasoning_efforts") or []),
                     "default_reasoning_effort": str(m.get("default_reasoning_effort") or ""),
+                    # Claude Code CLI per-model effort evidence (initialize response).
+                    "supported_effort_levels": list(m.get("supported_effort_levels") or []),
+                    "cli_values": list(m.get("cli_values") or []),
+                    "effort_evidence_failure": str(m.get("effort_evidence_failure") or ""),
                     _OVERLAY_CHECKED_KEY: True,
                 }
                 for m in wire["models"]

@@ -377,7 +377,7 @@ def _dynamic_agent_runtime_provenance(
         },
         # The thinking level this turn's LM runs with and the provider kwargs it
         # maps to, so a per-message reasoning effort is verifiable in the trace.
-        "reasoning": turn_reasoning_provenance(app, agent_def, provider_id),
+        "reasoning": turn_reasoning_provenance(app, agent_def, provider_id, model_id),
     }
     blueprint_id = str(agent_def.metadata.get("agent_blueprint_id") or "").strip()
     if blueprint_id:

@@ -122,7 +122,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         defaults = app.state.session_defaults.get()
         supplied = req.model_fields_set
         metadata = dict(req.metadata)
-        if "effort" not in metadata and "thinking_level" not in metadata:
+        if defaults.effort and not {"effort", "thinking_level"} & set(metadata):
             metadata["effort"] = defaults.effort
         if defaults.blueprint_id and "active_agent_blueprint_id" not in metadata:
             metadata["active_agent_blueprint_id"] = defaults.blueprint_id

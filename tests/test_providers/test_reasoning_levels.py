@@ -25,8 +25,8 @@ def test_codex_levels_come_from_the_sdk_catalog() -> None:
     reasoning = model_reasoning(
         "codex", _codex_profile(["minimal", "low", "medium", "high", "xhigh"], "medium")
     )
-    # minimal has no clio level; xhigh is passed through (Codex really has it).
-    assert reasoning["levels"] == ["low", "medium", "high", "xhigh"]
+    # Every effort the SDK reports is offered -- minimal included, none dropped.
+    assert reasoning["levels"] == ["minimal", "low", "medium", "high", "xhigh"]
     assert reasoning["default"] == "medium"
     assert reasoning["source"] == "codex_sdk"
     assert reasoning["supported"] is True
@@ -45,12 +45,51 @@ def test_codex_without_reported_efforts_offers_nothing() -> None:
     assert reasoning["source"] == "codex_sdk_unreported"
 
 
-def test_claude_code_offers_the_budget_ladder_with_shipped_default() -> None:
-    sonnet = model_reasoning("claude_code", ModelProfile(id="sonnet"))
-    assert sonnet["levels"] == ["off", "low", "medium", "high"]
-    assert sonnet["default"] == "low"
-    opus = model_reasoning("claude_code", ModelProfile(id="opus"))
-    assert opus["default"] == ""  # the SDK's own default governs
+_CLI_EFFORT = ["low", "medium", "high", "xhigh", "max"]
+
+
+def test_claude_code_offers_the_cli_reported_effort_levels() -> None:
+    fable = model_reasoning(
+        "claude_code",
+        ModelProfile(id="claude-fable-5-1", raw={"supported_effort_levels": _CLI_EFFORT}),
+    )
+    assert fable["levels"] == ["off", "low", "medium", "high", "xhigh", "max"]
+    assert fable["source"] == "claude_code_sdk"
+    assert fable["default"] == "high"  # the SDK documents high as its default effort
+    sonnet = model_reasoning(
+        "claude_code",
+        ModelProfile(id="claude-sonnet-5", raw={"supported_effort_levels": _CLI_EFFORT}),
+    )
+    assert sonnet["default"] == "low"  # clio ships low for sonnet
+
+
+def test_claude_code_model_without_effort_offers_the_thinking_budget() -> None:
+    haiku = model_reasoning(
+        "claude_code",
+        ModelProfile(id="claude-haiku-4-5-20251001", raw={"supported_effort_levels": []}),
+    )
+    assert haiku["levels"] == ["off", "low", "medium", "high"]
+    assert haiku["source"] == "claude_code_sdk_thinking_budget"
+
+
+def test_claude_code_missing_effort_evidence_is_typed() -> None:
+    row = {"effort_evidence_failure": "claude_code_cli_model_catalog_unavailable: boom"}
+    block = model_reasoning("claude_code", ModelProfile(id="claude-sonnet-5", raw=row))
+    assert block["levels"] == ["off", "low", "medium", "high"]
+    assert block["reason"].startswith("claude_code_cli_model_catalog_unavailable")
+
+
+def test_anthropic_adaptive_model_offers_output_config_effort() -> None:
+    block = model_reasoning("anthropic", ModelProfile(id="claude-opus-4-7"))
+    assert block["levels"] == ["off", "low", "medium", "high", "xhigh", "max"]
+    assert block["source"] == "litellm_model_info_effort"
+    assert model_reasoning("anthropic", ModelProfile(id="claude-sonnet-4-6"))["levels"] == [
+        "off",
+        "low",
+        "medium",
+        "high",
+        "max",
+    ]
 
 
 def test_anthropic_levels_follow_litellm_model_info() -> None:
@@ -81,6 +120,7 @@ def test_alcf_reasoning_model_that_ignores_effort_offers_no_levels() -> None:
 
 def test_openai_levels_include_xhigh_only_where_reported() -> None:
     assert model_reasoning("openai", ModelProfile(id="gpt-5"))["levels"] == [
+        "minimal",
         "low",
         "medium",
         "high",
@@ -100,6 +140,9 @@ def test_provider_without_a_thinking_mapping_offers_nothing() -> None:
     [
         ("codex", _codex_profile(["none", "low", "medium", "high", "xhigh"])),
         ("claude_code", ModelProfile(id="haiku")),
+        ("claude_code", ModelProfile(id="opus", raw={"supported_effort_levels": _CLI_EFFORT})),
+        ("anthropic", ModelProfile(id="claude-opus-4-7")),
+        ("openai", ModelProfile(id="gpt-5")),
         ("anthropic", ModelProfile(id="claude-sonnet-4-5")),
         ("argonne", ModelProfile(id="openai/gpt-oss-20b", reasoning_param="openai_gptoss")),
         ("openai", ModelProfile(id="gpt-5.1-codex-max")),
@@ -110,9 +153,12 @@ def test_every_offered_level_is_mapped_by_resolve_thinking(
 ) -> None:
     levels = model_reasoning(kind, profile)["levels"]
     assert levels
+    from clio_agent.providers.reasoning_levels import model_effort_levels
+
+    effort = model_effort_levels(kind, profile.id, raw=profile.raw)
     for level in levels:
         assert level in accepted_levels(kind)
-        assert resolve_thinking(kind, level, 0).supported
+        assert resolve_thinking(kind, level, 0, effort_levels=effort).supported
 
 
 def test_xhigh_maps_where_the_transport_has_it_and_is_typed_elsewhere() -> None:
@@ -196,3 +242,79 @@ def test_codex_overlay_efforts_reach_the_catalog_profile(
     reasoning = model_reasoning("codex", profile)
     assert reasoning["levels"] == ["low", "medium", "high", "xhigh"]
     assert reasoning["default"] == "high"
+
+
+def test_claude_code_effort_maps_to_the_sdk_effort_option() -> None:
+    plan = resolve_thinking("claude_code", "max", 0, effort_levels=_CLI_EFFORT)
+    assert plan.sdk_thinking == {"type": "adaptive", "display": "summarized", "effort": "max"}
+    off = resolve_thinking("claude_code", "off", 0, effort_levels=_CLI_EFFORT)
+    assert off.sdk_thinking == {"type": "disabled"}
+    budget = resolve_thinking("claude_code", "high", 0, effort_levels=None)
+    assert budget.sdk_thinking == {
+        "type": "enabled",
+        "budget_tokens": 24576,
+        "display": "summarized",
+    }
+
+
+def test_build_sdk_options_splits_effort_into_its_own_option(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+    import types
+
+    captured: dict[str, object] = {}
+
+    class _Options:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules, "claude_agent_sdk", types.SimpleNamespace(ClaudeAgentOptions=_Options)
+    )
+    from clio_agent.providers.claude_code_options import build_sdk_options
+
+    thinking = {"type": "adaptive", "display": "summarized", "effort": "xhigh"}
+    build_sdk_options(model="sonnet", cwd=None, stream=False, thinking=thinking)
+    assert captured["effort"] == "xhigh"
+    assert captured["thinking"] == {"type": "adaptive", "display": "summarized"}
+    assert thinking["effort"] == "xhigh"  # the caller's (pool-key) dict is untouched
+
+
+def test_anthropic_effort_maps_to_reasoning_effort() -> None:
+    effort = ["low", "medium", "high", "max"]
+    assert resolve_thinking("anthropic", "max", 0, effort_levels=effort).litellm_kwargs == {
+        "reasoning_effort": "max"
+    }
+    assert resolve_thinking("anthropic", "xhigh", 0, effort_levels=effort).supported is False
+
+
+def test_codex_minimal_and_openai_none_are_mapped() -> None:
+    assert resolve_thinking("codex", "minimal", 0).litellm_kwargs == {
+        "codex_reasoning_effort": "minimal"
+    }
+    plan = resolve_thinking("openai", "off", 0, effort_levels=["off", "low", "medium", "high"])
+    assert plan.litellm_kwargs == {"reasoning_effort": "none"}
+
+
+def test_claude_code_alias_resolves_to_its_overlay_row() -> None:
+    from clio_agent.providers.model_discovery import ProviderDiscoveryResult, record_refresh
+    from clio_agent.providers.reasoning_levels import model_effort_levels
+
+    record_refresh(
+        ProviderDiscoveryResult(
+            provider="claude_code",
+            discovered=[
+                {
+                    "id": "claude-sonnet-5",
+                    "name": "Sonnet",
+                    "supported_effort_levels": _CLI_EFFORT,
+                    "cli_values": ["sonnet"],
+                }
+            ],
+            source="claude_code_catalog",
+        )
+    )
+    assert model_effort_levels("claude_code", "sonnet") == tuple(_CLI_EFFORT)
+    assert model_effort_levels("claude_code", "claude-sonnet-5") == tuple(_CLI_EFFORT)
+    assert model_effort_levels("claude_code", "haiku") is None

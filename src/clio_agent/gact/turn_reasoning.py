@@ -59,7 +59,7 @@ def apply_turn_reasoning(user_msg: "Message", agent_def: "AgentDef") -> "AgentDe
 
 
 def turn_reasoning_provenance(
-    app: "FastAPI", agent_def: "AgentDef", provider_id: str
+    app: "FastAPI", agent_def: "AgentDef", provider_id: str, model_id: str = ""
 ) -> dict[str, Any]:
     """Describe the thinking level this turn's LM runs with (non-secret).
 
@@ -73,6 +73,7 @@ def turn_reasoning_provenance(
         _effective_lm_config,
         _provider_runtime_kind,
     )
+    from clio_agent.providers.reasoning_levels import model_effort_levels  # noqa: PLC0415
     from clio_agent.providers.thinking import resolve_thinking  # noqa: PLC0415
 
     active = _effective_lm_config(app)
@@ -87,7 +88,12 @@ def turn_reasoning_provenance(
     budget = int(parameters.get("thinking_budget") or active.get("thinking_budget") or 0)
     provider_kind = _provider_runtime_kind(provider_id) or str(active.get("provider") or "")
     try:
-        plan = resolve_thinking(provider_kind, requested or None, budget)
+        plan = resolve_thinking(
+            provider_kind,
+            requested or None,
+            budget,
+            effort_levels=model_effort_levels(provider_kind, model_id),
+        )
     except ValueError as exc:
         return {
             "requested_level": requested,

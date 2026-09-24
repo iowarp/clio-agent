@@ -25,7 +25,8 @@ def test_session_defaults_persist_and_apply_only_when_fields_are_omitted(tmp_pat
     assert initial.json() == {
         "provider_id": "",
         "model_id": "",
-        "effort": "medium",
+        # No fixed level: new sessions start on the selected model's own default.
+        "effort": None,
         "mode": "edit",
         "edit_mode": "diff",
         "routing_mode": "auto",
@@ -155,3 +156,18 @@ def test_provider_swap_clears_persisted_session_default_model_reference(tmp_path
     rebuilt = _client(sessions_path)
     assert rebuilt.get("/v1/session-defaults").json()["provider_id"] == ""
     assert rebuilt.get("/v1/session-defaults").json()["model_id"] == ""
+
+
+def test_session_default_effort_can_be_reset_to_the_model_default(tmp_path: Path) -> None:
+    client = _client(tmp_path / "sessions.json")
+    assert client.patch("/v1/session-defaults", json={"effort": "max"}).json()["effort"] == "max"
+    assert client.patch("/v1/session-defaults", json={"mode": "plan"}).json()["effort"] == "max"
+    reset = client.patch("/v1/session-defaults", json={"effort": None})
+    assert reset.json()["effort"] is None
+    created = client.post(
+        "/v1/sessions",
+        headers=GACT_V3_HEADERS,
+        json={"workspace_id": "ws_default", "title": "Model default"},
+    )
+    assert created.status_code == 201
+    assert created.json().get("effort") is None

@@ -139,12 +139,15 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
     if level is not None:
         cfg["thinking_level"] = level
     try:
+        from clio_agent.providers.reasoning_levels import model_effort_levels  # noqa: PLC0415
         from clio_agent.providers.thinking import resolve_thinking  # noqa: PLC0415
 
+        provider_kind = str(cfg.get("provider") or "")
         plan = resolve_thinking(
-            str(cfg.get("provider") or ""),
+            provider_kind,
             cfg.get("thinking_level"),
             int(cfg.get("thinking_budget") or 0),
+            effort_levels=model_effort_levels(provider_kind, str(cfg.get("model") or "")),
         )
         cfg["thinking_effective"] = plan.display
     except Exception as exc:  # noqa: BLE001 - status must never fail on a display derivation

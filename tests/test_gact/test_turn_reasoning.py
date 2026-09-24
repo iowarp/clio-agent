@@ -124,3 +124,31 @@ def test_unset_effort_is_absent_not_a_fabricated_default() -> None:
     assert MessageBehavior().reasoning_effort is None
     assert "reasoning_effort" not in PostMessageRequest().behavior.model_dump(exclude_none=True)
     assert message_reasoning_effort(_message(None)) == ""
+
+
+def test_claude_code_message_effort_sends_the_sdk_effort(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A claude_code model reporting CLI effort levels gets the real SDK effort."""
+    monkeypatch.setattr(
+        "clio_agent.providers.reasoning_levels._claude_code_row",
+        lambda _model: {"supported_effort_levels": ["low", "medium", "high", "xhigh", "max"]},
+    )
+    base = LMProviderConfig(provider="claude_code", model="claude-fable-5-1")
+    assert _lm_kwargs(base, "max")["claude_code_thinking"] == {
+        "type": "adaptive",
+        "display": "summarized",
+        "effort": "max",
+    }
+    assert _lm_kwargs(base, "off")["claude_code_thinking"] == {"type": "disabled"}
+
+
+def test_anthropic_adaptive_model_message_effort_sends_reasoning_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    base = LMProviderConfig(provider="anthropic", model="claude-opus-4-7", api_key="sk-ant")
+    assert _lm_kwargs(base, "max")["reasoning_effort"] == "max"
+
+
+def test_codex_message_minimal_effort_is_sent() -> None:
+    base = LMProviderConfig(provider="codex", model="gpt-5.5")
+    assert _lm_kwargs(base, "minimal")["codex_reasoning_effort"] == "minimal"

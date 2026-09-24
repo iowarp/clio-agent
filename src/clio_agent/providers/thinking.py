@@ -1,91 +1,91 @@
 """Provider-generic thinking (extended-reasoning) level → per-provider mapping (#895).
 
-One external vocabulary — ``off | low | medium | high | xhigh`` — maps to whatever
-each provider's transport actually understands. ``xhigh`` exists because Codex
-(and OpenAI's own reasoning models) really expose it; a provider whose transport
-cannot express a level gets a typed ``unsupported`` plan for it
-(:data:`ACCEPTED_LEVELS` is the per-provider truth, and the provider catalog
-offers a model only levels that are both accepted here and reported for that
-model — see :mod:`clio_agent.providers.reasoning_levels`). The knob is deliberately *not*
-Claude-shaped (design constraint from #896):
+One external vocabulary — ``off | minimal | low | medium | high | xhigh | max`` —
+maps to whatever each provider's transport actually understands. The vocabulary
+is the union of the levels real providers report (Codex's SDK
+``ReasoningEffort``: none/minimal/low/medium/high/xhigh; the Claude Code CLI's
+per-model ``supportedEffortLevels``: low/medium/high/xhigh/max); a level is
+extended here rather than dropped when a provider reports it. This module is the
+SINGLE level → kwargs mapping; the provider catalog offers a model exactly the
+levels this mapping supports for that model
+(:mod:`clio_agent.providers.reasoning_levels`).
 
-* **anthropic** (native LiteLLM): ``thinking={"type":"enabled","budget_tokens":N}``.
-* **claude_code** (Claude Agent SDK transport): the SDK
-  ``ClaudeAgentOptions.thinking`` config — ``{"type":"disabled"}`` for ``off`` and
-  ``{"type":"enabled","budget_tokens":N,"display":"summarized"}`` for a level.
-  ``display`` is load-bearing: claude CLI >= 2.1.x defaults the thinking display
-  to ``omitted`` (signature-only — ``thinking_delta`` events carry empty text
-  plus an ``estimated_tokens`` count), so without it no CoT text ever reaches
-  clio. Verified empirically that the SDK/CLI default for haiku is
-  thinking-**ON**, so ``off`` must send ``disabled`` *explicitly*; a zero
-  ``thinking_budget`` alone cannot express it (0 = "unset / let the provider
-  default govern"). That is exactly why the external level is a sibling knob to
-  ``thinking_budget``.
-* **codex** (official Python SDK): reasoning effort bucketed
-  to the level, carried under ``codex_reasoning_effort`` so the bridge pins it on
-  ``turn/start`` (LiteLLM ignores ``reasoning_effort`` on the CustomLLM, which is
-  why the old ``reasoning_effort`` mapping was a silent no-op there — #896). Codex
-  has an explicit ``none`` effort, so ``off`` maps to ``"none"`` (NOT omit — an
-  omitted effort would inherit the ambient ``config.toml`` value, not disable it).
-* **openai / openai-compatible** (lm_studio, ollama, argonne):
-  ``reasoning_effort`` bucketed to the level.
+``effort_levels`` is the model's own reported effort levels (clio vocabulary),
+when the provider reports them; ``None`` means "no per-model effort evidence".
+
+* **claude_code** (Claude Agent SDK): with ``effort_levels`` (the CLI reports
+  ``supportedEffortLevels`` for the model) a level becomes the SDK ``effort``
+  option on adaptive thinking — ``{"type":"adaptive","display":"summarized",
+  "effort":<level>}`` (``build_sdk_options`` splits ``effort`` into
+  ``ClaudeAgentOptions.effort`` → CLI ``--effort``). Without it (haiku reports no
+  effort support) a level is a thinking budget:
+  ``{"type":"enabled","budget_tokens":N,"display":"summarized"}``. ``off`` is
+  ``{"type":"disabled"}`` for every model (CLI ``--thinking disabled``; verified
+  live on sonnet 2026-09-23). ``display`` is load-bearing: claude CLI >= 2.1.x
+  defaults the thinking display to ``omitted``, so without it no CoT text
+  reaches clio.
+* **anthropic** (native LiteLLM): with ``effort_levels`` (an adaptive-thinking
+  model per LiteLLM's model map) a level is ``reasoning_effort=<level>``, which
+  LiteLLM sends as ``thinking={"type":"adaptive"}`` +
+  ``output_config={"effort":<level>}``. Otherwise
+  ``thinking={"type":"enabled","budget_tokens":N}``. ``off`` omits the kwarg
+  (the API default is thinking off).
+* **codex** (official Python SDK): ``codex_reasoning_effort`` pinned on
+  ``turn/start``; ``off`` → Codex's explicit ``none`` (never omit, which would
+  inherit the ambient ``config.toml`` effort — #896).
+* **openai**: ``reasoning_effort=<level>``; with ``effort_levels`` only reported
+  levels are accepted and ``off`` is ``reasoning_effort="none"`` where the model
+  reports a ``none`` effort.
+* **lm_studio / ollama / argonne** (OpenAI-compatible servers):
+  ``reasoning_effort`` low/medium/high.
 * **any other provider**: no mapping — a typed ``unsupported`` plan carrying a
   structured reason, surfaced by the caller. Never a silent no-op.
 
-This module is pure data mapping: it builds plain dicts (the SDK ``thinking``
-config is a plain ``{"type": ...}`` TypedDict-shaped dict) and imports nothing
-provider-specific, so it is trivially unit-testable.
+This module is pure data mapping and imports nothing provider-specific.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
-ThinkingLevel = Literal["off", "low", "medium", "high", "xhigh"]
+ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"]
 
 #: Every external level, in ascending order (``None``/unset means "provider default").
-LEVEL_ORDER: tuple[str, ...] = ("off", "low", "medium", "high", "xhigh")
+LEVEL_ORDER: tuple[str, ...] = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
 
 #: Valid external levels (``None``/unset means "provider default").
 THINKING_LEVELS: frozenset[str] = frozenset(LEVEL_ORDER)
 
-#: Canonical token budget for each non-off level. An explicit ``thinking_budget``
-#: overrides these for budget-based providers. ``xhigh`` is only accepted by
-#: effort-based transports, so its budget is informational (doctor display).
-LEVEL_BUDGET: dict[str, int] = {"low": 2048, "medium": 8192, "high": 24576, "xhigh": 32768}
+#: Canonical token budget for the budget ladder. An explicit ``thinking_budget``
+#: overrides these for budget-based transports. Levels outside the ladder are
+#: effort-only and have no budget.
+LEVEL_BUDGET: dict[str, int] = {"low": 2048, "medium": 8192, "high": 24576}
 
-# Providers whose transport expresses thinking as a token budget.
-_BUDGET_PROVIDERS: frozenset[str] = frozenset({"anthropic", "claude_code"})
-# Providers (OpenAI + OpenAI-compatible) that take a ``reasoning_effort`` string.
-_EFFORT_PROVIDERS: frozenset[str] = frozenset({"openai", "lm_studio", "ollama", "argonne"})
+_BUDGET_LEVELS: frozenset[str] = frozenset({"off", "low", "medium", "high"})
 
-#: Codex effort vocabulary. ``off`` → codex's explicit ``none`` (disable), not omit
-#: (omit would inherit the ambient ``config.toml`` effort — #896). low/medium/high
-#: pass through; all four are accepted by gpt-5.x through the Codex SDK.
+#: Codex effort vocabulary (the SDK's ``ReasoningEffort``). ``off`` → ``none``.
 _CODEX_EFFORT: dict[str, str] = {
     "off": "none",
+    "minimal": "minimal",
     "low": "low",
     "medium": "medium",
     "high": "high",
     "xhigh": "xhigh",
 }
 
-_BUDGET_LEVELS: frozenset[str] = frozenset({"off", "low", "medium", "high"})
-
-#: The levels each provider's transport can express. Budget transports stop at
-#: ``high`` (clio's budget ladder); Codex passes its SDK ``ReasoningEffort``
-#: through, ``xhigh`` included; OpenAI's API accepts ``xhigh`` on the models that
-#: support it; the OpenAI-compatible local/ALCF servers do not. A level outside a
-#: provider's set resolves to a typed ``unsupported`` plan, never a silent drop.
+#: The levels each provider's transport can express at all. A model's own
+#: ``effort_levels`` narrow this further. A level outside the set resolves to a
+#: typed ``unsupported`` plan, never a silent drop or neighbour substitution.
 ACCEPTED_LEVELS: dict[str, frozenset[str]] = {
-    "anthropic": _BUDGET_LEVELS,
-    "claude_code": _BUDGET_LEVELS,
+    "anthropic": frozenset({"off", "low", "medium", "high", "xhigh", "max"}),
+    "claude_code": frozenset({"off", "low", "medium", "high", "xhigh", "max"}),
     "codex": frozenset(_CODEX_EFFORT),
-    "openai": THINKING_LEVELS,
+    "openai": frozenset({"off", "minimal", "low", "medium", "high", "xhigh"}),
     "lm_studio": _BUDGET_LEVELS,
     "ollama": _BUDGET_LEVELS,
     "argonne": _BUDGET_LEVELS,
@@ -106,16 +106,15 @@ class ThinkingPlan:
     Attributes:
         provider: The provider the plan was resolved for.
         requested_level: The external level requested (``None`` = unset/default).
-        effective_level: What actually applies — ``"default"`` (nothing sent),
-            ``"off"``/``"low"``/``"medium"``/``"high"``, or ``"unsupported"``.
-        budget_tokens: Resolved thinking token budget (0 = off / none).
-        supported: False only when a non-default request hit a provider with no
-            mapping — the caller must surface ``unsupported_reason``.
+        effective_level: What actually applies — ``"default"`` (nothing sent), a
+            level from :data:`LEVEL_ORDER`, or ``"unsupported"``.
+        budget_tokens: Resolved thinking token budget (0 = off / effort-based).
+        supported: False only when a non-default request hit no mapping — the
+            caller must surface ``unsupported_reason``.
         unsupported_reason: Structured reason string when ``supported`` is False.
-        litellm_kwargs: Passthrough kwargs for native LiteLLM providers
-            (anthropic ``thinking``; effort providers ``reasoning_effort``).
-        sdk_thinking: The claude_code ``ClaudeAgentOptions.thinking`` dict, or
-            ``None`` when not applicable / unset.
+        litellm_kwargs: Passthrough kwargs for LiteLLM providers.
+        sdk_thinking: The claude_code SDK thinking config (with an ``effort`` key
+            when the level is an SDK effort), or ``None`` when not applicable.
     """
 
     provider: str
@@ -135,8 +134,8 @@ class ThinkingPlan:
             return f"unsupported ({self.unsupported_reason})"
         if self.effective_level == "default":
             return "default (provider default)"
-        if self.effective_level == "off":
-            return "off"
+        if self.budget_tokens <= 0:
+            return self.effective_level
         return f"{self.effective_level} (budget {self.budget_tokens})"
 
 
@@ -172,174 +171,176 @@ def validate_thinking_level(level: str) -> str:
     return normalized
 
 
-def resolve_thinking(provider: str, level: str | None, budget: int | None) -> ThinkingPlan:
-    """Map an external thinking level (+ optional budget override) to a provider plan.
+def _plan(
+    provider: str,
+    lvl: str | None,
+    effective: str,
+    *,
+    budget: int = 0,
+    litellm_kwargs: dict[str, Any] | None = None,
+    sdk_thinking: dict[str, Any] | None = None,
+) -> ThinkingPlan:
+    return ThinkingPlan(
+        provider=provider,
+        requested_level=lvl,
+        effective_level=effective,
+        budget_tokens=budget,
+        supported=True,
+        unsupported_reason=None,
+        litellm_kwargs=litellm_kwargs or {},
+        sdk_thinking=sdk_thinking,
+    )
 
-    Precedence:
-      1. ``level`` set → it wins ("off" → disabled; a level → its budget, or the
-         explicit ``budget`` when > 0 for budget-based providers).
-      2. ``level`` unset but ``budget`` > 0 → explicit budget override (back-compat
-         with the pre-#895 ``thinking_budget`` behavior); level is inferred by bucket.
-      3. Neither → ``"default"``: nothing is sent, byte-for-byte today's behavior.
 
-    Args:
-        provider: Provider id (e.g. ``"claude_code"``, ``"anthropic"``, ``"openai"``).
-        level: External level (one of :data:`LEVEL_ORDER`) or ``None``/"".
-        budget: Explicit token budget override (0/``None`` = none).
-
-    Returns:
-        A :class:`ThinkingPlan`. For an unsupported provider with a non-default
-        request, ``supported`` is False and ``unsupported_reason`` is set.
-    """
-
-    lvl = _normalize_level(level)
-    n = int(budget or 0)
-
-    # (3) Nothing requested → default (unset). Preserves today's behavior exactly.
-    if lvl is None and n <= 0:
-        return ThinkingPlan(
-            provider=provider,
-            requested_level=None,
-            effective_level="default",
-            budget_tokens=0,
-            supported=True,
-            unsupported_reason=None,
-            litellm_kwargs={},
-            sdk_thinking=None,
-        )
-
-    accepted = ACCEPTED_LEVELS.get(provider)
-    if lvl is not None and accepted is not None and lvl not in accepted:
-        # A known provider whose transport has no such level: typed, never a
-        # silent downgrade to a neighbouring level.
-        return ThinkingPlan(
-            provider=provider,
-            requested_level=lvl,
-            effective_level="unsupported",
-            budget_tokens=0,
-            supported=False,
-            unsupported_reason=(
-                f"provider {provider!r} has no {lvl!r} thinking level "
-                f"(accepts {'|'.join(accepted_levels(provider))})"
-            ),
-            litellm_kwargs={},
-            sdk_thinking=None,
-        )
-
-    # Resolve the effective level + numeric budget.
-    if lvl == "off":
-        effective, budget_tokens = "off", 0
-    elif lvl in LEVEL_BUDGET:
-        effective = lvl
-        budget_tokens = n if n > 0 else LEVEL_BUDGET[lvl]
-    else:  # lvl is None but n > 0: explicit budget override
-        effective = _bucket_level(n)
-        budget_tokens = n
-
-    if provider in _BUDGET_PROVIDERS:
-        if provider == "claude_code":
-            # "display": "summarized" is load-bearing. claude CLI >= 2.1.x defaults
-            # the SDK thinking display to "omitted" (signature-only thinking blocks:
-            # thinking_delta arrives with empty text plus an estimated_tokens count),
-            # so an enabled config WITHOUT it streams zero CoT text. Verified live
-            # 2026-08-05 on CLI 2.1.222 / claude-agent-sdk 0.2.128: enabled without
-            # display => 0 thinking chars; enabled+summarized (and also
-            # adaptive+summarized) => real CoT text streams. Budget-based "enabled"
-            # (not "adaptive") is kept so the off|low|medium|high vocabulary retains
-            # its budget semantics; "disabled" takes no display key (SDK TypedDict).
-            sdk_thinking: dict[str, Any] = (
-                {"type": "disabled"}
-                if effective == "off"
-                else {
-                    "type": "enabled",
-                    "budget_tokens": budget_tokens,
-                    "display": "summarized",
-                }
-            )
-            return ThinkingPlan(
-                provider=provider,
-                requested_level=lvl,
-                effective_level=effective,
-                budget_tokens=budget_tokens,
-                supported=True,
-                unsupported_reason=None,
-                litellm_kwargs={},
-                sdk_thinking=sdk_thinking,
-            )
-        # anthropic (native LiteLLM): omit the kwarg entirely for "off" (thinking
-        # is off by default when the parameter is not sent).
-        litellm_kwargs: dict[str, Any] = (
-            {}
-            if effective == "off"
-            else {"thinking": {"type": "enabled", "budget_tokens": budget_tokens}}
-        )
-        return ThinkingPlan(
-            provider=provider,
-            requested_level=lvl,
-            effective_level=effective,
-            budget_tokens=budget_tokens,
-            supported=True,
-            unsupported_reason=None,
-            litellm_kwargs=litellm_kwargs,
-            sdk_thinking=None,
-        )
-
-    if provider == "codex":
-        mapped = _CODEX_EFFORT.get(effective)
-        if mapped is None:  # defensive — off/low/medium/high always map
-            return ThinkingPlan(
-                provider=provider,
-                requested_level=lvl,
-                effective_level="unsupported",
-                budget_tokens=budget_tokens,
-                supported=False,
-                unsupported_reason=(
-                    f"codex has no reasoning-effort mapping for level {effective!r}"
-                ),
-                litellm_kwargs={},
-                sdk_thinking=None,
-            )
-        # Carried under codex_reasoning_effort (not reasoning_effort): the codex
-        # CustomLLM reads it and pins it on turn/start; LiteLLM would otherwise
-        # drop reasoning_effort on the CustomLLM path (the old silent no-op, #896).
-        return ThinkingPlan(
-            provider=provider,
-            requested_level=lvl,
-            effective_level=effective,
-            budget_tokens=budget_tokens,
-            supported=True,
-            unsupported_reason=None,
-            litellm_kwargs={"codex_reasoning_effort": mapped},
-            sdk_thinking=None,
-        )
-
-    if provider in _EFFORT_PROVIDERS:
-        litellm_kwargs = {} if effective == "off" else {"reasoning_effort": effective}
-        return ThinkingPlan(
-            provider=provider,
-            requested_level=lvl,
-            effective_level=effective,
-            budget_tokens=budget_tokens,
-            supported=True,
-            unsupported_reason=None,
-            litellm_kwargs=litellm_kwargs,
-            sdk_thinking=None,
-        )
-
-    # No mapping for this provider — typed unsupported, never a silent no-op.
+def _unsupported(provider: str, lvl: str | None, reason: str, budget: int = 0) -> ThinkingPlan:
     return ThinkingPlan(
         provider=provider,
         requested_level=lvl,
         effective_level="unsupported",
-        budget_tokens=budget_tokens,
+        budget_tokens=budget,
         supported=False,
-        unsupported_reason=(
-            f"thinking control (level={effective!r}, budget={budget_tokens}) has no "
-            f"mapping for provider {provider!r}"
-        ),
+        unsupported_reason=reason,
         litellm_kwargs={},
         sdk_thinking=None,
     )
+
+
+def _claude_code(
+    lvl: str | None, effective: str, budget: int, effort: frozenset[str] | None
+) -> ThinkingPlan:
+    if effective == "off":
+        return _plan("claude_code", lvl, "off", sdk_thinking={"type": "disabled"})
+    if effort and lvl is not None:
+        # The model reports SDK effort levels: the level IS the effort, on
+        # adaptive thinking ("display" keeps CoT text streaming).
+        return _plan(
+            "claude_code",
+            lvl,
+            effective,
+            sdk_thinking={"type": "adaptive", "display": "summarized", "effort": effective},
+        )
+    return _plan(
+        "claude_code",
+        lvl,
+        effective,
+        budget=budget,
+        sdk_thinking={"type": "enabled", "budget_tokens": budget, "display": "summarized"},
+    )
+
+
+def _anthropic(
+    lvl: str | None, effective: str, budget: int, effort: frozenset[str] | None
+) -> ThinkingPlan:
+    if effective == "off":
+        return _plan("anthropic", lvl, "off")
+    if effort and lvl is not None:
+        # LiteLLM maps this to thinking=adaptive + output_config.effort.
+        return _plan("anthropic", lvl, effective, litellm_kwargs={"reasoning_effort": effective})
+    return _plan(
+        "anthropic",
+        lvl,
+        effective,
+        budget=budget,
+        litellm_kwargs={"thinking": {"type": "enabled", "budget_tokens": budget}},
+    )
+
+
+def _openai_compatible(
+    provider: str, lvl: str | None, effective: str, effort: frozenset[str] | None
+) -> ThinkingPlan:
+    if effective == "off":
+        if provider == "openai" and effort and "off" in effort:
+            return _plan(provider, lvl, "off", litellm_kwargs={"reasoning_effort": "none"})
+        return _plan(provider, lvl, "off")
+    return _plan(provider, lvl, effective, litellm_kwargs={"reasoning_effort": effective})
+
+
+def resolve_thinking(
+    provider: str,
+    level: str | None,
+    budget: int | None,
+    *,
+    effort_levels: Collection[str] | None = None,
+) -> ThinkingPlan:
+    """Map an external thinking level (+ optional budget override) to a provider plan.
+
+    Precedence:
+      1. ``level`` set → it wins ("off" → disabled; a level → its effort, or its
+         budget / the explicit ``budget`` when > 0 on a budget transport).
+      2. ``level`` unset but ``budget`` > 0 → explicit budget override (back-compat
+         with the pre-#895 ``thinking_budget`` behavior); level is inferred by bucket.
+      3. Neither → ``"default"``: nothing is sent.
+
+    Args:
+        provider: Provider kind (e.g. ``"claude_code"``, ``"anthropic"``, ``"openai"``).
+        level: External level (one of :data:`LEVEL_ORDER`) or ``None``/"".
+        budget: Explicit token budget override (0/``None`` = none).
+        effort_levels: The model's own reported effort levels in clio vocabulary,
+            when its provider reports them (see
+            :func:`clio_agent.providers.reasoning_levels.model_effort_levels`).
+
+    Returns:
+        A :class:`ThinkingPlan`; unsupported requests carry a typed reason.
+    """
+
+    lvl = _normalize_level(level)
+    n = int(budget or 0)
+    if lvl is None and n <= 0:
+        return _plan(provider, None, "default")
+
+    effort = frozenset(effort_levels) if effort_levels else None
+    accepted = ACCEPTED_LEVELS.get(provider)
+    if accepted is None:
+        return _unsupported(
+            provider,
+            lvl,
+            f"thinking control (level={lvl or _bucket_level(n)!r}, budget={n}) has no "
+            f"mapping for provider {provider!r}",
+            n,
+        )
+    if lvl is not None and lvl not in accepted:
+        return _unsupported(
+            provider,
+            lvl,
+            f"provider {provider!r} has no {lvl!r} thinking level "
+            f"(accepts {'|'.join(accepted_levels(provider))})",
+        )
+    if lvl not in (None, "off") and effort is not None and lvl not in effort:
+        return _unsupported(
+            provider,
+            lvl,
+            f"this model reports no {lvl!r} effort (reports {'|'.join(sorted(effort))})",
+        )
+    uses_budget = provider in {"anthropic", "claude_code"} and not effort
+    if lvl is not None and uses_budget and lvl not in _BUDGET_LEVELS:
+        return _unsupported(
+            provider,
+            lvl,
+            f"{lvl!r} is an effort level and this model reports no effort support "
+            f"(thinking budget levels: {'|'.join(sorted(_BUDGET_LEVELS))})",
+        )
+
+    if lvl == "off":
+        effective, budget_tokens = "off", 0
+    elif lvl is not None:
+        effective = lvl
+        budget_tokens = (n if n > 0 else LEVEL_BUDGET[lvl]) if uses_budget else 0
+    else:  # explicit budget override, no level
+        effective = _bucket_level(n)
+        budget_tokens = n
+
+    if provider == "claude_code":
+        return _claude_code(lvl, effective, budget_tokens, effort)
+    if provider == "anthropic":
+        return _anthropic(lvl, effective, budget_tokens, effort)
+    if provider == "codex":
+        return _plan(
+            provider,
+            lvl,
+            effective,
+            litellm_kwargs={"codex_reasoning_effort": _CODEX_EFFORT[effective]},
+        )
+    return _openai_compatible(provider, lvl, effective, effort)
 
 
 def log_unsupported_thinking(plan: ThinkingPlan) -> None:

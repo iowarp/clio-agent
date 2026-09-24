@@ -1,35 +1,32 @@
 """Per-model reasoning levels for the provider catalog, derived from provider truth.
 
 The catalog used to advertise only ``reasoning: {supported, parameter}``, and
-clients filled the gap with a hard-coded ``off | low | medium | high | xhigh``
-list that no model actually matched. This module answers, for one discovered
-model, which thinking levels a person can really choose and which is the
-model's default, and says where that answer came from:
+clients filled the gap with a hard-coded list no model actually matched. This
+module answers, for one discovered model, which thinking levels a person can
+really choose, which is the model's default, and where that answer came from.
+The same answer feeds :func:`~clio_agent.providers.thinking.resolve_thinking`
+(via :func:`model_effort_levels`) when a turn's LM is built, so what the catalog
+offers is exactly what is sent:
 
 * **codex** — the Codex SDK catalog reports ``supportedReasoningEfforts`` and
-  ``defaultReasoningEffort`` per model (persisted by
-  :func:`clio_agent.providers.model_discovery.codex.discover_codex`). Codex
-  ``none`` is clio ``off``; ``minimal`` has no clio level and is not offered.
-* **claude_code** — clio drives Claude Code's thinking through the SDK's
-  budget-based ``thinking`` config (:func:`~clio_agent.providers.thinking.
-  resolve_thinking`), which every model Claude Code serves accepts. The SDK also
-  defines an ``effort`` knob (low/medium/high/xhigh/max), but clio does not send
-  it, so the offered levels are exactly the budget ladder
-  ``off | low | medium | high``. The default is clio's shipped per-model default
-  (``low`` for haiku/sonnet), else the SDK's own default.
-* **anthropic** — LiteLLM's model info says whether the model supports extended
-  thinking; when it does, the same budget ladder applies and the API default is
-  thinking off.
-* **argonne / lm_studio / ollama** — the served model decides. vLLM reports its
-  ``reasoning_parser``; gpt-oss models honor ``reasoning_effort`` low/medium/high
-  (default medium) and nothing else. Other reasoning parsers think, but ignore
-  ``reasoning_effort``, so no level is offered.
-* **openai** — LiteLLM's model info (``supports_reasoning`` and the per-effort
-  ``supports_xhigh_reasoning_effort`` flag); OpenAI's default effort is medium.
-
-Whatever the source says, a level is offered only if
-:func:`~clio_agent.providers.thinking.resolve_thinking` maps it for that provider
-(``resolve_thinking`` stays the single level -> kwargs mapping).
+  ``defaultReasoningEffort`` per model (persisted by discovery). Every effort
+  the SDK defines has a clio level (``none`` is ``off``).
+* **claude_code** — the Claude Code CLI reports each model's
+  ``supportedEffortLevels`` in its ``initialize`` response (read once per
+  discovery through the Agent SDK, no model turn; persisted on the overlay row).
+  A model with effort levels offers ``off`` plus exactly those levels, sent as
+  the SDK ``effort`` option. A model without (haiku) offers the thinking-budget
+  ladder ``off|low|medium|high``. ``off`` is the SDK's ``thinking: disabled``,
+  which every model accepts.
+* **anthropic** — LiteLLM's model map: an adaptive-thinking model accepts
+  ``output_config.effort`` low/medium/high/max (+``xhigh`` where the map says
+  so); other reasoning models take the budget ladder.
+* **openai** — LiteLLM's model map: low/medium/high plus ``minimal``/``xhigh``
+  where flagged, and ``off`` (``reasoning_effort="none"``) where the model
+  supports a ``none`` effort.
+* **argonne / lm_studio / ollama** — the served model decides. gpt-oss models
+  honor ``reasoning_effort`` low/medium/high (default medium); other reasoning
+  parsers think but ignore ``reasoning_effort``, so no level is offered.
 """
 
 from __future__ import annotations
@@ -42,9 +39,10 @@ from clio_agent.providers.thinking import LEVEL_ORDER, resolve_thinking, shipped
 
 logger = logging.getLogger(__name__)
 
-#: Codex ``ReasoningEffort`` values -> clio thinking levels (``minimal`` has none).
+#: Codex ``ReasoningEffort`` values -> clio thinking levels.
 _CODEX_TO_LEVEL: dict[str, str] = {
     "none": "off",
+    "minimal": "minimal",
     "low": "low",
     "medium": "medium",
     "high": "high",
@@ -53,6 +51,11 @@ _CODEX_TO_LEVEL: dict[str, str] = {
 
 _BUDGET_LADDER: tuple[str, ...] = ("off", "low", "medium", "high")
 _EFFORT_LADDER: tuple[str, ...] = ("low", "medium", "high")
+
+
+def _ordered(levels: Any) -> tuple[str, ...]:
+    values = {str(v) for v in levels} if isinstance(levels, (list, tuple, set)) else set()
+    return tuple(level for level in LEVEL_ORDER if level in values)
 
 
 def _is_gpt_oss(profile: ModelProfile) -> bool:
@@ -73,75 +76,173 @@ def _litellm_info(model: str) -> dict[str, Any]:
     return dict(info) if isinstance(info, dict) else {}
 
 
-def _codex(profile: ModelProfile) -> tuple[list[str], str, str]:
+def _anthropic_effort_levels(model: str) -> tuple[str, ...] | None:
+    """Effort levels LiteLLM will send as ``output_config.effort`` for ``model``."""
+
+    try:
+        from litellm.llms.anthropic.chat.transformation import (  # noqa: PLC0415
+            AnthropicConfig,
+        )
+
+        if not AnthropicConfig._is_adaptive_thinking_model(model):
+            return None
+        levels = ["low", "medium", "high", "max"]
+        if AnthropicConfig._supports_effort_level(model, "xhigh"):
+            levels.append("xhigh")
+    except Exception as exc:  # noqa: BLE001 - no LiteLLM evidence means budget ladder, logged
+        logger.debug("reasoning levels: no anthropic effort evidence for %r: %s", model, exc)
+        return None
+    return _ordered(levels)
+
+
+def _openai_effort_levels(model: str) -> tuple[str, ...] | None:
+    info = _litellm_info(model)
+    if not info.get("supports_reasoning"):
+        return None
+    levels = list(_EFFORT_LADDER)
+    for level, flag in (("minimal", "minimal"), ("xhigh", "xhigh"), ("off", "none")):
+        if info.get(f"supports_{flag}_reasoning_effort"):
+            levels.append(level)
+    return _ordered(levels)
+
+
+def _claude_code_row(model: str) -> dict[str, Any] | None:
+    """The claude_code overlay row for a configured model id or CLI alias."""
+
+    from clio_agent.providers.model_discovery.overlay import (  # noqa: PLC0415
+        OverlayMalformedError,
+        read_overlay,
+    )
+
+    bare = model.removeprefix("claude_code/").removeprefix("cc-").removesuffix("[1m]")
+    try:
+        entry = read_overlay().get("claude_code")
+    except OverlayMalformedError as exc:
+        logger.warning("reasoning levels: reason=overlay_malformed provider=claude_code: %s", exc)
+        return None
+    rows = entry.get("models") if isinstance(entry, dict) else None
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        raw_aliases = row.get("cli_values")
+        aliases = [str(a) for a in raw_aliases] if isinstance(raw_aliases, list) else []
+        if bare == row.get("id") or bare in aliases or model in aliases:
+            return row
+    return None
+
+
+def model_effort_levels(
+    provider_kind: str, model: str, *, raw: dict[str, Any] | None = None
+) -> tuple[str, ...] | None:
+    """The model's own reported effort levels (clio vocabulary), or ``None``.
+
+    ``raw`` is a catalog profile row when the caller already has it; otherwise
+    the persisted discovery evidence is read. ``None`` means the provider reports
+    no per-model effort for this model (the budget / legacy mapping applies).
+    """
+
+    if provider_kind == "claude_code":
+        row = raw if raw is not None else _claude_code_row(model)
+        levels = _ordered((row or {}).get("supported_effort_levels"))
+        return levels or None
+    if provider_kind == "anthropic":
+        return _anthropic_effort_levels(model)
+    if provider_kind == "openai":
+        return _openai_effort_levels(model)
+    return None
+
+
+def _codex(profile: ModelProfile) -> tuple[list[str], str, str, str]:
     reported = profile.raw.get("supported_reasoning_efforts")
     if not isinstance(reported, list):
-        return [], "", "codex_sdk_unreported"
-    levels = [_CODEX_TO_LEVEL[e] for e in (str(v) for v in reported) if e in _CODEX_TO_LEVEL]
+        return [], "", "codex_sdk_unreported", ""
+    unmapped = [str(v) for v in reported if str(v) not in _CODEX_TO_LEVEL]
+    levels = [_CODEX_TO_LEVEL[str(v)] for v in reported if str(v) in _CODEX_TO_LEVEL]
     default = _CODEX_TO_LEVEL.get(str(profile.raw.get("default_reasoning_effort") or ""), "")
-    return levels, default, "codex_sdk"
+    reason = f"codex_effort_unmapped: {', '.join(unmapped)}" if unmapped else ""
+    if unmapped:
+        logger.warning("reasoning levels: %s (model=%s)", reason, profile.id)
+    return levels, default, "codex_sdk", reason
 
 
-def _anthropic(profile: ModelProfile) -> tuple[list[str], str, str]:
-    info = _litellm_info(f"anthropic/{profile.id}")
-    if not info.get("supports_reasoning"):
-        return [], "", "litellm_model_info"
-    return list(_BUDGET_LADDER), "off", "litellm_model_info"
+def _claude_code(profile: ModelProfile) -> tuple[list[str], str, str, str]:
+    effort = model_effort_levels("claude_code", profile.id, raw=profile.raw)
+    shipped = shipped_default_level("claude_code", profile.id, None, 0) or ""
+    reason = str(profile.raw.get("effort_evidence_failure") or "")
+    if effort:
+        # The SDK documents "high" as its default effort.
+        default = shipped or ("high" if "high" in effort else "")
+        return ["off", *effort], default, "claude_code_sdk", reason
+    return list(_BUDGET_LADDER), shipped, "claude_code_sdk_thinking_budget", reason
 
 
-def _openai(profile: ModelProfile) -> tuple[list[str], str, str]:
-    info = _litellm_info(profile.id)
-    if not info.get("supports_reasoning"):
-        return [], "", "litellm_model_info"
-    levels = list(_EFFORT_LADDER)
-    if info.get("supports_xhigh_reasoning_effort"):
-        levels.append("xhigh")
-    return levels, "medium", "litellm_model_info"
+def _anthropic(profile: ModelProfile) -> tuple[list[str], str, str, str]:
+    effort = model_effort_levels("anthropic", profile.id)
+    if effort:
+        return ["off", *effort], "off", "litellm_model_info_effort", ""
+    if not _litellm_info(f"anthropic/{profile.id}").get("supports_reasoning"):
+        return [], "", "litellm_model_info", ""
+    return list(_BUDGET_LADDER), "off", "litellm_model_info", ""
 
 
-def _served(profile: ModelProfile) -> tuple[list[str], str, str]:
+def _openai(profile: ModelProfile) -> tuple[list[str], str, str, str]:
+    effort = model_effort_levels("openai", profile.id)
+    if not effort:
+        return [], "", "litellm_model_info", ""
+    return list(effort), "medium", "litellm_model_info", ""
+
+
+def _served(profile: ModelProfile) -> tuple[list[str], str, str, str]:
     if _is_gpt_oss(profile):
-        return list(_EFFORT_LADDER), "medium", "served_model_reasoning_parser"
-    return [], "", "served_model_reasoning_parser"
+        return list(_EFFORT_LADDER), "medium", "served_model_reasoning_parser", ""
+    return [], "", "served_model_reasoning_parser", ""
 
 
 def model_reasoning(provider_kind: str, profile: ModelProfile) -> dict[str, Any]:
     """Return the catalog ``reasoning`` block for one model.
 
     Returns:
-        ``{"supported", "parameter", "levels", "default", "source"}``. ``levels``
-        is ascending and only holds levels ``resolve_thinking`` maps for
-        ``provider_kind``; empty means there is nothing to choose (clients hide the
-        selector). ``default`` is one of ``levels`` or ``""`` (provider default
-        with no named level).
+        ``{"supported", "parameter", "levels", "default", "source"}`` plus a typed
+        ``reason`` when part of the evidence is missing. ``levels`` is ascending
+        and holds only levels ``resolve_thinking`` maps for this model; empty
+        means there is nothing to choose (clients hide the selector).
     """
 
     if provider_kind == "codex":
-        levels, default, source = _codex(profile)
+        levels, default, source, reason = _codex(profile)
     elif provider_kind == "claude_code":
-        levels = list(_BUDGET_LADDER)
-        default = shipped_default_level("claude_code", profile.id, None, 0) or ""
-        source = "claude_code_sdk_thinking"
+        levels, default, source, reason = _claude_code(profile)
     elif provider_kind == "anthropic":
-        levels, default, source = _anthropic(profile)
+        levels, default, source, reason = _anthropic(profile)
     elif provider_kind == "openai":
-        levels, default, source = _openai(profile)
+        levels, default, source, reason = _openai(profile)
     elif provider_kind in {"argonne", "lm_studio", "ollama"}:
-        levels, default, source = _served(profile)
+        levels, default, source, reason = _served(profile)
     else:
-        levels, default, source = [], "", "no_thinking_mapping"
+        levels, default, source, reason = [], "", "no_thinking_mapping", ""
+    effort = (
+        model_effort_levels(provider_kind, profile.id, raw=profile.raw)
+        if provider_kind == "claude_code"
+        else model_effort_levels(provider_kind, profile.id)
+        if provider_kind in {"anthropic", "openai"}
+        else None
+    )
     mapped = [
         level
         for level in LEVEL_ORDER
-        if level in levels and resolve_thinking(provider_kind, level, 0).supported
+        if level in levels
+        and resolve_thinking(provider_kind, level, 0, effort_levels=effort).supported
     ]
-    return {
+    block: dict[str, Any] = {
         "supported": bool(mapped) or profile.is_reasoning,
         "parameter": profile.reasoning_param or "",
         "levels": mapped,
         "default": default if default in mapped else "",
         "source": source,
     }
+    if reason:
+        block["reason"] = reason
+    return block
 
 
-__all__ = ["model_reasoning"]
+__all__ = ["model_effort_levels", "model_reasoning"]

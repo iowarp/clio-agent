@@ -19,7 +19,9 @@ class SessionDefaults(BaseModel):
 
     provider_id: str = Field(default="", max_length=128)
     model_id: str = Field(default="", max_length=256)
-    effort: Literal["off", "low", "medium", "high"] = "medium"
+    #: Starting thinking level for new sessions. ``None`` means "the selected
+    #: model's own default": a fixed level here would override every model.
+    effort: Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"] | None = None
     mode: Literal["plan", "edit", "architect"] = "edit"
     edit_mode: Literal["diff", "whole", "patch"] = "diff"
     routing_mode: Literal["auto", "chat", "experts", "reasoning_only"] = "auto"
@@ -34,7 +36,7 @@ class UpdateSessionDefaultsRequest(BaseModel):
 
     provider_id: str | None = Field(default=None, max_length=128)
     model_id: str | None = Field(default=None, max_length=256)
-    effort: Literal["off", "low", "medium", "high"] | None = None
+    effort: Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"] | None = None
     mode: Literal["plan", "edit", "architect"] | None = None
     edit_mode: Literal["diff", "whole", "patch"] | None = None
     routing_mode: Literal["auto", "chat", "experts", "reasoning_only"] | None = None
@@ -108,6 +110,8 @@ class SessionDefaultsStore:
         """Apply a validated partial update and persist it atomically."""
 
         updates = patch.model_dump(exclude_none=True, exclude_unset=True)
+        if "effort" in patch.model_fields_set and patch.effort is None:
+            updates["effort"] = None  # an explicit null resets to the model's default
         with self._lock:
             self._value = self._value.model_copy(update=updates)
             self._flush()
