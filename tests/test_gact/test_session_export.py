@@ -27,68 +27,74 @@ def _client(tmp_path: Path) -> TestClient:
 
 
 def test_export_unknown_session_404s(tmp_path: Path) -> None:
-    c = _client(tmp_path)
-    resp = c.get("/v1/sessions/sess_nope/export")
+    with _client(tmp_path) as c:
+        resp = c.get("/v1/sessions/sess_nope/export")
     assert resp.status_code == 404
 
 
 def test_export_then_import_round_trip(tmp_path: Path) -> None:
     from .conftest import complete_turn
 
-    c = _client(tmp_path)
-    sid = c.post("/v1/sessions", json={"title": "src"}).json()["id"]
-    complete_turn(c, sid, "first")
-    complete_turn(c, sid, "second")
+    # ENTERED: complete_turn drives a real POST /messages turn, and an un-entered
+    # TestClient's per-request transient portal is torn down (cancelling the turn)
+    # the instant the ack lands, before the assistant reply ever settles.
+    with _client(tmp_path) as c:
+        sid = c.post("/v1/sessions", json={"title": "src"}).json()["id"]
+        complete_turn(c, sid, "first")
+        complete_turn(c, sid, "second")
 
-    blob = c.get(f"/v1/sessions/{sid}/export").json()
-    assert blob["version"] == "1"
-    assert blob["session"]["id"] == sid
-    assert blob["session"]["title"] == "src"
-    assert len(blob["messages"]) == 4  # 2 turns × (user + assistant)
-    assert blob["workspace"]["id"] == "ws_default"
+        blob = c.get(f"/v1/sessions/{sid}/export").json()
+        assert blob["version"] == "1"
+        assert blob["session"]["id"] == sid
+        assert blob["session"]["title"] == "src"
+        assert len(blob["messages"]) == 4  # 2 turns × (user + assistant)
+        assert blob["workspace"]["id"] == "ws_default"
 
-    # Re-import.
-    new_sess = c.post("/v1/sessions/import", json=blob).json()
-    assert new_sess["id"] != sid
-    assert new_sess["title"] == "src"
-    assert new_sess["message_count"] == 4
+        # Re-import.
+        new_sess = c.post("/v1/sessions/import", json=blob).json()
+        assert new_sess["id"] != sid
+        assert new_sess["title"] == "src"
+        assert new_sess["message_count"] == 4
 
-    rows = c.get(f"/v1/sessions/{new_sess['id']}/messages").json()["messages"]
-    assert len(rows) == 4
-    # Original user prompts preserved.
-    user_texts = {
-        p["text"] for m in rows for p in m["parts"] if m["role"] == "user" and p["type"] == "text"
-    }
-    assert {"first", "second"} == user_texts
+        rows = c.get(f"/v1/sessions/{new_sess['id']}/messages").json()["messages"]
+        assert len(rows) == 4
+        # Original user prompts preserved.
+        user_texts = {
+            p["text"]
+            for m in rows
+            for p in m["parts"]
+            if m["role"] == "user" and p["type"] == "text"
+        }
+        assert {"first", "second"} == user_texts
 
 
 def test_export_import_preserves_context_files(tmp_path: Path) -> None:
-    c = _client(tmp_path)
-    sid = c.post("/v1/sessions", json={"title": "src"}).json()["id"]
-    target = tmp_path / "notes.md"
-    target.write_text("portable context\n", encoding="utf-8")
-    c.post(
-        f"/v1/sessions/{sid}/context/files",
-        json={
-            "path": str(target),
-            "mode": "read",
-            "language": "markdown",
-            "size": target.stat().st_size,
-        },
-    )
+    with _client(tmp_path) as c:
+        sid = c.post("/v1/sessions", json={"title": "src"}).json()["id"]
+        target = tmp_path / "notes.md"
+        target.write_text("portable context\n", encoding="utf-8")
+        c.post(
+            f"/v1/sessions/{sid}/context/files",
+            json={
+                "path": str(target),
+                "mode": "read",
+                "language": "markdown",
+                "size": target.stat().st_size,
+            },
+        )
 
-    blob = c.get(f"/v1/sessions/{sid}/export").json()
-    assert blob["context_files"][0]["path"] == str(target)
-    assert blob["context_files"][0]["mode"] == "read"
-    assert blob["context_files"][0]["language"] == "markdown"
+        blob = c.get(f"/v1/sessions/{sid}/export").json()
+        assert blob["context_files"][0]["path"] == str(target)
+        assert blob["context_files"][0]["mode"] == "read"
+        assert blob["context_files"][0]["language"] == "markdown"
 
-    new_sess = c.post("/v1/sessions/import", json=blob).json()
-    files = c.get(f"/v1/sessions/{new_sess['id']}/context/files").json()["files"]
+        new_sess = c.post("/v1/sessions/import", json=blob).json()
+        files = c.get(f"/v1/sessions/{new_sess['id']}/context/files").json()["files"]
 
-    assert files == blob["context_files"]
+        assert files == blob["context_files"]
 
 
 def test_capabilities_advertises_session_export(tmp_path: Path) -> None:
-    c = _client(tmp_path)
-    body = c.get("/v1/capabilities").json()
+    with _client(tmp_path) as c:
+        body = c.get("/v1/capabilities").json()
     assert body["capabilities"]["session_export"] is True

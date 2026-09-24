@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -35,8 +36,14 @@ class _BrokenARC:
 
 
 @pytest.fixture()
-def client(tmp_path: Path) -> TestClient:
-    return TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent()))
+def client(tmp_path: Path) -> Iterator[TestClient]:
+    # ENTERED: test_dispatch_clear_drops_messages / test_dispatch_clear_obeys_
+    # permission_policy drive a real POST /messages turn via complete_turn. An
+    # un-entered TestClient gives every request its own transient anyio portal,
+    # which is torn down (cancelling the still-running turn) the instant the ack
+    # lands -- before the assistant reply ever settles.
+    with TestClient(build_app(sessions_path=tmp_path / "s.json", agent=_Agent())) as test_client:
+        yield test_client
 
 
 def test_commands_listed(client: TestClient) -> None:
