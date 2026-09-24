@@ -336,6 +336,7 @@ def _dynamic_agent_runtime_provenance(
     """Return non-secret provenance for the dynamic agent used this turn."""
 
     from clio_agent.gact.providers.config import _active_lm_model_ref  # noqa: PLC0415
+    from clio_agent.gact.turn_reasoning import turn_reasoning_provenance  # noqa: PLC0415
 
     active_model = _active_lm_model_ref(app)
     provider_id = agent_def.default_provider or active_model.get("provider_id", "")
@@ -374,6 +375,9 @@ def _dynamic_agent_runtime_provenance(
             "fallback_to_global": not turn_model_source
             and not (agent_def.default_provider and agent_def.default_model),
         },
+        # The thinking level this turn's LM runs with and the provider kwargs it
+        # maps to, so a per-message reasoning effort is verifiable in the trace.
+        "reasoning": turn_reasoning_provenance(app, agent_def, provider_id),
     }
     blueprint_id = str(agent_def.metadata.get("agent_blueprint_id") or "").strip()
     if blueprint_id:

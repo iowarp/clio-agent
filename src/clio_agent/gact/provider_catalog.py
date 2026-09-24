@@ -18,6 +18,7 @@ from clio_agent.providers import model_discovery
 from clio_agent.providers.catalog import get_provider
 from clio_agent.providers.handshake import HandshakeContext, HandshakeReport, run_handshake
 from clio_agent.providers.handshake.model import ModelProfile
+from clio_agent.providers.reasoning_levels import model_reasoning
 
 
 def _now_iso() -> str:
@@ -120,10 +121,9 @@ def model_catalog_row(
         "model_id": profile.id,
         "revision": str(profile.raw.get("revision") or profile.raw.get("version") or ""),
         "modalities": _modalities(profile) if evidenced or modality_evidenced else ["text"],
-        "reasoning": {
-            "supported": profile.is_reasoning,
-            "parameter": profile.reasoning_param or "",
-        },
+        # The levels a person can actually choose for THIS model, derived from
+        # provider truth and restricted to what resolve_thinking maps.
+        "reasoning": model_reasoning(preset.provider, profile),
         "native_tool_calling": profile.native_tool_calling,
         "context_window": profile.context_window,
         "loaded_context_window": profile.loaded_context_window,

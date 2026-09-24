@@ -654,6 +654,9 @@ def test_discover_codex_success_reports_default_and_source(monkeypatch: pytest.M
     assert result.source == "codex_sdk"
     assert all(m["capabilities"] == ["text", "image"] for m in result.discovered)
     assert all(m["capability_evidence"]["reason"] == "modality_reported" for m in result.discovered)
+    # The account's own per-model reasoning efforts are persisted verbatim.
+    assert all(m["supported_reasoning_efforts"] == ["medium"] for m in result.discovered)
+    assert all(m["default_reasoning_effort"] == "medium" for m in result.discovered)
     assert stub.closed is True
 
 

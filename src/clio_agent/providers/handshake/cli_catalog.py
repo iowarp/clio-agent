@@ -132,6 +132,11 @@ class CliCatalogHandshake(NoOpHandshake):
                     # the capability negative stays queryable downstream instead
                     # of arriving as an anonymous empty list.
                     "capability_evidence": m.get("capability_evidence") or {},
+                    # Per-model reasoning efforts the discovery run recorded
+                    # (Codex SDK catalog); the provider catalog derives the
+                    # selectable thinking levels from them.
+                    "supported_reasoning_efforts": list(m.get("supported_reasoning_efforts") or []),
+                    "default_reasoning_effort": str(m.get("default_reasoning_effort") or ""),
                     _OVERLAY_CHECKED_KEY: True,
                 }
                 for m in wire["models"]

@@ -1,7 +1,12 @@
 """Provider-generic thinking (extended-reasoning) level → per-provider mapping (#895).
 
-One external vocabulary — ``off | low | medium | high`` — maps to whatever each
-provider's transport actually understands. The knob is deliberately *not*
+One external vocabulary — ``off | low | medium | high | xhigh`` — maps to whatever
+each provider's transport actually understands. ``xhigh`` exists because Codex
+(and OpenAI's own reasoning models) really expose it; a provider whose transport
+cannot express a level gets a typed ``unsupported`` plan for it
+(:data:`ACCEPTED_LEVELS` is the per-provider truth, and the provider catalog
+offers a model only levels that are both accepted here and reported for that
+model — see :mod:`clio_agent.providers.reasoning_levels`). The knob is deliberately *not*
 Claude-shaped (design constraint from #896):
 
 * **anthropic** (native LiteLLM): ``thinking={"type":"enabled","budget_tokens":N}``.
@@ -40,14 +45,18 @@ from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
-ThinkingLevel = Literal["off", "low", "medium", "high"]
+ThinkingLevel = Literal["off", "low", "medium", "high", "xhigh"]
+
+#: Every external level, in ascending order (``None``/unset means "provider default").
+LEVEL_ORDER: tuple[str, ...] = ("off", "low", "medium", "high", "xhigh")
 
 #: Valid external levels (``None``/unset means "provider default").
-THINKING_LEVELS: frozenset[str] = frozenset({"off", "low", "medium", "high"})
+THINKING_LEVELS: frozenset[str] = frozenset(LEVEL_ORDER)
 
 #: Canonical token budget for each non-off level. An explicit ``thinking_budget``
-#: overrides these for budget-based providers.
-LEVEL_BUDGET: dict[str, int] = {"low": 2048, "medium": 8192, "high": 24576}
+#: overrides these for budget-based providers. ``xhigh`` is only accepted by
+#: effort-based transports, so its budget is informational (doctor display).
+LEVEL_BUDGET: dict[str, int] = {"low": 2048, "medium": 8192, "high": 24576, "xhigh": 32768}
 
 # Providers whose transport expresses thinking as a token budget.
 _BUDGET_PROVIDERS: frozenset[str] = frozenset({"anthropic", "claude_code"})
@@ -57,7 +66,37 @@ _EFFORT_PROVIDERS: frozenset[str] = frozenset({"openai", "lm_studio", "ollama", 
 #: Codex effort vocabulary. ``off`` → codex's explicit ``none`` (disable), not omit
 #: (omit would inherit the ambient ``config.toml`` effort — #896). low/medium/high
 #: pass through; all four are accepted by gpt-5.x through the Codex SDK.
-_CODEX_EFFORT: dict[str, str] = {"off": "none", "low": "low", "medium": "medium", "high": "high"}
+_CODEX_EFFORT: dict[str, str] = {
+    "off": "none",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "xhigh": "xhigh",
+}
+
+_BUDGET_LEVELS: frozenset[str] = frozenset({"off", "low", "medium", "high"})
+
+#: The levels each provider's transport can express. Budget transports stop at
+#: ``high`` (clio's budget ladder); Codex passes its SDK ``ReasoningEffort``
+#: through, ``xhigh`` included; OpenAI's API accepts ``xhigh`` on the models that
+#: support it; the OpenAI-compatible local/ALCF servers do not. A level outside a
+#: provider's set resolves to a typed ``unsupported`` plan, never a silent drop.
+ACCEPTED_LEVELS: dict[str, frozenset[str]] = {
+    "anthropic": _BUDGET_LEVELS,
+    "claude_code": _BUDGET_LEVELS,
+    "codex": frozenset(_CODEX_EFFORT),
+    "openai": THINKING_LEVELS,
+    "lm_studio": _BUDGET_LEVELS,
+    "ollama": _BUDGET_LEVELS,
+    "argonne": _BUDGET_LEVELS,
+}
+
+
+def accepted_levels(provider: str) -> tuple[str, ...]:
+    """Return the levels ``provider``'s transport can express, in ascending order."""
+
+    accepted = ACCEPTED_LEVELS.get(provider, frozenset())
+    return tuple(level for level in LEVEL_ORDER if level in accepted)
 
 
 @dataclass(frozen=True)
@@ -120,8 +159,17 @@ def _normalize_level(level: str | None) -> str | None:
     if not lvl:
         return None
     if lvl not in THINKING_LEVELS:
-        raise ValueError(f"thinking level must be one of off|low|medium|high (got {level!r})")
+        raise ValueError(f"thinking level must be one of {'|'.join(LEVEL_ORDER)} (got {level!r})")
     return lvl
+
+
+def validate_thinking_level(level: str) -> str:
+    """Return a configured ``thinking_level`` normalized, or raise ``ValueError``."""
+
+    normalized = str(level).strip().lower()
+    if normalized not in THINKING_LEVELS:
+        raise ValueError(f"thinking_level must be {'|'.join(LEVEL_ORDER)} (got {level!r})")
+    return normalized
 
 
 def resolve_thinking(provider: str, level: str | None, budget: int | None) -> ThinkingPlan:
@@ -136,7 +184,7 @@ def resolve_thinking(provider: str, level: str | None, budget: int | None) -> Th
 
     Args:
         provider: Provider id (e.g. ``"claude_code"``, ``"anthropic"``, ``"openai"``).
-        level: External level ``off|low|medium|high`` or ``None``/"".
+        level: External level (one of :data:`LEVEL_ORDER`) or ``None``/"".
         budget: Explicit token budget override (0/``None`` = none).
 
     Returns:
@@ -156,6 +204,24 @@ def resolve_thinking(provider: str, level: str | None, budget: int | None) -> Th
             budget_tokens=0,
             supported=True,
             unsupported_reason=None,
+            litellm_kwargs={},
+            sdk_thinking=None,
+        )
+
+    accepted = ACCEPTED_LEVELS.get(provider)
+    if lvl is not None and accepted is not None and lvl not in accepted:
+        # A known provider whose transport has no such level: typed, never a
+        # silent downgrade to a neighbouring level.
+        return ThinkingPlan(
+            provider=provider,
+            requested_level=lvl,
+            effective_level="unsupported",
+            budget_tokens=0,
+            supported=False,
+            unsupported_reason=(
+                f"provider {provider!r} has no {lvl!r} thinking level "
+                f"(accepts {'|'.join(accepted_levels(provider))})"
+            ),
             litellm_kwargs={},
             sdk_thinking=None,
         )
@@ -296,12 +362,16 @@ def log_unsupported_thinking(plan: ThinkingPlan) -> None:
 
 
 __all__ = [
+    "ACCEPTED_LEVELS",
     "LEVEL_BUDGET",
+    "LEVEL_ORDER",
     "THINKING_LEVELS",
+    "accepted_levels",
     "ThinkingLevel",
     "ThinkingPlan",
     "log_unsupported_thinking",
     "resolve_thinking",
+    "validate_thinking_level",
 ]
 
 

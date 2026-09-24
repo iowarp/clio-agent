@@ -342,12 +342,9 @@ class LMProviderConfig:
                 f"sdk is the only transport (got {self.claude_code_transport!r})"
             )
         if self.thinking_level is not None:
-            level = str(self.thinking_level).strip().lower()
-            if level not in {"off", "low", "medium", "high"}:
-                raise ValueError(
-                    f"thinking_level must be off|low|medium|high (got {self.thinking_level!r})"
-                )
-            self.thinking_level = level
+            from clio_agent.providers.thinking import validate_thinking_level  # noqa: PLC0415
+
+            self.thinking_level = validate_thinking_level(self.thinking_level)
 
     def _apply_model_profile_defaults(self) -> None:
         """Apply safe defaults for known model families."""
@@ -404,6 +401,7 @@ class LMProviderConfig:
         # place the override is resolved; it does NOT suppress the served<native
         # warning, which is about provider configuration, not operator intent.
         from clio_agent import conf  # noqa: PLC0415 - keep config.py a leaf; lazy
+
         override = conf.resolve(
             "lm.context_window", env="CLIO_LM_CONTEXT_WINDOW", default=0, cast=conf.as_int
         )

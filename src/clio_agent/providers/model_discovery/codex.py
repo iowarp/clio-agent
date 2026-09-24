@@ -52,6 +52,32 @@ def _codex_capability_row(row: Any) -> dict[str, Any]:
     }
 
 
+def _effort_value(effort: Any) -> str:
+    return str(getattr(effort, "value", effort) or "")
+
+
+def _codex_reasoning_row(row: Any) -> dict[str, Any]:
+    """Return the reasoning efforts the Codex catalog reports for one model.
+
+    ``supportedReasoningEfforts`` / ``defaultReasoningEffort`` are REQUIRED fields
+    of the SDK's ``Model`` (``openai_codex/generated/v2_all.py``), so they are the
+    account's own per-model truth. They are persisted verbatim (Codex vocabulary:
+    ``none``/``minimal``/``low``/``medium``/``high``/``xhigh``); the catalog maps
+    them onto clio's thinking levels in :mod:`clio_agent.providers.reasoning_levels`.
+    """
+
+    options = getattr(row, "supported_reasoning_efforts", None) or []
+    supported = [
+        value
+        for value in (_effort_value(getattr(option, "reasoning_effort", "")) for option in options)
+        if value
+    ]
+    return {
+        "supported_reasoning_efforts": supported,
+        "default_reasoning_effort": _effort_value(getattr(row, "default_reasoning_effort", "")),
+    }
+
+
 # Deliberate injection seam for focused discovery tests.  The official SDK is
 # still imported only when discovery is requested; keeping the default as
 # ``None`` prevents provider startup from loading Codex for unrelated users.
@@ -118,6 +144,7 @@ def discover_codex(*, timeout: float = 20.0) -> ProviderDiscoveryResult:
             "name": str(row.display_name or row.id),
             "description": str(row.description or ""),
             **_codex_capability_row(row),
+            **_codex_reasoning_row(row),
         }
         for row in rows
         if row.id

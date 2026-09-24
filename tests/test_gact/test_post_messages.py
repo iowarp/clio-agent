@@ -978,6 +978,13 @@ def test_post_message_prompt_user_agent_executes_registered_agent(
             "model_source": "agent_default",
             "fallback_to_global": False,
         },
+        "reasoning": {
+            "effective_level": "default",
+            "lm_kwargs": {},
+            "provider": "openai",
+            "requested_level": "",
+            "source": "provider_default",
+        },
     }
     assert sess["status"] == "idle"
 
@@ -1325,6 +1332,13 @@ def test_post_message_tool_user_agent_executes_registered_agent(
             "provider_source": "global_active",
             "model_source": "global_active",
             "fallback_to_global": True,
+        },
+        "reasoning": {
+            "effective_level": "default",
+            "lm_kwargs": {},
+            "provider": "",
+            "requested_level": "",
+            "source": "provider_default",
         },
     }
     assert sess["status"] == "idle"
@@ -1907,3 +1921,38 @@ def test_tool_call_part_carries_thought_and_invoking_expert(tmp_path: Path) -> N
 # (the canonical answer channel never re-emits an already-landed answer, by op
 # identity) and by the suite-wide live==reload fold property in ``conftest.py``.
 # The restates_part_id echo TAG (mechanism 6's replacement labeling) ships in PR4.
+
+
+def test_post_message_reasoning_effort_is_applied_and_recorded(
+    client: TestClient,
+    fake_agent: FakeClioAgent,
+) -> None:
+    """The message's reasoning effort reaches the turn and its provenance (I)."""
+
+    from .conftest import complete_turn
+
+    sid = _create_session(client)
+    with_effort = complete_turn(
+        client,
+        sid,
+        "think hard",
+        json_override={
+            "client_message_id": "msg_effort",
+            "behavior": {"reasoning_effort": "high"},
+        },
+    )
+    without = complete_turn(
+        client, sid, "default please", json_override={"client_message_id": "msg_plain"}
+    )
+    messages = {
+        row["id"]: row for row in client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+    }
+
+    reasoning = with_effort["metadata"]["agent_runtime"]["reasoning"]
+    assert reasoning["requested_level"] == "high"
+    assert reasoning["source"] == "per_message"
+    assert reasoning["effective_level"] in {"high", "unsupported"}
+    assert without["metadata"]["agent_runtime"]["reasoning"]["source"] != "per_message"
+    assert messages["msg_effort"]["metadata"]["behavior"]["reasoning_effort"] == "high"
+    # Unset is absent -- never a fabricated "medium" that would override the setting.
+    assert "reasoning_effort" not in messages["msg_plain"]["metadata"]["behavior"]

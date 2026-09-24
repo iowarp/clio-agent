@@ -113,5 +113,5 @@ class LMProviderRequest(BaseModel):
     parallel: int = 0
     turn_timeout_s: float = 0.0
     transport: str | None = None
-    thinking_level: Literal["off", "low", "medium", "high"] | None = None
+    thinking_level: Literal["off", "low", "medium", "high", "xhigh"] | None = None
     thinking_budget: int = 0

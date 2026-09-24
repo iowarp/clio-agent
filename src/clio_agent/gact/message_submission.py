@@ -580,7 +580,8 @@ def accept_message(
             ).model_dump(exclude_none=True),
         )
 
-    behavior = req.behavior.model_dump()
+    # An unset reasoning effort is absent, never stored as null.
+    behavior = req.behavior.model_dump(exclude_none=True)
     metadata = dict(req.metadata)
     # Already schema-validated in ``_apply_a2ui_client_metadata_guards`` above
     # (strict + extra="forbid"/"allow", so the raw value IS the canonical shape)

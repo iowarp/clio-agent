@@ -6,8 +6,7 @@
         "metadata": {
           "behavior": {
             "confirmation_policy": "ask",
-            "execution_mode": "execute",
-            "reasoning_effort": "medium"
+            "execution_mode": "execute"
           },
           "client_message_id": "",
           "delivery": "start",
@@ -203,6 +202,13 @@
             "prompt": {
               "has_system_prompt": true,
               "source": "agent_definition"
+            },
+            "reasoning": {
+              "effective_level": "default",
+              "lm_kwargs": {},
+              "provider": "",
+              "requested_level": "",
+              "source": "provider_default"
             },
             "source": "builtin",
             "structured_outputs": {},
