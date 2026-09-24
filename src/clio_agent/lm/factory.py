@@ -68,6 +68,7 @@ def _construct_lm(*, model: str, **lm_kwargs: Any) -> dspy.LM:
             "lm construction callers=%s",
             " <- ".join(frame.name for frame in traceback.extract_stack(limit=8)[:-1]),
         )
+    _warn_dropped_params(model=model, kwargs=lm_kwargs)
     return _io_logging_lm_cls()(model=model, **lm_kwargs)
 
 
@@ -414,4 +415,94 @@ def _provider_lm_kwargs(config: LMProviderConfig) -> dict[str, Any]:
         extras["codex_transport"] = config.codex_transport
     elif config.provider == "claude_code":
         extras["claude_code_transport"] = config.claude_code_transport
+    # Safety net only (model-capabilities plan, Part 2.4): every optional field
+    # above is already gated on config/thinking-plan logic that is SUPPOSED to
+    # match what the endpoint accepts. `drop_params` is the backstop for when
+    # one of those records is wrong, so a stale/incomplete capability record
+    # degrades to "field silently omitted" instead of a hard request failure.
+    # `_warn_dropped_params` (called from `_construct_lm`) turns every actual
+    # drop into a logged bug signal instead of a silent one. `setdefault` so an
+    # operator's own explicit `provider_options={"drop_params": False}` wins.
+    extras.setdefault("drop_params", True)
     return extras
+
+
+#: Top-level OpenAI-shaped kwargs clio ever passes that a LiteLLM dialect
+#: validates against `get_supported_openai_params` before honoring. Nested
+#: `extra_body` contents (top_k, min_p, chat_template_kwargs, ...) are forwarded
+#: raw by OpenAI-compatible dialects and are never subject to that check, so
+#: they are intentionally not in this list.
+_CHECKED_PARAM_NAMES: tuple[str, ...] = (
+    "temperature",
+    "top_p",
+    "presence_penalty",
+    "frequency_penalty",
+    "stop",
+    "reasoning_effort",
+    "thinking",
+    "max_tokens",
+    "tools",
+    "tool_choice",
+    "parallel_tool_calls",
+    "response_format",
+    "n",
+    "seed",
+)
+
+#: LiteLLM ``CustomLLM`` transports clio owns end-to-end (`providers.codex_litellm`,
+#: `providers.claude_code_litellm`). LiteLLM's provider registry does not know
+#: these as dialects -- `get_llm_provider`/`get_supported_openai_params` raise
+#: or return nonsense for them -- and their own `completion()` reads a small,
+#: fixed set of `optional_params` keys directly, ignoring everything else. The
+#: drop_params proactive check below does not apply to them.
+_CUSTOM_TRANSPORT_PREFIXES: tuple[str, ...] = ("codex/", "claude_code/")
+
+
+def _warn_dropped_params(*, model: str, kwargs: dict[str, Any]) -> None:
+    """Log, at WARNING, every optional kwarg LiteLLM's ``drop_params=True`` would drop.
+
+    LiteLLM exposes no reliable after-the-fact hook for an actual drop: its
+    ``drop_params`` machinery (``litellm/utils.py`` -- ``_get_non_default_params``
+    and the per-call-type ``get_optional_params*`` functions) just pops the
+    unsupported key with no callback or log line (verified against litellm
+    1.102.1's source). So this checks PROACTIVELY, at LM construction: for each
+    optional kwarg clio is about to pass, is it in this model/dialect's own
+    ``get_supported_openai_params()`` list? Anything not listed there WOULD be
+    silently dropped on the real call. A drop means one of clio's own
+    capability records is wrong for this endpoint/model (model-capabilities
+    plan, Part 2.4) -- these are bug signals, not expected noise.
+
+    Best-effort and purely diagnostic: any failure here (unmapped dialect,
+    litellm quirk) is logged at DEBUG and never raises -- this must never break
+    LM construction.
+    """
+    if model.startswith(_CUSTOM_TRANSPORT_PREFIXES):
+        return
+    present = [name for name in _CHECKED_PARAM_NAMES if name in kwargs]
+    if not present:
+        return
+    try:
+        import litellm  # noqa: PLC0415
+
+        bare_model, custom_llm_provider, _key, _base = litellm.get_llm_provider(
+            model, api_base=kwargs.get("api_base") or None
+        )
+        supported = set(
+            litellm.get_supported_openai_params(
+                model=bare_model, custom_llm_provider=custom_llm_provider
+            )
+            or []
+        )
+    except Exception as exc:  # noqa: BLE001 - a diagnostic must never break LM construction
+        logger.debug("drop_params check skipped for model=%s: %s", model, exc)
+        return
+    dropped = [name for name in present if name not in supported]
+    if dropped:
+        endpoint = urlparse(str(kwargs.get("api_base") or ""))
+        logger.warning(
+            "lm drop_params would silently drop params=%s model=%s endpoint_host=%s "
+            "-- one of clio's capability records is wrong for this endpoint/model",
+            dropped,
+            model,
+            endpoint.hostname or "default",
+        )

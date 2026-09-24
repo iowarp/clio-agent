@@ -1,0 +1,234 @@
+"""A configured model id may be a catalog/handshake ALIAS, not the canonical id.
+
+``{provider_id: "claude_code", model: "sonnet"}`` is a real, supported binding --
+``PUT /v1/providers/lm`` itself reports ``resolved_model_id: "claude-sonnet-5"``
+for it -- but before this fix every modality/capability lookup compared the
+configured value against catalog/handshake model identity with a bare ``==``,
+so an alias-bound selection was silently treated as an unknown model: no
+``view_image``/``view_pdf``, no native image/PDF delivery.
+
+:func:`~clio_agent.providers.handshake.model.resolve_model_id` is the ONE
+resolution point every one of those lookups now routes through --
+``HandshakeReport.model`` directly, and ``gact.resource_delivery.
+_catalog_modalities`` explicitly. These tests drive an alias binding through
+each evidence shape (a bare ``HandshakeReport``, an in-process provider
+catalog dict) and through the capability gates / declared-tool resolution that
+sit on top of them, and pin that an UNRELATED id is never mistaken for a real
+alias.
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from typing import Any
+
+from clio_agent.gact import context as gact_context
+from clio_agent.gact.agents.declared_native_tools import (
+    declared_native_capabilities,
+    resolve_declared_native_tools,
+)
+from clio_agent.gact.catalog import _builtin_main_agent
+from clio_agent.gact.providers.config import _pdf_capability, _vision_capability
+from clio_agent.gact.resource_delivery import live_model_modalities
+from clio_agent.gact.types import ModelRef
+from clio_agent.providers.handshake.model import (
+    AuthState,
+    ConnectivityState,
+    HandshakeReport,
+    ModelProfile,
+    resolve_model_id,
+)
+
+_CANONICAL = "claude-sonnet-5"
+_ALIAS = "sonnet"
+_UNRELATED = "sonnet-x"
+
+
+def _handshake_report() -> HandshakeReport:
+    return HandshakeReport(
+        provider_id="claude_code",
+        provider_kind="claude_code",
+        connectivity=ConnectivityState.OK,
+        auth=AuthState.OK,
+        models_source="overlay",
+        generated_at="2026-09-24T00:00:00+00:00",
+        models=(
+            ModelProfile(
+                id=_CANONICAL,
+                capabilities=("image", "pdf", "text"),
+                raw={"cli_values": [_ALIAS]},
+            ),
+        ),
+    )
+
+
+def _catalog_payload() -> dict[str, Any]:
+    return {
+        "providers": [
+            {
+                "id": "claude_code",
+                "health": "ready",
+                "models": [
+                    {
+                        "model_id": _CANONICAL,
+                        "availability": "available",
+                        "modalities": ["image", "pdf", "text"],
+                        "aliases": [_ALIAS],
+                        "evidence": {
+                            "evidenced": True,
+                            "live": False,
+                            "source": "overlay",
+                            "generated_at": "2026-09-24T00:00:00+00:00",
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def _app(*, catalog: Any = None, report: Any = None) -> Any:
+    return SimpleNamespace(
+        state=SimpleNamespace(
+            lm_config={},
+            agent=None,
+            provider_catalog=catalog,
+            lm_handshake_report=report,
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# resolve_model_id -- the shared resolution point itself
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_model_id_matches_exact_id() -> None:
+    assert resolve_model_id([(_CANONICAL, (_ALIAS,))], _CANONICAL) == _CANONICAL
+
+
+def test_resolve_model_id_matches_an_exact_alias() -> None:
+    assert resolve_model_id([(_CANONICAL, (_ALIAS,))], _ALIAS) == _CANONICAL
+
+
+def test_resolve_model_id_never_keyword_matches_an_unrelated_id() -> None:
+    """``sonnet-x`` is not ``sonnet`` -- an exact alias match only."""
+
+    assert resolve_model_id([(_CANONICAL, (_ALIAS,))], _UNRELATED) == _UNRELATED
+
+
+def test_resolve_model_id_empty_query_is_unchanged() -> None:
+    assert resolve_model_id([(_CANONICAL, (_ALIAS,))], "") == ""
+
+
+# ---------------------------------------------------------------------------
+# HandshakeReport.model() -- the report-level caller
+# ---------------------------------------------------------------------------
+
+
+def test_handshake_report_model_resolves_a_cli_alias() -> None:
+    report = _handshake_report()
+    profile = report.model(_ALIAS)
+    assert profile is not None
+    assert profile.id == _CANONICAL
+
+
+def test_handshake_report_model_does_not_match_an_unrelated_id() -> None:
+    assert _handshake_report().model(_UNRELATED) is None
+
+
+# ---------------------------------------------------------------------------
+# live_model_modalities / _catalog_modalities -- the in-process catalog caller
+# ---------------------------------------------------------------------------
+
+
+def test_live_model_modalities_resolves_the_alias_against_the_catalog() -> None:
+    app = _app(catalog=_catalog_payload())
+    modalities, evidence, _generated_at = live_model_modalities(
+        app, ModelRef(provider_id="claude_code", model_id=_ALIAS)
+    )
+    assert "image" in modalities
+    assert "pdf" in modalities
+    assert evidence == "discovery_overlay"
+
+
+def test_live_model_modalities_resolves_the_alias_against_a_handshake_report() -> None:
+    app = _app(report=_handshake_report())
+    modalities, evidence, _generated_at = live_model_modalities(
+        app, ModelRef(provider_id="claude_code", model_id=_ALIAS)
+    )
+    assert "image" in modalities
+    assert evidence == "discovery_overlay"
+
+
+def test_live_model_modalities_does_not_resolve_an_unrelated_id() -> None:
+    app = _app(catalog=_catalog_payload())
+    modalities, evidence, _generated_at = live_model_modalities(
+        app, ModelRef(provider_id="claude_code", model_id=_UNRELATED)
+    )
+    assert modalities == {"text"}
+    assert evidence == "unavailable"
+
+
+# ---------------------------------------------------------------------------
+# _vision_capability / _pdf_capability -- the gate callers
+# ---------------------------------------------------------------------------
+
+
+def test_vision_capability_is_true_for_an_alias_bound_model() -> None:
+    app = _app(catalog=_catalog_payload())
+    assert _vision_capability(app, "claude_code", _ALIAS) == (True, "live_modality_evidence")
+
+
+def test_pdf_capability_is_true_for_an_alias_bound_model() -> None:
+    app = _app(catalog=_catalog_payload())
+    assert _pdf_capability(app, "claude_code", _ALIAS) == (True, "live_modality_evidence")
+
+
+def test_vision_and_pdf_capability_refuse_an_unrelated_id() -> None:
+    app = _app(catalog=_catalog_payload())
+    assert _vision_capability(app, "claude_code", _UNRELATED) == (
+        False,
+        "modality_evidence_unavailable",
+    )
+    assert _pdf_capability(app, "claude_code", _UNRELATED) == (
+        False,
+        "modality_evidence_unavailable",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Declared native tools -- the default agent's resolved tool surface
+# ---------------------------------------------------------------------------
+
+
+def test_default_agent_resolves_view_image_and_view_pdf_for_an_alias_bound_model() -> None:
+    """An agent bound to {provider_id: claude_code, model: sonnet} keeps its native tools.
+
+    Before the fix, ``declared_native_capabilities`` (via ``_vision_capability``/
+    ``_pdf_capability``) answered False for the alias, so ``resolve_declared_native_tools``
+    dropped ``view_image``/``view_pdf`` from the default agent's tool surface even
+    though it declares both (see ``_builtin_main_agent``).
+    """
+
+    app = _app(catalog=_catalog_payload())
+    gact_context.set_turn_identity(
+        app=app, session_id="sess_test", turn_id="turn_test", trace_id="trace_test"
+    )
+    try:
+        config = SimpleNamespace(provider_id="claude_code", model=_ALIAS)
+        capabilities = declared_native_capabilities(config)
+        assert capabilities == {"supports_vision": True, "supports_pdf": True}
+
+        agent = _builtin_main_agent()
+        assert "view_image" in agent.tools
+        assert "view_pdf" in agent.tools
+        requested, available, _gateway = resolve_declared_native_tools(
+            agent, {}, **capabilities
+        )
+        assert "view_image" in requested
+        assert "view_image" in available
+        assert "view_pdf" in requested
+        assert "view_pdf" in available
+    finally:
+        gact_context.set_turn_identity(app=None, session_id="", turn_id="", trace_id="")

@@ -141,28 +141,39 @@ def materialize_once(app: Any, record: "ResourceRecord") -> "ResourceRecord":
     NEVER raises: a failure is recorded as a typed ``materialization`` state
     on the resource and returned, so the caller can carry on to the next
     resource instead of one failure aborting everything.
+
+    Once materialized (fresh or already-``ready``), this is ALSO the one place
+    a resource is registered as a citable ``source`` artifact
+    (:func:`clio_agent.gact.artifacts.resource_sources.register_resource_source`)
+    — the SAME choke point, not a second one, so a resource uploaded before
+    that feature shipped gets registered lazily on its next ready-touch (the
+    one-time migration this doubles as) instead of a separate boot pass.
     """
 
     if record.state != "ready":
         return record
-    if record.materialization.state == "ready":
-        return record
-    try:
-        materialize_resource_for_app(app, record)
-    except (OSError, ValueError) as exc:
-        logger.warning(
-            "resource materialization failed reason=resource_materialization_failed "
-            "workspace_id=%s resource_id=%s error=%s",
-            record.workspace_id,
-            record.id,
-            exc,
+    if record.materialization.state != "ready":
+        try:
+            materialize_resource_for_app(app, record)
+        except (OSError, ValueError) as exc:
+            logger.warning(
+                "resource materialization failed reason=resource_materialization_failed "
+                "workspace_id=%s resource_id=%s error=%s",
+                record.workspace_id,
+                record.id,
+                exc,
+            )
+            return app.state.resource_store.set_materialization(
+                record.id, ResourceMaterialization(state="failed", reason=str(exc))
+            )
+        record = app.state.resource_store.set_materialization(
+            record.id, ResourceMaterialization(state="ready")
         )
-        return app.state.resource_store.set_materialization(
-            record.id, ResourceMaterialization(state="failed", reason=str(exc))
-        )
-    return app.state.resource_store.set_materialization(
-        record.id, ResourceMaterialization(state="ready")
+    from clio_agent.gact.artifacts.resource_sources import (  # noqa: PLC0415
+        register_resource_source,
     )
+
+    return register_resource_source(app, record)
 
 
 __all__ = [
