@@ -10,6 +10,7 @@ from clio_agent.gact.resource_materialization import materialize_once
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
+    from clio_agent.gact.resource_custody import ResourceRecord
     from clio_agent.gact.types import Message
 
 
@@ -62,6 +63,30 @@ def _derivative_suffix(manifest: Mapping | None) -> str:
     ]
     suffix = f" Available derivatives: {', '.join(derivative_ids)}." if derivative_ids else ""
     return suffix + _conversion_warnings(manifest)
+
+
+def _source_citation_clause(record: "ResourceRecord") -> str:
+    """State whether this attachment is a citable source artifact — grounding only.
+
+    A9/A1: once :mod:`clio_agent.gact.artifacts.resource_sources` registers the
+    attachment (the SAME ready-touch ``materialize_once`` this caller just
+    called), it has an id ``create_artifact``'s ``used=[...]`` can resolve
+    (:mod:`clio_agent.gact.artifacts.declared_used_edges`). This says what the
+    id IS, not that the model must cite it (understanding, not a behavioral
+    handcuff — see ``designation_tool``'s own ``used`` contract). A registration
+    failure is named, not hidden, matching the materialization-failure clause
+    above; it is not yet registered (``pending``) only in the narrow window
+    before ``materialize_once`` retries it, in which case this stays silent.
+    """
+    registration = record.source_registration
+    if registration.state == "registered" and record.source_artifact_id:
+        return (
+            f" It is registered as source artifact {record.source_artifact_id!r}; cite it "
+            "via create_artifact's used=[...] to record derivation."
+        )
+    if registration.state == "failed":
+        return f" Its source-artifact registration failed: {registration.reason}."
+    return ""
 
 
 def _is_native_delivery(part: object) -> bool:
@@ -125,7 +150,7 @@ def describe_resource_parts(app: "FastAPI", sid: str, parts: list) -> list[str]:
             f"revision={record.revision}) has an agent-usable working copy at "
             f"<{record.workspace_path}>. Filesystem tools may read or transform that copy. "
             "The bounded workspace-resource tools read the immutable original and its structured "
-            "conversion."
+            "conversion." + _source_citation_clause(record)
         )
         if _is_native_delivery(part):
             # State-meaning grounding only: say WHAT is true of this attachment.
