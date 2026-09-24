@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import py_compile
 import subprocess
@@ -43,7 +42,13 @@ def _module(
     path = site_packages / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(source, encoding="utf-8")
-    pyc = Path(importlib.util.cache_from_source(str(path)))
+    # The bundled runtime keeps bytecode in each package's own __pycache__,
+    # which is what the repair scans. Build that layout explicitly:
+    # cache_from_source() would honour the suite's sys.pycache_prefix and
+    # mirror the whole temp path under it, past Windows' 260-character limit
+    # under parallel workers (and outside the site-packages being repaired).
+    tag = sys.implementation.cache_tag
+    pyc = path.parent / "__pycache__" / f"{path.stem}.{tag}.pyc"
     py_compile.compile(str(path), cfile=str(pyc), doraise=True, invalidation_mode=mode)
     return path, pyc
 
