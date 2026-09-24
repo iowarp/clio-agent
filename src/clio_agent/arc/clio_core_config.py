@@ -96,6 +96,25 @@ def runtime_state_dir() -> Path:
 # user-designated dir (arc.cte.dir): disk-only data means no RAM data tier,
 # no eviction pressure, no rc=13 class (owner: "data is in memory or is in
 # disk"). Disk stays effectively unbounded at the user's endpoint.
+#
+# INDEXER CHIMOD (clio-core 2.2.0, upstream issue #905): ``SemanticSearch`` (the BM25
+# scope search Thread D relies on) moved OUT of ``clio_cte_core`` into a separate,
+# optional ``clio_cte_indexer`` chimod -- the core no longer implements it at all, so
+# every scope search against clio-core >=2.2.0 now silently returns zero hits (verified
+# empirically against 2.2.1; it does not raise). The chimod itself would fix this
+# (declared in ``compose`` + the client bound to its pool via ``CLIO_CTE_POOL``), but
+# is NOT wired in here: live-testing that config on Windows surfaced an intermittent
+# hang on the FIRST ``PutBlob`` after client attach WHENEVER the indexer chimod is
+# merely declared -- reproduced with and without ``CLIO_CTE_POOL`` set, so it is not
+# an artifact of the routing choice, and it is worse than the silent-empty-search
+# status quo it would fix (a hang blocks every write, not just search). Tracked
+# upstream rather than shipped; :func:`warn_if_search_indexer_absent` only reports the
+# gap loudly (#775 no-silent-fallback) until a safe fix lands. ``564.0`` is upstream's
+# own reserved constant for the indexer pool (``clio::cte::indexer::kIndexerPoolId``),
+# kept here for the warning message and any future safe fix, not a clio-agent
+# invention.
+_DEFAULT_CTE_INDEXER_POOL_ID = "564.0"
+
 _DEFAULT_CTE_CONFIG_TEMPLATE = """\
 networking:
   port: {core_port}
@@ -400,6 +419,25 @@ def _read_ram_caps_from_file(path: Path) -> tuple[str | None, str | None, str | 
     return tier_cap, bdev_cap, final_cap
 
 
+def _has_indexer_chimod(path: Path) -> bool:
+    """Return whether ``path`` declares a ``clio_cte_indexer`` chimod in ``compose``.
+
+    ``False`` on a missing/invalid/unparseable file (never raises — mirrors
+    :func:`_read_ram_caps_from_file`).
+    """
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return False
+    if not isinstance(data, Mapping):
+        return False
+    return any(
+        isinstance(module, Mapping)
+        and str(module.get("mod_name", "")).strip() == "clio_cte_indexer"
+        for module in data.get("compose", []) or []
+    )
+
+
 def _resolve_config_path(env: Mapping[str, str]) -> Path:
     """Resolve the ``cte.yaml`` the clio-core backend would use, WITHOUT seeding it.
 
@@ -466,6 +504,43 @@ def effective_ram_cap(
         parse_error=parse_error,
         bdev_capacity=bdev_cap,
         final_tier_capacity=final_cap,
+    )
+
+
+# Typed reason (clio-core 2.2.0 indexer extraction, upstream issue #905): the
+# resolved ``cte.yaml`` has no ``clio_cte_indexer`` chimod, so ``SemanticSearch``
+# (BM25 scope search, Thread D) silently returns zero hits against clio-core
+# >=2.2.0 no matter what the caller queries. DIAGNOSIS ONLY (#775 no-silent-
+# fallback) -- see the module docstring's INDEXER CHIMOD note for why the actual
+# fix (declaring the chimod) is NOT applied here: it introduced an intermittent
+# hang on the first PutBlob after client attach in live Windows testing, worse
+# than the silent-empty-search status quo it would fix.
+CLIO_CORE_SEARCH_INDEXER_ABSENT = "clio_core_search_indexer_absent"
+
+
+def warn_if_search_indexer_absent(config_path: str | Path) -> None:
+    """Log a loud, typed warning when the resolved config can't serve BM25 search.
+
+    Read-only: never seeds a file, never touches ``CLIO_CTE_POOL`` or the compose
+    config (see :data:`CLIO_CORE_SEARCH_INDEXER_ABSENT` for why a real fix is not
+    attempted). Called once from ``storage.ClioCoreStore._ensure_runtime`` so the gap
+    is diagnosed at boot instead of surfacing as a confused "search always empty" bug
+    report.
+
+    Args:
+        config_path: The resolved ``cte.yaml`` the store is about to load. A missing
+            file (falls back to ``~/.clio/clio.yaml``) is reported the same way.
+    """
+    path = Path(config_path).expanduser() if config_path else None
+    if path is not None and path.is_file() and _has_indexer_chimod(path):
+        return
+    logger.warning(
+        "reason=%s config=%s problem=%s (clio-core#905)",
+        CLIO_CORE_SEARCH_INDEXER_ABSENT,
+        config_path or "~/.clio/clio.yaml",
+        "no clio_cte_indexer chimod declared; ARCMemory.search_segment_scopes will "
+        "return zero hits against clio-core >=2.2.0 (a fix exists upstream but is not "
+        "yet safe to enable -- see clio_core_config.py's INDEXER CHIMOD note)",
     )
 
 

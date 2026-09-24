@@ -1,14 +1,13 @@
 """Persistent record backends for ARC.
 
-This module defines the storage seam ARC records go through and the two
-concrete backends that implement it. It is the durable tier beneath the
-in-memory hot layer (``LRUCache`` + ``BTreeIndex`` in ``memory.py``); it does
-NOT do access-pattern-driven tier migration -- there is no hot/warm/cold/archive
-mover here.
+This module defines the storage seam ARC records go through and the two concrete
+backends that implement it. It is the durable tier beneath the in-memory hot layer
+(``LRUCache`` + ``BTreeIndex`` in ``memory.py``); it does NOT do access-pattern-driven
+tier migration -- there is no hot/warm/cold/archive mover here.
 
-The seam -- :class:`ARCStore` (a ``Protocol``): ``put(kind, name, data,
-search_text=...)`` / ``get(kind, name)`` / ``scan(kind, prefix)`` over opaque
-``bytes`` keyed by ``(kind, name)``. Any backend that satisfies it plugs in.
+The seam -- :class:`ARCStore` (a ``Protocol``): ``put(kind, name, data, search_text=...)``
+/ ``get(kind, name)`` / ``scan(kind, prefix)`` over opaque ``bytes`` keyed by
+``(kind, name)``. Any backend that satisfies it plugs in.
 
 Backends:
     - :class:`LocalFSStore` -- plain files under ``<data_dir>``: one
@@ -57,6 +56,7 @@ from clio_agent.arc.clio_core_config import (  # noqa: F401 - re-exported for ca
     _default_cte_ram_capacity,
     default_cte_config_path,
     runtime_state_dir,
+    warn_if_search_indexer_absent,
 )
 from clio_agent.arc.clio_core_liveness import (  # noqa: F401 - re-exported for callers/tests
     _DEFAULT_RUNTIME_PORT,
@@ -554,20 +554,18 @@ def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str
 class ClioCoreStore:
     """ARCStore backed by a **shared** clio-core runtime (connect-or-spawn).
 
-    Maps ``(kind, name)`` -> ``(CTE tag, CTE blob)``. msgpack payloads are
-    base64-wrapped because CTE's ``GetBlob`` UTF-8-decodes in the C++ binding and
-    raises on non-UTF-8 bytes.
+    Maps ``(kind, name)`` -> ``(CTE tag, CTE blob)``. msgpack payloads are base64-wrapped
+    because CTE's ``GetBlob`` UTF-8-decodes in the C++ binding and raises on non-UTF-8 bytes.
 
-    RUNTIME MODEL: the chimaera runtime is a host-global singleton — one runtime binds
-    the RPC port (default 9413) and serves many clients. This store runs it as a
-    **standalone daemon** that outlives any single client: on first use it spawns the
-    daemon iff none is listening, then every process attaches as a pure client, so
-    multiple clio-agent processes share ONE instance. See ``_ensure_runtime``.
+    RUNTIME MODEL: the chimaera runtime is a host-global singleton — one runtime binds the RPC
+    port (default 9413) and serves many clients. This store runs it as a **standalone daemon**
+    that outlives any single client: on first use it spawns the daemon iff none is listening,
+    then every process attaches as a pure client, so multiple clio-agent processes share ONE
+    instance. See ``_ensure_runtime``.
 
-    DURABILITY: the default CTE config is a DRAM hot tier spilling to a file cold
-    tier (:func:`default_cte_config_path`). Cross-restart blob-data recovery is WIP
-    upstream; for guaranteed disk durability today, select the LocalFS backend
-    (``CLIO_ARC_STORE=local``).
+    DURABILITY: the default CTE config is a DRAM hot tier spilling to a file cold tier
+    (:func:`default_cte_config_path`). Cross-restart blob-data recovery is WIP upstream; for
+    guaranteed disk durability today, select the LocalFS backend (``CLIO_ARC_STORE=local``).
     """
 
     _initialized = False  # process-global init guard (the runtime inits exactly once)
@@ -599,26 +597,25 @@ class ClioCoreStore:
             "durability today."
         )
 
-    # NOTE: there is deliberately NO instance ``release()`` method. The shared
-    # clio-core runtime is released via the module-level, idempotent (last-one-
-    # out, deregister-guarded) :func:`release_runtime_client`. A desktop-managed
-    # boot calls it deterministically, once, from the gact lifespan right after
-    # the turn drain settles (``desktop_lifecycle.release_runtime_after_drain``
-    # in ``gact/app.py``); ``atexit``, registered below in :meth:`_ensure_runtime`,
-    # is the general backstop for every OTHER exit path (bare CLI, a crash, a
-    # non-desktop server) -- a second call from atexit after the lifespan already
-    # ran is a safe no-op.
+    # NOTE: there is deliberately NO instance ``release()`` method. The shared clio-core
+    # runtime is released via the module-level, idempotent (last-one-out, deregister-guarded)
+    # :func:`release_runtime_client`. A desktop-managed boot calls it deterministically, once,
+    # from the gact lifespan right after the turn drain settles
+    # (``desktop_lifecycle.release_runtime_after_drain`` in ``gact/app.py``); ``atexit``,
+    # registered below in :meth:`_ensure_runtime`, is the general backstop for every OTHER exit
+    # path (bare CLI, a crash, a non-desktop server) -- a second call from atexit after the
+    # lifespan already ran is a safe no-op.
 
     @classmethod
     def _ensure_runtime(cls, config_path: str, log_level: str, settle_s: float) -> None:
         """Attach this process to the shared clio-core runtime (connect-or-spawn).
 
-        Connect-or-spawn: if no clio-core daemon is listening on the configured RPC
-        port, spawn one (``clio_run start``, serialized across processes by a file
-        lock); then attach as a pure client (``chimaera_init(kClient, default_with
-        _runtime=False)``). Runs exactly once per process (``_initialized`` guard).
-        Spawning a standalone daemon — rather than ``default_with_runtime=True`` —
-        is what lets multiple clio-agent processes share ONE clio-core instance.
+        Connect-or-spawn: if no clio-core daemon is listening on the configured RPC port,
+        spawn one (``clio_run start``, serialized across processes by a file lock); then
+        attach as a pure client (``chimaera_init(kClient, default_with_runtime=False)``).
+        Runs exactly once per process (``_initialized`` guard). Spawning a standalone
+        daemon — rather than ``default_with_runtime=True`` — is what lets multiple
+        clio-agent processes share ONE clio-core instance.
         """
         with cls._init_lock:
             if cls._initialized:
@@ -634,6 +631,9 @@ class ClioCoreStore:
             # cannot init against a runtime that is not up).
             _ensure_runtime_daemon(iowarp_core, config_path, log_level)
 
+            # 905: clio-core >=2.2.0 needs an indexer chimod for BM25 search; not
+            # wired in (unsafe, see clio_core_config's docstring) -- warn loudly.
+            warn_if_search_indexer_absent(config_path)
             # Do NOT redirect fd 2 (no os.dup2 on stderr) here. Under pytest's
             # fd-level capture that clobbers the captured fd and can SILENTLY ABORT
             # the interpreter (exit 1, zero output) depending on capture mode +

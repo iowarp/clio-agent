@@ -73,7 +73,7 @@ dependencies = [
     # default so CTE works out of the box; make_arc_store falls back to local files
     # if the runtime is unavailable, and durability/fault-tolerance (replication,
     # erasure coding) come from the CTE config. CLIO_ARC_STORE=local opts out.
-    "iowarp-core>=2.1.0",
+    "iowarp-core>=2.2.1",
     # Cross-platform process lifecycle for the shared clio-core runtime daemon
     # (connect-or-spawn + last-one-out release). clio-core deploys identically on
     # Linux/macOS/Windows (per upstream), so only the host-side primitives differ:

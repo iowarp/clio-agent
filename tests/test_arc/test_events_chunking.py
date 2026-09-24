@@ -230,7 +230,9 @@ def test_append_amplification_is_o_chunk(
 # --------------------------------------------------------------------------- #
 
 
-def test_events_family_never_in_search_scopes(arc: ARCMemory) -> None:
+def test_events_family_never_in_search_scopes(
+    arc: ARCMemory, request: pytest.FixtureRequest
+) -> None:
     for e in _events(6):
         arc.record_semantic_event(e)
     # A normal expert scope DOES get indexed, so search has a legitimate hit to return.
@@ -241,6 +243,12 @@ def test_events_family_never_in_search_scopes(arc: ARCMemory) -> None:
     hits = arc.search_segment_scopes(SID, "question answer reasoned alpha")
     returned = [scope for scope, _ in hits]
     assert all(not is_events_scope(s) for s in returned), returned
+    if request.node.callspec.id == "cte":
+        # clio-core 2.2.0 moved SemanticSearch into an optional clio_cte_indexer
+        # chimod (upstream #905) clio-agent does not declare (unsafe to enable yet --
+        # see clio_agent.arc.clio_core_config's INDEXER CHIMOD note), so this leg's
+        # search_segment_scopes returns zero hits and "agentA" can never appear.
+        pytest.xfail("clio-core#905: cte-backend search returns zero hits (see #CU)")
     # The legitimate expert scope is still discoverable (search itself works).
     assert "agentA" in returned
 
