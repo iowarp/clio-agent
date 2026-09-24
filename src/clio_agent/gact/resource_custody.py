@@ -12,7 +12,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import shutil
 import threading
 import uuid
@@ -41,32 +40,19 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-# Windows forbids these in a filename outright (POSIX allows all but ``/`` and
-# NUL). This server materializes resources into a real workspace directory on
-# whatever OS it runs on (`resource_materialization.py`), and a name only
-# Windows rejects must be caught HERE rather than surfacing later as an
-# OSError from that copy — see the S2 hardening: that used to run again on
-# every GET, so one bad name 409'd the whole resource list for the workspace.
-_WINDOWS_FORBIDDEN_CHARACTERS = frozenset('<>:"/\\|?*')
-# Reserved device stems, matched case-insensitively against the name's
-# portion before its FIRST dot (Windows reserves "con.txt" too, not just "con").
-_WINDOWS_RESERVED_STEMS = frozenset(
-    {"CON", "PRN", "AUX", "NUL"}
-    | {f"COM{digit}" for digit in range(1, 10)}
-    | {f"LPT{digit}" for digit in range(1, 10)}
-)
-# A drive letter (``C:``, ``C:foo.txt``) is meaningless as a plain filename and,
-# joined onto a workspace root with :mod:`pathlib`, can silently discard that
-# root instead of raising — reject it by shape, with its own message, rather
-# than relying on the generic forbidden-character check below to catch the ':'.
-_DRIVE_LIKE_PATTERN = re.compile(r"^[A-Za-z]:")
-
-
 def _safe_name(value: str) -> str:
     """Return a display-only filename with path components removed.
 
-    The result must be creatable as a real file on every platform this server
-    runs on, Windows included, regardless of the platform serving the request.
+    This is deliberately permissive about characters that are perfectly
+    normal at the display layer (this becomes ``ResourceRecord.name``, shown
+    to the user and the model as-is) but unsafe as a literal filename on
+    Windows — "Q3: notes?.md" is an ordinary thing to name an attachment and
+    must not 400. Windows-specific sanitization happens exactly once, only
+    where a name actually becomes an on-disk path component
+    (:func:`windows_safe_filename`, used by
+    ``resource_materialization.managed_input_relative_path``) — and it maps
+    unsafe characters rather than rejecting them, so a name can never block
+    an upload (S2 hardening: sanitize, never reject).
     """
 
     normalized = value.replace("\\", "/").strip()
@@ -75,23 +61,46 @@ def _safe_name(value: str) -> str:
         raise ValueError("resource name must identify one file")
     if any(ord(character) < 32 for character in name):
         raise ValueError("resource name contains control characters")
-    name = name[:255]
-    if _DRIVE_LIKE_PATTERN.match(name):
-        raise ValueError("resource name looks like a drive path, not a filename")
-    forbidden = sorted(
-        {character for character in name if character in _WINDOWS_FORBIDDEN_CHARACTERS}
+    return name[:255]
+
+
+# Windows forbids these in a filename outright (POSIX allows all but ``/`` and
+# NUL). ``/`` and ``\`` are included even though `_safe_name` above already
+# strips path components from a *well-formed* value — this is the backstop
+# for a record constructed some other way (a legacy index, a future bypass),
+# and it neutralizes rather than raises, matching the rest of this function.
+_WINDOWS_FORBIDDEN_CHARACTERS = frozenset('<>:"/\\|?*')
+# Reserved device stems, matched case-insensitively against the name's
+# portion before its FIRST dot (Windows reserves "con.txt" too, not just "con").
+_WINDOWS_RESERVED_STEMS = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{digit}" for digit in range(1, 10)}
+    | {f"LPT{digit}" for digit in range(1, 10)}
+)
+
+
+def windows_safe_filename(name: str) -> str:
+    """Sanitize ``name`` into something safe to create as a real file on Windows.
+
+    NEVER rejects — every character or shape Windows forbids is replaced or
+    reworked, not refused: a forbidden character (this also neutralizes a
+    drive letter like ``C:``, since ``:`` is one of them) becomes ``_``,
+    trailing dots/spaces (which Windows silently strips, which could
+    otherwise let two differently-named uploads collide on disk) are
+    trimmed, and a reserved device stem (``CON``, ``NUL``, ...) is prefixed
+    with ``_``. This is the ONLY place a resource name is transformed for
+    the filesystem; ``ResourceRecord.name`` (the display name) is untouched.
+    """
+
+    sanitized = "".join(
+        "_" if character in _WINDOWS_FORBIDDEN_CHARACTERS else character for character in name
     )
-    if forbidden:
-        raise ValueError(
-            "resource name contains characters forbidden on Windows: " + "".join(forbidden)
-        )
-    if name != name.rstrip(". "):
-        raise ValueError(
-            "resource name cannot end with a dot or space (Windows strips these silently)"
-        )
-    if name.split(".", 1)[0].upper() in _WINDOWS_RESERVED_STEMS:
-        raise ValueError("resource name uses a device name reserved on Windows")
-    return name
+    sanitized = sanitized.rstrip(". ")
+    stem, dot, rest = sanitized.partition(".")
+    if stem.upper() in _WINDOWS_RESERVED_STEMS:
+        sanitized = f"_{stem}{dot}{rest}"
+    sanitized = sanitized[:255]
+    return sanitized or "_"
 
 
 class ResourceMaterialization(BaseModel):
@@ -444,6 +453,12 @@ class ResourceStore:
                     "workspace_id": destination_workspace_id,
                     "client_upload_id": "",
                     "workspace_path": "",
+                    # The copy has never been materialized into the DESTINATION
+                    # workspace — inheriting the source's "ready" materialization
+                    # here (model_copy carries every field not overridden) would
+                    # make materialize_once() skip it as already-done despite
+                    # the empty workspace_path just above.
+                    "materialization": ResourceMaterialization(),
                     "created_at": now,
                     "updated_at": now,
                     "completed_at": now,
@@ -551,4 +566,5 @@ __all__ = [
     "ResourceRecord",
     "ResourceStore",
     "quarantine_corrupt_index",
+    "windows_safe_filename",
 ]

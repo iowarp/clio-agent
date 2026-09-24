@@ -10,7 +10,6 @@ than carrying second copies with their own bounds and readiness gates.
 from __future__ import annotations
 
 import asyncio
-import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -22,7 +21,6 @@ from clio_agent.gact.resource_custody import (
     ResourceConflictError,
     ResourceDeleteError,
     ResourceLimitError,
-    ResourceMaterialization,
     ResourceRecord,
 )
 from clio_agent.gact.resource_lifecycle import (
@@ -32,7 +30,7 @@ from clio_agent.gact.resource_lifecycle import (
     schedule_processing,
     submit_processing,
 )
-from clio_agent.gact.resource_materialization import materialize_resource_for_app
+from clio_agent.gact.resource_materialization import materialize_once as _materialize_once
 from clio_agent.gact.resource_processing import ResourceConverterUnavailable
 from clio_agent.gact.resource_tools import (
     ResourceQueryError,
@@ -44,8 +42,6 @@ from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
-
-logger = logging.getLogger(__name__)
 
 _PREVIEWABLE_APPLICATION_TYPES = {
     "application/json",
@@ -202,36 +198,16 @@ def register_resource_routes(app: FastAPI, deps: "GactDeps") -> None:
         return payload
 
     async def materialize_once(record: ResourceRecord) -> ResourceRecord:
-        """Materialize a JUST-READIED upload's workspace-input copy, once.
+        """Materialize a JUST-READIED upload's workspace-input copy, off-thread.
 
         Called only at the moment an upload becomes ready — create-complete
         (a zero-byte resource), the final PATCH chunk, or a ready copy — and
-        NEVER from a GET route. A failure is recorded as a typed
-        ``materialization`` state on the resource and returned rather than
-        raised: since GET never calls this, one resource's bad name or
-        filesystem failure can no longer 409 the whole workspace's resource
-        list (S2 hardening; previously this ran again on every GET/GET-list
-        and raised, per gact-tui root cause B's secondary risk).
+        NEVER from a GET route (see ``resource_materialization.materialize_once``,
+        the single shared owner of this logic, also used by the agent's own
+        resource tools and per-turn attachment enrichment).
         """
 
-        if record.state != "ready":
-            return record
-        try:
-            await asyncio.to_thread(materialize_resource_for_app, app, record)
-        except (OSError, ValueError) as exc:
-            logger.warning(
-                "resource materialization failed reason=resource_materialization_failed "
-                "workspace_id=%s resource_id=%s error=%s",
-                record.workspace_id,
-                record.id,
-                exc,
-            )
-            return app.state.resource_store.set_materialization(
-                record.id, ResourceMaterialization(state="failed", reason=str(exc))
-            )
-        return app.state.resource_store.set_materialization(
-            record.id, ResourceMaterialization(state="ready")
-        )
+        return await asyncio.to_thread(_materialize_once, app, record)
 
     def lifecycle_payload(
         record: ResourceRecord, *, workspace_id: str, idempotent_replay: bool

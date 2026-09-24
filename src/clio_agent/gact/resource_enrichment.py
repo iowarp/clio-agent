@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
-from clio_agent.gact.resource_materialization import materialize_resource_for_app
+from clio_agent.gact.resource_materialization import materialize_once
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -107,12 +107,15 @@ def describe_resource_parts(app: "FastAPI", sid: str, parts: list) -> list[str]:
                 f"- Attachment {record.name!r} ({record.id}) is not ready for local inspection."
             )
             continue
-        try:
-            record = materialize_resource_for_app(app, record)
-        except (OSError, ValueError) as exc:
+        # A ready-touch point: retries a `pending`/`failed` materialization
+        # (a legacy record, or one whose earlier attempt failed) via the one
+        # shared, never-raising owner rather than calling the underlying
+        # copy directly and handling its exception here ourselves.
+        record = materialize_once(app, record)
+        if record.materialization.state == "failed":
             blocks.append(
                 f"- Attachment {record.name!r} ({record.id}) is ready in immutable custody, but "
-                f"its workspace working copy could not be prepared: {type(exc).__name__}. "
+                f"its workspace working copy could not be prepared: {record.materialization.reason}. "
                 "Do not invent a filesystem path; use the bounded workspace-resource tools."
             )
             continue
