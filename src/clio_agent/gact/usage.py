@@ -49,6 +49,7 @@ __all__ = [
     "_reasoning_records_from_history_slice",
     "_usage_from_dspy_history",
     "_estimate_cost_usd",
+    "_price_table_match",
     "_PRICE_TABLE_PER_M",
     "_capture_reasoning_enabled",
     "capture_reasoning_log",
@@ -156,6 +157,7 @@ def _usage_from_history_slice(start: Any, app: Optional["FastAPI"] = None) -> di
         snap = start
     input_tok = output_tok = cache_read = cache_write = 0
     raw_cost = 0.0
+    cost_reported = False
     last_model = ""
     for lm in lms:
         start_idx = snap.get(id(lm), 0)
@@ -171,9 +173,14 @@ def _usage_from_history_slice(start: Any, app: Optional["FastAPI"] = None) -> di
             entry_cache_read, entry_cache_write, _ = _usage_cache_tokens(usage)
             cache_read += entry_cache_read
             cache_write += entry_cache_write
-            raw_cost += float(usage.get("cost_usd") or usage.get("total_cost") or 0.0)
+            entry_cost = float(usage.get("cost_usd") or usage.get("total_cost") or 0.0)
+            if entry_cost:
+                cost_reported = True
+            raw_cost += entry_cost
             last_model = entry.get("model") or last_model
-    if raw_cost == 0.0:
+    cost_known = cost_reported
+    if raw_cost == 0.0 and not cost_reported:
+        cost_known = _price_table_match(last_model) is not None
         raw_cost = _estimate_cost_usd(last_model, input_tok, output_tok)
     return {
         "input": input_tok,
@@ -181,6 +188,11 @@ def _usage_from_history_slice(start: Any, app: Optional["FastAPI"] = None) -> di
         "cache_read": cache_read,
         "cache_write": cache_write,
         "cost_usd": raw_cost,
+        # True when ``cost_usd`` came from a provider report or a price-table
+        # match (even a legitimately-free $0 match) -- False means no source
+        # for this turn's cost exists, so it is unknown, not zero (#775 no
+        # silent fallback: callers must not present this as a real number).
+        "cost_known": cost_known,
     }
 
 
@@ -435,6 +447,7 @@ def _usage_from_dspy_history() -> dict[str, Any]:
     output_tok = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
     cache_read, cache_write, _ = _usage_cache_tokens(usage)
     raw_cost = float(usage.get("cost_usd") or usage.get("total_cost") or 0.0)
+    cost_known = raw_cost != 0.0
     # iowarp/clio-agent#8: some OpenAI-compatible proxies don't pass
     # cost_usd through, so the upstream usage dict reports zero. Fall
     # back to a per-token price table keyed by the LM's model id when
@@ -445,6 +458,7 @@ def _usage_from_dspy_history() -> dict[str, Any]:
             model = last.get("model") or last.get("response", {}).get("model", "") or ""
         else:
             model = getattr(last, "model", "") or ""
+        cost_known = _price_table_match(model) is not None
         raw_cost = _estimate_cost_usd(model, input_tok, output_tok)
     return {
         "input": input_tok,
@@ -452,6 +466,7 @@ def _usage_from_dspy_history() -> dict[str, Any]:
         "cache_read": cache_read,
         "cache_write": cache_write,
         "cost_usd": raw_cost,
+        "cost_known": cost_known,
     }
 
 
@@ -478,6 +493,24 @@ _PRICE_TABLE_PER_M: dict[str, tuple[float, float]] = {
 }
 
 
+def _price_table_match(model_id: str) -> Optional[tuple[float, float]]:
+    """Return the ``_PRICE_TABLE_PER_M`` entry substring-matching ``model_id``.
+
+    ``None`` means the model is genuinely unpriced here (e.g. a local/self-hosted
+    model the marketplace can't look up) -- distinct from a matched entry that
+    happens to price at $0 (the OpenRouter ``:free`` tier). Callers use this to
+    tell "no cost data exists" apart from "the provider/table says it's free."
+    """
+
+    if not model_id:
+        return None
+    needle = model_id.lower()
+    for key, prices in _PRICE_TABLE_PER_M.items():
+        if key in needle:
+            return prices
+    return None
+
+
 def _estimate_cost_usd(model_id: str, input_tokens: int, output_tokens: int) -> float:
     """Best-effort cost estimate when the LM doesn't report one.
 
@@ -485,14 +518,7 @@ def _estimate_cost_usd(model_id: str, input_tokens: int, output_tokens: int) -> 
     returns 0.0 when nothing matches (no false-precision number).
     """
 
-    if not model_id:
-        return 0.0
-    needle = model_id.lower()
-    match: Optional[tuple[float, float]] = None
-    for key, prices in _PRICE_TABLE_PER_M.items():
-        if key in needle:
-            match = prices
-            break
+    match = _price_table_match(model_id)
     if match is None:
         return 0.0
     input_price, output_price = match

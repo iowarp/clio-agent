@@ -181,6 +181,11 @@ class TurnState:
         }
     )
     turn_cost: float = 0.0
+    # True once a REAL cost source (provider report or a price-table match) set
+    # ``turn_cost`` -- False means the number is a placeholder 0.0, not a
+    # provider-confirmed free turn. Session/event projections use this to
+    # serialize cost_usd as null (unknown) instead of a fabricated zero.
+    turn_cost_known: bool = False
     last_prompt_usage: dict[str, Any] = field(default_factory=dict)
     pred: Any = None
     cancelled_turn: bool = False

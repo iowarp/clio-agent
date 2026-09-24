@@ -480,7 +480,7 @@ def finalize_turn(
         if state.cancelled_turn
         else ("error" if state.error_info else "end_turn"),
         "tokens": dict(state.turn_tokens),
-        "cost_usd": state.turn_cost,
+        "cost_usd": state.turn_cost if state.turn_cost_known else None,
     }
     if state.error_info is not None:
         completed_payload["error_info"] = state.error_info.model_dump(exclude_none=True)
@@ -555,7 +555,7 @@ def finalize_turn(
         message_count=len(state.app.state.messages.get(state.sid, [])),
         add_tokens_input=state.turn_tokens["input"],
         add_tokens_output=state.turn_tokens["output"],
-        add_cost_usd=state.turn_cost,
+        add_cost_usd=(state.turn_cost if state.turn_cost_known else None),
         metadata_patch=metadata_patch,
     )
     cancellation_status: dict[str, Any] = {}
