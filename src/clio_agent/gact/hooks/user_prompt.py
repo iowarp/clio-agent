@@ -66,6 +66,10 @@ def run_user_prompt_submit(
             session_id=state.sid,
             turn_id=state.turn_id,
             cwd=str(getattr(state.sess, "workspace_root", "") or ""),
+            # Cancel contract (L1): the turn's own cancel token, so a hook
+            # subprocess already running when a hard /cancel lands is killed
+            # (whole process tree) instead of left to finish.
+            cancel_event=state.turn_cancel_event,
         )
         if outcome.is_defer:
             return _suspend_for_defer(state, outcome)

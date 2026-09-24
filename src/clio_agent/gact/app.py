@@ -194,6 +194,7 @@ from clio_agent.gact.session_store import (  # noqa: E402,F401
 
 
 def _cancellation_attempt_summary(attempt: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Project the durable ``cancel_attempts`` record (what was actually stopped)."""
     if not attempt:
         return {}
     return {
@@ -206,9 +207,9 @@ def _cancellation_attempt_summary(attempt: Mapping[str, Any] | None) -> dict[str
             "cooperative_signal_sent",
             "asyncio_task_cancel_scheduled",
             "asyncio_task_cancel_sent",
-            "hard_abort_supported",
-            "upstream_abort",
-            "executor_work_may_continue",
+            "children_cancelled",
+            "provider_streams_killed",
+            "composer_autostart_suspended",
         )
         if key in attempt
     }
@@ -230,8 +231,6 @@ def _enrich_cancellation_error_info(
     details = error_info.details
     details.setdefault("cancellation_attempt_id", attempt.get("id", ""))
     details.setdefault("cancellation_attempt", _cancellation_attempt_summary(attempt))
-    details.setdefault("hard_abort_supported", attempt.get("hard_abort_supported", False))
-    details.setdefault("upstream_abort", attempt.get("upstream_abort", "not_supported"))
     return error_info
 
 

@@ -16,7 +16,6 @@ from clio_agent.gact.protocol.v3.session import session_to_v3
 # session projection rather than being discarded with the rest of the payload.
 _CANCELLATION_FIELDS = (
     "execution_cancellation",
-    "executor_work_may_continue",
     "cancellation_attempt",
     "composer_autostart",
 )

@@ -9,14 +9,21 @@ The endpoint is intentionally truthful about what it can and cannot stop.
 
 - Cancellation was already requested before provider or tool work started.
 - CLIO skips the agent turn.
-- `executor_work_may_continue=false`.
+
+`turn_cancelled_during_prologue` (L1, #1339 follow-on)
+
+- Cancellation landed while the turn's off-loop prologue (transcript persist,
+  `turn.started`, enrichment/memory-search, context frame, `UserPromptSubmit`
+  hooks) was still running. The prologue checks the turn's cancel token before
+  every step and stops immediately — no further semantic events, no further
+  RPCs, and an already-running `UserPromptSubmit` hook subprocess is killed
+  (its whole process tree). `error_info.error="turn_cancelled_during_prologue"`.
 
 `cooperative`
 
 - The active agent or MCP bridge observed CLIO's cancellation checker at a
   safe boundary and returned a structured cancelled turn.
 - CLIO has evidence that the observed boundary stopped normal turn progress.
-- `executor_work_may_continue=false`.
 
 `best_effort`
 
@@ -24,7 +31,6 @@ The endpoint is intentionally truthful about what it can and cannot stop.
   but provider or tool work may already be running inside an executor thread or
   upstream service that cannot be forcibly interrupted from CLIO.
 - The GACT turn settles promptly as `error_info.error="cancelled"`.
-- `executor_work_may_continue=true`.
 - Clients must not treat this as proof that upstream provider/tool execution
   stopped.
 
@@ -40,14 +46,16 @@ The endpoint is intentionally truthful about what it can and cannot stop.
 
 Cancelled assistant messages include:
 
-- `error_info.error="cancelled"`
+- `error_info.error` — `"cancelled"`, or `"turn_cancelled_during_prologue"` /
+  `"turn_prologue_never_ran"` for the two prologue-boundary cases above.
 - `error_info.details.execution_cancellation`
-- `error_info.details.executor_work_may_continue`
-- `error_info.details.hard_abort_supported`
-- `error_info.details.upstream_abort`
 - `error_info.details.cancellation_attempt`
 
-The `cancellation_attempt` object records:
+The `cancellation_attempt` object records what was ACTUALLY stopped (L1: the
+old constant `hard_abort_supported=false` / `upstream_abort="not_supported"`
+pair, and the `executor_work_may_continue` flag — redundant everywhere with
+`execution_cancellation` — are deleted; nothing replaces a fabricated fact with
+another one):
 
 - `id`
 - `session_id`
@@ -56,9 +64,10 @@ The `cancellation_attempt` object records:
 - `cooperative_signal_sent`
 - `asyncio_task_cancel_scheduled`
 - `asyncio_task_cancel_sent`
-- `hard_abort_supported`
-- `upstream_abort`
-- `executor_work_may_continue`
+- `children_cancelled` — count of descendant agent-task turns cancelled
+- `provider_streams_killed` — count of in-flight SDK streams aborted
+- `composer_autostart_suspended` — whether pending steers/queued messages were
+  suspended from auto-promoting
 
 This makes post-hoc inspection possible after transient SSE events are gone.
 
@@ -84,9 +93,14 @@ The final backend contract is intentionally **best-effort**, not hard abort:
 - late tool completions after cancellation are rewritten as unsuccessful
   cancellation telemetry, not stale success metadata;
 - pre-turn cancellation skips provider/tool execution entirely;
+- a cancel landing during the off-loop prologue stops it at its next
+  cooperative checkpoint (never emitting a later step) and kills an
+  already-running `UserPromptSubmit` hook subprocess outright;
 - cooperative agents that accept a cancellation callback can stop at safe
   boundaries and report `execution_cancellation="cooperative"`;
-- every cancelled turn carries durable cancellation-attempt evidence with
-  `hard_abort_supported=false` and `upstream_abort="not_supported"`.
+- every cancelled turn carries durable cancellation-attempt evidence naming
+  what was actually stopped (children/streams/composer autostart) — never a
+  constant placeholder.
 
-Regression coverage lives in `tests/test_gact/test_cancellation.py`.
+Regression coverage lives in `tests/test_gact/test_cancellation.py` and
+`tests/test_gact/test_finalize_error_envelope.py`.
