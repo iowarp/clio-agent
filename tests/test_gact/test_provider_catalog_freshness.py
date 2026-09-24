@@ -550,3 +550,64 @@ def test_served_last_good_carries_confirmed_at(monkeypatch: pytest.MonkeyPatch) 
     asyncio.run(discover_provider(_metis()))
     served = asyncio.run(discover_provider(_metis()))
     assert served["freshness"]["staleness"]["confirmed_at"] == "2026-09-22T10:00:00+00:00"
+
+
+def test_reprobe_logs_quiet_down_after_three_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    from clio_agent.gact import provider_catalog_reprobe, provider_catalog_snapshot
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    provider_catalog_snapshot.commit(
+        app,
+        {"catalog_id": "active", "providers": [_record("argonne_metis", source="last_good")]},
+        ["argonne_metis"],
+    )
+    answers = ["last_good"] * 5 + ["live"]
+
+    async def _discover(ids: list[str], *, refresh: bool) -> list[dict[str, Any]]:
+        return [_record("argonne_metis", source=answers.pop(0))]
+
+    monkeypatch.setattr(provider_catalog_snapshot, "discover", _discover)
+    caplog.set_level(logging.DEBUG, logger="clio_agent.gact.provider_catalog_reprobe")
+    failures: dict[str, int] = {}
+    for attempt in range(1, 7):
+        asyncio.run(provider_catalog_reprobe._attempt(app, attempt, ["argonne_metis"], failures))
+
+    levels = [
+        (r.levelno, "outcome=live" in r.getMessage())
+        for r in caplog.records
+        if "provider_catalog_reprobe_attempt" in r.getMessage()
+    ]
+    assert [lvl for lvl, _ in levels] == [logging.INFO] * 3 + [logging.DEBUG] * 2 + [logging.INFO]
+    assert levels[-1][1] is True
+
+
+def test_full_refresh_never_overwrites_a_newer_reprobe_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from clio_agent.gact import provider_catalog_snapshot
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    monkeypatch.setattr(provider_catalog_snapshot, "as_lm_presets", lambda: [_metis()])
+    provider_catalog_snapshot.commit(
+        app,
+        {"catalog_id": "active", "providers": [_record("argonne_metis", source="last_good")]},
+        ["argonne_metis"],
+    )
+    newer = _record("argonne_metis", source="live")
+    newer["name"] = "re-probe answer"
+
+    async def _discover(ids: list[str], *, refresh: bool) -> list[dict[str, Any]]:
+        # A background re-probe answers while this (older) refresh is in flight.
+        provider_catalog_snapshot.commit(
+            app, {"catalog_id": "active", "providers": [newer]}, ["argonne_metis"]
+        )
+        return [_record("argonne_metis", source="last_good")]
+
+    monkeypatch.setattr(provider_catalog_snapshot, "discover", _discover)
+    asyncio.run(provider_catalog_snapshot.read_catalog(app, refresh=True))
+
+    assert app.state.provider_catalog["providers"][0]["name"] == "re-probe answer"

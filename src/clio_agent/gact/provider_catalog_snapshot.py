@@ -146,6 +146,33 @@ async def discover(provider_ids: list[str], *, refresh: bool) -> list[dict[str, 
     )
 
 
+def _keep_newer(
+    app: "FastAPI", records: list[dict[str, Any]], seqs: dict[str, int]
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Swap in the CURRENT entry for any provider re-written while ``records`` was awaited.
+
+    Returns the records to install and the ids they newly evidence: a provider
+    whose sequence moved (a background re-probe answered meanwhile) keeps that
+    newer entry and is not re-stamped.
+    """
+    current = getattr(app.state, "provider_catalog", None)
+    newer = {
+        str(row.get("id")): row
+        for row in ((current or {}).get("providers") or [])
+        if isinstance(row, dict)
+    }
+    kept: list[dict[str, Any]] = []
+    stamped: list[str] = []
+    for record in records:
+        provider_id = str(record.get("id") or "")
+        if provider_seq(app, provider_id) != seqs.get(provider_id, 0) and provider_id in newer:
+            kept.append(newer[provider_id])
+        else:
+            kept.append(record)
+            stamped.append(provider_id)
+    return kept, stamped
+
+
 def _schedule_reprobe(app: "FastAPI", payload: dict[str, Any]) -> None:
     from clio_agent.gact.provider_catalog_reprobe import (  # noqa: PLC0415 - cycle
         schedule_stale_reprobe,
@@ -177,6 +204,7 @@ async def read_catalog(
     # Only the invalidations seen NOW are answered by this read; one that
     # arrives while discovery is awaited stays pending for the next read.
     taken = set(pending)
+    seqs = {pid: provider_seq(app, pid) for pid in preset_ids}
     if not isinstance(cached, dict) and provider_id:
         # No snapshot yet (boot, or retired by a model refresh): build it from
         # cached handshakes, forcing only the provider that was asked about.
@@ -184,17 +212,19 @@ async def read_catalog(
             discover([pid for pid in preset_ids if pid != provider_id], refresh=False),
             discover([provider_id], refresh=refresh),
         )
-        by_id = {str(record.get("id")): record for record in [*others, *targeted]}
+        records, stamped = _keep_newer(app, [*others, *targeted], seqs)
+        by_id = {str(record.get("id")): record for record in records}
         payload = _payload([by_id[pid] for pid in preset_ids if pid in by_id])
         pending.difference_update(taken)
-        commit(app, payload, preset_ids)
+        commit(app, payload, stamped)
         publish(app, payload)
         _schedule_reprobe(app, payload)
         return payload
     if not isinstance(cached, dict) or (refresh and not provider_id):
-        payload = _payload(await discover(preset_ids, refresh=refresh))
+        records, stamped = _keep_newer(app, await discover(preset_ids, refresh=refresh), seqs)
+        payload = _payload(records)
         pending.difference_update(taken)
-        commit(app, payload, preset_ids)
+        commit(app, payload, stamped)
         if refresh:
             publish(app, payload)
         _schedule_reprobe(app, payload)
@@ -208,11 +238,11 @@ async def read_catalog(
         return cached
     # An invalidated provider's cached handshake is already gone, so a plain
     # read re-probes it; an explicit refresh forces through the TTL cache.
-    records = await discover(targets, refresh=refresh)
+    records, stamped = _keep_newer(app, await discover(targets, refresh=refresh), seqs)
     pending.difference_update(targets)
     current = getattr(app.state, "provider_catalog", None)
     payload = merge(current if isinstance(current, dict) else cached, records)
-    commit(app, payload, targets)
+    commit(app, payload, stamped)
     publish(app, payload)
     _schedule_reprobe(app, payload)
     return payload

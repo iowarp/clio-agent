@@ -43,6 +43,11 @@ REPROBE_BACKOFF_S: tuple[float, ...] = (5.0, 30.0, 120.0)
 REPROBE_STEADY_S = 600.0
 
 
+#: Consecutive failed attempts per provider logged at INFO; later ones at DEBUG
+#: (the steady 10-minute retries of a down provider would otherwise flood INFO).
+REPROBE_INFO_FAILURES = 3
+
+
 def _delay(attempt: int) -> float:
     return REPROBE_BACKOFF_S[attempt] if attempt < len(REPROBE_BACKOFF_S) else REPROBE_STEADY_S
 
@@ -55,8 +60,16 @@ def _live_failure(record: dict[str, Any]) -> str:
     return str(record.get("failure") or "")
 
 
-async def _attempt(app: "FastAPI", attempt: int, stale: list[str]) -> None:
-    """One re-probe of ``stale``: real handshakes, merged only over unchanged entries."""
+async def _attempt(
+    app: "FastAPI", attempt: int, stale: list[str], failures: dict[str, int] | None = None
+) -> None:
+    """One re-probe of ``stale``: real handshakes, merged only over unchanged entries.
+
+    ``failures`` counts each provider's consecutive failed attempts (reset by a
+    live answer): the first :data:`REPROBE_INFO_FAILURES` log at INFO, later ones
+    at DEBUG, and a live answer always logs at INFO.
+    """
+    failures = failures if failures is not None else {}
 
     seqs = {provider_id: snapshot.provider_seq(app, provider_id) for provider_id in stale}
     for provider_id in stale:
@@ -69,7 +82,13 @@ async def _attempt(app: "FastAPI", attempt: int, stale: list[str]) -> None:
         outcome = (
             "superseded" if superseded else "still_stale" if snapshot.is_stale(record) else "live"
         )
-        logger.info(
+        if outcome == "still_stale":
+            failures[provider_id] = failures.get(provider_id, 0) + 1
+        elif outcome == "live":
+            failures.pop(provider_id, None)
+        quiet = failures.get(provider_id, 0) > REPROBE_INFO_FAILURES
+        logger.log(
+            logging.DEBUG if quiet else logging.INFO,
             "provider catalog re-probe: reason=provider_catalog_reprobe_attempt attempt=%d "
             "provider=%s outcome=%s live_failure=%r",
             attempt,
@@ -92,6 +111,7 @@ async def reprobe_until_live(app: "FastAPI") -> None:
     """Re-probe stale providers with bounded backoff until none is stale."""
 
     attempt = 0
+    failures: dict[str, int] = {}
     while snapshot.stale_provider_ids(getattr(app.state, "provider_catalog", None)):
         await asyncio.sleep(_delay(attempt))
         attempt += 1
@@ -99,7 +119,7 @@ async def reprobe_until_live(app: "FastAPI") -> None:
         if not stale:
             return
         try:
-            await _attempt(app, attempt, stale)
+            await _attempt(app, attempt, stale, failures)
         except Exception as exc:  # noqa: BLE001 - one failed attempt must not end the loop
             logger.warning(
                 "provider catalog re-probe: reason=provider_catalog_reprobe_failed "
