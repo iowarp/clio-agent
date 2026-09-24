@@ -333,6 +333,48 @@ def test_catalog_no_client_match_hint_says_answer_in_prose(
     )
 
 
+def test_empty_client_advertisement_is_a_typed_refusal_never_a_fake_created(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """S1 A2UI catalog contract, item 3 (no-silent-fallback).
+
+    A client that advertises ``supportedCatalogIds: []`` (gact-tui no longer
+    falls back to its own well-known catalog ids when its registry route is
+    unavailable -- ``processor-store.ts``) is a REAL advertisement, not a
+    missing one: ``select_catalog`` must see ``caps is not None`` and fall
+    through to ``a2ui_catalog_no_client_match`` on the empty intersection,
+    exactly like a non-empty-but-unmatched list. Before the client-side fix,
+    the client instead advertised its two well-known fallback ids, which
+    happened to intersect this session's producible set, so the tool
+    returned ``created: true`` for a catalog the client could not actually
+    render -- the root cause of "Interactive surface unavailable" reported
+    with a successful-looking tool result.
+    """
+
+    app, sid = _session(tmp_path, monkeypatch)
+    from clio_schemas.a2ui.v0_9_1.capabilities import A2UIClientCapabilities
+
+    from clio_agent.gact.a2ui_capabilities import remember_client_capabilities
+
+    caps = A2UIClientCapabilities.model_validate({"v0.9": {"supportedCatalogIds": []}})
+    remember_client_capabilities(app, sid, caps)
+
+    result = build_create_a2ui_surface_tool()(
+        surface_id="no-advertisement",
+        components=[{"id": "root", "component": "Text", "text": "x"}],
+    )
+
+    assert result["ok"] is False
+    assert result.get("created") is not True
+    assert result["reason"] == "a2ui_catalog_no_client_match"
+    assert "supportedCatalogIds=[]" in result["detail"]
+    assert result["hint"] == (
+        "this session's client renders no catalog this session can produce; "
+        "answer in prose, do not retry"
+    )
+    assert app.state.a2ui_store.get(sid, "no-advertisement") is None
+
+
 def test_session_unavailable_hint_says_do_not_retry(monkeypatch: Any) -> None:
     monkeypatch.setattr(gact_context, "active_app", lambda: None)
     monkeypatch.setattr(gact_context, "active_session_id", lambda: "")
