@@ -15,6 +15,8 @@ from clio_agent.gact.runtime.globals import _new_cancellation_attempt_id
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 if TYPE_CHECKING:
+    import threading
+
     from clio_agent.gact.routes.deps import GactDeps
 
 
@@ -63,8 +65,11 @@ def cancel_session_state(app: FastAPI, deps: "GactDeps", sid: str) -> dict[str, 
     from clio_agent.gact.turn_spawn import cancel_children_of  # noqa: PLC0415
     from clio_agent.providers.claude_code_cancel import abort_session_streams  # noqa: PLC0415
 
-    cancel_children_of(app, sid)
-    abort_session_streams(sid)
+    # L1: capture what each stop primitive actually did (real counts/flags) instead
+    # of discarding them behind a fabricated ``hard_abort_supported: False`` /
+    # ``upstream_abort: "not_supported"`` pair -- see ``_new_cancellation_attempt``.
+    children_cancelled = cancel_children_of(app, sid)
+    provider_streams_killed = abort_session_streams(sid)
     stop_session_loop(app, sid)
     stop_session_goal(app, sid)
     # The composer planes are turn PRODUCERS too: a residual steer and a queued
@@ -74,18 +79,14 @@ def cancel_session_state(app: FastAPI, deps: "GactDeps", sid: str) -> dict[str, 
     composer_autostart = stop_session_composer_autostart(app, sid)
     in_flight = app.state.in_flight_turns.get(sid)
     cancellation_pending = in_flight is not None and not in_flight.done()
-    attempt = {
-        "id": _new_cancellation_attempt_id(),
-        "session_id": sid,
-        "requested_at": datetime.now(timezone.utc).isoformat(),
-        "in_flight": cancellation_pending,
-        "cooperative_signal_sent": event is not None,
-        "asyncio_task_cancel_scheduled": cancellation_pending,
-        "asyncio_task_cancel_sent": False,
-        "hard_abort_supported": False,
-        "upstream_abort": "not_supported",
-        "executor_work_may_continue": cancellation_pending,
-    }
+    attempt = _new_cancellation_attempt(
+        sid,
+        event=event,
+        cancellation_pending=cancellation_pending,
+        children_cancelled=children_cancelled,
+        provider_streams_killed=provider_streams_killed,
+        composer_autostart=composer_autostart,
+    )
     app.state.cancel_attempts[sid] = attempt
     if cancellation_pending:
         asyncio.create_task(_cancel_after_grace(app, in_flight, sid, attempt))
@@ -95,12 +96,42 @@ def cancel_session_state(app: FastAPI, deps: "GactDeps", sid: str) -> dict[str, 
         "status": "cancelled",
         "prev_status": sess.status,
         "execution_cancellation": "cooperative_pending" if cancellation_pending else "none",
-        "executor_work_may_continue": cancellation_pending,
         "cancellation_attempt": deps.cancellation_attempt_summary(attempt),
         "composer_autostart": composer_autostart,
     }
     app.state.bus.publish(Event(type="session.status_changed", session_id=sid, payload=payload))
     return payload
+
+
+def _new_cancellation_attempt(
+    sid: str,
+    *,
+    event: "threading.Event | None",
+    cancellation_pending: bool,
+    children_cancelled: int,
+    provider_streams_killed: int,
+    composer_autostart: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the durable cancellation-attempt record from what actually happened.
+
+    L1: replaces the always-``False``/``"not_supported"`` ``hard_abort_supported``/
+    ``upstream_abort`` pair and the ``executor_work_may_continue`` flag (redundant
+    with ``asyncio_task_cancel_scheduled``) with the REAL counts each stop
+    primitive returned -- a genuinely-stopped fact instead of a constant.
+    """
+
+    return {
+        "id": _new_cancellation_attempt_id(),
+        "session_id": sid,
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+        "in_flight": cancellation_pending,
+        "cooperative_signal_sent": event is not None,
+        "asyncio_task_cancel_scheduled": cancellation_pending,
+        "asyncio_task_cancel_sent": False,
+        "children_cancelled": children_cancelled,
+        "provider_streams_killed": provider_streams_killed,
+        "composer_autostart_suspended": bool(composer_autostart.get("suspended", False)),
+    }
 
 
 async def _cancel_after_grace(

@@ -77,10 +77,13 @@ Cancellation is supported at the GACT boundary as **best effort** through
   settles with `error_info.error="cancelled"` and no text body.
 - If a cancel lands while the turn is running in an executor thread, the
   GACT envelope still settles as cancelled and includes
-  `details.execution_cancellation="best_effort"`.
-- Provider or tool work that is already running may continue after the
-  envelope settles. The status event exposes
-  `executor_work_may_continue=true` for this case.
+  `details.execution_cancellation="best_effort"`. Provider or tool work that
+  is already running may continue after the envelope settles.
+- If a cancel lands while the turn's off-loop prologue (transcript persist,
+  enrichment, `UserPromptSubmit` hooks) is still running, it settles as
+  `error_info.error="turn_cancelled_during_prologue"` instead — the prologue
+  stops at its next cooperative checkpoint and kills an already-running hook
+  subprocess outright.
 
 Tests: `tests/test_gact/test_cancellation.py`.
 
