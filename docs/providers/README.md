@@ -64,8 +64,8 @@ that do not use those providers.
 
 ## Provider-specific docs
 
-- [Codex (subscription)](codex.md)
-- [Claude Code (subscription)](claude_code.md)
+- [OpenAI Codex](codex.md) — uses your ChatGPT / Codex subscription
+- [Claude Code](claude_code.md) — uses your Claude subscription
 
 ## Local reasoning model profiles
 

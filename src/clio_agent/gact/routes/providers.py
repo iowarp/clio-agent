@@ -54,6 +54,8 @@ from clio_agent.gact.providers.auth import (
 from clio_agent.gact.providers.config import (
     _default_profile_spec,
     _effective_lm_config,
+    requested_thinking_level,
+    thinking_level_record,
 )
 from clio_agent.gact.providers.lmstudio import (
     _lm_studio_api_root,
@@ -477,9 +479,9 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             ),
             is_reasoning=bool(cfg.get("is_reasoning") or False),
             native_tool_calling=bool(cfg.get("native_tool_calling") or False),
-            # Thinking control (#895): raw level + resolved per-provider effect,
-            # both from _effective_lm_config so the knob is never invisible.
+            # #895 raw level, its provenance and resolved effect (never invisible).
             thinking_level=cfg.get("thinking_level"),
+            thinking_level_source=cfg.get("thinking_level_source"),
             thinking_effective=str(cfg.get("thinking_effective") or ""),
             thinking_budget=(
                 int(pending["thinking_budget"])
@@ -693,10 +695,8 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 min_p=req.min_p,
                 presence_penalty=req.presence_penalty,
                 thinking_budget=req.thinking_budget,
-                thinking_level=req.thinking_level,  # provider-generic level (#895)
-                # Per-provider transport (v0.8.0): only the bound provider's field
-                # reads req.transport — cross-feeding once let non-codex binds
-                # inherit the deleted codex "exec" default and 400 on validation.
+                thinking_level=requested_thinking_level(app, req),  # #895: see its provenance rule
+                # Per-provider transport (v0.8.0): only the bound provider's field reads req.transport.
                 codex_transport=(req.transport or "sdk") if is_codex else "sdk",  # type: ignore[arg-type]  # LMProviderConfig validates
                 claude_code_transport=(req.transport or "sdk") if is_cc else "sdk",  # type: ignore[arg-type]  # LMProviderConfig validates; deleted values 400 typed
             )
@@ -887,9 +887,8 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             if isinstance(store, ProviderProfileStore)
             else ProviderProfileStore.seed(default_spec)
         )
-        # Swap the agent + ARC atomically. Old agent isn't
-        # explicitly closed because we don't know what background
-        # state it owns; Python's GC will clean up.
+        # Swap the agent + ARC atomically. The old agent isn't closed (we don't
+        # know what background state it owns); Python's GC cleans it up.
         mark_agent_ready(app, agent)
         # The bind swaps in a freshly-built agent (new ARCMemory); _set_app_arc
         # re-wires the arc.op op-logger (every real run binds — without it the live
@@ -909,6 +908,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             "context_length": req.context_length,
             "thinking_budget": req.thinking_budget,
             "thinking_level": cfg.thinking_level,  # resolved level (shipped default) #895
+            **thinking_level_record(app, req),  # the person's level + its provenance
             "turn_timeout_s": req.turn_timeout_s,
             "transport": transport,
             "provider_options": dict(req.provider_options),

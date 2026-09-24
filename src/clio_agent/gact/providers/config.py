@@ -139,12 +139,15 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
     if level is not None:
         cfg["thinking_level"] = level
     try:
+        from clio_agent.providers.reasoning_levels import model_effort_levels  # noqa: PLC0415
         from clio_agent.providers.thinking import resolve_thinking  # noqa: PLC0415
 
+        provider_kind = str(cfg.get("provider") or "")
         plan = resolve_thinking(
-            str(cfg.get("provider") or ""),
+            provider_kind,
             cfg.get("thinking_level"),
             int(cfg.get("thinking_budget") or 0),
+            effort_levels=model_effort_levels(provider_kind, str(cfg.get("model") or "")),
         )
         cfg["thinking_effective"] = plan.display
     except Exception as exc:  # noqa: BLE001 - status must never fail on a display derivation
@@ -152,6 +155,48 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
         # reason instead of omitting the field silently.
         cfg["thinking_effective"] = f"unavailable (reason=display_derivation_failed: {exc})"
     return _with_native_capability_flags(app, cfg)
+
+
+#: The only provenance a configured global thinking level carries over with:
+#: a person set it with an explicit ``thinking_level`` on ``PUT /v1/providers/lm``.
+THINKING_LEVEL_SOURCE_USER = "user"
+
+
+def requested_thinking_level(app: "FastAPI", req: Any) -> str | None:
+    """The person's global thinking level for a ``PUT /v1/providers/lm``.
+
+    * An explicit value is the person's choice (``null`` clears it back to the
+      provider/model default).
+    * An OMITTED field carries over only a level a person set before
+      (``thinking_level_source == "user"``) and only when the provider and model
+      are unchanged. A level is a property of one model's effort scale, and a
+      shipped per-model default (``shipped_default_level``: sonnet ships ``low``)
+      is not a choice -- carrying either to another model would pin it there.
+    * A stored level with no source (older builds, boot config) is not a choice.
+
+    ``None`` lets ``LMProviderConfig`` apply the new model's shipped default.
+    """
+
+    if "thinking_level" in getattr(req, "model_fields_set", set()):
+        return req.thinking_level
+    previous = getattr(app.state, "lm_config", None) or {}
+    if previous.get("thinking_level_source") != THINKING_LEVEL_SOURCE_USER:
+        return None
+    same_model = (previous.get("provider_id") or previous.get("provider")) == (
+        req.provider_id or req.provider
+    ) and previous.get("model") == req.model
+    level = previous.get("user_thinking_level")
+    return str(level) if same_model and level else None
+
+
+def thinking_level_record(app: "FastAPI", req: Any) -> dict[str, Any]:
+    """The provenance fields the bound ``lm_config`` stores for this PUT."""
+
+    level = requested_thinking_level(app, req)
+    return {
+        "user_thinking_level": level,
+        "thinking_level_source": THINKING_LEVEL_SOURCE_USER if level else None,
+    }
 
 
 def _default_profile_spec(app: "FastAPI") -> Any:

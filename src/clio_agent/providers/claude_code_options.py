@@ -62,8 +62,9 @@ def build_sdk_options(
     are disabled; ``setting_sources=[]`` keeps the model isolated from filesystem
     settings; and clio's ReAct loop drives tools. ``stream`` adds
     ``include_partial_messages``. ``thinking`` (#895) is the resolved SDK thinking
-    config (``{"type":"disabled"}`` / ``{"type":"enabled","budget_tokens":N}``);
-    ``None`` sends nothing so the provider/CLI default governs.
+    config (``{"type":"disabled"}`` / ``{"type":"enabled","budget_tokens":N}`` /
+    ``{"type":"adaptive","effort":<level>}``, whose ``effort`` key becomes
+    ``ClaudeAgentOptions.effort``); ``None`` sends nothing so the CLI default governs.
     """
     from claude_agent_sdk import ClaudeAgentOptions  # noqa: PLC0415
 
@@ -96,5 +97,12 @@ def build_sdk_options(
     if stream:
         kwargs["include_partial_messages"] = True
     if thinking is not None:
-        kwargs["thinking"] = thinking
+        # resolve_thinking carries the SDK effort inside the thinking config so
+        # every path (and the session-pool key) sees one value; the SDK takes it
+        # as its own option (CLI ``--effort``).
+        config = dict(thinking)
+        effort = config.pop("effort", None)
+        kwargs["thinking"] = config
+        if effort is not None:
+            kwargs["effort"] = effort
     return ClaudeAgentOptions(**kwargs)

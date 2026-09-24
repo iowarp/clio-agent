@@ -20,6 +20,9 @@ of, one submodule per concern (kept split to respect the #775 file-size ratchet)
   for everything model-shaped, and separately runs exactly one ``auth status``
   CLI call to learn whether Claude Code is installed and signed in on this
   machine (no per-model probing, no bare-default probe, no multimodal probe).
+* :mod:`.last_good` — the last good LIVE model list of an HTTP-backed provider,
+  persisted in the same overlay and served (typed-stale) when a later passive
+  probe comes back empty.
 * :mod:`.http` — HTTP-backed providers reuse the existing live handshake `/models`
   path.
 * :mod:`.refresh` — the concurrent, deadline-bounded, configured-providers-only
@@ -51,6 +54,14 @@ from clio_agent.providers.model_discovery.claude_code import (
 )
 from clio_agent.providers.model_discovery.codex import discover_codex
 from clio_agent.providers.model_discovery.http import discover_http
+from clio_agent.providers.model_discovery.last_good import (
+    LAST_GOOD_CATALOG_SOURCE,
+    LAST_GOOD_REASONS,
+    LastGoodCatalog,
+    last_good_catalog,
+    last_good_staleness,
+    persist_live_catalog,
+)
 from clio_agent.providers.model_discovery.modality_evidence import (
     MODALITY_EVIDENCE_REASONS,
     MODALITY_SOURCES,
@@ -89,6 +100,9 @@ __all__ = [
     "CLAUDE_CODE_SOURCE",
     "CODEX_SOURCE",
     "HTTP_SOURCE",
+    "LAST_GOOD_CATALOG_SOURCE",
+    "LAST_GOOD_REASONS",
+    "LastGoodCatalog",
     "MODALITY_EVIDENCE_REASONS",
     "MODALITY_SOURCES",
     "OVERLAY_STALENESS_REASONS",
@@ -105,11 +119,14 @@ __all__ = [
     "discover_http",
     "entry_staleness",
     "is_provider_configured",
+    "last_good_catalog",
+    "last_good_staleness",
     "modality_evidence",
     "overlay_default_model",
     "overlay_models_wire",
     "overlay_path",
     "overlay_staleness_ttl_s",
+    "persist_live_catalog",
     "read_overlay",
     "record_refresh",
     "refresh_all",

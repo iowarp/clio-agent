@@ -8,6 +8,8 @@ static guesses.
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -16,6 +18,7 @@ from clio_agent.providers import model_discovery
 from clio_agent.providers.catalog import get_provider
 from clio_agent.providers.handshake import HandshakeContext, HandshakeReport, run_handshake
 from clio_agent.providers.handshake.model import ModelProfile
+from clio_agent.providers.reasoning_levels import model_reasoning
 
 
 def _now_iso() -> str:
@@ -75,6 +78,10 @@ async def _ensure_codex_live_catalog(preset: LMProviderPreset) -> str:
 #: and is never evidence.
 EVIDENCED_CATALOG_SOURCES: frozenset[str] = frozenset({"live", "overlay"})
 
+#: Provider kinds whose catalog is the discovery overlay itself (no HTTP probe).
+#: Every other kind is probed live and keeps a last-good list for empty probes.
+_CLI_CATALOG_KINDS: frozenset[str] = frozenset({"codex", "claude_code"})
+
 
 def _modalities(profile: ModelProfile) -> list[str]:
     """Normalize only modalities reported by the live provider handshake."""
@@ -114,10 +121,9 @@ def model_catalog_row(
         "model_id": profile.id,
         "revision": str(profile.raw.get("revision") or profile.raw.get("version") or ""),
         "modalities": _modalities(profile) if evidenced or modality_evidenced else ["text"],
-        "reasoning": {
-            "supported": profile.is_reasoning,
-            "parameter": profile.reasoning_param or "",
-        },
+        # The levels a person can actually choose for THIS model, derived from
+        # provider truth and restricted to what resolve_thinking maps.
+        "reasoning": model_reasoning(preset.provider, profile),
         "native_tool_calling": profile.native_tool_calling,
         "context_window": profile.context_window,
         "loaded_context_window": profile.loaded_context_window,
@@ -161,6 +167,34 @@ def _overlay_staleness(preset: LMProviderPreset) -> dict[str, Any]:
     return staleness if isinstance(staleness, dict) else {}
 
 
+async def _with_last_good(
+    preset: LMProviderPreset, report: HandshakeReport
+) -> tuple[HandshakeReport, dict[str, Any]]:
+    """Persist a live answer as last-good, or serve the last-good list for an empty probe.
+
+    Returns the report to project (unchanged, or carrying the last-good profiles
+    under ``models_source="last_good"``) and the typed staleness marker for the
+    latter. Last-good rows are never ``evidenced`` -- ``report.ok`` is false for an
+    empty probe -- so they surface as candidates until a live probe answers.
+    """
+
+    if preset.provider in _CLI_CATALOG_KINDS:
+        return report, {}
+    if report.models:
+        await asyncio.to_thread(model_discovery.persist_live_catalog, preset.id, report)
+        return report, {}
+    last_good = await asyncio.to_thread(model_discovery.last_good_catalog, preset.id)
+    if last_good is None:
+        return report, {}
+    served = replace(
+        report,
+        models=last_good.profiles,
+        models_source=model_discovery.LAST_GOOD_CATALOG_SOURCE,
+        evidence_generated_at=last_good.generated_at,
+    )
+    return served, model_discovery.last_good_staleness(last_good, report)
+
+
 async def discover_provider(preset: LMProviderPreset, *, refresh: bool = False) -> dict[str, Any]:
     """Run one passive handshake and return a normalized provider record."""
 
@@ -176,9 +210,11 @@ async def discover_provider(preset: LMProviderPreset, *, refresh: bool = False) 
         ),
         force=refresh or preset.id == "codex",
     )
+    report, staleness = await _with_last_good(preset, report)
     models = report.models
     failure = report.error or bootstrap_failure
-    staleness = _overlay_staleness(preset)
+    if not staleness:
+        staleness = _overlay_staleness(preset) if preset.provider in _CLI_CATALOG_KINDS else {}
     if preset.id == "codex" and report.models_source not in EVIDENCED_CATALOG_SOURCES:
         # Static Codex ids are compatibility candidates for legacy clients,
         # never evidence that the current account can actually select them.
@@ -193,7 +229,11 @@ async def discover_provider(preset: LMProviderPreset, *, refresh: bool = False) 
         "name": preset.label,
         "kind": preset.provider,
         "endpoint": preset.api_base,
-        "configuration_url": f"/settings/providers/{preset.id}",
+        # The one canonical display name; the sign-in service is separate detail.
+        "auth_method": preset.auth_method,
+        "auth_label": preset.auth_label,
+        # The client's real provider-settings route (a query, not a path segment).
+        "configuration_url": f"/settings/providers?provider={preset.id}",
         "connectivity": report.connectivity.value,
         "auth": report.auth.value,
         "health": "ready" if report.ok and not bootstrap_failure else "unavailable",

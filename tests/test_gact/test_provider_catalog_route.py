@@ -25,7 +25,7 @@ def test_provider_catalog_serves_the_in_process_snapshot_without_reprobing(
     }
     app.state.provider_catalog = cached
     discover = AsyncMock(side_effect=AssertionError("cached reads must not probe providers"))
-    monkeypatch.setattr("clio_agent.gact.routes.provider_catalog.discover_provider", discover)
+    monkeypatch.setattr("clio_agent.gact.provider_catalog_snapshot.discover_provider", discover)
 
     with TestClient(app) as client:
         response = client.get("/v1/provider-catalog")
@@ -53,7 +53,7 @@ def test_provider_catalog_refresh_bypasses_the_snapshot(
             "name": "Fresh",
             "kind": "test",
             "endpoint": "",
-            "configuration_url": "/settings/providers/fresh",
+            "configuration_url": "/settings/providers?provider=fresh",
             "connectivity": "ok",
             "auth": "not_required",
             "health": "ready",
@@ -62,7 +62,7 @@ def test_provider_catalog_refresh_bypasses_the_snapshot(
             "models": [],
         }
     )
-    monkeypatch.setattr("clio_agent.gact.routes.provider_catalog.discover_provider", discover)
+    monkeypatch.setattr("clio_agent.gact.provider_catalog_snapshot.discover_provider", discover)
 
     with TestClient(app) as client:
         response = client.get("/v1/provider-catalog?refresh=true")
