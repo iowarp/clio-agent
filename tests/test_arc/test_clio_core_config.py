@@ -187,8 +187,7 @@ def test_effective_ram_cap_reads_existing_file(tmp_path):
     cfg = tmp_path / "cte.yaml"
     cfg.write_text(
         _LEGACY_TIER_TEMPLATE.format(
-            conf_dir="c", file_tier="f", file_capacity="50GB", ram_capacity="2GB",
-            metadata_log="m"
+            conf_dir="c", file_tier="f", file_capacity="50GB", ram_capacity="2GB", metadata_log="m"
         ),
         encoding="utf-8",
     )
@@ -203,8 +202,7 @@ def test_effective_ram_cap_flags_0g(tmp_path):
     cfg = tmp_path / "cte.yaml"
     cfg.write_text(
         _LEGACY_TIER_TEMPLATE.format(
-            conf_dir="c", file_tier="f", file_capacity="1GB", ram_capacity="0g",
-            metadata_log="m"
+            conf_dir="c", file_tier="f", file_capacity="1GB", ram_capacity="0g", metadata_log="m"
         ),
         encoding="utf-8",
     )
@@ -221,3 +219,57 @@ def test_effective_ram_cap_default_when_file_absent(monkeypatch, tmp_path):
     assert result.cap is None  # disk-only default: no ram data tier (#906)
     assert result.bdev_capacity == "1GB"  # arena = the budget (hard bound)
     assert result.source == "generator-default"
+
+
+# ---- search-indexer-absence diagnosis (clio-core 2.2.0, upstream #905) ----- #
+#
+# SemanticSearch moved out of clio_cte_core into a separate, optional
+# clio_cte_indexer chimod. clio-agent does NOT declare it (live Windows testing
+# found declaring it -- with or without also binding the client to it via
+# CLIO_CTE_POOL -- causes an intermittent hang on the first PutBlob after client
+# attach), so BM25 scope search against clio-core >=2.2.0 silently returns zero
+# hits; warn_if_search_indexer_absent only reports that gap loudly.
+
+
+def test_generated_default_config_has_no_indexer_chimod(monkeypatch, tmp_path):
+    """The shipped default topology deliberately omits the indexer (unsafe, see #CU)."""
+    monkeypatch.setattr(conf, "_STORE", _store(env={}, tmp_path=tmp_path))
+    monkeypatch.setattr(clio_core_config, "_default_cte_dir", lambda: tmp_path / "cte")
+
+    clio_core_config.default_cte_config_path()
+    text = (tmp_path / "cte" / "cte.yaml").read_text(encoding="utf-8")
+    data = yaml.safe_load(text)
+    assert all(m.get("mod_name") != "clio_cte_indexer" for m in data["compose"])
+
+
+def test_warn_if_search_indexer_absent_warns_when_no_indexer(tmp_path, caplog):
+    cfg = tmp_path / "cte.yaml"
+    cfg.write_text(
+        "compose:\n  - mod_name: clio_cte_core\n    pool_id: '512.0'\n", encoding="utf-8"
+    )
+    with caplog.at_level("WARNING", logger="clio_agent.arc.clio_core_config"):
+        clio_core_config.warn_if_search_indexer_absent(str(cfg))
+    assert clio_core_config.CLIO_CORE_SEARCH_INDEXER_ABSENT in caplog.text
+
+
+def test_warn_if_search_indexer_absent_silent_when_indexer_declared(tmp_path, caplog):
+    """A hand-authored config that DOES declare the chimod is not flagged."""
+    cfg = tmp_path / "cte.yaml"
+    cfg.write_text(
+        "compose:\n"
+        "  - mod_name: clio_cte_core\n"
+        "    pool_id: '512.0'\n"
+        "  - mod_name: clio_cte_indexer\n"
+        "    pool_id: '564.0'\n"
+        "    next_pool_id: '512.0'\n",
+        encoding="utf-8",
+    )
+    with caplog.at_level("WARNING", logger="clio_agent.arc.clio_core_config"):
+        clio_core_config.warn_if_search_indexer_absent(str(cfg))
+    assert clio_core_config.CLIO_CORE_SEARCH_INDEXER_ABSENT not in caplog.text
+
+
+def test_warn_if_search_indexer_absent_warns_when_file_missing(tmp_path, caplog):
+    with caplog.at_level("WARNING", logger="clio_agent.arc.clio_core_config"):
+        clio_core_config.warn_if_search_indexer_absent(str(tmp_path / "absent.yaml"))
+    assert clio_core_config.CLIO_CORE_SEARCH_INDEXER_ABSENT in caplog.text

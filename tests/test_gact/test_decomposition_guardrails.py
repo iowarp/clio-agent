@@ -129,7 +129,9 @@ from clio_agent.gact.app import build_app
 # support install, now owned by routes/provider_catalog_routes.py) landed in
 # e0c66ff5 on the release line without a recount; measured by diffing the
 # registered (method, path) set of develop@01a789dd against the merged tree.
-EXPECTED_ROUTE_METHOD_PAIRS = 266
+# 266 -> 267: GET /v1/system/latest-release (the server-side release manifest
+# read the web and desktop version check use), in routes/latest_release.py.
+EXPECTED_ROUTE_METHOD_PAIRS = 267
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

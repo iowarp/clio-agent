@@ -10,7 +10,8 @@ pool and the live ``_astream_sdk`` path with a fake SDK client that records ever
     conversation boundary that makes cross-call/cross-expert context bleed
     impossible (server-side content-prefix caching supplies cache_read, proven
     live: 12K→184K across a turn);
-(c) the kill-switch restores the pre-#891 per-call behaviour byte-for-byte;
+(c) S2 (B1): the pool key is the ACTIVE GACT session, not a kill-switch —
+    distinct sessions never share a connection;
 (d) the pooled client survives separate ``asyncio.run()`` caller loops (BLOCKER);
 (e) an abnormal end drops the poisoned client (BLOCKER);
 (f) a mid-stream SDK/CLI death becomes a TYPED, audited, transient error the LM
@@ -180,26 +181,31 @@ async def test_stream_each_call_sends_full_prompt_under_fresh_session_id(monkeyp
     assert state["constructed"] == 1
 
 
-async def test_stream_kill_switch_restores_per_call(monkeypatch) -> None:
-    """(c) live: with reuse OFF, each call builds a fresh client + fresh session + full prompt."""
+async def test_stream_two_gact_sessions_get_distinct_clients(monkeypatch) -> None:
+    """(c) S2 B1: the pool key is the ACTIVE GACT session, not a kill-switch.
+
+    Two calls made under distinct GACT session contexts each get their OWN
+    pooled client (never sharing one connection) — while two calls under NO
+    GACT session context (the off-turn fallback, matching this test file's
+    other calls, which run with no session bound) share one.
+    """
+    from clio_agent.gact import context as gact_context
+
     state = _install_fake_sdk(monkeypatch)
-    monkeypatch.setenv("CLIO_CLAUDE_CODE_SESSION_REUSE", "false")
-    from clio_agent import conf  # noqa: PLC0415
+    token = gact_context.set_session_id("sess-alice")
+    try:
+        await _drain("HEADER-STABLE-PREFIX\nstep0")
+    finally:
+        gact_context.reset(token)
+    token = gact_context.set_session_id("sess-bob")
+    try:
+        await _drain("HEADER-STABLE-PREFIX\nstep0")
+    finally:
+        gact_context.reset(token)
 
-    conf.reload()
-    await _drain("HEADER-STABLE-PREFIX\nstep0")
-    await _drain("HEADER-STABLE-PREFIX\nstep0\nstep1")
-
-    # Byte-for-byte the original per-call behaviour: a fresh client each call, the
-    # FULL prompt each call, and a fresh random session_id.
-    assert state["constructed"] == 2  # SABOTAGE: honour the flag as ON -> 1 -> red
-    queries = _all_queries(state)
-    assert [p for p, _ in queries] == [
-        "HEADER-STABLE-PREFIX\nstep0",
-        "HEADER-STABLE-PREFIX\nstep0\nstep1",
-    ]
-    assert queries[0][1] != queries[1][1]  # distinct per-call session ids
-    conf.reload()
+    # SABOTAGE: key by something other than the active GACT session -> both
+    # calls share one client -> 1 -> red.
+    assert state["constructed"] == 2
 
 
 # --------------------------------------------------------------------------- #
@@ -439,3 +445,61 @@ async def test_midstream_sdk_death_becomes_typed_transient_error(monkeypatch) ->
     error_rows = [r for r in rows if r["event"] == "provider.transport_error"]
     assert error_rows and error_rows[-1]["reason"] == "send_failed"
     assert error_rows[-1]["category"] == "session_transport_error"
+
+
+async def test_midstream_death_attaches_the_stderr_tail_to_the_crash_error(monkeypatch) -> None:
+    """(B17) The dead client's stderr ring rides the raised crash error, so the
+    CLI's own diagnostic output reaches the user/trace, not just the bare
+    Python exception text.
+
+    SABOTAGE: stop passing ``stderr_tail=entry.stderr_ring.tail()`` at the
+    ``transient_transport_error_message`` call site -> the CLI's own stderr
+    line never appears in the raised message -> this goes red.
+    """
+    import sys
+
+    class FakeSdkError(Exception):
+        pass
+
+    class FakeStreamEvent:
+        def __init__(self, event: dict[str, Any]) -> None:
+            self.event = event
+
+    class FakeOptions:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+            self.stderr = kwargs.get("stderr")
+
+    class FakeClient:
+        def __init__(self, options: FakeOptions) -> None:
+            self._stderr_cb = options.stderr
+
+        async def connect(self) -> None:
+            if self._stderr_cb is not None:
+                self._stderr_cb("fatal: authentication expired, please re-run `claude login`\n")
+
+        async def disconnect(self) -> None:
+            return None
+
+        async def query(self, prompt: str, session_id: str = "default") -> None:
+            return None
+
+        async def receive_response(self) -> Any:
+            yield FakeStreamEvent(
+                {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "X"}}
+            )
+            raise FakeSdkError("Command failed with exit code 1")
+
+    fake_sdk = ModuleType("claude_agent_sdk")
+    fake_sdk.AssistantMessage = type("AssistantMessage", (), {})
+    fake_sdk.ClaudeAgentOptions = FakeOptions
+    fake_sdk.ClaudeSDKClient = FakeClient
+    fake_sdk.ResultMessage = type("ResultMessage", (), {})
+    fake_sdk.StreamEvent = FakeStreamEvent
+    fake_sdk.TextBlock = type("TextBlock", (), {})
+    fake_sdk.ClaudeSDKError = FakeSdkError
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
+
+    with pytest.raises(claude_code_litellm.ClaudeCodeExecError) as excinfo:
+        await _drain("HEADER-STABLE-PREFIX\nstep0")
+    assert "authentication expired" in str(excinfo.value)

@@ -48,7 +48,7 @@ def persist_paused_transcript(state: "TurnState") -> str:
         "message_id": message.id,
         "stop_reason": "waiting_user",
         "tokens": dict(state.turn_tokens),
-        "cost_usd": state.turn_cost,
+        "cost_usd": state.turn_cost if state.turn_cost_known else None,
     }
     _emit_semantic_event(
         state.app,

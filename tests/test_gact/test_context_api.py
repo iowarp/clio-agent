@@ -306,6 +306,76 @@ def test_search_context_404_503(tmp_path):
     assert client2.get(f"/v1/sessions/{sid}/context/search", params={"q": "x"}).status_code == 503
 
 
+class _CteShapedStore:
+    """A minimal ``ARCStore`` double shaped like ``ClioCoreStore`` (#905): a backend
+    that WOULD be semantic but currently reports degraded (indexer chimod absent) --
+    no live clio-core daemon needed to exercise the route's reporting contract."""
+
+    def __init__(self, degraded_reason: str) -> None:
+        self._blobs: dict[tuple[str, str], bytes] = {}
+        self._degraded_reason = degraded_reason
+
+    def put(self, kind, name, data, *, tier="warm", search_text=None):
+        self._blobs[(kind, name)] = data
+
+    def get(self, kind, name):
+        return self._blobs.get((kind, name))
+
+    def exists(self, kind, name) -> bool:
+        return (kind, name) in self._blobs
+
+    def scan(self, kind, prefix=""):
+        for (k, name), data in self._blobs.items():
+            if k == kind and name.startswith(prefix):
+                yield name, data
+
+    def delete(self, kind, name) -> None:
+        self._blobs.pop((kind, name), None)
+
+    def clear(self) -> None:
+        self._blobs.clear()
+
+    def supports_search(self) -> bool:
+        return not self._degraded_reason
+
+    def search_degradation_reason(self) -> str:
+        return self._degraded_reason
+
+    def search(self, kind, query_text, *, name_prefix="", k=10):
+        return []  # #905: a degraded clio-core-shaped backend reaches the bare core
+
+
+def test_search_context_reports_degraded_not_silent_semantic_true(tmp_path):
+    """#905: a clio-core-shaped backend whose indexer chimod is absent must report
+    ``semantic=False`` + the typed reason over the wire, not a silent empty result a
+    caller could misread as "semantic search ran and found nothing"."""
+    arc = ARCMemory(
+        data_dir=str(tmp_path / "arc"), store=_CteShapedStore("clio_core_search_indexer_absent")
+    )
+    client = _client(tmp_path, arc)
+    sid = _session(client)
+    arc.append_segment(sid, "agentA/hdf5", "observation", {"text": "HDF5 chunk compression"})
+    r = client.get(f"/v1/sessions/{sid}/context/search", params={"q": "HDF5"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["semantic"] is False
+    assert body["semantic_unavailable_reason"] == "clio_core_search_indexer_absent"
+    assert body["hits"] == []
+
+
+def test_search_context_semantic_true_carries_no_reason(tmp_path):
+    """The inverse: once a backend genuinely supports real search, the route never
+    carries a stale/leftover degradation reason alongside ``semantic=True``."""
+    arc = ARCMemory(data_dir=str(tmp_path / "arc"), store=_CteShapedStore(""))
+    client = _client(tmp_path, arc)
+    sid = _session(client)
+    r = client.get(f"/v1/sessions/{sid}/context/search", params={"q": "x"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["semantic"] is True
+    assert body["semantic_unavailable_reason"] == ""
+
+
 def test_context_op_append_does_not_publish_arc_op_frame(tmp_path, monkeypatch):
     """WS1: ``arc.op`` segment bookkeeping is substrate, not served UI -- a plain
     ``append`` does NOT ride the SSE bus (the TUI reads context via GET
