@@ -1077,7 +1077,7 @@ class _FakeHandshakeReport:
         self.connectivity = SimpleNamespace(value="ok" if models else "unreachable")
         self.auth = SimpleNamespace(value="ok" if models else "missing")
 
-    def to_models_wire(self) -> dict[str, Any]:
+    def models_wire(self) -> dict[str, Any]:
         return {"models": self._models, "source": "live", "error": self.error}
 
 

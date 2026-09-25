@@ -36,8 +36,8 @@ from clio_agent.providers.handshake.mcp import MCPServerReport, handshake_mcp_se
 from clio_agent.providers.handshake.model import (
     AuthState,
     ConnectivityState,
+    DiscoveredModel,
     HandshakeReport,
-    ModelProfile,
 )
 from clio_agent.providers.handshake.noop import NoOpHandshake
 from clio_agent.providers.handshake.ollama import OllamaHandshake
@@ -50,7 +50,7 @@ __all__ = [
     "ConnectivityResult",
     "DiscoveryAuthRejected",
     "HandshakeReport",
-    "ModelProfile",
+    "DiscoveredModel",
     "ConnectivityState",
     "AuthState",
     "MCPServerReport",

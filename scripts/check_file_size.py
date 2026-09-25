@@ -181,7 +181,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # bind-time site), not a new module, because it is a single conf.resolve call
     # tightly coupled to the existing window-vs-override decision. Ratchet down
     # as config.py's modular decomposition continues.
-    "src/clio_agent/config.py": 842,
+    "src/clio_agent/config.py": 840,
     # #1326: adapters.py was 780 lines (under the 800 cap). +56 for: a new
     # _ContextOverflowError typed exception, a _check_context_overflow pre-flight
     # helper (mirrors the guided path's _bound_guided_output_kwargs shape), pre-

@@ -241,7 +241,7 @@ def register_provider_catalog_routes(
             allow_external_sources=True,
         )
         report = await run_handshake(ctx)
-        wire = report.to_models_wire()
+        wire = report.models_wire()
         return wire
 
     @app.post("/v1/providers/{provider_id}/install")
@@ -288,7 +288,7 @@ def register_provider_catalog_routes(
 
         Report-only (no runtime mutation). Runs the per-provider handshake and
         returns the discovered context windows, reasoning/tool capabilities and
-        provenance alongside the legacy model list (``to_models_wire`` shape).
+        provenance alongside the legacy model list (``HandshakeReport.models_wire`` shape).
         Cached for the handshake TTL; ``refresh=true`` forces a re-probe. Argonne
         resolves its own stored token (passive, never interactive).
         """
@@ -406,7 +406,7 @@ def register_provider_catalog_routes(
             allow_external_sources=True,
         )
         report = await run_handshake(ctx, force=refresh)
-        out = report.to_models_wire()
+        out = report.models_wire()
         out["connectivity"] = report.connectivity.value
         out["auth"] = report.auth.value
         out["latency_ms"] = report.latency_ms

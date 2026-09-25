@@ -29,8 +29,16 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
+from clio_agent.providers.capabilities.link import deployment_model_key_fact
+from clio_agent.providers.capabilities.records import (
+    DeploymentCapabilities,
+    Fact,
+    ModelCapabilities,
+    unknown,
+)
 from clio_agent.providers.handshake.base import (
     ConnectivityResult,
     DiscoveryAuthRejected,
@@ -40,8 +48,14 @@ from clio_agent.providers.handshake.base import (
 from clio_agent.providers.handshake.model import (
     AuthState,
     ConnectivityState,
-    ModelProfile,
+    DiscoveredModel,
+    DiscoveredModelFacts,
 )
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
 
 #: Environment variables checked (in order) for a pre-supplied bearer token.
 #: These let a user or a batch job inject a token without the Globus flow.
@@ -325,43 +339,79 @@ class ArgonneHandshake(ProviderHandshake):
 
     async def discover_model_config(
         self, client: Any, ctx: HandshakeContext, raw: dict[str, Any]
-    ) -> ModelProfile:
-        """Build a :class:`ModelProfile` from one ALCF model row.
+    ) -> DiscoveredModelFacts:
+        """Build a :class:`DiscoveredModelFacts` from one ALCF model row.
 
-        Mapping (all values self-reported by the vLLM backend, so
-        ``context_source`` stays ``"live"``):
+        Every value here is self-reported by the vLLM backend the gateway
+        fronts, and per brief Part 6 (the vLLM section) this is all DEPLOYMENT
+        evidence -- how THIS server is currently running the model -- not a
+        fact about the weights themselves:
 
-        * ``max_model_len`` -> ``context_window``
-        * non-empty ``reasoning_parser`` -> ``is_reasoning=True`` +
-          ``reasoning_param=<value>``
+        * ``max_model_len`` -> ``DeploymentCapabilities.context_served``
+        * non-empty ``reasoning_parser`` -> ``DeploymentCapabilities.reasoning_enabled=True``
         * ``tool_call_parser`` present **or** ``enable_auto_tool_choice`` truthy
-          -> ``native_tool_calling=True`` (``tool_call_parser`` carries the
-          parser name when present)
+          -> ``DeploymentCapabilities.tools_enabled=True``
+
+        The model's own mechanism/ceiling stay unknown here (no HF/overlay
+        layer exists in this slice); ``enrich_capabilities`` fills the ceiling
+        from the community-catalog cascade.
         """
-        model_id = raw.get("id", "")
+        model_id = str(raw.get("id") or "")
+        observed_at = _now_iso()
 
         context_window = raw.get("max_model_len")
         if context_window is not None:
             context_window = int(context_window)
 
         reasoning_parser = raw.get("reasoning_parser") or None
-        is_reasoning = reasoning_parser is not None
-
         tool_call_parser = raw.get("tool_call_parser") or None
         auto_tool = bool(raw.get("enable_auto_tool_choice"))
         native_tool_calling = tool_call_parser is not None or auto_tool
 
-        return ModelProfile(
-            id=model_id,
-            context_window=context_window,
-            is_reasoning=is_reasoning,
-            reasoning_param=reasoning_parser,
-            native_tool_calling=native_tool_calling,
-            tool_call_parser=tool_call_parser,
-            is_loaded=bool(raw.get("is_loaded")),
-            context_source="live",
-            raw=dict(raw),
+        model_key_fact = deployment_model_key_fact(model_id, observed_at=observed_at)
+        model_key = model_key_fact.value or model_id
+        model = ModelCapabilities(model_key=model_key)
+        deployment = DeploymentCapabilities(
+            provider_id=ctx.provider_id,
+            api_base=ctx.api_base,
+            model_id=model_id,
+            model_key=model_key_fact,
+            context_served=(
+                Fact(
+                    value=context_window,
+                    source="server_report",
+                    observed_at=observed_at,
+                    detail="ALCF gateway /models max_model_len (vLLM self-reported)",
+                )
+                if context_window is not None
+                else unknown()
+            ),
+            reasoning_enabled=Fact(
+                value=reasoning_parser is not None,
+                source="server_report",
+                observed_at=observed_at,
+                detail=f"ALCF gateway /models reasoning_parser={reasoning_parser!r}",
+            ),
+            tools_enabled=Fact(
+                value=native_tool_calling,
+                source="server_report",
+                observed_at=observed_at,
+                detail=(
+                    f"ALCF gateway /models tool_call_parser={tool_call_parser!r} "
+                    f"enable_auto_tool_choice={auto_tool!r}"
+                ),
+            ),
         )
+        discovered = DiscoveredModel(
+            id=model_id,
+            is_loaded=bool(raw.get("is_loaded")),
+            raw={
+                **dict(raw),
+                "reasoning_parser": reasoning_parser,
+                "tool_call_parser": tool_call_parser,
+            },
+        )
+        return DiscoveredModelFacts(discovered=discovered, model=model, deployment=deployment)
 
     # ------------------------------------------------------------------ helpers
     def _auth_header(self, ctx: HandshakeContext) -> dict[str, str]:

@@ -124,8 +124,8 @@ async def _profiles_for(rows: list[dict[str, Any]]) -> dict[str, Any]:
     ctx = _sophia_context()
     out = {}
     for row in rows:
-        profile = await hs.discover_model_config(client=None, ctx=ctx, raw=row)
-        out[profile.id] = profile
+        facts = await hs.discover_model_config(client=None, ctx=ctx, raw=row)
+        out[facts.discovered.id] = facts
     return out
 
 
@@ -135,24 +135,24 @@ async def test_model_config_mapping_from_fixture() -> None:
     profiles = await _profiles_for(rows)
 
     nemotron = profiles["nvidia/nemotron-3-super-120b"]
-    assert nemotron.context_window == 262144
-    assert nemotron.is_reasoning is True
-    assert nemotron.reasoning_param == "super_v3"
+    assert nemotron.deployment.context_served.value == 262144
+    assert nemotron.deployment.reasoning_enabled.value is True
+    assert nemotron.discovered.raw["reasoning_parser"] == "super_v3"
     # enable_auto_tool_choice is true even though no tool_call_parser is set.
-    assert nemotron.native_tool_calling is True
-    assert nemotron.context_source == "live"
+    assert nemotron.deployment.tools_enabled.value is True
+    assert nemotron.deployment.context_served.source == "server_report"
 
     gpt_oss = profiles["openai/gpt-oss-120b"]
-    assert gpt_oss.context_window == 65536
-    assert gpt_oss.native_tool_calling is True
-    assert gpt_oss.tool_call_parser == "openai"
-    assert gpt_oss.is_reasoning is False
+    assert gpt_oss.deployment.context_served.value == 65536
+    assert gpt_oss.deployment.tools_enabled.value is True
+    assert gpt_oss.discovered.raw["tool_call_parser"] == "openai"
+    assert gpt_oss.deployment.reasoning_enabled.value is False
 
-    # A bare row with no config: everything falls back to None/False.
+    # A bare row with no config: everything falls back to unknown/False.
     bare = profiles["argonne/AuroraGPT-IT-v4-0125"]
-    assert bare.context_window is None
-    assert bare.is_reasoning is False
-    assert bare.native_tool_calling is False
+    assert not bare.deployment.context_served.known
+    assert bare.deployment.reasoning_enabled.value is False
+    assert bare.deployment.tools_enabled.value is False
 
 
 # --------------------------------------------------------------------------- #
@@ -404,9 +404,25 @@ async def test_full_handshake_monkeypatched_discovery(
     assert report.auth is AuthState.OK
     nemotron = report.model("nvidia/nemotron-3-super-120b")
     assert nemotron is not None
-    assert nemotron.context_window == 262144
-    assert nemotron.is_reasoning is True
-    assert report.model("openai/gpt-oss-120b").context_window == 65536
+
+    from clio_agent.providers.capabilities import invalidation
+    from clio_agent.providers.capabilities.accessor import get_effective_capabilities
+    from clio_agent.providers.identity import deployment_key
+
+    nemotron_effective = get_effective_capabilities(
+        report.provider_id, report.api_base, nemotron.id
+    )
+    assert nemotron_effective.context.value == 262144
+    nemotron_deployment = invalidation.get_deployment_capabilities(
+        deployment_key(report.provider_id, report.api_base, nemotron.id)
+    )
+    assert nemotron_deployment is not None
+    assert nemotron_deployment.reasoning_enabled.value is True
+
+    gpt_oss = report.model("openai/gpt-oss-120b")
+    assert gpt_oss is not None
+    gpt_oss_effective = get_effective_capabilities(report.provider_id, report.api_base, gpt_oss.id)
+    assert gpt_oss_effective.context.value == 65536
 
 
 # --------------------------------------------------------------------------- #

@@ -23,8 +23,8 @@ from clio_agent.gact.app import build_app
 from clio_agent.providers.handshake.model import (
     AuthState,
     ConnectivityState,
+    DiscoveredModel,
     HandshakeReport,
-    ModelProfile,
 )
 from clio_agent.runtime.status import (
     IntegrationState,
@@ -327,7 +327,7 @@ def test_lm_row_carries_cached_handshake_summary(
         provider_kind="lm_studio",
         connectivity=ConnectivityState.OK,
         auth=AuthState.NOT_REQUIRED,
-        models=(ModelProfile(id="qwen"), ModelProfile(id="granite")),
+        models=(DiscoveredModel(id="qwen"), DiscoveredModel(id="granite")),
     )
     resp = _health(app, monkeypatch, _ready_probe(tmp_path))
     assert resp.status_code == 200
@@ -368,7 +368,7 @@ def test_stale_ready_handshake_does_not_mask_live_down_lm(
         provider_kind="lm_studio",
         connectivity=ConnectivityState.OK,
         auth=AuthState.NOT_REQUIRED,
-        models=(ModelProfile(id="qwen"),),
+        models=(DiscoveredModel(id="qwen"),),
     )
     # ...but the live probe now finds the provider unreachable.
     resp = _health(app, monkeypatch, _ready_probe(tmp_path, http_get=_refused))

@@ -22,6 +22,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from clio_agent.gact import context as gact_context
 from clio_agent.gact.agents.declared_native_tools import (
     declared_native_capabilities,
@@ -31,32 +33,69 @@ from clio_agent.gact.catalog import _builtin_main_agent
 from clio_agent.gact.providers.config import _pdf_capability, _vision_capability
 from clio_agent.gact.resource_delivery import live_model_modalities
 from clio_agent.gact.types import ModelRef
+from clio_agent.providers.capabilities import invalidation
+from clio_agent.providers.capabilities.records import (
+    DeploymentCapabilities,
+    Fact,
+    ModelCapabilities,
+)
 from clio_agent.providers.handshake.model import (
     AuthState,
     ConnectivityState,
+    DiscoveredModel,
     HandshakeReport,
-    ModelProfile,
     resolve_model_id,
 )
 
 _CANONICAL = "claude-sonnet-5"
 _ALIAS = "sonnet"
 _UNRELATED = "sonnet-x"
+_NOW = "2026-09-24T00:00:00+00:00"
+
+
+@pytest.fixture(autouse=True)
+def _clear_capability_store():
+    invalidation.clear_all()
+    yield
+    invalidation.clear_all()
 
 
 def _handshake_report() -> HandshakeReport:
+    """A report + the capability-store facts ``live_model_modalities`` needs.
+
+    ``HandshakeReport`` itself only carries bare identity (:class:`DiscoveredModel`);
+    the modalities a caller resolves through it now come from the accessor, so
+    this seeds the SAME store a real handshake would have written to.
+    """
+    invalidation.record_model_capabilities(
+        ModelCapabilities(
+            model_key=_CANONICAL,
+            input_modalities=Fact(
+                value=frozenset({"image", "pdf", "text"}), source="server_report", observed_at=_NOW
+            ),
+        )
+    )
+    invalidation.record_deployment_capabilities(
+        DeploymentCapabilities(
+            provider_id="claude_code",
+            api_base="",
+            model_id=_CANONICAL,
+            model_key=Fact(value=_CANONICAL, source="server_report", observed_at=_NOW),
+        )
+    )
     return HandshakeReport(
         provider_id="claude_code",
         provider_kind="claude_code",
         connectivity=ConnectivityState.OK,
         auth=AuthState.OK,
+        api_base="",
         models_source="overlay",
         generated_at="2026-09-24T00:00:00+00:00",
         models=(
-            ModelProfile(
+            DiscoveredModel(
                 id=_CANONICAL,
-                capabilities=("image", "pdf", "text"),
-                raw={"cli_values": [_ALIAS]},
+                aliases=(_ALIAS,),
+                raw={"cli_values": [_ALIAS], "capabilities": ["image", "pdf", "text"]},
             ),
         ),
     )
@@ -223,9 +262,7 @@ def test_default_agent_resolves_view_image_and_view_pdf_for_an_alias_bound_model
         agent = _builtin_main_agent()
         assert "view_image" in agent.tools
         assert "view_pdf" in agent.tools
-        requested, available, _gateway = resolve_declared_native_tools(
-            agent, {}, **capabilities
-        )
+        requested, available, _gateway = resolve_declared_native_tools(agent, {}, **capabilities)
         assert "view_image" in requested
         assert "view_image" in available
         assert "view_pdf" in requested

@@ -564,27 +564,43 @@ def _patch_ambient_bind_network(monkeypatch) -> None:
 
 
 def test_provider_model_catalog_returns_handshake_models(tmp_path: Path, monkeypatch) -> None:
-    """The picker renders whatever the unified handshake discovered (to_models_wire)."""
+    """The picker renders whatever the unified handshake discovered (models_wire)."""
+    from clio_agent.providers.capabilities import invalidation
+    from clio_agent.providers.capabilities.records import (
+        DeploymentCapabilities,
+        Fact,
+        ModelCapabilities,
+    )
     from clio_agent.providers.handshake import (
         AuthState,
         ConnectivityState,
+        DiscoveredModel,
         HandshakeReport,
-        ModelProfile,
     )
 
+    invalidation.clear_all()
+    now = "2026-01-01T00:00:00+00:00"
+    invalidation.record_model_capabilities(
+        ModelCapabilities(
+            model_key="qwopus3.5-9b-v3",
+            context_max=Fact(value=262144, source="server_report", observed_at=now),
+        )
+    )
+    invalidation.record_deployment_capabilities(
+        DeploymentCapabilities(
+            provider_id="lm_studio",
+            api_base="",
+            model_id="qwopus3.5-9b-v3",
+            model_key=Fact(value="qwopus3.5-9b-v3", source="server_report", observed_at=now),
+        )
+    )
     report = HandshakeReport(
         provider_id="lm_studio",
         provider_kind="lm_studio",
         connectivity=ConnectivityState.OK,
         auth=AuthState.NOT_REQUIRED,
-        models=(
-            ModelProfile(
-                id="qwopus3.5-9b-v3",
-                context_window=262144,
-                quantization="Q4_K_M",
-                context_source="live",
-            ),
-        ),
+        api_base="",
+        models=(DiscoveredModel(id="qwopus3.5-9b-v3", raw={"quantization": "Q4_K_M"}),),
     )
     _patch_run_handshake(monkeypatch, report)
 
@@ -598,7 +614,9 @@ def test_provider_model_catalog_returns_handshake_models(tmp_path: Path, monkeyp
     assert row["id"] == "qwopus3.5-9b-v3"
     assert row["context_window"] == 262144
     assert row["quantization"] == "Q4_K_M"
-    assert row["context_source"] == "live"
+    # context_source now names which RECORD decided the effective value (brief
+    # 5.5's "decided by"), not a per-profile provenance string.
+    assert row["context_source"] == "model"
 
 
 def test_provider_model_catalog_empty_live_provider_is_live(tmp_path: Path, monkeypatch) -> None:
@@ -1624,6 +1642,7 @@ def test_lm_provider_reports_resolved_model_id_for_a_claude_code_alias(
             default_model="claude-sonnet-5",
         )
     )
+
     class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             self.arc = type(

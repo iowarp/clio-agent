@@ -34,7 +34,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from clio_agent.providers.handshake.model import ModelProfile
+from clio_agent.providers.handshake.model import DiscoveredModel
 from clio_agent.providers.thinking import LEVEL_ORDER, resolve_thinking, shipped_default_level
 
 logger = logging.getLogger(__name__)
@@ -61,8 +61,8 @@ def _ordered(levels: Any) -> tuple[str, ...]:
     return tuple(level for level in LEVEL_ORDER if level in values)
 
 
-def _is_gpt_oss(profile: ModelProfile) -> bool:
-    parser = (profile.reasoning_param or "").lower().replace("-", "_")
+def _is_gpt_oss(profile: DiscoveredModel) -> bool:
+    parser = str(profile.raw.get("reasoning_parser") or "").lower().replace("-", "_")
     return "gpt_oss" in parser or "gptoss" in parser or "gpt-oss" in profile.id.lower()
 
 
@@ -195,7 +195,7 @@ def model_effort_levels(
     return None
 
 
-def _codex(profile: ModelProfile) -> tuple[list[str], str, str, str]:
+def _codex(profile: DiscoveredModel) -> tuple[list[str], str, str, str]:
     reported = profile.raw.get("supported_reasoning_efforts")
     if not isinstance(reported, list):
         return [], "", "codex_sdk_unreported", ""
@@ -208,7 +208,7 @@ def _codex(profile: ModelProfile) -> tuple[list[str], str, str, str]:
     return levels, default, "codex_sdk", reason
 
 
-def _claude_code(profile: ModelProfile) -> tuple[list[str], str, str, str]:
+def _claude_code(profile: DiscoveredModel) -> tuple[list[str], str, str, str]:
     effort = model_effort_levels("claude_code", profile.id, raw=profile.raw)
     shipped = shipped_default_level("claude_code", profile.id, None, 0) or ""
     reason = str(profile.raw.get("effort_evidence_failure") or "")
@@ -219,7 +219,7 @@ def _claude_code(profile: ModelProfile) -> tuple[list[str], str, str, str]:
     return list(_BUDGET_LADDER), shipped, "claude_code_sdk_thinking_budget", reason
 
 
-def _anthropic(profile: ModelProfile) -> tuple[list[str], str, str, str]:
+def _anthropic(profile: DiscoveredModel) -> tuple[list[str], str, str, str]:
     effort = model_effort_levels("anthropic", profile.id)
     if effort:
         return ["off", *effort], "off", "litellm_model_info_effort", ""
@@ -228,21 +228,34 @@ def _anthropic(profile: ModelProfile) -> tuple[list[str], str, str, str]:
     return list(_BUDGET_LADDER), "off", "litellm_model_info", ""
 
 
-def _openai(profile: ModelProfile) -> tuple[list[str], str, str, str]:
+def _openai(profile: DiscoveredModel) -> tuple[list[str], str, str, str]:
     effort = model_effort_levels("openai", profile.id)
     if not effort:
         return [], "", "litellm_model_info", ""
     return list(effort), "medium", "litellm_model_info", ""
 
 
-def _served(profile: ModelProfile) -> tuple[list[str], str, str, str]:
+def _served(profile: DiscoveredModel) -> tuple[list[str], str, str, str]:
     if _is_gpt_oss(profile):
         return list(_EFFORT_LADDER), "medium", "served_model_reasoning_parser", ""
     return [], "", "served_model_reasoning_parser", ""
 
 
-def model_reasoning(provider_kind: str, profile: ModelProfile) -> dict[str, Any]:
+def model_reasoning(
+    provider_kind: str,
+    profile: DiscoveredModel,
+    *,
+    is_reasoning: bool = False,
+    reasoning_param: str = "",
+) -> dict[str, Any]:
     """Return the catalog ``reasoning`` block for one model.
+
+    ``is_reasoning``/``reasoning_param`` are the caller's effective-capabilities
+    decision (model-capabilities brief 5.5: whether the model's thinking
+    mechanism is known at all, and which wire control was chosen to carry it) --
+    this function no longer reads flat profile fields for them (deleted with
+    ``ModelProfile``); everything else here is unchanged, keyed off ``profile.id``/
+    ``profile.raw`` per provider.
 
     Returns:
         ``{"supported", "parameter", "levels", "default", "source"}`` plus a typed
@@ -279,8 +292,8 @@ def model_reasoning(provider_kind: str, profile: ModelProfile) -> dict[str, Any]
     default = default if default in mapped else ""
     shipped = shipped_default_level(provider_kind, profile.id, None, 0) or ""
     block: dict[str, Any] = {
-        "supported": bool(mapped) or profile.is_reasoning,
-        "parameter": profile.reasoning_param or "",
+        "supported": bool(mapped) or is_reasoning,
+        "parameter": reasoning_param or "",
         "levels": mapped,
         "default": default,
         # Who picks the default: CLIO's shipped per-model default (sonnet/haiku

@@ -18,8 +18,16 @@ claude_code models reached the picker and the budgeter with NO context window.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
+from clio_agent.providers.capabilities.link import deployment_model_key_fact
+from clio_agent.providers.capabilities.records import (
+    DeploymentCapabilities,
+    Fact,
+    ModelCapabilities,
+    modalities_from_capabilities,
+)
 from clio_agent.providers.handshake.base import (
     ConnectivityResult,
     HandshakeContext,
@@ -28,9 +36,14 @@ from clio_agent.providers.handshake.base import (
 from clio_agent.providers.handshake.model import (
     AuthState,
     ConnectivityState,
-    ModelProfile,
+    DiscoveredModel,
+    DiscoveredModelFacts,
 )
 from clio_agent.providers.model_discovery.modality_evidence import modality_evidence
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class NoOpHandshake(ProviderHandshake):
@@ -98,22 +111,47 @@ class NoOpHandshake(ProviderHandshake):
 
     async def discover_model_config(
         self, client: Any, ctx: HandshakeContext, raw: dict[str, Any]
-    ) -> ModelProfile:
-        """Wrap a registry row as a :class:`ModelProfile` (no network access).
+    ) -> DiscoveredModelFacts:
+        """Wrap a registry row as :class:`DiscoveredModelFacts` (no network access).
 
-        Context/output limits are left ``None`` here; the base
-        :meth:`ProviderHandshake.enrich_capabilities` step fills them from the
-        source cascade.
+        The registry's ``documented_modalities`` become
+        ``ModelCapabilities.input_modalities`` with ``source="catalog"`` — a
+        compiled-in candidate, never live evidence (this handshake makes zero
+        network calls, matching :meth:`models_provenance`'s ``"static"``).
+        Context/output limits are left unknown here; the base
+        :meth:`~clio_agent.providers.handshake.base.ProviderHandshake.enrich_capabilities`
+        step fills them from the community-catalog cascade.
         """
+        model_id = str(raw.get("id", "")).strip()
         capabilities = raw.get("capabilities")
-        return ModelProfile(
-            id=str(raw.get("id", "")).strip(),
-            capabilities=tuple(
+        caps = (
+            tuple(
                 str(value).strip()
                 for value in capabilities
                 if isinstance(value, str) and value.strip()
             )
             if isinstance(capabilities, list)
-            else (),
-            raw=dict(raw),
+            else ()
         )
+        observed_at = _now_iso()
+        model_key_fact = deployment_model_key_fact(model_id, observed_at=observed_at)
+        model_key = model_key_fact.value or model_id
+        model = ModelCapabilities(
+            model_key=model_key,
+            input_modalities=Fact(
+                value=modalities_from_capabilities(caps),
+                source="catalog",
+                observed_at=observed_at,
+                detail="registry-documented model_catalog capabilities",
+            )
+            if caps
+            else Fact(value=frozenset({"text"}), source="catalog", observed_at=observed_at),
+        )
+        deployment = DeploymentCapabilities(
+            provider_id=ctx.provider_id,
+            api_base=ctx.api_base,
+            model_id=model_id,
+            model_key=model_key_fact,
+        )
+        discovered = DiscoveredModel(id=model_id, raw={**dict(raw), "capabilities": list(caps)})
+        return DiscoveredModelFacts(discovered=discovered, model=model, deployment=deployment)

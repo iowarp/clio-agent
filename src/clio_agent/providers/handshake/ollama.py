@@ -6,23 +6,42 @@ none of this):
 * ``GET /api/tags`` — installed models (``{"models": [{"model", "name", ...}]}``).
 * ``POST /api/show`` ``{"model": id}`` — per-model metadata:
   - ``model_info["general.architecture"]`` (e.g. ``"qwen3"``) and, keyed by that
-    arch, ``model_info["<arch>.context_length"]`` — the **real context window**;
+    arch, ``model_info["<arch>.context_length"]`` — the model's own maximum
+    context (a **model** fact: brief Part 6 Ollama section, ``GET /v1/models``
+    row);
   - ``capabilities`` — a list that includes ``"tools"`` (native function-calling)
-    and ``"thinking"`` (reasoning) when the model supports them.
+    and ``"thinking"`` (reasoning) when the model supports them. This is an
+    exhaustive, self-reported list (brief Part 4: Ollama ``capabilities`` is a
+    **model** fact), so an ABSENT entry is real negative evidence, not "unknown".
 
-So Ollama models resolve **live** with no catalog fallback needed. We inherit the
-keyless connectivity probe from :class:`OpenAICompatHandshake` (Ollama needs no
-API key) and only override discovery + per-model config to hit the native API.
+So Ollama models resolve **live** with no catalog fallback needed for tools/
+thinking. We inherit the keyless connectivity probe from
+:class:`OpenAICompatHandshake` (Ollama needs no API key) and only override
+discovery + per-model config to hit the native API.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from clio_agent.providers.api_base import native_root
+from clio_agent.providers.capabilities.link import deployment_model_key_fact
+from clio_agent.providers.capabilities.records import (
+    DeploymentCapabilities,
+    Fact,
+    ModelCapabilities,
+    ThinkingSpec,
+    modalities_from_capabilities,
+    unknown,
+)
 from clio_agent.providers.handshake.base import HandshakeContext
-from clio_agent.providers.handshake.model import ModelProfile
+from clio_agent.providers.handshake.model import DiscoveredModel, DiscoveredModelFacts
 from clio_agent.providers.handshake.openai_compat import OpenAICompatHandshake
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class OllamaHandshake(OpenAICompatHandshake):
@@ -40,10 +59,11 @@ class OllamaHandshake(OpenAICompatHandshake):
 
     async def discover_model_config(
         self, client: Any, ctx: HandshakeContext, raw: dict[str, Any]
-    ) -> ModelProfile:
+    ) -> DiscoveredModelFacts:
         """Resolve one model's context window + capabilities via ``/api/show``."""
         model_id = str(raw.get("id") or raw.get("model") or "").strip()
         root = native_root(ctx.api_base)
+        observed_at = _now_iso()
 
         context_window: int | None = None
         arch: str | None = None
@@ -69,17 +89,64 @@ class OllamaHandshake(OpenAICompatHandshake):
                     if isinstance(raw_caps, list):
                         caps = tuple(str(c) for c in raw_caps)
         except Exception:  # noqa: BLE001,S110 - /api/show best-effort; falls back to the enrich cascade
-            # /api/show is best-effort: a failure leaves context_window=None and the
-            # base enrich step falls back to the cascade (models.dev/litellm/DB).
+            # /api/show is best-effort: a failure leaves context_max/caps unknown
+            # and the base enrich step falls back to the community-catalog cascade.
             pass
 
-        return ModelProfile(
-            id=model_id,
-            context_window=context_window,
-            is_reasoning="thinking" in caps,
-            native_tool_calling="tools" in caps,
-            arch=arch,
-            capabilities=caps,
-            context_source="live",
-            raw=dict(raw),
+        capabilities_known = bool(caps)
+        model_key_fact = deployment_model_key_fact(model_id, observed_at=observed_at)
+        model_key = model_key_fact.value or model_id
+        model = ModelCapabilities(
+            model_key=model_key,
+            context_max=(
+                Fact(
+                    value=context_window,
+                    source="server_report",
+                    observed_at=observed_at,
+                    detail="ollama /api/show model_info.<arch>.context_length",
+                )
+                if context_window is not None
+                else unknown()
+            ),
+            tools=(
+                Fact(
+                    value="tools" in caps,
+                    source="server_report",
+                    observed_at=observed_at,
+                    detail="ollama /api/show capabilities",
+                )
+                if capabilities_known
+                else unknown()
+            ),
+            input_modalities=(
+                Fact(
+                    value=modalities_from_capabilities(caps),
+                    source="server_report",
+                    observed_at=observed_at,
+                    detail="ollama /api/show capabilities",
+                )
+                if capabilities_known
+                else unknown()
+            ),
+            thinking=(
+                Fact(
+                    value=ThinkingSpec(mechanism="on_off" if "thinking" in caps else "none"),
+                    source="server_report",
+                    observed_at=observed_at,
+                    detail="ollama /api/show capabilities",
+                )
+                if capabilities_known
+                else unknown()
+            ),
         )
+        deployment = DeploymentCapabilities(
+            provider_id=ctx.provider_id,
+            api_base=ctx.api_base,
+            model_id=model_id,
+            model_key=model_key_fact,
+        )
+        discovered = DiscoveredModel(
+            id=model_id,
+            raw={**dict(raw), "arch": arch, "capabilities": list(caps)},
+        )
+        return DiscoveredModelFacts(discovered=discovered, model=model, deployment=deployment)

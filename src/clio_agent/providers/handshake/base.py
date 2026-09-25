@@ -7,9 +7,25 @@ provider-specific phases:
 
     connectivity + auth  ->  discover models  ->  per-model config  ->  enrich capabilities
 
-The enrich step resolves a missing ``context_window`` through the pluggable
-context-source factory (provider metadata first, then models.dev, then the
-marketplace DB) — see :mod:`clio_agent.providers.handshake.sources`.
+Per-model config now returns a :class:`~clio_agent.providers.handshake.model.
+DiscoveredModelFacts` — bare identity plus the
+:class:`~clio_agent.providers.capabilities.records.ModelCapabilities` /
+:class:`~clio_agent.providers.capabilities.records.DeploymentCapabilities`
+facts the adapter evidenced — instead of the deleted flat ``ModelProfile``.
+This class writes both records into the shared store
+(:mod:`clio_agent.providers.capabilities.invalidation`) as each model is
+discovered, and once per run builds and stores the endpoint's own
+:class:`~clio_agent.providers.capabilities.records.EndpointCapabilities` from
+the registry ``Provider``'s dialect (:mod:`clio_agent.providers.capabilities.
+endpoint`). :class:`HandshakeReport` itself keeps only the bare
+:class:`~clio_agent.providers.handshake.model.DiscoveredModel` identity list —
+every capability question routes through
+:func:`clio_agent.providers.capabilities.accessor.get_effective_capabilities`.
+
+The enrich step resolves a missing model ``context_max``/``output_max``
+through the community-catalog tier
+(:mod:`clio_agent.providers.capabilities.model_sources`) — see
+:meth:`ProviderHandshake.enrich_capabilities`.
 """
 
 from __future__ import annotations
@@ -17,15 +33,16 @@ from __future__ import annotations
 import abc
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
 
 from clio_agent.providers.handshake.model import (
     AuthState,
     ConnectivityState,
+    DiscoveredModel,
+    DiscoveredModelFacts,
     HandshakeReport,
-    ModelProfile,
 )
 
 logger = logging.getLogger(__name__)
@@ -151,11 +168,12 @@ class ProviderHandshake(abc.ABC):
                     error=f"model discovery failed: {exc}",
                     started=started,
                 )
-            profiles: list[ModelProfile] = []
+            self._record_endpoint_capabilities(ctx)
+            discovered: list[DiscoveredModel] = []
             for raw in raw_models:
                 try:
-                    profile = await self.discover_model_config(client, ctx, raw)
-                    profile = await self.enrich_capabilities(profile, ctx)
+                    facts = await self.discover_model_config(client, ctx, raw)
+                    facts = await self.enrich_capabilities(facts, ctx)
                 except Exception as exc:
                     # One bad model row must not sink the whole report, but a
                     # dropped row is not silent: emit a structured reason so it
@@ -167,12 +185,13 @@ class ProviderHandshake(abc.ABC):
                         exc,
                     )
                     continue
-                profiles.append(profile)
+                self._record_model_facts(facts)
+                discovered.append(facts.discovered)
             return self._report(
                 ctx,
                 ConnectivityState.OK,
                 conn.auth,
-                models=tuple(profiles),
+                models=tuple(discovered),
                 started=started,
             )
         except Exception as exc:  # final backstop — never raise out of a handshake  # noqa: BLE001 - final backstop surfaced in HandshakeReport.error
@@ -198,43 +217,76 @@ class ProviderHandshake(abc.ABC):
     @abc.abstractmethod
     async def discover_model_config(
         self, client: Any, ctx: HandshakeContext, raw: dict[str, Any]
-    ) -> ModelProfile:
-        """Build a :class:`ModelProfile` from one raw row's self-reported fields."""
+    ) -> DiscoveredModelFacts:
+        """Build a :class:`DiscoveredModelFacts` from one raw row's self-reported fields."""
 
     async def enrich_capabilities(
-        self, profile: ModelProfile, ctx: HandshakeContext
-    ) -> ModelProfile:
-        """Fill a missing ``context_window`` and ``output_limit`` from the factory.
+        self, facts: DiscoveredModelFacts, ctx: HandshakeContext
+    ) -> DiscoveredModelFacts:
+        """Fill a missing model ``context_max``/``output_max`` from the community catalogs.
 
-        If the provider already reported a window keep it; otherwise consult
-        models.dev -> marketplace -> static (when ``allow_external_sources``). The
-        ``output_limit`` (the max output cap) is only tracked by models.dev and is
-        resolved independently, since a provider may report context but not output.
+        If the adapter's own ``server_report`` facts already know a value, it
+        is kept; otherwise consult models.dev -> litellm -> the local DB (brief
+        5.1 step 5) via
+        :func:`clio_agent.providers.capabilities.model_sources.community_catalog_facts`,
+        when ``allow_external_sources`` permits it.
         """
         if not ctx.allow_external_sources:
-            return profile
-        from clio_agent.providers.handshake.sources import (  # noqa: PLC0415
-            resolve_context,
-            resolve_output_limit,
+            return facts
+        from clio_agent.providers.capabilities.model_sources import (  # noqa: PLC0415
+            community_catalog_facts,
         )
 
+        model = facts.model
+        if model.context_max.known and model.output_max.known:
+            return facts
+        catalog = community_catalog_facts(facts.discovered.id)
+        if catalog is None:
+            return facts
         updates: dict[str, Any] = {}
-        if profile.context_window is None:
-            window, source = resolve_context(profile.id, ctx.provider_kind)
-            if window is not None:
-                updates["context_window"] = window
-                updates["context_source"] = source
-        if profile.output_limit is None:
-            output = resolve_output_limit(profile.id, ctx.provider_kind)
-            if output is not None:
-                updates["output_limit"] = output
+        if not model.context_max.known and catalog.context_max.known:
+            updates["context_max"] = catalog.context_max
+        if not model.output_max.known and catalog.output_max.known:
+            updates["output_max"] = catalog.output_max
         if not updates:
-            return profile
-        from dataclasses import replace  # noqa: PLC0415
-
-        return replace(profile, **updates)
+            return facts
+        return replace(facts, model=replace(model, **updates))
 
     # ------------------------------------------------------------------ helpers
+    def _record_model_facts(self, facts: DiscoveredModelFacts) -> None:
+        """Write one discovered model's facts into the shared capability store."""
+        from clio_agent.providers.capabilities import invalidation  # noqa: PLC0415
+
+        invalidation.record_model_capabilities(facts.model)
+        invalidation.record_deployment_capabilities(facts.deployment)
+
+    def _record_endpoint_capabilities(self, ctx: HandshakeContext) -> None:
+        """Build and store this endpoint's :class:`EndpointCapabilities` once per run.
+
+        Uses the registry ``Provider`` row's own ``litellm_prefix`` (LiteLLM's
+        ``custom_llm_provider`` name) rather than ``ctx.provider_kind`` alone,
+        since ``provider_kind`` only selects the wire FORMAT (Part 3) and
+        collapses several real server types (llama.cpp, a bare vLLM server,
+        cloud OpenAI-compatible) onto the same kind.
+        """
+        from clio_agent.providers.capabilities import (
+            endpoint as capability_endpoint,  # noqa: PLC0415
+        )
+        from clio_agent.providers.capabilities import invalidation  # noqa: PLC0415
+
+        litellm_prefix = str(getattr(self.provider, "litellm_prefix", "") or ctx.provider_kind)
+        dialect = capability_endpoint.dialect_for_provider(
+            ctx.provider_kind, litellm_prefix, ctx.provider_id
+        )
+        caps = capability_endpoint.build_endpoint_capabilities(
+            ctx.provider_id,
+            ctx.api_base,
+            dialect,
+            ctx.target_model or "",
+            custom_llm_provider=litellm_prefix,
+        )
+        invalidation.record_endpoint_capabilities(caps)
+
     def models_provenance(self, ctx: HandshakeContext) -> tuple[str, str]:
         """Return ``(models_source, evidence_generated_at)`` for a completed run.
 
@@ -272,7 +324,7 @@ class ProviderHandshake(abc.ABC):
         connectivity: ConnectivityState,
         auth: AuthState,
         *,
-        models: tuple[ModelProfile, ...] = (),
+        models: tuple[DiscoveredModel, ...] = (),
         error: str | None = None,
         started: float | None = None,
     ) -> HandshakeReport:
@@ -287,6 +339,7 @@ class ProviderHandshake(abc.ABC):
             provider_kind=ctx.provider_kind,
             connectivity=connectivity,
             auth=auth,
+            api_base=ctx.api_base,
             latency_ms=latency,
             error=error,
             models=models,

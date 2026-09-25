@@ -370,23 +370,40 @@ def _live_modalities(app: Any, model: ModelRef) -> tuple[set[str], str, str]:
         # handshake evidence.
         and model.provider_id in {report.provider_id, ""}
     ):
-        profile = report.model(model.model_id)
-        if profile is not None:
-            # The evidence's OWN timestamp, not the wall clock of the handshake
-            # run that read it -- a cached catalog must not date itself to now.
-            return (
-                _modalities(profile.capabilities),
-                _EVIDENCE_LABEL_BY_SOURCE[report.models_source],
-                profile.evidence_generated_at
-                or getattr(report, "evidence_generated_at", "")
-                or report.generated_at,
+        discovered = report.model(model.model_id)
+        if discovered is not None:
+            from clio_agent.providers.capabilities.accessor import (  # noqa: PLC0415
+                get_effective_capabilities,
             )
+
+            effective = get_effective_capabilities(
+                report.provider_id, report.api_base, discovered.id
+            )
+            if effective.input_modalities.known:
+                # The evidence's OWN timestamp, not the wall clock of the
+                # handshake run that read it -- a cached catalog must not date
+                # itself to now.
+                return (
+                    set(effective.input_modalities.value or ()),
+                    _EVIDENCE_LABEL_BY_SOURCE[report.models_source],
+                    discovered.evidence_generated_at
+                    or getattr(report, "evidence_generated_at", "")
+                    or report.generated_at,
+                )
     if report is not None and report.ok and report.models_source == "static":
-        profile = report.model(model.model_id)
-        evidence = profile.raw.get("capability_evidence") if profile is not None else None
+        discovered = report.model(model.model_id)
+        evidence = discovered.raw.get("capability_evidence") if discovered is not None else None
         if isinstance(evidence, dict) and evidence.get("reason") == "modality_documented":
+            from clio_agent.providers.capabilities.accessor import (  # noqa: PLC0415
+                get_effective_capabilities,
+            )
+
+            effective = get_effective_capabilities(
+                report.provider_id, report.api_base, discovered.id
+            )
+            modalities = set(effective.input_modalities.value or {"text"})
             return (
-                _modalities(profile.capabilities),
+                modalities,
                 "documented_catalog",
                 report.evidence_generated_at or report.generated_at,
             )

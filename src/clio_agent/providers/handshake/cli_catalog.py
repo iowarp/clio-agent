@@ -51,11 +51,31 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
+from clio_agent.providers.capabilities.link import deployment_model_key_fact
+from clio_agent.providers.capabilities.records import (
+    DeploymentCapabilities,
+    Fact,
+    ModelCapabilities,
+    modalities_from_capabilities,
+    unknown,
+)
 from clio_agent.providers.handshake.base import ConnectivityResult, HandshakeContext
-from clio_agent.providers.handshake.model import AuthState, ConnectivityState, ModelProfile
+from clio_agent.providers.handshake.model import (
+    AuthState,
+    ConnectivityState,
+    DiscoveredModel,
+    DiscoveredModelFacts,
+    raw_aliases,
+)
 from clio_agent.providers.handshake.noop import NoOpHandshake
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
 
 logger = logging.getLogger(__name__)
 
@@ -166,53 +186,98 @@ class CliCatalogHandshake(NoOpHandshake):
 
     async def discover_model_config(
         self, client: Any, ctx: HandshakeContext, raw: dict[str, Any]
-    ) -> ModelProfile:
-        """Build a :class:`ModelProfile`, pre-filled from the overlay when available (D4).
+    ) -> DiscoveredModelFacts:
+        """Build :class:`DiscoveredModelFacts`, pre-filled from the overlay when available (D4).
 
         An overlay-sourced row (flagged by :meth:`discover_models`) already
         carries its context/output limit resolved at refresh time — real values
         OR a confirmed miss (``None``); either way, that information rides onto
-        the profile here so :meth:`enrich_capabilities` can skip the cascade
-        entirely. A static-catalog-sourced row (no overlay yet) falls through to
-        the base :class:`NoOpHandshake` behavior unchanged (context left unset,
-        so the cascade still runs for it — the pre-#1211 behavior, unaffected).
+        the model record here so :meth:`enrich_capabilities` can skip the
+        cascade entirely (it checks the SAME ``_OVERLAY_CHECKED_KEY`` sentinel
+        on the raw row, not whether a fact is known, so a confirmed miss is
+        never mistaken for "not checked yet" and re-attempted). A
+        static-catalog-sourced row (no overlay yet) falls through to the base
+        :class:`NoOpHandshake` behavior unchanged (the cascade still runs for
+        it — the pre-#1211 behavior, unaffected).
         """
         if not raw.get(_OVERLAY_CHECKED_KEY):
             return await super().discover_model_config(client, ctx, raw)
+        model_id = str(raw.get("id", "")).strip()
         context_window = raw.get("context_window")
         output_limit = raw.get("output_limit")
-        return ModelProfile(
-            id=str(raw.get("id", "")).strip(),
-            context_window=context_window
-            if isinstance(context_window, int) and context_window > 0
-            else None,
-            output_limit=output_limit
-            if isinstance(output_limit, int) and output_limit > 0
-            else None,
-            capabilities=_overlay_capabilities(raw),
-            context_source=str(raw.get("context_source") or "overlay"),
+        # The evidence's OWN timestamp (when the discovery run that produced
+        # this overlay row happened), never the wall clock of this passive read.
+        observed_at = str(ctx.extra.get(_OVERLAY_GENERATED_AT_KEY) or "") or _now_iso()
+        caps = _overlay_capabilities(raw)
+        detail = "persisted refresh-overlay evidence (clio_agent.providers.model_discovery.overlay)"
+        model_key_fact = deployment_model_key_fact(model_id, observed_at=observed_at)
+        model_key = model_key_fact.value or model_id
+        model = ModelCapabilities(
+            model_key=model_key,
+            context_max=(
+                Fact(
+                    value=context_window,
+                    source="server_report",
+                    observed_at=observed_at,
+                    detail=detail,
+                )
+                if isinstance(context_window, int) and context_window > 0
+                else unknown()
+            ),
+            output_max=(
+                Fact(
+                    value=output_limit,
+                    source="server_report",
+                    observed_at=observed_at,
+                    detail=detail,
+                )
+                if isinstance(output_limit, int) and output_limit > 0
+                else unknown()
+            ),
+            input_modalities=(
+                Fact(
+                    value=modalities_from_capabilities(caps),
+                    source="server_report",
+                    observed_at=observed_at,
+                    detail=detail,
+                )
+                if caps
+                else unknown()
+            ),
+        )
+        deployment = DeploymentCapabilities(
+            provider_id=ctx.provider_id,
+            api_base=ctx.api_base,
+            model_id=model_id,
+            model_key=model_key_fact,
+        )
+        discovered = DiscoveredModel(
+            id=model_id,
+            aliases=raw_aliases(raw),
             evidence_generated_at=str(ctx.extra.get(_OVERLAY_GENERATED_AT_KEY) or ""),
             raw=dict(raw),
         )
+        return DiscoveredModelFacts(discovered=discovered, model=model, deployment=deployment)
 
     async def enrich_capabilities(
-        self, profile: ModelProfile, ctx: HandshakeContext
-    ) -> ModelProfile:
-        """Skip the context-source cascade entirely for an overlay-checked profile (D4).
+        self, facts: DiscoveredModelFacts, ctx: HandshakeContext
+    ) -> DiscoveredModelFacts:
+        """Skip the community-catalog cascade entirely for an overlay-checked row (D4).
 
-        The base :meth:`ProviderHandshake.enrich_capabilities` re-runs
-        ``resolve_context``/``resolve_output_limit`` whenever ``context_window``/
-        ``output_limit`` is ``None`` — which is indistinguishable from "never
-        checked" unless the caller marks it. An overlay-sourced profile WAS
-        checked (at refresh time, by ``attach_context_limits``); a ``None`` here
-        means a CONFIRMED miss, not an unresolved value, so re-running the
-        cascade on every ambient handshake call would just repeat the same
-        (possibly network-touching) miss forever. Returns the profile unchanged
-        for those; delegates to the base cascade for everything else.
+        The base
+        :meth:`~clio_agent.providers.handshake.base.ProviderHandshake.enrich_capabilities`
+        re-runs the cascade whenever ``context_max``/``output_max`` is unknown
+        -- which is indistinguishable from "never checked" unless the caller
+        marks it. An overlay-sourced row WAS checked (at refresh time, by
+        ``attach_context_limits``); an unknown fact here means a CONFIRMED
+        miss, not an unresolved value, so re-running the cascade on every
+        ambient handshake call would just repeat the same (possibly
+        network-touching) miss forever. Returns ``facts`` unchanged for those;
+        delegates to the base cascade for everything else.
         """
-        if profile.raw.get(_OVERLAY_CHECKED_KEY):
-            return profile
-        return await super().enrich_capabilities(profile, ctx)
+        if facts.discovered.raw.get(_OVERLAY_CHECKED_KEY):
+            return facts
+        return await super().enrich_capabilities(facts, ctx)
 
 
 class CodexCatalogHandshake(CliCatalogHandshake):

@@ -15,9 +15,12 @@ from typing import Any
 
 from clio_agent.gact.types import LMProviderPreset
 from clio_agent.providers import model_discovery
+from clio_agent.providers.capabilities import invalidation
+from clio_agent.providers.capabilities.accessor import get_effective_capabilities
 from clio_agent.providers.catalog import get_provider
 from clio_agent.providers.handshake import HandshakeContext, HandshakeReport, run_handshake
-from clio_agent.providers.handshake.model import ModelProfile
+from clio_agent.providers.handshake.model import DiscoveredModel
+from clio_agent.providers.identity import deployment_key
 from clio_agent.providers.reasoning_levels import model_reasoning
 
 
@@ -86,35 +89,39 @@ EVIDENCED_CATALOG_SOURCES: frozenset[str] = frozenset({"live", "overlay"})
 _CLI_CATALOG_KINDS: frozenset[str] = frozenset({"codex", "claude_code"})
 
 
-def _modalities(profile: ModelProfile) -> list[str]:
-    """Normalize only modalities reported by the live provider handshake."""
-
-    normalized: set[str] = {"text"}
-    for capability in profile.capabilities:
-        value = capability.strip().lower().replace("-", "_")
-        if value in {"vision", "image", "images", "image_input"}:
-            normalized.add("image")
-        elif value in {"pdf", "document", "documents", "pdf_input"}:
-            normalized.add("pdf")
-        elif value in {"audio", "audio_input"}:
-            normalized.add("audio")
-        elif value in {"video", "video_input"}:
-            normalized.add("video")
-    return sorted(normalized)
-
-
 def model_catalog_row(
     preset: LMProviderPreset,
     report: HandshakeReport,
-    profile: ModelProfile,
+    profile: DiscoveredModel,
 ) -> dict[str, Any]:
-    """Return one normalized model row with explicit discovery evidence."""
+    """Return one normalized model row with explicit discovery evidence.
+
+    Every capability field (``modalities``, ``native_tool_calling``,
+    ``context_window``, ``output_limit``, the ``reasoning`` block) is read from
+    the effective capabilities (model-capabilities brief 5.5) for
+    ``(provider_id, api_base, model_id)`` -- never a flat per-provider profile
+    field. ``capabilities_provenance`` adds the source/observed_at/decided_by
+    each effective value carries, for the P7 UI (show provenance, don't tell
+    it) -- the wire contract's existing keys are otherwise unchanged.
+    """
 
     evidenced = report.models_source in EVIDENCED_CATALOG_SOURCES and report.ok
     capability_evidence = profile.raw.get("capability_evidence") or {}
     modality_evidenced = (
         isinstance(capability_evidence, dict)
         and capability_evidence.get("reason") == "modality_documented"
+    )
+    effective = get_effective_capabilities(report.provider_id, report.api_base, profile.id)
+    deployment = invalidation.get_deployment_capabilities(
+        deployment_key(report.provider_id, report.api_base, profile.id)
+    )
+    loaded_context_window = (
+        deployment.context_served.value if deployment and deployment.context_served.known else None
+    )
+    modalities = (
+        sorted(effective.input_modalities.value or ())
+        if (evidenced or modality_evidenced) and effective.input_modalities.known
+        else ["text"]
     )
     return {
         "provider_id": preset.id,
@@ -127,14 +134,19 @@ def model_catalog_row(
         # the same resolution the provider itself uses (claude_code_effort.py),
         # never a hand-typed table. Empty for providers with no alias concept.
         "aliases": [str(a) for a in profile.raw.get("cli_values") or [] if str(a).strip()],
-        "modalities": _modalities(profile) if evidenced or modality_evidenced else ["text"],
+        "modalities": modalities,
         # The levels a person can actually choose for THIS model, derived from
         # provider truth and restricted to what resolve_thinking maps.
-        "reasoning": model_reasoning(preset.provider, profile),
-        "native_tool_calling": profile.native_tool_calling,
-        "context_window": profile.context_window,
-        "loaded_context_window": profile.loaded_context_window,
-        "output_limit": profile.output_limit,
+        "reasoning": model_reasoning(
+            preset.provider,
+            profile,
+            is_reasoning=effective.thinking.known,
+            reasoning_param=effective.thinking.control or "",
+        ),
+        "native_tool_calling": bool(effective.tools.value),
+        "context_window": effective.context.value,
+        "loaded_context_window": loaded_context_window,
+        "output_limit": effective.output_max.value,
         "availability": "available" if evidenced else "candidate",
         "evidence": {
             "source": report.models_source,
@@ -150,10 +162,28 @@ def model_catalog_row(
             "modality_evidenced": evidenced or modality_evidenced,
             # ``live`` now means what it says: this run probed the provider.
             "live": report.models_source == "live" and report.ok,
-            "context_source": profile.context_source,
+            "context_source": effective.context.decided_by,
             "capability_evidence": capability_evidence,
         },
+        "capabilities_provenance": {
+            "context_window": _provenance_row(effective.context),
+            "output_limit": _provenance_row(effective.output_max),
+            "native_tool_calling": _provenance_row(effective.tools),
+            "modalities": _provenance_row(effective.input_modalities),
+            "reasoning": _provenance_row(effective.thinking),
+        },
         "failure": report.error or "",
+    }
+
+
+def _provenance_row(decision: Any) -> dict[str, Any]:
+    """One effective value's provenance, for the P7 UI (source/observed_at/decided_by)."""
+
+    return {
+        "source": getattr(decision, "source", "") or "",
+        "observed_at": getattr(decision, "observed_at", "") or "",
+        "decided_by": getattr(decision, "decided_by", "unknown"),
+        "reason": getattr(decision, "reason", ""),
     }
 
 
@@ -190,12 +220,14 @@ async def _with_last_good(
     if report.models:
         await asyncio.to_thread(model_discovery.persist_live_catalog, preset.id, report)
         return report, {}
-    last_good = await asyncio.to_thread(model_discovery.last_good_catalog, preset.id)
+    last_good = await asyncio.to_thread(
+        model_discovery.last_good_catalog, preset.id, api_base=preset.api_base
+    )
     if last_good is None:
         return report, {}
     served = replace(
         report,
-        models=last_good.profiles,
+        models=last_good.models,
         models_source=model_discovery.LAST_GOOD_CATALOG_SOURCE,
         evidence_generated_at=last_good.generated_at,
     )

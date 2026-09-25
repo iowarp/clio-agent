@@ -13,14 +13,32 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from clio_agent.gact.resource_delivery import live_model_modalities
 from clio_agent.gact.types import ModelRef
+from clio_agent.providers.capabilities import invalidation
+from clio_agent.providers.capabilities.records import (
+    DeploymentCapabilities,
+    Fact,
+    ModelCapabilities,
+)
 from clio_agent.providers.handshake.model import (
     AuthState,
     ConnectivityState,
+    DiscoveredModel,
     HandshakeReport,
-    ModelProfile,
 )
+
+_BEDROCK_MODEL = "anthropic.claude-3-5-sonnet-20240620-v1:0"
+_NOW = "2026-09-24T00:00:00+00:00"
+
+
+@pytest.fixture(autouse=True)
+def _clear_capability_store():
+    invalidation.clear_all()
+    yield
+    invalidation.clear_all()
 
 
 def _app(*, report: HandshakeReport | None, catalog: Any = None) -> Any:
@@ -32,19 +50,31 @@ def _app(*, report: HandshakeReport | None, catalog: Any = None) -> Any:
 def _bedrock_report() -> HandshakeReport:
     """A live handshake for Bedrock -- provider_kind "openai", id "bedrock"."""
 
+    invalidation.record_model_capabilities(
+        ModelCapabilities(
+            model_key=_BEDROCK_MODEL,
+            input_modalities=Fact(
+                value=frozenset({"image", "text"}), source="server_report", observed_at=_NOW
+            ),
+        )
+    )
+    invalidation.record_deployment_capabilities(
+        DeploymentCapabilities(
+            provider_id="bedrock",
+            api_base="",
+            model_id=_BEDROCK_MODEL,
+            model_key=Fact(value=_BEDROCK_MODEL, source="server_report", observed_at=_NOW),
+        )
+    )
     return HandshakeReport(
         provider_id="bedrock",
         provider_kind="openai",
         connectivity=ConnectivityState.OK,
         auth=AuthState.NOT_REQUIRED,
+        api_base="",
         models_source="live",
         generated_at="2026-09-24T00:00:00+00:00",
-        models=(
-            ModelProfile(
-                id="anthropic.claude-3-5-sonnet-20240620-v1:0",
-                capabilities=("vision",),
-            ),
-        ),
+        models=(DiscoveredModel(id=_BEDROCK_MODEL),),
     )
 
 

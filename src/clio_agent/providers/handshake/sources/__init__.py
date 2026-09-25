@@ -17,9 +17,10 @@ returns the first hit with an exact provenance string:
    models no public catalog lists yet are still known offline next time.
 
 On a total miss the factory returns ``(None, "")`` and the caller keeps the
-profile's limit unset. Provenance strings are exactly ``models.dev`` | ``litellm``
-| ``db`` and feed :attr:`ModelProfile.context_source`. Nothing here fetches at
-import time.
+model's limit unset. Provenance strings are exactly ``models.dev`` | ``litellm``
+| ``db`` and feed the ``Fact.source`` on a
+:class:`~clio_agent.providers.capabilities.records.ModelCapabilities`. Nothing
+here fetches at import time.
 """
 
 from __future__ import annotations
