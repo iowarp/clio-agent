@@ -234,7 +234,13 @@ class DeploymentCapabilities:
     modalities_enabled: Fact[frozenset[str]] = field(default_factory=_unknown_field)
     tools_enabled: Fact[bool] = field(default_factory=_unknown_field)
     reasoning_enabled: Fact[bool] = field(default_factory=_unknown_field)
-    template_caps: Fact[dict[str, bool]] = field(default_factory=_unknown_field)
+    #: A dialect's own verbatim capability blob, VERBATIM -- llama.cpp's
+    #: ``chat_template_caps`` (all-bool), LM Studio's ``reasoning.allowed_options``
+    #: (a list of accepted effort-level strings under a synthetic key), etc.
+    #: ``Any`` values because this bag is intentionally dialect-shaped, not one
+    #: fixed schema; a reader (:mod:`clio_agent.providers.capabilities.combine`,
+    #: the Part 7 request builder) knows what its OWN dialect put here.
+    template_caps: Fact[dict[str, Any]] = field(default_factory=_unknown_field)
     default_template_kwargs: Fact[dict[str, Any]] = field(default_factory=_unknown_field)
     #: Extra per-route narrowing (e.g. OpenRouter ``supported_parameters``).
     route_params: Fact[frozenset[str]] = field(default_factory=_unknown_field)
