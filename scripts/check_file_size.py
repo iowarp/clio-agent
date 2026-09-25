@@ -659,7 +659,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # Ratchet down 1172 -> 1163 (S1, direct Codex provider): the simplified
     # _codex_readiness dropped the "openai_codex" importlib probe -- the
     # Codex credential store is a plain, always-importable class.
-    "src/clio_agent/gact/routes/providers.py": 1163,
+    "src/clio_agent/gact/routes/providers.py": 1142,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (merged to develop with the size check red, baseline 1478 -> actual); ratchet
     # back below the pre-#947 count with the mcp_app_* owner-module split (see the

@@ -138,11 +138,14 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         """Return status, message, verified flag, and live default for Codex."""
 
         from clio_agent.providers.codex.credentials import CodexCredentialStore  # noqa: PLC0415
+        from clio_agent.providers.codex.errors import (  # noqa: PLC0415
+            CODEX_AUTHENTICATION_ERROR_MESSAGE,
+        )
 
         if not CodexCredentialStore().is_signed_in():
             return (
                 "auth_required",
-                "Codex sign-in is required on the connected agent",
+                CODEX_AUTHENTICATION_ERROR_MESSAGE,
                 False,
                 "",
             )
@@ -228,7 +231,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
 
                 authed = (
                     argonne_auth.tokens_exist()
-                    and importlib.util.find_spec("globus_sdk") is not None
+                    and argonne_auth.sdk_available()
                     and argonne_auth.check_auth_status()
                 )
             except Exception:  # noqa: BLE001 - auth probe failure treated as not-authed
@@ -313,39 +316,15 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
     def _preset_with_status(preset: LMProviderPreset) -> LMProviderPreset:
         update: dict[str, Any] = {}
         if preset.provider == "argonne":
-            env_token = (
-                os.environ.get("CLIO_ARGONNE_TOKEN", "").strip()
-                or os.environ.get("ALCF_INFERENCE_TOKEN", "").strip()
-            )
-            if env_token:
-                update["status"] = "ready"
-                update["status_message"] = "ALCF token present in environment"
-                update["is_authenticated"] = True
-                return preset.model_copy(update=update)
             try:
                 from clio_agent.providers import argonne_auth  # noqa: PLC0415
+
+                status, message, authed = argonne_auth.readiness()
             except Exception as exc:  # noqa: BLE001 - argonne unavailability surfaced in status/status_message
-                update["status"] = "unavailable"
-                update["status_message"] = f"argonne auth unavailable: {exc}"
-                update["is_authenticated"] = False
-                return preset.model_copy(update=update)
-            if not argonne_auth.tokens_exist():
-                update["status"] = "auth_required"
-                update["status_message"] = (
-                    "no Globus token stored; authenticate ALCF before connecting"
-                )
-                update["is_authenticated"] = False
-                return preset.model_copy(update=update)
-            if argonne_auth.check_auth_status():
-                update["status"] = "ready"
-                update["status_message"] = "Globus token validated"
-                update["is_authenticated"] = True
-                return preset.model_copy(update=update)
-            update["status"] = "auth_required"
-            update["status_message"] = (
-                "stored Globus token could not be refreshed; authenticate ALCF"
-            )
-            update["is_authenticated"] = False
+                status, message, authed = "unavailable", f"argonne auth unavailable: {exc}", False
+            update["status"] = status
+            update["status_message"] = message
+            update["is_authenticated"] = authed
             return preset.model_copy(update=update)
         if preset.requires_api_key:
             env_key = _preset_api_key_env(preset)

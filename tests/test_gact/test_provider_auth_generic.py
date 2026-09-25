@@ -83,7 +83,7 @@ class TestArgonne:
         monkeypatch.setattr(
             argonne_auth,
             "begin_authentication",
-            lambda: argonne_auth.PendingAuthentication(
+            lambda **_kwargs: argonne_auth.PendingAuthentication(
                 flow_id="flow_1", authorization_url="https://globus/auth"
             ),
         )
@@ -93,6 +93,33 @@ class TestArgonne:
         )
         assert result["flow_id"] == "flow_1"
         assert result["browser"] == {"authorization_url": "https://globus/auth", "loopback": False}
+
+    async def test_start_with_force_requests_a_fresh_globus_login(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicit (re)click always forces `prompt=login` -- the ONE action
+        for `argonne_reauthentication_required` ("Sign in again") never
+        silently re-uses a browser session that produced a rejected
+        credential."""
+        from clio_agent.providers import argonne_auth
+
+        monkeypatch.setattr(
+            "clio_agent.gact.routes.provider_auth.ensure_argonne_support", lambda: False
+        )
+        calls: list[dict[str, Any]] = []
+        monkeypatch.setattr(
+            argonne_auth,
+            "begin_authentication",
+            lambda **kwargs: calls.append(kwargs)
+            or argonne_auth.PendingAuthentication(
+                flow_id="flow_1", authorization_url="https://globus/auth"
+            ),
+        )
+        preset = _preset(provider="argonne")
+        await handle_auth_action(
+            preset=preset, action="start", body={"force": True}, app=_FakeApp(), presets=[preset]
+        )
+        assert calls == [{"force_login": True}]
 
     async def test_complete_calls_complete_authentication(
         self, monkeypatch: pytest.MonkeyPatch
@@ -141,15 +168,44 @@ class TestArgonne:
         )
         assert done["state"] == "complete"
 
-    async def test_logout_is_405_unsupported(self) -> None:
+    async def test_logout_revokes_and_reports_signed_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The owner's live-tested defect: ALCF sign-out used to 405. It now
+        revokes through the SDK's own sign-out primitive and reports
+        `is_authenticated: False`."""
+        from clio_agent.providers import argonne_auth
+
+        calls: list[None] = []
+        monkeypatch.setattr(argonne_auth, "sign_out", lambda: calls.append(None))
+        preset = _preset(provider="argonne")
+
+        result = await handle_auth_action(
+            preset=preset, action="logout", body={}, app=_FakeApp(), presets=[preset]
+        )
+
+        assert result["is_authenticated"] is False
+        assert calls == [None]
+
+    async def test_logout_failure_is_a_typed_502_not_a_crash(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from fastapi import HTTPException
 
+        from clio_agent.providers import argonne_auth
+
+        def _fail() -> None:
+            raise RuntimeError("globus unreachable")
+
+        monkeypatch.setattr(argonne_auth, "sign_out", _fail)
         preset = _preset(provider="argonne")
+
         with pytest.raises(HTTPException) as exc_info:
             await handle_auth_action(
                 preset=preset, action="logout", body={}, app=_FakeApp(), presets=[preset]
             )
-        assert exc_info.value.status_code == 405
+        assert exc_info.value.status_code == 502
+        assert exc_info.value.detail["error"]["error"] == "argonne_logout_failed"
 
 
 class TestCodex:

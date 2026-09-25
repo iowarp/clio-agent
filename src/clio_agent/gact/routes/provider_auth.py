@@ -33,7 +33,7 @@ StartHandler = Callable[
 ]
 CompleteHandler = StartHandler
 StatusHandler = Callable[[LMProviderPreset, str, Any, list[LMProviderPreset]], dict[str, Any]]
-LogoutHandler = Callable[[LMProviderPreset, Any, list[LMProviderPreset]], dict[str, Any]]
+LogoutHandler = Callable[[LMProviderPreset, Any, list[LMProviderPreset]], Awaitable[dict[str, Any]]]
 
 
 def _error(
@@ -53,9 +53,17 @@ def _error(
 async def _argonne_start(
     preset: LMProviderPreset, body: dict[str, Any], app: Any, presets: list[LMProviderPreset]
 ) -> dict[str, Any]:
-    del body, presets
+    del presets
     from clio_agent.providers import argonne_auth  # noqa: PLC0415
 
+    # `force` is the wire signal for "the user explicitly clicked
+    # Sign in / Sign in again" (never set implicitly). ALCF has no
+    # pending-flow reuse to protect (unlike Codex's single-active-flow
+    # registry): every explicit click here forces Globus's own
+    # `prompt=login`, so "Sign in again" for `argonne_reauthentication_required`
+    # never silently re-uses a browser session that produced the rejected
+    # credential in the first place.
+    force = bool(body.get("force"))
     try:
         installed_support = await asyncio.to_thread(ensure_argonne_support)
     except ProviderDependencyInstallError as exc:
@@ -65,7 +73,7 @@ async def _argonne_start(
             message=f"CLIO could not install ALCF sign-in support on the connected agent: {exc}",
         ) from exc
     try:
-        pending = await asyncio.to_thread(argonne_auth.begin_authentication)
+        pending = await asyncio.to_thread(argonne_auth.begin_authentication, force_login=force)
     except Exception as exc:  # noqa: BLE001 - surfaced as a typed 502
         raise _error(
             502,
@@ -122,16 +130,26 @@ def _argonne_status(
     return {"state": "pending" if pending else "complete", "reason": ""}
 
 
-def _argonne_logout(
+async def _argonne_logout(
     preset: LMProviderPreset, app: Any, presets: list[LMProviderPreset]
 ) -> dict[str, Any]:
-    del preset, app, presets
-    raise _error(
-        405,
-        error="unsupported",
-        message="ALCF sign-out is not supported yet; revoke CLIO's access at globus.org.",
-        recoverable=False,
-    )
+    del preset
+    from clio_agent.providers import argonne_auth  # noqa: PLC0415
+
+    try:
+        await asyncio.to_thread(argonne_auth.sign_out)
+    except Exception as exc:  # noqa: BLE001 - surfaced as a typed 502
+        raise _error(
+            502,
+            error="argonne_logout_failed",
+            message=f"Could not fully sign out of ALCF: {exc}",
+        ) from exc
+    # The Globus tokens are shared by every ALCF cluster, so every argonne
+    # provider's cached catalog/handshake evidence was produced under the
+    # now-revoked credential; the next catalog read re-probes them.
+    for argonne_preset in (p for p in presets if p.provider == "argonne"):
+        invalidate_provider(app, argonne_preset.id)
+    return {"is_authenticated": False, "instructions": "Signed out of ALCF."}
 
 
 # -- codex (direct Codex backend) ------------------------------------------
@@ -215,7 +233,7 @@ def _codex_status(
     return {"state": state, "reason": reason}
 
 
-def _codex_logout(
+async def _codex_logout(
     preset: LMProviderPreset, app: Any, presets: list[LMProviderPreset]
 ) -> dict[str, Any]:
     del preset
@@ -282,7 +300,7 @@ async def handle_auth_action(
             raise _error(
                 405, error="unsupported", message=f"provider '{preset.id}' has no stored sign-in."
             )
-        return {"provider_id": preset.id, **logout_handler(preset, app, presets)}
+        return {"provider_id": preset.id, **await logout_handler(preset, app, presets)}
     raise _error(
         400,
         error="invalid_action",

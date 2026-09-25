@@ -15,8 +15,37 @@ from clio_agent.gact.routes.provider_auth import handle_auth_action
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, LMProviderPreset
 from clio_agent.providers.dependencies import (
     ProviderDependencyInstallError,
-    ensure_claude_code_support,
+    ProviderExtraNotInstallableError,
+    ensure_provider_support,
 )
+
+
+def _install_failure_copy(provider_kind: str) -> tuple[str, str]:
+    """Provider kind -> (typed error code, user-facing failure message).
+
+    The install MECHANISM (:func:`ensure_provider_support`) is fully generic;
+    only the copy shown on failure is provider-specific, and lives here next
+    to the route that renders it.
+    """
+    from clio_agent.providers.argonne_auth import ARGONNE_INSTALL_FAILED_MESSAGE  # noqa: PLC0415
+    from clio_agent.providers.claude_code_errors import (  # noqa: PLC0415
+        CLAUDE_CODE_INSTALL_FAILED_MESSAGE,
+    )
+
+    copy = {
+        "argonne": ("argonne_install_failed", ARGONNE_INSTALL_FAILED_MESSAGE),
+        "claude_code": ("claude_code_install_failed", CLAUDE_CODE_INSTALL_FAILED_MESSAGE),
+    }
+    return copy.get(
+        provider_kind,
+        ("provider_install_failed", f"CLIO could not install support for '{provider_kind}'."),
+    )
+
+
+_INSTALL_SUCCESS_INSTRUCTIONS: dict[str, str] = {
+    "argonne": "ALCF sign-in support is installed. Check the provider to verify sign-in.",
+    "claude_code": "Claude Code support is installed. Check the provider to verify sign-in.",
+}
 
 Readiness = Callable[..., tuple[str, str, bool, str]]
 
@@ -165,39 +194,44 @@ def register_provider_catalog_routes(
 
     @app.post("/v1/providers/{provider_id}/install")
     async def install_provider_support(provider_id: str) -> dict[str, Any]:
-        """Install optional runtime support for a provider on the connected agent."""
+        """Install the optional runtime support a provider's own extra declares.
+
+        Dispatched by provider KIND through :func:`ensure_provider_support` --
+        one generic registry, never a per-provider branch here. The package
+        spec it installs always comes from CLIO's own declared extras
+        (never this request), runs with the active backend interpreter, and
+        re-checking the provider afterward is the caller's job (the picker
+        and Settings both re-run their check on a successful install).
+        """
 
         preset = next((p for p in _LM_PRESETS if p.id == provider_id), None)
         if preset is None:
             raise HTTPException(status_code=404, detail=f"unknown provider: {provider_id}")
-        if preset.provider != "claude_code":
+
+        try:
+            installed = await asyncio.to_thread(ensure_provider_support, preset.provider)
+        except ProviderExtraNotInstallableError as exc:
             raise HTTPException(
                 status_code=405,
                 detail=f"provider '{provider_id}' has no installable runtime support",
-            )
-        from clio_agent.providers.claude_code_errors import (  # noqa: PLC0415
-            CLAUDE_CODE_INSTALL_FAILED_MESSAGE,
-        )
-
-        try:
-            installed = await asyncio.to_thread(ensure_claude_code_support)
+            ) from exc
         except ProviderDependencyInstallError as exc:
+            error, message = _install_failure_copy(preset.provider)
             raise HTTPException(
                 status_code=503,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="claude_code_install_failed",
-                        message=CLAUDE_CODE_INSTALL_FAILED_MESSAGE,
+                        error=error,
+                        message=message,
                         details={"diagnostic": str(exc)},
                         recoverable=True,
                     )
                 ).model_dump(exclude_none=True),
             ) from exc
-        return {
-            "provider_id": preset.id,
-            "installed": installed,
-            "instructions": "Claude Code support is installed. Check the provider to verify sign-in.",
-        }
+        instructions = _INSTALL_SUCCESS_INSTRUCTIONS.get(
+            preset.provider, "Support is installed. Check the provider to verify sign-in."
+        )
+        return {"provider_id": preset.id, "installed": installed, "instructions": instructions}
 
     @app.get("/v1/providers/{provider_id}/handshake")
     async def provider_handshake(
