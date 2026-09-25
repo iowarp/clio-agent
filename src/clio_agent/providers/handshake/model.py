@@ -170,6 +170,14 @@ class HandshakeReport:
     #: the discovery run persisted, so a cached catalog cannot present itself as
     #: freshly generated.
     evidence_generated_at: str = ""
+    #: A typed machine-readable code for ``error``, when the failure is a KNOWN
+    #: condition a caller needs to branch on (e.g. a missing optional
+    #: dependency) rather than sniff out of the human-readable message. Empty
+    #: for an ordinary connectivity/auth/discovery failure with no such code.
+    #: This is a typed reason surfaced by the handshake that produced it
+    #: (``argonne_sdk_missing``, ...) -- never inferred by keyword-matching
+    #: ``error`` after the fact.
+    error_code: str = ""
 
     @property
     def ok(self) -> bool:

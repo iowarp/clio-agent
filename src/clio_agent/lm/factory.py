@@ -21,6 +21,9 @@ if TYPE_CHECKING:  # pragma: no cover
 from clio_agent.lm.adapters import _reasoning_model_capability
 from clio_agent.lm.io_logging import _io_logging_lm_cls
 from clio_agent.providers.codex.constants import LITELLM_PROVIDER as _CODEX_LITELLM_PREFIX
+from clio_agent.providers.codex.constants import (
+    LITELLM_PROVIDER_SDK as _CODEX_LITELLM_PREFIX_SDK,
+)
 
 _dspy_cache = None
 logger = logging.getLogger(__name__)
@@ -152,7 +155,14 @@ def _ensure_provider_registered(config: LMProviderConfig) -> None:
     binary do not pay the import cost.
     """
     if config.provider == "codex":
-        from clio_agent.providers.codex.litellm_adapter import ensure_registered  # noqa: PLC0415
+        if config.codex_variant == "sdk":
+            from clio_agent.providers.codex.sdk_transport import (  # noqa: PLC0415
+                ensure_registered,
+            )
+        else:
+            from clio_agent.providers.codex.litellm_adapter import (  # noqa: PLC0415
+                ensure_registered,
+            )
 
         ensure_registered()
     elif config.provider == "claude_code":
@@ -227,13 +237,18 @@ def _resolve_model_name(config: LMProviderConfig) -> str:
     if config.provider == "codex":
         # Strip a legacy/already-litellm-prefixed value defensively (a
         # persisted config.model could in principle already carry either
-        # prefix) before re-applying the CURRENT litellm-facing prefix.
+        # transport's prefix) before re-applying the CURRENT litellm-facing
+        # prefix for the BOUND transport (S1b: sdk vs direct).
         bare = (
             config.model.removeprefix(f"{_CODEX_LITELLM_PREFIX}/")
+            .removeprefix(f"{_CODEX_LITELLM_PREFIX_SDK}/")
             .removeprefix("codex/")
             .removeprefix("cg-")
         )
-        return f"{_CODEX_LITELLM_PREFIX}/cg-{bare}"
+        prefix = (
+            _CODEX_LITELLM_PREFIX_SDK if config.codex_variant == "sdk" else _CODEX_LITELLM_PREFIX
+        )
+        return f"{prefix}/cg-{bare}"
     if config.provider == "claude_code":
         bare = config.model.removeprefix("claude_code/").removeprefix("cc-")
         return f"claude_code/cc-{bare}"
@@ -460,13 +475,17 @@ _CHECKED_PARAM_NAMES: tuple[str, ...] = (
 )
 
 #: LiteLLM ``CustomLLM`` transports clio owns end-to-end
-#: (`providers.codex.litellm_adapter`, `providers.claude_code_litellm`).
-#: LiteLLM's provider registry does not know these as dialects --
-#: `get_llm_provider`/`get_supported_openai_params` raise or return nonsense
-#: for them -- and their own `completion()` reads a small, fixed set of
-#: `optional_params` keys directly, ignoring everything else. The drop_params
-#: proactive check below does not apply to them.
-_CUSTOM_TRANSPORT_PREFIXES: tuple[str, ...] = (f"{_CODEX_LITELLM_PREFIX}/", "claude_code/")
+#: (`providers.codex.litellm_adapter`, `providers.codex.sdk_transport`,
+#: `providers.claude_code_litellm`). LiteLLM's provider registry does not know
+#: these as dialects -- `get_llm_provider`/`get_supported_openai_params` raise
+#: or return nonsense for them -- and their own `completion()` reads a small,
+#: fixed set of `optional_params` keys directly, ignoring everything else. The
+#: drop_params proactive check below does not apply to them.
+_CUSTOM_TRANSPORT_PREFIXES: tuple[str, ...] = (
+    f"{_CODEX_LITELLM_PREFIX}/",
+    f"{_CODEX_LITELLM_PREFIX_SDK}/",
+    "claude_code/",
+)
 
 
 def _warn_dropped_params(*, model: str, kwargs: dict[str, Any]) -> None:

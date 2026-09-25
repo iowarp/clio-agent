@@ -9,6 +9,7 @@ import logging
 from typing import Any
 
 from clio_agent.providers.catalog import Provider, iter_providers
+from clio_agent.providers.handshake.base import describe_exception
 from clio_agent.providers.model_discovery.claude_code import (
     ClaudeCodeCLIUnavailableError,
     discover_claude_code,
@@ -165,12 +166,13 @@ async def refresh_all(
                 failed_reason=f"refresh timed out after {REFRESH_PER_PROVIDER_DEADLINE_S}s",
             )
         except Exception as exc:  # noqa: BLE001 - one provider's crash must not sink the refresh
-            logger.warning("model discovery crashed for provider=%s: %s", preset.id, exc)
+            reason = describe_exception(exc)
+            logger.warning("model discovery crashed for provider=%s: %s", preset.id, reason)
             return ProviderDiscoveryResult(
                 provider=preset.id,
                 discovered=[],
                 source="error",
-                failed_reason=f"discovery crashed: {exc}",
+                failed_reason=f"discovery crashed: {reason}",
             )
 
     results = await asyncio.gather(*(_one(p) for p in all_presets))
@@ -179,8 +181,9 @@ async def refresh_all(
         try:
             recorded.append(record_refresh(r))
         except OverlayMalformedError as exc:
+            reason = describe_exception(exc)
             logger.warning(
-                "record_refresh failed for provider=%s: overlay malformed: %s", r.provider, exc
+                "record_refresh failed for provider=%s: overlay malformed: %s", r.provider, reason
             )
             recorded.append(
                 {
@@ -192,7 +195,7 @@ async def refresh_all(
                     "added": [],
                     "removed": [],
                     "unchanged": [],
-                    "failed_reason": f"overlay_malformed: {exc}",
+                    "failed_reason": f"overlay_malformed: {reason}",
                 }
             )
     return recorded

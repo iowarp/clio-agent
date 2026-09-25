@@ -155,8 +155,15 @@ def test_normalized_codex_catalog_bootstraps_live_discovery(
     overlay_ready = False
     refreshed: list[str] = []
 
-    def _overlay(*_args: object) -> dict[str, object] | None:
-        return {"models": [{"id": "gpt-5.6-luna"}]} if overlay_ready else None
+    def _overlay(provider_id: str, _provider_kind: str) -> dict[str, object] | None:
+        # Only the DIRECT transport's own catalog key ("codex") is ever
+        # populated here -- the SDK transport (S1b) has its own "codex_sdk"
+        # overlay key, deliberately never checked/refreshed in this test.
+        return (
+            {"models": [{"id": "gpt-5.6-luna"}]}
+            if overlay_ready and provider_id == "codex"
+            else None
+        )
 
     async def _refresh(*, presets, only_configured):  # type: ignore[no-untyped-def]
         nonlocal overlay_ready
@@ -522,7 +529,11 @@ def test_a_stale_overlay_triggers_rediscovery_instead_of_being_served_forever(
     refreshed: list[str] = []
     stale = True
 
-    def _overlay(*_args: object) -> dict[str, object] | None:
+    def _overlay(provider_id: str, _provider_kind: str) -> dict[str, object] | None:
+        if provider_id != "codex":
+            # The SDK transport's own "codex_sdk" overlay key (S1b) --
+            # deliberately never populated in this test.
+            return None
         entry: dict[str, object] = {"models": [{"id": "gpt-5.6-luna"}]}
         if stale:
             entry["staleness"] = {
@@ -579,9 +590,15 @@ def test_a_failed_rediscovery_over_prior_evidence_stays_available_but_marked_sta
         "failed_reason": "SDK transport closed",
     }
 
+    def _overlay(provider_id: str, _provider_kind: str) -> dict[str, object] | None:
+        if provider_id != "codex":
+            # The SDK transport's own "codex_sdk" overlay key (S1b) --
+            # deliberately never populated in this test.
+            return None
+        return {"models": [{"id": "gpt-5.6-luna"}], "staleness": staleness}
+
     monkeypatch.setattr(
-        "clio_agent.gact.provider_catalog.model_discovery.overlay_models_wire",
-        lambda *_args: {"models": [{"id": "gpt-5.6-luna"}], "staleness": staleness},
+        "clio_agent.gact.provider_catalog.model_discovery.overlay_models_wire", _overlay
     )
 
     async def _refresh(*, presets, only_configured):  # type: ignore[no-untyped-def]

@@ -38,6 +38,25 @@ PROVIDER_LABEL = "Codex"
 #: module under ``PROVIDER_ID`` directly.
 LITELLM_PROVIDER = "codex_direct"
 
+#: The SDK transport's own LiteLLM-facing custom-provider key (S1b): the
+#: restored official ``openai_codex`` Python SDK, run against the user's OWN
+#: ``CODEX_HOME`` (never CLIO-copied credentials). Kept distinct from
+#: ``LITELLM_PROVIDER`` (the direct/HTTP transport) for the exact reason that
+#: one is kept distinct from ``PROVIDER_ID`` above -- two transports of the
+#: SAME catalog provider must resolve to two different litellm dialects so a
+#: selection can route to the right one end to end.
+LITELLM_PROVIDER_SDK = "codex_sdk"
+
+#: Transport ids for the ``codex`` provider's catalog row (owner requirement:
+#: offer the local SDK when installed+signed in, direct/OAuth otherwise, and
+#: report the provider READY when either is available).
+TRANSPORT_SDK = "sdk"
+TRANSPORT_DIRECT = "direct"
+TRANSPORT_LABELS: dict[str, str] = {
+    TRANSPORT_SDK: "Codex (local)",
+    TRANSPORT_DIRECT: "Direct",
+}
+
 #: The Codex CLI's public OAuth client id. Not a secret -- every open-source
 #: harness that reuses this login flow (pi, OpenCode, Cline) ships the same
 #: value; the security boundary is PKCE + the fixed loopback redirect, not
@@ -147,6 +166,7 @@ __all__ = [
     "DEVICE_VERIFY_URL",
     "JWT_AUTH_CLAIM",
     "LITELLM_PROVIDER",
+    "LITELLM_PROVIDER_SDK",
     "LOOPBACK_HOST",
     "LOOPBACK_PATH",
     "LOOPBACK_PORT",
@@ -168,6 +188,9 @@ __all__ = [
     "RETRY_MAX_DELAY_MS",
     "SCOPE",
     "TOKEN_URL",
+    "TRANSPORT_DIRECT",
+    "TRANSPORT_LABELS",
+    "TRANSPORT_SDK",
     "USAGE_LIMIT_MARKERS",
     "WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE",
     "WS_CONNECT_TIMEOUT_S",

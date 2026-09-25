@@ -64,6 +64,7 @@ from clio_agent.gact.providers.lmstudio import (
 )
 from clio_agent.gact.providers.request_normalization import normalize_lm_provider_request
 from clio_agent.gact.relay_wiring import construct_agent_with_relay
+from clio_agent.gact.routes.codex_variant import apply_codex_readiness_gate
 from clio_agent.gact.routes.provider_catalog_routes import register_provider_catalog_routes
 from clio_agent.gact.runtime.globals import _process_arc, _set_app_arc
 from clio_agent.gact.types import (
@@ -690,6 +691,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 # Per-provider transport (v0.8.0): only the bound provider's field reads req.transport.
                 codex_transport=(req.transport or "websocket") if is_codex else "websocket",  # type: ignore[arg-type]  # LMProviderConfig validates
                 claude_code_transport=(req.transport or "sdk") if is_cc else "sdk",  # type: ignore[arg-type]  # LMProviderConfig validates; deleted values 400 typed
+                codex_variant=(req.variant or "direct").lower() if is_codex else "",  # type: ignore[arg-type]
             )
             if is_cc:
                 status, message, verified, default_model = _claude_code_readiness()
@@ -719,24 +721,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 if not req.model and default_model:
                     cfg.model = default_model
             if is_codex:
-                status, message, verified, default_model = _codex_readiness()
-                if not verified:
-                    raise HTTPException(
-                        status_code=(
-                            401 if status in {"auth_required", "auth_check_required"} else 503
-                        ),
-                        detail=ErrorEnvelope(
-                            error=ErrorInfo(
-                                error="codex_auth_required"
-                                if status in {"auth_required", "auth_check_required"}
-                                else "codex_unavailable",
-                                message=message,
-                                recoverable=True,
-                            )
-                        ).model_dump(exclude_none=True),
-                    )
-                if not req.model and default_model:
-                    cfg.model = default_model
+                await apply_codex_readiness_gate(cfg, req, _codex_readiness)
             # Per-provider handshake: discover connectivity + per-model config and
             # fold it into cfg — context-aware max_tokens (replacing the static ALCF
             # 4096 cap on 128-256K-context models), reasoning/tool capability flags,
