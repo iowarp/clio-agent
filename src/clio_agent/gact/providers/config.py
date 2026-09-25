@@ -133,6 +133,11 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
             cfg["transport"] = getattr(provider_config, "codex_transport", None)
         elif provider == "claude_code":
             cfg["transport"] = getattr(provider_config, "claude_code_transport", None)
+    if not cfg.get("codex_variant") and getattr(provider_config, "provider", "") == "codex":
+        # WHICH codex transport (sdk/direct) the live agent is actually bound
+        # to (S1b), for :func:`_active_lm_model_ref` to surface as
+        # ``ModelRef.variant`` -- distinct from ``transport`` above.
+        cfg["codex_variant"] = getattr(provider_config, "codex_variant", None)
     # Effective thinking level (#895): surface both the raw level and the resolved
     # per-provider effect so the knob is never invisible (doctor/status field-map).
     level = getattr(provider_config, "thinking_level", None)
@@ -247,12 +252,19 @@ def _model_ref_is_empty(value: Any) -> bool:
 
 
 def _active_lm_model_ref(app: "FastAPI") -> dict[str, str]:
-    """Return the active global LM as a GACT ModelRef-shaped dict."""
+    """Return the active global LM as a GACT ModelRef-shaped dict.
+
+    ``variant`` carries the bound codex transport (``"sdk"``/``"direct"``) for
+    the ``codex`` provider (S1b) so a per-message/session model ref naming a
+    transport can be compared against what is actually bound; every other
+    provider has no transport concept and reports ``""``.
+    """
 
     cfg = _effective_lm_config(app)
     provider = str(cfg.get("provider_id") or cfg.get("provider") or "")
     model = str(cfg.get("model") or "")
-    return {"provider_id": provider, "model_id": model, "variant": ""}
+    variant = str(cfg.get("codex_variant") or "") if cfg.get("provider") == "codex" else ""
+    return {"provider_id": provider, "model_id": model, "variant": variant}
 
 
 def _model_ref_matches_active(value: Any, app: "FastAPI") -> bool:
@@ -261,9 +273,7 @@ def _model_ref_matches_active(value: Any, app: "FastAPI") -> bool:
     return _model_ref_dict(value) == _active_lm_model_ref(app)
 
 
-def _bare_provider_kind_error(
-    value: Any, *, session_id: str, source: str
-) -> ErrorEnvelope | None:
+def _bare_provider_kind_error(value: Any, *, session_id: str, source: str) -> ErrorEnvelope | None:
     """A typed 400 when a model ref's ``provider_id`` is a bare provider KIND.
 
     A client that resolves identity by kind (the wire's ``provider`` field,

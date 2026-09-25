@@ -42,6 +42,10 @@ _ANTHROPIC_VERSION = "2023-06-01"
 #: ``provider_kind`` values that require no API key (purely local backends).
 _NO_AUTH_KINDS = frozenset({"ollama", "vllm", "local"})
 
+#: ``error_code`` of a key the provider refused -- the client words it as
+#: "Your <provider> API key was rejected."
+API_KEY_REJECTED = "api_key_rejected"
+
 #: Substrings that mark a model row as an embedding/reranker model we skip — the
 #: handshake catalogs only chat-completion models.
 _EMBEDDING_MARKERS = ("embed", "embedding", "rerank", "reranker")
@@ -79,6 +83,59 @@ class OpenAICompatHandshake(ProviderHandshake):
             headers["Authorization"] = f"Bearer {ctx.api_key}"
         return headers
 
+    def _key_check_url(self, ctx: HandshakeContext) -> str | None:
+        """The provider's own key-check endpoint, when its model listing is public.
+
+        Read from the provider registry (``Provider.key_check_path``), never a
+        per-provider branch here.
+        """
+        from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
+
+        provider = get_provider(ctx.provider_id)
+        path = provider.key_check_path if provider is not None else None
+        return f"{ctx.api_base.rstrip('/')}{path}" if path else None
+
+    def _rejected(self, status: int, headers: dict[str, str]) -> ConnectivityResult:
+        return ConnectivityResult(
+            connectivity=ConnectivityState.OK,
+            auth=AuthState.REJECTED,
+            error=f"{API_KEY_REJECTED}: the provider refused the API key (HTTP {status})",
+            error_code=API_KEY_REJECTED,
+            auth_header=headers,
+        )
+
+    async def _check_key(
+        self, client: Any, ctx: HandshakeContext, headers: dict[str, str]
+    ) -> ConnectivityResult | None:
+        """Prove the key against ``key_check_path``; ``None`` when it is accepted.
+
+        A 401/403 is a rejected key. Any other failure means the key could not
+        be proven either way: reported as ``DEFERRED`` with the typed reason,
+        never as a silent pass.
+        """
+        url = self._key_check_url(ctx)
+        if url is None:
+            return None
+        try:
+            response = await client.get(url, headers=headers)
+        except Exception as exc:  # noqa: BLE001 - surfaced as a typed DEFERRED reason
+            return ConnectivityResult(
+                connectivity=ConnectivityState.OK,
+                auth=AuthState.DEFERRED,
+                error=f"key_check_unavailable: {type(exc).__name__}: {exc}",
+                auth_header=headers,
+            )
+        if response.status_code in (401, 403):
+            return self._rejected(response.status_code, headers)
+        if response.status_code >= 400:
+            return ConnectivityResult(
+                connectivity=ConnectivityState.OK,
+                auth=AuthState.DEFERRED,
+                error=f"key_check_unavailable: HTTP {response.status_code}",
+                auth_header=headers,
+            )
+        return None
+
     def _models_url(self, ctx: HandshakeContext) -> str:
         """The ``/models`` listing URL for this provider's ``api_base``."""
         return f"{ctx.api_base.rstrip('/')}/models"
@@ -109,12 +166,11 @@ class OpenAICompatHandshake(ProviderHandshake):
             )
         status = response.status_code
         if status in (401, 403):
-            return ConnectivityResult(
-                connectivity=ConnectivityState.OK,
-                auth=AuthState.REJECTED,
-                error=f"auth rejected (HTTP {status})",
-                auth_header=headers,
-            )
+            return self._rejected(status, headers)
+        if self._requires_key(ctx) and status < 400:
+            key_check = await self._check_key(client, ctx, headers)
+            if key_check is not None:
+                return key_check
         auth_ok = AuthState.OK if self._requires_key(ctx) else AuthState.NOT_REQUIRED
         if status >= 400:
             # Reachable but the listing failed for a non-auth reason (e.g. 404 on

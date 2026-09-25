@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 
+from clio_agent.providers.codex.credentials import CodexCredentialStore
 from clio_agent.providers.handshake.base import HandshakeContext
 from clio_agent.providers.handshake.cli_catalog import (
     ClaudeCodeCatalogHandshake,
@@ -40,32 +41,20 @@ def _ctx(provider_id: str = "codex", provider_kind: str = "codex") -> HandshakeC
     return HandshakeContext(
         provider_id=provider_id,
         provider_kind=provider_kind,
-        api_base="codex://sdk",
+        api_base="codex://direct",
         allow_external_sources=True,
     )
 
 
-def _codex_auth(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    home = tmp_path / "codex-home"
-    home.mkdir(exist_ok=True)
-    (home / "auth.json").write_text('{"token":"test"}', encoding="utf-8")
-    monkeypatch.setenv("CODEX_HOME", str(home))
-
-
-def _codex_sdk_present(monkeypatch: pytest.MonkeyPatch) -> None:
-    original = importlib.util.find_spec
-    monkeypatch.setattr(
-        importlib.util,
-        "find_spec",
-        lambda name: object() if name == "openai_codex" else original(name),
-    )
+def _codex_signed_in(monkeypatch: pytest.MonkeyPatch, *, signed_in: bool) -> None:
+    monkeypatch.setattr(CodexCredentialStore, "is_signed_in", lambda self: signed_in)
 
 
 def test_codex_handshake_requires_credentials(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing"))
-    _codex_sdk_present(monkeypatch)
+    _codex_signed_in(monkeypatch, signed_in=False)
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     report = asyncio.run(CodexCatalogHandshake(provider=None).handshake(_ctx()))
     assert report.connectivity is ConnectivityState.SKIPPED
     assert report.auth is AuthState.MISSING
@@ -75,9 +64,8 @@ def test_codex_handshake_requires_credentials(
 def test_codex_handshake_requires_a_live_verification(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _codex_auth(tmp_path, monkeypatch)
+    _codex_signed_in(monkeypatch, signed_in=True)
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
-    _codex_sdk_present(monkeypatch)
     report = asyncio.run(CodexCatalogHandshake(provider=None).handshake(_ctx()))
     assert report.connectivity is ConnectivityState.SKIPPED
     assert report.auth is AuthState.DEFERRED
@@ -87,9 +75,8 @@ def test_codex_handshake_requires_a_live_verification(
 def test_codex_handshake_ready_only_after_verified_catalog(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _codex_auth(tmp_path, monkeypatch)
+    _codex_signed_in(monkeypatch, signed_in=True)
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
-    _codex_sdk_present(monkeypatch)
     record_refresh(
         ProviderDiscoveryResult(
             provider="codex",
@@ -165,7 +152,7 @@ def test_discover_models_absent_overlay_falls_back_to_static_catalog(
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     handshake = CliCatalogHandshake(provider=None)
     rows = asyncio.run(handshake.discover_models(client=None, ctx=_ctx()))
-    # The static registry catalog for codex (3 candidate ids); none carry the
+    # The static registry catalog for codex (2 candidate ids); none carry the
     # overlay marker.
     assert rows
     assert all("_overlay_context_checked" not in r for r in rows)

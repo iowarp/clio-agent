@@ -21,14 +21,14 @@ def _codex_profile(efforts: list[str] | None, default: str = "") -> ModelProfile
     return ModelProfile(id="gpt-5.6-sol", raw=raw)
 
 
-def test_codex_levels_come_from_the_sdk_catalog() -> None:
+def test_codex_levels_come_from_the_maintained_catalog() -> None:
     reasoning = model_reasoning(
         "codex", _codex_profile(["minimal", "low", "medium", "high", "xhigh"], "medium")
     )
     # Every effort the SDK reports is offered -- minimal included, none dropped.
     assert reasoning["levels"] == ["minimal", "low", "medium", "high", "xhigh"]
     assert reasoning["default"] == "medium"
-    assert reasoning["source"] == "codex_sdk"
+    assert reasoning["source"] == "codex_catalog"
     assert reasoning["supported"] is True
 
 
@@ -42,10 +42,10 @@ def test_codex_without_reported_efforts_offers_nothing() -> None:
     reasoning = model_reasoning("codex", _codex_profile(None))
     assert reasoning["levels"] == []
     assert reasoning["supported"] is False
-    assert reasoning["source"] == "codex_sdk_unreported"
+    assert reasoning["source"] == "codex_catalog_unreported"
 
 
-def test_codex_offers_max_and_ultra_efforts_the_sdk_reports() -> None:
+def test_codex_offers_max_and_ultra_efforts_the_catalog_reports() -> None:
     """A model reporting 'max'/'ultra' (#1436) offers them -- not dropped as unmapped."""
     reasoning = model_reasoning(
         "codex", _codex_profile(["medium", "high", "xhigh", "max", "ultra"], "high")
@@ -247,7 +247,7 @@ def test_codex_overlay_efforts_reach_the_catalog_profile(
 
     monkeypatch.setattr("clio_agent.providers.model_discovery.overlay_models_wire", _overlay)
     hs = CliCatalogHandshake(provider=None)
-    ctx = HandshakeContext(provider_id="codex", provider_kind="codex", api_base="codex://sdk")
+    ctx = HandshakeContext(provider_id="codex", provider_kind="codex", api_base="codex://direct")
     rows = asyncio.run(hs.discover_models(None, ctx))
     profile = asyncio.run(hs.discover_model_config(None, ctx, rows[0]))
     reasoning = model_reasoning("codex", profile)

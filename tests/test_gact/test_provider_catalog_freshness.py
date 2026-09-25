@@ -119,6 +119,39 @@ def test_live_answer_is_persisted_and_served_stale_when_the_probe_is_empty(
     assert restarted["health"] == "unavailable"
 
 
+def test_a_rejected_credential_never_brings_back_the_last_good_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refused key is fresher, definitive evidence: the provider reports no
+    usable models and its rejection -- never the dated last-good list beside
+    it (which read as "maybe still available" next to "your key was rejected")."""
+    rejected = HandshakeReport(
+        provider_id="argonne_metis",
+        provider_kind="argonne",
+        connectivity=ConnectivityState.OK,
+        auth=AuthState.REJECTED,
+        error="api_key_rejected: the provider refused the API key (HTTP 401)",
+        error_code="api_key_rejected",
+        models_source="unavailable",
+        generated_at="2026-09-23T08:00:00+00:00",
+    )
+    reports = [_live_report(), rejected]
+
+    async def _handshake(*_args: object, **_kwargs: object) -> HandshakeReport:
+        return reports.pop(0)
+
+    monkeypatch.setattr("clio_agent.gact.provider_catalog.run_handshake", _handshake)
+
+    asyncio.run(discover_provider(_metis()))
+    after = asyncio.run(discover_provider(_metis()))
+
+    assert after["models"] == []
+    assert after["health"] == "unavailable"
+    assert after["failure"].startswith("api_key_rejected")
+    assert "staleness" not in after["freshness"]
+    assert after["freshness"]["source"] != "last_good"
+
+
 def test_no_last_good_list_means_no_models(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _handshake(*_args: object, **_kwargs: object) -> HandshakeReport:
         return _skipped_report()
@@ -213,7 +246,11 @@ def test_refresh_for_one_provider_probes_only_that_provider(
     assert probed == [("argonne_metis", True)]
     names = {row["id"]: row["name"] for row in response.json()["providers"]}
     assert names == {"codex": "codex", "argonne_metis": "fresh"}
-    assert app.state.provider_catalog == response.json()
+    # The stored snapshot is what was served, minus the per-response live
+    # "checking" overlay (never persisted -- it describes this instant).
+    served = response.json()
+    assert all(row.pop("checking") is False for row in served["providers"])
+    assert app.state.provider_catalog == served
 
 
 def test_unknown_provider_refresh_is_not_found(tmp_path: Path) -> None:
@@ -241,7 +278,7 @@ def test_sign_in_completion_retires_every_alcf_entry(
 
     monkeypatch.setattr("clio_agent.gact.provider_catalog_snapshot.discover_provider", _discover)
     monkeypatch.setattr(
-        "clio_agent.gact.routes.provider_catalog_routes.ensure_argonne_support", lambda: False
+        "clio_agent.gact.routes.provider_auth.ensure_argonne_support", lambda: False
     )
     monkeypatch.setattr(argonne_auth, "complete_authentication", lambda *_args: None)
 

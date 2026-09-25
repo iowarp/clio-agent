@@ -519,6 +519,7 @@ dependencies = [
     { name = "msgspec" },
     { name = "odfpy" },
     { name = "openai-codex" },
+    { name = "openai-codex-cli-bin" },
     { name = "openpyxl" },
     { name = "packaging" },
     { name = "platformdirs" },
@@ -536,6 +537,7 @@ dependencies = [
     { name = "tzdata" },
     { name = "tzlocal" },
     { name = "uvicorn" },
+    { name = "websockets" },
 ]
 
 [package.optional-dependencies]
@@ -627,6 +629,7 @@ requires-dist = [
     { name = "numpy", marker = "extra == 'optimizers'", specifier = ">=1.24.0" },
     { name = "odfpy", specifier = ">=1.4.1,<2" },
     { name = "openai-codex", specifier = ">=0.147.0,<0.148.0" },
+    { name = "openai-codex-cli-bin", specifier = ">=0.147.0,<0.148.0" },
     { name = "openpyxl", specifier = ">=3.1.5,<4" },
     { name = "packaging", specifier = ">=24.0" },
     { name = "pandas", marker = "extra == 'dev'", specifier = ">=2.0.0" },
@@ -657,6 +660,7 @@ requires-dist = [
     { name = "tzdata", specifier = ">=2024.1" },
     { name = "tzlocal", specifier = ">=5.2" },
     { name = "uvicorn", specifier = ">=0.24.0" },
+    { name = "websockets", specifier = ">=13.0" },
 ]
 provides-extras = ["optimizers", "adios", "argonne", "desktop", "claude-code", "flowcept", "dev", "all"]
 

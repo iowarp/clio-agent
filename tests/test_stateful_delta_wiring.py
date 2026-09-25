@@ -4,12 +4,14 @@ These lock the three fixes whose *wiring* (not the shared detector, proved in
 ``test_claude_code_stateful``) is the deliverable:
 
 * **T1 — V2+codex routing.** A codex model id that collides with a litellm-registered
-  OpenAI model name (``gpt-5.6-sol``) must reach the codex ``CustomLLM`` handler, NOT
-  litellm's OpenAI handler (which raises ``'codex' is not a valid LlmProviders``). The
-  clio-side guard is the ``cdx-`` namespace marker in
+  OpenAI model name (``gpt-5.6-sol``) must reach clio's own ``CodexLLM`` custom handler,
+  NOT litellm's OpenAI handler. The litellm-facing prefix is ``codex_direct`` -- never
+  bare ``codex``, which collides with litellm's OWN native ``codex`` provider
+  (:data:`clio_agent.providers.codex.constants.LITELLM_PROVIDER`) -- and the clio-side
+  collision guard is the ``cg-`` namespace marker in
   :func:`clio_agent.lm.factory._resolve_model_name`. **Sabotage:** drop the marker →
-  ``create_lm`` yields the bare ``codex/gpt-5.6-sol`` → litellm routes it to OpenAI →
-  this test goes red.
+  ``create_lm`` yields the bare ``codex_direct/gpt-5.6-sol`` → litellm routes it to
+  OpenAI → this test goes red.
 
 * **T2 — ops_reset.** When ARC autocompaction rewrites the History prefix
   (``_RetainingReActV2._maybe_autocompact`` → ``arc.summarize_segments``), the active
@@ -53,19 +55,25 @@ def _key(scope: str) -> tuple[Any, ...]:
 # T1 — V2+codex routing: the collision-avoidance marker reaches the transport. #
 # --------------------------------------------------------------------------- #
 def test_codex_colliding_model_reaches_custom_handler(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A codex model whose id collides with an OpenAI model name still routes to codex.
+    """A codex model whose id collides with an OpenAI model name still routes to clio's
+    own custom handler, never litellm's OpenAI dialect NOR litellm's own native
+    "codex" provider.
 
     The regression pin for the V2+codex routing bug: ``gpt-5.6-sol`` is a litellm-
-    registered OpenAI chat model, so the bare ``codex/gpt-5.6-sol`` is hijacked to
-    litellm's OpenAI handler (``'codex' is not a valid LlmProviders``). ``create_lm``'s
-    ``cdx-`` marker (``_resolve_model_name``) is the guard: the resolved
-    ``codex/cdx-gpt-5.6-sol`` reaches the codex ``CustomLLM`` handler instead. Removing
-    the marker turns both assertions red.
+    registered OpenAI chat model, so a bare ``codex_direct/gpt-5.6-sol`` risks being
+    hijacked to litellm's OpenAI handler. ``create_lm``'s ``cg-`` marker
+    (``_resolve_model_name``) is the guard: the resolved ``codex_direct/cg-gpt-5.6-sol``
+    reaches clio's ``CodexLLM`` custom handler instead. Removing the marker turns both
+    assertions red. Separately (not this test's sabotage target, but load-bearing): the
+    litellm-facing prefix itself must never be bare ``codex`` -- litellm ships its own
+    native ``codex`` provider (a real device-code OAuth flow against
+    auth.openai.com), so that name would silently route every turn there instead of
+    ever reaching this handler at all.
     """
     import litellm
 
     from clio_agent.config import LMProviderConfig, create_lm
-    from clio_agent.providers import codex_litellm
+    from clio_agent.providers.codex import litellm_adapter as codex_litellm
 
     codex_litellm.ensure_registered()
     litellm.utils.custom_llm_setup()
@@ -85,8 +93,9 @@ def test_codex_colliding_model_reaches_custom_handler(monkeypatch: pytest.Monkey
 
     cfg = LMProviderConfig(provider="codex", model="gpt-5.6-sol")
     resolved = create_lm(cfg).model
-    # The marker namespaces the id out of the OpenAI collision set.
-    assert resolved == "codex/cdx-gpt-5.6-sol"
+    # The marker namespaces the id out of the OpenAI collision set, and the
+    # litellm-facing prefix is "codex_direct" (never litellm's native "codex").
+    assert resolved == "codex_direct/cg-gpt-5.6-sol"
 
     reached: dict[str, Any] = {}
 
@@ -102,11 +111,12 @@ def test_codex_colliding_model_reaches_custom_handler(monkeypatch: pytest.Monkey
             messages=[{"role": "user", "content": "hi"}],
             stream=False,
         )
-    # NOT the OpenAI-hijack routing error; the codex handler WAS reached (litellm hands
-    # the custom handler the provider-prefix-stripped id — the ``cdx-`` marker survives
-    # so the handler's own ``removeprefix('cdx-')`` recovers the real ``gpt-5.6-sol``).
+    # NOT the OpenAI-hijack routing error; clio's CodexLLM handler WAS reached
+    # (litellm hands the custom handler the provider-prefix-stripped id — the ``cg-``
+    # marker survives so the handler's own ``removeprefix('cg-')`` recovers the real
+    # ``gpt-5.6-sol``).
     assert "is not a valid LlmProviders" not in str(excinfo.value)
-    assert reached.get("model") == "cdx-gpt-5.6-sol"
+    assert reached.get("model") == "cg-gpt-5.6-sol"
 
 
 # --------------------------------------------------------------------------- #

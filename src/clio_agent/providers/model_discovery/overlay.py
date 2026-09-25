@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 _LOCK = threading.Lock()
 
-CODEX_SOURCE = "codex_sdk"
+CODEX_SOURCE = "codex_catalog"
 CLAUDE_CODE_SOURCE = "claude_code_catalog"
 HTTP_SOURCE = "live_handshake"
 
@@ -288,6 +288,11 @@ def resolve_cloud_api_key(provider_id: str) -> str:
     dedicated env var and falls through to the generic ``CLIO_LM_API_KEY``,
     same as a recognized provider with none declared.
     """
+    from clio_agent.providers.api_key_store import stored_api_key  # noqa: PLC0415
+
+    saved = stored_api_key(provider_id)
+    if saved:
+        return saved
     provider = get_provider(provider_id)
     env_name = (provider.api_key_env or "") if provider is not None else ""
     key = os.environ.get(env_name, "") if env_name else ""
@@ -437,8 +442,8 @@ def update_entry_fields(provider: str, fields: Mapping[str, Any]) -> None:
 
 
 __all__ = [
-    "CLAUDE_CODE_SOURCE",
     "CODEX_SOURCE",
+    "CLAUDE_CODE_SOURCE",
     "HTTP_SOURCE",
     "OVERLAY_STALENESS_REASONS",
     "OverlayMalformedError",

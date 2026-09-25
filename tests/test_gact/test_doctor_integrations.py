@@ -122,7 +122,7 @@ def test_health_probes_the_runtime_provider_binding(
     app = build_app(sessions_path=tmp_path / "s.json")
     app.state.lm_config = {
         "provider": "codex",
-        "api_base": "codex://sdk",
+        "api_base": "codex://direct",
         "model": "gpt-5.6-luna",
     }
 
@@ -130,7 +130,7 @@ def test_health_probes_the_runtime_provider_binding(
 
     assert response.status_code == 200
     assert observed["CLIO_LM_PROVIDER"] == "codex"
-    assert observed["CLIO_LM_API_BASE"] == "codex://sdk"
+    assert observed["CLIO_LM_API_BASE"] == "codex://direct"
     assert observed["CLIO_LM_MODEL"] == "gpt-5.6-luna"
 
 
@@ -157,9 +157,9 @@ def test_health_probes_the_persisted_provider_bound_to_the_agent(
     agent = SimpleNamespace(
         _provider_config=SimpleNamespace(
             provider="codex",
-            api_base="codex://sdk",
+            api_base="codex://direct",
             model="gpt-5.6-sol",
-            codex_transport="sdk",
+            codex_transport="websocket",
         )
     )
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
@@ -169,7 +169,7 @@ def test_health_probes_the_persisted_provider_bound_to_the_agent(
     assert response.status_code == 200
     assert app.state.lm_config is None
     assert observed["CLIO_LM_PROVIDER"] == "codex"
-    assert observed["CLIO_LM_API_BASE"] == "codex://sdk"
+    assert observed["CLIO_LM_API_BASE"] == "codex://direct"
     assert observed["CLIO_LM_MODEL"] == "gpt-5.6-sol"
 
 

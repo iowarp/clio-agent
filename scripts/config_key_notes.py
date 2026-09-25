@@ -589,8 +589,12 @@ KEY_NOTES: dict[str, str] = {
         "explicit contract check, not a tuning knob."
     ),
     "lm.codex_transport": (
-        'Selects the Codex transport; "sdk" is the only supported value, kept as an explicit '
-        "contract check, not a tuning knob."
+        'Selects the Codex transport; "websocket" (default, with delta continuation) or "sse" '
+        "to force the automatic-fallback transport."
+    ),
+    "lm.codex_variant": (
+        'Selects which Codex transport a config binds: "direct" (default, CLIO sign-in) or '
+        '"sdk" (the local Codex app login).'
     ),
     "lm.context_window": (
         "Override the effective context window (tokens); 0 auto-derives from the "
@@ -820,10 +824,6 @@ KEY_NOTES: dict[str, str] = {
     "providers.claude_code.stream_idle_ttl_s": (
         "Seconds a session's pooled Claude Code connection may sit idle before the next request "
         "reaps it; lower to free idle connections sooner."
-    ),
-    "providers.codex.credential_home_capacity": (
-        "Max simultaneous private CODEX_HOME credential-dir copies the Codex SDK transport keeps "
-        "alive; raise for many concurrent Codex sessions."
     ),
     "providers.native_image_url_allowlist": (
         "Comma-separated hosts whose http(s) image URLs may be handed to a provider to fetch; "

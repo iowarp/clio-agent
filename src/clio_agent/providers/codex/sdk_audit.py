@@ -1,18 +1,15 @@
-"""Stream-audit instrumentation for the official Codex Python SDK transport.
+"""Stream-audit instrumentation for the restored Codex SDK transport (S1b).
 
 Emits the SAME ``provider.call_started`` / ``provider.call_usage`` /
 ``provider.raw_event`` / ``provider.normalized`` rows the Claude Code provider
 does, with a ``codex_sdk`` label, so ``scripts/analyze_turn_waterfall.py``
-works unchanged for codex. The shared fingerprint + gact-id helpers are reused
-from :mod:`clio_agent.providers.claude_code_audit` (one owner, no duplication);
-only the provider label and the codex usage normalization differ.
+works unchanged for the Codex SDK transport. The shared fingerprint + gact-id
+helpers are reused from :mod:`clio_agent.providers.claude_code_audit` (one
+owner, no duplication); only the provider label and the codex usage
+normalization differ.
 
-Codex usage is normalized from the SDK's typed token-usage notification
-to the snake-case keys the analyzer joins on (``cache_read_input_tokens`` for
-codex's ``cachedInputTokens``, ``reasoning_output_tokens`` for
-``reasoningOutputTokens``), so the flattened ``usage_<key>`` fields land in the
-exact columns the waterfall reads. Every emitter is gated by the existing
-``CLIO_STREAM_AUDIT_LOG`` switch and is free when the audit is off.
+Every emitter is gated by the existing ``CLIO_STREAM_AUDIT_LOG`` switch and is
+free when the audit is off.
 """
 
 from __future__ import annotations
@@ -29,7 +26,7 @@ _PROVIDER = "codex_sdk"
 
 
 def emit_call_started(*, call_id: str, call_index: int, model: str, prompt: str) -> None:
-    """Emit a ``provider.call_started`` row at turn-submission time (codex)."""
+    """Emit a ``provider.call_started`` row at turn-submission time (codex sdk)."""
     if not stream_audit_enabled():
         return
     session_id, turn_id, trace_id = active_gact_ids()
@@ -53,7 +50,7 @@ def emit_call_started(*, call_id: str, call_index: int, model: str, prompt: str)
 def emit_call_usage(
     *, call_id: str, call_index: int, model: str, usage: dict[str, Any], output_chars: int
 ) -> None:
-    """Emit a ``provider.call_usage`` row when the codex turn's usage lands.
+    """Emit a ``provider.call_usage`` row when the codex sdk turn's usage lands.
 
     ``usage`` is the normalized breakdown; every key is flattened to ``usage_<key>``
     (with the raw dict under ``usage_raw``) so the analyzer reads
@@ -84,7 +81,7 @@ def emit_call_usage(
 def emit_raw_event(
     *, call_index: int, event_index: int, source_channel: str, text: str, raw_event_type: str
 ) -> None:
-    """Emit a ``provider.raw_event`` row for one codex notification (codex)."""
+    """Emit a ``provider.raw_event`` row for one codex sdk notification."""
     if not stream_audit_enabled():
         return
     session_id, turn_id, trace_id = active_gact_ids()
@@ -108,7 +105,7 @@ def emit_raw_event(
 def emit_normalized(
     *, call_index: int, event_index: int, source_channel: str, normalized_event: str, text: str
 ) -> None:
-    """Emit a ``provider.normalized`` row for one normalized codex chunk (codex)."""
+    """Emit a ``provider.normalized`` row for one normalized codex sdk chunk."""
     if not stream_audit_enabled():
         return
     stream_audit(

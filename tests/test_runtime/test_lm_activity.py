@@ -679,9 +679,7 @@ def test_process_completion_uses_actual_reasoning_for_unclassified_provider(
 
     import dspy.clients.base_lm as base_lm
 
-    def fake_super(
-        self: Any, response: Any, merged_kwargs: dict[str, Any]
-    ) -> list[dict[str, str]]:
+    def fake_super(self: Any, response: Any, merged_kwargs: dict[str, Any]) -> list[dict[str, str]]:
         return [{"text": "", "reasoning_content": "[[ ## answer ## ]]\nready"}]
 
     monkeypatch.setattr(base_lm.BaseLM, "_process_completion", fake_super)
