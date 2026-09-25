@@ -7,10 +7,12 @@ directly for both provider kinds it supports today: ``argonne`` (ALCF) and
 
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 
 from clio_agent.gact.lm_provider_types import LMProviderPreset
 from clio_agent.gact.routes.provider_auth import handle_auth_action, supports_logout
@@ -79,6 +81,109 @@ async def test_invalid_action_returns_400() -> None:
             preset=preset, action="bogus", body={}, app=_FakeApp(), presets=[preset]
         )
     assert exc_info.value.status_code == 400
+
+
+def _api_key_preset() -> LMProviderPreset:
+    return LMProviderPreset(
+        id="openrouter",
+        provider="openai",
+        label="OpenRouter",
+        api_base="",
+        suggested_model="",
+        requires_api_key=True,
+        api_key_env="TEST_OPENROUTER_API_KEY",
+    )
+
+
+class TestApiKeySaveAndClear:
+    """save_api_key/clear_api_key: the non-binding counterpart to PUT
+    /v1/providers/lm (#1446 follow-up) -- saving a key must never change
+    which provider is active, only whether THIS one is checkable."""
+
+    async def test_save_api_key_sets_the_providers_own_env_var(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("TEST_OPENROUTER_API_KEY", raising=False)
+        preset = _api_key_preset()
+
+        result = await handle_auth_action(
+            preset=preset,
+            action="save_api_key",
+            body={"api_key": "sk-test-123"},
+            app=_FakeApp(),
+            presets=[preset],
+        )
+
+        assert result == {
+            "provider_id": "openrouter",
+            "is_authenticated": True,
+            "instructions": "Saved the OpenRouter API key. Checking available models.",
+        }
+        assert os.environ["TEST_OPENROUTER_API_KEY"] == "sk-test-123"
+
+    async def test_save_api_key_requires_a_non_empty_key(self) -> None:
+        preset = _api_key_preset()
+        with pytest.raises(HTTPException) as exc_info:
+            await handle_auth_action(
+                preset=preset, action="save_api_key", body={}, app=_FakeApp(), presets=[preset]
+            )
+        assert exc_info.value.status_code == 400
+
+    async def test_save_api_key_on_a_provider_that_does_not_use_one_is_405(self) -> None:
+        preset = _preset(provider="claude_code")
+        with pytest.raises(HTTPException) as exc_info:
+            await handle_auth_action(
+                preset=preset,
+                action="save_api_key",
+                body={"api_key": "x"},
+                app=_FakeApp(),
+                presets=[preset],
+            )
+        assert exc_info.value.status_code == 405
+
+    async def test_clear_api_key_removes_the_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TEST_OPENROUTER_API_KEY", "sk-test-123")
+        preset = _api_key_preset()
+
+        result = await handle_auth_action(
+            preset=preset, action="clear_api_key", body={}, app=_FakeApp(), presets=[preset]
+        )
+
+        assert result == {
+            "provider_id": "openrouter",
+            "is_authenticated": False,
+            "instructions": "Removed the OpenRouter API key.",
+        }
+        assert "TEST_OPENROUTER_API_KEY" not in os.environ
+
+    async def test_clear_api_key_on_a_provider_that_does_not_use_one_is_405(self) -> None:
+        preset = _preset(provider="claude_code")
+        with pytest.raises(HTTPException) as exc_info:
+            await handle_auth_action(
+                preset=preset, action="clear_api_key", body={}, app=_FakeApp(), presets=[preset]
+            )
+        assert exc_info.value.status_code == 405
+
+    async def test_saving_a_key_never_touches_the_active_bind(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The whole point of the split: unlike PUT /v1/providers/lm, this
+        route takes no `app.state.agent` / profile-store argument at all --
+        there is nothing here that COULD rebind the active provider."""
+        monkeypatch.delenv("TEST_OPENROUTER_API_KEY", raising=False)
+        preset = _api_key_preset()
+        app = _FakeApp()
+        before = vars(app.state).copy()
+
+        await handle_auth_action(
+            preset=preset,
+            action="save_api_key",
+            body={"api_key": "sk-test-456"},
+            app=app,
+            presets=[preset],
+        )
+
+        assert vars(app.state) == before
 
 
 class TestArgonne:

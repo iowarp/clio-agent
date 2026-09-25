@@ -66,12 +66,15 @@ def register_provider_catalog_routes(
 
     @app.post("/v1/providers/{provider_id}/auth")
     async def auth_provider(provider_id: str, request: Request) -> dict[str, Any]:
-        """The generic provider sign-in API (start/complete/status/logout).
+        """The generic provider sign-in API (start/complete/status/logout/save_api_key/clear_api_key).
 
-        Dispatched by provider kind in :mod:`clio_agent.gact.routes.provider_auth`
-        -- ALCF (Globus OAuth) and the direct Codex provider both go through
-        this one interface. Any other provider (cloud / local, api_key / no
-        auth) gets a 405 with a hint pointing to PUT /v1/providers/lm.
+        start/complete/status/logout are dispatched by provider kind in
+        :mod:`clio_agent.gact.routes.provider_auth` -- ALCF (Globus OAuth) and
+        the direct Codex provider both go through this one interface.
+        save_api_key/clear_api_key are generic across every `requires_api_key`
+        preset (OpenAI, Anthropic, OpenRouter, ...): they set/clear the
+        provider's own credential WITHOUT binding it as the active default,
+        unlike PUT /v1/providers/lm. Any other combination gets a 405.
         """
 
         preset = next((p for p in _LM_PRESETS if p.id == provider_id), None)

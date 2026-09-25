@@ -17,11 +17,13 @@ itself (:mod:`clio_agent.gact.routes.provider_catalog_routes`).
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fastapi import HTTPException
 
+from clio_agent.gact.lm_provider_types import preset_api_key_env
 from clio_agent.gact.provider_catalog_snapshot import invalidate_provider
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, LMProviderPreset
 from clio_agent.providers.dependencies import ProviderDependencyInstallError, ensure_argonne_support
@@ -245,6 +247,51 @@ async def _codex_logout(
     return {"is_authenticated": False, "instructions": "Signed out of Codex."}
 
 
+# -- api_key (any cloud provider: OpenAI, Anthropic, OpenRouter, ...) --------
+#
+# Unlike the OAuth/subscription flows above, this is not dispatched by
+# provider kind: every `requires_api_key` preset shares the same mechanic
+# (`resolve_cloud_api_key` reads the SAME env var this writes -- see
+# `clio_agent.providers.model_discovery.overlay`), so one generic pair of
+# actions covers all of them. This exists so the picker's inline "Save key"
+# can make a provider checkable WITHOUT the side effect PUT /v1/providers/lm
+# has of also binding it as the active default -- saving OpenRouter's key
+# must not switch the running agent onto OpenRouter.
+
+
+def _save_api_key(preset: LMProviderPreset, app: Any, api_key: str) -> dict[str, Any]:
+    if not preset.requires_api_key:
+        raise _error(
+            405,
+            error="unsupported",
+            message=f"provider '{preset.id}' does not use an API key.",
+            recoverable=False,
+        )
+    if not api_key:
+        raise _error(
+            400, error="invalid_request", message="api_key is required.", recoverable=False
+        )
+    os.environ[preset_api_key_env(preset)] = api_key
+    invalidate_provider(app, preset.id)
+    return {
+        "is_authenticated": True,
+        "instructions": f"Saved the {preset.label} API key. Checking available models.",
+    }
+
+
+def _clear_api_key(preset: LMProviderPreset, app: Any) -> dict[str, Any]:
+    if not preset.requires_api_key:
+        raise _error(
+            405,
+            error="unsupported",
+            message=f"provider '{preset.id}' does not use an API key.",
+            recoverable=False,
+        )
+    os.environ.pop(preset_api_key_env(preset), None)
+    invalidate_provider(app, preset.id)
+    return {"is_authenticated": False, "instructions": f"Removed the {preset.label} API key."}
+
+
 _START: dict[str, StartHandler] = {"argonne": _argonne_start, "codex": _codex_start}
 _COMPLETE: dict[str, CompleteHandler] = {"argonne": _argonne_complete, "codex": _codex_complete}
 _STATUS: dict[str, StatusHandler] = {"argonne": _argonne_status, "codex": _codex_status}
@@ -315,6 +362,11 @@ async def handle_auth_action(
                 405, error="unsupported", message=f"provider '{preset.id}' has no stored sign-in."
             )
         return {"provider_id": preset.id, **await logout_handler(preset, app, presets)}
+    if action == "save_api_key":
+        api_key = str(body.get("api_key") or "").strip()
+        return {"provider_id": preset.id, **_save_api_key(preset, app, api_key)}
+    if action == "clear_api_key":
+        return {"provider_id": preset.id, **_clear_api_key(preset, app)}
     raise _error(
         400,
         error="invalid_action",
