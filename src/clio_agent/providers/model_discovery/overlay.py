@@ -288,6 +288,11 @@ def resolve_cloud_api_key(provider_id: str) -> str:
     dedicated env var and falls through to the generic ``CLIO_LM_API_KEY``,
     same as a recognized provider with none declared.
     """
+    from clio_agent.providers.api_key_store import stored_api_key  # noqa: PLC0415
+
+    saved = stored_api_key(provider_id)
+    if saved:
+        return saved
     provider = get_provider(provider_id)
     env_name = (provider.api_key_env or "") if provider is not None else ""
     key = os.environ.get(env_name, "") if env_name else ""

@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
-import os
 import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -76,6 +75,7 @@ from clio_agent.gact.types import (
     LMProviderPreset,
     LMProviderRequest,
 )
+from clio_agent.providers.model_discovery import resolve_cloud_api_key
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -242,11 +242,9 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             return ["oauth"], authed
 
         if preset.requires_api_key:
-            # The preset's own env var (never a kind-keyed table -- openrouter/
-            # nvidia_nim share kind "openai" with the literal OpenAI provider
-            # and must not report "authenticated" off OPENAI_API_KEY, Part 3).
-            env_var = preset.api_key_env or "CLIO_LM_API_KEY"
-            return ["api_key"], bool(os.environ.get(env_var) or os.environ.get("CLIO_LM_API_KEY"))
+            # Keyed by preset id (saved key, then its own env var), never a
+            # kind-keyed table -- openrouter shares kind "openai" (Part 3).
+            return ["api_key"], bool(resolve_cloud_api_key(preset.id))
 
         return ["none"], True
 
@@ -321,10 +319,9 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             update["is_authenticated"] = authed
             return preset.model_copy(update=update)
         if preset.requires_api_key:
-            env_key = preset_api_key_env(preset)
-            if not (os.environ.get(env_key) or os.environ.get("CLIO_LM_API_KEY")):
+            if not resolve_cloud_api_key(preset.id):
                 update["status"] = "missing_key"
-                update["status_message"] = f"missing {env_key}"
+                update["status_message"] = f"missing {preset_api_key_env(preset)}"
                 update["is_authenticated"] = False
                 return preset.model_copy(update=update)
             update["is_authenticated"] = True

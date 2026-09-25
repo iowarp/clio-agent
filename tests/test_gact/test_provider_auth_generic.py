@@ -16,7 +16,9 @@ from fastapi import HTTPException
 
 from clio_agent.gact.lm_provider_types import LMProviderPreset
 from clio_agent.gact.routes.provider_auth import handle_auth_action, supports_logout
+from clio_agent.providers.api_key_store import ProviderApiKeyStore
 from clio_agent.providers.codex.login_flow import CodexCredential
+from clio_agent.providers.model_discovery import resolve_cloud_api_key
 
 
 def _preset(*, provider: str, provider_id: str = "") -> LMProviderPreset:
@@ -91,7 +93,7 @@ def _api_key_preset() -> LMProviderPreset:
         api_base="",
         suggested_model="",
         requires_api_key=True,
-        api_key_env="TEST_OPENROUTER_API_KEY",
+        api_key_env="OPENROUTER_API_KEY",
     )
 
 
@@ -100,10 +102,10 @@ class TestApiKeySaveAndClear:
     /v1/providers/lm (#1446 follow-up) -- saving a key must never change
     which provider is active, only whether THIS one is checkable."""
 
-    async def test_save_api_key_sets_the_providers_own_env_var(
+    async def test_save_api_key_persists_to_the_durable_store_never_the_environment(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.delenv("TEST_OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         preset = _api_key_preset()
 
         result = await handle_auth_action(
@@ -119,7 +121,9 @@ class TestApiKeySaveAndClear:
             "is_authenticated": True,
             "instructions": "Saved the OpenRouter API key. Checking available models.",
         }
-        assert os.environ["TEST_OPENROUTER_API_KEY"] == "sk-test-123"
+        assert ProviderApiKeyStore().load("openrouter") == "sk-test-123"
+        assert resolve_cloud_api_key("openrouter") == "sk-test-123"
+        assert "OPENROUTER_API_KEY" not in os.environ
 
     async def test_save_api_key_requires_a_non_empty_key(self) -> None:
         preset = _api_key_preset()
@@ -141,8 +145,11 @@ class TestApiKeySaveAndClear:
             )
         assert exc_info.value.status_code == 405
 
-    async def test_clear_api_key_removes_the_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("TEST_OPENROUTER_API_KEY", "sk-test-123")
+    async def test_clear_api_key_removes_the_saved_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        ProviderApiKeyStore().save("openrouter", "sk-test-123")
         preset = _api_key_preset()
 
         result = await handle_auth_action(
@@ -154,7 +161,22 @@ class TestApiKeySaveAndClear:
             "is_authenticated": False,
             "instructions": "Removed the OpenRouter API key.",
         }
-        assert "TEST_OPENROUTER_API_KEY" not in os.environ
+        assert ProviderApiKeyStore().load("openrouter") == ""
+        assert resolve_cloud_api_key("openrouter") == ""
+
+    async def test_clear_api_key_reports_an_operator_env_key_that_still_applies(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-from-env")
+        ProviderApiKeyStore().save("openrouter", "sk-saved")
+        preset = _api_key_preset()
+
+        result = await handle_auth_action(
+            preset=preset, action="clear_api_key", body={}, app=_FakeApp(), presets=[preset]
+        )
+
+        assert result["is_authenticated"] is True
+        assert resolve_cloud_api_key("openrouter") == "sk-from-env"
 
     async def test_clear_api_key_on_a_provider_that_does_not_use_one_is_405(self) -> None:
         preset = _preset(provider="claude_code")
@@ -170,7 +192,7 @@ class TestApiKeySaveAndClear:
         """The whole point of the split: unlike PUT /v1/providers/lm, this
         route takes no `app.state.agent` / profile-store argument at all --
         there is nothing here that COULD rebind the active provider."""
-        monkeypatch.delenv("TEST_OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         preset = _api_key_preset()
         app = _FakeApp()
         before = vars(app.state).copy()

@@ -17,16 +17,16 @@ itself (:mod:`clio_agent.gact.routes.provider_catalog_routes`).
 from __future__ import annotations
 
 import asyncio
-import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fastapi import HTTPException
 
-from clio_agent.gact.lm_provider_types import preset_api_key_env
 from clio_agent.gact.provider_catalog_snapshot import invalidate_provider
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, LMProviderPreset
+from clio_agent.providers.api_key_store import ProviderApiKeyStore
 from clio_agent.providers.dependencies import ProviderDependencyInstallError, ensure_argonne_support
+from clio_agent.providers.model_discovery import resolve_cloud_api_key
 
 __all__ = ["handle_auth_action", "supports_logout"]
 
@@ -251,9 +251,9 @@ async def _codex_logout(
 #
 # Unlike the OAuth/subscription flows above, this is not dispatched by
 # provider kind: every `requires_api_key` preset shares the same mechanic
-# (`resolve_cloud_api_key` reads the SAME env var this writes -- see
-# `clio_agent.providers.model_discovery.overlay`), so one generic pair of
-# actions covers all of them. This exists so the picker's inline "Save key"
+# (the durable `ProviderApiKeyStore`, which `resolve_cloud_api_key` and the
+# runtime credential resolver read first -- so the key survives a restart),
+# so one generic pair of actions covers all of them. This exists so the picker's inline "Save key"
 # can make a provider checkable WITHOUT the side effect PUT /v1/providers/lm
 # has of also binding it as the active default -- saving OpenRouter's key
 # must not switch the running agent onto OpenRouter.
@@ -271,7 +271,7 @@ def _save_api_key(preset: LMProviderPreset, app: Any, api_key: str) -> dict[str,
         raise _error(
             400, error="invalid_request", message="api_key is required.", recoverable=False
         )
-    os.environ[preset_api_key_env(preset)] = api_key
+    ProviderApiKeyStore().save(preset.id, api_key)
     invalidate_provider(app, preset.id)
     return {
         "is_authenticated": True,
@@ -287,9 +287,13 @@ def _clear_api_key(preset: LMProviderPreset, app: Any) -> dict[str, Any]:
             message=f"provider '{preset.id}' does not use an API key.",
             recoverable=False,
         )
-    os.environ.pop(preset_api_key_env(preset), None)
+    ProviderApiKeyStore().clear(preset.id)
     invalidate_provider(app, preset.id)
-    return {"is_authenticated": False, "instructions": f"Removed the {preset.label} API key."}
+    # An operator-set environment key still applies after the saved one goes.
+    return {
+        "is_authenticated": bool(resolve_cloud_api_key(preset.id)),
+        "instructions": f"Removed the {preset.label} API key.",
+    }
 
 
 _START: dict[str, StartHandler] = {"argonne": _argonne_start, "codex": _codex_start}
