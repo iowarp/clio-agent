@@ -131,10 +131,50 @@ def merge(payload: dict[str, Any], records: list[dict[str, Any]]) -> dict[str, A
     return _payload(providers)
 
 
-async def discover(provider_ids: list[str], *, refresh: bool) -> list[dict[str, Any]]:
-    """Discover the named providers concurrently (unknown ids are skipped)."""
+def _configured_preset_override(app: "FastAPI") -> tuple[str, Any] | None:
+    """The one preset row whose ``api_base`` the active bind has overridden.
+
+    ``app.state.lm_config`` (set by ``PUT /v1/providers/lm``) carries the
+    endpoint a person actually configured; the static catalog preset only
+    ever carries its compiled-in default. Discovery for that ONE bound
+    provider must probe the CONFIGURED endpoint -- otherwise a llama.cpp/vLLM
+    server pointed at a non-default port is never actually asked, its real
+    model id is never discovered, and the catalog keeps serving whatever the
+    default port would have answered (#1418 cause C).
+
+    Returns ``(provider_id, overridden_preset)``, or ``None`` when nothing is
+    bound or the bound endpoint matches the catalog default already. Full
+    ``(provider_id, api_base)`` keyed multi-endpoint discovery is slice P3;
+    this covers the one endpoint a person can have bound today, which is
+    already invalidated wholesale on rebind (``app.state.provider_catalog =
+    None`` in the ``PUT`` handler), so this only has to pick the right base
+    for the rebuild that follows.
+    """
+    cfg = getattr(app.state, "lm_config", None) or {}
+    provider_id = str(cfg.get("provider_id") or "")
+    api_base = str(cfg.get("api_base") or "")
+    if not provider_id or not api_base:
+        return None
+    preset = next((p for p in as_lm_presets() if p.id == provider_id), None)
+    if preset is None or preset.api_base == api_base:
+        return None
+    return provider_id, preset.model_copy(update={"api_base": api_base})
+
+
+async def discover(
+    app: "FastAPI", provider_ids: list[str], *, refresh: bool
+) -> list[dict[str, Any]]:
+    """Discover the named providers concurrently (unknown ids are skipped).
+
+    The provider currently bound as the active global LM is probed at its
+    CONFIGURED ``api_base`` rather than the catalog preset's default; see
+    :func:`_configured_preset_override`.
+    """
 
     presets = {preset.id: preset for preset in as_lm_presets()}
+    override = _configured_preset_override(app)
+    if override is not None:
+        presets[override[0]] = override[1]
     return list(
         await asyncio.gather(
             *(
@@ -209,8 +249,8 @@ async def read_catalog(
         # No snapshot yet (boot, or retired by a model refresh): build it from
         # cached handshakes, forcing only the provider that was asked about.
         others, targeted = await asyncio.gather(
-            discover([pid for pid in preset_ids if pid != provider_id], refresh=False),
-            discover([provider_id], refresh=refresh),
+            discover(app, [pid for pid in preset_ids if pid != provider_id], refresh=False),
+            discover(app, [provider_id], refresh=refresh),
         )
         records, stamped = _keep_newer(app, [*others, *targeted], seqs)
         by_id = {str(record.get("id")): record for record in records}
@@ -221,7 +261,7 @@ async def read_catalog(
         _schedule_reprobe(app, payload)
         return payload
     if not isinstance(cached, dict) or (refresh and not provider_id):
-        records, stamped = _keep_newer(app, await discover(preset_ids, refresh=refresh), seqs)
+        records, stamped = _keep_newer(app, await discover(app, preset_ids, refresh=refresh), seqs)
         payload = _payload(records)
         pending.difference_update(taken)
         commit(app, payload, stamped)
@@ -238,7 +278,7 @@ async def read_catalog(
         return cached
     # An invalidated provider's cached handshake is already gone, so a plain
     # read re-probes it; an explicit refresh forces through the TTL cache.
-    records, stamped = _keep_newer(app, await discover(targets, refresh=refresh), seqs)
+    records, stamped = _keep_newer(app, await discover(app, targets, refresh=refresh), seqs)
     pending.difference_update(targets)
     current = getattr(app.state, "provider_catalog", None)
     payload = merge(current if isinstance(current, dict) else cached, records)

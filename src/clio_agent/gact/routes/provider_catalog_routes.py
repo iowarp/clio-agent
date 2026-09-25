@@ -154,9 +154,11 @@ def register_provider_catalog_routes(
             run_handshake,
         )
 
+        # provider_id names a preset's own id, never its wire KIND (#1418):
+        # nine presets share kind "openai", so a kind-based fallback here
+        # silently returned the FIRST such preset (by catalog order) rather
+        # than the one actually configured.
         preset = next((p for p in _LM_PRESETS if p.id == provider_id), None)
-        if preset is None:
-            preset = next((p for p in _LM_PRESETS if p.provider == provider_id), None)
         if preset is None:
             # Last-ditch static for known provider ids only.
             models = _PROVIDER_MODELS.get(provider_id)
@@ -296,9 +298,9 @@ def register_provider_catalog_routes(
             run_handshake,
         )
 
+        # provider_id names a preset's own id, never its wire KIND (#1418) --
+        # see the matching comment on list_provider_models above.
         preset = next((p for p in _LM_PRESETS if p.id == provider_id), None)
-        if preset is None:
-            preset = next((p for p in _LM_PRESETS if p.provider == provider_id), None)
         if preset is None:
             raise HTTPException(
                 status_code=404,

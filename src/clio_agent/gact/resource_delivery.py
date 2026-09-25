@@ -364,7 +364,11 @@ def _live_modalities(app: Any, model: ModelRef) -> tuple[set[str], str, str]:
         report is not None
         and report.ok
         and report.models_source in _EVIDENCE_LABEL_BY_SOURCE
-        and model.provider_id in {report.provider_id, report.provider_kind, ""}
+        # provider KIND is never an identity match (#1418): nine presets share
+        # kind "openai", so matching on report.provider_kind let a message
+        # routed to one provider read another same-kind provider's live
+        # handshake evidence.
+        and model.provider_id in {report.provider_id, ""}
     ):
         profile = report.model(model.model_id)
         if profile is not None:
