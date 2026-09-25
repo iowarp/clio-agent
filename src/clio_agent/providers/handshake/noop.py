@@ -134,7 +134,13 @@ class NoOpHandshake(ProviderHandshake):
             else ()
         )
         observed_at = _now_iso()
-        model_key_fact = deployment_model_key_fact(model_id, observed_at=observed_at)
+        from clio_agent.providers.capabilities.model_overlay import (  # noqa: PLC0415
+            overlay_match_for_link,
+        )
+
+        model_key_fact = deployment_model_key_fact(
+            model_id, observed_at=observed_at, overlay_match=overlay_match_for_link
+        )
         model_key = model_key_fact.value or model_id
         model = ModelCapabilities(
             model_key=model_key,

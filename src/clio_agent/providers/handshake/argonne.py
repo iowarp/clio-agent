@@ -368,7 +368,13 @@ class ArgonneHandshake(ProviderHandshake):
         auto_tool = bool(raw.get("enable_auto_tool_choice"))
         native_tool_calling = tool_call_parser is not None or auto_tool
 
-        model_key_fact = deployment_model_key_fact(model_id, observed_at=observed_at)
+        from clio_agent.providers.capabilities.model_overlay import (  # noqa: PLC0415
+            overlay_match_for_link,
+        )
+
+        model_key_fact = deployment_model_key_fact(
+            model_id, observed_at=observed_at, overlay_match=overlay_match_for_link
+        )
         model_key = model_key_fact.value or model_id
         model = ModelCapabilities(model_key=model_key)
         deployment = DeploymentCapabilities(

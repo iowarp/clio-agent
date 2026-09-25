@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from clio_agent.providers.capabilities.model_sources import (
-    EmptyOverlaySource,
     community_catalog_facts,
     merge_model_layers,
     resolve_model_capabilities,
@@ -17,8 +16,13 @@ def _fact(value: object, source: str = "server_report") -> Fact:
     return Fact(value=value, source=source, observed_at=_NOW)
 
 
-def test_empty_overlay_source_always_returns_none() -> None:
-    assert EmptyOverlaySource().facts("any-model") is None
+class _NullOverlaySource:
+    """A fake overlay that always answers "no entry" -- for precedence tests
+    that must not depend on the REAL overlay's seeded catalog content."""
+
+    def facts(self, model_key: str) -> ModelCapabilities | None:
+        del model_key
+        return None
 
 
 def test_merge_model_layers_first_known_layer_wins_per_field() -> None:
@@ -103,8 +107,18 @@ def test_resolve_model_capabilities_falls_through_to_community_catalog() -> None
     assert result.context_max.source != "user"
 
 
-def test_resolve_model_capabilities_default_overlay_is_a_noop() -> None:
-    """With no overlay wired (P6), the precedence chain behaves as if it weren't there."""
-    with_overlay = resolve_model_capabilities("gpt-4o-mini", overlay=EmptyOverlaySource())
-    without_overlay = resolve_model_capabilities("gpt-4o-mini")
-    assert with_overlay.context_max.value == without_overlay.context_max.value
+def test_resolve_model_capabilities_default_overlay_is_a_noop_for_an_unmatched_model() -> None:
+    """A model no seeded family's matchPatterns hits behaves as if no overlay ran."""
+    with_null_overlay = resolve_model_capabilities("gpt-4o-mini", overlay=_NullOverlaySource())
+    with_default_overlay = resolve_model_capabilities("gpt-4o-mini")
+    assert with_default_overlay.context_max.value == with_null_overlay.context_max.value
+
+
+def test_resolve_model_capabilities_default_overlay_is_the_real_p6_catalog() -> None:
+    """P6 wiring: the default overlay is real and beats server_report (brief 5.1 order)."""
+    result = resolve_model_capabilities(
+        "qwen3.6-27b",
+        server_report=ModelCapabilities(model_key="qwen3.6-27b", context_max=_fact(1)),
+    )
+    assert result.context_max.value == 262144
+    assert result.context_max.source == "overlay"

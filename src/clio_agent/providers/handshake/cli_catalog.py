@@ -210,7 +210,13 @@ class CliCatalogHandshake(NoOpHandshake):
         observed_at = str(ctx.extra.get(_OVERLAY_GENERATED_AT_KEY) or "") or _now_iso()
         caps = _overlay_capabilities(raw)
         detail = "persisted refresh-overlay evidence (clio_agent.providers.model_discovery.overlay)"
-        model_key_fact = deployment_model_key_fact(model_id, observed_at=observed_at)
+        from clio_agent.providers.capabilities.model_overlay import (  # noqa: PLC0415
+            overlay_match_for_link,
+        )
+
+        model_key_fact = deployment_model_key_fact(
+            model_id, observed_at=observed_at, overlay_match=overlay_match_for_link
+        )
         model_key = model_key_fact.value or model_id
         model = ModelCapabilities(
             model_key=model_key,

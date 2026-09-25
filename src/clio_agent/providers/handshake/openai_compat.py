@@ -250,10 +250,15 @@ class OpenAICompatHandshake(ProviderHandshake):
         # (brief 5.4 rule 2); every other OpenAI-shaped backend has nothing
         # comparable, so this is None for them and the wire id stands in.
         vllm_root = raw.get("root")
+        from clio_agent.providers.capabilities.model_overlay import (  # noqa: PLC0415
+            overlay_match_for_link,
+        )
+
         model_key_fact = deployment_model_key_fact(
             model_id,
             observed_at=observed_at,
             vllm_root=str(vllm_root) if isinstance(vllm_root, str) and vllm_root else None,
+            overlay_match=overlay_match_for_link,
         )
         model_key = model_key_fact.value or model_id
         # An OFFLINE-ONLY (no network) catalog lookup for the model's own published

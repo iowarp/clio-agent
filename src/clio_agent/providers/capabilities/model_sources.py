@@ -6,10 +6,10 @@ higher layer that leaves a field unknown does not block a lower layer from
 filling it):
 
 1. **user** -- an explicit override from the settings panel.
-2. **overlay** -- the manual model overlay (brief Part 8). That catalog does
-   not exist yet; :class:`EmptyOverlaySource` is the interface this slice
-   wires in its place, so the precedence chain and its call sites never have
-   to change again once P6 lands.
+2. **overlay** -- the manual model overlay (brief Part 8):
+   :class:`~clio_agent.providers.capabilities.model_overlay.CatalogOverlaySource`,
+   consulted by default so this precedence chain and its call sites never had
+   to change once P6 landed.
 3. **server_report** -- what the handshake adapter itself evidenced (Ollama
    ``capabilities``, LM Studio ``trained_for_tool_use``, ...). Built by the
    adapter, passed in.
@@ -68,21 +68,6 @@ class OverlaySource(Protocol):
     def facts(self, model_key: str) -> ModelCapabilities | None:
         """Return this model's overlay-recorded facts, or ``None`` for no entry."""
         ...
-
-
-class EmptyOverlaySource:
-    """The P6 overlay's stand-in for this slice: always "no override".
-
-    Brief Part 8's manual model overlay (``catalogs/models/*.yaml``) is a
-    later slice. Wiring this no-op in now means :func:`resolve_model_capabilities`
-    and every caller already shaped around "user > overlay > server_report >
-    ..." need no changes when the real overlay lands -- only this class gets
-    replaced.
-    """
-
-    def facts(self, model_key: str) -> ModelCapabilities | None:
-        del model_key
-        return None
 
 
 class HfRepoSource(Protocol):
@@ -193,8 +178,9 @@ def resolve_model_capabilities(
     Args:
         model_key: The canonical model key the result is stamped with.
         user_override: An explicit settings-panel override, highest precedence.
-        overlay: The overlay source to consult; defaults to
-            :class:`EmptyOverlaySource` (no overlay wired yet, brief Part 8/P6).
+        overlay: The overlay source to consult; defaults to the real
+            :func:`~clio_agent.providers.capabilities.model_overlay.default_overlay_source`
+            (brief Part 8/P6). Callers inject a fake for tests.
         server_report: The facts the live handshake adapter evidenced this run.
         hf_repo: The Hugging Face repo source to consult, when one is wired
             (P4b); omitted entirely when the caller has none.
@@ -206,7 +192,14 @@ def resolve_model_capabilities(
         The merged :class:`ModelCapabilities`, per-field precedence-resolved.
     """
 
-    overlay_source = overlay if overlay is not None else EmptyOverlaySource()
+    if overlay is not None:
+        overlay_source = overlay
+    else:
+        from clio_agent.providers.capabilities.model_overlay import (  # noqa: PLC0415
+            default_overlay_source,
+        )
+
+        overlay_source = default_overlay_source()
     overlay_facts = overlay_source.facts(model_key)
     hf_facts = hf_repo.facts(model_key) if hf_repo is not None else None
     catalog_facts = community_catalog_facts(community_lookup_id or model_key)
@@ -221,7 +214,6 @@ def resolve_model_capabilities(
 
 
 __all__ = [
-    "EmptyOverlaySource",
     "HfRepoSource",
     "OverlaySource",
     "community_catalog_facts",

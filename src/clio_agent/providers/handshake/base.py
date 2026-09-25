@@ -223,34 +223,37 @@ class ProviderHandshake(abc.ABC):
     async def enrich_capabilities(
         self, facts: DiscoveredModelFacts, ctx: HandshakeContext
     ) -> DiscoveredModelFacts:
-        """Fill a missing model ``context_max``/``output_max`` from the community catalogs.
+        """Layer the model overlay and the community catalogs onto ``server_report``.
 
-        If the adapter's own ``server_report`` facts already know a value, it
-        is kept; otherwise consult models.dev -> litellm -> the local DB (brief
-        5.1 step 5) via
-        :func:`clio_agent.providers.capabilities.model_sources.community_catalog_facts`,
-        when ``allow_external_sources`` permits it.
+        Brief 5.1's per-field model-record precedence, restricted to the two
+        layers this passive per-handshake step can reach: the **overlay**
+        (priority 2, brief Part 8) wins field-by-field over the adapter's own
+        ``server_report`` facts (priority 3) -- a measured overlay correction
+        beats what a server/template misreports -- while the **community
+        catalogs** (priority 5: models.dev -> litellm -> the local DB, via
+        :func:`~clio_agent.providers.capabilities.model_sources.community_catalog_facts`)
+        only fill whatever NEITHER of those established. (Priority 1, a user
+        override, and priority 4, the Hugging Face repo layer, are not reached
+        from this step.) Gated on ``allow_external_sources`` exactly as
+        before -- the overlay's own default source never blocks on network
+        (it reads disk-cache/bundled data only), but this gate is the existing
+        contract callers rely on to keep a handshake network-free in tests.
         """
         if not ctx.allow_external_sources:
             return facts
         from clio_agent.providers.capabilities.model_sources import (  # noqa: PLC0415
-            community_catalog_facts,
+            resolve_model_capabilities,
         )
 
         model = facts.model
-        if model.context_max.known and model.output_max.known:
+        resolved = resolve_model_capabilities(
+            model.model_key,
+            server_report=model,
+            community_lookup_id=facts.discovered.id,
+        )
+        if resolved == model:
             return facts
-        catalog = community_catalog_facts(facts.discovered.id)
-        if catalog is None:
-            return facts
-        updates: dict[str, Any] = {}
-        if not model.context_max.known and catalog.context_max.known:
-            updates["context_max"] = catalog.context_max
-        if not model.output_max.known and catalog.output_max.known:
-            updates["output_max"] = catalog.output_max
-        if not updates:
-            return facts
-        return replace(facts, model=replace(model, **updates))
+        return replace(facts, model=resolved)
 
     # ------------------------------------------------------------------ helpers
     def _record_model_facts(self, facts: DiscoveredModelFacts) -> None:
