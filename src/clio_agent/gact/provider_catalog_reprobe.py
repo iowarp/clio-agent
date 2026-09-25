@@ -114,7 +114,7 @@ async def _attempt(
     seqs = {provider_id: snapshot.provider_seq(app, provider_id) for provider_id in stale}
     for provider_id in stale:
         handshake_cache.invalidate_provider(provider_id)
-    records = await snapshot.discover(stale, refresh=False)
+    records = await snapshot.discover(app, stale, refresh=False)
     fresh: list[dict[str, Any]] = []
     for record in records:
         provider_id = str(record.get("id") or "")

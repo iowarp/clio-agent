@@ -261,6 +261,55 @@ def _model_ref_matches_active(value: Any, app: "FastAPI") -> bool:
     return _model_ref_dict(value) == _active_lm_model_ref(app)
 
 
+def _bare_provider_kind_error(
+    value: Any, *, session_id: str, source: str
+) -> ErrorEnvelope | None:
+    """A typed 400 when a model ref's ``provider_id`` is a bare provider KIND.
+
+    A client that resolves identity by kind (the wire's ``provider`` field,
+    e.g. ``"openai"``) instead of a preset's own ``provider_id`` can send that
+    kind back on a message route (#1418 cause B). Where the kind also happens
+    to be a real provider id (``ollama``, ``anthropic``, the direct ``openai``
+    preset, ...) this is indistinguishable from a genuine selection and must
+    NOT be rejected -- only a kind with no matching provider id at all
+    (``argonne``, split into ``argonne_sophia`` / ``argonne_metis``) is
+    unambiguous evidence of the bug. With the frontend identity fix (#1418
+    cause A) this should never fire; a client that still trips it has the
+    same bug the frontend had.
+
+    Returns ``None`` when ``provider_id`` is empty, names a real preset, or
+    names no known kind at all.
+    """
+
+    ref = _model_ref_dict(value)
+    provider_id = ref["provider_id"]
+    if not provider_id:
+        return None
+    from clio_agent.providers.catalog import get_provider, iter_providers  # noqa: PLC0415
+
+    if get_provider(provider_id) is not None:
+        return None
+    if not any(p.provider_kind == provider_id for p in iter_providers()):
+        return None
+    return ErrorEnvelope(
+        error=ErrorInfo(
+            error="provider_kind_is_not_a_provider_id",
+            message=(
+                f"{source} model override names the provider KIND {provider_id!r}, "
+                "not a provider id. Send the specific preset's provider_id (as "
+                "reported by GET /v1/providers/lm), never its provider kind."
+            ),
+            details={
+                "session_id": session_id,
+                "source": source,
+                "model": ref,
+                "recovery_actions": ["put_global_lm_provider", "clear_session_model", "retry"],
+            },
+            recoverable=True,
+        )
+    )
+
+
 def _unsupported_model_ref_error(
     *,
     session_id: str,

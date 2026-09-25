@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from clio_agent.providers.api_base import native_root
 from clio_agent.providers.handshake.base import HandshakeContext
 from clio_agent.providers.handshake.model import ModelProfile
 from clio_agent.providers.handshake.openai_compat import OpenAICompatHandshake
@@ -31,12 +32,6 @@ class OllamaHandshake(OpenAICompatHandshake):
     #: ``tools``), so this backend really can evidence input modalities.
     reports_input_modalities = True
 
-    @staticmethod
-    def _native_root(api_base: str) -> str:
-        """The native API root — ``api_base`` with a trailing ``/v1`` stripped."""
-        base = (api_base or "").rstrip("/")
-        return base[: -len("/v1")] if base.endswith("/v1") else base
-
     async def discover_models(self, client: Any, ctx: HandshakeContext) -> list[dict[str, Any]]:
         """List installed models from the native ``/api/tags``."""
         headers = self._auth_header(ctx)
@@ -48,7 +43,7 @@ class OllamaHandshake(OpenAICompatHandshake):
     ) -> ModelProfile:
         """Resolve one model's context window + capabilities via ``/api/show``."""
         model_id = str(raw.get("id") or raw.get("model") or "").strip()
-        root = self._native_root(ctx.api_base)
+        root = native_root(ctx.api_base)
 
         context_window: int | None = None
         arch: str | None = None

@@ -155,6 +155,8 @@ def test_only_live_answers_are_persisted() -> None:
 
 
 def test_invalidate_provider_drops_every_api_base_variant() -> None:
+    # The cache is process-global; count only the entries this test puts.
+    handshake_cache.invalidate()
     handshake_cache.put_cached(("argonne_metis", "a"), _live_report())
     handshake_cache.put_cached(("argonne_metis", "b"), _live_report())
     handshake_cache.put_cached(("argonne_sophia", "a"), _live_report())
@@ -448,7 +450,7 @@ def test_older_reprobe_never_merges_over_a_newer_refresh(
     newer = _record("argonne_metis", source="live")
     newer["name"] = "newer refresh"
 
-    async def _discover(ids: list[str], *, refresh: bool) -> list[dict[str, Any]]:
+    async def _discover(_app: Any, ids: list[str], *, refresh: bool) -> list[dict[str, Any]]:
         # A refresh lands while this re-probe attempt is in flight.
         provider_catalog_snapshot.commit(
             app, {"catalog_id": "active", "providers": [newer]}, ["argonne_metis"]
@@ -469,7 +471,7 @@ def test_invalidation_during_a_read_is_kept_for_the_next_read(
     app = build_app(sessions_path=tmp_path / "sessions.json")
     monkeypatch.setattr(provider_catalog_snapshot, "as_lm_presets", lambda: [_metis()])
 
-    async def _discover(ids: list[str], *, refresh: bool) -> list[dict[str, Any]]:
+    async def _discover(_app: Any, ids: list[str], *, refresh: bool) -> list[dict[str, Any]]:
         provider_catalog_snapshot.invalidate_provider(app, "argonne_metis")
         return [_record(pid) for pid in ids]
 
@@ -567,7 +569,7 @@ def test_reprobe_logs_quiet_down_after_three_failures(
     )
     answers = ["last_good"] * 5 + ["live"]
 
-    async def _discover(ids: list[str], *, refresh: bool) -> list[dict[str, Any]]:
+    async def _discover(_app: Any, ids: list[str], *, refresh: bool) -> list[dict[str, Any]]:
         return [_record("argonne_metis", source=answers.pop(0))]
 
     monkeypatch.setattr(provider_catalog_snapshot, "discover", _discover)
@@ -600,7 +602,7 @@ def test_full_refresh_never_overwrites_a_newer_reprobe_answer(
     newer = _record("argonne_metis", source="live")
     newer["name"] = "re-probe answer"
 
-    async def _discover(ids: list[str], *, refresh: bool) -> list[dict[str, Any]]:
+    async def _discover(_app: Any, ids: list[str], *, refresh: bool) -> list[dict[str, Any]]:
         # A background re-probe answers while this (older) refresh is in flight.
         provider_catalog_snapshot.commit(
             app, {"catalog_id": "active", "providers": [newer]}, ["argonne_metis"]
