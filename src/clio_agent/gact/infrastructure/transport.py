@@ -16,6 +16,31 @@ class TransportUnavailableError(RuntimeError):
     """The target has no connected Desktop transport."""
 
 
+INFRASTRUCTURE_TRANSPORT_PROTOCOL = "clio.infrastructure.v1"
+
+
+def _negotiate_subprotocol(websocket: WebSocket) -> str | None:
+    """Pick the one application subprotocol both sides agree on (#1440).
+
+    The desktop's WebSocket client offers ``clio.infrastructure.v1`` (plus a
+    ``clio-bearer.<token>`` entry that only carries the bearer token). Per
+    RFC 6455 the server must echo back exactly one of the client's offered
+    values — never a value the client didn't offer — or omit the header
+    entirely. Accepting without echoing anything left every handshake
+    without a negotiated subprotocol, which some WebSocket clients along a
+    jump-host route (for example CHPC's Utah cluster) refuse outright.
+    """
+
+    offered = {
+        part.strip()
+        for part in websocket.headers.get("sec-websocket-protocol", "").split(",")
+        if part.strip()
+    }
+    return (
+        INFRASTRUCTURE_TRANSPORT_PROTOCOL if INFRASTRUCTURE_TRANSPORT_PROTOCOL in offered else None
+    )
+
+
 class _Connection:
     def __init__(self, websocket: WebSocket) -> None:
         self.websocket = websocket
@@ -63,7 +88,7 @@ class InfrastructureTransportRegistry:
     async def serve(self, target_id: str, websocket: WebSocket) -> None:
         """Attach one WebSocket until its Desktop transport disconnects."""
 
-        await websocket.accept()
+        await websocket.accept(subprotocol=_negotiate_subprotocol(websocket))
         connection = _Connection(websocket)
         async with self._lock:
             previous = self._connections.pop(target_id, None)
