@@ -223,6 +223,10 @@ async def _with_last_good(
     if report.models:
         await asyncio.to_thread(model_discovery.persist_live_catalog, preset.id, report)
         return report, {}
+    if report.auth == AuthState.REJECTED:
+        # A refused credential is fresher, definitive evidence: the last-good
+        # list must not come back dated as "maybe still available" beside it.
+        return report, {}
     last_good = await asyncio.to_thread(model_discovery.last_good_catalog, preset.id)
     if last_good is None:
         return report, {}
