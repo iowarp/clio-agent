@@ -73,7 +73,18 @@ dependencies = [
     # default so CTE works out of the box; make_arc_store falls back to local files
     # if the runtime is unavailable, and durability/fault-tolerance (replication,
     # erasure coding) come from the CTE config. CLIO_ARC_STORE=local opts out.
-    "iowarp-core>=2.1.0",
+    #
+    # ~= (compatible release), not >=: a bare floor let a plain `pip install
+    # clio-agent` (or the bundled runtime's unlocked `uv pip install`) silently
+    # resolve onto clio-core 2.2.1 while uv.lock/CI were still on 2.1.0 -- a
+    # real incident (a 2.1.0 client talking to a 2.2.1 daemon on one host).
+    # ~=2.2.1 == ">=2.2.1,<2.3.0": auto-follows 2.2.x patches (this project's
+    # own convention -- patch bumps are self-approved, minor bumps are not,
+    # see CLAUDE.md's "Contract versioning is patch-level"; clio-core's own
+    # 2.2.1 release notes call it "a drop-in upgrade from 2.2.0"), but a future
+    # 2.3.0 (new features, like 2.2.0's client-side caching + indexer chimod)
+    # requires an explicit bump + the root-cause work that goes with one.
+    "iowarp-core~=2.2.1",
     # Cross-platform process lifecycle for the shared clio-core runtime daemon
     # (connect-or-spawn + last-one-out release). clio-core deploys identically on
     # Linux/macOS/Windows (per upstream), so only the host-side primitives differ:
