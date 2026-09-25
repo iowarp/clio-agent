@@ -448,3 +448,30 @@ def _const_client(client: Any) -> Any:
         return client
 
     return _open
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_key_ends_the_handshake_before_model_discovery() -> None:
+    """A refused key must not go on to list (and enrich) a public catalog of
+    hundreds of models: one /models probe, one key check, then the verdict."""
+    client = FakeAsyncClient(
+        routes={
+            "https://openrouter.ai/api/v1/models": FakeResponse(200, _OPENROUTER_MODELS),
+            "https://openrouter.ai/api/v1/key": FakeResponse(401, {"error": "No auth"}),
+        }
+    )
+    handshake = OpenAICompatHandshake(provider=object())
+
+    async def _client(_ctx: HandshakeContext) -> FakeAsyncClient:
+        return client
+
+    handshake._open_client = _client  # type: ignore[method-assign]
+    report = await handshake.handshake(_openrouter_ctx("sk-or-v1-fake"))
+
+    assert report.auth is AuthState.REJECTED
+    assert report.error_code == "api_key_rejected"
+    assert report.models == ()
+    assert [url for url, _ in client.calls] == [
+        "https://openrouter.ai/api/v1/models",
+        "https://openrouter.ai/api/v1/key",
+    ]

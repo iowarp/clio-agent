@@ -157,6 +157,18 @@ class ProviderHandshake(abc.ABC):
                     error_code=conn.error_code,
                     started=started,
                 )
+            if conn.auth == AuthState.REJECTED:
+                # A refused credential ends the handshake: listing (and
+                # enriching) a public catalog under it proves nothing and, for
+                # a provider with hundreds of models, costs seconds.
+                return self._report(
+                    ctx,
+                    ConnectivityState.OK,
+                    AuthState.REJECTED,
+                    error=conn.error,
+                    error_code=conn.error_code,
+                    started=started,
+                )
             # thread the auth material resolved during connectivity to later phases
             if conn.auth_header:
                 ctx.extra["auth_header"] = conn.auth_header
@@ -195,9 +207,9 @@ class ProviderHandshake(abc.ABC):
                     )
                     continue
                 profiles.append(profile)
-            # A rejected or unproven credential keeps its typed reason even
-            # when the model listing itself answered (a public listing).
-            auth_reason = conn.auth in (AuthState.REJECTED, AuthState.DEFERRED)
+            # An unproven credential keeps its typed reason even when the
+            # model listing itself answered (a public listing).
+            auth_reason = conn.auth == AuthState.DEFERRED
             return self._report(
                 ctx,
                 ConnectivityState.OK,
