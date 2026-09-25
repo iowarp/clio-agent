@@ -4,15 +4,15 @@ The static per-provider model lists in :mod:`clio_agent.providers.catalog` are a
 compiled-in snapshot; CLI-routed accounts (codex, claude_code) rotate their served
 model ids independently of a clio release, so a snapshot goes stale (iowarp/clio-
 agent#1184: the catalog offered ``gpt-5.5``/``gpt-5.5-codex``/``gpt-5.1`` after the
-ChatGPT channel had moved on to ``gpt-5.6-sol``). This package is the single owner
+Codex channel had moved on to ``gpt-5.6-sol``). This package is the single owner
 of, one submodule per concern (kept split to respect the #775 file-size ratchet):
 
 * :mod:`.overlay` — the refresh overlay: read/write/delta, malformed-vs-unreadable
   typed errors, the ``ProviderDiscoveryResult`` shape, and the context/output-limit
   enrichment persisted at refresh time (#1211 review D4).
-* :mod:`.chatgpt_catalog` / :mod:`.chatgpt` — the maintained ChatGPT model
+* :mod:`.codex_catalog` / :mod:`.codex` — the maintained Codex model
   catalog document plus a credential-store sign-in check (see
-  :func:`discover_chatgpt`) -- the direct provider has no account model-
+  :func:`discover_codex`) -- the direct provider has no account model-
   enumeration RPC the way the deleted ``openai_codex`` SDK offered.
 * :mod:`.claude_code_catalog` — the maintained GitHub catalog document
   (:data:`~clio_agent.providers.model_discovery.claude_code_catalog.CLAUDE_CODE_CATALOG_URL`):
@@ -49,12 +49,12 @@ degrading to ``{}`` (the #1202 ``_read_mcp_yaml`` lesson).
 
 from __future__ import annotations
 
-from clio_agent.providers.model_discovery.chatgpt import discover_chatgpt
 from clio_agent.providers.model_discovery.claude_code import (
     CLAUDE_CODE_AUTH_STATUS_TIMEOUT_S,
     ClaudeCodeCLIUnavailableError,
     discover_claude_code,
 )
+from clio_agent.providers.model_discovery.codex import discover_codex
 from clio_agent.providers.model_discovery.http import discover_http
 from clio_agent.providers.model_discovery.last_good import (
     LAST_GOOD_CATALOG_SOURCE,
@@ -72,8 +72,8 @@ from clio_agent.providers.model_discovery.modality_evidence import (
     reported_modalities,
 )
 from clio_agent.providers.model_discovery.overlay import (
-    CHATGPT_SOURCE,
     CLAUDE_CODE_SOURCE,
+    CODEX_SOURCE,
     HTTP_SOURCE,
     OVERLAY_STALENESS_REASONS,
     OverlayMalformedError,
@@ -98,7 +98,7 @@ from clio_agent.providers.model_discovery.refresh import (
 )
 
 __all__ = [
-    "CHATGPT_SOURCE",
+    "CODEX_SOURCE",
     "CLAUDE_CODE_AUTH_STATUS_TIMEOUT_S",
     "CLAUDE_CODE_SOURCE",
     "HTTP_SOURCE",
@@ -116,7 +116,7 @@ __all__ = [
     "UnknownModalityReasonError",
     "attach_context_limits",
     "build_refresh_provider_models_tool",
-    "discover_chatgpt",
+    "discover_codex",
     "discover_claude_code",
     "discover_http",
     "entry_staleness",

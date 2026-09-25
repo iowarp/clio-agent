@@ -27,7 +27,7 @@ from clio_agent.providers.catalog_types import (
     Provider,
     ProviderConfigurationField,
 )
-from clio_agent.providers.chatgpt.constants import LITELLM_PROVIDER as _CHATGPT_LITELLM_PREFIX
+from clio_agent.providers.codex.constants import LITELLM_PROVIDER as _CODEX_LITELLM_PREFIX
 
 # -- shared catalogs --------------------------------------------------
 
@@ -171,7 +171,7 @@ PROVIDERS: tuple[Provider, ...] = (
     # ----- cloud / proxy ---------------------------------------------
     Provider(
         id="openai",
-        label="OpenAI / ChatGPT",
+        label="OpenAI / Codex",
         description=(
             "Direct OpenAI API. Requires "
             "an OPENAI_API_KEY. Defaults to gpt-4o-mini for low cost; "
@@ -372,25 +372,26 @@ PROVIDERS: tuple[Provider, ...] = (
         ),
     ),
     Provider(
-        id="chatgpt",
-        label="ChatGPT (subscription)",
+        id="codex",
+        label="Codex",
         description=(
-            "Signs in with your ChatGPT account and calls the Codex backend "
+            "Signs in with your Codex account and calls the Codex backend "
             "directly from CLIO's own process -- no Codex CLI, no Codex SDK. "
-            "Usage counts against your ChatGPT plan limits."
+            "Usage counts against your Codex plan limits."
         ),
-        provider_kind="chatgpt",
-        # NOT "chatgpt": litellm ships its own native "chatgpt" provider
-        # (a device-code OAuth client against auth.openai.com) that would
-        # silently swallow every "chatgpt/..." model string before our
-        # custom_provider_map registration is ever consulted. See
-        # providers.chatgpt.constants.LITELLM_PROVIDER.
-        litellm_prefix=_CHATGPT_LITELLM_PREFIX,
+        provider_kind="codex",
+        # The litellm wire prefix is kept separate from the catalog id
+        # ("codex") on purpose: this module was ORIGINALLY registered under
+        # "chatgpt" (its catalog id at the time), and litellm ships its own
+        # native "chatgpt" provider that silently intercepted every turn
+        # before ours ever ran. See providers.codex.constants.LITELLM_PROVIDER
+        # for the full story -- this indirection is the permanent fix.
+        litellm_prefix=_CODEX_LITELLM_PREFIX,
         # No HTTP base to configure -- an identity marker only. The actual
         # transport endpoints (chatgpt.com/backend-api) live in
-        # providers.chatgpt.constants, never here.
-        api_base="chatgpt://direct",
-        # The maintained catalog (catalogs/chatgpt-models.json) supplies the
+        # providers.codex.constants, never here.
+        api_base="codex://direct",
+        # The maintained catalog (catalogs/codex-models.json) supplies the
         # live default; never auto-select a compiled-in candidate.
         suggested_model="",
         requires_api_key=False,
@@ -402,13 +403,13 @@ PROVIDERS: tuple[Provider, ...] = (
         model_catalog=(
             ModelEntry(
                 "gpt-5.6-sol",
-                "GPT-5.6 Sol (ChatGPT)",
-                "Candidate ChatGPT catalog model id; not guaranteed by account entitlement.",
+                "GPT-5.6 Sol (Codex)",
+                "Candidate Codex catalog model id; not guaranteed by account entitlement.",
             ),
             ModelEntry(
                 "gpt-5.5",
-                "GPT-5.5 (ChatGPT)",
-                "Candidate ChatGPT catalog model id; not guaranteed by account entitlement.",
+                "GPT-5.5 (Codex)",
+                "Candidate Codex catalog model id; not guaranteed by account entitlement.",
             ),
         ),
     ),

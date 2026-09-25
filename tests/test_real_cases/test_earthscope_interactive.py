@@ -39,7 +39,7 @@ via ``ClioAgent._extract_messages`` — never prose. Per the live-test rule
 (subscription providers only; local qwopus/LM Studio kills the box on a
 multi-session grind) and the headless pre-allow doctrine (the ``gact_server``
 fixture already ``PUT``s a wildcard-allow policy before the first turn), run
-against ``claude_code`` or ``chatgpt``, e.g.::
+against ``claude_code`` or ``codex``, e.g.::
 
     CLIO_RUN_LIVE=1 CLIO_GACT_FIXTURE_PORT=18997 \
       uv run pytest tests/test_real_cases/test_earthscope_interactive.py \
@@ -47,7 +47,7 @@ against ``claude_code`` or ``chatgpt``, e.g.::
         -o addopts="" -p no:cacheprovider -q
 
 and likewise with ``-k a2ui_queued_selection`` / ``-k a2ui_waiting_user_selection``
-(and ``--provider chatgpt --model gpt-5.5`` for the second required cell).
+(and ``--provider codex --model gpt-5.5`` for the second required cell).
 Each scene installs the pack fresh via ``marketplace_source`` (the SAME
 mechanism ``ClioAgent.invoke`` already uses for a workspace-scoped
 ``/v1/agent-blueprints/install``, real CTE, real gact server — no fixture

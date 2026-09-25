@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 __all__ = [
-    "ChatGptSessionState",
+    "CodexSessionState",
     "SessionCounters",
     "all_session_counters",
     "drop_session",
@@ -46,8 +46,8 @@ class SessionCounters:
 
 
 @dataclass
-class ChatGptSessionState:
-    """One CLIO session's ChatGPT-provider state."""
+class CodexSessionState:
+    """One CLIO session's Codex-provider state."""
 
     session_id: str
     #: Reasoning items from the most recently completed turn, sent back
@@ -65,16 +65,16 @@ class ChatGptSessionState:
 
 
 _REGISTRY_LOCK = threading.Lock()
-_SESSIONS: dict[str, ChatGptSessionState] = {}
+_SESSIONS: dict[str, CodexSessionState] = {}
 
 
-def get_session(session_id: str) -> ChatGptSessionState:
+def get_session(session_id: str) -> CodexSessionState:
     """Return (creating if needed) the state for ``session_id``."""
 
     with _REGISTRY_LOCK:
         state = _SESSIONS.get(session_id)
         if state is None:
-            state = ChatGptSessionState(session_id=session_id)
+            state = CodexSessionState(session_id=session_id)
             _SESSIONS[session_id] = state
         return state
 

@@ -561,7 +561,7 @@ async def _try_streamed_forward(
         or "provider"
     )
     bridge_provider_thinking = _provider_runtime_kind(provider_id) not in {
-        "chatgpt",
+        "codex",
         "claude_code",
     }
     # Seed the heartbeat clock so the first reasoning chunk publishes immediately.

@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 _LOCK = threading.Lock()
 
-CHATGPT_SOURCE = "chatgpt_catalog"
+CODEX_SOURCE = "codex_catalog"
 CLAUDE_CODE_SOURCE = "claude_code_catalog"
 HTTP_SOURCE = "live_handshake"
 
@@ -426,7 +426,7 @@ def update_entry_fields(provider: str, fields: Mapping[str, Any]) -> None:
 
 
 __all__ = [
-    "CHATGPT_SOURCE",
+    "CODEX_SOURCE",
     "CLAUDE_CODE_SOURCE",
     "HTTP_SOURCE",
     "OVERLAY_STALENESS_REASONS",

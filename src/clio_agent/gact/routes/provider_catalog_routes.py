@@ -25,14 +25,14 @@ def register_provider_catalog_routes(
     app: FastAPI,
     presets: list[LMProviderPreset],
     provider_models: dict[str, list[dict[str, str]]],
-    chatgpt_readiness: Readiness,
+    codex_readiness: Readiness,
     claude_code_readiness: Readiness,
 ) -> None:
     """Register provider auth, model listing, support install and checks."""
 
     _LM_PRESETS = presets
     _PROVIDER_MODELS = provider_models
-    _chatgpt_readiness = chatgpt_readiness
+    _codex_readiness = codex_readiness
     _claude_code_readiness = claude_code_readiness
 
     @app.post("/v1/providers/{provider_id}/auth")
@@ -40,7 +40,7 @@ def register_provider_catalog_routes(
         """The generic provider sign-in API (start/complete/status/logout).
 
         Dispatched by provider kind in :mod:`clio_agent.gact.routes.provider_auth`
-        -- ALCF (Globus OAuth) and the direct ChatGPT provider both go through
+        -- ALCF (Globus OAuth) and the direct Codex provider both go through
         this one interface. Any other provider (cloud / local, api_key / no
         auth) gets a 405 with a hint pointing to PUT /v1/providers/lm.
         """
@@ -60,7 +60,9 @@ def register_provider_catalog_routes(
 
         body = await json_body(request, route="POST /v1/providers/{provider_id}/auth")
         action = str(body.get("action", "start")).strip().lower()
-        return await handle_auth_action(preset=preset, action=action, body=body, app=app, presets=_LM_PRESETS)
+        return await handle_auth_action(
+            preset=preset, action=action, body=body, app=app, presets=_LM_PRESETS
+        )
 
     @app.get("/v1/providers/{provider_id}/models")
     async def list_provider_models(provider_id: str, api_base: str = "") -> dict[str, Any]:
@@ -93,9 +95,9 @@ def register_provider_catalog_routes(
                 )
             return {"models": models, "source": "static_catalog"}
 
-        if preset.provider in {"chatgpt", "claude_code"}:
+        if preset.provider in {"codex", "claude_code"}:
             _, message, verified, _ = (
-                _chatgpt_readiness() if preset.provider == "chatgpt" else _claude_code_readiness()
+                _codex_readiness() if preset.provider == "codex" else _claude_code_readiness()
             )
             try:
                 overlay = model_discovery.overlay_models_wire(preset.id, preset.provider)
@@ -233,13 +235,13 @@ def register_provider_catalog_routes(
             # An explicit check is new evidence: the catalog snapshot must not keep
             # serving what the provider looked like before it.
             invalidate_provider(app, preset.id)
-        if preset.provider == "chatgpt":
-            status, message, verified, _ = _chatgpt_readiness()
+        if preset.provider == "codex":
+            status, message, verified, _ = _codex_readiness()
             if refresh and status in {"auth_check_required", "ready"}:
                 from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
-                from clio_agent.providers.chatgpt.errors import (  # noqa: PLC0415
-                    CHATGPT_AUTHENTICATION_ERROR_MESSAGE,
-                    contains_chatgpt_authentication_error,
+                from clio_agent.providers.codex.errors import (  # noqa: PLC0415
+                    CODEX_AUTHENTICATION_ERROR_MESSAGE,
+                    contains_codex_authentication_error,
                 )
 
                 provider = get_provider(preset.id)
@@ -251,17 +253,17 @@ def register_provider_catalog_routes(
                 result = results[0] if results else {}
                 failure = str(result.get("failed_reason") or "")
                 if failure:
-                    auth_failure = contains_chatgpt_authentication_error(failure)
+                    auth_failure = contains_codex_authentication_error(failure)
                     return {
                         "models": [],
                         "source": "unavailable",
-                        "error": (CHATGPT_AUTHENTICATION_ERROR_MESSAGE if auth_failure else failure),
+                        "error": (CODEX_AUTHENTICATION_ERROR_MESSAGE if auth_failure else failure),
                         "connectivity": "ok" if auth_failure else "unreachable",
                         "auth": "rejected" if auth_failure else "deferred",
                         "latency_ms": None,
                         "generated_at": str(result.get("generated_at") or ""),
                     }
-                status, message, verified, _ = _chatgpt_readiness(ignore_startup=True)
+                status, message, verified, _ = _codex_readiness(ignore_startup=True)
             if not verified:
                 return {
                     "models": [],

@@ -30,8 +30,8 @@ from clio_agent.gact.app import (
     build_app,
 )
 from clio_agent.gact.types import AgentDef
-from clio_agent.providers.chatgpt.errors import CHATGPT_AUTHENTICATION_ERROR_MESSAGE
 from clio_agent.providers.claude_code_errors import CLAUDE_CODE_INSTALL_FAILED_MESSAGE
+from clio_agent.providers.codex.errors import CODEX_AUTHENTICATION_ERROR_MESSAGE
 from tests._config_layer import set_config
 
 # #948 S4b: turns that POST through the engine now run the default blueprint react
@@ -539,7 +539,7 @@ def test_argonne_streaming_is_not_force_classified_as_batch() -> None:
     """iowarp/clio-agent#160: ALCF (Sophia + Metis) is a plain OpenAI-compatible
     SSE endpoint that streams at the provider AND through LiteLLM (verified with a
     live multi-chunk probe). CLIO must NOT force-classify it as batch -- doing so
-    bypassed the streamify pump for every ALCF run. The direct ChatGPT provider is
+    bypassed the streamify pump for every ALCF run. The direct Codex provider is
     also a real streaming transport."""
 
     from clio_agent.gact.app import _agent_streaming_unsupported_reason
@@ -565,13 +565,13 @@ def test_argonne_streaming_is_not_force_classified_as_batch() -> None:
         == ""
     )
 
-    # The direct ChatGPT provider emits text/reasoning notifications and must
+    # The direct Codex provider emits text/reasoning notifications and must
     # use the stream pump.
-    assert _agent_streaming_unsupported_reason(_agent("chatgpt")) == ""
+    assert _agent_streaming_unsupported_reason(_agent("codex")) == ""
 
 
 @pytest.mark.asyncio
-async def test_dynamic_agent_module_carries_streaming_chatgpt_provider_config(
+async def test_dynamic_agent_module_carries_streaming_codex_provider_config(
     tmp_path: Path,
 ) -> None:
     from clio_agent.config import LMProviderConfig
@@ -579,11 +579,11 @@ async def test_dynamic_agent_module_carries_streaming_chatgpt_provider_config(
 
     base_agent = SimpleNamespace(
         _provider_config=LMProviderConfig(
-            provider="chatgpt",
-            api_base="chatgpt://direct",
+            provider="codex",
+            api_base="codex://direct",
             model="gpt-5.5",
             api_key="x",
-            chatgpt_transport="websocket",
+            codex_transport="websocket",
         )
     )
     module = _build_prompt_user_agent_module(
@@ -595,8 +595,8 @@ async def test_dynamic_agent_module_carries_streaming_chatgpt_provider_config(
             system_prompt="Review reference evidence.",
         ),
     )
-    assert module._provider_config.provider == "chatgpt"
-    assert module._provider_config.chatgpt_transport == "websocket"
+    assert module._provider_config.provider == "codex"
+    assert module._provider_config.codex_transport == "websocket"
     assert _agent_streaming_unsupported_reason(module) == ""
 
 
@@ -936,7 +936,7 @@ def test_pre_stream_failure_surfaces_error_without_sync_rerun(
     )
 
 
-def test_chatgpt_missing_auth_surfaces_clean_error(
+def test_codex_missing_auth_surfaces_clean_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
 ) -> None:
     async def fail_before_chunk(*args: Any, **kwargs: Any) -> Any:
@@ -945,7 +945,7 @@ def test_chatgpt_missing_auth_surfaces_clean_error(
             "provider stream failed",
             [
                 RuntimeError(
-                    "[chatgpt-gpt-5.5] unexpected status 401 Unauthorized: "
+                    "[codex-gpt-5.5] unexpected status 401 Unauthorized: "
                     "access token rejected, "
                     "url: https://chatgpt.com/backend-api/codex/responses"
                 )
@@ -974,7 +974,7 @@ def test_chatgpt_missing_auth_surfaces_clean_error(
 
     messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
     assistant = [message for message in messages if message["role"] == "assistant"][-1]
-    assert assistant["error_info"]["message"] == CHATGPT_AUTHENTICATION_ERROR_MESSAGE
+    assert assistant["error_info"]["message"] == CODEX_AUTHENTICATION_ERROR_MESSAGE
     assert "live streaming failed" not in assistant["error_info"]["message"]
     assert "chatgpt.com" not in assistant["error_info"]["message"]
 

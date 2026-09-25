@@ -116,7 +116,7 @@ def test_prompt_context_is_estimated_when_cli_provider_has_no_history(
         turn_usage, "_last_prompt_usage_from_history_slice", lambda _start, _app: {}
     )
     monkeypatch.setattr(turn_usage, "_usage_from_dspy_history", lambda: {})
-    monkeypatch.setattr(turn_usage, "_current_lm_model_id", lambda: "chatgpt/gpt-5")
+    monkeypatch.setattr(turn_usage, "_current_lm_model_id", lambda: "codex/gpt-5")
     monkeypatch.setattr(
         turn_usage,
         "_estimated_prompt_usage",

@@ -77,10 +77,10 @@ def test_daemon_spawn_breaks_away_from_job_on_windows(monkeypatch: pytest.Monkey
 def test_teardown_pooled_sdk_transports_closes_both_pools_and_logs(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Clean shutdown closes every pooled SDK client + the chatgpt WS sessions, and logs."""
-    from clio_agent.providers import claude_code_sdk_pool, claude_code_sessions
-    from clio_agent.providers.chatgpt import sessions as chatgpt_sessions
-    from clio_agent.providers.chatgpt import transport_ws as chatgpt_transport_ws
+    """Clean shutdown closes the pooled Claude client + the codex WS sessions, and logs."""
+    from clio_agent.providers import claude_code_sessions
+    from clio_agent.providers.codex import sessions as codex_sessions
+    from clio_agent.providers.codex import transport_ws as codex_transport_ws
 
     calls: list[str] = []
     monkeypatch.setattr(
@@ -88,31 +88,25 @@ def test_teardown_pooled_sdk_transports_closes_both_pools_and_logs(
         "close_blocking",
         lambda: calls.append("stream"),
     )
-    monkeypatch.setattr(
-        claude_code_sdk_pool._SDK_SESSION_POOL,
-        "close",
-        lambda: calls.append("sdk"),
-    )
     fake_connections = ["conn-1", "conn-2"]
 
     def _fake_pop_all_ws_connections() -> list[str]:
-        calls.append("chatgpt")
+        calls.append("codex")
         return fake_connections
 
     async def _fake_close_connections(connections: list[str]) -> None:
         assert connections == fake_connections
 
-    monkeypatch.setattr(chatgpt_sessions, "pop_all_ws_connections", _fake_pop_all_ws_connections)
-    monkeypatch.setattr(chatgpt_transport_ws, "close_connections", _fake_close_connections)
+    monkeypatch.setattr(codex_sessions, "pop_all_ws_connections", _fake_pop_all_ws_connections)
+    monkeypatch.setattr(codex_transport_ws, "close_connections", _fake_close_connections)
 
     with caplog.at_level(logging.INFO, logger="clio_agent.runtime.process_tree"):
         outcome = pt.teardown_pooled_sdk_transports()
 
-    assert calls == ["stream", "sdk", "chatgpt"]
+    assert calls == ["stream", "codex"]
     assert outcome == {
         "stream_client_pool": "closed",
-        "sdk_session_pool": "closed",
-        "chatgpt_ws_sessions": "closed:2",
+        "codex_ws_sessions": "closed:2",
     }
     assert any("reason=sdk_pools_closed" in rec.message for rec in caplog.records)
 

@@ -1,4 +1,4 @@
-"""Typed errors + retry/terminal classification for the ChatGPT transport (A.7).
+"""Typed errors + retry/terminal classification for the Codex transport (A.7).
 
 No silent fallback: every failure this provider can raise is one of the typed
 exceptions below, carrying a machine-readable ``reason`` alongside the human
@@ -12,7 +12,7 @@ import email.utils
 import time
 from dataclasses import dataclass
 
-from clio_agent.providers.chatgpt.constants import (
+from clio_agent.providers.codex.constants import (
     RETRY_BASE_DELAY_MS,
     RETRY_MAX_DELAY_MS,
     RETRYABLE_STATUS_CODES,
@@ -20,38 +20,38 @@ from clio_agent.providers.chatgpt.constants import (
 )
 
 
-class ChatGPTError(RuntimeError):
-    """Base class for every typed ChatGPT-provider failure."""
+class CodexError(RuntimeError):
+    """Base class for every typed Codex-provider failure."""
 
-    reason: str = "chatgpt_error"
+    reason: str = "codex_error"
 
 
-class ChatGPTAuthError(ChatGPTError):
+class CodexAuthError(CodexError):
     """The OAuth login/refresh flow failed (A.3/A.4)."""
 
-    reason = "chatgpt_auth_failed"
+    reason = "codex_auth_failed"
 
 
-class ChatGPTCredentialMissingError(ChatGPTAuthError):
+class CodexCredentialMissingError(CodexAuthError):
     """No stored credential -- the user has never signed in, or logged out."""
 
-    reason = "chatgpt_credential_missing"
+    reason = "codex_credential_missing"
 
 
-class ChatGPTRefreshFailedError(ChatGPTAuthError):
+class CodexRefreshFailedError(CodexAuthError):
     """A 401 refresh attempt failed -- the credential must be treated as invalid."""
 
-    reason = "chatgpt_auth_refresh_failed"
+    reason = "codex_auth_refresh_failed"
 
 
-class ChatGPTResponseError(ChatGPTError):
+class CodexResponseError(CodexError):
     """The Codex backend rejected or failed a turn (SSE ``error``/``response.failed``).
 
     ``code`` is the backend's own error code (``response.error.code``) when
     one was present; ``status_code`` is the transport HTTP status when applicable.
     """
 
-    reason = "chatgpt_response_failed"
+    reason = "codex_response_failed"
 
     def __init__(
         self, message: str, *, code: str | None = None, status_code: int | None = None
@@ -61,28 +61,28 @@ class ChatGPTResponseError(ChatGPTError):
         self.status_code = status_code
 
 
-class ChatGPTPlanLimitError(ChatGPTResponseError):
-    """A 429 whose text names the ChatGPT plan window -- terminal, never retried."""
+class CodexPlanLimitError(CodexResponseError):
+    """A 429 whose text names the Codex plan window -- terminal, never retried."""
 
-    reason = "chatgpt_plan_limit"
+    reason = "codex_plan_limit"
 
 
-class ChatGPTRetryExhaustedError(ChatGPTError):
+class CodexRetryExhaustedError(CodexError):
     """Every retry attempt was consumed, or the server asked for longer than the cap."""
 
-    reason = "chatgpt_retry_exhausted"
+    reason = "codex_retry_exhausted"
 
 
-class ChatGPTTransportError(ChatGPTError):
+class CodexTransportError(CodexError):
     """A network/transport-level failure (connection refused, timeout, ...)."""
 
-    reason = "chatgpt_transport_error"
+    reason = "codex_transport_error"
 
 
 #: Shown wherever a refresh/handshake failure turns out to be an auth
 #: rejection rather than a generic transport failure -- mirrors the deleted
 #: Codex provider's ``CODEX_AUTHENTICATION_ERROR_MESSAGE``.
-CHATGPT_AUTHENTICATION_ERROR_MESSAGE = "ChatGPT sign-in is required on the connected agent"
+CODEX_AUTHENTICATION_ERROR_MESSAGE = "Codex sign-in is required on the connected agent"
 
 _AUTH_FAILURE_MARKERS: tuple[str, ...] = (
     "401",
@@ -95,7 +95,7 @@ _AUTH_FAILURE_MARKERS: tuple[str, ...] = (
 )
 
 
-def contains_chatgpt_authentication_error(error: BaseException | str) -> bool:
+def contains_codex_authentication_error(error: BaseException | str) -> bool:
     """Whether an error/failure string names an auth rejection.
 
     Distinguishes "the account needs to sign in again" from a generic
@@ -204,22 +204,22 @@ def raise_for_backend_error(
 
     text = message or "Codex backend request failed"
     if is_usage_limit_text(text):
-        raise ChatGPTPlanLimitError(text, code=code, status_code=status_code)
-    raise ChatGPTResponseError(text, code=code, status_code=status_code)
+        raise CodexPlanLimitError(text, code=code, status_code=status_code)
+    raise CodexResponseError(text, code=code, status_code=status_code)
 
 
 __all__ = [
-    "CHATGPT_AUTHENTICATION_ERROR_MESSAGE",
-    "ChatGPTAuthError",
-    "ChatGPTCredentialMissingError",
-    "ChatGPTError",
-    "ChatGPTPlanLimitError",
-    "ChatGPTRefreshFailedError",
-    "ChatGPTResponseError",
-    "ChatGPTRetryExhaustedError",
-    "ChatGPTTransportError",
+    "CODEX_AUTHENTICATION_ERROR_MESSAGE",
+    "CodexAuthError",
+    "CodexCredentialMissingError",
+    "CodexError",
+    "CodexPlanLimitError",
+    "CodexRefreshFailedError",
+    "CodexResponseError",
+    "CodexRetryExhaustedError",
+    "CodexTransportError",
     "RetryDecision",
-    "contains_chatgpt_authentication_error",
+    "contains_codex_authentication_error",
     "is_retryable_status",
     "is_usage_limit_text",
     "next_retry_delay_ms",

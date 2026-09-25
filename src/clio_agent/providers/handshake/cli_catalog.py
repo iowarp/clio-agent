@@ -1,7 +1,7 @@
 """``CliCatalogHandshake`` — :class:`NoOpHandshake` + the #1211 model-catalog overlay.
 
 Extends :class:`~clio_agent.providers.handshake.noop.NoOpHandshake` (zero network
-calls; chatgpt/claude_code have no HTTP ``/models`` surface) so ``discover_models``
+calls; codex/claude_code have no HTTP ``/models`` surface) so ``discover_models``
 also consults the persisted refresh overlay
 (:mod:`clio_agent.providers.model_discovery`) written by ``POST
 /v1/providers/models/refresh`` — an explicit, user-triggered action.
@@ -83,7 +83,7 @@ class CliCatalogHandshake(NoOpHandshake):
     """:class:`NoOpHandshake` variant whose model list prefers the refresh overlay."""
 
     #: The overlay carries the capabilities an explicit discovery run evidenced
-    #: (the maintained ChatGPT catalog's declared input modalities, the maintained claude_code
+    #: (the maintained Codex catalog's declared input modalities, the maintained claude_code
     #: catalog's declared capabilities), so this provider kind HAS a
     #: modality-evidence system -- absence of a modality here means "not
     #: evidenced yet", never "nobody could ask".
@@ -133,7 +133,7 @@ class CliCatalogHandshake(NoOpHandshake):
                     # of arriving as an anonymous empty list.
                     "capability_evidence": m.get("capability_evidence") or {},
                     # Per-model reasoning efforts the discovery run recorded
-                    # (the maintained ChatGPT catalog); the provider catalog derives the
+                    # (the maintained Codex catalog); the provider catalog derives the
                     # selectable thinking levels from them.
                     "supported_reasoning_efforts": list(m.get("supported_reasoning_efforts") or []),
                     "default_reasoning_effort": str(m.get("default_reasoning_effort") or ""),
@@ -151,7 +151,7 @@ class CliCatalogHandshake(NoOpHandshake):
     def models_provenance(self, ctx: HandshakeContext) -> tuple[str, str]:
         """Report ``overlay`` + the discovery run's own timestamp, else ``static``.
 
-        The overlay is real evidence — a ChatGPT catalog read or a claude_code
+        The overlay is real evidence — a Codex catalog read or a claude_code
         alias probe actually ran — but it is not THIS run's evidence, and it can
         be arbitrarily old. Both facts are reported rather than collapsed into
         the ``live`` the base class used to stamp unconditionally. With no
@@ -215,21 +215,21 @@ class CliCatalogHandshake(NoOpHandshake):
         return await super().enrich_capabilities(profile, ctx)
 
 
-class ChatGptCatalogHandshake(CliCatalogHandshake):
-    """ChatGPT catalog handshake gated by a verified, signed-in credential."""
+class CodexCatalogHandshake(CliCatalogHandshake):
+    """Codex catalog handshake gated by a verified, signed-in credential."""
 
     async def check_connectivity(self, client: Any, ctx: HandshakeContext) -> ConnectivityResult:
         """Reject synthetic readiness until a signed-in credential and a fresh catalog check exist."""
 
         del client
         from clio_agent.providers import model_discovery  # noqa: PLC0415
-        from clio_agent.providers.chatgpt.credentials import ChatGptCredentialStore  # noqa: PLC0415
+        from clio_agent.providers.codex.credentials import CodexCredentialStore  # noqa: PLC0415
 
-        if not ChatGptCredentialStore().is_signed_in():
+        if not CodexCredentialStore().is_signed_in():
             return ConnectivityResult(
                 connectivity=ConnectivityState.SKIPPED,
                 auth=AuthState.MISSING,
-                error="ChatGPT sign-in is required on the connected agent",
+                error="Codex sign-in is required on the connected agent",
             )
         try:
             overlay = model_discovery.overlay_models_wire(ctx.provider_id, ctx.provider_kind)
@@ -237,7 +237,7 @@ class ChatGptCatalogHandshake(CliCatalogHandshake):
             return ConnectivityResult(
                 connectivity=ConnectivityState.UNREACHABLE,
                 auth=AuthState.DEFERRED,
-                error=f"ChatGPT model catalog is invalid: {exc}",
+                error=f"Codex model catalog is invalid: {exc}",
             )
         if overlay and overlay.get("models") and not overlay.get("staleness"):
             return ConnectivityResult(
@@ -247,7 +247,7 @@ class ChatGptCatalogHandshake(CliCatalogHandshake):
         return ConnectivityResult(
             connectivity=ConnectivityState.SKIPPED,
             auth=AuthState.DEFERRED,
-            error="ChatGPT credentials are present but have not been validated",
+            error="Codex credentials are present but have not been validated",
         )
 
 
@@ -290,4 +290,4 @@ class ClaudeCodeCatalogHandshake(CliCatalogHandshake):
         )
 
 
-__all__ = ["ChatGptCatalogHandshake", "ClaudeCodeCatalogHandshake", "CliCatalogHandshake"]
+__all__ = ["CodexCatalogHandshake", "ClaudeCodeCatalogHandshake", "CliCatalogHandshake"]

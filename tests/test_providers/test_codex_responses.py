@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from clio_agent.providers.chatgpt.responses import (
+from clio_agent.providers.codex.responses import (
     build_request_body,
     chat_messages_to_responses_input,
     chat_tools_to_responses_tools,

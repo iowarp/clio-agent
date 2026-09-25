@@ -1,9 +1,9 @@
-"""The ChatGPT credential record and the login-flow orchestrator.
+"""The Codex credential record and the login-flow orchestrator.
 
-Split out of :mod:`clio_agent.providers.chatgpt.oauth` (which owns the
+Split out of :mod:`clio_agent.providers.codex.oauth` (which owns the
 stateless protocol mechanics: PKCE, the loopback listener, paste parsing,
 device login, code exchange/refresh, JWT decode) to keep that module under
-the #775 file-size ratchet. :class:`ChatGptLoginFlow` is the stateful
+the #775 file-size ratchet. :class:`CodexLoginFlow` is the stateful
 orchestrator a route handler drives across the generic
 start/complete/status/logout auth API (see
 :mod:`clio_agent.gact.routes.provider_auth`); the module-level registry at
@@ -20,8 +20,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from clio_agent.providers.chatgpt import constants as c
-from clio_agent.providers.chatgpt.oauth import (
+from clio_agent.providers.codex import constants as c
+from clio_agent.providers.codex.oauth import (
     DeviceLogin,
     LoopbackBindError,
     LoopbackListener,
@@ -38,8 +38,8 @@ from clio_agent.providers.chatgpt.oauth import (
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "ChatGptCredential",
-    "ChatGptLoginFlow",
+    "CodexCredential",
+    "CodexLoginFlow",
     "FlowState",
     "LoginMethods",
     "create_login_flow",
@@ -47,7 +47,7 @@ __all__ = [
     "get_login_flow",
 ]
 
-#: How long :class:`ChatGptLoginFlow` waits on the loopback callback before
+#: How long :class:`CodexLoginFlow` waits on the loopback callback before
 #: giving up (a paste can still complete the flow after this).
 _BROWSER_WAIT_TIMEOUT_S = 15 * 60.0
 
@@ -55,8 +55,8 @@ FlowState = Literal["pending", "complete", "failed"]
 
 
 @dataclass(frozen=True)
-class ChatGptCredential:
-    """One stored ChatGPT OAuth credential (A.3's ``credential`` shape)."""
+class CodexCredential:
+    """One stored Codex OAuth credential (A.3's ``credential`` shape)."""
 
     access_token: str
     refresh_token: str
@@ -74,7 +74,7 @@ class ChatGptCredential:
         }
 
     @classmethod
-    def from_dict(cls, raw: dict[str, Any]) -> "ChatGptCredential":
+    def from_dict(cls, raw: dict[str, Any]) -> "CodexCredential":
         return cls(
             access_token=str(raw.get("access") or ""),
             refresh_token=str(raw.get("refresh") or ""),
@@ -85,7 +85,7 @@ class ChatGptCredential:
 
 @dataclass
 class LoginMethods:
-    """What :meth:`ChatGptLoginFlow.start_browser`/``start_device`` hand the client.
+    """What :meth:`CodexLoginFlow.start_browser`/``start_device`` hand the client.
 
     Matches the generic auth API's ``start`` response shape: ``{flow_id,
     browser?: {authorization_url, loopback}, device?: {user_code,
@@ -106,8 +106,8 @@ class _FlowResult:
     claimed: bool = False
 
 
-class ChatGptLoginFlow:
-    """One in-progress ChatGPT sign-in attempt.
+class CodexLoginFlow:
+    """One in-progress Codex sign-in attempt.
 
     Owns the PKCE verifier and CSRF state for its lifetime (one flow, one
     attempt). The browser method races the loopback listener against a pasted
@@ -122,7 +122,7 @@ class ChatGptLoginFlow:
         self._pkce = generate_pkce()
         self._redirect_uri = c.REDIRECT_URI
         self._result = _FlowResult()
-        self._credential: ChatGptCredential | None = None
+        self._credential: CodexCredential | None = None
         self._loopback: LoopbackListener | None = None
 
     def _claim(self) -> bool:
@@ -143,19 +143,19 @@ class ChatGptLoginFlow:
         try:
             listener.start()
         except LoopbackBindError as exc:
-            logger.info("chatgpt oauth: loopback unavailable, falling back to paste-only: %s", exc)
+            logger.info("codex oauth: loopback unavailable, falling back to paste-only: %s", exc)
             browser["loopback_unavailable_reason"] = "port_in_use"
         else:
             self._loopback = listener
             browser["loopback"] = True
             threading.Thread(
-                target=self._await_loopback, daemon=True, name="chatgpt-oauth-wait"
+                target=self._await_loopback, daemon=True, name="codex-oauth-wait"
             ).start()
         return LoginMethods(
             flow_id=self.flow_id,
             browser=browser,
             instructions=(
-                "Open the link to sign in with your ChatGPT account, or paste the "
+                "Open the link to sign in with your Codex account, or paste the "
                 "redirect URL here once you land on the localhost page."
             ),
         )
@@ -166,7 +166,7 @@ class ChatGptLoginFlow:
         login = start_device_login()
         self._redirect_uri = c.DEVICE_REDIRECT_URI
         threading.Thread(
-            target=self._run_device_poll, args=(login,), daemon=True, name="chatgpt-oauth-device"
+            target=self._run_device_poll, args=(login,), daemon=True, name="codex-oauth-device"
         ).start()
         return LoginMethods(
             flow_id=self.flow_id,
@@ -204,7 +204,7 @@ class ChatGptLoginFlow:
         with self._result.lock:
             return self._result.status, self._result.reason
 
-    def credential(self) -> ChatGptCredential | None:
+    def credential(self) -> CodexCredential | None:
         return self._credential
 
     # -- internals -------------------------------------------------------
@@ -243,7 +243,7 @@ class ChatGptLoginFlow:
         except OAuthError as exc:
             self._finish_failed(str(exc))
             return
-        self._credential = ChatGptCredential(
+        self._credential = CodexCredential(
             access_token=tokens.access_token,
             refresh_token=tokens.refresh_token,
             expires_at_ms=int(time.time() * 1000) + tokens.expires_in * 1000,
@@ -270,12 +270,12 @@ class ChatGptLoginFlow:
 # ---------------------------------------------------------------------------
 
 _FLOW_TTL_S = 15 * 60.0
-_flows: dict[str, ChatGptLoginFlow] = {}
+_flows: dict[str, CodexLoginFlow] = {}
 _flow_created_at: dict[str, float] = {}
 _flows_lock = threading.Lock()
 
 
-def create_login_flow() -> ChatGptLoginFlow:
+def create_login_flow() -> CodexLoginFlow:
     """Create and register a new login flow, sweeping expired ones first."""
 
     flow_id = secrets.token_urlsafe(32)
@@ -287,13 +287,13 @@ def create_login_flow() -> ChatGptLoginFlow:
             _flow_created_at.pop(fid, None)
             if stale is not None:
                 stale.cancel()
-        flow = ChatGptLoginFlow(flow_id)
+        flow = CodexLoginFlow(flow_id)
         _flows[flow_id] = flow
         _flow_created_at[flow_id] = now
     return flow
 
 
-def get_login_flow(flow_id: str) -> ChatGptLoginFlow | None:
+def get_login_flow(flow_id: str) -> CodexLoginFlow | None:
     with _flows_lock:
         return _flows.get(flow_id.strip())
 

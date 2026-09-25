@@ -20,7 +20,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 from clio_agent.lm.adapters import _reasoning_model_capability
 from clio_agent.lm.io_logging import _io_logging_lm_cls
-from clio_agent.providers.chatgpt.constants import LITELLM_PROVIDER as _CHATGPT_LITELLM_PREFIX
+from clio_agent.providers.codex.constants import LITELLM_PROVIDER as _CODEX_LITELLM_PREFIX
 
 _dspy_cache = None
 logger = logging.getLogger(__name__)
@@ -80,7 +80,7 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     For lm_studio, uses 'openai/{model}' with custom api_base. For ollama, uses
     LiteLLM's native 'ollama_chat/{model}' (see :func:`_connection_kwargs` for
     why its api_base must NOT carry a trailing ``/v1``).
-    For chatgpt/claude_code, uses a provider-specific prefix routed through
+    For codex/claude_code, uses a provider-specific prefix routed through
     the LiteLLM ``CustomLLM`` registered by ``providers.*_litellm``.
 
     Args:
@@ -127,7 +127,7 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     )
     # Keep the catalog identity on the LM so the generic stream tap can label
     # provider-native reasoning without inferring identity from a LiteLLM prefix.
-    # ChatGPT and Claude Code own their established stream semantics and are
+    # Codex and Claude Code own their established stream semantics and are
     # explicitly excluded from the generic provider bridge.
     provider_id = config.provider_id or str(config.provider)
     try:
@@ -136,7 +136,7 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
             config, provider_options=dict(config.provider_options)
         )
         lm._clio_reasoning_fallback = provider_id not in {  # type: ignore[attr-defined]
-            "chatgpt",
+            "codex",
             "claude_code",
         }
     except Exception:  # noqa: BLE001,S110 - never let tagging break LM construction
@@ -151,8 +151,8 @@ def _ensure_provider_registered(config: LMProviderConfig) -> None:
     The import is gated on the provider so installs without the relevant
     binary do not pay the import cost.
     """
-    if config.provider == "chatgpt":
-        from clio_agent.providers.chatgpt.litellm_adapter import ensure_registered  # noqa: PLC0415
+    if config.provider == "codex":
+        from clio_agent.providers.codex.litellm_adapter import ensure_registered  # noqa: PLC0415
 
         ensure_registered()
     elif config.provider == "claude_code":
@@ -167,7 +167,7 @@ def _resolved_litellm_prefix(config: LMProviderConfig) -> str:
     """The LiteLLM provider prefix for ``config``'s catalog preset.
 
     Falls back to ``config.provider`` (the wire kind) when no preset row
-    matches. chatgpt/claude_code never reach this — :func:`_resolve_model_name`
+    matches. codex/claude_code never reach this — :func:`_resolve_model_name`
     prefixes those itself — so this only serves the OpenAI-compatible and
     native (``ollama_chat``) dialects. Shared by :func:`_resolve_model_name`
     and :func:`_connection_kwargs` so the catalog lookup isn't duplicated.
@@ -203,10 +203,10 @@ def _resolve_model_name(config: LMProviderConfig) -> str:
     """Prefix the configured model id for litellm.
 
     - ``openai`` / ``anthropic``: native litellm prefix.
-    - ``chatgpt`` / ``claude_code``: route through registered CustomLLMs
-      under provider-specific prefixes. ``chatgpt``'s litellm-facing prefix is
-      deliberately NOT "chatgpt" -- see
-      :data:`clio_agent.providers.chatgpt.constants.LITELLM_PROVIDER`.
+    - ``codex`` / ``claude_code``: route through registered CustomLLMs
+      under provider-specific prefixes. ``codex``'s litellm-facing prefix is
+      deliberately NOT "codex" -- see
+      :data:`clio_agent.providers.codex.constants.LITELLM_PROVIDER`.
     - ``ollama``: LiteLLM's native ``ollama_chat/`` provider (see
       :func:`_connection_kwargs` for its api_base requirement).
     - everything else (lm_studio, argonne, vllm, …): treated as
@@ -224,16 +224,16 @@ def _resolve_model_name(config: LMProviderConfig) -> str:
         raise ValueError(
             f"No model configured for LM provider {config.provider_id or config.provider!r}"
         )
-    if config.provider == "chatgpt":
+    if config.provider == "codex":
         # Strip a legacy/already-litellm-prefixed value defensively (a
         # persisted config.model could in principle already carry either
         # prefix) before re-applying the CURRENT litellm-facing prefix.
         bare = (
-            config.model.removeprefix(f"{_CHATGPT_LITELLM_PREFIX}/")
-            .removeprefix("chatgpt/")
+            config.model.removeprefix(f"{_CODEX_LITELLM_PREFIX}/")
+            .removeprefix("codex/")
             .removeprefix("cg-")
         )
-        return f"{_CHATGPT_LITELLM_PREFIX}/cg-{bare}"
+        return f"{_CODEX_LITELLM_PREFIX}/cg-{bare}"
     if config.provider == "claude_code":
         bare = config.model.removeprefix("claude_code/").removeprefix("cc-")
         return f"claude_code/cc-{bare}"
@@ -421,8 +421,8 @@ def _provider_lm_kwargs(config: LMProviderConfig) -> dict[str, Any]:
                 "[[ ## tool_args_",
             ]
         )
-    if config.provider == "chatgpt":
-        extras["chatgpt_transport"] = config.chatgpt_transport
+    if config.provider == "codex":
+        extras["codex_transport"] = config.codex_transport
     elif config.provider == "claude_code":
         extras["claude_code_transport"] = config.claude_code_transport
     # Safety net only (model-capabilities plan, Part 2.4): every optional field
@@ -460,13 +460,13 @@ _CHECKED_PARAM_NAMES: tuple[str, ...] = (
 )
 
 #: LiteLLM ``CustomLLM`` transports clio owns end-to-end
-#: (`providers.chatgpt.litellm_adapter`, `providers.claude_code_litellm`).
+#: (`providers.codex.litellm_adapter`, `providers.claude_code_litellm`).
 #: LiteLLM's provider registry does not know these as dialects --
 #: `get_llm_provider`/`get_supported_openai_params` raise or return nonsense
 #: for them -- and their own `completion()` reads a small, fixed set of
 #: `optional_params` keys directly, ignoring everything else. The drop_params
 #: proactive check below does not apply to them.
-_CUSTOM_TRANSPORT_PREFIXES: tuple[str, ...] = (f"{_CHATGPT_LITELLM_PREFIX}/", "claude_code/")
+_CUSTOM_TRANSPORT_PREFIXES: tuple[str, ...] = (f"{_CODEX_LITELLM_PREFIX}/", "claude_code/")
 
 
 def _warn_dropped_params(*, model: str, kwargs: dict[str, Any]) -> None:

@@ -129,8 +129,8 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
                 cfg[key] = value
     if not cfg.get("transport"):
         provider = getattr(provider_config, "provider", "")
-        if provider == "chatgpt":
-            cfg["transport"] = getattr(provider_config, "chatgpt_transport", None)
+        if provider == "codex":
+            cfg["transport"] = getattr(provider_config, "codex_transport", None)
         elif provider == "claude_code":
             cfg["transport"] = getattr(provider_config, "claude_code_transport", None)
     # Effective thinking level (#895): surface both the raw level and the resolved
@@ -261,9 +261,7 @@ def _model_ref_matches_active(value: Any, app: "FastAPI") -> bool:
     return _model_ref_dict(value) == _active_lm_model_ref(app)
 
 
-def _bare_provider_kind_error(
-    value: Any, *, session_id: str, source: str
-) -> ErrorEnvelope | None:
+def _bare_provider_kind_error(value: Any, *, session_id: str, source: str) -> ErrorEnvelope | None:
     """A typed 400 when a model ref's ``provider_id`` is a bare provider KIND.
 
     A client that resolves identity by kind (the wire's ``provider`` field,

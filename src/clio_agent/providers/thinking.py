@@ -2,7 +2,7 @@
 
 One external vocabulary — ``off | minimal | low | medium | high | xhigh | max`` —
 maps to whatever each provider's transport actually understands. The vocabulary
-is the union of the levels real providers report (the ChatGPT/Codex backend's
+is the union of the levels real providers report (the Codex backend's
 ``reasoning.effort``: none/minimal/low/medium/high/xhigh; the Claude Code CLI's
 per-model ``supportedEffortLevels``: low/medium/high/xhigh/max); a level is
 extended here rather than dropped when a provider reports it. This module is the
@@ -30,7 +30,7 @@ when the provider reports them; ``None`` means "no per-model effort evidence".
   ``output_config={"effort":<level>}``. Otherwise
   ``thinking={"type":"enabled","budget_tokens":N}``. ``off`` omits the kwarg
   (the API default is thinking off).
-* **chatgpt** (direct Codex backend): ``chatgpt_reasoning_effort`` becomes the
+* **codex** (direct Codex backend): ``codex_reasoning_effort`` becomes the
   Responses API's ``reasoning.effort``; ``off`` → the backend's explicit
   ``none`` (never omitted, which would leave the effort unset for a model
   that requires one).
@@ -69,11 +69,11 @@ LEVEL_BUDGET: dict[str, int] = {"low": 2048, "medium": 8192, "high": 24576}
 
 _BUDGET_LEVELS: frozenset[str] = frozenset({"off", "low", "medium", "high"})
 
-#: ChatGPT (Codex backend) effort vocabulary, in the Responses API's own
+#: Codex (Codex backend) effort vocabulary, in the Responses API's own
 #: ``reasoning.effort`` values. ``off`` -> ``none``. ``max``/``ultra`` are
 #: reported by newer models -- every effort the catalog defines gets a clio
 #: level; none are dropped.
-_CHATGPT_EFFORT: dict[str, str] = {
+_CODEX_EFFORT: dict[str, str] = {
     "off": "none",
     "minimal": "minimal",
     "low": "low",
@@ -90,7 +90,7 @@ _CHATGPT_EFFORT: dict[str, str] = {
 ACCEPTED_LEVELS: dict[str, frozenset[str]] = {
     "anthropic": frozenset({"off", "low", "medium", "high", "xhigh", "max"}),
     "claude_code": frozenset({"off", "low", "medium", "high", "xhigh", "max"}),
-    "chatgpt": frozenset(_CHATGPT_EFFORT),
+    "codex": frozenset(_CODEX_EFFORT),
     "openai": frozenset({"off", "minimal", "low", "medium", "high", "xhigh"}),
     "lm_studio": _BUDGET_LEVELS,
     "ollama": _BUDGET_LEVELS,
@@ -339,12 +339,12 @@ def resolve_thinking(
         return _claude_code(lvl, effective, budget_tokens, effort)
     if provider == "anthropic":
         return _anthropic(lvl, effective, budget_tokens, effort)
-    if provider == "chatgpt":
+    if provider == "codex":
         return _plan(
             provider,
             lvl,
             effective,
-            litellm_kwargs={"chatgpt_reasoning_effort": _CHATGPT_EFFORT[effective]},
+            litellm_kwargs={"codex_reasoning_effort": _CODEX_EFFORT[effective]},
         )
     return _openai_compatible(provider, lvl, effective, effort)
 

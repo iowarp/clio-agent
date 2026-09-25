@@ -1,9 +1,9 @@
-"""Codex Responses-API event -> normalized ChatGPT event mapping (A.5).
+"""Codex Responses-API event -> normalized Codex event mapping (A.5).
 
 The SSE and WebSocket transports receive identical JSON event payloads (only
 the wire framing differs -- ``data:`` lines vs. one JSON text frame). This
 module is the ONE place that classifies a raw event dict into the small
-internal vocabulary :mod:`clio_agent.providers.chatgpt.litellm_adapter`
+internal vocabulary :mod:`clio_agent.providers.codex.litellm_adapter`
 consumes, so a fix to event mapping lands once for both transports.
 
 Tool-call arguments are accumulated internally and surfaced as ONE

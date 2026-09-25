@@ -780,7 +780,7 @@ def create_chat_adapter(config: LMProviderConfig) -> Any:
     if _guided_output_enabled():
         adapter = _strict_guided_json_adapter_cls()()
         provider_id = str(getattr(config, "provider_id", "") or getattr(config, "provider", ""))
-        if provider_id not in {"chatgpt", "claude_code"}:
+        if provider_id not in {"codex", "claude_code"}:
             adapter._clio_context_window = int(  # type: ignore[attr-defined]
                 getattr(config, "chosen_context", None)
                 or getattr(config, "context_window", None)
@@ -805,7 +805,7 @@ def create_chat_adapter(config: LMProviderConfig) -> Any:
     # _check_context_overflow can raise _ContextOverflowError before the server
     # sees an oversize prompt.  Mirrors the guided-path stamp at lines ~760-764.
     provider_id = str(getattr(config, "provider_id", "") or getattr(config, "provider", ""))
-    if provider_id not in {"chatgpt", "claude_code"}:
+    if provider_id not in {"codex", "claude_code"}:
         adapter._clio_context_window = int(  # type: ignore[attr-defined]
             getattr(config, "chosen_context", None) or getattr(config, "context_window", None) or 0
         )

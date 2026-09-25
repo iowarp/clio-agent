@@ -50,7 +50,7 @@ def test_capabilities_negotiate_v3_without_changing_v2(tmp_path: Path) -> None:
 def test_capabilities_report_the_effective_active_model(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "sessions.json")
     app.state.lm_config = {
-        "provider": "chatgpt",
+        "provider": "codex",
         "model": "gpt-5.6-luna",
         "thinking_level": "medium",
     }
@@ -59,7 +59,7 @@ def test_capabilities_report_the_effective_active_model(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert response.json()["active_model"] == {
-        "provider_id": "chatgpt",
+        "provider_id": "codex",
         "model_id": "gpt-5.6-luna",
         "effort": "medium",
     }
@@ -197,9 +197,9 @@ def test_v3_session_and_transcript_are_normalized(tmp_path: Path) -> None:
                 sequence=1,
                 metadata={
                     "stream_source": "live",
-                    "signature_field_name": "provider_thinking:chatgpt_reasoning",
+                    "signature_field_name": "provider_thinking:codex_reasoning",
                     "thinking_source": "provider",
-                    "provider_source": "chatgpt_reasoning",
+                    "provider_source": "codex_reasoning",
                     "default_collapsed": True,
                 },
             ),
@@ -271,12 +271,12 @@ def test_v3_session_and_transcript_are_normalized(tmp_path: Path) -> None:
         "type": "reasoning",
         "text": "Comparing the observed campaigns before choosing an action.",
         "source": "provider",
-        "provider_source": "chatgpt_reasoning",
+        "provider_source": "codex_reasoning",
         "default_collapsed": True,
         "agent_id": "main",
         "sequence": 1,
         "stream_source": "live",
-        "channel": "provider_thinking:chatgpt_reasoning",
+        "channel": "provider_thinking:codex_reasoning",
     }
     assert projected["blocks"][1]["channel"] == "next_thought"
     assert projected["blocks"][1]["agent_id"] == "spotter"
@@ -865,7 +865,7 @@ def test_event_projection_preserves_live_tool_output_stream() -> None:
 
 
 def test_connection_event_does_not_inherit_focused_session_scope() -> None:
-    event = Event(type="lm.provider.changed", session_id="", payload={"provider": "chatgpt"})
+    event = Event(type="lm.provider.changed", session_id="", payload={"provider": "codex"})
 
     envelope = event_to_v3(event, workspace_id="ws_focused")
 

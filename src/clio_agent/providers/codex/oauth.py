@@ -1,13 +1,13 @@
-"""ChatGPT subscription login: PKCE, the three login methods, and code exchange.
+"""Codex subscription login: PKCE, the three login methods, and code exchange.
 
 Implements brief Part A.3's protocol mechanics exactly: browser + loopback
 (default), paste the redirect URL (fallback / always raced against the
 loopback), and device code (headless: clio-relay HPC login nodes, any server
 with no local browser). All three end in the same code exchange
 (:func:`exchange_code`). The stateful orchestrator that drives these three
-methods (:class:`~clio_agent.providers.chatgpt.login_flow.ChatGptLoginFlow`)
+methods (:class:`~clio_agent.providers.codex.login_flow.CodexLoginFlow`)
 and the credential record it produces live in
-:mod:`clio_agent.providers.chatgpt.login_flow` -- split out to keep this
+:mod:`clio_agent.providers.codex.login_flow` -- split out to keep this
 module under the file-size ratchet.
 
 No Codex CLI or Codex SDK is involved anywhere in this module: CLIO runs its
@@ -31,7 +31,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 
-from clio_agent.providers.chatgpt import constants as c
+from clio_agent.providers.codex import constants as c
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ __all__ = [
 
 
 class OAuthError(RuntimeError):
-    """Base class for every ChatGPT OAuth failure."""
+    """Base class for every Codex OAuth failure."""
 
 
 class StateMismatchError(OAuthError):
@@ -140,11 +140,11 @@ class PendingBrowserLogin:
 # ---------------------------------------------------------------------------
 
 _CLOSE_PAGE = (
-    "<html><head><title>ChatGPT sign-in</title></head>"
+    "<html><head><title>Codex sign-in</title></head>"
     "<body><p>Signed in. You can close this window and return to CLIO.</p></body></html>"
 )
 _ERROR_PAGE = (
-    "<html><head><title>ChatGPT sign-in</title></head>"
+    "<html><head><title>Codex sign-in</title></head>"
     "<body><p>Sign-in failed: {reason}. Return to CLIO and try again, or paste the "
     "redirect URL directly.</p></body></html>"
 )
@@ -164,7 +164,7 @@ class _CallbackHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - stdlib signature
         # Never log query strings (they carry the authorization code).
-        logger.debug("chatgpt loopback callback: %s", self.command)
+        logger.debug("codex loopback callback: %s", self.command)
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler name
         parsed = urlparse(self.path)
@@ -246,7 +246,7 @@ class LoopbackListener:
                 f"could not bind loopback callback on {c.LOOPBACK_HOST}:{c.LOOPBACK_PORT}: {exc}"
             ) from exc
         self._thread = threading.Thread(
-            target=self._server.serve_forever, name="chatgpt-oauth-loopback", daemon=True
+            target=self._server.serve_forever, name="codex-oauth-loopback", daemon=True
         )
         self._thread.start()
 
@@ -277,7 +277,7 @@ class LoopbackListener:
                 self._server.shutdown()
                 self._server.server_close()
             except Exception:  # noqa: BLE001 - teardown must never raise
-                logger.debug("chatgpt loopback listener close failed", exc_info=True)
+                logger.debug("codex loopback listener close failed", exc_info=True)
         if self._thread is not None:
             self._thread.join(timeout=2.0)
 
@@ -614,7 +614,7 @@ def refresh_token(refresh: str, *, client: httpx.Client | None = None) -> TokenR
 
 
 def decode_account_id(access_token: str) -> str:
-    """Decode the access token's JWT payload and return ``chatgpt_account_id``.
+    """Decode the access token's JWT payload and return ``codex_account_id``.
 
     No signature verification is performed (A.3: "no signature check
     needed") -- CLIO trusts the token because it just received it directly
@@ -639,10 +639,10 @@ def decode_account_id(access_token: str) -> str:
         raise OAuthError(f"could not decode the access token payload: {exc}") from exc
     auth_claim = payload.get(c.JWT_AUTH_CLAIM)
     account_id = (
-        (auth_claim or {}).get("chatgpt_account_id") if isinstance(auth_claim, dict) else None
+        (auth_claim or {}).get("codex_account_id") if isinstance(auth_claim, dict) else None
     )
     if not account_id:
         raise OAuthError(
-            f"access token is missing {c.JWT_AUTH_CLAIM!r}.chatgpt_account_id -- login failed"
+            f"access token is missing {c.JWT_AUTH_CLAIM!r}.codex_account_id -- login failed"
         )
     return str(account_id)

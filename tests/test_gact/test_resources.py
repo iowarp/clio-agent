@@ -589,7 +589,7 @@ def test_text_only_selected_model_rejects_image_resource_before_turn(
     app.state.provider_catalog = {
         "providers": [
             {
-                "id": "chatgpt",
+                "id": "codex",
                 "health": "ready",
                 "models": [
                     {
@@ -626,7 +626,7 @@ def test_text_only_selected_model_rejects_image_resource_before_turn(
             f"/v1/sessions/{sid}/messages",
             json={
                 "client_message_id": "msg_text_only_image",
-                "model": {"provider_id": "chatgpt", "model_id": "gpt-5.3-cg-spark"},
+                "model": {"provider_id": "codex", "model_id": "gpt-5.3-cg-spark"},
                 "parts": [
                     {"type": "text", "text": "What is in this image?"},
                     {
@@ -645,7 +645,7 @@ def test_text_only_selected_model_rejects_image_resource_before_turn(
             "workspace_id": workspace_id,
             "resource_id": resource["id"],
             "media_type": "image/png",
-            "provider": "chatgpt",
+            "provider": "codex",
             "model": "gpt-5.3-cg-spark",
             "representation": "metadata_only",
             "evidence_source": "live_handshake",

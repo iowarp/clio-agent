@@ -38,7 +38,7 @@ def _patch_hermetic_bind_network(monkeypatch: pytest.MonkeyPatch) -> None:
     and the relay/MCP-federation catalog discovery the first-bind path pulls
     in via ``construct_agent_with_relay``. Neither is what these tests are
     about, and both can legitimately take seconds against ambient conditions
-    (or hang against a claude_code CLI, or a ChatGPT credential refresh, that
+    (or hang against a claude_code CLI, or a Codex credential refresh, that
     isn't signed in on this box), so they are stubbed for hermetic, fast
     isolation exactly like the
     rest of the ``PUT /v1/providers/lm`` suite.
@@ -110,7 +110,7 @@ def _pristine_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CLIO_LM_MODEL", raising=False)
 
 
-def test_claude_code_then_chatgpt_first_bind_never_runs_lm_studio_discovery(
+def test_claude_code_then_codex_first_bind_never_runs_lm_studio_discovery(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     claude_sdk_installed: Any,
@@ -118,21 +118,21 @@ def test_claude_code_then_chatgpt_first_bind_never_runs_lm_studio_discovery(
     """A pristine-install claude_code bind must never touch LM Studio
     discovery -- the first-bind path must construct ``ClioAgent`` off the
     REQUESTED provider config, not the ambient (lm_studio-defaulting) boot
-    env. A follow-up chatgpt bind (now a hot-swap of the already-constructed
+    env. A follow-up codex bind (now a hot-swap of the already-constructed
     agent) must stay clean too.
     """
 
     _pristine_env(monkeypatch)
     _patch_hermetic_bind_network(monkeypatch)
     _forbid_lm_studio_discovery(monkeypatch)
-    # Subscription binds require a validated catalog (and, for chatgpt, a
+    # Subscription binds require a validated catalog (and, for codex, a
     # signed-in credential). Pin them in tmp_path/monkeypatch so the result
     # never depends on the host's real sign-ins or model cache.
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     from clio_agent.providers import model_discovery
-    from clio_agent.providers.chatgpt.credentials import ChatGptCredentialStore
+    from clio_agent.providers.codex.credentials import CodexCredentialStore
 
-    monkeypatch.setattr(ChatGptCredentialStore, "is_signed_in", lambda self: True)
+    monkeypatch.setattr(CodexCredentialStore, "is_signed_in", lambda self: True)
 
     model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
@@ -144,9 +144,9 @@ def test_claude_code_then_chatgpt_first_bind_never_runs_lm_studio_discovery(
     )
     model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
-            provider="chatgpt",
+            provider="codex",
             discovered=[{"id": "gpt-5.6-sol", "name": "Sol", "description": ""}],
-            source=model_discovery.CHATGPT_SOURCE,
+            source=model_discovery.CODEX_SOURCE,
             default_model="gpt-5.6-sol",
         )
     )
@@ -176,8 +176,8 @@ def test_claude_code_then_chatgpt_first_bind_never_runs_lm_studio_discovery(
         resp2 = c.put(
             "/v1/providers/lm",
             json={
-                "provider": "chatgpt",
-                "api_base": "chatgpt://direct",
+                "provider": "codex",
+                "api_base": "codex://direct",
                 "model": "gpt-5.6-sol",
                 "api_key": "x",
                 "temperature": 0.0,
@@ -190,7 +190,7 @@ def test_claude_code_then_chatgpt_first_bind_never_runs_lm_studio_discovery(
         assert resp2.status_code == 200, resp2.text
         body2 = resp2.json()
         assert body2["configured"] is True
-        assert body2["provider"] == "chatgpt"
+        assert body2["provider"] == "codex"
         assert body2["model"] == "gpt-5.6-sol"
 
 

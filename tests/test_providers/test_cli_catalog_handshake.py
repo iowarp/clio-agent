@@ -21,71 +21,71 @@ from typing import Any
 
 import pytest
 
-from clio_agent.providers.chatgpt.credentials import ChatGptCredentialStore
+from clio_agent.providers.codex.credentials import CodexCredentialStore
 from clio_agent.providers.handshake.base import HandshakeContext
 from clio_agent.providers.handshake.cli_catalog import (
-    ChatGptCatalogHandshake,
     ClaudeCodeCatalogHandshake,
     CliCatalogHandshake,
+    CodexCatalogHandshake,
 )
 from clio_agent.providers.handshake.model import AuthState, ConnectivityState
 from clio_agent.providers.model_discovery import (
-    CHATGPT_SOURCE,
     CLAUDE_CODE_SOURCE,
+    CODEX_SOURCE,
     ProviderDiscoveryResult,
     record_refresh,
 )
 
 
-def _ctx(provider_id: str = "chatgpt", provider_kind: str = "chatgpt") -> HandshakeContext:
+def _ctx(provider_id: str = "codex", provider_kind: str = "codex") -> HandshakeContext:
     return HandshakeContext(
         provider_id=provider_id,
         provider_kind=provider_kind,
-        api_base="chatgpt://direct",
+        api_base="codex://direct",
         allow_external_sources=True,
     )
 
 
-def _chatgpt_signed_in(monkeypatch: pytest.MonkeyPatch, *, signed_in: bool) -> None:
-    monkeypatch.setattr(ChatGptCredentialStore, "is_signed_in", lambda self: signed_in)
+def _codex_signed_in(monkeypatch: pytest.MonkeyPatch, *, signed_in: bool) -> None:
+    monkeypatch.setattr(CodexCredentialStore, "is_signed_in", lambda self: signed_in)
 
 
-def test_chatgpt_handshake_requires_credentials(
+def test_codex_handshake_requires_credentials(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _chatgpt_signed_in(monkeypatch, signed_in=False)
+    _codex_signed_in(monkeypatch, signed_in=False)
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
-    report = asyncio.run(ChatGptCatalogHandshake(provider=None).handshake(_ctx()))
+    report = asyncio.run(CodexCatalogHandshake(provider=None).handshake(_ctx()))
     assert report.connectivity is ConnectivityState.SKIPPED
     assert report.auth is AuthState.MISSING
     assert report.models == ()
 
 
-def test_chatgpt_handshake_requires_a_live_verification(
+def test_codex_handshake_requires_a_live_verification(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _chatgpt_signed_in(monkeypatch, signed_in=True)
+    _codex_signed_in(monkeypatch, signed_in=True)
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
-    report = asyncio.run(ChatGptCatalogHandshake(provider=None).handshake(_ctx()))
+    report = asyncio.run(CodexCatalogHandshake(provider=None).handshake(_ctx()))
     assert report.connectivity is ConnectivityState.SKIPPED
     assert report.auth is AuthState.DEFERRED
     assert report.models == ()
 
 
-def test_chatgpt_handshake_ready_only_after_verified_catalog(
+def test_codex_handshake_ready_only_after_verified_catalog(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _chatgpt_signed_in(monkeypatch, signed_in=True)
+    _codex_signed_in(monkeypatch, signed_in=True)
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     record_refresh(
         ProviderDiscoveryResult(
-            provider="chatgpt",
+            provider="codex",
             discovered=[{"id": "gpt-live", "name": "GPT Live", "description": ""}],
-            source=CHATGPT_SOURCE,
+            source=CODEX_SOURCE,
             default_model="gpt-live",
         )
     )
-    report = asyncio.run(ChatGptCatalogHandshake(provider=None).handshake(_ctx()))
+    report = asyncio.run(CodexCatalogHandshake(provider=None).handshake(_ctx()))
     assert report.connectivity is ConnectivityState.OK
     assert report.auth is AuthState.OK
     assert [model.id for model in report.models] == ["gpt-live"]
@@ -152,7 +152,7 @@ def test_discover_models_absent_overlay_falls_back_to_static_catalog(
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     handshake = CliCatalogHandshake(provider=None)
     rows = asyncio.run(handshake.discover_models(client=None, ctx=_ctx()))
-    # The static registry catalog for chatgpt (2 candidate ids); none carry the
+    # The static registry catalog for codex (2 candidate ids); none carry the
     # overlay marker.
     assert rows
     assert all("_overlay_context_checked" not in r for r in rows)
@@ -164,7 +164,7 @@ def test_discover_models_present_overlay_served_with_context_marker(
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     record_refresh(
         ProviderDiscoveryResult(
-            provider="chatgpt",
+            provider="codex",
             discovered=[
                 {
                     "id": "gpt-5.6-sol",
@@ -176,7 +176,7 @@ def test_discover_models_present_overlay_served_with_context_marker(
                     "capabilities": ["text", "image"],
                 }
             ],
-            source=CHATGPT_SOURCE,
+            source=CODEX_SOURCE,
             default_model="gpt-5.6-sol",
         )
     )
@@ -326,7 +326,7 @@ def test_full_handshake_never_hits_the_cascade_once_overlay_populated(
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     record_refresh(
         ProviderDiscoveryResult(
-            provider="chatgpt",
+            provider="codex",
             discovered=[
                 {
                     "id": "gpt-5.6-sol",
@@ -337,7 +337,7 @@ def test_full_handshake_never_hits_the_cascade_once_overlay_populated(
                     "output_limit": 64000,
                 }
             ],
-            source=CHATGPT_SOURCE,
+            source=CODEX_SOURCE,
             default_model="gpt-5.6-sol",
         )
     )
@@ -375,9 +375,9 @@ def test_overlay_backed_handshake_reports_overlay_not_live(
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     record_refresh(
         ProviderDiscoveryResult(
-            provider="chatgpt",
+            provider="codex",
             discovered=[{"id": "gpt-5.6-sol", "name": "GPT-5.6-Sol", "description": ""}],
-            source=CHATGPT_SOURCE,
+            source=CODEX_SOURCE,
             default_model="gpt-5.6-sol",
             generated_at="2026-01-02T03:04:05+00:00",
         )

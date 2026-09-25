@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from clio_agent.providers.chatgpt.transport_ws import DeltaSnapshot, compute_delta
+from clio_agent.providers.codex.transport_ws import DeltaSnapshot, compute_delta
 
 
 def _body(input_items: list[dict], **extra: object) -> dict:

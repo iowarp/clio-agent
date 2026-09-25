@@ -814,7 +814,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.sandbox = install_sandbox()
 
     # Reap proven CLIO orphans before the MCP-cache liveness check (order matters,
-    # off-loop). The direct ChatGPT provider owns one durable credential file,
+    # off-loop). The direct Codex provider owns one durable credential file,
     # not a spawned CLI's scratch home, so unlike the deleted Codex SDK
     # provider's IsolatedCodexHome there is nothing here for it to reap.
     from clio_agent.gact import default_registry_migration as _registry_resync  # noqa: PLC0415
@@ -1412,11 +1412,9 @@ def build_app(
     # construction, so we fall back to the plain provider-default spec (the
     # deferred agent build tolerates it and surfaces the real error).
     from clio_agent.config import LMProviderConfig, load_config_from_env
-    from clio_agent.gact.chatgpt_provider_migration import migrate_codex_provider_configs
     from clio_agent.gact.providers.profile_store import ProviderProfileStore
     from clio_agent.providers.lm_spec import spec_from_config
 
-    migrate_codex_provider_configs()  # S1: codex -> chatgpt in a shared config.yaml
     try:
         _boot_cfg = load_config_from_env()
     except Exception:  # noqa: BLE001 - misconfig must not break app construction
@@ -1738,7 +1736,7 @@ def build_app(
     # call/reconnect/uninstall + tools/resources/prompts + handshake) are owned
     # by routes/mcp.py; registered below via register_mcp_routes(app, deps).
 
-    # ---- /v1/sessions/{sid}/compact (ChatGPT/CC parity) ----------------
+    # ---- /v1/sessions/{sid}/compact (Codex/CC parity) ----------------
     # Transcript compaction into an evidence-preserving compact memory is
     # owned by routes/sessions.py and registered below via
     # register_sessions_routes(app, deps); the deterministic evidence index

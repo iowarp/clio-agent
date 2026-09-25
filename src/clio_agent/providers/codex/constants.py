@@ -1,11 +1,11 @@
-"""Wire constants for the direct ChatGPT subscription provider (Part A).
+"""Wire constants for the direct Codex subscription provider (Part A).
 
-OpenAI has no third-party OAuth program for ChatGPT subscriptions. Every
-harness that offers "sign in with ChatGPT" (OpenCode, pi, Cline, Hermes)
+OpenAI has no third-party OAuth program for Codex subscriptions. Every
+harness that offers "sign in with Codex" (OpenCode, pi, Cline, Hermes)
 reuses the Codex CLI's own public OAuth client and calls the Codex backend at
 ``chatgpt.com`` directly -- never ``api.openai.com``. Usage counts against the
-user's ChatGPT plan limits. This is the single owner of every literal
-endpoint/header/timeout value the rest of :mod:`clio_agent.providers.chatgpt`
+user's Codex plan limits. This is the single owner of every literal
+endpoint/header/timeout value the rest of :mod:`clio_agent.providers.codex`
 uses, so a value never drifts between the oauth/, credentials/, responses/,
 and transport modules.
 
@@ -15,24 +15,28 @@ No accretion: this module is a leaf -- constants only, no logic.
 from __future__ import annotations
 
 #: Provider id/label used across the catalog, routes, config, and credential store.
-PROVIDER_ID = "chatgpt"
-PROVIDER_LABEL = "ChatGPT (subscription)"
+#: Users know this subscription as "Codex" -- the id and display name say so too.
+PROVIDER_ID = "codex"
+PROVIDER_LABEL = "Codex"
 
 #: The LiteLLM-facing custom-provider key AND model-string prefix
 #: (``f"{LITELLM_PROVIDER}/cg-<model>"``, registered via
 #: ``providers._cli_provider.register_custom_provider`` in
-#: ``providers.chatgpt.litellm_adapter``). This is DELIBERATELY NOT
-#: ``PROVIDER_ID`` ("chatgpt"): litellm ships its own native "chatgpt"
-#: provider (``litellm/llms/chatgpt/`` -- a device-code OAuth client against
-#: auth.openai.com), and litellm resolves a known native prefix before ever
-#: consulting ``litellm.custom_provider_map``. Registering (or routing
-#: ``dspy.LM``) under "chatgpt" silently hands every turn to litellm's own
-#: provider instead of this module's -- it never touches
-#: ``ChatGptCredentialStore``/the WS-SSE transport, and blocks on a real
-#: device-code prompt. Verified against the installed litellm build:
-#: ``"chatgpt" in litellm.provider_list`` is True, ``"chatgpt_direct" in
-#: litellm.provider_list`` is False. Never rename this back to "chatgpt".
-LITELLM_PROVIDER = "chatgpt_direct"
+#: ``providers.codex.litellm_adapter``). Kept DELIBERATELY DISTINCT from
+#: ``PROVIDER_ID`` ("codex") even though "codex" itself is not a litellm
+#: native provider name (verified against the installed litellm build:
+#: ``"codex" in litellm.provider_list`` is False) -- this module was
+#: ORIGINALLY registered under "chatgpt" (matching the catalog id at the
+#: time), and litellm ships its own native "chatgpt" provider
+#: (``litellm/llms/chatgpt/`` -- a device-code OAuth client against
+#: auth.openai.com) that silently intercepted every turn before this
+#: module's handler ever ran, hanging on a real device-code prompt instead
+#: of reaching ``CodexCredentialStore``/the WS-SSE transport. Keeping the
+#: litellm wire name separate from the public catalog id is the permanent
+#: fix, not a one-off rename: it means a FUTURE catalog id can never
+#: collide with a litellm-native provider name either. Never register this
+#: module under ``PROVIDER_ID`` directly.
+LITELLM_PROVIDER = "codex_direct"
 
 #: The Codex CLI's public OAuth client id. Not a secret -- every open-source
 #: harness that reuses this login flow (pi, OpenCode, Cline) ships the same
@@ -50,7 +54,7 @@ LOOPBACK_HOST = "127.0.0.1"
 LOOPBACK_PORT = 1455
 LOOPBACK_PATH = "/auth/callback"
 SCOPE = "openid profile email offline_access"
-#: JWT claim namespace holding ``chatgpt_account_id`` on the access token.
+#: JWT claim namespace holding ``codex_account_id`` on the access token.
 JWT_AUTH_CLAIM = "https://api.openai.com/auth"
 
 # ---------------------------------------------------------------------------
@@ -116,13 +120,13 @@ WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached"
 
 #: Typed reasons for the no-silent-fallback ground rule -- every WS->SSE
 #: degradation records one of these (gact/streaming.py stream_fallback model).
-REASON_LOOPBACK_BIND_FAILED = "chatgpt_loopback_bind_failed"
-REASON_DEVICE_LOGIN_UNAVAILABLE = "chatgpt_device_login_unavailable"
-REASON_WS_PRESTREAM_FAILURE = "chatgpt_ws_prestream_failure"
-REASON_WS_CONNECTION_LIMIT = "chatgpt_ws_connection_limit_reached"
-REASON_WS_MIDSTREAM_FAILURE = "chatgpt_ws_midstream_failure"
-REASON_PLAN_LIMIT = "chatgpt_plan_limit"
-REASON_AUTH_REFRESH_FAILED = "chatgpt_auth_refresh_failed"
+REASON_LOOPBACK_BIND_FAILED = "codex_loopback_bind_failed"
+REASON_DEVICE_LOGIN_UNAVAILABLE = "codex_device_login_unavailable"
+REASON_WS_PRESTREAM_FAILURE = "codex_ws_prestream_failure"
+REASON_WS_CONNECTION_LIMIT = "codex_ws_connection_limit_reached"
+REASON_WS_MIDSTREAM_FAILURE = "codex_ws_midstream_failure"
+REASON_PLAN_LIMIT = "codex_plan_limit"
+REASON_AUTH_REFRESH_FAILED = "codex_auth_refresh_failed"
 
 __all__ = [
     "AUTHORIZE_URL",

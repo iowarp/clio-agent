@@ -1,4 +1,4 @@
-"""Integration tests for the ChatGPT LiteLLM adapter's turn orchestration (A.9).
+"""Integration tests for the Codex LiteLLM adapter's turn orchestration (A.9).
 
 Covers the WS-pre-stream-failure -> SSE fallback, a 401 refreshing the
 credential once and retrying, and cancel aborting a session's stream via the
@@ -12,15 +12,15 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from clio_agent.providers.chatgpt import litellm_adapter
-from clio_agent.providers.chatgpt.credentials import ChatGptCredentialStore
-from clio_agent.providers.chatgpt.errors import ChatGPTAuthError
-from clio_agent.providers.chatgpt.login_flow import ChatGptCredential
-from clio_agent.providers.chatgpt.sessions import reset_sessions_for_tests
-from clio_agent.providers.chatgpt.stream_events import Completed, TextDelta
-from clio_agent.providers.chatgpt.transport_ws import WsPreStreamFailure
 from clio_agent.providers.claude_code_cancel import _reset_for_tests as reset_cancel_registry
 from clio_agent.providers.claude_code_cancel import active_stream_sessions
+from clio_agent.providers.codex import litellm_adapter
+from clio_agent.providers.codex.credentials import CodexCredentialStore
+from clio_agent.providers.codex.errors import CodexAuthError
+from clio_agent.providers.codex.login_flow import CodexCredential
+from clio_agent.providers.codex.sessions import reset_sessions_for_tests
+from clio_agent.providers.codex.stream_events import Completed, TextDelta
+from clio_agent.providers.codex.transport_ws import WsPreStreamFailure
 
 
 @pytest.fixture(autouse=True)
@@ -28,10 +28,10 @@ def _isolate(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     reset_sessions_for_tests()
     reset_cancel_registry()
     monkeypatch.setattr("clio_agent.gact.context.active_session_id", lambda: "test-session")
-    store = ChatGptCredentialStore(path=tmp_path / "chatgpt_credential.json")
+    store = CodexCredentialStore(path=tmp_path / "codex_credential.json")
     fresh_expiry = int(time.time() * 1000) + 60 * 60 * 1000
     store.save(
-        ChatGptCredential(
+        CodexCredential(
             access_token="at", refresh_token="rt", expires_at_ms=fresh_expiry, account_id="a"
         )
     )
@@ -66,7 +66,7 @@ async def test_stream_turn_falls_back_to_sse_on_ws_pre_stream_failure(
     events = [
         e
         async for e in litellm_adapter.stream_turn(
-            model="chatgpt_direct/gpt-5.6-sol",
+            model="codex_direct/gpt-5.6-sol",
             messages=[{"role": "user", "content": "hi"}],
             params={},
         )
@@ -84,7 +84,7 @@ async def test_stream_turn_refreshes_once_on_401_and_retries(
     async def ws_impl(**_kwargs) -> AsyncIterator:
         calls["n"] += 1
         if calls["n"] == 1:
-            raise ChatGPTAuthError("access token rejected")
+            raise CodexAuthError("access token rejected")
         yield Completed(response_id="r1", output_items=[], usage={})
 
     monkeypatch.setattr(litellm_adapter, "stream_ws_turn", ws_impl)
@@ -95,7 +95,7 @@ async def test_stream_turn_refreshes_once_on_401_and_retries(
     def _get_valid_credential(*, force_refresh: bool = False):
         if force_refresh:
             refreshed["called"] = True
-        return ChatGptCredential(
+        return CodexCredential(
             access_token="at2", refresh_token="rt2", expires_at_ms=0, account_id="a"
         )
 
@@ -104,7 +104,7 @@ async def test_stream_turn_refreshes_once_on_401_and_retries(
     events = [
         e
         async for e in litellm_adapter.stream_turn(
-            model="chatgpt_direct/gpt-5.6-sol",
+            model="codex_direct/gpt-5.6-sol",
             messages=[{"role": "user", "content": "hi"}],
             params={},
         )
@@ -129,7 +129,7 @@ async def test_stream_turn_registers_and_unregisters_cancel_handle(
     monkeypatch.setattr(litellm_adapter, "stream_ws_turn", _tracking_ws)
 
     async for _ in litellm_adapter.stream_turn(
-        model="chatgpt_direct/gpt-5.6-sol", messages=[{"role": "user", "content": "hi"}], params={}
+        model="codex_direct/gpt-5.6-sol", messages=[{"role": "user", "content": "hi"}], params={}
     ):
         pass
     assert "test-session" in seen_mid_stream

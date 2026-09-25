@@ -5,16 +5,16 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from clio_agent.providers.chatgpt.errors import (
-    ChatGPTAuthError,
-    ChatGPTPlanLimitError,
-    ChatGPTTransportError,
+from clio_agent.providers.codex.errors import (
+    CodexAuthError,
+    CodexPlanLimitError,
+    CodexTransportError,
 )
-from clio_agent.providers.chatgpt.login_flow import ChatGptCredential
-from clio_agent.providers.chatgpt.stream_events import Completed, TextDelta
-from clio_agent.providers.chatgpt.transport_sse import build_headers, stream_sse_turn
+from clio_agent.providers.codex.login_flow import CodexCredential
+from clio_agent.providers.codex.stream_events import Completed, TextDelta
+from clio_agent.providers.codex.transport_sse import build_headers, stream_sse_turn
 
-_CREDENTIAL = ChatGptCredential(
+_CREDENTIAL = CodexCredential(
     access_token="at", refresh_token="rt", expires_at_ms=0, account_id="acct_1"
 )
 
@@ -26,7 +26,7 @@ def _sse_body(*lines: str) -> bytes:
 def test_build_headers_carries_auth_and_ids() -> None:
     headers = build_headers(_CREDENTIAL, session_id="sess_1")
     assert headers["Authorization"] == "Bearer at"
-    assert headers["chatgpt-account-id"] == "acct_1"
+    assert headers["codex-account-id"] == "acct_1"
     assert headers["session-id"] == "sess_1"
     assert headers["x-client-request-id"] == "sess_1"
     assert headers["accept"] == "text/event-stream"
@@ -63,7 +63,7 @@ async def test_stream_sse_turn_401_raises_auth_error() -> None:
         return httpx.Response(401, content=b"unauthorized")
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    with pytest.raises(ChatGPTAuthError):
+    with pytest.raises(CodexAuthError):
         async for _ in stream_sse_turn(
             credential=_CREDENTIAL, body={}, session_id="s", client=client
         ):
@@ -76,7 +76,7 @@ async def test_stream_sse_turn_terminal_429_raises_plan_limit() -> None:
         return httpx.Response(429, content=b"usage limit reached for this plan")
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    with pytest.raises(ChatGPTPlanLimitError):
+    with pytest.raises(CodexPlanLimitError):
         async for _ in stream_sse_turn(
             credential=_CREDENTIAL, body={}, session_id="s", client=client, max_attempts=1
         ):
@@ -121,7 +121,7 @@ async def test_stream_sse_turn_without_completion_event_is_an_error() -> None:
         return httpx.Response(200, content=body)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    with pytest.raises(ChatGPTTransportError):
+    with pytest.raises(CodexTransportError):
         async for _ in stream_sse_turn(
             credential=_CREDENTIAL, body={}, session_id="s", client=client
         ):

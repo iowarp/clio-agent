@@ -6,7 +6,7 @@ call here). An autouse fixture stubs the context/output-limit resolution
 (``attach_context_limits`` — #1211 review D4) every ``discover_*`` success path
 now runs, so this file never touches models.dev/litellm/the local DB — that
 cascade has its own tests in ``tests/test_providers/test_handshake_sources.py``.
-Two ``@pytest.mark.live`` tests at the bottom actually hit the ChatGPT
+Two ``@pytest.mark.live`` tests at the bottom actually hit the Codex
 catalog/credential store and the installed ``claude`` binary — gated behind ``CLIO_RUN_LIVE=1`` like every
 other live test in this suite (see ``tests/test_arc/test_live_plane_alcf.py``
 for the house convention).
@@ -35,7 +35,7 @@ async def test_startup_refreshes_configured_cli_and_remote_claude_catalog(
     from clio_agent.providers.model_discovery import refresh as md_refresh
 
     seen: list[str] = []
-    monkeypatch.setattr(md_refresh, "is_provider_configured", lambda preset: preset.id == "chatgpt")
+    monkeypatch.setattr(md_refresh, "is_provider_configured", lambda preset: preset.id == "codex")
     monkeypatch.setattr(
         claude_code_catalog,
         "refresh_claude_code_candidates",
@@ -48,7 +48,7 @@ async def test_startup_refreshes_configured_cli_and_remote_claude_catalog(
 
     monkeypatch.setattr(md_refresh, "refresh_all", _refresh)
     await md_refresh.refresh_subscription_catalogs_at_startup()
-    assert seen == ["github", "chatgpt"]
+    assert seen == ["github", "codex"]
 
 
 @pytest.fixture(autouse=True)
@@ -92,24 +92,24 @@ def _stub_claude_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _stub_chatgpt_catalog_offline(
+def _stub_codex_catalog_offline(
     monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
 ) -> None:
-    """Keep every test in this file offline for the ChatGPT catalog.
+    """Keep every test in this file offline for the Codex catalog.
 
-    ``discover_chatgpt`` otherwise force-refreshes the maintained GitHub catalog;
-    individual tests override this with their own rows via ``_stub_chatgpt_catalog``.
+    ``discover_codex`` otherwise force-refreshes the maintained GitHub catalog;
+    individual tests override this with their own rows via ``_stub_codex_catalog``.
     ``@pytest.mark.live`` tests are exempt -- they exist to hit the real catalog.
     """
     if request.node.get_closest_marker("live") is not None:
         return
-    from clio_agent.providers.model_discovery import chatgpt as md_chatgpt
-    from clio_agent.providers.model_discovery.chatgpt_catalog import ChatGptCatalogError
+    from clio_agent.providers.model_discovery import codex as md_codex
+    from clio_agent.providers.model_discovery.codex_catalog import CodexCatalogError
 
     def _offline() -> Any:
-        raise ChatGptCatalogError("ChatGPT catalog fetch disabled in unit tests")
+        raise CodexCatalogError("Codex catalog fetch disabled in unit tests")
 
-    monkeypatch.setattr(md_chatgpt, "refresh_chatgpt_catalog", _offline)
+    monkeypatch.setattr(md_codex, "refresh_codex_catalog", _offline)
 
 
 @pytest.fixture(autouse=True)
@@ -200,16 +200,16 @@ def test_overlay_models_wire_absent_entry_returns_none(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
-    assert model_discovery.overlay_models_wire("chatgpt", "chatgpt") is None
+    assert model_discovery.overlay_models_wire("codex", "codex") is None
 
 
 def test_overlay_models_wire_empty_models_list_returns_none(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     overlay_file = tmp_path / "overlay.json"
-    overlay_file.write_text(json.dumps({"chatgpt": {"models": []}}), encoding="utf-8")
+    overlay_file.write_text(json.dumps({"codex": {"models": []}}), encoding="utf-8")
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(overlay_file))
-    assert model_discovery.overlay_models_wire("chatgpt", "chatgpt") is None
+    assert model_discovery.overlay_models_wire("codex", "codex") is None
 
 
 def test_overlay_models_wire_present_serves_verbatim(
@@ -219,9 +219,9 @@ def test_overlay_models_wire_present_serves_verbatim(
     overlay_file.write_text(
         json.dumps(
             {
-                "chatgpt": {
+                "codex": {
                     "models": [{"id": "gpt-5.6-sol", "name": "GPT-5.6-Sol", "description": ""}],
-                    "source": "chatgpt_catalog",
+                    "source": "codex_catalog",
                     "default_model": "gpt-5.6-sol",
                     "generated_at": "2026-08-14T00:00:00+00:00",
                 }
@@ -230,10 +230,10 @@ def test_overlay_models_wire_present_serves_verbatim(
         encoding="utf-8",
     )
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(overlay_file))
-    wire = model_discovery.overlay_models_wire("chatgpt", "chatgpt")
+    wire = model_discovery.overlay_models_wire("codex", "codex")
     assert wire is not None
     assert wire["models"] == [{"id": "gpt-5.6-sol", "name": "GPT-5.6-Sol", "description": ""}]
-    assert wire["source"] == "chatgpt_catalog"
+    assert wire["source"] == "codex_catalog"
     assert wire["default_model"] == "gpt-5.6-sol"
 
 
@@ -256,18 +256,18 @@ def test_overlay_models_wire_falls_back_to_bare_kind_key(
 def test_overlay_default_model_present(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     overlay_file = tmp_path / "overlay.json"
     overlay_file.write_text(
-        json.dumps({"chatgpt": {"models": [{"id": "x"}], "default_model": "gpt-5.6-sol"}}),
+        json.dumps({"codex": {"models": [{"id": "x"}], "default_model": "gpt-5.6-sol"}}),
         encoding="utf-8",
     )
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(overlay_file))
-    assert model_discovery.overlay_default_model("chatgpt", "chatgpt") == "gpt-5.6-sol"
+    assert model_discovery.overlay_default_model("codex", "codex") == "gpt-5.6-sol"
 
 
 def test_overlay_default_model_absent_is_empty(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
-    assert model_discovery.overlay_default_model("chatgpt", "chatgpt") == ""
+    assert model_discovery.overlay_default_model("codex", "codex") == ""
 
 
 def test_overlay_default_model_malformed_degrades_to_empty_logged(
@@ -279,7 +279,7 @@ def test_overlay_default_model_malformed_degrades_to_empty_logged(
     overlay_file.write_text("{not valid json", encoding="utf-8")
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(overlay_file))
     with caplog.at_level("WARNING"):
-        assert model_discovery.overlay_default_model("chatgpt", "chatgpt") == ""
+        assert model_discovery.overlay_default_model("codex", "codex") == ""
     assert any("malformed" in rec.message for rec in caplog.records)
 
 
@@ -293,16 +293,16 @@ def test_record_refresh_first_success_reports_everything_added(
 ) -> None:
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     result = model_discovery.ProviderDiscoveryResult(
-        provider="chatgpt",
+        provider="codex",
         discovered=[
             {"id": "gpt-5.6-sol", "name": "Sol", "description": ""},
             {"id": "gpt-5.6-terra", "name": "Terra", "description": ""},
         ],
-        source="chatgpt_catalog",
+        source="codex_catalog",
         default_model="gpt-5.6-sol",
     )
     wire = model_discovery.record_refresh(result)
-    assert wire["provider"] == "chatgpt"
+    assert wire["provider"] == "codex"
     assert sorted(wire["added"]) == ["gpt-5.6-sol", "gpt-5.6-terra"]
     assert wire["removed"] == []
     assert wire["unchanged"] == []
@@ -311,7 +311,7 @@ def test_record_refresh_first_success_reports_everything_added(
 
     # Persisted for the next GET / refresh to read back.
     overlay = model_discovery.read_overlay()
-    assert {m["id"] for m in overlay["chatgpt"]["models"]} == {"gpt-5.6-sol", "gpt-5.6-terra"}
+    assert {m["id"] for m in overlay["codex"]["models"]} == {"gpt-5.6-sol", "gpt-5.6-terra"}
 
 
 def test_record_refresh_second_success_computes_delta_against_previous(
@@ -320,22 +320,22 @@ def test_record_refresh_second_success_computes_delta_against_previous(
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
-            provider="chatgpt",
+            provider="codex",
             discovered=[
                 {"id": "gpt-5.5", "name": "5.5", "description": ""},
                 {"id": "gpt-5.5-mini", "name": "5.5-mini", "description": ""},
             ],
-            source="chatgpt_catalog",
+            source="codex_catalog",
         )
     )
     wire = model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
-            provider="chatgpt",
+            provider="codex",
             discovered=[
                 {"id": "gpt-5.5", "name": "5.5", "description": ""},
                 {"id": "gpt-5.6-sol", "name": "Sol", "description": ""},
             ],
-            source="chatgpt_catalog",
+            source="codex_catalog",
         )
     )
     assert wire["added"] == ["gpt-5.6-sol"]
@@ -402,9 +402,9 @@ def test_record_refresh_never_silently_clobbers_a_malformed_overlay(
     overlay_file.write_text("{not valid json", encoding="utf-8")
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(overlay_file))
     result = model_discovery.ProviderDiscoveryResult(
-        provider="chatgpt",
+        provider="codex",
         discovered=[{"id": "x", "name": "x", "description": ""}],
-        source="chatgpt_catalog",
+        source="codex_catalog",
     )
     with pytest.raises(model_discovery.OverlayMalformedError):
         model_discovery.record_refresh(result)
@@ -420,7 +420,7 @@ def test_record_refresh_refuses_claimed_success_with_empty_discovered(
     silently narrowing the overlay to nothing."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     bad = model_discovery.ProviderDiscoveryResult(
-        provider="chatgpt", discovered=[], source="chatgpt_catalog"
+        provider="codex", discovered=[], source="codex_catalog"
     )
     with pytest.raises(ValueError, match="refusing to write an empty models list"):
         model_discovery.record_refresh(bad)
@@ -541,23 +541,23 @@ def test_record_refresh_claude_code_falls_back_when_sonnet_unavailable(
     assert "cli_default" not in wire
 
 
-def test_record_refresh_chatgpt_has_only_one_discovered_default(
+def test_record_refresh_codex_has_only_one_discovered_default(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """ChatGPT follows its catalog default without synthetic alternatives."""
+    """Codex follows its catalog default without synthetic alternatives."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     wire = model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
-            provider="chatgpt",
+            provider="codex",
             discovered=[{"id": "gpt-5.6-sol", "name": "Sol", "description": ""}],
-            source=model_discovery.CHATGPT_SOURCE,
+            source=model_discovery.CODEX_SOURCE,
             default_model="gpt-5.6-sol",
         )
     )
     assert wire["default_model"] == "gpt-5.6-sol"
     assert "cli_default" not in wire
     overlay = model_discovery.read_overlay()
-    assert "cli_default" not in overlay["chatgpt"]
+    assert "cli_default" not in overlay["codex"]
 
 
 # --------------------------------------------------------------------------- #
@@ -583,8 +583,8 @@ def test_resolve_cloud_api_key_unknown_kind_is_empty(monkeypatch: pytest.MonkeyP
 
 
 # --------------------------------------------------------------------------- #
-# discover_chatgpt -- mocked at the maintained-catalog boundary
-# (refresh_chatgpt_catalog) and the credential-store sign-in boundary.
+# discover_codex -- mocked at the maintained-catalog boundary
+# (refresh_codex_catalog) and the credential-store sign-in boundary.
 # --------------------------------------------------------------------------- #
 
 
@@ -596,14 +596,14 @@ class _StubCredentialStore:
         return self._signed_in
 
 
-def _chatgpt_row(
+def _codex_row(
     model_id: str,
     *,
     name: str = "",
     capabilities: list[str] | None = None,
     effort_levels: list[str] | None = None,
 ) -> dict[str, Any]:
-    """One validated maintained-catalog row (the ``ChatGptCatalog.models`` shape)."""
+    """One validated maintained-catalog row (the ``CodexCatalog.models`` shape)."""
 
     return {
         "id": model_id,
@@ -616,37 +616,37 @@ def _chatgpt_row(
     }
 
 
-def _stub_chatgpt_catalog(
+def _stub_codex_catalog(
     monkeypatch: pytest.MonkeyPatch,
     rows: list[dict[str, Any]],
     default_model: str = "",
     error: Exception | None = None,
 ) -> None:
-    from clio_agent.providers.model_discovery import chatgpt as md_chatgpt
-    from clio_agent.providers.model_discovery.chatgpt_catalog import ChatGptCatalog
+    from clio_agent.providers.model_discovery import codex as md_codex
+    from clio_agent.providers.model_discovery.codex_catalog import CodexCatalog
 
-    def _refresh() -> ChatGptCatalog:
+    def _refresh() -> CodexCatalog:
         if error is not None:
             raise error
-        return ChatGptCatalog(models=rows, default_model=default_model)
+        return CodexCatalog(models=rows, default_model=default_model)
 
-    monkeypatch.setattr(md_chatgpt, "refresh_chatgpt_catalog", _refresh)
+    monkeypatch.setattr(md_codex, "refresh_codex_catalog", _refresh)
 
 
-def test_discover_chatgpt_success_reports_default_and_source(
+def test_discover_codex_success_reports_default_and_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _stub_chatgpt_catalog(
+    _stub_codex_catalog(
         monkeypatch,
-        [_chatgpt_row("gpt-5.6-sol", name="GPT-5.6-Sol"), _chatgpt_row("gpt-5.6-terra")],
+        [_codex_row("gpt-5.6-sol", name="GPT-5.6-Sol"), _codex_row("gpt-5.6-terra")],
         default_model="gpt-5.6-sol",
     )
 
-    result = model_discovery.discover_chatgpt(credential_store=_StubCredentialStore(True))
+    result = model_discovery.discover_codex(credential_store=_StubCredentialStore(True))
 
     assert result.failed_reason is None
-    assert result.source == model_discovery.CHATGPT_SOURCE == "chatgpt_catalog"
-    assert result.provider == "chatgpt"
+    assert result.source == model_discovery.CODEX_SOURCE == "codex_catalog"
+    assert result.provider == "codex"
     assert {m["id"] for m in result.discovered} == {"gpt-5.6-sol", "gpt-5.6-terra"}
     assert result.default_model == "gpt-5.6-sol"
     assert all(m["capabilities"] == ["text", "image"] for m in result.discovered)
@@ -661,67 +661,65 @@ def test_discover_chatgpt_success_reports_default_and_source(
     assert all(m["default_reasoning_effort"] == "medium" for m in result.discovered)
 
 
-def test_discover_chatgpt_does_not_guess_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    _stub_chatgpt_catalog(monkeypatch, [_chatgpt_row("gpt-5.6-sol")], default_model="")
+def test_discover_codex_does_not_guess_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_codex_catalog(monkeypatch, [_codex_row("gpt-5.6-sol")], default_model="")
 
-    result = model_discovery.discover_chatgpt(credential_store=_StubCredentialStore(True))
+    result = model_discovery.discover_codex(credential_store=_StubCredentialStore(True))
 
     assert [model["id"] for model in result.discovered] == ["gpt-5.6-sol"]
     assert result.default_model == ""
 
 
-def test_discover_chatgpt_text_only_row_is_not_widened(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_discover_codex_text_only_row_is_not_widened(monkeypatch: pytest.MonkeyPatch) -> None:
     """A model the catalog declares text-only stays text-only, and says why."""
 
-    _stub_chatgpt_catalog(monkeypatch, [_chatgpt_row("gpt-5.6-mini", capabilities=["text"])])
+    _stub_codex_catalog(monkeypatch, [_codex_row("gpt-5.6-mini", capabilities=["text"])])
 
-    result = model_discovery.discover_chatgpt(credential_store=_StubCredentialStore(True))
+    result = model_discovery.discover_codex(credential_store=_StubCredentialStore(True))
 
     assert result.discovered[0]["capabilities"] == ["text"]
     assert result.discovered[0]["capability_evidence"]["reason"] == "modality_cataloged"
 
 
-def test_discover_chatgpt_default_effort_without_medium_is_the_first_level(
+def test_discover_codex_default_effort_without_medium_is_the_first_level(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _stub_chatgpt_catalog(
-        monkeypatch, [_chatgpt_row("gpt-5.6-sol", effort_levels=["high", "xhigh"])]
-    )
+    _stub_codex_catalog(monkeypatch, [_codex_row("gpt-5.6-sol", effort_levels=["high", "xhigh"])])
 
-    result = model_discovery.discover_chatgpt(credential_store=_StubCredentialStore(True))
+    result = model_discovery.discover_codex(credential_store=_StubCredentialStore(True))
 
     assert result.discovered[0]["supported_reasoning_efforts"] == ["high", "xhigh"]
     assert result.discovered[0]["default_reasoning_effort"] == "high"
 
 
-def test_discover_chatgpt_requires_a_signed_in_credential(
+def test_discover_codex_requires_a_signed_in_credential(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """No sign-in is a typed failure -- never a catalog served as account evidence."""
 
-    _stub_chatgpt_catalog(monkeypatch, [_chatgpt_row("gpt-5.6-sol")], default_model="gpt-5.6-sol")
+    _stub_codex_catalog(monkeypatch, [_codex_row("gpt-5.6-sol")], default_model="gpt-5.6-sol")
 
-    result = model_discovery.discover_chatgpt(credential_store=_StubCredentialStore(False))
+    result = model_discovery.discover_codex(credential_store=_StubCredentialStore(False))
 
     assert result.discovered == []
     assert "sign-in is required" in (result.failed_reason or "")
 
 
-def test_discover_chatgpt_catalog_error_is_typed_reason(monkeypatch: pytest.MonkeyPatch) -> None:
-    from clio_agent.providers.model_discovery.chatgpt_catalog import ChatGptCatalogError
+def test_discover_codex_catalog_error_is_typed_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    from clio_agent.providers.model_discovery.codex_catalog import CodexCatalogError
 
-    _stub_chatgpt_catalog(
-        monkeypatch, [], error=ChatGptCatalogError("Could not fetch the ChatGPT model catalog")
+    _stub_codex_catalog(
+        monkeypatch, [], error=CodexCatalogError("Could not fetch the Codex model catalog")
     )
 
-    result = model_discovery.discover_chatgpt(credential_store=_StubCredentialStore(True))
+    result = model_discovery.discover_codex(credential_store=_StubCredentialStore(True))
 
     assert result.discovered == []
-    assert "Could not fetch the ChatGPT model catalog" in (result.failed_reason or "")
+    assert "Could not fetch the Codex model catalog" in (result.failed_reason or "")
 
 
-def test_discover_chatgpt_zero_models_is_typed_reason() -> None:
-    result = model_discovery.discover_chatgpt(
+def test_discover_codex_zero_models_is_typed_reason() -> None:
+    result = model_discovery.discover_codex(
         credential_store=_StubCredentialStore(True), catalog_candidates=[]
     )
 
@@ -1053,16 +1051,16 @@ async def test_discover_http_no_models_is_typed_reason(monkeypatch: pytest.Monke
 # --------------------------------------------------------------------------- #
 
 
-def test_is_provider_configured_chatgpt_requires_a_signed_in_credential(
+def test_is_provider_configured_codex_requires_a_signed_in_credential(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from clio_agent.providers.chatgpt.credentials import ChatGptCredentialStore
+    from clio_agent.providers.codex.credentials import CodexCredentialStore
 
-    preset = get_provider("chatgpt")
+    preset = get_provider("codex")
     assert preset is not None
-    monkeypatch.setattr(ChatGptCredentialStore, "is_signed_in", lambda self: False)
+    monkeypatch.setattr(CodexCredentialStore, "is_signed_in", lambda self: False)
     assert model_discovery.is_provider_configured(preset) is False
-    monkeypatch.setattr(ChatGptCredentialStore, "is_signed_in", lambda self: True)
+    monkeypatch.setattr(CodexCredentialStore, "is_signed_in", lambda self: True)
     assert model_discovery.is_provider_configured(preset) is True
 
 
@@ -1104,11 +1102,11 @@ async def test_refresh_all_one_provider_failing_others_still_refresh(
 ) -> None:
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
 
-    def _fake_discover_chatgpt() -> model_discovery.ProviderDiscoveryResult:
+    def _fake_discover_codex() -> model_discovery.ProviderDiscoveryResult:
         return model_discovery.ProviderDiscoveryResult(
-            provider="chatgpt",
+            provider="codex",
             discovered=[{"id": "gpt-5.6-sol", "name": "Sol", "description": ""}],
-            source=model_discovery.CHATGPT_SOURCE,
+            source=model_discovery.CODEX_SOURCE,
             default_model="gpt-5.6-sol",
         )
 
@@ -1129,18 +1127,18 @@ async def test_refresh_all_one_provider_failing_others_still_refresh(
         )
 
     monkeypatch.setattr(
-        "clio_agent.providers.model_discovery.refresh.discover_chatgpt", _fake_discover_chatgpt
+        "clio_agent.providers.model_discovery.refresh.discover_codex", _fake_discover_codex
     )
     monkeypatch.setattr(
         "clio_agent.providers.model_discovery.refresh.discover_http", _fake_discover_http
     )
 
-    presets = [get_provider("chatgpt"), get_provider("openai"), get_provider("anthropic")]
+    presets = [get_provider("codex"), get_provider("openai"), get_provider("anthropic")]
     results = await model_discovery.refresh_all(presets=presets)  # type: ignore[arg-type]
 
     by_id = {r["provider"]: r for r in results}
-    assert "failed_reason" not in by_id["chatgpt"]
-    assert by_id["chatgpt"]["added"] == ["gpt-5.6-sol"]
+    assert "failed_reason" not in by_id["codex"]
+    assert by_id["codex"]["added"] == ["gpt-5.6-sol"]
     assert "failed_reason" not in by_id["openai"]
     assert by_id["openai"]["added"] == ["gpt-4o"]
     assert by_id["anthropic"]["failed_reason"] == "simulated network failure"
@@ -1153,11 +1151,11 @@ async def test_refresh_all_default_scan_filters_to_configured_providers(
 ) -> None:
     """#1211 review R2: with no explicit presets, only configured providers are probed."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
-    # ChatGPT counts as configured only with a signed-in credential; pin it
-    # instead of depending on the host's real ChatGPT sign-in.
-    from clio_agent.providers.chatgpt.credentials import ChatGptCredentialStore
+    # Codex counts as configured only with a signed-in credential; pin it
+    # instead of depending on the host's real Codex sign-in.
+    from clio_agent.providers.codex.credentials import CodexCredentialStore
 
-    monkeypatch.setattr(ChatGptCredentialStore, "is_signed_in", lambda self: True)
+    monkeypatch.setattr(CodexCredentialStore, "is_signed_in", lambda self: True)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
@@ -1184,13 +1182,13 @@ async def test_refresh_all_default_scan_filters_to_configured_providers(
         "clio_agent.providers.model_discovery.refresh.discover_http", _fake_discover_http
     )
     monkeypatch.setattr(
-        "clio_agent.providers.model_discovery.refresh.discover_chatgpt",
+        "clio_agent.providers.model_discovery.refresh.discover_codex",
         lambda: (
-            seen.append("chatgpt")
+            seen.append("codex")
             or model_discovery.ProviderDiscoveryResult(
-                provider="chatgpt",
+                provider="codex",
                 discovered=[{"id": "gpt-5.6-luna", "name": "Luna", "description": ""}],
-                source=model_discovery.CHATGPT_SOURCE,
+                source=model_discovery.CODEX_SOURCE,
                 default_model="gpt-5.6-luna",
             )
         ),
@@ -1198,9 +1196,9 @@ async def test_refresh_all_default_scan_filters_to_configured_providers(
 
     await model_discovery.refresh_all()
 
-    # The signed-in ChatGPT credential is configured; Claude Code and API-key
+    # The signed-in Codex credential is configured; Claude Code and API-key
     # providers are not.
-    assert "chatgpt" in seen
+    assert "codex" in seen
     assert "claude_code" not in seen
     assert "openai" not in seen
     assert "anthropic" not in seen
@@ -1322,12 +1320,12 @@ def test_record_refresh_writes_use_a_unique_temp_filename(
 
     model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
-            provider="chatgpt", discovered=[{"id": "a", "name": "a", "description": ""}], source="x"
+            provider="codex", discovered=[{"id": "a", "name": "a", "description": ""}], source="x"
         )
     )
     model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
-            provider="chatgpt", discovered=[{"id": "b", "name": "b", "description": ""}], source="x"
+            provider="codex", discovered=[{"id": "b", "name": "b", "description": ""}], source="x"
         )
     )
     assert len(seen_tmp_names) == 2
@@ -1352,7 +1350,7 @@ def test_refresh_provider_models_tool_calls_refresh_all(monkeypatch: pytest.Monk
     ) -> list[dict[str, Any]]:
         return [
             {
-                "provider": "chatgpt",
+                "provider": "codex",
                 "discovered": [],
                 "source": "x",
                 "default_model": "",
@@ -1370,7 +1368,7 @@ def test_refresh_provider_models_tool_calls_refresh_all(monkeypatch: pytest.Monk
     assert out == {
         "results": [
             {
-                "provider": "chatgpt",
+                "provider": "codex",
                 "discovered": [],
                 "source": "x",
                 "default_model": "",
@@ -1390,13 +1388,13 @@ def test_refresh_provider_models_tool_calls_refresh_all(monkeypatch: pytest.Monk
 @pytest.mark.live
 @pytest.mark.skipif(
     os.environ.get("CLIO_RUN_LIVE") != "1",
-    reason="live ChatGPT discovery: set CLIO_RUN_LIVE=1 (needs an existing ChatGPT sign-in)",
+    reason="live Codex discovery: set CLIO_RUN_LIVE=1 (needs an existing Codex sign-in)",
 )
-def test_discover_chatgpt_live() -> None:
+def test_discover_codex_live() -> None:
     """Real maintained-catalog fetch + the real credential store -- no LM cost."""
-    result = model_discovery.discover_chatgpt()
+    result = model_discovery.discover_codex()
     assert result.failed_reason is None, result.failed_reason
-    assert result.discovered, "the maintained ChatGPT catalog returned zero models"
+    assert result.discovered, "the maintained Codex catalog returned zero models"
 
 
 @pytest.mark.live
@@ -1428,7 +1426,7 @@ def test_discover_claude_code_live_reads_catalog_and_checks_sign_in() -> None:
 
 def _write_overlay(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entry: dict[str, Any]) -> None:
     overlay_file = tmp_path / "overlay.json"
-    overlay_file.write_text(json.dumps({"chatgpt": entry}), encoding="utf-8")
+    overlay_file.write_text(json.dumps({"codex": entry}), encoding="utf-8")
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(overlay_file))
 
 
@@ -1442,11 +1440,11 @@ def test_overlay_within_ttl_is_served_without_a_staleness_marker(
         monkeypatch,
         {
             "models": [{"id": "gpt-5.6-sol"}],
-            "source": "chatgpt_catalog",
+            "source": "codex_catalog",
             "generated_at": datetime.now(timezone.utc).isoformat(),
         },
     )
-    wire = model_discovery.overlay_models_wire("chatgpt", "chatgpt")
+    wire = model_discovery.overlay_models_wire("codex", "codex")
     assert wire is not None
     assert "staleness" not in wire
 
@@ -1462,10 +1460,10 @@ def test_overlay_older_than_ttl_is_still_served_but_marked_typed_stale(
     _write_overlay(
         tmp_path,
         monkeypatch,
-        {"models": [{"id": "gpt-5.6-sol"}], "source": "chatgpt_catalog", "generated_at": old},
+        {"models": [{"id": "gpt-5.6-sol"}], "source": "codex_catalog", "generated_at": old},
     )
 
-    wire = model_discovery.overlay_models_wire("chatgpt", "chatgpt")
+    wire = model_discovery.overlay_models_wire("codex", "codex")
 
     assert wire is not None
     # Still SERVED -- the documented contract never clears a prior good list.
@@ -1487,10 +1485,10 @@ def test_overlay_ttl_zero_disables_the_age_check(
     _write_overlay(
         tmp_path,
         monkeypatch,
-        {"models": [{"id": "gpt-5.6-sol"}], "source": "chatgpt_catalog", "generated_at": old},
+        {"models": [{"id": "gpt-5.6-sol"}], "source": "codex_catalog", "generated_at": old},
     )
     set_config("providers.model_catalog_ttl_s", 0)
-    wire = model_discovery.overlay_models_wire("chatgpt", "chatgpt")
+    wire = model_discovery.overlay_models_wire("codex", "codex")
     assert wire is not None
     assert "staleness" not in wire
 
@@ -1503,11 +1501,11 @@ def test_overlay_with_unreadable_timestamp_is_unverified_not_assumed_fresh(
         monkeypatch,
         {
             "models": [{"id": "gpt-5.6-sol"}],
-            "source": "chatgpt_catalog",
+            "source": "codex_catalog",
             "generated_at": "whenever",
         },
     )
-    wire = model_discovery.overlay_models_wire("chatgpt", "chatgpt")
+    wire = model_discovery.overlay_models_wire("codex", "codex")
     assert wire is not None
     assert wire["staleness"]["reason"] == "overlay_generated_at_unreadable"
 
@@ -1520,19 +1518,19 @@ def test_a_failed_refresh_keeps_the_prior_list_and_marks_it_typed_stale(
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
-            provider="chatgpt",
+            provider="codex",
             discovered=[{"id": "gpt-5.6-sol", "name": "GPT-5.6-Sol", "description": ""}],
-            source=model_discovery.CHATGPT_SOURCE,
+            source=model_discovery.CODEX_SOURCE,
             default_model="gpt-5.6-sol",
         )
     )
 
     failed_row = model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
-            provider="chatgpt",
+            provider="codex",
             discovered=[],
-            source=model_discovery.CHATGPT_SOURCE,
-            failed_reason="Could not fetch the ChatGPT model catalog: transport closed",
+            source=model_discovery.CODEX_SOURCE,
+            failed_reason="Could not fetch the Codex model catalog: transport closed",
         )
     )
 
@@ -1540,7 +1538,7 @@ def test_a_failed_refresh_keeps_the_prior_list_and_marks_it_typed_stale(
     assert failed_row["staleness"]["reason"] == "overlay_refresh_failed"
     assert "transport closed" in failed_row["staleness"]["failed_reason"]
     # And every later READ of that entry keeps saying so.
-    wire = model_discovery.overlay_models_wire("chatgpt", "chatgpt")
+    wire = model_discovery.overlay_models_wire("codex", "codex")
     assert wire is not None
     assert wire["staleness"]["reason"] == "overlay_refresh_failed"
 

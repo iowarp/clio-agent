@@ -14,17 +14,17 @@ from typing import Any
 import pytest
 import websockets
 
-from clio_agent.providers.chatgpt import constants as c
-from clio_agent.providers.chatgpt.login_flow import ChatGptCredential
-from clio_agent.providers.chatgpt.sessions import ChatGptSessionState
-from clio_agent.providers.chatgpt.stream_events import Completed
-from clio_agent.providers.chatgpt.transport_ws import (
+from clio_agent.providers.codex import constants as c
+from clio_agent.providers.codex.login_flow import CodexCredential
+from clio_agent.providers.codex.sessions import CodexSessionState
+from clio_agent.providers.codex.stream_events import Completed
+from clio_agent.providers.codex.transport_ws import (
     WsPreStreamFailure,
     drop_connection_after_cancel,
     stream_ws_turn,
 )
 
-_CREDENTIAL = ChatGptCredential(
+_CREDENTIAL = CodexCredential(
     access_token="at", refresh_token="rt", expires_at_ms=0, account_id="acct_1"
 )
 
@@ -88,7 +88,7 @@ async def test_ws_reuse_across_three_turns_with_delta_on_2_and_3(
             )
 
     await ws_server_factory(handler)
-    state = ChatGptSessionState(session_id="s1")
+    state = CodexSessionState(session_id="s1")
 
     turn1_input = [
         {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}
@@ -176,7 +176,7 @@ async def test_previous_response_not_found_recovers_with_a_full_resend(
                 await websocket.send(_completed_frame("resp_3"))
 
     await ws_server_factory(handler)
-    state = ChatGptSessionState(session_id="s1")
+    state = CodexSessionState(session_id="s1")
 
     turn1_input = [{"type": "message", "role": "user", "content": []}]
     body1 = {"model": "m", "instructions": "x", "input": turn1_input}
@@ -213,12 +213,12 @@ async def test_pre_stream_connection_failure_marks_session_sse_only() -> None:
     server.close()
     await server.wait_closed()
 
-    import clio_agent.providers.chatgpt.transport_ws as transport_ws_module
+    import clio_agent.providers.codex.transport_ws as transport_ws_module
 
     original_url = c.CODEX_WS_URL
     try:
         transport_ws_module.c.CODEX_WS_URL = f"ws://127.0.0.1:{port}"
-        state = ChatGptSessionState(session_id="s1")
+        state = CodexSessionState(session_id="s1")
         with pytest.raises(WsPreStreamFailure):
             async for _ in stream_ws_turn(
                 credential=_CREDENTIAL,
@@ -244,7 +244,7 @@ async def test_drop_connection_after_cancel_clears_and_closes_socket(
             await websocket.send(_completed_frame("resp_1"))
 
     await ws_server_factory(handler)
-    state = ChatGptSessionState(session_id="s1")
+    state = CodexSessionState(session_id="s1")
     body = {"model": "m", "instructions": "x", "input": []}
     async for _ in stream_ws_turn(credential=_CREDENTIAL, body=body, session_id="s1", state=state):
         pass

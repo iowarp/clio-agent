@@ -321,7 +321,7 @@ def test_streamed_call_surfaces_provider_reasoning_before_contract_fields(
     assert ("next_thought", "use a tool") in observed
 
 
-@pytest.mark.parametrize("provider_id", ["chatgpt", "claude_code"])
+@pytest.mark.parametrize("provider_id", ["codex", "claude_code"])
 def test_generic_stream_bridge_leaves_sdk_provider_reasoning_unchanged(
     monkeypatch: pytest.MonkeyPatch, provider_id: str
 ) -> None:

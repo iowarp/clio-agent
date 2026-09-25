@@ -42,21 +42,21 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _chatgpt_signed_in(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Present a (unvalidated) signed-in ChatGPT credential."""
-    from clio_agent.providers.chatgpt.credentials import ChatGptCredentialStore
+def _codex_signed_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Present a (unvalidated) signed-in Codex credential."""
+    from clio_agent.providers.codex.credentials import CodexCredentialStore
 
-    monkeypatch.setattr(ChatGptCredentialStore, "is_signed_in", lambda self: True)
+    monkeypatch.setattr(CodexCredentialStore, "is_signed_in", lambda self: True)
 
 
-def test_get_models_unverified_chatgpt_is_unavailable_not_static(
+def test_get_models_unverified_codex_is_unavailable_not_static(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Subscription availability: with no validated catalog, ChatGPT reports
+    """Subscription availability: with no validated catalog, Codex reports
     ``unavailable`` with a reason instead of the frozen static pins, which named
     models an unverified account might not be able to use."""
-    _chatgpt_signed_in(monkeypatch)
-    body = client.get("/v1/providers/chatgpt/models").json()
+    _codex_signed_in(monkeypatch)
+    body = client.get("/v1/providers/codex/models").json()
     assert body["source"] == "unavailable"
     assert body["models"] == []
     assert body["error"]
@@ -68,23 +68,23 @@ def test_get_models_overlay_present_is_served_verbatim(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The core overlay-first contract: a fresh, validated list is served as-is."""
-    _chatgpt_signed_in(monkeypatch)
+    _codex_signed_in(monkeypatch)
     _write_overlay(
         tmp_path,
         {
-            "chatgpt": {
+            "codex": {
                 "models": [
                     {"id": "gpt-5.6-sol", "name": "GPT-5.6-Sol", "description": "live"},
                     {"id": "gpt-5.6-terra", "name": "GPT-5.6-Terra", "description": "live"},
                 ],
-                "source": "chatgpt_catalog",
+                "source": "codex_catalog",
                 "default_model": "gpt-5.6-sol",
                 "generated_at": _now(),
             }
         },
     )
-    body = client.get("/v1/providers/chatgpt/models").json()
-    assert body["source"] == "chatgpt_catalog"
+    body = client.get("/v1/providers/codex/models").json()
+    assert body["source"] == "codex_catalog"
     ids = {m["id"] for m in body["models"]}
     assert ids == {"gpt-5.6-sol", "gpt-5.6-terra"}
     # SABOTAGE-sensitive: none of the STALE static ids leak through once an
@@ -98,7 +98,7 @@ def test_get_models_malformed_overlay_is_typed_500_not_silent_fallback(
     client: TestClient, tmp_path: Path
 ) -> None:
     (tmp_path / "model_catalog.json").write_text("{not valid json", encoding="utf-8")
-    resp = client.get("/v1/providers/chatgpt/models")
+    resp = client.get("/v1/providers/codex/models")
     assert resp.status_code == 500
     body = resp.json()
     assert body["error"]["error"] == "overlay_malformed"
@@ -147,7 +147,7 @@ def test_get_models_http_provider_overlay_is_never_served_ahead_of_live_handshak
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """#1211 review D5: overlay-first serving is scoped to the CLI kinds ONLY
-    (chatgpt/claude_code). An HTTP-backed provider's overlay entry (populated by
+    (codex/claude_code). An HTTP-backed provider's overlay entry (populated by
     a prior refresh, for the added/removed/unchanged delta) is NEVER served
     ahead of a fresh live handshake attempt -- it always keeps its live path.
     No API key is set, so the live handshake short-circuits fast (SKIPPED
@@ -181,9 +181,9 @@ def test_post_refresh_returns_the_discovery_results_verbatim(
 ) -> None:
     fake_results = [
         {
-            "provider": "chatgpt",
+            "provider": "codex",
             "discovered": [{"id": "gpt-5.6-sol", "name": "Sol", "description": ""}],
-            "source": "chatgpt_catalog",
+            "source": "codex_catalog",
             "default_model": "gpt-5.6-sol",
             "generated_at": "2026-08-14T00:00:00+00:00",
             "added": ["gpt-5.6-sol"],
@@ -230,12 +230,12 @@ def test_post_refresh_with_explicit_providers_body_narrows_the_scan(
     """#1211 review R3: an explicit {"providers": [...]} body is honored."""
     mock_refresh = AsyncMock(return_value=[])
     monkeypatch.setattr("clio_agent.providers.model_discovery.refresh_all", mock_refresh)
-    resp = client.post("/v1/providers/models/refresh", json={"providers": ["chatgpt", "openai"]})
+    resp = client.post("/v1/providers/models/refresh", json={"providers": ["codex", "openai"]})
     assert resp.status_code == 200
     mock_refresh.assert_awaited_once()
     presets = mock_refresh.await_args.kwargs.get("presets")
     assert presets is not None
-    assert {p.id for p in presets} == {"chatgpt", "openai"}
+    assert {p.id for p in presets} == {"codex", "openai"}
 
 
 def test_post_refresh_with_unknown_provider_id_is_typed_404(client: TestClient) -> None:

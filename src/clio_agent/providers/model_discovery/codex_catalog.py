@@ -1,4 +1,4 @@
-"""Fetch the maintained ChatGPT model catalog from the CLIO GitHub document.
+"""Fetch the maintained Codex model catalog from the CLIO GitHub document.
 
 The Codex backend has no account model-enumeration endpoint the way the old
 ``openai_codex`` SDK's ``client.models()`` call did, so the model list, each
@@ -22,8 +22,8 @@ from typing import Any
 from clio_agent.providers.fetched_catalog import FetchedCatalog, FetchedCatalogUnavailable
 from clio_agent.providers.thinking import THINKING_LEVELS
 
-CHATGPT_CATALOG_URL = (
-    "https://raw.githubusercontent.com/iowarp/clio-agent/develop/catalogs/chatgpt-models.json"
+CODEX_CATALOG_URL = (
+    "https://raw.githubusercontent.com/iowarp/clio-agent/develop/catalogs/codex-models.json"
 )
 _MODEL_ID = re.compile(r"^[a-z0-9]+(?:[.\-][a-z0-9]+)*$")
 _KNOWN_CAPABILITIES = frozenset({"text", "image"})
@@ -33,13 +33,13 @@ _FETCH_TIMEOUT_S = 8.0
 _MAX_BYTES = 65_536
 
 
-class ChatGptCatalogError(RuntimeError):
-    """The maintained ChatGPT catalog could not be read safely."""
+class CodexCatalogError(RuntimeError):
+    """The maintained Codex catalog could not be read safely."""
 
 
 @dataclass(frozen=True)
-class ChatGptCatalog:
-    """One fetched-and-validated snapshot of the maintained ChatGPT catalog.
+class CodexCatalog:
+    """One fetched-and-validated snapshot of the maintained Codex catalog.
 
     Attributes:
         models: Rows shaped ``{"id", "name", "context_window",
@@ -61,9 +61,7 @@ def _validate_capabilities(model_id: str, raw: Any) -> list[str]:
         or not all(value in _KNOWN_CAPABILITIES for value in raw)
         or "text" not in raw
     ):
-        raise ChatGptCatalogError(
-            f"ChatGPT model catalog has invalid capabilities for {model_id!r}"
-        )
+        raise CodexCatalogError(f"Codex model catalog has invalid capabilities for {model_id!r}")
     return list(raw)
 
 
@@ -71,19 +69,17 @@ def _validate_effort_levels(model_id: str, raw: Any) -> list[str]:
     if raw is None:
         return []
     if not isinstance(raw, list) or not all(isinstance(v, str) for v in raw):
-        raise ChatGptCatalogError(
-            f"ChatGPT model catalog has invalid effort_levels for {model_id!r}"
-        )
+        raise CodexCatalogError(f"Codex model catalog has invalid effort_levels for {model_id!r}")
     unknown = [v for v in raw if v not in THINKING_LEVELS]
     if unknown:
-        raise ChatGptCatalogError(
-            f"ChatGPT model catalog names unknown effort level(s) {unknown} for {model_id!r}"
+        raise CodexCatalogError(
+            f"Codex model catalog names unknown effort level(s) {unknown} for {model_id!r}"
         )
     return list(raw)
 
 
-def _parse_catalog(payload: bytes) -> ChatGptCatalog:
-    """Validate one catalog document's bytes into a :class:`ChatGptCatalog`.
+def _parse_catalog(payload: bytes) -> CodexCatalog:
+    """Validate one catalog document's bytes into a :class:`CodexCatalog`.
 
     Pure parse+validate, no I/O -- the ``parse`` callable handed to
     :class:`~clio_agent.providers.fetched_catalog.FetchedCatalog`.
@@ -92,19 +88,19 @@ def _parse_catalog(payload: bytes) -> ChatGptCatalog:
     try:
         payload_obj: Any = json.loads(payload.decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as exc:
-        raise ChatGptCatalogError(f"ChatGPT model catalog is not valid JSON: {exc}") from exc
+        raise CodexCatalogError(f"Codex model catalog is not valid JSON: {exc}") from exc
 
     if not isinstance(payload_obj, dict) or payload_obj.get("schema_version") != 1:
-        raise ChatGptCatalogError("ChatGPT model catalog has an unsupported schema")
+        raise CodexCatalogError("Codex model catalog has an unsupported schema")
     rows = payload_obj.get("models")
     if not isinstance(rows, list) or not rows:
-        raise ChatGptCatalogError("ChatGPT model catalog contains no models")
+        raise CodexCatalogError("Codex model catalog contains no models")
 
     candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
     for row in rows:
         if not isinstance(row, dict):
-            raise ChatGptCatalogError("ChatGPT model catalog contains an invalid row")
+            raise CodexCatalogError("Codex model catalog contains an invalid row")
         model_id = row.get("id")
         name = row.get("name")
         if (
@@ -115,17 +111,17 @@ def _parse_catalog(payload: bytes) -> ChatGptCatalog:
             or not name.strip()
             or len(name) > 120
         ):
-            raise ChatGptCatalogError("ChatGPT model catalog contains an invalid model")
+            raise CodexCatalogError("Codex model catalog contains an invalid model")
         seen.add(model_id)
         context_window = row.get("context_window")
         max_output_tokens = row.get("max_output_tokens")
         if not isinstance(context_window, int) or context_window <= 0:
-            raise ChatGptCatalogError(
-                f"ChatGPT model catalog has an invalid context_window for {model_id!r}"
+            raise CodexCatalogError(
+                f"Codex model catalog has an invalid context_window for {model_id!r}"
             )
         if not isinstance(max_output_tokens, int) or max_output_tokens <= 0:
-            raise ChatGptCatalogError(
-                f"ChatGPT model catalog has an invalid max_output_tokens for {model_id!r}"
+            raise CodexCatalogError(
+                f"Codex model catalog has an invalid max_output_tokens for {model_id!r}"
             )
         candidates.append(
             {
@@ -143,15 +139,15 @@ def _parse_catalog(payload: bytes) -> ChatGptCatalog:
     if default_model is not None and (
         not isinstance(default_model, str) or default_model not in seen
     ):
-        raise ChatGptCatalogError(
-            f"ChatGPT model catalog default_model {default_model!r} is not a cataloged model id"
+        raise CodexCatalogError(
+            f"Codex model catalog default_model {default_model!r} is not a cataloged model id"
         )
-    return ChatGptCatalog(models=candidates, default_model=str(default_model or ""))
+    return CodexCatalog(models=candidates, default_model=str(default_model or ""))
 
 
-_CATALOG: FetchedCatalog[ChatGptCatalog] = FetchedCatalog(
-    "chatgpt-models",
-    CHATGPT_CATALOG_URL,
+_CATALOG: FetchedCatalog[CodexCatalog] = FetchedCatalog(
+    "codex-models",
+    CODEX_CATALOG_URL,
     parse=_parse_catalog,
     ttl_s=DEFAULT_TTL_S,
     max_bytes=_MAX_BYTES,
@@ -159,11 +155,11 @@ _CATALOG: FetchedCatalog[ChatGptCatalog] = FetchedCatalog(
 )
 
 
-def _raise_unavailable(exc: FetchedCatalogUnavailable) -> ChatGptCatalogError:
-    return ChatGptCatalogError(f"Could not fetch the ChatGPT model catalog: {exc}")
+def _raise_unavailable(exc: FetchedCatalogUnavailable) -> CodexCatalogError:
+    return CodexCatalogError(f"Could not fetch the Codex model catalog: {exc}")
 
 
-def load_chatgpt_catalog() -> ChatGptCatalog:
+def load_codex_catalog() -> CodexCatalog:
     """Return the current catalog, using the disk cache/network per TTL policy."""
 
     try:
@@ -172,7 +168,7 @@ def load_chatgpt_catalog() -> ChatGptCatalog:
         raise _raise_unavailable(exc) from exc
 
 
-def refresh_chatgpt_catalog() -> ChatGptCatalog:
+def refresh_codex_catalog() -> CodexCatalog:
     """Force a live re-fetch (bypassing TTL freshness), keeping last-good on failure."""
 
     try:
@@ -181,7 +177,7 @@ def refresh_chatgpt_catalog() -> ChatGptCatalog:
         raise _raise_unavailable(exc) from exc
 
 
-def cached_chatgpt_catalog() -> tuple[ChatGptCatalog | None, str]:
+def cached_codex_catalog() -> tuple[CodexCatalog | None, str]:
     """Return the last known-good catalog without touching the network."""
 
     try:
@@ -191,10 +187,10 @@ def cached_chatgpt_catalog() -> tuple[ChatGptCatalog | None, str]:
 
 
 __all__ = [
-    "CHATGPT_CATALOG_URL",
-    "ChatGptCatalog",
-    "ChatGptCatalogError",
-    "cached_chatgpt_catalog",
-    "load_chatgpt_catalog",
-    "refresh_chatgpt_catalog",
+    "CODEX_CATALOG_URL",
+    "CodexCatalog",
+    "CodexCatalogError",
+    "cached_codex_catalog",
+    "load_codex_catalog",
+    "refresh_codex_catalog",
 ]

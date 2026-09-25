@@ -477,7 +477,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # landed here.
     # Desktop lifecycle and agent-initialization owners from release combine
     # with develop's activation extraction and provider startup refresh.
-    "src/clio_agent/gact/app.py": 2469,  # L1: -1, the deleted hard_abort_supported/upstream_abort/executor_work_may_continue triad
+    # Ratchet down 2469 -> 2467 (naming reversal): removed the now-unneeded
+    # codex->chatgpt boot migration call (the provider id never changed).
+    "src/clio_agent/gact/app.py": 2467,  # L1: -1, the deleted hard_abort_supported/upstream_abort/executor_work_may_continue triad
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -654,9 +656,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # Ratchet down 1292 -> 1172: the per-provider auth/models/install/handshake
     # routes moved verbatim to gact/routes/provider_catalog_routes.py, which
     # also absorbed the subscription-readiness growth from e0c66ff5.
-    # Ratchet down 1172 -> 1163 (S1, chatgpt direct provider): _codex_readiness
-    # -> _chatgpt_readiness dropped the "openai_codex" importlib probe -- the
-    # ChatGPT credential store is a plain, always-importable class.
+    # Ratchet down 1172 -> 1163 (S1, direct Codex provider): the simplified
+    # _codex_readiness dropped the "openai_codex" importlib probe -- the
+    # Codex credential store is a plain, always-importable class.
     "src/clio_agent/gact/routes/providers.py": 1163,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (merged to develop with the size check red, baseline 1478 -> actual); ratchet

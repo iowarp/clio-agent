@@ -13,29 +13,29 @@ from typing import Any
 
 import httpx
 
-from clio_agent.providers.chatgpt import constants as c
-from clio_agent.providers.chatgpt.errors import (
-    ChatGPTAuthError,
-    ChatGPTTransportError,
+from clio_agent.providers.codex import constants as c
+from clio_agent.providers.codex.errors import (
+    CodexAuthError,
+    CodexTransportError,
     is_retryable_status,
     next_retry_delay_ms,
     raise_for_backend_error,
 )
-from clio_agent.providers.chatgpt.login_flow import ChatGptCredential
-from clio_agent.providers.chatgpt.stream_events import Failed, ResponseEventParser, StreamEvent
+from clio_agent.providers.codex.login_flow import CodexCredential
+from clio_agent.providers.codex.stream_events import Failed, ResponseEventParser, StreamEvent
 
 logger = logging.getLogger(__name__)
 
 __all__ = ["build_headers", "stream_sse_turn"]
 
 
-def build_headers(credential: ChatGptCredential, *, session_id: str) -> dict[str, str]:
+def build_headers(credential: CodexCredential, *, session_id: str) -> dict[str, str]:
     """A.5 headers. Callers must never log these verbatim -- Authorization and
-    chatgpt-account-id are secrets/identity and are redacted at every log site."""
+    codex-account-id are secrets/identity and are redacted at every log site."""
 
     return {
         "Authorization": f"Bearer {credential.access_token}",
-        "chatgpt-account-id": credential.account_id,
+        "codex-account-id": credential.account_id,
         "originator": c.ORIGINATOR,
         "User-Agent": "clio-agent",
         "OpenAI-Beta": c.OPENAI_BETA_SSE,
@@ -65,7 +65,7 @@ async def _iter_sse_events(response: httpx.Response) -> AsyncIterator[dict[str, 
         try:
             event = json.loads(payload)
         except ValueError:
-            logger.warning("chatgpt sse: undecodable event payload (len=%d)", len(payload))
+            logger.warning("codex sse: undecodable event payload (len=%d)", len(payload))
             return None
         return event if isinstance(event, dict) else None
 
@@ -90,7 +90,7 @@ async def _sleep_ms(milliseconds: float) -> None:
 
 async def stream_sse_turn(
     *,
-    credential: ChatGptCredential,
+    credential: CodexCredential,
     body: dict[str, Any],
     session_id: str,
     client: httpx.AsyncClient | None = None,
@@ -105,9 +105,9 @@ async def stream_sse_turn(
     symmetrically here.
 
     Raises:
-        ChatGPTPlanLimitError: A terminal 429 (the account's plan window).
-        ChatGPTResponseError: The backend reported ``error``/``response.failed``.
-        ChatGPTTransportError: Retries were exhausted, or the stream ended
+        CodexPlanLimitError: A terminal 429 (the account's plan window).
+        CodexResponseError: The backend reported ``error``/``response.failed``.
+        CodexTransportError: Retries were exhausted, or the stream ended
             without a completion event.
     """
 
@@ -125,9 +125,7 @@ async def stream_sse_turn(
             except httpx.HTTPError as exc:
                 decision = next_retry_delay_ms(attempt=attempt)
                 if attempt + 1 >= max_attempts or not decision.should_retry:
-                    raise ChatGPTTransportError(
-                        f"could not reach the Codex backend: {exc}"
-                    ) from exc
+                    raise CodexTransportError(f"could not reach the Codex backend: {exc}") from exc
                 attempt += 1
                 await _sleep_ms(decision.delay_ms)
                 continue
@@ -139,7 +137,7 @@ async def stream_sse_turn(
                 if response.status_code == 401:
                     # A.7: refresh once and retry -- the caller (litellm_adapter)
                     # catches this, refreshes the credential, and retries the turn.
-                    raise ChatGPTAuthError(f"access token rejected (401): {text}")
+                    raise CodexAuthError(f"access token rejected (401): {text}")
                 if is_retryable_status(response.status_code, text):
                     decision = next_retry_delay_ms(attempt=attempt, headers=dict(response.headers))
                     if attempt + 1 < max_attempts and decision.should_retry:
@@ -162,7 +160,7 @@ async def stream_sse_turn(
             finally:
                 await response.aclose()
             if not parser.completed:
-                raise ChatGPTTransportError(
+                raise CodexTransportError(
                     "the Codex backend's stream ended without a completion event"
                 )
             return

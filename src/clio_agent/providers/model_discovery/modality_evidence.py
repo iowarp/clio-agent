@@ -28,7 +28,7 @@ from typing import Any
 MODALITY_SOURCES: dict[str, str] = {
     "codex_sdk_input_modalities": ("the Codex Python SDK's model row (``Model.input_modalities``)"),
     "claude_code_catalog": "CLIO's maintained Claude Code model catalog document",
-    "chatgpt_catalog": "CLIO's maintained ChatGPT model catalog document",
+    "codex_catalog": "CLIO's maintained Codex model catalog document",
     "provider_documentation": (
         "the provider's published model capability documentation and CLIO's native transport"
     ),

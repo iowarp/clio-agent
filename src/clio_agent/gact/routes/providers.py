@@ -6,7 +6,7 @@ drives:
 * ``GET /v1/providers`` + ``GET /v1/providers/{provider_id}`` (SPEC §6.12) -- the
   generic provider catalog (one row per preset) and the per-provider detail row.
 * ``POST /v1/providers/{provider_id}/auth`` -- the generic sign-in API
-  (start/complete/status/logout; ALCF and ChatGPT today, 405 hint otherwise).
+  (start/complete/status/logout; ALCF and Codex today, 405 hint otherwise).
 * ``GET /v1/providers/{provider_id}/models`` + ``.../handshake`` -- the per-provider
   model catalog and connectivity/auth/per-model handshake via the unified async
   handshake (passive auth -- browsing never triggers interactive OAuth).
@@ -134,37 +134,37 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     _PROVIDER_MODELS: dict[str, list[dict[str, str]]] = _build_provider_models()
 
-    def _chatgpt_readiness(*, ignore_startup: bool = False) -> tuple[str, str, bool, str]:
-        """Return status, message, verified flag, and live default for ChatGPT."""
+    def _codex_readiness(*, ignore_startup: bool = False) -> tuple[str, str, bool, str]:
+        """Return status, message, verified flag, and live default for Codex."""
 
-        from clio_agent.providers.chatgpt.credentials import ChatGptCredentialStore  # noqa: PLC0415
+        from clio_agent.providers.codex.credentials import CodexCredentialStore  # noqa: PLC0415
 
-        if not ChatGptCredentialStore().is_signed_in():
+        if not CodexCredentialStore().is_signed_in():
             return (
                 "auth_required",
-                "ChatGPT sign-in is required on the connected agent",
+                "Codex sign-in is required on the connected agent",
                 False,
                 "",
             )
         startup_check = getattr(app.state, "provider_catalog_startup_task", None)
         if not ignore_startup and startup_check is not None and not startup_check.done():
-            return "auth_check_required", "ChatGPT models are being checked", False, ""
+            return "auth_check_required", "Codex models are being checked", False, ""
         from clio_agent.providers import model_discovery  # noqa: PLC0415
 
         try:
-            overlay = model_discovery.overlay_models_wire("chatgpt", "chatgpt")
+            overlay = model_discovery.overlay_models_wire("codex", "codex")
         except model_discovery.OverlayMalformedError as exc:
-            return "unavailable", f"ChatGPT model catalog is invalid: {exc}", False, ""
+            return "unavailable", f"Codex model catalog is invalid: {exc}", False, ""
         if overlay and overlay.get("models") and not overlay.get("staleness"):
             return (
                 "ready",
-                "ChatGPT credentials validated",
+                "Codex credentials validated",
                 True,
                 str(overlay.get("default_model") or ""),
             )
         return (
             "auth_check_required",
-            "ChatGPT credentials are present but have not been validated",
+            "Codex credentials are present but have not been validated",
             False,
             "",
         )
@@ -211,12 +211,12 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
           AND globus-sdk is importable.
         - cloud (requires_api_key=True): api_key auth; authenticated when
           the matching env var is set.
-        - chatgpt: a signed-in credential must exist and have a fresh successful
+        - codex: a signed-in credential must exist and have a fresh successful
           catalog check.
         - local (lm_studio/ollama): no auth required.
         """
-        if preset.provider == "chatgpt":
-            _, _, verified, _ = _chatgpt_readiness()
+        if preset.provider == "codex":
+            _, _, verified, _ = _codex_readiness()
             return ["subscription"], verified
         if preset.provider == "claude_code":
             _, _, verified, _ = _claude_code_readiness()
@@ -248,11 +248,11 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         """The provider's suggested default model: overlay-discovered first (#1211
         review D2), the frozen static ``suggested_model`` otherwise. Once a
         refresh has run, this follows the CLI's/account's OWN live default
-        (e.g. chatgpt's ``gpt-5.6-sol``) instead of a snapshot that may already be
+        (e.g. codex's ``gpt-5.6-sol``) instead of a snapshot that may already be
         rejected (#1184). CLI-provider candidates are never automatic defaults;
         only a fresh account discovery supplies one."""
-        if preset.provider in {"chatgpt", "claude_code"}:
-            readiness = _chatgpt_readiness if preset.provider == "chatgpt" else _claude_code_readiness
+        if preset.provider in {"codex", "claude_code"}:
+            readiness = _codex_readiness if preset.provider == "codex" else _claude_code_readiness
             _, _, verified, default_model = readiness()
             return default_model if verified else ""
 
@@ -296,7 +296,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
     # winning FastAPI's order-based route match.
 
     register_provider_catalog_routes(
-        app, _LM_PRESETS, _PROVIDER_MODELS, _chatgpt_readiness, _claude_code_readiness
+        app, _LM_PRESETS, _PROVIDER_MODELS, _codex_readiness, _claude_code_readiness
     )
 
     # ---- /v1/providers/lm ------------------------
@@ -355,8 +355,8 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 update["is_authenticated"] = False
                 return preset.model_copy(update=update)
             update["is_authenticated"] = True
-        if preset.provider == "chatgpt":
-            status, message, verified, default_model = _chatgpt_readiness()
+        if preset.provider == "codex":
+            status, message, verified, default_model = _codex_readiness()
             update["status"] = status
             update["status_message"] = message
             update["is_authenticated"] = verified
@@ -671,7 +671,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                         ).model_dump(exclude_none=True),
                     ) from auth_exc
 
-            is_chatgpt, is_cc = req.provider == "chatgpt", req.provider == "claude_code"
+            is_codex, is_cc = req.provider == "codex", req.provider == "claude_code"
             cfg = LMProviderConfig(
                 provider=req.provider,  # type: ignore[arg-type]  # str validated at boundary
                 provider_id=req.provider_id,
@@ -688,7 +688,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 thinking_budget=req.thinking_budget,
                 thinking_level=requested_thinking_level(app, req),  # #895: see its provenance rule
                 # Per-provider transport (v0.8.0): only the bound provider's field reads req.transport.
-                chatgpt_transport=(req.transport or "websocket") if is_chatgpt else "websocket",  # type: ignore[arg-type]  # LMProviderConfig validates
+                codex_transport=(req.transport or "websocket") if is_codex else "websocket",  # type: ignore[arg-type]  # LMProviderConfig validates
                 claude_code_transport=(req.transport or "sdk") if is_cc else "sdk",  # type: ignore[arg-type]  # LMProviderConfig validates; deleted values 400 typed
             )
             if is_cc:
@@ -718,8 +718,8 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 if not req.model and default_model:
                     cfg.model = default_model
-            if is_chatgpt:
-                status, message, verified, default_model = _chatgpt_readiness()
+            if is_codex:
+                status, message, verified, default_model = _codex_readiness()
                 if not verified:
                     raise HTTPException(
                         status_code=(
@@ -727,9 +727,9 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                         ),
                         detail=ErrorEnvelope(
                             error=ErrorInfo(
-                                error="chatgpt_auth_required"
+                                error="codex_auth_required"
                                 if status in {"auth_required", "auth_check_required"}
-                                else "chatgpt_unavailable",
+                                else "codex_unavailable",
                                 message=message,
                                 recoverable=True,
                             )
@@ -815,7 +815,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 # Build the first agent directly with the selected, handshake-applied
                 # provider.  Reading the ambient boot default here used to construct a
                 # throwaway LM Studio agent first, making a clean desktop's initial
-                # ChatGPT/Claude selection wait through local-provider retries.
+                # Codex/Claude selection wait through local-provider retries.
                 agent = await construct_agent_with_relay(
                     app,
                     arc=_process_arc(app),
@@ -886,7 +886,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         # path stays unobserved).
         _set_app_arc(app, agent.arc)
         deps.install_tool_runtime_hooks(app)
-        transport = {"chatgpt": cfg.chatgpt_transport, "claude_code": cfg.claude_code_transport}.get(
+        transport = {"codex": cfg.codex_transport, "claude_code": cfg.claude_code_transport}.get(
             req.provider
         )
         app.state.lm_config = {

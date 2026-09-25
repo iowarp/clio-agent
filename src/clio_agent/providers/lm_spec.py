@@ -49,7 +49,7 @@ class LMSpec:
         credential_ref: A credential *reference* (never an inline secret).
             Empty selects the provider's default credential.
         transport: Transport selector for providers that have one
-            (``chatgpt``: ``"websocket"``/``"sse"``; ``claude_code``: ``"sdk"``).
+            (``codex``: ``"websocket"``/``"sse"``; ``claude_code``: ``"sdk"``).
             Empty for providers with no transport choice.
         temperature: Sampling temperature (``None`` omits → provider default).
         max_tokens: Per-reply output cap (``None`` omits → resolver default).
@@ -93,8 +93,8 @@ def spec_from_config(cfg: "LMProviderConfig") -> LMSpec:
         no secret material.
     """
     transport: str
-    if cfg.provider == "chatgpt":
-        transport = cfg.chatgpt_transport
+    if cfg.provider == "codex":
+        transport = cfg.codex_transport
     elif cfg.provider == "claude_code":
         transport = cfg.claude_code_transport
     else:

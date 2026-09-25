@@ -9,11 +9,11 @@ import logging
 from typing import Any
 
 from clio_agent.providers.catalog import Provider, iter_providers
-from clio_agent.providers.model_discovery.chatgpt import discover_chatgpt
 from clio_agent.providers.model_discovery.claude_code import (
     ClaudeCodeCLIUnavailableError,
     discover_claude_code,
 )
+from clio_agent.providers.model_discovery.codex import discover_codex
 from clio_agent.providers.model_discovery.http import discover_http
 from clio_agent.providers.model_discovery.overlay import (
     OverlayMalformedError,
@@ -31,7 +31,7 @@ REFRESH_PER_PROVIDER_DEADLINE_S = 90.0
 
 
 async def refresh_subscription_catalogs_at_startup() -> None:
-    """Populate ChatGPT and Claude catalogs once, off the server's boot path."""
+    """Populate Codex and Claude catalogs once, off the server's boot path."""
 
     from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
     from clio_agent.providers.model_discovery.claude_code_catalog import (  # noqa: PLC0415
@@ -41,7 +41,7 @@ async def refresh_subscription_catalogs_at_startup() -> None:
 
     presets = [
         preset
-        for provider_id in ("chatgpt", "claude_code")
+        for provider_id in ("codex", "claude_code")
         if (preset := get_provider(provider_id)) is not None and is_provider_configured(preset)
     ]
     if not any(preset.provider_kind == "claude_code" for preset in presets):
@@ -66,7 +66,7 @@ def is_provider_configured(preset: Provider) -> bool:
     Filters :func:`refresh_all`'s default scan so an explicit refresh doesn't
     spend its (bounded) wall-clock on providers nobody has set up:
 
-    * chatgpt: a stored, signed-in ChatGPT credential must exist.
+    * codex: a stored, signed-in Codex credential must exist.
     * claude_code: the Claude Agent SDK and its bundled CLI must be installed.
     * argonne: a stored Globus token must exist.
     * any other ``requires_api_key`` kind: its resolved API key must be non-empty.
@@ -74,10 +74,10 @@ def is_provider_configured(preset: Provider) -> bool:
       the probe itself (a live connect attempt) is what tells you whether the
       local server is actually running.
     """
-    if preset.provider_kind == "chatgpt":
-        from clio_agent.providers.chatgpt.credentials import ChatGptCredentialStore  # noqa: PLC0415
+    if preset.provider_kind == "codex":
+        from clio_agent.providers.codex.credentials import CodexCredentialStore  # noqa: PLC0415
 
-        return ChatGptCredentialStore().is_signed_in()
+        return CodexCredentialStore().is_signed_in()
     if preset.provider_kind == "claude_code":
         import importlib.util  # noqa: PLC0415
 
@@ -117,7 +117,7 @@ async def refresh_all(
     #1211 review R3) is honored verbatim, un-filtered — the caller named exactly
     what they want probed.
 
-    Runs one discovery coroutine per preset (the maintained catalog for chatgpt, the
+    Runs one discovery coroutine per preset (the maintained catalog for codex, the
     maintained GitHub catalog plus one CLI sign-in check for claude_code, the
     live handshake for everything else) via ``asyncio.gather`` so wall-clock
     is bounded by the SLOWEST single provider, not their sum. Each provider's
@@ -140,8 +140,8 @@ async def refresh_all(
     explicit_presets = presets is not None
 
     async def _discover(preset: Provider) -> ProviderDiscoveryResult:
-        if preset.provider_kind == "chatgpt":
-            return await asyncio.to_thread(discover_chatgpt)
+        if preset.provider_kind == "codex":
+            return await asyncio.to_thread(discover_codex)
         if preset.provider_kind == "claude_code":
             if explicit_presets:
                 from clio_agent.providers.dependencies import (  # noqa: PLC0415
@@ -237,7 +237,7 @@ def build_refresh_provider_models_tool() -> Any:
 
     def refresh_provider_models() -> dict[str, Any]:
         """Refresh the LM provider model catalogs against each account's REAL
-        current state (chatgpt's maintained catalog, claude_code's maintained
+        current state (codex's maintained catalog, claude_code's maintained
         catalog plus a CLI sign-in check, every configured HTTP backend's live
         models endpoint) and report what changed. Returns
         ``{"results": [{"provider", "discovered", "source", "default_model",

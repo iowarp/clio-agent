@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from clio_agent.providers.chatgpt.stream_events import (
+from clio_agent.providers.codex.stream_events import (
     Completed,
     Failed,
     ReasoningDelta,

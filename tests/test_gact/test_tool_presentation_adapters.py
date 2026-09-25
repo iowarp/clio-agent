@@ -928,8 +928,8 @@ def test_model_catalog_exposes_actual_changes_and_failures_without_empty_fields(
     row = {
         "results": [
             {
-                "provider": "chatgpt",
-                "source": "chatgpt_catalog",
+                "provider": "codex",
+                "source": "codex_catalog",
                 "default_model": "model-a",
                 "added": [],
                 "removed": [],
@@ -954,10 +954,10 @@ def test_model_catalog_exposes_actual_changes_and_failures_without_empty_fields(
             "id": "provider-1",
             "type": "item",
             "target": "url",
-            "uri": "/settings/providers?provider=chatgpt",
-            "label": "chatgpt",
+            "uri": "/settings/providers?provider=codex",
+            "label": "codex",
             "status": "succeeded",
-            "detail": "Source: chatgpt_catalog\nDefault model: model-a",
+            "detail": "Source: codex_catalog\nDefault model: model-a",
             "items": ["model-a"],
             "action_label": "Change",
         },

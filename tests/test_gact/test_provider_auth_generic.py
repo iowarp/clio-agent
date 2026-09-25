@@ -2,7 +2,7 @@
 
 Exercises :func:`clio_agent.gact.routes.provider_auth.handle_auth_action`
 directly for both provider kinds it supports today: ``argonne`` (ALCF) and
-``chatgpt``.
+``codex``.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import pytest
 
 from clio_agent.gact.lm_provider_types import LMProviderPreset
 from clio_agent.gact.routes.provider_auth import handle_auth_action
-from clio_agent.providers.chatgpt.login_flow import ChatGptCredential
+from clio_agent.providers.codex.login_flow import CodexCredential
 
 
 def _preset(*, provider: str, provider_id: str = "") -> LMProviderPreset:
@@ -34,8 +34,8 @@ class _FakeApp:
 
 
 @pytest.fixture(autouse=True)
-def _reset_chatgpt_flows() -> None:
-    from clio_agent.providers.chatgpt.login_flow import _reset_login_flows_for_tests
+def _reset_codex_flows() -> None:
+    from clio_agent.providers.codex.login_flow import _reset_login_flows_for_tests
 
     _reset_login_flows_for_tests()
     yield
@@ -63,7 +63,7 @@ async def test_unknown_provider_kind_returns_405_for_start() -> None:
 async def test_invalid_action_returns_400() -> None:
     from fastapi import HTTPException
 
-    preset = _preset(provider="chatgpt")
+    preset = _preset(provider="codex")
     with pytest.raises(HTTPException) as exc_info:
         await handle_auth_action(
             preset=preset, action="bogus", body={}, app=_FakeApp(), presets=[preset]
@@ -152,11 +152,11 @@ class TestArgonne:
         assert exc_info.value.status_code == 405
 
 
-class TestChatGpt:
+class TestCodex:
     async def test_start_browser_returns_methods(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from clio_agent.providers.chatgpt import login_flow
+        from clio_agent.providers.codex import login_flow
 
-        preset = _preset(provider="chatgpt")
+        preset = _preset(provider="codex")
         result = await handle_auth_action(
             preset=preset, action="start", body={}, app=_FakeApp(), presets=[preset]
         )
@@ -172,7 +172,7 @@ class TestChatGpt:
     async def test_complete_with_bad_flow_id_is_404(self) -> None:
         from fastapi import HTTPException
 
-        preset = _preset(provider="chatgpt")
+        preset = _preset(provider="codex")
         with pytest.raises(HTTPException) as exc_info:
             await handle_auth_action(
                 preset=preset,
@@ -186,9 +186,9 @@ class TestChatGpt:
     async def test_complete_with_bad_paste_is_401(self) -> None:
         from fastapi import HTTPException
 
-        from clio_agent.providers.chatgpt import login_flow
+        from clio_agent.providers.codex import login_flow
 
-        preset = _preset(provider="chatgpt")
+        preset = _preset(provider="codex")
         start_result = await handle_auth_action(
             preset=preset, action="start", body={}, app=_FakeApp(), presets=[preset]
         )
@@ -209,21 +209,21 @@ class TestChatGpt:
     async def test_status_persists_credential_and_drops_flow_on_completion(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
     ) -> None:
-        from clio_agent.providers.chatgpt import login_flow
-        from clio_agent.providers.chatgpt.credentials import ChatGptCredentialStore
+        from clio_agent.providers.codex import login_flow
+        from clio_agent.providers.codex.credentials import CodexCredentialStore
 
-        store = ChatGptCredentialStore(path=tmp_path / "chatgpt_credential.json")
+        store = CodexCredentialStore(path=tmp_path / "codex_credential.json")
         monkeypatch.setattr(
-            "clio_agent.providers.chatgpt.credentials.ChatGptCredentialStore", lambda: store
+            "clio_agent.providers.codex.credentials.CodexCredentialStore", lambda: store
         )
         flow = login_flow.create_login_flow()
-        flow._credential = ChatGptCredential(  # noqa: SLF001 - simulate a completed exchange
+        flow._credential = CodexCredential(  # noqa: SLF001 - simulate a completed exchange
             access_token="at", refresh_token="rt", expires_at_ms=0, account_id="acct_1"
         )
         with flow._result.lock:  # noqa: SLF001
             flow._result.status = "complete"  # noqa: SLF001
 
-        preset = _preset(provider="chatgpt")
+        preset = _preset(provider="codex")
         result = await handle_auth_action(
             preset=preset,
             action="status",
@@ -238,18 +238,16 @@ class TestChatGpt:
     async def test_logout_deletes_credential(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
     ) -> None:
-        from clio_agent.providers.chatgpt.credentials import ChatGptCredentialStore
+        from clio_agent.providers.codex.credentials import CodexCredentialStore
 
-        store = ChatGptCredentialStore(path=tmp_path / "chatgpt_credential.json")
+        store = CodexCredentialStore(path=tmp_path / "codex_credential.json")
         store.save(
-            ChatGptCredential(
-                access_token="at", refresh_token="rt", expires_at_ms=0, account_id="a"
-            )
+            CodexCredential(access_token="at", refresh_token="rt", expires_at_ms=0, account_id="a")
         )
         monkeypatch.setattr(
-            "clio_agent.providers.chatgpt.credentials.ChatGptCredentialStore", lambda: store
+            "clio_agent.providers.codex.credentials.CodexCredentialStore", lambda: store
         )
-        preset = _preset(provider="chatgpt")
+        preset = _preset(provider="codex")
         result = await handle_auth_action(
             preset=preset, action="logout", body={}, app=_FakeApp(), presets=[preset]
         )

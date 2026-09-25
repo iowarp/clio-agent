@@ -1,18 +1,19 @@
-"""LiteLLM ``CustomLLM`` adapter for the direct ChatGPT provider.
+"""LiteLLM ``CustomLLM`` adapter for the direct Codex provider.
 
 Replaces ``providers/codex_litellm.py``'s ``CodexLLM`` entirely -- no flag, no
 parallel path. Routes ``dspy.LM(model=f"{LITELLM_PROVIDER}/<model>", ...)``
 through the WebSocket transport by default (falling back to SSE per A.6),
 builds the Responses-API request from OpenAI-shape messages/tools
-(:mod:`clio_agent.providers.chatgpt.responses`), and aggregates the resulting
-:mod:`clio_agent.providers.chatgpt.stream_events` into LiteLLM's shapes.
+(:mod:`clio_agent.providers.codex.responses`), and aggregates the resulting
+:mod:`clio_agent.providers.codex.stream_events` into LiteLLM's shapes.
 
 Registered (and routed) under ``constants.LITELLM_PROVIDER`` --
-``"chatgpt_direct"`` -- and DELIBERATELY NOT the catalog/config-facing
-``constants.PROVIDER_ID`` ("chatgpt"): litellm ships its own native
-"chatgpt" provider, and a model string under that prefix would resolve to
-litellm's own device-code OAuth client instead of this module. See
-:data:`clio_agent.providers.chatgpt.constants.LITELLM_PROVIDER`.
+``"codex_direct"`` -- kept deliberately distinct from the catalog/config-facing
+``constants.PROVIDER_ID`` ("codex"). This module was ORIGINALLY registered
+under "chatgpt" (its catalog id at the time), and litellm ships its own
+native "chatgpt" provider whose device-code OAuth client silently
+intercepted every turn before this module's handler ever ran. See
+:data:`clio_agent.providers.codex.constants.LITELLM_PROVIDER`.
 
 Cancellation registers an abort handle with the SAME transport-agnostic
 registry Claude Code and the deleted Codex provider used
@@ -29,31 +30,31 @@ from collections.abc import AsyncIterator, Iterator
 from typing import Any, cast
 
 from clio_agent.providers._cli_provider import register_custom_provider
-from clio_agent.providers.chatgpt.constants import LITELLM_PROVIDER
-from clio_agent.providers.chatgpt.credentials import ChatGptCredentialStore
-from clio_agent.providers.chatgpt.errors import ChatGPTAuthError, ChatGPTError
-from clio_agent.providers.chatgpt.responses import (
+from clio_agent.providers.claude_code_cancel import register_sdk_stream, unregister_sdk_stream
+from clio_agent.providers.codex.constants import LITELLM_PROVIDER
+from clio_agent.providers.codex.credentials import CodexCredentialStore
+from clio_agent.providers.codex.errors import CodexAuthError, CodexError
+from clio_agent.providers.codex.responses import (
     build_request_body,
     chat_messages_to_responses_input,
     chat_tools_to_responses_tools,
     extract_reasoning_items,
     with_reasoning_items,
 )
-from clio_agent.providers.chatgpt.sessions import get_session
-from clio_agent.providers.chatgpt.stream_events import (
+from clio_agent.providers.codex.sessions import get_session
+from clio_agent.providers.codex.stream_events import (
     Completed,
     ReasoningDelta,
     StreamEvent,
     TextDelta,
     ToolCallDone,
 )
-from clio_agent.providers.chatgpt.transport_sse import stream_sse_turn
-from clio_agent.providers.chatgpt.transport_ws import (
+from clio_agent.providers.codex.transport_sse import stream_sse_turn
+from clio_agent.providers.codex.transport_ws import (
     WsPreStreamFailure,
     drop_connection_after_cancel,
     stream_ws_turn,
 )
-from clio_agent.providers.claude_code_cancel import register_sdk_stream, unregister_sdk_stream
 
 logger = logging.getLogger(__name__)
 
@@ -68,21 +69,21 @@ try:
         Usage,
     )
 except ImportError as e:  # pragma: no cover - litellm is a hard dep
-    raise ImportError("litellm must be installed to use the ChatGPT provider") from e
+    raise ImportError("litellm must be installed to use the Codex provider") from e
 
 #: Lazily constructed so importing this module never touches the disk-backed
 #: credential store (tests / installs that don't use this provider).
-_store: ChatGptCredentialStore | None = None
+_store: CodexCredentialStore | None = None
 
 
-def _credential_store() -> ChatGptCredentialStore:
+def _credential_store() -> CodexCredentialStore:
     global _store  # noqa: PLW0603
     if _store is None:
-        _store = ChatGptCredentialStore()
+        _store = CodexCredentialStore()
     return _store
 
 
-def _reset_store_for_tests(store: ChatGptCredentialStore | None = None) -> None:
+def _reset_store_for_tests(store: CodexCredentialStore | None = None) -> None:
     global _store  # noqa: PLW0603
     _store = store
 
@@ -92,7 +93,7 @@ def _session_id() -> str:
         active_session_id,  # noqa: PLC0415 - avoid a boot import cycle
     )
 
-    return active_session_id() or f"chatgpt-{uuid.uuid4().hex}"
+    return active_session_id() or f"codex-{uuid.uuid4().hex}"
 
 
 def _bare_model(model: str) -> str:
@@ -106,7 +107,7 @@ async def stream_turn(
 
     A 401 refreshes the credential once and retries the whole turn (A.7); a
     pre-stream WebSocket failure falls back to SSE for the rest of this turn,
-    per :func:`clio_agent.providers.chatgpt.transport_ws.stream_ws_turn`.
+    per :func:`clio_agent.providers.codex.transport_ws.stream_ws_turn`.
     """
 
     session_id = _session_id()
@@ -121,9 +122,9 @@ async def stream_turn(
         tools=tools,
         tool_choice=params.get("tool_choice"),
         session_id=session_id,
-        reasoning_effort=params.get("chatgpt_reasoning_effort"),
+        reasoning_effort=params.get("codex_reasoning_effort"),
     )
-    forced_sse = str(params.get("chatgpt_transport") or "").strip().lower() == "sse"
+    forced_sse = str(params.get("codex_transport") or "").strip().lower() == "sse"
     use_ws = not forced_sse and not state.sse_only
 
     store = _credential_store()
@@ -148,7 +149,7 @@ async def stream_turn(
             except WsPreStreamFailure:
                 use_ws = False
                 continue
-            except ChatGPTAuthError:
+            except CodexAuthError:
                 if refreshed_once:
                     raise
                 refreshed_once = True
@@ -182,7 +183,7 @@ def _usage_from_responses(usage: dict[str, Any]) -> dict[str, int]:
 def _build_model_response(
     *, text: str, model: str, tool_calls: list[dict[str, Any]], usage_payload: dict[str, Any]
 ) -> ModelResponse:
-    """Wrap an aggregated ChatGPT turn in a LiteLLM ``ModelResponse``."""
+    """Wrap an aggregated Codex turn in a LiteLLM ``ModelResponse``."""
 
     message = Message(role="assistant", content=text or None)
     if tool_calls:
@@ -192,7 +193,7 @@ def _build_model_response(
     reasoning_tokens = usage_payload.get("reasoning_output_tokens", 0)
     total = usage_payload.get("total_tokens", 0) or (prompt_tokens + completion_tokens)
     return ModelResponse(
-        id=f"chatgpt-{uuid.uuid4().hex}",
+        id=f"codex-{uuid.uuid4().hex}",
         choices=[
             Choices(index=0, message=message, finish_reason="tool_calls" if tool_calls else "stop")
         ],
@@ -285,8 +286,8 @@ def _to_streaming_chunk(event: StreamEvent, *, index: int) -> GenericStreamingCh
     return None
 
 
-class ChatGPTLLM(CustomLLM):
-    """LiteLLM custom handler routing ``"chatgpt_direct/<model>"`` to the Codex backend directly."""
+class CodexLLM(CustomLLM):
+    """LiteLLM custom handler routing ``"codex_direct/<model>"`` to the Codex backend directly."""
 
     def completion(
         self,
@@ -401,20 +402,20 @@ class ChatGPTLLM(CustomLLM):
                 chunk = _to_streaming_chunk(event, index=0)
                 if chunk is not None:
                     yield chunk
-        except ChatGPTError as exc:
+        except CodexError as exc:
             logger.warning(
-                "chatgpt turn failed reason=%s: %s", getattr(exc, "reason", "chatgpt_error"), exc
+                "codex turn failed reason=%s: %s", getattr(exc, "reason", "codex_error"), exc
             )
             raise
 
 
 ensure_registered, _reset_registration_for_tests = register_custom_provider(
-    LITELLM_PROVIDER, ChatGPTLLM
+    LITELLM_PROVIDER, CodexLLM
 )
 
 
 __all__ = [
-    "ChatGPTLLM",
+    "CodexLLM",
     "ensure_registered",
     "stream_turn",
 ]

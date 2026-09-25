@@ -1,12 +1,12 @@
-"""Unit tests for ChatGPT error classification and retry/backoff (A.7, A.9)."""
+"""Unit tests for Codex error classification and retry/backoff (A.7, A.9)."""
 
 from __future__ import annotations
 
 import pytest
 
-from clio_agent.providers.chatgpt.errors import (
-    ChatGPTPlanLimitError,
-    ChatGPTResponseError,
+from clio_agent.providers.codex.errors import (
+    CodexPlanLimitError,
+    CodexResponseError,
     is_retryable_status,
     is_usage_limit_text,
     next_retry_delay_ms,
@@ -51,16 +51,16 @@ def test_4xx_other_than_429_is_not_retryable() -> None:
 
 
 def test_raise_for_backend_error_terminal_plan_limit() -> None:
-    with pytest.raises(ChatGPTPlanLimitError):
+    with pytest.raises(CodexPlanLimitError):
         raise_for_backend_error(
             code="rate_limit_exceeded", message="usage limit reached", status_code=429
         )
 
 
 def test_raise_for_backend_error_generic_response_error() -> None:
-    with pytest.raises(ChatGPTResponseError) as exc_info:
+    with pytest.raises(CodexResponseError) as exc_info:
         raise_for_backend_error(code="server_error", message="something broke")
-    assert not isinstance(exc_info.value, ChatGPTPlanLimitError)
+    assert not isinstance(exc_info.value, CodexPlanLimitError)
 
 
 class TestRetryAfterParsing:

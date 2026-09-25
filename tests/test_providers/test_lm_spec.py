@@ -106,8 +106,8 @@ def test_spec_from_config_drops_secret() -> None:
 
 def test_spec_from_config_transport() -> None:
     """Transport is projected from the provider-specific transport field."""
-    chatgpt_cfg = LMProviderConfig(provider="chatgpt", chatgpt_transport="websocket")
-    assert spec_from_config(chatgpt_cfg).transport == "websocket"
+    codex_cfg = LMProviderConfig(provider="codex", codex_transport="websocket")
+    assert spec_from_config(codex_cfg).transport == "websocket"
 
     cc_cfg = LMProviderConfig(provider="claude_code", claude_code_transport="sdk")
     assert spec_from_config(cc_cfg).transport == "sdk"

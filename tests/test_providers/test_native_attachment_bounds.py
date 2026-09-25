@@ -127,13 +127,13 @@ def test_claude_refuses_individually_legal_attachments_that_sum_past_the_request
         )
 
 
-# NOTE (chatgpt migration): the deleted Codex SDK provider's
+# NOTE (codex migration): the deleted Codex SDK provider's
 # ``_messages_to_codex_input`` re-checked these same bounds as a defense-in-depth
 # layer before expansion (mirroring the Claude Code adapter above). The new
-# direct ChatGPT provider's message conversion
-# (``clio_agent.providers.chatgpt.responses.chat_messages_to_responses_input``)
+# direct Codex provider's message conversion
+# (``clio_agent.providers.codex.responses.chat_messages_to_responses_input``)
 # does not call into ``native_attachment_bounds`` at all -- there is no
-# provider-adapter-level bounds re-check for chatgpt to port a test onto. The
+# provider-adapter-level bounds re-check for codex to port a test onto. The
 # generic ingestion-level check in ``gact/messaging.py`` (``check_block_bytes``
 # against the recorded attachment size, before any provider is invoked) still
 # applies regardless of provider, so this is not a silent hole in coverage of

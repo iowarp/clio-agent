@@ -8,7 +8,7 @@ The same answer feeds :func:`~clio_agent.providers.thinking.resolve_thinking`
 (via :func:`model_effort_levels`) when a turn's LM is built, so what the catalog
 offers is exactly what is sent:
 
-* **chatgpt** — the maintained ChatGPT catalog document reports each model's
+* **codex** — the maintained Codex catalog document reports each model's
   ``effort_levels`` (persisted by discovery, in the SAME
   ``supported_reasoning_efforts``/``default_reasoning_effort`` overlay-row
   field names the deleted Codex SDK discovery used). Every effort the catalog
@@ -41,10 +41,10 @@ from clio_agent.providers.thinking import LEVEL_ORDER, resolve_thinking, shipped
 
 logger = logging.getLogger(__name__)
 
-#: ChatGPT (Codex backend) ``reasoning.effort`` values -> clio thinking levels.
+#: Codex (Codex backend) ``reasoning.effort`` values -> clio thinking levels.
 #: ``max``/``ultra`` are reported by newer models and map onto themselves like
 #: ``xhigh``.
-_CHATGPT_TO_LEVEL: dict[str, str] = {
+_CODEX_TO_LEVEL: dict[str, str] = {
     "none": "off",
     "minimal": "minimal",
     "low": "low",
@@ -198,17 +198,17 @@ def model_effort_levels(
     return None
 
 
-def _chatgpt(profile: ModelProfile) -> tuple[list[str], str, str, str]:
+def _codex(profile: ModelProfile) -> tuple[list[str], str, str, str]:
     reported = profile.raw.get("supported_reasoning_efforts")
     if not isinstance(reported, list):
-        return [], "", "chatgpt_catalog_unreported", ""
-    unmapped = [str(v) for v in reported if str(v) not in _CHATGPT_TO_LEVEL]
-    levels = [_CHATGPT_TO_LEVEL[str(v)] for v in reported if str(v) in _CHATGPT_TO_LEVEL]
-    default = _CHATGPT_TO_LEVEL.get(str(profile.raw.get("default_reasoning_effort") or ""), "")
-    reason = f"chatgpt_effort_unmapped: {', '.join(unmapped)}" if unmapped else ""
+        return [], "", "codex_catalog_unreported", ""
+    unmapped = [str(v) for v in reported if str(v) not in _CODEX_TO_LEVEL]
+    levels = [_CODEX_TO_LEVEL[str(v)] for v in reported if str(v) in _CODEX_TO_LEVEL]
+    default = _CODEX_TO_LEVEL.get(str(profile.raw.get("default_reasoning_effort") or ""), "")
+    reason = f"codex_effort_unmapped: {', '.join(unmapped)}" if unmapped else ""
     if unmapped:
         logger.warning("reasoning levels: %s (model=%s)", reason, profile.id)
-    return levels, default, "chatgpt_catalog", reason
+    return levels, default, "codex_catalog", reason
 
 
 def _claude_code(profile: ModelProfile) -> tuple[list[str], str, str, str]:
@@ -254,8 +254,8 @@ def model_reasoning(provider_kind: str, profile: ModelProfile) -> dict[str, Any]
         means there is nothing to choose (clients hide the selector).
     """
 
-    if provider_kind == "chatgpt":
-        levels, default, source, reason = _chatgpt(profile)
+    if provider_kind == "codex":
+        levels, default, source, reason = _codex(profile)
     elif provider_kind == "claude_code":
         levels, default, source, reason = _claude_code(profile)
     elif provider_kind == "anthropic":

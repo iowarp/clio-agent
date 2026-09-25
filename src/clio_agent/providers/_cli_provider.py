@@ -4,10 +4,10 @@ The Claude Code provider (:mod:`clio_agent.providers.claude_code_litellm`)
 routes ``dspy.LM`` calls through a local CLI subprocess and uses
 :func:`normalise_message_content`/:func:`messages_to_prompt` to flatten chat
 messages into a role-hardened prompt string, which a CLI's single ``exec``
-argument requires. The direct ChatGPT provider
-(:mod:`clio_agent.providers.chatgpt.litellm_adapter`) is not CLI-backed --
+argument requires. The direct Codex provider
+(:mod:`clio_agent.providers.codex.litellm_adapter`) is not CLI-backed --
 it builds native Responses-API ``input`` items instead
-(:mod:`clio_agent.providers.chatgpt.responses`) -- but still shares the two
+(:mod:`clio_agent.providers.codex.responses`) -- but still shares the two
 provider-lifecycle pieces below, so a fix to the registration lifecycle or the
 model-rejection classification lands once for every clio-owned ``CustomLLM``:
 
@@ -154,7 +154,7 @@ def register_custom_provider(
     globals, so each provider gets an independent guard.
 
     Args:
-        provider: The LiteLLM custom-provider key (e.g. ``"chatgpt"``).
+        provider: The LiteLLM custom-provider key (e.g. ``"codex"``).
         handler_factory: Zero-arg factory returning a fresh ``CustomLLM`` handler.
 
     Returns:
@@ -193,8 +193,8 @@ def raise_model_rejected(
 ) -> NoReturn:
     """Raise the typed, non-retryable exception for a DEFINITIVE model rejection.
 
-    ``model`` is the litellm-facing id (e.g. ``"chatgpt_direct/gpt-5.5"`` or
-    ``"claude_code/bogus"``); ``llm_provider`` is the bare kind (``"chatgpt_direct"``
+    ``model`` is the litellm-facing id (e.g. ``"codex_direct/gpt-5.5"`` or
+    ``"claude_code/bogus"``); ``llm_provider`` is the bare kind (``"codex_direct"``
     / ``"claude_code"``). Callers pass the provider's own rejection TEXT in
     ``message`` (a provider error string; claude_code's ``result``
     field) — it survives verbatim into ``str(exc)``, which the transcript's

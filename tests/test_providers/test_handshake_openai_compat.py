@@ -307,7 +307,7 @@ async def test_noop_discover_models_unknown_provider_is_empty() -> None:
     """An unregistered provider id yields no models (no crash)."""
     ctx = HandshakeContext(
         provider_id="not-a-real-provider",
-        provider_kind="chatgpt",
+        provider_kind="codex",
         api_base="",
         allow_external_sources=False,
     )

@@ -277,37 +277,37 @@ def test_lm_provider_sdk_transport_unavailable_when_cli_absent(tmp_path, monkeyp
     assert "No connection adapters" not in status.summary
 
 
-def test_chatgpt_doctor_uses_credential_store_not_path(tmp_path, monkeypatch):
-    """ChatGPT readiness follows its signed-in-credential contract, not a CLI on PATH.
+def test_codex_doctor_uses_credential_store_not_path(tmp_path, monkeypatch):
+    """Codex readiness follows its signed-in-credential contract, not a CLI on PATH.
 
     Unlike the deleted Codex SDK provider (bundled binary + ``auth.json`` on
-    disk), the direct ChatGPT provider has no CLI/SDK dependency at all -- the
+    disk), the direct Codex provider has no CLI/SDK dependency at all -- the
     sole local readiness signal is a signed-in credential
-    (``ChatGptCredentialStore.is_signed_in``).
+    (``CodexCredentialStore.is_signed_in``).
     """
-    from clio_agent.providers.chatgpt.credentials import ChatGptCredentialStore
+    from clio_agent.providers.codex.credentials import CodexCredentialStore
 
-    monkeypatch.setattr(ChatGptCredentialStore, "is_signed_in", lambda self: True)
+    monkeypatch.setattr(CodexCredentialStore, "is_signed_in", lambda self: True)
     monkeypatch.setattr("shutil.which", lambda _binary: None)
 
     probe = RuntimeProbe(
-        env={"CLIO_DATA_DIR": str(tmp_path), "CLIO_LM_PROVIDER": "chatgpt"},
+        env={"CLIO_DATA_DIR": str(tmp_path), "CLIO_LM_PROVIDER": "codex"},
         http_get=_http_get_must_not_run,
     )
     status = probe.probe_lm_provider()
 
     assert status.state == IntegrationState.DEGRADED
-    assert status.details["provider"] == "chatgpt"
+    assert status.details["provider"] == "codex"
     assert status.details["reason"] == "auth_unverified"
 
 
-def test_chatgpt_doctor_reports_missing_auth(tmp_path, monkeypatch):
-    from clio_agent.providers.chatgpt.credentials import ChatGptCredentialStore
+def test_codex_doctor_reports_missing_auth(tmp_path, monkeypatch):
+    from clio_agent.providers.codex.credentials import CodexCredentialStore
 
-    monkeypatch.setattr(ChatGptCredentialStore, "is_signed_in", lambda self: False)
+    monkeypatch.setattr(CodexCredentialStore, "is_signed_in", lambda self: False)
 
     probe = RuntimeProbe(
-        env={"CLIO_DATA_DIR": str(tmp_path), "CLIO_LM_PROVIDER": "chatgpt"},
+        env={"CLIO_DATA_DIR": str(tmp_path), "CLIO_LM_PROVIDER": "codex"},
         http_get=_http_get_must_not_run,
     )
     status = probe.probe_lm_provider()

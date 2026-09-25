@@ -1,8 +1,8 @@
 """Generic atomic, 0600, schema-tagged JSON keyed-file store.
 
 Extracted from :mod:`clio_agent.tools.mcp_oauth_storage` (#1285) so a second
-durable credential store — the direct ChatGPT subscription provider
-(:mod:`clio_agent.providers.chatgpt.credentials`) — does not duplicate the
+durable credential store — the direct Codex subscription provider
+(:mod:`clio_agent.providers.codex.credentials`) — does not duplicate the
 create-at-0600 + atomic-replace dance. Both stores keep their own schema tag
 and their own per-entry shape; this module owns only "read the whole file",
 "atomically replace the whole file", and the file-permission discipline.
@@ -48,7 +48,9 @@ class AtomicJsonFileStore:
         except FileNotFoundError:
             return {}
         except (OSError, ValueError) as exc:
-            trace.event(self._trace_tag, "atomic_json_store_unreadable path=%s reason=%s", self._path, exc)
+            trace.event(
+                self._trace_tag, "atomic_json_store_unreadable path=%s reason=%s", self._path, exc
+            )
             return {}
         if not isinstance(raw, dict) or raw.get("schema") != self._schema:
             trace.event(
@@ -84,4 +86,6 @@ class AtomicJsonFileStore:
         try:
             os.chmod(self._path, 0o600)
         except OSError as exc:
-            trace.event(self._trace_tag, "atomic_json_store_chmod_failed path=%s reason=%s", self._path, exc)
+            trace.event(
+                self._trace_tag, "atomic_json_store_chmod_failed path=%s reason=%s", self._path, exc
+            )

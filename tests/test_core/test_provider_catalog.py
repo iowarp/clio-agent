@@ -55,9 +55,9 @@ class TestRegistryInvariants:
             assert p.label, f"{p.id}: empty label"
             assert p.provider_kind, f"{p.id}: empty provider_kind"
             # api_base may be conceptually empty for future providers
-            # (e.g. the direct ChatGPT transport doesn't need an HTTP
+            # (e.g. the direct Codex transport doesn't need an HTTP
             # URL -- its api_base is the identity marker
-            # "chatgpt://direct"), but every entry shipped today must
+            # "codex://direct"), but every entry shipped today must
             # have one.
             assert p.api_base or p.litellm_prefix in {"azure", "gemini", "vertex_ai", "bedrock"}, (
                 f"{p.id}: empty api_base without a cloud-native LiteLLM route"
@@ -81,7 +81,7 @@ class TestRegistryInvariants:
             "openai",
             "anthropic",
             "argonne",
-            "chatgpt",
+            "codex",
             "claude_code",
         ],
     )
@@ -157,7 +157,7 @@ class TestDerivedViews:
             "openai",
             "anthropic",
             "argonne",
-            "chatgpt",
+            "codex",
             "claude_code",
         }
 
@@ -172,9 +172,9 @@ class TestDerivedViews:
         assert row["max_tokens"] == 4096
         assert row["strip_openai_prefix"] is False
 
-    def test_chatgpt_parse_retry_is_a_catalog_capability(self) -> None:
+    def test_codex_parse_retry_is_a_catalog_capability(self) -> None:
         defaults = as_provider_defaults_dict()
-        assert defaults["chatgpt"]["parse_retry_capability"] == "single_attempt"
+        assert defaults["codex"]["parse_retry_capability"] == "single_attempt"
         assert defaults["anthropic"].get("parse_retry_capability", "bounded") == "bounded"
 
     def test_argonne_catalog_prefers_modern_models_before_legacy_llama31(self) -> None:
@@ -211,8 +211,8 @@ class TestDerivedViews:
         # up by wire kind.
         assert "argonne" in models
 
-    def test_chatgpt_catalog_uses_user_facing_model_ids(self) -> None:
-        models = as_provider_models_dict()["chatgpt"]
+    def test_codex_catalog_uses_user_facing_model_ids(self) -> None:
+        models = as_provider_models_dict()["codex"]
         ids = {row["id"] for row in models}
         assert {"gpt-5.6-sol", "gpt-5.5"} <= ids
         assert all(not model_id.startswith("cg-") for model_id in ids)

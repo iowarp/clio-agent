@@ -29,10 +29,10 @@ def _api_key_for(preset: LMProviderPreset) -> str:
     return model_discovery.resolve_cloud_api_key(preset.provider)
 
 
-async def _ensure_chatgpt_live_catalog(preset: LMProviderPreset) -> str:
-    """Populate a fresh install from the maintained ChatGPT model catalog.
+async def _ensure_codex_live_catalog(preset: LMProviderPreset) -> str:
+    """Populate a fresh install from the maintained Codex model catalog.
 
-    This is deliberately restricted to ChatGPT. Its catalog read (the
+    This is deliberately restricted to Codex. Its catalog read (the
     maintained document plus a credential-store sign-in check) is local/
     authenticated and does not create a model turn. Claude Code discovery
     validates aliases with real provider calls and therefore remains an
@@ -45,7 +45,7 @@ async def _ensure_chatgpt_live_catalog(preset: LMProviderPreset) -> str:
     failure reason only when the account has no discovered catalog at all.
     """
 
-    if preset.id != "chatgpt" or preset.provider != "chatgpt":
+    if preset.id != "codex" or preset.provider != "codex":
         return ""
     try:
         existing = model_discovery.overlay_models_wire(preset.id, preset.provider)
@@ -62,10 +62,10 @@ async def _ensure_chatgpt_live_catalog(preset: LMProviderPreset) -> str:
         return ""
     provider = get_provider(preset.id)
     if provider is None:
-        return "ChatGPT provider is not registered"
+        return "Codex provider is not registered"
     results = await model_discovery.refresh_all(presets=[provider], only_configured=False)
     if not results:
-        return "" if has_prior_models else "ChatGPT model discovery returned no result"
+        return "" if has_prior_models else "Codex model discovery returned no result"
     failure = str(results[0].get("failed_reason") or "")
     if failure and not has_prior_models:
         return failure
@@ -74,14 +74,14 @@ async def _ensure_chatgpt_live_catalog(preset: LMProviderPreset) -> str:
 
 #: Catalog sources that are real probe EVIDENCE rather than a compiled-in guess.
 #: ``live`` is this run's own probe; ``overlay`` is a persisted earlier discovery
-#: run (the maintained ChatGPT catalog read / the claude_code alias probe) —
+#: run (the maintained Codex catalog read / the claude_code alias probe) —
 #: both were produced by asking the provider. ``static`` is the frozen registry
 #: snapshot and is never evidence.
 EVIDENCED_CATALOG_SOURCES: frozenset[str] = frozenset({"live", "overlay"})
 
 #: Provider kinds whose catalog is the discovery overlay itself (no HTTP probe).
 #: Every other kind is probed live and keeps a last-good list for empty probes.
-_CLI_CATALOG_KINDS: frozenset[str] = frozenset({"chatgpt", "claude_code"})
+_CLI_CATALOG_KINDS: frozenset[str] = frozenset({"codex", "claude_code"})
 
 
 def _modalities(profile: ModelProfile) -> list[str]:
@@ -203,7 +203,7 @@ async def _with_last_good(
 async def discover_provider(preset: LMProviderPreset, *, refresh: bool = False) -> dict[str, Any]:
     """Run one passive handshake and return a normalized provider record."""
 
-    bootstrap_failure = await _ensure_chatgpt_live_catalog(preset)
+    bootstrap_failure = await _ensure_codex_live_catalog(preset)
     report = await run_handshake(
         HandshakeContext(
             provider_id=preset.id,
@@ -213,21 +213,21 @@ async def discover_provider(preset: LMProviderPreset, *, refresh: bool = False) 
             auth_mode="passive",
             allow_external_sources=True,
         ),
-        force=refresh or preset.id == "chatgpt",
+        force=refresh or preset.id == "codex",
     )
     report, staleness = await _with_last_good(preset, report)
     models = report.models
     failure = report.error or bootstrap_failure
     if not staleness:
         staleness = _overlay_staleness(preset) if preset.provider in _CLI_CATALOG_KINDS else {}
-    if preset.id == "chatgpt" and report.models_source not in EVIDENCED_CATALOG_SOURCES:
-        # Static ChatGPT ids are compatibility candidates for legacy clients,
+    if preset.id == "codex" and report.models_source not in EVIDENCED_CATALOG_SOURCES:
+        # Static Codex ids are compatibility candidates for legacy clients,
         # never evidence that the current account can actually select them.
         # This guard was DEAD while models_source was hardcoded to "live" for
         # every non-empty report; it fires again now that the zero-network CLI
         # handshake reports "static"/"overlay" honestly, and it must test
         # EVIDENCE (live probe or persisted discovery) rather than liveness --
-        # ChatGPT's whole catalog arrives through the persisted overlay.
+        # Codex's whole catalog arrives through the persisted overlay.
         models = ()
     return {
         "id": preset.id,

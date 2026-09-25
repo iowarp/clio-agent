@@ -1,16 +1,16 @@
-"""Wiring pins for ChatGPT routing and the Claude SDK stateful-delta transport.
+"""Wiring pins for Codex routing and the Claude SDK stateful-delta transport.
 
 These lock the three fixes whose *wiring* (not the shared detector, proved in
 ``test_claude_code_stateful``) is the deliverable:
 
-* **T1 — V2+chatgpt routing.** A chatgpt model id that collides with a litellm-registered
-  OpenAI model name (``gpt-5.6-sol``) must reach clio's own ``ChatGPTLLM`` custom handler,
-  NOT litellm's OpenAI handler. The litellm-facing prefix is ``chatgpt_direct`` -- never
-  bare ``chatgpt``, which collides with litellm's OWN native ``chatgpt`` provider
-  (:data:`clio_agent.providers.chatgpt.constants.LITELLM_PROVIDER`) -- and the clio-side
+* **T1 — V2+codex routing.** A codex model id that collides with a litellm-registered
+  OpenAI model name (``gpt-5.6-sol``) must reach clio's own ``CodexLLM`` custom handler,
+  NOT litellm's OpenAI handler. The litellm-facing prefix is ``codex_direct`` -- never
+  bare ``codex``, which collides with litellm's OWN native ``codex`` provider
+  (:data:`clio_agent.providers.codex.constants.LITELLM_PROVIDER`) -- and the clio-side
   collision guard is the ``cg-`` namespace marker in
   :func:`clio_agent.lm.factory._resolve_model_name`. **Sabotage:** drop the marker →
-  ``create_lm`` yields the bare ``chatgpt_direct/gpt-5.6-sol`` → litellm routes it to
+  ``create_lm`` yields the bare ``codex_direct/gpt-5.6-sol`` → litellm routes it to
   OpenAI → this test goes red.
 
 * **T2 — ops_reset.** When ARC autocompaction rewrites the History prefix
@@ -52,30 +52,30 @@ def _key(scope: str) -> tuple[Any, ...]:
 
 
 # --------------------------------------------------------------------------- #
-# T1 — V2+chatgpt routing: the collision-avoidance marker reaches the transport. #
+# T1 — V2+codex routing: the collision-avoidance marker reaches the transport. #
 # --------------------------------------------------------------------------- #
-def test_chatgpt_colliding_model_reaches_custom_handler(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A chatgpt model whose id collides with an OpenAI model name still routes to clio's
+def test_codex_colliding_model_reaches_custom_handler(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A codex model whose id collides with an OpenAI model name still routes to clio's
     own custom handler, never litellm's OpenAI dialect NOR litellm's own native
-    "chatgpt" provider.
+    "codex" provider.
 
-    The regression pin for the V2+chatgpt routing bug: ``gpt-5.6-sol`` is a litellm-
-    registered OpenAI chat model, so a bare ``chatgpt_direct/gpt-5.6-sol`` risks being
+    The regression pin for the V2+codex routing bug: ``gpt-5.6-sol`` is a litellm-
+    registered OpenAI chat model, so a bare ``codex_direct/gpt-5.6-sol`` risks being
     hijacked to litellm's OpenAI handler. ``create_lm``'s ``cg-`` marker
-    (``_resolve_model_name``) is the guard: the resolved ``chatgpt_direct/cg-gpt-5.6-sol``
-    reaches clio's ``ChatGPTLLM`` custom handler instead. Removing the marker turns both
+    (``_resolve_model_name``) is the guard: the resolved ``codex_direct/cg-gpt-5.6-sol``
+    reaches clio's ``CodexLLM`` custom handler instead. Removing the marker turns both
     assertions red. Separately (not this test's sabotage target, but load-bearing): the
-    litellm-facing prefix itself must never be bare ``chatgpt`` -- litellm ships its own
-    native ``chatgpt`` provider (a real device-code OAuth flow against
+    litellm-facing prefix itself must never be bare ``codex`` -- litellm ships its own
+    native ``codex`` provider (a real device-code OAuth flow against
     auth.openai.com), so that name would silently route every turn there instead of
     ever reaching this handler at all.
     """
     import litellm
 
     from clio_agent.config import LMProviderConfig, create_lm
-    from clio_agent.providers.chatgpt import litellm_adapter as chatgpt_litellm
+    from clio_agent.providers.codex import litellm_adapter as codex_litellm
 
-    chatgpt_litellm.ensure_registered()
+    codex_litellm.ensure_registered()
     litellm.utils.custom_llm_setup()
     # The bare model id WOULD collide with a registered OpenAI model — that is the trap.
     # Make the collision deterministic instead of trusting litellm's model catalog:
@@ -91,19 +91,19 @@ def test_chatgpt_colliding_model_reaches_custom_handler(monkeypatch: pytest.Monk
     )
     assert "gpt-5.6-sol" in litellm.open_ai_chat_completion_models
 
-    cfg = LMProviderConfig(provider="chatgpt", model="gpt-5.6-sol")
+    cfg = LMProviderConfig(provider="codex", model="gpt-5.6-sol")
     resolved = create_lm(cfg).model
     # The marker namespaces the id out of the OpenAI collision set, and the
-    # litellm-facing prefix is "chatgpt_direct" (never litellm's native "chatgpt").
-    assert resolved == "chatgpt_direct/cg-gpt-5.6-sol"
+    # litellm-facing prefix is "codex_direct" (never litellm's native "codex").
+    assert resolved == "codex_direct/cg-gpt-5.6-sol"
 
     reached: dict[str, Any] = {}
 
     def _stub_completion(self: Any, *args: Any, **kwargs: Any) -> Any:
         reached["model"] = kwargs.get("model") or (args[0] if args else None)
-        raise RuntimeError("REACHED-CHATGPT-TRANSPORT")
+        raise RuntimeError("REACHED-CODEX-TRANSPORT")
 
-    monkeypatch.setattr(chatgpt_litellm.ChatGPTLLM, "completion", _stub_completion)
+    monkeypatch.setattr(codex_litellm.CodexLLM, "completion", _stub_completion)
 
     with pytest.raises(Exception) as excinfo:  # noqa: PT011 - message is asserted below
         litellm.completion(
@@ -111,7 +111,7 @@ def test_chatgpt_colliding_model_reaches_custom_handler(monkeypatch: pytest.Monk
             messages=[{"role": "user", "content": "hi"}],
             stream=False,
         )
-    # NOT the OpenAI-hijack routing error; clio's ChatGPTLLM handler WAS reached
+    # NOT the OpenAI-hijack routing error; clio's CodexLLM handler WAS reached
     # (litellm hands the custom handler the provider-prefix-stripped id — the ``cg-``
     # marker survives so the handler's own ``removeprefix('cg-')`` recovers the real
     # ``gpt-5.6-sol``).

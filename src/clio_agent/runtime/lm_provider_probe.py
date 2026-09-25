@@ -8,12 +8,12 @@ transport handling has a single owner:
 * :func:`extract_models` / :class:`ModelDiscoverySchemaError` -- parse an
   OpenAI-compatible ``/models`` HTTP response (the HTTP-transport path).
 * :func:`probe_cli_transport` -- the **transport-aware** probe for the CLI/SDK
-  pseudo-schemes (``chatgpt://direct``, ``claude-code://sdk``). These providers
+  pseudo-schemes (``codex://direct``, ``claude-code://sdk``). These providers
   have no HTTP ``/models`` endpoint; an HTTP GET against the pseudo-scheme
   yields ``requests``' ``No connection adapters were found`` and reports the
   provider UNAVAILABLE while turns actually run fine (#899). Claude's SDK
   transport requires both the optional ``claude_agent_sdk`` package and the
-  local CLI; the direct ChatGPT provider's only local dependency is a
+  local CLI; the direct Codex provider's only local dependency is a
   signed-in credential (no CLI, no SDK). No pseudo-scheme is HTTP-probed.
 """
 
@@ -89,32 +89,32 @@ _CLI_TRANSPORT_BINARIES: dict[str, tuple[str, str]] = {
 }
 
 
-def _probe_chatgpt_direct(
+def _probe_codex_direct(
     config: LMProviderConfig,
     source: str,
     auth_mode: str,
 ) -> IntegrationStatus:
-    """Probe the direct ChatGPT provider: a signed-in credential is its only local dependency.
+    """Probe the direct Codex provider: a signed-in credential is its only local dependency.
 
     Unlike the deleted Codex SDK provider, there is no CLI binary, no SDK
     package, and no ``auth.json`` to check -- the provider talks HTTP/WebSocket
     directly, so the sole readiness signal is whether CLIO holds a valid,
-    signed-in credential (:mod:`clio_agent.providers.chatgpt.credentials`).
+    signed-in credential (:mod:`clio_agent.providers.codex.credentials`).
     """
-    from clio_agent.providers.chatgpt.credentials import ChatGptCredentialStore  # noqa: PLC0415
+    from clio_agent.providers.codex.credentials import CodexCredentialStore  # noqa: PLC0415
 
     details: dict[str, Any] = {
-        "provider": "chatgpt",
+        "provider": "codex",
         "model": config.model,
-        "transport": config.chatgpt_transport,
+        "transport": config.codex_transport,
     }
-    if not ChatGptCredentialStore().is_signed_in():
+    if not CodexCredentialStore().is_signed_in():
         return IntegrationStatus(
             name="lm_provider",
             state=IntegrationState.UNAVAILABLE,
-            summary="ChatGPT sign-in is required on the connected agent.",
+            summary="Codex sign-in is required on the connected agent.",
             config_source=source,
-            next_action="Sign in to ChatGPT in Settings.",
+            next_action="Sign in to Codex in Settings.",
             endpoint=config.api_base,
             auth_mode=auth_mode,
             details={**details, "reason": "auth_absent"},
@@ -124,11 +124,11 @@ def _probe_chatgpt_direct(
         name="lm_provider",
         state=IntegrationState.DEGRADED,
         summary=(
-            "ChatGPT credentials are present, but authentication has not been "
+            "Codex credentials are present, but authentication has not been "
             "verified with the provider."
         ),
         config_source=source,
-        next_action="Run Check provider in Settings to validate ChatGPT and discover live models.",
+        next_action="Run Check provider in Settings to validate Codex and discover live models.",
         endpoint=config.api_base,
         auth_mode=auth_mode,
         capabilities=["chat-completions", "websocket-transport", "sse-transport"],
@@ -164,7 +164,7 @@ def probe_cli_transport(
 ) -> IntegrationStatus:
     """Transport-aware doctor probe for CLI/SDK pseudo-scheme providers (#899).
 
-    The ``api_base`` (e.g. ``claude-code://sdk``, ``chatgpt://direct``) has no
+    The ``api_base`` (e.g. ``claude-code://sdk``, ``codex://direct``) has no
     HTTP ``/models`` endpoint. This validates the local dependencies that the
     selected transport actually imports or starts rather than issuing an HTTP
     GET that would always report the provider unreachable.
@@ -179,8 +179,8 @@ def probe_cli_transport(
         A READY row when the CLI is on PATH, else a typed UNAVAILABLE row naming
         the missing binary (``reason=cli_binary_absent``).
     """
-    if config.provider == "chatgpt":
-        return _probe_chatgpt_direct(config, source, auth_mode)
+    if config.provider == "codex":
+        return _probe_codex_direct(config, source, auth_mode)
 
     parsed = urlparse(config.api_base)
     transport = parsed.netloc or parsed.path.lstrip("/") or "cli"

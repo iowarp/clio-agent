@@ -14,7 +14,7 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
     (
         "Language models + providers",
         ("lm", "providers", "summarizer"),
-        "LM sampling/provider selection and the per-provider transport knobs (Claude Code, ChatGPT).",
+        "LM sampling/provider selection and the per-provider transport knobs (Claude Code, Codex).",
     ),
     (
         "Limits, timeouts and retries",
@@ -584,8 +584,8 @@ KEY_NOTES: dict[str, str] = {
         'Selects the Claude Code transport; "sdk" is the only supported value, kept as an '
         "explicit contract check, not a tuning knob."
     ),
-    "lm.chatgpt_transport": (
-        'Selects the ChatGPT transport; "websocket" (default, with delta continuation) or "sse" '
+    "lm.codex_transport": (
+        'Selects the Codex transport; "websocket" (default, with delta continuation) or "sse" '
         "to force the automatic-fallback transport."
     ),
     "lm.context_window": (
@@ -638,7 +638,7 @@ KEY_NOTES: dict[str, str] = {
         "needing fuller sampling than temp-0."
     ),
     "lm.provider": (
-        "Selects the LM backend (lm_studio, ollama, openai, anthropic, argonne, chatgpt, "
+        "Selects the LM backend (lm_studio, ollama, openai, anthropic, argonne, codex, "
         "claude_code); change to switch which provider clio talks to."
     ),
     "lm.reasoning_model": (

@@ -1,4 +1,4 @@
-"""Unit tests for the ChatGPT OAuth protocol mechanics (A.9).
+"""Unit tests for the Codex OAuth protocol mechanics (A.9).
 
 Covers PKCE generation, the authorize URL, all four paste forms, state
 mismatch, JWT account-id extraction, and token response validation.
@@ -13,8 +13,8 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 
-from clio_agent.providers.chatgpt import constants as c
-from clio_agent.providers.chatgpt import oauth
+from clio_agent.providers.codex import constants as c
+from clio_agent.providers.codex import oauth
 
 
 def test_generate_pkce_verifier_is_url_safe_and_in_range() -> None:
@@ -107,7 +107,7 @@ def _jwt_with_payload(payload: dict) -> str:
 
 class TestDecodeAccountId:
     def test_extracts_account_id_from_claim(self) -> None:
-        token = _jwt_with_payload({c.JWT_AUTH_CLAIM: {"chatgpt_account_id": "acct_123"}})
+        token = _jwt_with_payload({c.JWT_AUTH_CLAIM: {"codex_account_id": "acct_123"}})
         assert oauth.decode_account_id(token) == "acct_123"
 
     def test_missing_claim_raises(self) -> None:

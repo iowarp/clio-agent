@@ -9,7 +9,7 @@ subscription/OAuth provider means one new adapter here, never a route change.
 {authorization_url, loopback}, device?: {user_code, verification_url,
 interval}}``. ``complete`` takes a paste. ``status`` is a poll returning
 pending/complete/failed with a reason. ``logout`` deletes the stored
-credential. ALCF (argonne) and the direct ChatGPT provider both go through
+credential. ALCF (argonne) and the direct Codex provider both go through
 this one interface -- there is no provider-specific branch left in the route
 itself (:mod:`clio_agent.gact.routes.provider_catalog_routes`).
 """
@@ -134,15 +134,15 @@ def _argonne_logout(
     )
 
 
-# -- chatgpt (direct Codex backend) ------------------------------------------
+# -- codex (direct Codex backend) ------------------------------------------
 
 
-async def _chatgpt_start(
+async def _codex_start(
     preset: LMProviderPreset, body: dict[str, Any], app: Any, presets: list[LMProviderPreset]
 ) -> dict[str, Any]:
     del preset, app, presets
-    from clio_agent.providers.chatgpt import login_flow  # noqa: PLC0415
-    from clio_agent.providers.chatgpt.oauth import OAuthError  # noqa: PLC0415
+    from clio_agent.providers.codex import login_flow  # noqa: PLC0415
+    from clio_agent.providers.codex.oauth import OAuthError  # noqa: PLC0415
 
     flow = login_flow.create_login_flow()
     method = str(body.get("method") or "browser").strip().lower()
@@ -151,7 +151,7 @@ async def _chatgpt_start(
             flow.start_device if method == "device" else flow.start_browser
         )
     except OAuthError as exc:
-        raise _error(502, error="chatgpt_auth_failed", message=str(exc)) from exc
+        raise _error(502, error="codex_auth_failed", message=str(exc)) from exc
     result: dict[str, Any] = {"flow_id": methods.flow_id, "instructions": methods.instructions}
     if methods.browser is not None:
         result["browser"] = methods.browser
@@ -160,11 +160,11 @@ async def _chatgpt_start(
     return result
 
 
-async def _chatgpt_complete(
+async def _codex_complete(
     preset: LMProviderPreset, body: dict[str, Any], app: Any, presets: list[LMProviderPreset]
 ) -> dict[str, Any]:
     del preset, app, presets
-    from clio_agent.providers.chatgpt import login_flow  # noqa: PLC0415
+    from clio_agent.providers.codex import login_flow  # noqa: PLC0415
 
     flow_id = str(body.get("flow_id", ""))
     flow = login_flow.get_login_flow(flow_id)
@@ -178,19 +178,19 @@ async def _chatgpt_complete(
     await asyncio.to_thread(flow.submit_paste, paste)
     status, reason = flow.status()
     if status == "failed":
-        raise _error(401, error="chatgpt_auth_failed", message=reason or "ChatGPT sign-in failed.")
+        raise _error(401, error="codex_auth_failed", message=reason or "Codex sign-in failed.")
     return {
         "is_authenticated": status == "complete",
-        "instructions": "Finishing ChatGPT sign-in...",
+        "instructions": "Finishing Codex sign-in...",
     }
 
 
-def _chatgpt_status(
+def _codex_status(
     preset: LMProviderPreset, flow_id: str, app: Any, presets: list[LMProviderPreset]
 ) -> dict[str, Any]:
     del preset
-    from clio_agent.providers.chatgpt import login_flow  # noqa: PLC0415
-    from clio_agent.providers.chatgpt.credentials import ChatGptCredentialStore  # noqa: PLC0415
+    from clio_agent.providers.codex import login_flow  # noqa: PLC0415
+    from clio_agent.providers.codex.credentials import CodexCredentialStore  # noqa: PLC0415
 
     flow = login_flow.get_login_flow(flow_id)
     if flow is None:
@@ -202,31 +202,31 @@ def _chatgpt_status(
     if state == "complete":
         credential = flow.credential()
         if credential is not None:
-            ChatGptCredentialStore().save(credential)
-            for chatgpt_preset in (p for p in presets if p.provider == "chatgpt"):
-                invalidate_provider(app, chatgpt_preset.id)
+            CodexCredentialStore().save(credential)
+            for codex_preset in (p for p in presets if p.provider == "codex"):
+                invalidate_provider(app, codex_preset.id)
         login_flow.drop_login_flow(flow_id)
     elif state == "failed":
         login_flow.drop_login_flow(flow_id)
     return {"state": state, "reason": reason}
 
 
-def _chatgpt_logout(
+def _codex_logout(
     preset: LMProviderPreset, app: Any, presets: list[LMProviderPreset]
 ) -> dict[str, Any]:
     del preset
-    from clio_agent.providers.chatgpt.credentials import ChatGptCredentialStore  # noqa: PLC0415
+    from clio_agent.providers.codex.credentials import CodexCredentialStore  # noqa: PLC0415
 
-    ChatGptCredentialStore().logout()
-    for chatgpt_preset in (p for p in presets if p.provider == "chatgpt"):
-        invalidate_provider(app, chatgpt_preset.id)
-    return {"is_authenticated": False, "instructions": "Signed out of ChatGPT."}
+    CodexCredentialStore().logout()
+    for codex_preset in (p for p in presets if p.provider == "codex"):
+        invalidate_provider(app, codex_preset.id)
+    return {"is_authenticated": False, "instructions": "Signed out of Codex."}
 
 
-_START: dict[str, StartHandler] = {"argonne": _argonne_start, "chatgpt": _chatgpt_start}
-_COMPLETE: dict[str, CompleteHandler] = {"argonne": _argonne_complete, "chatgpt": _chatgpt_complete}
-_STATUS: dict[str, StatusHandler] = {"argonne": _argonne_status, "chatgpt": _chatgpt_status}
-_LOGOUT: dict[str, LogoutHandler] = {"argonne": _argonne_logout, "chatgpt": _chatgpt_logout}
+_START: dict[str, StartHandler] = {"argonne": _argonne_start, "codex": _codex_start}
+_COMPLETE: dict[str, CompleteHandler] = {"argonne": _argonne_complete, "codex": _codex_complete}
+_STATUS: dict[str, StatusHandler] = {"argonne": _argonne_status, "codex": _codex_status}
+_LOGOUT: dict[str, LogoutHandler] = {"argonne": _argonne_logout, "codex": _codex_logout}
 
 _NO_AUTH_FLOW_MESSAGE = (
     "provider '{id}' uses {kind} auth; pass api_key directly to PUT /v1/providers/lm."

@@ -1,10 +1,10 @@
-"""ChatGPT model discovery: the maintained catalog plus a credential-store check.
+"""Codex model discovery: the maintained catalog plus a credential-store check.
 
 Per owner ruling (A.8), the model list, its context/output limits, and its
 reasoning-effort levels come from the maintained catalog
-(:mod:`.chatgpt_catalog`) -- the Codex backend offers no account model-
+(:mod:`.codex_catalog`) -- the Codex backend offers no account model-
 enumeration RPC the way the deleted ``openai_codex`` SDK's ``client.models()``
-did. This module's only LIVE check is whether CLIO holds a signed-in ChatGPT
+did. This module's only LIVE check is whether CLIO holds a signed-in Codex
 credential -- never a network probe, which would spend this passive discovery
 path on a token refresh nobody asked for.
 """
@@ -13,13 +13,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from clio_agent.providers.chatgpt.credentials import ChatGptCredentialStore
-from clio_agent.providers.model_discovery.chatgpt_catalog import (
-    ChatGptCatalogError,
-    refresh_chatgpt_catalog,
+from clio_agent.providers.codex.credentials import CodexCredentialStore
+from clio_agent.providers.model_discovery.codex_catalog import (
+    CodexCatalogError,
+    refresh_codex_catalog,
 )
 from clio_agent.providers.model_discovery.modality_evidence import modality_evidence
-from clio_agent.providers.model_discovery.overlay import CHATGPT_SOURCE, ProviderDiscoveryResult
+from clio_agent.providers.model_discovery.overlay import CODEX_SOURCE, ProviderDiscoveryResult
 
 
 def _capability_row(model: dict[str, Any]) -> dict[str, Any]:
@@ -27,7 +27,7 @@ def _capability_row(model: dict[str, Any]) -> dict[str, Any]:
     return {
         "capabilities": capabilities,
         "capability_evidence": modality_evidence(
-            source="chatgpt_catalog", reason="modality_cataloged"
+            source="codex_catalog", reason="modality_cataloged"
         ),
     }
 
@@ -43,9 +43,9 @@ def _reasoning_row(model: dict[str, Any]) -> dict[str, Any]:
     return {"supported_reasoning_efforts": levels, "default_reasoning_effort": default}
 
 
-def discover_chatgpt(
+def discover_codex(
     *,
-    credential_store: ChatGptCredentialStore | None = None,
+    credential_store: CodexCredentialStore | None = None,
     catalog_candidates: list[dict[str, Any]] | None = None,
 ) -> ProviderDiscoveryResult:
     """Trust the maintained catalog for models; verify sign-in via the credential store.
@@ -58,22 +58,22 @@ def discover_chatgpt(
 
     if catalog_candidates is None:
         try:
-            catalog = refresh_chatgpt_catalog()
-        except ChatGptCatalogError as exc:
+            catalog = refresh_codex_catalog()
+        except CodexCatalogError as exc:
             return ProviderDiscoveryResult(
-                provider="chatgpt", discovered=[], source=CHATGPT_SOURCE, failed_reason=str(exc)
+                provider="codex", discovered=[], source=CODEX_SOURCE, failed_reason=str(exc)
             )
         rows, default_model = catalog.models, catalog.default_model
     else:
         rows, default_model = catalog_candidates, ""
 
-    store = credential_store or ChatGptCredentialStore()
+    store = credential_store or CodexCredentialStore()
     if not store.is_signed_in():
         return ProviderDiscoveryResult(
-            provider="chatgpt",
+            provider="codex",
             discovered=[],
-            source=CHATGPT_SOURCE,
-            failed_reason="ChatGPT sign-in is required on the connected agent",
+            source=CODEX_SOURCE,
+            failed_reason="Codex sign-in is required on the connected agent",
         )
 
     discovered = [
@@ -85,12 +85,12 @@ def discover_chatgpt(
             # -- never routed through overlay.attach_context_limits()'s
             # models.dev/litellm/local-DB cascade. That cascade is for
             # providers with no such catalog of their own (claude_code); for
-            # ChatGPT it would look up candidate ids like "gpt-5.6-sol" that
+            # Codex it would look up candidate ids like "gpt-5.6-sol" that
             # cascade has never heard of, miss, and silently overwrite a real
             # catalog value with None (caught in review, never shipped).
             "context_window": row.get("context_window"),
             "output_limit": row.get("max_output_tokens"),
-            "context_source": "chatgpt_catalog",
+            "context_source": "codex_catalog",
             **_capability_row(row),
             **_reasoning_row(row),
         }
@@ -99,17 +99,17 @@ def discover_chatgpt(
     ]
     if not discovered:
         return ProviderDiscoveryResult(
-            provider="chatgpt",
+            provider="codex",
             discovered=[],
-            source=CHATGPT_SOURCE,
-            failed_reason="ChatGPT catalog has zero models",
+            source=CODEX_SOURCE,
+            failed_reason="Codex catalog has zero models",
         )
     return ProviderDiscoveryResult(
-        provider="chatgpt",
+        provider="codex",
         discovered=discovered,
-        source=CHATGPT_SOURCE,
+        source=CODEX_SOURCE,
         default_model=default_model,
     )
 
 
-__all__ = ["discover_chatgpt"]
+__all__ = ["discover_codex"]

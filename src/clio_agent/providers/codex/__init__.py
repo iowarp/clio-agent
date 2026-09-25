@@ -1,9 +1,9 @@
-"""The direct ChatGPT (Codex backend) subscription provider.
+"""The direct Codex (Codex backend) subscription provider.
 
-CLIO signs in with a user's ChatGPT account and calls the Codex backend
+CLIO signs in with a user's Codex account and calls the Codex backend
 (``chatgpt.com/backend-api``) directly from this process -- no Codex CLI, no
 Codex SDK anywhere in the loop. Replaces the deleted ``openai_codex``-based
-provider entirely (see ``providers/catalog.py``'s ``chatgpt`` entry and
+provider entirely (see ``providers/catalog.py``'s ``codex`` entry and
 ``lm/factory.py``).
 
 Submodules:
@@ -18,11 +18,11 @@ Submodules:
     transport_ws: the WebSocket transport with delta continuation (A.6).
     sessions: per-CLIO-session state shared by both transports.
     errors: typed errors + retry/terminal classification (A.7).
-    litellm_adapter: the LiteLLM ``CustomLLM`` registered as ``chatgpt``.
+    litellm_adapter: the LiteLLM ``CustomLLM`` registered as ``codex``.
 """
 
 from __future__ import annotations
 
-from clio_agent.providers.chatgpt.constants import LITELLM_PROVIDER, PROVIDER_ID, PROVIDER_LABEL
+from clio_agent.providers.codex.constants import LITELLM_PROVIDER, PROVIDER_ID, PROVIDER_LABEL
 
 __all__ = ["LITELLM_PROVIDER", "PROVIDER_ID", "PROVIDER_LABEL"]

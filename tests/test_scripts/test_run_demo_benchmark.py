@@ -332,7 +332,7 @@ def test_case_row_records_semantic_proof_declarations() -> None:
         session_id="sess_semantic",
         elapsed_s=1.0,
         message=_message(route_source="dspy"),
-        provider={"provider": "chatgpt", "model": "gpt-5.5", "api_base": ""},
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
         benchmark_lane="semantic_regression",
     )
 
@@ -496,7 +496,7 @@ def test_failed_result_recovers_partial_route_evidence_from_semantic_events() ->
         session_id="sess_test",
         elapsed_s=300.0,
         message=message,
-        provider={"provider": "chatgpt", "model": "gpt-5.5", "api_base": "chatgpt://direct"},
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": "codex://direct"},
         semantic_events=[
             {
                 "event_type": "agent.invocation.started",
@@ -1513,7 +1513,7 @@ def test_case_row_includes_full_session_logs() -> None:
         session_id="sess_root",
         elapsed_s=1.0,
         message=_message(),
-        provider={"provider": "chatgpt", "model": "gpt-5.5", "api_base": ""},
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
         child_sessions=[{"id": "sess_child", "title": "child"}],
         session_messages=[
             {"id": "msg_user", "role": "user", "parts": [{"type": "text", "text": "prompt"}]},
@@ -1579,7 +1579,7 @@ def test_render_existing_jsonl_tolerates_missing_session_log() -> None:
             "why": "why",
             "session_id": "sess_old",
             "elapsed_s": 1.0,
-            "provider": {"provider": "chatgpt", "model": "gpt-5.5"},
+            "provider": {"provider": "codex", "model": "gpt-5.5"},
         }
     )
 
@@ -1689,7 +1689,7 @@ def test_real_orchestrator_audit_no_longer_requires_sac_plot() -> None:
         session_id="sess_ndp",
         elapsed_s=1.0,
         message=message,
-        provider={"provider": "chatgpt", "model": "gpt-5.5", "api_base": ""},
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
         benchmark_lane="real_orchestrator",
     )
 
@@ -1732,7 +1732,7 @@ def test_real_orchestrator_audit_requires_sync_parent_resume() -> None:
         session_id="sess_ndp",
         elapsed_s=1.0,
         message=message,
-        provider={"provider": "chatgpt", "model": "gpt-5.5", "api_base": ""},
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
         benchmark_lane="real_orchestrator",
     )
 
@@ -1763,7 +1763,7 @@ def test_semantic_regression_audit_reports_missing_proof_evidence() -> None:
         session_id="sess_hierarchy",
         elapsed_s=1.0,
         message=_message(route_source="dspy"),
-        provider={"provider": "chatgpt", "model": "gpt-5.5", "api_base": ""},
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
         child_sessions=[{"id": "child_1"}],
         benchmark_lane="semantic_regression",
     )
@@ -1781,7 +1781,7 @@ def test_semantic_regression_audit_reports_missing_proof_evidence() -> None:
         session_id="sess_memory",
         elapsed_s=1.0,
         message=_message(text="continued from prior session context"),
-        provider={"provider": "chatgpt", "model": "gpt-5.5", "api_base": ""},
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
         benchmark_lane="semantic_regression",
     )
 
@@ -1830,7 +1830,7 @@ def test_command_mcp_skill_scope_requires_structured_capability_evidence() -> No
         session_id="sess_mcp",
         elapsed_s=1.0,
         message=_message(text="calculator_add is disabled until explicit trust"),
-        provider={"provider": "chatgpt", "model": "gpt-5.5", "api_base": ""},
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
         benchmark_lane="semantic_regression",
         agent_blueprint={
             "active_agent_blueprint_id": "mcp-calculator-smoke",
@@ -1864,7 +1864,7 @@ def test_command_mcp_skill_scope_ignores_unstructured_model_words() -> None:
         session_id="sess_mcp",
         elapsed_s=1.0,
         message=_message(text="This mentions command, mcp, skill, disabled, and trust."),
-        provider={"provider": "chatgpt", "model": "gpt-5.5", "api_base": ""},
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
         benchmark_lane="semantic_regression",
     )
 
@@ -1887,7 +1887,7 @@ def test_enabled_mcp_execution_requires_enable_and_call_actions() -> None:
         session_id="sess_mcp",
         elapsed_s=1.0,
         message=_message(text="calculator_add ready"),
-        provider={"provider": "chatgpt", "model": "gpt-5.5", "api_base": ""},
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
         benchmark_lane="semantic_regression",
         actions=[
             {
@@ -1924,7 +1924,7 @@ def test_workspace_memory_scope_requires_structured_policy_actions() -> None:
         session_id="sess_current",
         elapsed_s=1.0,
         message=_message(text="workspace memory scope"),
-        provider={"provider": "chatgpt", "model": "gpt-5.5", "api_base": ""},
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
         benchmark_lane="semantic_regression",
         actions=[
             {
@@ -1975,7 +1975,7 @@ def test_render_existing_jsonl_can_gate_missing_semantic_evidence(tmp_path: Path
         session_id="sess_memory",
         elapsed_s=1.0,
         message=_message(text="continued from prior session context", route_source="dspy"),
-        provider={"provider": "chatgpt", "model": "gpt-5.5", "api_base": ""},
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
         benchmark_lane="semantic_regression",
     )
     evidence = tmp_path / "semantic.jsonl"
@@ -2015,7 +2015,7 @@ def test_render_existing_jsonl_without_gate_keeps_report_rendering_permissive(
         session_id="sess_memory",
         elapsed_s=1.0,
         message=_message(text="continued from prior session context", route_source="dspy"),
-        provider={"provider": "chatgpt", "model": "gpt-5.5", "api_base": ""},
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
         benchmark_lane="semantic_regression",
     )
     evidence = tmp_path / "semantic.jsonl"
@@ -2062,7 +2062,7 @@ def test_marketplace_audit_requires_root_sync_delegation() -> None:
         session_id="sess_marketplace",
         elapsed_s=1.0,
         message=message,
-        provider={"provider": "chatgpt", "model": "gpt-5.5", "api_base": ""},
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
         benchmark_lane="marketplace_agents",
         agent_blueprint={"active_agent_blueprint_id": "genomics-review"},
     )
@@ -2179,7 +2179,7 @@ def test_case_minimum_hierarchy_thresholds_affect_pass_status() -> None:
         session_id="sess_threshold",
         elapsed_s=1.0,
         message=message,
-        provider={"provider": "chatgpt", "model": "gpt-5.5", "api_base": ""},
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
         benchmark_lane="marketplace_agents",
     )
 
@@ -3101,7 +3101,7 @@ def test_marketplace_audit_distinguishes_complex_hierarchy_from_smoke() -> None:
             session_id=f"sess_{case_id}",
             elapsed_s=1.0,
             message=message,
-            provider={"provider": "chatgpt", "model": "gpt-5.5", "api_base": ""},
+            provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
             benchmark_lane="marketplace_agents",
             agent_blueprint={"active_agent_blueprint_id": blueprint_id},
         )
@@ -3238,7 +3238,7 @@ def test_render_report_from_multiple_jsonls_combines_marketplace_evidence(tmp_pa
             session_id=f"sess_{case_id}",
             elapsed_s=1.0,
             message=message,
-            provider={"provider": "chatgpt", "model": "gpt-5.5", "api_base": ""},
+            provider={"provider": "codex", "model": "gpt-5.5", "api_base": ""},
             benchmark_lane="marketplace_agents",
             agent_blueprint={"active_agent_blueprint_id": blueprint_id},
         )

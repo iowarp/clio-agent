@@ -431,7 +431,7 @@ def test_a_capable_model_does_not_get_an_unimplemented_native_plan(
             provider_catalog={
                 "providers": [
                     {
-                        "id": "chatgpt",
+                        "id": "codex",
                         "health": "ready",
                         "models": [
                             {
@@ -460,7 +460,7 @@ def test_a_capable_model_does_not_get_an_unimplemented_native_plan(
         app,
         resource=record,
         message_id="m1",
-        model=ModelRef(provider_id="chatgpt", model_id="omni"),
+        model=ModelRef(provider_id="codex", model_id="omni"),
     )
 
     assert planned.representation == expected

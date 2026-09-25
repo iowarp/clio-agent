@@ -12,7 +12,7 @@
 ClioAgent Configuration Module
 
 Multi-provider LM configuration with environment-based settings.
-Supports local, cloud, OpenAI-compatible, ChatGPT, and ALCF providers.
+Supports local, cloud, OpenAI-compatible, Codex, and ALCF providers.
 
 Usage:
     >>> from clio_agent.config import setup_dspy
@@ -197,7 +197,7 @@ class LMProviderConfig:
         planner_temperature: Lower temperature for deterministic action planning
         planner_max_tokens: Maximum tokens for planner JSON generation
         environment: Deployment environment (dev/staging/production)
-        chatgpt_transport: ChatGPT transport: "websocket" (default, A.6) or "sse"
+        codex_transport: Codex transport: "websocket" (default, A.6) or "sse"
     """
 
     provider: Literal[
@@ -206,7 +206,7 @@ class LMProviderConfig:
         "openai",
         "anthropic",
         "argonne",
-        "chatgpt",
+        "codex",
         "claude_code",
     ] = "lm_studio"
     provider_id: str = ""
@@ -235,7 +235,7 @@ class LMProviderConfig:
     min_p: float | None = None
     presence_penalty: float | None = None
     environment: str = "dev"
-    chatgpt_transport: Literal["websocket", "sse"] = "websocket"
+    codex_transport: Literal["websocket", "sse"] = "websocket"
     # "sdk" (the only transport since v0.8.0): the in-process Claude Agent SDK
     #   with a persistent CLI session — no per-call spawn, streaming-capable, and
     #   setting_sources=[] keeps the user's ~/.claude/CLAUDE.md out of the prompt.
@@ -332,9 +332,9 @@ class LMProviderConfig:
             Literal["bounded", "single_attempt"],
             defaults.get("parse_retry_capability", "bounded"),
         )
-        if self.chatgpt_transport not in {"websocket", "sse"}:
+        if self.codex_transport not in {"websocket", "sse"}:
             raise ValueError(
-                f"chatgpt_transport must be 'websocket' or 'sse' (got {self.chatgpt_transport!r})"
+                f"codex_transport must be 'websocket' or 'sse' (got {self.codex_transport!r})"
             )
         if self.claude_code_transport != "sdk":
             raise ValueError(
@@ -496,7 +496,7 @@ def load_config_from_env() -> LMProviderConfig:
 
     Config keys → environment variables:
         ``lm.provider`` / CLIO_LM_PROVIDER: Provider name (lm_studio, ollama,
-            openai, anthropic, argonne, chatgpt, claude_code)
+            openai, anthropic, argonne, codex, claude_code)
         ``lm.api_base`` / CLIO_LM_API_BASE: Override API base URL
         ``lm.model`` / CLIO_LM_MODEL: Override model identifier
         ``lm.temperature`` / CLIO_LM_TEMPERATURE: Override reasoner/chat temperature
@@ -504,7 +504,7 @@ def load_config_from_env() -> LMProviderConfig:
         ``lm.planner_max_tokens`` / CLIO_LM_PLANNER_MAX_TOKENS: planner token cap
         ``lm.max_tokens`` / CLIO_LM_MAX_TOKENS: Override max tokens
         ``lm.top_p`` / ``lm.top_k`` / ``lm.min_p`` / ``lm.presence_penalty``: sampling
-        ``lm.chatgpt_transport`` / CLIO_CHATGPT_TRANSPORT: ChatGPT transport (websocket/sse)
+        ``lm.codex_transport`` / CLIO_CODEX_TRANSPORT: Codex transport (websocket/sse)
         ``lm.claude_code_transport`` / CLIO_CLAUDE_CODE_TRANSPORT: Claude Code transport
         ``lm.context_window`` / CLIO_LM_CONTEXT_WINDOW: Override effective context window
             (tokens); 0 = auto-derive from handshake (default). Set to assert a larger
@@ -534,8 +534,8 @@ def load_config_from_env() -> LMProviderConfig:
     environment = conf.resolve(
         "runtime.environment", env="CLIO_ENVIRONMENT", default="dev", cast=conf.as_str
     )
-    chatgpt_transport = (
-        conf.resolve("lm.chatgpt_transport", env="CLIO_CHATGPT_TRANSPORT", default="", cast=conf.as_str)
+    codex_transport = (
+        conf.resolve("lm.codex_transport", env="CLIO_CODEX_TRANSPORT", default="", cast=conf.as_str)
         .strip()
         .lower()
     )
@@ -614,8 +614,8 @@ def load_config_from_env() -> LMProviderConfig:
         kwargs["min_p"] = min_p
     if presence_penalty is not None:
         kwargs["presence_penalty"] = presence_penalty
-    if chatgpt_transport:
-        kwargs["chatgpt_transport"] = chatgpt_transport
+    if codex_transport:
+        kwargs["codex_transport"] = codex_transport
     if claude_code_transport:
         kwargs["claude_code_transport"] = claude_code_transport
     if thinking_level:

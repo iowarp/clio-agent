@@ -1,8 +1,8 @@
 """WebSocket transport with delta continuation (A.6).
 
-The default transport; :mod:`clio_agent.providers.chatgpt.transport_sse` is
+The default transport; :mod:`clio_agent.providers.codex.transport_sse` is
 the automatic fallback. One socket is kept open per CLIO session and reused
-across turns (:mod:`clio_agent.providers.chatgpt.sessions`); it is closed
+across turns (:mod:`clio_agent.providers.codex.sessions`); it is closed
 after roughly 5 minutes idle and recycled before 55 minutes of total age.
 
 Delta continuation: when every request-body field except ``input`` is
@@ -24,15 +24,15 @@ from typing import Any
 
 import websockets
 
-from clio_agent.providers.chatgpt import constants as c
-from clio_agent.providers.chatgpt.errors import (
-    ChatGPTAuthError,
-    ChatGPTTransportError,
+from clio_agent.providers.codex import constants as c
+from clio_agent.providers.codex.errors import (
+    CodexAuthError,
+    CodexTransportError,
     raise_for_backend_error,
 )
-from clio_agent.providers.chatgpt.login_flow import ChatGptCredential
-from clio_agent.providers.chatgpt.sessions import ChatGptSessionState
-from clio_agent.providers.chatgpt.stream_events import (
+from clio_agent.providers.codex.login_flow import CodexCredential
+from clio_agent.providers.codex.sessions import CodexSessionState
+from clio_agent.providers.codex.stream_events import (
     Completed,
     Failed,
     ResponseEventParser,
@@ -53,10 +53,10 @@ __all__ = [
 ]
 
 
-class WsPreStreamFailure(ChatGPTTransportError):
+class WsPreStreamFailure(CodexTransportError):
     """A WebSocket failure before any event arrived (A.6).
 
-    The caller (:mod:`clio_agent.providers.chatgpt.litellm_adapter`) catches
+    The caller (:mod:`clio_agent.providers.codex.litellm_adapter`) catches
     this and retries the SAME turn over SSE; the session is left marked
     ``sse_only`` so later turns skip straight to SSE.
     """
@@ -70,13 +70,13 @@ class _WsConnectionLimitSignal(Exception):
     """Internal control-flow signal: open a new connection and retry once."""
 
 
-def build_ws_headers(credential: ChatGptCredential, *, session_id: str) -> dict[str, str]:
+def build_ws_headers(credential: CodexCredential, *, session_id: str) -> dict[str, str]:
     """A.6 headers: SSE's auth headers minus ``accept``/``content-type``/the SSE
     ``OpenAI-Beta`` value, plus the WebSocket beta flag."""
 
     return {
         "Authorization": f"Bearer {credential.access_token}",
-        "chatgpt-account-id": credential.account_id,
+        "codex-account-id": credential.account_id,
         "originator": c.ORIGINATOR,
         "User-Agent": "clio-agent",
         "OpenAI-Beta": c.OPENAI_BETA_WEBSOCKETS,
@@ -151,17 +151,17 @@ def _handshake_status_code(exc: Exception) -> int | None:
     return status if isinstance(status, int) else None
 
 
-async def _open_connection(credential: ChatGptCredential, *, session_id: str) -> Any:
+async def _open_connection(credential: CodexCredential, *, session_id: str) -> Any:
     headers = build_ws_headers(credential, session_id=session_id)
     try:
         return await websockets.connect(
             c.CODEX_WS_URL, additional_headers=headers, open_timeout=c.WS_CONNECT_TIMEOUT_S
         )
-    except ChatGPTAuthError:
+    except CodexAuthError:
         raise
     except Exception as exc:
         if _handshake_status_code(exc) == 401:
-            raise ChatGPTAuthError(f"WebSocket handshake rejected the access token: {exc}") from exc
+            raise CodexAuthError(f"WebSocket handshake rejected the access token: {exc}") from exc
         raise WsPreStreamFailure(f"could not open the WebSocket: {exc}") from exc
 
 
@@ -169,10 +169,10 @@ async def _close_connection(connection: WsConnection) -> None:
     try:
         await connection.socket.close()
     except Exception:  # noqa: BLE001 - teardown must never raise
-        logger.debug("chatgpt ws: socket close failed", exc_info=True)
+        logger.debug("codex ws: socket close failed", exc_info=True)
 
 
-async def drop_connection_after_cancel(state: ChatGptSessionState) -> None:
+async def drop_connection_after_cancel(state: CodexSessionState) -> None:
     """Drop (never reuse) a session's socket after an aborted turn (A.7)."""
 
     if state.ws is not None:
@@ -231,15 +231,15 @@ async def _run_over_socket(socket: Any, body: dict[str, Any]) -> AsyncIterator[S
     except Exception as exc:
         if not first_event_seen:
             raise WsPreStreamFailure(f"WebSocket failed before any event arrived: {exc}") from exc
-        raise ChatGPTTransportError(f"WebSocket failed mid-stream: {exc}") from exc
-    raise ChatGPTTransportError(
+        raise CodexTransportError(f"WebSocket failed mid-stream: {exc}") from exc
+    raise CodexTransportError(
         "the Codex backend's WebSocket stream ended without a completion event"
     )
 
 
 async def _drive_turn(
-    state: ChatGptSessionState,
-    credential: ChatGptCredential,
+    state: CodexSessionState,
+    credential: CodexCredential,
     session_id: str,
     original_body: dict[str, Any],
     request_body: dict[str, Any],
@@ -298,15 +298,15 @@ async def _drive_turn(
     except Exception as exc:
         await _close_connection(connection)
         state.ws = None
-        raise ChatGPTTransportError(f"WebSocket turn failed: {exc}") from exc
+        raise CodexTransportError(f"WebSocket turn failed: {exc}") from exc
 
 
 async def stream_ws_turn(
     *,
-    credential: ChatGptCredential,
+    credential: CodexCredential,
     body: dict[str, Any],
     session_id: str,
-    state: ChatGptSessionState,
+    state: CodexSessionState,
 ) -> AsyncIterator[StreamEvent]:
     """Stream one turn over the session's pooled WebSocket, with delta continuation.
 
@@ -314,7 +314,7 @@ async def stream_ws_turn(
         WsPreStreamFailure: No event arrived before the failure. The session
             is marked ``sse_only`` and its socket dropped; the caller should
             retry this turn over SSE (A.6).
-        ChatGPTTransportError / a typed backend error: A failure after events
+        CodexTransportError / a typed backend error: A failure after events
             had started streaming, or the stream never completed. Never
             replayed (A.6/A.7).
     """

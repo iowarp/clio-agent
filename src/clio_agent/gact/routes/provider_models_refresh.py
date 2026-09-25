@@ -36,7 +36,7 @@ def register_provider_models_refresh_routes(app: FastAPI, deps: "GactDeps") -> N
         With no body (or an empty one), scans the catalog and probes only the
         providers :func:`~clio_agent.providers.model_discovery.is_provider_configured`
         reports ready — auth/CLI present (#1211 review R2). An optional
-        ``{"providers": ["chatgpt", "openai", ...]}`` body narrows (or widens past
+        ``{"providers": ["codex", "openai", ...]}`` body narrows (or widens past
         the configured-only filter) the scan to exactly those preset ids
         (#1211 review R3); an unknown id in that list is a typed 404.
 
