@@ -246,6 +246,25 @@ def test_handshake_unreachable_records_reason_and_static_caps(
     assert cfg.max_tokens == 0
 
 
+def test_kind_only_spec_resolves_identity_before_the_handshake(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bare-kind LMSpec (no provider_id -- e.g. ``provider="argonne"``) must
+    resolve to a real preset id (``argonne_sophia``) BEFORE the handshake runs,
+    both on the config skeleton and in the handshake's own cache key -- never
+    leak the bare kind "argonne" into either (model-capabilities brief Part 3).
+    A kind with no matching preset id is not itself a real identity, so
+    reaching the handshake with it unresolved would be a regression."""
+    calls = _patch_handshake(monkeypatch, _report(provider="argonne", model_id="x", ok=False))
+
+    spec = LMSpec(provider="argonne", model="openai/gpt-oss-120b")
+    resolved = resolve_endpoint_and_handshake(spec)
+
+    assert resolved.config_skeleton.provider_id == "argonne_sophia"
+    assert len(calls) == 1
+    assert calls[0].provider_id == "argonne_sophia"
+
+
 def test_handshake_error_records_reason(monkeypatch: pytest.MonkeyPatch) -> None:
     """A handshake that raises is caught and recorded as ``handshake_error``."""
     _patch_handshake(monkeypatch, RuntimeError("boom"))

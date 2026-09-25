@@ -509,6 +509,39 @@ def test_unchanged_last_good_list_is_not_rewritten() -> None:
     assert path.stat().st_mtime_ns == before
 
 
+def test_a_changed_api_base_stamps_a_different_freshness_key(tmp_path: Path) -> None:
+    """A provider whose configured endpoint changes must never read as fresh
+    evidence for its OLD endpoint (model-capabilities brief Part 3): the
+    freshness ledger is keyed by (provider_id, normalized api_base), not just
+    provider_id."""
+    from clio_agent.gact import provider_catalog_snapshot as snapshot
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    old_base = "http://127.0.0.1:8088/v1"
+    new_base = "http://127.0.0.1:9000/v1"
+
+    snapshot.commit(
+        app,
+        {"catalog_id": "active", "providers": [{**_record("llama_cpp"), "endpoint": old_base}]},
+        ["llama_cpp"],
+    )
+    before = snapshot.provider_seq(app, "llama_cpp", old_base)
+    assert before != 0
+    # The new endpoint has never been stamped -- its own freshness key is 0,
+    # entirely independent of the old endpoint's.
+    assert snapshot.provider_seq(app, "llama_cpp", new_base) == 0
+
+    snapshot.commit(
+        app,
+        {"catalog_id": "active", "providers": [{**_record("llama_cpp"), "endpoint": new_base}]},
+        ["llama_cpp"],
+    )
+    # The old endpoint's freshness entry is untouched by the new commit.
+    assert snapshot.provider_seq(app, "llama_cpp", old_base) == before
+    assert snapshot.provider_seq(app, "llama_cpp", new_base) != 0
+    assert snapshot.provider_seq(app, "llama_cpp", new_base) != before
+
+
 def test_last_confirmed_tracks_every_live_confirmation(monkeypatch: pytest.MonkeyPatch) -> None:
     """An unchanged list is not rewritten, but its confirmation time moves forward."""
     from clio_agent.providers.model_discovery import last_good

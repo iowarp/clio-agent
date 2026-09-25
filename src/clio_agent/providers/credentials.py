@@ -167,7 +167,12 @@ def resolve(provider: str, credential_ref: str = "") -> str:
         return os.environ.get(_named_account_env_var(provider, account), "")
 
     # Default cloud ref: the well-known per-provider env var, read-only.
-    env_var = _CLOUD_API_KEY_ENV.get(provider) or _CLOUD_API_KEY_ENV.get(runtime_kind)
+    # provider_id only, never runtime_kind (Part 3): llama.cpp and vLLM share
+    # kind "openai" with the literal OpenAI provider and declare no
+    # api_key_env of their own -- a kind-keyed fallback here silently handed
+    # them a real OPENAI_API_KEY from the environment instead of leaving them
+    # keyless.
+    env_var = _CLOUD_API_KEY_ENV.get(provider)
     if env_var:
         return os.environ.get(env_var, "")
     return ""

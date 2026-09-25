@@ -183,6 +183,39 @@ class TestLMProviderConfig:
             LMProviderConfig(provider="claude_code", claude_code_transport="bogus")  # type: ignore[arg-type]
 
 
+class TestProviderIdIsAnIdentityNotAKind:
+    """provider_id names a real preset; it gets no kind_default fallback (Part 3).
+
+    Only the no-provider_id convenience form (``LMProviderConfig(provider=...)``)
+    resolves through the kind default -- an explicit provider_id is an identity
+    claim and a bogus one is a typed error, never a silent redirect to
+    whichever preset happens to share that kind.
+    """
+
+    def test_unknown_provider_id_is_a_typed_error(self):
+        with pytest.raises(ValueError, match="Unknown LM provider"):
+            LMProviderConfig(provider_id="not-a-real-provider")
+
+    def test_a_bare_kind_string_as_provider_id_is_a_typed_error(self):
+        """"argonne" is a kind, not a preset id (the presets are argonne_sophia /
+        argonne_metis); passed explicitly as provider_id it must error rather
+        than silently resolve to the kind's default preset."""
+        with pytest.raises(ValueError, match="Unknown LM provider"):
+            LMProviderConfig(provider_id="argonne")
+
+    def test_bare_kind_construction_still_resolves_via_kind_default(self):
+        """With no provider_id at all, ``provider="argonne"`` is still a valid
+        convenience construction (used throughout the test suite) and resolves
+        to the kind's designated default preset."""
+        config = LMProviderConfig(provider="argonne")
+        assert config.provider_id == "argonne_sophia"
+
+    def test_explicit_provider_id_is_preserved_exactly(self):
+        config = LMProviderConfig(provider_id="argonne_metis")
+        assert config.provider_id == "argonne_metis"
+        assert config.provider == "argonne"
+
+
 class TestLoadConfigFromEnv:
     """Test load_config_from_env function."""
 
