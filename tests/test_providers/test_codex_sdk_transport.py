@@ -286,6 +286,10 @@ async def test_catalog_lists_both_transports_with_their_own_models(
     assert [m["model_id"] for m in transports["sdk"]["models"]] == ["gpt-5.6-sol"]
     assert transports["direct"]["health"] == "ready"
     assert [m["model_id"] for m in transports["direct"]["models"]] == ["gpt-5.5"]
+    # Only the Direct (CLIO-owned OAuth) transport can be signed out of; the
+    # SDK transport is the user's own Codex login and carries no auth action.
+    assert transports["direct"]["auth"] == {"method": "oauth", "logout": True}
+    assert "auth" not in transports["sdk"]
     # Every model on the merged, provider-level list carries its own transport.
     merged = {(m["model_id"], m["transport"]) for m in provider["models"]}
     assert merged == {("gpt-5.6-sol", "sdk"), ("gpt-5.5", "direct")}

@@ -362,6 +362,8 @@ def _codex_direct_transport_row(
     for the ``codex`` provider -- this just relabels that result as one of the
     two transports rather than the whole provider.
     """
+    # Lazy: provider_auth -> provider_catalog_snapshot -> this module.
+    from clio_agent.gact.routes.provider_auth import supports_logout  # noqa: PLC0415
     from clio_agent.providers.codex import constants as codex_constants
 
     rows = [model_catalog_row(preset, report, model) for model in models]
@@ -372,7 +374,9 @@ def _codex_direct_transport_row(
         "label": codex_constants.TRANSPORT_LABELS[codex_constants.TRANSPORT_DIRECT],
         "health": health,
         "reason": failure,
-        "auth": {"method": "oauth"},
+        # `logout` comes from the SAME registry POST .../auth {action: logout}
+        # dispatches on, so the client never infers "Sign out" on its own.
+        "auth": {"method": "oauth", "logout": supports_logout(preset.provider)},
         "models": rows,
     }
 
