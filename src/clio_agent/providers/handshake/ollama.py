@@ -1,23 +1,18 @@
-"""Ollama handshake — grounded on the Ollama REST API.
+"""Ollama handshake — thin orchestration over :mod:`clio_agent.providers.capabilities.dialects.ollama`.
 
-Ollama exposes two native endpoints we use (the OpenAI-compat ``/v1`` shim reports
-none of this):
+This class owns ONLY connectivity dispatch and the per-phase plumbing
+(:class:`~clio_agent.providers.handshake.base.ProviderHandshake`'s contract);
+every HTTP read of Ollama's native API (``/api/tags``, ``/api/show``,
+``/api/ps``) and every mapping of its fields onto the capability records lives
+in :mod:`clio_agent.providers.capabilities.dialects.ollama` -- the single
+place that talks to an Ollama server (consolidation review of #1447: this
+class used to read/parse ``/api/show`` itself, duplicating the dialect
+module).
 
-* ``GET /api/tags`` — installed models (``{"models": [{"model", "name", ...}]}``).
-* ``POST /api/show`` ``{"model": id}`` — per-model metadata:
-  - ``model_info["general.architecture"]`` (e.g. ``"qwen3"``) and, keyed by that
-    arch, ``model_info["<arch>.context_length"]`` — the model's own maximum
-    context (a **model** fact: brief Part 6 Ollama section, ``GET /v1/models``
-    row);
-  - ``capabilities`` — a list that includes ``"tools"`` (native function-calling)
-    and ``"thinking"`` (reasoning) when the model supports them. This is an
-    exhaustive, self-reported list (brief Part 4: Ollama ``capabilities`` is a
-    **model** fact), so an ABSENT entry is real negative evidence, not "unknown".
-
-So Ollama models resolve **live** with no catalog fallback needed for tools/
-thinking. We inherit the keyless connectivity probe from
-:class:`OpenAICompatHandshake` (Ollama needs no API key) and only override
-discovery + per-model config to hit the native API.
+We inherit the keyless connectivity probe from :class:`OpenAICompatHandshake`
+(Ollama needs no API key) and only override discovery + per-model config to
+route through the dialect adapter's native-API reads instead of the generic
+OpenAI-compat ``/v1`` shim, which reports nothing useful for Ollama.
 """
 
 from __future__ import annotations
@@ -26,25 +21,15 @@ from datetime import datetime, timezone
 from typing import Any
 
 from clio_agent.providers.api_base import native_root
+from clio_agent.providers.capabilities.dialects import ollama as ollama_dialect
 from clio_agent.providers.capabilities.link import deployment_model_key_fact
-from clio_agent.providers.capabilities.records import (
-    Fact,
-    ModelCapabilities,
-    ThinkingSpec,
-    modalities_from_capabilities,
-    unknown,
-)
 from clio_agent.providers.handshake.base import HandshakeContext
 from clio_agent.providers.handshake.model import DiscoveredModel, DiscoveredModelFacts
 from clio_agent.providers.handshake.openai_compat import OpenAICompatHandshake
 
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
 class OllamaHandshake(OpenAICompatHandshake):
-    """Ollama: list via ``/api/tags``, enrich each model via ``/api/show``."""
+    """Ollama: list via ``/api/tags``, enrich each model via ``/api/show`` + ``/api/ps``."""
 
     #: ``/api/show`` reports a per-model ``capabilities`` list (``vision``,
     #: ``tools``), so this backend really can evidence input modalities.
@@ -52,123 +37,34 @@ class OllamaHandshake(OpenAICompatHandshake):
 
     async def discover_models(self, client: Any, ctx: HandshakeContext) -> list[dict[str, Any]]:
         """List installed models from the native ``/api/tags``."""
-        headers = self._auth_header(ctx)
-        rows = await self._discover_ollama_tags(client, ctx, headers)
+        rows = await ollama_dialect.fetch_tags(client, native_root(ctx.api_base))
         return [r for r in rows if not self._is_embedding(r)]
 
     async def discover_model_config(
         self, client: Any, ctx: HandshakeContext, raw: dict[str, Any]
     ) -> DiscoveredModelFacts:
-        """Resolve one model's context window + capabilities via ``/api/show``.
-
-        Also layers on the DEPLOYMENT facts P4b's dialect adapter adds (brief
-        Part 6): the Modelfile ``parameters`` blob's ``num_ctx`` and the context
-        actually loaded right now from ``/api/ps``, combined via
-        :func:`~clio_agent.providers.capabilities.dialects.ollama.build_deployment_extra`
-        (``ollama-probe-context``).
-        """
+        """Resolve one model's facts via ``/api/show`` + ``/api/ps`` (brief Part 6)."""
         model_id = str(raw.get("id") or raw.get("model") or "").strip()
         root = native_root(ctx.api_base)
-        observed_at = _now_iso()
 
-        context_window: int | None = None
-        arch: str | None = None
-        caps: tuple[str, ...] = ()
-        show_parameters: str | None = None
-        try:
-            resp = await client.post(f"{root}/api/show", json={"model": model_id})
-            if resp.status_code < 400:
-                data = resp.json()
-                if isinstance(data, dict):
-                    info = data.get("model_info")
-                    if isinstance(info, dict):
-                        raw_arch = info.get("general.architecture")
-                        if isinstance(raw_arch, str) and raw_arch:
-                            arch = raw_arch
-                            window = info.get(f"{arch}.context_length")
-                            if (
-                                isinstance(window, int)
-                                and not isinstance(window, bool)
-                                and window > 0
-                            ):
-                                context_window = window
-                    raw_caps = data.get("capabilities")
-                    if isinstance(raw_caps, list):
-                        caps = tuple(str(c) for c in raw_caps)
-                    raw_parameters = data.get("parameters")
-                    if isinstance(raw_parameters, str):
-                        show_parameters = raw_parameters
-        except Exception:  # noqa: BLE001,S110 - /api/show best-effort; falls back to the enrich cascade
-            # /api/show is best-effort: a failure leaves context_max/caps unknown
-            # and the base enrich step falls back to the community-catalog cascade.
-            pass
+        show_data = await ollama_dialect.fetch_show(client, root, model_id)
+        ps_data = await ollama_dialect.fetch_ps(client, root)
+        show_parameters = show_data.get("parameters") if isinstance(show_data, dict) else None
 
-        ps_payload: dict[str, Any] | None = None
-        try:
-            ps_resp = await client.get(f"{root}/api/ps")
-            if ps_resp.status_code < 400:
-                data = ps_resp.json()
-                ps_payload = data if isinstance(data, dict) else None
-        except Exception:  # noqa: BLE001,S110 - /api/ps is best-effort (older server, transient error)
-            pass
-
-        capabilities_known = bool(caps)
+        observed_at = datetime.now(timezone.utc).isoformat()
         model_key_fact = deployment_model_key_fact(model_id, observed_at=observed_at)
-        model_key = model_key_fact.value or model_id
-        model = ModelCapabilities(
-            model_key=model_key,
-            context_max=(
-                Fact(
-                    value=context_window,
-                    source="server_report",
-                    observed_at=observed_at,
-                    detail="ollama /api/show model_info.<arch>.context_length",
-                )
-                if context_window is not None
-                else unknown()
-            ),
-            tools=(
-                Fact(
-                    value="tools" in caps,
-                    source="server_report",
-                    observed_at=observed_at,
-                    detail="ollama /api/show capabilities",
-                )
-                if capabilities_known
-                else unknown()
-            ),
-            input_modalities=(
-                Fact(
-                    value=modalities_from_capabilities(caps),
-                    source="server_report",
-                    observed_at=observed_at,
-                    detail="ollama /api/show capabilities",
-                )
-                if capabilities_known
-                else unknown()
-            ),
-            thinking=(
-                Fact(
-                    value=ThinkingSpec(mechanism="on_off" if "thinking" in caps else "none"),
-                    source="server_report",
-                    observed_at=observed_at,
-                    detail="ollama /api/show capabilities",
-                )
-                if capabilities_known
-                else unknown()
-            ),
+        model = ollama_dialect.parse_show(
+            show_data, model_key=model_key_fact.value or model_id, observed_at=observed_at
         )
-        from clio_agent.providers.capabilities.dialects import (  # noqa: PLC0415
-            ollama as ollama_dialect,
-        )
-
         deployment = ollama_dialect.build_deployment_extra(
             provider_id=ctx.provider_id,
             api_base=ctx.api_base,
             model_id=model_id,
             show_parameters=show_parameters,
-            ps_payload=ps_payload,
+            ps_payload=ps_data,
         )
+
+        arch, caps = ollama_dialect.show_identity(show_data)
         discovered = DiscoveredModel(
             id=model_id,
             raw={**dict(raw), "arch": arch, "capabilities": list(caps)},

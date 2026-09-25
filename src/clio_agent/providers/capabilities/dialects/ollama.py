@@ -1,23 +1,34 @@
 """Ollama dialect adapter (model-capabilities brief Part 6, Ollama section).
 
-Uses the official ``ollama`` Python client (added as a proper dependency this
-slice -- it was not one before) for ``show``/``ps``, since both are thin,
-already-typed wrappers over Ollama's native REST API; ``/api/version`` has no
-client method, so it is one plain GET through the client's own underlying
-``httpx.AsyncClient`` (``ollama.AsyncClient._client``) rather than a second,
-hand-rolled HTTP client.
+The SINGLE place that reads Ollama's native REST surface and maps it onto the
+capability records -- :class:`~clio_agent.providers.handshake.ollama.
+OllamaHandshake` calls this module for every HTTP read and does no parsing of
+its own (consolidation review of #1447: two readers of ``/api/show``/``/api/ps``
+existed briefly, one here and one hand-rolled in the handshake class; this
+module now owns all of it).
 
-P4a's :mod:`clio_agent.providers.handshake.ollama` already reads ``/api/show``
-for the MODEL facts (``capabilities``, ``model_info.<arch>.context_length``).
-This module adds what that handshake does not cover, all of it DEPLOYMENT
-evidence (brief Part 4):
+Reads plain HTTP verbs (``client.get``/``client.post``) through whatever
+client :class:`~clio_agent.providers.handshake.base.ProviderHandshake` opened
+-- the SAME ``httpx.AsyncClient`` every other dialect adapter uses, not the
+official ``ollama`` Python package's client. That package's ``AsyncClient``
+has no generic ``get``/``post`` (only typed methods like ``show``/``ps``), so
+using it here would force a SECOND, incompatible client type through the one
+``ProviderHandshake.handshake()`` loop that already threads a single
+``httpx.AsyncClient`` across connectivity, discovery and per-model config --
+exactly the "two ways to reach the same endpoint" duplication this
+consolidation removes elsewhere. Ollama's native API is plain JSON-over-HTTP,
+so nothing is lost by reading it the same way every other dialect does.
 
-* ``/api/show`` ``parameters`` -- the Modelfile defaults (``num_ctx`` and
-  sampling), a plain multi-line ``key value`` text blob, not JSON.
-* ``/api/ps`` -- the context ACTUALLY loaded right now; ``context_served`` is
-  the smaller of that and the Modelfile's ``num_ctx`` (clio-coder
-  ``local-native/ollama.ts``).
-* ``/api/version`` -- the endpoint's own fingerprint (brief 5.6).
+Covers, all as brief-Part-6 facts:
+
+* ``GET /api/tags`` -- installed models (:func:`fetch_tags`).
+* ``POST /api/show`` -- [M] ``model_info.<arch>.context_length``,
+  ``capabilities`` (tools/thinking/vision), [D] the Modelfile ``parameters``
+  blob (``num_ctx`` and sampling defaults).
+* ``GET /api/ps`` -- [D] the context ACTUALLY loaded right now;
+  ``context_served`` is the smaller of that and the Modelfile's ``num_ctx``
+  (clio-coder ``local-native/ollama.ts``).
+* ``GET /api/version`` -- [E] the endpoint's own fingerprint (brief 5.6).
 
 Model linking's third named case ("Ollama's ``hf.co/<repo>`` names") is
 already handled generically by :mod:`clio_agent.providers.capabilities.link`
@@ -34,6 +45,9 @@ from clio_agent.providers.capabilities.records import (
     DeploymentCapabilities,
     EndpointCapabilities,
     Fact,
+    ModelCapabilities,
+    ThinkingSpec,
+    modalities_from_capabilities,
     unknown,
 )
 
@@ -46,6 +60,75 @@ def _now_iso() -> str:
 
 def _positive_int(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+# --------------------------------------------------------------------------- fetch (plain HTTP)
+
+
+async def fetch_tags(client: Any, root: str) -> list[dict[str, Any]]:
+    """``GET /api/tags`` -> normalized ``{"id", ...}`` rows for installed models."""
+    try:
+        response = await client.get(f"{root}/api/tags")
+        if response.status_code >= 400:
+            return []
+        payload = response.json()
+    except Exception:  # noqa: BLE001 - an unparseable/unreachable tags listing yields no rows
+        return []
+    models = payload.get("models") if isinstance(payload, dict) else None
+    if not isinstance(models, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for entry in models:
+        if not isinstance(entry, dict):
+            continue
+        model_id = entry.get("model") or entry.get("name")
+        if model_id:
+            rows.append({"id": model_id, **entry})
+    return rows
+
+
+async def fetch_show(client: Any, root: str, model_id: str) -> dict[str, Any] | None:
+    """``POST /api/show {"model": id}`` -> the raw per-model metadata, or ``None``."""
+    try:
+        response = await client.post(f"{root}/api/show", json={"model": model_id})
+        if response.status_code >= 400:
+            return None
+        data = response.json()
+    except Exception:  # noqa: BLE001 - /api/show is best-effort; the enrich cascade fills the gap
+        return None
+    return data if isinstance(data, dict) else None
+
+
+async def fetch_ps(client: Any, root: str) -> dict[str, Any] | None:
+    """``GET /api/ps`` -> the raw resident-model listing, or ``None``."""
+    try:
+        response = await client.get(f"{root}/api/ps")
+        if response.status_code >= 400:
+            return None
+        data = response.json()
+    except Exception:  # noqa: BLE001 - /api/ps is best-effort (older server, transient error)
+        return None
+    return data if isinstance(data, dict) else None
+
+
+async def fetch_version(client: Any, root: str) -> str | None:
+    """``GET /api/version`` -> ``{"version": "..."}``, or ``None``.
+
+    Best-effort: a failure (older server, transient error) yields ``None``,
+    never raises -- this is enrichment, not a connectivity gate.
+    """
+    try:
+        response = await client.get(f"{root}/api/version")
+        if response.status_code >= 400:
+            return None
+        payload = response.json()
+    except Exception:  # noqa: BLE001 - best-effort enrichment, never sinks discovery
+        return None
+    version = payload.get("version") if isinstance(payload, dict) else None
+    return str(version) if version else None
+
+
+# --------------------------------------------------------------------------- parse (pure)
 
 
 def parse_modelfile_parameters(raw: str | None) -> dict[str, Any]:
@@ -134,6 +217,76 @@ def digest_from_ps(payload: Any, model_id: str) -> str | None:
     return None
 
 
+def show_identity(data: Any) -> tuple[str | None, tuple[str, ...]]:
+    """``(arch, capabilities)`` from a raw ``/api/show`` payload -- shared by :func:`parse_show`
+    and the handshake's raw passthrough metadata, so the field names
+    (``model_info.general.architecture``, ``capabilities``) are written once.
+    """
+    if not isinstance(data, dict):
+        return None, ()
+    arch: str | None = None
+    info = data.get("model_info")
+    if isinstance(info, dict):
+        raw_arch = info.get("general.architecture")
+        arch = raw_arch if isinstance(raw_arch, str) and raw_arch else None
+    raw_caps = data.get("capabilities")
+    caps = tuple(str(c) for c in raw_caps) if isinstance(raw_caps, list) else ()
+    return arch, caps
+
+
+def parse_show(data: Any, *, model_key: str, observed_at: str | None = None) -> ModelCapabilities:
+    """Build the MODEL half of ``POST /api/show`` (brief Part 6 Ollama section).
+
+    ``model_info.<arch>.context_length`` -> the model's own ceiling;
+    ``capabilities`` is an exhaustive, self-reported list, so an ABSENT entry
+    (``"tools"``, ``"thinking"``) is real negative evidence, not "unknown".
+    """
+    observed_at = observed_at or _now_iso()
+    if not isinstance(data, dict):
+        return ModelCapabilities(model_key=model_key)
+
+    arch, caps = show_identity(data)
+    context_window: int | None = None
+    info = data.get("model_info")
+    if arch and isinstance(info, dict):
+        context_window = _positive_int(info.get(f"{arch}.context_length"))
+    capabilities_known = bool(caps)
+
+    return ModelCapabilities(
+        model_key=model_key,
+        context_max=(
+            Fact(context_window, "server_report", observed_at, "ollama /api/show model_info.<arch>.context_length")
+            if context_window is not None
+            else unknown()
+        ),
+        tools=(
+            Fact(value="tools" in caps, source="server_report", observed_at=observed_at, detail="ollama /api/show capabilities")
+            if capabilities_known
+            else unknown()
+        ),
+        input_modalities=(
+            Fact(
+                value=modalities_from_capabilities(caps),
+                source="server_report",
+                observed_at=observed_at,
+                detail="ollama /api/show capabilities",
+            )
+            if capabilities_known
+            else unknown()
+        ),
+        thinking=(
+            Fact(
+                value=ThinkingSpec(mechanism="on_off" if "thinking" in caps else "none"),
+                source="server_report",
+                observed_at=observed_at,
+                detail="ollama /api/show capabilities",
+            )
+            if capabilities_known
+            else unknown()
+        ),
+    )
+
+
 def build_deployment_extra(
     *,
     provider_id: str,
@@ -142,7 +295,7 @@ def build_deployment_extra(
     show_parameters: str | None,
     ps_payload: Any,
 ) -> DeploymentCapabilities:
-    """The DEPLOYMENT facts this module adds on top of P4a's ``/api/show`` model facts.
+    """The DEPLOYMENT half of ``/api/show`` + ``/api/ps`` (brief Part 6 Ollama section).
 
     ``context_served`` is the smaller of the Modelfile's ``num_ctx`` and the
     context actually loaded per ``/api/ps`` (clio-coder ``local-native/ollama.ts``);
@@ -201,81 +354,19 @@ def build_endpoint_capabilities(
     )
 
 
-def _model_dump(obj: Any) -> dict[str, Any]:
-    """Normalize one ``ollama`` client response object (or a plain dict) to a dict."""
-    if isinstance(obj, dict):
-        return obj
-    dump = getattr(obj, "model_dump", None)
-    if callable(dump):
-        return dict(dump())
-    return dict(obj)
-
-
-async def fetch_deployment_facts(
-    client: Any, *, provider_id: str, api_base: str, model_id: str
-) -> DeploymentCapabilities:
-    """Fetch ``/api/show`` + ``/api/ps`` through the official ``ollama.AsyncClient`` and build the deployment record.
-
-    ``client`` is an ``ollama.AsyncClient`` (typed ``Any`` here to keep this
-    module importable without the dependency at type-check time for callers
-    that don't need it). Each read is independently best-effort -- either can
-    be absent (older server, transient error, the model just isn't currently
-    loaded so ``/api/ps`` omits it) without failing the other.
-    """
-    show_parameters: str | None = None
-    ps_payload: dict[str, Any] | None = None
-    try:
-        show = await client.show(model_id)
-        show_parameters = getattr(show, "parameters", None)
-    except Exception:  # noqa: BLE001 - best-effort enrichment, never sinks discovery
-        pass
-    try:
-        ps = await client.ps()
-        models = getattr(ps, "models", None) or []
-        ps_payload = {"models": [_model_dump(m) for m in models]}
-    except Exception:  # noqa: BLE001 - best-effort enrichment, never sinks discovery
-        pass
-    return build_deployment_extra(
-        provider_id=provider_id,
-        api_base=api_base,
-        model_id=model_id,
-        show_parameters=show_parameters,
-        ps_payload=ps_payload,
-    )
-
-
-async def fetch_version(client: Any, api_base: str) -> str | None:
-    """``GET /api/version`` -> ``{"version": "..."}``.
-
-    No ``ollama`` client method covers this, so it is one plain GET through the
-    SAME httpx transport the client itself uses (``client._client``) rather
-    than opening a second HTTP client. Best-effort: a failure (older server,
-    transient error) yields ``None``, never raises -- this is enrichment, not a
-    connectivity gate.
-    """
-    from clio_agent.providers.api_base import native_root  # noqa: PLC0415
-
-    root = native_root(api_base)
-    try:
-        response = await client._client.get(f"{root}/api/version")  # noqa: SLF001 - see docstring
-        if response.status_code >= 400:
-            return None
-        payload = response.json()
-    except Exception:  # noqa: BLE001 - best-effort enrichment, never sinks discovery
-        return None
-    version = payload.get("version") if isinstance(payload, dict) else None
-    return str(version) if version else None
-
-
 __all__ = [
     "DIALECT",
     "build_deployment_extra",
     "build_endpoint_capabilities",
     "deployment_fingerprint",
     "digest_from_ps",
-    "fetch_deployment_facts",
+    "fetch_ps",
+    "fetch_show",
+    "fetch_tags",
     "fetch_version",
     "fingerprint_from_version",
     "loaded_context_from_ps",
     "parse_modelfile_parameters",
+    "parse_show",
+    "show_identity",
 ]

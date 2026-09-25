@@ -1,37 +1,81 @@
 """Contract tests for the Ollama dialect adapter, against RECORDED responses.
 
 Fixtures: the existing ``tests/test_providers/fixtures/handshake/ollama_api_show_qwen3.json``
-(P4a's) plus the new ``tests/fixtures/capabilities/ollama/`` (``/api/ps``,
-``/api/version``). Covers the DEPLOYMENT facts P4a's handshake does not
-already cover (brief Part 6): the Modelfile ``parameters`` blob, the loaded
-context from ``/api/ps`` (``ollama-probe-context``), and the endpoint
-fingerprint from ``/api/version``.
+(P4a's) plus ``tests/fixtures/capabilities/ollama/`` (``/api/ps``,
+``/api/version``). This module is the SINGLE reader of Ollama's native API
+(consolidation review of #1447: ``handshake/ollama.py`` used to read/parse
+``/api/show`` itself); it reads via plain ``client.get``/``client.post`` --
+the SAME ``httpx.AsyncClient``-shaped interface every dialect adapter and
+:class:`~clio_agent.providers.handshake.base.ProviderHandshake` phase already
+shares, not the official ``ollama`` Python package's client (which has no
+generic HTTP verb methods and so cannot be threaded through the one shared
+client every handshake phase uses without a second, incompatible client type).
 
-``fetch_deployment_facts`` is exercised against the REAL ``ollama.AsyncClient``
-(brief: "through the official ollama Python client") wired to an
-``httpx.MockTransport`` -- a fake HTTP server with no real socket -- serving
-the same recorded JSON, so the client's own request/response wire contract is
-tested too, not just this module's dict-shaped parsing.
+Covers the field mapping the brief calls out for Ollama (Part 6):
+``model_info.<arch>.context_length`` -> the model's own ceiling,
+``capabilities`` -> tools/thinking/input-modalities, the Modelfile
+``parameters`` blob, the loaded context from ``/api/ps``
+(``ollama-probe-context``), and the endpoint fingerprint from ``/api/version``.
 """
 
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import httpx
-import ollama
 import pytest
 
 from clio_agent.providers.capabilities.dialects import ollama as ollama_dialect
 
 HANDSHAKE_FIXTURES = Path(__file__).parent / "fixtures" / "handshake"
 CAPABILITY_FIXTURES = Path(__file__).parent.parent / "fixtures" / "capabilities" / "ollama"
+ROOT = "http://127.0.0.1:11434"
 
 
 def _load(directory: Path, name: str) -> Any:
     return json.loads((directory / name).read_text(encoding="utf-8"))
+
+
+@dataclass
+class _FakeResponse:
+    status_code: int
+    _payload: Any = None
+
+    def json(self) -> Any:
+        return self._payload
+
+
+class _FakeAsyncClient:
+    """In-memory fake serving the recorded Ollama fixtures by URL/method."""
+
+    def __init__(self, *, show: Any = None, ps: Any = None, version: Any = None, fail: bool = False) -> None:
+        self._show = show
+        self._ps = ps
+        self._version = version
+        self._fail = fail
+        self.requested: list[str] = []
+
+    async def get(self, url: str, **_: object) -> _FakeResponse:
+        self.requested.append(url)
+        if self._fail:
+            raise ConnectionError("unreachable")
+        if url.endswith("/api/ps"):
+            return _FakeResponse(200, self._ps) if self._ps is not None else _FakeResponse(404)
+        if url.endswith("/api/version"):
+            return _FakeResponse(200, self._version) if self._version is not None else _FakeResponse(404)
+        if url.endswith("/api/tags"):
+            return _FakeResponse(200, self._tags) if hasattr(self, "_tags") else _FakeResponse(404)
+        return _FakeResponse(404)
+
+    async def post(self, url: str, json: dict[str, Any], **_: object) -> _FakeResponse:
+        self.requested.append(url)
+        if self._fail:
+            raise ConnectionError("unreachable")
+        if url.endswith("/api/show"):
+            return _FakeResponse(200, self._show) if self._show is not None else _FakeResponse(404)
+        return _FakeResponse(404)
 
 
 # --------------------------------------------------------------------------- pure parsing
@@ -69,6 +113,43 @@ def test_digest_from_ps_matches_by_model_id() -> None:
 
     assert ollama_dialect.digest_from_ps(ps, "qwen3:8b") == "sha256:abc123def456"
     assert ollama_dialect.digest_from_ps(ps, "other:model") is None
+
+
+def test_show_identity_reads_arch_and_capabilities() -> None:
+    show = _load(HANDSHAKE_FIXTURES, "ollama_api_show_qwen3.json")
+
+    arch, caps = ollama_dialect.show_identity(show)
+
+    assert arch == "qwen3"
+    assert caps == ("completion", "tools", "thinking")
+
+
+def test_show_identity_defensive_on_non_dict() -> None:
+    assert ollama_dialect.show_identity(None) == (None, ())
+    assert ollama_dialect.show_identity("not a dict") == (None, ())
+
+
+def test_parse_show_maps_context_tools_and_thinking() -> None:
+    show = _load(HANDSHAKE_FIXTURES, "ollama_api_show_qwen3.json")
+
+    model = ollama_dialect.parse_show(show, model_key="qwen3:8b")
+
+    assert model.context_max.value == 40960
+    assert model.context_max.source == "server_report"
+    assert "model_info" in model.context_max.detail
+    assert model.tools.value is True
+    assert model.thinking.known
+    assert model.thinking.value.mechanism == "on_off"
+    assert model.input_modalities.value == frozenset({"text"})
+
+
+def test_parse_show_missing_data_is_unknown_not_false() -> None:
+    model = ollama_dialect.parse_show(None, model_key="qwen3:8b")
+
+    assert not model.context_max.known
+    assert not model.tools.known
+    assert not model.input_modalities.known
+    assert not model.thinking.known
 
 
 def test_build_deployment_extra_uses_smaller_of_num_ctx_and_loaded_context() -> None:
@@ -125,73 +206,79 @@ def test_build_endpoint_capabilities_reports_version_and_fingerprint() -> None:
     assert endpoint.server_version.value == "0.5.4"
 
 
-# --------------------------------------------------------------------------- real client, fake transport
-
-
-def _mock_transport(*, show_payload: Any, ps_payload: Any) -> httpx.MockTransport:
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/api/show":
-            return httpx.Response(200, json=show_payload)
-        if request.url.path == "/api/ps":
-            return httpx.Response(200, json=ps_payload)
-        return httpx.Response(404, json={"error": "not found"})
-
-    return httpx.MockTransport(handler)
+# --------------------------------------------------------------------------- fetch (fake HTTP client)
 
 
 @pytest.mark.asyncio
-async def test_fetch_deployment_facts_through_the_real_ollama_client() -> None:
+async def test_fetch_show_reads_the_native_endpoint() -> None:
     show_payload = _load(HANDSHAKE_FIXTURES, "ollama_api_show_qwen3.json")
+    client = _FakeAsyncClient(show=show_payload)
+
+    data = await ollama_dialect.fetch_show(client, ROOT, "qwen3:8b")
+
+    assert data == show_payload
+    assert client.requested == [f"{ROOT}/api/show"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_show_is_best_effort_on_failure() -> None:
+    client = _FakeAsyncClient(fail=True)
+
+    assert await ollama_dialect.fetch_show(client, ROOT, "qwen3:8b") is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_show_none_on_404() -> None:
+    client = _FakeAsyncClient(show=None)
+
+    assert await ollama_dialect.fetch_show(client, ROOT, "unknown:model") is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_ps_reads_the_native_endpoint() -> None:
     ps_payload = _load(CAPABILITY_FIXTURES, "api_ps.json")
-    client = ollama.AsyncClient(
-        host="http://127.0.0.1:11434",
-        transport=_mock_transport(show_payload=show_payload, ps_payload=ps_payload),
-    )
+    client = _FakeAsyncClient(ps=ps_payload)
 
-    deployment = await ollama_dialect.fetch_deployment_facts(
-        client, provider_id="ollama", api_base="http://127.0.0.1:11434", model_id="qwen3:8b"
-    )
+    data = await ollama_dialect.fetch_ps(client, ROOT)
 
-    assert deployment.context_served.value == 8192
-    assert deployment.fingerprint == "ollama:digest=sha256:abc123def456:loaded_context=8192"
+    assert data == ps_payload
 
 
 @pytest.mark.asyncio
-async def test_fetch_deployment_facts_survives_a_missing_ps_row() -> None:
-    show_payload = _load(HANDSHAKE_FIXTURES, "ollama_api_show_qwen3.json")
-    client = ollama.AsyncClient(
-        host="http://127.0.0.1:11434",
-        transport=_mock_transport(show_payload=show_payload, ps_payload={"models": []}),
-    )
+async def test_fetch_ps_is_best_effort_on_failure() -> None:
+    client = _FakeAsyncClient(fail=True)
 
-    deployment = await ollama_dialect.fetch_deployment_facts(
-        client, provider_id="ollama", api_base="http://127.0.0.1:11434", model_id="qwen3:8b"
-    )
-
-    # falls back to the Modelfile's own num_ctx when nothing is currently loaded
-    assert deployment.context_served.value == 40960
+    assert await ollama_dialect.fetch_ps(client, ROOT) is None
 
 
 @pytest.mark.asyncio
 async def test_fetch_version_reads_the_native_endpoint() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/api/version"
-        return httpx.Response(200, json={"version": "0.5.4"})
+    client = _FakeAsyncClient(version={"version": "0.5.4"})
 
-    client = ollama.AsyncClient(host="http://127.0.0.1:11434", transport=httpx.MockTransport(handler))
-
-    version = await ollama_dialect.fetch_version(client, "http://127.0.0.1:11434")
+    version = await ollama_dialect.fetch_version(client, ROOT)
 
     assert version == "0.5.4"
 
 
 @pytest.mark.asyncio
 async def test_fetch_version_is_best_effort_on_failure() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(500, json={"error": "boom"})
+    client = _FakeAsyncClient(fail=True)
 
-    client = ollama.AsyncClient(host="http://127.0.0.1:11434", transport=httpx.MockTransport(handler))
+    assert await ollama_dialect.fetch_version(client, ROOT) is None
 
-    version = await ollama_dialect.fetch_version(client, "http://127.0.0.1:11434")
 
-    assert version is None
+@pytest.mark.asyncio
+async def test_fetch_tags_normalizes_rows_and_filters_non_dicts() -> None:
+    client = _FakeAsyncClient()
+    client._tags = {"models": [{"model": "qwen3:8b"}, {"name": "llama3.2"}]}  # type: ignore[attr-defined]
+
+    rows = await ollama_dialect.fetch_tags(client, ROOT)
+
+    assert [r["id"] for r in rows] == ["qwen3:8b", "llama3.2"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_tags_empty_on_failure() -> None:
+    client = _FakeAsyncClient(fail=True)
+
+    assert await ollama_dialect.fetch_tags(client, ROOT) == []
