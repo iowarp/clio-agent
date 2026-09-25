@@ -195,11 +195,16 @@ class ProviderHandshake(abc.ABC):
                     )
                     continue
                 profiles.append(profile)
+            # A rejected or unproven credential keeps its typed reason even
+            # when the model listing itself answered (a public listing).
+            auth_reason = conn.auth in (AuthState.REJECTED, AuthState.DEFERRED)
             return self._report(
                 ctx,
                 ConnectivityState.OK,
                 conn.auth,
                 models=tuple(profiles),
+                error=conn.error if auth_reason else None,
+                error_code=conn.error_code if auth_reason else "",
                 started=started,
             )
         except Exception as exc:  # final backstop — never raise out of a handshake  # noqa: BLE001 - final backstop surfaced in HandshakeReport.error

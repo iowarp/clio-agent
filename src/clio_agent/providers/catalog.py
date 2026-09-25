@@ -352,6 +352,8 @@ PROVIDERS: tuple[Provider, ...] = (
         api_base="https://openrouter.ai/api/v1",
         suggested_model="openai/gpt-oss-120b:free",
         api_key_env="OPENROUTER_API_KEY",
+        # GET /api/v1/key describes the calling key; 401 for a bad one.
+        key_check_path="/key",
         supports_vision=True,
         model_catalog=(
             ModelEntry(
