@@ -938,7 +938,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # +2 comment, +1 to_thread call); the bridge itself stays in claude_code_sdk_pool.py.
     # 866 -> 864 (S2 B2 rework): entry_for()'s call site drops the now-dead
     # thinking=/system_prompt= peek kwargs (the warm pool they fed is deleted).
-    "src/clio_agent/providers/claude_code_litellm.py": 864,
+    "src/clio_agent/providers/claude_code_litellm.py": 862,
     # (process_census.py's entry retired: 711 lines, back under the flat 800 cap.)
     # NEW entry (#1305 review round): crossed the flat 800 cap (800 -> 825)
     # for the F2/F4/F6b fixes an adversarial review demanded on
@@ -991,7 +991,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # background-connect logic lives in that owner module, not here, mirroring
     # how sweep_idle_session_entries/reap_idle_session_entry already reach into
     # the pool from that sibling file).
-    "src/clio_agent/providers/claude_code_sessions.py": 846,
+    "src/clio_agent/providers/claude_code_sessions.py": 841,
     # #900: +2 for wiring probe_process_tree into the doctor collect().
     # owner ruling 2026-07-14: +3 for the DEGRADED-by-policy local-ARC doctor row.
     # #947 DEBT (recorded 2026-07-18, #948 S4): residual over the pre-#947 count

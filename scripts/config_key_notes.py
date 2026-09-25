@@ -8,7 +8,7 @@
 SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
     (
         "Runtime + paths",
-        ("runtime", "paths", "sandbox"),
+        ("runtime", "paths", "sandbox", "system"),
         "Process identity, filesystem locations and the global runtime toggles.",
     ),
     (
@@ -1090,6 +1090,10 @@ KEY_NOTES: dict[str, str] = {
     "spotter.watcher_blueprint_id": (
         "Agent-Blueprint id used to build the SPOTTER standing watcher child session; change to "
         "point spotter-ai at a custom watcher blueprint."
+    ),
+    "system.release_manifest_url": (
+        "Release manifest the server reads to report the latest CLIO release to clients; point "
+        "at a mirror or a fork's releases feed."
     ),
     "spotter.watcher_expert_id": (
         "Expert id within the watcher blueprint SPOTTER arms as the standing watcher; change "
