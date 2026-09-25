@@ -118,17 +118,17 @@ def test_catalog_row_carries_claude_code_cli_aliases() -> None:
     assert plain["aliases"] == []
 
 
-def test_live_codex_sdk_catalog_advertises_its_typed_image_input() -> None:
+def test_live_chatgpt_catalog_advertises_its_typed_image_input() -> None:
     preset = LMProviderPreset(
-        id="codex",
-        label="Codex",
-        provider="codex",
-        api_base="codex://sdk",
+        id="chatgpt",
+        label="ChatGPT",
+        provider="chatgpt",
+        api_base="chatgpt://direct",
         suggested_model="gpt-5.6-luna",
     )
     report = HandshakeReport(
-        provider_id="codex",
-        provider_kind="codex",
+        provider_id="chatgpt",
+        provider_kind="chatgpt",
         connectivity=ConnectivityState.OK,
         auth=AuthState.NOT_REQUIRED,
         models_source="live",
@@ -142,14 +142,14 @@ def test_live_codex_sdk_catalog_advertises_its_typed_image_input() -> None:
     assert row["evidence"]["live"] is True
 
 
-def test_normalized_codex_catalog_bootstraps_live_discovery(
+def test_normalized_chatgpt_catalog_bootstraps_live_discovery(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     preset = LMProviderPreset(
-        id="codex",
-        label="Codex",
-        provider="codex",
-        api_base="codex://app-server",
+        id="chatgpt",
+        label="ChatGPT",
+        provider="chatgpt",
+        api_base="chatgpt://app-server",
         suggested_model="",
     )
     overlay_ready = False
@@ -163,12 +163,12 @@ def test_normalized_codex_catalog_bootstraps_live_discovery(
         assert only_configured is False
         refreshed.extend(provider.id for provider in presets)
         overlay_ready = True
-        return [{"provider": "codex", "failed_reason": ""}]
+        return [{"provider": "chatgpt", "failed_reason": ""}]
 
     async def _handshake(*_args: object, **_kwargs: object) -> HandshakeReport:
         return HandshakeReport(
-            provider_id="codex",
-            provider_kind="codex",
+            provider_id="chatgpt",
+            provider_kind="chatgpt",
             connectivity=ConnectivityState.OK,
             auth=AuthState.NOT_REQUIRED,
             models_source="live",
@@ -182,19 +182,19 @@ def test_normalized_codex_catalog_bootstraps_live_discovery(
     monkeypatch.setattr("clio_agent.gact.provider_catalog.run_handshake", _handshake)
 
     provider = asyncio.run(discover_provider(preset))
-    assert refreshed == ["codex"]
+    assert refreshed == ["chatgpt"]
     assert [model["model_id"] for model in provider["models"]] == ["gpt-5.6-luna"]
     assert provider["health"] == "ready"
 
 
-def test_normalized_codex_catalog_hides_static_candidates_after_discovery_failure(
+def test_normalized_chatgpt_catalog_hides_static_candidates_after_discovery_failure(
     monkeypatch,
 ) -> None:  # type: ignore[no-untyped-def]
     preset = LMProviderPreset(
-        id="codex",
-        label="Codex",
-        provider="codex",
-        api_base="codex://app-server",
+        id="chatgpt",
+        label="ChatGPT",
+        provider="chatgpt",
+        api_base="chatgpt://app-server",
         suggested_model="",
     )
 
@@ -205,12 +205,12 @@ def test_normalized_codex_catalog_hides_static_candidates_after_discovery_failur
 
     async def _refresh(*, presets, only_configured):  # type: ignore[no-untyped-def]
         del presets, only_configured
-        return [{"provider": "codex", "failed_reason": "app-server unavailable"}]
+        return [{"provider": "chatgpt", "failed_reason": "app-server unavailable"}]
 
     async def _handshake(*_args: object, **_kwargs: object) -> HandshakeReport:
         return HandshakeReport(
-            provider_id="codex",
-            provider_kind="codex",
+            provider_id="chatgpt",
+            provider_kind="chatgpt",
             connectivity=ConnectivityState.OK,
             auth=AuthState.NOT_REQUIRED,
             models_source="static",
@@ -259,7 +259,7 @@ def test_planner_uses_current_in_process_catalog_without_active_handshake() -> N
             provider_catalog={
                 "providers": [
                     {
-                        "id": "codex",
+                        "id": "chatgpt",
                         "health": "ready",
                         "models": [
                             {
@@ -281,7 +281,7 @@ def test_planner_uses_current_in_process_catalog_without_active_handshake() -> N
         app,
         resource=_resource(media_type="image/png"),
         message_id="msg_catalog_native",
-        model=ModelRef(provider_id="codex", model_id="gpt-5.6-luna"),
+        model=ModelRef(provider_id="chatgpt", model_id="gpt-5.6-luna"),
     )
 
     assert planned.representation == "native"
@@ -324,15 +324,15 @@ def test_overlay_evidence_is_available_and_dates_itself_to_the_probe() -> None:
     """
 
     preset = LMProviderPreset(
-        id="codex",
-        label="Codex",
-        provider="codex",
-        api_base="codex://sdk",
+        id="chatgpt",
+        label="ChatGPT",
+        provider="chatgpt",
+        api_base="chatgpt://direct",
         suggested_model="gpt-5.6-luna",
     )
     report = HandshakeReport(
-        provider_id="codex",
-        provider_kind="codex",
+        provider_id="chatgpt",
+        provider_kind="chatgpt",
         connectivity=ConnectivityState.OK,
         auth=AuthState.NOT_REQUIRED,
         models_source="overlay",
@@ -360,15 +360,15 @@ def test_overlay_evidence_is_available_and_dates_itself_to_the_probe() -> None:
 
 def test_static_catalog_rows_are_never_evidence() -> None:
     preset = LMProviderPreset(
-        id="codex",
-        label="Codex",
-        provider="codex",
-        api_base="codex://sdk",
+        id="chatgpt",
+        label="ChatGPT",
+        provider="chatgpt",
+        api_base="chatgpt://direct",
         suggested_model="gpt-5.5",
     )
     report = HandshakeReport(
-        provider_id="codex",
-        provider_kind="codex",
+        provider_id="chatgpt",
+        provider_kind="chatgpt",
         connectivity=ConnectivityState.OK,
         auth=AuthState.NOT_REQUIRED,
         models_source="static",
@@ -469,7 +469,7 @@ def test_planner_accepts_overlay_evidence_and_keeps_its_probe_timestamp() -> Non
             provider_catalog={
                 "providers": [
                     {
-                        "id": "codex",
+                        "id": "chatgpt",
                         "health": "ready",
                         "models": [
                             {
@@ -494,7 +494,7 @@ def test_planner_accepts_overlay_evidence_and_keeps_its_probe_timestamp() -> Non
         app,
         resource=_resource(media_type="image/png"),
         message_id="m_overlay",
-        model=ModelRef(provider_id="codex", model_id="gpt-5.6-luna"),
+        model=ModelRef(provider_id="chatgpt", model_id="gpt-5.6-luna"),
     )
 
     assert planned.representation == "native"
@@ -513,10 +513,10 @@ def test_a_stale_overlay_triggers_rediscovery_instead_of_being_served_forever(
     """
 
     preset = LMProviderPreset(
-        id="codex",
-        label="Codex",
-        provider="codex",
-        api_base="codex://sdk",
+        id="chatgpt",
+        label="ChatGPT",
+        provider="chatgpt",
+        api_base="chatgpt://direct",
         suggested_model="",
     )
     refreshed: list[str] = []
@@ -536,12 +536,12 @@ def test_a_stale_overlay_triggers_rediscovery_instead_of_being_served_forever(
         del only_configured
         refreshed.extend(provider.id for provider in presets)
         stale = False
-        return [{"provider": "codex", "failed_reason": ""}]
+        return [{"provider": "chatgpt", "failed_reason": ""}]
 
     async def _handshake(*_args: object, **_kwargs: object) -> HandshakeReport:
         return HandshakeReport(
-            provider_id="codex",
-            provider_kind="codex",
+            provider_id="chatgpt",
+            provider_kind="chatgpt",
             connectivity=ConnectivityState.OK,
             auth=AuthState.NOT_REQUIRED,
             models_source="overlay",
@@ -556,7 +556,7 @@ def test_a_stale_overlay_triggers_rediscovery_instead_of_being_served_forever(
 
     provider = asyncio.run(discover_provider(preset))
 
-    assert refreshed == ["codex"]
+    assert refreshed == ["chatgpt"]
     assert provider["health"] == "ready"
     assert [model["model_id"] for model in provider["models"]] == ["gpt-5.6-luna"]
 
@@ -567,10 +567,10 @@ def test_a_failed_rediscovery_over_prior_evidence_stays_available_but_marked_sta
     """Prior evidence is not an availability failure -- but it is not fresh either."""
 
     preset = LMProviderPreset(
-        id="codex",
-        label="Codex",
-        provider="codex",
-        api_base="codex://sdk",
+        id="chatgpt",
+        label="ChatGPT",
+        provider="chatgpt",
+        api_base="chatgpt://direct",
         suggested_model="",
     )
     staleness = {
@@ -586,12 +586,12 @@ def test_a_failed_rediscovery_over_prior_evidence_stays_available_but_marked_sta
 
     async def _refresh(*, presets, only_configured):  # type: ignore[no-untyped-def]
         del presets, only_configured
-        return [{"provider": "codex", "failed_reason": "SDK transport closed"}]
+        return [{"provider": "chatgpt", "failed_reason": "SDK transport closed"}]
 
     async def _handshake(*_args: object, **_kwargs: object) -> HandshakeReport:
         return HandshakeReport(
-            provider_id="codex",
-            provider_kind="codex",
+            provider_id="chatgpt",
+            provider_kind="chatgpt",
             connectivity=ConnectivityState.OK,
             auth=AuthState.NOT_REQUIRED,
             models_source="overlay",

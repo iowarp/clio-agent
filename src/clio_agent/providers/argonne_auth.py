@@ -334,6 +334,18 @@ def begin_authentication() -> PendingAuthentication:
     return PendingAuthentication(flow_id=flow_id, authorization_url=authorization_url)
 
 
+def flow_is_pending(flow_id: str) -> bool:
+    """Whether ``flow_id`` is a live, unexpired :func:`begin_authentication` flow.
+
+    Used by the generic provider sign-in API's ``status`` action -- ALCF's
+    flow has no async background half, so "pending" means only "still
+    awaiting `complete_authentication`", never a live progress signal.
+    """
+    with _pending_authentications_lock:
+        state = _pending_authentications.get(flow_id.strip())
+    return state is not None and state.expires_at > time.monotonic()
+
+
 def complete_authentication(flow_id: str, authorization_code: str) -> None:
     """Exchange a browser authorization code and persist refresh tokens.
 

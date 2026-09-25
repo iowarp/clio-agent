@@ -3,7 +3,7 @@
 ``_active_lm_supports_vision`` used to end in a literal ``{"openai",
 "anthropic"}`` name allowlist, and the ``supports_vision`` key it preferred was
 never written by any production path — so the catalog's own
-``supports_vision=True`` flags (codex, claude_code) could not reach the gate at
+``supports_vision=True`` flags (chatgpt, claude_code) could not reach the gate at
 all, and no amount of discovery evidence could either. These tests drive each
 typed arm of the replacement through the real resolver.
 """
@@ -86,7 +86,7 @@ def test_a_provider_with_an_evidence_system_but_no_evidence_yet_is_refused() -> 
     """ "Not evidenced yet" is a different, actionable answer from "cannot be asked"."""
 
     app = _app()
-    assert _vision_capability(app, "codex", "gpt-5.5") == (
+    assert _vision_capability(app, "chatgpt", "gpt-5.5") == (
         False,
         "modality_evidence_unavailable",
     )
@@ -146,6 +146,6 @@ def test_a_hand_set_config_value_cannot_fabricate_the_capability() -> None:
     was an unreachable value that only tests could reach.
     """
 
-    app = _app(lm_config={"provider": "codex", "model": "gpt-5.5", "supports_vision": True})
+    app = _app(lm_config={"provider": "chatgpt", "model": "gpt-5.5", "supports_vision": True})
     assert _active_lm_supports_vision(app) is False
     assert _effective_lm_config(app)["supports_vision_source"] == "modality_evidence_unavailable"

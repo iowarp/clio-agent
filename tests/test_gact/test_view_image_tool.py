@@ -161,12 +161,12 @@ def test_declared_capability_uses_live_model_evidence(monkeypatch: pytest.Monkey
     monkeypatch.setattr("clio_agent.gact.context.active_app", lambda: app)
     monkeypatch.setattr(
         "clio_agent.gact.providers.config._vision_capability",
-        lambda _app, provider, model: (provider == "codex" and model == "gpt-5.5", "live"),
+        lambda _app, provider, model: (provider == "chatgpt" and model == "gpt-5.5", "live"),
     )
 
     assert declared_view_image_capability(
-        SimpleNamespace(provider_id="codex", model="gpt-5.5", supports_vision=False)
+        SimpleNamespace(provider_id="chatgpt", model="gpt-5.5", supports_vision=False)
     )
     assert not declared_view_image_capability(
-        SimpleNamespace(provider_id="codex", model="text-only", supports_vision=True)
+        SimpleNamespace(provider_id="chatgpt", model="text-only", supports_vision=True)
     )

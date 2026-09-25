@@ -11,7 +11,7 @@ ProviderKind = Literal[
     "openai",
     "anthropic",
     "argonne",
-    "codex",
+    "chatgpt",
     "claude_code",
 ]
 AuthMethod = Literal["none", "api_key", "oauth", "subscription"]

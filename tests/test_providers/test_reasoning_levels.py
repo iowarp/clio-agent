@@ -14,41 +14,41 @@ from clio_agent.providers.reasoning_levels import model_reasoning
 from clio_agent.providers.thinking import accepted_levels, resolve_thinking
 
 
-def _codex_profile(efforts: list[str] | None, default: str = "") -> ModelProfile:
+def _chatgpt_profile(efforts: list[str] | None, default: str = "") -> ModelProfile:
     raw: dict[str, object] = {"default_reasoning_effort": default}
     if efforts is not None:
         raw["supported_reasoning_efforts"] = efforts
     return ModelProfile(id="gpt-5.6-sol", raw=raw)
 
 
-def test_codex_levels_come_from_the_sdk_catalog() -> None:
+def test_chatgpt_levels_come_from_the_maintained_catalog() -> None:
     reasoning = model_reasoning(
-        "codex", _codex_profile(["minimal", "low", "medium", "high", "xhigh"], "medium")
+        "chatgpt", _chatgpt_profile(["minimal", "low", "medium", "high", "xhigh"], "medium")
     )
     # Every effort the SDK reports is offered -- minimal included, none dropped.
     assert reasoning["levels"] == ["minimal", "low", "medium", "high", "xhigh"]
     assert reasoning["default"] == "medium"
-    assert reasoning["source"] == "codex_sdk"
+    assert reasoning["source"] == "chatgpt_catalog"
     assert reasoning["supported"] is True
 
 
-def test_codex_none_effort_is_the_off_level() -> None:
-    reasoning = model_reasoning("codex", _codex_profile(["none", "low"], "none"))
+def test_chatgpt_none_effort_is_the_off_level() -> None:
+    reasoning = model_reasoning("chatgpt", _chatgpt_profile(["none", "low"], "none"))
     assert reasoning["levels"] == ["off", "low"]
     assert reasoning["default"] == "off"
 
 
-def test_codex_without_reported_efforts_offers_nothing() -> None:
-    reasoning = model_reasoning("codex", _codex_profile(None))
+def test_chatgpt_without_reported_efforts_offers_nothing() -> None:
+    reasoning = model_reasoning("chatgpt", _chatgpt_profile(None))
     assert reasoning["levels"] == []
     assert reasoning["supported"] is False
-    assert reasoning["source"] == "codex_sdk_unreported"
+    assert reasoning["source"] == "chatgpt_catalog_unreported"
 
 
-def test_codex_offers_max_and_ultra_efforts_the_sdk_reports() -> None:
+def test_chatgpt_offers_max_and_ultra_efforts_the_catalog_reports() -> None:
     """A model reporting 'max'/'ultra' (#1436) offers them -- not dropped as unmapped."""
     reasoning = model_reasoning(
-        "codex", _codex_profile(["medium", "high", "xhigh", "max", "ultra"], "high")
+        "chatgpt", _chatgpt_profile(["medium", "high", "xhigh", "max", "ultra"], "high")
     )
     assert reasoning["levels"] == ["medium", "high", "xhigh", "max", "ultra"]
     assert reasoning["default"] == "high"
@@ -148,7 +148,7 @@ def test_provider_without_a_thinking_mapping_offers_nothing() -> None:
 @pytest.mark.parametrize(
     ("kind", "profile"),
     [
-        ("codex", _codex_profile(["none", "low", "medium", "high", "xhigh"])),
+        ("chatgpt", _chatgpt_profile(["none", "low", "medium", "high", "xhigh"])),
         ("claude_code", ModelProfile(id="haiku")),
         ("claude_code", ModelProfile(id="opus", raw={"supported_effort_levels": _CLI_EFFORT})),
         ("anthropic", ModelProfile(id="claude-opus-4-7")),
@@ -172,8 +172,8 @@ def test_every_offered_level_is_mapped_by_resolve_thinking(
 
 
 def test_xhigh_maps_where_the_transport_has_it_and_is_typed_elsewhere() -> None:
-    assert resolve_thinking("codex", "xhigh", 0).litellm_kwargs == {
-        "codex_reasoning_effort": "xhigh"
+    assert resolve_thinking("chatgpt", "xhigh", 0).litellm_kwargs == {
+        "chatgpt_reasoning_effort": "xhigh"
     }
     assert resolve_thinking("openai", "xhigh", 0).litellm_kwargs == {"reasoning_effort": "xhigh"}
     plan = resolve_thinking("claude_code", "xhigh", 0)
@@ -184,7 +184,7 @@ def test_xhigh_maps_where_the_transport_has_it_and_is_typed_elsewhere() -> None:
 
 
 def test_config_accepts_xhigh() -> None:
-    cfg = LMProviderConfig(provider="codex", model="gpt-5.6-sol", thinking_level="xhigh")
+    cfg = LMProviderConfig(provider="chatgpt", model="gpt-5.6-sol", thinking_level="xhigh")
     assert cfg.thinking_level == "xhigh"
 
 
@@ -224,7 +224,7 @@ def test_catalog_row_carries_the_model_levels() -> None:
     }
 
 
-def test_codex_overlay_efforts_reach_the_catalog_profile(
+def test_chatgpt_overlay_efforts_reach_the_catalog_profile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The CLI catalog handshake forwards persisted efforts into the profile."""
@@ -247,10 +247,12 @@ def test_codex_overlay_efforts_reach_the_catalog_profile(
 
     monkeypatch.setattr("clio_agent.providers.model_discovery.overlay_models_wire", _overlay)
     hs = CliCatalogHandshake(provider=None)
-    ctx = HandshakeContext(provider_id="codex", provider_kind="codex", api_base="codex://sdk")
+    ctx = HandshakeContext(
+        provider_id="chatgpt", provider_kind="chatgpt", api_base="chatgpt://direct"
+    )
     rows = asyncio.run(hs.discover_models(None, ctx))
     profile = asyncio.run(hs.discover_model_config(None, ctx, rows[0]))
-    reasoning = model_reasoning("codex", profile)
+    reasoning = model_reasoning("chatgpt", profile)
     assert reasoning["levels"] == ["low", "medium", "high", "xhigh"]
     assert reasoning["default"] == "high"
 
@@ -300,9 +302,9 @@ def test_anthropic_effort_maps_to_reasoning_effort() -> None:
     assert resolve_thinking("anthropic", "xhigh", 0, effort_levels=effort).supported is False
 
 
-def test_codex_minimal_and_openai_none_are_mapped() -> None:
-    assert resolve_thinking("codex", "minimal", 0).litellm_kwargs == {
-        "codex_reasoning_effort": "minimal"
+def test_chatgpt_minimal_and_openai_none_are_mapped() -> None:
+    assert resolve_thinking("chatgpt", "minimal", 0).litellm_kwargs == {
+        "chatgpt_reasoning_effort": "minimal"
     }
     plan = resolve_thinking("openai", "off", 0, effort_levels=["off", "low", "medium", "high"])
     assert plan.litellm_kwargs == {"reasoning_effort": "none"}
@@ -362,7 +364,7 @@ def test_resolve_configured_model_id_follows_the_cli_alias() -> None:
     # Unknown alias / no discovery yet: falls back to the input unchanged.
     assert resolve_configured_model_id("claude_code", "haiku") == "haiku"
     # Non-aliasing providers: always unchanged.
-    assert resolve_configured_model_id("codex", "gpt-5.6-sol") == "gpt-5.6-sol"
+    assert resolve_configured_model_id("chatgpt", "gpt-5.6-sol") == "gpt-5.6-sol"
     assert resolve_configured_model_id("claude_code", "") == ""
 
 

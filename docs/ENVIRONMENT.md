@@ -64,6 +64,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_BLUEPRINT_SOURCE_CLONE_TIMEOUT_S` | `gact.blueprint_source.clone_timeout_s` | float | `30.0` | `src/clio_agent/gact/agent_blueprint_sources.py` |
 | `CLIO_BLUEPRINT_SOURCE_LS_REMOTE_TIMEOUT_S` | `gact.blueprint_source.ls_remote_timeout_s` | float | `10.0` | `src/clio_agent/gact/blueprint_update_check.py` |
 | `CLIO_CAPTURE_REASONING` | `runtime.capture_reasoning` | bool | `true` | `src/clio_agent/gact/usage.py` |
+| `CLIO_CHATGPT_TRANSPORT` | `lm.chatgpt_transport` | str | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_CHILD_FORWARD_DEADLINE_S` | `agents.child_forward_deadline_s` | float | `DEFAULT_ELICITATION_TIMEOUT_S` _(computed)_ | `src/clio_agent/gact/child_forward.py` |
 | `CLIO_CLAUDE_CODE_AUTH_STATUS_TIMEOUT_S` | `providers.claude_code.auth_status_timeout_s` | float | `20.0` | `src/clio_agent/providers/model_discovery/claude_code.py` |
 | `CLIO_CLAUDE_CODE_MAX_CONCURRENT_PROCESSES` | `providers.claude_code.max_concurrent_processes` | float | `4.0` | `src/clio_agent/providers/claude_code_stream_bounds.py` |
@@ -79,9 +80,6 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_CMF_PYTHON` | `provenance.artifacts.cmf.python` | str | _(unset)_ | `src/clio_agent/gact/artifacts/provenance/cmf_mode.py` |
 | `CLIO_CMF_SERVER_URL` | `provenance.artifacts.cmf.server_url` | str | _(unset)_ | `src/clio_agent/gact/artifacts/provenance/cmf_mode.py` |
 | `CLIO_CMF_WORKER_URL` | `provenance.artifacts.cmf.worker_url` | str | _(unset)_ | `src/clio_agent/gact/artifacts/provenance/cmf_mode.py` |
-| `CLIO_CODEX_CREDENTIAL_HOME_CAPACITY` | `providers.codex.credential_home_capacity` | int | `4` | `src/clio_agent/providers/codex_credential_home.py` |
-| `CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S` | `limits.codex_sdk_progress_timeout_s` | float | `120.0` | `src/clio_agent/providers/codex_stream.py` |
-| `CLIO_CODEX_TRANSPORT` | `lm.codex_transport` | str | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_CONTEXT_REFERENCE_BROWSE_LIMIT` | `gact.context_references.browse_limit_per_kind` | int | `20` | `src/clio_agent/gact/context_reference_search.py` |
 | `CLIO_CONTEXT_REFERENCE_MAX_HASHABLE_BYTES` | `gact.context_references.max_hashable_bytes` | int | `67108864` | `src/clio_agent/gact/context_references.py` |
 | `CLIO_CONTEXT_REFERENCE_SEARCH_LIMIT` | `gact.context_references.search_limit` | int | `100` | `src/clio_agent/gact/context_reference_search.py` |
@@ -303,10 +301,6 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_WEB_DIR` | `paths.web_dir` | str | _(unset)_ | `src/clio_agent/gact/app.py` |
 | `CLIO_WINDOWS_SHELL_BACKEND` | `tools.shell.windows_backend` | str | `powershell` | `src/clio_agent/tools/servers/shell_server.py` |
 | `CLIO_WORKFLOW_STEP_INACTIVITY_S` | `workflows.step_inactivity_s` | float | `120.0` | `src/clio_agent/gact/workflow_step_watch.py` |
-
-### Codex SDK transport
-
-Codex runs through the official Python SDK and its venv-bundled binary, with one SDK-owned cancellation path. This deliberately replaces the former stateful-delta/subprocess transport in exchange for an observed roughly 2.5x time-to-first-token cost. `CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S` is a progress deadline: it resets after every SDK event rather than imposing a fixed wall-clock cap on a healthy long-running exchange.
 
 ## Environment-only variables
 

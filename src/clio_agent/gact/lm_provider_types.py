@@ -83,7 +83,7 @@ class LMProviderInfo(BaseModel):
     thinking_level_source: str | None = None
     thinking_effective: str = ""
     thinking_budget: int = 0
-    transport: Literal["sdk"] | None = None
+    transport: Literal["sdk", "websocket", "sse"] | None = None
     state: Literal["idle", "configuring", "ready", "error"] = "idle"
     status_message: str = ""
     error: str = ""

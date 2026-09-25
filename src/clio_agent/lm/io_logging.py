@@ -490,7 +490,7 @@ def _io_logging_lm_cls() -> Any:
                     or str(getattr(self, "model", "")).split("/", 1)[0]
                     or "provider"
                 )
-                generic_provider_thinking = provider_id not in {"codex", "claude_code"}
+                generic_provider_thinking = provider_id not in {"chatgpt", "claude_code"}
                 last_event = _time.monotonic()
                 async with _anyio.create_task_group() as tg:
                     tg.start_soon(_produce)

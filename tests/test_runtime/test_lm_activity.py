@@ -321,7 +321,7 @@ def test_streamed_call_surfaces_provider_reasoning_before_contract_fields(
     assert ("next_thought", "use a tool") in observed
 
 
-@pytest.mark.parametrize("provider_id", ["codex", "claude_code"])
+@pytest.mark.parametrize("provider_id", ["chatgpt", "claude_code"])
 def test_generic_stream_bridge_leaves_sdk_provider_reasoning_unchanged(
     monkeypatch: pytest.MonkeyPatch, provider_id: str
 ) -> None:
@@ -679,9 +679,7 @@ def test_process_completion_uses_actual_reasoning_for_unclassified_provider(
 
     import dspy.clients.base_lm as base_lm
 
-    def fake_super(
-        self: Any, response: Any, merged_kwargs: dict[str, Any]
-    ) -> list[dict[str, str]]:
+    def fake_super(self: Any, response: Any, merged_kwargs: dict[str, Any]) -> list[dict[str, str]]:
         return [{"text": "", "reasoning_content": "[[ ## answer ## ]]\nready"}]
 
     monkeypatch.setattr(base_lm.BaseLM, "_process_completion", fake_super)

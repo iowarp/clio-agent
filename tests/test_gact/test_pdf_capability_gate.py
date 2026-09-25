@@ -74,15 +74,15 @@ def test_discovery_evidence_naming_pdf_permits_pdf_parts() -> None:
 
 
 def test_discovery_evidence_omitting_pdf_refuses_even_for_an_image_capable_model() -> None:
-    """A model that evidences image but not pdf stays pdf-refused (codex-shaped)."""
+    """A model that evidences image but not pdf stays pdf-refused (chatgpt-shaped)."""
 
-    app = _app(catalog=_catalog("codex", "gpt-5.5", ["text", "image"]))
-    assert _pdf_capability(app, "codex", "gpt-5.5") == (False, "live_modality_evidence")
+    app = _app(catalog=_catalog("chatgpt", "gpt-5.5", ["text", "image"]))
+    assert _pdf_capability(app, "chatgpt", "gpt-5.5") == (False, "live_modality_evidence")
 
 
 def test_a_provider_with_an_evidence_system_but_no_evidence_yet_is_refused() -> None:
     app = _app()
-    assert _pdf_capability(app, "codex", "gpt-5.5") == (False, "modality_evidence_unavailable")
+    assert _pdf_capability(app, "chatgpt", "gpt-5.5") == (False, "modality_evidence_unavailable")
 
 
 def test_a_provider_with_no_evidence_system_has_no_static_pdf_default() -> None:
@@ -122,6 +122,6 @@ def test_effective_config_forwards_the_pdf_field_the_gate_reads() -> None:
 
 
 def test_a_hand_set_config_value_cannot_fabricate_the_pdf_capability() -> None:
-    app = _app(lm_config={"provider": "codex", "model": "gpt-5.5", "supports_pdf": True})
+    app = _app(lm_config={"provider": "chatgpt", "model": "gpt-5.5", "supports_pdf": True})
     assert _effective_lm_config(app)["supports_pdf"] is False
     assert _effective_lm_config(app)["supports_pdf_source"] == "modality_evidence_unavailable"

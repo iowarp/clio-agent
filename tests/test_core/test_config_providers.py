@@ -155,16 +155,16 @@ class TestLMProviderConfig:
         config = LMProviderConfig()
         assert config.environment == "dev"
 
-    def test_default_codex_transport(self):
-        """Codex transport defaults to the official Python SDK."""
-        config = LMProviderConfig(provider="codex")
-        assert config.codex_transport == "sdk"
+    def test_default_chatgpt_transport(self):
+        """ChatGPT transport defaults to the direct websocket transport (A.6)."""
+        config = LMProviderConfig(provider="chatgpt")
+        assert config.chatgpt_transport == "websocket"
         assert config.parse_retry_capability == "single_attempt"
 
-    def test_invalid_codex_transport_rejected(self):
-        """Invalid Codex transport should fail during config construction."""
-        with pytest.raises(ValueError, match="codex_transport"):
-            LMProviderConfig(provider="codex", codex_transport="telepathy")  # type: ignore[arg-type]
+    def test_invalid_chatgpt_transport_rejected(self):
+        """Invalid ChatGPT transport should fail during config construction."""
+        with pytest.raises(ValueError, match="chatgpt_transport"):
+            LMProviderConfig(provider="chatgpt", chatgpt_transport="telepathy")  # type: ignore[arg-type]
 
     def test_claude_code_defaults(self):
         """Claude Code needs no API key and has no synthetic model default."""
@@ -324,18 +324,18 @@ class TestLoadConfigFromEnv:
             config = load_config_from_env()
             assert config.api_key == "sk-native"
 
-    def test_codex_transport_from_env(self):
-        """CLIO_CODEX_TRANSPORT accepts only the official SDK."""
-        env = {"CLIO_LM_PROVIDER": "codex", "CLIO_CODEX_TRANSPORT": "sdk"}
+    def test_chatgpt_transport_from_env(self):
+        """CLIO_CHATGPT_TRANSPORT accepts websocket (default, A.6) or sse."""
+        env = {"CLIO_LM_PROVIDER": "chatgpt", "CLIO_CHATGPT_TRANSPORT": "sse"}
         with isolated_environ(env):
             config = load_config_from_env()
-            assert config.codex_transport == "sdk"
+            assert config.chatgpt_transport == "sse"
 
-    def test_codex_removed_transport_from_env_raises(self):
-        """A deleted transport in the env is a loud config error, not a downgrade."""
-        env = {"CLIO_LM_PROVIDER": "codex", "CLIO_CODEX_TRANSPORT": "exec"}
+    def test_chatgpt_invalid_transport_from_env_raises(self):
+        """An invalid transport in the env is a loud config error, not a silent downgrade."""
+        env = {"CLIO_LM_PROVIDER": "chatgpt", "CLIO_CHATGPT_TRANSPORT": "exec"}
         with isolated_environ(env):
-            with pytest.raises(ValueError, match="official Python SDK"):
+            with pytest.raises(ValueError, match="chatgpt_transport"):
                 load_config_from_env()
 
     def test_claude_code_transport_from_env(self):
@@ -550,46 +550,58 @@ class TestCreateLM:
             lm = create_lm(config)
             assert lm.model.startswith("anthropic/")
 
-    def test_codex_uses_custom_provider_prefix_with_internal_marker(self):
-        """Codex should keep user-facing model ids clean and mark internally."""
-        config = LMProviderConfig(provider="codex", model="gpt-5.5")
-        lm = create_lm(config)
-        assert lm.model == "codex/cdx-gpt-5.5"
-        assert lm.kwargs["codex_transport"] == "sdk"
+    def test_chatgpt_uses_custom_provider_prefix_with_internal_marker(self):
+        """ChatGPT should keep user-facing model ids clean and mark internally.
 
-    def test_codex_model_marker_is_not_doubled(self):
-        """Codex should accept already-prefixed config values idempotently."""
-        config = LMProviderConfig(provider="codex", model="codex/cdx-gpt-5.5")
+        The litellm-facing prefix is "chatgpt_direct" (never bare "chatgpt" --
+        litellm ships its own native "chatgpt" provider; see
+        providers.chatgpt.constants.LITELLM_PROVIDER).
+        """
+        config = LMProviderConfig(provider="chatgpt", model="gpt-5.5")
         lm = create_lm(config)
-        assert lm.model == "codex/cdx-gpt-5.5"
+        assert lm.model == "chatgpt_direct/cg-gpt-5.5"
+        assert lm.kwargs["chatgpt_transport"] == "websocket"
 
-    def test_codex_transport_passes_litellm_kwarg(self):
-        """The codex transport should flow into dspy.LM kwargs."""
+    def test_chatgpt_model_marker_is_not_doubled(self):
+        """ChatGPT should accept already-prefixed config values idempotently."""
+        config = LMProviderConfig(provider="chatgpt", model="chatgpt_direct/cg-gpt-5.5")
+        lm = create_lm(config)
+        assert lm.model == "chatgpt_direct/cg-gpt-5.5"
+
+    def test_chatgpt_legacy_prefix_is_stripped_defensively(self):
+        """A config persisted before the litellm-prefix rename (bare 'chatgpt/')
+        still resolves to the current 'chatgpt_direct/' wire prefix, never doubled."""
+        config = LMProviderConfig(provider="chatgpt", model="chatgpt/cg-gpt-5.5")
+        lm = create_lm(config)
+        assert lm.model == "chatgpt_direct/cg-gpt-5.5"
+
+    def test_chatgpt_transport_passes_litellm_kwarg(self):
+        """The chatgpt transport should flow into dspy.LM kwargs."""
         config = LMProviderConfig(
-            provider="codex",
+            provider="chatgpt",
             model="gpt-5.5",
-            codex_transport="sdk",
+            chatgpt_transport="sse",
         )
         lm = create_lm(config)
-        assert lm.kwargs["codex_transport"] == "sdk"
+        assert lm.kwargs["chatgpt_transport"] == "sse"
 
-    def test_codex_thinking_level_passes_codex_reasoning_effort_kwarg(self):
+    def test_chatgpt_thinking_level_passes_chatgpt_reasoning_effort_kwarg(self):
         """SEAM (#896): the #895 thinking level survives the factory into the LM
-        kwargs as codex_reasoning_effort — the same optional_params lane
-        codex_transport already proves reaches the CustomLLM. off → codex's
-        explicit 'none' (never omit-and-inherit-ambient)."""
-        config = LMProviderConfig(provider="codex", model="gpt-5.5", thinking_level="high")
+        kwargs as chatgpt_reasoning_effort — the same optional_params lane
+        chatgpt_transport already proves reaches the CustomLLM. off → the
+        backend's explicit 'none' (never omit-and-inherit-ambient)."""
+        config = LMProviderConfig(provider="chatgpt", model="gpt-5.5", thinking_level="high")
         lm = create_lm(config)
-        assert lm.kwargs["codex_reasoning_effort"] == "high"
+        assert lm.kwargs["chatgpt_reasoning_effort"] == "high"
 
-        config_off = LMProviderConfig(provider="codex", model="gpt-5.5", thinking_level="off")
+        config_off = LMProviderConfig(provider="chatgpt", model="gpt-5.5", thinking_level="off")
         lm_off = create_lm(config_off)
-        assert lm_off.kwargs["codex_reasoning_effort"] == "none"
+        assert lm_off.kwargs["chatgpt_reasoning_effort"] == "none"
 
-        # Unset level → no effort kwarg at all (codex's own default governs).
-        config_default = LMProviderConfig(provider="codex", model="gpt-5.5")
+        # Unset level → no effort kwarg at all (the backend's own default governs).
+        config_default = LMProviderConfig(provider="chatgpt", model="gpt-5.5")
         lm_default = create_lm(config_default)
-        assert "codex_reasoning_effort" not in lm_default.kwargs
+        assert "chatgpt_reasoning_effort" not in lm_default.kwargs
 
     def test_claude_code_uses_custom_provider_prefix(self):
         """Claude Code should keep user-facing model ids clean and mark internally."""

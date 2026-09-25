@@ -813,17 +813,16 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.sandbox = install_sandbox()
 
-    # Reap proven CLIO orphans before the MCP-cache liveness check (order matters, off-loop).
+    # Reap proven CLIO orphans before the MCP-cache liveness check (order matters,
+    # off-loop). The direct ChatGPT provider owns one durable credential file,
+    # not a spawned CLI's scratch home, so unlike the deleted Codex SDK
+    # provider's IsolatedCodexHome there is nothing here for it to reap.
     from clio_agent.gact import default_registry_migration as _registry_resync  # noqa: PLC0415
     from clio_agent.gact.routes.system import _prime_orphan_scan_cache  # noqa: PLC0415
-    from clio_agent.providers.codex_credential_home import (  # noqa: PLC0415
-        _reap_orphaned_codex_homes,
-    )
     from clio_agent.tools.mcp_cache import boot_prune_off_loop  # noqa: PLC0415
 
     async def _reap_orphans_then_prune_mcp_cache() -> None:
         await _prime_orphan_scan_cache(app)
-        await asyncio.to_thread(_reap_orphaned_codex_homes)
         await boot_prune_off_loop()
 
     app.state.mcp_cache_prune_task = asyncio.create_task(_reap_orphans_then_prune_mcp_cache())
@@ -1410,13 +1409,14 @@ def build_app(
     # independent stores instead of racing one process-global. Additive/shadow:
     # nothing routes LM resolution through it yet. load_config_from_env may raise
     # for a misconfigured cloud provider (missing key); that must not fail app
-    # construction (baseline: the deferred agent build tolerates it), so we fall
-    # back to the plain provider-default spec and let the deferred build surface
-    # the real error.
+    # construction, so we fall back to the plain provider-default spec (the
+    # deferred agent build tolerates it and surfaces the real error).
     from clio_agent.config import LMProviderConfig, load_config_from_env
+    from clio_agent.gact.chatgpt_provider_migration import migrate_codex_provider_configs
     from clio_agent.gact.providers.profile_store import ProviderProfileStore
     from clio_agent.providers.lm_spec import spec_from_config
 
+    migrate_codex_provider_configs()  # S1: codex -> chatgpt in a shared config.yaml
     try:
         _boot_cfg = load_config_from_env()
     except Exception:  # noqa: BLE001 - misconfig must not break app construction
@@ -1738,7 +1738,7 @@ def build_app(
     # call/reconnect/uninstall + tools/resources/prompts + handshake) are owned
     # by routes/mcp.py; registered below via register_mcp_routes(app, deps).
 
-    # ---- /v1/sessions/{sid}/compact (Codex/CC parity) -----------------
+    # ---- /v1/sessions/{sid}/compact (ChatGPT/CC parity) ----------------
     # Transcript compaction into an evidence-preserving compact memory is
     # owned by routes/sessions.py and registered below via
     # register_sessions_routes(app, deps); the deterministic evidence index

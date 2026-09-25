@@ -43,9 +43,17 @@ dependencies = [
     # DSPy permits a broad LiteLLM range. Pin the tested stable wheel so a global
     # prerelease policy can never select a LiteLLM dev sdist on Windows.
     "litellm==1.102.1",
-    # Subscription-authenticated Codex provider. CLIO imports the official Python
-    # SDK directly; the SDK owns its pinned runtime and JSON-RPC lifecycle.
-    "openai-codex>=0.147.0,<0.148.0",
+    # Subscription-authenticated ChatGPT provider (direct): CLIO calls the Codex
+    # backend itself over HTTP/WebSocket (providers/chatgpt/), no Codex CLI or
+    # Codex SDK. "openai_codex" (the SDK-based provider) is deleted; the
+    # bundled codex binary this pins stays a DIRECT dependency because the
+    # Windows shell sandbox (runtime/sandbox_codex.py) spawns it as its
+    # enforcement rung -- unrelated to the LM provider.
+    "openai-codex-cli-bin>=0.147.0,<0.148.0",
+    # The direct ChatGPT provider's WebSocket transport (A.6); already present
+    # transitively (litellm/fastmcp's own tree), declared explicitly now that
+    # first-party code imports it directly.
+    "websockets>=13.0",
     "fastmcp==4.0.0b5",  # 2026-07-28 line (#1107); b1->b5 beta-track hardening bump (#1285
     # C1-S5 item 5, LAST commit -- everything else verified green on b1 first).
     "fastmcp-tasks==4.0.0b5",

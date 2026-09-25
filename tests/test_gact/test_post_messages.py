@@ -265,7 +265,7 @@ def test_capabilities_and_provider_catalog_report_image_part_support(client: Tes
     by_id = {row["id"]: row for row in providers}
     assert by_id["openai"]["metadata"]["supports_vision"] is True
     assert by_id["anthropic"]["metadata"]["supports_vision"] is True
-    assert by_id["codex"]["metadata"]["supports_vision"] is True
+    assert by_id["chatgpt"]["metadata"]["supports_vision"] is True
     assert by_id["claude_code"]["metadata"]["supports_vision"] is True
 
 
@@ -275,10 +275,10 @@ def test_post_message_rejects_image_parts_for_text_only_provider(
 ) -> None:
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=fake_agent)
     # NO hand-set ``supports_vision``: no production writer ever set that key, so
-    # a test that supplied it proved nothing about the real gate. codex HAS a
+    # a test that supplied it proved nothing about the real gate. chatgpt HAS a
     # modality-evidence system (its discovery overlay), and nothing has evidenced
     # this model, so the refusal must come from the evidence path itself.
-    app.state.lm_config = {"provider": "codex", "model": "gpt-5.5"}
+    app.state.lm_config = {"provider": "chatgpt", "model": "gpt-5.5"}
     with TestClient(app) as c:
         assert _effective_lm_config(app)["supports_vision_source"] == (
             "modality_evidence_unavailable"
@@ -301,7 +301,7 @@ def test_post_message_rejects_image_parts_for_text_only_provider(
         assert resp.status_code == 501, resp.text
         body = resp.json()["error"]
         assert body["error"] == "unsupported_multimodal_image"
-        assert body["details"]["provider"] == "codex"
+        assert body["details"]["provider"] == "chatgpt"
         assert body["details"]["image_part_count"] == 1
         assert c.get(f"/v1/sessions/{sid}/messages").json()["messages"] == []
 
@@ -1508,11 +1508,11 @@ def test_post_message_live_discovered_model_override_executes_and_records_route(
     client.app.state.provider_catalog = {
         "providers": [
             {
-                "id": "codex",
+                "id": "chatgpt",
                 "health": "ready",
                 "models": [
                     {
-                        "model_id": "gpt-5.3-codex-spark",
+                        "model_id": "gpt-5.3-cg-spark",
                         "availability": "available",
                         "modalities": ["text"],
                         "evidence": {
@@ -1532,7 +1532,7 @@ def test_post_message_live_discovered_model_override_executes_and_records_route(
         "route this turn",
         json_override={
             "client_message_id": "msg_spark_route",
-            "model": {"provider_id": "codex", "model_id": "gpt-5.3-codex-spark"},
+            "model": {"provider_id": "chatgpt", "model_id": "gpt-5.3-cg-spark"},
         },
     )
     messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
@@ -1540,15 +1540,15 @@ def test_post_message_live_discovered_model_override_executes_and_records_route(
 
     assert fake_agent.calls == [("route this turn", sid)]
     assert user["metadata"]["effective_model"] == {
-        "provider_id": "codex",
-        "model_id": "gpt-5.3-codex-spark",
+        "provider_id": "chatgpt",
+        "model_id": "gpt-5.3-cg-spark",
         "variant": "",
     }
     assert user["metadata"]["model_selection_source"] == "per_message"
     runtime_model = assistant["metadata"]["agent_runtime"]["model"]
     assert runtime_model == {
-        "provider_id": "codex",
-        "model_id": "gpt-5.3-codex-spark",
+        "provider_id": "chatgpt",
+        "model_id": "gpt-5.3-cg-spark",
         "provider_source": "per_message",
         "model_source": "per_message",
         "fallback_to_global": False,

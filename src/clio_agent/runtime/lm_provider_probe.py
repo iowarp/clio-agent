@@ -8,12 +8,13 @@ transport handling has a single owner:
 * :func:`extract_models` / :class:`ModelDiscoverySchemaError` -- parse an
   OpenAI-compatible ``/models`` HTTP response (the HTTP-transport path).
 * :func:`probe_cli_transport` -- the **transport-aware** probe for the CLI/SDK
-  pseudo-schemes (``codex://sdk``, ``claude-code://sdk``). These providers have
-  no HTTP ``/models`` endpoint; an HTTP GET against the pseudo-scheme yields
-  ``requests``' ``No connection adapters were found`` and reports the provider
-  UNAVAILABLE while turns actually run fine (#899). Claude's SDK transport
-  requires both the optional ``claude_agent_sdk`` package and the local CLI;
-  Codex owns a separate bundled-runtime probe. No pseudo-scheme is HTTP-probed.
+  pseudo-schemes (``chatgpt://direct``, ``claude-code://sdk``). These providers
+  have no HTTP ``/models`` endpoint; an HTTP GET against the pseudo-scheme
+  yields ``requests``' ``No connection adapters were found`` and reports the
+  provider UNAVAILABLE while turns actually run fine (#899). Claude's SDK
+  transport requires both the optional ``claude_agent_sdk`` package and the
+  local CLI; the direct ChatGPT provider's only local dependency is a
+  signed-in credential (no CLI, no SDK). No pseudo-scheme is HTTP-probed.
 """
 
 from __future__ import annotations
@@ -21,7 +22,6 @@ from __future__ import annotations
 import importlib.util
 import os
 import shutil
-from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
 
@@ -89,76 +89,49 @@ _CLI_TRANSPORT_BINARIES: dict[str, tuple[str, str]] = {
 }
 
 
-def _codex_auth_path() -> Path:
-    """Return the official SDK authentication file location."""
-
-    from clio_agent.providers.codex_credential_home import codex_auth_path  # noqa: PLC0415
-
-    return codex_auth_path()
-
-
-def _bundled_codex_path() -> Path | None:
-    """Resolve the SDK-pinned Codex binary without consulting ``PATH``."""
-    try:
-        from codex_cli_bin import bundled_codex_path  # noqa: PLC0415
-
-        return Path(bundled_codex_path())
-    except (ImportError, OSError, RuntimeError):
-        return None
-
-
-def _probe_codex_sdk(
+def _probe_chatgpt_direct(
     config: LMProviderConfig,
     source: str,
     auth_mode: str,
 ) -> IntegrationStatus:
-    """Probe the three dependencies the official Codex SDK actually consumes."""
-    sdk_present = importlib.util.find_spec("openai_codex") is not None
-    bundled_binary = _bundled_codex_path()
-    auth_path = _codex_auth_path()
-    details: dict[str, Any] = {
-        "provider": "codex",
-        "model": config.model,
-        "transport": "sdk",
-        "sdk_module": "openai_codex",
-        "bundled_binary": str(bundled_binary or ""),
-        "auth_path": str(auth_path),
-    }
-    missing: list[str] = []
-    if not sdk_present:
-        missing.append("sdk_module_absent")
-    if bundled_binary is None or not bundled_binary.is_file():
-        missing.append("bundled_binary_absent")
-    from clio_agent.providers.codex_credential_home import (  # noqa: PLC0415
-        codex_credentials_present,
-    )
+    """Probe the direct ChatGPT provider: a signed-in credential is its only local dependency.
 
-    if not codex_credentials_present(auth_path):
-        missing.append("auth_absent")
-    if missing:
+    Unlike the deleted Codex SDK provider, there is no CLI binary, no SDK
+    package, and no ``auth.json`` to check -- the provider talks HTTP/WebSocket
+    directly, so the sole readiness signal is whether CLIO holds a valid,
+    signed-in credential (:mod:`clio_agent.providers.chatgpt.credentials`).
+    """
+    from clio_agent.providers.chatgpt.credentials import ChatGptCredentialStore  # noqa: PLC0415
+
+    details: dict[str, Any] = {
+        "provider": "chatgpt",
+        "model": config.model,
+        "transport": config.chatgpt_transport,
+    }
+    if not ChatGptCredentialStore().is_signed_in():
         return IntegrationStatus(
             name="lm_provider",
             state=IntegrationState.UNAVAILABLE,
-            summary="Codex SDK transport is unavailable: " + ", ".join(missing) + ".",
+            summary="ChatGPT sign-in is required on the connected agent.",
             config_source=source,
-            next_action="Install the Codex SDK extra and authenticate Codex on this machine.",
+            next_action="Sign in to ChatGPT in Settings.",
             endpoint=config.api_base,
             auth_mode=auth_mode,
-            details={**details, "reason": missing[0], "missing": missing},
+            details={**details, "reason": "auth_absent"},
             required=True,
         )
     return IntegrationStatus(
         name="lm_provider",
         state=IntegrationState.DEGRADED,
         summary=(
-            "Codex SDK, bundled runtime, and credentials are present, but authentication "
-            "has not been verified with the provider."
+            "ChatGPT credentials are present, but authentication has not been "
+            "verified with the provider."
         ),
         config_source=source,
-        next_action="Run Check provider in Settings to validate Codex and discover live models.",
+        next_action="Run Check provider in Settings to validate ChatGPT and discover live models.",
         endpoint=config.api_base,
         auth_mode=auth_mode,
-        capabilities=["chat-completions", "sdk-transport"],
+        capabilities=["chat-completions", "websocket-transport", "sse-transport"],
         details={**details, "reason": "auth_unverified"},
         required=True,
     )
@@ -167,8 +140,8 @@ def _probe_codex_sdk(
 def _which_cli(binary: str) -> str | None:
     """Resolve a CLI binary on PATH, honouring the Windows ``.cmd`` launcher shim.
 
-    Mirrors the resolution in the Claude Code / Codex LiteLLM providers so the
-    doctor's readiness signal matches what the transport will actually spawn.
+    Mirrors the resolution in the Claude Code LiteLLM provider so the doctor's
+    readiness signal matches what the transport will actually spawn.
     """
     if os.name == "nt":
         cmd_path = shutil.which(f"{binary}.cmd")
@@ -191,8 +164,8 @@ def probe_cli_transport(
 ) -> IntegrationStatus:
     """Transport-aware doctor probe for CLI/SDK pseudo-scheme providers (#899).
 
-    The ``api_base`` (e.g. ``claude-code://sdk``, ``codex://sdk``) has no HTTP
-    ``/models`` endpoint. This validates the local dependencies that the
+    The ``api_base`` (e.g. ``claude-code://sdk``, ``chatgpt://direct``) has no
+    HTTP ``/models`` endpoint. This validates the local dependencies that the
     selected transport actually imports or starts rather than issuing an HTTP
     GET that would always report the provider unreachable.
 
@@ -206,8 +179,8 @@ def probe_cli_transport(
         A READY row when the CLI is on PATH, else a typed UNAVAILABLE row naming
         the missing binary (``reason=cli_binary_absent``).
     """
-    if config.provider == "codex":
-        return _probe_codex_sdk(config, source, auth_mode)
+    if config.provider == "chatgpt":
+        return _probe_chatgpt_direct(config, source, auth_mode)
 
     parsed = urlparse(config.api_base)
     transport = parsed.netloc or parsed.path.lstrip("/") or "cli"

@@ -1,6 +1,6 @@
 ---
 name: update-models
-description: Refresh the LM provider model catalogs (codex, claude_code, and every configured HTTP backend) and report what changed per provider.
+description: Refresh the LM provider model catalogs (chatgpt, claude_code, and every configured HTTP backend) and report what changed per provider.
 ---
 
 # Update Models
@@ -17,8 +17,8 @@ main session — not on a spawned sub-agent/child session. If you are running
 as a spawned child and don't see this tool available, report that back
 instead of guessing at another way to trigger a refresh; ask to have this
 skill invoked from the main session instead. On the main session, it takes no
-arguments and probes every CONFIGURED provider: codex through the official
-Python SDK model catalog,
+arguments and probes every CONFIGURED provider: chatgpt through the maintained
+model catalog document plus a credential-store sign-in check,
 claude_code by fetching the maintained GitHub candidate list and validating
 each model against the signed-in CLI with a probe turn,
 and every HTTP-backed provider (OpenAI, Anthropic, OpenRouter, ALCF/Argonne,
@@ -29,9 +29,9 @@ live models endpoint. It returns JSON shaped like:
 {
   "results": [
     {
-      "provider": "codex",
+      "provider": "chatgpt",
       "discovered": [{"id": "...", "name": "...", "description": "..."}],
-      "source": "codex_sdk",
+      "source": "chatgpt_catalog",
       "default_model": "...",
       "added": ["..."],
       "removed": ["..."],

@@ -353,7 +353,7 @@ def test_vision_only_config_still_gets_view_image_not_view_pdf() -> None:
     assert gateway == []
 
 
-def test_image_only_codexlike_config_does_not_get_view_pdf() -> None:
+def test_image_only_chatgptlike_config_does_not_get_view_pdf() -> None:
     agent = AgentDef(id="both", title="Both", tools=["view_image", "view_pdf"])
 
     requested, available, gateway = resolve_declared_native_tools(
@@ -381,5 +381,5 @@ def test_declared_pdf_capability_uses_live_model_evidence(monkeypatch: pytest.Mo
         SimpleNamespace(provider_id="claude_code", model="claude-opus-5", supports_pdf=False)
     )
     assert not declared_view_pdf_capability(
-        SimpleNamespace(provider_id="codex", model="gpt-5.5", supports_pdf=True)
+        SimpleNamespace(provider_id="chatgpt", model="gpt-5.5", supports_pdf=True)
     )

@@ -77,8 +77,10 @@ def test_daemon_spawn_breaks_away_from_job_on_windows(monkeypatch: pytest.Monkey
 def test_teardown_pooled_sdk_transports_closes_both_pools_and_logs(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """Clean shutdown closes every SDK client and emits the typed reason."""
-    from clio_agent.providers import claude_code_sessions, codex_stream
+    """Clean shutdown closes every pooled SDK client + the chatgpt WS sessions, and logs."""
+    from clio_agent.providers import claude_code_sdk_pool, claude_code_sessions
+    from clio_agent.providers.chatgpt import sessions as chatgpt_sessions
+    from clio_agent.providers.chatgpt import transport_ws as chatgpt_transport_ws
 
     calls: list[str] = []
     monkeypatch.setattr(
@@ -87,18 +89,30 @@ def test_teardown_pooled_sdk_transports_closes_both_pools_and_logs(
         lambda: calls.append("stream"),
     )
     monkeypatch.setattr(
-        codex_stream._SDK_CLIENT,
-        "close_blocking",
-        lambda: calls.append("codex"),
+        claude_code_sdk_pool._SDK_SESSION_POOL,
+        "close",
+        lambda: calls.append("sdk"),
     )
+    fake_connections = ["conn-1", "conn-2"]
+
+    def _fake_pop_all_ws_connections() -> list[str]:
+        calls.append("chatgpt")
+        return fake_connections
+
+    async def _fake_close_connections(connections: list[str]) -> None:
+        assert connections == fake_connections
+
+    monkeypatch.setattr(chatgpt_sessions, "pop_all_ws_connections", _fake_pop_all_ws_connections)
+    monkeypatch.setattr(chatgpt_transport_ws, "close_connections", _fake_close_connections)
 
     with caplog.at_level(logging.INFO, logger="clio_agent.runtime.process_tree"):
         outcome = pt.teardown_pooled_sdk_transports()
 
-    assert calls == ["stream", "codex"]
+    assert calls == ["stream", "sdk", "chatgpt"]
     assert outcome == {
         "stream_client_pool": "closed",
-        "codex_sdk_client": "closed",
+        "sdk_session_pool": "closed",
+        "chatgpt_ws_sessions": "closed:2",
     }
     assert any("reason=sdk_pools_closed" in rec.message for rec in caplog.records)
 

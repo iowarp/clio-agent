@@ -27,9 +27,9 @@ from clio_agent.providers.handshake.base import (
     ProviderHandshake,
 )
 from clio_agent.providers.handshake.cli_catalog import (
+    ChatGptCatalogHandshake,
     ClaudeCodeCatalogHandshake,
     CliCatalogHandshake,
-    CodexCatalogHandshake,
 )
 from clio_agent.providers.handshake.lmstudio import LMStudioHandshake
 from clio_agent.providers.handshake.mcp import MCPServerReport, handshake_mcp_servers
@@ -54,9 +54,9 @@ __all__ = [
     "ConnectivityState",
     "AuthState",
     "MCPServerReport",
+    "ChatGptCatalogHandshake",
     "CliCatalogHandshake",
     "ClaudeCodeCatalogHandshake",
-    "CodexCatalogHandshake",
     "NoOpHandshake",
     "handshake_mcp_servers",
     "resolve_context",
@@ -77,10 +77,10 @@ _BY_KIND: dict[str, type[ProviderHandshake]] = {
     "ollama": OllamaHandshake,
     "vllm": OpenAICompatHandshake,
     "openrouter": OpenAICompatHandshake,
-    # #1211: codex/claude_code prefer the refresh-overlay-aware variant (still
+    # #1211: chatgpt/claude_code prefer the refresh-overlay-aware variant (still
     # zero network calls on this passive read path); NoOpHandshake stays the
     # registry entry for any OTHER future no-HTTP-surface CLI provider.
-    "codex": CodexCatalogHandshake,
+    "chatgpt": ChatGptCatalogHandshake,
     "claude_code": ClaudeCodeCatalogHandshake,
 }
 

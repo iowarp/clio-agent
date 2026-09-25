@@ -40,7 +40,7 @@ def test_session_defaults_persist_and_apply_only_when_fields_are_omitted(tmp_pat
     updated = client.patch(
         "/v1/session-defaults",
         json={
-            "provider_id": "codex",
+            "provider_id": "chatgpt",
             "model_id": "gpt-5.6-luna",
             "effort": "medium",
             "mode": "architect",
@@ -59,7 +59,7 @@ def test_session_defaults_persist_and_apply_only_when_fields_are_omitted(tmp_pat
     )
     assert inherited.status_code == 201
     inherited_expected = {
-        "provider_id": "codex",
+        "provider_id": "chatgpt",
         "model_id": "gpt-5.6-luna",
         "effort": "medium",
         "mode": "architect",
@@ -112,11 +112,11 @@ def test_session_defaults_reject_unknown_and_invalid_values(tmp_path: Path) -> N
 def test_session_defaults_reject_half_filled_model_reference(tmp_path: Path) -> None:
     client = _client(tmp_path / "sessions.json")
 
-    provider_only = client.patch("/v1/session-defaults", json={"provider_id": "codex"})
+    provider_only = client.patch("/v1/session-defaults", json={"provider_id": "chatgpt"})
     model_only = client.patch("/v1/session-defaults", json={"model_id": "gpt-5.6-luna"})
     mismatched_empty = client.patch(
         "/v1/session-defaults",
-        json={"provider_id": "codex", "model_id": ""},
+        json={"provider_id": "chatgpt", "model_id": ""},
     )
 
     for response in (provider_only, model_only, mismatched_empty):
@@ -126,7 +126,7 @@ def test_session_defaults_reject_half_filled_model_reference(tmp_path: Path) -> 
 
 def test_corrupt_session_defaults_are_quarantined_without_overwrite(tmp_path: Path) -> None:
     path = tmp_path / "session-defaults.json"
-    original = '{"provider_id": "codex", broken}'
+    original = '{"provider_id": "chatgpt", broken}'
     path.write_text(original, encoding="utf-8")
 
     store = SessionDefaultsStore(path)
@@ -148,7 +148,7 @@ def test_provider_swap_clears_persisted_session_default_model_reference(tmp_path
     client = _client(sessions_path)
     updated = client.patch(
         "/v1/session-defaults",
-        json={"provider_id": "codex", "model_id": "gpt-5.6-luna"},
+        json={"provider_id": "chatgpt", "model_id": "gpt-5.6-luna"},
     )
     assert updated.status_code == 200
 

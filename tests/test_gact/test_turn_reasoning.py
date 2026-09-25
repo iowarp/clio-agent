@@ -67,12 +67,12 @@ def _lm_kwargs(base: LMProviderConfig, effort: str | None) -> dict[str, Any]:
     return dict(create_lm(cfg).kwargs)
 
 
-def test_codex_message_effort_overrides_the_global_level() -> None:
-    base = LMProviderConfig(provider="codex", model="gpt-5.5", thinking_level="low")
-    assert _lm_kwargs(base, "high")["codex_reasoning_effort"] == "high"
-    assert _lm_kwargs(base, "xhigh")["codex_reasoning_effort"] == "xhigh"
+def test_chatgpt_message_effort_overrides_the_global_level() -> None:
+    base = LMProviderConfig(provider="chatgpt", model="gpt-5.5", thinking_level="low")
+    assert _lm_kwargs(base, "high")["chatgpt_reasoning_effort"] == "high"
+    assert _lm_kwargs(base, "xhigh")["chatgpt_reasoning_effort"] == "xhigh"
     # No per-message level: the configured level still governs.
-    assert _lm_kwargs(base, None)["codex_reasoning_effort"] == "low"
+    assert _lm_kwargs(base, None)["chatgpt_reasoning_effort"] == "low"
 
 
 def test_openai_kind_message_effort_sets_reasoning_effort(
@@ -149,9 +149,9 @@ def test_anthropic_adaptive_model_message_effort_sends_reasoning_effort(
     assert _lm_kwargs(base, "max")["reasoning_effort"] == "max"
 
 
-def test_codex_message_minimal_effort_is_sent() -> None:
-    base = LMProviderConfig(provider="codex", model="gpt-5.5")
-    assert _lm_kwargs(base, "minimal")["codex_reasoning_effort"] == "minimal"
+def test_chatgpt_message_minimal_effort_is_sent() -> None:
+    base = LMProviderConfig(provider="chatgpt", model="gpt-5.5")
+    assert _lm_kwargs(base, "minimal")["chatgpt_reasoning_effort"] == "minimal"
 
 
 def _record(
@@ -231,8 +231,8 @@ def test_child_on_a_different_model_records_why_it_did_not_inherit() -> None:
 
 
 def test_child_does_not_inherit_a_global_level() -> None:
-    app = _parent_app("codex", "gpt-5.5", level="high", source="global")
-    child = AgentDef(id="child", title="Child", default_provider="codex", default_model="gpt-5.5")
+    app = _parent_app("chatgpt", "gpt-5.5", level="high", source="global")
+    child = AgentDef(id="child", title="Child", default_provider="chatgpt", default_model="gpt-5.5")
 
     resolved = apply_turn_reasoning(_child_message(), child, app=app)  # type: ignore[arg-type]
 
@@ -242,7 +242,7 @@ def test_child_does_not_inherit_a_global_level() -> None:
 def test_deleting_a_session_prunes_its_turn_records() -> None:
     from clio_agent.gact.session_descendants import purge_session_tasks
 
-    app = _parent_app("codex", "gpt-5.5")
+    app = _parent_app("chatgpt", "gpt-5.5")
     app.state.agent_task_registry = None
     purge_session_tasks(app, "sess_parent")  # type: ignore[arg-type]
     assert app.state.turn_reasoning_by_turn == {}

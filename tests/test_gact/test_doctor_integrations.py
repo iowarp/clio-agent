@@ -102,7 +102,7 @@ def _rows(body: dict[str, Any]) -> dict[str, dict[str, Any]]:
 def test_health_probes_the_runtime_provider_binding(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A runtime Codex selection replaces the boot LM Studio doctor inputs."""
+    """A runtime ChatGPT selection replaces the boot LM Studio doctor inputs."""
 
     observed: dict[str, str] = {}
 
@@ -121,16 +121,16 @@ def test_health_probes_the_runtime_provider_binding(
     monkeypatch.setattr("clio_agent.gact.routes.system.collect_runtime_status", _capture)
     app = build_app(sessions_path=tmp_path / "s.json")
     app.state.lm_config = {
-        "provider": "codex",
-        "api_base": "codex://sdk",
+        "provider": "chatgpt",
+        "api_base": "chatgpt://direct",
         "model": "gpt-5.6-luna",
     }
 
     response = TestClient(app).get("/v1/health")
 
     assert response.status_code == 200
-    assert observed["CLIO_LM_PROVIDER"] == "codex"
-    assert observed["CLIO_LM_API_BASE"] == "codex://sdk"
+    assert observed["CLIO_LM_PROVIDER"] == "chatgpt"
+    assert observed["CLIO_LM_API_BASE"] == "chatgpt://direct"
     assert observed["CLIO_LM_MODEL"] == "gpt-5.6-luna"
 
 
@@ -156,10 +156,10 @@ def test_health_probes_the_persisted_provider_bound_to_the_agent(
     monkeypatch.setattr("clio_agent.gact.routes.system.collect_runtime_status", _capture)
     agent = SimpleNamespace(
         _provider_config=SimpleNamespace(
-            provider="codex",
-            api_base="codex://sdk",
+            provider="chatgpt",
+            api_base="chatgpt://direct",
             model="gpt-5.6-sol",
-            codex_transport="sdk",
+            chatgpt_transport="websocket",
         )
     )
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
@@ -168,8 +168,8 @@ def test_health_probes_the_persisted_provider_bound_to_the_agent(
 
     assert response.status_code == 200
     assert app.state.lm_config is None
-    assert observed["CLIO_LM_PROVIDER"] == "codex"
-    assert observed["CLIO_LM_API_BASE"] == "codex://sdk"
+    assert observed["CLIO_LM_PROVIDER"] == "chatgpt"
+    assert observed["CLIO_LM_API_BASE"] == "chatgpt://direct"
     assert observed["CLIO_LM_MODEL"] == "gpt-5.6-sol"
 
 

@@ -195,7 +195,7 @@ def test_refresh_for_one_provider_probes_only_that_provider(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = build_app(sessions_path=tmp_path / "sessions.json")
-    app.state.provider_catalog = _snapshot("codex", "argonne_metis")
+    app.state.provider_catalog = _snapshot("chatgpt", "argonne_metis")
     probed: list[tuple[str, bool]] = []
 
     async def _discover(preset: LMProviderPreset, *, refresh: bool = False) -> dict[str, Any]:
@@ -212,13 +212,13 @@ def test_refresh_for_one_provider_probes_only_that_provider(
     assert response.status_code == 200
     assert probed == [("argonne_metis", True)]
     names = {row["id"]: row["name"] for row in response.json()["providers"]}
-    assert names == {"codex": "codex", "argonne_metis": "fresh"}
+    assert names == {"chatgpt": "chatgpt", "argonne_metis": "fresh"}
     assert app.state.provider_catalog == response.json()
 
 
 def test_unknown_provider_refresh_is_not_found(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "sessions.json")
-    app.state.provider_catalog = _snapshot("codex")
+    app.state.provider_catalog = _snapshot("chatgpt")
     with TestClient(app) as client:
         response = client.get("/v1/provider-catalog?refresh=true&provider=nope")
     assert response.status_code == 404
@@ -231,7 +231,7 @@ def test_sign_in_completion_retires_every_alcf_entry(
     from clio_agent.providers import argonne_auth
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
-    app.state.provider_catalog = _snapshot("codex", "argonne_metis", "argonne_sophia")
+    app.state.provider_catalog = _snapshot("chatgpt", "argonne_metis", "argonne_sophia")
     handshake_cache.put_cached(("argonne_metis", METIS_BASE), _skipped_report())
     probed: list[str] = []
 
@@ -241,7 +241,7 @@ def test_sign_in_completion_retires_every_alcf_entry(
 
     monkeypatch.setattr("clio_agent.gact.provider_catalog_snapshot.discover_provider", _discover)
     monkeypatch.setattr(
-        "clio_agent.gact.routes.provider_catalog_routes.ensure_argonne_support", lambda: False
+        "clio_agent.gact.routes.provider_auth.ensure_argonne_support", lambda: False
     )
     monkeypatch.setattr(argonne_auth, "complete_authentication", lambda *_args: None)
 
@@ -264,7 +264,7 @@ def test_explicit_check_retires_that_provider(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = build_app(sessions_path=tmp_path / "sessions.json")
-    app.state.provider_catalog = _snapshot("codex", "argonne_metis")
+    app.state.provider_catalog = _snapshot("chatgpt", "argonne_metis")
     probed: list[str] = []
 
     async def _discover(preset: LMProviderPreset, *, refresh: bool = False) -> dict[str, Any]:
@@ -291,7 +291,7 @@ def test_last_good_entry_is_reprobed_and_replaced_in_background(
     from clio_agent.gact.provider_catalog_snapshot import read_catalog
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
-    snapshot = _snapshot("codex")
+    snapshot = _snapshot("chatgpt")
     snapshot["providers"].append(_record("argonne_metis", source="last_good"))
     app.state.provider_catalog = snapshot
     published: list[Any] = []

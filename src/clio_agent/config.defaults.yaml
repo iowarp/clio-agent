@@ -75,22 +75,22 @@ sandbox.enabled: true
 # Language models + providers
 # ==========================================================================
 # LM sampling/provider selection and the per-provider transport knobs
-# (Claude Code, Codex).
+# (Claude Code, ChatGPT).
 
 # CLIO_LM_API_BASE  (str)  <- src/clio_agent/config.py
 # Overrides the LM provider's default API base URL; set to point at a non-
 # default endpoint for a provider (custom LM Studio/OpenAI host).
 # lm.api_base:  # default unset; resolved in code
 
+# CLIO_CHATGPT_TRANSPORT  (str)  <- src/clio_agent/config.py
+# Selects the ChatGPT transport; "websocket" (default, with delta
+# continuation) or "sse" to force the automatic-fallback transport.
+# lm.chatgpt_transport:  # default unset; resolved in code
+
 # CLIO_CLAUDE_CODE_TRANSPORT  (str)  <- src/clio_agent/config.py
 # Selects the Claude Code transport; "sdk" is the only supported value, kept
 # as an explicit contract check, not a tuning knob.
 # lm.claude_code_transport:  # default unset; resolved in code
-
-# CLIO_CODEX_TRANSPORT  (str)  <- src/clio_agent/config.py
-# Selects the Codex transport; "sdk" is the only supported value, kept as an
-# explicit contract check, not a tuning knob.
-# lm.codex_transport:  # default unset; resolved in code
 
 # CLIO_LM_CONTEXT_WINDOW  (int)  <- src/clio_agent/config.py
 # Override the effective context window (tokens); 0 auto-derives from the
@@ -157,7 +157,7 @@ lm.lmstudio_flash_attention: true
 
 # CLIO_LM_PROVIDER  (str)  <- src/clio_agent/config.py
 # Selects the LM backend (lm_studio, ollama, openai, anthropic, argonne,
-# codex, claude_code); change to switch which provider clio talks to.
+# chatgpt, claude_code); change to switch which provider clio talks to.
 lm.provider: "lm_studio"
 
 # CLIO_LM_REASONING_MODEL  (str)  <- src/clio_agent/lm/adapters.py
@@ -222,11 +222,6 @@ providers.claude_code.stateful_capacity: 128.0
 # next request reaps it; lower to free idle connections sooner.
 providers.claude_code.stream_idle_ttl_s: 15.0
 
-# CLIO_CODEX_CREDENTIAL_HOME_CAPACITY  (int)  <- src/clio_agent/providers/codex_credential_home.py
-# Max simultaneous private CODEX_HOME credential-dir copies the Codex SDK
-# transport keeps alive; raise for many concurrent Codex sessions.
-providers.codex.credential_home_capacity: 4
-
 # CLIO_MODEL_CATALOG_TTL_S  (float)  <- src/clio_agent/providers/model_discovery/overlay.py
 # Seconds a discovered provider model catalog is served as fresh before
 # every read marks it typed-stale (it is still served, never cleared); 0
@@ -287,11 +282,6 @@ limits.agent_task_artifact_context_chars: 64000
 # inline larger child answers, lower to bound coordinator context growth
 # sooner.
 limits.agent_task_output_digest_chars: 8000
-
-# CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S  (float)  <- src/clio_agent/providers/codex_stream.py
-# Max silence (seconds) for one Codex SDK exchange/event, resetting on every
-# progress event rather than a fixed clock; raise for long turns.
-limits.codex_sdk_progress_timeout_s: 120.0
 
 # CLIO_CTX_MAX_BYTES  (int)  <- src/clio_agent/gact/runtime/constants.py
 # Byte cap per attached file inlined into context injection; raise to inline

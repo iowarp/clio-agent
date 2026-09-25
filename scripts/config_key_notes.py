@@ -14,7 +14,7 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
     (
         "Language models + providers",
         ("lm", "providers", "summarizer"),
-        "LM sampling/provider selection and the per-provider transport knobs (Claude Code, Codex).",
+        "LM sampling/provider selection and the per-provider transport knobs (Claude Code, ChatGPT).",
     ),
     (
         "Limits, timeouts and retries",
@@ -492,10 +492,6 @@ KEY_NOTES: dict[str, str] = {
         "when a child blueprint returns; raise for larger reports, lower to bound resumed "
         "parent context growth."
     ),
-    "limits.codex_sdk_progress_timeout_s": (
-        "Max silence (seconds) for one Codex SDK exchange/event, resetting on every progress event "
-        "rather than a fixed clock; raise for long turns."
-    ),
     "limits.context_inline_bytes": (
         "Byte cap per attached file inlined into context injection; raise to inline larger "
         "attachments, lower to bound prompt growth."
@@ -588,9 +584,9 @@ KEY_NOTES: dict[str, str] = {
         'Selects the Claude Code transport; "sdk" is the only supported value, kept as an '
         "explicit contract check, not a tuning knob."
     ),
-    "lm.codex_transport": (
-        'Selects the Codex transport; "sdk" is the only supported value, kept as an explicit '
-        "contract check, not a tuning knob."
+    "lm.chatgpt_transport": (
+        'Selects the ChatGPT transport; "websocket" (default, with delta continuation) or "sse" '
+        "to force the automatic-fallback transport."
     ),
     "lm.context_window": (
         "Override the effective context window (tokens); 0 auto-derives from the "
@@ -642,7 +638,7 @@ KEY_NOTES: dict[str, str] = {
         "needing fuller sampling than temp-0."
     ),
     "lm.provider": (
-        "Selects the LM backend (lm_studio, ollama, openai, anthropic, argonne, codex, "
+        "Selects the LM backend (lm_studio, ollama, openai, anthropic, argonne, chatgpt, "
         "claude_code); change to switch which provider clio talks to."
     ),
     "lm.reasoning_model": (
@@ -820,10 +816,6 @@ KEY_NOTES: dict[str, str] = {
     "providers.claude_code.stream_idle_ttl_s": (
         "Seconds a session's pooled Claude Code connection may sit idle before the next request "
         "reaps it; lower to free idle connections sooner."
-    ),
-    "providers.codex.credential_home_capacity": (
-        "Max simultaneous private CODEX_HOME credential-dir copies the Codex SDK transport keeps "
-        "alive; raise for many concurrent Codex sessions."
     ),
     "providers.native_image_url_allowlist": (
         "Comma-separated hosts whose http(s) image URLs may be handed to a provider to fetch; "

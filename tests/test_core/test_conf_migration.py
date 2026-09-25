@@ -156,7 +156,7 @@ class TestParseRetryAttempts:
             provider=provider,
             model="gpt-4o",
             is_reasoning=is_reasoning,
-            parse_retry_capability="single_attempt" if provider == "codex" else "bounded",
+            parse_retry_capability="single_attempt" if provider == "chatgpt" else "bounded",
         )
 
     def test_default(self, monkeypatch):
@@ -165,7 +165,7 @@ class TestParseRetryAttempts:
         monkeypatch.delenv("CLIO_LM_PARSE_RETRY_ATTEMPTS", raising=False)
         assert _parse_retry_attempts(self._cfg(is_reasoning=False)) == 0
         assert _parse_retry_attempts(self._cfg(is_reasoning=True)) == 2
-        assert _parse_retry_attempts(self._cfg(is_reasoning=True, provider="codex")) == 0
+        assert _parse_retry_attempts(self._cfg(is_reasoning=True, provider="chatgpt")) == 0
 
     def test_env(self, monkeypatch):
         from clio_agent.config import _parse_retry_attempts
@@ -355,7 +355,7 @@ class TestStopSequencesOverride:
             presence_penalty=None,
             top_k=None,
             min_p=None,
-            codex_transport="",
+            chatgpt_transport="",
             claude_code_transport="",
         )
 

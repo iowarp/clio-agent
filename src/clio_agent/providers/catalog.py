@@ -27,6 +27,7 @@ from clio_agent.providers.catalog_types import (
     Provider,
     ProviderConfigurationField,
 )
+from clio_agent.providers.chatgpt.constants import LITELLM_PROVIDER as _CHATGPT_LITELLM_PREFIX
 
 # -- shared catalogs --------------------------------------------------
 
@@ -371,22 +372,26 @@ PROVIDERS: tuple[Provider, ...] = (
         ),
     ),
     Provider(
-        id="codex",
-        label="OpenAI Codex",
+        id="chatgpt",
+        label="ChatGPT (subscription)",
         description=(
-            "Uses the official OpenAI Codex Python SDK so calls reuse "
-            "your ChatGPT / Codex subscription instead of paying "
-            "per-token on the OpenAI API. Authenticate Codex once on "
-            "this machine; the SDK owns its pinned runtime."
+            "Signs in with your ChatGPT account and calls the Codex backend "
+            "directly from CLIO's own process -- no Codex CLI, no Codex SDK. "
+            "Usage counts against your ChatGPT plan limits."
         ),
-        provider_kind="codex",
-        litellm_prefix="codex",
-        # Codex does not use an HTTP base. This is an identity marker only;
-        # the official Python SDK owns its pinned runtime.
-        api_base="codex://sdk",
-        # Codex model entitlement is account-specific and changes independently
-        # of CLIO releases. Never auto-select a compiled-in candidate; a
-        # successful SDK catalog check supplies the account's live default.
+        provider_kind="chatgpt",
+        # NOT "chatgpt": litellm ships its own native "chatgpt" provider
+        # (a device-code OAuth client against auth.openai.com) that would
+        # silently swallow every "chatgpt/..." model string before our
+        # custom_provider_map registration is ever consulted. See
+        # providers.chatgpt.constants.LITELLM_PROVIDER.
+        litellm_prefix=_CHATGPT_LITELLM_PREFIX,
+        # No HTTP base to configure -- an identity marker only. The actual
+        # transport endpoints (chatgpt.com/backend-api) live in
+        # providers.chatgpt.constants, never here.
+        api_base="chatgpt://direct",
+        # The maintained catalog (catalogs/chatgpt-models.json) supplies the
+        # live default; never auto-select a compiled-in candidate.
         suggested_model="",
         requires_api_key=False,
         auth_method="subscription",
@@ -396,19 +401,14 @@ PROVIDERS: tuple[Provider, ...] = (
         parse_retry_capability="single_attempt",
         model_catalog=(
             ModelEntry(
+                "gpt-5.6-sol",
+                "GPT-5.6 Sol (ChatGPT)",
+                "Candidate ChatGPT catalog model id; not guaranteed by account entitlement.",
+            ),
+            ModelEntry(
                 "gpt-5.5",
-                "GPT-5.5 (via Codex)",
-                "Candidate Codex SDK model id; not guaranteed by account entitlement.",
-            ),
-            ModelEntry(
-                "gpt-5.5-codex",
-                "GPT-5.5 Codex",
-                "Candidate Codex-tuned model id; not guaranteed by account entitlement.",
-            ),
-            ModelEntry(
-                "gpt-5.1",
-                "GPT-5.1 (via Codex)",
-                "Fallback candidate model id; not guaranteed by account entitlement.",
+                "GPT-5.5 (ChatGPT)",
+                "Candidate ChatGPT catalog model id; not guaranteed by account entitlement.",
             ),
         ),
     ),

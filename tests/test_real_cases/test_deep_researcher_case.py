@@ -80,7 +80,7 @@ MARKETPLACE_SOURCE = str(REPO_ROOT / "external" / "clio-agent-marketplace" / "de
 
 # Guardrail cell (GOAL.md "Case-specific deviations"): subscription provider,
 # not the NDP-case default (argonne_metis) — per issue #1286's own leg (iii)
-# text and the live-tests-use-claude/codex convention. Documented here for the
+# text and the live-tests-use-claude/chatgpt convention. Documented here for the
 # run recipe; actual cell selection happens via `pytest --provider/--model` or
 # `CLIO_AGENTTEST_CELLS`, exactly like every sibling real-case test.
 GUARDRAIL_PROVIDER = "claude_code"

@@ -1,0 +1,228 @@
+"""Typed errors + retry/terminal classification for the ChatGPT transport (A.7).
+
+No silent fallback: every failure this provider can raise is one of the typed
+exceptions below, carrying a machine-readable ``reason`` alongside the human
+message, so the gact streaming layer can record it the same way it records
+every other ``stream_fallback`` reason (``gact/streaming.py``).
+"""
+
+from __future__ import annotations
+
+import email.utils
+import time
+from dataclasses import dataclass
+
+from clio_agent.providers.chatgpt.constants import (
+    RETRY_BASE_DELAY_MS,
+    RETRY_MAX_DELAY_MS,
+    RETRYABLE_STATUS_CODES,
+    USAGE_LIMIT_MARKERS,
+)
+
+
+class ChatGPTError(RuntimeError):
+    """Base class for every typed ChatGPT-provider failure."""
+
+    reason: str = "chatgpt_error"
+
+
+class ChatGPTAuthError(ChatGPTError):
+    """The OAuth login/refresh flow failed (A.3/A.4)."""
+
+    reason = "chatgpt_auth_failed"
+
+
+class ChatGPTCredentialMissingError(ChatGPTAuthError):
+    """No stored credential -- the user has never signed in, or logged out."""
+
+    reason = "chatgpt_credential_missing"
+
+
+class ChatGPTRefreshFailedError(ChatGPTAuthError):
+    """A 401 refresh attempt failed -- the credential must be treated as invalid."""
+
+    reason = "chatgpt_auth_refresh_failed"
+
+
+class ChatGPTResponseError(ChatGPTError):
+    """The Codex backend rejected or failed a turn (SSE ``error``/``response.failed``).
+
+    ``code`` is the backend's own error code (``response.error.code``) when
+    one was present; ``status_code`` is the transport HTTP status when applicable.
+    """
+
+    reason = "chatgpt_response_failed"
+
+    def __init__(
+        self, message: str, *, code: str | None = None, status_code: int | None = None
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.status_code = status_code
+
+
+class ChatGPTPlanLimitError(ChatGPTResponseError):
+    """A 429 whose text names the ChatGPT plan window -- terminal, never retried."""
+
+    reason = "chatgpt_plan_limit"
+
+
+class ChatGPTRetryExhaustedError(ChatGPTError):
+    """Every retry attempt was consumed, or the server asked for longer than the cap."""
+
+    reason = "chatgpt_retry_exhausted"
+
+
+class ChatGPTTransportError(ChatGPTError):
+    """A network/transport-level failure (connection refused, timeout, ...)."""
+
+    reason = "chatgpt_transport_error"
+
+
+#: Shown wherever a refresh/handshake failure turns out to be an auth
+#: rejection rather than a generic transport failure -- mirrors the deleted
+#: Codex provider's ``CODEX_AUTHENTICATION_ERROR_MESSAGE``.
+CHATGPT_AUTHENTICATION_ERROR_MESSAGE = "ChatGPT sign-in is required on the connected agent"
+
+_AUTH_FAILURE_MARKERS: tuple[str, ...] = (
+    "401",
+    "unauthorized",
+    "access token rejected",
+    "sign-in is required",
+    "sign in again",
+    "credential",
+    "refresh failed",
+)
+
+
+def contains_chatgpt_authentication_error(error: BaseException | str) -> bool:
+    """Whether an error/failure string names an auth rejection.
+
+    Distinguishes "the account needs to sign in again" from a generic
+    network/transport failure, so a refresh probe can report ``auth:
+    rejected`` instead of ``auth: deferred``.
+    """
+
+    lowered = str(error).casefold()
+    return any(marker in lowered for marker in _AUTH_FAILURE_MARKERS)
+
+
+def is_usage_limit_text(text: str) -> bool:
+    """Whether ``text`` (a 429 response body, or an in-stream error message) names
+    the account's plan window rather than a transient rate limit (A.7)."""
+
+    lowered = (text or "").casefold()
+    return any(marker in lowered for marker in USAGE_LIMIT_MARKERS)
+
+
+def is_retryable_status(status_code: int, body_text: str = "") -> bool:
+    """Whether a response with this status should be retried with backoff.
+
+    A 429 is retried UNLESS its body identifies a terminal plan-limit
+    condition (see :func:`is_usage_limit_text`).
+    """
+
+    if status_code == 429:
+        return not is_usage_limit_text(body_text)
+    return status_code in RETRYABLE_STATUS_CODES
+
+
+@dataclass(frozen=True)
+class RetryDecision:
+    """The outcome of consulting the retry policy for one failed attempt."""
+
+    should_retry: bool
+    delay_ms: float = 0.0
+    exceeded_cap: bool = False
+
+
+def parse_retry_after_ms(headers: dict[str, str]) -> float | None:
+    """Read ``retry-after-ms`` first, then ``retry-after`` (seconds or an HTTP-date).
+
+    Header lookup is case-insensitive; callers may pass a dict with any
+    casing (httpx.Headers already normalizes to lower-case, but a plain dict
+    from a test fixture might not).
+    """
+
+    lowered = {k.casefold(): v for k, v in headers.items()}
+    raw_ms = lowered.get("retry-after-ms")
+    if raw_ms is not None:
+        try:
+            return max(0.0, float(raw_ms))
+        except ValueError:
+            pass
+    raw_s = lowered.get("retry-after")
+    if raw_s is None:
+        return None
+    try:
+        return max(0.0, float(raw_s) * 1000.0)
+    except ValueError:
+        pass
+    try:
+        parsed = email.utils.parsedate_to_datetime(raw_s)
+    except (TypeError, ValueError):
+        return None
+    if parsed is None:
+        return None
+    return max(0.0, (parsed.timestamp() - time.time()) * 1000.0)
+
+
+def next_retry_delay_ms(
+    *,
+    attempt: int,
+    headers: dict[str, str] | None = None,
+    max_delay_ms: float = RETRY_MAX_DELAY_MS,
+    base_delay_ms: float = RETRY_BASE_DELAY_MS,
+) -> RetryDecision:
+    """Exponential backoff honoring a server-requested delay, capped (A.7).
+
+    ``attempt`` is 0-indexed (the first retry is ``attempt=0``). Honors
+    ``retry-after-ms`` first, then ``retry-after``, before falling back to
+    ``base_delay_ms * 2**attempt``. A server-requested delay exceeding
+    ``max_delay_ms`` refuses the retry (``exceeded_cap=True``) rather than
+    waiting an unbounded amount of time.
+    """
+
+    server_delay = parse_retry_after_ms(headers or {})
+    if server_delay is not None:
+        if server_delay > max_delay_ms:
+            return RetryDecision(should_retry=False, delay_ms=server_delay, exceeded_cap=True)
+        return RetryDecision(should_retry=True, delay_ms=server_delay)
+    computed = min(base_delay_ms * (2**attempt), max_delay_ms)
+    return RetryDecision(should_retry=True, delay_ms=computed)
+
+
+def raise_for_backend_error(
+    *, code: str | None, message: str | None, status_code: int | None = None
+) -> None:
+    """Raise the typed error for a backend-reported ``error``/``response.failed`` event.
+
+    Classifies a terminal plan-limit condition even when it arrives as an
+    in-stream event rather than an HTTP 429 -- the Codex backend can fail a
+    turn mid-stream with the same usage-limit wording.
+    """
+
+    text = message or "Codex backend request failed"
+    if is_usage_limit_text(text):
+        raise ChatGPTPlanLimitError(text, code=code, status_code=status_code)
+    raise ChatGPTResponseError(text, code=code, status_code=status_code)
+
+
+__all__ = [
+    "CHATGPT_AUTHENTICATION_ERROR_MESSAGE",
+    "ChatGPTAuthError",
+    "ChatGPTCredentialMissingError",
+    "ChatGPTError",
+    "ChatGPTPlanLimitError",
+    "ChatGPTRefreshFailedError",
+    "ChatGPTResponseError",
+    "ChatGPTRetryExhaustedError",
+    "ChatGPTTransportError",
+    "RetryDecision",
+    "contains_chatgpt_authentication_error",
+    "is_retryable_status",
+    "is_usage_limit_text",
+    "next_retry_delay_ms",
+    "parse_retry_after_ms",
+    "raise_for_backend_error",
+]

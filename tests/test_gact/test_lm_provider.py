@@ -38,13 +38,12 @@ def _patch_doctor(monkeypatch: Any, probe: RuntimeProbe) -> None:
     monkeypatch.setattr("clio_agent.gact.routes.system.collect_runtime_status", _fake)
 
 
-def _write_codex_auth(tmp_path: Path, monkeypatch: Any) -> None:
-    """Install non-empty local Codex credentials for readiness tests."""
+def _chatgpt_signed_in(monkeypatch: Any, *, signed_in: bool = True) -> None:
+    """Present a (unvalidated) signed-in ChatGPT credential for readiness tests."""
 
-    codex_home = tmp_path / "codex-home"
-    codex_home.mkdir(exist_ok=True)
-    (codex_home / "auth.json").write_text('{"token":"test"}', encoding="utf-8")
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    from clio_agent.providers.chatgpt.credentials import ChatGptCredentialStore
+
+    monkeypatch.setattr(ChatGptCredentialStore, "is_signed_in", lambda self: signed_in)
 
 
 def test_service_startup_schedules_subscription_catalog_refresh(
@@ -122,42 +121,42 @@ def test_get_lm_provider_unconfigured(tmp_path: Path) -> None:
         assert "openai" in ids
         assert "openrouter" in ids
         assert "lm_studio" in ids
-        assert "codex" in ids
+        assert "chatgpt" in ids
 
 
-def test_get_lm_provider_reports_codex_sign_in_required(tmp_path: Path, monkeypatch: Any) -> None:
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex-home"))
+def test_get_lm_provider_reports_chatgpt_sign_in_required(tmp_path: Path, monkeypatch: Any) -> None:
+    _chatgpt_signed_in(monkeypatch, signed_in=False)
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
 
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as client:
         body = client.get("/v1/providers/lm").json()
 
-    codex = next(preset for preset in body["presets"] if preset["id"] == "codex")
-    assert codex["auth_method"] == "subscription"
-    assert codex["status"] == "auth_required"
-    assert codex["is_authenticated"] is False
-    assert codex["suggested_model"] == ""
+    chatgpt = next(preset for preset in body["presets"] if preset["id"] == "chatgpt")
+    assert chatgpt["auth_method"] == "subscription"
+    assert chatgpt["status"] == "auth_required"
+    assert chatgpt["is_authenticated"] is False
+    assert chatgpt["suggested_model"] == ""
 
 
-def test_get_lm_provider_requires_live_codex_check(tmp_path: Path, monkeypatch: Any) -> None:
-    _write_codex_auth(tmp_path, monkeypatch)
+def test_get_lm_provider_requires_live_chatgpt_check(tmp_path: Path, monkeypatch: Any) -> None:
+    _chatgpt_signed_in(monkeypatch)
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
 
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as client:
         body = client.get("/v1/providers/lm").json()
 
-    codex = next(preset for preset in body["presets"] if preset["id"] == "codex")
-    assert codex["status"] == "auth_check_required"
-    assert codex["is_authenticated"] is False
-    assert codex["suggested_model"] == ""
+    chatgpt = next(preset for preset in body["presets"] if preset["id"] == "chatgpt")
+    assert chatgpt["status"] == "auth_check_required"
+    assert chatgpt["is_authenticated"] is False
+    assert chatgpt["suggested_model"] == ""
 
 
-def test_codex_provider_check_validates_sdk_and_adopts_live_default(
+def test_chatgpt_provider_check_validates_and_adopts_live_default(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
-    _write_codex_auth(tmp_path, monkeypatch)
+    _chatgpt_signed_in(monkeypatch)
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     from clio_agent.providers import model_discovery
 
@@ -167,9 +166,9 @@ def test_codex_provider_check_validates_sdk_and_adopts_live_default(
         del only_configured
         calls.append([preset.id for preset in presets])
         result = model_discovery.ProviderDiscoveryResult(
-            provider="codex",
+            provider="chatgpt",
             discovered=[{"id": "gpt-live", "name": "GPT Live", "description": ""}],
-            source=model_discovery.CODEX_SOURCE,
+            source=model_discovery.CHATGPT_SOURCE,
             default_model="gpt-live",
         )
         return [model_discovery.record_refresh(result)]
@@ -177,23 +176,23 @@ def test_codex_provider_check_validates_sdk_and_adopts_live_default(
     monkeypatch.setattr(model_discovery, "refresh_all", _refresh)
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as client:
-        checked = client.get("/v1/providers/codex/handshake?refresh=true").json()
+        checked = client.get("/v1/providers/chatgpt/handshake?refresh=true").json()
         configured = client.get("/v1/providers/lm").json()
 
-    assert calls == [["codex"]]
+    assert calls == [["chatgpt"]]
     assert checked["connectivity"] == "ok"
     assert checked["auth"] == "ok"
     assert [model["id"] for model in checked["models"]] == ["gpt-live"]
-    codex = next(preset for preset in configured["presets"] if preset["id"] == "codex")
-    assert codex["status"] == "ready"
-    assert codex["is_authenticated"] is True
-    assert codex["suggested_model"] == "gpt-live"
+    chatgpt = next(preset for preset in configured["presets"] if preset["id"] == "chatgpt")
+    assert chatgpt["status"] == "ready"
+    assert chatgpt["is_authenticated"] is True
+    assert chatgpt["suggested_model"] == "gpt-live"
 
 
-def test_codex_provider_check_does_not_probe_without_credentials(
+def test_chatgpt_provider_check_does_not_probe_without_credentials(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex-home"))
+    _chatgpt_signed_in(monkeypatch, signed_in=False)
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     from clio_agent.providers import model_discovery
 
@@ -203,42 +202,39 @@ def test_codex_provider_check_does_not_probe_without_credentials(
     monkeypatch.setattr(model_discovery, "refresh_all", _unexpected_refresh)
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as client:
-        checked = client.get("/v1/providers/codex/handshake?refresh=true").json()
+        checked = client.get("/v1/providers/chatgpt/handshake?refresh=true").json()
 
     assert checked["connectivity"] == "skipped"
     assert checked["auth"] == "missing"
     assert checked["models"] == []
 
 
-def test_codex_provider_check_reports_rejected_credentials_cleanly(
+def test_chatgpt_provider_check_reports_rejected_credentials_cleanly(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
-    _write_codex_auth(tmp_path, monkeypatch)
+    _chatgpt_signed_in(monkeypatch)
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     from clio_agent.providers import model_discovery
-    from clio_agent.providers.codex_errors import CODEX_AUTHENTICATION_ERROR_MESSAGE
+    from clio_agent.providers.chatgpt.errors import CHATGPT_AUTHENTICATION_ERROR_MESSAGE
 
     async def _refresh(*, presets: list[Any], only_configured: bool = True) -> list[dict[str, Any]]:
         del presets, only_configured
         return [
             {
-                "provider": "codex",
+                "provider": "chatgpt",
                 "discovered": [],
-                "failed_reason": (
-                    "Codex Python SDK model discovery failed: unexpected status 401 Unauthorized: "
-                    "Missing bearer or basic authentication in header"
-                ),
+                "failed_reason": ("unexpected status 401 Unauthorized: access token rejected"),
             }
         ]
 
     monkeypatch.setattr(model_discovery, "refresh_all", _refresh)
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as client:
-        checked = client.get("/v1/providers/codex/handshake?refresh=true").json()
+        checked = client.get("/v1/providers/chatgpt/handshake?refresh=true").json()
 
     assert checked["connectivity"] == "ok"
     assert checked["auth"] == "rejected"
-    assert checked["error"] == CODEX_AUTHENTICATION_ERROR_MESSAGE
+    assert checked["error"] == CHATGPT_AUTHENTICATION_ERROR_MESSAGE
     assert checked["models"] == []
 
 
@@ -410,9 +406,7 @@ def test_auth_provider_starts_and_completes_browser_argonne_flow(
 
     from clio_agent.providers import argonne_auth
 
-    monkeypatch.setattr(
-        "clio_agent.gact.routes.provider_catalog_routes.ensure_argonne_support", lambda: True
-    )
+    monkeypatch.setattr("clio_agent.gact.routes.provider_auth.ensure_argonne_support", lambda: True)
     monkeypatch.setattr(
         argonne_auth,
         "begin_authentication",
@@ -442,10 +436,14 @@ def test_auth_provider_starts_and_completes_browser_argonne_flow(
 
     assert start.status_code == 200, start.text
     body = start.json()
-    assert body["is_authenticated"] is False
+    # The generic provider sign-in API nests the browser flow's authorization
+    # URL under "browser" (replacing the old top-level authorization_url), and
+    # "start" no longer reports is_authenticated at all -- see
+    # gact/routes/provider_auth.py's module docstring.
     assert body["provider_id"] == "argonne_sophia"
     assert body["flow_id"] == "flow-123"
-    assert body["authorization_url"].startswith("https://auth.globus.org/")
+    assert body["browser"]["authorization_url"].startswith("https://auth.globus.org/")
+    assert body["browser"]["loopback"] is False
     assert "Installed ALCF sign-in support" in body["instructions"]
     assert "terminal" not in body["instructions"].lower()
     assert complete.status_code == 200, complete.text
@@ -466,7 +464,7 @@ def test_auth_provider_reports_argonne_support_install_failure(
         raise ProviderDependencyInstallError("permission denied")
 
     monkeypatch.setattr(
-        "clio_agent.gact.routes.provider_catalog_routes.ensure_argonne_support", _fail_install
+        "clio_agent.gact.routes.provider_auth.ensure_argonne_support", _fail_install
     )
 
     app = build_app(sessions_path=tmp_path / "s.json")
@@ -619,7 +617,7 @@ def test_provider_model_catalog_unavailable_live_provider_has_no_static(
 def test_provider_model_catalog_requires_verified_cli_provider(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
-    """Claude candidates stay visibly unverified; Codex has no static models."""
+    """Claude candidates stay visibly unverified; ChatGPT has no static models."""
     from clio_agent.providers.model_discovery import claude_code_catalog
 
     monkeypatch.setattr(
@@ -629,11 +627,11 @@ def test_provider_model_catalog_requires_verified_cli_provider(
     )
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
-        codex = c.get("/v1/providers/codex/models").json()
+        chatgpt = c.get("/v1/providers/chatgpt/models").json()
         claude = c.get("/v1/providers/claude_code/models").json()
 
-    assert codex["source"] == "unavailable"
-    assert codex["models"] == []
+    assert chatgpt["source"] == "unavailable"
+    assert chatgpt["models"] == []
     assert claude["source"] == "github_catalog"
     assert claude["models"] == [
         {"id": "claude-opus-5-5", "name": "Claude Opus 5.5", "availability": "candidate"}
@@ -641,17 +639,17 @@ def test_provider_model_catalog_requires_verified_cli_provider(
     assert claude["default_model"] == ""
 
 
-def test_codex_model_catalog_reads_startup_snapshot(tmp_path: Path, monkeypatch: Any) -> None:
-    """Ordinary reads use the last startup/explicit SDK check, not a new process."""
+def test_chatgpt_model_catalog_reads_startup_snapshot(tmp_path: Path, monkeypatch: Any) -> None:
+    """Ordinary reads use the last startup/explicit check, not a new process."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
-    _write_codex_auth(tmp_path, monkeypatch)
+    _chatgpt_signed_in(monkeypatch)
     from clio_agent.providers import model_discovery
 
     model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
-            provider="codex",
+            provider="chatgpt",
             discovered=[{"id": "old", "name": "Old"}],
-            source=model_discovery.CODEX_SOURCE,
+            source=model_discovery.CHATGPT_SOURCE,
             default_model="old",
         )
     )
@@ -659,14 +657,14 @@ def test_codex_model_catalog_reads_startup_snapshot(tmp_path: Path, monkeypatch:
 
     async def _refresh(*, presets: Any) -> list[dict[str, Any]]:
         nonlocal calls
-        assert presets[0].id == "codex"
+        assert presets[0].id == "chatgpt"
         calls += 1
         return [
             model_discovery.record_refresh(
                 model_discovery.ProviderDiscoveryResult(
-                    provider="codex",
+                    provider="chatgpt",
                     discovered=[{"id": f"model-{calls}", "name": f"Model {calls}"}],
-                    source=model_discovery.CODEX_SOURCE,
+                    source=model_discovery.CHATGPT_SOURCE,
                     default_model=f"model-{calls}",
                 )
             )
@@ -675,41 +673,41 @@ def test_codex_model_catalog_reads_startup_snapshot(tmp_path: Path, monkeypatch:
     monkeypatch.setattr(model_discovery, "refresh_all", _refresh)
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
-        first = c.get("/v1/providers/codex/models").json()
-        second = c.get("/v1/providers/codex/models").json()
+        first = c.get("/v1/providers/chatgpt/models").json()
+        second = c.get("/v1/providers/chatgpt/models").json()
     assert [row["id"] for row in first["models"]] == ["old"]
     assert [row["id"] for row in second["models"]] == ["old"]
     assert second["default_model"] == "old"
     assert calls == 0
 
 
-def test_codex_model_catalog_failure_does_not_show_old_models(
+def test_chatgpt_model_catalog_failure_does_not_show_old_models(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
-    _write_codex_auth(tmp_path, monkeypatch)
+    _chatgpt_signed_in(monkeypatch)
     from clio_agent.providers import model_discovery
 
     model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
-            provider="codex",
+            provider="chatgpt",
             discovered=[{"id": "old", "name": "Old"}],
-            source=model_discovery.CODEX_SOURCE,
+            source=model_discovery.CHATGPT_SOURCE,
             default_model="old",
         )
     )
 
     model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
-            provider="codex",
+            provider="chatgpt",
             discovered=[],
-            source=model_discovery.CODEX_SOURCE,
-            failed_reason="Codex credentials expired",
+            source=model_discovery.CHATGPT_SOURCE,
+            failed_reason="ChatGPT credentials expired",
         )
     )
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
-        body = c.get("/v1/providers/codex/models").json()
+        body = c.get("/v1/providers/chatgpt/models").json()
     assert body["models"] == []
     assert body["source"] == "unavailable"
 
@@ -721,23 +719,23 @@ def test_provider_list_default_model_follows_overlay_once_refreshed(
     overlay's discovered default (once a refresh has run), not the stale static
     ``suggested_model`` the account may already reject (#1184)."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
-    _write_codex_auth(tmp_path, monkeypatch)
+    _chatgpt_signed_in(monkeypatch)
     from clio_agent.providers import model_discovery
 
     model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
-            provider="codex",
+            provider="chatgpt",
             discovered=[{"id": "gpt-5.6-sol", "name": "Sol", "description": ""}],
-            source=model_discovery.CODEX_SOURCE,
+            source=model_discovery.CHATGPT_SOURCE,
             default_model="gpt-5.6-sol",
         )
     )
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
         rows = c.get("/v1/providers").json()["providers"]
-        detail = c.get("/v1/providers/codex").json()
-    codex_row = next(r for r in rows if r["id"] == "codex")
-    assert codex_row["default_model"] == "gpt-5.6-sol"
+        detail = c.get("/v1/providers/chatgpt").json()
+    chatgpt_row = next(r for r in rows if r["id"] == "chatgpt")
+    assert chatgpt_row["default_model"] == "gpt-5.6-sol"
     assert detail["default_model"] == "gpt-5.6-sol"
 
 
@@ -748,8 +746,8 @@ def test_provider_list_default_model_falls_back_to_static_without_overlay(
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
         rows = c.get("/v1/providers").json()["providers"]
-    codex_row = next(r for r in rows if r["id"] == "codex")
-    assert codex_row["default_model"] == ""
+    chatgpt_row = next(r for r in rows if r["id"] == "chatgpt")
+    assert chatgpt_row["default_model"] == ""
 
 
 def test_provider_list_default_model_claude_code_follows_account_default(
@@ -759,7 +757,7 @@ def test_provider_list_default_model_claude_code_follows_account_default(
 ) -> None:
     """Both subscription providers expose their account-discovered defaults."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
-    _write_codex_auth(tmp_path, monkeypatch)
+    _chatgpt_signed_in(monkeypatch)
     from clio_agent.providers import model_discovery
     from clio_agent.providers.model_discovery import claude_code_catalog
 
@@ -788,12 +786,12 @@ def test_provider_list_default_model_claude_code_follows_account_default(
             default_model="fable",  # the CLI's own bare-default choice
         )
     )
-    # Codex twin: its own account-discovered overlay default also wins.
+    # ChatGPT twin: its own account-discovered overlay default also wins.
     model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
-            provider="codex",
+            provider="chatgpt",
             discovered=[{"id": "gpt-5.6-sol", "name": "Sol", "description": ""}],
-            source=model_discovery.CODEX_SOURCE,
+            source=model_discovery.CHATGPT_SOURCE,
             default_model="gpt-5.6-sol",
         )
     )
@@ -807,13 +805,13 @@ def test_provider_list_default_model_claude_code_follows_account_default(
     with TestClient(app) as c:
         rows = c.get("/v1/providers").json()["providers"]
         claude_detail = c.get("/v1/providers/claude_code").json()
-        codex_detail = c.get("/v1/providers/codex").json()
+        chatgpt_detail = c.get("/v1/providers/chatgpt").json()
     claude_row = next(r for r in rows if r["id"] == "claude_code")
-    codex_row = next(r for r in rows if r["id"] == "codex")
+    chatgpt_row = next(r for r in rows if r["id"] == "chatgpt")
     assert claude_row["default_model"] == "fable"
     assert claude_detail["default_model"] == "fable"
-    assert codex_row["default_model"] == "gpt-5.6-sol"
-    assert codex_detail["default_model"] == "gpt-5.6-sol"
+    assert chatgpt_row["default_model"] == "gpt-5.6-sol"
+    assert chatgpt_detail["default_model"] == "gpt-5.6-sol"
     models_resp = c.get("/v1/providers/claude_code/models").json()
     assert models_resp["default_model"] == "fable"
     assert "cli_default" not in models_resp
@@ -885,14 +883,14 @@ def test_put_lm_provider_omitted_model_binds_the_overlay_default(
     through the overlay's discovered default once a refresh has run, not the
     stale static ``suggested_model`` (#1184's rejected pins)."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
-    _write_codex_auth(tmp_path, monkeypatch)
+    _chatgpt_signed_in(monkeypatch)
     from clio_agent.providers import model_discovery
 
     model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
-            provider="codex",
+            provider="chatgpt",
             discovered=[{"id": "gpt-5.6-sol", "name": "Sol", "description": ""}],
-            source=model_discovery.CODEX_SOURCE,
+            source=model_discovery.CHATGPT_SOURCE,
             default_model="gpt-5.6-sol",
         )
     )
@@ -928,7 +926,7 @@ def test_put_lm_provider_omitted_model_binds_the_overlay_default(
     with TestClient(app) as c:
         resp = c.put(
             "/v1/providers/lm",
-            json={"provider": "codex", "api_base": "codex://sdk", "model": ""},
+            json={"provider": "chatgpt", "api_base": "chatgpt://direct", "model": ""},
         )
     assert resp.status_code == 200, resp.text
     assert resp.json()["model"] == "gpt-5.6-sol"
@@ -977,11 +975,11 @@ def test_get_lm_provider_when_configured_from_boot_agent(tmp_path: Path, monkeyp
     ambient, not tmp_path-scoped). Delete the knobs that boot config reads so
     the seeded default profile is deterministically the lm_studio/no-transport
     default this test's ``assert body["transport"] is None`` actually pins,
-    instead of silently depending on nobody's ``.env`` naming codex/claude_code.
+    instead of silently depending on nobody's ``.env`` naming chatgpt/claude_code.
     """
     for env_var in (
         "CLIO_LM_PROVIDER",
-        "CLIO_CODEX_TRANSPORT",
+        "CLIO_CHATGPT_TRANSPORT",
         "CLIO_CLAUDE_CODE_TRANSPORT",
     ):
         monkeypatch.delenv(env_var, raising=False)
@@ -995,7 +993,7 @@ def test_get_lm_provider_when_configured_from_boot_agent(tmp_path: Path, monkeyp
             max_tokens=4096,
             context_length=32768,
             thinking_budget=0,
-            codex_transport="sdk",
+            chatgpt_transport="websocket",
         )
     )
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
@@ -1337,19 +1335,78 @@ def test_argonne_runtime_refresh_updates_live_lm_kwargs(monkeypatch) -> None:
     assert planner_lm.kwargs["api_key"] == "runtime-token"
 
 
-def test_put_lm_provider_rejects_removed_codex_transport(tmp_path: Path, monkeypatch) -> None:
-    """A manual app-server bind 400s; the default uses the official SDK."""
-    captured: dict[str, Any] = {}
-    monkeypatch.delenv("CLIO_CODEX_TRANSPORT", raising=False)
+def test_put_lm_provider_rejects_invalid_chatgpt_transport(tmp_path: Path, monkeypatch) -> None:
+    """A manual bind naming an unsupported transport 400s typed."""
+    monkeypatch.delenv("CLIO_CHATGPT_TRANSPORT", raising=False)
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
-    _write_codex_auth(tmp_path, monkeypatch)
+    _chatgpt_signed_in(monkeypatch)
     from clio_agent.providers import model_discovery
 
     model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
-            provider="codex",
+            provider="chatgpt",
             discovered=[{"id": "gpt-5.5", "name": "GPT-5.5", "description": ""}],
-            source=model_discovery.CODEX_SOURCE,
+            source=model_discovery.CHATGPT_SOURCE,
+            default_model="gpt-5.5",
+        )
+    )
+
+    class _StubAgent(_RebindLMStub):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.arc = type(
+                "ARC",
+                (),
+                {
+                    "get_cache_stats": lambda self: {
+                        "hits": 0,
+                        "misses": 0,
+                        "hit_rate": 0.0,
+                        "capacity": 10,
+                    }
+                },
+            )()
+
+        def forward(self, *args: Any, **kwargs: Any) -> Any:
+            return type("Pred", (), {"answer": "ok", "selected_expert": ""})()
+
+    monkeypatch.setattr("clio_agent.agent.ClioAgent", _StubAgent)
+
+    def _stub_create_lm(cfg: Any) -> Any:
+        return type("FakeLM", (), {"history": []})()
+
+    monkeypatch.setattr("clio_agent.config.create_lm", _stub_create_lm)
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        rejected = c.put(
+            "/v1/providers/lm",
+            json={
+                "provider": "chatgpt",
+                "api_base": "chatgpt://direct",
+                "model": "gpt-5.5",
+                "transport": "app_server",
+            },
+        )
+    assert rejected.status_code == 400, rejected.text
+    error = rejected.json()["error"]
+    assert error["error"] == "config_error"
+    assert "chatgpt_transport" in error["message"]
+    assert error["details"]["original_error"] == "ValueError"
+
+
+def test_put_lm_provider_accepts_explicit_chatgpt_transport(tmp_path: Path, monkeypatch) -> None:
+    """An explicit, valid chatgpt transport applies and round-trips on GET."""
+    captured: dict[str, Any] = {}
+    monkeypatch.delenv("CLIO_CHATGPT_TRANSPORT", raising=False)
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    _chatgpt_signed_in(monkeypatch)
+    from clio_agent.providers import model_discovery
+
+    model_discovery.record_refresh(
+        model_discovery.ProviderDiscoveryResult(
+            provider="chatgpt",
+            discovered=[{"id": "gpt-5.5", "name": "GPT-5.5", "description": ""}],
+            source=model_discovery.CHATGPT_SOURCE,
             default_model="gpt-5.5",
         )
     )
@@ -1382,43 +1439,29 @@ def test_put_lm_provider_rejects_removed_codex_transport(tmp_path: Path, monkeyp
 
     app = build_app(sessions_path=tmp_path / "s.json")
     with TestClient(app) as c:
-        rejected = c.put(
-            "/v1/providers/lm",
-            json={
-                "provider": "codex",
-                "api_base": "codex://app-server",
-                "model": "gpt-5.5",
-                "transport": "app_server",
-            },
-        )
-        assert rejected.status_code == 400, rejected.text
-        error = rejected.json()["error"]
-        assert error["error"] == "config_error"
-        assert "official Python SDK" in error["message"]
-        assert error["details"]["original_error"] == "ValueError"
-
         resp = c.put(
             "/v1/providers/lm",
             json={
-                "provider": "codex",
-                "api_base": "codex://sdk",
+                "provider": "chatgpt",
+                "api_base": "chatgpt://direct",
                 "model": "gpt-5.5",
+                "transport": "sse",
             },
         )
         body = resp.json()
         get_body = c.get("/v1/providers/lm").json()
 
     assert resp.status_code == 200, resp.text
-    assert body["transport"] == "sdk"
-    assert get_body["transport"] == "sdk"
-    assert captured["cfg"].provider == "codex"
+    assert body["transport"] == "sse"
+    assert get_body["transport"] == "sse"
+    assert captured["cfg"].provider == "chatgpt"
     assert captured["cfg"].api_key == "x"
-    assert captured["cfg"].codex_transport == "sdk"
-    assert app.state.lm_config["transport"] == "sdk"
+    assert captured["cfg"].chatgpt_transport == "sse"
+    assert app.state.lm_config["transport"] == "sse"
     # Demoted bind (design §5): transport travels on the config / store default,
-    # NOT process-global env. The bind must not stamp CLIO_CODEX_TRANSPORT.
-    assert "CLIO_CODEX_TRANSPORT" not in os.environ
-    assert app.state.provider_profiles.default.transport == "sdk"
+    # NOT process-global env. The bind must not stamp CLIO_CHATGPT_TRANSPORT.
+    assert "CLIO_CHATGPT_TRANSPORT" not in os.environ
+    assert app.state.provider_profiles.default.transport == "sse"
 
 
 def test_put_lm_provider_rejects_removed_claude_code_transport(
@@ -1598,6 +1641,7 @@ def test_lm_provider_reports_resolved_model_id_for_a_claude_code_alias(
             default_model="claude-sonnet-5",
         )
     )
+
     class _StubAgent(_RebindLMStub):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             self.arc = type(
@@ -1876,7 +1920,7 @@ def test_put_lm_provider_failed_first_connect_restores_env(tmp_path: Path, monke
         "CLIO_LM_API_BASE": "http://127.0.0.1:1234/v1",
         "CLIO_LM_MODEL": "stable-model",
         "CLIO_LM_API_KEY": "stable-key",
-        "CLIO_CODEX_TRANSPORT": "sdk",
+        "CLIO_CHATGPT_TRANSPORT": "websocket",
     }
     for key, value in before.items():
         monkeypatch.setenv(key, value)
@@ -2005,7 +2049,7 @@ _REMOVED_BIND_ENV_KEYS = (
     "CLIO_LM_API_BASE",
     "CLIO_LM_MODEL",
     "CLIO_LM_API_KEY",
-    "CLIO_CODEX_TRANSPORT",
+    "CLIO_CHATGPT_TRANSPORT",
     "CLIO_CLAUDE_CODE_TRANSPORT",
 )
 

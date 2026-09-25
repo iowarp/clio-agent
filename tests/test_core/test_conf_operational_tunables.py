@@ -225,17 +225,15 @@ def test_table_preview_source_byte_ceiling_is_configurable(
 
 
 # --------------------------------------------------------------------------- #
-# Codex private credential homes (providers/codex_credential_home.py)
+# NOTE (chatgpt migration): the deleted Codex SDK provider spawned per-session
+# CODEX_HOME dirs (isolated credential homes) with a configurable capacity
+# (``providers.codex.credential_home_capacity``,
+# ``providers/codex_credential_home.py``). The direct ChatGPT provider owns
+# ONE durable credential file end to end
+# (``clio_agent.providers.chatgpt.credentials.ChatGptCredentialStore``, see
+# ``gact/app.py``'s note next to the deleted reaper) -- there is no spawned
+# home, and so no equivalent capacity knob to test here.
 # --------------------------------------------------------------------------- #
-
-
-def test_codex_credential_home_capacity_is_configurable() -> None:
-    """``providers.codex.credential_home_capacity`` caps live private homes."""
-
-    from clio_agent.providers.codex_credential_home import codex_credential_home_capacity
-
-    set_config("providers", {"codex": {"credential_home_capacity": 2}})
-    assert codex_credential_home_capacity() == 2
 
 
 # --------------------------------------------------------------------------- #

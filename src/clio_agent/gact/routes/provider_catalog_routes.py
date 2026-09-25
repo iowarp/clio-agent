@@ -11,10 +11,10 @@ from fastapi import FastAPI, HTTPException, Request
 
 from clio_agent.gact.provider_catalog_snapshot import invalidate_provider
 from clio_agent.gact.routes._body import json_body
+from clio_agent.gact.routes.provider_auth import handle_auth_action
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, LMProviderPreset
 from clio_agent.providers.dependencies import (
     ProviderDependencyInstallError,
-    ensure_argonne_support,
     ensure_claude_code_support,
 )
 
@@ -25,27 +25,24 @@ def register_provider_catalog_routes(
     app: FastAPI,
     presets: list[LMProviderPreset],
     provider_models: dict[str, list[dict[str, str]]],
-    codex_readiness: Readiness,
+    chatgpt_readiness: Readiness,
     claude_code_readiness: Readiness,
 ) -> None:
     """Register provider auth, model listing, support install and checks."""
 
     _LM_PRESETS = presets
     _PROVIDER_MODELS = provider_models
-    _codex_readiness = codex_readiness
+    _chatgpt_readiness = chatgpt_readiness
     _claude_code_readiness = claude_code_readiness
 
     @app.post("/v1/providers/{provider_id}/auth")
     async def auth_provider(provider_id: str, request: Request) -> dict[str, Any]:
-        """SPEC §6.12 — kick off provider-specific auth.
+        """The generic provider sign-in API (start/complete/status/logout).
 
-        For argonne_*, ``action=start`` returns the Globus login URL and an
-        opaque flow id. ``action=complete`` exchanges the one-time code on the
-        connected agent, where the refresh token must live. This works for both
-        local and remote agents without trying to open a terminal on that host.
-
-        Other providers (cloud / local) use api_key / no-auth and
-        return 405 with a hint pointing to PUT /v1/providers/lm.
+        Dispatched by provider kind in :mod:`clio_agent.gact.routes.provider_auth`
+        -- ALCF (Globus OAuth) and the direct ChatGPT provider both go through
+        this one interface. Any other provider (cloud / local, api_key / no
+        auth) gets a 405 with a hint pointing to PUT /v1/providers/lm.
         """
 
         preset = next((p for p in _LM_PRESETS if p.id == provider_id), None)
@@ -61,89 +58,9 @@ def register_provider_catalog_routes(
                 ).model_dump(exclude_none=True),
             )
 
-        if preset.provider != "argonne":
-            raise HTTPException(
-                status_code=405,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="unsupported",
-                        message=(
-                            f"provider '{provider_id}' uses "
-                            f"{'api_key' if preset.requires_api_key else 'no'} "
-                            "auth; pass api_key directly to PUT /v1/providers/lm."
-                        ),
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        try:
-            installed_support = await asyncio.to_thread(ensure_argonne_support)
-        except ProviderDependencyInstallError as exc:
-            raise HTTPException(
-                status_code=503,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="dependency_install_failed",
-                        message=(
-                            "CLIO could not install ALCF sign-in support on the connected agent: "
-                            f"{exc}"
-                        ),
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from exc
-
         body = await json_body(request, route="POST /v1/providers/{provider_id}/auth")
         action = str(body.get("action", "start")).strip().lower()
-        try:
-            from clio_agent.providers import argonne_auth  # noqa: PLC0415
-
-            if action == "complete":
-                flow_id = str(body.get("flow_id", ""))
-                authorization_code = str(body.get("authorization_code", ""))
-                await asyncio.to_thread(
-                    argonne_auth.complete_authentication,
-                    flow_id,
-                    authorization_code,
-                )
-                # The Globus tokens are shared by every ALCF cluster, so every
-                # argonne provider's catalog evidence was produced under the old
-                # (signed-out) credential; the next catalog read re-probes them.
-                for argonne_preset in (p for p in _LM_PRESETS if p.provider == "argonne"):
-                    invalidate_provider(app, argonne_preset.id)
-                return {
-                    "is_authenticated": True,
-                    "provider_id": provider_id,
-                    "instructions": "ALCF sign-in complete. Checking available models.",
-                }
-            if action != "start":
-                raise ValueError(f"unknown authentication action: {action}")
-
-            pending = await asyncio.to_thread(argonne_auth.begin_authentication)
-        except Exception as exc:
-            raise HTTPException(
-                status_code=502,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="argonne_auth_failed",
-                        message=f"Could not complete Globus authentication: {exc}",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from exc
-
-        return {
-            "is_authenticated": False,
-            "provider_id": provider_id,
-            "instructions": (
-                ("Installed ALCF sign-in support on this agent. " if installed_support else "")
-                + f"Continue in {preset.auth_label or 'Globus'}, then paste the authorization "
-                "code here."
-            ),
-            "authorization_url": pending.authorization_url,
-            "flow_id": pending.flow_id,
-        }
+        return await handle_auth_action(preset=preset, action=action, body=body, app=app, presets=_LM_PRESETS)
 
     @app.get("/v1/providers/{provider_id}/models")
     async def list_provider_models(provider_id: str, api_base: str = "") -> dict[str, Any]:
@@ -176,9 +93,9 @@ def register_provider_catalog_routes(
                 )
             return {"models": models, "source": "static_catalog"}
 
-        if preset.provider in {"codex", "claude_code"}:
+        if preset.provider in {"chatgpt", "claude_code"}:
             _, message, verified, _ = (
-                _codex_readiness() if preset.provider == "codex" else _claude_code_readiness()
+                _chatgpt_readiness() if preset.provider == "chatgpt" else _claude_code_readiness()
             )
             try:
                 overlay = model_discovery.overlay_models_wire(preset.id, preset.provider)
@@ -316,13 +233,13 @@ def register_provider_catalog_routes(
             # An explicit check is new evidence: the catalog snapshot must not keep
             # serving what the provider looked like before it.
             invalidate_provider(app, preset.id)
-        if preset.provider == "codex":
-            status, message, verified, _ = _codex_readiness()
+        if preset.provider == "chatgpt":
+            status, message, verified, _ = _chatgpt_readiness()
             if refresh and status in {"auth_check_required", "ready"}:
                 from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
-                from clio_agent.providers.codex_errors import (  # noqa: PLC0415
-                    CODEX_AUTHENTICATION_ERROR_MESSAGE,
-                    contains_codex_authentication_error,
+                from clio_agent.providers.chatgpt.errors import (  # noqa: PLC0415
+                    CHATGPT_AUTHENTICATION_ERROR_MESSAGE,
+                    contains_chatgpt_authentication_error,
                 )
 
                 provider = get_provider(preset.id)
@@ -334,17 +251,17 @@ def register_provider_catalog_routes(
                 result = results[0] if results else {}
                 failure = str(result.get("failed_reason") or "")
                 if failure:
-                    auth_failure = contains_codex_authentication_error(failure)
+                    auth_failure = contains_chatgpt_authentication_error(failure)
                     return {
                         "models": [],
                         "source": "unavailable",
-                        "error": (CODEX_AUTHENTICATION_ERROR_MESSAGE if auth_failure else failure),
+                        "error": (CHATGPT_AUTHENTICATION_ERROR_MESSAGE if auth_failure else failure),
                         "connectivity": "ok" if auth_failure else "unreachable",
                         "auth": "rejected" if auth_failure else "deferred",
                         "latency_ms": None,
                         "generated_at": str(result.get("generated_at") or ""),
                     }
-                status, message, verified, _ = _codex_readiness(ignore_startup=True)
+                status, message, verified, _ = _chatgpt_readiness(ignore_startup=True)
             if not verified:
                 return {
                     "models": [],

@@ -10,10 +10,6 @@ from clio_agent.providers.claude_code_litellm import (
     ClaudeCodeUnsupportedMultimodalError,
     _messages_to_claude_input,
 )
-from clio_agent.providers.codex_litellm import (
-    CodexUnsupportedMultimodalError,
-    _messages_to_codex_input,
-)
 from clio_agent.providers.native_attachment_bounds import (
     NATIVE_ATTACHMENT_REFUSAL_REASONS,
     NativeAttachmentTooLargeError,
@@ -131,37 +127,15 @@ def test_claude_refuses_individually_legal_attachments_that_sum_past_the_request
         )
 
 
-def test_codex_shares_the_same_bounds() -> None:
-    """One bounds module across both providers, so the two cannot drift apart."""
-
-    set_config("resources.native_image_max_bytes", 1024)
-    oversized = f"data:image/png;base64,{_b64_of(4096)}"
-
-    with pytest.raises(CodexUnsupportedMultimodalError, match="per-image ceiling"):
-        _messages_to_codex_input(
-            [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image_url", "image_url": {"url": oversized}},
-                    ],
-                }
-            ]
-        )
-
-
-def test_codex_remote_urls_are_not_sized_as_clio_payload() -> None:
-    """A remote URL's bytes are not CLIO's to measure, so it is not refused on size."""
-
-    set_config("resources.native_image_max_bytes", 8)
-    _prompt, images = _messages_to_codex_input(
-        [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": "https://example.test/a.png"}}
-                ],
-            }
-        ]
-    )
-    assert images == ["https://example.test/a.png"]
+# NOTE (chatgpt migration): the deleted Codex SDK provider's
+# ``_messages_to_codex_input`` re-checked these same bounds as a defense-in-depth
+# layer before expansion (mirroring the Claude Code adapter above). The new
+# direct ChatGPT provider's message conversion
+# (``clio_agent.providers.chatgpt.responses.chat_messages_to_responses_input``)
+# does not call into ``native_attachment_bounds`` at all -- there is no
+# provider-adapter-level bounds re-check for chatgpt to port a test onto. The
+# generic ingestion-level check in ``gact/messaging.py`` (``check_block_bytes``
+# against the recorded attachment size, before any provider is invoked) still
+# applies regardless of provider, so this is not a silent hole in coverage of
+# the bound itself -- only of this one provider's redundant second check. Flagged
+# for the src owners rather than fixed here (out of scope for a test-only slice).

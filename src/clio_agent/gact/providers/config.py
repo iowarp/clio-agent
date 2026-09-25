@@ -129,8 +129,8 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
                 cfg[key] = value
     if not cfg.get("transport"):
         provider = getattr(provider_config, "provider", "")
-        if provider == "codex":
-            cfg["transport"] = getattr(provider_config, "codex_transport", None)
+        if provider == "chatgpt":
+            cfg["transport"] = getattr(provider_config, "chatgpt_transport", None)
         elif provider == "claude_code":
             cfg["transport"] = getattr(provider_config, "claude_code_transport", None)
     # Effective thinking level (#895): surface both the raw level and the resolved
