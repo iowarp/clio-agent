@@ -31,11 +31,11 @@ __all__ = ["build_headers", "stream_sse_turn"]
 
 def build_headers(credential: CodexCredential, *, session_id: str) -> dict[str, str]:
     """A.5 headers. Callers must never log these verbatim -- Authorization and
-    codex-account-id are secrets/identity and are redacted at every log site."""
+    chatgpt-account-id are secrets/identity and are redacted at every log site."""
 
     return {
         "Authorization": f"Bearer {credential.access_token}",
-        "codex-account-id": credential.account_id,
+        "chatgpt-account-id": credential.account_id,
         "originator": c.ORIGINATOR,
         "User-Agent": "clio-agent",
         "OpenAI-Beta": c.OPENAI_BETA_SSE,

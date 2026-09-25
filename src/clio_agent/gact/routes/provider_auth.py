@@ -26,7 +26,7 @@ from clio_agent.gact.provider_catalog_snapshot import invalidate_provider
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, LMProviderPreset
 from clio_agent.providers.dependencies import ProviderDependencyInstallError, ensure_argonne_support
 
-__all__ = ["handle_auth_action"]
+__all__ = ["handle_auth_action", "supports_logout"]
 
 StartHandler = Callable[
     [LMProviderPreset, dict[str, Any], Any, list[LMProviderPreset]], Awaitable[dict[str, Any]]
@@ -253,6 +253,20 @@ _LOGOUT: dict[str, LogoutHandler] = {"argonne": _argonne_logout, "codex": _codex
 _NO_AUTH_FLOW_MESSAGE = (
     "provider '{id}' uses {kind} auth; pass api_key directly to PUT /v1/providers/lm."
 )
+
+
+def supports_logout(provider_kind: str) -> bool:
+    """Whether ``provider_kind`` has a real ``POST .../auth {action: logout}`` handler.
+
+    The ONE source of truth for "does Sign out do anything" -- Claude Code's
+    subscription is the user's own Claude CLI login, which CLIO does not own
+    and cannot revoke, so it (correctly) has no entry in :data:`_LOGOUT` and
+    this returns ``False`` for it. The picker/Settings action panel reads
+    this off the preset (``LMProviderPreset.supports_logout``) rather than
+    inferring it from ``auth_method`` client-side, which cannot tell
+    Claude Code's subscription apart from Codex's or ALCF's.
+    """
+    return provider_kind in _LOGOUT
 
 
 async def handle_auth_action(

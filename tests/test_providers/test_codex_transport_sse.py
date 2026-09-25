@@ -26,7 +26,7 @@ def _sse_body(*lines: str) -> bytes:
 def test_build_headers_carries_auth_and_ids() -> None:
     headers = build_headers(_CREDENTIAL, session_id="sess_1")
     assert headers["Authorization"] == "Bearer at"
-    assert headers["codex-account-id"] == "acct_1"
+    assert headers["chatgpt-account-id"] == "acct_1"
     assert headers["session-id"] == "sess_1"
     assert headers["x-client-request-id"] == "sess_1"
     assert headers["accept"] == "text/event-stream"

@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from clio_agent.gact.lm_provider_types import LMProviderPreset
-from clio_agent.gact.routes.provider_auth import handle_auth_action
+from clio_agent.gact.routes.provider_auth import handle_auth_action, supports_logout
 from clio_agent.providers.codex.login_flow import CodexCredential
 
 
@@ -47,6 +47,16 @@ def _no_invalidate(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "clio_agent.gact.routes.provider_auth.invalidate_provider", lambda *a, **k: None
     )
+
+
+def test_supports_logout_matches_the_registry_exactly() -> None:
+    """The registry IS the answer -- argonne and codex have real logout
+    handlers, Claude Code (the user's own CLI login) does not, and neither
+    does an unknown kind."""
+    assert supports_logout("argonne") is True
+    assert supports_logout("codex") is True
+    assert supports_logout("claude_code") is False
+    assert supports_logout("openai") is False
 
 
 async def test_unknown_provider_kind_returns_405_for_start() -> None:

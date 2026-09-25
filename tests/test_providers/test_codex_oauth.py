@@ -107,7 +107,7 @@ def _jwt_with_payload(payload: dict) -> str:
 
 class TestDecodeAccountId:
     def test_extracts_account_id_from_claim(self) -> None:
-        token = _jwt_with_payload({c.JWT_AUTH_CLAIM: {"codex_account_id": "acct_123"}})
+        token = _jwt_with_payload({c.JWT_AUTH_CLAIM: {"chatgpt_account_id": "acct_123"}})
         assert oauth.decode_account_id(token) == "acct_123"
 
     def test_missing_claim_raises(self) -> None:
@@ -332,3 +332,20 @@ class TestLoopbackListener:
     def test_close_is_always_safe(self) -> None:
         listener = oauth.LoopbackListener("expected-state")
         listener.close()  # never started -- must not raise
+
+
+def test_openai_wire_names_are_pinned() -> None:
+    """OpenAI's own identifiers must survive any CLIO-side renaming.
+
+    The access token's account claim and the request header are named by
+    OpenAI, not CLIO. A rename of the CLIO provider once changed both, and
+    every sign-in then failed after OpenAI had already approved it.
+    """
+    import inspect
+
+    from clio_agent.providers.codex import oauth, transport_sse, transport_ws
+
+    assert c.JWT_AUTH_CLAIM == "https://api.openai.com/auth"
+    assert '"chatgpt_account_id"' in inspect.getsource(oauth)
+    assert '"chatgpt-account-id"' in inspect.getsource(transport_sse)
+    assert '"chatgpt-account-id"' in inspect.getsource(transport_ws)

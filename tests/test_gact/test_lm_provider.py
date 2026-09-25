@@ -289,6 +289,22 @@ def test_get_lm_provider_reports_claude_code_install_required(
     assert claude["suggested_model"] == ""
 
 
+def test_get_lm_provider_reports_supports_logout_per_provider_kind(tmp_path: Path) -> None:
+    """The ONE source of truth for "does Sign out do anything": derived from
+    the same `_LOGOUT` registry the auth route dispatches through, never
+    inferred client-side from `auth_method` (which cannot tell Claude Code's
+    own CLI subscription apart from Codex's or ALCF's CLIO-owned one)."""
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        body = client.get("/v1/providers/lm").json()
+
+    presets_by_id = {preset["id"]: preset for preset in body["presets"]}
+    assert presets_by_id["claude_code"]["supports_logout"] is False
+    assert presets_by_id["codex"]["supports_logout"] is True
+    assert presets_by_id["argonne_sophia"]["supports_logout"] is True
+
+
 def test_install_claude_code_support_endpoint(tmp_path: Path, monkeypatch: Any) -> None:
     from clio_agent.providers import dependencies
 

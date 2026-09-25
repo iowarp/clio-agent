@@ -73,7 +73,7 @@ LOOPBACK_HOST = "127.0.0.1"
 LOOPBACK_PORT = 1455
 LOOPBACK_PATH = "/auth/callback"
 SCOPE = "openid profile email offline_access"
-#: JWT claim namespace holding ``codex_account_id`` on the access token.
+#: JWT claim namespace holding ``chatgpt_account_id`` on the access token.
 JWT_AUTH_CLAIM = "https://api.openai.com/auth"
 
 # ---------------------------------------------------------------------------

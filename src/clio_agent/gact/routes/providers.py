@@ -65,6 +65,7 @@ from clio_agent.gact.providers.lmstudio import (
 from clio_agent.gact.providers.request_normalization import normalize_lm_provider_request
 from clio_agent.gact.relay_wiring import construct_agent_with_relay
 from clio_agent.gact.routes.codex_variant import apply_codex_readiness_gate
+from clio_agent.gact.routes.provider_auth import supports_logout
 from clio_agent.gact.routes.provider_catalog_routes import register_provider_catalog_routes
 from clio_agent.gact.runtime.globals import _process_arc, _set_app_arc
 from clio_agent.gact.types import (
@@ -315,7 +316,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         }.get(preset.id, "CLIO_LM_API_KEY")
 
     def _preset_with_status(preset: LMProviderPreset) -> LMProviderPreset:
-        update: dict[str, Any] = {}
+        update: dict[str, Any] = {"supports_logout": supports_logout(preset.provider)}
         if preset.provider == "argonne":
             try:
                 from clio_agent.providers import argonne_auth  # noqa: PLC0415

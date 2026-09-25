@@ -614,7 +614,7 @@ def refresh_token(refresh: str, *, client: httpx.Client | None = None) -> TokenR
 
 
 def decode_account_id(access_token: str) -> str:
-    """Decode the access token's JWT payload and return ``codex_account_id``.
+    """Decode the access token's JWT payload and return ``chatgpt_account_id``.
 
     No signature verification is performed (A.3: "no signature check
     needed") -- CLIO trusts the token because it just received it directly
@@ -639,10 +639,10 @@ def decode_account_id(access_token: str) -> str:
         raise OAuthError(f"could not decode the access token payload: {exc}") from exc
     auth_claim = payload.get(c.JWT_AUTH_CLAIM)
     account_id = (
-        (auth_claim or {}).get("codex_account_id") if isinstance(auth_claim, dict) else None
+        (auth_claim or {}).get("chatgpt_account_id") if isinstance(auth_claim, dict) else None
     )
     if not account_id:
         raise OAuthError(
-            f"access token is missing {c.JWT_AUTH_CLAIM!r}.codex_account_id -- login failed"
+            f"access token is missing {c.JWT_AUTH_CLAIM!r}.chatgpt_account_id -- login failed"
         )
     return str(account_id)

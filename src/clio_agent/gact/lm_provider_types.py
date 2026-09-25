@@ -50,6 +50,11 @@ class LMProviderPreset(BaseModel):
     configuration_fields: list[LMProviderConfigurationField] = Field(default_factory=list)
     supports_runtime_sizing: bool = False
     managed_service_id: str = ""
+    #: Whether this provider has a real POST .../auth {action: logout} handler
+    #: (the SAME registry the route itself dispatches through -- never
+    #: inferred client-side from auth_method, which cannot tell a CLIO-owned
+    #: subscription like Codex's apart from Claude Code's own CLI login).
+    supports_logout: bool = False
 
 
 class LMProviderInfo(BaseModel):

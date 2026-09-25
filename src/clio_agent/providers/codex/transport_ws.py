@@ -76,7 +76,7 @@ def build_ws_headers(credential: CodexCredential, *, session_id: str) -> dict[st
 
     return {
         "Authorization": f"Bearer {credential.access_token}",
-        "codex-account-id": credential.account_id,
+        "chatgpt-account-id": credential.account_id,
         "originator": c.ORIGINATOR,
         "User-Agent": "clio-agent",
         "OpenAI-Beta": c.OPENAI_BETA_WEBSOCKETS,
