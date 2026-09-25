@@ -140,6 +140,28 @@ argonne = [
     "globus-sdk>=3.0.0",
 ]
 
+desktop = [
+    # The bundled CLIO Desktop runtime's install set beyond clio-agent's base
+    # deps. install/build-gact-runtime.sh|.ps1 install exactly
+    # `clio-agent[argonne,desktop]` (their BUNDLE_EXTRAS list) against a
+    # `uv export` of those same extras, so everything the bundle ships comes
+    # from ONE `uv lock` resolution. Before this extra, clio-kit was a
+    # hardcoded pin outside the lock and its click>=8.3.3 floor could never
+    # be reconciled with the locked click (resolver failure at release time).
+    "clio-kit==2.10.6",
+    # Runtime deps of clio-kit's bundled Web Search adapter (web-mcp 2.1.0,
+    # installed from clio-kit's data dir), mirrored from its pyproject so
+    # they are locked too. fastmcp, httpx, pydantic and platformdirs are
+    # already base deps. When bumping clio-kit, re-mirror this list:
+    # scripts/check_bundle_matches_lock.py fails on any installed package the
+    # lock export does not cover.
+    "trafilatura>=1.12",
+    "readability-lxml>=0.8",
+    "ddgs>=6.0",
+    "pydantic-settings>=2.6",
+    "python-dotenv>=1.0",
+]
+
 claude-code = [
     # Optional Claude Agent SDK transport (claude_code_transport="sdk"): a
     # persistent in-process Claude Code session instead of one spawn per LM
@@ -178,7 +200,7 @@ dev = [
 ]
 
 all = [
-    "clio-agent[optimizers,adios,argonne,claude-code,flowcept,dev]",
+    "clio-agent[optimizers,adios,argonne,claude-code,desktop,flowcept,dev]",
 ]
 
 [project.urls]

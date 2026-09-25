@@ -242,12 +242,12 @@ jobs:
         if: matrix.variant == 'bundled' && runner.os == 'Windows'
         shell: pwsh
         run: ./install/build-gact-runtime.ps1 -Out external/gact-tui/desktop/src-tauri/gact-runtime -Source $env:GITHUB_WORKSPACE
-      # CU: the build scripts now pass uv.lock's own export as an install
-      # --constraint, but prove it actually took effect rather than trusting
-      # the mechanism silently -- a mismatch here means the bundle shipped a
-      # different iowarp-core (or any other package) than uv.lock/CI tested,
-      # the exact class of incident (a 2.1.0 client + 2.2.1 daemon on one
-      # host) this check exists to catch before release.
+      # CU: the build scripts install clio-agent[BUNDLE_EXTRAS] against uv.lock's
+      # export of those same extras, but prove it actually took effect rather
+      # than trusting the mechanism silently -- a version mismatch, or a package
+      # the lock export does not cover, means the bundle shipped something other
+      # than what uv.lock/CI tested (the 2.1.0 client + 2.2.1 daemon incident).
+      # ci.yml's bundle-lock-resolve job catches install-set conflicts per PR.
       - name: Verify bundled runtime matches uv.lock
         if: matrix.variant == 'bundled' && runner.os != 'Windows'
         shell: bash
