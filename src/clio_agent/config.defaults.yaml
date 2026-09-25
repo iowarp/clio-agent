@@ -201,21 +201,10 @@ lm.provider: "lm_studio"
 # abandoned as inconclusive; raise on hosts where cold CLI startup is slow.
 providers.claude_code.auth_status_timeout_s: 20.0
 
-# CLIO_CLAUDE_CODE_MAX_BASE_CONNECTIONS  (int)  <- src/clio_agent/providers/claude_code_stream_bounds.py
-# Max idle shared Claude Code connections (one per model and reasoning
-# level) kept pooled before the least recently used is closed; raise if you
-# switch levels often.
-providers.claude_code.max_base_connections: 4
-
 # CLIO_CLAUDE_CODE_MAX_CONCURRENT_PROCESSES  (float)  <- src/clio_agent/providers/claude_code_stream_bounds.py
 # Process-wide cap on concurrently-connected claude CLI subprocesses; a
 # connect beyond it waits, raise for more concurrent sessions.
 providers.claude_code.max_concurrent_processes: 4.0
-
-# CLIO_CLAUDE_CODE_SESSION_REUSE  (bool)  <- src/clio_agent/providers/claude_code_sessions.py
-# Keeps a pooled/reused SDK connection per scope instead of a fresh client
-# per call; set false to restore pre-#891 fresh-connect behavior.
-providers.claude_code.session_reuse: true
 
 # CLIO_CLAUDE_CODE_STATEFUL_CAPACITY  (float)  <- src/clio_agent/providers/claude_code_stateful.py
 # Max live Claude Code stateful-session entries before LRU eviction; raise
@@ -223,9 +212,15 @@ providers.claude_code.session_reuse: true
 providers.claude_code.stateful_capacity: 128.0
 
 # CLIO_CLAUDE_CODE_STREAM_IDLE_TTL_S  (float)  <- src/clio_agent/providers/claude_code_stream_bounds.py
-# Seconds a scope-keyed pooled Claude Code connection may sit idle before
-# the next request reaps it; lower to free idle connections sooner.
+# Seconds a session's pooled Claude Code connection may sit idle before the
+# next request reaps it; lower to free idle connections sooner.
 providers.claude_code.stream_idle_ttl_s: 15.0
+
+# CLIO_CLAUDE_CODE_WARM_POOL_SIZE  (float)  <- src/clio_agent/providers/claude_code_stream_bounds.py
+# Pre-connected, unclaimed Claude Code SDK clients kept ready (one per GACT
+# session is handed one on first use); 0 disables the warm pool, raise for
+# more sessions starting at once.
+providers.claude_code.warm_pool_size: 2.0
 
 # CLIO_CODEX_CREDENTIAL_HOME_CAPACITY  (int)  <- src/clio_agent/providers/codex_credential_home.py
 # Max simultaneous private CODEX_HOME credential-dir copies the Codex SDK

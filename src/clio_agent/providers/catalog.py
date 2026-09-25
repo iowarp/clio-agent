@@ -476,6 +476,12 @@ PROVIDERS: tuple[Provider, ...] = (
                 ("text", "image"),
             ),
         ),
+        # B7 not adopted (S2 Claude SDK tuning): CLIO's own DSPy ReAct loop
+        # drives every claude_code turn end-to-end (tools=[] on the SDK
+        # session — see build_sdk_options); Claude Code is a bare model
+        # engine, never its own inner loop. Explicit (matches the dataclass
+        # default) so the ruling is documented on the record itself.
+        inner_loop_owner="clio",
     ),
     # ----- argonne ALCF ----------------------------------------------
     # NB: api_key for argonne presets is resolved lazily via

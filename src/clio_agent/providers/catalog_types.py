@@ -76,3 +76,11 @@ class Provider:
     managed_service_id: str = ""
     is_kind_default: bool = False
     model_catalog: tuple[ModelEntry, ...] = ()
+    #: Who drives the tool/reasoning loop for this provider. ``"clio"`` (the
+    #: default, and true for every direct provider): CLIO's own DSPy ReAct
+    #: loop owns iteration end-to-end. A provider whose own SDK/CLI could run
+    #: an agentic loop of its own (e.g. claude_code, if its built-in tools were
+    #: ever enabled) would report something else here — checked instead of
+    #: assumed, so the rest of CLIO never silently assumes context-policy
+    #: parity (rewind/compaction/etc.) it does not actually have.
+    inner_loop_owner: str = "clio"

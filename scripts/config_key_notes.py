@@ -805,24 +805,21 @@ KEY_NOTES: dict[str, str] = {
         "Process-wide cap on concurrently-connected claude CLI subprocesses; a connect beyond it "
         "waits, raise for more concurrent sessions."
     ),
-    "providers.claude_code.session_reuse": (
-        "Keeps a pooled/reused SDK connection per scope instead of a fresh client per call; set "
-        "false to restore pre-#891 fresh-connect behavior."
-    ),
     "providers.claude_code.auth_status_timeout_s": (
         "Seconds the Claude Code `auth status` sign-in check may run before it is abandoned as "
         "inconclusive; raise on hosts where cold CLI startup is slow."
     ),
-    "providers.claude_code.max_base_connections": (
-        "Max idle shared Claude Code connections (one per model and reasoning level) kept "
-        "pooled before the least recently used is closed; raise if you switch levels often."
+    "providers.claude_code.warm_pool_size": (
+        "Pre-connected, unclaimed Claude Code SDK clients kept ready (one per GACT session is "
+        "handed one on first use); 0 disables the warm pool, raise for more sessions starting "
+        "at once."
     ),
     "providers.claude_code.stateful_capacity": (
         "Max live Claude Code stateful-session entries before LRU eviction; raise on a host "
         "running many concurrent stateful sessions."
     ),
     "providers.claude_code.stream_idle_ttl_s": (
-        "Seconds a scope-keyed pooled Claude Code connection may sit idle before the next request "
+        "Seconds a session's pooled Claude Code connection may sit idle before the next request "
         "reaps it; lower to free idle connections sooner."
     ),
     "providers.codex.credential_home_capacity": (
