@@ -977,6 +977,7 @@ def test_health_lm_row_is_unified_probe_lm_provider(tmp_path: Path, monkeypatch)
     def _refused(*a: Any, **k: Any):
         raise requests.ConnectionError("connection refused")
 
+    monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")  # selected (else: unconfigured)
     probe = RuntimeProbe(
         env={"CLIO_ARC_STORE": "local", "CLIO_DATA_DIR": str(tmp_path)},
         http_get=_refused,
@@ -1048,6 +1049,7 @@ def test_health_surfaces_argonne_token_missing_via_probe(tmp_path: Path, monkeyp
     check now lives in the probe engine, not the health handler."""
 
     monkeypatch.setattr("clio_agent.providers.argonne_auth.tokens_exist", lambda: False)
+    monkeypatch.setenv("CLIO_LM_PROVIDER", "argonne")  # selected (else: unconfigured)
 
     probe = RuntimeProbe(
         env={

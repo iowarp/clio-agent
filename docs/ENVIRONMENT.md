@@ -320,7 +320,7 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_AUTH_TOKEN` | secret | `src/clio_agent/gact/auth.py`, `src/clio_agent/gact/desktop_boot.py` |
 | `CLIO_COLLABORA_URL` | unmigrated | `src/clio_agent/gact/documents/editors.py` |
 | `CLIO_CRED_<PROVIDER>_<ACCOUNT>` | secret | `src/clio_agent/providers/credentials.py` |
-| `CLIO_DESKTOP_BOOT_HEARTBEAT` | unmigrated | `src/clio_agent/gact/desktop_boot.py`, `src/clio_agent/gact/routes/health_projection.py`, `src/clio_agent/tools/desktop_mcp_runtime.py` |
+| `CLIO_DESKTOP_BOOT_HEARTBEAT` | unmigrated | `src/clio_agent/gact/desktop_boot.py`, `src/clio_agent/tools/desktop_mcp_runtime.py` |
 | `CLIO_DESKTOP_MANAGED` | unmigrated | `src/clio_agent/gact/routes/lifecycle.py` |
 | `CLIO_DOCUMENT_TYPST_FONT` | unmigrated | `src/clio_agent/gact/documents/renditions.py` |
 | `CLIO_ENV_FILE` | bootstrap | `src/clio_agent/config.py` |

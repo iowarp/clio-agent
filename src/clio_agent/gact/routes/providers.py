@@ -65,7 +65,8 @@ from clio_agent.gact.providers.lmstudio import (
 from clio_agent.gact.providers.request_normalization import normalize_lm_provider_request
 from clio_agent.gact.relay_wiring import construct_agent_with_relay
 from clio_agent.gact.routes.provider_catalog_routes import register_provider_catalog_routes
-from clio_agent.gact.runtime.globals import _process_arc, _set_app_arc
+from clio_agent.gact.runtime.globals import _set_app_arc
+from clio_agent.gact.server_boot import process_arc_off_loop
 from clio_agent.gact.types import (
     ErrorEnvelope,
     ErrorInfo,
@@ -821,13 +822,12 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 # win over a from-scratch rebuild.
                 agent = _copy.copy(existing)
             else:
-                # Build the first agent directly with the selected, handshake-applied
-                # provider.  Reading the ambient boot default here used to construct a
-                # throwaway LM Studio agent first, making a clean desktop's initial
-                # Codex/Claude selection wait through local-provider retries.
+                # Build the first agent directly with the selected, handshake-applied provider
+                # (never a throwaway ambient-default LM Studio agent first); the ARC is awaited
+                # off-loop, sharing any in-flight boot construction (server_boot).
                 agent = await construct_agent_with_relay(
                     app,
-                    arc=_process_arc(app),
+                    arc=await process_arc_off_loop(app),
                     provider_config=cfg,
                 )
             agent.rebind_lms(cfg)  # both paths need this cfg bound; done once, unconditionally

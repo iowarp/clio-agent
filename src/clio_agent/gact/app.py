@@ -55,7 +55,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from clio_agent import conf
 from clio_agent.arc import loop_guard
-from clio_agent.gact import composer_runtime
+from clio_agent.gact import composer_runtime, server_boot
 from clio_agent.gact.auth import configure_bearer_auth
 from clio_agent.gact.cors import gact_cors_origins as _gact_cors_origins
 from clio_agent.gact.error_middleware import error_code_for_status, install_error_envelope
@@ -834,6 +834,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         task = asyncio.create_task(_scheduler_tick(app))
         app.state.scheduler_task = task
 
+    server_boot.start(app)  # clio-core attach + first doctor pass, both off-loop (typed rows)
     agent_task: Optional[asyncio.Task] = None
     if getattr(app.state, "want_agent", False) and app.state.agent is None:
         agent_task = asyncio.create_task(_construct_agent_async(app))
@@ -966,11 +967,10 @@ async def _construct_agent_async(app: "FastAPI") -> None:
     # a server that advertises provider readiness while every turn returns the vague
     # ``not_configured`` state.
     try:
-        # Construct (or reuse) the ONE per-process ARC up front and inject it into the
-        # build, so the agent does not mint a fresh ARC — the same instance is
-        # app.state.arc for the whole process across every later LM bind (no per-build
-        # ARC churn / trace ⊋ ARC split).
-        arc = _process_arc(app)
+        # The ONE per-process ARC, injected so the agent never mints its own (no per-build
+        # ARC churn / trace ⊋ ARC split). Built on a worker thread (server_boot): a clio-core
+        # attach can take tens of seconds and must never block /v1/health on this loop.
+        arc = await server_boot.process_arc_off_loop(app)
         relay_kwargs = await relay_wiring.relay_agent_kwargs(app)
         # Pre-import the heavy LM stack ON THIS THREAD before any builder thread
         # runs: the deferred init here and a concurrent provider bind otherwise
@@ -2362,10 +2362,9 @@ def run_server(
     ``clio-agent-gact`` console script (:func:`main`) and the
     ``clio-agent serve`` subcommand. It blocks until the server exits.
 
-    When ``CLIO_LM_PROVIDER`` is set (and ``no_agent`` is False) the real
-    ``ClioAgent`` is constructed by the lifespan startup task so POST
-    /messages drives a real LM; otherwise the app runs agent-less (fine for
-    capability introspection, 503s on /messages).
+    When the user selected a provider (config file / ``CLIO_LM_PROVIDER``; not the
+    committed default) and ``no_agent`` is False, the lifespan builds the real
+    ``ClioAgent``; otherwise the app runs agent-less until a provider is bound.
 
     Args:
         host: Bind host.
@@ -2388,11 +2387,12 @@ def run_server(
     # 503s until app.state.agent is stamped by the background task.
     app_to_run: FastAPI = build_app()
     app_to_run.state.refresh_provider_catalog_on_startup = True
-    if (
-        not no_agent
-        and conf.resolve("lm.provider", env="CLIO_LM_PROVIDER", default="", cast=conf.as_str) != ""
-    ):
-        app_to_run.state.want_agent = True
+    app_to_run.state.server_boot = True  # real server: owns clio-core attach + boot doctor
+    from clio_agent.gact.providers.boot_selection import explicit_lm_provider  # noqa: PLC0415
+
+    # Only a USER-selected provider builds an agent at boot; the committed lm_studio default
+    # is not a selection (a headless host has no LM Studio -> lm_provider stays unconfigured).
+    app_to_run.state.want_agent = not no_agent and bool(explicit_lm_provider())
 
     if reload:
         uvicorn.run(

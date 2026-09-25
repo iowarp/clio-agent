@@ -45,13 +45,10 @@ set -euo pipefail
 CLIO_PREFIX="${CLIO_PREFIX:-$HOME/.local/share/clio}"
 CLIO_PORT="${CLIO_PORT:-17800}"
 CLIO_BIN_DIR="${CLIO_BIN_DIR:-$HOME/.local/bin}"
-# Keep every installation-owned runtime surface under the selected prefix.
-# This matters on shared login/HPC hosts: the old defaults placed clio-core's
-# lock, client registry, and CTE files in host-global user paths, so an unrelated
-# agent could leave stale coordination state that made a fresh install time out.
+# Agent data stays with the selected install. The clio-core daemon does NOT: there
+# is exactly one per machine (host-global ~/.clio state, fixed ports, one CTE
+# config), shared by every CLIO, so the launcher never scopes its identity.
 export CLIO_DATA_DIR="${CLIO_DATA_DIR:-$CLIO_PREFIX/data}"
-export CLIO_ARC_CTE_DIR="${CLIO_ARC_CTE_DIR:-$CLIO_PREFIX/cte}"
-export CLIO_RUNTIME_STATE_DIR="${CLIO_RUNTIME_STATE_DIR:-$CLIO_PREFIX/runtime-state}"
 export PATH="$CLIO_BIN_DIR:$PATH"
 # The installer provisions supported MCP launchers into CLIO_BIN_DIR. Ensure a
 # detached server inherits that directory even when it was started through a
@@ -72,64 +69,15 @@ WEB_DIR="$CLIO_PREFIX/clio-agent/web"
 CLIO_VENV="$CLIO_PREFIX/clio-agent/.venv"
 UPDATE_STAMP="$CLIO_PREFIX/.update-checked"
 
-# clio-core binds a cluster of host TCP ports. Port 9413 cannot be shared by
-# different users on a university login node, even though their files and POSIX
-# shared-memory namespaces are separate. Persist one free block per CLIO install;
-# subsequent agents under that prefix intentionally share the same daemon.
-resolve_core_port() {
-  [[ -n "${CLIO_CORE_PORT:-}" ]] && return 0
-  local port_file="$CLIO_PREFIX/clio-core.port" chosen=""
-  if [[ -f "$port_file" ]]; then
-    chosen="$(cat "$port_file" 2>/dev/null || true)"
-    [[ "$chosen" =~ ^[0-9]+$ ]] || chosen=""
-  fi
-  if [[ -z "$chosen" ]]; then
-    mkdir -p "$CLIO_PREFIX"
-    chosen="$("$CLIO_VENV/bin/python" - "$CLIO_PREFIX" <<'PY'
-import hashlib
-import os
-from pathlib import Path
-import socket
-import sys
-
-prefix = str(Path(sys.argv[1]).expanduser().resolve())
-identity = f"{os.getuid()}:{prefix}".encode()
-slots = 4_000
-start = int.from_bytes(hashlib.sha256(identity).digest()[:4], "big") % slots
-for offset in range(slots):
-    base = 12_000 + 5 * ((start + offset) % slots)
-    sockets = []
-    try:
-        for port in range(base, base + 5):
-            sock = socket.socket()
-            sock.bind(("127.0.0.1", port))
-            sockets.append(sock)
-    except OSError:
-        pass
-    else:
-        print(base)
-        break
-    finally:
-        for sock in sockets:
-            sock.close()
-else:
-    raise SystemExit("no free clio-core port block found")
-PY
-)" || { err "could not reserve a clio-core port block"; return 1; }
-    printf '%s\n' "$chosen" >"$port_file"
-  fi
-  export CLIO_CORE_PORT="$chosen"
-}
-
 GREEN='\033[0;32m'; YELLOW='\033[0;33m'; RED='\033[0;31m'; RESET='\033[0m'
 say()  { printf "${GREEN}==>${RESET} %s\n" "$*"; }
 warn() { printf "${YELLOW}!!${RESET} %s\n" "$*" >&2; }
 err()  { printf "${RED}xx${RESET} %s\n" "$*" >&2; }
 
 # health returns 0 when the server answers /v1/health on the port.
-# CLIO returns 503 for a reachable server whose dependencies still need
-# user configuration, such as first-run LM provider selection. Treat that
-# as "server is up" so the TUI can surface and resolve the configuration.
+# CLIO answers within a second of binding, even while clio-core is still
+# attaching (503 while a required dependency is not up yet). Treat 503 as
+# "server is up" so the TUI can surface and resolve the dependency state.
 health() {
   local code
   code="$(curl -sS -m 1 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$CLIO_PORT/v1/health" 2>/dev/null || true)"
@@ -225,7 +173,6 @@ start_server() {
     err "is CLIO installed? run the installer or set CLIO_PREFIX."
     return 1
   fi
-  resolve_core_port
   say "Starting CLIO server on :$CLIO_PORT (log: $SERVER_LOG)"
   # setsid runs the server as its own session/process-group leader (PGID == PID)
   # so stop_server can group-kill the server AND every MCP child it spawns (the

@@ -76,6 +76,7 @@ class Integration(BaseModel):
     next_action: Optional[str] = None
     endpoint: Optional[str] = None
     required: bool = True
+    reason: Optional[str] = None  # typed row reason, e.g. clio_core_starting (additive)
 
 
 class HealthResponse(BaseModel):

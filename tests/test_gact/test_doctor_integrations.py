@@ -91,6 +91,9 @@ def _ready_probe(tmp_path: Path, **overrides: Any) -> RuntimeProbe:
 
 
 def _health(app: Any, monkeypatch: pytest.MonkeyPatch, probe: RuntimeProbe):
+    # A user-selected provider: an unselected one is reported ``unconfigured`` instead
+    # of probed (see test_health_does_not_treat_an_unselected_provider_as_an_outage).
+    monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")
     _patch_engine(monkeypatch, probe)
     return TestClient(app).get("/v1/health")
 
@@ -173,13 +176,13 @@ def test_health_probes_the_persisted_provider_bound_to_the_agent(
     assert observed["CLIO_LM_MODEL"] == "gpt-5.6-sol"
 
 
-def test_health_does_not_treat_an_unselected_desktop_provider_as_an_outage(
+def test_health_does_not_treat_an_unselected_provider_as_an_outage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A fresh desktop selects its provider in the composer, not at boot."""
+    """Any fresh server (desktop or a headless remote host) selects its provider later."""
 
     monkeypatch.delenv("CLIO_LM_PROVIDER", raising=False)
-    monkeypatch.setenv("CLIO_DESKTOP_BOOT_HEARTBEAT", "1")
+    monkeypatch.delenv("CLIO_DESKTOP_BOOT_HEARTBEAT", raising=False)
 
     def _unselected_provider(**kwargs: Any) -> RuntimeReport:
         return RuntimeReport(
@@ -215,6 +218,7 @@ def test_health_does_not_treat_an_unselected_desktop_provider_as_an_outage(
     assert lm["status"] == "ready"
     assert lm["required"] is False
     assert lm["summary"] == "Choose a language model when starting a session."
+    assert lm["reason"] == "lm_provider_unconfigured"
 
 
 def test_health_returns_probe_engine_rows_not_hand_rolled(
