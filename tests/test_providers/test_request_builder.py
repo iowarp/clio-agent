@@ -608,11 +608,15 @@ def test_lm_provider_preset_wire_type_has_no_supports_vision_field() -> None:
     assert "supports_vision" not in LMProviderPreset.model_fields
 
 
-def test_model_catalog_assignment_has_one_deliberate_exception() -> None:
-    """``model_catalog=`` (an assignment, not the bare field declaration) is zero
-    everywhere except claude_code's one ``Provider(...)`` row -- the sole
-    remaining carrier of real ``documented_modalities`` vision evidence (see
-    ``providers/catalog.py``'s own comment at that entry)."""
+def test_model_catalog_assignment_is_zero_everywhere() -> None:
+    """``model_catalog=`` (an assignment, not the bare field declaration) is zero.
+
+    claude_code's own former exception (the fable/haiku/sonnet/opus rows) is
+    gone: its vision/pdf modality evidence now comes from the maintained
+    catalog document (``catalogs/claude-code-models.json``, read through
+    ``ClaudeCodeCatalogHandshake``/the refresh overlay), never a second,
+    hand-typed candidate list in ``providers/catalog.py``.
+    """
 
     hits: list[tuple[Path, int]] = []
     for path in _SRC.rglob("*.py"):
@@ -620,10 +624,4 @@ def test_model_catalog_assignment_has_one_deliberate_exception() -> None:
         for lineno, line in enumerate(text.splitlines(), start=1):
             if re.search(r"model_catalog=", line):
                 hits.append((path, lineno))
-    assert len(hits) == 1, f"expected exactly one model_catalog= row, got: {hits}"
-    (path, lineno) = hits[0]
-    assert path == _SRC / "providers" / "catalog.py"
-    # It belongs to the claude_code Provider(...) row specifically.
-    lines = path.read_text(encoding="utf-8").splitlines()
-    preceding = "\n".join(lines[max(0, lineno - 60) : lineno])
-    assert 'id="claude_code"' in preceding
+    assert not hits, f"model_catalog= still present: {hits}"

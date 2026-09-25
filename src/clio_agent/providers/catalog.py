@@ -23,7 +23,6 @@ from __future__ import annotations
 from typing import Any
 
 from clio_agent.providers.catalog_types import (
-    ModelEntry,
     Provider,
     ProviderConfigurationField,
 )
@@ -303,41 +302,16 @@ PROVIDERS: tuple[Provider, ...] = (
         # pre-filled (skipping the cascade entirely on every later passive
         # call) -- see providers/handshake/cli_catalog.py.
         #
-        # DELIBERATE EXCEPTION to "no static model_catalog" (model-capabilities
-        # brief 9.1): these four rows are the ONLY place any provider still
-        # sets `documented_modalities` -- claude_code has no live per-model
-        # modality discovery (`supports_live_catalog=False`), so this is the
-        # sole evidence source the vision gate's "documented_catalog" arm
-        # (`gact/resource_delivery.py::_live_modalities`) reads to prove these
-        # aliases accept images. Deleting it would silently regress image
-        # support for every claude_code model, not just drop a suggestion
-        # list -- so it stays, unlike every other provider's candidate rows.
-        model_catalog=(
-            ModelEntry(
-                "fable",
-                "Claude Fable (Claude Code alias)",
-                "Candidate Claude Code alias; not guaranteed by account entitlement.",
-                ("text", "image"),
-            ),
-            ModelEntry(
-                "haiku",
-                "Claude Haiku (Claude Code alias)",
-                "Candidate Claude Code alias; not guaranteed by account entitlement.",
-                ("text", "image"),
-            ),
-            ModelEntry(
-                "sonnet",
-                "Claude Sonnet (Claude Code alias)",
-                "Candidate Claude Code alias; not guaranteed by account entitlement.",
-                ("text", "image"),
-            ),
-            ModelEntry(
-                "opus",
-                "Claude Opus (Claude Code alias)",
-                "Candidate Claude Code alias; not guaranteed by account entitlement.",
-                ("text", "image"),
-            ),
-        ),
+        # No static model_catalog (model-capabilities brief 9.1): model
+        # existence AND per-model vision/pdf modality evidence for claude_code
+        # come from exactly ONE trusted source now, the maintained catalog
+        # document `catalogs/claude-code-models.json`
+        # (providers/model_discovery/claude_code_catalog.py), read through the
+        # refresh overlay when populated and through
+        # ClaudeCodeCatalogHandshake._fallback_models's own disk cache before
+        # the first refresh -- never a second, hand-typed candidate list here
+        # that could drift from it (that was the previous four-row exception;
+        # it is now a real data source, not a compiled-in tuple).
         # B7 not adopted (S2 Claude SDK tuning): CLIO's own DSPy ReAct loop
         # drives every claude_code turn end-to-end (tools=[] on the SDK
         # session — see build_sdk_options); Claude Code is a bare model

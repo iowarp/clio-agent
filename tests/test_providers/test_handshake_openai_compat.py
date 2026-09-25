@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from clio_agent.providers.catalog_types import ModelEntry, Provider
 from clio_agent.providers.handshake.base import HandshakeContext
 from clio_agent.providers.handshake.model import (
     AuthState,
@@ -24,6 +25,40 @@ from clio_agent.providers.handshake.noop import NoOpHandshake
 from clio_agent.providers.handshake.openai_compat import OpenAICompatHandshake
 
 FIXTURES = Path(__file__).parent / "fixtures" / "handshake"
+
+#: model-capabilities brief 9.1: no REAL provider in the registry carries a
+#: populated ``model_catalog`` any more (claude_code's own former exception
+#: moved to the maintained catalog document, cli_catalog.py's
+#: ``ClaudeCodeCatalogHandshake._fallback_models``). ``NoOpHandshake``'s
+#: generic documented-modality-preservation behavior is still real, intended
+#: functionality for a FUTURE no-HTTP-surface CLI provider though (its own
+#: docstring says so), so these tests exercise it against a synthetic
+#: provider row instead of leaning on a real one that no longer has the data.
+_SYNTHETIC_CLI_PROVIDER = Provider(
+    id="a_future_cli_provider",
+    label="A Future CLI Provider",
+    description="test-only synthetic provider for NoOpHandshake's generic contract",
+    provider_kind="claude_code",
+    litellm_prefix="claude_code",
+    api_base="a-future-cli-provider://sdk",
+    suggested_model="",
+    requires_api_key=False,
+    model_catalog=(
+        ModelEntry("fable", "Fable", "", ("text", "image")),
+        ModelEntry("sonnet", "Sonnet", "", ("text", "image")),
+        ModelEntry("opus", "Opus", "", ("text", "image")),
+        ModelEntry("haiku", "Haiku", "", ("text", "image")),
+    ),
+)
+
+
+def _patch_synthetic_cli_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "clio_agent.providers.catalog.get_provider",
+        lambda provider_id: _SYNTHETIC_CLI_PROVIDER
+        if provider_id == _SYNTHETIC_CLI_PROVIDER.id
+        else None,
+    )
 
 
 def _load(name: str) -> Any:
@@ -313,7 +348,9 @@ async def test_discover_model_config_routes_llama_cpp_dialect_to_the_llama_cpp_a
         "total_slots": 2,
         "build_info": "1234 (abc)",
     }
-    client = FakeAsyncClient(routes={"http://127.0.0.1:9088/props": FakeResponse(200, props_payload)})
+    client = FakeAsyncClient(
+        routes={"http://127.0.0.1:9088/props": FakeResponse(200, props_payload)}
+    )
     handshake = OpenAICompatHandshake(provider=object())
 
     facts = await handshake.discover_model_config(client, ctx, {"id": "local-model"})
@@ -340,17 +377,18 @@ async def test_discover_model_config_routes_a_cloud_dialect_to_no_restriction_de
 
 
 @pytest.mark.asyncio
-async def test_noop_makes_zero_network_calls() -> None:
+async def test_noop_makes_zero_network_calls(monkeypatch: pytest.MonkeyPatch) -> None:
     """NoOpHandshake never touches the client across every phase.
 
     Connectivity is now ``OK`` (a local CLI is always reachable) and discovery
     returns the provider's registry-declared candidate models — but still with
     zero network traffic on the probe client.
     """
+    _patch_synthetic_cli_provider(monkeypatch)
     ctx = HandshakeContext(
-        provider_id="claude_code",
+        provider_id=_SYNTHETIC_CLI_PROVIDER.id,
         provider_kind="claude_code",
-        api_base="claude-code://sdk",
+        api_base=_SYNTHETIC_CLI_PROVIDER.api_base,
         allow_external_sources=False,
     )
     client = FakeAsyncClient()
@@ -383,13 +421,16 @@ async def test_noop_discover_models_unknown_provider_is_empty() -> None:
 
 
 @pytest.mark.asyncio
-async def test_noop_preserves_documented_claude_image_input() -> None:
-    """Static Claude aliases retain documented image input without claiming availability."""
+async def test_noop_preserves_documented_claude_image_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Static registry aliases retain documented image input without claiming availability."""
 
+    _patch_synthetic_cli_provider(monkeypatch)
     ctx = HandshakeContext(
-        provider_id="claude_code",
+        provider_id=_SYNTHETIC_CLI_PROVIDER.id,
         provider_kind="claude_code",
-        api_base="claude-code://sdk",
+        api_base=_SYNTHETIC_CLI_PROVIDER.api_base,
         allow_external_sources=False,
     )
     handshake = NoOpHandshake(provider=object())
@@ -404,8 +445,12 @@ async def test_noop_preserves_documented_claude_image_input() -> None:
 
 
 @pytest.mark.asyncio
-async def test_noop_full_handshake_lists_static_candidates_without_network() -> None:
+async def test_noop_full_handshake_lists_static_candidates_without_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A generic no-auth CLI handshake lists candidates without claiming liveness."""
+
+    _patch_synthetic_cli_provider(monkeypatch)
 
     class _NoNetClient(FakeAsyncClient):
         async def get(self, url: str, headers: dict[str, str] | None = None) -> FakeResponse:
@@ -415,9 +460,9 @@ async def test_noop_full_handshake_lists_static_candidates_without_network() -> 
     handshake._open_client = _const_client(_NoNetClient())  # type: ignore[method-assign]
 
     ctx = HandshakeContext(
-        provider_id="claude_code",
+        provider_id=_SYNTHETIC_CLI_PROVIDER.id,
         provider_kind="claude_code",
-        api_base="claude-code://sdk",
+        api_base=_SYNTHETIC_CLI_PROVIDER.api_base,
         allow_external_sources=True,
     )
     report = await handshake.handshake(ctx)

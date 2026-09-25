@@ -220,11 +220,13 @@ class TestDerivedViews:
         # a codex model id now, never a stale compiled-in guess.
         assert as_provider_models_dict()["codex"] == []
 
-    def test_claude_code_catalog_uses_user_facing_model_ids(self) -> None:
-        models = as_provider_models_dict()["claude_code"]
-        ids = {row["id"] for row in models}
-        assert {"sonnet", "opus", "haiku"} <= ids
-        assert all(not model_id.startswith("cc-") for model_id in ids)
+    def test_claude_code_catalog_has_no_static_model_list(self) -> None:
+        # Follow-up to model-capabilities brief 9.1: claude_code's own former
+        # exception (fable/haiku/sonnet/opus rows with real vision evidence)
+        # is deleted too -- that evidence now comes from the maintained
+        # catalog document (catalogs/claude-code-models.json), read through
+        # ClaudeCodeCatalogHandshake, never a second static list here.
+        assert as_provider_models_dict()["claude_code"] == []
 
     def test_local_vllm_is_not_labeled_as_alcf_provider(self) -> None:
         provider = get_provider("argonne_local_vllm")
