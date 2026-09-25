@@ -79,14 +79,12 @@ def _litellm_info(model: str) -> dict[str, Any]:
     """
 
     from clio_agent.providers.handshake.sources.litellm_catalog import (  # noqa: PLC0415
-        _get_model_info,
-        _id_variants,
+        lookup_litellm_info,
     )
 
-    for candidate in _id_variants(model):
-        info = _get_model_info(candidate, allow_fetch=False)
-        if info:
-            return info
+    matched = lookup_litellm_info(model, allow_fetch=False)
+    if matched is not None and matched[1]:
+        return matched[1]
     logger.debug("reasoning levels: no litellm model info for %r", model)
     return {}
 

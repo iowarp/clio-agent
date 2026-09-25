@@ -47,10 +47,6 @@ def _now_iso() -> str:
 class OllamaHandshake(OpenAICompatHandshake):
     """Ollama: list via ``/api/tags``, enrich each model via ``/api/show``."""
 
-    #: ``/api/show`` reports a per-model ``capabilities`` list (``vision``,
-    #: ``tools``), so this backend really can evidence input modalities.
-    reports_input_modalities = True
-
     async def discover_models(self, client: Any, ctx: HandshakeContext) -> list[dict[str, Any]]:
         """List installed models from the native ``/api/tags``."""
         headers = self._auth_header(ctx)

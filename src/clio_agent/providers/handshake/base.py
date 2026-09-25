@@ -47,6 +47,15 @@ from clio_agent.providers.handshake.model import (
 
 logger = logging.getLogger(__name__)
 
+#: The model-record fields the community catalogs can state
+#: (:func:`~clio_agent.providers.capabilities.model_sources.community_catalog_facts`).
+_CATALOG_FILLED_FIELDS: tuple[str, ...] = (
+    "context_max",
+    "output_max",
+    "input_modalities",
+    "model_type",
+)
+
 
 @dataclass
 class ConnectivityResult:
@@ -106,14 +115,6 @@ class HandshakeContext:
 
 class ProviderHandshake(abc.ABC):
     """Abstract per-provider handshake. Subclass and implement the phase methods."""
-
-    #: Whether this handshake's model rows can report INPUT MODALITIES at all.
-    #: ``False`` is the honest default: an OpenAI-compatible ``/models`` listing
-    #: returns ids and nothing else, so no amount of probing yields modality
-    #: evidence for that provider. Consumers use this to tell "the evidence
-    #: system says no" from "no evidence system exists here" -- the second is the
-    #: only case where a catalog-level default may legitimately stand in.
-    reports_input_modalities: bool = False
 
     #: per-phase HTTP timeouts (seconds); subclasses may override.
     timeout_connect: float = 4.0
@@ -223,13 +224,17 @@ class ProviderHandshake(abc.ABC):
     async def enrich_capabilities(
         self, facts: DiscoveredModelFacts, ctx: HandshakeContext
     ) -> DiscoveredModelFacts:
-        """Fill a missing model ``context_max``/``output_max`` from the community catalogs.
+        """Fill the model facts the adapter left unknown from the community catalogs.
 
-        If the adapter's own ``server_report`` facts already know a value, it
-        is kept; otherwise consult models.dev -> litellm -> the local DB (brief
-        5.1 step 5) via
+        Covers the fields those catalogs state: ``context_max``/``output_max``,
+        ``input_modalities`` and ``model_type``. If the adapter's own
+        ``server_report`` facts already know a value, it is kept; otherwise
+        consult models.dev -> litellm (-> the local DB for limits) (brief 5.1
+        step 5) via
         :func:`clio_agent.providers.capabilities.model_sources.community_catalog_facts`,
-        when ``allow_external_sources`` permits it.
+        when ``allow_external_sources`` permits it. A field no catalog states
+        stays UNKNOWN -- in particular a server that reports no modalities is
+        never read as text-only.
         """
         if not ctx.allow_external_sources:
             return facts
@@ -238,16 +243,15 @@ class ProviderHandshake(abc.ABC):
         )
 
         model = facts.model
-        if model.context_max.known and model.output_max.known:
+        missing = [name for name in _CATALOG_FILLED_FIELDS if not getattr(model, name).known]
+        if not missing:
             return facts
         catalog = community_catalog_facts(facts.discovered.id)
         if catalog is None:
             return facts
-        updates: dict[str, Any] = {}
-        if not model.context_max.known and catalog.context_max.known:
-            updates["context_max"] = catalog.context_max
-        if not model.output_max.known and catalog.output_max.known:
-            updates["output_max"] = catalog.output_max
+        updates: dict[str, Any] = {
+            name: getattr(catalog, name) for name in missing if getattr(catalog, name).known
+        }
         if not updates:
             return facts
         return replace(facts, model=replace(model, **updates))

@@ -30,8 +30,8 @@ from clio_agent.gact.agents.declared_native_tools import (
     resolve_declared_native_tools,
 )
 from clio_agent.gact.catalog import _builtin_main_agent
+from clio_agent.gact.modality_evidence import live_model_modalities
 from clio_agent.gact.providers.config import _pdf_capability, _vision_capability
-from clio_agent.gact.resource_delivery import live_model_modalities
 from clio_agent.gact.types import ModelRef
 from clio_agent.providers.capabilities import invalidation
 from clio_agent.providers.capabilities.records import (
@@ -183,30 +183,24 @@ def test_handshake_report_model_does_not_match_an_unrelated_id() -> None:
 
 def test_live_model_modalities_resolves_the_alias_against_the_catalog() -> None:
     app = _app(catalog=_catalog_payload())
-    modalities, evidence, _generated_at = live_model_modalities(
-        app, ModelRef(provider_id="claude_code", model_id=_ALIAS)
-    )
-    assert "image" in modalities
-    assert "pdf" in modalities
-    assert evidence == "discovery_overlay"
+    found = live_model_modalities(app, ModelRef(provider_id="claude_code", model_id=_ALIAS))
+    assert "image" in (found.modalities or ())
+    assert "pdf" in (found.modalities or ())
+    assert found.evidence == "discovery_overlay"
 
 
 def test_live_model_modalities_resolves_the_alias_against_a_handshake_report() -> None:
     app = _app(report=_handshake_report())
-    modalities, evidence, _generated_at = live_model_modalities(
-        app, ModelRef(provider_id="claude_code", model_id=_ALIAS)
-    )
-    assert "image" in modalities
-    assert evidence == "discovery_overlay"
+    found = live_model_modalities(app, ModelRef(provider_id="claude_code", model_id=_ALIAS))
+    assert "image" in (found.modalities or ())
+    assert found.evidence == "discovery_overlay"
 
 
 def test_live_model_modalities_does_not_resolve_an_unrelated_id() -> None:
     app = _app(catalog=_catalog_payload())
-    modalities, evidence, _generated_at = live_model_modalities(
-        app, ModelRef(provider_id="claude_code", model_id=_UNRELATED)
-    )
-    assert modalities == {"text"}
-    assert evidence == "unavailable"
+    found = live_model_modalities(app, ModelRef(provider_id="claude_code", model_id=_UNRELATED))
+    assert found.modalities is None
+    assert found.evidence == "unavailable"
 
 
 # ---------------------------------------------------------------------------
@@ -224,16 +218,17 @@ def test_pdf_capability_is_true_for_an_alias_bound_model() -> None:
     assert _pdf_capability(app, "claude_code", _ALIAS) == (True, "live_modality_evidence")
 
 
-def test_vision_and_pdf_capability_refuse_an_unrelated_id() -> None:
+def test_vision_and_pdf_capability_treat_an_unrelated_id_as_unknown() -> None:
+    """An id the catalog does not resolve borrows nothing: its capability is UNKNOWN.
+
+    Unknown image input is permitted under ``modality_unknown`` (the upstream
+    endpoint decides); unknown PDF input withholds native PDF. Neither answer
+    claims the alias's evidence.
+    """
+
     app = _app(catalog=_catalog_payload())
-    assert _vision_capability(app, "claude_code", _UNRELATED) == (
-        False,
-        "modality_evidence_unavailable",
-    )
-    assert _pdf_capability(app, "claude_code", _UNRELATED) == (
-        False,
-        "modality_evidence_unavailable",
-    )
+    assert _vision_capability(app, "claude_code", _UNRELATED) == (True, "modality_unknown")
+    assert _pdf_capability(app, "claude_code", _UNRELATED) == (False, "modality_unknown")
 
 
 # ---------------------------------------------------------------------------

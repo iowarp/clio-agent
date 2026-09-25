@@ -55,10 +55,6 @@ def _positive_int(value: Any) -> int | None:
 class LMStudioHandshake(ProviderHandshake):
     """Handshake for a local LM Studio backend (no auth, native ``/api/v0``)."""
 
-    #: ``/api/v0/models`` reports a per-model ``capabilities`` list (``vision``,
-    #: ``tool_use``), so this backend really can evidence input modalities.
-    reports_input_modalities = True
-
     async def check_connectivity(self, client: Any, ctx: HandshakeContext) -> ConnectivityResult:
         """Probe LM Studio; native ``/api/v0/models`` first, OpenAI ``/models`` fallback.
 

@@ -1,0 +1,224 @@
+{
+  "google/gemma-4-31b-it": {
+    "id": "google/gemma-4-31b-it",
+    "name": "Gemma 4 31B IT",
+    "description": "Largest Gemma 4 instruction model for open, self-hosted chat and reasoning",
+    "family": "gemma",
+    "attachment": true,
+    "reasoning": true,
+    "tool_call": true,
+    "structured_output": true,
+    "temperature": true,
+    "release_date": "2026-04-02",
+    "last_updated": "2026-04-02",
+    "modalities": {
+      "input": [
+        "text",
+        "image"
+      ],
+      "output": [
+        "text"
+      ]
+    },
+    "open_weights": true,
+    "limit": {
+      "context": 262144,
+      "output": 32768
+    },
+    "weights": [
+      {
+        "label": "Hugging Face",
+        "url": "https://huggingface.co/google/gemma-4-31B-it"
+      }
+    ]
+  },
+  "google/gemma-4-26b-a4b-it": {
+    "id": "google/gemma-4-26b-a4b-it",
+    "name": "Gemma 4 26B A4B IT",
+    "description": "Open Gemma instruction model for efficient chat and self-hosted deployments",
+    "family": "gemma",
+    "attachment": true,
+    "reasoning": true,
+    "tool_call": true,
+    "structured_output": true,
+    "temperature": true,
+    "release_date": "2026-04-02",
+    "last_updated": "2026-04-02",
+    "modalities": {
+      "input": [
+        "text",
+        "image"
+      ],
+      "output": [
+        "text"
+      ]
+    },
+    "open_weights": true,
+    "limit": {
+      "context": 262144,
+      "output": 32768
+    },
+    "weights": [
+      {
+        "label": "Hugging Face",
+        "url": "https://huggingface.co/google/gemma-4-26B-A4B-it"
+      }
+    ]
+  },
+  "google/gemma-4-E4B-it": {
+    "id": "google/gemma-4-E4B-it",
+    "name": "Gemma 4 E4B IT",
+    "description": "Open Gemma instruction model for efficient chat and self-hosted deployments",
+    "family": "gemma",
+    "attachment": true,
+    "reasoning": true,
+    "tool_call": true,
+    "structured_output": true,
+    "temperature": true,
+    "release_date": "2026-04-02",
+    "last_updated": "2026-04-02",
+    "modalities": {
+      "input": [
+        "text",
+        "image",
+        "audio"
+      ],
+      "output": [
+        "text"
+      ]
+    },
+    "open_weights": true,
+    "limit": {
+      "context": 131072,
+      "output": 8192
+    },
+    "weights": [
+      {
+        "label": "Hugging Face",
+        "url": "https://huggingface.co/google/gemma-4-E4B-it"
+      }
+    ]
+  },
+  "google/gemma-3-27b-it": {
+    "id": "google/gemma-3-27b-it",
+    "name": "Gemma 3 27B IT",
+    "description": "Largest open Gemma 3 instruction model for multilingual text generation and visual understanding",
+    "family": "gemma",
+    "attachment": true,
+    "reasoning": false,
+    "tool_call": true,
+    "temperature": true,
+    "knowledge": "2024-08",
+    "release_date": "2025-03-12",
+    "last_updated": "2025-03-12",
+    "modalities": {
+      "input": [
+        "text",
+        "image"
+      ],
+      "output": [
+        "text"
+      ]
+    },
+    "open_weights": true,
+    "limit": {
+      "context": 131072,
+      "output": 131072
+    },
+    "weights": [
+      {
+        "label": "Hugging Face",
+        "url": "https://huggingface.co/google/gemma-3-27b-it"
+      }
+    ]
+  },
+  "openai/gpt-oss-120b": {
+    "id": "openai/gpt-oss-120b",
+    "name": "GPT OSS 120B",
+    "description": "Open GPT reasoning model for self-hosted agents and controllable deployments",
+    "family": "gpt-oss",
+    "attachment": false,
+    "reasoning": true,
+    "tool_call": true,
+    "structured_output": true,
+    "temperature": true,
+    "release_date": "2025-08-05",
+    "last_updated": "2025-08-05",
+    "modalities": {
+      "input": [
+        "text"
+      ],
+      "output": [
+        "text"
+      ]
+    },
+    "open_weights": true,
+    "limit": {
+      "context": 131072,
+      "output": 32768
+    },
+    "weights": [
+      {
+        "label": "Hugging Face",
+        "url": "https://huggingface.co/openai/gpt-oss-120b"
+      }
+    ]
+  },
+  "openai/gpt-oss-20b": {
+    "id": "openai/gpt-oss-20b",
+    "name": "GPT OSS 20B",
+    "description": "Open GPT reasoning model for self-hosted agents and controllable deployments",
+    "family": "gpt-oss",
+    "attachment": false,
+    "reasoning": true,
+    "tool_call": true,
+    "structured_output": true,
+    "temperature": true,
+    "release_date": "2025-08-05",
+    "last_updated": "2025-08-05",
+    "modalities": {
+      "input": [
+        "text"
+      ],
+      "output": [
+        "text"
+      ]
+    },
+    "open_weights": true,
+    "limit": {
+      "context": 131072,
+      "output": 32768
+    },
+    "weights": [
+      {
+        "label": "Hugging Face",
+        "url": "https://huggingface.co/openai/gpt-oss-20b"
+      }
+    ]
+  },
+  "mistral/mistral-embed": {
+    "id": "mistral/mistral-embed",
+    "name": "Mistral Embed",
+    "description": "Embedding model for semantic search, retrieval, clustering, and ranking pipelines",
+    "family": "mistral-embed",
+    "attachment": false,
+    "reasoning": false,
+    "tool_call": false,
+    "temperature": false,
+    "release_date": "2023-12-11",
+    "last_updated": "2023-12-11",
+    "modalities": {
+      "input": [
+        "text"
+      ],
+      "output": [
+        "text"
+      ]
+    },
+    "open_weights": false,
+    "limit": {
+      "context": 8000,
+      "output": 3072
+    }
+  }
+}

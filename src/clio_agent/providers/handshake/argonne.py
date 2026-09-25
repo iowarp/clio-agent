@@ -37,6 +37,7 @@ from clio_agent.providers.capabilities.records import (
     DeploymentCapabilities,
     Fact,
     ModelCapabilities,
+    model_type_fact,
     unknown,
 )
 from clio_agent.providers.handshake.base import (
@@ -66,6 +67,27 @@ _TOKEN_ENV_VARS: tuple[str, ...] = ("CLIO_ARGONNE_TOKEN", "ALCF_INFERENCE_TOKEN"
 _RESOURCE_SERVER = "/resource_server"
 
 logger = logging.getLogger(__name__)
+
+#: ALCF gateway ``framework`` -> the model type that serving framework proves.
+#: A row's ``framework`` names the service running the model; only a service
+#: that serves exactly one kind of model decides the type. ``vllm`` (and the
+#: Metis ``api`` framework) serve chat AND embedding models alike, so they are
+#: deliberately absent: the type stays unknown for other sources to establish.
+ALCF_FRAMEWORK_MODEL_TYPES: dict[str, str] = {
+    "sam3service": "segmentation",
+}
+
+
+def alcf_model_type_fact(row: dict[str, Any], *, observed_at: str) -> Fact[str]:
+    """The model-type fact an ALCF ``/models`` row's ``framework`` proves (or unknown)."""
+    framework = str(row.get("framework") or "").strip().lower()
+    return model_type_fact(
+        ALCF_FRAMEWORK_MODEL_TYPES.get(framework),
+        source="server_report",
+        observed_at=observed_at,
+        detail=f"ALCF gateway /models framework={framework!r}",
+    )
+
 
 #: Typed reasons the passive token lookup reports instead of a bare ``None``
 #: (no-silent-fallback): the code is the queryable fact, the sentence is what a
@@ -370,7 +392,10 @@ class ArgonneHandshake(ProviderHandshake):
 
         model_key_fact = deployment_model_key_fact(model_id, observed_at=observed_at)
         model_key = model_key_fact.value or model_id
-        model = ModelCapabilities(model_key=model_key)
+        model = ModelCapabilities(
+            model_key=model_key,
+            model_type=alcf_model_type_fact(raw, observed_at=observed_at),
+        )
         deployment = DeploymentCapabilities(
             provider_id=ctx.provider_id,
             api_base=ctx.api_base,
