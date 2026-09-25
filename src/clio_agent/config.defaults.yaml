@@ -97,6 +97,11 @@ system.release_manifest_url: "https://github.com/iowarp/clio-agent/releases/late
 # continuation) or "sse" to force the automatic-fallback transport.
 # lm.codex_transport:  # default unset; resolved in code
 
+# CLIO_CODEX_VARIANT  (str)  <- src/clio_agent/config.py
+# Selects which Codex transport a config binds: "direct" (default, CLIO
+# sign-in) or "sdk" (the local Codex app login).
+# lm.codex_variant:  # default unset; resolved in code
+
 # CLIO_LM_CONTEXT_WINDOW  (int)  <- src/clio_agent/config.py
 # Override the effective context window (tokens); 0 auto-derives from the
 # handshake-discovered served window, set >0 to assert a larger window than
@@ -287,6 +292,11 @@ limits.agent_task_artifact_context_chars: 64000
 # inline larger child answers, lower to bound coordinator context growth
 # sooner.
 limits.agent_task_output_digest_chars: 8000
+
+# CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S  (float)  <- src/clio_agent/providers/codex/sdk_client.py
+# Max silence (seconds) for one Codex SDK exchange/event, resetting on every
+# progress event rather than a fixed clock; raise for long turns.
+limits.codex_sdk_progress_timeout_s: 120.0
 
 # CLIO_CTX_MAX_BYTES  (int)  <- src/clio_agent/gact/runtime/constants.py
 # Byte cap per attached file inlined into context injection; raise to inline
