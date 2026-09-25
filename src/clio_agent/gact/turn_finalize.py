@@ -562,9 +562,6 @@ def finalize_turn(
     if state.cancelled_turn and state.error_info is not None:
         cancellation_status = {
             "execution_cancellation": state.error_info.details.get("execution_cancellation"),
-            "executor_work_may_continue": state.error_info.details.get(
-                "executor_work_may_continue"
-            ),
             "cancellation_attempt": state.error_info.details.get("cancellation_attempt", {}),
         }
     state.bus.publish(
@@ -686,8 +683,9 @@ def settle_failed_finalize(
     live; #1337: carrying the parts already sealed) and a terminal status. Nothing
     degrades silently: every best-effort step below logs its reason when it fails.
     ``persist_finalized_message`` binds ``gact.app._append_session_message`` at call
-    time so the live==reload test monkeypatches keep intercepting. #1339: ``exc`` may
-    carry ``settle_reason``/``settle_error_code`` (turn_prologue_guard) instead.
+    time so the live==reload test monkeypatches keep intercepting. #1339 / L1: ``exc``
+    may carry ``settle_reason``/``settle_error_code`` (turn_prologue_guard) instead.
+    Every branch closes the turn minter -- never skipped regardless of session status.
     """
 
     reason = getattr(exc, "settle_reason", "turn_finalize_error")
@@ -720,7 +718,9 @@ def settle_failed_finalize(
     if sess is not None and getattr(sess, "status", "") != "running":
         # Finalize already settled the turn (the exception escaped after the
         # terminal publishes); re-running the envelope would double-publish
-        # completion. The failure stays visible via the log above.
+        # completion. The failure stays visible via the log above. L1: this used to
+        # skip close_turn_minter below entirely -- every branch closes it now.
+        close_turn_minter(app, sid)
         return
 
     error_info = ErrorInfo(

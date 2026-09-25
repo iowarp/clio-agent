@@ -1,16 +1,11 @@
 """LiteLLM ``CustomLLM`` provider for Claude Code.
 
-Routes ``dspy.LM(model="claude_code/<model>", ...)`` calls through the
-Claude Agent SDK (persistent pooled CLI session) so CLIO can use the user's
-Claude Code subscription auth without bypassing the DSPy/LiteLLM provider
-contract. One transport since the v0.8.0 cleanup: the legacy ``exec`` batch
-transport (one ``claude -p`` subprocess per call, no token stream) was
-deleted — #891 evidence showed the SDK path is strictly better (pooled
-session reuse, streaming TTFT, prompt-cache continuity).
-
-The Claude Code process is used as a bare model transport. Built-in tools
-are disabled; CLIO's planner and MCP/tool gateway remain the only tool
-execution layer.
+Routes ``dspy.LM(model="claude_code/<model>", ...)`` calls through the Claude
+Agent SDK's ONE per-GACT-session pooled client (S2 B1, :mod:`claude_code_sessions`)
+so CLIO can use the user's Claude Code subscription auth without bypassing the
+DSPy/LiteLLM provider contract. Built-in tools are disabled; CLIO's own
+planner + MCP/tool gateway are the only tool execution layer (B3/B7 — Claude
+Code stays a bare model engine, never an inner loop of its own).
 """
 
 from __future__ import annotations
@@ -36,23 +31,20 @@ from clio_agent.providers.claude_code_audit import (
     emit_request_trace,
 )
 from clio_agent.providers.claude_code_audit import trace_json as _trace_json
+from clio_agent.providers.claude_code_blocking import _run_sdk
 from clio_agent.providers.claude_code_multimodal import (
     messages_to_claude_input,
     native_input_summary,
     redact_message_attachments,
 )
-from clio_agent.providers.claude_code_options import build_sdk_options
+from clio_agent.providers.claude_code_plan_limit import (
+    plan_limit_from_rate_limit_event,
+    plan_limit_from_result,
+)
 from clio_agent.providers.claude_code_sessions import (
-    _SDK_SESSION_POOL,
     _STREAM_CLIENT_POOL,
     _active_gact_session_id,
-    _per_call_message_source,
-    _run_sdk,
-    _SdkSession,
-    _SdkSessionPool,
     _streaming_chunk,
-    session_reuse_enabled,
-    stream_scope_for,
     transient_transport_error_message,
     transient_transport_error_types,
 )
@@ -65,6 +57,10 @@ from clio_agent.providers.claude_code_stream_events import (
 )
 from clio_agent.providers.claude_code_stream_events import (
     stream_event_thinking as _sdk_stream_event_thinking,
+)
+from clio_agent.providers.claude_code_system_prompt import (
+    prepare_claude_request,
+    split_system_prompt,
 )
 from clio_agent.providers.claude_code_thinking_split import (
     _split_provider_thinking_contract_delta,
@@ -148,9 +144,24 @@ def _messages_to_claude_input(
     )
 
 
-# The SDK transport machinery (the blocking-path pool in ``claude_code_sdk_pool`` and
-# the #891 pooled streaming transport in ``claude_code_sessions``) is imported at the
-# top and re-exported below for the historical import seams (#775 no-accretion).
+def _prepare_claude_request(
+    messages: list[dict[str, Any]],
+) -> tuple[str, str, list[dict[str, Any]]]:
+    """B4: split CLIO's system message out, then serialize the rest — this
+    provider's own exception type bound onto the shared helper."""
+    return prepare_claude_request(
+        messages,
+        serialize_text=_messages_to_claude_prompt,
+        unsupported_multimodal_exc=ClaudeCodeUnsupportedMultimodalError,
+    )
+
+
+def _split_for_native_blocks(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The non-system remainder of ``messages`` (a delta tail's native-block
+    extraction excludes the system row exactly like the full-prompt path)."""
+    return split_system_prompt(
+        messages, unsupported_multimodal_exc=ClaudeCodeUnsupportedMultimodalError
+    )[1]
 
 
 async def _astream_sdk(
@@ -161,35 +172,29 @@ async def _astream_sdk(
     cwd: str | None = None,
     call_index: int = 0,
     thinking: dict[str, Any] | None = None,
+    system_prompt: str | None = None,
     send: StatefulSend | None = None,
     native_blocks: list[dict[str, Any]] | None = None,
+    usage_sink: dict[str, Any] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Stream one Claude Code SDK call as LiteLLM-compatible chunks.
 
-    With connection reuse ON
-    (:func:`~clio_agent.providers.claude_code_sessions.session_reuse_enabled`, the
-    default) the call rides the pooled persistent client (#891): the connect is
-    paid once per ``(model, cwd, thinking)`` and every call sends its FULL prompt
-    under a FRESH ``session_id`` — the provider's content-prefix cache supplies the
-    cache_read win; the per-call conversation boundary supplies
-    compartmentalisation (no cross-call/cross-expert context bleed). With the kill
-    switch off the per-call path runs byte-for-byte as before — a fresh client,
-    connect, query, disconnect. The downstream normalization (#877 marker-split,
-    #878 suppression) is identical on both paths — only the client lifecycle
-    differs.
+    S2 (B1): rides the ONE pooled client for the active GACT session, reused
+    across every turn. ``system_prompt`` (B4) rides
+    ``ClaudeAgentOptions.system_prompt``, never the query text. ``usage_sink``,
+    when given, collects the raw SDK usage dict for the blocking path.
     """
-    # Single typed seam (finding #2): a structured mcp-2 unavailability error
-    # instead of a raw ImportError trace when the SDK is absent/uninstallable.
+    # A structured mcp-2 unavailability error, not a raw ImportError trace.
     from clio_agent.providers.claude_code_options import require_claude_agent_sdk  # noqa: PLC0415
 
     await asyncio.to_thread(require_claude_agent_sdk)
-    from claude_agent_sdk import (  # noqa: PLC0415
-        AssistantMessage,
-        ClaudeSDKClient,
-        ResultMessage,
-        StreamEvent,
-        TextBlock,
-    )
+    import claude_agent_sdk as _sdk  # noqa: PLC0415
+
+    AssistantMessage, ResultMessage = _sdk.AssistantMessage, _sdk.ResultMessage
+    StreamEvent, TextBlock = _sdk.StreamEvent, _sdk.TextBlock
+    # B17: only the real SDK (or a fake that opts in) exposes RateLimitEvent; a
+    # minimal test fake without it simply never matches the isinstance below.
+    RateLimitEvent = getattr(_sdk, "RateLimitEvent", None)
 
     call_id = (
         send.call_id if send is not None else ""
@@ -207,36 +212,22 @@ async def _astream_sdk(
     # byte-identical pre-#901 transport.
     payload = send.payload if send is not None else prompt
     session_id = send.session_id if send is not None else uuid.uuid4().hex
-    if session_reuse_enabled():
-        # gact_session_id (#1305): lets release_session_resources find + free
-        # this scope deterministically at agent-task completion.
-        entry = _STREAM_CLIENT_POOL.entry_for(
-            model=model,
-            cwd=cwd,
-            thinking=thinking,
-            scope=stream_scope_for(send),
-            gact_session_id=_active_gact_session_id(),
-        )
-        source = entry.stream(
-            payload=payload,
-            native_blocks=list(native_blocks or []),
-            session_id=session_id,
-            timeout=timeout,
-            on_construct=_STREAM_CLIENT_POOL.bump_construct,
-        )
-    else:
-        # Per-call path (kill switch off): a fresh client, the resolved payload, and a
-        # disconnect after the call.
-        client = ClaudeSDKClient(
-            options=build_sdk_options(model=model, cwd=cwd, stream=True, thinking=thinking)
-        )
-        source = _per_call_message_source(
-            client,
-            prompt=payload,
-            native_blocks=list(native_blocks or []),
-            session_id=session_id,
-            timeout=timeout,
-        )
+    gact_sid_for_pool = _active_gact_session_id()
+    entry = _STREAM_CLIENT_POOL.entry_for(
+        session_id=gact_sid_for_pool,
+        gact_session_id=gact_sid_for_pool,
+    )
+    source = entry.stream(
+        payload=payload,
+        native_blocks=list(native_blocks or []),
+        session_id=session_id,
+        timeout=timeout,
+        on_construct=_STREAM_CLIENT_POOL.bump_construct,
+        model=model,
+        cwd=cwd,
+        thinking=thinking,
+        system_prompt=system_prompt,
+    )
     emitted_partial = False
     final_text = ""
     final_usage: dict[str, Any] = {}
@@ -458,14 +449,30 @@ async def _astream_sdk(
                             model=f"claude_code/{model}",
                             llm_provider="claude_code",
                         )
+                    # B17: a structured 429 is a typed, terminal plan-limit error
+                    # (never the generic, retry-tempting ClaudeCodeExecError).
+                    plan_limit = plan_limit_from_result(msg)
+                    if plan_limit is not None:
+                        raise plan_limit
                     raise ClaudeCodeExecError(
                         f"claude agent sdk returned an error for model={model}: "
                         f"{status or getattr(msg, 'subtype', None)}"
                     )
+            elif RateLimitEvent is not None and isinstance(msg, RateLimitEvent):
+                # B17: a "rejected" status is the SAME typed plan-limit error as a
+                # 429 result, raised as soon as the CLI reports it.
+                response_log.append(
+                    {
+                        "message_type": "RateLimitEvent",
+                        "info": getattr(msg, "rate_limit_info", None),
+                    }
+                )
+                plan_limit = plan_limit_from_rate_limit_event(msg)
+                if plan_limit is not None:
+                    raise plan_limit
 
-    # Both message sources are timeout-bounded internally (the pooled entry enforces
-    # it on its owner loop; the per-call source wraps its own query→receive), so the
-    # timeout surfaces here as a TimeoutError to translate.
+    # The pooled entry's query→receive cycle is timeout-bounded internally on its
+    # owner loop, so a timeout surfaces here as a TimeoutError to translate.
     try:
         async for chunk in _process():
             yield chunk
@@ -476,14 +483,15 @@ async def _astream_sdk(
             f"claude agent sdk timed out after {timeout}s (model={model})"
         ) from exc
     except transient_transport_error_types() as exc:
-        # The pooled CLI subprocess died mid-stream (exit 1, no is_error result).
-        # The entry already dropped the poisoned client on the abnormal end, so
-        # surface a TYPED, audited, transient error → the LM retry layer re-issues
-        # on a fresh connection instead of failing the turn (#891 live-crash fix).
+        # The pooled CLI subprocess died mid-stream; surface a TYPED, audited,
+        # transient error (carrying its stderr tail, B17) so the LM retry
+        # layer re-issues on a fresh connection instead of failing the turn.
         if send is not None:
             send.note_error()  # drop the poisoned stateful session → bounded full resend
         raise ClaudeCodeExecError(
-            transient_transport_error_message(model, exc, call_index=call_index)
+            transient_transport_error_message(
+                model, exc, call_index=call_index, stderr_tail=entry.stderr_ring.tail()
+            )
         ) from exc
     finally:
         emit_call_usage(  # BEFORE disconnect: record call end even if teardown raises (#891)
@@ -494,8 +502,11 @@ async def _astream_sdk(
             usage=final_usage,
             output_chars=len(final_text),
         )
+        if usage_sink is not None:
+            usage_sink.update(final_usage)
         # The pooled client's lifecycle (connect reuse + reset-on-abnormal-end) is
-        # owned by the entry; the per-call client disconnects inside its own source.
+        # owned by the entry, keyed to the active GACT session (B1) — this
+        # generator never connects or disconnects a client itself.
         trace.HF_ON and trace.hot(
             "CLAUDE-CODE-IO",
             "response call=%d json=%s",
@@ -568,7 +579,7 @@ class ClaudeCodeLLM(CustomLLM):
     ) -> ModelResponse:
         call_index = _next_call_index()
         clean_model = model.removeprefix("claude_code/").removeprefix("cc-")
-        prompt, native_blocks = _messages_to_claude_input(messages)
+        system_prompt, prompt, native_blocks = _prepare_claude_request(messages)
         params = optional_params or {}
         # Transport travels per-LM in optional_params (carried on the resolved
         # LMProviderConfig, #818); no process-global env fallback so concurrent
@@ -614,20 +625,10 @@ class ClaudeCodeLLM(CustomLLM):
             timeout_s,
             cwd or "",
         )
-        call_id = uuid.uuid4().hex
-        emit_call_started(
-            call_id=call_id,
-            call_index=call_index,
-            model=clean_model,
-            transport=transport,
-            prompt=prompt,
-        )
         started = time.monotonic()
-        # ONE choice for the native_blocks seam: every call site passes it,
-        # empty or not. The completion path used to pass it conditionally while
-        # the streaming path and both message sources passed it unconditionally,
-        # so the empty case exercised a different signature from the non-empty
-        # one and only the non-empty one was tested.
+        # ``_run_sdk`` rides the same per-session pooled client ``_astream_sdk``
+        # uses for streaming (S2 B1) and emits its own call_started/call_usage
+        # audit rows internally — this method no longer duplicates them.
         text, usage = _run_sdk(
             prompt=prompt,
             native_blocks=native_blocks,
@@ -635,14 +636,8 @@ class ClaudeCodeLLM(CustomLLM):
             timeout=timeout_s,
             cwd=cwd,
             thinking=thinking,
-        )
-        emit_call_usage(
-            call_id=call_id,
+            system_prompt=system_prompt,
             call_index=call_index,
-            model=clean_model,
-            transport=transport,
-            usage=usage,
-            output_chars=len(text),
         )
         trace.HF_ON and trace.hot(
             "CLAUDE-CODE-CALL",
@@ -767,7 +762,7 @@ class ClaudeCodeLLM(CustomLLM):
                 "CLIO_CLAUDE_CODE_TRANSPORT / lm.claude_code_transport"
             )
         clean_model = model.removeprefix("claude_code/").removeprefix("cc-")
-        prompt, native_blocks = _messages_to_claude_input(messages)
+        system_prompt, prompt, native_blocks = _prepare_claude_request(messages)
         timeout_s = float(timeout) if timeout else 180.0
         cwd = params.get("claude_code_cwd", os.getcwd())
         # Provider-generic thinking (#895): resolved SDK thinking config, or None.
@@ -810,11 +805,16 @@ class ClaudeCodeLLM(CustomLLM):
             model=clean_model,
             cwd=cwd,
             thinking=thinking,
-            serialize=lambda rows: _messages_to_claude_input(rows)[0],
+            # B4: a delta tail's own serialization must also exclude the system
+            # row (in practice a delta tail never carries the first message
+            # anyway, but this keeps the guarantee structural, not incidental).
+            serialize=lambda rows: _messages_to_claude_input(_split_for_native_blocks(rows))[0],
             call_index=call_index,
         )
         if send.message_batch:
-            _send_prompt, native_blocks = _messages_to_claude_input(send.message_batch)
+            _, native_blocks = _messages_to_claude_input(
+                _split_for_native_blocks(send.message_batch)
+            )
         try:
             async for chunk in _astream_sdk(
                 prompt=prompt,
@@ -823,6 +823,7 @@ class ClaudeCodeLLM(CustomLLM):
                 cwd=cwd,
                 call_index=call_index,
                 thinking=thinking,
+                system_prompt=system_prompt,
                 send=send,
                 native_blocks=native_blocks,
             ):
@@ -853,12 +854,9 @@ __all__ = [
     "ClaudeCodeLLM",
     "ensure_registered",
     "_messages_to_claude_input",
-    # Re-exported from providers.claude_code_sessions for the historical import
-    # seams (tests + the completion path) — the SDK-session machinery's owner
-    # module moved out of this file (#891, #775 no-accretion).
     "_run_sdk",
-    "_SDK_SESSION_POOL",
-    "_SdkSession",
-    "_SdkSessionPool",
+    # Re-exported from providers.claude_code_sessions for the historical import
+    # seam (tests) — the ONE per-GACT-session pooled client (S2 B1; #775
+    # no-accretion keeps its owner module separate from this one).
     "_STREAM_CLIENT_POOL",
 ]

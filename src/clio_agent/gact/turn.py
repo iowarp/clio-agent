@@ -320,11 +320,7 @@ async def _run_turn_in_background(
         if state.sid in state.app.state.cancel_flags:
             state.app.state.cancel_flags.discard(state.sid)
             raise _TurnCancelled(
-                _cancelled_error_info(
-                    state.sid,
-                    execution_cancellation="turn_boundary",
-                    executor_work_may_continue=False,
-                )
+                _cancelled_error_info(state.sid, execution_cancellation="turn_boundary")
             )
 
         # #948 S6 [1]/[4]: commit-to-run seam — past the last abort/veto seam, the
@@ -479,9 +475,7 @@ async def _run_turn_in_background(
         if state.sid in state.app.state.cancel_flags:
             state.app.state.cancel_flags.discard(state.sid)
             state.error_info = _cancelled_error_info(
-                state.sid,
-                execution_cancellation="turn_boundary",
-                executor_work_may_continue=False,
+                state.sid, execution_cancellation="turn_boundary"
             )
             state.answer_text = ""
             state.tools_called = []
@@ -518,7 +512,6 @@ async def _run_turn_in_background(
                 "timeout_s": exc.timeout_s,
                 "partial_output": partial_output,
                 "execution_cancellation": "best_effort",
-                "executor_work_may_continue": True,
                 "recovery_actions": [
                     "retry",
                     "increase_turn_timeout",
@@ -677,11 +670,12 @@ async def _run_turn_in_background(
             recoverable=True,
         )
 
-    # #756 / #1339 round 5: everything finalize does (answer grounding, part assembly,
+    # #756 / #1339 / L1: everything finalize does (answer grounding, part assembly,
     # diff indexing, nanoagent spawn, publishes, persistence) reads prologue-derived
-    # state -- ``turn_prologue_guard`` gates it on ``state.prologue_completed`` (a
-    # turn whose prologue never ran settles typed instead of crashing on an unset
-    # field) and keeps the #756 envelope for an ordinary finalize-region crash.
+    # state -- ``turn_prologue_guard`` gates it on ``state.prologue_phase`` (a turn
+    # whose prologue never ran or was cancelled mid-flight settles typed instead of
+    # crashing on an unset field) and keeps the #756 envelope for an ordinary
+    # finalize-region crash.
     await run_finalize_or_settle_prologue_gap(
         state,
         drain_observed_tool_calls=_drain_observed_tool_calls,

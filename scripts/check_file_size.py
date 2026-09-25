@@ -147,7 +147,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # comment lines explaining why the stamp is deliberately absent here.
     # MERGE (PR #1298 x #1310): 1030 -> 1032. Both campaigns' call-site lines
     # coexist; neither side's additions were dropped.
-    "src/clio_agent/agent.py": 994,  # MCP refresh moved to gact/mcp_gateway_refresh.py
+    "src/clio_agent/agent.py": 990,  # MCP refresh moved to gact/mcp_gateway_refresh.py; L1: -4 (executor_work_may_continue deleted)
     "src/clio_agent/arc/memory.py": 1340,  # #1339: the _events chunk writer cursor moved to arc/lane_chunking.py
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
@@ -278,7 +278,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # declared_native_tools.py) instead of one `supports_vision=...` kwarg each,
     # and `_dynamic_agent_tools` forwards `**capabilities` generically -- net a
     # one-line ratchet-down despite gaining PDF-capability threading.
-    "src/clio_agent/gact/agents/builders.py": 1546,
+    "src/clio_agent/gact/agents/builders.py": 1522,  # L1: -24, the 6 identical cancelled_error_info(..., executor_work_may_continue=False) calls collapsed to one line each
     # NEW entry (#1282, C1-S2 D1): crossed the flat 800 cap (797 -> 884) for
     # the #1275 fix's ONE chokepoint. Two pieces: (1) __init__ wraps every
     # tool callable this loop will ever run (MCP-bridged, instrumented
@@ -477,7 +477,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # landed here.
     # Desktop lifecycle and agent-initialization owners from release combine
     # with develop's activation extraction and provider startup refresh.
-    "src/clio_agent/gact/app.py": 2470,
+    "src/clio_agent/gact/app.py": 2469,  # L1: -1, the deleted hard_abort_supported/upstream_abort/executor_work_may_continue triad
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -723,7 +723,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # mount_failures map (namespace -> typed reason) so the exception itself
     # can name a declared tool's server + reason -- turn.py's except handler
     # is the only reader; the mount decision lives in gact/agents/builders.py.
-    "src/clio_agent/gact/runtime/globals.py": 986,  # blueprint-path arg threading (#1247)
+    "src/clio_agent/gact/runtime/globals.py": 981,  # blueprint-path arg threading (#1247); L1: -5, executor_work_may_continue param deleted from _cancelled_error_info
     # PR #1278 re-land: -36. _run_dynamic_agent_compat + its arity probe moved
     # to the owner module gact/agent_invocation.py (which adds the optional
     # images slot); kwargs selection extraction lowered this owner further.
@@ -770,7 +770,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # wake_on_parent_activity call site right after the tool.call.completed
     # publish (a lazy import + one call). All gating/coalesce/wake logic lives
     # in the owner module gact/spotter_watcher.py.
-    "src/clio_agent/gact/tool_observer.py": 1056,
+    "src/clio_agent/gact/tool_observer.py": 1053,  # L1: -3, executor_work_may_continue deleted from cancellation_metadata
     # Collector-collapse work already on this branch grew the file to 1303 (>the
     # recorded 986 baseline) before this entry was updated — pre-existing, not
     # introduced here. P5 (wire semantics): +34 for the waited_tasks union-merge
@@ -936,10 +936,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # providers/session_lifecycle.py -- only the threaded kwarg is here.
     # 862 -> 866 (#1333): acompletion runs the blocking pool bridge off the loop (+1 import,
     # +2 comment, +1 to_thread call); the bridge itself stays in claude_code_sdk_pool.py.
-    # 866 -> 864 (U1 #775): the astreaming usage/cost extraction moved to the
-    # shared claude_code_bridge.sdk_result_usage; a module-level import replaced
-    # the two local ClaudeCodeLLM helper aliases (net shrink despite the new call).
-    "src/clio_agent/providers/claude_code_litellm.py": 864,
+    # 866 -> 864 (S2 B2 rework): entry_for()'s call site drops the now-dead
+    # thinking=/system_prompt= peek kwargs (the warm pool they fed is deleted).
+    "src/clio_agent/providers/claude_code_litellm.py": 862,
     # (process_census.py's entry retired: 711 lines, back under the flat 800 cap.)
     # NEW entry (#1305 review round): crossed the flat 800 cap (800 -> 825)
     # for the F2/F4/F6b fixes an adversarial review demanded on
@@ -974,10 +973,25 @@ RATCHET_BASELINE: dict[str, int] = {
     # Ratchet back with the #714/#767 decomposition.
     # MERGE (PR #1298 x #1310): 863 -> 879. Both campaigns' stream-entry lifecycle
     # additions coexist; neither side's hardening was dropped.
-    # 879 -> 874 (U1 #775): _streaming_chunk's token/cost field conversion moved
-    # to the shared claude_code_bridge.usage_chunk_fields (also used by the
-    # blocking transport), so the real-cost passthrough fix shrank this file.
-    "src/clio_agent/providers/claude_code_sessions.py": 874,
+    # S2 (Claude SDK tuning, B1): stays at 879 (no growth past the recorded
+    # ceiling). Rekeyed the pool by GACT session id (dropping the whole
+    # scope<->session ownership bookkeeping layer -- _session_scopes/
+    # _scope_session and their note/forget/scopes_for_session helpers -- since
+    # session id IS the key now) while adding B2 (warm pool, incl. the
+    # claim-vs-mint compatibility check that avoids a double CLI spawn), B13
+    # (live model switch), B14 (interrupt-based cancel), and B17 (dead-client
+    # replacement + stderr-tail-on-crash); the bookkeeping deletion offset the
+    # additions almost exactly, so the file holds its baseline rather than
+    # shrinking further.
+    # S2 B2 rework (879 -> 846): the generic bare-config warm pool (_warm,
+    # _pop_compatible_warm_locked, prewarm/_spawn_warm_refill/
+    # _prewarm_one_blocking) is deleted outright, replaced by
+    # ClaudeStreamClientPool.precede_connect -- a thin delegator to
+    # claude_code_stream_bounds.precede_connect (the actual mint/cap/
+    # background-connect logic lives in that owner module, not here, mirroring
+    # how sweep_idle_session_entries/reap_idle_session_entry already reach into
+    # the pool from that sibling file).
+    "src/clio_agent/providers/claude_code_sessions.py": 841,
     # #900: +2 for wiring probe_process_tree into the doctor collect().
     # owner ruling 2026-07-14: +3 for the DEGRADED-by-policy local-ARC doctor row.
     # #947 DEBT (recorded 2026-07-18, #948 S4): residual over the pre-#947 count

@@ -56,9 +56,14 @@ class TestLMProviderConfig:
         assert config.api_key == "lm-studio"
 
     def test_ollama_defaults(self):
-        """Ollama defaults should match PROVIDER_DEFAULTS."""
+        """Ollama defaults should match PROVIDER_DEFAULTS.
+
+        No trailing ``/v1``: LiteLLM's native ``ollama_chat`` provider appends
+        its own ``/api/chat`` to this base (#1413) — a ``/v1`` suffix here
+        would double into ``/v1/api/chat`` and 404.
+        """
         config = LMProviderConfig(provider="ollama")
-        assert config.api_base == "http://127.0.0.1:11434/v1"
+        assert config.api_base == "http://127.0.0.1:11434"
         assert config.model == "granite3.1-dense:8b"
         assert config.api_key == "ollama"
 
@@ -209,11 +214,11 @@ class TestLoadConfigFromEnv:
         assert config.provider == "lm_studio"
 
     def test_ollama_provider_from_env(self):
-        """CLIO_LM_PROVIDER=ollama should configure ollama defaults."""
+        """CLIO_LM_PROVIDER=ollama should configure ollama defaults (no /v1, #1413)."""
         with isolated_environ({"CLIO_LM_PROVIDER": "ollama"}):
             config = load_config_from_env()
             assert config.provider == "ollama"
-            assert config.api_base == "http://127.0.0.1:11434/v1"
+            assert config.api_base == "http://127.0.0.1:11434"
             assert config.model == "granite3.1-dense:8b"
 
     def test_env_model_overrides_provider_default(self):

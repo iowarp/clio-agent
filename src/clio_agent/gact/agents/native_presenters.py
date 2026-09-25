@@ -8,7 +8,11 @@ Only ``build_wait_tool``, ``waiting_presentation``, ``validate_declaration``, an
 ``native_presentation`` are imported elsewhere — every other name here is either a
 private helper for the declarations kept in this module (``text``, ``model_catalog``,
 ``fields:``) or a re-export kept for monkeypatch compatibility (see
-``native_presenters_memory.py``'s module docstring).
+``native_presenters_memory.py``'s module docstring). ``view_image``/``view_pdf``
+moved off the generic ``fields:path,...`` declaration onto the dedicated
+``workspace_file`` block (U3, ``native_presenters_workspace_file.py``) — the
+generic ``fields:a,b,c`` declaration itself stays available for a future tool
+that just needs plain field rows.
 """
 
 from __future__ import annotations

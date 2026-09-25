@@ -1663,7 +1663,7 @@ def test_post_message_turn_timeout_surfaces_error(
     assert assistant["stop_reason"] == "error"
     assert assistant["error_info"]["error"] == "provider_timeout"
     assert assistant["error_info"]["details"]["timeout_s"] == 0.2
-    assert assistant["error_info"]["details"]["executor_work_may_continue"] is True
+    assert assistant["error_info"]["details"]["execution_cancellation"] == "best_effort"
     assert sess["status"] == "error"
     assert sess["message_count"] == 2
     assert len(agent.calls) <= 1

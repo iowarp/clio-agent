@@ -15,6 +15,7 @@ the TUI model picker already consumes.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -91,6 +92,58 @@ class ModelProfile:
         return self.loaded_context_window or self.context_window
 
 
+def _raw_aliases(raw: dict[str, Any]) -> tuple[str, ...]:
+    """Return a profile's own recorded CLI aliases (``cli_values``), defensively typed.
+
+    ``raw`` is passthrough evidence from a handshake/overlay payload, not a
+    validated model -- a malformed or absent ``cli_values`` (not a list, or a
+    list with non-string entries) must degrade to "no aliases" rather than
+    letting a stray string be iterated character-by-character into false alias
+    matches.
+    """
+
+    values = raw.get("cli_values")
+    if not isinstance(values, list):
+        return ()
+    return tuple(str(value) for value in values if isinstance(value, str) and value)
+
+
+def resolve_model_id(candidates: Iterable[tuple[str, Sequence[str]]], query: str) -> str:
+    """Resolve a configured model id or alias to its catalog/handshake canonical id.
+
+    ``candidates`` is an iterable of ``(canonical_id, aliases)`` pairs drawn from
+    ONE evidence source for ONE provider -- a :class:`HandshakeReport`'s own
+    profiles (``profile.id``, ``profile.raw["cli_values"]``) or a provider
+    catalog's own model rows (``row["model_id"]``, ``row["aliases"]``). Both
+    alias lists are populated from the same discovery evidence (#1436's
+    ``cli_values``/``aliases``), so this reads existing alias data rather than
+    maintaining a second, hand-typed alias table.
+
+    A match is always an EXACT string match against the canonical id or one of
+    its own recorded aliases -- never a keyword, prefix, or substring match, so
+    an unrelated id (``"sonnet-x"``) can never be mistaken for a real alias
+    (``"sonnet"``). ``query`` is returned unchanged when nothing matches: an
+    unknown model id stays unknown rather than being coerced onto some other
+    candidate.
+
+    This is the ONE place a configured model value (which may be an alias) is
+    reconciled against discovered model identity. Every capability decision that
+    needs to match a configured id against catalog/handshake evidence --
+    :meth:`HandshakeReport.model` (and through it, context-window/reasoning
+    folding in ``LMProviderConfig.apply_handshake`` and the cross-provider
+    resolver), plus ``gact.resource_delivery._catalog_modalities`` (vision/PDF/
+    delivery-planning modality lookups) -- routes through here so they cannot
+    disagree about which model a configured alias names.
+    """
+
+    if not query:
+        return query
+    for candidate_id, aliases in candidates:
+        if candidate_id == query or query in aliases:
+            return candidate_id
+    return query
+
+
 @dataclass(frozen=True)
 class HandshakeReport:
     """The result of a provider handshake. Never raised — failures are encoded in state."""
@@ -128,9 +181,19 @@ class HandshakeReport:
         }
 
     def model(self, model_id: str) -> ModelProfile | None:
-        """Return the profile for ``model_id`` (exact match), or None."""
+        """Return the profile for ``model_id``, or None.
+
+        ``model_id`` may be an exact profile id or one of a profile's own
+        recorded aliases (e.g. claude_code CLI values like ``"sonnet"`` for
+        ``"claude-sonnet-5"``) -- see :func:`resolve_model_id`, the shared
+        resolution point every alias-tolerant model lookup routes through.
+        """
+        canonical = resolve_model_id(
+            ((profile.id, _raw_aliases(profile.raw)) for profile in self.models),
+            model_id,
+        )
         for profile in self.models:
-            if profile.id == model_id:
+            if profile.id == canonical:
                 return profile
         return None
 

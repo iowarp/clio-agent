@@ -242,6 +242,9 @@ def promote_view_image_tool_messages(messages: list[dict[str, Any]]) -> list[dic
 def build_view_image_tool() -> Any:
     """Build the declared native tool that inspects one workspace image."""
 
+    from clio_agent.gact.agents.native_presenters_workspace_file import (  # noqa: PLC0415
+        workspace_file_presentation,
+    )
     from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
     def view_image(path: str) -> dict[str, Any]:
@@ -258,7 +261,7 @@ def build_view_image_tool() -> Any:
     return native_tool(
         view_image,
         name="view_image",
-        presentation="fields:path,media_type,size_bytes",
+        presentation=workspace_file_presentation,
         domain="workspace",
         desc=view_image.__doc__,
         title="View image",

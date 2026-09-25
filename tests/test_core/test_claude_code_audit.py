@@ -275,19 +275,26 @@ def _install_timed_fake_sdk(
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
 
 
-async def test_call_started_brackets_connect_and_usage_precedes_disconnect(
+async def test_call_started_brackets_connect_and_usage_precedes_release(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # #891 finding, pinned on the PER-CALL transport (kill-switch off — the pooled
-    # default never disconnects per call): the SDK connect (cold-start) must be
-    # INSIDE the [call_started -> call_usage] window (else it is misfiled as
-    # inter_call_gap), and call_usage must be recorded BEFORE disconnect.
+    # #891 finding, re-pinned for S2 (B1): the pooled per-GACT-session client no
+    # longer disconnects per call (it stays warm for the session's next turn),
+    # so this proves the SDK connect (cold-start, paid once for the session)
+    # falls INSIDE the [call_started -> call_usage] window (else it is misfiled
+    # as inter_call_gap), and that call_usage is recorded well before the
+    # session's eventual release/disconnect -- so usage survives even if that
+    # later teardown fails.
     from clio_agent import conf  # noqa: PLC0415
+    from clio_agent.providers.claude_code_sessions import (  # noqa: PLC0415
+        _STREAM_CLIENT_POOL,
+        _reset_sessions_for_tests,
+    )
 
     audit = tmp_path / "audit.jsonl"
     monkeypatch.setenv("CLIO_STREAM_AUDIT_LOG", str(audit))
-    monkeypatch.setenv("CLIO_CLAUDE_CODE_SESSION_REUSE", "false")
     conf.reload()
+    _reset_sessions_for_tests()
     events: list[tuple[str, float]] = []
     delay = 0.5
     _install_timed_fake_sdk(monkeypatch, connect_delay=delay, events=events)
@@ -297,8 +304,12 @@ async def test_call_started_brackets_connect_and_usage_precedes_disconnect(
             prompt="hello", model="haiku", timeout=5.0, cwd="/tmp/clio", call_index=3
         ):
             pass
+        # B1: the connection stays warm after the call -- release it explicitly
+        # (mirrors a real session-end) to observe the disconnect ordering.
+        _STREAM_CLIENT_POOL.release("")
     finally:
         conf.reload()
+        _reset_sessions_for_tests()
 
     rows = _read_rows(audit)
     started = next(r for r in rows if r["stage"] == "provider.call_started")
@@ -313,7 +324,8 @@ async def test_call_started_brackets_connect_and_usage_precedes_disconnect(
     # 10x discrimination while being immune to clock adjustment.
     assert started["ts"] <= connect_enter + 0.05
     assert usage["ts"] - started["ts"] >= delay * 0.8
-    # Usage is recorded before teardown, so it survives a disconnect failure.
+    # Usage is recorded before the session's eventual teardown, so it survives
+    # a disconnect failure.
     assert usage["ts"] <= disconnect_enter + 0.05
 
 

@@ -67,30 +67,50 @@ def _is_gpt_oss(profile: ModelProfile) -> bool:
 
 
 def _litellm_info(model: str) -> dict[str, Any]:
-    """LiteLLM's offline model info, or ``{}`` (logged) when it has no entry."""
+    """The fetched LiteLLM community map's raw entry for ``model``, or ``{}``.
 
-    try:
-        import litellm  # noqa: PLC0415
+    Reads through :mod:`clio_agent.providers.handshake.sources.litellm_catalog`
+    -- the SAME source :func:`~clio_agent.providers.handshake.sources.litellm_catalog.lookup_litellm`
+    uses -- instead of calling ``litellm.get_model_info()`` directly, so there is
+    one source of LiteLLM model facts, not two. ``allow_fetch=False``: this runs
+    on a per-turn thinking-resolution path, so it reads the disk cache / bundled
+    snapshot only, never blocking a turn on a live fetch (the live map is kept
+    current by whatever last touched :mod:`.litellm_catalog`, e.g. a handshake).
+    """
 
-        info = litellm.get_model_info(model)
-    except Exception as exc:  # noqa: BLE001 - an unknown model is "no evidence", logged
-        logger.debug("reasoning levels: no litellm model info for %r: %s", model, exc)
-        return {}
-    return dict(info) if isinstance(info, dict) else {}
+    from clio_agent.providers.handshake.sources.litellm_catalog import (  # noqa: PLC0415
+        _get_model_info,
+        _id_variants,
+    )
+
+    for candidate in _id_variants(model):
+        info = _get_model_info(candidate, allow_fetch=False)
+        if info:
+            return info
+    logger.debug("reasoning levels: no litellm model info for %r", model)
+    return {}
 
 
 def _anthropic_effort_levels(model: str) -> tuple[str, ...] | None:
-    """Effort levels LiteLLM will send as ``output_config.effort`` for ``model``."""
+    """Effort levels LiteLLM will send as ``output_config.effort`` for ``model``.
+
+    Dialect knowledge (Part 5.2 of the model-capabilities plan): this stays a
+    direct call into LiteLLM's own Anthropic transformation code -- which reads
+    LiteLLM's OWN internal ``model_cost`` map (forced local-only by
+    :func:`clio_agent._default_litellm_local_cost_map`, matching this module's
+    pre-upgrade behavior) -- rather than being folded into
+    :mod:`.litellm_catalog`'s live-fetched map like :func:`_litellm_info` was.
+    """
 
     try:
         from litellm.llms.anthropic.chat.transformation import (  # noqa: PLC0415
             AnthropicConfig,
         )
 
-        if not AnthropicConfig._is_adaptive_thinking_model(model):
+        if not AnthropicConfig._is_adaptive_thinking_model(model, "anthropic"):
             return None
         levels = ["low", "medium", "high", "max"]
-        if AnthropicConfig._supports_effort_level(model, "xhigh"):
+        if AnthropicConfig._supports_effort_level(model, "xhigh", "anthropic"):
             levels.append("xhigh")
     except Exception as exc:  # noqa: BLE001 - no LiteLLM evidence means budget ladder, logged
         logger.debug("reasoning levels: no anthropic effort evidence for %r: %s", model, exc)

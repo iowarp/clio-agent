@@ -214,7 +214,17 @@ def test_custom_llm_sdk_transport_routes_to_run_sdk(monkeypatch) -> None:
     # native_blocks is required, not optional: the seam passes it from EVERY
     # call site now, empty or not, so a signature that omits it would be a
     # signature the transport never actually sees.
-    def _fake_sdk(*, prompt, native_blocks, model, timeout, cwd, thinking=None):
+    def _fake_sdk(
+        *,
+        prompt,
+        native_blocks,
+        model,
+        timeout,
+        cwd,
+        thinking=None,
+        system_prompt=None,
+        call_index=0,
+    ):
         seen["model"] = model
         seen["thinking"] = thinking
         seen["native_blocks"] = native_blocks
@@ -885,7 +895,17 @@ def test_acompletion_does_not_hold_the_callers_loop(monkeypatch) -> None:
     started = threading.Event()
     release = threading.Event()
 
-    def _parked_sdk(*, prompt, native_blocks, model, timeout, cwd, thinking=None):
+    def _parked_sdk(
+        *,
+        prompt,
+        native_blocks,
+        model,
+        timeout,
+        cwd,
+        thinking=None,
+        system_prompt=None,
+        call_index=0,
+    ):
         started.set()
         assert release.wait(timeout=5.0)
         return "judged", {"input_tokens": 1, "output_tokens": 1}

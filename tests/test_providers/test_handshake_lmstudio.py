@@ -150,11 +150,3 @@ async def test_connectivity_unreachable() -> None:
     assert result.connectivity is ConnectivityState.UNREACHABLE
     assert result.auth is AuthState.NOT_REQUIRED
     assert result.error is not None
-
-
-@pytest.mark.asyncio
-async def test_root_strips_trailing_v1() -> None:
-    """``_root`` strips a trailing ``/v1`` (with or without a trailing slash)."""
-    assert LMStudioHandshake._root("http://h:1234/v1") == "http://h:1234"
-    assert LMStudioHandshake._root("http://h:1234/v1/") == "http://h:1234"
-    assert LMStudioHandshake._root("http://h:1234") == "http://h:1234"

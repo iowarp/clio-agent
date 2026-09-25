@@ -123,7 +123,12 @@ PROVIDERS: tuple[Provider, ...] = (
         description="Locally-hosted models via Ollama.",
         provider_kind="ollama",
         litellm_prefix="ollama_chat",
-        api_base="http://127.0.0.1:11434/v1",
+        # NOT "/v1": LiteLLM's native ollama_chat provider appends its own
+        # /api/chat to this base (OllamaChatConfig.get_complete_url), so a
+        # /v1 suffix here doubles into /v1/api/chat and 404s (#1413). The
+        # discovery handshake still reaches the OpenAI-compatible /v1 shim by
+        # going through native_root() the other way where it needs to.
+        api_base="http://127.0.0.1:11434",
         suggested_model="granite3.1-dense:8b",
         api_key_default="ollama",
         requires_api_key=False,
@@ -151,16 +156,16 @@ PROVIDERS: tuple[Provider, ...] = (
         provider_kind="openai",
         litellm_prefix="openai",
         api_base="http://127.0.0.1:8088/v1",
-        suggested_model="local-model",
+        # Empty means "discover the loaded model from llama.cpp's /v1/models".
+        # A hardcoded "local-model" id (#1418) was never what the server
+        # actually serves, so it was never a usable message route.
+        suggested_model="",
         api_key_default="llama-cpp",
         requires_api_key=False,
         auth_method="none",
         supports_vision=True,
         supports_runtime_sizing=True,
         managed_service_id="llama_cpp",
-        model_catalog=(
-            ModelEntry("local-model", "Loaded GGUF model", "The model served by llama.cpp."),
-        ),
     ),
     # ----- cloud / proxy ---------------------------------------------
     Provider(
@@ -476,6 +481,12 @@ PROVIDERS: tuple[Provider, ...] = (
                 ("text", "image"),
             ),
         ),
+        # B7 not adopted (S2 Claude SDK tuning): CLIO's own DSPy ReAct loop
+        # drives every claude_code turn end-to-end (tools=[] on the SDK
+        # session — see build_sdk_options); Claude Code is a bare model
+        # engine, never its own inner loop. Explicit (matches the dataclass
+        # default) so the ruling is documented on the record itself.
+        inner_loop_owner="clio",
     ),
     # ----- argonne ALCF ----------------------------------------------
     # NB: api_key for argonne presets is resolved lazily via

@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from clio_agent import conf
 from clio_agent.gact.resource_custody import ResourceRecord, quarantine_corrupt_index
 from clio_agent.gact.types import ModelRef
+from clio_agent.providers.handshake.model import resolve_model_id
 
 logger = logging.getLogger(__name__)
 
@@ -281,6 +282,16 @@ _EVIDENCE_LABEL_BY_SOURCE: dict[str, str] = {
 }
 
 
+def _catalog_row_aliases(row: dict[str, Any]) -> tuple[str, ...]:
+    """A catalog row's own recorded aliases (:func:`~clio_agent.gact.provider_catalog.
+    model_catalog_row`'s ``aliases`` field), defensively typed against a malformed payload."""
+
+    values = row.get("aliases")
+    if not isinstance(values, list):
+        return ()
+    return tuple(str(value) for value in values if isinstance(value, str) and value)
+
+
 def _catalog_modalities(app: Any, model: ModelRef) -> tuple[set[str], str, str]:
     catalog = getattr(app.state, "provider_catalog", None)
     if not isinstance(catalog, dict):
@@ -300,12 +311,20 @@ def _catalog_modalities(app: Any, model: ModelRef) -> tuple[set[str], str, str]:
     )
     if provider is None or not isinstance(provider.get("models"), list):
         return {"text"}, "unavailable", ""
+    rows = [row for row in provider["models"] if isinstance(row, dict)]
+    # A configured model id may be an alias (e.g. claude_code's "sonnet" for
+    # "claude-sonnet-5"); resolve it against this provider's own catalog rows
+    # before matching, through the same resolution point ``HandshakeReport.model``
+    # uses, so an alias-bound selection is never treated as an unknown model.
+    canonical_id = resolve_model_id(
+        ((str(row.get("model_id") or ""), _catalog_row_aliases(row)) for row in rows),
+        model.model_id,
+    )
     profile = next(
         (
             row
-            for row in provider["models"]
-            if isinstance(row, dict)
-            and row.get("model_id") == model.model_id
+            for row in rows
+            if row.get("model_id") == canonical_id
             and (
                 row.get("availability") == "available"
                 or (
@@ -345,7 +364,11 @@ def _live_modalities(app: Any, model: ModelRef) -> tuple[set[str], str, str]:
         report is not None
         and report.ok
         and report.models_source in _EVIDENCE_LABEL_BY_SOURCE
-        and model.provider_id in {report.provider_id, report.provider_kind, ""}
+        # provider KIND is never an identity match (#1418): nine presets share
+        # kind "openai", so matching on report.provider_kind let a message
+        # routed to one provider read another same-kind provider's live
+        # handshake evidence.
+        and model.provider_id in {report.provider_id, ""}
     ):
         profile = report.model(model.model_id)
         if profile is not None:

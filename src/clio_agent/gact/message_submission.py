@@ -31,6 +31,7 @@ from clio_agent.gact.part_atom_minter import run_transcript_job
 from clio_agent.gact.parts import Part
 from clio_agent.gact.providers.config import (
     _active_lm_supports_vision,
+    _bare_provider_kind_error,
     _image_part_error,
     _model_ref_dict,
     _model_ref_is_empty,
@@ -293,6 +294,10 @@ def _validate_provider_and_payload(
         )
 
     selected_model = _selected_model(app, deps, sess, req)
+    _source = "per_message" if req.model is not None else "session"
+    bare_kind_error = _bare_provider_kind_error(selected_model, session_id=sid, source=_source)
+    if bare_kind_error is not None:
+        raise HTTPException(status_code=400, detail=bare_kind_error.model_dump(exclude_none=True))
     if not _model_ref_matches_active(selected_model, app):
         # A selection the ACTIVE global LM does not serve is executable only when
         # the provider catalog holds real discovery EVIDENCE for that exact
@@ -307,7 +312,7 @@ def _validate_provider_and_payload(
                 status_code=501,
                 detail=deps.unsupported_model_ref_error(
                     session_id=sid,
-                    source="per_message" if req.model is not None else "session",
+                    source=_source,
                     model_ref=selected_model,
                     active_model=deps.active_lm_model_ref(app),
                 ).model_dump(exclude_none=True),

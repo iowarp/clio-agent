@@ -8,8 +8,10 @@ returns the first hit with an exact provenance string:
 
 1. **models.dev** (``"models.dev"``) — the public catalog, fetched + cached with a
    TTL, offline-safe. Broadest coverage.
-2. **litellm** (``"litellm"``) — the bundled LiteLLM model-cost catalog, an
-   offline in-process lookup for models models.dev doesn't list.
+2. **litellm** (``"litellm"``) — the LiteLLM community model-cost map, fetched +
+   cached with a TTL the same way (see
+   :mod:`clio_agent.providers.handshake.sources.litellm_catalog`), for models
+   models.dev doesn't list.
 3. **db** (``"db"``) — the local model-limits database (:mod:`...sources.db`): a
    repo-shipped, lab-shareable JSON that is also **written back on discovery**, so
    models no public catalog lists yet are still known offline next time.
@@ -56,9 +58,11 @@ def lookup_native_context(model_id: str) -> int | None:
 
     Walks the same offline-only ladder as
     :func:`clio_agent.gact.runtime.context_tokens._resolve_expert_context_window`:
-    LiteLLM bundled catalog first, then the bundled ``model_limits.json`` DB.
-    No network call is made. Returns None when neither source has an entry, so the
-    caller can leave ``native_context_window`` unset rather than guessing.
+    the LiteLLM catalog first (disk cache / bundled snapshot only --
+    ``allow_fetch=False``, so this never fetches), then the bundled
+    ``model_limits.json`` DB. No network call is made. Returns None when neither
+    source has an entry, so the caller can leave ``native_context_window`` unset
+    rather than guessing.
 
     This is intentionally distinct from :func:`resolve_context`, which includes the
     network-based models.dev source and is used for the *served* window; here we only
@@ -67,7 +71,7 @@ def lookup_native_context(model_id: str) -> int | None:
     """
     if not (model_id or "").strip():
         return None
-    ctx = lookup_litellm_context(model_id)
+    ctx = lookup_litellm_context(model_id, allow_fetch=False)
     if ctx is not None:
         return ctx
     return db.lookup_context(model_id)
