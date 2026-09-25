@@ -9,6 +9,7 @@ only the activation is platform-gated.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -122,3 +123,110 @@ def test_short_stage_name_honors_custom_prefix_and_suffix() -> None:
 
     assert name.startswith(".manifest-")
     assert name.endswith(".json.tmp")
+
+
+# ---------------------------------------------------------------------------
+# atomic_replace: retry-on-transient-Windows-sharing-race (overlay.py PermissionError)
+# ---------------------------------------------------------------------------
+
+
+def _permission_error(winerror: int | None) -> PermissionError:
+    exc = PermissionError("access denied")
+    if winerror is not None:
+        exc.winerror = winerror  # type: ignore[attr-defined]
+    return exc
+
+
+def test_atomic_replace_happy_path_replaces_file(tmp_path: Path) -> None:
+    source = tmp_path / "source.tmp"
+    target = tmp_path / "target.json"
+    source.write_text("new", encoding="utf-8")
+    target.write_text("old", encoding="utf-8")
+
+    platform_paths.atomic_replace(source, target)
+
+    assert target.read_text(encoding="utf-8") == "new"
+    assert not source.exists()
+
+
+def test_atomic_replace_retries_a_transient_sharing_violation_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(platform_paths.time, "sleep", lambda _seconds: None)
+    source = tmp_path / "source.tmp"
+    target = tmp_path / "target.json"
+    source.write_text("new", encoding="utf-8")
+    calls: list[int] = []
+    real_replace = platform_paths.os.replace
+
+    def flaky_replace(src: str, dst: str) -> None:
+        calls.append(1)
+        if len(calls) < 3:
+            raise _permission_error(32)  # ERROR_SHARING_VIOLATION
+        real_replace(src, dst)
+
+    monkeypatch.setattr(platform_paths.os, "replace", flaky_replace)
+
+    platform_paths.atomic_replace(source, target)
+
+    assert len(calls) == 3
+    assert target.read_text(encoding="utf-8") == "new"
+
+
+def test_atomic_replace_reraises_after_exhausting_retries(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(platform_paths.time, "sleep", lambda _seconds: None)
+    calls: list[int] = []
+
+    def always_fails(src: str, dst: str) -> None:
+        calls.append(1)
+        raise _permission_error(5)  # ERROR_ACCESS_DENIED
+
+    monkeypatch.setattr(platform_paths.os, "replace", always_fails)
+
+    with pytest.raises(PermissionError):
+        platform_paths.atomic_replace(tmp_path / "source.tmp", tmp_path / "target.json", retries=3)
+
+    assert len(calls) == 3
+
+
+def test_atomic_replace_does_not_retry_a_non_retryable_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A DURABLE permission failure (no winerror, or a real ACL denial) must not
+    burn the retry budget -- only the specific transient sharing race is retried."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(platform_paths.time, "sleep", lambda _seconds: None)
+    calls: list[int] = []
+
+    def durable_failure(src: str, dst: str) -> None:
+        calls.append(1)
+        raise _permission_error(None)
+
+    monkeypatch.setattr(platform_paths.os, "replace", durable_failure)
+
+    with pytest.raises(PermissionError):
+        platform_paths.atomic_replace(tmp_path / "source.tmp", tmp_path / "target.json", retries=5)
+
+    assert len(calls) == 1
+
+
+def test_atomic_replace_never_retries_off_win32(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(sys, "platform", "linux")
+    calls: list[int] = []
+
+    def fails(src: str, dst: str) -> None:
+        calls.append(1)
+        raise _permission_error(32)
+
+    monkeypatch.setattr(platform_paths.os, "replace", fails)
+
+    with pytest.raises(PermissionError):
+        platform_paths.atomic_replace(tmp_path / "source.tmp", tmp_path / "target.json", retries=5)
+
+    assert len(calls) == 1
