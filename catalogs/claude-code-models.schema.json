@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/iowarp/clio-agent/develop/catalogs/claude-code-models.schema.json",
+  "title": "CLIO Claude Code model catalog",
+  "description": "Schema for catalogs/claude-code-models.json, fetched by providers/model_discovery/claude_code_catalog.py. Mirrors the validation _parse_catalog already enforces at read time (schema_version, model id shape, capabilities vocabulary, default_model membership) so CI can catch a malformed commit before it ever reaches a client's fetch.",
+  "type": "object",
+  "required": ["schema_version", "models"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+    "source": { "type": "string" },
+    "default_model": { "type": "string" },
+    "models": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "name"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^claude-[a-z0-9]+(?:-[a-z0-9]+)*$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "capabilities": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "enum": ["text", "image", "pdf"] },
+            "contains": { "const": "text" }
+          }
+        }
+      }
+    }
+  }
+}

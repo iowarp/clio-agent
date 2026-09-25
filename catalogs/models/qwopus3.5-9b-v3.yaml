@@ -1,0 +1,51 @@
+# Seeded verbatim from clio-coder's local-models/clio-local-coding-targets.yaml (model-capabilities brief Part 8.5).
+- family: qwopus3.5-9b-v3
+  matchPatterns:
+    - qwopus3.5-9b-v3
+    - qwopus-9b
+    - qwopus 9b
+  capabilities:
+    chat: true
+    tools: true
+    toolCallFormat: qwen
+    reasoning: true
+    thinkingFormat: qwen-chat-template
+    structuredOutputs: json-schema
+    vision: false
+    audio: false
+    embeddings: false
+    rerank: false
+    fim: false
+    contextWindow: 262144
+    maxTokens: 32768
+  quirks:
+    sampling:
+      instruct:
+        temperature: 0.2
+        topP: 0.9
+        topK: 20
+        maxTokens: 4096
+      thinking:
+        temperature: 0.6
+        topP: 0.95
+        topK: 20
+        maxTokens: 8192
+        reasoningBudget: 2048
+    gpuTiers:
+      "16gb": "Use this as the local 16GB emulation target. It keeps the output cap below the 32GB-class MoE defaults."
+    runtimePreference:
+      lmstudioNative: "Primary local laptop path. Verified through LM Studio /api/v1/models with 262144 loaded context, flash attention, GPU KV offload, and trained_for_tool_use."
+      openaiCompat: "Verified through the LM Studio gateway for read and write_plan tool calls; use when the native SDK produces thinking-only length stops or malformed tools."
+      anthropicCompat: "LM Studio's Anthropic Messages surface streams simple text with the server root URL as baseUrl; keep as a protocol fallback until tool and reasoning behavior are proven."
+    thinking:
+      mechanism: budget-tokens
+      budgetByLevel:
+        low: 512
+        medium: 2048
+        high: 4096
+      guidance: |
+        Qwopus 9B distilled from Opus reasoning; thinking emits via the qwen
+        chat template. Output cap is tighter than the 32GB-class MoE families
+        because this is the 16GB emulation target. Keep thinking budgets
+        modest for tool-calling workflows.
+    serving: "LM Studio reports trained_for_tool_use for the local qwopus3.5-9b-v3 target. Native model override successfully switched residency to granite-4.0-h-350m through the SDK."

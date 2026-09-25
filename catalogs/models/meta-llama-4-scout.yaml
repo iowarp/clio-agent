@@ -1,0 +1,18 @@
+# Seeded verbatim from clio-coder's cloud-models/alcf.yaml (model-capabilities brief Part 8.5).
+- family: meta-llama-4-scout
+  matchPatterns:
+    - meta-llama/llama-4-scout
+    - llama-4-scout
+  capabilities:
+    chat: true
+    tools: true
+    toolCallFormat: openai
+    reasoning: false
+    structuredOutputs: json-schema
+    vision: false
+    audio: false
+    embeddings: false
+    rerank: false
+    fim: false
+    contextWindow: 131072
+    maxTokens: 8192

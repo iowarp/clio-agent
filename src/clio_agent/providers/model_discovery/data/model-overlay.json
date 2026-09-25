@@ -1,0 +1,782 @@
+{
+  "entries": [
+    {
+      "capabilities": {
+        "audio": false,
+        "chat": true,
+        "contextWindow": 262144,
+        "embeddings": false,
+        "fim": false,
+        "maxTokens": 65536,
+        "reasoning": true,
+        "rerank": false,
+        "structuredOutputs": "json-schema",
+        "thinkingFormat": "qwen-chat-template",
+        "toolCallFormat": "qwen",
+        "tools": true,
+        "vision": false
+      },
+      "family": "agenticqwen-30b-a3b-i1",
+      "matchPatterns": [
+        "agenticqwen-30b-a3b-i1",
+        "agenticqwen-30b-a3b-i1-q4_k_m",
+        "agenticqwen"
+      ],
+      "quirks": {
+        "gpuTiers": {
+          "32gb": "Default mini llama.cpp orchestrator model; benchmarked with 1 GiB VRAM headroom on a 31.859 GiB card."
+        },
+        "llamaCpp": {
+          "batchSize": 2048,
+          "cacheTypeK": "q8_0",
+          "cacheTypeV": "q8_0",
+          "ctxSize": 262144,
+          "parallel": 4,
+          "ubatchSize": 512
+        },
+        "runtimePreference": {
+          "llamaCpp": "OpenAI-compatible chat completions with --jinja. Deployed mini preset uses ctx=262144, parallel=4, batch=2048, ubatch=512, and q8 KV cache.",
+          "openaiCompat": "Use only when a gateway fronts the same llama.cpp chat-completions surface."
+        },
+        "sampling": {
+          "instruct": {
+            "maxTokens": 4096,
+            "temperature": 0.5,
+            "topK": 20,
+            "topP": 0.9
+          },
+          "thinking": {
+            "maxTokens": 16384,
+            "reasoningBudget": 4096,
+            "temperature": 0.5,
+            "topK": 20,
+            "topP": 0.9
+          }
+        },
+        "serving": "Use the mini llama-server preset from docs/.superpowers/reference/llama-bench-findings.md.",
+        "thinking": {
+          "budgetByLevel": {
+            "high": 16384,
+            "low": 1024,
+            "medium": 4096
+          },
+          "guidance": "AgenticQwen is the tuned local default for Clio source work on\nmini's llama.cpp server. Thinking emits through the qwen chat template;\nkeep high reasoning for main-agent work and preserve visible thinking\nblocks in receipts.\n",
+          "mechanism": "budget-tokens"
+        }
+      }
+    },
+    {
+      "capabilities": {
+        "audio": false,
+        "chat": true,
+        "contextWindow": 122880,
+        "embeddings": false,
+        "fim": false,
+        "maxTokens": 32768,
+        "reasoning": true,
+        "rerank": false,
+        "structuredOutputs": "json-schema",
+        "thinkingFormat": "qwen-chat-template",
+        "toolCallFormat": "openai",
+        "tools": true,
+        "vision": true
+      },
+      "family": "gemma-4-31b-it-nvfp4-turbo",
+      "matchPatterns": [
+        "gemma-4-31b-it-nvfp4-turbo",
+        "gemma-4-31b-it-nvfp4",
+        "gemma-4-31b-it-turbo",
+        "gemma-4-31b-it",
+        "gemma-4-31b"
+      ],
+      "quirks": {
+        "chatTemplate": "gemma-channel",
+        "gpuTiers": {
+          "48gb": "Fits at f16 KV when parallel=1 and ctx=122880; drop to q8_0 KV at parallel=4.",
+          "80gb": "Comfortable at f16 KV with parallel=1 and ctx=122880."
+        },
+        "kvCache": {
+          "kQuant": "q8_0",
+          "vQuant": "q8_0"
+        },
+        "leakageNote": "LM Studio's gemma4 chat template emits chain-of-thought as plain text\nbracketed by literal '<|channel>thought\\n' and '<channel|>' markers\nrather than reasoningType=reasoning fragments. Clio's lmstudio-native\nadapter buffers and re-classifies these regions into ThinkingContent\nso the markers do not leak into the visible TUI text and reasoning\ntokens are accounted via the chars/4 estimator.\n",
+        "runtimePreference": {
+          "lmstudioNative": "Verified path. Pin parallel=1 in the LM Studio per-model preset to give a single agent the full 122880 context.",
+          "openaiCompat": "Fallback path; the openai-compat surface does not expose the channel-marker classifier so visible text shows the raw markers."
+        },
+        "sampling": {
+          "instruct": {
+            "maxTokens": 32768,
+            "minP": 0.0,
+            "temperature": 0.7,
+            "topK": 64,
+            "topP": 0.95
+          },
+          "thinking": {
+            "maxTokens": 32768,
+            "minP": 0.0,
+            "presencePenalty": 0.0,
+            "repetitionPenalty": 1.0,
+            "temperature": 1.0,
+            "topK": 64,
+            "topP": 0.95
+          }
+        },
+        "serving": "LilaRest publishes no per-model sampler; values inherit the gemma family default per the official Google Gemma 4 31B card. KV cache budget at f16, ctx=122880 is roughly 57 GB on top of ~21 GB of NVFP4 weights.",
+        "thinking": {
+          "guidance": "Gemma 4 chat template exposes thinking only as on or off; intermediate\nlevels coerce to on. NVFP4 quantization can corrupt JSON tool-call\noutput under aggressive sampling, so the instruct profile pins\ntemperature at 0.7. The lmstudio-native adapter re-classifies the\nchannel-marker thought region into ThinkingContent so markers do not\nleak into visible text.\n",
+          "mechanism": "on-off"
+        }
+      }
+    },
+    {
+      "capabilities": {
+        "audio": false,
+        "chat": true,
+        "contextWindow": 262144,
+        "embeddings": false,
+        "fim": false,
+        "maxTokens": 65536,
+        "reasoning": true,
+        "rerank": false,
+        "structuredOutputs": "json-schema",
+        "thinkingFormat": "qwen-chat-template",
+        "toolCallFormat": "openai",
+        "tools": true,
+        "vision": true
+      },
+      "family": "gemma4-26b-a4b",
+      "matchPatterns": [
+        "gemma-4-26b-a4b",
+        "gemma4-26b-a4b",
+        "gemma-4-26b-a4b-it",
+        "gemma4-26b-a4b-it",
+        "gemma-4-26b-a4b-it-q4",
+        "gemma-4-26b-a4b-it-q4_k_m"
+      ],
+      "quirks": {
+        "gpuTiers": {
+          "32gb": "Main-agent candidate for the mini and dynamo class when Gemma behavior is preferred."
+        },
+        "llamaCpp": {
+          "cacheTypeK": "q8_0",
+          "cacheTypeV": "q8_0",
+          "ctxSize": 262144,
+          "flashAttn": true,
+          "mmproj": true,
+          "nGpuLayers": 99
+        },
+        "runtimePreference": {
+          "llamaCpp": "OpenAI-compatible chat completions with --jinja, --reasoning on, and the matching mmproj.",
+          "lmstudioNative": "Use for already-loaded LM Studio sessions and multimodal checks.",
+          "openaiCompat": "Preferred fallback when SDK rawTools do not match the template."
+        },
+        "sampling": {
+          "thinking": {
+            "maxTokens": 8192,
+            "reasoningBudget": 4096,
+            "temperature": 0.3,
+            "topK": 20,
+            "topP": 0.9
+          }
+        },
+        "thinking": {
+          "guidance": "Gemma 4 chat template exposes thinking only as on or off via\nenable_thinking. Intermediate levels coerce to on. The MoE A4B variant\nkeeps the same template behavior as the dense gemma-4 family.\n",
+          "mechanism": "on-off"
+        },
+        "thinkingControl": "Gemma 4 exposes thinking through chat template enable_thinking support."
+      }
+    },
+    {
+      "capabilities": {
+        "audio": false,
+        "chat": true,
+        "contextWindow": 122880,
+        "embeddings": false,
+        "fim": false,
+        "maxTokens": 32768,
+        "reasoning": true,
+        "rerank": false,
+        "structuredOutputs": "json-schema",
+        "thinkingFormat": "qwen-chat-template",
+        "toolCallFormat": "openai",
+        "tools": true,
+        "vision": false
+      },
+      "family": "gemopus-4-31b-it",
+      "matchPatterns": [
+        "gemopus-4-31b-it",
+        "gemopus-4-31b",
+        "gemopus-4"
+      ],
+      "quirks": {
+        "chatTemplate": "gemma-channel",
+        "gpuTiers": {
+          "48gb": "Fits at f16 KV with parallel=1; q8_0 KV recommended at parallel=4.",
+          "80gb": "Comfortable at f16 KV with parallel=1 and ctx=122880."
+        },
+        "kvCache": {
+          "kQuant": "q8_0",
+          "vQuant": "q8_0"
+        },
+        "runtimePreference": {
+          "lmstudioNative": "Verified path. Channel-marker handler in clio's adapter recovers reasoning tokens that the SDK classifier drops.",
+          "openaiCompat": "Fallback; reasoning_content is absent from the openai-compat reasoning probe for this family."
+        },
+        "sampling": {
+          "instruct": {
+            "maxTokens": 32768,
+            "minP": 0.0,
+            "temperature": 0.7,
+            "topK": 64,
+            "topP": 0.95
+          },
+          "thinking": {
+            "maxTokens": 32768,
+            "minP": 0.0,
+            "presencePenalty": 0.0,
+            "repetitionPenalty": 1.0,
+            "temperature": 1.0,
+            "topK": 64,
+            "topP": 0.95
+          }
+        },
+        "serving": "Distilled from Claude 4.6 Opus reasoning traces onto Google Gemma 4 31B; sampler matches the gemopus card values.",
+        "thinking": {
+          "guidance": "Distilled traces emit unconditionally. The thinking level setting is\nignored at the API surface; chain-of-thought arrives whether or not\nClio asks for it. Reasoning tokens are accounted via the channel-marker\nre-classifier in lmstudio-native.\n",
+          "mechanism": "always-on"
+        },
+        "thinkingControl": "Jackrong's distilled gemma-4 31B uses the same channel-marker template.\nThinking mode is gated by the literal '<|think|>' token in the system\nprompt; Clio does not currently inject it, so the model emits an empty\nthought region followed by the answer.\n"
+      }
+    },
+    {
+      "capabilities": {
+        "audio": false,
+        "chat": true,
+        "contextWindow": 131072,
+        "embeddings": false,
+        "fim": false,
+        "maxTokens": 8192,
+        "reasoning": false,
+        "rerank": false,
+        "structuredOutputs": "json-schema",
+        "toolCallFormat": "openai",
+        "tools": true,
+        "vision": false
+      },
+      "family": "meta-llama-4-maverick",
+      "matchPatterns": [
+        "meta-llama/llama-4-maverick",
+        "llama-4-maverick"
+      ]
+    },
+    {
+      "capabilities": {
+        "audio": false,
+        "chat": true,
+        "contextWindow": 131072,
+        "embeddings": false,
+        "fim": false,
+        "maxTokens": 8192,
+        "reasoning": false,
+        "rerank": false,
+        "structuredOutputs": "json-schema",
+        "toolCallFormat": "openai",
+        "tools": true,
+        "vision": false
+      },
+      "family": "meta-llama-4-scout",
+      "matchPatterns": [
+        "meta-llama/llama-4-scout",
+        "llama-4-scout"
+      ]
+    },
+    {
+      "capabilities": {
+        "audio": true,
+        "chat": true,
+        "contextWindow": 1048576,
+        "embeddings": false,
+        "fim": false,
+        "maxTokens": 131072,
+        "reasoning": true,
+        "rerank": false,
+        "structuredOutputs": "json-schema",
+        "thinkingFormat": "qwen-chat-template",
+        "toolCallFormat": "qwen",
+        "tools": true,
+        "vision": true
+      },
+      "family": "nemotron-3-nano-omni-30b-a3b-reasoning",
+      "matchPatterns": [
+        "nvidia-nemotron-3-nano-omni-30b-a3b-reasoning",
+        "nemotron-3-nano-omni-30b-a3b-reasoning-ud-q4_k_m",
+        "nemotron-3-nano-omni-30b-a3b-reasoning",
+        "nemotron-3-nano-omni",
+        "nemotron-nano-omni"
+      ],
+      "quirks": {
+        "gpuTiers": {
+          "24gb": "Use a 4-bit quant with reduced load context for evaluation. Prefer the 32GB tier for sustained Clio writes.",
+          "32gb": "Primary strong local model for multimodal main-agent work. Keep openai-compat available for tool-call fallback."
+        },
+        "llamaCpp": {
+          "cacheTypeK": "q8_0",
+          "cacheTypeV": "q8_0",
+          "ctxSize": 819200,
+          "flashAttn": true,
+          "nGpuLayers": 99,
+          "parallel": 4
+        },
+        "runtimePreference": {
+          "llamaCpp": "OpenAI-compatible chat completions with --jinja.",
+          "lmstudioNative": "Use only when the target's server lifecycle is Clio-managed or the model is already loaded at the requested context.",
+          "openaiCompat": "Preferred fallback for LM Studio gateway tool-call extraction."
+        },
+        "sampling": {
+          "instruct": {
+            "maxTokens": 1024,
+            "temperature": 0.2,
+            "topK": 1
+          },
+          "thinking": {
+            "gracePeriod": 1024,
+            "maxTokens": 20480,
+            "reasoningBudget": 16384,
+            "temperature": 0.6,
+            "topK": 20,
+            "topP": 0.95
+          }
+        },
+        "serving": "Use qwen3_coder tool parsing when served through OpenAI-compatible HTTP. LM Studio native uses SDK rawTools, but openai-compat remains the fallback for template-specific tool extraction issues.",
+        "thinking": {
+          "budgetByLevel": {
+            "high": 16384,
+            "low": 1024,
+            "medium": 4096
+          },
+          "guidance": "Reasoning is template-driven; thinking blocks emit through the qwen\nchat template. Preserve thinking across coding-task turns when the\nchain matters; otherwise let the budget cap output growth.\n",
+          "mechanism": "budget-tokens"
+        }
+      }
+    },
+    {
+      "capabilities": {
+        "audio": false,
+        "chat": true,
+        "contextWindow": 1048576,
+        "embeddings": false,
+        "fim": false,
+        "maxTokens": 65536,
+        "reasoning": true,
+        "rerank": false,
+        "structuredOutputs": "json-schema",
+        "thinkingFormat": "qwen-chat-template",
+        "toolCallFormat": "qwen",
+        "tools": true,
+        "vision": false
+      },
+      "family": "nemotron-cascade-2-30b-a3b",
+      "matchPatterns": [
+        "nemotron-cascade-2",
+        "nemotron-cascade-2-30b-a3b",
+        "nemotron-cascade-2-30b-a3b-i1",
+        "nemotron-cascade-2-30b-a3b-i1-q4_k_m",
+        "nemotron-cascade2",
+        "nemotron-cascade-2-30b"
+      ],
+      "quirks": {
+        "gpuTiers": {
+          "32gb": "Preferred local worker model when a text-only worker is enough."
+        },
+        "llamaCpp": {
+          "cacheTypeK": "q8_0",
+          "cacheTypeV": "q8_0",
+          "chatTemplateKwargs": {
+            "enable_thinking": false
+          },
+          "ctxSize": 1048576,
+          "flashAttn": true,
+          "nGpuLayers": 99,
+          "parallel": 4
+        },
+        "runtimePreference": {
+          "anthropicCompat": "Do not select for the current mini llama.cpp target; /v1/messages returned 404 while /v1/models and OpenAI-compatible chat worked.",
+          "llamaCpp": "OpenAI-compatible chat completions with --jinja. Current mini preset disables thinking in chat_template_kwargs.",
+          "lmstudioNative": "Use when LM Studio SDK tool extraction is verified for the loaded template.",
+          "openaiCompat": "Preferred fallback for LM Studio gateway tool calls."
+        },
+        "sampling": {
+          "instruct": {
+            "maxTokens": 8192,
+            "temperature": 0.3,
+            "topK": 20,
+            "topP": 0.9
+          }
+        },
+        "serving": "NVIDIA card recommends vLLM with nemotron_v3 reasoning and qwen3_coder tool parsing.",
+        "thinking": {
+          "guidance": "Nemotron Cascade 2 chat template exposes thinking through\nchat_template_kwargs.enable_thinking. Intermediate levels coerce to on.\nThe mini llama.cpp preset disables thinking in the template kwargs by\ndefault; flip via the runtime override when reasoning is needed.\n",
+          "mechanism": "on-off"
+        }
+      }
+    },
+    {
+      "capabilities": {
+        "audio": false,
+        "chat": true,
+        "contextWindow": 131072,
+        "embeddings": false,
+        "fim": false,
+        "maxTokens": 32768,
+        "reasoning": true,
+        "rerank": false,
+        "structuredOutputs": "json-schema",
+        "thinkingFormat": "harmony",
+        "toolCallFormat": "openai",
+        "tools": true,
+        "vision": false
+      },
+      "family": "openai-gpt-oss",
+      "matchPatterns": [
+        "openai/gpt-oss",
+        "gpt-oss",
+        "gpt-oss-20b",
+        "gpt-oss-120b"
+      ],
+      "quirks": {
+        "runtimePreference": {
+          "llamaCpp": "Use the OpenAI-compatible chat-completions surface with chat_template_kwargs.reasoning_effort set to low, medium, or high.",
+          "openaiCompat": "Preferred for Harmony reasoning-effort control when the local gateway exposes chat_template_kwargs."
+        },
+        "sampling": {
+          "instruct": {
+            "maxTokens": 8192,
+            "temperature": 1,
+            "topP": 1
+          },
+          "thinking": {
+            "maxTokens": 32768,
+            "temperature": 1,
+            "topP": 1
+          }
+        },
+        "thinking": {
+          "effortByLevel": {
+            "high": "high",
+            "low": "low",
+            "medium": "medium"
+          },
+          "guidance": "GPT-OSS uses OpenAI Harmony formatting and supports low, medium, and\nhigh reasoning effort. Clio coerces off/minimal to low, captures\nnon-final Harmony channels as ThinkingContent, and strips Harmony\ncontrol tokens from visible output.\n",
+          "mechanism": "effort-levels"
+        }
+      }
+    },
+    {
+      "capabilities": {
+        "audio": false,
+        "chat": true,
+        "contextWindow": 262144,
+        "embeddings": false,
+        "fim": false,
+        "maxTokens": 32768,
+        "reasoning": true,
+        "rerank": false,
+        "structuredOutputs": "json-schema",
+        "thinkingFormat": "qwen-chat-template",
+        "toolCallFormat": "qwen",
+        "tools": true,
+        "vision": false
+      },
+      "family": "qwen3.5-35b-a3b-claude-4.6-opus-reasoning-distilled",
+      "matchPatterns": [
+        "qwen3.5-35b-a3b-claude-4.6-opus-reasoning-distilled",
+        "qwen3.5-35b-a3b-claude-4.6-opus-reasoning-distilled-i1",
+        "qwen3.5-35b-a3b-claude-4.6-opus-reasoning-distilled-i1-q4_k_m",
+        "qwen35-distilled",
+        "qwen35-distilled-i1",
+        "qwen35-distilled-i1-q4_k_m"
+      ],
+      "quirks": {
+        "gpuTiers": {
+          "32gb": "Distilled Opus-style reasoning at Qwen3.5 35B A3B scale. Use as a strong local main agent when GPU room is available."
+        },
+        "runtimePreference": {
+          "llamaCpp": "OpenAI-compatible chat completions with --jinja. Match qwen3 reasoning parser flags upstream.",
+          "lmstudioNative": "Verified usable on LM Studio when loaded with the Qwen-style preset.",
+          "openaiCompat": "Preferred fallback when SDK rawTools yield empty arguments for the distilled template."
+        },
+        "sampling": {
+          "instruct": {
+            "maxTokens": 4096,
+            "temperature": 0.2,
+            "topK": 20,
+            "topP": 0.9
+          },
+          "thinking": {
+            "maxTokens": 16384,
+            "reasoningBudget": 4096,
+            "temperature": 0.6,
+            "topK": 20,
+            "topP": 0.95
+          }
+        },
+        "serving": "Distilled from Claude 4.6 Opus reasoning traces; expect stronger thinking-then-answer behavior than vanilla Qwen3.5 35B A3B.",
+        "thinking": {
+          "budgetByLevel": {
+            "high": 16384,
+            "low": 1024,
+            "medium": 4096
+          },
+          "guidance": "Distilled Opus reasoning over Qwen3.5 35B A3B; thinking emits via the\nqwen chat template. Preserve thinking blocks across coding-task turns;\nthe budget caps runaway chains while keeping iterative reasoning\ncoherent.\n",
+          "mechanism": "budget-tokens"
+        }
+      }
+    },
+    {
+      "capabilities": {
+        "audio": false,
+        "chat": true,
+        "contextWindow": 262144,
+        "embeddings": false,
+        "fim": false,
+        "maxTokens": 32768,
+        "reasoning": true,
+        "rerank": false,
+        "structuredOutputs": "json-schema",
+        "thinkingFormat": "qwen-chat-template",
+        "toolCallFormat": "qwen",
+        "tools": true,
+        "vision": true
+      },
+      "family": "qwen3.6-27b",
+      "matchPatterns": [
+        "qwen3.6-27b",
+        "qwen3_6-27b",
+        "qwen3-6-27b"
+      ],
+      "quirks": {
+        "gpuTiers": {
+          "32gb": "Fits at f16 KV with parallel=1 and ctx=262144 (Q4_K_XL weights ~19.5 GB plus ~32 GB KV)."
+        },
+        "runtimePreference": {
+          "lmstudioNative": "Primary path; standard <think> tagging works correctly with the SDK classifier.",
+          "openaiCompat": "Verified parity for tool calls; reasoning_content surfaces and completion_tokens_details.reasoning_tokens is reported."
+        },
+        "sampling": {
+          "instruct": {
+            "maxTokens": 32768,
+            "minP": 0.0,
+            "presencePenalty": 1.5,
+            "repetitionPenalty": 1.0,
+            "temperature": 0.7,
+            "topK": 20,
+            "topP": 0.8
+          },
+          "thinking": {
+            "maxTokens": 32768,
+            "minP": 0.0,
+            "presencePenalty": 0.0,
+            "repetitionPenalty": 1.0,
+            "temperature": 0.6,
+            "topK": 20,
+            "topP": 0.95
+          }
+        },
+        "serving": "Official Qwen card recommends max output 32768 tokens for standard queries (81920 only for math/code competitions). Coding sampler is the precise variant; preserve thinking blocks across turns for iterative workflows.",
+        "thinking": {
+          "budgetByLevel": {
+            "high": 16384,
+            "low": 1024,
+            "medium": 4096
+          },
+          "guidance": "Qwen chat template drives thinking via standard <think> blocks.\nCoding sampler is the precise variant. Preserve thinking blocks across\nturns when the workflow is iterative; the budget caps runaway chains.\n",
+          "mechanism": "budget-tokens"
+        }
+      }
+    },
+    {
+      "capabilities": {
+        "audio": false,
+        "chat": true,
+        "contextWindow": 262144,
+        "embeddings": false,
+        "fim": false,
+        "maxTokens": 65536,
+        "reasoning": true,
+        "rerank": false,
+        "structuredOutputs": "json-schema",
+        "thinkingFormat": "qwen-chat-template",
+        "toolCallFormat": "qwen",
+        "tools": true,
+        "vision": true
+      },
+      "family": "qwen3.6-35b-a3b",
+      "matchPatterns": [
+        "qwen3.6-35b-a3b",
+        "qwen3_6-35b-a3b",
+        "qwen3-6-35b-a3b",
+        "qwen3.6-35b",
+        "qwen3.6-35b-a3b-ud",
+        "qwen3.6-35b-a3b-ud-q4_k_xl"
+      ],
+      "quirks": {
+        "gpuTiers": {
+          "32gb": "Main-agent candidate on 32GB targets when Nemotron Omni is unavailable or tool behavior is better for text-only work."
+        },
+        "llamaCpp": {
+          "cacheTypeK": "q8_0",
+          "cacheTypeV": "q8_0",
+          "ctxSize": 262144,
+          "flashAttn": true,
+          "nGpuLayers": 99
+        },
+        "runtimePreference": {
+          "llamaCpp": "OpenAI-compatible chat completions with --jinja. Current mini preset emits reasoning_content without a separate --reasoning flag.",
+          "lmstudioNative": "Usable for text and vision when loaded in LM Studio. Keep openai-compat available for tool fallback.",
+          "openaiCompat": "Preferred local gateway path for tool-call stress tests."
+        },
+        "sampling": {
+          "thinking": {
+            "maxTokens": 16384,
+            "reasoningBudget": 4096,
+            "temperature": 0.6,
+            "topK": 20,
+            "topP": 0.95
+          }
+        },
+        "serving": "Official card recommends at least 128K context for thinking quality. Use 262K when memory allows.",
+        "thinking": {
+          "budgetByLevel": {
+            "high": 16384,
+            "low": 1024,
+            "medium": 4096
+          },
+          "guidance": "Qwen chat template emits thinking blocks. The card recommends at least\n128K context for thinking quality. Preserve thinking blocks across\ncoding-task turns so iterative reasoning chains do not restart cold.\n",
+          "mechanism": "budget-tokens"
+        }
+      }
+    },
+    {
+      "capabilities": {
+        "audio": false,
+        "chat": true,
+        "contextWindow": 262144,
+        "embeddings": false,
+        "fim": false,
+        "maxTokens": 32768,
+        "reasoning": true,
+        "rerank": false,
+        "structuredOutputs": "json-schema",
+        "thinkingFormat": "qwen-chat-template",
+        "toolCallFormat": "qwen",
+        "tools": true,
+        "vision": false
+      },
+      "family": "qwopus3.5-9b-v3",
+      "matchPatterns": [
+        "qwopus3.5-9b-v3",
+        "qwopus-9b",
+        "qwopus 9b"
+      ],
+      "quirks": {
+        "gpuTiers": {
+          "16gb": "Use this as the local 16GB emulation target. It keeps the output cap below the 32GB-class MoE defaults."
+        },
+        "runtimePreference": {
+          "anthropicCompat": "LM Studio's Anthropic Messages surface streams simple text with the server root URL as baseUrl; keep as a protocol fallback until tool and reasoning behavior are proven.",
+          "lmstudioNative": "Primary local laptop path. Verified through LM Studio /api/v1/models with 262144 loaded context, flash attention, GPU KV offload, and trained_for_tool_use.",
+          "openaiCompat": "Verified through the LM Studio gateway for read and write_plan tool calls; use when the native SDK produces thinking-only length stops or malformed tools."
+        },
+        "sampling": {
+          "instruct": {
+            "maxTokens": 4096,
+            "temperature": 0.2,
+            "topK": 20,
+            "topP": 0.9
+          },
+          "thinking": {
+            "maxTokens": 8192,
+            "reasoningBudget": 2048,
+            "temperature": 0.6,
+            "topK": 20,
+            "topP": 0.95
+          }
+        },
+        "serving": "LM Studio reports trained_for_tool_use for the local qwopus3.5-9b-v3 target. Native model override successfully switched residency to granite-4.0-h-350m through the SDK.",
+        "thinking": {
+          "budgetByLevel": {
+            "high": 4096,
+            "low": 512,
+            "medium": 2048
+          },
+          "guidance": "Qwopus 9B distilled from Opus reasoning; thinking emits via the qwen\nchat template. Output cap is tighter than the 32GB-class MoE families\nbecause this is the 16GB emulation target. Keep thinking budgets\nmodest for tool-calling workflows.\n",
+          "mechanism": "budget-tokens"
+        }
+      }
+    },
+    {
+      "capabilities": {
+        "audio": false,
+        "chat": true,
+        "contextWindow": 262144,
+        "embeddings": false,
+        "fim": false,
+        "maxTokens": 32768,
+        "reasoning": true,
+        "rerank": false,
+        "structuredOutputs": "json-schema",
+        "thinkingFormat": "qwen-chat-template",
+        "toolCallFormat": "qwen",
+        "tools": true,
+        "vision": false
+      },
+      "family": "qwopus3.6-27b-v1-preview",
+      "matchPatterns": [
+        "qwopus3.6-27b-v1-preview",
+        "qwopus3.6-27b",
+        "qwopus3.6"
+      ],
+      "quirks": {
+        "gpuTiers": {
+          "32gb": "Fits at f16 KV with parallel=1 and ctx=262144 thanks to the Q4_K_M weights (~16.5 GB)."
+        },
+        "runtimePreference": {
+          "lmstudioNative": "Primary path; thinking is emitted via standard <think> tags so the SDK classifier accounts reasoning correctly.",
+          "openaiCompat": "Verified for tool-call extraction parity; reasoning_content surfaces."
+        },
+        "sampling": {
+          "instruct": {
+            "maxTokens": 32768,
+            "minP": 0.0,
+            "presencePenalty": 1.5,
+            "repetitionPenalty": 1.0,
+            "temperature": 0.7,
+            "topK": 20,
+            "topP": 0.8
+          },
+          "thinking": {
+            "maxTokens": 32768,
+            "minP": 0.0,
+            "presencePenalty": 0.0,
+            "repetitionPenalty": 1.0,
+            "temperature": 0.6,
+            "topK": 20,
+            "topP": 0.95
+          }
+        },
+        "serving": "Distilled from Claude 4.6 Opus reasoning traces onto Qwen3.6 27B. Coding-task sampler is the precise variant: temperature 0.6, top_p 0.95, top_k 20.",
+        "thinking": {
+          "budgetByLevel": {
+            "high": 16384,
+            "low": 1024,
+            "medium": 4096
+          },
+          "guidance": "Distilled Opus reasoning traces over Qwen3.6 27B; thinking emits via\nstandard <think> tags. Coding-task sampler is the precise variant.\nPreserve thinking blocks across turns for iterative workflows.\n",
+          "mechanism": "budget-tokens"
+        }
+      }
+    }
+  ],
+  "schema_version": 1
+}
