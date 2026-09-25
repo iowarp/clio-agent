@@ -18,7 +18,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from clio_agent.config import LMProviderConfig, load_config_from_env
-from clio_agent.lm.factory import _thinking_kwargs
+from clio_agent.lm.request_builder import _legacy_thinking_kwargs, build_request_kwargs
 from clio_agent.providers import claude_code_litellm
 from clio_agent.providers.claude_code_litellm import ClaudeCodeLLM
 from clio_agent.providers.claude_code_options import build_sdk_options, thinking_key
@@ -27,10 +27,18 @@ from tests.env_isolation import isolated_environ
 
 # --------------------------------------------------------------------------- #
 # LM-factory mapping: config.thinking_level → provider-specific kwargs.
+#
+# claude_code/anthropic (and codex/openai) keep the pre-P5 SDK/CLI-transport
+# engine unchanged (`lm.request_builder._legacy_thinking_kwargs`, itself a thin
+# call into `providers.thinking.resolve_thinking` -- see `lm/request_builder.py`'s
+# module docstring for why: these four are not HTTP dialects a P4a/P4b
+# capability-record adapter builds a ThinkingSpec for). lm_studio/ollama/
+# llama_cpp/vllm/openrouter now go through the NEW dialect_wire-driven mapping
+# instead (see tests/test_providers/test_request_builder.py).
 # --------------------------------------------------------------------------- #
 def test_factory_maps_claude_code_level_to_optional_params() -> None:
     """claude_code carries the SDK thinking config under ``claude_code_thinking``."""
-    off = _thinking_kwargs(
+    off = _legacy_thinking_kwargs(
         LMProviderConfig(provider="claude_code", model="haiku", thinking_level="off")
     )
     assert off == {"claude_code_thinking": {"type": "disabled"}}
@@ -44,7 +52,7 @@ def test_factory_maps_claude_code_level_to_optional_params() -> None:
             "display": "summarized",
         }
     }
-    low = _thinking_kwargs(
+    low = _legacy_thinking_kwargs(
         LMProviderConfig(provider="claude_code", model="haiku", thinking_level="low")
     )
     assert low == shipped_low
@@ -52,32 +60,26 @@ def test_factory_maps_claude_code_level_to_optional_params() -> None:
     # Unset on HAIKU (#895 acceptance outcome) and on SONNET (the CLI runs sonnet
     # thinking-OFF without a config; probed 2026-08-05) → the shipped default 'low';
     # unset on other models → nothing (pre-#895 behavior), never reasoning_effort.
-    default_haiku = _thinking_kwargs(LMProviderConfig(provider="claude_code", model="haiku"))
+    default_haiku = _legacy_thinking_kwargs(LMProviderConfig(provider="claude_code", model="haiku"))
     assert default_haiku == shipped_low
-    default_sonnet = _thinking_kwargs(LMProviderConfig(provider="claude_code", model="sonnet"))
+    default_sonnet = _legacy_thinking_kwargs(
+        LMProviderConfig(provider="claude_code", model="sonnet")
+    )
     assert default_sonnet == shipped_low
-    default_opus = _thinking_kwargs(LMProviderConfig(provider="claude_code", model="opus"))
+    default_opus = _legacy_thinking_kwargs(LMProviderConfig(provider="claude_code", model="opus"))
     assert default_opus == {}
 
 
-def test_factory_maps_anthropic_and_effort_providers() -> None:
-    anth = _thinking_kwargs(
+def test_factory_maps_anthropic_effort() -> None:
+    anth = _legacy_thinking_kwargs(
         LMProviderConfig(provider="anthropic", model="x", api_key="k", thinking_level="high")
     )
     assert anth == {"thinking": {"type": "enabled", "budget_tokens": 24576}}
-    # openai-compatible → reasoning_effort; no claude_code_thinking key leaks.
-    oai = _thinking_kwargs(
-        LMProviderConfig(provider="lm_studio", model="m", thinking_level="medium")
-    )
-    assert oai == {"reasoning_effort": "medium"}
-    assert "claude_code_thinking" not in oai
 
 
 def test_provider_lm_kwargs_carries_transport_and_thinking() -> None:
     """The full provider kwargs surface carries BOTH transport and thinking."""
-    from clio_agent.lm.factory import _provider_lm_kwargs
-
-    extras = _provider_lm_kwargs(
+    extras = build_request_kwargs(
         LMProviderConfig(provider="claude_code", model="haiku", thinking_level="off")
     )
     assert extras["claude_code_transport"] == "sdk"
@@ -258,6 +260,21 @@ def test_unsupported_level_logs_and_returns_empty(caplog) -> None:
     cfg.provider = "mystery"  # type: ignore[assignment]
     cfg.thinking_level = "high"
     with caplog.at_level(logging.WARNING, logger="clio_agent.providers.thinking"):
-        extras = _thinking_kwargs(cfg)
+        extras = _legacy_thinking_kwargs(cfg)
     assert extras == {}
+    assert any("thinking_unsupported" in r.message for r in caplog.records)
+
+
+def test_unsupported_dialect_logs_via_the_request_builder(caplog) -> None:
+    """The same "no silent no-op" contract holds end-to-end through
+    ``build_request_kwargs`` for a dialect with NO mapping at all (neither the
+    legacy SDK/CLI engine nor a dialect_wire entry)."""
+    cfg = LMProviderConfig(provider="argonne", model="m")
+    cfg.provider = "mystery"  # type: ignore[assignment]
+    cfg.provider_id = "mystery"
+    cfg.thinking_level = "high"
+    with caplog.at_level(logging.WARNING, logger="clio_agent.lm.request_builder"):
+        extras = build_request_kwargs(cfg)
+    assert "claude_code_thinking" not in extras
+    assert "reasoning_effort" not in extras
     assert any("thinking_unsupported" in r.message for r in caplog.records)

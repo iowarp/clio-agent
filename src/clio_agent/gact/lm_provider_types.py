@@ -46,7 +46,6 @@ class LMProviderPreset(BaseModel):
     ] = "unknown"
     status_message: str = ""
     supports_live_catalog: bool = True
-    supports_vision: bool = False
     configuration_fields: list[LMProviderConfigurationField] = Field(default_factory=list)
     supports_runtime_sizing: bool = False
     managed_service_id: str = ""
@@ -70,7 +69,7 @@ class LMProviderInfo(BaseModel):
     #: aliases like "sonnet" -> "claude-sonnet-5"); equal to ``model`` when the
     #: provider has no alias concept or none is known yet.
     resolved_model_id: str = ""
-    temperature: float = 0.0
+    temperature: float | None = None
     max_tokens: int = 0
     context_length: int = 0
     chosen_context: int | None = None
@@ -118,9 +117,9 @@ class LMProviderRequest(BaseModel):
 
     ``temperature`` + ``max_tokens`` are forwarded to dspy.LM so
     the user can tune behaviour from the TUI without touching env
-    vars. Defaults match LMProviderConfig's defaults
-    (temperature=0.0 — deterministic, structured/tool-calling agentic
-    output; max_tokens=0 omits the client output cap).
+    vars. Defaults match LMProviderConfig's defaults (temperature
+    unset — the provider/model's own sampling default applies;
+    max_tokens=0 omits the client output cap).
     """
 
     provider: str
@@ -129,7 +128,7 @@ class LMProviderRequest(BaseModel):
     model: str
     api_key: str = "x"
     provider_options: dict[str, str] = Field(default_factory=dict)
-    temperature: float = 0.0
+    temperature: float | None = None
     max_tokens: int = 0
     top_p: float | None = None
     top_k: int | None = None

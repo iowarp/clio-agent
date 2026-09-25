@@ -18,8 +18,8 @@ if TYPE_CHECKING:  # pragma: no cover
 
     from clio_agent.config import LMProviderConfig
 
-from clio_agent.lm.adapters import _reasoning_model_capability
 from clio_agent.lm.io_logging import _io_logging_lm_cls
+from clio_agent.lm.request_builder import build_request_kwargs
 
 _dspy_cache = None
 logger = logging.getLogger(__name__)
@@ -107,12 +107,11 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     _resolve_lm_studio_model_if_needed(config)
     model_name = _resolve_model_name(config)
 
-    extras = _provider_lm_kwargs(config)
+    extras = build_request_kwargs(config, role="main")
     connection = _connection_kwargs(config)
     lm = _construct_lm(
         model=model_name,
         api_key=config.api_key,
-        temperature=config.temperature,
         max_tokens=config.max_tokens or None,
         model_type="chat",
         # iowarp/clio-agent#8: disable DSPy LM cache so token usage
@@ -239,46 +238,14 @@ def _is_argonne_sophia(config: LMProviderConfig) -> bool:
     return config.provider == "argonne" and "/resource_server/sophia/" in parsed.path
 
 
-def _thinking_kwargs(config: LMProviderConfig) -> dict:
-    """Translate the provider-generic thinking knob to LiteLLM/transport kwargs.
-
-    Delegates the ``off|low|medium|high`` level (+ explicit ``thinking_budget``
-    override) to :func:`clio_agent.providers.thinking.resolve_thinking`, which
-    owns the per-provider mapping (anthropic ``thinking``; openai/compat
-    ``reasoning_effort``; claude_code SDK thinking config; typed unsupported for
-    the rest). The claude_code SDK config rides ``optional_params`` under
-    ``claude_code_thinking`` — the provider reads it and applies it to
-    ``ClaudeAgentOptions`` (LiteLLM ignores ``reasoning_effort`` on that
-    transport, which is why the old mapping was a silent no-op there).
-    """
-    from clio_agent.providers.reasoning_levels import model_effort_levels  # noqa: PLC0415
-    from clio_agent.providers.thinking import (  # noqa: PLC0415
-        log_unsupported_thinking,
-        resolve_thinking,
-    )
-
-    plan = resolve_thinking(
-        config.provider,
-        getattr(config, "thinking_level", None),
-        int(getattr(config, "thinking_budget", 0) or 0),
-        # The model's own reported effort levels decide effort vs budget.
-        effort_levels=model_effort_levels(config.provider, config.model or ""),
-    )
-    if not plan.supported:
-        # No silent no-op: a requested level with no provider mapping is recorded
-        # with a typed reason (and surfaced in doctor/status via resolve_thinking).
-        log_unsupported_thinking(plan)
-        return {}
-    extras = dict(plan.litellm_kwargs)
-    if plan.sdk_thinking is not None:
-        extras["claude_code_thinking"] = plan.sdk_thinking
-    return extras
-
-
 def create_planner_lm(config: LMProviderConfig) -> dspy.LM:
     """Create a lower-temperature LM for deterministic action planning.
 
-    Uses config.planner_temperature instead of config.temperature.
+    Uses config.planner_temperature instead of config.temperature (item 1:
+    "planner and router determinism may set temperature explicitly, but only
+    when temperature is in the effective parameter set" —
+    :func:`~clio_agent.lm.request_builder.build_request_kwargs`'s
+    ``role="planner"`` still gates it).
 
     Args:
         config: LM provider configuration
@@ -294,12 +261,11 @@ def create_planner_lm(config: LMProviderConfig) -> dspy.LM:
     lm = _construct_lm(
         model=model_name,
         api_key=config.api_key,
-        temperature=config.planner_temperature,
         max_tokens=config.planner_max_tokens or None,
         model_type="chat",
         cache=False,  # see create_lm — same rationale
         **connection,
-        **_provider_lm_kwargs(config),
+        **build_request_kwargs(config, role="planner"),
     )
     # Stamp the effective planner sampling surface. Secondary inference from a
     # planner call must not silently revert to the main LM's temperature/cap.
@@ -325,106 +291,6 @@ def _resolve_lm_studio_model_if_needed(config: LMProviderConfig) -> None:
     if config.provider == "lm_studio" and not config.model.strip():
         models = list_lm_studio_models(base_url=config.api_base)
         config.model, _ = select_models_for_agents(models)
-
-
-def _thinking_disabled() -> bool:
-    """Whether reasoning ("thinking") is disabled for the active LM.
-
-    Resolved via ``lm.disable_thinking`` / ``CLIO_LM_DISABLE_THINKING``
-    (file → env → default False). Shared by the sampling-kwargs path
-    (``_provider_lm_kwargs``) and the output-discipline prompt injection in
-    ``gact.agents.builders`` so both honour a single knob and one truthy rule.
-    """
-    from clio_agent import conf  # noqa: PLC0415 - keep config.py a leaf module
-
-    return bool(
-        conf.resolve(
-            "lm.disable_thinking",
-            env="CLIO_LM_DISABLE_THINKING",
-            default=False,
-            cast=conf.as_bool,
-        )
-    )
-
-
-def _provider_lm_kwargs(config: LMProviderConfig) -> dict[str, Any]:
-    """Return provider-specific LiteLLM kwargs for dspy.LM construction."""
-    extras = _thinking_kwargs(config)
-    extras.update(getattr(config, "provider_options", {}) or {})
-    # Qwen-family reasoning models (e.g. qwopus) run their reasoning_content away
-    # on the pipeline's structured routing/tool-decision calls — consuming the whole
-    # token budget without reaching the decision (uncapped → >900s → wedge; capped →
-    # no tool call). Structured routing does not need chain-of-thought, so disable
-    # thinking when CLIO_LM_DISABLE_THINKING is set. enable_thinking=false is honored
-    # by Qwen chat templates (verified: 8327 reasoning chars/43s → 0 chars/0.8s).
-    if _thinking_disabled():
-        body = dict(extras.get("extra_body") or {})
-        body["chat_template_kwargs"] = {
-            **body.get("chat_template_kwargs", {}),
-            "enable_thinking": False,
-        }
-        extras["extra_body"] = body
-    # Sampling surface. top_p / presence_penalty are OpenAI-standard (litellm
-    # forwards them directly); top_k / min_p are non-OpenAI, forwarded to the
-    # backend (llama.cpp / LM Studio / vLLM) via extra_body. None -> omit (use the
-    # model's own default).
-    if config.top_p is not None:
-        extras["top_p"] = config.top_p
-    if config.presence_penalty is not None:
-        extras["presence_penalty"] = config.presence_penalty
-    if config.top_k is not None or config.min_p is not None:
-        body = dict(extras.get("extra_body") or {})
-        if config.top_k is not None:
-            body["top_k"] = config.top_k
-        if config.min_p is not None:
-            body["min_p"] = config.min_p
-        extras["extra_body"] = body
-    # Reasoning-model trajectory-regurgitation stop sequences (per-model). On a long
-    # trajectory, qwopus continues/fabricates DSPy's trajectory INPUT format —
-    # underscore-numbered `thought_N`/`tool_name_N`/`tool_args_N` + invented
-    # `observation_N` tool results — instead of emitting one step (react) or the
-    # answer (extract), running away to truncation -> unparseable. The model must
-    # NEVER emit those markers (its real outputs are next_thought/next_tool_name/
-    # next_tool_args/reasoning/answer, with NO underscore-number), so they are safe
-    # stop sequences: generation halts the instant regurgitation starts and the
-    # valid leading fields survive. Override with CLIO_LM_STOP_SEQUENCES (||-joined).
-    if _reasoning_model_capability(config) and "stop" not in extras:
-        from clio_agent import conf  # noqa: PLC0415 - keep config.py a leaf module
-
-        # File layer accepts a YAML list; the env override stays ``||``-joined (a
-        # comma is a legal stop token, so csv-splitting would be wrong here).
-        raw_stop = conf.resolve("lm.stop_sequences", env="CLIO_LM_STOP_SEQUENCES", default=None)
-        override_stop: list[str]
-        if isinstance(raw_stop, (list, tuple)):
-            override_stop = [str(s) for s in raw_stop if str(s)]
-        elif raw_stop:
-            override_stop = [s for s in str(raw_stop).split("||") if s]
-        else:
-            override_stop = []
-        extras["stop"] = (
-            override_stop
-            if override_stop
-            else [
-                "[[ ## observation",
-                "[[ ## thought_",
-                "[[ ## tool_name_",
-                "[[ ## tool_args_",
-            ]
-        )
-    if config.provider == "codex":
-        extras["codex_transport"] = config.codex_transport
-    elif config.provider == "claude_code":
-        extras["claude_code_transport"] = config.claude_code_transport
-    # Safety net only (model-capabilities plan, Part 2.4): every optional field
-    # above is already gated on config/thinking-plan logic that is SUPPOSED to
-    # match what the endpoint accepts. `drop_params` is the backstop for when
-    # one of those records is wrong, so a stale/incomplete capability record
-    # degrades to "field silently omitted" instead of a hard request failure.
-    # `_warn_dropped_params` (called from `_construct_lm`) turns every actual
-    # drop into a logged bug signal instead of a silent one. `setdefault` so an
-    # operator's own explicit `provider_options={"drop_params": False}` wins.
-    extras.setdefault("drop_params", True)
-    return extras
 
 
 #: Top-level OpenAI-shaped kwargs clio ever passes that a LiteLLM dialect

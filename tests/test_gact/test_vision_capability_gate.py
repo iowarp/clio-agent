@@ -93,7 +93,15 @@ def test_a_provider_with_an_evidence_system_but_no_evidence_yet_is_refused() -> 
 
 
 def test_a_provider_with_no_evidence_system_uses_the_documented_catalog_default() -> None:
-    """An OpenAI-compatible /models listing returns ids and nothing else."""
+    """An OpenAI-compatible /models listing returns ids and nothing else.
+
+    openai/anthropic are cloud dialects with no vision projector to forget
+    (model-capabilities brief 4.2's "no restriction at this layer"), so the
+    effective-capabilities fallback (:mod:`clio_agent.providers.capabilities.
+    dialects.cloud`) permits image delivery absent contrary model evidence --
+    the SAME fact the deleted static ``Provider.supports_vision=True`` flag
+    used to assert, now derived rather than hand-typed per provider row.
+    """
 
     app = _app()
     assert _vision_capability(app, "openai", "gpt-4o") == (
@@ -104,11 +112,15 @@ def test_a_provider_with_no_evidence_system_uses_the_documented_catalog_default(
         True,
         "catalog_default_no_modality_evidence_system",
     )
+    # vLLM is NOT a cloud dialect: a self-hosted server's loaded model can
+    # genuinely lack a vision tower (brief Part 6: "depend on launch flags
+    # vLLM does not expose, so use probes"), so -- UNLIKE the deleted
+    # blanket ``supports_vision=True`` this preset used to carry -- it now
+    # stays refused absent real evidence, exactly like lm_studio below.
     assert _vision_capability(app, "vllm", "Qwen/Qwen2.5-VL-7B-Instruct") == (
-        True,
+        False,
         "catalog_default_no_modality_evidence_system",
     )
-    # ...and a catalog-level flag of False is honoured just as literally.
     assert _vision_capability(app, "lm_studio", "qwen")[0] is False
 
 

@@ -284,7 +284,6 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             "metadata": {
                 "provider_kind": preset.provider,
                 "requires_api_key": preset.requires_api_key,
-                "supports_vision": bool(getattr(preset, "supports_vision", False)),
             },
         }
 

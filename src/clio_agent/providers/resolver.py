@@ -257,7 +257,7 @@ def _build_key_less_skeleton(spec: "LMSpec") -> tuple["LMProviderConfig", str]:
         "model": spec.model,
         "provider_options": dict(spec.provider_options),
         "api_key": _CRED_DEFERRED_SENTINEL,
-        "temperature": spec.temperature if spec.temperature is not None else 0.0,
+        "temperature": spec.temperature,
         "max_tokens": spec.max_tokens or 0,
         "thinking_budget": spec.thinking_budget or 0,
         "thinking_level": spec.thinking_level,

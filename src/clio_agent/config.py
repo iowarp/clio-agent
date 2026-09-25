@@ -87,11 +87,10 @@ def _dspy():
 #                         -120b` IS the gateway's model id; stripping
 #                         turns it into `gpt-oss-120b`, which the
 #                         gateway maps to a non-existent backend).
-#   max_tokens (override): 4 096 for ALCF gateway defaults. Live ALCF
-#                         model context windows vary by running job, and
-#                         some gateway paths reject the shared 32 000
-#                         default. Users can override with
-#                         CLIO_LM_MAX_TOKENS for larger-context models.
+#   (the static per-provider `max_tokens_default`/`supports_vision` overrides
+#    that used to live here were deleted -- model-capabilities brief 9.1;
+#    `resolve_effective_max_tokens` prefers the handshake-discovered output
+#    limit, and vision comes from the effective capabilities, Part 5.5)
 from clio_agent.providers import credentials as _credentials
 from clio_agent.providers.catalog import (
     as_cloud_api_key_env as _registry_cloud_api_key_env,
@@ -209,9 +208,14 @@ class LMProviderConfig:
     model: str = ""
     api_key: str = ""
     provider_options: dict[str, str] = field(default_factory=dict)
-    # Greedy decoding is the safe default for structured agent/tool output.
-    # Explicit modules and callers may override it when sampling is desired.
-    temperature: float = 0.0
+    # None omits the field entirely (model-capabilities brief Part 7 item 1):
+    # with no value, the server applies the model maker's own default (vLLM's
+    # generation_config, Ollama's Modelfile) instead of clio silently forcing
+    # temp-0 on every model, which degenerates Qwen-family reasoning models
+    # (qwopus, nemotron) into endless verbatim repetition loops. Explicit
+    # modules and callers may still set it; `lm.request_builder` sends it only
+    # when the effective parameter set (Part 5.5) actually accepts it.
+    temperature: float | None = None
     # 0 omits the client output cap; positive values set an explicit cap.
     max_tokens: int = 0
     planner_temperature: float = 0.3
@@ -254,7 +258,6 @@ class LMProviderConfig:
     # PROVIDER_DEFAULTS so adding a new wire-protocol quirk = one
     # entry in the defaults dict, no agent.py branches.
     strip_openai_prefix: bool = field(init=False, default=True)
-    supports_vision: bool = field(init=False, default=False)
     parse_retry_capability: Literal["bounded", "single_attempt"] = field(
         init=False, default="bounded"
     )
@@ -320,14 +323,12 @@ class LMProviderConfig:
             self.planner_max_tokens is not None and self.planner_max_tokens < 0
         ):
             raise ValueError("max_tokens and planner_max_tokens must be non-negative")
-        self._apply_model_profile_defaults()
         if self.planner_max_tokens is None:
             self.planner_max_tokens = self.max_tokens
         # Capability flags. defaults dict wins — these aren't user-set
         # via env vars (they're wire-protocol facts about the provider),
         # so re-reading on every config load is safe.
         self.strip_openai_prefix = bool(defaults.get("strip_openai_prefix", True))
-        self.supports_vision = bool(defaults.get("supports_vision", False))
         self.parse_retry_capability = cast(
             Literal["bounded", "single_attempt"],
             defaults.get("parse_retry_capability", "bounded"),
@@ -345,17 +346,6 @@ class LMProviderConfig:
             from clio_agent.providers.thinking import validate_thinking_level  # noqa: PLC0415
 
             self.thinking_level = validate_thinking_level(self.thinking_level)
-
-    def _apply_model_profile_defaults(self) -> None:
-        """Apply safe defaults for known model families."""
-        if not _uses_local_reasoning_model_profile(self.provider, self.model):
-            return
-
-        if self.planner_temperature == 0.3:
-            self.planner_temperature = 0.0
-            self.router_temperature = self.planner_temperature
-        # Output caps are exact operator choices (#1323). Model profiles may
-        # tune sampling, but must not invent or raise a client-side cap.
 
     def apply_handshake(self, report: Any, *, user_set_max_tokens: bool = False) -> None:
         """Fold a provider handshake report into this config (call at bind time).
@@ -455,21 +445,6 @@ def resolve_effective_max_tokens(
     if context_window and context_window > 0:
         chosen = min(chosen, int(context_window))
     return max(1, chosen)
-
-
-def _uses_local_reasoning_model_profile(provider: str, model: str) -> bool:
-    """Return whether a local model needs reasoning-friendly planner defaults."""
-    if provider not in {"lm_studio", "ollama"}:
-        return False
-    normalized = model.lower().replace("_", "-")
-    reasoning_markers = (
-        "qwopus",
-        "qwen3",
-        "qwen-3",
-        "qwen35",
-        "qwen-3.5",
-    )
-    return any(marker in normalized for marker in reasoning_markers)
 
 
 def _resolve_argonne_api_key() -> str:
@@ -688,7 +663,6 @@ from clio_agent.lm.adapters import (
     _lenient_chat_adapter_cls,  # noqa: E402, F401
     _live_streaming_enabled,  # noqa: E402, F401
     _parse_retry_attempts,  # noqa: E402, F401
-    _reasoning_model_capability,  # noqa: E402, F401
     _recover_malformed_structured_value,  # noqa: E402, F401
     _signature_strict_response_format,  # noqa: E402, F401
     _strict_guided_json_adapter_cls,  # noqa: E402, F401
@@ -699,11 +673,8 @@ from clio_agent.lm.factory import (
     _construct_lm,  # noqa: E402, F401
     _ensure_provider_registered,  # noqa: E402, F401
     _is_argonne_sophia,  # noqa: E402, F401
-    _provider_lm_kwargs,  # noqa: E402, F401
     _resolve_lm_studio_model_if_needed,  # noqa: E402, F401
     _resolve_model_name,  # noqa: E402, F401
-    _thinking_disabled,  # noqa: E402, F401
-    _thinking_kwargs,  # noqa: E402, F401
     create_lm,  # noqa: E402, F401
     create_planner_lm,  # noqa: E402, F401
 )
@@ -716,6 +687,7 @@ from clio_agent.lm.io_logging import (
     _StreamingPlumbingError,  # noqa: E402, F401
     _token_liveness_enabled,  # noqa: E402, F401
 )
+from clio_agent.lm.request_builder import build_request_kwargs  # noqa: E402, F401
 from clio_agent.providers.lmstudio_discovery import (
     LMStudioDiscoveryError,  # noqa: E402, F401
     _openai_compatible_api_base,  # noqa: E402, F401

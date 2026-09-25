@@ -181,7 +181,12 @@ RATCHET_BASELINE: dict[str, int] = {
     # bind-time site), not a new module, because it is a single conf.resolve call
     # tightly coupled to the existing window-vs-override decision. Ratchet down
     # as config.py's modular decomposition continues.
-    "src/clio_agent/config.py": 840,
+    # P5 (model-capabilities request builder, campaign slice): 840 -> 812.
+    # temperature/supports_vision/max_tokens_default deletions and the
+    # _uses_local_reasoning_model_profile/_apply_model_profile_defaults
+    # qwen-name heuristic removal net-shrink this file; the new
+    # lm/request_builder.py + lm/dialect_wire.py own the replacement logic.
+    "src/clio_agent/config.py": 812,
     # #1326: adapters.py was 780 lines (under the 800 cap). +56 for: a new
     # _ContextOverflowError typed exception, a _check_context_overflow pre-flight
     # helper (mirrors the guided path's _bound_guided_output_kwargs shape), pre-
@@ -191,7 +196,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # self-explaining "prompt≈N tokens > context M" error before the server sees the
     # request, replacing an opaque HTTP 400. Ratchet down as the adapters module is
     # further decomposed per #714/#767.
-    "src/clio_agent/lm/adapters.py": 813,
+    # (lm/adapters.py's entry retired: P5's _reasoning_model_capability deletion
+    # (the qwen-name heuristic; callers now read config.is_reasoning directly)
+    # dropped it to 782 lines -- back under the flat 800 cap, no baseline entry
+    # needed.)
     # 2026-08-04 (78f81d6f, unrelated to the P5 wire-semantics wave): +43 for
     # validate_agent_blueprint_path's new runtime_tool_names parameter -- pack
     # validation only knew builtins + pack mcp_servers namespaces, so an expert
@@ -278,7 +286,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # declared_native_tools.py) instead of one `supports_vision=...` kwarg each,
     # and `_dynamic_agent_tools` forwards `**capabilities` generically -- net a
     # one-line ratchet-down despite gaining PDF-capability threading.
-    "src/clio_agent/gact/agents/builders.py": 1522,  # L1: -24, the 6 identical cancelled_error_info(..., executor_work_may_continue=False) calls collapsed to one line each
+    # P5 (model-capabilities request builder): 1522 -> 1507. The
+    # CLIO_LM_DISABLE_THINKING qwen-output-discipline prompt injection (its
+    # forward() block) is deleted -- thinking is now driven per-dialect off
+    # the model's own ThinkingSpec, never a global on/off knob.
+    "src/clio_agent/gact/agents/builders.py": 1507,  # L1: -24, the 6 identical cancelled_error_info(..., executor_work_may_continue=False) calls collapsed to one line each
     # NEW entry (#1282, C1-S2 D1): crossed the flat 800 cap (797 -> 884) for
     # the #1275 fix's ONE chokepoint. Two pieces: (1) __init__ wraps every
     # tool callable this loop will ever run (MCP-bridged, instrumented
@@ -654,7 +666,11 @@ RATCHET_BASELINE: dict[str, int] = {
     # Ratchet down 1292 -> 1172: the per-provider auth/models/install/handshake
     # routes moved verbatim to gact/routes/provider_catalog_routes.py, which
     # also absorbed the subscription-readiness growth from e0c66ff5.
-    "src/clio_agent/gact/routes/providers.py": 1172,
+    # P5 (model-capabilities request builder): 1172 -> 1171. The static
+    # `supports_vision` wire-metadata key in `_provider_to_wire` is deleted
+    # (brief 9.1); vision is an evidence-based per-model fact now, never a
+    # per-provider catalog row.
+    "src/clio_agent/gact/routes/providers.py": 1171,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (merged to develop with the size check red, baseline 1478 -> actual); ratchet
     # back below the pre-#947 count with the mcp_app_* owner-module split (see the
@@ -739,7 +755,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # Ratchet down 885 -> 880: streamed-failure description (ExceptionGroup
     # unwrap + CLI-provider auth/install classification) moved to the owner
     # module gact/stream_failures.py.
-    "src/clio_agent/gact/streaming.py": 880,
+    # P5 (model-capabilities request builder): 880 -> 876. _config_is_reasoning_model
+    # now reads config.is_reasoning directly instead of the deleted
+    # clio_agent.config._reasoning_model_capability qwen-name heuristic.
+    "src/clio_agent/gact/streaming.py": 876,
     # #948 S5: +2 to read the RUN-KEYED tap-dedup bucket under an in-process module
     # variant (context.run_keyed_scope; bare invoking_expert still owns attribution).
     # merge(main->develop): +10 (932 -> 942) integrating main's #964 structured

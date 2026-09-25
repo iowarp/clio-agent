@@ -67,8 +67,6 @@ class Provider:
     auth_label: str = ""
     api_key_env: str | None = None
     supports_live_catalog: bool = True
-    supports_vision: bool = False
-    max_tokens_default: int = 32000
     strip_openai_prefix: bool = True
     parse_retry_capability: Literal["bounded", "single_attempt"] = "bounded"
     configuration_fields: tuple[ProviderConfigurationField, ...] = ()

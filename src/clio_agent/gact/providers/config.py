@@ -199,6 +199,26 @@ def thinking_level_record(app: "FastAPI", req: Any) -> dict[str, Any]:
     }
 
 
+def _current_api_base(app: "FastAPI") -> str:
+    """The bound/live ``api_base``, without going through :func:`_effective_lm_config`.
+
+    ``_vision_capability``/``_pdf_capability`` are themselves called FROM
+    ``_with_native_capability_flags`` (called from ``_effective_lm_config``),
+    so they cannot call ``_effective_lm_config`` back to find the api_base
+    their own accessor fallback needs -- that would recurse. This repeats
+    only its two api_base sources (the bound ``PUT /v1/providers/lm`` config,
+    then the live agent's provider config), not the whole merge.
+    """
+
+    cfg = getattr(app.state, "lm_config", None) or {}
+    api_base = str(cfg.get("api_base") or "") if isinstance(cfg, Mapping) else ""
+    if api_base:
+        return api_base
+    agent = getattr(app.state, "agent", None)
+    provider_config = getattr(agent, "_provider_config", None)
+    return str(getattr(provider_config, "api_base", "") or "")
+
+
 def _default_profile_spec(app: "FastAPI") -> Any:
     """Return the per-app profile store's default :class:`LMSpec`, or ``None``.
 
@@ -261,9 +281,7 @@ def _model_ref_matches_active(value: Any, app: "FastAPI") -> bool:
     return _model_ref_dict(value) == _active_lm_model_ref(app)
 
 
-def _bare_provider_kind_error(
-    value: Any, *, session_id: str, source: str
-) -> ErrorEnvelope | None:
+def _bare_provider_kind_error(value: Any, *, session_id: str, source: str) -> ErrorEnvelope | None:
     """A typed 400 when a model ref's ``provider_id`` is a bare provider KIND.
 
     A client that resolves identity by kind (the wire's ``provider`` field,
@@ -352,9 +370,11 @@ VISION_CAPABILITY_REASONS: dict[str, str] = {
     ),
     "catalog_default_no_modality_evidence_system": (
         "this provider kind exposes no per-model modality evidence at all (an "
-        "OpenAI-compatible /models listing returns ids and nothing else), so the "
-        "registry's documented transport-level supports_vision flag permits image "
-        "delivery and leaves model compatibility to the upstream endpoint"
+        "OpenAI-compatible /models listing returns ids and nothing else); for a "
+        "cloud dialect with no vision projector to forget, the effective "
+        "capabilities' own 'no restriction at this layer' default permits image "
+        "delivery and leaves model compatibility to the upstream endpoint -- any "
+        "other dialect stays refused until real evidence exists"
     ),
     "modality_evidence_unavailable": (
         "this provider kind CAN evidence input modalities but none has been recorded for "
@@ -373,12 +393,16 @@ def _vision_capability(app: "FastAPI", provider_id: str, model_id: str) -> tuple
     Consults the SAME evidence path delivery planning uses
     (:func:`~clio_agent.gact.resource_delivery.live_model_modalities`), so the
     route gate and the delivery planner cannot disagree about what a model can
-    receive. The static registry ``supports_vision`` flag is a documented
-    transport-level DEFAULT, used only where no modality-evidence system exists for
-    that provider kind — never as a substitute for evidence that could have been
-    collected. There is deliberately no provider-name allowlist: the previous
-    gate ended in a literal ``{"openai", "anthropic"}`` set, which no static flag
-    could ever reach past.
+    receive. When that evidence system has nothing for this provider kind (an
+    OpenAI-compatible ``/models`` listing returns ids and nothing else), the
+    fallback reads the effective capabilities directly
+    (:func:`~clio_agent.providers.capabilities.accessor.get_effective_capabilities`,
+    model-capabilities brief 5.5) instead of a static per-provider flag -- the
+    old registry-level ``supports_vision`` default is deleted (brief 9.1), so
+    this is now evidence or nothing, never an assumed default. There is
+    deliberately no provider-name allowlist: the previous-previous gate ended
+    in a literal ``{"openai", "anthropic"}`` set, which no static flag could
+    ever reach past.
     """
 
     if not provider_id or not model_id:
@@ -395,22 +419,67 @@ def _vision_capability(app: "FastAPI", provider_id: str, model_id: str) -> tuple
     if evidence in EVIDENCED_MODALITY_SOURCES:
         return "image" in modalities, "live_modality_evidence"
 
-    from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
     from clio_agent.providers.handshake import reports_input_modalities  # noqa: PLC0415
 
     kind = _provider_runtime_kind(provider_id)
     if reports_input_modalities(kind):
         return False, "modality_evidence_unavailable"
-    # provider_id only: get_provider(kind) would be ambiguous by construction
-    # (several presets share a kind, e.g. "openai") and adds nothing here --
-    # _provider_runtime_kind already falls back to provider_id verbatim when
-    # get_provider(provider_id) fails to resolve it, so a get_provider(kind)
-    # fallback would just repeat that same failed lookup (Part 3).
-    provider = get_provider(provider_id)
-    return (
-        bool(getattr(provider, "supports_vision", False)),
-        "catalog_default_no_modality_evidence_system",
+
+    fallback_modalities = _no_evidence_system_modalities(
+        provider_id, _current_api_base(app), model_id
     )
+    return "image" in fallback_modalities, "catalog_default_no_modality_evidence_system"
+
+
+def _no_evidence_system_modalities(
+    provider_id: str, api_base: str, model_id: str
+) -> frozenset[str]:
+    """Modalities for a provider kind with NO live modality-evidence system at all.
+
+    First consults the effective capabilities
+    (:func:`~clio_agent.providers.capabilities.accessor.get_effective_capabilities`)
+    in case a handshake already linked a real model record. Absent that (the
+    common case for a fresh bind: no handshake has populated the capability
+    cache yet), this falls back to the SAME "no restriction at this layer"
+    default the cloud dialect adapter would eventually record
+    (:func:`~clio_agent.providers.capabilities.dialects.cloud.
+    build_deployment_capabilities`, model-capabilities brief 4.2) for the seven
+    cloud dialects that structurally have no modality projector to forget --
+    computed directly here (pure, network-free) rather than waiting for a
+    handshake to run it, so this is the SAME fact the accessor would report
+    post-handshake, just answered a turn early. Any other dialect (a
+    self-hosted OpenAI-compatible server LiteLLM has no modality opinion about)
+    stays text-only until real evidence exists -- there is no default to fall
+    back to for those, unlike the deleted static ``supports_vision`` flag which
+    used to (wrongly) apply the SAME default to every provider kind.
+    """
+
+    from clio_agent.providers.capabilities.accessor import (  # noqa: PLC0415
+        get_effective_capabilities,
+    )
+
+    effective = get_effective_capabilities(provider_id, api_base, model_id)
+    if effective.input_modalities.known:
+        assert effective.input_modalities.value is not None
+        return effective.input_modalities.value
+
+    from clio_agent.providers.capabilities import endpoint as capability_endpoint  # noqa: PLC0415
+    from clio_agent.providers.capabilities.combine import combine_capabilities  # noqa: PLC0415
+    from clio_agent.providers.capabilities.dialects import (
+        cloud as capability_cloud,  # noqa: PLC0415
+    )
+    from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
+
+    preset = get_provider(provider_id)
+    litellm_prefix = preset.litellm_prefix if preset is not None else ""
+    dialect = capability_endpoint.dialect_for_provider(
+        _provider_runtime_kind(provider_id), litellm_prefix, provider_id
+    )
+    if dialect not in capability_cloud.CLOUD_DIALECTS:
+        return frozenset({"text"})
+    deployment = capability_cloud.build_deployment_capabilities(provider_id, api_base, model_id)
+    combined = combine_capabilities(model=None, endpoint=None, deployment=deployment)
+    return combined.input_modalities.value or frozenset({"text"})
 
 
 def _active_lm_supports_vision(app: "FastAPI") -> bool:
@@ -447,11 +516,9 @@ def _pdf_capability(app: "FastAPI", provider_id: str, model_id: str) -> tuple[bo
     """Resolve PDF-document input capability for one provider/model, with a typed reason.
 
     Mirrors :func:`_vision_capability` exactly, consulting the SAME live
-    modality evidence and checking ``"pdf"`` instead of ``"image"``. Unlike
-    vision, no provider-registry row carries a static ``supports_pdf``
-    default — PDF input is a newer, less commonly documented capability — so
-    the no-evidence-system fallback answers ``False`` rather than trusting an
-    undocumented transport-level default.
+    modality evidence and checking ``"pdf"`` instead of ``"image"``, then the
+    same effective-capabilities fallback when no live evidence system exists
+    for this provider kind.
     """
 
     if not provider_id or not model_id:
@@ -473,6 +540,18 @@ def _pdf_capability(app: "FastAPI", provider_id: str, model_id: str) -> tuple[bo
     kind = _provider_runtime_kind(provider_id)
     if reports_input_modalities(kind):
         return False, "modality_evidence_unavailable"
+
+    from clio_agent.providers.capabilities.accessor import (  # noqa: PLC0415
+        get_effective_capabilities,
+    )
+
+    effective = get_effective_capabilities(provider_id, _current_api_base(app), model_id)
+    if effective.input_modalities.known:
+        assert effective.input_modalities.value is not None
+        return (
+            "pdf" in effective.input_modalities.value,
+            "catalog_default_no_modality_evidence_system",
+        )
     return False, "catalog_default_no_modality_evidence_system"
 
 

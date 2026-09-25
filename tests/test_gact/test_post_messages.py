@@ -261,12 +261,16 @@ def test_capabilities_and_provider_catalog_report_image_part_support(client: Tes
     caps = client.get("/v1/capabilities").json()["capabilities"]
     assert caps["multimodal_image_parts"] is True
 
+    # model-capabilities brief 9.1: GET /v1/providers' per-row `metadata` no
+    # longer carries a static `supports_vision` flag (deleted from `Provider`
+    # and `_provider_to_wire`) -- whether a provider/model actually accepts an
+    # image part is now an evidence-based, per-MODEL question answered by
+    # `_vision_capability`/`_effective_lm_config` (see
+    # test_vision_capability_gate.py), never a per-provider catalog row.
     providers = client.get("/v1/providers").json()["providers"]
     by_id = {row["id"]: row for row in providers}
-    assert by_id["openai"]["metadata"]["supports_vision"] is True
-    assert by_id["anthropic"]["metadata"]["supports_vision"] is True
-    assert by_id["codex"]["metadata"]["supports_vision"] is True
-    assert by_id["claude_code"]["metadata"]["supports_vision"] is True
+    for provider_id in ("openai", "anthropic", "codex", "claude_code"):
+        assert "supports_vision" not in by_id[provider_id]["metadata"]
 
 
 def test_post_message_rejects_image_parts_for_text_only_provider(

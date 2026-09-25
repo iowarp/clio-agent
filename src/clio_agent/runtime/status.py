@@ -1152,7 +1152,7 @@ class RuntimeProbe:
             api_base=api_base,
             model=model,
             api_key=api_key,
-            temperature=self._float_env("CLIO_LM_TEMPERATURE", 0.0),
+            temperature=self._float_env("CLIO_LM_TEMPERATURE", None),
             max_tokens=self._int_env("CLIO_LM_MAX_TOKENS", 0),
             environment=self.env.get("CLIO_ENVIRONMENT", "dev"),
         )
@@ -1164,7 +1164,7 @@ class RuntimeProbe:
         ]
         return config, ", ".join(part for part in source_parts if part)
 
-    def _float_env(self, key: str, default: float) -> float:
+    def _float_env(self, key: str, default: float | None) -> float | None:
         value = self.env.get(key)
         if value is None:
             return default

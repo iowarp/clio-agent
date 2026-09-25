@@ -168,9 +168,12 @@ class TestDerivedViews:
                 assert key in row, f"{kind}: missing {key}"
 
     def test_provider_defaults_argonne_overrides(self) -> None:
+        # model-capabilities brief 9.1: no static suggested model id, no static
+        # max_tokens_default override -- live discovery / the handshake-derived
+        # output limit decide both, not a compiled-in ALCF gateway guess.
         row = as_provider_defaults_dict()["argonne"]
-        assert row["model"] == "openai/gpt-oss-120b"
-        assert row["max_tokens"] == 4096
+        assert row["model"] == ""
+        assert "max_tokens" not in row
         assert row["strip_openai_prefix"] is False
 
     def test_codex_parse_retry_is_a_catalog_capability(self) -> None:
@@ -178,12 +181,11 @@ class TestDerivedViews:
         assert defaults["codex"]["parse_retry_capability"] == "single_attempt"
         assert defaults["anthropic"].get("parse_retry_capability", "bounded") == "bounded"
 
-    def test_argonne_catalog_prefers_modern_models_before_legacy_llama31(self) -> None:
-        models = as_provider_models_dict()["argonne_sophia"]
-        ids = [row["id"] for row in models]
-        assert ids[:3] == ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "gpt-oss-120b"]
-        assert "meta-llama/Meta-Llama-3.1-8B-Instruct" in ids
-        assert ids.index("openai/gpt-oss-120b") < ids.index("meta-llama/Meta-Llama-3.1-8B-Instruct")
+    def test_argonne_catalog_has_no_static_model_list(self) -> None:
+        # model-capabilities brief 9.1: the static _ARGONNE_MODELS fallback is
+        # deleted. The live /jobs discovery (unchanged) is the only source of
+        # ALCF model rows now; the static catalog fallback is empty.
+        assert as_provider_models_dict()["argonne_sophia"] == []
 
     def test_cloud_api_key_env_only_cloud_kinds(self) -> None:
         env_map = as_cloud_api_key_env()
@@ -212,11 +214,11 @@ class TestDerivedViews:
         # up by wire kind.
         assert "argonne" in models
 
-    def test_codex_catalog_uses_user_facing_model_ids(self) -> None:
-        models = as_provider_models_dict()["codex"]
-        ids = {row["id"] for row in models}
-        assert {"gpt-5.5", "gpt-5.5-codex", "gpt-5.1"} <= ids
-        assert all(not model_id.startswith("cdx-") for model_id in ids)
+    def test_codex_catalog_has_no_static_model_list(self) -> None:
+        # model-capabilities brief 9.1: codex's compiled-in candidate model ids
+        # are deleted -- the SDK's own live catalog check is the only source of
+        # a codex model id now, never a stale compiled-in guess.
+        assert as_provider_models_dict()["codex"] == []
 
     def test_claude_code_catalog_uses_user_facing_model_ids(self) -> None:
         models = as_provider_models_dict()["claude_code"]
@@ -268,7 +270,6 @@ def test_provider_dataclass_round_trip() -> None:
     )
     assert p.requires_api_key is True  # default
     assert p.auth_method == "api_key"
-    assert p.max_tokens_default == 32000
     assert p.strip_openai_prefix is True
     assert p.is_kind_default is False
     assert p.model_catalog == ()
