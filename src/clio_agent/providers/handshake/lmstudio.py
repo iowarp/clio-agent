@@ -1,20 +1,24 @@
 """LM Studio provider handshake.
 
-LM Studio exposes an OpenAI-compatible API under ``{api_base}`` (e.g.
-``http://host:1234/v1``) plus a richer, native ``/api/v0`` surface served from
-the same host root (``http://host:1234``). The native ``/api/v0/models``
-endpoint is what makes LM Studio worth a bespoke handshake: it self-reports
-``max_context_length`` (the model's own ceiling — a **model** fact),
-``loaded_context_length`` (the *runtime* window an already-loaded model is
-actually serving — a **deployment** fact, brief Part 6), the ``quantization``/
-``arch`` of the GGUF, the load ``state``, and a ``capabilities`` list
-(``"tool_use"`` / ``"vision"`` => native tool calling / image input, both
-**model** facts).
+LM Studio 0.4+ exposes a newer native ``GET /api/v1/models`` surface
+(``max_context_length``, ``loaded_context_length``, ``capabilities.vision``,
+``trained_for_tool_use``, ``reasoning.allowed_options`` -- brief Part 6, parsed
+by :mod:`clio_agent.providers.capabilities.dialects.lm_studio`); older builds
+only have ``GET /api/v0/models`` (``capabilities`` as a flat string list). Both
+live at the NATIVE host root (``http://host:1234``), not under the
+OpenAI-compatible ``{api_base}`` (``http://host:1234/v1``).
+
+:meth:`discover_models` tries v1 first, falling back to v0
+(:func:`~clio_agent.providers.capabilities.dialects.lm_studio.fetch_rows`), and
+tags each raw row with which schema answered so :meth:`discover_model_config`
+knows which field mapping applies -- v1's own parser
+(:func:`~clio_agent.providers.capabilities.dialects.lm_studio.parse_v1_row`),
+or this class's own v0 mapping below.
 
 LM Studio is a local backend with no authentication, so the connectivity probe
-reports :data:`AuthState.NOT_REQUIRED`. The probe hits the native endpoint first
-and falls back to the OpenAI-compatible ``{api_base}/models`` so that a stripped
-build (or an older LM Studio) still registers as reachable.
+reports :data:`AuthState.NOT_REQUIRED`. The probe hits v1, then v0, then falls
+back to the OpenAI-compatible ``{api_base}/models`` so that a stripped build
+(or an older LM Studio) still registers as reachable.
 """
 
 from __future__ import annotations
@@ -53,21 +57,23 @@ def _positive_int(value: Any) -> int | None:
 
 
 class LMStudioHandshake(ProviderHandshake):
-    """Handshake for a local LM Studio backend (no auth, native ``/api/v0``)."""
+    """Handshake for a local LM Studio backend (no auth, native v1 with a v0 fallback)."""
 
-    #: ``/api/v0/models`` reports a per-model ``capabilities`` list (``vision``,
-    #: ``tool_use``), so this backend really can evidence input modalities.
+    #: Both the v1 and v0 model rows report per-model capability evidence
+    #: (v1: ``capabilities.vision``/``trained_for_tool_use``; v0: a flat
+    #: ``capabilities`` list), so this backend really can evidence input
+    #: modalities either way.
     reports_input_modalities = True
 
     async def check_connectivity(self, client: Any, ctx: HandshakeContext) -> ConnectivityResult:
-        """Probe LM Studio; native ``/api/v0/models`` first, OpenAI ``/models`` fallback.
+        """Probe LM Studio; native v1, then v0, then the OpenAI ``/models`` fallback.
 
-        Either endpoint answering marks the backend reachable. LM Studio requires
+        Any endpoint answering marks the backend reachable. LM Studio requires
         no credential, so auth is always :data:`AuthState.NOT_REQUIRED`.
         """
         root = native_root(ctx.api_base)
         base = ctx.api_base.rstrip("/")
-        urls = (f"{root}/api/v0/models", f"{base}/models")
+        urls = (f"{root}/api/v1/models", f"{root}/api/v0/models", f"{base}/models")
         last_error: str | None = None
         for url in urls:
             try:
@@ -88,26 +94,51 @@ class LMStudioHandshake(ProviderHandshake):
         )
 
     async def discover_models(self, client: Any, ctx: HandshakeContext) -> list[dict[str, Any]]:
-        """Return the raw rows from ``{root}/api/v0/models`` (the ``data`` array)."""
-        root = native_root(ctx.api_base)
-        response = await client.get(f"{root}/api/v0/models")
-        response.raise_for_status()
-        payload = response.json()
-        rows = payload.get("data", []) if isinstance(payload, dict) else []
-        return [row for row in rows if isinstance(row, dict)]
+        """Return the raw rows from ``/api/v1/models``, falling back to ``/api/v0/models``.
+
+        Each row is tagged with ``_lm_studio_schema`` (``"v1"``/``"v0"``) so
+        :meth:`discover_model_config` knows which field mapping applies.
+        """
+        from clio_agent.providers.capabilities.dialects import (  # noqa: PLC0415
+            lm_studio as lm_studio_dialect,
+        )
+
+        rows, schema = await lm_studio_dialect.fetch_rows(client, ctx.api_base)
+        if not schema:
+            raise RuntimeError("lm studio: neither /api/v1/models nor /api/v0/models answered")
+        for row in rows:
+            row["_lm_studio_schema"] = schema
+        return rows
 
     async def discover_model_config(
         self, client: Any, ctx: HandshakeContext, raw: dict[str, Any]
     ) -> DiscoveredModelFacts:
-        """Build a :class:`DiscoveredModelFacts` from one ``/api/v0`` model row.
+        """Build a :class:`DiscoveredModelFacts` from one LM Studio model row.
 
-        Maps LM Studio's self-reported fields: ``max_context_length`` ->
-        ``ModelCapabilities.context_max`` (the ceiling), ``loaded_context_length``
-        -> ``DeploymentCapabilities.context_served`` (the runtime window),
-        ``quantization``/``arch`` pass through as raw identity metadata, the
-        ``capabilities`` list becomes ``ModelCapabilities.tools``/
-        ``input_modalities``, and ``state == "loaded"`` sets ``is_loaded``.
+        Dispatches on the ``_lm_studio_schema`` tag :meth:`discover_models` set:
+        a v1 row goes straight through
+        :func:`~clio_agent.providers.capabilities.dialects.lm_studio.parse_v1_row`
+        (brief Part 6's newer field names, including ``reasoning.allowed_options``);
+        a v0 row keeps this class's own mapping below (``max_context_length`` ->
+        the ceiling, ``loaded_context_length`` -> the runtime window,
+        ``quantization``/``arch`` as raw identity metadata, the flat
+        ``capabilities`` list -> tools/vision, ``state == "loaded"`` -> ``is_loaded``).
         """
+        if raw.get("_lm_studio_schema") == "v1":
+            from clio_agent.providers.capabilities.dialects import (  # noqa: PLC0415
+                lm_studio as lm_studio_dialect,
+            )
+
+            model, deployment = lm_studio_dialect.parse_v1_row(
+                raw, provider_id=ctx.provider_id, api_base=ctx.api_base
+            )
+            discovered = DiscoveredModel(
+                id=deployment.model_id,
+                is_loaded=deployment.context_served.known,
+                raw={k: v for k, v in raw.items() if k != "_lm_studio_schema"},
+            )
+            return DiscoveredModelFacts(discovered=discovered, model=model, deployment=deployment)
+
         capabilities = raw.get("capabilities") or []
         if not isinstance(capabilities, list):
             capabilities = []

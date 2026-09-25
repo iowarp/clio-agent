@@ -28,7 +28,6 @@ from typing import Any
 from clio_agent.providers.api_base import native_root
 from clio_agent.providers.capabilities.link import deployment_model_key_fact
 from clio_agent.providers.capabilities.records import (
-    DeploymentCapabilities,
     Fact,
     ModelCapabilities,
     ThinkingSpec,
@@ -60,7 +59,14 @@ class OllamaHandshake(OpenAICompatHandshake):
     async def discover_model_config(
         self, client: Any, ctx: HandshakeContext, raw: dict[str, Any]
     ) -> DiscoveredModelFacts:
-        """Resolve one model's context window + capabilities via ``/api/show``."""
+        """Resolve one model's context window + capabilities via ``/api/show``.
+
+        Also layers on the DEPLOYMENT facts P4b's dialect adapter adds (brief
+        Part 6): the Modelfile ``parameters`` blob's ``num_ctx`` and the context
+        actually loaded right now from ``/api/ps``, combined via
+        :func:`~clio_agent.providers.capabilities.dialects.ollama.build_deployment_extra`
+        (``ollama-probe-context``).
+        """
         model_id = str(raw.get("id") or raw.get("model") or "").strip()
         root = native_root(ctx.api_base)
         observed_at = _now_iso()
@@ -68,6 +74,7 @@ class OllamaHandshake(OpenAICompatHandshake):
         context_window: int | None = None
         arch: str | None = None
         caps: tuple[str, ...] = ()
+        show_parameters: str | None = None
         try:
             resp = await client.post(f"{root}/api/show", json={"model": model_id})
             if resp.status_code < 400:
@@ -88,9 +95,21 @@ class OllamaHandshake(OpenAICompatHandshake):
                     raw_caps = data.get("capabilities")
                     if isinstance(raw_caps, list):
                         caps = tuple(str(c) for c in raw_caps)
+                    raw_parameters = data.get("parameters")
+                    if isinstance(raw_parameters, str):
+                        show_parameters = raw_parameters
         except Exception:  # noqa: BLE001,S110 - /api/show best-effort; falls back to the enrich cascade
             # /api/show is best-effort: a failure leaves context_max/caps unknown
             # and the base enrich step falls back to the community-catalog cascade.
+            pass
+
+        ps_payload: dict[str, Any] | None = None
+        try:
+            ps_resp = await client.get(f"{root}/api/ps")
+            if ps_resp.status_code < 400:
+                data = ps_resp.json()
+                ps_payload = data if isinstance(data, dict) else None
+        except Exception:  # noqa: BLE001,S110 - /api/ps is best-effort (older server, transient error)
             pass
 
         capabilities_known = bool(caps)
@@ -139,11 +158,16 @@ class OllamaHandshake(OpenAICompatHandshake):
                 else unknown()
             ),
         )
-        deployment = DeploymentCapabilities(
+        from clio_agent.providers.capabilities.dialects import (  # noqa: PLC0415
+            ollama as ollama_dialect,
+        )
+
+        deployment = ollama_dialect.build_deployment_extra(
             provider_id=ctx.provider_id,
             api_base=ctx.api_base,
             model_id=model_id,
-            model_key=model_key_fact,
+            show_parameters=show_parameters,
+            ps_payload=ps_payload,
         )
         discovered = DiscoveredModel(
             id=model_id,

@@ -48,6 +48,10 @@ from clio_agent.providers.handshake.model import (
 logger = logging.getLogger(__name__)
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 @dataclass
 class ConnectivityResult:
     """Outcome of the connectivity + auth phase."""
@@ -168,7 +172,7 @@ class ProviderHandshake(abc.ABC):
                     error=f"model discovery failed: {exc}",
                     started=started,
                 )
-            self._record_endpoint_capabilities(ctx)
+            await self._record_endpoint_capabilities(client, ctx)
             discovered: list[DiscoveredModel] = []
             for raw in raw_models:
                 try:
@@ -260,7 +264,7 @@ class ProviderHandshake(abc.ABC):
         invalidation.record_model_capabilities(facts.model)
         invalidation.record_deployment_capabilities(facts.deployment)
 
-    def _record_endpoint_capabilities(self, ctx: HandshakeContext) -> None:
+    async def _record_endpoint_capabilities(self, client: Any, ctx: HandshakeContext) -> None:
         """Build and store this endpoint's :class:`EndpointCapabilities` once per run.
 
         Uses the registry ``Provider`` row's own ``litellm_prefix`` (LiteLLM's
@@ -268,6 +272,12 @@ class ProviderHandshake(abc.ABC):
         since ``provider_kind`` only selects the wire FORMAT (Part 3) and
         collapses several real server types (llama.cpp, a bare vLLM server,
         cloud OpenAI-compatible) onto the same kind.
+
+        The dialect's own invalidation fingerprint (brief 5.6) is resolved via
+        :meth:`_dialect_endpoint_fingerprint` -- one best-effort extra GET for a
+        dialect this base class knows how to fingerprint (llama.cpp ``/props``
+        ``build_info``, vLLM ``/version``, Ollama ``/api/version``); a failure
+        there never blocks recording the rest of this endpoint's facts.
         """
         from clio_agent.providers.capabilities import (
             endpoint as capability_endpoint,  # noqa: PLC0415
@@ -278,14 +288,69 @@ class ProviderHandshake(abc.ABC):
         dialect = capability_endpoint.dialect_for_provider(
             ctx.provider_kind, litellm_prefix, ctx.provider_id
         )
+        server_version, fingerprint = await self._dialect_endpoint_fingerprint(client, ctx, dialect)
         caps = capability_endpoint.build_endpoint_capabilities(
             ctx.provider_id,
             ctx.api_base,
             dialect,
             ctx.target_model or "",
             custom_llm_provider=litellm_prefix,
+            server_version=server_version,
+            fingerprint=fingerprint,
         )
         invalidation.record_endpoint_capabilities(caps)
+
+    async def _dialect_endpoint_fingerprint(
+        self, client: Any, ctx: HandshakeContext, dialect: str
+    ) -> tuple[Any, str]:
+        """Best-effort per-dialect endpoint fingerprint (brief 5.6).
+
+        Returns ``(server_version_fact_or_none, fingerprint)``. Reuses each
+        dialect module's own pure ``fingerprint_from_*`` function
+        (:mod:`clio_agent.providers.capabilities.dialects`) so the exact
+        fingerprint SHAPE lives in exactly one place per dialect; this method's
+        own job is only the one extra HTTP read each needs, through the SAME
+        ``httpx.AsyncClient`` every handshake phase already shares. Any failure
+        (older server, transient error, a dialect this base class has no
+        fingerprint for) degrades to ``(None, "")`` -- an endpoint with no
+        fingerprint yet is exactly today's (pre-P4b) behavior, never a hard
+        failure.
+        """
+        from clio_agent.providers.api_base import native_root  # noqa: PLC0415
+        from clio_agent.providers.capabilities.dialects import (  # noqa: PLC0415
+            llama_cpp as llama_cpp_dialect,
+        )
+        from clio_agent.providers.capabilities.dialects import (
+            ollama as ollama_dialect,  # noqa: PLC0415
+        )
+        from clio_agent.providers.capabilities.dialects import vllm as vllm_dialect  # noqa: PLC0415
+        from clio_agent.providers.capabilities.records import Fact  # noqa: PLC0415
+
+        try:
+            if dialect == "llama_cpp":
+                response = await client.get(f"{ctx.api_base.rstrip('/')}/props")
+                if response.status_code < 400:
+                    build_info = response.json().get("build_info")
+                    text = str(build_info or "").strip()
+                    fact = Fact(text, "server_report", _now_iso(), "llama.cpp /props build_info") if text else None
+                    return fact, llama_cpp_dialect.fingerprint_from_build_info(build_info)
+            elif dialect == "vllm":
+                response = await client.get(f"{native_root(ctx.api_base)}/version")
+                if response.status_code < 400:
+                    version = response.json().get("version")
+                    text = str(version or "").strip()
+                    fact = Fact(text, "server_report", _now_iso(), "vllm /version") if text else None
+                    return fact, vllm_dialect.fingerprint_from_version(version)
+            elif dialect == "ollama":
+                response = await client.get(f"{native_root(ctx.api_base)}/api/version")
+                if response.status_code < 400:
+                    version = response.json().get("version")
+                    text = str(version or "").strip()
+                    fact = Fact(text, "server_report", _now_iso(), "ollama /api/version") if text else None
+                    return fact, ollama_dialect.fingerprint_from_version(version)
+        except Exception as exc:  # noqa: BLE001 - fingerprinting is best-effort, never sinks discovery
+            logger.debug("handshake: dialect endpoint fingerprint failed dialect=%s: %s", dialect, exc)
+        return None, ""
 
     def models_provenance(self, ctx: HandshakeContext) -> tuple[str, str]:
         """Return ``(models_source, evidence_generated_at)`` for a completed run.
