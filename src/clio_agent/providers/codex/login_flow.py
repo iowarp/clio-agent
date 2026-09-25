@@ -42,9 +42,9 @@ __all__ = [
     "CodexLoginFlow",
     "FlowState",
     "LoginMethods",
-    "create_login_flow",
     "drop_login_flow",
     "get_login_flow",
+    "start_login",
 ]
 
 #: How long :class:`CodexLoginFlow` waits on the loopback callback before
@@ -124,6 +124,16 @@ class CodexLoginFlow:
         self._result = _FlowResult()
         self._credential: CodexCredential | None = None
         self._loopback: LoopbackListener | None = None
+        #: The `start_browser`/`start_device` result, cached so a second
+        #: `start` call for the SAME still-pending flow (see `start_login`)
+        #: can return it verbatim instead of starting a second listener/poll.
+        self._methods: LoginMethods | None = None
+
+    def cached_methods(self) -> LoginMethods | None:
+        return self._methods
+
+    def set_cached_methods(self, methods: LoginMethods) -> None:
+        self._methods = methods
 
     def _claim(self) -> bool:
         with self._result.lock:
@@ -264,47 +274,114 @@ class CodexLoginFlow:
 
 
 # ---------------------------------------------------------------------------
-# Pending-flow registry (mirrors ``argonne_auth``'s server-held, TTL'd,
-# opaque-flow-id-keyed pending-authentication dict) -- the generic sign-in
-# API's ``start``/``complete``/``status`` actions all address a flow by this id.
+# ONE active flow, ever (#1 of the owner's live-tested OAuth defects). Codex
+# sign-in is machine-wide (one credential per machine, `credentials.py`), and
+# the loopback listener can only ever bind ONE port -- so there is at most
+# ONE pending flow at a time, not a dict of them. `start_login` is the single
+# entry point every `start` action goes through: a still-pending flow for the
+# SAME method is returned verbatim (same flow_id, same PKCE state, no second
+# listener); anything else (an explicit retry, a method change, expiry, or
+# a resolved flow) cancels the old one -- closing its listener -- before a
+# fresh one starts. Running two listeners/states at once is exactly how a
+# retried sign-in produced "state mismatch": the second flow's browser URL
+# carried a state the (only one that could bind the port) first flow's
+# listener never expected.
 # ---------------------------------------------------------------------------
 
 _FLOW_TTL_S = 15 * 60.0
-_flows: dict[str, CodexLoginFlow] = {}
-_flow_created_at: dict[str, float] = {}
+_current: CodexLoginFlow | None = None
+_current_created_at: float = 0.0
+_current_method: str = ""
 _flows_lock = threading.Lock()
 
 
-def create_login_flow() -> CodexLoginFlow:
-    """Create and register a new login flow, sweeping expired ones first."""
+def _expired(created_at: float) -> bool:
+    return time.monotonic() - created_at > _FLOW_TTL_S
 
-    flow_id = secrets.token_urlsafe(32)
-    now = time.monotonic()
+
+def start_login(*, method: str = "browser", force: bool = False) -> LoginMethods:
+    """Start (or idempotently resume) THE ONE Codex login flow.
+
+    Args:
+        method: ``"browser"`` or ``"device"``. A change from the pending
+            flow's own method is treated the same as ``force``.
+        force: An explicit user "Sign in" click. Always cancels whatever was
+            pending and starts clean, so a retry never contends with a stale
+            attempt for the loopback port.
+
+    Never runs two listeners/states concurrently: that invariant is the
+    entire point of this function, not an incidental property of it.
+    """
+    global _current, _current_created_at, _current_method  # noqa: PLW0603
     with _flows_lock:
-        expired = [fid for fid, created in _flow_created_at.items() if now - created > _FLOW_TTL_S]
-        for fid in expired:
-            stale = _flows.pop(fid, None)
-            _flow_created_at.pop(fid, None)
-            if stale is not None:
-                stale.cancel()
+        stale = _current
+        can_reuse = False
+        if stale is not None and not force and method == _current_method:
+            state, _reason = stale.status()
+            can_reuse = (
+                state == "pending"
+                and not _expired(_current_created_at)
+                and stale.cached_methods() is not None
+            )
+        if can_reuse:
+            cached = stale.cached_methods() if stale is not None else None
+            if cached is not None:
+                return cached
+        if stale is not None:
+            logger.info(
+                "codex oauth: replacing the pending flow before starting a new one "
+                "reason=%s",
+                "forced" if force else "method_changed_or_resolved",
+            )
+            stale.cancel()
+        flow_id = secrets.token_urlsafe(32)
         flow = CodexLoginFlow(flow_id)
-        _flows[flow_id] = flow
-        _flow_created_at[flow_id] = now
-    return flow
+        _current = flow
+        _current_created_at = time.monotonic()
+        _current_method = method
+    # The side-effecting part (binding the loopback socket / calling the
+    # device-code endpoint) happens OUTSIDE the lock -- it must never block a
+    # concurrent status/complete lookup, which only ever reads _current.
+    methods = flow.start_device() if method == "device" else flow.start_browser()
+    flow.set_cached_methods(methods)
+    return methods
+
+
+def _set_current_flow_for_tests(flow: CodexLoginFlow) -> None:
+    """Register a manually-constructed flow as THE current one (tests only).
+
+    A test that wants to simulate a flow already at some state (e.g.
+    "complete", to exercise `status`'s credential-persist path) constructs a
+    plain :class:`CodexLoginFlow`, mutates its private state directly, and
+    registers it here so :func:`get_login_flow` finds it -- without going
+    through :func:`start_login`'s real side effects (binding the loopback
+    socket, calling the device-code endpoint).
+    """
+
+    global _current, _current_created_at, _current_method  # noqa: PLW0603
+    with _flows_lock:
+        _current = flow
+        _current_created_at = time.monotonic()
+        _current_method = "browser"
 
 
 def get_login_flow(flow_id: str) -> CodexLoginFlow | None:
     with _flows_lock:
-        return _flows.get(flow_id.strip())
+        if _current is not None and _current.flow_id == flow_id.strip():
+            return _current
+        return None
 
 
 def drop_login_flow(flow_id: str) -> None:
+    global _current  # noqa: PLW0603
     with _flows_lock:
-        _flows.pop(flow_id, None)
-        _flow_created_at.pop(flow_id, None)
+        if _current is not None and _current.flow_id == flow_id.strip():
+            _current = None
 
 
 def _reset_login_flows_for_tests() -> None:
+    global _current, _current_created_at, _current_method  # noqa: PLW0603
     with _flows_lock:
-        _flows.clear()
-        _flow_created_at.clear()
+        _current = None
+        _current_created_at = 0.0
+        _current_method = ""

@@ -144,12 +144,16 @@ async def _codex_start(
     from clio_agent.providers.codex import login_flow  # noqa: PLC0415
     from clio_agent.providers.codex.oauth import OAuthError  # noqa: PLC0415
 
-    flow = login_flow.create_login_flow()
     method = str(body.get("method") or "browser").strip().lower()
+    # `force` is the wire signal for "the user explicitly clicked Sign in" --
+    # never set implicitly by a submenu opening or a status poll. See
+    # `login_flow.start_login`: without it, a still-pending flow for the same
+    # method is returned AS-IS (no second listener, no new PKCE state) rather
+    # than started twice, which is what produced a real "state mismatch"
+    # failure when two flows both raced for the one loopback port.
+    force = bool(body.get("force"))
     try:
-        methods = await asyncio.to_thread(
-            flow.start_device if method == "device" else flow.start_browser
-        )
+        methods = await asyncio.to_thread(login_flow.start_login, method=method, force=force)
     except OAuthError as exc:
         raise _error(502, error="codex_auth_failed", message=str(exc)) from exc
     result: dict[str, Any] = {"flow_id": methods.flow_id, "instructions": methods.instructions}

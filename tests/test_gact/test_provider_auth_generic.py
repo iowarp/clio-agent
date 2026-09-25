@@ -216,12 +216,13 @@ class TestCodex:
         monkeypatch.setattr(
             "clio_agent.providers.codex.credentials.CodexCredentialStore", lambda: store
         )
-        flow = login_flow.create_login_flow()
+        flow = login_flow.CodexLoginFlow(flow_id="flow-1")
         flow._credential = CodexCredential(  # noqa: SLF001 - simulate a completed exchange
             access_token="at", refresh_token="rt", expires_at_ms=0, account_id="acct_1"
         )
         with flow._result.lock:  # noqa: SLF001
             flow._result.status = "complete"  # noqa: SLF001
+        login_flow._set_current_flow_for_tests(flow)  # noqa: SLF001
 
         preset = _preset(provider="codex")
         result = await handle_auth_action(
