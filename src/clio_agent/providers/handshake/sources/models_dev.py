@@ -248,3 +248,88 @@ def lookup_models_dev_output(
         if output is not None:
             return output
     return None
+
+
+#: The modality spellings models.dev uses in ``modalities.input``/``.output`` that
+#: CLIO has a modality for. models.dev's vocabulary already IS CLIO's
+#: (``text``/``image``/``audio``/``video``/``pdf``); anything else is dropped
+#: rather than guessed at.
+_MODELS_DEV_MODALITIES: frozenset[str] = frozenset({"text", "image", "audio", "video", "pdf"})
+
+
+def _build_entry_index(catalog: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Build a normalized ``{candidate_key: entry}`` index (same key rules as :func:`_build_index`)."""
+    index: dict[str, dict[str, Any]] = {}
+    for key, entry in catalog.items():
+        if not isinstance(key, str) or not isinstance(entry, dict):
+            continue
+        norm_key = normalize_id(key)
+        if norm_key and norm_key not in index:
+            index[norm_key] = entry
+        if "/" in norm_key:
+            basename = norm_key.rsplit("/", 1)[1]
+            if basename and basename not in index:
+                index[basename] = entry
+    return index
+
+
+def lookup_models_dev_entry(
+    model_id: str,
+    *,
+    path: str | os.PathLike[str] | None = None,
+    ttl_s: float = DEFAULT_TTL_S,
+    allow_fetch: bool = True,
+) -> dict[str, Any] | None:
+    """Return the whole models.dev entry for ``model_id`` (one catalog load), or None.
+
+    Uses the same id candidates as the limit lookups, so a caller that needs
+    several fields of one model reads the catalog once instead of once per field.
+    """
+    catalog = _load_models_dev(path, ttl_s=ttl_s, allow_fetch=allow_fetch)
+    if not catalog:
+        return None
+    index = _build_entry_index(catalog)
+    for candidate in iter_id_candidates(model_id):
+        entry = index.get(candidate)
+        if entry is not None:
+            return entry
+    return None
+
+
+def _modality_set(raw: object) -> frozenset[str] | None:
+    if not isinstance(raw, list):
+        return None
+    values = {str(value).strip().lower() for value in raw if isinstance(value, str)}
+    return frozenset(values & _MODELS_DEV_MODALITIES)
+
+
+def modalities_from_entry(
+    entry: object,
+) -> tuple[frozenset[str] | None, frozenset[str] | None]:
+    """``(input, output)`` modalities from a models.dev entry's ``modalities`` block.
+
+    Each side is ``None`` when the entry does not state it -- an absent list is
+    no evidence, never "text only".
+    """
+    if not isinstance(entry, dict):
+        return None, None
+    block = entry.get("modalities")
+    if not isinstance(block, dict):
+        return None, None
+    return _modality_set(block.get("input")), _modality_set(block.get("output"))
+
+
+def model_type_from_output(output: frozenset[str] | None) -> str | None:
+    """The model type a models.dev OUTPUT list proves, when it proves one.
+
+    models.dev has no type field and lists embedding models with a ``text``
+    output, so a ``text`` output decides nothing. Only an output that lacks text
+    names a type: image output is image generation, audio output is speech.
+    """
+    if not output or "text" in output:
+        return None
+    if "image" in output:
+        return "image_generation"
+    if "audio" in output:
+        return "audio_speech"
+    return None

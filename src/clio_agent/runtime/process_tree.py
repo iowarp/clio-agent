@@ -315,13 +315,17 @@ def child_reaper_status() -> ChildReaperResult | None:
 def teardown_pooled_sdk_transports() -> dict[str, str]:
     """Close the pooled Claude and Codex SDK transports on clean shutdown (#900).
 
-    The blocking SDK session pool and the streaming client pool each hold persistent
-    ``claude`` CLI connections + a loop thread. They register ``atexit`` best-effort
-    closers, but this promotes teardown to an explicit, typed-logged step on the gact
-    lifespan shutdown so the CLI process(es) are reaped promptly (not only at
-    interpreter exit) and the outcome reaches the trace. Idempotent — a later ``atexit``
-    run is a safe no-op. Never raises: a per-pool failure is logged with a structured
-    reason and recorded in the returned map.
+    The claude_code streaming client pool (S2: ONE client per GACT session,
+    B1 — the standalone blocking-path pool this teardown used to ALSO close
+    was deleted in the same change; the blocking `completion()` path now
+    rides this same pool) and the Codex streaming client each hold persistent
+    CLI connections + a loop thread. They register ``atexit`` best-effort
+    closers, but this promotes teardown to an explicit, typed-logged step on
+    the gact lifespan shutdown so the CLI process(es) are reaped promptly
+    (not only at interpreter exit) and the outcome reaches the trace.
+    Idempotent — a later ``atexit`` run is a safe no-op. Never raises: a
+    per-pool failure is logged with a structured reason and recorded in the
+    returned map.
 
     Returns:
         A ``{pool_name: outcome}`` map where each outcome is ``"closed"`` or
@@ -341,17 +345,6 @@ def teardown_pooled_sdk_transports() -> dict[str, str]:
             "sdk transport teardown failed reason=sdk_stream_pool_close_failed error=%r", exc
         )
         results["stream_client_pool"] = f"error:{exc!r}"
-
-    try:
-        from clio_agent.providers.claude_code_sdk_pool import _SDK_SESSION_POOL  # noqa: PLC0415
-
-        _SDK_SESSION_POOL.close()
-        results["sdk_session_pool"] = "closed"
-    except Exception as exc:  # noqa: BLE001 - teardown must not raise; reason logged + recorded
-        logger.warning(
-            "sdk transport teardown failed reason=sdk_session_pool_close_failed error=%r", exc
-        )
-        results["sdk_session_pool"] = f"error:{exc!r}"
 
     try:
         from clio_agent.providers.codex_stream import _SDK_CLIENT  # noqa: PLC0415

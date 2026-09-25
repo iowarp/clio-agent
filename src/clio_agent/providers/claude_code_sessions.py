@@ -1,49 +1,60 @@
-"""Pooled Claude Agent SDK streaming transport for ``claude_code`` (#891).
+"""One ``ClaudeSDKClient`` per GACT session for ``claude_code`` (S2 Claude SDK tuning).
 
-Owner module for the *streaming* connection half of the ``claude_code`` SDK
-transport, carved out of :mod:`clio_agent.providers.claude_code_litellm`
-(which kept regrowing — #775 no-accretion). The pre-existing *blocking*
-``completion`` path's thread-backed pool (``_SdkSession`` / ``_SdkSessionPool`` /
-``_run_sdk``) is a separate concern in the sibling
-:mod:`clio_agent.providers.claude_code_sdk_pool`; it is re-exported here (and via
-``claude_code_litellm``) for the historical import seams.
+Owner module for the ``claude_code`` SDK transport's connection pool. Replaces
+the pre-S2 design (one process-wide pool keyed by ``(model, cwd, thinking)``,
+plus a SEPARATE per-``forward()``-scope-keyed connection for the #901 stateful
+delta transport) with one invariant:
 
-**The mechanism (measured, #891).** The pre-#891 fault was a *fresh*
-``ClaudeSDKClient`` — a fresh ``claude`` CLI subprocess spawn + connect — on every
-LM call (~7% of a turn's wall clock), and ``cache_read == 0`` everywhere. The fix
-is two independent facts:
+**B1.** The pool key is the GACT session id (the contextvar
+:func:`_active_gact_session_id` reads, which ``claude_code_cancel`` already
+keys cancellation on) — not a react-loop scope token. Since #948 every tier
+is a REAL, distinct GACT session, so session-id keying already isolates every
+concurrently-active agent (the old scope-keying's job) while ALSO satisfying
+B1: the client survives a whole session's turns, not just one ``forward()``.
+No active GACT session (off-turn/test/CLI) falls back to the empty-string key
+— never individually cancellable, matching ``register_sdk_stream``'s contract.
 
-* **Connection reuse**: :class:`ClaudeStreamClientPool` keeps ONE connected
-  ``ClaudeSDKClient`` per ``(model, cwd, thinking)``, hosted on a private
-  daemon-thread event loop so it survives the per-call ``asyncio.run()`` loops the
-  token-liveness driver spins up (``lm.io_logging._clio_streamed_call``). The
-  connect is paid once, not per call; a per-loop query lock serialises the whole
-  query→receive cycle so concurrent calls never interleave streams, and any
-  abnormal end drops the client so a poisoned/half-drained connection is never
-  reused.
-* **Server-side prefix caching**: with the connection warm, each call sends its
-  FULL prompt under a FRESH ``session_id`` — and the provider's content-prefix
-  cache still hits on the stable leading bytes. Measured on the live 2-turn probe:
-  ``cache_read`` grew 12K→184K across a turn's calls with zero session
-  continuation. The ``session_id`` is a per-call conversation boundary
-  (compartmentalisation: no cross-call, hence no cross-expert, context bleed),
-  not a cache key.
+**B14.** A cancel calls :meth:`_StreamClientEntry.request_interrupt`, sending
+``interrupt()`` on the entry's owner loop. Per the installed 0.2.156 SDK's own
+contract, an interrupted turn still yields a normal terminal ``ResultMessage``
+and ``receive_response()`` completes cleanly, so the client is never
+disconnected — the NEXT turn reuses it warm. The abort handle is registered
+for the WHOLE call (before the connect region, not just the query lock): a
+call still queued for a slot is abortable via its ``abandon`` event instead.
 
-**History (do not rebuild).** #891 first shipped a per-expert session registry
-that appended byte-suffix *deltas* onto a stable ``session_id`` behind a strict
-prefix-extension gate. On real dspy-rendered ReAct prompts the gate never passed
-(the adapter re-renders the trailing instruction footer after the trajectory every
-step), so the live audit showed 0 deltas / 22 typed resets — every call already
-WAS full-prompt-on-fresh-session, and ``cache_read`` grew anyway (see above). The
-delta layer was dead code carrying a stale-context risk surface and was stripped;
-connection pooling + server-side prefix caching is the entire mechanism.
+**B17.** Any ABNORMAL end (a transport error, a timed-out query, or a caller
+abandoning the stream) marks the entry ``dead`` (F6b — never reconnected in
+place). The next ``entry_for`` for that session evicts it and mints fresh —
+typed and logged (``dead_client_replaced``), and the crash message carries
+the dead client's stderr tail (:mod:`claude_code_stderr_ring`).
 
-A process/env kill-switch (:func:`session_reuse_enabled`, default ON for
-``claude_code``) restores the pre-#891 per-call transport byte-for-byte (fresh
-client + connect per call). A mid-stream death of the pooled CLI subprocess is a
-TYPED transient failure (:data:`TRANSPORT_FAILURE_REASONS`, audited as
-``provider.transport_error``) that the LM retry layer re-issues on a fresh
-connection — never a silent turn failure (#775 no-silent-fallback).
+**B2.** :meth:`ClaudeStreamClientPool.precede_connect` mints a session's entry
+and connects it in the BACKGROUND with its REAL resolved ``model``/``cwd``/
+``thinking``/``system_prompt`` the moment a caller (session create, or first
+resolution to a ``claude_code`` model) has them — before any turn asks for
+the client. The entry is inserted into ``pool._entries`` immediately, so the
+first real ``entry_for`` for that session just returns THIS entry (one
+connect, not two); if config drifted between pre-connect and first turn, the
+existing typed reconnect (below) reconciles it. A pre-connect failure is
+logged (typed, ``precede_connect_failed``) and never raised — the entry is
+left with no client, so the first turn's own ``entry_for``/``stream`` just
+connects it cold, as if pre-connect had never run. Pre-connect NEVER blocks
+its caller and NEVER competes unbounded for connect slots with a real turn:
+:func:`~clio_agent.providers.claude_code_stream_bounds.max_precede_connects`
+caps how many may be simultaneously pending. ``cwd`` is excluded from every
+mismatch check in the reconcile path (a bare-model-transport no-op; B3/B5/B6/
+B9 disable every tool/setting/hook that would ever resolve a path against
+it). A reconcile needing only a different MODEL is free (``set_model``, B13).
+
+**History (do not rebuild): #COPPER12 scope-keyed connections.** The prior
+design gave every ACTIVE ``stateful_scope()`` its own connection since a
+spawned child was not yet a first-class GACT session; #948 made every
+declared child real, so session-id keying gives the same isolation without a
+second bookkeeping layer. The #901 stateful-delta layer is UNCHANGED and
+orthogonal (its own SDK-level conversation continuation, independent of which
+physical client a query rides on); this module still flags it when a
+connection dies out from under an ACTIVE scope (reap/dead-replace) so a delta
+is never shipped to a fresh subprocess with no memory of the dropped prefix.
 """
 
 from __future__ import annotations
@@ -58,36 +69,24 @@ import time
 from collections.abc import AsyncIterator
 from typing import Any
 
+from clio_agent.providers.claude_code_bridge import usage_chunk_fields
 from clio_agent.providers.claude_code_cancel import (
     register_sdk_stream,
     unregister_sdk_stream,
 )
 from clio_agent.providers.claude_code_multimodal import sdk_prompt
 from clio_agent.providers.claude_code_options import build_sdk_options, thinking_key
-
-# Re-export the sibling blocking-path pool for the historical import seams (tests
-# and ``claude_code_litellm`` import these names from this module).
-from clio_agent.providers.claude_code_sdk_pool import (
-    _SDK_SESSION_POOL,
-    _run_sdk,
-    _SdkSession,
-    _SdkSessionPool,
-)
-
-# Idle-reap + concurrency-cap bounds (#775 no-accretion owner split): pure
-# behaviour over THIS module's pool/entry classes, kept in its own file so it
-# does not regrow this one. Imported here (not the other way) — the sibling
-# only reaches back into claude_code_sessions via deferred, function-local
-# imports, so this stays a one-directional, non-circular dependency.
+from clio_agent.providers.claude_code_stderr_ring import StderrRing
 from clio_agent.providers.claude_code_stream_bounds import (
     await_connect_slot,
-    forget_scope_owner,
+    log_config_change_reconnect,
+    log_dead_client_replaced,
     max_concurrent_claude_processes,
-    note_scope_owner,
-    reap_idle_stream_entry,
-    stream_idle_ttl_s,
-    sweep_idle_scoped_entries,
-    sweep_stream_entries,
+    reap_idle_session_entry,
+    sweep_idle_session_entries,
+)
+from clio_agent.providers.claude_code_stream_bounds import (
+    precede_connect as precede_connect_impl,
 )
 from clio_agent.runtime.stream_audit import stream_audit, stream_audit_enabled
 
@@ -98,20 +97,11 @@ __all__ = [
     "TRANSIENT_TRANSPORT_MARKER",
     "ClaudeStreamClientPool",
     "max_concurrent_claude_processes",
-    "session_reuse_enabled",
-    "stream_idle_ttl_s",
     "transient_transport_error_message",
     "transient_transport_error_types",
-    "stream_scope_for",
     "transport_failure_payload",
     "_streaming_chunk",
-    # blocking-path pool (re-exported from claude_code_sdk_pool for the seams)
-    "_SdkSession",
-    "_SdkSessionPool",
-    "_SDK_SESSION_POOL",
-    "_run_sdk",
     "_STREAM_CLIENT_POOL",
-    "_per_call_message_source",
     "_reset_sessions_for_tests",
 ]
 
@@ -134,14 +124,27 @@ TRANSPORT_FAILURE_REASONS: dict[str, dict[str, Any]] = {
     "idle_reaped": {
         "category": "session_idle_reap",
         "description": (
-            "A SCOPE-KEYED pooled connection (a spawned expert's own isolated "
-            "claude-sdk-cli subprocess, #COPPER12 scope-keying) sat connected but "
-            "unused past the idle TTL while its stateful scope was still open (e.g. "
-            "a parent orchestrator blocked in wait_agent_tasks while its own scope's "
-            "connection idled). Proactively dropped to bound how many concurrently- "
-            "spawned experts' CLI subprocesses stay resident; the next send on this "
-            "scope reclassifies as a full resend (never a delta onto a subprocess "
-            "with no memory of the prefix)."
+            "A session's pooled connection sat connected but unused past the idle "
+            "TTL. Proactively dropped to bound resident claude-sdk-cli subprocess "
+            "count; the session's next call reconnects fresh."
+        ),
+    },
+    "config_change_requires_restart": {
+        "category": "session_reconnect",
+        "description": (
+            "A thinking/system_prompt/cwd change on an existing session's connection "
+            "cannot be applied live in this SDK version (no set_effort/set_thinking/"
+            "set_cwd control request exists — only set_model and set_permission_mode "
+            "mutate a connected client). The client reconnected with the new config."
+        ),
+    },
+    "dead_client_replaced": {
+        "category": "session_health",
+        "description": (
+            "A session's connection ended abnormally (a transport error, a timed-out "
+            "query, or the caller abandoning the stream mid-flight). The dead client "
+            "was replaced with a fresh connect, so the session's next call is never "
+            "handed a poisoned client."
         ),
     },
 }
@@ -154,18 +157,12 @@ def _streaming_chunk(
     finish_reason: str | None = None,
     usage_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build a LiteLLM-compatible streaming chunk (streaming-transport helper)."""
-    usage: dict[str, int] | None = None
-    if usage_payload is not None:
-        prompt_tokens = int(usage_payload.get("input_tokens", 0) or 0)
-        prompt_tokens += int(usage_payload.get("cache_creation_input_tokens", 0) or 0)
-        prompt_tokens += int(usage_payload.get("cache_read_input_tokens", 0) or 0)
-        completion_tokens = int(usage_payload.get("output_tokens", 0) or 0)
-        usage = {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": prompt_tokens + completion_tokens,
-        }
+    """Build a LiteLLM-compatible streaming chunk (streaming-transport helper).
+
+    Token/cost field conversion is shared with the blocking transport --
+    see :func:`clio_agent.providers.claude_code_bridge.usage_chunk_fields`.
+    """
+    usage = usage_chunk_fields(usage_payload) if usage_payload is not None else None
     return {
         "text": text,
         "is_finished": is_finished,
@@ -195,29 +192,12 @@ def transport_failure_payload(reason: str, message: str = "") -> dict[str, Any]:
 
 # --------------------------------------------------------------------------- #
 # Mid-stream transport-death translation (#891 live-crash fix).
-#
-# The persistent pooled ``claude`` CLI subprocess can die mid-conversation (exit
-# 1 with no structured ``is_error`` result — observed live at call 11 of a turn,
-# after 10 clean cache-reading calls). The SDK surfaces that as a
-# ``ClaudeSDKError`` (``ProcessError`` / ``MessageParseError`` / connection drop),
-# which the LM retry classifier (``lm.io_logging._TRANSIENT_PROVIDER_MARKERS``)
-# did NOT recognise — so a genuinely transient infra fault failed the whole turn
-# instead of re-issuing on a fresh connection (as the per-call transport did).
-# The pooled entry already drops the poisoned client on the abnormal end, so a
-# re-issue reconnects cleanly; this makes the fault LOUD (audited) and typed as
-# transient so the existing retry layer heals it.
 # --------------------------------------------------------------------------- #
 TRANSIENT_TRANSPORT_MARKER = "claude agent sdk transport failed mid-stream"
 
 
 def transient_transport_error_types() -> tuple[type[BaseException], ...]:
-    """SDK transport/process-death exception types (empty tuple if unavailable).
-
-    Returns the ``ClaudeSDKError`` base (covers ``ProcessError``,
-    ``CLIConnectionError``, ``MessageParseError``, ``CLIJSONDecodeError``) or an
-    empty tuple when the SDK is absent / a test stub omits it — ``except ():``
-    then matches nothing, leaving stubbed paths untouched.
-    """
+    """SDK transport/process-death exception types (empty tuple if unavailable)."""
     try:
         from claude_agent_sdk import ClaudeSDKError  # noqa: PLC0415
 
@@ -226,14 +206,13 @@ def transient_transport_error_types() -> tuple[type[BaseException], ...]:
         return ()
 
 
-def transient_transport_error_message(model: str, exc: BaseException, *, call_index: int) -> str:
+def transient_transport_error_message(
+    model: str, exc: BaseException, *, call_index: int, stderr_tail: str = ""
+) -> str:
     """Audit a mid-stream SDK transport death and return the transient message.
 
-    Emits a structured, queryable ``provider.transport_error`` row carrying the
-    typed :data:`TRANSPORT_FAILURE_REASONS` payload (no silent fallback) and
-    returns a message carrying :data:`TRANSIENT_TRANSPORT_MARKER` so
-    ``lm.io_logging`` classifies it transient and re-issues the call on a fresh
-    pooled connection.
+    B17: ``stderr_tail`` rides both the audit row and the returned message --
+    a crash error carries the CLI's own last words, not just its exception text.
     """
     if stream_audit_enabled():
         stream_audit(
@@ -242,54 +221,17 @@ def transient_transport_error_message(model: str, exc: BaseException, *, call_in
             call_index=call_index,
             transport="sdk",
             model=model,
+            stderr_tail=stderr_tail,
             **transport_failure_payload("send_failed", str(exc)[:300]),
         )
-    return f"{TRANSIENT_TRANSPORT_MARKER} (model={model}): {str(exc)[:300]}"
-
-
-# --------------------------------------------------------------------------- #
-# Kill-switch.
-# --------------------------------------------------------------------------- #
-def session_reuse_enabled() -> bool:
-    """Whether the pooled-connection SDK transport is on (default ON for claude_code).
-
-    Resolved via ``providers.claude_code.session_reuse`` /
-    ``CLIO_CLAUDE_CODE_SESSION_REUSE`` (file → env → default True). Set it false to
-    restore the byte-identical pre-#891 per-call behaviour (a fresh client +
-    connect + disconnect on every call). Either way each call sends its full
-    prompt under a fresh ``session_id``.
-    """
-    from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
-
-    return bool(
-        conf.resolve(
-            "providers.claude_code.session_reuse",
-            env="CLIO_CLAUDE_CODE_SESSION_REUSE",
-            default=True,
-            cast=conf.as_bool,
-        )
-    )
-
-
-# --------------------------------------------------------------------------- #
-# Streaming client pool: ONE connected client per (model, cwd, thinking), hosted
-# on a dedicated loop-thread so it survives the per-call ``asyncio.run()`` loops
-# the token-liveness driver spins up (lm.io_logging._clio_streamed_call).
-# --------------------------------------------------------------------------- #
-_STREAM_END = object()  # queue sentinel: the pump's message stream is exhausted
+    message = f"{TRANSIENT_TRANSPORT_MARKER} (model={model}): {str(exc)[:300]}"
+    if stderr_tail:
+        message = f"{message}\nclaude CLI stderr:\n{stderr_tail}"
+    return message
 
 
 def _active_gact_session_id() -> str:
-    """The GACT session that owns the current LM call, or ``""`` off-turn (#993).
-
-    Read from the turn/executor context var the GACT machinery binds around every
-    expert/child forward (the same seam ``lm_activity`` uses to attribute an in-flight
-    call). Deferred import: ``clio_agent.gact`` transitively imports the providers, so a
-    module-level import would cycle; by the time a real stream runs during a turn, ``gact``
-    is already loaded and this is a cheap ``sys.modules`` hit. Kill-on-cancel binds the
-    in-flight stream to this id so cancelling the child terminates ONLY its subprocess.
-    """
-
+    """The GACT session that owns the current LM call, or ``""`` off-turn (#993)."""
     try:
         from clio_agent.gact.context import active_session_id  # noqa: PLC0415
 
@@ -298,59 +240,92 @@ def _active_gact_session_id() -> str:
         return ""
 
 
-class _StreamClientEntry:
-    """One pooled ``ClaudeSDKClient`` for a ``(model, cwd, thinking)`` key.
+def _active_stateful_scope() -> str | None:
+    """The active per-forward stateful-delta scope token, or ``None`` off the V2 loop.
 
-    The real SDK client spawns its CLI subprocess + anyio reader tasks on the loop
-    that connects it, so a client connected under one ``asyncio.run()`` is dead once
-    that loop closes. The live expert path drives EVERY LM call under its own
-    ``asyncio.run()`` (token liveness), so a client cached without loop affinity
-    would fail from the second call on and silently fall back to per-call transport.
-    This entry therefore owns a private daemon-thread event loop (like the
-    non-streaming :class:`_SdkSession`): all SDK I/O runs there, and :meth:`stream`
-    bridges each message to the *caller's* loop over a thread-safe queue. The
-    per-loop :attr:`_query_lock` serialises the whole query→receive cycle so
-    concurrent experts sharing the connection never interleave streams; on any
-    abnormal end the client is dropped so a mid-cycle connection never serves the
-    next (possibly different-expert) call its leftover response.
+    Deferred import: the same cross-module boundary :mod:`claude_code_stateful`
+    itself documents (this module must never import it at module load — the
+    delta layer imports THIS module's sibling, not the other way).
+    """
+    try:
+        from clio_agent.providers.stateful_common import active_stateful_scope  # noqa: PLC0415
+
+        return active_stateful_scope()
+    except Exception:  # noqa: BLE001 - never let the delta layer break a plain send
+        return None
+
+
+def _note_scope_provider_error(
+    scope: str | None, *, model: str, cwd: str | None, thinking_key_: str | None
+) -> None:
+    """Flag the stateful-delta registry when a LIVE connection dies out from under it.
+
+    A no-op unless ``scope`` is set (the entry's last call was an ENGAGED,
+    delta-capable send) — the common case (a classic ReAct call, or a scope
+    that already cleanly released via its own ``stateful_scope()`` teardown)
+    has nothing to flag. See this module's docstring for why the two layers
+    still touch here.
+    """
+    if not scope:
+        return
+    try:
+        from clio_agent.providers.claude_code_stateful import stateful_registry  # noqa: PLC0415
+
+        stateful_registry().note_provider_error((scope, model, cwd, thinking_key_), scope)
+    except Exception:  # noqa: BLE001 - a bookkeeping miss must never break teardown
+        logger.debug("claude_code stateful registry notification failed", exc_info=True)
+
+
+# --------------------------------------------------------------------------- #
+# One pooled ``ClaudeSDKClient`` per GACT session, hosted on a private
+# daemon-thread event loop so it survives the per-call ``asyncio.run()`` loops
+# the token-liveness driver spins up (lm.io_logging._clio_streamed_call).
+# --------------------------------------------------------------------------- #
+_STREAM_END = object()  # queue sentinel: the pump's message stream is exhausted
+
+
+class _StreamClientEntry:
+    """One pooled ``ClaudeSDKClient``, bound to a GACT session id (or unclaimed/pending pre-connect).
+
+    Configuration is resolved lazily, per call, by :meth:`_ensure_client`: the
+    FIRST call connects with whatever it asks for; a LATER call either reuses
+    the connection as-is (identical config — the hot path), swaps the model
+    live (B13, no reconnect), or reconnects once (``thinking``/``system_prompt``
+    changed — neither can be applied to a live connection in this SDK).
     """
 
     def __init__(
         self,
-        options_factory: Any,
         connect_slots: threading.Semaphore | None = None,
         reclaim_idle_slot: Any | None = None,
     ) -> None:
-        self._options_factory = options_factory
         self._lock = threading.Lock()  # guards loop/thread construction
         self._loop: Any = None
         self._thread: threading.Thread | None = None
         self._client: Any = None
         self._connect_lock = asyncio.Lock()  # owner-loop bound (lazy, first await)
         self._query_lock = asyncio.Lock()  # owner-loop bound (lazy, first await)
-        # Process-wide connect gate (:func:`max_concurrent_claude_processes`):
-        # every entry's connect draws from the SAME N slots and releases on
-        # disconnect, bounding total resident CLI subprocesses regardless of
-        # how many scope-keyed entries exist. ``None`` (test default) = uncapped.
         self._connect_slots = connect_slots
-        # A one-slot pool can otherwise deadlock when a child asks for its
-        # connection during the final milliseconds of the parent's query: the
-        # allocation-time sweep sees the parent as busy, then the parent becomes
-        # idle while the child is already queued and no later entry_for() call
-        # exists to trigger another sweep.  The queued waiter re-checks for an
-        # idle scoped sibling between bounded semaphore polls.
         self._reclaim_idle_slot = reclaim_idle_slot
-        # Idle-reap bookkeeping (plain threading.Lock — read/written from both
-        # the caller's loop, in :meth:`stream`, and the sweep in
-        # :meth:`ClaudeStreamClientPool._sweep_idle_scoped_entries`, which runs
-        # on WHATEVER thread calls ``entry_for`` next).
         self._activity_lock = threading.Lock()
         self._in_flight = False
         self._idle_since = time.monotonic()
-        # #1305 F6b: set when claude_code_lifecycle pops this entry out of the
-        # pool -- refuses a LATE connect from a caller already holding it
-        # from an earlier entry_for() (closes the orphaned-entry window).
+        # F6b: once popped by the pool (idle reap, dead-client replacement, or
+        # the abnormal-termination backstop), refuse a LATE connect from a
+        # caller still holding it from an earlier entry_for().
         self._dead = False
+        self.stderr_ring = StderrRing()
+        # Connected configuration (None until the first successful connect).
+        self._model: str | None = None
+        self._cwd: str | None = None
+        self._thinking: dict[str, Any] | None = None
+        self._thinking_key: str | None = None
+        self._system_prompt: str | None = None
+        self._last_scope: str | None = None  # last call's stateful-delta scope, if any
+
+    @property
+    def dead(self) -> bool:
+        return self._dead
 
     def _ensure_loop(self) -> None:
         with self._lock:
@@ -364,24 +339,16 @@ class _StreamClientEntry:
             self._loop, self._thread = loop, thread
 
     def _mark_busy(self) -> None:
-        """Flag this entry as mid-stream — never eligible for the idle reap."""
         with self._activity_lock:
             self._in_flight = True
 
     def _mark_idle(self) -> None:
-        """Flag this entry as done streaming and reset its idle clock."""
         with self._activity_lock:
             self._in_flight = False
             self._idle_since = time.monotonic()
 
     def idle_for(self) -> float | None:
-        """Seconds since the last :meth:`stream` call finished.
-
-        ``None`` while a call is in flight (a live-in-use entry must never be
-        reaped out from under its own caller). A freshly constructed, never-used
-        entry reports idle-since-construction, so a scope that opens a
-        connection then stalls before its first send is still reapable.
-        """
+        """Seconds since the last call finished (``None`` while one is in flight)."""
         with self._activity_lock:
             if self._in_flight:
                 return None
@@ -390,12 +357,6 @@ class _StreamClientEntry:
     async def _acquire_connect_slot(
         self, *, gact_session_id: str = "", abandon: "threading.Event | None" = None
     ) -> bool:
-        """Wait for a free process-wide connect slot ("acquired" no-op when
-        uncapped). ``gact_session_id``/``abandon`` (B1, round 3 — set to give
-        up on a still-queued wait) thread through to
-        :func:`~clio_agent.providers.claude_code_stream_bounds.await_connect_slot`
-        (full rationale there). Returns ``True`` iff a slot is now held.
-        """
         if self._connect_slots is None:
             return True
         return await await_connect_slot(
@@ -405,6 +366,92 @@ class _StreamClientEntry:
             abandon=abandon,
         )
 
+    async def _connect_locked(
+        self,
+        on_construct: Any,
+        *,
+        gact_session_id: str,
+        timeout: float | None,
+        abandon: "threading.Event | None",
+        model: str | None,
+        cwd: str | None,
+        thinking: dict[str, Any] | None,
+        thinking_key_: str | None,
+        system_prompt: str | None,
+    ) -> None:
+        """Connect a FRESH client (no prior one held). Caller holds ``_connect_lock``."""
+        from claude_agent_sdk import ClaudeSDKClient  # noqa: PLC0415
+
+        acquired = await self._acquire_connect_slot(
+            gact_session_id=gact_session_id, abandon=abandon
+        )
+        if not acquired:
+            from clio_agent.providers.claude_code_lifecycle import (  # noqa: PLC0415
+                StreamAbandonedError,
+            )
+
+            raise StreamAbandonedError
+        self.stderr_ring.clear()  # a fresh subprocess starts with an empty ring
+        try:
+            async with asyncio.timeout(timeout):
+                # ``model=None`` (an off-turn/bare connect) omits the field
+                # entirely so the CLI's own default governs.
+                options = build_sdk_options(
+                    model=model,
+                    cwd=cwd,
+                    stream=True,
+                    thinking=thinking,
+                    system_prompt=system_prompt,
+                    stderr=self.stderr_ring.append,
+                )
+                client = ClaudeSDKClient(options=options)
+                on_construct()
+                await client.connect()
+        except BaseException:
+            if self._connect_slots is not None:
+                self._connect_slots.release()
+            raise
+        self._client = client
+        self._model, self._cwd = model, cwd
+        self._thinking, self._thinking_key = thinking, thinking_key_
+        self._system_prompt = system_prompt
+
+    async def _reconnect_locked(
+        self,
+        on_construct: Any,
+        *,
+        gact_session_id: str,
+        timeout: float | None,
+        abandon: "threading.Event | None",
+        model: str | None,
+        cwd: str | None,
+        thinking: dict[str, Any] | None,
+        thinking_key_: str | None,
+        system_prompt: str | None,
+    ) -> None:
+        """Drop the current client and connect a new one with the new config (B13/B4)."""
+        changed = [
+            name
+            for name, is_changed in (
+                ("thinking", thinking_key_ != self._thinking_key),
+                ("system_prompt", system_prompt != self._system_prompt),
+            )
+            if is_changed
+        ]
+        await self._areset_client()
+        await self._connect_locked(
+            on_construct,
+            gact_session_id=gact_session_id,
+            timeout=timeout,
+            abandon=abandon,
+            model=model,
+            cwd=cwd,
+            thinking=thinking,
+            thinking_key_=thinking_key_,
+            system_prompt=system_prompt,
+        )
+        log_config_change_reconnect(model, changed)
+
     async def _ensure_client(
         self,
         on_construct: Any,
@@ -412,25 +459,16 @@ class _StreamClientEntry:
         gact_session_id: str = "",
         timeout: float | None = None,
         abandon: "threading.Event | None" = None,
+        model: str | None = None,
+        cwd: str | None = None,
+        thinking: dict[str, Any] | None = None,
+        system_prompt: str | None = None,
     ) -> Any:
-        """Connect the client once (runs on the owner loop, double-checked).
-
-        WAITS for a free process-wide connect slot before connecting when one
-        is configured — never fails or degrades (:meth:`_acquire_connect_slot`).
-        That wait is UNBOUNDED and runs BEFORE ``timeout`` applies to anything
-        — only construct+connect below is bounded by it (#1305 accounting
-        fix; full rationale: ``claude_code_stream_bounds.await_connect_slot``).
+        """Return a connected, correctly-configured client (connect/reconcile once).
 
         F6b: refuses (typed, retryable) when :attr:`_dead` — a lifecycle
         release popped this entry while a caller already held it from an
-        earlier ``entry_for()``. Monotonic, so no lock is needed here.
-
-        B1 (round 3): ``abandon``, if set while STILL QUEUED, raises
-        :class:`~clio_agent.providers.claude_code_lifecycle.StreamAbandonedError`
-        (no slot held, no client constructed) rather than cancelling this
-        coroutine outright (which risked interrupting an in-progress
-        ``client.disconnect()`` elsewhere, orphaning the CLI). Ignored once
-        past the slot wait — construct+connect always runs to completion.
+        earlier ``entry_for()``.
         """
         if self._dead:
             from clio_agent.providers.claude_code_lifecycle import (  # noqa: PLC0415
@@ -438,44 +476,60 @@ class _StreamClientEntry:
             )
 
             raise RuntimeError(dead_entry_error_message())
-        if self._client is not None:
+        thinking_key_ = thinking_key(thinking)
+        system_prompt = system_prompt or None
+        # Fast path: already connected and configured identically — every call
+        # after the first on a settled session/model pays nothing here. ``cwd``
+        # is NOT compared: it is a bare-model-transport no-op (no tools,
+        # settings, or hooks ever resolve a relative path against it here), so
+        # a differing ``cwd`` must never trigger a reconnect on its own.
+        if (
+            self._client is not None
+            and self._thinking_key == thinking_key_
+            and self._system_prompt == system_prompt
+            and self._model == model
+        ):
             return self._client
         async with self._connect_lock:
-            if self._client is not None:
-                return self._client
-            from claude_agent_sdk import ClaudeSDKClient  # noqa: PLC0415
-
-            # UNBOUNDED (#1305); may return False (abandoned) instead of
-            # raising -- see the abandon paragraph above.
-            acquired = await self._acquire_connect_slot(
-                gact_session_id=gact_session_id, abandon=abandon
-            )
-            if not acquired:
+            if self._dead:
                 from clio_agent.providers.claude_code_lifecycle import (  # noqa: PLC0415
-                    StreamAbandonedError,
+                    dead_entry_error_message,
                 )
 
-                raise StreamAbandonedError
-            try:
-                async with asyncio.timeout(timeout):
-                    client = ClaudeSDKClient(options=self._options_factory())
-                    on_construct()
-                    await client.connect()
-            except BaseException:
-                if self._connect_slots is not None:
-                    self._connect_slots.release()
-                raise
-            self._client = client
-            return client
+                raise RuntimeError(dead_entry_error_message())
+            if self._client is None:
+                await self._connect_locked(
+                    on_construct,
+                    gact_session_id=gact_session_id,
+                    timeout=timeout,
+                    abandon=abandon,
+                    model=model,
+                    cwd=cwd,
+                    thinking=thinking,
+                    thinking_key_=thinking_key_,
+                    system_prompt=system_prompt,
+                )
+            elif self._thinking_key != thinking_key_ or self._system_prompt != system_prompt:
+                await self._reconnect_locked(
+                    on_construct,
+                    gact_session_id=gact_session_id,
+                    timeout=timeout,
+                    abandon=abandon,
+                    model=model,
+                    cwd=cwd,
+                    thinking=thinking,
+                    thinking_key_=thinking_key_,
+                    system_prompt=system_prompt,
+                )
+            elif model and self._model != model:
+                # B13: a model-only change on an existing, otherwise-identical
+                # connection is a live control request — never a reconnect.
+                await self._client.set_model(model)
+                self._model = model
+            return self._client
 
     async def _areset_client(self) -> None:
-        """Disconnect + drop the client (owner loop) so the next call reconnects.
-
-        Releases this entry's connect-gate slot (:attr:`_connect_slots`) — the
-        exact counterpart of the acquire in :meth:`_ensure_client` — so the
-        process-wide cap actually frees up for a queued connect once this
-        subprocess is really gone.
-        """
+        """Disconnect + drop the client (owner loop) so the next call reconnects."""
         client, self._client = self._client, None
         if client is None:
             return
@@ -487,22 +541,39 @@ class _StreamClientEntry:
             if self._connect_slots is not None:
                 self._connect_slots.release()
 
-    def _abort_active_query(self) -> None:
-        """Kill the currently-streaming query by resetting this entry's client on its
-        owner loop (#993 kill-on-cancel).
-
-        Scheduled cross-thread from the cancel path: disconnecting the pooled
-        ``ClaudeSDKClient`` ends its CLI subprocess (and the in-flight
-        ``receive_response()``, stopping the late-op flood). Only THIS entry
-        drops — other pooled entries/sessions are untouched. Best-effort: a
-        closed owner loop or scheduling fault is swallowed, never raised.
-        """
-
-        loop = self._loop
-        if loop is None:
+    async def _ainterrupt(self) -> None:
+        """B14: send the SDK interrupt control request (never disconnects)."""
+        client = self._client
+        if client is None:
             return
-        with contextlib.suppress(Exception):
-            asyncio.run_coroutine_threadsafe(self._areset_client(), loop)
+        try:
+            await client.interrupt()
+        except Exception:  # noqa: BLE001 - a failed interrupt must never raise into the cancel path
+            logger.warning("claude stream client interrupt failed", exc_info=True)
+
+    async def _mark_dead_and_reset(self) -> None:
+        """B17: burn this entry (F6b) and disconnect — the pool replaces it next use."""
+        self._dead = True
+        _note_scope_provider_error(
+            self._last_scope,
+            model=self._model or "",
+            cwd=self._cwd,
+            thinking_key_=self._thinking_key,
+        )
+        await self._areset_client()
+
+    def request_interrupt(self, abandon: "threading.Event") -> None:
+        """The cancel-registry abort callback for one call (B14, cross-thread, sync).
+
+        Interrupts a LIVE client on its owner loop; with no client yet (still
+        queued, or never reached ``client.query()``) sets ``abandon`` instead
+        so the queued wait gives up cleanly.
+        """
+        if self._client is not None and self._loop is not None:
+            with contextlib.suppress(Exception):
+                asyncio.run_coroutine_threadsafe(self._ainterrupt(), self._loop)
+        else:
+            abandon.set()
 
     async def stream(
         self,
@@ -512,49 +583,47 @@ class _StreamClientEntry:
         session_id: str,
         timeout: float | None,
         on_construct: Any,
+        model: str | None = None,
+        cwd: str | None = None,
+        thinking: dict[str, Any] | None = None,
+        system_prompt: str | None = None,
     ) -> AsyncIterator[Any]:
-        """Yield SDK messages for one ``query`` on the pooled client (cross-loop).
-
-        The query→receive cycle runs on this entry's owner loop; each message is
-        bridged to the caller's loop via a thread-safe queue. A timeout / transport
-        error / caller-abandon drops the pooled client (no cross-call bleed).
-        """
+        """Yield SDK messages for one ``query`` on the pooled client (cross-loop)."""
         if self._dead:
-            # Residual 3 (round 3): refuse BEFORE minting a loop thread nobody
-            # will use -- _ensure_client's own check would catch this too, but
-            # only after paying for the thread.
             from clio_agent.providers.claude_code_lifecycle import (  # noqa: PLC0415
                 dead_entry_error_message,
             )
 
             raise RuntimeError(dead_entry_error_message())
         self._ensure_loop()
-        self._mark_busy()  # idle-reap must never pull this entry mid-stream
+        self._mark_busy()
         caller_loop = asyncio.get_running_loop()
         chunks: queue.SimpleQueue[tuple[Any, Any]] = queue.SimpleQueue()
-        # Kill-on-cancel binding (#993): capture the GACT session that owns this call in
-        # the CALLER's context (the executor where the turn's session contextvar is set) —
-        # the owner-loop pump below has no access to it. The stream is registered as
-        # cancellable only WHILE it holds the query and is actively generating, so
-        # cancelling a session never kills a same-key sibling that is merely queued behind
-        # the per-loop query lock (that sibling has not registered yet).
+        # Captured in the CALLER's context -- the owner-loop pump has no access
+        # to either contextvar once scheduled cross-thread (#993 / #901).
         gact_sid = _active_gact_session_id()
-        # #1305 B1: caller-abandon signal for a STILL-QUEUED connect only --
-        # see the finally below for why `fut` is never cancelled outright.
+        self._last_scope = _active_stateful_scope()
         abandon = threading.Event()
+        # B14: registered for the WHOLE call, not just while the query lock is
+        # held, so a cancel arriving before this call ever sends a query still
+        # stops it (via `abandon`) instead of racing in unseen.
+        handle = register_sdk_stream(gact_sid, lambda: self.request_interrupt(abandon))
 
         async def _pump() -> None:
             clean = False
-            handle = None
             try:
-                # #1305: ensure_client's slot-wait is UNBOUNDED, outside this
-                # timeout entirely -- see its docstring for the accounting fix.
                 client = await self._ensure_client(
-                    on_construct, gact_session_id=gact_sid, timeout=timeout, abandon=abandon
+                    on_construct,
+                    gact_session_id=gact_sid,
+                    timeout=timeout,
+                    abandon=abandon,
+                    model=model,
+                    cwd=cwd,
+                    thinking=thinking,
+                    system_prompt=system_prompt,
                 )
                 async with asyncio.timeout(timeout):
                     async with self._query_lock:
-                        handle = register_sdk_stream(gact_sid, self._abort_active_query)
                         query_input: Any = (
                             sdk_prompt(payload, native_blocks) if native_blocks else payload
                         )
@@ -565,22 +634,14 @@ class _StreamClientEntry:
             except BaseException as exc:  # noqa: BLE001 - surfaced onto the caller loop
                 chunks.put(("exc", exc))
             finally:
-                if handle is not None:
-                    unregister_sdk_stream(handle)
-                # #1305 F2 strand fix: END BEFORE the reset below -- the caller
-                # blocks in an UNBOUNDED chunks.get() on a worker thread; a
-                # cross-thread lifecycle release can stop THIS owner loop out
-                # from under the reset's await, and END queued after it would
-                # then never arrive, permanently stranding that worker thread.
+                unregister_sdk_stream(handle)
+                # END queued BEFORE any reset below — the caller blocks in an
+                # UNBOUNDED chunks.get() on a worker thread; a cross-thread
+                # lifecycle release stopping this owner loop out from under the
+                # reset's await must never strand that worker (#1305 F2).
                 chunks.put((_STREAM_END, None))
                 if not clean:
-                    # Mid-cycle end: drop the connection so its leftover
-                    # response can never bleed into the next call (idempotent
-                    # with a kill-on-cancel reset that already ran). B1: never
-                    # interrupted by the caller's own unwind -- this coroutine
-                    # is no longer cancelled from stream()'s finally, so this
-                    # disconnect always runs to completion.
-                    await self._areset_client()
+                    await self._mark_dead_and_reset()
 
         fut = asyncio.run_coroutine_threadsafe(_pump(), self._loop)
         try:
@@ -593,18 +654,13 @@ class _StreamClientEntry:
                 yield val
         finally:
             if not fut.done():
-                # #1305 B1: DO NOT cancel `fut` -- it could land inside
-                # _pump's own in-progress `_areset_client()` await on an
-                # abnormal end, interrupting `client.disconnect()` mid-flight
-                # (slot released, CLI never actually disconnected -- orphaned
-                # on essentially every error path). Only ask the queue wait
-                # to give up; a pump with a client already runs its reset to
-                # completion, untouched.
+                # Never cancel `fut` outright — it could land inside `_pump`'s
+                # own in-progress teardown await, interrupting a disconnect
+                # mid-flight (slot released, CLI never actually gone). Only
+                # ask the queue wait to give up.
                 abandon.set()
-                # Caller abandoned mid-stream: reset the client on the owner loop so
-                # a half-drained (already-connected) connection is never reused.
                 with contextlib.suppress(Exception):
-                    asyncio.run_coroutine_threadsafe(self._areset_client(), self._loop)
+                    asyncio.run_coroutine_threadsafe(self._mark_dead_and_reset(), self._loop)
             self._mark_idle()
 
     def close_blocking(self) -> None:
@@ -622,17 +678,7 @@ class _StreamClientEntry:
             loop.call_soon_threadsafe(loop.stop)
 
     def close_nonblocking(self) -> None:
-        """Disconnect the client and stop the loop-thread WITHOUT blocking the caller.
-
-        The idle-reap sweep (:func:`~clio_agent.providers.claude_code_stream_bounds.sweep_idle_scoped_entries`)
-        runs synchronously inside ``entry_for``, on the CALLER's own event loop — unlike
-        :meth:`close_blocking` (atexit / test reset, where blocking is fine), stalling
-        that loop for the ``.result(timeout=15)`` wait would delay whatever OTHER
-        concurrent work shares it. Fire-and-forget: schedule the same disconnect, then
-        stop the loop via a done-callback once it actually completes rather than
-        waiting synchronously. Idempotent — a second call sees ``self._loop is None``
-        and no-ops.
-        """
+        """Disconnect the client and stop the loop-thread WITHOUT blocking the caller."""
         with self._lock:
             loop, self._loop, self._thread = self._loop, None, None
         if loop is None or not loop.is_running():
@@ -642,135 +688,110 @@ class _StreamClientEntry:
 
 
 class ClaudeStreamClientPool:
-    """Process-wide pool of persistent streaming clients (#891, reconciles #715/#818).
+    """Process-wide pool of persistent streaming clients, keyed by GACT session id.
 
-    Keyed by ``(model, cwd, thinking)`` so distinct-model/thinking experts each
-    hold their own connection while same-key experts share one — the connect is
-    paid once, not per call (the ~7% per-call cold-connect the waterfall measured).
-    Each call rides ``query()`` with a fresh per-call ``session_id``, so ONE client
-    serves every expert on its key; compartmentalisation is the per-call
-    conversation boundary, not the client.
+    :meth:`precede_connect` (B2) lets a caller with a session's REAL resolved
+    config mint and background-connect that session's own entry before any
+    turn asks for it — see the module docstring for the full contract.
     """
 
     def __init__(self, *, max_concurrent: int | None = None) -> None:
-        self._entries: dict[tuple[str, str | None, str | None, str], _StreamClientEntry] = {}
+        self._entries: dict[str, _StreamClientEntry] = {}
+        self._precede_pending: set[str] = set()
         self._guard = threading.Lock()
         self._construct_count = 0
-        # Process-wide connect gate (#COPPER12 fan-out follow-up): every entry
-        # this pool constructs shares ONE semaphore, so total CONCURRENTLY-
-        # CONNECTED claude-sdk-cli subprocesses is bounded regardless of how
-        # many scope-keyed entries exist. Resolved from config by default;
-        # pass an explicit int (tests) to pin a specific cap.
         n = max_concurrent if max_concurrent is not None else max_concurrent_claude_processes()
         self._connect_slots = threading.Semaphore(n)
-        # #1305 session<->scope bookkeeping for release_session_resources();
-        # owned (as free functions) by claude_code_stream_bounds -- see there.
-        self._session_scopes: dict[str, set[str]] = {}
-        self._scope_session: dict[str, str] = {}
 
-    def entry_for(
-        self,
-        *,
-        model: str,
-        cwd: str | None,
-        thinking: dict[str, Any] | None,
-        scope: str | None = None,
-        gact_session_id: str = "",
-    ) -> _StreamClientEntry:
-        """Return (creating if needed) the pooled entry for the transport params.
+    def entry_for(self, *, session_id: str, gact_session_id: str = "") -> _StreamClientEntry:
+        """Return (creating/claiming/replacing as needed) the entry for ``session_id``.
 
-        ``scope`` is the per-forward stateful scope token and MUST be passed for
-        every ENGAGED (delta-capable) send: a delta rides the conversation state of
-        the connection it is sent on, so two concurrent expert loops multiplexing
-        delta runs over ONE connection cross their conversations — the AGENT-COPPER12
-        defect (a child's delta returned the PARENT's continuation, since the
-        SDK connection — not the per-call ``session_id`` — is the real resume
-        boundary). Scope-keyed entries give each stateful loop its own
-        connection; the loop's many iterations still amortize the one connect
-        (#891). Non-engaged sends (full prompt, fresh ``session_id``) stay on
-        the shared base entry — the per-call boundary IS proven for those.
-
-        ``gact_session_id`` (#1305) records the owning session for
-        :meth:`release_session_resources` (``note_scope_owner``). A
-        scope-keyed request first sweeps every IDLE scope-keyed entry past
-        :func:`stream_idle_ttl_s` (own scope included) — the moment a fan-out
-        (``spawn_agents_parallel``) or a long-waiting parent is about to grow the
-        resident claude-sdk-cli count is exactly when a sibling that has gone
-        quiet (e.g. the parent itself, blocked in ``wait_agent_tasks`` with its
-        own connection idling) should be reclaimed first. The shared base entry
-        (``scope=""``) is never swept.
+        ``session_id`` IS the pool key (B1) — the GACT session id; empty is
+        the shared off-turn fallback. ``gact_session_id`` defaults to it.
+        :meth:`_StreamClientEntry._ensure_client` does the real reconcile/
+        connect against whatever this entry already has, be it nothing
+        (fresh mint), a session's own pre-connected entry
+        (:meth:`precede_connect`), or a live connection from an earlier turn.
         """
-        key = (model, cwd, thinking_key(thinking), scope or "")
-        for evicted_key, evicted_entry in sweep_stream_entries(self, bool(scope), key):
-            reap_idle_stream_entry(evicted_key, evicted_entry)
+        key = session_id or ""
+        for evicted_key, evicted_entry in sweep_idle_session_entries(self):
+            reap_idle_session_entry(evicted_key, evicted_entry)
+        replaced_dead_entry = False
         with self._guard:
+            self._precede_pending.discard(key)
             entry = self._entries.get(key)
+            if entry is not None and entry.dead:
+                del self._entries[key]
+                entry = None
+                replaced_dead_entry = True
             if entry is None:
                 entry = _StreamClientEntry(
-                    lambda: build_sdk_options(model=model, cwd=cwd, stream=True, thinking=thinking),
                     connect_slots=self._connect_slots,
-                    reclaim_idle_slot=self._reclaim_idle_scoped_connections_for_slot,
+                    reclaim_idle_slot=self._reclaim_idle_for_slot,
                 )
                 self._entries[key] = entry
-            note_scope_owner(self, scope=scope, gact_session_id=gact_session_id)
-            return entry
+        if replaced_dead_entry:
+            log_dead_client_replaced(key)
+        return entry
 
-    def _reclaim_idle_scoped_connections_for_slot(self) -> int:
-        """Reap idle scoped siblings when a connect is queued behind the cap.
+    def precede_connect(
+        self,
+        *,
+        session_id: str,
+        model: str | None = None,
+        cwd: str | None = None,
+        thinking: dict[str, Any] | None = None,
+        system_prompt: str | None = None,
+    ) -> None:
+        """B2: background-connect ``session_id``'s own entry with its REAL config.
 
-        ``entry_for`` performs the normal TTL-based sweep before allocating a
-        child entry.  This second seam closes the narrow race where the current
-        slot holder was still busy during that sweep but becomes idle while the
-        child is waiting.  Busy entries and the shared base entry remain
-        protected by :func:`sweep_idle_scoped_entries`; ``ttl_s=0`` is deliberate
-        because an actual queued caller needs the slot now.
+        Thin delegator -- see :func:`~clio_agent.providers.claude_code_stream_bounds
+        .precede_connect` (this module's owner-split sibling) for the full
+        contract: fire-and-forget, capped, and a failure never reaches the
+        caller or the session's first real turn.
         """
-        evicted = sweep_idle_scoped_entries(self, ttl_s=0.0)
+        precede_connect_impl(
+            self,
+            session_id=session_id,
+            model=model,
+            cwd=cwd,
+            thinking=thinking,
+            system_prompt=system_prompt,
+        )
+
+    def _reclaim_idle_for_slot(self) -> int:
+        """Reap idle session entries when a connect is queued behind the cap."""
+        evicted = sweep_idle_session_entries(self, ttl_s=0.0)
         for key, entry in evicted:
-            reap_idle_stream_entry(key, entry)
+            reap_idle_session_entry(key, entry)
         return len(evicted)
 
-    def release(self, scope: str) -> None:
-        """Close and drop every entry keyed to ``scope`` (loop/scope teardown).
+    def release(self, session_id: str) -> None:
+        """Close and drop the entry keyed to ``session_id`` (session-end teardown).
 
-        Called by :func:`~clio_agent.providers.stateful_common.stateful_scope`
-        on clean loop end (#900) — the primary, common-path release; see
-        :meth:`release_session_resources` for the (non-blocking) abnormal-path
-        backstop. This BLOCKS (``close_blocking``, up to 15s/entry) so it must
-        only ever run off the server's own event loop (a react forward's own
-        thread, atexit, tests). Also trims the #1305 bookkeeping via
-        ``forget_scope_owner``. Best-effort: logged by the entry, never raised.
+        BLOCKS (``close_blocking``, up to 15s) — callers must run this off the
+        server's own event loop. See :meth:`release_session_resources` for the
+        non-blocking abnormal-path backstop.
         """
-        if not scope:
+        if not session_id:
             return
         with self._guard:
-            keys = [key for key in self._entries if key[3] == scope]
-            entries = [self._entries.pop(key) for key in keys]
-            forget_scope_owner(self, scope)
-        for entry in entries:
+            entry = self._entries.pop(session_id, None)
+        if entry is not None:
             with contextlib.suppress(Exception):
                 entry.close_blocking()
 
     def release_session_resources(self, session_id: str) -> None:
-        """Provider-agnostic per-subagent connection release (#1305) --
-        the ABNORMAL-termination backstop (a clean exit already released via
-        :meth:`release`, see :mod:`clio_agent.providers.claude_code_lifecycle`'s
-        docstring). Delegates there (not :meth:`release`) because THIS runs on
-        the server's own event loop and must never block or evict an in-flight
-        entry.
+        """Provider-agnostic per-session release (#1305) — the non-blocking,
+        ABNORMAL-termination backstop. Delegates to
+        :mod:`clio_agent.providers.claude_code_lifecycle` (runs on the server's
+        own event loop; must never block or evict an in-flight entry).
         """
         from clio_agent.providers.claude_code_lifecycle import (  # noqa: PLC0415
             release_session_resources_nonblocking,
         )
 
         release_session_resources_nonblocking(self, session_id)
-
-    def mark_reset(self, scope: str, reason: str) -> None:
-        """Scope-registry protocol no-op: a prefix reset keeps the connection.
-
-        An ARC-op reset means the NEXT send is a full send under a fresh
-        ``session_id`` — safe on the same connection; only scope END closes it.
-        """
 
     def bump_construct(self) -> None:
         """Increment the connect counter (called once per real client connect)."""
@@ -779,61 +800,31 @@ class ClaudeStreamClientPool:
 
     @property
     def construction_count(self) -> int:
-        """How many clients this pool has constructed (connect-reuse assertions)."""
         with self._guard:
             return self._construct_count
 
     def close_blocking(self) -> None:
-        """Disconnect every pooled client + stop its loop-thread (#900: no unreaped
-        children). Best-effort — a failure is logged, never raised."""
+        """Disconnect every pooled client and stop its loop-thread."""
         with self._guard:
             entries = list(self._entries.values())
             self._entries.clear()
-            self._session_scopes.clear()
-            self._scope_session.clear()
+            self._precede_pending.clear()
         for entry in entries:
             entry.close_blocking()
 
     def reset_for_tests(self) -> None:
-        """Tear down pooled clients + counter IN PLACE (never rebind the singleton).
-
-        The litellm module binds ``_STREAM_CLIENT_POOL`` by value at import, so test
-        isolation must mutate this object rather than replace it — otherwise the
-        provider keeps using the pre-reset pool.
-        """
+        """Tear down pooled clients + counter IN PLACE (never rebind the singleton)."""
         self.close_blocking()
         with self._guard:
             self._construct_count = 0
 
 
-def stream_scope_for(send: Any) -> str | None:
-    """The pool-entry scope for one send: its stateful scope IFF the send is engaged.
-
-    An engaged send is delta-capable, so it must ride its own scope-keyed
-    connection (see :meth:`ClaudeStreamClientPool.entry_for`); a non-engaged send
-    (full prompt, fresh ``session_id``) shares the base entry.
-    """
-    if send is None or not getattr(send, "engaged", False):
-        return None
-    token = getattr(send, "scope_token", None)
-    return str(token) if token is not None else None
-
-
 _STREAM_CLIENT_POOL = ClaudeStreamClientPool()
 atexit.register(_STREAM_CLIENT_POOL.close_blocking)
 
-# Scope-end teardown seam: the pool implements the scope-registry protocol
-# (``release`` / ``mark_reset``), so a react forward's scope exit closes the
-# forward's own stateful connection (see ``entry_for``'s scope keying).
-from clio_agent.providers.stateful_common import (
-    register_scope_registry as _register_scope,  # noqa: E402
-)
-
-_register_scope(_STREAM_CLIENT_POOL)  # type: ignore[arg-type]  # duck-typed scope-registry protocol
-
-# #1305 generic per-subagent lifecycle seam (SEPARATE from the scope-registry
-# above — keyed by GACT session id, not the scope token; see
-# providers/session_lifecycle.py's docstring for why).
+# #1305 generic per-subagent lifecycle seam: a child task's terminal status
+# releases its own session's connection deterministically (the primary path;
+# the idle-TTL sweep is the backstop for anything that races or never runs).
 from clio_agent.providers.session_lifecycle import (  # noqa: E402
     register_session_lifecycle_provider as _register_session_lifecycle,
 )
@@ -848,32 +839,3 @@ def _reset_sessions_for_tests() -> None:
     (``claude_code_litellm``) keep pointing at the reset object.
     """
     _STREAM_CLIENT_POOL.reset_for_tests()
-
-
-async def _per_call_message_source(
-    client: Any,
-    *,
-    prompt: str,
-    native_blocks: list[dict[str, Any]],
-    session_id: str,
-    timeout: float | None,
-) -> AsyncIterator[Any]:
-    """Per-call (kill-switch off) SDK message source.
-
-    A fresh client that connects, queries the FULL prompt under a fresh
-    ``session_id``, streams every SDK message, and disconnects — byte-for-byte the
-    pre-#891 per-call transport. The whole query→receive cycle is timeout-bounded so
-    the caller sees a ``TimeoutError`` exactly as before.
-    """
-    await client.connect()
-    try:
-        async with asyncio.timeout(timeout):
-            query_input: Any = sdk_prompt(prompt, native_blocks) if native_blocks else prompt
-            await client.query(query_input, session_id=session_id)
-            async for msg in client.receive_response():
-                yield msg
-    finally:
-        try:
-            await client.disconnect()
-        except Exception:  # noqa: BLE001 - best-effort teardown
-            logger.warning("claude sdk streaming client disconnect failed", exc_info=True)

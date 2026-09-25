@@ -359,7 +359,10 @@ class ArgonneHandshake(ProviderHandshake):
         deployment = alcf_dialect.parse_gateway_model_row(
             raw, provider_id=ctx.provider_id, api_base=ctx.api_base, observed_at=observed_at
         )
-        model = ModelCapabilities(model_key=deployment.model_key.value or model_id)
+        model = ModelCapabilities(
+            model_key=deployment.model_key.value or model_id,
+            model_type=alcf_dialect.gateway_model_type_fact(raw, observed_at=observed_at),
+        )
 
         reasoning_parser, tool_call_parser = alcf_dialect.gateway_row_identity(raw)
         discovered = DiscoveredModel(

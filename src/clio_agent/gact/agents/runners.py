@@ -5,6 +5,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.agents.claude_code_precede import precede_connect_claude_code_session
+from clio_agent.gact.agents.signatures import (
+    _prompt_user_agent_signature,
+    _tool_user_agent_signature,
+)
 
 if TYPE_CHECKING:
     from clio_agent.gact.types import AgentDef
@@ -54,6 +59,13 @@ def _run_blueprint_dspy_agent(
     token = _ctx.set_session_id(session_id)
     try:
         module = _app_builder("_build_blueprint_dspy_module")(base_agent, agent_def)
+        # B2: background pre-connect with the REAL resolved config -- see
+        # gact.agents.claude_code_precede for the full contract.
+        precede_connect_claude_code_session(
+            getattr(module, "config", None),
+            getattr(module, "signature", None),
+            session_id=session_id,
+        )
         return module(
             **_runner_kwargs(
                 question=question,
@@ -81,6 +93,9 @@ def _run_prompt_user_agent(
     token = _ctx.set_session_id(session_id)
     try:
         module = _app_builder("_build_prompt_user_agent_module")(base_agent, agent_def)
+        precede_connect_claude_code_session(
+            getattr(module, "config", None), _prompt_user_agent_signature(), session_id=session_id
+        )
         return module.forward(
             **_runner_kwargs(
                 question=question,
@@ -108,6 +123,9 @@ def _run_tool_user_agent(
     token = _ctx.set_session_id(session_id)
     try:
         module = _app_builder("_build_tool_user_agent_module")(base_agent, agent_def)
+        precede_connect_claude_code_session(
+            getattr(module, "config", None), _tool_user_agent_signature(), session_id=session_id
+        )
         return module.forward(
             **_runner_kwargs(
                 question=question,

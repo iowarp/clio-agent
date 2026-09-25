@@ -9,6 +9,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
+_NULLABLE_SSH_STRING_FIELDS = ("profile", "host", "user", "identity_file")
+
 TargetKind = Literal["local", "ssh", "direct"]
 TransportState = Literal[
     "connected",
@@ -40,6 +42,19 @@ class SshRoute(BaseModel):
     jump_hosts: list[str] = Field(default_factory=list)
     identity_file: str = ""
     platform: Literal["auto", "linux", "windows"] = "auto"
+
+    @field_validator(*_NULLABLE_SSH_STRING_FIELDS, mode="before")
+    @classmethod
+    def coerce_absent_to_empty(cls, value: str | None) -> str:
+        """Treat a missing/`null` optional string the same as "" (#1438).
+
+        The desktop's Rust bridge serializes an unset `Option<String>` (for
+        example a host with no key-file override) as JSON `null`, not an
+        absent field. Format-only correction, no semantic change: `null` and
+        `""` both already mean "not configured" everywhere this is read.
+        """
+
+        return "" if value is None else value
 
     @field_validator("profile", "host", "user", "identity_file")
     @classmethod
@@ -93,11 +108,19 @@ class CreateTargetRequest(BaseModel):
     ssh: SshRoute | None = None
     auto_reconnect: bool = True
 
-    @field_validator("install_root")
+    @field_validator("install_root", mode="before")
     @classmethod
-    def validate_install_root(cls, value: str) -> str:
-        """Prevent an install root from becoming a shell-control channel."""
+    def validate_install_root(cls, value: str | None) -> str:
+        """Prevent an install root from becoming a shell-control channel.
 
+        Runs in "before" mode so a `null` install_root (the same Rust
+        `Option<String>::None` shape as `identity_file`, #1438 — a host left
+        at "use the remote user's home directory") is treated as "" instead
+        of failing request validation outright.
+        """
+
+        if value is None:
+            return ""
         if any(character in value for character in ("\0", "\r", "\n")):
             raise ValueError("Install location cannot contain control characters")
         cleaned = value.strip()

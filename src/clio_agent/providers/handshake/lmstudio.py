@@ -37,12 +37,6 @@ from clio_agent.providers.handshake.model import (
 class LMStudioHandshake(ProviderHandshake):
     """Handshake for a local LM Studio backend (no auth, native v1 with a v0 fallback)."""
 
-    #: Both the v1 and v0 model rows report per-model capability evidence
-    #: (v1: ``capabilities.vision``/``trained_for_tool_use``; v0: a flat
-    #: ``capabilities`` list), so this backend really can evidence input
-    #: modalities either way.
-    reports_input_modalities = True
-
     async def check_connectivity(self, client: Any, ctx: HandshakeContext) -> ConnectivityResult:
         """Reachable if either native endpoint answers; else the generic OpenAI fallback."""
         _rows, schema = await lm_studio_dialect.fetch_rows(client, ctx.api_base)

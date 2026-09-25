@@ -39,11 +39,10 @@ def test_release_installers_explicitly_root_intentional_prereleases() -> None:
             "'fastmcp-slim==4.0.0b5', 'fastmcp-tasks==4.0.0b5'",
         ),
         "install/clio": ('"dspy==3.3.0b1" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5"',),
-        "install/build-gact-runtime.sh": (
-            '"dspy==3.3.0b1" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5"',
-        ),
-        "install/build-gact-runtime.ps1": ("'fastmcp-slim==4.0.0b5', 'fastmcp-tasks==4.0.0b5'",),
     }
+    # The bundled-runtime builders root nothing themselves: they install
+    # clio-agent[BUNDLE_EXTRAS] against the lock export, whose exact prerelease
+    # pins root the betas (test_check_bundle_matches_lock.py covers them).
 
     for relative_path, commands in expected_commands.items():
         contents = _text(relative_path)
@@ -176,7 +175,6 @@ def test_bundled_runtime_is_precompiled_before_relocation_proof() -> None:
         assert "precompile_runtime.py" in script, relative_path
         assert "'--no-agent'" in script or '"--no-agent"' in script, relative_path
         assert "within 30 seconds" in script, relative_path
-        assert "clio-kit==2.10.6" in script, relative_path
         assert "from clio_kit import cli; cli()" in script, relative_path
         assert "uvx" in script, relative_path
 

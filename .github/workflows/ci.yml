@@ -65,6 +65,23 @@ jobs:
       # raise this toward the 80% target as gact code gains tests (#31/#773).
       - run: uv run pytest tests/ -m "not integration" --cov=clio_agent --cov-branch --cov-report=term-missing --cov-fail-under=78
 
+  bundle-lock-resolve:
+    # The bundled CLIO Desktop runtime installs clio-agent[BUNDLE_EXTRAS]
+    # against a `uv export` of those extras, but clio-bundles.yml builds it on
+    # tags only. Resolve that exact install set against the exported lock for
+    # every bundled target here, so a conflict (the hardcoded clio-kit pin vs
+    # the locked click) fails the PR instead of the release.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+      - run: uv python install 3.12
+      - run: uv run --no-project --python 3.12 python scripts/check_bundle_matches_lock.py --resolve
+
   flowcept-integration:
     # The Flowcept live-runtime test is excluded from the main leg (integration
     # marker) and would silently rot as skip-only — this job installs the

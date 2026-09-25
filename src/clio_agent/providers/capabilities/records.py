@@ -136,6 +136,51 @@ def modalities_from_capabilities(capabilities: object) -> frozenset[str]:
     return frozenset(normalized)
 
 
+#: What KIND of model this is -- what it produces, which decides whether it can
+#: be offered as a chat model at all. Spellings follow LiteLLM's own ``mode``
+#: vocabulary (``chat``, ``embedding``, ``rerank``, ``audio_transcription``,
+#: ``audio_speech``, ``image_generation``) so a LiteLLM row maps verbatim, plus
+#: ``segmentation`` (e.g. SAM-style mask models), which LiteLLM has no mode for.
+#: An unknown type stays an unknown :class:`Fact` -- never defaulted to "chat".
+ModelType = Literal[
+    "chat",
+    "embedding",
+    "rerank",
+    "audio_transcription",
+    "audio_speech",
+    "image_generation",
+    "segmentation",
+]
+
+#: Every :data:`ModelType` spelling, for validating an evidence source's value.
+MODEL_TYPES: frozenset[str] = frozenset(
+    {
+        "chat",
+        "embedding",
+        "rerank",
+        "audio_transcription",
+        "audio_speech",
+        "image_generation",
+        "segmentation",
+    }
+)
+
+
+def model_type_fact(
+    value: str | None, *, source: FactSource, observed_at: str, detail: str
+) -> Fact[str]:
+    """A :data:`ModelType` fact, or an honest unknown when ``value`` is not a known type.
+
+    Every evidence source (LiteLLM ``mode``, a Hugging Face ``pipeline_tag``, an
+    ALCF gateway ``framework``, the overlay's flags) maps its own vocabulary to a
+    :data:`ModelType` first; this is the single place that refuses a value
+    outside that closed set rather than letting a stray spelling through.
+    """
+    if value in MODEL_TYPES:
+        return Fact(value=value, source=source, observed_at=observed_at, detail=detail)
+    return unknown(detail)
+
+
 #: How a model's thinking/reasoning is switched and configured.
 ThinkingMechanism = Literal["none", "always_on", "on_off", "effort_levels", "budget_tokens"]
 
@@ -181,6 +226,10 @@ class ModelCapabilities:
     """
 
     model_key: str
+    #: The :data:`ModelType` (``chat``, ``embedding``, ...). Unknown means no
+    #: source has said -- a picker treats it as selectable for chat, since the
+    #: model was offered by a chat endpoint, but never RECORDS it as chat.
+    model_type: Fact[str] = field(default_factory=_unknown_field)
     context_max: Fact[int] = field(default_factory=_unknown_field)
     output_max: Fact[int] = field(default_factory=_unknown_field)
     input_modalities: Fact[frozenset[str]] = field(default_factory=_unknown_field)
@@ -255,10 +304,13 @@ __all__ = [
     "EndpointCapabilities",
     "Fact",
     "FactSource",
+    "MODEL_TYPES",
     "ModelCapabilities",
+    "ModelType",
     "ThinkingMechanism",
     "ThinkingSpec",
     "modalities_from_capabilities",
+    "model_type_fact",
     "no_restriction",
     "unknown",
 ]

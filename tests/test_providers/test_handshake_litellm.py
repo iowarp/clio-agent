@@ -85,23 +85,21 @@ def test_variants_include_provider_prefixes() -> None:
 
 
 def test_prefix_resolves_when_bare_id_misses(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_get(candidate: str, *, allow_fetch: bool = True) -> dict[str, int] | None:
-        if candidate == "anthropic/foo-model":
-            return {"max_input_tokens": 50000, "max_output_tokens": 4096}
-        return None
-
-    monkeypatch.setattr(lc, "_get_model_info", fake_get)
+    monkeypatch.setattr(
+        lc,
+        "_cost_map",
+        lambda *, allow_fetch=True: {
+            "anthropic/foo-model": {"max_input_tokens": 50000, "max_output_tokens": 4096}
+        },
+    )
     assert lc.lookup_litellm("foo-model", allow_fetch=False) == (50000, 4096)
 
 
 def test_zero_and_bool_values_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         lc,
-        "_get_model_info",
-        lambda candidate, *, allow_fetch=True: {
-            "max_input_tokens": 0,
-            "max_output_tokens": True,
-        },
+        "_cost_map",
+        lambda *, allow_fetch=True: {"x": {"max_input_tokens": 0, "max_output_tokens": True}},
     )
     assert lc.lookup_litellm("x", allow_fetch=False) == (None, None)
 
@@ -110,8 +108,8 @@ def test_max_tokens_fallback_for_context(monkeypatch: pytest.MonkeyPatch) -> Non
     # some entries only carry max_tokens (no max_input_tokens) -> used as context
     monkeypatch.setattr(
         lc,
-        "_get_model_info",
-        lambda candidate, *, allow_fetch=True: {"max_tokens": 32768, "max_output_tokens": 8192},
+        "_cost_map",
+        lambda *, allow_fetch=True: {"x": {"max_tokens": 32768, "max_output_tokens": 8192}},
     )
     assert lc.lookup_litellm("x", allow_fetch=False) == (32768, 8192)
 

@@ -84,6 +84,14 @@ async def _ensure_codex_live_catalog(preset: LMProviderPreset) -> str:
 #: and is never evidence.
 EVIDENCED_CATALOG_SOURCES: frozenset[str] = frozenset({"live", "overlay"})
 
+#: ``availability`` of a row whose model is KNOWN not to be a chat model (an
+#: embedding, rerank, segmentation, ... model). Reachability is not the question
+#: for such a row -- it cannot serve a chat turn at all -- so it is neither
+#: ``available`` nor ``candidate`` and a chat picker must not offer it. The row
+#: still lists the model, with its ``model_type``, so a client can show it as
+#: what it is.
+NOT_CHAT_AVAILABILITY = "not_chat"
+
 #: Provider kinds whose catalog is the discovery overlay itself (no HTTP probe).
 #: Every other kind is probed live and keeps a last-good list for empty probes.
 _CLI_CATALOG_KINDS: frozenset[str] = frozenset({"codex", "claude_code"})
@@ -118,11 +126,20 @@ def model_catalog_row(
     loaded_context_window = (
         deployment.context_served.value if deployment and deployment.context_served.known else None
     )
-    modalities = (
-        sorted(effective.input_modalities.value or ())
-        if (evidenced or modality_evidenced) and effective.input_modalities.known
-        else ["text"]
-    )
+    # Three-valued: a row whose discovery never established its modalities says
+    # so (``modalities: []`` + ``modality_evidenced: false`` + the provenance
+    # reason) instead of presenting "text" -- a gateway /models listing that
+    # carries no modality fields is no proof of a text-only model.
+    modality_evidenced = (evidenced or modality_evidenced) and effective.input_modalities.known
+    modalities = sorted(effective.input_modalities.value or ()) if modality_evidenced else []
+    model_type = effective.model_type.value if effective.model_type.known else None
+    # An unknown type stays selectable (the model was offered by a chat
+    # endpoint); only a model KNOWN to be another type is withheld from chat.
+    chat_selectable = model_type in (None, "chat")
+    if not chat_selectable:
+        availability = NOT_CHAT_AVAILABILITY
+    else:
+        availability = "available" if evidenced else "candidate"
     return {
         "provider_id": preset.id,
         "provider_kind": preset.provider,
@@ -135,6 +152,10 @@ def model_catalog_row(
         # never a hand-typed table. Empty for providers with no alias concept.
         "aliases": [str(a) for a in profile.raw.get("cli_values") or [] if str(a).strip()],
         "modalities": modalities,
+        # chat / embedding / rerank / audio_transcription / audio_speech /
+        # image_generation / segmentation, or null when no source states it.
+        "model_type": model_type,
+        "chat_selectable": chat_selectable,
         # The levels a person can actually choose for THIS model, derived from
         # provider truth and restricted to what resolve_thinking maps.
         "reasoning": model_reasoning(
@@ -147,7 +168,7 @@ def model_catalog_row(
         "context_window": effective.context.value,
         "loaded_context_window": loaded_context_window,
         "output_limit": effective.output_max.value,
-        "availability": "available" if evidenced else "candidate",
+        "availability": availability,
         "evidence": {
             "source": report.models_source,
             # WHEN the evidence was produced -- a persisted discovery run's own
@@ -159,7 +180,7 @@ def model_catalog_row(
             or report.generated_at,
             "read_at": report.generated_at,
             "evidenced": evidenced,
-            "modality_evidenced": evidenced or modality_evidenced,
+            "modality_evidenced": modality_evidenced,
             # ``live`` now means what it says: this run probed the provider.
             "live": report.models_source == "live" and report.ok,
             "context_source": effective.context.decided_by,
@@ -170,6 +191,7 @@ def model_catalog_row(
             "output_limit": _provenance_row(effective.output_max),
             "native_tool_calling": _provenance_row(effective.tools),
             "modalities": _provenance_row(effective.input_modalities),
+            "model_type": _provenance_row(effective.model_type),
             "reasoning": _provenance_row(effective.thinking),
         },
         "failure": report.error or "",
@@ -287,4 +309,9 @@ async def discover_provider(preset: LMProviderPreset, *, refresh: bool = False) 
     }
 
 
-__all__ = ["EVIDENCED_CATALOG_SOURCES", "discover_provider", "model_catalog_row"]
+__all__ = [
+    "EVIDENCED_CATALOG_SOURCES",
+    "NOT_CHAT_AVAILABILITY",
+    "discover_provider",
+    "model_catalog_row",
+]
