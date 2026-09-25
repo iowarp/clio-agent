@@ -57,6 +57,23 @@ class LMProviderPreset(BaseModel):
     supports_logout: bool = False
 
 
+#: Presets whose env var name doesn't follow ``CLIO_LM_API_KEY`` (the fallback
+#: every other preset uses) -- kept next to :class:`LMProviderPreset` so a new
+#: preset's key lookup and its wire shape stay in one place.
+_WELL_KNOWN_API_KEY_ENV: dict[str, str] = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+}
+
+
+def preset_api_key_env(preset: LMProviderPreset) -> str:
+    """Return the environment variable ``preset``'s API key is read from."""
+    if preset.api_key_env:
+        return preset.api_key_env
+    return _WELL_KNOWN_API_KEY_ENV.get(preset.id, "CLIO_LM_API_KEY")
+
+
 class LMProviderInfo(BaseModel):
     """GET /v1/providers/lm body: current LM config state + the preset list the
     TUI's picker shows. ``api_key`` is never echoed back.

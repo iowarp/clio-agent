@@ -47,6 +47,7 @@ from fastapi import FastAPI, HTTPException
 
 from clio_agent.gact.agent_initialization import mark_agent_ready
 from clio_agent.gact.events import Event
+from clio_agent.gact.lm_provider_types import preset_api_key_env
 from clio_agent.gact.providers.auth import (
     _is_placeholder_api_key,
     _resolve_argonne_runtime_api_key,
@@ -306,15 +307,6 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     # ---- /v1/providers/lm ------------------------
 
-    def _preset_api_key_env(preset: LMProviderPreset) -> str:
-        if preset.api_key_env:
-            return preset.api_key_env
-        return {
-            "openai": "OPENAI_API_KEY",
-            "anthropic": "ANTHROPIC_API_KEY",
-            "openrouter": "OPENROUTER_API_KEY",
-        }.get(preset.id, "CLIO_LM_API_KEY")
-
     def _preset_with_status(preset: LMProviderPreset) -> LMProviderPreset:
         update: dict[str, Any] = {"supports_logout": supports_logout(preset.provider)}
         if preset.provider == "argonne":
@@ -329,7 +321,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             update["is_authenticated"] = authed
             return preset.model_copy(update=update)
         if preset.requires_api_key:
-            env_key = _preset_api_key_env(preset)
+            env_key = preset_api_key_env(preset)
             if not (os.environ.get(env_key) or os.environ.get("CLIO_LM_API_KEY")):
                 update["status"] = "missing_key"
                 update["status_message"] = f"missing {env_key}"
