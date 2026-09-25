@@ -199,6 +199,7 @@ class LMProviderConfig:
         planner_max_tokens: Maximum tokens for planner JSON generation
         environment: Deployment environment (dev/staging/production)
         codex_transport: Codex transport: "websocket" (default, A.6) or "sse"
+        codex_variant: Which codex transport this config binds: "sdk" or "direct" (default, S1b)
     """
 
     # ProviderKind (the dialect selector, not an identity -- Part 3): the
@@ -231,6 +232,7 @@ class LMProviderConfig:
     presence_penalty: float | None = None
     environment: str = "dev"
     codex_transport: Literal["websocket", "sse"] = "websocket"
+    codex_variant: Literal["", "sdk", "direct"] = ""  # S1b; "" normalizes to "direct" below
     # "sdk" (the only transport since v0.8.0): the in-process Claude Agent SDK
     #   with a persistent CLI session — no per-call spawn, streaming-capable, and
     #   setting_sources=[] keeps the user's ~/.claude/CLAUDE.md out of the prompt.
@@ -336,6 +338,11 @@ class LMProviderConfig:
             raise ValueError(
                 f"codex_transport must be 'websocket' or 'sse' (got {self.codex_transport!r})"
             )
+        if self.codex_variant not in {"", "sdk", "direct"}:
+            raise ValueError(
+                f"codex_variant must be 'sdk' or 'direct' (got {self.codex_variant!r})"
+            )
+        self.codex_variant = self.codex_variant or "direct"
         if self.claude_code_transport != "sdk":
             raise ValueError(
                 "claude_code_transport 'exec' was removed in the v0.8.0 cleanup — "
@@ -504,7 +511,8 @@ def load_config_from_env() -> LMProviderConfig:
         ``lm.planner_max_tokens`` / CLIO_LM_PLANNER_MAX_TOKENS: planner token cap
         ``lm.max_tokens`` / CLIO_LM_MAX_TOKENS: Override max tokens
         ``lm.top_p`` / ``lm.top_k`` / ``lm.min_p`` / ``lm.presence_penalty``: sampling
-        ``lm.codex_transport`` / CLIO_CODEX_TRANSPORT: Codex transport (websocket/sse)
+        ``lm.codex_transport`` / CLIO_CODEX_TRANSPORT: direct codex transport (websocket/sse)
+        ``lm.codex_variant`` / CLIO_CODEX_VARIANT: codex provider transport (sdk/direct)
         ``lm.claude_code_transport`` / CLIO_CLAUDE_CODE_TRANSPORT: Claude Code transport
         ``lm.context_window`` / CLIO_LM_CONTEXT_WINDOW: Override effective context window
             (tokens); 0 = auto-derive from handshake (default). Set to assert a larger
@@ -536,6 +544,11 @@ def load_config_from_env() -> LMProviderConfig:
     )
     codex_transport = (
         conf.resolve("lm.codex_transport", env="CLIO_CODEX_TRANSPORT", default="", cast=conf.as_str)
+        .strip()
+        .lower()
+    )
+    codex_variant = (
+        conf.resolve("lm.codex_variant", env="CLIO_CODEX_VARIANT", default="", cast=conf.as_str)
         .strip()
         .lower()
     )
@@ -616,6 +629,8 @@ def load_config_from_env() -> LMProviderConfig:
         kwargs["presence_penalty"] = presence_penalty
     if codex_transport:
         kwargs["codex_transport"] = codex_transport
+    if codex_variant:
+        kwargs["codex_variant"] = codex_variant
     if claude_code_transport:
         kwargs["claude_code_transport"] = claude_code_transport
     if thinking_level:

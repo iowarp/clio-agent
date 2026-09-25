@@ -43,12 +43,16 @@ dependencies = [
     # DSPy permits a broad LiteLLM range. Pin the tested stable wheel so a global
     # prerelease policy can never select a LiteLLM dev sdist on Windows.
     "litellm==1.102.1",
-    # Subscription-authenticated Codex provider (direct): CLIO calls the Codex
-    # backend itself over HTTP/WebSocket (providers/codex/), no Codex CLI or
-    # Codex SDK. "openai_codex" (the SDK-based provider) is deleted; the
-    # bundled codex binary this pins stays a DIRECT dependency because the
-    # Windows shell sandbox (runtime/sandbox_codex.py) spawns it as its
-    # enforcement rung -- unrelated to the LM provider.
+    # The Codex provider has two transports (S1b): "direct" calls the Codex
+    # backend itself over HTTP/WebSocket (providers/codex/, no CLI/SDK), and
+    # "sdk" restores the official openai_codex Python SDK against the user's
+    # OWN CODEX_HOME (default ~/.codex) so the Codex runtime owns its own
+    # login/refresh -- CLIO never reads or writes auth.json. Same pin as
+    # before S1 deleted this transport.
+    "openai-codex>=0.147.0,<0.148.0",
+    # The bundled codex binary stays a DIRECT dependency because the Windows
+    # shell sandbox (runtime/sandbox_codex.py) spawns it as its enforcement
+    # rung -- unrelated to either LM provider transport.
     "openai-codex-cli-bin>=0.147.0,<0.148.0",
     # The direct Codex provider's WebSocket transport (A.6); already present
     # transitively (litellm/fastmcp's own tree), declared explicitly now that

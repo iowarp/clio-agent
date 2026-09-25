@@ -326,12 +326,19 @@ class FetchedCatalog(Generic[T]):
                 self.url, timeout=self.timeout_s, headers=headers, follow_redirects=True
             )
         except httpx.HTTPError as exc:
-            reason = f"transport_error: {exc}"
+            # Lazy import: handshake.base (via the handshake package __init__)
+            # transitively imports model_discovery, which imports THIS module
+            # at load time -- a module-level import here would be circular.
+            from clio_agent.providers.handshake.base import (  # noqa: PLC0415
+                describe_exception,
+            )
+
+            reason = f"transport_error: {describe_exception(exc)}"
             logger.warning(
                 "fetched_catalog: reason=transport_error name=%s url=%s: %s",
                 self.name,
                 self.url,
-                exc,
+                reason,
             )
             return None, reason
 

@@ -179,9 +179,16 @@ RATCHET_BASELINE: dict[str, int] = {
     # context_window_below_native warning, and (4) the updated load_config_from_env
     # docstring. The override resolution lives inline in apply_handshake (the one
     # bind-time site), not a new module, because it is a single conf.resolve call
-    # tightly coupled to the existing window-vs-override decision. Ratchet down
-    # as config.py's modular decomposition continues.
-    "src/clio_agent/config.py": 842,
+    # tightly coupled to the existing window-vs-override decision.
+    # S1b (Codex SDK transport restore): +15 for codex_variant -- a SECOND
+    # transport selector for the codex provider (sdk vs direct), the same shape
+    # as the existing codex_transport field: the Literal field itself, its
+    # __post_init__ validation + default-normalization, and its
+    # lm.codex_variant/CLIO_CODEX_VARIANT env-resolution block in
+    # load_config_from_env. A dataclass field's own validation/env-plumbing has
+    # no owner module to move to; this IS its owner. Ratchet down as config.py's
+    # modular decomposition continues.
+    "src/clio_agent/config.py": 857,
     # #1326: adapters.py was 780 lines (under the 800 cap). +56 for: a new
     # _ContextOverflowError typed exception, a _check_context_overflow pre-flight
     # helper (mirrors the guided path's _bound_guided_output_kwargs shape), pre-
@@ -659,7 +666,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # Ratchet down 1172 -> 1163 (S1, direct Codex provider): the simplified
     # _codex_readiness dropped the "openai_codex" importlib probe -- the
     # Codex credential store is a plain, always-importable class.
-    "src/clio_agent/gact/routes/providers.py": 1142,
+    # S1 (1163 -> 1142) + S1b (codex readiness gate moved to routes/codex_variant.py).
+    "src/clio_agent/gact/routes/providers.py": 1127,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (merged to develop with the size check red, baseline 1478 -> actual); ratchet
     # back below the pre-#947 count with the mcp_app_* owner-module split (see the

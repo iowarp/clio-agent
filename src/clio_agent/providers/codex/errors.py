@@ -79,6 +79,18 @@ class CodexTransportError(CodexError):
     reason = "codex_transport_error"
 
 
+class CodexSDKError(CodexError):
+    """The local Codex SDK/runtime transport failed.
+
+    Covers a bare-LM validation trip (the SDK started a hidden internal
+    action), a failed SDK turn, or any other error the official ``openai_codex``
+    SDK surfaces. Distinct from :class:`CodexTransportError`/:class:`CodexResponseError`,
+    which are the DIRECT (HTTP/WebSocket) transport's own failure shapes.
+    """
+
+    reason = "codex_sdk_error"
+
+
 #: Shown wherever a refresh/handshake failure turns out to be an auth
 #: rejection rather than a generic transport failure. No "on the connected
 #: agent" -- that phrasing named the deleted local-CLI transport; the direct
@@ -219,6 +231,7 @@ __all__ = [
     "CodexRefreshFailedError",
     "CodexResponseError",
     "CodexRetryExhaustedError",
+    "CodexSDKError",
     "CodexTransportError",
     "RetryDecision",
     "contains_codex_authentication_error",

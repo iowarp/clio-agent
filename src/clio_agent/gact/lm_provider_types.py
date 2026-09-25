@@ -139,6 +139,13 @@ class LMProviderRequest(BaseModel):
     parallel: int = 0
     turn_timeout_s: float = 0.0
     transport: str | None = None
+    # WHICH of a multi-transport provider's implementations to bind (S1b).
+    # Only the ``codex`` provider reads this today (``"sdk"`` | ``"direct"``,
+    # default ``"direct"``) -- distinct from ``transport`` above, which is a
+    # provider's own internal delivery choice (codex direct's websocket/sse,
+    # claude_code's sdk). Named ``variant`` to mirror ``ModelRef.variant``,
+    # which a session/message model ref uses to request the same transport.
+    variant: str = ""
     thinking_level: (
         Literal["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] | None
     ) = None
