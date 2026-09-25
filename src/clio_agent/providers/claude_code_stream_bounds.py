@@ -31,22 +31,24 @@ rather than ``(model, cwd, thinking, scope)``:
   connect is typed, surfaced at an expanding cadence, and feeds the waiting
   session's LM-activity liveness bucket so the turn no-progress watchdog
   counts the queue as progress, never a stall.
-* **Warm pool sizing** (:func:`warm_pool_size`, B2) — how many pre-connected,
-  unclaimed clients :class:`ClaudeStreamClientPool` keeps ready, connected
-  with the "standard options" (see that module's docstring for the honest
-  TTFT contract given this SDK's connect-time-only ``system_prompt``/``cwd``).
+* **Pre-connect bounding** (:func:`max_precede_connects`, B2) — how many
+  session-open pre-connects (see that module's :meth:`ClaudeStreamClientPool
+  .precede_connect`) may sit unclaimed at once. A pre-connected entry lives in
+  the SAME ``pool._entries`` as a claimed one, so the idle reap above already
+  evicts it under the identical lifetime rule; this cap only bounds how many
+  may be simultaneously CONNECTING, so a burst of session creates can never
+  queue ahead of a real turn's own connect for the shared slots above.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
-    import threading
-
     from clio_agent.providers.claude_code_sessions import (
         ClaudeStreamClientPool,
         _StreamClientEntry,
@@ -60,12 +62,14 @@ __all__ = [
     "connect_wait_payload",
     "log_config_change_reconnect",
     "log_dead_client_replaced",
+    "log_precede_connect_failed",
+    "log_precede_connect_skipped",
     "max_concurrent_claude_processes",
-    "pop_compatible_warm_entry",
+    "max_precede_connects",
+    "precede_connect",
     "reap_idle_session_entry",
     "session_idle_ttl_s",
     "sweep_idle_session_entries",
-    "warm_pool_size",
 ]
 
 
@@ -87,12 +91,16 @@ def session_idle_ttl_s() -> float:
     )
 
 
-def warm_pool_size() -> int:
-    """B2: how many pre-connected, unclaimed clients the pool keeps ready.
+def max_precede_connects() -> int:
+    """B2: how many session-open pre-connects may sit unclaimed at once.
 
-    Resolved via ``providers.claude_code.warm_pool_size`` /
-    ``CLIO_CLAUDE_CODE_WARM_POOL_SIZE`` (file → env → default 2). ``0`` disables
-    the warm pool entirely (every ``entry_for`` mints a cold entry).
+    Resolved via ``providers.claude_code.max_precede_connects`` /
+    ``CLIO_CLAUDE_CODE_MAX_PRECEDE_CONNECTS`` (file → env → default 2). Kept
+    well under :func:`max_concurrent_claude_processes`'s own default so a
+    burst of session creates can never fill every connect slot with
+    speculative work and make a real turn's own connect wait behind it. ``0``
+    disables session-open pre-connect entirely (every session's first turn
+    connects cold, as before B2 was wired to session open).
     """
     from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
 
@@ -100,8 +108,8 @@ def warm_pool_size() -> int:
         0,
         int(
             conf.resolve(
-                "providers.claude_code.warm_pool_size",
-                env="CLIO_CLAUDE_CODE_WARM_POOL_SIZE",
+                "providers.claude_code.max_precede_connects",
+                env="CLIO_CLAUDE_CODE_MAX_PRECEDE_CONNECTS",
                 default=2.0,
                 cast=conf.as_float,
             )
@@ -114,8 +122,8 @@ def max_concurrent_claude_processes() -> int:
 
     Resolved via ``providers.claude_code.max_concurrent_processes`` /
     ``CLIO_CLAUDE_CODE_MAX_CONCURRENT_PROCESSES`` (file → env → default 4).
-    Every pooled entry — one per GACT session, plus every warm-pool entry —
-    draws from the SAME N slots at connect time and releases its slot on
+    Every pooled entry — one per GACT session, plus every pending session-open
+    pre-connect — draws from the SAME N slots at connect time and releases its slot on
     disconnect, so the resident CLI-process count this process can ever hold
     is bounded by N regardless of how many sessions exist. A connect beyond
     the cap WAITS (surfaced, typed, expanding — :func:`await_connect_slot` —
@@ -305,50 +313,126 @@ def log_config_change_reconnect(model: str | None, changed_fields: list[str]) ->
         )
 
 
-def log_dead_client_replaced(session_id: str, *, from_warm_pool: bool) -> None:
-    """B17: typed log + audit row when a session's dead entry is replaced."""
+def log_dead_client_replaced(session_id: str) -> None:
+    """B17: typed log + audit row when a session's dead entry is replaced (fresh connect)."""
     from clio_agent.providers.claude_code_sessions import (  # noqa: PLC0415
         stream_audit,
         stream_audit_enabled,
         transport_failure_payload,
     )
 
-    logger.warning(
-        "claude_code sdk pool: reason=dead_client_replaced session=%s from_warm_pool=%s",
-        session_id,
-        from_warm_pool,
-    )
+    logger.warning("claude_code sdk pool: reason=dead_client_replaced session=%s", session_id)
     if stream_audit_enabled():
         stream_audit(
             "provider.session_release",
             provider="claude_code_sdk",
             transport="sdk",
             session_id=session_id,
-            from_warm_pool=from_warm_pool,
             **transport_failure_payload("dead_client_replaced"),
         )
 
 
-def pop_compatible_warm_entry(
-    warm: list["_StreamClientEntry"],
-    wanted_thinking_key: str | None,
-    wanted_system_prompt: str | None,
-) -> "_StreamClientEntry | None":
-    """Pop the first warm entry whose connected config would not need reconciling (B2).
+def log_precede_connect_skipped(session_id: str) -> None:
+    """B2: typed log when a session-open pre-connect is skipped at the pending cap."""
+    logger.info(
+        "claude_code sdk pool: reason=precede_connect_skipped session=%s "
+        "cap=%d (max_precede_connects)",
+        session_id,
+        max_precede_connects(),
+    )
 
-    Reconciling forces a reconnect (no live ``set_effort``/``set_thinking`` in
-    this SDK), so claiming a mismatched entry would pay for TWO CLI spawns
-    (the discarded warm connect, then the real one) -- worse than minting a
-    matching entry cold in one shot. A real turn's ``system_prompt`` is
-    virtually always non-empty, so this is the common path, not an edge case:
-    a mismatched entry is left in ``warm`` (still useful to a future
-    bare/default request), never popped-then-reconnected. ``warm`` is mutated
-    in place; the caller holds the pool's own lock.
+
+def log_precede_connect_failed(session_id: str) -> None:
+    """B2: typed log when a session-open pre-connect fails; never raises into the caller."""
+    logger.warning(
+        "claude_code sdk pool: reason=precede_connect_failed session=%s "
+        "(the first turn connects normally)",
+        session_id,
+        exc_info=True,
+    )
+
+
+def precede_connect(
+    pool: "ClaudeStreamClientPool",
+    *,
+    session_id: str,
+    model: str | None = None,
+    cwd: str | None = None,
+    thinking: dict[str, Any] | None = None,
+    system_prompt: str | None = None,
+) -> None:
+    """B2: background-connect ``session_id``'s own entry on ``pool`` with its REAL config.
+
+    Fire-and-forget -- NEVER blocks the caller and NEVER raises. A no-op when
+    ``session_id`` already has an entry (already pre-connecting, already
+    claimed, or already connected) or when :func:`max_precede_connects`
+    pending pre-connects are already outstanding (typed,
+    ``precede_connect_skipped`` -- a real turn's own connect must never queue
+    behind speculative work). On failure the entry is left in place with no
+    client (typed, ``precede_connect_failed``): the first real
+    ``entry_for``/``stream`` for this session just connects it cold, exactly
+    as if pre-connect had never run. Caller is
+    :meth:`~claude_code_sessions.ClaudeStreamClientPool.precede_connect`, a
+    thin delegator kept on the pool for gact's call site.
     """
-    for index, candidate in enumerate(warm):
-        if (
-            candidate._thinking_key == wanted_thinking_key  # noqa: SLF001
-            and candidate._system_prompt == wanted_system_prompt  # noqa: SLF001
-        ):
-            return warm.pop(index)
-    return None
+    key = session_id or ""
+    if not key:
+        return
+    from clio_agent.providers.claude_code_sessions import _StreamClientEntry  # noqa: PLC0415
+
+    entry: _StreamClientEntry | None = None
+    at_cap = False
+    with pool._guard:  # noqa: SLF001 - this module is claude_code_sessions' owner-split sibling
+        if key not in pool._entries:  # noqa: SLF001
+            if len(pool._precede_pending) >= max_precede_connects():  # noqa: SLF001
+                at_cap = True
+            else:
+                entry = _StreamClientEntry(
+                    connect_slots=pool._connect_slots,  # noqa: SLF001
+                    reclaim_idle_slot=pool._reclaim_idle_for_slot,  # noqa: SLF001
+                )
+                pool._entries[key] = entry  # noqa: SLF001
+                pool._precede_pending.add(key)  # noqa: SLF001
+    if entry is None:
+        if at_cap:
+            log_precede_connect_skipped(key)
+        return
+    threading.Thread(
+        target=_precede_connect_blocking,
+        args=(pool, key, entry, model, cwd, thinking, system_prompt),
+        daemon=True,
+        name="claude-precede-connect",
+    ).start()
+
+
+def _precede_connect_blocking(
+    pool: "ClaudeStreamClientPool",
+    session_id: str,
+    entry: "_StreamClientEntry",
+    model: str | None,
+    cwd: str | None,
+    thinking: dict[str, Any] | None,
+    system_prompt: str | None,
+) -> None:
+    """The background thread body for one :func:`precede_connect` call."""
+    entry._ensure_loop()  # noqa: SLF001 - this module is claude_code_sessions' owner-split sibling
+    entry._mark_busy()  # noqa: SLF001 - never idle-reaped mid-connect
+    try:
+        fut = asyncio.run_coroutine_threadsafe(
+            entry._ensure_client(  # noqa: SLF001
+                pool.bump_construct,
+                gact_session_id=session_id,
+                model=model,
+                cwd=cwd,
+                thinking=thinking,
+                system_prompt=system_prompt,
+            ),
+            entry._loop,  # noqa: SLF001
+        )
+        fut.result(timeout=60.0)
+    except Exception:  # noqa: BLE001 - a failed pre-connect must never break the caller
+        log_precede_connect_failed(session_id)
+    finally:
+        entry._mark_idle()  # noqa: SLF001
+        with pool._guard:  # noqa: SLF001
+            pool._precede_pending.discard(session_id)  # noqa: SLF001

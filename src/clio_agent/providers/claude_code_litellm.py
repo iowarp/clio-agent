@@ -218,8 +218,6 @@ async def _astream_sdk(
     entry = _STREAM_CLIENT_POOL.entry_for(
         session_id=gact_sid_for_pool,
         gact_session_id=gact_sid_for_pool,
-        thinking=thinking,
-        system_prompt=system_prompt,
     )
     source = entry.stream(
         payload=payload,

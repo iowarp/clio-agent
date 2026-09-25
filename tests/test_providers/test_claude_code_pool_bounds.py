@@ -12,11 +12,12 @@ is bounded by N regardless of how many sessions want one. A connect beyond
 the cap WAITS for a free slot -- it never fails or degrades a turn, only
 queues it.
 
-S2 rekeys the pool by GACT session id (not ``(model, cwd, thinking, scope)``)
-and adds a small warm pool (B2): these pins are updated for the new
-:meth:`_StreamClientEntry` constructor shape (no ``options_factory``; config
-is resolved per call by ``_ensure_client``) and :meth:`ClaudeStreamClientPool
-.entry_for`'s new ``session_id=`` signature.
+S2 rekeys the pool by GACT session id (not ``(model, cwd, thinking, scope)``):
+these pins are updated for the new :meth:`_StreamClientEntry` constructor
+shape (no ``options_factory``; config is resolved per call by
+``_ensure_client``) and :meth:`ClaudeStreamClientPool.entry_for`'s new
+``session_id=`` signature. B2's session-open precede-connect pins live in
+``test_claude_code_precede_connect.py``.
 
 Each pin carries an inline SABOTAGE note.
 """
@@ -215,13 +216,13 @@ def test_pool_wires_its_connect_slots_into_every_entry(monkeypatch: pytest.Monke
 
 def test_entry_for_evicts_a_dead_entry_and_replaces_it(monkeypatch: pytest.MonkeyPatch) -> None:
     """A ``_dead`` entry at a session's key is never handed out again -- the
-    pool mints (or claims warm) a replacement, typed and logged.
+    pool mints a fresh replacement, typed and logged.
 
     SABOTAGE: return the dead entry as-is from ``entry_for`` -> the caller's
     next connect attempt raises the F6b ``dead_entry_error_message`` forever
     -> this identity check goes red.
     """
-    pool = ccs.ClaudeStreamClientPool(max_concurrent=4, warm_size=0)
+    pool = ccs.ClaudeStreamClientPool(max_concurrent=4)
     first = pool.entry_for(session_id="sess-dead")
     first._dead = True
 
@@ -242,18 +243,3 @@ def test_reclaim_idle_for_slot_evicts_only_idle_entries(monkeypatch: pytest.Monk
     assert pool._reclaim_idle_for_slot() == 1
     assert pool.entry_for(session_id="sibling") is busy
     assert pool.entry_for(session_id="parent") is not idle
-
-
-def test_entry_for_claims_a_warm_entry_before_minting_cold(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A brand-new session key claims an existing warm entry rather than
-    minting a fresh one, when the warm pool is non-empty (B2)."""
-    pool = ccs.ClaudeStreamClientPool(max_concurrent=4, warm_size=0)
-    warm_entry = ccs._StreamClientEntry(connect_slots=pool._connect_slots)
-    pool._warm.append(warm_entry)
-    # A claim triggers a background refill (real SDK, real subprocess) that
-    # this hermetic test must not actually spawn.
-    monkeypatch.setattr(pool, "_spawn_warm_refill", lambda: None)
-
-    claimed = pool.entry_for(session_id="sess-new")
-    assert claimed is warm_entry
-    assert pool._warm == []

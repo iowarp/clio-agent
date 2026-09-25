@@ -809,10 +809,9 @@ KEY_NOTES: dict[str, str] = {
         "Seconds the Claude Code `auth status` sign-in check may run before it is abandoned as "
         "inconclusive; raise on hosts where cold CLI startup is slow."
     ),
-    "providers.claude_code.warm_pool_size": (
-        "Pre-connected, unclaimed Claude Code SDK clients kept ready (one per GACT session is "
-        "handed one on first use); 0 disables the warm pool, raise for more sessions starting "
-        "at once."
+    "providers.claude_code.max_precede_connects": (
+        "Max session-open Claude Code SDK pre-connects (B2) pending at once; 0 disables "
+        "session-open pre-connect entirely, raise for more sessions starting at once."
     ),
     "providers.claude_code.stateful_capacity": (
         "Max live Claude Code stateful-session entries before LRU eviction; raise on a host "
