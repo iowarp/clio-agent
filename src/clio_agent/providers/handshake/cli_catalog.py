@@ -224,12 +224,15 @@ class CodexCatalogHandshake(CliCatalogHandshake):
         del client
         from clio_agent.providers import model_discovery  # noqa: PLC0415
         from clio_agent.providers.codex.credentials import CodexCredentialStore  # noqa: PLC0415
+        from clio_agent.providers.codex.errors import (  # noqa: PLC0415
+            CODEX_AUTHENTICATION_ERROR_MESSAGE,
+        )
 
         if not CodexCredentialStore().is_signed_in():
             return ConnectivityResult(
                 connectivity=ConnectivityState.SKIPPED,
                 auth=AuthState.MISSING,
-                error="Codex sign-in is required on the connected agent",
+                error=CODEX_AUTHENTICATION_ERROR_MESSAGE,
             )
         try:
             overlay = model_discovery.overlay_models_wire(ctx.provider_id, ctx.provider_kind)

@@ -80,9 +80,11 @@ class CodexTransportError(CodexError):
 
 
 #: Shown wherever a refresh/handshake failure turns out to be an auth
-#: rejection rather than a generic transport failure -- mirrors the deleted
-#: Codex provider's ``CODEX_AUTHENTICATION_ERROR_MESSAGE``.
-CODEX_AUTHENTICATION_ERROR_MESSAGE = "Codex sign-in is required on the connected agent"
+#: rejection rather than a generic transport failure. No "on the connected
+#: agent" -- that phrasing named the deleted local-CLI transport; the direct
+#: subscription provider authenticates against openai.com, not anything
+#: running on the backend host.
+CODEX_AUTHENTICATION_ERROR_MESSAGE = "Codex sign-in is required"
 
 _AUTH_FAILURE_MARKERS: tuple[str, ...] = (
     "401",

@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from clio_agent.providers.codex.credentials import CodexCredentialStore
+from clio_agent.providers.codex.errors import CODEX_AUTHENTICATION_ERROR_MESSAGE
 from clio_agent.providers.model_discovery.codex_catalog import (
     CodexCatalogError,
     refresh_codex_catalog,
@@ -73,7 +74,7 @@ def discover_codex(
             provider="codex",
             discovered=[],
             source=CODEX_SOURCE,
-            failed_reason="Codex sign-in is required on the connected agent",
+            failed_reason=CODEX_AUTHENTICATION_ERROR_MESSAGE,
         )
 
     discovered = [

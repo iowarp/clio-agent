@@ -112,7 +112,7 @@ def _probe_codex_direct(
         return IntegrationStatus(
             name="lm_provider",
             state=IntegrationState.UNAVAILABLE,
-            summary="Codex sign-in is required on the connected agent.",
+            summary="Codex sign-in is required.",
             config_source=source,
             next_action="Sign in to Codex in Settings.",
             endpoint=config.api_base,
