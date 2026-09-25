@@ -10,8 +10,11 @@ Cache doctrine (see project ``CLAUDE.md``): a cache accelerates, it is never the
 truth, and going stale is always a *typed* fact, never a silent one. Concretely:
 
 * The disk cache lives at ``paths.user_cache_dir() / "catalogs" / "<name>.json"``,
-  written atomically (temp file + ``os.replace``) so a crash mid-write can never
-  leave a torn/partial cache behind.
+  written atomically (temp file + :func:`~clio_agent.platform_paths.atomic_replace`
+  -- the SAME helper :mod:`clio_agent.providers.model_discovery.overlay` uses,
+  not a second tmp+replace implementation) so a crash mid-write can never
+  leave a torn/partial cache behind, and a transient Windows sharing race never
+  surfaces as a write failure.
 * Every read returns a :class:`CatalogResult`, which carries the data PLUS its
   provenance (``source``, ``etag``/``version``, ``fetched_at``) and, when the data
   is not a fresh live fetch, a non-empty ``stale_reason`` explaining why (a failed
@@ -49,6 +52,7 @@ from typing import Generic, TypeVar
 import httpx
 
 from clio_agent import paths
+from clio_agent.platform_paths import atomic_replace
 
 logger = logging.getLogger(__name__)
 
@@ -429,7 +433,10 @@ class FetchedCatalog(Generic[T]):
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = cache_path.with_suffix(cache_path.suffix + ".tmp")
             tmp.write_text(json.dumps(entry.to_json()), encoding="utf-8")
-            tmp.replace(cache_path)
+            # atomic_replace (not a second tmp+replace implementation): retries
+            # only the transient Windows sharing race (WinError 5/32) this
+            # cache write can hit the same way model_discovery/overlay.py's did.
+            atomic_replace(tmp, cache_path)
         except OSError as exc:
             logger.warning("fetched_catalog: reason=cache_write_failed name=%s: %s", self.name, exc)
 
