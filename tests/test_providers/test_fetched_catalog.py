@@ -346,3 +346,76 @@ def test_empty_name_is_rejected(tmp_path: Path) -> None:
         FetchedCatalog(
             "", "https://x", parse=_parse_dict, ttl_s=1.0, cache_path=tmp_path / "x.json"
         )
+
+
+# ---- repeated reads are served from memory, never re-parsed ----
+def test_repeated_fresh_reads_parse_the_document_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A provider refresh looks up hundreds of model ids; each lookup used to
+    re-read and re-parse the whole catalog document (thousands of full parses
+    for one OpenRouter refresh). A fresh read is now parsed once and re-served
+    from memory -- with disk-cache provenance -- until its TTL expires."""
+    parses = {"n": 0}
+
+    def _counting_parse(payload: bytes) -> dict[str, Any]:
+        parses["n"] += 1
+        return _parse_dict(payload)
+
+    catalog = FetchedCatalog(
+        "widgets",
+        "https://example/catalog.json",
+        parse=_counting_parse,
+        ttl_s=3600.0,
+        max_bytes=1024,
+        timeout_s=1.0,
+        cache_path=tmp_path / "widgets.json",
+    )
+    monkeypatch.setattr(
+        "clio_agent.providers.fetched_catalog.httpx.get",
+        lambda *_a, **_kw: _response('{"a": 1}', etag='"v1"'),
+    )
+
+    first = catalog.get()
+    results = [catalog.get() for _ in range(50)]
+
+    assert parses["n"] == 1
+    assert first.source == "network"
+    assert {result.source for result in results} == {"disk_cache"}
+    assert {result.stale_reason for result in results} == {""}
+    assert all(result.data == {"a": 1} for result in results)
+
+
+def test_force_refresh_bypasses_the_in_memory_copy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    catalog = _catalog(tmp_path)
+    calls = {"n": 0}
+
+    def _get(*_a: object, **_kw: object) -> httpx.Response:
+        calls["n"] += 1
+        return _response(json.dumps({"n": calls["n"]}))
+
+    monkeypatch.setattr("clio_agent.providers.fetched_catalog.httpx.get", _get)
+    catalog.get()
+    assert catalog.get().data == {"n": 1}
+    assert catalog.get(force_refresh=True).data == {"n": 2}
+    assert catalog.get().data == {"n": 2}
+
+
+def test_bundled_snapshot_is_loaded_once_and_every_read_keeps_its_typed_reason(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    loads = {"n": 0}
+
+    def _bundled() -> dict[str, Any]:
+        loads["n"] += 1
+        return {"bundled": True}
+
+    catalog = _catalog(tmp_path, bundled=_bundled)
+    with caplog.at_level("WARNING", logger="clio_agent.providers.fetched_catalog"):
+        results = [catalog.get(allow_fetch=False) for _ in range(20)]
+
+    assert loads["n"] == 1
+    assert {result.stale_reason for result in results} == {"bundled_cold_start"}
+    assert sum("bundled_cold_start" in record.getMessage() for record in caplog.records) == 1
