@@ -30,12 +30,16 @@ def _row(model_id: str) -> dict[str, Any]:
 
 def test_parse_model_row_reads_model_and_deployment_fields() -> None:
     model, deployment = openrouter.parse_model_row(
-        _row("qwen/qwen3-235b-a22b"), provider_id="openrouter", api_base="https://openrouter.ai/api/v1"
+        _row("qwen/qwen3-235b-a22b"),
+        provider_id="openrouter",
+        api_base="https://openrouter.ai/api/v1",
     )
 
     assert model.context_max.value == 131072
     assert model.context_max.source == "openrouter"
     assert model.input_modalities.value == frozenset({"text"})
+    assert model.model_type.value == "chat"  # architecture.output_modalities = ["text"]
+    assert model.model_type.source == "openrouter"
 
     assert deployment.context_served.value == 40960  # top_provider, smaller than context_length
     assert deployment.output_max.value == 8192
@@ -46,7 +50,9 @@ def test_parse_model_row_reads_model_and_deployment_fields() -> None:
 
 def test_parse_model_row_vision_model_reports_image_modality() -> None:
     model, _deployment = openrouter.parse_model_row(
-        _row("openai/gpt-4o-mini"), provider_id="openrouter", api_base="https://openrouter.ai/api/v1"
+        _row("openai/gpt-4o-mini"),
+        provider_id="openrouter",
+        api_base="https://openrouter.ai/api/v1",
     )
 
     assert model.input_modalities.value == frozenset({"text", "image"})
@@ -54,10 +60,14 @@ def test_parse_model_row_vision_model_reports_image_modality() -> None:
 
 def test_route_params_fingerprint_changes_with_supported_parameters() -> None:
     _model_a, dep_a = openrouter.parse_model_row(
-        _row("qwen/qwen3-235b-a22b"), provider_id="openrouter", api_base="https://openrouter.ai/api/v1"
+        _row("qwen/qwen3-235b-a22b"),
+        provider_id="openrouter",
+        api_base="https://openrouter.ai/api/v1",
     )
     _model_b, dep_b = openrouter.parse_model_row(
-        _row("openai/gpt-4o-mini"), provider_id="openrouter", api_base="https://openrouter.ai/api/v1"
+        _row("openai/gpt-4o-mini"),
+        provider_id="openrouter",
+        api_base="https://openrouter.ai/api/v1",
     )
 
     assert dep_a.fingerprint != dep_b.fingerprint
@@ -71,6 +81,7 @@ def test_parse_model_row_missing_fields_are_unknown() -> None:
 
     assert not model.context_max.known
     assert not model.input_modalities.known
+    assert not model.model_type.known
     assert not deployment.context_served.known
     assert not deployment.route_params.known
     assert deployment.fingerprint == ""
@@ -78,3 +89,10 @@ def test_parse_model_row_missing_fields_are_unknown() -> None:
 
 def test_require_parameters_flag_shape() -> None:
     assert openrouter.REQUIRE_PARAMETERS_FLAG == {"provider": {"require_parameters": True}}
+
+
+def test_output_modalities_without_text_name_a_generation_type() -> None:
+    assert openrouter.model_type_from_output_modalities(["image"]) == "image_generation"
+    assert openrouter.model_type_from_output_modalities(["audio"]) == "audio_speech"
+    assert openrouter.model_type_from_output_modalities(["image", "text"]) == "chat"
+    assert openrouter.model_type_from_output_modalities(None) is None

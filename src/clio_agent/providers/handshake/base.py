@@ -31,6 +31,7 @@ through the community-catalog tier
 from __future__ import annotations
 
 import abc
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field, replace
@@ -47,14 +48,17 @@ from clio_agent.providers.handshake.model import (
 
 logger = logging.getLogger(__name__)
 
-#: The model-record fields the community catalogs can state
-#: (:func:`~clio_agent.providers.capabilities.model_sources.community_catalog_facts`).
-_CATALOG_FILLED_FIELDS: tuple[str, ...] = (
-    "context_max",
-    "output_max",
-    "input_modalities",
-    "model_type",
-)
+#: Endpoint dialects that serve Hugging Face weights under their repo id (or a
+#: link rule resolves one), so an ``org/name`` model key there is worth asking
+#: the Hub about. Cloud APIs and aggregators name their own catalogs (an
+#: OpenRouter ``openai/gpt-4o`` slug is not a repo), so they never reach the
+#: Hugging Face layer.
+_HF_REPO_DIALECTS: frozenset[str] = frozenset({"vllm", "llama_cpp", "lm_studio", "ollama"})
+
+#: How many model rows are discovered + enriched at once. Enrichment reads the
+#: community catalogs and the Hugging Face layer (network on a cold cache), so
+#: a 40-model gateway must not run them one after another.
+_MODEL_ROW_CONCURRENCY = 8
 
 
 def _now_iso() -> str:
@@ -174,21 +178,29 @@ class ProviderHandshake(abc.ABC):
                     started=started,
                 )
             await self._record_endpoint_capabilities(client, ctx)
+            gate = asyncio.Semaphore(_MODEL_ROW_CONCURRENCY)
+
+            async def _one_row(raw: Any) -> DiscoveredModelFacts | None:
+                async with gate:
+                    try:
+                        facts = await self.discover_model_config(client, ctx, raw)
+                        return await self.enrich_capabilities(facts, ctx)
+                    except Exception as exc:  # noqa: BLE001 - one bad row is dropped with a typed reason
+                        # One bad model row must not sink the whole report, but a
+                        # dropped row is not silent: emit a structured reason so it
+                        # reaches the logs rather than vanishing.
+                        _model = raw.get("id") if isinstance(raw, dict) else getattr(raw, "id", raw)
+                        logger.warning(
+                            "handshake dropped a model row: reason=model_row_discovery_failed model=%r error=%r",
+                            _model,
+                            exc,
+                        )
+                        return None
+
+            # Rows run concurrently but are recorded in the server's own order.
             discovered: list[DiscoveredModel] = []
-            for raw in raw_models:
-                try:
-                    facts = await self.discover_model_config(client, ctx, raw)
-                    facts = await self.enrich_capabilities(facts, ctx)
-                except Exception as exc:
-                    # One bad model row must not sink the whole report, but a
-                    # dropped row is not silent: emit a structured reason so it
-                    # reaches the logs rather than vanishing.
-                    _model = raw.get("id") if isinstance(raw, dict) else getattr(raw, "id", raw)
-                    logger.warning(
-                        "handshake dropped a model row: reason=model_row_discovery_failed model=%r error=%r",
-                        _model,
-                        exc,
-                    )
+            for facts in await asyncio.gather(*(_one_row(raw) for raw in raw_models)):
+                if facts is None:
                     continue
                 self._record_model_facts(facts)
                 discovered.append(facts.discovered)
@@ -228,37 +240,56 @@ class ProviderHandshake(abc.ABC):
     async def enrich_capabilities(
         self, facts: DiscoveredModelFacts, ctx: HandshakeContext
     ) -> DiscoveredModelFacts:
-        """Fill the model facts the adapter left unknown from the community catalogs.
+        """Resolve the model record through the brief 5.1 precedence below ``server_report``.
 
-        Covers the fields those catalogs state: ``context_max``/``output_max``,
-        ``input_modalities`` and ``model_type``. If the adapter's own
-        ``server_report`` facts already know a value, it is kept; otherwise
-        consult models.dev -> litellm (-> the local DB for limits) (brief 5.1
-        step 5) via
-        :func:`clio_agent.providers.capabilities.model_sources.community_catalog_facts`,
-        when ``allow_external_sources`` permits it. A field no catalog states
-        stays UNKNOWN -- in particular a server that reports no modalities is
-        never read as text-only.
+        The adapter's own ``server_report`` facts win field by field; what they
+        leave unknown comes from the Hugging Face repo layer (brief 6.1:
+        ``config.json`` / processor / ``params.json`` modalities, the
+        ``pipeline_tag`` model type, sampling, a chat-template scan) and then the
+        community catalogs (models.dev -> litellm -> the local DB), via
+        :func:`~clio_agent.providers.capabilities.model_sources.resolve_model_capabilities`.
+        The Hugging Face layer is consulted only for an ``org/name`` key on a
+        dialect that serves Hub weights (:data:`_HF_REPO_DIALECTS`). Runs off the
+        event loop: both layers read disk caches and, when cold, the network.
+        Gated on ``allow_external_sources``. A field no layer states stays
+        UNKNOWN -- a server that reports no modalities is never read as text-only.
         """
         if not ctx.allow_external_sources:
             return facts
         from clio_agent.providers.capabilities.model_sources import (  # noqa: PLC0415
-            community_catalog_facts,
+            resolve_model_capabilities,
         )
 
         model = facts.model
-        missing = [name for name in _CATALOG_FILLED_FIELDS if not getattr(model, name).known]
-        if not missing:
+        hf_source = self._hf_source(ctx, model.model_key)
+        resolved = await asyncio.to_thread(
+            resolve_model_capabilities,
+            model.model_key,
+            server_report=model,
+            hf_repo=hf_source,
+            community_lookup_id=facts.discovered.id,
+        )
+        if resolved == model:
             return facts
-        catalog = community_catalog_facts(facts.discovered.id)
-        if catalog is None:
-            return facts
-        updates: dict[str, Any] = {
-            name: getattr(catalog, name) for name in missing if getattr(catalog, name).known
-        }
-        if not updates:
-            return facts
-        return replace(facts, model=replace(model, **updates))
+        return replace(facts, model=resolved)
+
+    def _hf_source(self, ctx: HandshakeContext, model_key: str) -> Any:
+        """The Hugging Face layer for ``model_key`` on this endpoint, or ``None``."""
+        from clio_agent.providers.capabilities import invalidation  # noqa: PLC0415
+        from clio_agent.providers.capabilities.hf_repo import (  # noqa: PLC0415
+            HfRepoCatalogSource,
+            is_repo_id,
+        )
+        from clio_agent.providers.identity import endpoint_key  # noqa: PLC0415
+
+        if not is_repo_id(model_key):
+            return None
+        endpoint = invalidation.get_endpoint_capabilities(
+            endpoint_key(ctx.provider_id, ctx.api_base)
+        )
+        if endpoint is None or endpoint.dialect not in _HF_REPO_DIALECTS:
+            return None
+        return HfRepoCatalogSource()
 
     # ------------------------------------------------------------------ helpers
     def _record_model_facts(self, facts: DiscoveredModelFacts) -> None:
@@ -353,7 +384,9 @@ class ProviderHandshake(abc.ABC):
                     ollama_dialect.fingerprint_from_version(version),
                 )
         except Exception as exc:  # noqa: BLE001 - fingerprinting is best-effort, never sinks discovery
-            logger.debug("handshake: dialect endpoint fingerprint failed dialect=%s: %s", dialect, exc)
+            logger.debug(
+                "handshake: dialect endpoint fingerprint failed dialect=%s: %s", dialect, exc
+            )
         return None, ""
 
     def models_provenance(self, ctx: HandshakeContext) -> tuple[str, str]:
