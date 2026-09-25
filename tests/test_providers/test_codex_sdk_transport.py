@@ -332,6 +332,46 @@ async def test_catalog_is_ready_when_sdk_available_even_if_direct_is_not(
 
 
 # --------------------------------------------------------------------------- #
+# Startup: the SDK transport must be checked at boot, not left "not checked"
+# until someone clicks an explicit refresh (the owner's original complaint).
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_startup_probes_the_sdk_transport_and_a_fresh_catalog_read_reports_it_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fresh (passive) catalog read must show the SDK ready right after boot --
+    never "codex_sdk_not_checked" -- and never trigger its OWN live probe (the
+    startup task already recorded the result; a passive read only serves it)."""
+    from clio_agent.providers.model_discovery import claude_code_catalog
+    from clio_agent.providers.model_discovery import refresh as md_refresh
+
+    # Isolate from the direct transport's own sign-in state entirely: the SDK
+    # must be probed regardless of whether the direct credential is signed in.
+    monkeypatch.setattr(md_refresh, "is_provider_configured", lambda _preset: False)
+    monkeypatch.setattr(claude_code_catalog, "refresh_claude_code_candidates", lambda: [])
+
+    fake_sdk = _FakeSdkClient(
+        signed_in=True, rows=[_fake_model_row("gpt-5.6-luna", is_default=True)]
+    )
+    monkeypatch.setattr(sdk_discovery, "AsyncCodex", fake_sdk)
+
+    await md_refresh.refresh_subscription_catalogs_at_startup()
+
+    # The fresh read is passive (refresh=False): it must not re-probe the SDK
+    # itself -- flip the fake so a live re-probe would prove itself by failing.
+    monkeypatch.setattr(sdk_discovery, "AsyncCodex", _FakeSdkClient(signed_in=False))
+
+    provider = await discover_provider(_preset(), refresh=False)
+
+    sdk_transport_row = {t["id"]: t for t in provider["transports"]}["sdk"]
+    assert sdk_transport_row["health"] == "ready"
+    assert not sdk_transport_row["reason"].startswith("codex_sdk_not_checked")
+    assert [m["model_id"] for m in sdk_transport_row["models"]] == ["gpt-5.6-luna"]
+
+
+# --------------------------------------------------------------------------- #
 # Model selection routes to the right LiteLLM provider (S1b end-to-end).
 # --------------------------------------------------------------------------- #
 

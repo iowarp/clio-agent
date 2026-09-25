@@ -171,7 +171,7 @@ PROVIDERS: tuple[Provider, ...] = (
     # ----- cloud / proxy ---------------------------------------------
     Provider(
         id="openai",
-        label="OpenAI / Codex",
+        label="OpenAI API",
         description=(
             "Direct OpenAI API. Requires "
             "an OPENAI_API_KEY. Defaults to gpt-4o-mini for low cost; "
