@@ -103,6 +103,7 @@ from clio_agent.providers.catalog import get_provider as _catalog_provider
 from clio_agent.providers.catalog import kind_default as _catalog_kind_default
 from clio_agent.providers.catalog import normalize_provider_options as _normalize_provider_options
 from clio_agent.providers.catalog import provider_defaults as _catalog_provider_defaults
+from clio_agent.providers.catalog_types import ProviderKind
 
 PROVIDER_DEFAULTS: dict[str, dict[str, Any]] = _registry_provider_defaults()
 
@@ -200,15 +201,9 @@ class LMProviderConfig:
         codex_transport: Codex transport: "websocket" (default, A.6) or "sse"
     """
 
-    provider: Literal[
-        "lm_studio",
-        "ollama",
-        "openai",
-        "anthropic",
-        "argonne",
-        "codex",
-        "claude_code",
-    ] = "lm_studio"
+    # ProviderKind (the dialect selector, not an identity -- Part 3): the
+    # catalog owns the one list of kinds, so it isn't re-typed here too.
+    provider: ProviderKind = "lm_studio"
     provider_id: str = ""
     api_base: str = ""
     model: str = ""
@@ -280,8 +275,13 @@ class LMProviderConfig:
 
     def __post_init__(self) -> None:
         """Fill empty fields + capability flags from provider defaults."""
+        # provider_id is an identity, so it skips kind_default (Part 3); only
+        # the no-provider_id form (``LMProviderConfig(provider="argonne")``)
+        # resolves via kind.
         identity = self.provider_id or str(self.provider)
-        preset = _catalog_provider(identity) or _catalog_kind_default(identity)
+        preset = _catalog_provider(identity)
+        if preset is None and not self.provider_id:
+            preset = _catalog_kind_default(identity)
         if preset is not None:
             self.provider_id = preset.id
             self.provider = cast(Any, preset.provider_kind)

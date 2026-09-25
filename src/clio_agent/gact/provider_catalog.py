@@ -26,7 +26,10 @@ def _now_iso() -> str:
 
 
 def _api_key_for(preset: LMProviderPreset) -> str:
-    return model_discovery.resolve_cloud_api_key(preset.provider)
+    # Keyed by provider_id, never provider_kind (Part 3): nine presets share
+    # the kind "openai", and a kind-keyed lookup here previously resolved
+    # openrouter/nvidia_nim to the literal OpenAI provider's env var.
+    return model_discovery.resolve_cloud_api_key(preset.id)
 
 
 async def _ensure_codex_live_catalog(preset: LMProviderPreset) -> str:

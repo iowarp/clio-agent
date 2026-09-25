@@ -124,6 +124,32 @@ def test_get_lm_provider_unconfigured(tmp_path: Path) -> None:
         assert "codex" in ids
 
 
+def test_openrouter_auth_state_is_keyed_by_its_own_env_var(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """openrouter and the literal OpenAI provider share the catalog kind
+    "openai"; GET /v1/providers' ``is_authenticated`` state must key off
+    openrouter's OWN ``api_key_env`` (OPENROUTER_API_KEY), never off a
+    kind-keyed table that happens to reach OPENAI_API_KEY for both
+    (model-capabilities brief Part 3)."""
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-literal")
+    monkeypatch.delenv("CLIO_LM_API_KEY", raising=False)
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as c:
+        body = c.get("/v1/providers").json()
+
+    openrouter = next(p for p in body["providers"] if p["id"] == "openrouter")
+    assert openrouter["is_authenticated"] is False
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-openrouter")
+    with TestClient(app) as c:
+        body = c.get("/v1/providers").json()
+    openrouter = next(p for p in body["providers"] if p["id"] == "openrouter")
+    assert openrouter["is_authenticated"] is True
+
+
 def test_get_lm_provider_reports_codex_sign_in_required(tmp_path: Path, monkeypatch: Any) -> None:
     _codex_signed_in(monkeypatch, signed_in=False)
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))

@@ -399,7 +399,12 @@ def _vision_capability(app: "FastAPI", provider_id: str, model_id: str) -> tuple
     kind = _provider_runtime_kind(provider_id)
     if reports_input_modalities(kind):
         return False, "modality_evidence_unavailable"
-    provider = get_provider(provider_id) or get_provider(kind)
+    # provider_id only: get_provider(kind) would be ambiguous by construction
+    # (several presets share a kind, e.g. "openai") and adds nothing here --
+    # _provider_runtime_kind already falls back to provider_id verbatim when
+    # get_provider(provider_id) fails to resolve it, so a get_provider(kind)
+    # fallback would just repeat that same failed lookup (Part 3).
+    provider = get_provider(provider_id)
     return (
         bool(getattr(provider, "supports_vision", False)),
         "catalog_default_no_modality_evidence_system",

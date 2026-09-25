@@ -1,12 +1,9 @@
 """GACT v0.2 wire types as Pydantic models.
 
-Shapes mirror ``gact-tui/contract/SPEC.md`` (v0.2). This module is
-the Python counterpart of the Go types at
-``gact-tui/emulator/pkg/gact/``; field names + JSON keys match so
-generated client code rounds-trips cleanly.
-
-Only the shapes we actually emit or consume live here — we stub
-incrementally as each endpoint lands.
+Shapes mirror ``gact-tui/contract/SPEC.md`` (v0.2). This module is the Python
+counterpart of the Go types at ``gact-tui/emulator/pkg/gact/``; field names + JSON
+keys match so generated client code rounds-trips cleanly. Only the shapes we
+actually emit or consume live here — we stub incrementally as each endpoint lands.
 """
 
 from __future__ import annotations
@@ -301,8 +298,7 @@ class ContextOpRequest(BaseModel):
 
 
 class ContextOpResponse(BaseModel):
-    """Result of a context op plus a fresh state snapshot so the TUI updates
-    without a second GET."""
+    """Result of a context op plus a fresh state snapshot so the TUI updates without a 2nd GET."""
 
     session_id: str
     scope: str
@@ -325,13 +321,16 @@ class ContextSearchHit(BaseModel):
 class ContextSearchResponse(BaseModel):
     """GET /v1/sessions/{sid}/context/search — semantic discovery over scopes.
 
-    'which expert/scope knows about X'. ``semantic`` is True for real BM25 (the clio-core
-    backend) and False for the naive word-overlap fallback (LocalFS).
+    ``semantic`` is True only for real BM25 (clio-core, indexer chimod composed);
+    False covers both LocalFS's deliberate naive fallback (reason "") and a
+    clio-core backend missing the indexer (#905, ``semantic_unavailable_reason``
+    set) — never silently claimed True when it isn't real.
     """
 
     session_id: str
     query: str
     semantic: bool = False
+    semantic_unavailable_reason: str = ""
     hits: list[ContextSearchHit] = Field(default_factory=list)
 
 

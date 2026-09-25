@@ -582,6 +582,35 @@ def test_resolve_cloud_api_key_unknown_kind_is_empty(monkeypatch: pytest.MonkeyP
     assert model_discovery.resolve_cloud_api_key("lm_studio") == ""
 
 
+def test_resolve_cloud_api_key_is_keyed_by_provider_id_not_kind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """openrouter and nvidia_nim share the catalog kind "openai" with the literal
+    OpenAI provider; resolving by kind previously gave both of them
+    OPENAI_API_KEY (model-capabilities brief Part 3)."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-literal")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-openrouter")
+    monkeypatch.setenv("NVIDIA_NIM_API_KEY", "sk-nvidia")
+    monkeypatch.delenv("CLIO_LM_API_KEY", raising=False)
+
+    assert model_discovery.resolve_cloud_api_key("openrouter") == "sk-openrouter"
+    assert model_discovery.resolve_cloud_api_key("nvidia_nim") == "sk-nvidia"
+    # The literal OpenAI provider still resolves its own key.
+    assert model_discovery.resolve_cloud_api_key("openai") == "sk-openai-literal"
+
+
+def test_resolve_cloud_api_key_never_borrows_a_same_kind_siblings_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Even with no dedicated env var set, openrouter must not fall through to
+    a same-kind sibling's key -- only to the generic CLIO_LM_API_KEY."""
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-literal")
+    monkeypatch.delenv("CLIO_LM_API_KEY", raising=False)
+
+    assert model_discovery.resolve_cloud_api_key("openrouter") == ""
+
+
 # --------------------------------------------------------------------------- #
 # discover_codex -- mocked at the maintained-catalog boundary
 # (refresh_codex_catalog) and the credential-store sign-in boundary.

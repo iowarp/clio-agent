@@ -155,7 +155,7 @@ def register_provider_catalog_routes(
             provider_id=preset.id,
             provider_kind=preset.provider,
             api_base=(api_base or preset.api_base or ""),
-            api_key=model_discovery.resolve_cloud_api_key(preset.provider),
+            api_key=model_discovery.resolve_cloud_api_key(preset.id),
             auth_mode="passive",
             allow_external_sources=True,
         )
@@ -320,7 +320,7 @@ def register_provider_catalog_routes(
             provider_id=preset.id,
             provider_kind=preset.provider,
             api_base=(api_base or preset.api_base or ""),
-            api_key=model_discovery.resolve_cloud_api_key(preset.provider),
+            api_key=model_discovery.resolve_cloud_api_key(preset.id),
             auth_mode="passive",
             allow_external_sources=True,
         )

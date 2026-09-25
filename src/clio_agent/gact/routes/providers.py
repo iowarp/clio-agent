@@ -236,10 +236,10 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             return ["oauth"], authed
 
         if preset.requires_api_key:
-            env_var = {
-                "anthropic": "ANTHROPIC_API_KEY",
-                "openai": "OPENAI_API_KEY",
-            }.get(preset.provider, "CLIO_LM_API_KEY")
+            # The preset's own env var (never a kind-keyed table -- openrouter/
+            # nvidia_nim share kind "openai" with the literal OpenAI provider
+            # and must not report "authenticated" off OPENAI_API_KEY, Part 3).
+            env_var = preset.api_key_env or "CLIO_LM_API_KEY"
             return ["api_key"], bool(os.environ.get(env_var) or os.environ.get("CLIO_LM_API_KEY"))
 
         return ["none"], True

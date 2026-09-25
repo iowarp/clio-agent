@@ -242,6 +242,29 @@ jobs:
         if: matrix.variant == 'bundled' && runner.os == 'Windows'
         shell: pwsh
         run: ./install/build-gact-runtime.ps1 -Out external/gact-tui/desktop/src-tauri/gact-runtime -Source $env:GITHUB_WORKSPACE
+      # CU: the build scripts now pass uv.lock's own export as an install
+      # --constraint, but prove it actually took effect rather than trusting
+      # the mechanism silently -- a mismatch here means the bundle shipped a
+      # different iowarp-core (or any other package) than uv.lock/CI tested,
+      # the exact class of incident (a 2.1.0 client + 2.2.1 daemon on one
+      # host) this check exists to catch before release.
+      - name: Verify bundled runtime matches uv.lock
+        if: matrix.variant == 'bundled' && runner.os != 'Windows'
+        shell: bash
+        # Run the check WITH the just-built bundled interpreter (guaranteed
+        # present + >=3.11 for tomllib) rather than assuming a runner-ambient
+        # python; the script itself has zero third-party dependencies.
+        run: |
+          external/gact-tui/desktop/src-tauri/gact-runtime/python/bin/python3.12 \
+            scripts/check_bundle_matches_lock.py \
+            --python external/gact-tui/desktop/src-tauri/gact-runtime/python/bin/python3.12
+      - name: Verify bundled runtime matches uv.lock (Windows)
+        if: matrix.variant == 'bundled' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & external/gact-tui/desktop/src-tauri/gact-runtime/python/python.exe `
+            scripts/check_bundle_matches_lock.py `
+            --python external/gact-tui/desktop/src-tauri/gact-runtime/python/python.exe
       - name: Pack embedded clio-agent runtime (Windows)
         if: matrix.variant == 'bundled' && runner.os == 'Windows'
         shell: pwsh

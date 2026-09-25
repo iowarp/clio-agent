@@ -657,18 +657,19 @@ def as_provider_defaults_dict() -> dict[str, dict[str, Any]]:
 
 
 def as_cloud_api_key_env() -> dict[str, str]:
-    """Build the legacy ``_CLOUD_API_KEY_ENV`` mapping.
+    """Build the legacy ``_CLOUD_API_KEY_ENV`` mapping, keyed by ``provider_id``.
 
-    Maps each provider_kind that has an ``api_key_env`` on its
-    kind-default to that env var name. Used by ``__post_init__`` to
-    fill ``api_key`` from the process environment when the wire field
-    is blank.
+    Used by ``__post_init__`` to fill ``api_key`` from the process environment
+    when the wire field is blank. Keyed by id only (never by ``provider_kind``,
+    Part 3): nine presets share the kind ``"openai"``, so a kind-keyed entry
+    would resolve openrouter or nvidia_nim to whichever of them happened to be
+    that kind's default -- the literal OpenAI provider's ``OPENAI_API_KEY``.
+    A previous kind-keyed second pass here was a pure no-op (the only kinds
+    with an ``is_kind_default`` provider that also declares ``api_key_env`` are
+    "openai" and "anthropic", each already covered by its own id), so it added
+    nothing and is deleted rather than kept as dead scaffolding.
     """
-    out = {p.id: p.api_key_env for p in PROVIDERS if p.api_key_env}
-    out.update(
-        {p.provider_kind: p.api_key_env for p in PROVIDERS if p.is_kind_default and p.api_key_env}
-    )
-    return out
+    return {p.id: p.api_key_env for p in PROVIDERS if p.api_key_env}
 
 
 def as_lm_presets() -> list[Any]:
