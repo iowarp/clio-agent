@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 
+from clio_agent.arc.clio_core_config import CLIO_CORE_SEARCH_INDEXER_ABSENT
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.storage import make_arc_store
 
@@ -74,25 +75,18 @@ def test_search_empty_query(tmp_path):
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    reason=(
-        "clio-core 2.2.0 moved SemanticSearch into an optional clio_cte_indexer "
-        "chimod (upstream #905) that clio-agent's generated cte.yaml does not "
-        "declare -- declaring it is not safe yet (live Windows testing hit an "
-        "intermittent hang on the first PutBlob after client attach whenever the "
-        "chimod is merely present, with or without also binding the client to it "
-        "via CLIO_CTE_POOL). See clio_agent.arc.clio_core_config's INDEXER CHIMOD "
-        "note and CLIO_CORE_SEARCH_INDEXER_ABSENT."
-    ),
-    strict=False,
-)
-def test_search_bm25_on_clio_core():
+def test_search_on_clio_core_reports_degraded_not_silently_empty():
+    """Today's real behavior (clio-core#905): the indexer chimod's binary is absent
+    from every published 2.2.1 wheel, so clio-agent does not declare it (declaring it
+    hangs the first PutBlob -- see clio_core_config's INDEXER CHIMOD note). ``search``
+    still reaches the bare core and gets zero hits, but the backend REPORTS that
+    honestly instead of claiming real BM25: ``segment_search_is_semantic`` is False
+    and ``segment_search_degradation_reason`` names the typed reason -- never a
+    silent "semantic" empty result indistinguishable from a genuine no-match query."""
     arc = ARCMemory(store=make_arc_store(backend="cte"))
     sid = _seed(arc, sid="search_clio_core_s1")
-    assert arc.segment_search_is_semantic() is True  # real BM25
+    assert arc.segment_search_is_semantic() is False
+    assert arc.segment_search_degradation_reason() == CLIO_CORE_SEARCH_INDEXER_ABSENT
     hits = arc.search_segment_scopes(sid, "earthquake magnitude and epicenter location", k=3)
-    assert hits and hits[0][0] == "agentA/seismic"
-    # different query -> different top scope (genuinely content-ranked)
-    hits2 = arc.search_segment_scopes(sid, "smoke plume air quality", k=3)
-    assert hits2 and hits2[0][0] == "agentA/wildfire"
+    assert hits == []  # honest empty, not a fabricated ranking
     arc.clear_all()

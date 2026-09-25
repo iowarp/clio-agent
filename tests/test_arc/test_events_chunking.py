@@ -244,11 +244,13 @@ def test_events_family_never_in_search_scopes(
     returned = [scope for scope, _ in hits]
     assert all(not is_events_scope(s) for s in returned), returned
     if request.node.callspec.id == "cte":
-        # clio-core 2.2.0 moved SemanticSearch into an optional clio_cte_indexer
-        # chimod (upstream #905) clio-agent does not declare (unsafe to enable yet --
-        # see clio_agent.arc.clio_core_config's INDEXER CHIMOD note), so this leg's
-        # search_segment_scopes returns zero hits and "agentA" can never appear.
-        pytest.xfail("clio-core#905: cte-backend search returns zero hits (see #CU)")
+        # Today's real behavior (clio-core#905): the indexer chimod's binary is absent
+        # from every published 2.2.1 wheel, so this leg's search is honestly reported
+        # degraded (never a silent "semantic" empty result) and returns zero hits --
+        # "agentA" cannot appear, but that must never be misread as an _events leak.
+        assert arc.segment_search_is_semantic() is False
+        assert returned == []
+        return
     # The legitimate expert scope is still discoverable (search itself works).
     assert "agentA" in returned
 
