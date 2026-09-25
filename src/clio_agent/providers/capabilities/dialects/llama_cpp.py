@@ -185,6 +185,52 @@ def build_model_capabilities(model_key: str, v1_models_payload: Any, model_id: s
     return ModelCapabilities(model_key=model_key, context_max=parse_v1_models_context_max(v1_models_payload, model_id))
 
 
+# --------------------------------------------------------------------------- fetch (plain HTTP)
+
+
+async def fetch_props(client: Any, root: str, *, model_id: str = "", loaded: bool = True) -> dict[str, Any] | None:
+    """``GET /props`` (single mode, no query) or ``GET /props?model=<id>`` (router mode).
+
+    The router-mode query form is only safe for an ALREADY LOADED model (brief:
+    asking for an unloaded one loads it as a side effect), so callers pass
+    ``model_id`` there only when they already know ``loaded=True``; the default
+    (no ``model_id``) is always the safe, unqualified single-mode form.
+    """
+    url = f"{root}/props"
+    if model_id and loaded:
+        url = f"{root}/props?model={model_id}"
+    try:
+        response = await client.get(url)
+        if response.status_code >= 400:
+            return None
+        payload = response.json()
+    except Exception:  # noqa: BLE001 - /props is best-effort; the enrich cascade fills the gap
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+async def fetch_v1_models(client: Any, root: str) -> Any:
+    """``GET /v1/models`` -> the raw payload (brief: ``meta.n_ctx_train``), or ``None``."""
+    try:
+        response = await client.get(f"{root}/v1/models")
+        if response.status_code >= 400:
+            return None
+        return response.json()
+    except Exception:  # noqa: BLE001 - best-effort; context_max stays unknown
+        return None
+
+
+async def fetch_router_models(client: Any, root: str) -> Any:
+    """Router mode ``GET /models`` -> the raw payload, or ``None``."""
+    try:
+        response = await client.get(f"{root}/models")
+        if response.status_code >= 400:
+            return None
+        return response.json()
+    except Exception:  # noqa: BLE001 - best-effort; no router rows discovered
+        return None
+
+
 # --------------------------------------------------------------------------- router mode (/models)
 
 
@@ -440,6 +486,9 @@ __all__ = [
     "build_model_capabilities",
     "deployment_fingerprint_from_args",
     "deployment_fingerprint_from_model_path",
+    "fetch_props",
+    "fetch_router_models",
+    "fetch_v1_models",
     "fingerprint_from_build_info",
     "parse_props",
     "parse_router_model_row",

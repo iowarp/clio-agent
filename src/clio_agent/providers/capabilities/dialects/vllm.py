@@ -62,6 +62,40 @@ def deployment_fingerprint_from_row(row: Mapping[str, Any]) -> str:
     return f"vllm:root={root}:max_model_len={max_len}"
 
 
+async def fetch_models(client: Any, api_base: str) -> Any:
+    """``GET /v1/models`` -> the raw payload, or ``None``.
+
+    ``api_base`` may already end in ``/v1`` (a configured vLLM provider's own
+    ``api_base``) or be a bare host root (ALCF's per-job endpoint URL) --
+    :func:`~clio_agent.providers.api_base.native_root` normalizes either shape
+    before ``/v1/models`` is appended, so both callers always hit the same path.
+    """
+    from clio_agent.providers.api_base import native_root  # noqa: PLC0415
+
+    try:
+        response = await client.get(f"{native_root(api_base)}/v1/models")
+        if response.status_code >= 400:
+            return None
+        return response.json()
+    except Exception:  # noqa: BLE001 - best-effort; caller falls back to unknown facts
+        return None
+
+
+async def fetch_version(client: Any, api_base: str) -> str | None:
+    """``GET /version`` (native root, no ``/v1``) -> ``{"version": "..."}``, or ``None``."""
+    from clio_agent.providers.api_base import native_root  # noqa: PLC0415
+
+    try:
+        response = await client.get(f"{native_root(api_base)}/version")
+        if response.status_code >= 400:
+            return None
+        payload = response.json()
+    except Exception:  # noqa: BLE001 - best-effort enrichment, never sinks discovery
+        return None
+    version = payload.get("version") if isinstance(payload, dict) else None
+    return str(version) if version else None
+
+
 def find_model_row(payload: Any, model_id: str) -> Mapping[str, Any] | None:
     """Return the ``/v1/models`` row matching ``model_id``, or the sole row when only one exists."""
     rows = payload.get("data") if isinstance(payload, Mapping) else payload
@@ -143,6 +177,8 @@ __all__ = [
     "build_endpoint_capabilities",
     "build_model_capabilities",
     "deployment_fingerprint_from_row",
+    "fetch_models",
+    "fetch_version",
     "find_model_row",
     "fingerprint_from_version",
     "parse_models_row",

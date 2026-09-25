@@ -14,8 +14,11 @@ reasoning, ``--chat-template-kwargs`` -> default template kwargs).
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from clio_agent.providers.capabilities.dialects import llama_cpp
 
@@ -235,3 +238,84 @@ def test_build_endpoint_capabilities_reports_fingerprint_and_version() -> None:
     # the shared supplement table (brief 5.2 step 3) still fills accepted_params
     assert endpoint.accepted_params.known
     assert "reasoning_effort" in (endpoint.accepted_params.value or set())
+
+
+# --------------------------------------------------------------------------- fetch (fake HTTP client)
+
+
+@dataclass
+class _FakeResponse:
+    status_code: int
+    _payload: Any = None
+
+    def json(self) -> Any:
+        return self._payload
+
+
+class _FakeClient:
+    def __init__(self, *, routes: dict[str, Any] | None = None, fail: bool = False) -> None:
+        self._routes = routes or {}
+        self._fail = fail
+        self.requested: list[str] = []
+
+    async def get(self, url: str, **_: object) -> _FakeResponse:
+        self.requested.append(url)
+        if self._fail:
+            raise ConnectionError("unreachable")
+        if url in self._routes:
+            return _FakeResponse(200, self._routes[url])
+        return _FakeResponse(404)
+
+
+@pytest.mark.asyncio
+async def test_fetch_props_single_mode_is_unqualified() -> None:
+    payload = _load("props_single.json")
+    client = _FakeClient(routes={"http://127.0.0.1:9088/props": payload})
+
+    data = await llama_cpp.fetch_props(client, "http://127.0.0.1:9088")
+
+    assert data == payload
+    assert client.requested == ["http://127.0.0.1:9088/props"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_props_router_mode_queries_only_when_loaded() -> None:
+    client = _FakeClient(routes={"http://127.0.0.1:9090/props?model=m": {"ok": True}})
+
+    data = await llama_cpp.fetch_props(client, "http://127.0.0.1:9090", model_id="m", loaded=True)
+
+    assert data == {"ok": True}
+
+    # NOT loaded -> must stay on the safe, unqualified form (never query an
+    # unloaded router model, which would load it as a side effect).
+    client2 = _FakeClient(routes={"http://127.0.0.1:9090/props": {"safe": True}})
+    data2 = await llama_cpp.fetch_props(client2, "http://127.0.0.1:9090", model_id="m", loaded=False)
+    assert data2 == {"safe": True}
+    assert client2.requested == ["http://127.0.0.1:9090/props"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_props_is_best_effort_on_failure() -> None:
+    client = _FakeClient(fail=True)
+
+    assert await llama_cpp.fetch_props(client, "http://127.0.0.1:9088") is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_v1_models_reads_the_endpoint() -> None:
+    payload = _load("v1_models.json")
+    client = _FakeClient(routes={"http://127.0.0.1:9088/v1/models": payload})
+
+    data = await llama_cpp.fetch_v1_models(client, "http://127.0.0.1:9088")
+
+    assert data == payload
+
+
+@pytest.mark.asyncio
+async def test_fetch_router_models_reads_the_endpoint() -> None:
+    payload = _load("router_models.json")
+    client = _FakeClient(routes={"http://127.0.0.1:9090/models": payload})
+
+    data = await llama_cpp.fetch_router_models(client, "http://127.0.0.1:9090")
+
+    assert data == payload

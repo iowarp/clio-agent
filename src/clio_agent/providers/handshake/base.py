@@ -305,15 +305,14 @@ class ProviderHandshake(abc.ABC):
     ) -> tuple[Any, str]:
         """Best-effort per-dialect endpoint fingerprint (brief 5.6).
 
-        Returns ``(server_version_fact_or_none, fingerprint)``. Reuses each
-        dialect module's own pure ``fingerprint_from_*`` function
-        (:mod:`clio_agent.providers.capabilities.dialects`) so the exact
-        fingerprint SHAPE lives in exactly one place per dialect; this method's
-        own job is only the one extra HTTP read each needs, through the SAME
-        ``httpx.AsyncClient`` every handshake phase already shares. Any failure
-        (older server, transient error, a dialect this base class has no
-        fingerprint for) degrades to ``(None, "")`` -- an endpoint with no
-        fingerprint yet is exactly today's (pre-P4b) behavior, never a hard
+        Returns ``(server_version_fact_or_none, fingerprint)``. Delegates the
+        HTTP read itself to each dialect's OWN ``fetch_*`` function (this
+        method reads/parses NOTHING dialect-specific) and reuses its pure
+        ``fingerprint_from_*`` for the fingerprint shape -- both live in
+        exactly one place, :mod:`clio_agent.providers.capabilities.dialects`.
+        Any failure (older server, transient error, a dialect this base class
+        has no fingerprint for) degrades to ``(None, "")`` -- an endpoint with
+        no fingerprint yet is exactly today's (pre-P4b) behavior, never a hard
         failure.
         """
         from clio_agent.providers.api_base import native_root  # noqa: PLC0415
@@ -326,28 +325,29 @@ class ProviderHandshake(abc.ABC):
         from clio_agent.providers.capabilities.dialects import vllm as vllm_dialect  # noqa: PLC0415
         from clio_agent.providers.capabilities.records import Fact  # noqa: PLC0415
 
+        def _fact(text: str, detail: str) -> Fact | None:
+            return Fact(text, "server_report", _now_iso(), detail) if text else None
+
         try:
-            if dialect == "llama_cpp":
-                response = await client.get(f"{ctx.api_base.rstrip('/')}/props")
-                if response.status_code < 400:
-                    build_info = response.json().get("build_info")
-                    text = str(build_info or "").strip()
-                    fact = Fact(text, "server_report", _now_iso(), "llama.cpp /props build_info") if text else None
-                    return fact, llama_cpp_dialect.fingerprint_from_build_info(build_info)
-            elif dialect == "vllm":
-                response = await client.get(f"{native_root(ctx.api_base)}/version")
-                if response.status_code < 400:
-                    version = response.json().get("version")
-                    text = str(version or "").strip()
-                    fact = Fact(text, "server_report", _now_iso(), "vllm /version") if text else None
-                    return fact, vllm_dialect.fingerprint_from_version(version)
-            elif dialect == "ollama":
-                response = await client.get(f"{native_root(ctx.api_base)}/api/version")
-                if response.status_code < 400:
-                    version = response.json().get("version")
-                    text = str(version or "").strip()
-                    fact = Fact(text, "server_report", _now_iso(), "ollama /api/version") if text else None
-                    return fact, ollama_dialect.fingerprint_from_version(version)
+            if dialect == llama_cpp_dialect.DIALECT:
+                props = await llama_cpp_dialect.fetch_props(client, native_root(ctx.api_base))
+                build_info = (props or {}).get("build_info")
+                return (
+                    _fact(str(build_info or "").strip(), "llama.cpp /props build_info"),
+                    llama_cpp_dialect.fingerprint_from_build_info(build_info),
+                )
+            if dialect == vllm_dialect.DIALECT:
+                version = await vllm_dialect.fetch_version(client, ctx.api_base)
+                return (
+                    _fact(str(version or "").strip(), "vllm /version"),
+                    vllm_dialect.fingerprint_from_version(version),
+                )
+            if dialect == ollama_dialect.DIALECT:
+                version = await ollama_dialect.fetch_version(client, native_root(ctx.api_base))
+                return (
+                    _fact(str(version or "").strip(), "ollama /api/version"),
+                    ollama_dialect.fingerprint_from_version(version),
+                )
         except Exception as exc:  # noqa: BLE001 - fingerprinting is best-effort, never sinks discovery
             logger.debug("handshake: dialect endpoint fingerprint failed dialect=%s: %s", dialect, exc)
         return None, ""

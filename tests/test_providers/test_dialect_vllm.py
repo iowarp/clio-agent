@@ -8,8 +8,11 @@ the Hugging Face repo link) and ``GET /version`` (endpoint fingerprint).
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from clio_agent.providers.capabilities.dialects import vllm
 
@@ -86,3 +89,67 @@ def test_build_model_capabilities_is_a_bare_stub_for_the_hf_layer_to_fill() -> N
 
     assert model.model_key == "Qwen/Qwen3-8B"
     assert not model.context_max.known
+
+
+# --------------------------------------------------------------------------- fetch (fake HTTP client)
+
+
+@dataclass
+class _FakeResponse:
+    status_code: int
+    _payload: Any = None
+
+    def json(self) -> Any:
+        return self._payload
+
+
+class _FakeClient:
+    def __init__(self, *, routes: dict[str, Any] | None = None, fail: bool = False) -> None:
+        self._routes = routes or {}
+        self._fail = fail
+        self.requested: list[str] = []
+
+    async def get(self, url: str, **_: object) -> _FakeResponse:
+        self.requested.append(url)
+        if self._fail:
+            raise ConnectionError("unreachable")
+        if url in self._routes:
+            return _FakeResponse(200, self._routes[url])
+        return _FakeResponse(404)
+
+
+@pytest.mark.asyncio
+async def test_fetch_models_normalizes_a_bare_root_and_a_v1_suffixed_api_base() -> None:
+    payload = _load("v1_models.json")
+
+    # a configured provider's api_base already ends in /v1...
+    client_a = _FakeClient(routes={"http://127.0.0.1:8000/v1/models": payload})
+    assert await vllm.fetch_models(client_a, "http://127.0.0.1:8000/v1") == payload
+
+    # ...and a bare host root (ALCF's per-job endpoint) hits the SAME path.
+    client_b = _FakeClient(routes={"http://127.0.0.1:8000/v1/models": payload})
+    assert await vllm.fetch_models(client_b, "http://127.0.0.1:8000") == payload
+
+
+@pytest.mark.asyncio
+async def test_fetch_models_is_best_effort_on_failure() -> None:
+    client = _FakeClient(fail=True)
+
+    assert await vllm.fetch_models(client, "http://127.0.0.1:8000/v1") is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_version_reads_the_native_root_not_v1() -> None:
+    client = _FakeClient(routes={"http://127.0.0.1:8000/version": {"version": "0.11.0"}})
+
+    version = await vllm.fetch_version(client, "http://127.0.0.1:8000/v1")
+
+    assert version == "0.11.0"
+    assert client.requested == ["http://127.0.0.1:8000/version"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_version_is_best_effort_on_failure() -> None:
+    client = _FakeClient(fail=True)
+
+    assert await vllm.fetch_version(client, "http://127.0.0.1:8000/v1") is None
