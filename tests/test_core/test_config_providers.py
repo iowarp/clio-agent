@@ -624,6 +624,46 @@ class TestCreateLM:
         kwargs as codex_reasoning_effort — the same optional_params lane
         codex_transport already proves reaches the CustomLLM. off → codex's
         explicit 'none' (never omit-and-inherit-ambient)."""
+        from clio_agent.providers.capabilities import invalidation
+        from clio_agent.providers.capabilities.records import (
+            DeploymentCapabilities,
+            EndpointCapabilities,
+            Fact,
+            ModelCapabilities,
+            ThinkingSpec,
+        )
+
+        invalidation.clear_all()
+        now = "2026-01-01T00:00:00+00:00"
+        invalidation.record_endpoint_capabilities(
+            EndpointCapabilities(
+                provider_id="codex",
+                api_base="codex://sdk",
+                dialect="codex",
+                thinking_controls=Fact(frozenset({"reasoning_effort"}), "dialect", now),
+            )
+        )
+        invalidation.record_model_capabilities(
+            ModelCapabilities(
+                model_key="test:codex:gpt-5.5",
+                thinking=Fact(
+                    ThinkingSpec(
+                        mechanism="effort_levels", levels=("high",), effort_by_level={}
+                    ),
+                    "server_report",
+                    now,
+                ),
+            )
+        )
+        invalidation.record_deployment_capabilities(
+            DeploymentCapabilities(
+                provider_id="codex",
+                api_base="codex://sdk",
+                model_id="gpt-5.5",
+                model_key=Fact("test:codex:gpt-5.5", "server_report", now),
+            )
+        )
+
         config = LMProviderConfig(provider="codex", model="gpt-5.5", thinking_level="high")
         lm = create_lm(config)
         assert lm.kwargs["codex_reasoning_effort"] == "high"
@@ -632,8 +672,13 @@ class TestCreateLM:
         lm_off = create_lm(config_off)
         assert lm_off.kwargs["codex_reasoning_effort"] == "none"
 
-        # Unset level → no effort kwarg at all (codex's own default governs).
-        config_default = LMProviderConfig(provider="codex", model="gpt-5.5")
+        # Unset level on a model with NO linked evidence yet (no handshake has
+        # run for this identity) → no effort kwarg at all, never a guess
+        # (fail closed; model-capabilities brief 5.5). A model WITH known
+        # evidence sends codex's explicit 'none' even when unset (dialect_wire
+        # docstring: never omit-and-inherit-ambient) -- this is the distinct
+        # "nothing is known yet" case, covered with its own, unseeded model id.
+        config_default = LMProviderConfig(provider="codex", model="gpt-5.5-unseeded")
         lm_default = create_lm(config_default)
         assert "codex_reasoning_effort" not in lm_default.kwargs
 

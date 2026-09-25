@@ -44,34 +44,25 @@ mean "an operator's own locally-configured backend goes silently mute before
 its first handshake" -- see the design note under :data:`_SDK_ONLY_DIALECTS`
 for the one place this still needs a further, deliberate exemption.
 
-**Thinking is a split table, not one unified mapping** (item 5, dialect
-table). ``llama_cpp``/``vllm``/``ollama``/``lm_studio``/``openrouter`` --
-the dialects the P4a/P4b capability-record adapters actually populate a
-:class:`~clio_agent.providers.capabilities.records.ThinkingSpec` for -- are
-driven by :mod:`clio_agent.lm.dialect_wire`, itself driven by the model's own
-``ThinkingSpec`` and the control :mod:`.combine` chose (Part 5.5). ``codex``/
-``claude_code``/``anthropic``/``openai`` keep the EXISTING, live-verified
-SDK/CLI-transport mapping in :mod:`clio_agent.providers.thinking`
-(``resolve_thinking``) unchanged: those four are not HTTP dialects with a
-JSON request body llama.cpp-style parameter gating applies to (codex/
-claude_code are Python SDK sessions; anthropic/openai are real cloud APIs
-whose thinking shape LiteLLM already translates end-to-end), and no P4a/P4b
-adapter builds a ``ThinkingSpec``/``ThinkingDecision`` for them yet -- unifying
-that is future work (a codex/claude_code dialect adapter), not this slice.
-This split is a deliberate, documented scoping call, not an oversight.
-
-**``providers/thinking.py``'s ``ACCEPTED_LEVELS`` keeps its ``lm_studio``/
-``ollama``/``argonne`` rows.** This module never calls ``resolve_thinking``
-for those three dialects any more (they go through :mod:`.dialect_wire`
-instead, above) -- but ``providers/reasoning_levels.py``'s ``model_reasoning``
-(the UI catalog's ``reasoning.levels`` display, an unrelated consumer, brief
-Part 7's UI deliverable) still reads those same rows to decide which levels
-the model picker advertises for a local model. Deleting them would silently
-empty that picker with no replacement in this slice's scope, for zero benefit
-to request-building. Folding the picker's OWN level list onto the model's
-``ThinkingSpec``/effective ``ThinkingDecision`` (so it, too, stops being
-kind-keyed) is future work, tracked with the codex/claude_code dialect
-adapter above -- not deleted here.
+**Thinking is ONE mapping, covering every dialect** (item 5, dialect table).
+:func:`clio_agent.lm.dialect_wire.thinking_wire` builds the on/off/level
+kwargs for every dialect this module configures an LM for -- the five HTTP
+dialects (llama.cpp/vLLM/Ollama/LM Studio/OpenRouter) AND codex/claude_code/
+anthropic/openai, all driven by the model's own
+:class:`~clio_agent.providers.capabilities.records.ThinkingSpec` and the
+control :mod:`.combine` chose (Part 5.5). ``providers/thinking.py`` (the old
+provider-name-keyed ``resolve_thinking``/``ACCEPTED_LEVELS`` engine) and
+``providers/reasoning_levels.py`` (its catalog-display counterpart) are
+deleted: codex's ``ThinkingSpec`` comes from its SDK's own reported
+``supportedReasoningEfforts`` (``providers.capabilities.dialects.codex``),
+claude_code's from the CLI's own ``supportedEffortLevels``
+(``providers.capabilities.dialects.claude_code``), and anthropic/openai's
+from LiteLLM's own introspection (``providers.capabilities.dialects.
+cloud_thinking``) -- real per-model/per-provider data feeding the SAME
+``ThinkingSpec`` shape every other dialect already uses, never a second,
+provider-name-keyed mapping table. Only the CLIO-level vocabulary itself
+(``off``/``low``/.../``ultra``, the generic budget ladder) survives, in
+:mod:`clio_agent.providers.thinking_levels`.
 """
 
 from __future__ import annotations
@@ -104,12 +95,6 @@ logger = logging.getLogger(__name__)
 #: Matches this pair's existing, unconditional treatment everywhere else in
 #: the codebase (``_CUSTOM_TRANSPORT_PREFIXES``, ``parse_retry_capability``).
 _SDK_ONLY_DIALECTS: frozenset[str] = frozenset({"codex", "claude_code"})
-
-#: Dialects whose thinking config still goes through the existing
-#: ``providers.thinking.resolve_thinking`` engine (see module docstring).
-_LEGACY_THINKING_DIALECTS: frozenset[str] = frozenset(
-    {"codex", "claude_code", "anthropic", "openai"}
-)
 
 #: User-settable optional sampling fields (beyond temperature, handled
 #: separately since its default/recommended-value rule differs slightly --
@@ -199,35 +184,6 @@ def _lm_studio_allowed_options(config: "LMProviderConfig") -> tuple[str, ...] | 
     return tuple(str(v) for v in raw)
 
 
-def _legacy_thinking_kwargs(config: "LMProviderConfig") -> dict[str, Any]:
-    """Codex/claude_code/anthropic/openai thinking, via the existing SDK/CLI mapping.
-
-    Unchanged behavior from the pre-P5 ``_thinking_kwargs`` (module docstring
-    explains why these four stay on :func:`~clio_agent.providers.thinking.
-    resolve_thinking` rather than :mod:`clio_agent.lm.dialect_wire`).
-    """
-
-    from clio_agent.providers.reasoning_levels import model_effort_levels  # noqa: PLC0415
-    from clio_agent.providers.thinking import (  # noqa: PLC0415
-        log_unsupported_thinking,
-        resolve_thinking,
-    )
-
-    plan = resolve_thinking(
-        config.provider,
-        getattr(config, "thinking_level", None),
-        int(getattr(config, "thinking_budget", 0) or 0),
-        effort_levels=model_effort_levels(config.provider, config.model or ""),
-    )
-    if not plan.supported:
-        log_unsupported_thinking(plan)
-        return {}
-    extras = dict(plan.litellm_kwargs)
-    if plan.sdk_thinking is not None:
-        extras["claude_code_thinking"] = plan.sdk_thinking
-    return extras
-
-
 def _stop_sequences() -> list[str]:
     """The DSPy trajectory-regurgitation stop list, or ``lm.stop_sequences``' override.
 
@@ -312,32 +268,29 @@ def build_request_kwargs(
         sent_optional = True
 
     # -- thinking (item 4) ------------------------------------------------
-    if dialect in _LEGACY_THINKING_DIALECTS:
-        thinking_extras = _legacy_thinking_kwargs(config)
-        if thinking_extras:
-            extras.update(thinking_extras)
-            sent_optional = True
-    elif dialect in dialect_wire.HTTP_DIALECTS:
-        allowed_options = _lm_studio_allowed_options(config) if dialect == "lm_studio" else None
-        wire = dialect_wire.thinking_wire(
-            dialect,
-            effective.thinking,
-            level=getattr(config, "thinking_level", None),
-            lm_studio_allowed_options=allowed_options,
-        )
-        if wire:
-            dialect_wire.apply_thinking_wire(extras, dialect, wire)
-            sent_optional = True
+    allowed_options = _lm_studio_allowed_options(config) if dialect == "lm_studio" else None
+    wire = dialect_wire.thinking_wire(
+        dialect,
+        effective.thinking,
+        level=getattr(config, "thinking_level", None),
+        lm_studio_allowed_options=allowed_options,
+        budget_tokens=int(getattr(config, "thinking_budget", 0) or 0),
+    )
+    if wire:
+        dialect_wire.apply_thinking_wire(extras, dialect, wire)
+        sent_optional = True
     elif getattr(config, "thinking_level", None) not in (None, "off"):
         # No silent no-op (ground rule): a thinking level was explicitly
-        # requested on a dialect this module has no mapping for at all
-        # (neither the legacy SDK/CLI engine nor a dialect_wire entry).
+        # requested but nothing was sent -- either this dialect has no
+        # mapping at all, or the model's own thinking evidence is unknown/
+        # not controllable here (brief 5.5). Either way it is worth a
+        # structured signal rather than a quiet no-op.
         logger.warning(
-            "thinking_unsupported provider=%s dialect=%s requested_level=%s "
-            "reason=no_mapping_for_dialect",
+            "thinking_unsupported provider=%s dialect=%s requested_level=%s reason=%s",
             config.provider,
             dialect,
             config.thinking_level,
+            "no_thinking_control" if effective.thinking.known else "thinking_spec_unknown",
         )
 
     # -- stop sequences (item 3) -------------------------------------------

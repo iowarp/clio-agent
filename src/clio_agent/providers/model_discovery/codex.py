@@ -62,8 +62,9 @@ def _codex_reasoning_row(row: Any) -> dict[str, Any]:
     ``supportedReasoningEfforts`` / ``defaultReasoningEffort`` are REQUIRED fields
     of the SDK's ``Model`` (``openai_codex/generated/v2_all.py``), so they are the
     account's own per-model truth. They are persisted verbatim (Codex vocabulary:
-    ``none``/``minimal``/``low``/``medium``/``high``/``xhigh``); the catalog maps
-    them onto clio's thinking levels in :mod:`clio_agent.providers.reasoning_levels`.
+    ``none``/``minimal``/``low``/``medium``/``high``/``xhigh``); the capabilities
+    layer maps them onto clio's thinking levels
+    (:mod:`clio_agent.providers.capabilities.dialects.codex`).
     """
 
     options = getattr(row, "supported_reasoning_efforts", None) or []

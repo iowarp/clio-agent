@@ -64,6 +64,7 @@ from clio_agent.providers.capabilities.records import (
     DeploymentCapabilities,
     Fact,
     ModelCapabilities,
+    ThinkingSpec,
     modalities_from_capabilities,
     unknown,
 )
@@ -102,6 +103,31 @@ def _overlay_capabilities(row: dict[str, Any]) -> tuple[str, ...]:
     if not isinstance(values, list):
         return ()
     return tuple(str(value).strip() for value in values if str(value).strip())
+
+
+def _thinking_fact_for(provider_kind: str, raw: dict[str, Any]) -> Fact[ThinkingSpec]:
+    """This overlay-sourced row's ``ThinkingSpec`` fact, dispatched by CLI provider.
+
+    Codex's own SDK effort vocabulary and Claude Code's CLI-reported effort
+    levels need different per-provider translation
+    (:mod:`clio_agent.providers.capabilities.dialects.codex`/``.claude_code``);
+    every other (future) no-HTTP-surface CLI provider has no known thinking
+    story here yet, so it stays unknown.
+    """
+
+    if provider_kind == "codex":
+        from clio_agent.providers.capabilities.dialects import (
+            codex as codex_dialect,  # noqa: PLC0415
+        )
+
+        return codex_dialect.build_thinking_spec(raw)
+    if provider_kind == "claude_code":
+        from clio_agent.providers.capabilities.dialects import (  # noqa: PLC0415
+            claude_code as claude_code_dialect,
+        )
+
+        return claude_code_dialect.build_thinking_spec(raw)
+    return unknown()
 
 
 class CliCatalogHandshake(NoOpHandshake):
@@ -166,6 +192,10 @@ class CliCatalogHandshake(NoOpHandshake):
                     "supported_effort_levels": list(m.get("supported_effort_levels") or []),
                     "cli_values": list(m.get("cli_values") or []),
                     "effort_evidence_failure": str(m.get("effort_evidence_failure") or ""),
+                    # The maintained claude-code-models.json catalog's own
+                    # shipped-default thinking level for this model, when it
+                    # declares one (data, never a name-matched heuristic).
+                    "shipped_default_effort": str(m.get("shipped_default_effort") or ""),
                     _OVERLAY_CHECKED_KEY: True,
                 }
                 for m in wire["models"]
@@ -262,6 +292,7 @@ class CliCatalogHandshake(NoOpHandshake):
                 if caps
                 else unknown()
             ),
+            thinking=_thinking_fact_for(ctx.provider_kind, raw),
         )
         deployment = DeploymentCapabilities(
             provider_id=ctx.provider_id,
@@ -417,6 +448,7 @@ class ClaudeCodeCatalogHandshake(CliCatalogHandshake):
                 "description": "",
                 "capabilities": list(model.get("capabilities") or []),
                 "capability_evidence": model.get("capability_evidence") or {},
+                "shipped_default_effort": str(model.get("shipped_default_effort") or ""),
             }
             for model in catalog.models
         ]

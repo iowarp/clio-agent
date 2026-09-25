@@ -476,6 +476,226 @@ def test_openrouter_require_parameters_absent_when_nothing_optional_sent() -> No
 
 
 # --------------------------------------------------------------------------- #
+# codex (SDK transport) -- ThinkingSpec sourced from providers.capabilities.
+# dialects.codex, driven by the SDK's own reported supportedReasoningEfforts.
+# --------------------------------------------------------------------------- #
+
+_CODEX_BASE = "codex://sdk"
+_CODEX_LEVELS = ("low", "medium", "high", "xhigh")
+
+
+def _seed_codex(model_id: str = "gpt-5.6-sol") -> None:
+    _seed(
+        provider_id="codex",
+        api_base=_CODEX_BASE,
+        model_id=model_id,
+        dialect="codex",
+        accepted_params=frozenset(),
+        thinking_controls=frozenset({"reasoning_effort"}),
+        thinking_spec=ThinkingSpec(
+            mechanism="effort_levels",
+            levels=_CODEX_LEVELS,
+            effort_by_level={level: level for level in _CODEX_LEVELS},
+        ),
+    )
+
+
+def test_codex_thinking_off() -> None:
+    _seed_codex()
+    extras = build_request_kwargs(_cfg("codex", "gpt-5.6-sol", thinking_level="off"))
+    assert extras["codex_reasoning_effort"] == "none"
+
+
+@pytest.mark.parametrize("level", _CODEX_LEVELS)
+def test_codex_thinking_each_level(level: str) -> None:
+    _seed_codex()
+    extras = build_request_kwargs(_cfg("codex", "gpt-5.6-sol", thinking_level=level))
+    assert extras["codex_reasoning_effort"] == level
+
+
+# --------------------------------------------------------------------------- #
+# claude_code (SDK transport) -- ThinkingSpec sourced from providers.
+# capabilities.dialects.claude_code, driven by the CLI's own
+# supportedEffortLevels (or a generic token budget for a model with none).
+# --------------------------------------------------------------------------- #
+
+_CLAUDE_CODE_BASE = "claude-code://sdk"
+_CLAUDE_CODE_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+
+def _seed_claude_code_effort(model_id: str = "sonnet") -> None:
+    _seed(
+        provider_id="claude_code",
+        api_base=_CLAUDE_CODE_BASE,
+        model_id=model_id,
+        dialect="claude_code",
+        accepted_params=frozenset(),
+        thinking_controls=frozenset({"effort", "claude_code_thinking"}),
+        thinking_spec=ThinkingSpec(
+            mechanism="effort_levels",
+            levels=_CLAUDE_CODE_LEVELS,
+            effort_by_level={level: level for level in _CLAUDE_CODE_LEVELS},
+        ),
+    )
+
+
+def _seed_claude_code_budget(model_id: str = "haiku") -> None:
+    _seed(
+        provider_id="claude_code",
+        api_base=_CLAUDE_CODE_BASE,
+        model_id=model_id,
+        dialect="claude_code",
+        accepted_params=frozenset(),
+        thinking_controls=frozenset({"claude_code_thinking"}),
+        thinking_spec=ThinkingSpec(mechanism="budget_tokens"),
+    )
+
+
+def test_claude_code_thinking_off() -> None:
+    _seed_claude_code_effort()
+    extras = build_request_kwargs(_cfg("claude_code", "sonnet", thinking_level="off"))
+    assert extras["claude_code_thinking"] == {"type": "disabled"}
+
+
+@pytest.mark.parametrize("level", _CLAUDE_CODE_LEVELS)
+def test_claude_code_thinking_each_effort_level(level: str) -> None:
+    _seed_claude_code_effort()
+    extras = build_request_kwargs(_cfg("claude_code", "sonnet", thinking_level=level))
+    assert extras["claude_code_thinking"] == {
+        "type": "adaptive",
+        "display": "summarized",
+        "effort": level,
+    }
+
+
+def test_claude_code_budget_mechanism_off() -> None:
+    _seed_claude_code_budget()
+    extras = build_request_kwargs(_cfg("claude_code", "haiku", thinking_level="off"))
+    assert extras["claude_code_thinking"] == {"type": "disabled"}
+
+
+@pytest.mark.parametrize(("level", "budget"), [("low", 2048), ("medium", 8192), ("high", 24576)])
+def test_claude_code_budget_mechanism_uses_the_generic_ladder(level: str, budget: int) -> None:
+    """A model the CLI lists with no per-model effort levels (e.g. haiku)
+    still gets real thinking, via CLIO's own generic level->budget ladder."""
+    _seed_claude_code_budget()
+    extras = build_request_kwargs(_cfg("claude_code", "haiku", thinking_level=level))
+    assert extras["claude_code_thinking"] == {
+        "type": "enabled",
+        "budget_tokens": budget,
+        "display": "summarized",
+    }
+
+
+# --------------------------------------------------------------------------- #
+# anthropic -- ThinkingSpec sourced from providers.capabilities.dialects.
+# cloud_thinking, driven by LiteLLM's own adaptive-thinking introspection.
+# --------------------------------------------------------------------------- #
+
+_ANTHROPIC_BASE = "https://api.anthropic.com/v1"
+_ANTHROPIC_LEVELS = ("low", "medium", "high", "max")
+
+
+def _seed_anthropic_effort(model_id: str = "claude-opus-4-7") -> None:
+    _seed(
+        provider_id="anthropic",
+        api_base=_ANTHROPIC_BASE,
+        model_id=model_id,
+        dialect="anthropic",
+        accepted_params=frozenset(),
+        thinking_controls=frozenset({"reasoning_effort", "anthropic_thinking"}),
+        thinking_spec=ThinkingSpec(
+            mechanism="effort_levels", levels=_ANTHROPIC_LEVELS, effort_by_level={}
+        ),
+    )
+
+
+def _seed_anthropic_budget(model_id: str = "claude-sonnet-4-5") -> None:
+    _seed(
+        provider_id="anthropic",
+        api_base=_ANTHROPIC_BASE,
+        model_id=model_id,
+        dialect="anthropic",
+        accepted_params=frozenset(),
+        thinking_controls=frozenset({"anthropic_thinking"}),
+        thinking_spec=ThinkingSpec(mechanism="budget_tokens"),
+    )
+
+
+def test_anthropic_effort_off_sends_nothing() -> None:
+    """The Anthropic API's own default is thinking off -- nothing to send."""
+    _seed_anthropic_effort()
+    extras = build_request_kwargs(_cfg("anthropic", "claude-opus-4-7", thinking_level="off"))
+    assert "reasoning_effort" not in extras
+    assert "thinking" not in extras
+
+
+@pytest.mark.parametrize("level", _ANTHROPIC_LEVELS)
+def test_anthropic_effort_each_level(level: str) -> None:
+    _seed_anthropic_effort()
+    extras = build_request_kwargs(_cfg("anthropic", "claude-opus-4-7", thinking_level=level))
+    assert extras["reasoning_effort"] == level
+
+
+def test_anthropic_budget_off_sends_nothing() -> None:
+    _seed_anthropic_budget()
+    extras = build_request_kwargs(_cfg("anthropic", "claude-sonnet-4-5", thinking_level="off"))
+    assert "thinking" not in extras
+
+
+@pytest.mark.parametrize(("level", "budget"), [("low", 2048), ("medium", 8192), ("high", 24576)])
+def test_anthropic_budget_mechanism_uses_the_generic_ladder(level: str, budget: int) -> None:
+    """A model with no adaptive-effort evidence still gets a real thinking
+    token budget (a platform-wide fact), off the same generic ladder."""
+    _seed_anthropic_budget()
+    extras = build_request_kwargs(_cfg("anthropic", "claude-sonnet-4-5", thinking_level=level))
+    assert extras["thinking"] == {"type": "enabled", "budget_tokens": budget}
+
+
+# --------------------------------------------------------------------------- #
+# openai -- ThinkingSpec sourced from providers.capabilities.dialects.
+# cloud_thinking, driven by the LiteLLM model map's own supports_reasoning /
+# supports_*_reasoning_effort flags.
+# --------------------------------------------------------------------------- #
+
+_OPENAI_BASE = "https://api.openai.com/v1"
+_OPENAI_LEVELS = ("minimal", "low", "medium", "high")
+
+
+def _seed_openai(model_id: str, *, levels: tuple[str, ...]) -> None:
+    _seed(
+        provider_id="openai",
+        api_base=_OPENAI_BASE,
+        model_id=model_id,
+        dialect="openai",
+        accepted_params=frozenset(),
+        thinking_controls=frozenset({"reasoning_effort"}),
+        thinking_spec=ThinkingSpec(mechanism="effort_levels", levels=levels, effort_by_level={}),
+    )
+
+
+def test_openai_off_omitted_when_the_model_reports_no_off_level() -> None:
+    """Some reasoning models accept no explicit off -- omitting the field IS
+    the correct "off" (never a guessed 'none' value the model may reject)."""
+    _seed_openai("gpt-5", levels=_OPENAI_LEVELS)
+    extras = build_request_kwargs(_cfg("openai", "gpt-5", thinking_level="off"))
+    assert "reasoning_effort" not in extras
+
+
+def test_openai_off_sends_none_when_the_model_reports_an_off_level() -> None:
+    _seed_openai("gpt-5-compat", levels=("off", *_OPENAI_LEVELS))
+    extras = build_request_kwargs(_cfg("openai", "gpt-5-compat", thinking_level="off"))
+    assert extras["reasoning_effort"] == "none"
+
+
+@pytest.mark.parametrize("level", _OPENAI_LEVELS)
+def test_openai_each_level(level: str) -> None:
+    _seed_openai("gpt-5", levels=_OPENAI_LEVELS)
+    extras = build_request_kwargs(_cfg("openai", "gpt-5", thinking_level=level))
+    assert extras["reasoning_effort"] == level
+
+
+# --------------------------------------------------------------------------- #
 # temperature=None default (Part 7 item 1)
 # --------------------------------------------------------------------------- #
 

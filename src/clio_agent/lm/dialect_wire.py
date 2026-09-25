@@ -42,6 +42,7 @@ from typing import Any
 
 from clio_agent.providers.capabilities.combine import ThinkingDecision
 from clio_agent.providers.capabilities.dialects.openrouter import REQUIRE_PARAMETERS_FLAG
+from clio_agent.providers.thinking_levels import LEVEL_BUDGET
 
 #: Optional fields the brief names (Part 7 item 2) whose WIRE NAME differs by
 #: dialect. A field absent from the inner mapping keeps its clio-internal name
@@ -63,9 +64,17 @@ _TOP_LEVEL_STANDARD_FIELDS: frozenset[str] = frozenset({"top_p", "presence_penal
 #: it appears in ``get_supported_openai_params(custom_llm_provider="lm_studio")``
 #: with no supplement-table addition needed, unlike llama.cpp/vLLM where the
 #: SAME field name is a supplement-table addition with no native translator at
-#: all, and therefore must go through ``extra_body`` instead).
+#: all, and therefore must go through ``extra_body`` instead). openai/anthropic
+#: are real LiteLLM providers that translate ``reasoning_effort``/``thinking``
+#: natively; codex/claude_code are CustomLLM transports whose own
+#: ``optional_params`` reader expects these exact top-level kwarg names
+#: (never a JSON request body, so "extra_body" has no meaning for them at all).
 _DIALECT_NATIVE_TOP_LEVEL_FIELDS: dict[str, frozenset[str]] = {
     "lm_studio": frozenset({"reasoning_effort"}),
+    "openai": frozenset({"reasoning_effort"}),
+    "anthropic": frozenset({"reasoning_effort", "thinking"}),
+    "codex": frozenset({"codex_reasoning_effort"}),
+    "claude_code": frozenset({"claude_code_thinking"}),
 }
 
 
@@ -130,14 +139,35 @@ def _effort_value(decision: ThinkingDecision, level: str) -> str | None:
     return spec.effort_by_level.get(level, level)
 
 
+def _budget_for_level(decision: ThinkingDecision, level: str, explicit_budget: int) -> int:
+    """The token budget to send for ``level`` on a ``budget_tokens`` mechanism.
+
+    An explicit ``thinking_budget`` override (``config.thinking_budget``, a
+    real user setting) always wins. Otherwise the model's OWN
+    ``budget_range`` (when it reports one) supplies the ceiling; failing
+    that, CLIO's generic level -> budget ladder
+    (:data:`clio_agent.providers.thinking_levels.LEVEL_BUDGET`) is the
+    documented default schedule, never a per-model guess.
+    """
+
+    if explicit_budget > 0:
+        return explicit_budget
+    spec = decision.spec
+    assert spec is not None
+    if spec.budget_range is not None:
+        return spec.budget_range[1]
+    return LEVEL_BUDGET.get(level, LEVEL_BUDGET["medium"])
+
+
 def thinking_wire(
     dialect: str,
     decision: ThinkingDecision,
     *,
     level: str | None,
     lm_studio_allowed_options: tuple[str, ...] | None = None,
+    budget_tokens: int = 0,
 ) -> dict[str, Any]:
-    """Build the on/off/level thinking kwargs for one HTTP dialect (Part 7 item 4).
+    """Build the on/off/level thinking kwargs for one dialect (Part 7 item 4).
 
     ``decision`` is the effective :class:`ThinkingDecision`
     (:mod:`clio_agent.providers.capabilities.combine`): its ``control`` is
@@ -149,10 +179,15 @@ def thinking_wire(
     thinking directive at all rather than guessing (fail closed).
 
     ``level`` is the user's/shipped CLIO level (``None``/``"off"`` means off).
-    Only CODEX/CLAUDE_CODE/ANTHROPIC/OPENAI are NOT handled here -- those are
-    SDK/CLI transports with their own established, live-verified mapping
-    (:func:`clio_agent.providers.thinking.resolve_thinking`); see
-    :mod:`clio_agent.lm.request_builder` for why that split is deliberate.
+    ``budget_tokens`` is an explicit ``config.thinking_budget`` override, used
+    only by the ``budget_tokens``-mechanism dialects (anthropic, claude_code,
+    vLLM).
+
+    Covers EVERY dialect the request builder configures an LM for --
+    llama.cpp/vLLM/Ollama/LM Studio/OpenRouter (:data:`HTTP_DIALECTS`) and
+    codex/claude_code/anthropic/openai (real cloud APIs and CLI/SDK
+    transports, still driven by their own real per-model ``ThinkingSpec``
+    now, never a second, provider-name-keyed mapping table).
     """
 
     if decision.spec is None or decision.control is None:
@@ -172,11 +207,10 @@ def thinking_wire(
         return {"chat_template_kwargs": {"enable_thinking": not off}}
 
     if dialect == "vllm":
-        if control == "thinking_token_budget" and decision.spec.budget_range is not None:
+        if control == "thinking_token_budget":
             if off:
                 return {"chat_template_kwargs": {"enable_thinking": False}}
-            _lo, hi = decision.spec.budget_range
-            return {"thinking_token_budget": hi}
+            return {"thinking_token_budget": _budget_for_level(decision, wire_level, budget_tokens)}
         if control == "chat_template_kwargs":
             kwarg = decision.spec.template_kwarg or "enable_thinking"
             if off:
@@ -219,12 +253,70 @@ def thinking_wire(
         value = _effort_value(decision, wire_level)
         return {"reasoning": {"effort": value}} if value is not None else {}
 
+    if dialect == "openai":
+        # OpenAI reasoning models: reasoning_effort=<level>, or "none" only
+        # when the model itself reports a "none"/off effort (some do not
+        # accept an explicit off at all -- omitting the field is then correct).
+        if off:
+            if decision.spec.levels and "off" in decision.spec.levels:
+                return {"reasoning_effort": "none"}
+            return {}
+        value = _effort_value(decision, wire_level)
+        return {"reasoning_effort": value} if value is not None else {}
+
+    if dialect == "anthropic":
+        if off:
+            return {}  # the API default is thinking off; nothing to send.
+        if control == "reasoning_effort":
+            value = _effort_value(decision, wire_level)
+            return {"reasoning_effort": value} if value is not None else {}
+        # control == "anthropic_thinking": a token budget (LiteLLM's own
+        # `thinking={"type":"enabled","budget_tokens":N}` kwarg).
+        budget = _budget_for_level(decision, wire_level, budget_tokens)
+        return {"thinking": {"type": "enabled", "budget_tokens": budget}}
+
+    if dialect == "codex":
+        # Codex NEVER omits the field, even off: an omitted value inherits the
+        # ambient config.toml effort rather than actually disabling it.
+        value = "none" if off else _effort_value(decision, wire_level)
+        return {"codex_reasoning_effort": value} if value is not None else {}
+
+    if dialect == "claude_code":
+        if off:
+            return {"claude_code_thinking": {"type": "disabled"}}
+        if control == "effort":
+            value = _effort_value(decision, wire_level)
+            if value is None:
+                return {}
+            # "display": "summarized" un-redacts the CoT text -- the claude
+            # CLI otherwise defaults the thinking display to signature-only.
+            return {
+                "claude_code_thinking": {
+                    "type": "adaptive",
+                    "display": "summarized",
+                    "effort": value,
+                }
+            }
+        # control == "claude_code_thinking": a token budget.
+        budget = _budget_for_level(decision, wire_level, budget_tokens)
+        return {
+            "claude_code_thinking": {
+                "type": "enabled",
+                "budget_tokens": budget,
+                "display": "summarized",
+            }
+        }
+
     return {}
 
 
-#: Dialects :func:`thinking_wire` owns directly. Every other configured
-#: provider (codex, claude_code, anthropic, openai) keeps the existing
-#: SDK/CLI-transport mapping in :mod:`clio_agent.providers.thinking`.
+#: The HTTP dialects (a real JSON request body) among the set
+#: :func:`thinking_wire` covers -- codex/claude_code/anthropic/openai are ALSO
+#: covered by :func:`thinking_wire` (see its docstring) but are not HTTP
+#: dialects in this sense, so this set exists only for callers that
+#: specifically need to distinguish "has a request body at all" (there are
+#: none left in this package; kept for that future distinction rather than
+#: deleted, since it is still an accurate, meaningful partition).
 HTTP_DIALECTS: frozenset[str] = frozenset(
     {"llama_cpp", "vllm", "ollama", "lm_studio", "openrouter"}
 )

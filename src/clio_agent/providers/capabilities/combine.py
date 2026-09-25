@@ -44,8 +44,19 @@ _NO_CONTROL_NEEDED: frozenset[ThinkingMechanism] = frozenset({"none", "always_on
 #: table only decides WHICH control wins when more than one is offered.
 _CONTROL_PRIORITY: dict[ThinkingMechanism, tuple[str, ...]] = {
     "on_off": ("chat_template_kwargs", "think", "reasoning_object"),
-    "effort_levels": ("reasoning_effort", "reasoning_object", "chat_template_kwargs", "think"),
-    "budget_tokens": ("thinking_token_budget", "anthropic_thinking", "chat_template_kwargs"),
+    "effort_levels": (
+        "reasoning_effort",
+        "effort",
+        "reasoning_object",
+        "chat_template_kwargs",
+        "think",
+    ),
+    "budget_tokens": (
+        "thinking_token_budget",
+        "anthropic_thinking",
+        "claude_code_thinking",
+        "chat_template_kwargs",
+    ),
 }
 
 

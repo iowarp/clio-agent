@@ -27,9 +27,58 @@ import pytest
 from clio_agent.gact.agents import claude_code_precede as hook
 from clio_agent.gact.agents import runners
 from clio_agent.providers import claude_code_sessions as ccs
+from clio_agent.providers.capabilities import invalidation
+from clio_agent.providers.capabilities.accessor import clear_cache
+from clio_agent.providers.capabilities.records import (
+    DeploymentCapabilities,
+    EndpointCapabilities,
+    Fact,
+    ModelCapabilities,
+    ThinkingSpec,
+)
 
 if TYPE_CHECKING:
     from clio_agent.gact.types import AgentDef
+
+_NOW = "2026-09-25T00:00:00+00:00"
+
+
+@pytest.fixture(autouse=True)
+def _reset_capability_state():
+    invalidation.clear_all()
+    clear_cache()
+    yield
+    invalidation.clear_all()
+    clear_cache()
+
+
+def _seed_claude_code_thinking(model_id: str) -> None:
+    """Seed a real, known ThinkingSpec (a live handshake would have already
+    linked one) -- the hook fails closed (sends no directive at all) for a
+    cold/unlinked deployment, by design (see dialect_wire.thinking_wire)."""
+    model_key = f"test:claude_code:{model_id}"
+    invalidation.record_endpoint_capabilities(
+        EndpointCapabilities(
+            provider_id="claude_code",
+            api_base="claude-code://sdk",
+            dialect="claude_code",
+            thinking_controls=Fact(frozenset({"claude_code_thinking"}), "dialect", _NOW),
+        )
+    )
+    invalidation.record_model_capabilities(
+        ModelCapabilities(
+            model_key=model_key,
+            thinking=Fact(ThinkingSpec(mechanism="budget_tokens"), "server_report", _NOW),
+        )
+    )
+    invalidation.record_deployment_capabilities(
+        DeploymentCapabilities(
+            provider_id="claude_code",
+            api_base="claude-code://sdk",
+            model_id=model_id,
+            model_key=Fact(model_key, "server_report", _NOW),
+        )
+    )
 
 
 class _FakeSignature(dspy.Signature):
@@ -120,6 +169,7 @@ def test_resolves_model_and_system_prompt_and_calls_the_pool(
 def test_thinking_off_resolves_to_the_disabled_sdk_plan(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _capture_precede_connect(monkeypatch)
     config = _fake_config(thinking_level="off")
+    _seed_claude_code_thinking(config.model)
 
     hook.precede_connect_claude_code_session(config, _FakeSignature, session_id="sess-thinking")
 
@@ -137,9 +187,9 @@ def test_a_resolution_failure_is_swallowed_and_never_calls_the_pool(
     def _boom(*args: Any, **kwargs: Any) -> Any:
         raise RuntimeError("thinking resolution exploded")
 
-    import clio_agent.providers.thinking as thinking_mod
+    import clio_agent.providers.capabilities.accessor as accessor_mod
 
-    monkeypatch.setattr(thinking_mod, "resolve_thinking", _boom)
+    monkeypatch.setattr(accessor_mod, "get_effective_capabilities", _boom)
 
     # Must not raise.
     hook.precede_connect_claude_code_session(_fake_config(), _FakeSignature, session_id="sess-x")

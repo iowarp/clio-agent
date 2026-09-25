@@ -30,6 +30,7 @@ from typing import Any
 
 from clio_agent.providers.capabilities import endpoint as capability_endpoint
 from clio_agent.providers.capabilities.dialects import cloud as cloud_dialect
+from clio_agent.providers.capabilities.dialects import cloud_thinking
 from clio_agent.providers.capabilities.dialects import llama_cpp as llama_cpp_dialect
 from clio_agent.providers.capabilities.dialects import openrouter as openrouter_dialect
 from clio_agent.providers.capabilities.dialects import vllm as vllm_dialect
@@ -38,6 +39,7 @@ from clio_agent.providers.capabilities.records import (
     DeploymentCapabilities,
     Fact,
     ModelCapabilities,
+    unknown,
 )
 from clio_agent.providers.handshake.base import (
     ConnectivityResult,
@@ -205,7 +207,9 @@ class OpenAICompatHandshake(ProviderHandshake):
         and collapses several real server types onto the same value.)
         """
         litellm_prefix = str(getattr(self.provider, "litellm_prefix", "") or ctx.provider_kind)
-        return capability_endpoint.dialect_for_provider(ctx.provider_kind, litellm_prefix, ctx.provider_id)
+        return capability_endpoint.dialect_for_provider(
+            ctx.provider_kind, litellm_prefix, ctx.provider_id
+        )
 
     async def discover_model_config(
         self, client: Any, ctx: HandshakeContext, raw: dict[str, Any]
@@ -223,7 +227,9 @@ class OpenAICompatHandshake(ProviderHandshake):
         dialect = self._dialect(ctx)
 
         if dialect == vllm_dialect.DIALECT:
-            deployment = vllm_dialect.parse_models_row(raw, provider_id=ctx.provider_id, api_base=ctx.api_base)
+            deployment = vllm_dialect.parse_models_row(
+                raw, provider_id=ctx.provider_id, api_base=ctx.api_base
+            )
             model_key = deployment.model_key.value or model_id
             model = vllm_dialect.build_model_capabilities(model_key, raw)
             model = await self._compare_against_native_context(model, deployment, model_id)
@@ -241,8 +247,13 @@ class OpenAICompatHandshake(ProviderHandshake):
             model_key = deployment.model_key.value or model_id
             model = llama_cpp_dialect.build_model_capabilities(model_key, {"data": [raw]}, model_id)
         elif dialect in cloud_dialect.CLOUD_DIALECTS:
-            deployment = cloud_dialect.build_deployment_capabilities(ctx.provider_id, ctx.api_base, model_id)
-            model = ModelCapabilities(model_key=self._bare_model_key(model_id))
+            deployment = cloud_dialect.build_deployment_capabilities(
+                ctx.provider_id, ctx.api_base, model_id
+            )
+            model = ModelCapabilities(
+                model_key=self._bare_model_key(model_id),
+                thinking=self._thinking_fact(dialect, model_id),
+            )
         else:
             # No adapter for this dialect (an unrecognized OpenAI-compatible
             # server): a bare record, no field guessing. The base class's
@@ -261,6 +272,20 @@ class OpenAICompatHandshake(ProviderHandshake):
     def _bare_model_key(self, model_id: str) -> str:
         fact = deployment_model_key_fact(model_id, observed_at=_now_iso())
         return fact.value or model_id
+
+    def _thinking_fact(self, dialect: str, model_id: str) -> Fact[Any]:
+        """The model's ``ThinkingSpec`` fact, for the two cloud dialects with a
+        real per-model thinking/reasoning story (anthropic, openai) --
+        :mod:`clio_agent.providers.capabilities.dialects.cloud_thinking`'s pure,
+        network-free LiteLLM introspection. Every other cloud dialect (Azure,
+        Bedrock, Vertex, Gemini, NVIDIA NIM) has no known per-model reasoning
+        story here yet, so it stays unknown rather than guessed.
+        """
+        if dialect == "anthropic":
+            return cloud_thinking.build_thinking_spec_anthropic(model_id)
+        if dialect == "openai":
+            return cloud_thinking.build_thinking_spec_openai(model_id)
+        return unknown()
 
     async def _compare_against_native_context(
         self, model: ModelCapabilities, deployment: DeploymentCapabilities, model_id: str

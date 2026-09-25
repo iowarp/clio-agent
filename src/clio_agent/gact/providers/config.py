@@ -139,22 +139,60 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
     if level is not None:
         cfg["thinking_level"] = level
     try:
-        from clio_agent.providers.reasoning_levels import model_effort_levels  # noqa: PLC0415
-        from clio_agent.providers.thinking import resolve_thinking  # noqa: PLC0415
-
-        provider_kind = str(cfg.get("provider") or "")
-        plan = resolve_thinking(
-            provider_kind,
-            cfg.get("thinking_level"),
-            int(cfg.get("thinking_budget") or 0),
-            effort_levels=model_effort_levels(provider_kind, str(cfg.get("model") or "")),
-        )
-        cfg["thinking_effective"] = plan.display
+        cfg["thinking_effective"] = _thinking_effective_display(cfg)
     except Exception as exc:  # noqa: BLE001 - status must never fail on a display derivation
         # No-silent-fallback (#772): surface the degraded display with a typed
         # reason instead of omitting the field silently.
         cfg["thinking_effective"] = f"unavailable (reason=display_derivation_failed: {exc})"
     return _with_native_capability_flags(app, cfg)
+
+
+def _thinking_effective_display(cfg: dict[str, Any]) -> str:
+    """A human-readable ``thinking_effective`` string for the doctor/status field-map.
+
+    Built directly off the effective capabilities (model-capabilities brief
+    5.5) and the SAME :func:`~clio_agent.lm.dialect_wire.thinking_wire` the
+    request builder uses -- this is a pure DISPLAY derivation of what would
+    actually be sent, never a second thinking-mapping engine.
+    """
+
+    from clio_agent.lm import dialect_wire  # noqa: PLC0415
+    from clio_agent.providers.capabilities import endpoint as capability_endpoint  # noqa: PLC0415
+    from clio_agent.providers.capabilities.accessor import (  # noqa: PLC0415
+        get_effective_capabilities,
+    )
+    from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
+
+    provider_id = str(cfg.get("provider_id") or cfg.get("provider") or "")
+    provider_kind = str(cfg.get("provider") or "")
+    model = str(cfg.get("model") or "")
+    api_base = str(cfg.get("api_base") or "")
+    level = cfg.get("thinking_level")
+    budget = int(cfg.get("thinking_budget") or 0)
+
+    preset = get_provider(provider_id)
+    litellm_prefix = preset.litellm_prefix if preset is not None else provider_kind
+    dialect = capability_endpoint.dialect_for_provider(provider_kind, litellm_prefix, provider_id)
+    effective = get_effective_capabilities(provider_id, api_base, model)
+
+    if not effective.thinking.known:
+        if level not in (None, "off"):
+            return (
+                f"unavailable (reason=no thinking evidence for this model yet, requested={level})"
+            )
+        return "default (no thinking evidence for this model yet)"
+
+    wire = dialect_wire.thinking_wire(
+        dialect, effective.thinking, level=level, budget_tokens=budget
+    )
+    if level in (None, "off"):
+        return "default (provider default)" if level is None else "off"
+    if not wire:
+        return f"unsupported ({effective.thinking.reason or 'not controllable here'})"
+    for value in wire.values():
+        if isinstance(value, dict) and isinstance(value.get("budget_tokens"), int):
+            return f"{level} (budget {value['budget_tokens']})"
+    return str(level)
 
 
 #: The only provenance a configured global thinking level carries over with:

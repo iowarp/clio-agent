@@ -32,6 +32,7 @@ from clio_agent.providers.fetched_catalog import (
     FetchedCatalogUnavailable,
 )
 from clio_agent.providers.model_discovery.modality_evidence import modality_evidence
+from clio_agent.providers.thinking_levels import THINKING_LEVELS
 
 CLAUDE_CODE_CATALOG_URL = (
     "https://raw.githubusercontent.com/iowarp/clio-agent/develop/catalogs/claude-code-models.json"
@@ -141,14 +142,21 @@ def _parse_catalog(payload: bytes) -> ClaudeCodeCatalog:
             raise ClaudeCodeCatalogError("Claude Code model catalog contains an invalid model")
         seen.add(model_id)
         capabilities, evidence = _capabilities_from_row(model_id, row.get("capabilities"))
-        candidates.append(
-            {
-                "id": model_id,
-                "name": name.strip(),
-                "capabilities": capabilities,
-                "capability_evidence": evidence,
-            }
-        )
+        candidate: dict[str, Any] = {
+            "id": model_id,
+            "name": name.strip(),
+            "capabilities": capabilities,
+            "capability_evidence": evidence,
+        }
+        shipped_default = row.get("shipped_default_effort")
+        if shipped_default is not None:
+            if not isinstance(shipped_default, str) or shipped_default not in THINKING_LEVELS:
+                raise ClaudeCodeCatalogError(
+                    f"Claude Code model catalog has an invalid shipped_default_effort "
+                    f"for {model_id!r}: {shipped_default!r}"
+                )
+            candidate["shipped_default_effort"] = shipped_default
+        candidates.append(candidate)
 
     default_model = payload_obj.get("default_model")
     if default_model is None:

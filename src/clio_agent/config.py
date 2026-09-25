@@ -242,16 +242,16 @@ class LMProviderConfig:
     #   "exec" batch transport (one `claude -p` per call, ~10-15s cold start,
     #   #715) was deleted in the v0.8.0 cleanup.
     claude_code_transport: Literal["sdk"] = "sdk"
-    # Reasoning/thinking budget (explicit token override). Mapped per-provider in
-    # create_lm via providers.thinking.resolve_thinking:
+    # Reasoning/thinking budget (explicit token override). Mapped per-provider
+    # in create_lm via lm.dialect_wire.thinking_wire (model's own ThinkingSpec):
     #   anthropic → thinking={"type":"enabled","budget_tokens":N}
     #   claude_code → SDK ClaudeAgentOptions.thinking budget
     #   openai/openai-compat → reasoning_effort bucketed from N
     # 0 = unset (defers to thinking_level / the provider default).
     thinking_budget: int = 0
     # Provider-generic thinking LEVEL (#895): off|low|medium|high, or None=unset.
-    # 'off' actively disables; None defers to the SHIPPED per-model default
-    # (providers.thinking.shipped_default_level — haiku/claude_code ships 'low').
+    # 'off' actively disables; None defers to the SHIPPED per-model default --
+    # DATA now (claude-code-models.json's shipped_default_effort), never a name heuristic.
     thinking_level: str | None = None
     # Per-provider capability flags. init=False so callers don't need
     # to know they exist; __post_init__ populates them from
@@ -298,10 +298,10 @@ class LMProviderConfig:
         if self.router_temperature is not None:
             self.planner_temperature = self.router_temperature
         self.router_temperature = self.planner_temperature
-        from clio_agent.providers.thinking import shipped_default_level  # noqa: PLC0415
+        from clio_agent.providers.capabilities.dialects import claude_code  # noqa: PLC0415
 
-        self.thinking_level = shipped_default_level(
-            self.provider, self.model or "", self.thinking_level, self.thinking_budget
+        self.thinking_level = claude_code.shipped_default_thinking_level(
+            self.provider, self.model, self.thinking_level, self.thinking_budget
         )
         if not self.api_base:
             self.api_base = defaults["api_base"]
@@ -343,9 +343,9 @@ class LMProviderConfig:
                 f"sdk is the only transport (got {self.claude_code_transport!r})"
             )
         if self.thinking_level is not None:
-            from clio_agent.providers.thinking import validate_thinking_level  # noqa: PLC0415
+            from clio_agent.providers import thinking_levels  # noqa: PLC0415
 
-            self.thinking_level = validate_thinking_level(self.thinking_level)
+            self.thinking_level = thinking_levels.validate_thinking_level(self.thinking_level)
 
     def apply_handshake(self, report: Any, *, user_set_max_tokens: bool = False) -> None:
         """Fold a provider handshake report into this config (call at bind time).

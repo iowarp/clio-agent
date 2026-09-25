@@ -2264,7 +2264,46 @@ def test_put_lm_provider_rejects_invalid_thinking_level(tmp_path: Path) -> None:
 
 
 def test_effective_lm_config_surfaces_supported_thinking_effective() -> None:
-    """A budget provider reports the raw level and the resolved budget effect (#895)."""
+    """A budget provider reports the raw level and the resolved budget effect (#895).
+
+    The display is a pure derivation off the effective capabilities' own
+    ThinkingSpec (model-capabilities brief 5.5) -- seeded here the way a live
+    handshake would have linked one, never a second, provider-name-keyed
+    mapping table (the deleted ``providers.thinking``).
+    """
+    from clio_agent.providers.capabilities import invalidation
+    from clio_agent.providers.capabilities.records import (
+        DeploymentCapabilities,
+        EndpointCapabilities,
+        Fact,
+        ModelCapabilities,
+        ThinkingSpec,
+    )
+
+    invalidation.clear_all()
+    now = "2026-01-01T00:00:00+00:00"
+    invalidation.record_endpoint_capabilities(
+        EndpointCapabilities(
+            provider_id="anthropic",
+            api_base="",
+            dialect="anthropic",
+            thinking_controls=Fact(frozenset({"anthropic_thinking"}), "dialect", now),
+        )
+    )
+    invalidation.record_model_capabilities(
+        ModelCapabilities(
+            model_key="test:anthropic",
+            thinking=Fact(ThinkingSpec(mechanism="budget_tokens"), "server_report", now),
+        )
+    )
+    invalidation.record_deployment_capabilities(
+        DeploymentCapabilities(
+            provider_id="anthropic",
+            api_base="",
+            model_id="",
+            model_key=Fact("test:anthropic", "server_report", now),
+        )
+    )
 
     app = SimpleNamespace(
         state=SimpleNamespace(
@@ -2280,17 +2319,71 @@ def test_effective_lm_config_surfaces_supported_thinking_effective() -> None:
     cfg = _effective_lm_config(app)  # type: ignore[arg-type]
 
     assert cfg["thinking_level"] == "high"
-    # anthropic maps 'high' → budget_tokens 24576 (providers.thinking.LEVEL_BUDGET).
+    # anthropic's generic budget ladder maps 'high' -> 24576
+    # (providers.thinking_levels.LEVEL_BUDGET).
     assert cfg["thinking_effective"] == "high (budget 24576)"
 
 
-def test_effective_lm_config_surfaces_unsupported_thinking() -> None:
-    """A provider with no mapping surfaces a typed ``unsupported`` — no silent drop (#895).
+def test_effective_lm_config_surfaces_unavailable_thinking_with_no_evidence_yet() -> None:
+    """No handshake has linked this model's thinking evidence yet -- a typed
+    'unavailable', never a silent drop and never a guessed value (#895)."""
+    from clio_agent.providers.capabilities import invalidation
 
-    This is the GET-report side of the no-silent-fallback rule: a requested level
-    on a provider ``providers.thinking`` cannot map still reaches the API as a
-    structured ``unsupported (...)`` display instead of vanishing.
+    invalidation.clear_all()
+
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            lm_config={},
+            agent=SimpleNamespace(
+                _provider_config=SimpleNamespace(
+                    provider="mystery-transport", thinking_level="high", thinking_budget=0
+                )
+            ),
+        )
+    )
+
+    cfg = _effective_lm_config(app)  # type: ignore[arg-type]
+
+    assert cfg["thinking_level"] == "high"
+    assert cfg["thinking_effective"].startswith("unavailable")
+    assert "high" in cfg["thinking_effective"]
+
+
+def test_effective_lm_config_surfaces_unsupported_thinking() -> None:
+    """A dialect with known evidence but no control that can carry it surfaces
+    a typed ``unsupported`` -- no silent drop (#895).
+
+    This is the GET-report side of the no-silent-fallback rule: a requested
+    level whose mechanism nothing offered can carry still reaches the API as
+    a structured ``unsupported (...)`` display instead of vanishing.
     """
+    from clio_agent.providers.capabilities import invalidation
+    from clio_agent.providers.capabilities.records import (
+        DeploymentCapabilities,
+        Fact,
+        ModelCapabilities,
+        ThinkingSpec,
+    )
+
+    invalidation.clear_all()
+    now = "2026-01-01T00:00:00+00:00"
+    # A model record exists (thinking is "known"), but no endpoint offers ANY
+    # control for its mechanism -- effective.thinking.known is True while
+    # dialect_wire.thinking_wire has nothing to build (control is None).
+    invalidation.record_model_capabilities(
+        ModelCapabilities(
+            model_key="test:mystery-transport",
+            thinking=Fact(ThinkingSpec(mechanism="effort_levels"), "server_report", now),
+        )
+    )
+    invalidation.record_deployment_capabilities(
+        DeploymentCapabilities(
+            provider_id="mystery-transport",
+            api_base="",
+            model_id="",
+            model_key=Fact("test:mystery-transport", "server_report", now),
+        )
+    )
 
     app = SimpleNamespace(
         state=SimpleNamespace(
@@ -2307,4 +2400,3 @@ def test_effective_lm_config_surfaces_unsupported_thinking() -> None:
 
     assert cfg["thinking_level"] == "high"
     assert cfg["thinking_effective"].startswith("unsupported")
-    assert "mystery-transport" in cfg["thinking_effective"]

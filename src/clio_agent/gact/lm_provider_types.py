@@ -100,11 +100,16 @@ class LMProviderInfo(BaseModel):
         an ``LMProviderInfo`` having to remember to call it.
         """
         if not self.resolved_model_id and self.model:
-            from clio_agent.providers.reasoning_levels import (  # noqa: PLC0415
-                resolve_configured_model_id,
-            )
+            if self.provider == "claude_code":
+                from clio_agent.providers.capabilities.dialects.claude_code import (  # noqa: PLC0415
+                    resolve_configured_model_id,
+                )
 
-            self.resolved_model_id = resolve_configured_model_id(self.provider, self.model)
+                self.resolved_model_id = resolve_configured_model_id(self.model)
+            else:
+                # Only claude_code reports CLI aliases; every other provider's
+                # configured model already IS its catalog id.
+                self.resolved_model_id = self.model
         return self
 
 
