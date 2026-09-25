@@ -29,31 +29,25 @@ warm entry when one exists, else mints fresh — typed and logged
 (``dead_client_replaced``), and the crash message carries the dead client's
 stderr tail (:mod:`claude_code_stderr_ring`).
 
-**B2.** A small warm pool of pre-connected idle clients, connected with
-"standard options" (no ``system_prompt``/``cwd``/``thinking`` override, the
-CLI's own default model). A claim needing only a different MODEL is free
-(``set_model``, B13); a claim needing a different ``system_prompt``/``cwd``/
-``thinking`` — the common case for a real turn, since those are CLI STARTUP
-flags with no live-update control request in this SDK version (verified:
-``--system-prompt`` at ``subprocess_cli.py:569-582``, ``cwd=`` at its
-``subprocess.Popen`` call; the only mutating control requests this SDK
-exposes are ``set_model``/``set_permission_mode``/``interrupt``/
-``rewind_files``/``reconnect_mcp_server``) — reconnects once, exactly as a
-cold connect would, never worse than no warm pool. See the PR body for the
-follow-up this implies (pre-warming with a session's REAL system_prompt needs
-a hook earlier than this module owns, in the gact turn/session pipeline).
+**B2.** A small warm pool of pre-connected idle clients ("standard options" —
+no ``system_prompt``/``thinking`` override, the CLI's own default model).
+``entry_for`` peeks at the caller's about-to-be-requested ``thinking``/
+``system_prompt`` and claims a warm entry only when it ALREADY matches --
+see :meth:`ClaudeStreamClientPool._pop_compatible_warm_locked` for why a
+mismatch must skip the warm pool rather than claim-then-reconnect. ``cwd`` is
+excluded from every mismatch check (a bare-model-transport no-op; B3/B5/B6/B9
+disable every tool/setting/hook that would ever resolve a path against it). A
+claim needing only a different MODEL is free (``set_model``, B13).
 
 **History (do not rebuild): #COPPER12 scope-keyed connections.** The prior
-design gave every ACTIVE ``stateful_scope()`` its own connection because a
+design gave every ACTIVE ``stateful_scope()`` its own connection since a
 spawned child was not yet a first-class GACT session; #948 made every
-declared child a real session, so session-id keying gives the same isolation
-without a second bookkeeping layer. The #901 stateful-delta layer is
-UNCHANGED and orthogonal: it tracks its own SDK-level conversation
-continuation independently of which physical client a query rides on. This
-module still tells that layer when a connection dies out from under an
-ACTIVE scope (the reap/dead-replace paths) — the one place the two concerns
-still touch — so a delta is never shipped to a fresh subprocess with no
-memory of the dropped prefix.
+declared child real, so session-id keying gives the same isolation without a
+second bookkeeping layer. The #901 stateful-delta layer is UNCHANGED and
+orthogonal (its own SDK-level conversation continuation, independent of which
+physical client a query rides on); this module still flags it when a
+connection dies out from under an ACTIVE scope (reap/dead-replace) so a delta
+is never shipped to a fresh subprocess with no memory of the dropped prefix.
 """
 
 from __future__ import annotations
@@ -80,6 +74,7 @@ from clio_agent.providers.claude_code_stream_bounds import (
     log_config_change_reconnect,
     log_dead_client_replaced,
     max_concurrent_claude_processes,
+    pop_compatible_warm_entry,
     reap_idle_session_entry,
     sweep_idle_session_entries,
     warm_pool_size,
@@ -289,13 +284,11 @@ _STREAM_END = object()  # queue sentinel: the pump's message stream is exhausted
 class _StreamClientEntry:
     """One pooled ``ClaudeSDKClient``, bound to a GACT session id (or unclaimed/warm).
 
-    Configuration (``model``/``cwd``/``thinking``/``system_prompt``) is resolved
-    lazily, per call, by :meth:`_ensure_client`: the FIRST call connects with
-    whatever it asks for; a LATER call on an already-connected entry either
-    reuses the connection as-is (identical config — the hot path), swaps the
-    model live (B13, :meth:`ClaudeSDKClient.set_model`, no reconnect), or
-    reconnects once (a ``cwd``/``thinking``/``system_prompt`` change — none of
-    which this SDK version can apply to a live connection).
+    Configuration is resolved lazily, per call, by :meth:`_ensure_client`: the
+    FIRST call connects with whatever it asks for; a LATER call either reuses
+    the connection as-is (identical config — the hot path), swaps the model
+    live (B13, no reconnect), or reconnects once (``thinking``/``system_prompt``
+    changed — neither can be applied to a live connection in this SDK).
     """
 
     def __init__(
@@ -314,11 +307,9 @@ class _StreamClientEntry:
         self._activity_lock = threading.Lock()
         self._in_flight = False
         self._idle_since = time.monotonic()
-        # F6b (historical #1305 finding, still load-bearing): once popped by the
-        # pool (idle reap, dead-client replacement, or the abnormal-termination
-        # backstop), this entry refuses a LATE connect from a caller still
-        # holding it from an earlier entry_for() — closing the orphaned-entry
-        # window rather than silently resurrecting a connection outside the pool.
+        # F6b: once popped by the pool (idle reap, dead-client replacement, or
+        # the abnormal-termination backstop), refuse a LATE connect from a
+        # caller still holding it from an earlier entry_for().
         self._dead = False
         self.stderr_ring = StderrRing()
         # Connected configuration (None until the first successful connect).
@@ -327,9 +318,7 @@ class _StreamClientEntry:
         self._thinking: dict[str, Any] | None = None
         self._thinking_key: str | None = None
         self._system_prompt: str | None = None
-        # The stateful-delta scope active on the MOST RECENT call, if any — see
-        # ``_note_scope_provider_error``.
-        self._last_scope: str | None = None
+        self._last_scope: str | None = None  # last call's stateful-delta scope, if any
 
     @property
     def dead(self) -> bool:
@@ -443,7 +432,6 @@ class _StreamClientEntry:
             for name, is_changed in (
                 ("thinking", thinking_key_ != self._thinking_key),
                 ("system_prompt", system_prompt != self._system_prompt),
-                ("cwd", cwd != self._cwd),
             )
             if is_changed
         ]
@@ -488,12 +476,14 @@ class _StreamClientEntry:
         thinking_key_ = thinking_key(thinking)
         system_prompt = system_prompt or None
         # Fast path: already connected and configured identically — every call
-        # after the first on a settled session/model pays nothing here.
+        # after the first on a settled session/model pays nothing here. ``cwd``
+        # is NOT compared: it is a bare-model-transport no-op (no tools,
+        # settings, or hooks ever resolve a relative path against it here), so
+        # a differing ``cwd`` must never trigger a reconnect on its own.
         if (
             self._client is not None
             and self._thinking_key == thinking_key_
             and self._system_prompt == system_prompt
-            and self._cwd == cwd
             and self._model == model
         ):
             return self._client
@@ -516,11 +506,7 @@ class _StreamClientEntry:
                     thinking_key_=thinking_key_,
                     system_prompt=system_prompt,
                 )
-            elif (
-                self._thinking_key != thinking_key_
-                or self._system_prompt != system_prompt
-                or self._cwd != cwd
-            ):
+            elif self._thinking_key != thinking_key_ or self._system_prompt != system_prompt:
                 await self._reconnect_locked(
                     on_construct,
                     gact_session_id=gact_session_id,
@@ -576,10 +562,9 @@ class _StreamClientEntry:
     def request_interrupt(self, abandon: "threading.Event") -> None:
         """The cancel-registry abort callback for one call (B14, cross-thread, sync).
 
-        Interrupts a LIVE connected client on its owner loop; if this entry has
-        no client yet (still queued for a connect slot, or never reached
-        ``client.query()``), sets ``abandon`` instead so the queued wait gives
-        up cleanly — the same mechanism a caller's own teardown already uses.
+        Interrupts a LIVE client on its owner loop; with no client yet (still
+        queued, or never reached ``client.query()``) sets ``abandon`` instead
+        so the queued wait gives up cleanly.
         """
         if self._client is not None and self._loop is not None:
             with contextlib.suppress(Exception):
@@ -611,15 +596,14 @@ class _StreamClientEntry:
         self._mark_busy()
         caller_loop = asyncio.get_running_loop()
         chunks: queue.SimpleQueue[tuple[Any, Any]] = queue.SimpleQueue()
-        # Captured in the CALLER's context — the owner-loop pump has no access
+        # Captured in the CALLER's context -- the owner-loop pump has no access
         # to either contextvar once scheduled cross-thread (#993 / #901).
         gact_sid = _active_gact_session_id()
         self._last_scope = _active_stateful_scope()
         abandon = threading.Event()
-        # B14: registered for the WHOLE call (connect-slot wait, config
-        # reconciliation, AND the query itself) — not just while the query
-        # lock is held — so a cancel arriving before this call ever sends a
-        # query still stops it (via `abandon`) instead of racing in unseen.
+        # B14: registered for the WHOLE call, not just while the query lock is
+        # held, so a cancel arriving before this call ever sends a query still
+        # stops it (via `abandon`) instead of racing in unseen.
         handle = register_sdk_stream(gact_sid, lambda: self.request_interrupt(abandon))
 
         async def _pump() -> None:
@@ -718,13 +702,24 @@ class ClaudeStreamClientPool:
         self._connect_slots = threading.Semaphore(n)
         self._warm_size = warm_size if warm_size is not None else warm_pool_size()
 
-    def entry_for(self, *, session_id: str, gact_session_id: str = "") -> _StreamClientEntry:
+    def entry_for(
+        self,
+        *,
+        session_id: str,
+        gact_session_id: str = "",
+        thinking: dict[str, Any] | None = None,
+        system_prompt: str | None = None,
+    ) -> _StreamClientEntry:
         """Return (creating/claiming/replacing as needed) the entry for ``session_id``.
 
-        ``session_id`` IS the pool key (B1) — pass the GACT session id; an
-        empty string is the shared off-turn fallback. ``gact_session_id`` is
-        accepted for symmetry with the connect-wait surfacing's liveness feed
-        and defaults to ``session_id`` when omitted.
+        ``session_id`` IS the pool key (B1) — the GACT session id; empty is
+        the shared off-turn fallback. ``gact_session_id`` defaults to it.
+
+        ``thinking``/``system_prompt`` are a PEEK at what the caller is about
+        to request -- not applied here (:meth:`_StreamClientEntry._ensure_client`
+        does the real reconcile/connect) -- so a warm entry is claimed only
+        when it would not need reconciling; see
+        :meth:`_pop_compatible_warm_locked` for why.
         """
         key = session_id or ""
         for evicted_key, evicted_entry in sweep_idle_session_entries(self):
@@ -738,7 +733,7 @@ class ClaudeStreamClientPool:
                 entry = None
                 replaced_dead_entry = True
             if entry is None:
-                entry = self._warm.pop() if self._warm else None
+                entry = self._pop_compatible_warm_locked(thinking, system_prompt)
                 replaced_from_warm = entry is not None
                 if entry is None:
                     entry = _StreamClientEntry(
@@ -751,6 +746,17 @@ class ClaudeStreamClientPool:
         if replaced_dead_entry:
             log_dead_client_replaced(key, from_warm_pool=replaced_from_warm)
         return entry
+
+    def _pop_compatible_warm_locked(
+        self, thinking: dict[str, Any] | None, system_prompt: str | None
+    ) -> _StreamClientEntry | None:
+        """Pop a warm entry whose connected config would not need reconciling.
+
+        See :func:`~clio_agent.providers.claude_code_stream_bounds
+        .pop_compatible_warm_entry` for why a mismatch must skip the warm pool
+        rather than claim-then-reconnect. Caller holds ``self._guard``.
+        """
+        return pop_compatible_warm_entry(self._warm, thinking_key(thinking), system_prompt or None)
 
     def _reclaim_idle_for_slot(self) -> int:
         """Reap idle session entries when a connect is queued behind the cap."""

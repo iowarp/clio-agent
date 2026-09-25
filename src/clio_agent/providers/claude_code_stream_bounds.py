@@ -61,6 +61,7 @@ __all__ = [
     "log_config_change_reconnect",
     "log_dead_client_replaced",
     "max_concurrent_claude_processes",
+    "pop_compatible_warm_entry",
     "reap_idle_session_entry",
     "session_idle_ttl_s",
     "sweep_idle_session_entries",
@@ -326,3 +327,28 @@ def log_dead_client_replaced(session_id: str, *, from_warm_pool: bool) -> None:
             from_warm_pool=from_warm_pool,
             **transport_failure_payload("dead_client_replaced"),
         )
+
+
+def pop_compatible_warm_entry(
+    warm: list["_StreamClientEntry"],
+    wanted_thinking_key: str | None,
+    wanted_system_prompt: str | None,
+) -> "_StreamClientEntry | None":
+    """Pop the first warm entry whose connected config would not need reconciling (B2).
+
+    Reconciling forces a reconnect (no live ``set_effort``/``set_thinking`` in
+    this SDK), so claiming a mismatched entry would pay for TWO CLI spawns
+    (the discarded warm connect, then the real one) -- worse than minting a
+    matching entry cold in one shot. A real turn's ``system_prompt`` is
+    virtually always non-empty, so this is the common path, not an edge case:
+    a mismatched entry is left in ``warm`` (still useful to a future
+    bare/default request), never popped-then-reconnected. ``warm`` is mutated
+    in place; the caller holds the pool's own lock.
+    """
+    for index, candidate in enumerate(warm):
+        if (
+            candidate._thinking_key == wanted_thinking_key  # noqa: SLF001
+            and candidate._system_prompt == wanted_system_prompt  # noqa: SLF001
+        ):
+            return warm.pop(index)
+    return None

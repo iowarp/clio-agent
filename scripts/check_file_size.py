@@ -971,14 +971,17 @@ RATCHET_BASELINE: dict[str, int] = {
     # Ratchet back with the #714/#767 decomposition.
     # MERGE (PR #1298 x #1310): 863 -> 879. Both campaigns' stream-entry lifecycle
     # additions coexist; neither side's hardening was dropped.
-    # S2 (Claude SDK tuning, B1): 879 -> 873. Rekeyed the pool by GACT session id
-    # (dropping the whole scope<->session ownership bookkeeping layer --
-    # _session_scopes/_scope_session and their note/forget/scopes_for_session
-    # helpers -- since session id IS the key now) even while adding B2 (warm
-    # pool), B13 (live model switch), B14 (interrupt-based cancel), and B17
-    # (dead-client replacement + stderr-tail-on-crash); the net was a shrink
-    # despite the new features.
-    "src/clio_agent/providers/claude_code_sessions.py": 873,
+    # S2 (Claude SDK tuning, B1): stays at 879 (no growth past the recorded
+    # ceiling). Rekeyed the pool by GACT session id (dropping the whole
+    # scope<->session ownership bookkeeping layer -- _session_scopes/
+    # _scope_session and their note/forget/scopes_for_session helpers -- since
+    # session id IS the key now) while adding B2 (warm pool, incl. the
+    # claim-vs-mint compatibility check that avoids a double CLI spawn), B13
+    # (live model switch), B14 (interrupt-based cancel), and B17 (dead-client
+    # replacement + stderr-tail-on-crash); the bookkeeping deletion offset the
+    # additions almost exactly, so the file holds its baseline rather than
+    # shrinking further.
+    "src/clio_agent/providers/claude_code_sessions.py": 879,
     # #900: +2 for wiring probe_process_tree into the doctor collect().
     # owner ruling 2026-07-14: +3 for the DEGRADED-by-policy local-ARC doctor row.
     # #947 DEBT (recorded 2026-07-18, #948 S4): residual over the pre-#947 count

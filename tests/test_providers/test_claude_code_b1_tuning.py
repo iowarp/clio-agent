@@ -245,6 +245,43 @@ async def test_model_switch_uses_set_model_without_a_new_client(
     assert state["set_model_calls"] == ["sonnet"]
 
 
+async def test_cwd_change_never_forces_a_reconnect(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``cwd`` is a bare-model-transport no-op (no tools/settings/hooks ever
+    resolve a relative path against it here -- B3/B5/B6/B9 disable all of
+    them), so a differing ``cwd`` alone must never trigger a reconnect --
+    unlike ``thinking``/``system_prompt``, which genuinely cannot be applied
+    to a live connection in this SDK version.
+
+    SABOTAGE: put ``cwd`` back into the reconnect-mismatch check -> this call
+    reconnects -> ``constructed`` goes to 2 -> red.
+    """
+    state = _install_fake_sdk(monkeypatch)
+    entry = _StreamClientEntry()
+
+    await _consume(
+        entry,
+        payload="p1",
+        native_blocks=[],
+        session_id="sid-1",
+        timeout=5.0,
+        on_construct=lambda: None,
+        model="haiku",
+        cwd="/workspace/a",
+    )
+    await _consume(
+        entry,
+        payload="p2",
+        native_blocks=[],
+        session_id="sid-2",
+        timeout=5.0,
+        on_construct=lambda: None,
+        model="haiku",
+        cwd="/workspace/b",
+    )
+
+    assert state["constructed"] == 1
+
+
 # --------------------------------------------------------------------------- #
 # B2: a warm-claimed entry reconciles lazily on first real use.
 # --------------------------------------------------------------------------- #
@@ -297,20 +334,35 @@ async def test_warm_claim_with_a_model_only_difference_uses_set_model(
     assert state["set_model_calls"] == ["haiku"]
 
 
-async def test_warm_claim_with_a_system_prompt_reconnects_once(
+async def test_entry_for_skips_a_mismatched_warm_entry_and_mints_fresh_directly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The honest B2 limit: ``system_prompt`` is a CLI startup flag, so a real
-    turn's system prompt (virtually always non-empty) forces one reconnect --
-    never worse than a cold connect would have been."""
+    """The honest B2 limit: ``system_prompt`` is a CLI startup flag, so a warm
+    entry connected with none cannot be reconciled live. A real turn's system
+    prompt is virtually always non-empty, so claiming that mismatched warm
+    entry and immediately reconnecting it would pay for TWO CLI spawns (the
+    discarded warm connect, then the real one) -- worse than a cold connect.
+    ``entry_for`` must instead skip it (leaving it in the warm list for a
+    future bare/default request) and mint a matching entry directly, in ONE
+    connect, exactly as if there had been no warm pool at all.
+
+    SABOTAGE: pop the warm entry regardless of its connected config (the
+    pre-fix behaviour) -> ``constructed`` goes to 2 and the warm entry is
+    consumed -> both assertions below go red.
+    """
     state = _install_fake_sdk(monkeypatch)
     pool = ClaudeStreamClientPool(max_concurrent=4, warm_size=0)
     monkeypatch.setattr(pool, "_spawn_warm_refill", lambda: None)
     warm_entry = _StreamClientEntry(connect_slots=pool._connect_slots)
-    await warm_entry._ensure_client(lambda: None)
+    await warm_entry._ensure_client(lambda: None)  # bare: thinking=None, system_prompt=None
     pool._warm.append(warm_entry)
 
-    entry = pool.entry_for(session_id="sess-sp")
+    # entry_for is told what the caller is ABOUT to request, matching the
+    # real claude_code_litellm call site.
+    entry = pool.entry_for(session_id="sess-sp", system_prompt="You are CLIO.")
+    assert entry is not warm_entry
+    assert pool._warm == [warm_entry]  # left untouched, not consumed
+
     await _consume(
         entry,
         payload="p",
@@ -321,7 +373,7 @@ async def test_warm_claim_with_a_system_prompt_reconnects_once(
         model="haiku",
         system_prompt="You are CLIO.",
     )
-    assert state["constructed"] == 2  # exactly one reconnect, not a leak of more
+    assert state["constructed"] == 2  # the untouched warm entry (1) + this fresh one (1)
 
 
 # --------------------------------------------------------------------------- #

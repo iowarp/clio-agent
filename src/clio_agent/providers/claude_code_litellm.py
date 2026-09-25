@@ -182,14 +182,11 @@ async def _astream_sdk(
     """Stream one Claude Code SDK call as LiteLLM-compatible chunks.
 
     S2 (B1): rides the ONE pooled client for the active GACT session, reused
-    across every turn (not keyed per ``(model, cwd, thinking)``); each call's
-    payload goes under a fresh ``session_id`` (or the stable one a #901
-    stateful-delta run carries). ``system_prompt`` (B4) rides
+    across every turn. ``system_prompt`` (B4) rides
     ``ClaudeAgentOptions.system_prompt``, never the query text. ``usage_sink``,
     when given, collects the raw SDK usage dict for the blocking path.
     """
-    # Single typed seam (finding #2): a structured mcp-2 unavailability error
-    # instead of a raw ImportError trace when the SDK is absent/uninstallable.
+    # A structured mcp-2 unavailability error, not a raw ImportError trace.
     from clio_agent.providers.claude_code_options import require_claude_agent_sdk  # noqa: PLC0415
 
     await asyncio.to_thread(require_claude_agent_sdk)
@@ -219,7 +216,10 @@ async def _astream_sdk(
     session_id = send.session_id if send is not None else uuid.uuid4().hex
     gact_sid_for_pool = _active_gact_session_id()
     entry = _STREAM_CLIENT_POOL.entry_for(
-        session_id=gact_sid_for_pool, gact_session_id=gact_sid_for_pool
+        session_id=gact_sid_for_pool,
+        gact_session_id=gact_sid_for_pool,
+        thinking=thinking,
+        system_prompt=system_prompt,
     )
     source = entry.stream(
         payload=payload,
