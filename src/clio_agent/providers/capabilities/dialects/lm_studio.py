@@ -33,6 +33,7 @@ from clio_agent.providers.capabilities.records import (
     EndpointCapabilities,
     Fact,
     ModelCapabilities,
+    modalities_from_capabilities,
     unknown,
 )
 
@@ -157,6 +158,72 @@ def _with_allowed_reasoning_options(
     )
 
 
+def parse_v0_row(
+    row: Mapping[str, Any],
+    *,
+    provider_id: str,
+    api_base: str,
+    observed_at: str | None = None,
+) -> tuple[ModelCapabilities, DeploymentCapabilities]:
+    """Build one ``(ModelCapabilities, DeploymentCapabilities)`` pair from a v0 ``/api/v0/models`` row.
+
+    The fallback for a pre-0.4 LM Studio build: ``max_context_length`` ->
+    ceiling, ``loaded_context_length`` -> the runtime window,
+    ``quantization``/``arch``/``state`` pass through as raw identity metadata,
+    a flat ``capabilities`` list (``"tool_use"``, ``"vision"``) -> tools/
+    input_modalities, and ``state == "loaded"`` sets ``is_loaded``.
+    """
+    observed_at = observed_at or _now_iso()
+    capabilities = row.get("capabilities") or []
+    if not isinstance(capabilities, list):
+        capabilities = []
+    caps = tuple(str(cap) for cap in capabilities)
+    model_id = str(row.get("id", ""))
+    context_max = _positive_int(row.get("max_context_length"))
+    capabilities_known = bool(caps)
+    model_key_fact = deployment_model_key_fact(model_id, observed_at=observed_at)
+    model_key = model_key_fact.value or model_id
+
+    model = ModelCapabilities(
+        model_key=model_key,
+        context_max=(
+            Fact(context_max, "server_report", observed_at, "lmstudio /api/v0/models max_context_length")
+            if context_max is not None
+            else unknown()
+        ),
+        tools=(
+            Fact("tool_use" in caps, "server_report", observed_at, "lmstudio /api/v0/models capabilities")
+            if capabilities_known
+            else unknown()
+        ),
+        input_modalities=(
+            Fact(
+                modalities_from_capabilities(caps),
+                "server_report",
+                observed_at,
+                "lmstudio /api/v0/models capabilities",
+            )
+            if capabilities_known
+            else unknown()
+        ),
+    )
+    loaded_context = _positive_int(row.get("loaded_context_length"))
+    deployment = DeploymentCapabilities(
+        provider_id=provider_id,
+        api_base=api_base,
+        model_id=model_id,
+        model_key=model_key_fact,
+        context_served=(
+            Fact(
+                loaded_context, "server_report", observed_at, "lmstudio /api/v0/models loaded_context_length"
+            )
+            if loaded_context is not None
+            else unknown()
+        ),
+    )
+    return model, deployment
+
+
 def build_endpoint_capabilities(provider_id: str, api_base: str, model_id: str) -> EndpointCapabilities:
     """Build this endpoint's :class:`EndpointCapabilities`.
 
@@ -181,11 +248,10 @@ async def fetch_rows(client: Any, api_base: str) -> tuple[list[dict[str, Any]], 
     """``GET /api/v1/models``, falling back to ``GET /api/v0/models`` (brief Part 6).
 
     Returns ``(rows, schema)`` where ``schema`` is ``"v1"`` or ``"v0"`` so the
-    caller knows which parser applies -- :func:`parse_v1_row` for ``"v1"``, or
-    P4a's existing :meth:`clio_agent.providers.handshake.lmstudio.LMStudioHandshake.
-    discover_model_config` field mapping for ``"v0"``. Both endpoints live at the
-    NATIVE root (no ``/v1`` API-base suffix). An empty ``rows``/``schema=""``
-    means neither endpoint answered.
+    caller knows which parser applies -- :func:`parse_v1_row` for ``"v1"``,
+    :func:`parse_v0_row` for ``"v0"``. Both endpoints live at the NATIVE root
+    (no ``/v1`` API-base suffix). An empty ``rows``/``schema=""`` means
+    neither endpoint answered.
     """
     from clio_agent.providers.api_base import native_root  # noqa: PLC0415
 
@@ -210,5 +276,6 @@ __all__ = [
     "DIALECT",
     "build_endpoint_capabilities",
     "fetch_rows",
+    "parse_v0_row",
     "parse_v1_row",
 ]
