@@ -389,9 +389,9 @@ class _CountingDispatcher(HookDispatcher):
         super().__init__(entries)
         self.counts: dict[str, int] = {}
 
-    def dispatch(self, event: str, envelope: Any) -> Any:
+    def dispatch(self, event: str, envelope: Any, *, cancel_event: Any = None) -> Any:
         self.counts[event] = self.counts.get(event, 0) + 1
-        return super().dispatch(event, envelope)
+        return super().dispatch(event, envelope, cancel_event=cancel_event)
 
 
 def test_per_request_fires_before_model_once_per_lm_call(tmp_path: Path) -> None:

@@ -85,7 +85,7 @@ structured `provider_error` turns rather than hidden sync reruns.
 
 ## Cancellation Semantics
 
-`POST /v1/sessions/{sid}/cancel` is available. It settles the user-visible GACT envelope as cancelled and emits session status changes. If provider or tool work is already running inside an executor thread, the backend cannot guarantee a hard upstream abort; the event metadata marks this as `execution_cancellation="best_effort"` and `executor_work_may_continue=true`.
+`POST /v1/sessions/{sid}/cancel` is available. It settles the user-visible GACT envelope as cancelled and emits session status changes. If provider or tool work is already running inside an executor thread, the backend cannot guarantee a hard upstream abort; the event metadata marks this as `execution_cancellation="best_effort"`. A cancel landing while the turn's off-loop prologue is still running settles as `error_info.error="turn_cancelled_during_prologue"` instead, and kills an already-running `UserPromptSubmit` hook subprocess outright.
 
 The TUI should render that as cancellation acknowledged, with no implication that the upstream provider request was killed.
 

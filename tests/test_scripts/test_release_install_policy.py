@@ -17,7 +17,7 @@ EXPECTED_DSPY = "dspy==3.3.0b1"
 EXPECTED_FASTMCP = "fastmcp==4.0.0b5"
 EXPECTED_FASTMCP_SLIM = "fastmcp-slim==4.0.0b5"
 EXPECTED_FASTMCP_TASKS = "fastmcp-tasks==4.0.0b5"
-EXPECTED_LITELLM = "litellm==1.91.3"
+EXPECTED_LITELLM = "litellm==1.102.1"
 
 
 def _text(relative_path: str) -> str:

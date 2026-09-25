@@ -718,6 +718,10 @@ def test_file_result_has_one_portable_filename_link() -> None:
         "detail": "",
         "items": [],
         "action_label": "",
+        "workspace_id": "",
+        "path": "",
+        "sha256": "",
+        "pages": [],
     }
     assert view["blocks"][1]["label"] == ""
 

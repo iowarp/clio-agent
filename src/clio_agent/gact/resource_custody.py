@@ -118,6 +118,21 @@ class ResourceMaterialization(BaseModel):
     reason: str = ""
 
 
+class ResourceSourceRegistration(BaseModel):
+    """Typed outcome of registering a ready resource as a citable source artifact.
+
+    Mirrors :class:`ResourceMaterialization`'s shape (the same no-silent-fallback
+    rule): a resource becomes a first-class ``source`` artifact once materialized
+    (:mod:`clio_agent.gact.artifacts.resource_sources`), so the model can cite it
+    via ``create_artifact``'s ``used=[...]``. A registration failure is recorded
+    here — never swallowed — so the resource wire always shows why it cannot yet
+    be cited.
+    """
+
+    state: Literal["pending", "registered", "failed"] = "pending"
+    reason: str = ""
+
+
 class ResourceRecord(BaseModel):
     """Durable metadata for one immutable resource revision."""
 
@@ -139,6 +154,10 @@ class ResourceRecord(BaseModel):
     completed_at: str = ""
     workspace_path: str = ""
     materialization: ResourceMaterialization = Field(default_factory=ResourceMaterialization)
+    source_artifact_id: str = ""
+    source_registration: ResourceSourceRegistration = Field(
+        default_factory=ResourceSourceRegistration
+    )
 
     @property
     def mime_mismatch(self) -> bool:
@@ -435,6 +454,36 @@ class ResourceStore:
             self._flush_locked()
             return record.model_copy(deep=True)
 
+    def set_source_registration(
+        self,
+        resource_id: str,
+        registration: ResourceSourceRegistration,
+        *,
+        artifact_id: str = "",
+    ) -> ResourceRecord:
+        """Record one source-artifact registration attempt's outcome.
+
+        The same never-raises shape as :meth:`set_materialization`: a failure
+        is recorded, not swallowed, so
+        :mod:`clio_agent.gact.artifacts.resource_sources` can carry on past it.
+        ``artifact_id`` is set only on a ``registered`` outcome; it is left
+        untouched on a ``failed``/``pending`` one (a prior success is never
+        overwritten by a later retry's failure).
+        """
+
+        with self._lock:
+            record = self._require_locked(resource_id)
+            update: dict[str, object] = {
+                "source_registration": registration,
+                "updated_at": _now_iso(),
+            }
+            if artifact_id:
+                update["source_artifact_id"] = artifact_id
+            record = record.model_copy(update=update)
+            self._records[resource_id] = record
+            self._flush_locked()
+            return record.model_copy(deep=True)
+
     def copy_ready(
         self, source_workspace_id: str, resource_id: str, destination_workspace_id: str
     ) -> ResourceRecord:
@@ -459,6 +508,13 @@ class ResourceStore:
                     # make materialize_once() skip it as already-done despite
                     # the empty workspace_path just above.
                     "materialization": ResourceMaterialization(),
+                    # Same reasoning: the copy is a NEW resource in a NEW workspace,
+                    # so it needs its OWN source artifact (the registry keys artifacts
+                    # per-workspace) — inheriting the source's registration would
+                    # point this copy's citations at an artifact in the WRONG
+                    # workspace, and materialize_once() would skip re-registering it.
+                    "source_artifact_id": "",
+                    "source_registration": ResourceSourceRegistration(),
                     "created_at": now,
                     "updated_at": now,
                     "completed_at": now,
@@ -564,6 +620,7 @@ __all__ = [
     "ResourceLimitError",
     "ResourceMaterialization",
     "ResourceRecord",
+    "ResourceSourceRegistration",
     "ResourceStore",
     "quarantine_corrupt_index",
     "windows_safe_filename",

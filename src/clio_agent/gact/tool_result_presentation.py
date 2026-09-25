@@ -28,11 +28,22 @@ class PresentationBlock(BaseModel):
         "check",
         "media",
         "item",
+        "workspace_file",
     ]
     media_type: str = ""
     text: str = ""
     label: str = ""
     language: str = ""
+    # "workspace_file" only (U3): the workspace-relative identity of a file the
+    # agent inspected via view_image/view_pdf, so the transcript can show what
+    # the agent actually saw. Never carries bytes -- the client fetches and
+    # previews the file itself through the workspace file APIs, keyed by
+    # ``workspace_id`` + ``path``, and verifies it is still the same file via
+    # ``sha256`` (the same hash the tool's own hydration re-check uses).
+    workspace_id: str = ""
+    path: str = ""
+    sha256: str = ""
+    pages: list[int] = Field(default_factory=list)
     target: Literal["artifact", "resource", "session", "url", "file", "work", "surface"] | None = (
         None
     )

@@ -1210,7 +1210,6 @@ def test_mcp_wire_cancellation_unavailable_is_typed() -> None:
         "stage": "tool_call_in_flight",
         "reason": "mcp_wire_cancellation_unavailable",
         "execution_cancellation": "cooperative",
-        "executor_work_may_continue": True,
         "mcp_wire_cancellation": "unavailable",
     }
 
