@@ -936,7 +936,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # providers/session_lifecycle.py -- only the threaded kwarg is here.
     # 862 -> 866 (#1333): acompletion runs the blocking pool bridge off the loop (+1 import,
     # +2 comment, +1 to_thread call); the bridge itself stays in claude_code_sdk_pool.py.
-    "src/clio_agent/providers/claude_code_litellm.py": 866,
+    # 866 -> 864 (S2 B2 rework): entry_for()'s call site drops the now-dead
+    # thinking=/system_prompt= peek kwargs (the warm pool they fed is deleted).
+    "src/clio_agent/providers/claude_code_litellm.py": 864,
     # (process_census.py's entry retired: 711 lines, back under the flat 800 cap.)
     # NEW entry (#1305 review round): crossed the flat 800 cap (800 -> 825)
     # for the F2/F4/F6b fixes an adversarial review demanded on
@@ -971,7 +973,25 @@ RATCHET_BASELINE: dict[str, int] = {
     # Ratchet back with the #714/#767 decomposition.
     # MERGE (PR #1298 x #1310): 863 -> 879. Both campaigns' stream-entry lifecycle
     # additions coexist; neither side's hardening was dropped.
-    "src/clio_agent/providers/claude_code_sessions.py": 879,
+    # S2 (Claude SDK tuning, B1): stays at 879 (no growth past the recorded
+    # ceiling). Rekeyed the pool by GACT session id (dropping the whole
+    # scope<->session ownership bookkeeping layer -- _session_scopes/
+    # _scope_session and their note/forget/scopes_for_session helpers -- since
+    # session id IS the key now) while adding B2 (warm pool, incl. the
+    # claim-vs-mint compatibility check that avoids a double CLI spawn), B13
+    # (live model switch), B14 (interrupt-based cancel), and B17 (dead-client
+    # replacement + stderr-tail-on-crash); the bookkeeping deletion offset the
+    # additions almost exactly, so the file holds its baseline rather than
+    # shrinking further.
+    # S2 B2 rework (879 -> 846): the generic bare-config warm pool (_warm,
+    # _pop_compatible_warm_locked, prewarm/_spawn_warm_refill/
+    # _prewarm_one_blocking) is deleted outright, replaced by
+    # ClaudeStreamClientPool.precede_connect -- a thin delegator to
+    # claude_code_stream_bounds.precede_connect (the actual mint/cap/
+    # background-connect logic lives in that owner module, not here, mirroring
+    # how sweep_idle_session_entries/reap_idle_session_entry already reach into
+    # the pool from that sibling file).
+    "src/clio_agent/providers/claude_code_sessions.py": 846,
     # #900: +2 for wiring probe_process_tree into the doctor collect().
     # owner ruling 2026-07-14: +3 for the DEGRADED-by-policy local-ARC doctor row.
     # #947 DEBT (recorded 2026-07-18, #948 S4): residual over the pre-#947 count

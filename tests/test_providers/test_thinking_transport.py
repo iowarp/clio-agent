@@ -2,14 +2,17 @@
 
 Proves the level travels config → factory kwargs → optional_params → the SDK
 call: the LM-factory mapping, the claude_code provider pass-through into
-``_run_sdk``, the ``ClaudeAgentOptions.thinking`` placement, and the session-pool
-re-key on distinct thinking configs. The env/config plumbing and typed-unsupported
-surfacing round it out.
+``_run_sdk``, the ``ClaudeAgentOptions.thinking`` placement, and (S2 B13) the
+session pool's own-entry reconnect on a thinking-config change. The env/config
+plumbing and typed-unsupported surfacing round it out.
 """
 
 from __future__ import annotations
 
 import logging
+import sys
+from types import ModuleType
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -17,7 +20,7 @@ import pytest
 from clio_agent.config import LMProviderConfig, load_config_from_env
 from clio_agent.lm.factory import _thinking_kwargs
 from clio_agent.providers import claude_code_litellm
-from clio_agent.providers.claude_code_litellm import ClaudeCodeLLM, _SdkSessionPool
+from clio_agent.providers.claude_code_litellm import ClaudeCodeLLM
 from clio_agent.providers.claude_code_options import build_sdk_options, thinking_key
 from tests.env_isolation import isolated_environ
 
@@ -122,7 +125,17 @@ def test_build_sdk_options_isolates_clio_from_personal_claude_capabilities() -> 
 def test_completion_passes_thinking_from_optional_params_to_run_sdk(monkeypatch) -> None:
     seen: dict = {}
 
-    def fake_sdk(*, prompt, native_blocks, model, timeout, cwd, thinking=None):
+    def fake_sdk(
+        *,
+        prompt,
+        native_blocks,
+        model,
+        timeout,
+        cwd,
+        thinking=None,
+        system_prompt=None,
+        call_index=0,
+    ):
         seen["thinking"] = thinking
         return "ok", {"input_tokens": 1, "output_tokens": 1}
 
@@ -157,13 +170,59 @@ def test_thinking_key_is_stable_and_distinct() -> None:
     assert a != thinking_key({"type": "disabled"})
 
 
-def test_pool_rekeys_on_distinct_thinking() -> None:
-    pool = _SdkSessionPool()
-    disabled = pool._session_for("haiku", "/w", thinking_key({"type": "disabled"}))
-    low = pool._session_for("haiku", "/w", thinking_key({"type": "enabled", "budget_tokens": 2048}))
-    disabled_again = pool._session_for("haiku", "/w", thinking_key({"type": "disabled"}))
-    assert disabled is disabled_again
-    assert disabled is not low
+def _install_fake_sdk(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """A minimal fake ``claude_agent_sdk`` -- connect/disconnect only."""
+    state: dict[str, Any] = {"constructed": 0}
+
+    class FakeOptions:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
+    class FakeClient:
+        def __init__(self, options: FakeOptions) -> None:
+            state["constructed"] += 1
+            self.options = options
+
+        async def connect(self) -> None:
+            return None
+
+        async def disconnect(self) -> None:
+            return None
+
+        async def set_model(self, model: str | None) -> None:
+            return None
+
+    fake_sdk = ModuleType("claude_agent_sdk")
+    fake_sdk.ClaudeAgentOptions = FakeOptions
+    fake_sdk.ClaudeSDKClient = FakeClient
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
+    return state
+
+
+async def test_entry_reconnects_on_distinct_thinking_config(monkeypatch) -> None:
+    """S2 B13: a session's entry keeps ONE client across same-config calls, but a
+    thinking-config change on the SAME entry reconnects (this SDK exposes no
+    live ``set_thinking``/``set_effort`` control request — only ``set_model``)."""
+    from clio_agent.providers.claude_code_sessions import _StreamClientEntry
+
+    state = _install_fake_sdk(monkeypatch)
+    entry = _StreamClientEntry()
+    await entry._ensure_client(lambda: None, model="haiku", cwd="/w", thinking={"type": "disabled"})
+    await entry._ensure_client(lambda: None, model="haiku", cwd="/w", thinking={"type": "disabled"})
+    assert state["constructed"] == 1  # identical config -> no reconnect
+
+    await entry._ensure_client(
+        lambda: None,
+        model="haiku",
+        cwd="/w",
+        thinking={"type": "enabled", "budget_tokens": 2048},
+    )
+    assert state["constructed"] == 2  # distinct thinking config -> reconnect
+
+    await entry._ensure_client(lambda: None, model="haiku", cwd="/w", thinking={"type": "disabled"})
+    assert state["constructed"] == 3  # reconnects back too
 
 
 # --------------------------------------------------------------------------- #

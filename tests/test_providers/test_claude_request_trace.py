@@ -99,6 +99,8 @@ def test_the_sdk_seam_passes_native_blocks_either_way(
         timeout: float,
         cwd: str | None,
         thinking: Any,
+        system_prompt: str | None = None,
+        call_index: int = 0,
     ) -> tuple[str, dict[str, int]]:
         seen["native_blocks"] = native_blocks
         seen["prompt"] = prompt

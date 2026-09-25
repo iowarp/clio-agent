@@ -78,18 +78,13 @@ def test_teardown_pooled_sdk_transports_closes_both_pools_and_logs(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Clean shutdown closes every SDK client and emits the typed reason."""
-    from clio_agent.providers import claude_code_sdk_pool, claude_code_sessions, codex_stream
+    from clio_agent.providers import claude_code_sessions, codex_stream
 
     calls: list[str] = []
     monkeypatch.setattr(
         claude_code_sessions._STREAM_CLIENT_POOL,
         "close_blocking",
         lambda: calls.append("stream"),
-    )
-    monkeypatch.setattr(
-        claude_code_sdk_pool._SDK_SESSION_POOL,
-        "close",
-        lambda: calls.append("sdk"),
     )
     monkeypatch.setattr(
         codex_stream._SDK_CLIENT,
@@ -100,10 +95,9 @@ def test_teardown_pooled_sdk_transports_closes_both_pools_and_logs(
     with caplog.at_level(logging.INFO, logger="clio_agent.runtime.process_tree"):
         outcome = pt.teardown_pooled_sdk_transports()
 
-    assert calls == ["stream", "sdk", "codex"]
+    assert calls == ["stream", "codex"]
     assert outcome == {
         "stream_client_pool": "closed",
-        "sdk_session_pool": "closed",
         "codex_sdk_client": "closed",
     }
     assert any("reason=sdk_pools_closed" in rec.message for rec in caplog.records)
@@ -111,17 +105,15 @@ def test_teardown_pooled_sdk_transports_closes_both_pools_and_logs(
 
 def test_teardown_records_per_pool_failure_reason(monkeypatch: pytest.MonkeyPatch) -> None:
     """A pool that fails to close is recorded with a structured reason, never swallowed."""
-    from clio_agent.providers import claude_code_sdk_pool, claude_code_sessions
+    from clio_agent.providers import claude_code_sessions
 
     def _boom() -> None:
         raise RuntimeError("connect wedged")
 
     monkeypatch.setattr(claude_code_sessions._STREAM_CLIENT_POOL, "close_blocking", _boom)
-    monkeypatch.setattr(claude_code_sdk_pool._SDK_SESSION_POOL, "close", lambda: None)
 
     outcome = pt.teardown_pooled_sdk_transports()
     assert outcome["stream_client_pool"].startswith("error:")
-    assert outcome["sdk_session_pool"] == "closed"
 
 
 def test_probe_census_lists_children_with_pid_name_age_kind() -> None:

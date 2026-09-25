@@ -120,6 +120,21 @@ class TestLookups:
     def test_get_provider_returns_none_for_unknown(self) -> None:
         assert get_provider("does-not-exist") is None
 
+    def test_inner_loop_owner_defaults_to_clio_for_every_provider(self) -> None:
+        """Every direct provider's tool/reasoning loop is CLIO's own DSPy
+        ReAct loop -- the flag defaults true rather than needing an explicit
+        entry per provider."""
+        assert all(p.inner_loop_owner == "clio" for p in PROVIDERS)
+
+    def test_claude_code_declares_inner_loop_owner_clio(self) -> None:
+        """S2 (B7 not adopted): claude_code's own SDK never runs its own tool
+        loop for CLIO -- ``tools=[]`` on the SDK session means CLIO's ReAct
+        loop drives every turn end-to-end. Explicit on the record (not just
+        the dataclass default) so the ruling is documented in one place."""
+        p = get_provider("claude_code")
+        assert p is not None
+        assert p.inner_loop_owner == "clio"
+
     def test_kind_default_resolves_argonne_sophia(self) -> None:
         p = kind_default("argonne")
         assert p is not None
