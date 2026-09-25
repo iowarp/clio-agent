@@ -24,18 +24,89 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from dataclasses import replace
+from datetime import datetime, timezone
 from typing import Any
 
 from clio_agent.providers.capabilities.dialects import vllm
-from clio_agent.providers.capabilities.records import DeploymentCapabilities, EndpointCapabilities
+from clio_agent.providers.capabilities.records import (
+    DeploymentCapabilities,
+    EndpointCapabilities,
+    Fact,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
 
 #: Field names an ALCF ``/jobs`` row might name its own per-job vLLM endpoint
 #: under. Tried in order; the first present non-empty string wins. Kept as a
 #: named constant (not inlined) so a confirmed real field name is a one-line
 #: fix, not a re-read of this whole module.
 _JOB_ENDPOINT_FIELDS: tuple[str, ...] = ("endpoint", "url", "api_base", "Endpoint")
+
+
+def gateway_row_identity(row: Mapping[str, Any]) -> tuple[str | None, str | None]:
+    """``(reasoning_parser, tool_call_parser)`` from a raw gateway ``/models`` row.
+
+    Shared by :func:`parse_gateway_model_row` and the handshake's raw
+    passthrough metadata, so the field names are written once. A falsy value
+    normalizes to ``None`` (an empty string is not evidence of a parser name).
+    """
+    reasoning_parser = row.get("reasoning_parser") or None
+    tool_call_parser = row.get("tool_call_parser") or None
+    return reasoning_parser, tool_call_parser
+
+
+def parse_gateway_model_row(
+    row: Mapping[str, Any],
+    *,
+    provider_id: str,
+    api_base: str,
+    observed_at: str | None = None,
+) -> DeploymentCapabilities:
+    """Build one :class:`DeploymentCapabilities` from an ALCF gateway ``/models`` row.
+
+    ALCF fronts vLLM, and this row's ``max_model_len``/``root`` are exactly
+    what a vLLM ``/v1/models`` row would report, so those two fields (and the
+    model link/fingerprint they feed) reuse :func:`clio_agent.providers.
+    capabilities.dialects.vllm.parse_models_row` rather than a second copy of
+    that mapping. ``reasoning_parser``/``tool_call_parser``/
+    ``enable_auto_tool_choice`` are ALCF-gateway-specific extras vanilla vLLM's
+    own ``/v1/models`` does not expose (brief Part 6 vLLM section: "Tools,
+    vision and reasoning parsing depend on launch flags that vLLM does not
+    expose"), so they are layered on here, not in ``.vllm``. Every row is an
+    EXHAUSTIVE self-report -- an absent parser/flag is real negative evidence
+    (``False``), never left unknown.
+    """
+    observed_at = observed_at or _now_iso()
+    base = vllm.parse_models_row(row, provider_id=provider_id, api_base=api_base, observed_at=observed_at)
+
+    reasoning_parser, tool_call_parser = gateway_row_identity(row)
+    auto_tool = bool(row.get("enable_auto_tool_choice"))
+    native_tool_calling = tool_call_parser is not None or auto_tool
+
+    return replace(
+        base,
+        reasoning_enabled=Fact(
+            value=reasoning_parser is not None,
+            source="server_report",
+            observed_at=observed_at,
+            detail=f"ALCF gateway /models reasoning_parser={reasoning_parser!r}",
+        ),
+        tools_enabled=Fact(
+            value=native_tool_calling,
+            source="server_report",
+            observed_at=observed_at,
+            detail=(
+                f"ALCF gateway /models tool_call_parser={tool_call_parser!r} "
+                f"enable_auto_tool_choice={auto_tool!r}"
+            ),
+        ),
+    )
 
 
 def job_endpoint_url(job: Mapping[str, Any]) -> str | None:
@@ -61,20 +132,12 @@ async def probe_job_endpoint(
     if base is None:
         return None
     try:
-        models_response = await client.get(f"{base.rstrip('/')}/v1/models")
-        models_response.raise_for_status()
-        models_payload = models_response.json()
+        models_payload = await vllm.fetch_models(client, base)
         row = vllm.find_model_row(models_payload, model_id)
         if row is None:
             return None
         deployment = vllm.parse_models_row(row, provider_id=provider_id, api_base=base)
-        version = None
-        try:
-            version_response = await client.get(f"{base.rstrip('/')}/version")
-            if version_response.status_code < 400:
-                version = version_response.json().get("version")
-        except Exception:  # noqa: BLE001 - version is a nice-to-have, not required
-            version = None
+        version = await vllm.fetch_version(client, base)
         endpoint = vllm.build_endpoint_capabilities(provider_id, base, model_id, version=version)
         return endpoint, deployment
     except Exception as exc:  # noqa: BLE001 - best-effort, mirrors _discover_hot_models
@@ -82,4 +145,9 @@ async def probe_job_endpoint(
         return None
 
 
-__all__ = ["job_endpoint_url", "probe_job_endpoint"]
+__all__ = [
+    "gateway_row_identity",
+    "job_endpoint_url",
+    "parse_gateway_model_row",
+    "probe_job_endpoint",
+]
