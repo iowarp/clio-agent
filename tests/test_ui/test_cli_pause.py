@@ -367,3 +367,91 @@ def test_message_fetch_failure_surfaces_structured_error(
     out = console.export_text()
     assert "CLIO Error" in out
     assert "(no answer)" not in out
+
+
+# --------------------------------------------------------------------------- #
+# The CLI fetches the assistant message on message.completed; it must be readable
+# --------------------------------------------------------------------------- #
+
+
+def test_ask_question_fetch_never_races_assistant_persistence(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The CLI GETs the assistant message the moment it sees ``message.completed``.
+
+    Finalize used to publish ``message.completed`` BEFORE persisting the message
+    (``persist_finalized_message`` on the finalize executor thread), so the CLI's
+    fetch could 404 (``message_fetch_failed``; the intermittent CI failure of
+    ``test_ask_question_drives_permission_pause``). This turns that race into a
+    certainty instead of relying on thread timing: the assistant-message append is
+    HELD OPEN whenever its ``message.completed`` has already been published, and is
+    released only after the CLI's fetch has returned. Under the old order the fetch
+    therefore always 404s; under the fixed order (persist, then publish) the append
+    runs before any completion is visible, the gate never engages, and the fetch
+    reads the persisted message.
+    """
+
+    import clio_agent.gact.app as gact_app
+
+    app = build_app(
+        sessions_path=tmp_path / "sessions.json",
+        agent=StubAgent(
+            answer="Command finished.",
+            permissions_requested=[
+                {"id": "perm_ord", "tool_call": {"tool_name": "shell.run"}, "summary": "run ls"}
+            ],
+        ),
+        arc=_fresh_arc(tmp_path / "inst"),
+    )
+
+    published_completions: set[str] = set()
+    real_publish = app.state.bus.publish
+
+    def _recording_publish(event: Any, *args: Any, **kwargs: Any) -> Any:
+        if event.type == "message.completed":
+            published_completions.add(str(event.payload.get("message_id", "")))
+        return real_publish(event, *args, **kwargs)
+
+    app.state.bus.publish = _recording_publish
+
+    fetch_returned = threading.Event()
+    held_appends: list[str] = []
+    real_append = gact_app._append_session_message
+
+    def _gated_append(app_: Any, session_id: str, message: Any, **kwargs: Any) -> Any:
+        if message.role == "assistant" and message.id in published_completions:
+            # The completion escaped ahead of persistence: hold the append open until
+            # the client has acted on it (bounded so a regression fails, never hangs).
+            held_appends.append(message.id)
+            fetch_returned.wait(timeout=20.0)
+        return real_append(app_, session_id, message, **kwargs)
+
+    monkeypatch.setattr(gact_app, "_append_session_message", _gated_append)
+
+    transport = StreamingASGITransport(app)
+    client = ClioClient("http://testserver", transport=transport)
+    try:
+        real_get = client.messages.get
+
+        def _signalling_get(session_id: str, message_id: str) -> Any:
+            try:
+                return real_get(session_id, message_id)
+            finally:
+                fetch_returned.set()
+
+        monkeypatch.setattr(client.messages, "get", _signalling_get)
+        cli, _ = _make_cli(client)
+        monkeypatch.setattr(cli, "_prompt", lambda *a, **k: "y")
+
+        result = _run_with_timeout(lambda: cli.ask_question("do the thing"))
+    finally:
+        fetch_returned.set()
+        client.close()
+        transport.close()
+
+    # Pre-fix this is the CI symptom: message_fetch_failed / [404] message not found.
+    assert result["error_info"] is None, result["error_info"]
+    assert "Command finished." in result["answer"]
+    assert held_appends == [], (
+        f"message.completed was published before its assistant message persisted: {held_appends}"
+    )
