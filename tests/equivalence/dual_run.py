@@ -27,7 +27,6 @@ a real gact turn needs to settle.
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional  # noqa: F401
@@ -42,6 +41,7 @@ from clio_agent.arc.memory import ARCMemory
 # The real loop helpers (test_arc / test_gact are packages).
 from tests.test_arc.conftest import live_plane_context  # noqa: E402
 from tests.test_gact.test_post_messages import FakeClioAgent  # noqa: E402
+from tests.turn_signals import wait_for_terminal_status  # noqa: E402
 
 from . import normalizers as N
 
@@ -201,15 +201,13 @@ def _capture_gact_surfaces(
     app = build_app(sessions_path=tmp_dir / "sessions.json", agent=agent, arc=arc)
     with TestClient(app) as c:
         sid = c.post("/v1/sessions", json={"title": "equiv"}).json()["id"]
+        cursor = app.state.bus.latest_event_id(sid)
         ack = c.post(f"/v1/sessions/{sid}/messages", json={"parts": [{"type": "text", "text": "hi"}]})
         assert ack.status_code == 200, ack.text
-        deadline = time.monotonic() + 10.0
-        status = "running"
-        while time.monotonic() < deadline:
-            status = c.get(f"/v1/sessions/{sid}").json()["status"]
-            if status != "running":
-                break
-            time.sleep(0.05)
+        # Capture once the turn has SETTLED: its terminal status event publishes after
+        # the busy gate releases (#1466), which is after the completion events are
+        # persisted (#1469). A fixed wall-clock window failed on a slow first turn.
+        wait_for_terminal_status(app.state.bus, sid, after_event_id=cursor)
         rows = c.get(f"/v1/sessions/{sid}/messages").json()["messages"]
         events = list(app.state.bus._history.get(sid, []))
     return events, rows
