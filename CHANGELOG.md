@@ -6,6 +6,14 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Added
+
+- The builtin `clio-workspace` A2UI catalog offers two more components
+  (clio-schemas 0.4.0): `clio.mesh-viewport.v1`, an orbitable 3D view of a
+  registered `.glb` mesh with field coloring, frames, a cell threshold, a
+  bound camera and linked views, and `clio.slider.v1`, a slider with a step,
+  a unit and a typed value.
+
 ## [0.9.4.18] — 2026-09-26
 
 ### Added
