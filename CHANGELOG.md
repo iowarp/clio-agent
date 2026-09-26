@@ -74,6 +74,11 @@ TUI/HTTP surface aren't tracked here.
 - Writes under deep workspace paths work on Windows without long path
   support.
 - A crashed or cancelled turn start reports its real cause.
+- A session reports `idle` only once its turn has fully finished, so a
+  message sent right after no longer becomes a steer or a `session_busy`
+  409.
+- Idle Claude Code CLI processes are released after their idle timeout,
+  instead of staying resident until the next session starts.
 
 ## [0.9.4.17] — 2026-09-24
 
