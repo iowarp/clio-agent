@@ -172,6 +172,12 @@ def resolve(provider: str, credential_ref: str = "") -> str:
     # api_key_env of their own -- a kind-keyed fallback here silently handed
     # them a real OPENAI_API_KEY from the environment instead of leaving them
     # keyless.
+    # A key a client saved (the durable store) wins over the env var.
+    from clio_agent.providers.api_key_store import stored_api_key  # noqa: PLC0415
+
+    saved = stored_api_key(provider)
+    if saved:
+        return saved
     env_var = _CLOUD_API_KEY_ENV.get(provider)
     if env_var:
         return os.environ.get(env_var, "")

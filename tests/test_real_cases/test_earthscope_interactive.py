@@ -530,7 +530,9 @@ def test_earthscope_a2ui_idle_selection(agent: Any, gact_server: Any, tmp_path: 
         }
         action = _a2ui_selected_action(surface["id"], search_id, station_ids)
         posted = http.post(
-            f"/v1/sessions/{session_id}/a2ui/actions", headers=A2UI_HEADERS, json={"message": action}
+            f"/v1/sessions/{session_id}/a2ui/actions",
+            headers=A2UI_HEADERS,
+            json={"message": action},
         )
         assert posted.status_code == 200, posted.text
         assert posted.json()["delivery"] == "start"
@@ -581,14 +583,18 @@ def test_earthscope_a2ui_queued_selection(agent: Any, gact_server: Any, tmp_path
 
         action = _a2ui_selected_action(surface["id"], search_id, station_ids)
         first = http.post(
-            f"/v1/sessions/{session_id}/a2ui/actions", headers=A2UI_HEADERS, json={"message": action}
+            f"/v1/sessions/{session_id}/a2ui/actions",
+            headers=A2UI_HEADERS,
+            json={"message": action},
         )
         assert first.status_code == 200, first.text
         assert first.json()["delivery"] == "steer"
         action_id = first.json()["action_id"]
 
         duplicate = http.post(
-            f"/v1/sessions/{session_id}/a2ui/actions", headers=A2UI_HEADERS, json={"message": action}
+            f"/v1/sessions/{session_id}/a2ui/actions",
+            headers=A2UI_HEADERS,
+            json={"message": action},
         )
         assert duplicate.status_code == 200, duplicate.text
         assert duplicate.json()["action_id"] == action_id
@@ -633,7 +639,9 @@ def test_earthscope_a2ui_waiting_user_selection(
         }
         action = _a2ui_selected_action(surface["id"], search_id, station_ids)
         posted = http.post(
-            f"/v1/sessions/{session_id}/a2ui/actions", headers=A2UI_HEADERS, json={"message": action}
+            f"/v1/sessions/{session_id}/a2ui/actions",
+            headers=A2UI_HEADERS,
+            json={"message": action},
         )
         assert posted.status_code == 200, posted.text
         assert posted.json()["delivery"] == "resolve_question"

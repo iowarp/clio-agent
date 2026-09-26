@@ -33,6 +33,7 @@ Public API:
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import os
 import secrets
@@ -77,6 +78,16 @@ class GlobusUnavailable(RuntimeError):
     helpful "pip install clio-agent[argonne]" hint instead of a bare
     ``ModuleNotFoundError``.
     """
+
+
+#: User-facing copy for the generic install route (never the raw CLI
+#: pip-install hint from :func:`_require_globus` -- that stays in the
+#: diagnostic detail, not the primary message).
+ARGONNE_NOT_INSTALLED_MESSAGE = "ALCF sign-in support is not installed on the connected agent."
+ARGONNE_INSTALL_FAILED_MESSAGE = (
+    "CLIO could not install ALCF sign-in support. Check the connected agent's "
+    "internet connection and try again."
+)
 
 
 class GlobusAuthError(RuntimeError):
@@ -247,6 +258,80 @@ def tokens_exist() -> bool:
     return any(os.path.isfile(path) for path in token_paths())
 
 
+def readiness() -> tuple[str, str, bool]:
+    """Return ``(status, status_message, is_authenticated)`` for an ALCF preset.
+
+    The one place this is computed (mirrors ``_codex_readiness`` /
+    ``_claude_code_readiness`` living beside their own providers): an env
+    token wins outright; otherwise missing the 'argonne' extra is
+    ``install_required`` regardless of sign-in state (a stored token can
+    outlive the runtime that saved it), then no stored token or a stored
+    token that fails to refresh is ``auth_required``, else ``ready``.
+    """
+    env_token = (
+        os.environ.get("CLIO_ARGONNE_TOKEN", "").strip()
+        or os.environ.get("ALCF_INFERENCE_TOKEN", "").strip()
+    )
+    if env_token:
+        return "ready", "ALCF token present in environment", True
+    if not sdk_available():
+        return "install_required", ARGONNE_NOT_INSTALLED_MESSAGE, False
+    if not tokens_exist():
+        return "auth_required", "no Globus token stored; authenticate ALCF before connecting", False
+    if check_auth_status():
+        return "ready", "Globus token validated", True
+    return (
+        "auth_required",
+        "stored Globus token could not be refreshed; authenticate ALCF",
+        False,
+    )
+
+
+def sdk_available() -> bool:
+    """Whether the 'argonne' extra (globus-sdk) is importable right now.
+
+    A cheap ``find_spec`` check, never an import -- callers that need the
+    module itself still go through :func:`_require_globus`. The ONE place
+    this is checked from, so a provider-status computation and an auth-state
+    computation can never quietly disagree about whether ALCF needs Install.
+    """
+    return importlib.util.find_spec("globus_sdk") is not None
+
+
+def sign_out() -> None:
+    """Revoke and delete every stored ALCF Globus token.
+
+    ``UserApp.logout()`` (globus-sdk >= 4.x) revokes both the access and
+    refresh token for each resource server it finds stored, then removes
+    them from token storage -- the SDK's own documented sign-out primitive
+    (never a hand-rolled "delete the JSON file" that skips revocation).
+    Idempotent: it only acts on resource servers it actually finds token
+    data for, so calling this with nothing stored (already signed out, or
+    never signed in) does nothing and never raises.
+
+    A revoke call that fails (network down, Globus unreachable) must not
+    leave a locally "still signed in" credential behind, so the on-disk
+    token file(s) are removed unconditionally afterward regardless of
+    whether ``logout()`` completed cleanly -- and unconditionally when the
+    'argonne' extra itself isn't installed (there is then no client to
+    revoke through, but the stale file must still go).
+    """
+    try:
+        app = _build_user_app(force=False, allow_interactive=False)
+    except GlobusUnavailable:
+        app = None
+    if app is not None:
+        try:
+            app.logout()
+        except Exception as exc:  # noqa: BLE001 - best-effort revoke, deletion still proceeds
+            logger.warning("ALCF token revocation failed (removing local tokens anyway): %s", exc)
+    for path in token_paths():
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+
+
 def get_access_token(force_refresh: bool = False, *, allow_interactive: bool = True) -> str:
     """Return a valid bearer token for the ALCF inference gateway.
 
@@ -297,12 +382,20 @@ def check_auth_status() -> bool:
         return False
 
 
-def begin_authentication() -> PendingAuthentication:
+def begin_authentication(*, force_login: bool = False) -> PendingAuthentication:
     """Start a remote-safe Globus login and return its browser URL.
 
     The login client remains on the agent because its PKCE verifier is required
     to exchange the authorization code.  Only an opaque flow id and the public
     Globus URL cross the desktop API boundary.
+
+    ``force_login`` sets Globus Auth's own ``prompt=login`` (globus-sdk >= 4.x,
+    verified live: ``NativeAppAuthClient.oauth2_get_authorize_url`` takes
+    ``prompt: Literal['login']``), which makes Globus require a fresh
+    interactive login even if the browser still carries an existing Globus
+    session cookie. This is the ONE action for
+    ``argonne_reauthentication_required`` ("Sign in again"): re-using a stale
+    browser session would silently reproduce the same rejected credential.
     """
     globus_sdk = _require_globus()
     client = globus_sdk.NativeAppAuthClient(
@@ -314,9 +407,10 @@ def begin_authentication() -> PendingAuthentication:
         refresh_tokens=True,
         prefill_named_grant=APP_NAME,
     )
-    authorization_url = client.oauth2_get_authorize_url(
-        session_required_single_domain=ALLOWED_DOMAINS
-    )
+    authorize_kwargs: dict[str, Any] = {"session_required_single_domain": ALLOWED_DOMAINS}
+    if force_login:
+        authorize_kwargs["prompt"] = "login"
+    authorization_url = client.oauth2_get_authorize_url(**authorize_kwargs)
     flow_id = secrets.token_urlsafe(32)
     now = time.monotonic()
     with _pending_authentications_lock:
@@ -332,6 +426,18 @@ def begin_authentication() -> PendingAuthentication:
             expires_at=now + _AUTH_FLOW_TTL_SECONDS,
         )
     return PendingAuthentication(flow_id=flow_id, authorization_url=authorization_url)
+
+
+def flow_is_pending(flow_id: str) -> bool:
+    """Whether ``flow_id`` is a live, unexpired :func:`begin_authentication` flow.
+
+    Used by the generic provider sign-in API's ``status`` action -- ALCF's
+    flow has no async background half, so "pending" means only "still
+    awaiting `complete_authentication`", never a live progress signal.
+    """
+    with _pending_authentications_lock:
+        state = _pending_authentications.get(flow_id.strip())
+    return state is not None and state.expires_at > time.monotonic()
 
 
 def complete_authentication(flow_id: str, authorization_code: str) -> None:

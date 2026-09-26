@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import logging
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.events import Event
@@ -43,6 +44,7 @@ logger = logging.getLogger(__name__)
 
 _INVALIDATED_ATTR = "provider_catalog_invalidated"
 _SEQ_ATTR = "provider_catalog_seq"
+_CHECKING_ATTR = "provider_catalog_checking"
 _SEQUENCE = itertools.count(1)
 
 
@@ -68,6 +70,38 @@ def _pending(app: "FastAPI") -> set[str]:
         pending = set()
         setattr(app.state, _INVALIDATED_ATTR, pending)
     return pending
+
+
+def _checking(app: "FastAPI") -> set[str]:
+    checking = getattr(app.state, _CHECKING_ATTR, None)
+    if not isinstance(checking, set):
+        checking = set()
+        setattr(app.state, _CHECKING_ATTR, checking)
+    return checking
+
+
+def mark_checking(app: "FastAPI", provider_ids: "Iterable[str]") -> None:
+    """Record that a background probe is now RUNNING for ``provider_ids``.
+
+    Purely a live "in flight right now" signal for :func:`read_catalog`'s
+    per-response overlay -- never merged into the persisted snapshot, since
+    "checking" is a property of this instant, not of the cached record. Set
+    by :mod:`clio_agent.gact.provider_catalog_reprobe` around its own
+    handshake call, so a client reading the catalog WHILE ALCF's stale entry
+    is being re-probed sees "checking" instead of the stale failure quietly
+    flipping to ready with nothing in between (#1446 follow-up).
+    """
+    _checking(app).update(provider_ids)
+
+
+def clear_checking(app: "FastAPI", provider_ids: "Iterable[str]") -> None:
+    """The counterpart to :func:`mark_checking`, called when the probe settles."""
+    _checking(app).difference_update(provider_ids)
+
+
+def checking_provider_ids(app: "FastAPI") -> frozenset[str]:
+    """Provider ids with a background probe in flight right now."""
+    return frozenset(_checking(app))
 
 
 def provider_seq(app: "FastAPI", provider_id: str, api_base: str) -> int:
@@ -264,6 +298,44 @@ def _schedule_reprobe(app: "FastAPI", payload: dict[str, Any]) -> None:
 async def read_catalog(
     app: "FastAPI", *, refresh: bool = False, provider_id: str = ""
 ) -> dict[str, Any]:
+    """Serve the catalog snapshot with the live "checking" overlay applied.
+
+    Thin wrapper around :func:`_read_catalog_snapshot` (the actual
+    re-discovery logic, untouched) so every caller -- this route, tests,
+    anything else that reads the catalog -- gets the same per-response
+    ``checking`` stamp without that logic having to thread it through its own
+    several early returns.
+    """
+    payload = await _read_catalog_snapshot(app, refresh=refresh, provider_id=provider_id)
+    return _with_checking_overlay(app, payload)
+
+
+def _with_checking_overlay(app: "FastAPI", payload: dict[str, Any]) -> dict[str, Any]:
+    """Stamp each provider row with whether a background probe is running for
+    it RIGHT NOW (:func:`checking_provider_ids`) -- the client's only way to
+    tell "never checked" apart from "checking, hang on" instead of a stale
+    row silently flipping to ready with nothing in between (#1446 follow-up).
+    Never written back into the snapshot: "in flight" is a property of this
+    instant, not of the cached record.
+    """
+    checking = checking_provider_ids(app)
+    providers = payload.get("providers")
+    if not isinstance(providers, list):
+        return payload
+    return {
+        **payload,
+        "providers": [
+            {**provider, "checking": provider.get("id") in checking}
+            if isinstance(provider, dict)
+            else provider
+            for provider in providers
+        ],
+    }
+
+
+async def _read_catalog_snapshot(
+    app: "FastAPI", *, refresh: bool = False, provider_id: str = ""
+) -> dict[str, Any]:
     """Serve the catalog snapshot, re-discovering exactly what must be re-discovered.
 
     Args:
@@ -335,10 +407,13 @@ async def read_catalog(
 
 __all__ = [
     "UnknownCatalogProviderError",
+    "checking_provider_ids",
+    "clear_checking",
     "commit",
     "discover",
     "invalidate_provider",
     "is_stale",
+    "mark_checking",
     "merge",
     "provider_seq",
     "publish",

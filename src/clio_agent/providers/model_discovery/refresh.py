@@ -9,6 +9,7 @@ import logging
 from typing import Any
 
 from clio_agent.providers.catalog import Provider, iter_providers
+from clio_agent.providers.handshake.base import describe_exception
 from clio_agent.providers.model_discovery.claude_code import (
     ClaudeCodeCLIUnavailableError,
     discover_claude_code,
@@ -56,6 +57,35 @@ async def refresh_subscription_catalogs_at_startup() -> None:
                 logger.warning(
                     "%s model discovery failed at startup: %s", result["provider"], failure
                 )
+    # Codex's SECOND transport (S1b): the SDK is asked independently of the
+    # direct transport's sign-in state above (`is_provider_configured` gates
+    # on the direct credential store, which says nothing about whether a
+    # local SDK/runtime is signed in). Without this, the SDK stayed
+    # "codex_sdk_not_checked" until someone clicked an explicit refresh --
+    # the owner's original complaint. Runs off the same background startup
+    # task (never the request path), and the probe itself already degrades
+    # to a typed failure rather than raising when the SDK isn't installed.
+    if get_provider("codex") is not None:
+        await refresh_codex_sdk_transport()
+
+
+async def refresh_codex_sdk_transport() -> None:
+    """Probe the Codex SDK transport once and persist the result to the overlay.
+
+    The overlay write is what makes this "persist last-good": a restart
+    serves whatever this last recorded (marked stale via the overlay's own
+    ``generated_at``) immediately, rather than showing "not checked" again
+    until the next probe completes.
+    """
+    from clio_agent.providers.codex.sdk_discovery import discover_codex_sdk_async
+
+    try:
+        result = await discover_codex_sdk_async()
+        record_refresh(result)
+    except OverlayMalformedError as exc:
+        logger.warning("Codex SDK transport overlay write failed at startup: %s", exc)
+    except Exception as exc:  # noqa: BLE001 - the SDK probe must never crash startup
+        logger.warning("Codex SDK transport discovery failed at startup: %s", exc)
 
 
 def is_provider_configured(preset: Provider) -> bool:
@@ -66,7 +96,7 @@ def is_provider_configured(preset: Provider) -> bool:
     Filters :func:`refresh_all`'s default scan so an explicit refresh doesn't
     spend its (bounded) wall-clock on providers nobody has set up:
 
-    * codex: the official Python SDK is a required dependency.
+    * codex: a stored, signed-in Codex credential must exist.
     * claude_code: the Claude Agent SDK and its bundled CLI must be installed.
     * argonne: a stored Globus token must exist.
     * any other ``requires_api_key`` kind: its resolved API key must be non-empty.
@@ -75,16 +105,9 @@ def is_provider_configured(preset: Provider) -> bool:
       local server is actually running.
     """
     if preset.provider_kind == "codex":
-        try:
-            import openai_codex  # noqa: F401,PLC0415
+        from clio_agent.providers.codex.credentials import CodexCredentialStore  # noqa: PLC0415
 
-            from clio_agent.providers.codex_credential_home import (  # noqa: PLC0415
-                codex_credentials_present,
-            )
-
-            return codex_credentials_present()
-        except ImportError:
-            return False
+        return CodexCredentialStore().is_signed_in()
     if preset.provider_kind == "claude_code":
         import importlib.util  # noqa: PLC0415
 
@@ -126,7 +149,7 @@ async def refresh_all(
     #1211 review R3) is honored verbatim, un-filtered — the caller named exactly
     what they want probed.
 
-    Runs one discovery coroutine per preset (SDK catalog for codex, the
+    Runs one discovery coroutine per preset (the maintained catalog for codex, the
     maintained GitHub catalog plus one CLI sign-in check for claude_code, the
     live handshake for everything else) via ``asyncio.gather`` so wall-clock
     is bounded by the SLOWEST single provider, not their sum. Each provider's
@@ -174,12 +197,13 @@ async def refresh_all(
                 failed_reason=f"refresh timed out after {REFRESH_PER_PROVIDER_DEADLINE_S}s",
             )
         except Exception as exc:  # noqa: BLE001 - one provider's crash must not sink the refresh
-            logger.warning("model discovery crashed for provider=%s: %s", preset.id, exc)
+            reason = describe_exception(exc)
+            logger.warning("model discovery crashed for provider=%s: %s", preset.id, reason)
             return ProviderDiscoveryResult(
                 provider=preset.id,
                 discovered=[],
                 source="error",
-                failed_reason=f"discovery crashed: {exc}",
+                failed_reason=f"discovery crashed: {reason}",
             )
 
     results = await asyncio.gather(*(_one(p) for p in all_presets))
@@ -188,8 +212,9 @@ async def refresh_all(
         try:
             recorded.append(record_refresh(r))
         except OverlayMalformedError as exc:
+            reason = describe_exception(exc)
             logger.warning(
-                "record_refresh failed for provider=%s: overlay malformed: %s", r.provider, exc
+                "record_refresh failed for provider=%s: overlay malformed: %s", r.provider, reason
             )
             recorded.append(
                 {
@@ -201,7 +226,7 @@ async def refresh_all(
                     "added": [],
                     "removed": [],
                     "unchanged": [],
-                    "failed_reason": f"overlay_malformed: {exc}",
+                    "failed_reason": f"overlay_malformed: {reason}",
                 }
             )
     return recorded
@@ -246,7 +271,7 @@ def build_refresh_provider_models_tool() -> Any:
 
     def refresh_provider_models() -> dict[str, Any]:
         """Refresh the LM provider model catalogs against each account's REAL
-        current state (codex's live model list, claude_code's maintained
+        current state (codex's maintained catalog, claude_code's maintained
         catalog plus a CLI sign-in check, every configured HTTP backend's live
         models endpoint) and report what changed. Returns
         ``{"results": [{"provider", "discovered", "source", "default_model",
@@ -274,5 +299,6 @@ __all__ = [
     "is_provider_configured",
     "refresh_all",
     "refresh_all_sync",
+    "refresh_codex_sdk_transport",
     "refresh_subscription_catalogs_at_startup",
 ]

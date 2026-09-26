@@ -2,8 +2,8 @@
 
 One external vocabulary — ``off | minimal | low | medium | high | xhigh | max`` —
 maps to whatever each provider's transport actually understands. The vocabulary
-is the union of the levels real providers report (Codex's SDK
-``ReasoningEffort``: none/minimal/low/medium/high/xhigh; the Claude Code CLI's
+is the union of the levels real providers report (the Codex backend's
+``reasoning.effort``: none/minimal/low/medium/high/xhigh; the Claude Code CLI's
 per-model ``supportedEffortLevels``: low/medium/high/xhigh/max); a level is
 extended here rather than dropped when a provider reports it. This module is the
 SINGLE level → kwargs mapping; the provider catalog offers a model exactly the
@@ -30,9 +30,10 @@ when the provider reports them; ``None`` means "no per-model effort evidence".
   ``output_config={"effort":<level>}``. Otherwise
   ``thinking={"type":"enabled","budget_tokens":N}``. ``off`` omits the kwarg
   (the API default is thinking off).
-* **codex** (official Python SDK): ``codex_reasoning_effort`` pinned on
-  ``turn/start``; ``off`` → Codex's explicit ``none`` (never omit, which would
-  inherit the ambient ``config.toml`` effort — #896).
+* **codex** (direct Codex backend): ``codex_reasoning_effort`` becomes the
+  Responses API's ``reasoning.effort``; ``off`` → the backend's explicit
+  ``none`` (never omitted, which would leave the effort unset for a model
+  that requires one).
 * **openai**: ``reasoning_effort=<level>``; with ``effort_levels`` only reported
   levels are accepted and ``off`` is ``reasoning_effort="none"`` where the model
   reports a ``none`` effort.
@@ -68,9 +69,10 @@ LEVEL_BUDGET: dict[str, int] = {"low": 2048, "medium": 8192, "high": 24576}
 
 _BUDGET_LEVELS: frozenset[str] = frozenset({"off", "low", "medium", "high"})
 
-#: Codex effort vocabulary (the SDK's ``ReasoningEffort``). ``off`` → ``none``.
-#: ``max``/``ultra`` are reported by newer models (#1436) -- every effort the
-#: SDK defines gets a clio level; none are dropped.
+#: Codex (Codex backend) effort vocabulary, in the Responses API's own
+#: ``reasoning.effort`` values. ``off`` -> ``none``. ``max``/``ultra`` are
+#: reported by newer models -- every effort the catalog defines gets a clio
+#: level; none are dropped.
 _CODEX_EFFORT: dict[str, str] = {
     "off": "none",
     "minimal": "minimal",

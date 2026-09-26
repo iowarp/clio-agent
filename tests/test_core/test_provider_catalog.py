@@ -55,11 +55,10 @@ class TestRegistryInvariants:
             assert p.label, f"{p.id}: empty label"
             assert p.provider_kind, f"{p.id}: empty provider_kind"
             # api_base may be conceptually empty for future providers
-            # (e.g. Codex SDK transport doesn't need a URL), but every
-            # entry shipped today must have one. When the codex
-            # registry entry switches to the CustomLLM path in #51, this
-            # check may need a "provider_kind == 'codex' or api_base"
-            # exemption.
+            # (e.g. the direct Codex transport doesn't need an HTTP
+            # URL -- its api_base is the identity marker
+            # "codex://direct"), but every entry shipped today must
+            # have one.
             assert p.api_base or p.litellm_prefix in {"azure", "gemini", "vertex_ai", "bedrock"}, (
                 f"{p.id}: empty api_base without a cloud-native LiteLLM route"
             )
@@ -215,8 +214,8 @@ class TestDerivedViews:
     def test_codex_catalog_uses_user_facing_model_ids(self) -> None:
         models = as_provider_models_dict()["codex"]
         ids = {row["id"] for row in models}
-        assert {"gpt-5.5", "gpt-5.5-codex", "gpt-5.1"} <= ids
-        assert all(not model_id.startswith("cdx-") for model_id in ids)
+        assert {"gpt-5.6-sol", "gpt-5.5"} <= ids
+        assert all(not model_id.startswith("cg-") for model_id in ids)
 
     def test_claude_code_catalog_uses_user_facing_model_ids(self) -> None:
         models = as_provider_models_dict()["claude_code"]

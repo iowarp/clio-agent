@@ -79,9 +79,9 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_CMF_PYTHON` | `provenance.artifacts.cmf.python` | str | _(unset)_ | `src/clio_agent/gact/artifacts/provenance/cmf_mode.py` |
 | `CLIO_CMF_SERVER_URL` | `provenance.artifacts.cmf.server_url` | str | _(unset)_ | `src/clio_agent/gact/artifacts/provenance/cmf_mode.py` |
 | `CLIO_CMF_WORKER_URL` | `provenance.artifacts.cmf.worker_url` | str | _(unset)_ | `src/clio_agent/gact/artifacts/provenance/cmf_mode.py` |
-| `CLIO_CODEX_CREDENTIAL_HOME_CAPACITY` | `providers.codex.credential_home_capacity` | int | `4` | `src/clio_agent/providers/codex_credential_home.py` |
-| `CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S` | `limits.codex_sdk_progress_timeout_s` | float | `120.0` | `src/clio_agent/providers/codex_stream.py` |
+| `CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S` | `limits.codex_sdk_progress_timeout_s` | float | `120.0` | `src/clio_agent/providers/codex/sdk_client.py` |
 | `CLIO_CODEX_TRANSPORT` | `lm.codex_transport` | str | _(unset)_ | `src/clio_agent/config.py` |
+| `CLIO_CODEX_VARIANT` | `lm.codex_variant` | str | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_CONTEXT_REFERENCE_BROWSE_LIMIT` | `gact.context_references.browse_limit_per_kind` | int | `20` | `src/clio_agent/gact/context_reference_search.py` |
 | `CLIO_CONTEXT_REFERENCE_MAX_HASHABLE_BYTES` | `gact.context_references.max_hashable_bytes` | int | `67108864` | `src/clio_agent/gact/context_references.py` |
 | `CLIO_CONTEXT_REFERENCE_SEARCH_LIMIT` | `gact.context_references.search_limit` | int | `100` | `src/clio_agent/gact/context_reference_search.py` |
@@ -305,18 +305,14 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_WINDOWS_SHELL_BACKEND` | `tools.shell.windows_backend` | str | `powershell` | `src/clio_agent/tools/servers/shell_server.py` |
 | `CLIO_WORKFLOW_STEP_INACTIVITY_S` | `workflows.step_inactivity_s` | float | `120.0` | `src/clio_agent/gact/workflow_step_watch.py` |
 
-### Codex SDK transport
-
-Codex runs through the official Python SDK and its venv-bundled binary, with one SDK-owned cancellation path. This deliberately replaces the former stateful-delta/subprocess transport in exchange for an observed roughly 2.5x time-to-first-token cost. `CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S` is a progress deadline: it resets after every SDK event rather than imposing a fixed wall-clock cap on a healthy long-running exchange.
-
 ## Environment-only variables
 
 These deliberately bypass the config store (a shared file must not be able to redirect them). `bootstrap` = read before the store exists; `secret` = never committed to a shared file; `unmigrated` = a legacy env read not yet routed through `conf`.
 
 | Environment variable | Tier | Read in |
 | --- | --- | --- |
-| `ALCF_INFERENCE_TOKEN` | secret | `src/clio_agent/gact/routes/providers.py`, `src/clio_agent/providers/credentials.py` |
-| `CLIO_ARGONNE_TOKEN` | secret | `src/clio_agent/gact/routes/providers.py`, `src/clio_agent/providers/credentials.py` |
+| `ALCF_INFERENCE_TOKEN` | secret | `src/clio_agent/providers/argonne_auth.py`, `src/clio_agent/providers/credentials.py` |
+| `CLIO_ARGONNE_TOKEN` | secret | `src/clio_agent/providers/argonne_auth.py`, `src/clio_agent/providers/credentials.py` |
 | `CLIO_AUTH_TOKEN` | secret | `src/clio_agent/gact/auth.py`, `src/clio_agent/gact/desktop_boot.py` |
 | `CLIO_COLLABORA_URL` | unmigrated | `src/clio_agent/gact/documents/editors.py` |
 | `CLIO_CRED_<PROVIDER>_<ACCOUNT>` | secret | `src/clio_agent/providers/credentials.py` |
@@ -326,7 +322,7 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_ENV_FILE` | bootstrap | `src/clio_agent/config.py` |
 | `CLIO_GACT_PUBLIC_URL` | unmigrated | `src/clio_agent/gact/documents/editors.py` |
 | `CLIO_KIT_CACHE_DIR` | unmigrated | `src/clio_agent/runtime/disk_gc.py`, `src/clio_agent/tools/desktop_mcp_runtime.py` |
-| `CLIO_LM_API_KEY` | secret | `src/clio_agent/config.py`, `src/clio_agent/gact/routes/providers.py`, `src/clio_agent/providers/model_discovery/overlay.py`, `src/clio_agent/runtime/status.py` |
+| `CLIO_LM_API_KEY` | secret | `src/clio_agent/config.py`, `src/clio_agent/providers/model_discovery/overlay.py`, `src/clio_agent/runtime/status.py` |
 | `CLIO_ONLYOFFICE_JWT_SECRET` | unmigrated | `src/clio_agent/gact/documents/editors.py` |
 | `CLIO_ONLYOFFICE_URL` | unmigrated | `src/clio_agent/gact/documents/editors.py` |
 | `CLIO_RELAY_API_TOKEN` | secret | `src/clio_agent/tools/relay_factory.py`, `src/clio_agent/tools/relay_transport.py` |
