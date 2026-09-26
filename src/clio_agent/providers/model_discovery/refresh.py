@@ -99,6 +99,8 @@ def is_provider_configured(preset: Provider) -> bool:
     * codex: a stored, signed-in Codex credential must exist.
     * claude_code: the Claude Agent SDK and its bundled CLI must be installed.
     * argonne: a stored Globus token must exist.
+    * a host-credential provider (Vertex AI, Bedrock): its credential chain must
+      resolve on this computer (``providers.host_credentials``).
     * any other ``requires_api_key`` kind: its resolved API key must be non-empty.
     * local/no-auth kinds (lm_studio, ollama, local vLLM): always configured —
       the probe itself (a live connect attempt) is what tells you whether the
@@ -129,6 +131,10 @@ def is_provider_configured(preset: Provider) -> bool:
             return argonne_auth.tokens_exist()
         except Exception:  # noqa: BLE001 - argonne unavailability means "not configured"
             return False
+    if preset.host_credentials:
+        from clio_agent.providers import host_credentials  # noqa: PLC0415
+
+        return host_credentials.present(preset.host_credentials)
     if preset.requires_api_key:
         # provider_id, not provider_kind (Part 3): kind-keyed resolution would
         # give a same-kind sibling's env var to a provider with its own.

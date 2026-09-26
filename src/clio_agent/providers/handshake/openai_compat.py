@@ -28,6 +28,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from clio_agent.providers import host_credentials
 from clio_agent.providers.capabilities import endpoint as capability_endpoint
 from clio_agent.providers.capabilities.dialects import cloud as cloud_dialect
 from clio_agent.providers.capabilities.dialects import llama_cpp as llama_cpp_dialect
@@ -87,6 +88,8 @@ class OpenAICompatHandshake(ProviderHandshake):
         Local backends (Ollama, a bare vLLM server) accept any/no key; cloud
         providers (OpenAI, Anthropic, OpenRouter) require one.
         """
+        if getattr(self.provider, "host_credentials", ""):
+            return False  # signs with the host's credentials, never an API key
         return ctx.provider_kind not in _NO_AUTH_KINDS
 
     def _auth_header(self, ctx: HandshakeContext) -> dict[str, str]:
@@ -178,6 +181,14 @@ class OpenAICompatHandshake(ProviderHandshake):
         - otherwise -> ``(OK, OK)`` (or ``NOT_REQUIRED`` for keyless local kinds),
           carrying the resolved ``auth_header`` forward for later phases.
         """
+        chain = getattr(self.provider, "host_credentials", "")
+        if chain and not host_credentials.present(chain):
+            return ConnectivityResult(
+                connectivity=ConnectivityState.SKIPPED,
+                auth=AuthState.MISSING,
+                error=host_credentials.missing_reason(chain),
+                error_code=host_credentials.HOST_CREDENTIALS_MISSING,
+            )
         if self._requires_key(ctx) and not ctx.api_key:
             return ConnectivityResult(
                 connectivity=ConnectivityState.SKIPPED,
@@ -260,7 +271,9 @@ class OpenAICompatHandshake(ProviderHandshake):
         and collapses several real server types onto the same value.)
         """
         litellm_prefix = str(getattr(self.provider, "litellm_prefix", "") or ctx.provider_kind)
-        return capability_endpoint.dialect_for_provider(ctx.provider_kind, litellm_prefix, ctx.provider_id)
+        return capability_endpoint.dialect_for_provider(
+            ctx.provider_kind, litellm_prefix, ctx.provider_id
+        )
 
     async def discover_model_config(
         self, client: Any, ctx: HandshakeContext, raw: dict[str, Any]
@@ -278,7 +291,9 @@ class OpenAICompatHandshake(ProviderHandshake):
         dialect = self._dialect(ctx)
 
         if dialect == vllm_dialect.DIALECT:
-            deployment = vllm_dialect.parse_models_row(raw, provider_id=ctx.provider_id, api_base=ctx.api_base)
+            deployment = vllm_dialect.parse_models_row(
+                raw, provider_id=ctx.provider_id, api_base=ctx.api_base
+            )
             model_key = deployment.model_key.value or model_id
             model = vllm_dialect.build_model_capabilities(model_key, raw)
             model = await self._compare_against_native_context(model, deployment, model_id)
@@ -296,7 +311,9 @@ class OpenAICompatHandshake(ProviderHandshake):
             model_key = deployment.model_key.value or model_id
             model = llama_cpp_dialect.build_model_capabilities(model_key, {"data": [raw]}, model_id)
         elif dialect in cloud_dialect.CLOUD_DIALECTS:
-            deployment = cloud_dialect.build_deployment_capabilities(ctx.provider_id, ctx.api_base, model_id)
+            deployment = cloud_dialect.build_deployment_capabilities(
+                ctx.provider_id, ctx.api_base, model_id
+            )
             model = ModelCapabilities(model_key=self._bare_model_key(model_id))
         else:
             # No adapter for this dialect (an unrecognized OpenAI-compatible
