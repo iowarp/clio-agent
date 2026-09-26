@@ -66,6 +66,11 @@ class Provider:
     #: canonical display name.
     auth_label: str = ""
     api_key_env: str | None = None
+    #: A path under ``api_base`` that answers only with a valid key, for a
+    #: provider whose model listing is public (OpenRouter's ``/models`` lists
+    #: every model to anyone, so listing it proves nothing about the key).
+    #: ``None``: the authenticated ``/models`` call is itself the key check.
+    key_check_path: str | None = None
     supports_live_catalog: bool = True
     strip_openai_prefix: bool = True
     parse_retry_capability: Literal["bounded", "single_attempt"] = "bounded"

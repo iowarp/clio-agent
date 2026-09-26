@@ -123,11 +123,10 @@ _SUPPORTED_LM_PROVIDERS = frozenset(PROVIDER_DEFAULTS.keys())
 _CLOUD_API_KEY_ENV = _CONFIG_CLOUD_API_KEY_ENV
 
 
-# Maps a gateway tool namespace (the prefix before the first underscore in a
-# mounted tool name) to the Python module its server depends on. This drives
-# backend verification for servers that are ACTUALLY mounted on the active
-# gateway — it does not declare any server as universally required. Namespaces
-# absent from the gateway produce no status at all.
+# Maps a gateway tool namespace (the prefix before the first underscore in a mounted tool name) to
+# the Python module its server depends on. This drives backend verification for servers that are
+# ACTUALLY mounted on the active gateway — it does not declare any server as universally required.
+# Namespaces absent from the gateway produce no status at all.
 _DATA_BACKEND_MODULES = {
     "hdf5": "h5py",
     "parquet": "pyarrow.parquet",
@@ -137,8 +136,7 @@ _DATA_BACKEND_MODULES = {
 # /experts API is not what production serves.
 _GACT_API_ENDPOINTS = ["/v1/health", "/v1/capabilities"]
 
-# How many trailing lines of ~/.clio/clio-runtime.log to surface when the
-# clio-core daemon is down.
+# How many trailing lines of ~/.clio/clio-runtime.log to surface when the clio-core daemon is down.
 _CLIO_CORE_LOG_TAIL_LINES = 20
 
 
@@ -358,11 +356,10 @@ class RuntimeProbe:
             probe_cli_transport,
         )
 
-        # Transport-aware probe (#899): SDK pseudo-schemes (codex://sdk,
-        # claude-code://sdk) have no HTTP /models endpoint — an HTTP GET yields
-        # "No connection adapters were found" and reports the provider UNAVAILABLE
-        # while turns run fine. Probe the local CLI the transport spawns instead of
-        # HTTP-GETting a pseudo-scheme.
+        # Transport-aware probe (#899): SDK pseudo-schemes (codex://sdk, claude-code://sdk) have no
+        # HTTP /models endpoint — an HTTP GET yields "No connection adapters were found" and
+        # reports the provider UNAVAILABLE while turns run fine. Probe the local CLI the transport
+        # spawns instead of HTTP-GETting a pseudo-scheme.
         if not is_http_transport(config.api_base):
             return probe_cli_transport(config, source, auth_mode)
 
@@ -466,9 +463,8 @@ class RuntimeProbe:
     ) -> IntegrationStatus:
         """Cheap-status report for the ALCF inference gateway.
 
-        We never trigger globus OAuth here — that's an interactive flow
-        the user only wants when they explicitly opt in (CLI command or
-        TUI button). Instead we look at:
+        We never trigger globus OAuth here — that's an interactive flow the user only wants
+        when they explicitly opt in (CLI command or TUI button). Instead we look at:
 
           - Is ``globus-sdk`` importable? (UNAVAILABLE if not.)
           - Do tokens exist on disk? (MISCONFIGURED if not — needs a
@@ -548,12 +544,11 @@ class RuntimeProbe:
     def _probe_clio_core_runtime(self) -> ClioCoreRuntimeHealth:
         """Probe the production clio-core runtime: pip package + shared daemon.
 
-        Shared by :meth:`probe_arc` (clio-core backend) and :meth:`probe_clio_core`
-        so both report on one reality. Uses the same helpers the runtime
-        lifecycle in :mod:`clio_agent.arc.storage` uses: the resolved RPC port,
-        a socket liveness check, the daemon pidfile, and — on failure — the
-        tail of ``~/.clio/clio-runtime.log``. Memoized per probe instance so
-        one ``collect()`` opens at most one socket.
+        Shared by :meth:`probe_arc` (clio-core backend) and :meth:`probe_clio_core` so both report
+        on one reality. Uses the same helpers the runtime lifecycle in :mod:`clio_agent.arc.storage`
+        uses: the resolved RPC port, a socket liveness check, the daemon pidfile, and — on failure
+        — the tail of ``~/.clio/clio-runtime.log``. Memoized per probe instance so one
+        ``collect()`` opens at most one socket.
         """
         if self._clio_core_runtime is not None:
             return self._clio_core_runtime
@@ -673,24 +668,34 @@ class RuntimeProbe:
                 details=details,
                 required=True,
             )
+        # 905: "semantic-search" is real only once the indexer chimod is composed
+        # (currently never -- absent from every published 2.2.1 wheel binary).
+        from clio_agent.arc import clio_core_config  # noqa: PLC0415 - keep import light
+
+        capabilities = ["conversations", "invocations", "metrics", "variants"]
+        summary = (
+            "ARC clio-core backend is live: iowarp_core is installed and the shared "
+            f"clio-core daemon is listening on port {runtime.port}."
+        )
+        if clio_core_config.indexer_chimod_present(env=self.env):
+            capabilities.append("semantic-search")
+        else:
+            issue = clio_core_config.UPSTREAM_INDEXER_ISSUE
+            summary += (
+                f" Semantic (BM25) scope search is degraded to zero hits -- the clio_cte_indexer "
+                f"chimod is not composed (clio-core#905: {issue})."
+            )
+            details = {**details, "reason": clio_core_config.CLIO_CORE_SEARCH_INDEXER_ABSENT}
+            details["upstream"] = issue
         return IntegrationStatus(
             name="arc",
             state=IntegrationState.READY,
-            summary=(
-                "ARC clio-core backend is live: iowarp_core is installed and the shared "
-                f"clio-core daemon is listening on port {runtime.port}."
-            ),
+            summary=summary,
             config_source=source,
             next_action="No action required.",
             endpoint=endpoint,
             fallback="none",
-            capabilities=[
-                "conversations",
-                "invocations",
-                "metrics",
-                "variants",
-                "semantic-search",
-            ],
+            capabilities=capabilities,
             details=details,
             required=True,
         )
@@ -784,10 +789,9 @@ class RuntimeProbe:
         tool_names = sorted(
             item["name"] for item in capabilities if isinstance(item.get("name"), str)
         )
-        # The healthy "expected" set is whatever the active gateway actually
-        # mounts — there is no universal tool requirement. A gateway that
-        # exposes at least one tool is READY; an empty gateway is genuinely
-        # broken (no servers mounted) and is DEGRADED.
+        # The healthy "expected" set is whatever the active gateway actually mounts -- there is no
+        # universal tool requirement. A gateway that exposes at least one tool is READY; an empty
+        # gateway is genuinely broken (no servers mounted) and is DEGRADED.
         namespaces = sorted({name.split("_", 1)[0] for name in tool_names if "_" in name})
         if tool_names:
             return IntegrationStatus(
@@ -816,12 +820,11 @@ class RuntimeProbe:
     def probe_data_backends(self, gateway_tools: set[str]) -> list[IntegrationStatus]:
         """Verify the Python backend of each data server actually mounted.
 
-        This is structural grounding, not a universal requirement: we only
-        report on a backend when the active gateway exposes tools in its
-        namespace. A backend whose tools are not mounted is simply not part
-        of this deployment and produces no status. When a server *is* mounted
-        but its Python dependency cannot be imported, that mount is broken and
-        is surfaced as UNAVAILABLE.
+        This is structural grounding, not a universal requirement: we only report on a backend when
+        the active gateway exposes tools in its namespace. A backend whose tools are not mounted is
+        simply not part of this deployment and produces no status. When a server *is* mounted but
+        its Python dependency cannot be imported, that mount is broken and is surfaced as
+        UNAVAILABLE.
         """
         namespaces = {name.split("_", 1)[0] for name in gateway_tools if "_" in name}
         statuses: list[IntegrationStatus] = []
@@ -1033,13 +1036,12 @@ class RuntimeProbe:
     def probe_clio_core(self) -> IntegrationStatus:
         """Probe the production clio-core runtime: pip package + shared daemon.
 
-        #800 retired the source-repo layout discovery (build/bin chimaera
-        binaries, docker/quickstart YAML): it probed a deployment shape that no
-        longer exists, so it stayed green while the real runtime was broken.
-        The production runtime is the pip ``iowarp_core`` package plus the
-        shared ``clio_run`` daemon — the same reality :meth:`probe_arc` gates
-        on for the clio-core backend (one shared helper, no duplication). The row is
-        required exactly when the ARC backend is ``cte``.
+        #800 retired the source-repo layout discovery (build/bin chimaera binaries,
+        docker/quickstart YAML): it probed a deployment shape that no longer exists, so it stayed
+        green while the real runtime was broken. The production runtime is the pip ``iowarp_core``
+        package plus the shared ``clio_run`` daemon — the same reality :meth:`probe_arc` gates on
+        for the clio-core backend (one shared helper, no duplication). The row is required exactly
+        when the ARC backend is ``cte``.
         """
         backend, backend_source = self._arc_backend()
         required = backend == "cte"
@@ -1139,10 +1141,9 @@ class RuntimeProbe:
                 f"or {_CLOUD_API_KEY_ENV[provider]}."
             )
 
-        # Argonne: leave api_key blank in the LMProviderConfig the
-        # probe constructs — it's only used to display config_source,
-        # never to call out to the network here. The probe path itself
-        # (_probe_argonne) reports separately on token presence.
+        # Argonne: leave api_key blank in the LMProviderConfig the probe constructs — it's only
+        # used to display config_source, never to call out to the network here. The probe path
+        # itself (_probe_argonne) reports separately on token presence.
         if provider == "argonne" and not api_key:
             api_key = ""
             key_source = "argonne:globus-deferred"
@@ -1193,9 +1194,8 @@ def collect_runtime_status(
 ) -> RuntimeReport:
     """Collect a runtime status report using default probes.
 
-    ``include_process_census=False`` skips the expensive live process-census rows
-    (the ~10s cold psutil walk) for polled callers that serve them from a cache;
-    see :meth:`RuntimeProbe.collect`.
+    ``include_process_census=False`` skips the expensive live process-census rows (the ~10s cold
+    psutil walk) for polled callers that serve them from a cache; see :meth:`RuntimeProbe.collect`.
     """
     probe = RuntimeProbe(env=env, lm_timeout=lm_timeout)
     return probe.collect(

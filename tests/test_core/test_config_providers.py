@@ -166,9 +166,9 @@ class TestLMProviderConfig:
         assert config.environment == "dev"
 
     def test_default_codex_transport(self):
-        """Codex transport defaults to the official Python SDK."""
+        """Codex transport defaults to the direct websocket transport (A.6)."""
         config = LMProviderConfig(provider="codex")
-        assert config.codex_transport == "sdk"
+        assert config.codex_transport == "websocket"
         assert config.parse_retry_capability == "single_attempt"
 
     def test_invalid_codex_transport_rejected(self):
@@ -369,17 +369,17 @@ class TestLoadConfigFromEnv:
             assert config.api_key == "sk-native"
 
     def test_codex_transport_from_env(self):
-        """CLIO_CODEX_TRANSPORT accepts only the official SDK."""
-        env = {"CLIO_LM_PROVIDER": "codex", "CLIO_CODEX_TRANSPORT": "sdk"}
+        """CLIO_CODEX_TRANSPORT accepts websocket (default, A.6) or sse."""
+        env = {"CLIO_LM_PROVIDER": "codex", "CLIO_CODEX_TRANSPORT": "sse"}
         with isolated_environ(env):
             config = load_config_from_env()
-            assert config.codex_transport == "sdk"
+            assert config.codex_transport == "sse"
 
-    def test_codex_removed_transport_from_env_raises(self):
-        """A deleted transport in the env is a loud config error, not a downgrade."""
+    def test_codex_invalid_transport_from_env_raises(self):
+        """An invalid transport in the env is a loud config error, not a silent downgrade."""
         env = {"CLIO_LM_PROVIDER": "codex", "CLIO_CODEX_TRANSPORT": "exec"}
         with isolated_environ(env):
-            with pytest.raises(ValueError, match="official Python SDK"):
+            with pytest.raises(ValueError, match="codex_transport"):
                 load_config_from_env()
 
     def test_claude_code_transport_from_env(self):
@@ -597,27 +597,39 @@ class TestCreateLM:
             assert lm.model.startswith("anthropic/")
 
     def test_codex_uses_custom_provider_prefix_with_internal_marker(self):
-        """Codex should keep user-facing model ids clean and mark internally."""
+        """Codex should keep user-facing model ids clean and mark internally.
+
+        The litellm-facing prefix is "codex_direct" (never bare "codex" --
+        litellm ships its own native "codex" provider; see
+        providers.codex.constants.LITELLM_PROVIDER).
+        """
         config = LMProviderConfig(provider="codex", model="gpt-5.5")
         lm = create_lm(config)
-        assert lm.model == "codex/cdx-gpt-5.5"
-        assert lm.kwargs["codex_transport"] == "sdk"
+        assert lm.model == "codex_direct/cg-gpt-5.5"
+        assert lm.kwargs["codex_transport"] == "websocket"
 
     def test_codex_model_marker_is_not_doubled(self):
         """Codex should accept already-prefixed config values idempotently."""
-        config = LMProviderConfig(provider="codex", model="codex/cdx-gpt-5.5")
+        config = LMProviderConfig(provider="codex", model="codex_direct/cg-gpt-5.5")
         lm = create_lm(config)
-        assert lm.model == "codex/cdx-gpt-5.5"
+        assert lm.model == "codex_direct/cg-gpt-5.5"
+
+    def test_codex_legacy_prefix_is_stripped_defensively(self):
+        """A config persisted before the litellm-prefix rename (bare 'codex/')
+        still resolves to the current 'codex_direct/' wire prefix, never doubled."""
+        config = LMProviderConfig(provider="codex", model="codex/cg-gpt-5.5")
+        lm = create_lm(config)
+        assert lm.model == "codex_direct/cg-gpt-5.5"
 
     def test_codex_transport_passes_litellm_kwarg(self):
         """The codex transport should flow into dspy.LM kwargs."""
         config = LMProviderConfig(
             provider="codex",
             model="gpt-5.5",
-            codex_transport="sdk",
+            codex_transport="sse",
         )
         lm = create_lm(config)
-        assert lm.kwargs["codex_transport"] == "sdk"
+        assert lm.kwargs["codex_transport"] == "sse"
 
     def test_codex_thinking_level_passes_codex_reasoning_effort_kwarg(self):
         """SEAM (#896): the #895 thinking level survives the factory into the LM
@@ -638,7 +650,7 @@ class TestCreateLM:
         invalidation.record_endpoint_capabilities(
             EndpointCapabilities(
                 provider_id="codex",
-                api_base="codex://sdk",
+                api_base="codex://direct",
                 dialect="codex",
                 thinking_controls=Fact(frozenset({"reasoning_effort"}), "dialect", now),
             )
@@ -658,7 +670,7 @@ class TestCreateLM:
         invalidation.record_deployment_capabilities(
             DeploymentCapabilities(
                 provider_id="codex",
-                api_base="codex://sdk",
+                api_base="codex://direct",
                 model_id="gpt-5.5",
                 model_key=Fact("test:codex:gpt-5.5", "server_report", now),
             )

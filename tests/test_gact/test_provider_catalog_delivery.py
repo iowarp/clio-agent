@@ -161,7 +161,8 @@ def test_catalog_uses_modalities_only_from_current_live_evidence() -> None:
     static_report = _report(source="static")
     static = model_catalog_row(_preset(), static_report, static_report.models[0])
     assert static["availability"] == "candidate"
-    assert static["modalities"] == ["text"]
+    assert static["modalities"] == []
+    assert static["evidence"]["modality_evidenced"] is False
     assert static["evidence"]["live"] is False
 
 
@@ -332,12 +333,12 @@ def test_catalog_row_carries_claude_code_cli_aliases() -> None:
     assert plain["aliases"] == []
 
 
-def test_live_codex_sdk_catalog_advertises_its_typed_image_input() -> None:
+def test_live_codex_catalog_advertises_its_typed_image_input() -> None:
     preset = LMProviderPreset(
         id="codex",
         label="Codex",
         provider="codex",
-        api_base="codex://sdk",
+        api_base="codex://direct",
         suggested_model="gpt-5.6-luna",
     )
     _seed("codex", "codex://sdk", "gpt-5.6-luna", capabilities=("text", "image"))
@@ -371,8 +372,15 @@ def test_normalized_codex_catalog_bootstraps_live_discovery(
     overlay_ready = False
     refreshed: list[str] = []
 
-    def _overlay(*_args: object) -> dict[str, object] | None:
-        return {"models": [{"id": "gpt-5.6-luna"}]} if overlay_ready else None
+    def _overlay(provider_id: str, _provider_kind: str) -> dict[str, object] | None:
+        # Only the DIRECT transport's own catalog key ("codex") is ever
+        # populated here -- the SDK transport (S1b) has its own "codex_sdk"
+        # overlay key, deliberately never checked/refreshed in this test.
+        return (
+            {"models": [{"id": "gpt-5.6-luna"}]}
+            if overlay_ready and provider_id == "codex"
+            else None
+        )
 
     async def _refresh(*, presets, only_configured):  # type: ignore[no-untyped-def]
         nonlocal overlay_ready
@@ -442,7 +450,7 @@ def test_normalized_codex_catalog_hides_static_candidates_after_discovery_failur
     assert provider["failure"] == "app-server unavailable"
 
 
-def test_planner_never_uses_unverified_native_or_changes_provider() -> None:
+def test_planner_delivers_images_by_evidence_and_never_changes_provider() -> None:
     app = SimpleNamespace(state=SimpleNamespace(lm_handshake_report=_report()))
     model = ModelRef(provider_id="local-lab", model_id="vision-local")
     native = plan_resource_delivery(
@@ -455,16 +463,35 @@ def test_planner_never_uses_unverified_native_or_changes_provider() -> None:
     assert native.provider_id == "local-lab"
     assert native.evidence_source == "live_handshake"
 
+    # No evidence for the model at all: its image input is UNKNOWN. Unknown is not
+    # refused -- the image rides natively under a reason code naming the unknown.
     app.state.lm_handshake_report = _report(source="static")
-    unknown = plan_resource_delivery(
+    unknown_plan = plan_resource_delivery(
         app,
         resource=_resource(media_type="image/png"),
         message_id="msg_unknown",
         model=model,
     )
-    assert unknown.representation == "metadata_only"
-    assert unknown.provider_id == "local-lab"
-    assert unknown.evidence_source == "unavailable"
+    assert unknown_plan.representation == "native"
+    assert unknown_plan.reason_code == "native_image_modality_unknown"
+    assert unknown_plan.provider_id == "local-lab"
+    assert unknown_plan.evidence_source == "unavailable"
+
+
+def test_planner_refuses_native_images_only_for_known_text_only_models() -> None:
+    """KNOWN modalities that omit image are the one case an image is not native."""
+
+    report = _report()
+    _seed("local-lab", "http://127.0.0.1:9000/v1", "vision-local", capabilities=("text",))
+    app = SimpleNamespace(state=SimpleNamespace(lm_handshake_report=report))
+    plan = plan_resource_delivery(
+        app,
+        resource=_resource(media_type="image/png"),
+        message_id="msg_text_only",
+        model=ModelRef(provider_id="local-lab", model_id="vision-local"),
+    )
+    assert plan.representation == "metadata_only"
+    assert plan.evidence_source == "live_handshake"
 
 
 def test_planner_uses_current_in_process_catalog_without_active_handshake() -> None:
@@ -543,7 +570,7 @@ def test_overlay_evidence_is_available_and_dates_itself_to_the_probe() -> None:
         id="codex",
         label="Codex",
         provider="codex",
-        api_base="codex://sdk",
+        api_base="codex://direct",
         suggested_model="gpt-5.6-luna",
     )
     _seed("codex", "codex://sdk", "gpt-5.6-luna", capabilities=("text", "image"))
@@ -580,7 +607,7 @@ def test_static_catalog_rows_are_never_evidence() -> None:
         id="codex",
         label="Codex",
         provider="codex",
-        api_base="codex://sdk",
+        api_base="codex://direct",
         suggested_model="gpt-5.5",
     )
     report = HandshakeReport(
@@ -597,7 +624,8 @@ def test_static_catalog_rows_are_never_evidence() -> None:
     row = model_catalog_row(preset, report, report.models[0])
 
     assert row["availability"] == "candidate"
-    assert row["modalities"] == ["text"]
+    assert row["modalities"] == []
+    assert row["evidence"]["modality_evidenced"] is False
     assert row["evidence"]["evidenced"] is False
     assert row["evidence"]["live"] is False
 
@@ -735,13 +763,17 @@ def test_a_stale_overlay_triggers_rediscovery_instead_of_being_served_forever(
         id="codex",
         label="Codex",
         provider="codex",
-        api_base="codex://sdk",
+        api_base="codex://direct",
         suggested_model="",
     )
     refreshed: list[str] = []
     stale = True
 
-    def _overlay(*_args: object) -> dict[str, object] | None:
+    def _overlay(provider_id: str, _provider_kind: str) -> dict[str, object] | None:
+        if provider_id != "codex":
+            # The SDK transport's own "codex_sdk" overlay key (S1b) --
+            # deliberately never populated in this test.
+            return None
         entry: dict[str, object] = {"models": [{"id": "gpt-5.6-luna"}]}
         if stale:
             entry["staleness"] = {
@@ -789,7 +821,7 @@ def test_a_failed_rediscovery_over_prior_evidence_stays_available_but_marked_sta
         id="codex",
         label="Codex",
         provider="codex",
-        api_base="codex://sdk",
+        api_base="codex://direct",
         suggested_model="",
     )
     staleness = {
@@ -798,9 +830,15 @@ def test_a_failed_rediscovery_over_prior_evidence_stays_available_but_marked_sta
         "failed_reason": "SDK transport closed",
     }
 
+    def _overlay(provider_id: str, _provider_kind: str) -> dict[str, object] | None:
+        if provider_id != "codex":
+            # The SDK transport's own "codex_sdk" overlay key (S1b) --
+            # deliberately never populated in this test.
+            return None
+        return {"models": [{"id": "gpt-5.6-luna"}], "staleness": staleness}
+
     monkeypatch.setattr(
-        "clio_agent.gact.provider_catalog.model_discovery.overlay_models_wire",
-        lambda *_args: {"models": [{"id": "gpt-5.6-luna"}], "staleness": staleness},
+        "clio_agent.gact.provider_catalog.model_discovery.overlay_models_wire", _overlay
     )
 
     async def _refresh(*, presets, only_configured):  # type: ignore[no-untyped-def]

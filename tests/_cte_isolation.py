@@ -41,6 +41,16 @@ _PRIVATE_ROOT_NAME = re.compile(r"clio-agent-cte-[0-9]+-[A-Za-z0-9_-]+\Z")
 # Private clio-core topology for the suite: DRAM hot tier + file cold tier, own port.
 # Mirrors the proven private-daemon config of tests/test_arc/test_clio_core_offload_spill.py
 # with suite-sized caps (the offload test keeps its own tiny 2MB cap to force spill).
+#
+# NOTE (clio-core 2.2.0, upstream issue #905): this topology deliberately does NOT
+# declare the ``clio_cte_indexer`` chimod. SemanticSearch moved into that chimod
+# upstream, so the ``cte``-leg BM25 search tests (``test_search_bm25_on_clio_core``,
+# ``test_events_family_never_in_search_scopes[cte]``) get zero hits and are marked
+# ``xfail`` -- declaring the chimod would "fix" that, but live-testing it here
+# surfaced an intermittent hang on the FIRST ``PutBlob`` after client attach
+# (reproduced with and without also binding the client via ``CLIO_CTE_POOL``), which
+# would break every cte-backed test, not just search. See
+# ``clio_agent.arc.clio_core_config``'s INDEXER CHIMOD note.
 _PRIVATE_CONFIG_TEMPLATE = """\
 networking:
   port: {port}

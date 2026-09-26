@@ -74,7 +74,7 @@ def test_no_warning_when_no_checked_params_are_present(caplog: pytest.LogCapture
     assert not caplog.records
 
 
-@pytest.mark.parametrize("model", ["codex/cdx-gpt-5.5", "claude_code/cc-opus"])
+@pytest.mark.parametrize("model", ["codex_direct/cg-gpt-5.5", "claude_code/cc-opus"])
 def test_custom_cli_transports_are_never_checked(
     model: str, caplog: pytest.LogCaptureFixture
 ) -> None:

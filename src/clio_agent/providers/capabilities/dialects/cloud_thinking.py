@@ -49,14 +49,12 @@ def _litellm_info(model: str) -> dict[str, Any]:
     """
 
     from clio_agent.providers.handshake.sources.litellm_catalog import (  # noqa: PLC0415
-        _get_model_info,
-        _id_variants,
+        lookup_litellm_info,
     )
 
-    for candidate in _id_variants(model):
-        info = _get_model_info(candidate, allow_fetch=False)
-        if info:
-            return info
+    matched = lookup_litellm_info(model, allow_fetch=False)
+    if matched is not None and matched[1]:
+        return matched[1]
     logger.debug("cloud_thinking: no litellm model info for %r", model)
     return {}
 
@@ -131,9 +129,25 @@ def build_thinking_spec_openai(model_id: str) -> Fact[ThinkingSpec]:
     )
 
 
+def local_thinking_spec(dialect: str, model_id: str) -> Fact[ThinkingSpec]:
+    """The model's ``ThinkingSpec`` fact for a cloud dialect with a per-model story.
+
+    Only anthropic and openai have one here (pure, network-free LiteLLM
+    introspection); every other dialect answers unknown rather than a guess.
+    Shared by the openai-compatible handshake and the request builder's
+    local-first resolution, so both read the same fact.
+    """
+    if dialect == "anthropic":
+        return build_thinking_spec_anthropic(model_id)
+    if dialect == "openai":
+        return build_thinking_spec_openai(model_id)
+    return unknown("no per-model thinking source for this dialect")
+
+
 __all__ = [
     "anthropic_effort_levels",
     "build_thinking_spec_anthropic",
     "build_thinking_spec_openai",
+    "local_thinking_spec",
     "openai_effort_levels",
 ]

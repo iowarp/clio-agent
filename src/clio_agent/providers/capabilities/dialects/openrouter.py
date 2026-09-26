@@ -3,7 +3,8 @@
 One ``GET /api/v1/models`` row carries model AND per-route deployment facts
 together:
 
-* [M] ``context_length`` / ``architecture.input_modalities``.
+* [M] ``context_length`` / ``architecture.input_modalities``; the model type
+  from ``architecture.output_modalities`` (:func:`model_type_from_output_modalities`).
 * [D] ``top_provider.context_length`` / ``top_provider.max_completion_tokens``
   (what the CURRENTLY ROUTED upstream actually serves -- may be smaller than
   the model's own ``context_length``).
@@ -28,6 +29,7 @@ from clio_agent.providers.capabilities.records import (
     Fact,
     ModelCapabilities,
     modalities_from_capabilities,
+    model_type_fact,
     unknown,
 )
 
@@ -46,6 +48,26 @@ def _now_iso() -> str:
 
 def _positive_int(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def model_type_from_output_modalities(output: object) -> str | None:
+    """The model type an OpenRouter ``architecture.output_modalities`` list proves.
+
+    ``/api/v1/models`` is OpenRouter's chat-completions catalog (embedding models
+    are listed separately), so a text output is a chat model. An output without
+    text names the type directly: image output is image generation, audio output
+    is speech. A missing list decides nothing.
+    """
+    if not isinstance(output, list):
+        return None
+    values = {str(value).strip().lower() for value in output}
+    if "text" in values:
+        return "chat"
+    if "image" in values:
+        return "image_generation"
+    if "audio" in values:
+        return "audio_speech"
+    return None
 
 
 def parse_model_row(
@@ -77,8 +99,15 @@ def parse_model_row(
     model_key_fact = deployment_model_key_fact(model_id, observed_at=observed_at)
     model_key = model_key_fact.value or model_id
 
+    output_modalities = architecture.get("output_modalities") if isinstance(architecture, Mapping) else None
     model = ModelCapabilities(
         model_key=model_key,
+        model_type=model_type_fact(
+            model_type_from_output_modalities(output_modalities),
+            source="openrouter",
+            observed_at=observed_at,
+            detail=f"openrouter /api/v1/models architecture.output_modalities={output_modalities!r}",
+        ),
         context_max=(
             Fact(context_length, "openrouter", observed_at, "openrouter /api/v1/models context_length")
             if context_length is not None
@@ -122,4 +151,4 @@ def parse_model_row(
     return model, deployment
 
 
-__all__ = ["DIALECT", "REQUIRE_PARAMETERS_FLAG", "parse_model_row"]
+__all__ = ["DIALECT", "REQUIRE_PARAMETERS_FLAG", "model_type_from_output_modalities", "parse_model_row"]

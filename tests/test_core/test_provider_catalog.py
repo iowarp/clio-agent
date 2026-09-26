@@ -55,11 +55,10 @@ class TestRegistryInvariants:
             assert p.label, f"{p.id}: empty label"
             assert p.provider_kind, f"{p.id}: empty provider_kind"
             # api_base may be conceptually empty for future providers
-            # (e.g. Codex SDK transport doesn't need a URL), but every
-            # entry shipped today must have one. When the codex
-            # registry entry switches to the CustomLLM path in #51, this
-            # check may need a "provider_kind == 'codex' or api_base"
-            # exemption.
+            # (e.g. the direct Codex transport doesn't need an HTTP
+            # URL -- its api_base is the identity marker
+            # "codex://direct"), but every entry shipped today must
+            # have one.
             assert p.api_base or p.litellm_prefix in {"azure", "gemini", "vertex_ai", "bedrock"}, (
                 f"{p.id}: empty api_base without a cloud-native LiteLLM route"
             )
@@ -216,7 +215,7 @@ class TestDerivedViews:
 
     def test_codex_catalog_has_no_static_model_list(self) -> None:
         # model-capabilities brief 9.1: codex's compiled-in candidate model ids
-        # are deleted -- the SDK's own live catalog check is the only source of
+        # are deleted -- the maintained catalog check is the only source of
         # a codex model id now, never a stale compiled-in guess.
         assert as_provider_models_dict()["codex"] == []
 

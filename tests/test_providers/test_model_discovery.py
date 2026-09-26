@@ -6,8 +6,8 @@ call here). An autouse fixture stubs the context/output-limit resolution
 (``attach_context_limits`` — #1211 review D4) every ``discover_*`` success path
 now runs, so this file never touches models.dev/litellm/the local DB — that
 cascade has its own tests in ``tests/test_providers/test_handshake_sources.py``.
-Two ``@pytest.mark.live`` tests at the bottom actually invoke the installed
-``codex``/``claude`` binaries — gated behind ``CLIO_RUN_LIVE=1`` like every
+Two ``@pytest.mark.live`` tests at the bottom actually hit the Codex
+catalog/credential store and the installed ``claude`` binary — gated behind ``CLIO_RUN_LIVE=1`` like every
 other live test in this suite (see ``tests/test_arc/test_live_plane_alcf.py``
 for the house convention).
 """
@@ -89,6 +89,27 @@ def _stub_claude_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
             default_model_reason="",
         ),
     )
+
+
+@pytest.fixture(autouse=True)
+def _stub_codex_catalog_offline(
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    """Keep every test in this file offline for the Codex catalog.
+
+    ``discover_codex`` otherwise force-refreshes the maintained GitHub catalog;
+    individual tests override this with their own rows via ``_stub_codex_catalog``.
+    ``@pytest.mark.live`` tests are exempt -- they exist to hit the real catalog.
+    """
+    if request.node.get_closest_marker("live") is not None:
+        return
+    from clio_agent.providers.model_discovery import codex as md_codex
+    from clio_agent.providers.model_discovery.codex_catalog import CodexCatalogError
+
+    def _offline() -> Any:
+        raise CodexCatalogError("Codex catalog fetch disabled in unit tests")
+
+    monkeypatch.setattr(md_codex, "refresh_codex_catalog", _offline)
 
 
 @pytest.fixture(autouse=True)
@@ -200,7 +221,7 @@ def test_overlay_models_wire_present_serves_verbatim(
             {
                 "codex": {
                     "models": [{"id": "gpt-5.6-sol", "name": "GPT-5.6-Sol", "description": ""}],
-                    "source": "codex_sdk",
+                    "source": "codex_catalog",
                     "default_model": "gpt-5.6-sol",
                     "generated_at": "2026-08-14T00:00:00+00:00",
                 }
@@ -212,7 +233,7 @@ def test_overlay_models_wire_present_serves_verbatim(
     wire = model_discovery.overlay_models_wire("codex", "codex")
     assert wire is not None
     assert wire["models"] == [{"id": "gpt-5.6-sol", "name": "GPT-5.6-Sol", "description": ""}]
-    assert wire["source"] == "codex_sdk"
+    assert wire["source"] == "codex_catalog"
     assert wire["default_model"] == "gpt-5.6-sol"
 
 
@@ -277,7 +298,7 @@ def test_record_refresh_first_success_reports_everything_added(
             {"id": "gpt-5.6-sol", "name": "Sol", "description": ""},
             {"id": "gpt-5.6-terra", "name": "Terra", "description": ""},
         ],
-        source="codex_sdk",
+        source="codex_catalog",
         default_model="gpt-5.6-sol",
     )
     wire = model_discovery.record_refresh(result)
@@ -302,9 +323,9 @@ def test_record_refresh_second_success_computes_delta_against_previous(
             provider="codex",
             discovered=[
                 {"id": "gpt-5.5", "name": "5.5", "description": ""},
-                {"id": "gpt-5.5-codex", "name": "5.5-codex", "description": ""},
+                {"id": "gpt-5.5-mini", "name": "5.5-mini", "description": ""},
             ],
-            source="codex_sdk",
+            source="codex_catalog",
         )
     )
     wire = model_discovery.record_refresh(
@@ -314,11 +335,11 @@ def test_record_refresh_second_success_computes_delta_against_previous(
                 {"id": "gpt-5.5", "name": "5.5", "description": ""},
                 {"id": "gpt-5.6-sol", "name": "Sol", "description": ""},
             ],
-            source="codex_sdk",
+            source="codex_catalog",
         )
     )
     assert wire["added"] == ["gpt-5.6-sol"]
-    assert wire["removed"] == ["gpt-5.5-codex"]
+    assert wire["removed"] == ["gpt-5.5-mini"]
     assert wire["unchanged"] == ["gpt-5.5"]
 
 
@@ -383,7 +404,7 @@ def test_record_refresh_never_silently_clobbers_a_malformed_overlay(
     result = model_discovery.ProviderDiscoveryResult(
         provider="codex",
         discovered=[{"id": "x", "name": "x", "description": ""}],
-        source="codex_sdk",
+        source="codex_catalog",
     )
     with pytest.raises(model_discovery.OverlayMalformedError):
         model_discovery.record_refresh(result)
@@ -399,7 +420,7 @@ def test_record_refresh_refuses_claimed_success_with_empty_discovered(
     silently narrowing the overlay to nothing."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     bad = model_discovery.ProviderDiscoveryResult(
-        provider="codex", discovered=[], source="codex_sdk"
+        provider="codex", discovered=[], source="codex_catalog"
     )
     with pytest.raises(ValueError, match="refusing to write an empty models list"):
         model_discovery.record_refresh(bad)
@@ -523,7 +544,7 @@ def test_record_refresh_claude_code_falls_back_when_sonnet_unavailable(
 def test_record_refresh_codex_has_only_one_discovered_default(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Codex follows its account default without synthetic alternatives."""
+    """Codex follows its catalog default without synthetic alternatives."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     wire = model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
@@ -591,198 +612,146 @@ def test_resolve_cloud_api_key_never_borrows_a_same_kind_siblings_key(
 
 
 # --------------------------------------------------------------------------- #
-# discover_codex -- mocked at the official Python SDK boundary.
+# discover_codex -- mocked at the maintained-catalog boundary
+# (refresh_codex_catalog) and the credential-store sign-in boundary.
 # --------------------------------------------------------------------------- #
 
 
-class _StubCodex:
-    def __init__(self, rows: list[Any] | None = None, error: Exception | None = None) -> None:
-        self._rows = rows or []
-        self._error = error
-        self.closed = False
+class _StubCredentialStore:
+    def __init__(self, signed_in: bool) -> None:
+        self._signed_in = signed_in
 
-    async def __aenter__(self) -> _StubCodex:
-        return self
-
-    async def __aexit__(self, *_args: Any) -> None:
-        self.closed = True
-
-    async def models(self) -> Any:
-        if self._error is not None:
-            raise self._error
-        return SimpleNamespace(data=self._rows)
+    def is_signed_in(self) -> bool:
+        return self._signed_in
 
 
-#: Sentinel for "the wire row did NOT carry this field at all" — distinct from an
-#: explicit empty list. The SDK declares ``Model.input_modalities`` with a schema
-#: default of ``["text", "image"]``, so only a row built WITHOUT the key
-#: reproduces what an omitting provider actually sends.
-_OMITTED: Any = object()
-
-
-def _codex_model(
+def _codex_row(
     model_id: str,
     *,
     name: str = "",
-    description: str = "",
-    is_default: bool = False,
-    input_modalities: Any = _OMITTED,
-) -> Any:
-    """Build a REAL ``openai_codex`` model row (not a permissive stand-in).
+    capabilities: list[str] | None = None,
+    effort_levels: list[str] | None = None,
+) -> dict[str, Any]:
+    """One validated maintained-catalog row (the ``CodexCatalog.models`` shape)."""
 
-    Discovery's modality evidence is decided by Pydantic's ``model_fields_set``,
-    which only a genuine SDK model carries; a ``SimpleNamespace`` stub cannot
-    reproduce the omitted-field case the SDK default hides.
-    """
-
-    from openai_codex.generated.v2_all import (
-        Model,
-        ReasoningEffort,
-        ReasoningEffortOption,
-    )
-
-    fields: dict[str, Any] = {
+    return {
         "id": model_id,
-        "model": model_id,
-        "displayName": name or model_id,
-        "description": description,
-        "hidden": False,
-        "isDefault": is_default,
-        "defaultReasoningEffort": ReasoningEffort.medium,
-        "supportedReasoningEfforts": [
-            ReasoningEffortOption(description="medium", reasoningEffort=ReasoningEffort.medium)
-        ],
+        "name": name or model_id,
+        "context_window": 272000,
+        "max_output_tokens": 128000,
+        "reasoning": True,
+        "effort_levels": ["low", "medium", "high"] if effort_levels is None else effort_levels,
+        "capabilities": ["text", "image"] if capabilities is None else capabilities,
     }
-    if input_modalities is not _OMITTED:
-        fields["inputModalities"] = input_modalities
-    return Model(**fields)
 
 
-def test_discover_codex_success_reports_default_and_source(monkeypatch: pytest.MonkeyPatch) -> None:
-    from openai_codex.generated.v2_all import InputModality
-
+def _stub_codex_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+    rows: list[dict[str, Any]],
+    default_model: str = "",
+    error: Exception | None = None,
+) -> None:
     from clio_agent.providers.model_discovery import codex as md_codex
+    from clio_agent.providers.model_discovery.codex_catalog import CodexCatalog
 
-    stub = _StubCodex(
-        rows=[
-            _codex_model(
-                "gpt-5.6-sol",
-                name="GPT-5.6-Sol",
-                description="d1",
-                is_default=True,
-                input_modalities=[InputModality.text, InputModality.image],
-            ),
-            _codex_model(
-                "gpt-5.6-terra",
-                name="GPT-5.6-Terra",
-                description="d2",
-                input_modalities=[InputModality.text, InputModality.image],
-            ),
-        ]
+    def _refresh() -> CodexCatalog:
+        if error is not None:
+            raise error
+        return CodexCatalog(models=rows, default_model=default_model)
+
+    monkeypatch.setattr(md_codex, "refresh_codex_catalog", _refresh)
+
+
+def test_discover_codex_success_reports_default_and_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_codex_catalog(
+        monkeypatch,
+        [_codex_row("gpt-5.6-sol", name="GPT-5.6-Sol"), _codex_row("gpt-5.6-terra")],
+        default_model="gpt-5.6-sol",
     )
-    monkeypatch.setattr(md_codex, "AsyncCodex", lambda *_args, **_kwargs: stub)
 
-    result = model_discovery.discover_codex()
+    result = model_discovery.discover_codex(credential_store=_StubCredentialStore(True))
+
     assert result.failed_reason is None
-    assert result.source == model_discovery.CODEX_SOURCE
+    assert result.source == model_discovery.CODEX_SOURCE == "codex_catalog"
+    assert result.provider == "codex"
     assert {m["id"] for m in result.discovered} == {"gpt-5.6-sol", "gpt-5.6-terra"}
     assert result.default_model == "gpt-5.6-sol"
-    assert result.source == "codex_sdk"
     assert all(m["capabilities"] == ["text", "image"] for m in result.discovered)
-    assert all(m["capability_evidence"]["reason"] == "modality_reported" for m in result.discovered)
-    # The account's own per-model reasoning efforts are persisted verbatim.
-    assert all(m["supported_reasoning_efforts"] == ["medium"] for m in result.discovered)
+    assert all(
+        m["capability_evidence"]["reason"] == "modality_cataloged" for m in result.discovered
+    )
+    # The catalog's per-model efforts are persisted in the field names the
+    # handshake/reasoning_levels readers already consume.
+    assert all(
+        m["supported_reasoning_efforts"] == ["low", "medium", "high"] for m in result.discovered
+    )
     assert all(m["default_reasoning_effort"] == "medium" for m in result.discovered)
-    assert stub.closed is True
 
 
 def test_discover_codex_does_not_guess_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    from clio_agent.providers.model_discovery import codex as md_codex
+    _stub_codex_catalog(monkeypatch, [_codex_row("gpt-5.6-sol")], default_model="")
 
-    stub = _StubCodex(rows=[_codex_model("gpt-5.6-sol")])
-    monkeypatch.setattr(md_codex, "AsyncCodex", lambda *_args, **_kwargs: stub)
+    result = model_discovery.discover_codex(credential_store=_StubCredentialStore(True))
 
-    result = model_discovery.discover_codex()
     assert [model["id"] for model in result.discovered] == ["gpt-5.6-sol"]
     assert result.default_model == ""
-    assert stub.closed is True
 
 
-def test_discover_codex_omitted_input_modalities_records_no_image_capability(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An omitted wire field must NOT inherit the SDK's ``["text","image"]`` default.
+def test_discover_codex_text_only_row_is_not_widened(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A model the catalog declares text-only stays text-only, and says why."""
 
-    ``Model.input_modalities`` is declared with that schema default, so reading the
-    attribute manufactures an image capability nobody reported — and the typed
-    negative could never fire in production. Only ``model_fields_set`` is evidence.
-    """
+    _stub_codex_catalog(monkeypatch, [_codex_row("gpt-5.6-mini", capabilities=["text"])])
 
-    from openai_codex.generated.v2_all import Model
-
-    from clio_agent.providers.model_discovery import codex as md_codex
-
-    row = _codex_model("gpt-5.6-sol", name="GPT-5.6-Sol", is_default=True)
-    # Guard the premise: the SDK really does hand back a fabricated image modality.
-    assert isinstance(row, Model)
-    assert "input_modalities" not in row.model_fields_set
-    assert [str(getattr(v, "value", v)) for v in row.input_modalities or []] == ["text", "image"]
-
-    monkeypatch.setattr(md_codex, "AsyncCodex", lambda *_args, **_kwargs: _StubCodex(rows=[row]))
-
-    result = model_discovery.discover_codex()
-
-    assert result.failed_reason is None
-    assert result.discovered[0]["capabilities"] == []
-    evidence = result.discovered[0]["capability_evidence"]
-    assert evidence["reason"] == "modality_unreported"
-    assert evidence["source"] == "codex_sdk_input_modalities"
-    assert evidence["unevidenced"] == ["image"]
-
-
-def test_discover_codex_explicit_text_only_row_is_not_widened(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A provider explicitly reporting text-only stays text-only, and says so."""
-
-    from openai_codex.generated.v2_all import InputModality
-
-    from clio_agent.providers.model_discovery import codex as md_codex
-
-    stub = _StubCodex(
-        rows=[
-            _codex_model(
-                "gpt-5.6-mini",
-                is_default=True,
-                input_modalities=[InputModality.text],
-            )
-        ]
-    )
-    monkeypatch.setattr(md_codex, "AsyncCodex", lambda *_args, **_kwargs: stub)
-
-    result = model_discovery.discover_codex()
+    result = model_discovery.discover_codex(credential_store=_StubCredentialStore(True))
 
     assert result.discovered[0]["capabilities"] == ["text"]
-    assert result.discovered[0]["capability_evidence"]["reason"] == "modality_reported"
+    assert result.discovered[0]["capability_evidence"]["reason"] == "modality_cataloged"
 
 
-def test_discover_codex_sdk_error_is_typed_reason(monkeypatch: pytest.MonkeyPatch) -> None:
-    from clio_agent.providers.model_discovery import codex as md_codex
+def test_discover_codex_default_effort_without_medium_is_the_first_level(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_codex_catalog(monkeypatch, [_codex_row("gpt-5.6-sol", effort_levels=["high", "xhigh"])])
 
-    stub = _StubCodex(error=RuntimeError("SDK transport closed"))
-    monkeypatch.setattr(md_codex, "AsyncCodex", lambda *_args, **_kwargs: stub)
-    result = model_discovery.discover_codex()
+    result = model_discovery.discover_codex(credential_store=_StubCredentialStore(True))
+
+    assert result.discovered[0]["supported_reasoning_efforts"] == ["high", "xhigh"]
+    assert result.discovered[0]["default_reasoning_effort"] == "high"
+
+
+def test_discover_codex_requires_a_signed_in_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No sign-in is a typed failure -- never a catalog served as account evidence."""
+
+    _stub_codex_catalog(monkeypatch, [_codex_row("gpt-5.6-sol")], default_model="gpt-5.6-sol")
+
+    result = model_discovery.discover_codex(credential_store=_StubCredentialStore(False))
+
     assert result.discovered == []
-    assert "SDK transport closed" in (result.failed_reason or "")
-    assert stub.closed is True
+    assert "sign-in is required" in (result.failed_reason or "")
 
 
-def test_discover_codex_zero_models_is_typed_reason(monkeypatch: pytest.MonkeyPatch) -> None:
-    from clio_agent.providers.model_discovery import codex as md_codex
+def test_discover_codex_catalog_error_is_typed_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    from clio_agent.providers.model_discovery.codex_catalog import CodexCatalogError
 
-    monkeypatch.setattr(md_codex, "AsyncCodex", lambda *_args, **_kwargs: _StubCodex(rows=[]))
+    _stub_codex_catalog(
+        monkeypatch, [], error=CodexCatalogError("Could not fetch the Codex model catalog")
+    )
 
-    result = model_discovery.discover_codex()
+    result = model_discovery.discover_codex(credential_store=_StubCredentialStore(True))
+
+    assert result.discovered == []
+    assert "Could not fetch the Codex model catalog" in (result.failed_reason or "")
+
+
+def test_discover_codex_zero_models_is_typed_reason() -> None:
+    result = model_discovery.discover_codex(
+        credential_store=_StubCredentialStore(True), catalog_candidates=[]
+    )
+
     assert result.discovered == []
     assert result.failed_reason is not None
 
@@ -1111,17 +1080,16 @@ async def test_discover_http_no_models_is_typed_reason(monkeypatch: pytest.Monke
 # --------------------------------------------------------------------------- #
 
 
-def test_is_provider_configured_codex_requires_sdk_and_credentials(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_is_provider_configured_codex_requires_a_signed_in_credential(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from clio_agent.providers.codex.credentials import CodexCredentialStore
+
     preset = get_provider("codex")
     assert preset is not None
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing"))
+    monkeypatch.setattr(CodexCredentialStore, "is_signed_in", lambda self: False)
     assert model_discovery.is_provider_configured(preset) is False
-    codex_home = tmp_path / "codex-home"
-    codex_home.mkdir()
-    (codex_home / "auth.json").write_text('{"token":"test"}', encoding="utf-8")
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setattr(CodexCredentialStore, "is_signed_in", lambda self: True)
     assert model_discovery.is_provider_configured(preset) is True
 
 
@@ -1163,7 +1131,7 @@ async def test_refresh_all_one_provider_failing_others_still_refresh(
 ) -> None:
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
 
-    def _fake_discover_codex(*, timeout: float = 20.0) -> model_discovery.ProviderDiscoveryResult:
+    def _fake_discover_codex() -> model_discovery.ProviderDiscoveryResult:
         return model_discovery.ProviderDiscoveryResult(
             provider="codex",
             discovered=[{"id": "gpt-5.6-sol", "name": "Sol", "description": ""}],
@@ -1212,12 +1180,11 @@ async def test_refresh_all_default_scan_filters_to_configured_providers(
 ) -> None:
     """#1211 review R2: with no explicit presets, only configured providers are probed."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
-    # Codex counts as configured only with credentials present; pin them in
-    # tmp_path instead of depending on the host's real ~/.codex sign-in.
-    codex_home = tmp_path / "codex-home"
-    codex_home.mkdir()
-    (codex_home / "auth.json").write_text('{"token":"test"}', encoding="utf-8")
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    # Codex counts as configured only with a signed-in credential; pin it
+    # instead of depending on the host's real Codex sign-in.
+    from clio_agent.providers.codex.credentials import CodexCredentialStore
+
+    monkeypatch.setattr(CodexCredentialStore, "is_signed_in", lambda self: True)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
@@ -1245,7 +1212,7 @@ async def test_refresh_all_default_scan_filters_to_configured_providers(
     )
     monkeypatch.setattr(
         "clio_agent.providers.model_discovery.refresh.discover_codex",
-        lambda **_kwargs: (
+        lambda: (
             seen.append("codex")
             or model_discovery.ProviderDiscoveryResult(
                 provider="codex",
@@ -1258,7 +1225,8 @@ async def test_refresh_all_default_scan_filters_to_configured_providers(
 
     await model_discovery.refresh_all()
 
-    # The required Codex SDK is configured; Claude Code and API-key providers are not.
+    # The signed-in Codex credential is configured; Claude Code and API-key
+    # providers are not.
     assert "codex" in seen
     assert "claude_code" not in seen
     assert "openai" not in seen
@@ -1449,14 +1417,13 @@ def test_refresh_provider_models_tool_calls_refresh_all(monkeypatch: pytest.Monk
 @pytest.mark.live
 @pytest.mark.skipif(
     os.environ.get("CLIO_RUN_LIVE") != "1",
-    reason="live Codex SDK probe: set CLIO_RUN_LIVE=1 (needs existing Codex authentication)",
+    reason="live Codex discovery: set CLIO_RUN_LIVE=1 (needs an existing Codex sign-in)",
 )
 def test_discover_codex_live() -> None:
-    """Real official Codex Python SDK model-list call -- no LM cost."""
-    result = model_discovery.discover_codex(timeout=30.0)
+    """Real maintained-catalog fetch + the real credential store -- no LM cost."""
+    result = model_discovery.discover_codex()
     assert result.failed_reason is None, result.failed_reason
-    assert result.discovered, "codex model/list returned zero models"
-    assert result.default_model
+    assert result.discovered, "the maintained Codex catalog returned zero models"
 
 
 @pytest.mark.live
@@ -1502,7 +1469,7 @@ def test_overlay_within_ttl_is_served_without_a_staleness_marker(
         monkeypatch,
         {
             "models": [{"id": "gpt-5.6-sol"}],
-            "source": "codex_sdk",
+            "source": "codex_catalog",
             "generated_at": datetime.now(timezone.utc).isoformat(),
         },
     )
@@ -1522,7 +1489,7 @@ def test_overlay_older_than_ttl_is_still_served_but_marked_typed_stale(
     _write_overlay(
         tmp_path,
         monkeypatch,
-        {"models": [{"id": "gpt-5.6-sol"}], "source": "codex_sdk", "generated_at": old},
+        {"models": [{"id": "gpt-5.6-sol"}], "source": "codex_catalog", "generated_at": old},
     )
 
     wire = model_discovery.overlay_models_wire("codex", "codex")
@@ -1547,7 +1514,7 @@ def test_overlay_ttl_zero_disables_the_age_check(
     _write_overlay(
         tmp_path,
         monkeypatch,
-        {"models": [{"id": "gpt-5.6-sol"}], "source": "codex_sdk", "generated_at": old},
+        {"models": [{"id": "gpt-5.6-sol"}], "source": "codex_catalog", "generated_at": old},
     )
     set_config("providers.model_catalog_ttl_s", 0)
     wire = model_discovery.overlay_models_wire("codex", "codex")
@@ -1561,7 +1528,11 @@ def test_overlay_with_unreadable_timestamp_is_unverified_not_assumed_fresh(
     _write_overlay(
         tmp_path,
         monkeypatch,
-        {"models": [{"id": "gpt-5.6-sol"}], "source": "codex_sdk", "generated_at": "whenever"},
+        {
+            "models": [{"id": "gpt-5.6-sol"}],
+            "source": "codex_catalog",
+            "generated_at": "whenever",
+        },
     )
     wire = model_discovery.overlay_models_wire("codex", "codex")
     assert wire is not None
@@ -1588,7 +1559,7 @@ def test_a_failed_refresh_keeps_the_prior_list_and_marks_it_typed_stale(
             provider="codex",
             discovered=[],
             source=model_discovery.CODEX_SOURCE,
-            failed_reason="Codex Python SDK model discovery failed: transport closed",
+            failed_reason="Could not fetch the Codex model catalog: transport closed",
         )
     )
 

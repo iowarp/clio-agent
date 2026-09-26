@@ -6,10 +6,10 @@ higher layer that leaves a field unknown does not block a lower layer from
 filling it):
 
 1. **user** -- an explicit override from the settings panel.
-2. **overlay** -- the manual model overlay (brief Part 8). That catalog does
-   not exist yet; :class:`EmptyOverlaySource` is the interface this slice
-   wires in its place, so the precedence chain and its call sites never have
-   to change again once P6 lands.
+2. **overlay** -- the manual model overlay (brief Part 8):
+   :class:`~clio_agent.providers.capabilities.model_overlay.CatalogOverlaySource`,
+   consulted by default so this precedence chain and its call sites never had
+   to change once P6 landed.
 3. **server_report** -- what the handshake adapter itself evidenced (Ollama
    ``capabilities``, LM Studio ``trained_for_tool_use``, ...). Built by the
    adapter, passed in.
@@ -37,6 +37,7 @@ from clio_agent.providers.capabilities.records import (
     Fact,
     FactSource,
     ModelCapabilities,
+    model_type_fact,
     unknown,
 )
 
@@ -45,6 +46,7 @@ logger = logging.getLogger(__name__)
 #: The field names merged, in the exact order :class:`ModelCapabilities` (and
 #: therefore :func:`merge_model_layers`) declares them.
 _FACT_FIELDS: tuple[str, ...] = (
+    "model_type",
     "context_max",
     "output_max",
     "input_modalities",
@@ -70,21 +72,6 @@ class OverlaySource(Protocol):
         ...
 
 
-class EmptyOverlaySource:
-    """The P6 overlay's stand-in for this slice: always "no override".
-
-    Brief Part 8's manual model overlay (``catalogs/models/*.yaml``) is a
-    later slice. Wiring this no-op in now means :func:`resolve_model_capabilities`
-    and every caller already shaped around "user > overlay > server_report >
-    ..." need no changes when the real overlay lands -- only this class gets
-    replaced.
-    """
-
-    def facts(self, model_key: str) -> ModelCapabilities | None:
-        del model_key
-        return None
-
-
 class HfRepoSource(Protocol):
     """A source of Hugging Face repo facts (brief 6.1), keyed by model key.
 
@@ -101,42 +88,48 @@ class HfRepoSource(Protocol):
 def community_catalog_facts(model_id: str) -> ModelCapabilities | None:
     """Model facts from the fetched community catalogs (brief 5.1 step 5).
 
-    Reuses :mod:`clio_agent.providers.handshake.sources` (models.dev -> the
-    LiteLLM community map -> the local DB) for ``context_max``/``output_max`` --
-    the exact cascade :func:`~clio_agent.providers.handshake.sources.resolve_context`
-    already implements, so this is not a second fetcher. OpenRouter's
-    model-level catalog fields are the fifth named source (brief 5.1) but no
-    fetcher for it exists anywhere in this codebase yet (OpenRouter's fields
-    read live, per-deployment, in
-    :mod:`clio_agent.providers.handshake.openai_compat` are a DEPLOYMENT fact,
-    not this community-catalog tier) -- adding one is out of this slice's
-    scope, so this only ever returns the models.dev/litellm/db tiers.
+    Reuses :mod:`clio_agent.providers.handshake.sources` rather than fetching
+    anything a second time:
 
-    Returns ``None`` when the id resolves through no catalog at all, so the
-    caller can tell "nothing here" from "we checked and it's unknown" only by
-    field (every field on the returned record still carries its own
-    known/unknown status).
+    * ``context_max``/``output_max`` -- models.dev -> the LiteLLM community map
+      -> the local DB (:func:`~clio_agent.providers.handshake.sources.resolve_context`
+      and ``resolve_output_limit``);
+    * ``input_modalities`` -- models.dev ``modalities.input``, else LiteLLM's
+      ``supports_vision``/``supports_audio_input``/``supports_pdf_input``
+      (:func:`~clio_agent.providers.handshake.sources.resolve_input_modalities`);
+    * ``model_type`` -- LiteLLM ``mode``, else a models.dev output list that
+      lacks text (:func:`~clio_agent.providers.handshake.sources.resolve_model_type`).
+
+    Every id goes through the sources' shared normalization
+    (:mod:`~clio_agent.providers.handshake.sources._normalize`), so an
+    org-prefixed wire id such as ``google/gemma-4-31B-it`` matches the catalog's
+    own key. OpenRouter's model-level catalog fields are the fifth named source
+    (brief 5.1) but no fetcher for it exists in this codebase yet (OpenRouter's
+    per-route fields read live in the handshake are DEPLOYMENT facts, not this
+    tier), so this only ever returns the models.dev/litellm/db tiers.
+
+    Returns ``None`` when the id resolves through no catalog at all; otherwise
+    every field on the returned record carries its own known/unknown status --
+    a catalog that states no modalities leaves ``input_modalities`` UNKNOWN,
+    never "text only".
     """
 
-    from clio_agent.providers.handshake.sources import (  # noqa: PLC0415
-        resolve_context,
-        resolve_output_limit,
-    )
+    from clio_agent.providers.handshake import sources  # noqa: PLC0415
 
     if not (model_id or "").strip():
         return None
     observed_at = _now_iso()
-    context, context_source = resolve_context(model_id, "")
-    output = resolve_output_limit(model_id, "")
-    if context is None and output is None:
+    context, context_source = sources.resolve_context(model_id, "")
+    output = sources.resolve_output_limit(model_id, "")
+    modalities, modality_source, modality_detail = sources.resolve_input_modalities(model_id)
+    model_type, type_source, type_detail = sources.resolve_model_type(model_id)
+    if context is None and output is None and modalities is None and model_type is None:
         return None
     # resolve_context's provenance strings are exactly "models.dev" | "litellm" | "db"
-    # (or "" on a miss, never reached here since context is known) -- all valid
-    # FactSource members already.
-    source = cast(FactSource, context_source) if context_source else "litellm"
+    # (or "" on a miss) -- all valid FactSource members already.
     context_fact = (
-        Fact(value=context, source=source, observed_at=observed_at)
-        if context is not None
+        Fact(value=context, source=cast(FactSource, context_source), observed_at=observed_at)
+        if context is not None and context_source
         else unknown()
     )
     # resolve_output_limit does not report which tier answered; models.dev is
@@ -146,7 +139,29 @@ def community_catalog_facts(model_id: str) -> ModelCapabilities | None:
         if output is not None
         else unknown()
     )
-    return ModelCapabilities(model_key=model_id, context_max=context_fact, output_max=output_fact)
+    modality_fact = (
+        Fact(
+            value=modalities,
+            source=cast(FactSource, modality_source),
+            observed_at=observed_at,
+            detail=modality_detail,
+        )
+        if modalities is not None
+        else unknown("no community catalog states this model's input modalities")
+    )
+    type_fact = model_type_fact(
+        model_type,
+        source=cast(FactSource, type_source or "unknown"),
+        observed_at=observed_at,
+        detail=type_detail or "no community catalog states this model's type",
+    )
+    return ModelCapabilities(
+        model_key=model_id,
+        model_type=type_fact,
+        context_max=context_fact,
+        output_max=output_fact,
+        input_modalities=modality_fact,
+    )
 
 
 def merge_model_layers(model_key: str, *layers: ModelCapabilities | None) -> ModelCapabilities:
@@ -193,8 +208,9 @@ def resolve_model_capabilities(
     Args:
         model_key: The canonical model key the result is stamped with.
         user_override: An explicit settings-panel override, highest precedence.
-        overlay: The overlay source to consult; defaults to
-            :class:`EmptyOverlaySource` (no overlay wired yet, brief Part 8/P6).
+        overlay: The overlay source to consult; defaults to the real
+            :func:`~clio_agent.providers.capabilities.model_overlay.default_overlay_source`
+            (brief Part 8/P6). Callers inject a fake for tests.
         server_report: The facts the live handshake adapter evidenced this run.
         hf_repo: The Hugging Face repo source to consult, when one is wired
             (P4b); omitted entirely when the caller has none.
@@ -206,7 +222,14 @@ def resolve_model_capabilities(
         The merged :class:`ModelCapabilities`, per-field precedence-resolved.
     """
 
-    overlay_source = overlay if overlay is not None else EmptyOverlaySource()
+    if overlay is not None:
+        overlay_source = overlay
+    else:
+        from clio_agent.providers.capabilities.model_overlay import (  # noqa: PLC0415
+            default_overlay_source,
+        )
+
+        overlay_source = default_overlay_source()
     overlay_facts = overlay_source.facts(model_key)
     hf_facts = hf_repo.facts(model_key) if hf_repo is not None else None
     catalog_facts = community_catalog_facts(community_lookup_id or model_key)
@@ -221,7 +244,6 @@ def resolve_model_capabilities(
 
 
 __all__ = [
-    "EmptyOverlaySource",
     "HfRepoSource",
     "OverlaySource",
     "community_catalog_facts",

@@ -179,14 +179,20 @@ RATCHET_BASELINE: dict[str, int] = {
     # context_window_below_native warning, and (4) the updated load_config_from_env
     # docstring. The override resolution lives inline in apply_handshake (the one
     # bind-time site), not a new module, because it is a single conf.resolve call
-    # tightly coupled to the existing window-vs-override decision. Ratchet down
-    # as config.py's modular decomposition continues.
-    # P5 (model-capabilities request builder, campaign slice): 840 -> 812.
-    # temperature/supports_vision/max_tokens_default deletions and the
-    # _uses_local_reasoning_model_profile/_apply_model_profile_defaults
-    # qwen-name heuristic removal net-shrink this file; the new
-    # lm/request_builder.py + lm/dialect_wire.py own the replacement logic.
-    "src/clio_agent/config.py": 812,
+    # tightly coupled to the existing window-vs-override decision.
+    # S1b (Codex SDK transport restore): +15 for codex_variant -- a SECOND
+    # transport selector for the codex provider (sdk vs direct), the same shape
+    # as the existing codex_transport field: the Literal field itself, its
+    # __post_init__ validation + default-normalization, and its
+    # lm.codex_variant/CLIO_CODEX_VARIANT env-resolution block in
+    # load_config_from_env. A dataclass field's own validation/env-plumbing has
+    # no owner module to move to; this IS its owner. Ratchet down as config.py's
+    # modular decomposition continues.
+    # P4a (capability records) nets config.py -2 on top of S1b: ratcheted to 855.
+    # P5 (request builder) deletes temperature/supports_vision/max_tokens_default
+    # and the qwen-name profile heuristics (lm/request_builder.py and
+    # lm/dialect_wire.py own the replacement): ratcheted to 827.
+    "src/clio_agent/config.py": 827,
     # #1326: adapters.py was 780 lines (under the 800 cap). +56 for: a new
     # _ContextOverflowError typed exception, a _check_context_overflow pre-flight
     # helper (mirrors the guided path's _bound_guided_output_kwargs shape), pre-
@@ -489,7 +495,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # landed here.
     # Desktop lifecycle and agent-initialization owners from release combine
     # with develop's activation extraction and provider startup refresh.
-    "src/clio_agent/gact/app.py": 2469,  # L1: -1, the deleted hard_abort_supported/upstream_abort/executor_work_may_continue triad
+    # Ratchet down 2469 -> 2467 (naming reversal): removed the now-unneeded
+    # codex->chatgpt boot migration call (the provider id never changed).
+    "src/clio_agent/gact/app.py": 2467,  # L1: -1, the deleted hard_abort_supported/upstream_abort/executor_work_may_continue triad
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -666,11 +674,13 @@ RATCHET_BASELINE: dict[str, int] = {
     # Ratchet down 1292 -> 1172: the per-provider auth/models/install/handshake
     # routes moved verbatim to gact/routes/provider_catalog_routes.py, which
     # also absorbed the subscription-readiness growth from e0c66ff5.
-    # P5 (model-capabilities request builder): 1172 -> 1171. The static
-    # `supports_vision` wire-metadata key in `_provider_to_wire` is deleted
-    # (brief 9.1); vision is an evidence-based per-model fact now, never a
-    # per-provider catalog row.
-    "src/clio_agent/gact/routes/providers.py": 1171,
+    # Ratchet down 1172 -> 1163 (S1, direct Codex provider): the simplified
+    # _codex_readiness dropped the "openai_codex" importlib probe -- the
+    # Codex credential store is a plain, always-importable class.
+    # S1 (1163 -> 1142) + S1b (codex readiness gate moved to routes/codex_variant.py).
+    # P5 (request builder): the static `supports_vision` wire-metadata key in
+    # `_provider_to_wire` is deleted (brief 9.1): ratcheted to 1116.
+    "src/clio_agent/gact/routes/providers.py": 1116,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (merged to develop with the size check red, baseline 1478 -> actual); ratchet
     # back below the pre-#947 count with the mcp_app_* owner-module split (see the
@@ -957,7 +967,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # +2 comment, +1 to_thread call); the bridge itself stays in claude_code_sdk_pool.py.
     # 866 -> 864 (S2 B2 rework): entry_for()'s call site drops the now-dead
     # thinking=/system_prompt= peek kwargs (the warm pool they fed is deleted).
-    "src/clio_agent/providers/claude_code_litellm.py": 864,
+    "src/clio_agent/providers/claude_code_litellm.py": 862,
     # (process_census.py's entry retired: 711 lines, back under the flat 800 cap.)
     # NEW entry (#1305 review round): crossed the flat 800 cap (800 -> 825)
     # for the F2/F4/F6b fixes an adversarial review demanded on
@@ -1010,7 +1020,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # background-connect logic lives in that owner module, not here, mirroring
     # how sweep_idle_session_entries/reap_idle_session_entry already reach into
     # the pool from that sibling file).
-    "src/clio_agent/providers/claude_code_sessions.py": 846,
+    "src/clio_agent/providers/claude_code_sessions.py": 841,
     # #900: +2 for wiring probe_process_tree into the doctor collect().
     # owner ruling 2026-07-14: +3 for the DEGRADED-by-policy local-ARC doctor row.
     # #947 DEBT (recorded 2026-07-18, #948 S4): residual over the pre-#947 count

@@ -199,10 +199,8 @@ def turn_reasoning_provenance(
         _provider_runtime_kind,
     )
     from clio_agent.lm import dialect_wire  # noqa: PLC0415
+    from clio_agent.lm.request_builder import local_first_effective  # noqa: PLC0415
     from clio_agent.providers.capabilities import endpoint as capability_endpoint  # noqa: PLC0415
-    from clio_agent.providers.capabilities.accessor import (  # noqa: PLC0415
-        get_effective_capabilities,
-    )
     from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
     from clio_agent.providers.thinking_levels import normalize_level  # noqa: PLC0415
 
@@ -232,8 +230,12 @@ def turn_reasoning_provenance(
     litellm_prefix = preset.litellm_prefix if preset is not None else provider_kind
     dialect = capability_endpoint.dialect_for_provider(provider_kind, litellm_prefix, provider_id)
     api_base = str(active.get("api_base") or "")
-    effective = get_effective_capabilities(
-        provider_id, api_base, model_id or str(active.get("model") or "")
+    effective = local_first_effective(
+        provider_id,
+        api_base,
+        model_id or str(active.get("model") or ""),
+        dialect=dialect,
+        litellm_prefix=litellm_prefix,
     )
     kwargs = dialect_wire.thinking_wire(
         dialect, effective.thinking, level=level, budget_tokens=budget

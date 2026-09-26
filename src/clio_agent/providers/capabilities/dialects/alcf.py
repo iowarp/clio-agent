@@ -33,6 +33,7 @@ from clio_agent.providers.capabilities.records import (
     DeploymentCapabilities,
     EndpointCapabilities,
     Fact,
+    model_type_fact,
 )
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,27 @@ def _now_iso() -> str:
 #: named constant (not inlined) so a confirmed real field name is a one-line
 #: fix, not a re-read of this whole module.
 _JOB_ENDPOINT_FIELDS: tuple[str, ...] = ("endpoint", "url", "api_base", "Endpoint")
+
+
+#: ALCF gateway ``framework`` -> the model type that serving framework proves.
+#: A row's ``framework`` names the service running the model; only a service
+#: that serves exactly one kind of model decides the type. ``vllm`` (and the
+#: Metis ``api`` framework) serve chat AND embedding models alike, so they are
+#: deliberately absent: the type stays unknown for other sources to establish.
+FRAMEWORK_MODEL_TYPES: dict[str, str] = {
+    "sam3service": "segmentation",
+}
+
+
+def gateway_model_type_fact(row: Mapping[str, Any], *, observed_at: str) -> Fact[str]:
+    """The model-type fact an ALCF ``/models`` row's ``framework`` proves (or unknown)."""
+    framework = str(row.get("framework") or "").strip().lower()
+    return model_type_fact(
+        FRAMEWORK_MODEL_TYPES.get(framework),
+        source="server_report",
+        observed_at=observed_at,
+        detail=f"ALCF gateway /models framework={framework!r}",
+    )
 
 
 def gateway_row_identity(row: Mapping[str, Any]) -> tuple[str | None, str | None]:
@@ -146,6 +168,8 @@ async def probe_job_endpoint(
 
 
 __all__ = [
+    "FRAMEWORK_MODEL_TYPES",
+    "gateway_model_type_fact",
     "gateway_row_identity",
     "job_endpoint_url",
     "parse_gateway_model_row",

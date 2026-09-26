@@ -31,10 +31,6 @@ from clio_agent.providers.handshake.openai_compat import OpenAICompatHandshake
 class OllamaHandshake(OpenAICompatHandshake):
     """Ollama: list via ``/api/tags``, enrich each model via ``/api/show`` + ``/api/ps``."""
 
-    #: ``/api/show`` reports a per-model ``capabilities`` list (``vision``,
-    #: ``tools``), so this backend really can evidence input modalities.
-    reports_input_modalities = True
-
     async def discover_models(self, client: Any, ctx: HandshakeContext) -> list[dict[str, Any]]:
         """List installed models from the native ``/api/tags``."""
         rows = await ollama_dialect.fetch_tags(client, native_root(ctx.api_base))

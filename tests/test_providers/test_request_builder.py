@@ -480,7 +480,7 @@ def test_openrouter_require_parameters_absent_when_nothing_optional_sent() -> No
 # dialects.codex, driven by the SDK's own reported supportedReasoningEfforts.
 # --------------------------------------------------------------------------- #
 
-_CODEX_BASE = "codex://sdk"
+_CODEX_BASE = "codex://direct"
 _CODEX_LEVELS = ("low", "medium", "high", "xhigh")
 
 
@@ -845,3 +845,34 @@ def test_model_catalog_assignment_is_zero_everywhere() -> None:
             if re.search(r"model_catalog=", line):
                 hits.append((path, lineno))
     assert not hits, f"model_catalog= still present: {hits}"
+
+
+# --------------------------------------------------------------------------- #
+# Local-first thinking: a freshly bound cloud model (no handshake recorded yet)
+# still gets its requested effort. The spec comes from LiteLLM's local map --
+# the same fact the openai-compatible handshake records later.
+# --------------------------------------------------------------------------- #
+
+
+def test_openai_effort_applies_before_any_handshake() -> None:
+    extras = build_request_kwargs(_cfg("openai", "gpt-5", thinking_level="high"))
+    assert extras["reasoning_effort"] == "high"
+
+
+def test_local_thinking_names_its_source_and_never_guesses() -> None:
+    from clio_agent.lm.request_builder import local_first_effective
+
+    effective = local_first_effective(
+        "openai", "https://api.openai.com/v1", "gpt-5", dialect="openai", litellm_prefix="openai"
+    )
+    assert effective.thinking.known
+    assert "litellm" in effective.thinking.source.split("+")
+    # No per-model thinking source for this dialect: stays unknown, never guessed.
+    unknown_dialect = local_first_effective(
+        "vllm",
+        "http://127.0.0.1:8000/v1",
+        "some/model",
+        dialect="vllm",
+        litellm_prefix="hosted_vllm",
+    )
+    assert not unknown_dialect.thinking.known

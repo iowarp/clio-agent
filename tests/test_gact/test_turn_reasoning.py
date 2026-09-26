@@ -129,7 +129,7 @@ def _lm_kwargs(base: LMProviderConfig, effort: str | None) -> dict[str, Any]:
 def test_codex_message_effort_overrides_the_global_level() -> None:
     _seed_thinking(
         provider_id="codex",
-        api_base="codex://sdk",
+        api_base="codex://direct",
         model_id="gpt-5.5",
         dialect="codex",
         thinking_controls=frozenset({"reasoning_effort"}),
@@ -284,7 +284,7 @@ def test_anthropic_adaptive_model_message_effort_sends_reasoning_effort(
 def test_codex_message_minimal_effort_is_sent() -> None:
     _seed_thinking(
         provider_id="codex",
-        api_base="codex://sdk",
+        api_base="codex://direct",
         model_id="gpt-5.5",
         dialect="codex",
         thinking_controls=frozenset({"reasoning_effort"}),

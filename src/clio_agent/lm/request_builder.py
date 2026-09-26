@@ -68,6 +68,7 @@ provider-name-keyed mapping table. Only the CLIO-level vocabulary itself
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from clio_agent.lm import dialect_wire
@@ -123,6 +124,48 @@ def _dialect_and_litellm_prefix(config: "LMProviderConfig") -> tuple[str, str]:
     return dialect, litellm_prefix
 
 
+def local_first_effective(
+    provider_id: str, api_base: str, model_id: str, *, dialect: str, litellm_prefix: str
+) -> EffectiveCapabilities:
+    """The effective capabilities, with the thinking spec computed local-first.
+
+    Before any handshake has recorded this deployment, a cloud dialect's thinking
+    spec is still knowable without the network (anthropic/openai: LiteLLM's
+    local map, :func:`~clio_agent.providers.capabilities.dialects.cloud_thinking.
+    local_thinking_spec`) -- the same fact the handshake would record. Without
+    this, a requested effort on a freshly bound cloud model was silently not
+    applied ("not controllable here"). A recorded thinking fact always wins.
+    """
+
+    from clio_agent.providers.capabilities import invalidation  # noqa: PLC0415
+    from clio_agent.providers.capabilities.combine import combine_capabilities  # noqa: PLC0415
+    from clio_agent.providers.capabilities.dialects import cloud_thinking  # noqa: PLC0415
+    from clio_agent.providers.capabilities.records import ModelCapabilities  # noqa: PLC0415
+    from clio_agent.providers.identity import deployment_key, endpoint_key  # noqa: PLC0415
+
+    effective = get_effective_capabilities(provider_id, api_base, model_id)
+    if effective.thinking.known:
+        return effective
+    spec = cloud_thinking.local_thinking_spec(dialect, model_id)
+    if not spec.known:
+        return effective
+    deployment = invalidation.get_deployment_capabilities(
+        deployment_key(provider_id, api_base, model_id)
+    )
+    model_key = (
+        deployment.model_key.value
+        if deployment is not None and deployment.model_key.known and deployment.model_key.value
+        else model_id
+    )
+    model = invalidation.get_model_capabilities(model_key) or ModelCapabilities(model_key=model_key)
+    endpoint = invalidation.get_endpoint_capabilities(
+        endpoint_key(provider_id, api_base)
+    ) or capability_endpoint.build_endpoint_capabilities(
+        provider_id, api_base, dialect, model_id, custom_llm_provider=litellm_prefix
+    )
+    return combine_capabilities(replace(model, thinking=spec), endpoint, deployment)
+
+
 def _resolve(
     config: "LMProviderConfig",
 ) -> tuple[str, frozenset[str], EffectiveCapabilities]:
@@ -141,7 +184,9 @@ def _resolve(
 
     provider_id = getattr(config, "provider_id", "") or str(config.provider)
     api_base = getattr(config, "api_base", "") or ""
-    effective = get_effective_capabilities(provider_id, api_base, config.model)
+    effective = local_first_effective(
+        provider_id, api_base, config.model, dialect=dialect, litellm_prefix=litellm_prefix
+    )
     accepted: frozenset[str] = (
         effective.accepted_params.value
         if effective.accepted_params.known and effective.accepted_params.value is not None

@@ -28,6 +28,7 @@ from typing import Any
 MODALITY_SOURCES: dict[str, str] = {
     "codex_sdk_input_modalities": ("the Codex Python SDK's model row (``Model.input_modalities``)"),
     "claude_code_catalog": "CLIO's maintained Claude Code model catalog document",
+    "codex_catalog": "CLIO's maintained Codex model catalog document",
     "provider_documentation": (
         "the provider's published model capability documentation and CLIO's native transport"
     ),
@@ -49,10 +50,10 @@ MODALITY_EVIDENCE_REASONS: dict[str, str] = {
         "negative can fire; re-run discovery once the provider reports the field"
     ),
     "modality_cataloged": (
-        "the maintained Claude Code catalog declares these input modalities for the model"
+        "the maintained model catalog declares these input modalities for the model"
     ),
     "modality_uncataloged": (
-        "the maintained Claude Code catalog does not declare this model's input modalities, "
+        "the maintained model catalog does not declare this model's input modalities, "
         "so only text is recorded as a capability; no non-text modality is assumed until the "
         "catalog documents it"
     ),

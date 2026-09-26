@@ -49,8 +49,8 @@ class LMSpec:
         credential_ref: A credential *reference* (never an inline secret).
             Empty selects the provider's default credential.
         transport: Transport selector for providers that have one
-            (``codex`` / ``claude_code``: ``"exec"`` or ``"sdk"``). Empty for
-            providers with no transport choice.
+            (``codex``: ``"websocket"``/``"sse"``; ``claude_code``: ``"sdk"``).
+            Empty for providers with no transport choice.
         temperature: Sampling temperature (``None`` omits → provider default).
         max_tokens: Per-reply output cap (``None`` omits → resolver default).
         thinking_budget: Reasoning/thinking token budget (``None`` omits).

@@ -47,7 +47,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
-from typing import Generic, TypeVar
+from typing import Generic, TypeVar, cast
 
 import httpx
 
@@ -212,6 +212,14 @@ class FetchedCatalog(Generic[T]):
         self._bundled = bundled
         self._explicit_cache_path = cache_path
         self._lock = threading.Lock()
+        # In-memory accelerators, never a second source of truth: a fresh
+        # read is re-served from memory only while it is still inside its TTL
+        # (and for the same cache file), and the packaged snapshot is immutable.
+        # Without them every lookup re-read and re-parsed the whole document --
+        # one full parse per model-id variant, thousands per provider refresh.
+        self._fresh: tuple[Path, CatalogResult[T]] | None = None
+        self._bundled_loaded = False
+        self._bundled_data: T | None = None
 
     @property
     def cache_path(self) -> Path:
@@ -251,12 +259,18 @@ class FetchedCatalog(Generic[T]):
     # -- internals -----------------------------------------------------------
 
     def _get_locked(self, *, force_refresh: bool, allow_fetch: bool) -> CatalogResult[T]:
+        cache_path = self.cache_path
+        if not force_refresh and self._fresh is not None:
+            memo_path, memo = self._fresh
+            if memo_path == cache_path and _age_s(memo.fetched_at) < self.ttl_s:
+                return memo
+
         cached = self._read_disk_cache()
 
         if cached is not None and not force_refresh and _age_s(cached.fetched_at) < self.ttl_s:
             data = self._safe_parse(cached, context="disk_cache")
             if data is not None:
-                return CatalogResult(
+                result = CatalogResult(
                     data=data,
                     source="disk_cache",
                     source_url=cached.source_url,
@@ -264,6 +278,8 @@ class FetchedCatalog(Generic[T]):
                     version=cached.version,
                     fetched_at=cached.fetched_at,
                 )
+                self._fresh = (cache_path, result)
+                return result
             # The fresh-enough cache no longer parses (schema drift on disk) --
             # treat it as absent for the rest of this read.
             cached = None
@@ -272,6 +288,9 @@ class FetchedCatalog(Generic[T]):
         if allow_fetch:
             fetched, fetch_failure_reason = self._fetch(cached)
             if fetched is not None:
+                # A later read of this payload is a read of the disk cache it
+                # was just written to -- memoised with that provenance.
+                self._fresh = (cache_path, replace(fetched, source="disk_cache"))
                 return fetched
 
         if cached is not None:
@@ -294,21 +313,26 @@ class FetchedCatalog(Generic[T]):
                 )
 
         if self._bundled is not None:
-            try:
-                data = self._bundled()
-            except Exception as exc:  # noqa: BLE001 - a bad bundled loader is just "no bundled data"
-                logger.warning(
-                    "fetched_catalog: reason=bundled_load_failed name=%s: %s", self.name, exc
-                )
-            else:
-                logger.warning(
-                    "fetched_catalog: reason=bundled_cold_start name=%s "
-                    "(no disk cache; fetch=%s) using the packaged snapshot",
-                    self.name,
-                    fetch_failure_reason if allow_fetch else "disabled",
-                )
+            if not self._bundled_loaded:
+                try:
+                    self._bundled_data = self._bundled()
+                except Exception as exc:  # noqa: BLE001 - a bad bundled loader is just "no bundled data"
+                    logger.warning(
+                        "fetched_catalog: reason=bundled_load_failed name=%s: %s", self.name, exc
+                    )
+                else:
+                    self._bundled_loaded = True
+                    # Logged once per process (the snapshot is parsed once);
+                    # every result still carries the typed stale_reason.
+                    logger.warning(
+                        "fetched_catalog: reason=bundled_cold_start name=%s "
+                        "(no disk cache; fetch=%s) using the packaged snapshot",
+                        self.name,
+                        fetch_failure_reason if allow_fetch else "disabled",
+                    )
+            if self._bundled_loaded:
                 return CatalogResult(
-                    data=data,
+                    data=cast(T, self._bundled_data),
                     source="bundled",
                     source_url=self.url,
                     etag="",
@@ -330,12 +354,19 @@ class FetchedCatalog(Generic[T]):
                 self.url, timeout=self.timeout_s, headers=headers, follow_redirects=True
             )
         except httpx.HTTPError as exc:
-            reason = f"transport_error: {exc}"
+            # Lazy import: handshake.base (via the handshake package __init__)
+            # transitively imports model_discovery, which imports THIS module
+            # at load time -- a module-level import here would be circular.
+            from clio_agent.providers.handshake.base import (  # noqa: PLC0415
+                describe_exception,
+            )
+
+            reason = f"transport_error: {describe_exception(exc)}"
             logger.warning(
                 "fetched_catalog: reason=transport_error name=%s url=%s: %s",
                 self.name,
                 self.url,
-                exc,
+                reason,
             )
             return None, reason
 

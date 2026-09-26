@@ -1,0 +1,60 @@
+# Seeded verbatim from clio-coder's local-models/clio-local-coding-targets.yaml (model-capabilities brief Part 8.5).
+- family: gemopus-4-31b-it
+  matchPatterns:
+    - gemopus-4-31b-it
+    - gemopus-4-31b
+    - gemopus-4
+  capabilities:
+    chat: true
+    tools: true
+    toolCallFormat: openai
+    reasoning: true
+    thinkingFormat: qwen-chat-template
+    structuredOutputs: json-schema
+    vision: false
+    audio: false
+    embeddings: false
+    rerank: false
+    fim: false
+    contextWindow: 122880
+    maxTokens: 32768
+  quirks:
+    kvCache:
+      kQuant: q8_0
+      vQuant: q8_0
+    sampling:
+      thinking:
+        temperature: 1.0
+        topP: 0.95
+        topK: 64
+        minP: 0.0
+        presencePenalty: 0.0
+        repetitionPenalty: 1.0
+        maxTokens: 32768
+      instruct:
+        temperature: 0.7  # 0.7 keeps tool-call JSON parseable; gemma card's 1.0 is for chat
+        topP: 0.95
+        topK: 64
+        minP: 0.0
+        maxTokens: 32768
+    chatTemplate: "gemma-channel"
+    thinkingControl: |
+      Jackrong's distilled gemma-4 31B uses the same channel-marker template.
+      Thinking mode is gated by the literal '<|think|>' token in the system
+      prompt; Clio does not currently inject it, so the model emits an empty
+      thought region followed by the answer.
+    gpuTiers:
+      "48gb": "Fits at f16 KV with parallel=1; q8_0 KV recommended at parallel=4."
+      "80gb": "Comfortable at f16 KV with parallel=1 and ctx=122880."
+    runtimePreference:
+      lmstudioNative: "Verified path. Channel-marker handler in clio's adapter recovers reasoning tokens that the SDK classifier drops."
+      openaiCompat: "Fallback; reasoning_content is absent from the openai-compat reasoning probe for this family."
+    thinking:
+      mechanism: always-on
+      guidance: |
+        Distilled traces emit unconditionally. The thinking level setting is
+        ignored at the API surface; chain-of-thought arrives whether or not
+        Clio asks for it. Reasoning tokens are accounted via the channel-marker
+        re-classifier in lmstudio-native.
+    serving: "Distilled from Claude 4.6 Opus reasoning traces onto Google Gemma 4 31B; sampler matches the gemopus card values."
+

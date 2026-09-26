@@ -42,6 +42,13 @@ jobs:
         run: uv run python scripts/check_no_elicitation_id_vocabulary.py
       - name: "guard: no bare dspy.Tool outside the instrumentation factory/bridge (baseline 0)"
         run: uv run python scripts/check_tool_instrumentation.py
+      # Model-capabilities brief Part 8 (P6). BLOCKING: fails if any
+      # catalogs/models/*.yaml is invalid, if catalogs/model-overlay.json (or
+      # its packaged bundled copy) is stale relative to the YAML sources, or
+      # if catalogs/claude-code-models.json (and catalogs/codex-models.json,
+      # once S1 lands it) no longer validates against its schema.
+      - name: "guard: model overlay + catalog schemas are valid and up to date (brief Part 8)"
+        run: uv run python scripts/compile_model_overlay.py --check
       - name: "warn: ruff complexity (C901, PLR0915) (#714)"
         run: uv run ruff check --select C901,PLR0915 src/
         continue-on-error: true
@@ -64,6 +71,23 @@ jobs:
       # regression fails CI while normal noise does not. Ratchet intent:
       # raise this toward the 80% target as gact code gains tests (#31/#773).
       - run: uv run pytest tests/ -m "not integration" --cov=clio_agent --cov-branch --cov-report=term-missing --cov-fail-under=78
+
+  bundle-lock-resolve:
+    # The bundled CLIO Desktop runtime installs clio-agent[BUNDLE_EXTRAS]
+    # against a `uv export` of those extras, but clio-bundles.yml builds it on
+    # tags only. Resolve that exact install set against the exported lock for
+    # every bundled target here, so a conflict (the hardcoded clio-kit pin vs
+    # the locked click) fails the PR instead of the release.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+      - run: uv python install 3.12
+      - run: uv run --no-project --python 3.12 python scripts/check_bundle_matches_lock.py --resolve
 
   flowcept-integration:
     # The Flowcept live-runtime test is excluded from the main leg (integration

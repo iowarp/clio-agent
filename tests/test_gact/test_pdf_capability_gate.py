@@ -61,8 +61,7 @@ def _catalog(provider_id: str, model_id: str, modalities: list[str]) -> dict[str
 def test_every_pdf_reason_arm_is_catalogued() -> None:
     assert set(PDF_CAPABILITY_REASONS) == {
         "live_modality_evidence",
-        "catalog_default_no_modality_evidence_system",
-        "modality_evidence_unavailable",
+        "modality_unknown",
         "no_active_model",
     }
     assert all(sentence for sentence in PDF_CAPABILITY_REASONS.values())
@@ -80,23 +79,22 @@ def test_discovery_evidence_omitting_pdf_refuses_even_for_an_image_capable_model
     assert _pdf_capability(app, "codex", "gpt-5.5") == (False, "live_modality_evidence")
 
 
-def test_a_provider_with_an_evidence_system_but_no_evidence_yet_is_refused() -> None:
-    app = _app()
-    assert _pdf_capability(app, "codex", "gpt-5.5") == (False, "modality_evidence_unavailable")
+def test_unknown_pdf_capability_withholds_native_pdf_under_a_typed_reason() -> None:
+    """No row, or a row that states no modalities, is UNKNOWN -- never a known "no".
 
-
-def test_a_provider_with_no_evidence_system_has_no_static_pdf_default() -> None:
-    """Unlike vision, no provider-registry row carries a static ``supports_pdf``
-    default, so the no-evidence-system arm always answers ``False``."""
+    Native PDF stays withheld (the structured conversion still carries the
+    document), but the reason names the unknown instead of claiming evidence.
+    """
 
     app = _app()
-    assert _pdf_capability(app, "openai", "gpt-4o") == (
+    assert _pdf_capability(app, "codex", "gpt-5.5") == (False, "modality_unknown")
+    assert _pdf_capability(app, "openai", "gpt-4o") == (False, "modality_unknown")
+
+    catalog = _catalog("argonne_sophia", "google/gemma-3-27b-it", [])
+    catalog["providers"][0]["models"][0]["evidence"]["modality_evidenced"] = False
+    assert _pdf_capability(_app(catalog=catalog), "argonne_sophia", "google/gemma-3-27b-it") == (
         False,
-        "catalog_default_no_modality_evidence_system",
-    )
-    assert _pdf_capability(app, "vllm", "Qwen/Qwen2.5-VL-7B-Instruct") == (
-        False,
-        "catalog_default_no_modality_evidence_system",
+        "modality_unknown",
     )
 
 
@@ -124,4 +122,4 @@ def test_effective_config_forwards_the_pdf_field_the_gate_reads() -> None:
 def test_a_hand_set_config_value_cannot_fabricate_the_pdf_capability() -> None:
     app = _app(lm_config={"provider": "codex", "model": "gpt-5.5", "supports_pdf": True})
     assert _effective_lm_config(app)["supports_pdf"] is False
-    assert _effective_lm_config(app)["supports_pdf_source"] == "modality_evidence_unavailable"
+    assert _effective_lm_config(app)["supports_pdf_source"] == "modality_unknown"
