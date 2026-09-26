@@ -282,6 +282,12 @@ markers = [
 # every invocation — even --collect-only — punishes local runs. CI passes
 # its coverage flags explicitly in .github/workflows/ci.yml (#773).
 addopts = []
+# Diagnostic only, never an abort: a test still running after 15 minutes gets every
+# thread's stack dumped to stderr and keeps running. A hang in native code that holds
+# the GIL (the clio-core CTE binding does, on every blocking RPC) is invisible to any
+# Python-level watchdog; faulthandler's C thread still sees it, so a hung CI job names
+# the test and the frame instead of going silent for hours.
+faulthandler_timeout = 900
 
 [tool.ruff]
 line-length = 100

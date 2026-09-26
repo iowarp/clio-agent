@@ -101,6 +101,12 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
         from clio_agent.lm.lazy_tiktoken import install_lazy_cl100k  # noqa: PLC0415
 
         install_lazy_cl100k()
+    else:
+        # Opted out of the lazy proxy: litellm's import loads cl100k eagerly, so the
+        # vendored rank files still need repairing first (see lm.tiktoken_vendored).
+        from clio_agent.lm.tiktoken_vendored import repair_vendored_rank_files  # noqa: PLC0415
+
+        repair_vendored_rank_files()
     _ensure_provider_registered(config)
     if _defer_tiktoken_enabled():
         # After litellm is imported (by the provider registration above): stop its

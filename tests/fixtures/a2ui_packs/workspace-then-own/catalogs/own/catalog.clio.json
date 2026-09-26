@@ -1,0 +1,17 @@
+{
+  "catalogId": "https://example.test/a2ui/catalogs/own",
+  "protocolVersion": "0.9.1",
+  "trust": {
+    "source": "pack"
+  },
+  "implements": {
+    "OwnText": {
+      "kernel": "Text"
+    },
+    "OwnButton": {
+      "kernel": "Button"
+    }
+  },
+  "events": {},
+  "instructions": "instructions.md"
+}
