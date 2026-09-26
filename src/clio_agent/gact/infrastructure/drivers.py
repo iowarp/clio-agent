@@ -4,8 +4,14 @@ from __future__ import annotations
 
 import ntpath
 import posixpath
+from collections.abc import Callable
 from dataclasses import dataclass
 
+from clio_agent.gact.infrastructure.clio_agent_deploy import (
+    ClaimResult,
+    claim_command,
+    teardown_command,
+)
 from clio_agent.gact.infrastructure.models import (
     CommandSpec,
     InfrastructureTarget,
@@ -35,6 +41,9 @@ class DriverPlan:
 
     commands: tuple[CommandSpec, ...]
     connection_port: int | None = None
+    # Undo what this plan started when it fails or is cancelled, given what
+    # its claim step found (see clio_agent_deploy); None when nothing to undo.
+    teardown: Callable[[ClaimResult], CommandSpec] | None = None
 
 
 def service_connection_port(service_id: str) -> int | None:
@@ -643,8 +652,9 @@ def _clio_agent_plan(action: str, target: InfrastructureTarget | None) -> Driver
     launcher_script = (
         'root="$1"; if [ -z "$root" ]; then root="$HOME/.local/share/clio"; fi; '
         'bin="$2"; if [ -z "$bin" ]; then bin="$HOME/.local/bin"; fi; '
-        'export CLIO_PREFIX="$root" CLIO_DATA_DIR="$root/data" '
-        'CLIO_ARC_CTE_DIR="$root/cte" CLIO_RUNTIME_STATE_DIR="$root/runtime-state"; '
+        # Agent data follows the install; the clio-core daemon is host-global (one per
+        # machine: ~/.clio state, fixed ports, one CTE config), so it is never scoped here.
+        'export CLIO_PREFIX="$root" CLIO_DATA_DIR="$root/data"; '
     )
     if action == "status":
         return DriverPlan(
@@ -690,6 +700,9 @@ def _clio_agent_plan(action: str, target: InfrastructureTarget | None) -> Driver
         commands.extend(_clio_agent_plan("uninstall", target).commands)
     if action not in {"install", "reinstall", "start"}:
         raise ValueError(f"Unsupported CLIO lifecycle action {action!r}")
+    # Adopt this install's healthy server or stop any other CLIO on the port
+    # before touching anything; never start beside one.
+    commands.append(claim_command(root, bin_dir, CLIO_AGENT_PORT, CLIO_AGENT_VERSION))
     if action in {"install", "reinstall"}:
         script = (
             launcher_script + f"export CLIO_VERSION={CLIO_AGENT_VERSION} "
@@ -719,4 +732,10 @@ def _clio_agent_plan(action: str, target: InfrastructureTarget | None) -> Driver
             args=["-lc", launcher_script + '"$bin/clio" start', "clio", root, bin_dir],
         )
     )
-    return DriverPlan(tuple(commands), connection_port=CLIO_AGENT_PORT)
+    return DriverPlan(
+        tuple(commands),
+        connection_port=CLIO_AGENT_PORT,
+        teardown=lambda claim: teardown_command(
+            root, bin_dir, CLIO_AGENT_PORT, purge_root=not claim.existing_root
+        ),
+    )

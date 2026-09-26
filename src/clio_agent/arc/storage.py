@@ -42,7 +42,7 @@ from typing import Dict, Optional, Protocol, runtime_checkable
 # Clean-stop + the shutdown latch live in owner module arc/runtime_stop.py (file-size ratchet,
 # #775/#774), re-exported below. Also imported as a MODULE (not just names) so
 # ``_ensure_runtime_daemon`` reads the latch flag live, not a stale copy frozen at import time.
-from clio_agent.arc import runtime_stop
+from clio_agent.arc import clio_core_attach, runtime_stop
 
 # CTE config generation + capacity policy (the bounded ram hot-tier cap) live in their own
 # owner module (iowarp/clio-agent#774/#890); re-exported here so callers/tests reaching
@@ -624,8 +624,9 @@ class ClioCoreStore:
             import iowarp_core  # noqa: PLC0415  # isort:skip
             import clio_cte_core_ext as cte  # noqa: PLC0415  # isort:skip
 
-            # Ensure a shared runtime daemon exists BEFORE connecting (a pure client
-            # cannot init against a runtime that is not up).
+            # ONE config for daemon, native client and liveness probe (clio_core_attach), then
+            # ensure a shared daemon is up BEFORE connecting (a pure client cannot init otherwise).
+            clio_core_attach.export_client_config(config_path)
             _ensure_runtime_daemon(iowarp_core, config_path, log_level)
 
             # 905: clio-core >=2.2.0 needs an indexer chimod for BM25 search; not
@@ -637,9 +638,13 @@ class ClioCoreStore:
             # C++ logging; a one-time startup banner on stderr is an acceptable trade for never
             # crashing the host process.
             #
-            # CLIENT ONLY attach; resolve renamed clio_init/RuntimeMode (was chimaera_*).
-            client_init = getattr(cte, "clio_init", None) or cte.chimaera_init
-            client_init((getattr(cte, "RuntimeMode", None) or cte.ChimaeraMode).kClient, False)
+            # CLIENT ONLY attach, result CHECKED: a failed handshake raises typed at once.
+            clio_core_attach.attach_native_client(
+                cte,
+                config_path=config_path,
+                port=_resolve_runtime_port(config_path),
+                on_failure=_deregister_client,
+            )
             time.sleep(settle_s)  # let the client handshake settle
             cte.initialize_cte(config_path, cte.PoolQuery.Dynamic())  # "" => ~/.clio/clio.yaml
             cls._initialized = True
@@ -841,6 +846,7 @@ def make_arc_store(
         from clio_agent.arc.init_degradation import warn_local_backend_selected  # noqa: PLC0415
 
         warn_local_backend_selected()
+        clio_core_attach.mark_not_selected()
         return LocalFSStore(data_dir)
     if choice == "cte":
         cfg = config_path or conf.resolve(
@@ -852,16 +858,6 @@ def make_arc_store(
 
             ws_cfg = paths.workspace_core_dir() / "cte.yaml"
             cfg = str(ws_cfg) if ws_cfg.is_file() else default_cte_config_path()
-        try:
-            from clio_agent.arc import clio_core_file_capacity  # noqa: PLC0415
-
-            clio_core_file_capacity.preflight_clio_core_config(cfg, env=os.environ)
-            return ClioCoreStore(config_path=cfg)
-        except Exception as exc:  # noqa: BLE001 - LOUD degrade to LocalFS, recorded below
-            from clio_agent.arc.init_degradation import record_arc_init_degradation  # noqa: PLC0415
-
-            record_arc_init_degradation(
-                backend=backend, config_path=cfg, error=exc, data_dir=str(data_dir)
-            )
-            return LocalFSStore(data_dir)
+        # Attach (or loud degrade to LocalFS) with its typed state tracked for /v1/health.
+        return clio_core_attach.build_tracked_store(cfg, backend=backend, data_dir=data_dir)
     raise ValueError(f"unknown CLIO_ARC_STORE {choice!r}; expected 'cte' or 'local'")
