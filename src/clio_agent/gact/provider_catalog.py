@@ -44,11 +44,29 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+#: The key a keyless OpenAI-compatible server is probed with. A server that
+#: needs no key (a local vLLM / llama.cpp, a custom self-hosted endpoint)
+#: accepts any value, while the OpenAI-compatible handshake skips a probe that
+#: carries none -- so without this a keyless preset of kind ``openai`` was
+#: never actually asked ("no API key provided").
+KEYLESS_PROBE_API_KEY = "EMPTY"
+
+
+def probe_api_key(preset: LMProviderPreset) -> str:
+    """The API key a probe of ``preset`` sends: its stored one, else the keyless placeholder.
+
+    Keyed by provider_id, never provider_kind (Part 3): nine presets share the
+    kind "openai", and a kind-keyed lookup previously resolved
+    openrouter/nvidia_nim to the literal OpenAI provider's env var.
+    """
+    stored = model_discovery.resolve_cloud_api_key(preset.id)
+    if stored or preset.requires_api_key:
+        return stored
+    return KEYLESS_PROBE_API_KEY
+
+
 def _api_key_for(preset: LMProviderPreset) -> str:
-    # Keyed by provider_id, never provider_kind (Part 3): nine presets share
-    # the kind "openai", and a kind-keyed lookup here previously resolved
-    # openrouter/nvidia_nim to the literal OpenAI provider's env var.
-    return model_discovery.resolve_cloud_api_key(preset.id)
+    return probe_api_key(preset)
 
 
 async def _ensure_codex_live_catalog(preset: LMProviderPreset) -> str:

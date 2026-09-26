@@ -24,6 +24,7 @@ from clio_agent.providers.codex.constants import LITELLM_PROVIDER as _CODEX_LITE
 from clio_agent.providers.codex.constants import (
     LITELLM_PROVIDER_SDK as _CODEX_LITELLM_PREFIX_SDK,
 )
+from clio_agent.runtime import turn_lm_ledger
 
 _dspy_cache = None
 logger = logging.getLogger(__name__)
@@ -143,6 +144,8 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
         }
     except Exception:  # noqa: BLE001,S110 - never let tagging break LM construction
         pass
+    # A per-forward LM reaches the running turn's usage rollup only via this.
+    turn_lm_ledger.record(lm)
     return lm
 
 

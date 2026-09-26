@@ -168,13 +168,12 @@ def _dynamic_agent_lm_config(base_agent: Any, agent_def: "AgentDef") -> "Resolve
     boot_key = str(getattr(base_config, "api_key", "") or "")
     declared_provider = str(getattr(agent_def, "default_provider", "") or "")
     if declared_provider and declared_provider != default_spec.provider:
-        # Cross-provider expert: the endpoint / model / credential-ref / transport
+        # Cross-provider expert: endpoint / model / credential-ref / transport / variant
         # are provider-scoped, so inheriting the default provider's values would
         # point the new provider at the wrong endpoint (and a foreign credential).
         # Blank them — the resolver fills the new provider's PROVIDER_DEFAULTS and
-        # its own default credential — while the provider-agnostic sampling params
-        # still inherit. This preserves the old ``same_provider`` endpoint/model
-        # semantics (design §2 the gap; §4).
+        # its own default credential — while provider-agnostic sampling params
+        # still inherit (the old ``same_provider`` semantics, design §2; §4).
         default_spec = replace(
             default_spec,
             provider=declared_provider,
@@ -182,6 +181,7 @@ def _dynamic_agent_lm_config(base_agent: Any, agent_def: "AgentDef") -> "Resolve
             api_base="",
             credential_ref="",
             transport="",
+            variant="",
         )
     spec = build_spec(agent_def, default_spec)
     # Thread the boot credential only when the expert resolves to the boot

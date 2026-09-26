@@ -178,6 +178,7 @@ PROVIDERS: tuple[Provider, ...] = (
         suggested_model="",
         requires_api_key=False,
         auth_method="none",
+        host_credentials="google_cloud",
         supports_live_catalog=False,
         configuration_fields=(
             ProviderConfigurationField(
@@ -201,6 +202,7 @@ PROVIDERS: tuple[Provider, ...] = (
         suggested_model="",
         requires_api_key=False,
         auth_method="none",
+        host_credentials="aws",
         supports_live_catalog=False,
         configuration_fields=(
             ProviderConfigurationField(

@@ -28,6 +28,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from clio_agent.providers import host_credentials
 from clio_agent.providers.capabilities import endpoint as capability_endpoint
 from clio_agent.providers.capabilities.dialects import cloud as cloud_dialect
 from clio_agent.providers.capabilities.dialects import cloud_thinking
@@ -88,6 +89,8 @@ class OpenAICompatHandshake(ProviderHandshake):
         Local backends (Ollama, a bare vLLM server) accept any/no key; cloud
         providers (OpenAI, Anthropic, OpenRouter) require one.
         """
+        if host_credentials.chain_for(ctx.provider_id):
+            return False  # signs with the host's credentials, never an API key
         return ctx.provider_kind not in _NO_AUTH_KINDS
 
     def _auth_header(self, ctx: HandshakeContext) -> dict[str, str]:
@@ -179,6 +182,14 @@ class OpenAICompatHandshake(ProviderHandshake):
         - otherwise -> ``(OK, OK)`` (or ``NOT_REQUIRED`` for keyless local kinds),
           carrying the resolved ``auth_header`` forward for later phases.
         """
+        chain = host_credentials.chain_for(ctx.provider_id)
+        if chain and not host_credentials.present(chain):
+            return ConnectivityResult(
+                connectivity=ConnectivityState.SKIPPED,
+                auth=AuthState.MISSING,
+                error=host_credentials.missing_reason(chain),
+                error_code=host_credentials.HOST_CREDENTIALS_MISSING,
+            )
         if self._requires_key(ctx) and not ctx.api_key:
             return ConnectivityResult(
                 connectivity=ConnectivityState.SKIPPED,
