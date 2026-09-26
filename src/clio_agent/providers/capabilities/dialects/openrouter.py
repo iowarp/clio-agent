@@ -11,7 +11,8 @@ they are.
 One row carries model AND per-route deployment facts together:
 
 * [M] ``architecture.input_modalities`` -> input modalities (``file`` is a
-  document attachment -> ``pdf``); ``architecture.output_modalities`` -> output
+  document attachment -> ``pdf``; the list is exhaustive, so ``text`` only when
+  stated); ``architecture.output_modalities`` -> output
   modalities and the task (:func:`task_from_output_modalities`).
 * [M] ``context_length``; ``supported_parameters`` -> tools (``tools`` /
   ``tool_choice``), thinking (``reasoning`` / ``include_reasoning`` /
@@ -232,7 +233,7 @@ def parse_model_row(
         ),
         input_modalities=(
             Fact(
-                modalities_from_capabilities(input_modalities),
+                modalities_from_capabilities(input_modalities, implicit_text=False),
                 "openrouter",
                 observed_at,
                 "openrouter architecture.input_modalities",

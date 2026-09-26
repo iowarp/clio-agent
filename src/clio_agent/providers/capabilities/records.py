@@ -120,19 +120,29 @@ _MODALITY_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 
-def modalities_from_capabilities(capabilities: object) -> frozenset[str]:
+def modalities_from_capabilities(
+    capabilities: object, *, implicit_text: bool = True
+) -> frozenset[str]:
     """Normalize a provider's raw capability-string list into CLIO's modality vocabulary.
 
-    Every model implicitly accepts ``"text"``. Anything not in
-    :data:`_MODALITY_ALIASES` (case/dash-insensitive) is ignored rather than
-    guessed at -- an unrecognized capability string names a capability this
-    layer has no modality opinion about, not evidence of a new modality.
+    A capability list (Ollama/LM Studio ``vision``, ...) names only what a model
+    accepts BEYOND text, so ``implicit_text`` (the default) adds ``"text"``. An
+    exhaustive input-modality list (OpenRouter's ``architecture.
+    input_modalities``) passes ``implicit_text=False``: there ``text`` is
+    stated when accepted, and an audio-only transcriber must stay audio-only.
+    Anything not in :data:`_MODALITY_ALIASES` (case/dash-insensitive) is
+    ignored rather than guessed at -- an unrecognized capability string names a
+    capability this layer has no modality opinion about, not evidence of a new
+    modality.
     """
 
-    normalized = {"text"}
+    normalized = {"text"} if implicit_text else set()
     if isinstance(capabilities, (list, tuple, set, frozenset)):
         for capability in capabilities:
             value = str(capability).strip().lower().replace("-", "_")
+            if value == "text":
+                normalized.add("text")
+                continue
             for modality, aliases in _MODALITY_ALIASES.items():
                 if value in aliases:
                     normalized.add(modality)

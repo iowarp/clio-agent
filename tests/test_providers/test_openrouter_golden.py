@@ -456,3 +456,27 @@ async def test_run_handshake_resolves_the_registry_row_and_lists_every_output_mo
     assert rows["~typesafe/jev-latest"]["capability_tags"]["role"]["value"] == "surrogate"
     surrogates = [row for row in rows.values() if row["chat_selectable"] is False]
     assert len(surrogates) == 170  # every non-text-output model, listed and tagged
+
+
+def test_an_audio_only_transcriber_does_not_accept_text() -> None:
+    """OpenRouter's input list is exhaustive: no implicit ``text`` for audio-only models.
+
+    Defect this locks: every OpenRouter row got ``text`` added to its inputs, so
+    the 24 audio-only transcribers matched the picker's default
+    ``input:text output:text`` filter and were listed as chat candidates.
+    """
+    model, _deployment = openrouter.parse_model_row(
+        _row("google/gemini-3.5-transcribe"), provider_id="openrouter", api_base=API_BASE
+    )
+    assert model.input_modalities.value == frozenset({"audio"})
+    audio_only = [
+        row["id"]
+        for row in _payload()["data"]
+        if "text" not in row["architecture"]["input_modalities"]
+    ]
+    assert audio_only  # the recording has them
+    for model_id in audio_only:
+        parsed, _ = openrouter.parse_model_row(
+            _row(model_id), provider_id="openrouter", api_base=API_BASE
+        )
+        assert "text" not in (parsed.input_modalities.value or ()), model_id

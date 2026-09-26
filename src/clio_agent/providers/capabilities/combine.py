@@ -174,12 +174,16 @@ def _tri_and(*facts: tuple[Fact[bool] | None, str]) -> Decision[bool]:
     if false_owners:
         source, observed_at = _provenance(*(fact for _, fact in false_owners))
         owners = "+".join(owner for owner, _ in false_owners)
-        return Decision(False, owners, f"{owners}: not supported", source, observed_at)
+        detail = _details(*(fact for _, fact in false_owners))
+        reason = f"{owners}: not supported" + (f" ({detail})" if detail else "")
+        return Decision(False, owners, reason, source, observed_at)
     true_owners = [(owner, fact) for value, owner, fact in known if value is True]
     if len(true_owners) == len(known):
         source, observed_at = _provenance(*(fact for _, fact in true_owners))
         owners = "+".join(owner for owner, _ in true_owners)
-        return Decision(True, owners, f"{owners}: supported", source, observed_at)
+        detail = _details(*(fact for _, fact in true_owners))
+        reason = f"{owners}: supported" + (f" ({detail})" if detail else "")
+        return Decision(True, owners, reason, source, observed_at)
     return _unknown("boolean evidence disagreed in kind (non-bool present)")
 
 
@@ -201,6 +205,11 @@ def _min_known(*values: tuple[Fact[int] | None, str]) -> Decision[int]:
     return Decision(minimum, "+".join(o for o, _ in winners), reason, source, observed_at)
 
 
+def _details(*facts: Fact | None) -> str:
+    """The contributing facts' own details (where each value was read), ``; ``-joined."""
+    return "; ".join(fact.detail for fact in facts if fact is not None and fact.detail)
+
+
 def _intersect_modalities(
     model: Fact[frozenset[str]] | None, deployment: Fact[frozenset[str]] | None
 ) -> Decision[frozenset[str]]:
@@ -214,19 +223,29 @@ def _intersect_modalities(
         return Decision(
             combined,
             "model+deployment",
-            "intersection of model and deployment",
+            f"intersection of model and deployment: {_details(model, deployment)}",
             source,
             observed_at,
         )
     if model_known:
         assert model is not None and model.value is not None
         source, observed_at = _provenance(model)
-        return Decision(model.value, "model", "deployment modalities unknown", source, observed_at)
+        return Decision(
+            model.value,
+            "model",
+            f"{_details(model) or 'model'} (deployment modalities unknown)",
+            source,
+            observed_at,
+        )
     if deploy_known:
         assert deployment is not None and deployment.value is not None
         source, observed_at = _provenance(deployment)
         return Decision(
-            deployment.value, "deployment", "model modalities unknown", source, observed_at
+            deployment.value,
+            "deployment",
+            f"{_details(deployment) or 'deployment'} (model modalities unknown)",
+            source,
+            observed_at,
         )
     return _unknown("neither model nor deployment reports modalities")
 
