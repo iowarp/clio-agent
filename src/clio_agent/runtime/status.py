@@ -254,8 +254,8 @@ class RuntimeProbe:
             *self.probe_data_backends(set(gateway_status.capabilities)),
             self.probe_api(api_state=api_state, api_error=api_error),
             self.probe_clio_core(),
-            *probe_mcp_launchers(env=self.env),
-            *probe_mcp_yaml_declarations(env=self.env),
+            *probe_mcp_launchers(env=self.env),  # runs the ONE declaration discovery ...
+            *probe_mcp_yaml_declarations(env=self.env, discovered=True),  # ... this reuses
             probe_sandbox(),
             _sconf.probe_sandbox_conformance(),
             *probe_process_tree(include_live_census=include_process_census),

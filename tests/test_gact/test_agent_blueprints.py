@@ -642,6 +642,41 @@ def test_stale_default_install_kept_when_refresh_fails(
         conf.reload()
 
 
+def test_unrepaired_refresh_is_not_recloned_on_every_discovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Discovery runs on every /v1/health; a failed refresh must not re-clone each call.
+
+    ares 2026-09-25: every health call re-cloned the registry (~1.2 s of git), so
+    health never answered inside the launcher's 1 s probe. The diagnostic still
+    surfaces on every call.
+    """
+
+    missing = (tmp_path / "no-such-registry").as_uri()
+    install_root, home = _prepare_default_store(tmp_path, monkeypatch, registry_url=missing)
+    _write_blueprint_tree(
+        install_root, main_md=_STALE_MAIN_MD, child_md=_STALE_CHILD_MD, commit="stale-head"
+    )
+    try:
+        with caplog.at_level("WARNING", logger="clio_agent.gact.agent_blueprints"):
+            first = ensure_default_registry_bootstrap(home=home, cwd=tmp_path / "cwd")
+            second = ensure_default_registry_bootstrap(home=home, cwd=tmp_path / "cwd")
+
+        assert "stale install kept" in first
+        assert second == first  # still surfaced, typed, every call
+        attempts = [
+            rec
+            for rec in caplog.records
+            if "default_registry_refresh_failed reason=root_disabled_stale_install"
+            in rec.getMessage()
+        ]
+        assert len(attempts) == 1  # ONE clone attempt per process, not one per discovery
+    finally:
+        conf.reload()
+
+
 def test_valid_default_install_is_not_refreshed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

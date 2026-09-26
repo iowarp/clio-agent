@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import socket
 import subprocess
 from collections import defaultdict
@@ -13,7 +14,9 @@ from urllib.parse import urlsplit
 import anyio
 import httpx
 
+from clio_agent.gact.infrastructure.clio_agent_deploy import ClaimResult, parse_claim
 from clio_agent.gact.infrastructure.drivers import (
+    DriverPlan,
     build_driver_plan,
     service_connection_port,
     service_definitions,
@@ -34,10 +37,15 @@ from clio_agent.gact.infrastructure.models import (
 )
 from clio_agent.gact.infrastructure.probe import probe_target
 from clio_agent.gact.infrastructure.store import InfrastructureStore
-from clio_agent.gact.infrastructure.transport import InfrastructureTransportRegistry
+from clio_agent.gact.infrastructure.transport import (
+    InfrastructureTransportRegistry,
+    TransportUnavailableError,
+)
 from clio_agent.providers.credentials import resolve as resolve_credential
 
 MAX_OPERATION_LOG_CHARS = 16_000
+
+logger = logging.getLogger(__name__)
 
 
 def _bounded(value: str) -> str:
@@ -264,6 +272,8 @@ class InfrastructureRuntime:
         row = self.store.put_operation(
             row.model_copy(update={"state": "running", "progress": "Inspecting target"})
         )
+        plan: DriverPlan | None = None
+        claim: ClaimResult | None = None
         try:
             catalog = await self.catalog(request.target_id)
             definition = next(
@@ -295,6 +305,11 @@ class InfrastructureRuntime:
                         or result.stdout.strip()
                         or f"{spec.program} exited with code {result.exit_code}"
                     )
+                claim = parse_claim(result.stdout) or claim
+                if claim is not None and claim.result == "adopted":
+                    # The healthy server of this exact install and version
+                    # keeps running; installing or starting again is not needed.
+                    break
                 if spec.settle_seconds:
                     await asyncio.sleep(spec.settle_seconds)
             await self._settle_service(row.service_id, request, plan.connection_port, output)
@@ -309,19 +324,45 @@ class InfrastructureRuntime:
                 )
             )
         except asyncio.CancelledError:
+            cleanup = await self._teardown(request.target_id, plan, claim)
             self.store.put_operation(
                 row.model_copy(
                     update={
                         "state": "cancelled",
-                        "progress": "Cancelled; inspect actual service state before retrying.",
+                        "progress": f"Cancelled. {cleanup}",
                     }
                 )
             )
             raise
         except (KeyError, OSError, RuntimeError, ValueError) as exc:
+            cleanup = await self._teardown(request.target_id, plan, claim)
             self.store.put_operation(
-                row.model_copy(update={"state": "failed", "progress": "Failed", "error": str(exc)})
+                row.model_copy(
+                    update={"state": "failed", "progress": f"Failed. {cleanup}", "error": str(exc)}
+                )
             )
+
+    async def _teardown(
+        self, target_id: str, plan: DriverPlan | None, claim: ClaimResult | None
+    ) -> str:
+        """Undo what a failed or cancelled plan started; report what happened.
+
+        Runs only after the claim step: before it, this plan started nothing,
+        and an adopted server was already running, so it is left alone.
+        """
+
+        if plan is None or plan.teardown is None or claim is None or claim.result == "adopted":
+            return "Nothing this deploy started needed cleaning up."
+        try:
+            result = await self._execute(target_id, plan.teardown(claim))
+        except (OSError, RuntimeError, TransportUnavailableError) as exc:
+            logger.warning(
+                "infrastructure teardown failed: reason=teardown_error target=%s", target_id
+            )
+            return f"Cleanup failed: {exc}"
+        if result.exit_code != 0:
+            return f"Cleanup failed: {(result.stderr or result.stdout).strip()}"
+        return "Cleaned up what this deploy started."
 
     async def _settle_service(
         self,
