@@ -190,6 +190,60 @@ def probe_clio_core_ram_cap(*, env: Mapping[str, str] | None = None) -> list[Int
     ]
 
 
+def probe_clio_core_attach(*, state: object | None = None) -> list[IntegrationStatus]:
+    """Surface this process's clio-core attach progress as the ``clio_core_attach`` row.
+
+    ARC construction (connect-or-spawn + native attach) runs off the server's event
+    loop, so ``/v1/health`` answers while it is still in flight; this row says where it
+    is: ``starting`` (DEGRADED, never 503 by itself), ``attached`` (READY), or
+    ``unavailable`` with the typed init-degrade reason (DEGRADED; ARC is on LocalFS).
+    Process-local like the #892 gate registry: a separate doctor CLI reports nothing.
+
+    Args:
+        state: Optional injected :class:`~clio_agent.arc.clio_core_attach.ClioCoreAttachState`
+            for testing; defaults to the live process record.
+
+    Returns:
+        One row, or empty when no attach was attempted (idle, or LocalFS chosen).
+    """
+    from clio_agent.arc.clio_core_attach import (  # noqa: PLC0415 - keep import light
+        ClioCoreAttachPhase,
+        ClioCoreAttachState,
+        attach_state_snapshot,
+    )
+
+    snap = state if isinstance(state, ClioCoreAttachState) else attach_state_snapshot()
+    if snap.phase in (ClioCoreAttachPhase.IDLE, ClioCoreAttachPhase.NOT_SELECTED):
+        return []
+    endpoint = None if snap.port is None else f"127.0.0.1:{snap.port}"
+    where = f"port {snap.port}, config {snap.config_path or '<default>'}"
+    if snap.phase is ClioCoreAttachPhase.STARTING:
+        state_, required = IntegrationState.DEGRADED, False
+        summary = f"clio-core attach in progress ({where}); ARC is not live yet."
+        next_action = "Wait; this row turns ready (attached) or names the failure."
+    elif snap.phase is ClioCoreAttachPhase.ATTACHED:
+        state_, required = IntegrationState.READY, False
+        summary = f"clio-core attached ({where})."
+        next_action = "No action required."
+    else:
+        state_, required = IntegrationState.DEGRADED, True
+        summary = f"clio-core unavailable (reason={snap.reason}, {where}): {snap.error}"
+        next_action = "Run clio doctor; see the clio_core_init row and the daemon log."
+    return [
+        IntegrationStatus(
+            name="clio_core_attach",
+            state=state_,
+            summary=summary,
+            config_source="runtime:clio_core_attach",
+            next_action=next_action,
+            endpoint=endpoint,
+            fallback="local" if snap.phase is ClioCoreAttachPhase.UNAVAILABLE else "none",
+            details=snap.to_details(),
+            required=required,
+        )
+    ]
+
+
 def probe_clio_core_liveness(*, snapshot: list[dict] | None = None) -> list[IntegrationStatus]:
     """Surface a quarantined (daemon-lost) clio-core store as a doctor row (#892).
 
@@ -614,7 +668,7 @@ def probe_clio_core_write_health(
 
 
 def probe_clio_core_health(*, env: Mapping[str, str] | None = None) -> list[IntegrationStatus]:
-    """Aggregate the clio-core doctor rows: init (#897) + ram cap (#890) + liveness (#892) + daemon mem (#891) + cold-tier disk (#1001).
+    """Aggregate the clio-core doctor rows: attach + init (#897) + ram cap (#890) + liveness (#892) + daemon mem (#891) + cold-tier disk (#1001).
 
     A single collection seam so the doctor wires ONE call for all clio-core sub-checks.
 
@@ -626,6 +680,7 @@ def probe_clio_core_health(*, env: Mapping[str, str] | None = None) -> list[Inte
         cold-tier-disk rows (each may be empty).
     """
     return [
+        *probe_clio_core_attach(),
         *probe_clio_core_init_degradation(),
         *probe_clio_core_ram_cap(env=env),
         *probe_clio_core_liveness(),

@@ -652,8 +652,9 @@ def _clio_agent_plan(action: str, target: InfrastructureTarget | None) -> Driver
     launcher_script = (
         'root="$1"; if [ -z "$root" ]; then root="$HOME/.local/share/clio"; fi; '
         'bin="$2"; if [ -z "$bin" ]; then bin="$HOME/.local/bin"; fi; '
-        'export CLIO_PREFIX="$root" CLIO_DATA_DIR="$root/data" '
-        'CLIO_ARC_CTE_DIR="$root/cte" CLIO_RUNTIME_STATE_DIR="$root/runtime-state"; '
+        # Agent data follows the install; the clio-core daemon is host-global (one per
+        # machine: ~/.clio state, fixed ports, one CTE config), so it is never scoped here.
+        'export CLIO_PREFIX="$root" CLIO_DATA_DIR="$root/data"; '
     )
     if action == "status":
         return DriverPlan(

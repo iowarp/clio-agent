@@ -164,7 +164,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # ``_RUNTIME_STOP_POLL_SECONDS``) moved verbatim to the owner module
     # arc/runtime_stop.py; storage.py keeps a thin ``_stop_runtime_daemon`` import
     # alias (tests monkeypatch it) and ``release_runtime_client`` is unchanged.
-    "src/clio_agent/arc/storage.py": 867,
+    "src/clio_agent/arc/storage.py": 863,
     # #737 S2 fold owner module. Crossed the 800 new-file cap restoring the FROZEN
     # arc.op reproducibility contract (§2 / GOAL.md DoD #4): the five working-set write
     # overrides now emit a per-op arc.op via _emit_op so arc.replay rebuilds the live

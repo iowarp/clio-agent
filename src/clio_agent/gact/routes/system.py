@@ -29,11 +29,13 @@ from clio_agent.gact.composer_runtime import resource_capabilities
 from clio_agent.gact.context_references import CONTEXT_REFERENCE_CAPABILITY
 from clio_agent.gact.protocol_v3 import capabilities_to_v3, project_for_request
 from clio_agent.gact.provenance.child_projection import CHILD_ACTIVITY_PROJECTION_CAPABILITY
+from clio_agent.gact.providers.boot_selection import explicit_lm_provider
 from clio_agent.gact.providers.config import _effective_lm_config
 from clio_agent.gact.relay_status import relay_capabilities
+from clio_agent.gact.routes import health_boot
 from clio_agent.gact.routes.health_projection import (
-    desktop_provider_report,
     integration_to_wire,
+    unconfigured_provider_report,
 )
 from clio_agent.gact.routes.latest_release import register_latest_release_routes
 from clio_agent.gact.routes.provider_probe_env import runtime_provider_probe_env
@@ -303,6 +305,27 @@ def _context_pressure_state(
     return pressure, "normal", False
 
 
+def collect_health_report(app: FastAPI) -> RuntimeReport:
+    """One full doctor collection for ``/v1/health`` (blocking; run on a worker thread).
+
+    Never triggers an LM handshake (folded from cache by the route) and skips the
+    full-box process census (served from its boot cache). An unselected LM provider
+    is reported ``unconfigured`` rather than probed at its committed default.
+    """
+
+    effective_lm = _effective_lm_config(app)
+    configured = bool(effective_lm.get("provider") and effective_lm.get("model"))
+    report = collect_runtime_status(
+        api_state=IntegrationState.READY,
+        env=runtime_provider_probe_env(effective_lm),
+        lm_timeout=0.5,
+        include_process_census=False,
+    )
+    return unconfigured_provider_report(
+        report, provider_configured=configured or bool(explicit_lm_provider())
+    )
+
+
 def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
     """Register the read-only system/observability routes on ``app``.
 
@@ -339,26 +362,12 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         uptime = int(time.time() - app.state.started_at)
 
         try:
-            effective_lm = _effective_lm_config(app)
-            effective_provider_configured = bool(
-                effective_lm.get("provider") and effective_lm.get("model")
-            )
-            report = await asyncio.to_thread(
-                collect_runtime_status,
-                api_state=IntegrationState.READY,
-                env=runtime_provider_probe_env(effective_lm),
-                lm_timeout=0.5,
-                # The full-box process census is served from a background cache
-                # below — a polled endpoint must not pay the ~10s cold psutil walk.
-                include_process_census=False,
-            )
-            report = desktop_provider_report(
-                report,
-                lm_config=effective_lm if effective_provider_configured else None,
-                provider_configured=bool(
-                    effective_provider_configured
-                    or runtime_provider_probe_env(None).get("CLIO_LM_PROVIDER", "").strip()
-                ),
+            # While the boot collection runs, answer at once (health_boot); else collect.
+            pending = health_boot.pending_report(app)
+            report = (
+                pending
+                if pending is not None
+                else await asyncio.to_thread(collect_health_report, app)
             )
             integrations = list(report.integrations)
         except Exception as exc:  # noqa: BLE001 - surfaced as a degraded doctor row (see comment)
