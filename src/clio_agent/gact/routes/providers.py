@@ -994,7 +994,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         """Start or perform an LM provider swap without freezing the backend."""
 
         req = normalize_lm_provider_request(req, _LM_PRESETS, _default_model_for)
-        if (refused := surrogate_selection_error(app, req.provider_id or req.provider, req.model)):
+        if refused := surrogate_selection_error(app, req.provider_id or req.provider, req.model):
             raise HTTPException(status_code=422, detail=refused.model_dump(exclude_none=True))
         running_task = getattr(app.state, "lm_config_task", None)
         if running_task is not None and not running_task.done():
