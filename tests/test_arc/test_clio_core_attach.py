@@ -75,16 +75,20 @@ def _wire_ensure_runtime(monkeypatch, *, client_ok: bool) -> dict[str, Any]:
     monkeypatch.setitem(sys.modules, "iowarp_core", types.ModuleType("iowarp_core"))
     monkeypatch.setitem(sys.modules, "clio_cte_core_ext", _fake_cte(client_ok=client_ok, seen=seen))
     monkeypatch.setattr(storage.ClioCoreStore, "_initialized", False)
+    # Restore the stashed release params: a leaked fake config would point the
+    # session-end last-one-out release at a port no daemon serves (orphan clio_run).
+    monkeypatch.setattr(storage, "_active_config_path", storage._active_config_path)
+    monkeypatch.setattr(storage, "_active_log_level", storage._active_log_level)
     monkeypatch.setattr(storage.atexit, "register", lambda *a, **k: None)
     monkeypatch.setattr(storage, "warn_if_search_indexer_absent", lambda _cfg: None)
     monkeypatch.delenv("CLIO_SERVER_CONF", raising=False)
     monkeypatch.delenv("CLIO_CORE_PORT", raising=False)
 
-    def ensure_daemon(_core: object, cfg: str, _level: str) -> None:
-        # The daemon is spawned with CLIO_SERVER_CONF=cfg; record what THIS process
-        # exports at the moment the daemon is ensured.
+    def ensure_daemon(_core: object, cfg: str, _level: str) -> str:
+        # Returns the EFFECTIVE config: the request when this process spawns the
+        # daemon, the running daemon's own when it attaches (first config wins).
         seen["daemon_conf"] = cfg
-        seen["client_env_at_daemon_time"] = _env_subset()["CLIO_SERVER_CONF"]
+        return str(seen.get("daemon_effective_conf", cfg))
 
     monkeypatch.setattr(storage, "_ensure_runtime_daemon", ensure_daemon)
     deregistered: list[bool] = []
@@ -101,11 +105,25 @@ def test_client_reads_the_same_config_the_daemon_composes(monkeypatch, tmp_path)
     storage.ClioCoreStore._ensure_runtime(cfg, "error", 0.0)
 
     assert seen["daemon_conf"] == cfg
-    assert seen["client_env_at_daemon_time"] == cfg  # exported BEFORE the daemon/attach
-    assert seen["client_init"][2]["CLIO_SERVER_CONF"] == cfg
+    assert seen["client_init"][2]["CLIO_SERVER_CONF"] == cfg  # exported BEFORE the attach
     assert seen["client_init"][:2] == ("kClient", False)  # pure client, never embedded
     assert seen["initialize_cte"] == cfg
     assert storage.ClioCoreStore._initialized is True
+
+
+def test_client_attaches_with_the_running_daemons_config(monkeypatch, tmp_path):
+    """First config wins: the client and CTE init use the daemon's config, not the request."""
+    requested = _cfg(tmp_path, 21045)
+    (tmp_path / "daemon").mkdir()
+    daemon_cfg = _cfg(tmp_path / "daemon", 21045)
+    seen = _wire_ensure_runtime(monkeypatch, client_ok=True)
+    seen["daemon_effective_conf"] = daemon_cfg
+
+    effective = storage.ClioCoreStore._ensure_runtime(requested, "error", 0.0)
+
+    assert effective == daemon_cfg
+    assert seen["client_init"][2]["CLIO_SERVER_CONF"] == daemon_cfg
+    assert seen["initialize_cte"] == daemon_cfg
 
 
 def test_failed_client_init_raises_typed_at_once_and_deregisters(monkeypatch, tmp_path):
@@ -192,3 +210,44 @@ def test_attach_state_unavailable_carries_the_typed_reason(monkeypatch, tmp_path
 def test_attach_state_not_selected_for_explicit_local(tmp_path):
     storage.make_arc_store(backend="local", data_dir=tmp_path / "arc")
     assert attach_state_snapshot().phase is ClioCoreAttachPhase.NOT_SELECTED
+
+
+def _probe_store(port: int = 21045) -> SimpleNamespace:
+    return SimpleNamespace(
+        _HEALTH_PROBE_KIND="segments",
+        _HEALTH_PROBE_NAME="__probe__",
+        _gate=SimpleNamespace(port=port),
+        _config_path="cte.yaml",
+    )
+
+
+def test_post_attach_probe_failure_raises_typed_and_deregisters(monkeypatch):
+    """A clean clio_init/initialize_cte whose first RPC fails degrades typed at init."""
+    from clio_agent.arc import rpc_liveness  # noqa: PLC0415
+
+    monkeypatch.setattr(rpc_liveness, "store_rpc_health_probe", lambda *a, **k: False)
+    deregistered: list[bool] = []
+
+    with pytest.raises(ClioCoreAttachError) as info:
+        clio_core_attach.verify_post_attach(
+            _probe_store(), on_failure=lambda: deregistered.append(True)
+        )
+
+    assert info.value.stage == "post_attach_probe"
+    assert "stage=post_attach_probe" in str(info.value) and "21045" in str(info.value)
+    assert classify_init_failure(info.value) == CLIO_CORE_CLIENT_ATTACH_FAILED
+    assert deregistered == [True]
+
+
+def test_post_attach_probe_success_hands_the_store_out(monkeypatch):
+    from clio_agent.arc import rpc_liveness  # noqa: PLC0415
+
+    seen: dict[str, Any] = {}
+
+    def probe(store: object, *, kind: str, name: str) -> bool:
+        seen["probe"] = (kind, name)
+        return True
+
+    monkeypatch.setattr(rpc_liveness, "store_rpc_health_probe", probe)
+    clio_core_attach.verify_post_attach(_probe_store(), on_failure=lambda: pytest.fail("no"))
+    assert seen["probe"] == ("segments", "__probe__")  # the store's own liveness sentinel
