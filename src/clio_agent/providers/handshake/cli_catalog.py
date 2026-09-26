@@ -102,13 +102,6 @@ def _overlay_capabilities(row: dict[str, Any]) -> tuple[str, ...]:
 class CliCatalogHandshake(NoOpHandshake):
     """:class:`NoOpHandshake` variant whose model list prefers the refresh overlay."""
 
-    #: The overlay carries the capabilities an explicit discovery run evidenced
-    #: (the Codex SDK's reported input modalities, the maintained claude_code
-    #: catalog's declared capabilities), so this provider kind HAS a
-    #: modality-evidence system -- absence of a modality here means "not
-    #: evidenced yet", never "nobody could ask".
-    reports_input_modalities = True
-
     async def discover_models(self, client: Any, ctx: HandshakeContext) -> list[dict[str, Any]]:
         """Return the overlay's discovered models when present, else the static catalog.
 
@@ -153,7 +146,7 @@ class CliCatalogHandshake(NoOpHandshake):
                     # of arriving as an anonymous empty list.
                     "capability_evidence": m.get("capability_evidence") or {},
                     # Per-model reasoning efforts the discovery run recorded
-                    # (Codex SDK catalog); the provider catalog derives the
+                    # (the maintained Codex catalog); the provider catalog derives the
                     # selectable thinking levels from them.
                     "supported_reasoning_efforts": list(m.get("supported_reasoning_efforts") or []),
                     "default_reasoning_effort": str(m.get("default_reasoning_effort") or ""),
@@ -171,7 +164,7 @@ class CliCatalogHandshake(NoOpHandshake):
     def models_provenance(self, ctx: HandshakeContext) -> tuple[str, str]:
         """Report ``overlay`` + the discovery run's own timestamp, else ``static``.
 
-        The overlay is real evidence — a Codex SDK catalog read or a claude_code
+        The overlay is real evidence — a Codex catalog read or a claude_code
         alias probe actually ran — but it is not THIS run's evidence, and it can
         be arbitrarily old. Both facts are reported rather than collapsed into
         the ``live`` the base class used to stamp unconditionally. With no
@@ -210,13 +203,7 @@ class CliCatalogHandshake(NoOpHandshake):
         observed_at = str(ctx.extra.get(_OVERLAY_GENERATED_AT_KEY) or "") or _now_iso()
         caps = _overlay_capabilities(raw)
         detail = "persisted refresh-overlay evidence (clio_agent.providers.model_discovery.overlay)"
-        from clio_agent.providers.capabilities.model_overlay import (  # noqa: PLC0415
-            overlay_match_for_link,
-        )
-
-        model_key_fact = deployment_model_key_fact(
-            model_id, observed_at=observed_at, overlay_match=overlay_match_for_link
-        )
+        model_key_fact = deployment_model_key_fact(model_id, observed_at=observed_at)
         model_key = model_key_fact.value or model_id
         model = ModelCapabilities(
             model_key=model_key,
@@ -287,28 +274,23 @@ class CliCatalogHandshake(NoOpHandshake):
 
 
 class CodexCatalogHandshake(CliCatalogHandshake):
-    """Codex catalog handshake gated by verified subscription credentials."""
+    """Codex catalog handshake gated by a verified, signed-in credential."""
 
     async def check_connectivity(self, client: Any, ctx: HandshakeContext) -> ConnectivityResult:
-        """Reject synthetic readiness until a fresh SDK catalog check exists."""
+        """Reject synthetic readiness until a signed-in credential and a fresh catalog check exist."""
 
         del client
-        if importlib.util.find_spec("openai_codex") is None:
-            return ConnectivityResult(
-                connectivity=ConnectivityState.UNREACHABLE,
-                auth=AuthState.MISSING,
-                error="official openai-codex Python SDK is not installed",
-            )
         from clio_agent.providers import model_discovery  # noqa: PLC0415
-        from clio_agent.providers.codex_credential_home import (  # noqa: PLC0415
-            codex_credentials_present,
+        from clio_agent.providers.codex.credentials import CodexCredentialStore  # noqa: PLC0415
+        from clio_agent.providers.codex.errors import (  # noqa: PLC0415
+            CODEX_AUTHENTICATION_ERROR_MESSAGE,
         )
 
-        if not codex_credentials_present():
+        if not CodexCredentialStore().is_signed_in():
             return ConnectivityResult(
                 connectivity=ConnectivityState.SKIPPED,
                 auth=AuthState.MISSING,
-                error="Codex sign-in is required on the connected agent",
+                error=CODEX_AUTHENTICATION_ERROR_MESSAGE,
             )
         try:
             overlay = model_discovery.overlay_models_wire(ctx.provider_id, ctx.provider_kind)
@@ -369,4 +351,4 @@ class ClaudeCodeCatalogHandshake(CliCatalogHandshake):
         )
 
 
-__all__ = ["ClaudeCodeCatalogHandshake", "CliCatalogHandshake", "CodexCatalogHandshake"]
+__all__ = ["CodexCatalogHandshake", "ClaudeCodeCatalogHandshake", "CliCatalogHandshake"]

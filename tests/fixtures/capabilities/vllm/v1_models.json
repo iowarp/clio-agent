@@ -1,0 +1,14 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "Qwen/Qwen3-8B",
+      "object": "model",
+      "created": 1700000000,
+      "owned_by": "vllm",
+      "root": "Qwen/Qwen3-8B",
+      "parent": null,
+      "max_model_len": 40960
+    }
+  ]
+}

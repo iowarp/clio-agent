@@ -30,13 +30,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from clio_agent.platform_paths import atomic_replace
 from clio_agent.providers.catalog import get_provider
 
 logger = logging.getLogger(__name__)
 
 _LOCK = threading.Lock()
 
-CODEX_SOURCE = "codex_sdk"
+CODEX_SOURCE = "codex_catalog"
 CLAUDE_CODE_SOURCE = "claude_code_catalog"
 HTTP_SOURCE = "live_handshake"
 
@@ -288,6 +289,11 @@ def resolve_cloud_api_key(provider_id: str) -> str:
     dedicated env var and falls through to the generic ``CLIO_LM_API_KEY``,
     same as a recognized provider with none declared.
     """
+    from clio_agent.providers.api_key_store import stored_api_key  # noqa: PLC0415
+
+    saved = stored_api_key(provider_id)
+    if saved:
+        return saved
     provider = get_provider(provider_id)
     env_name = (provider.api_key_env or "") if provider is not None else ""
     key = os.environ.get(env_name, "") if env_name else ""
@@ -389,7 +395,11 @@ def record_refresh(result: ProviderDiscoveryResult) -> dict[str, Any]:
         # (or a refresh racing a stray writer) never collide on the same tmp file.
         tmp = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
         tmp.write_text(json.dumps(db, indent=1, sort_keys=True), encoding="utf-8")
-        tmp.replace(path)
+        # #1... (W... follow-up): a plain ``tmp.replace(path)`` intermittently raised
+        # PermissionError on Windows (WinError 5/32 -- a transient sharing race with
+        # a concurrent reader/AV scan), never on POSIX. atomic_replace retries only
+        # that specific transient race; a durable permission failure still raises.
+        atomic_replace(tmp, path)
 
     wire: dict[str, Any] = {
         "provider": result.provider,
@@ -433,12 +443,12 @@ def update_entry_fields(provider: str, fields: Mapping[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
         tmp.write_text(json.dumps(db, indent=1, sort_keys=True), encoding="utf-8")
-        tmp.replace(path)
+        atomic_replace(tmp, path)
 
 
 __all__ = [
-    "CLAUDE_CODE_SOURCE",
     "CODEX_SOURCE",
+    "CLAUDE_CODE_SOURCE",
     "HTTP_SOURCE",
     "OVERLAY_STALENESS_REASONS",
     "OverlayMalformedError",

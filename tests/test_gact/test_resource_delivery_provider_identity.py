@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from clio_agent.gact.resource_delivery import live_model_modalities
+from clio_agent.gact.modality_evidence import live_model_modalities
 from clio_agent.gact.types import ModelRef
 from clio_agent.providers.capabilities import invalidation
 from clio_agent.providers.capabilities.records import (
@@ -83,9 +83,9 @@ def test_matching_provider_id_reads_its_own_live_evidence() -> None:
 
     app = _app(report=_bedrock_report())
     model = ModelRef(provider_id="bedrock", model_id="anthropic.claude-3-5-sonnet-20240620-v1:0")
-    modalities, evidence, _generated_at = live_model_modalities(app, model)
-    assert "image" in modalities
-    assert evidence == "live_handshake"
+    found = live_model_modalities(app, model)
+    assert "image" in (found.modalities or ())
+    assert found.evidence == "live_handshake"
 
 
 def test_bare_kind_provider_id_does_not_borrow_another_providers_evidence() -> None:
@@ -99,9 +99,9 @@ def test_bare_kind_provider_id_does_not_borrow_another_providers_evidence() -> N
 
     app = _app(report=_bedrock_report())
     model = ModelRef(provider_id="openai", model_id="anthropic.claude-3-5-sonnet-20240620-v1:0")
-    modalities, evidence, _generated_at = live_model_modalities(app, model)
-    assert modalities == {"text"}
-    assert evidence == "unavailable"
+    found = live_model_modalities(app, model)
+    assert found.modalities is None
+    assert found.evidence == "unavailable"
 
 
 def test_a_different_same_kind_provider_id_does_not_borrow_the_evidence() -> None:
@@ -109,6 +109,6 @@ def test_a_different_same_kind_provider_id_does_not_borrow_the_evidence() -> Non
 
     app = _app(report=_bedrock_report())
     model = ModelRef(provider_id="llama_cpp", model_id="anthropic.claude-3-5-sonnet-20240620-v1:0")
-    modalities, evidence, _generated_at = live_model_modalities(app, model)
-    assert modalities == {"text"}
-    assert evidence == "unavailable"
+    found = live_model_modalities(app, model)
+    assert found.modalities is None
+    assert found.evidence == "unavailable"

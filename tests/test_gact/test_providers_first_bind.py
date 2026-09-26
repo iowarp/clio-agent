@@ -38,8 +38,9 @@ def _patch_hermetic_bind_network(monkeypatch: pytest.MonkeyPatch) -> None:
     and the relay/MCP-federation catalog discovery the first-bind path pulls
     in via ``construct_agent_with_relay``. Neither is what these tests are
     about, and both can legitimately take seconds against ambient conditions
-    (or hang against a claude_code/codex CLI that isn't logged in on this
-    box), so they are stubbed for hermetic, fast isolation exactly like the
+    (or hang against a claude_code CLI, or a Codex credential refresh, that
+    isn't signed in on this box), so they are stubbed for hermetic, fast
+    isolation exactly like the
     rest of the ``PUT /v1/providers/lm`` suite.
     """
 
@@ -124,15 +125,14 @@ def test_claude_code_then_codex_first_bind_never_runs_lm_studio_discovery(
     _pristine_env(monkeypatch)
     _patch_hermetic_bind_network(monkeypatch)
     _forbid_lm_studio_discovery(monkeypatch)
-    # Subscription binds require a validated catalog (and, for codex, present
-    # credentials). Pin them in tmp_path so the result never depends on the
-    # host's real sign-ins or model cache.
+    # Subscription binds require a validated catalog (and, for codex, a
+    # signed-in credential). Pin them in tmp_path/monkeypatch so the result
+    # never depends on the host's real sign-ins or model cache.
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
-    codex_home = tmp_path / "codex-home"
-    codex_home.mkdir()
-    (codex_home / "auth.json").write_text('{"token":"test"}', encoding="utf-8")
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
     from clio_agent.providers import model_discovery
+    from clio_agent.providers.codex.credentials import CodexCredentialStore
+
+    monkeypatch.setattr(CodexCredentialStore, "is_signed_in", lambda self: True)
 
     model_discovery.record_refresh(
         model_discovery.ProviderDiscoveryResult(
@@ -177,7 +177,7 @@ def test_claude_code_then_codex_first_bind_never_runs_lm_studio_discovery(
             "/v1/providers/lm",
             json={
                 "provider": "codex",
-                "api_base": "codex://sdk",
+                "api_base": "codex://direct",
                 "model": "gpt-5.6-sol",
                 "api_key": "x",
                 "temperature": 0.0,

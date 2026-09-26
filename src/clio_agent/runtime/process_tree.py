@@ -313,7 +313,7 @@ def child_reaper_status() -> ChildReaperResult | None:
 
 
 def teardown_pooled_sdk_transports() -> dict[str, str]:
-    """Close the pooled Claude and Codex SDK transports on clean shutdown (#900).
+    """Close the pooled Claude SDK and direct-Codex transports on clean shutdown (#900).
 
     The claude_code streaming client pool (S2: ONE client per GACT session,
     B1 — the standalone blocking-path pool this teardown used to ALSO close
@@ -347,15 +347,24 @@ def teardown_pooled_sdk_transports() -> dict[str, str]:
         results["stream_client_pool"] = f"error:{exc!r}"
 
     try:
-        from clio_agent.providers.codex_stream import _SDK_CLIENT  # noqa: PLC0415
+        import asyncio as _asyncio  # noqa: PLC0415
 
-        _SDK_CLIENT.close_blocking()
-        results["codex_sdk_client"] = "closed"
+        from clio_agent.providers.codex.sessions import pop_all_ws_connections  # noqa: PLC0415
+        from clio_agent.providers.codex.transport_ws import close_connections  # noqa: PLC0415
+
+        # The direct Codex provider owns no persistent background thread/loop
+        # the way the deleted Codex SDK client did -- its per-session pooled
+        # WebSocket connections live in the gact server's own async context, so
+        # closing them here just means detaching + awaiting each one closed
+        # (a fresh, short-lived loop in this thread; there is no other loop to
+        # reuse from a synchronous shutdown step).
+        connections = pop_all_ws_connections()
+        if connections:
+            _asyncio.run(close_connections(connections))
+        results["codex_ws_sessions"] = f"closed:{len(connections)}"
     except Exception as exc:  # noqa: BLE001 - teardown must not raise; reason logged + recorded
-        logger.warning(
-            "sdk transport teardown failed reason=codex_sdk_client_close_failed error=%r", exc
-        )
-        results["codex_sdk_client"] = f"error:{exc!r}"
+        logger.warning("sdk transport teardown failed reason=codex_ws_close_failed error=%r", exc)
+        results["codex_ws_sessions"] = f"error:{exc!r}"
 
     logger.info(
         "pooled SDK transports torn down on shutdown reason=sdk_pools_closed outcome=%s", results
@@ -419,6 +428,9 @@ _CHILD_KINDS: tuple[tuple[str, str], ...] = (
     ("uvx", "mcp_launcher"),
     ("uv", "mcp_launcher"),
     ("claude", "sdk_cli"),
+    # The Windows shell sandbox spawns the bundled ``codex sandbox`` binary as
+    # its enforcement rung (runtime/sandbox_codex.py) -- unrelated to the LM
+    # provider (the direct Codex provider never spawns a codex process).
     ("codex", "codex_cli"),
     ("node", "mcp_stdio"),
     ("npx", "mcp_launcher"),

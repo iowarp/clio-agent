@@ -71,6 +71,11 @@ runtime.lm_token_liveness: true
 # trusted local dev where sandbox setup gets in the way.
 sandbox.enabled: true
 
+# CLIO_RELEASE_MANIFEST_URL  (str)  <- src/clio_agent/gact/routes/latest_release.py
+# Release manifest the server reads to report the latest CLIO release to
+# clients; point at a mirror or a fork's releases feed.
+system.release_manifest_url: "https://github.com/iowarp/clio-agent/releases/latest/download/latest-lite.json"
+
 # ==========================================================================
 # Language models + providers
 # ==========================================================================
@@ -88,9 +93,14 @@ sandbox.enabled: true
 # lm.claude_code_transport:  # default unset; resolved in code
 
 # CLIO_CODEX_TRANSPORT  (str)  <- src/clio_agent/config.py
-# Selects the Codex transport; "sdk" is the only supported value, kept as an
-# explicit contract check, not a tuning knob.
+# Selects the Codex transport; "websocket" (default, with delta
+# continuation) or "sse" to force the automatic-fallback transport.
 # lm.codex_transport:  # default unset; resolved in code
+
+# CLIO_CODEX_VARIANT  (str)  <- src/clio_agent/config.py
+# Selects which Codex transport a config binds: "direct" (default, CLIO
+# sign-in) or "sdk" (the local Codex app login).
+# lm.codex_variant:  # default unset; resolved in code
 
 # CLIO_LM_CONTEXT_WINDOW  (int)  <- src/clio_agent/config.py
 # Override the effective context window (tokens); 0 auto-derives from the
@@ -222,11 +232,6 @@ providers.claude_code.stateful_capacity: 128.0
 # next request reaps it; lower to free idle connections sooner.
 providers.claude_code.stream_idle_ttl_s: 15.0
 
-# CLIO_CODEX_CREDENTIAL_HOME_CAPACITY  (int)  <- src/clio_agent/providers/codex_credential_home.py
-# Max simultaneous private CODEX_HOME credential-dir copies the Codex SDK
-# transport keeps alive; raise for many concurrent Codex sessions.
-providers.codex.credential_home_capacity: 4
-
 # CLIO_MODEL_CATALOG_TTL_S  (float)  <- src/clio_agent/providers/model_discovery/overlay.py
 # Seconds a discovered provider model catalog is served as fresh before
 # every read marks it typed-stale (it is still served, never cleared); 0
@@ -288,7 +293,7 @@ limits.agent_task_artifact_context_chars: 64000
 # sooner.
 limits.agent_task_output_digest_chars: 8000
 
-# CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S  (float)  <- src/clio_agent/providers/codex_stream.py
+# CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S  (float)  <- src/clio_agent/providers/codex/sdk_client.py
 # Max silence (seconds) for one Codex SDK exchange/event, resetting on every
 # progress event rather than a fixed clock; raise for long turns.
 limits.codex_sdk_progress_timeout_s: 120.0

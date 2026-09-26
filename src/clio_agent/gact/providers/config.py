@@ -133,6 +133,11 @@ def _effective_lm_config(app: "FastAPI") -> dict[str, Any]:
             cfg["transport"] = getattr(provider_config, "codex_transport", None)
         elif provider == "claude_code":
             cfg["transport"] = getattr(provider_config, "claude_code_transport", None)
+    if not cfg.get("codex_variant") and getattr(provider_config, "provider", "") == "codex":
+        # WHICH codex transport (sdk/direct) the live agent is actually bound
+        # to (S1b), for :func:`_active_lm_model_ref` to surface as
+        # ``ModelRef.variant`` -- distinct from ``transport`` above.
+        cfg["codex_variant"] = getattr(provider_config, "codex_variant", None)
     # Effective thinking level (#895): surface both the raw level and the resolved
     # per-provider effect so the knob is never invisible (doctor/status field-map).
     level = getattr(provider_config, "thinking_level", None)
@@ -247,12 +252,19 @@ def _model_ref_is_empty(value: Any) -> bool:
 
 
 def _active_lm_model_ref(app: "FastAPI") -> dict[str, str]:
-    """Return the active global LM as a GACT ModelRef-shaped dict."""
+    """Return the active global LM as a GACT ModelRef-shaped dict.
+
+    ``variant`` carries the bound codex transport (``"sdk"``/``"direct"``) for
+    the ``codex`` provider (S1b) so a per-message/session model ref naming a
+    transport can be compared against what is actually bound; every other
+    provider has no transport concept and reports ``""``.
+    """
 
     cfg = _effective_lm_config(app)
     provider = str(cfg.get("provider_id") or cfg.get("provider") or "")
     model = str(cfg.get("model") or "")
-    return {"provider_id": provider, "model_id": model, "variant": ""}
+    variant = str(cfg.get("codex_variant") or "") if cfg.get("provider") == "codex" else ""
+    return {"provider_id": provider, "model_id": model, "variant": variant}
 
 
 def _model_ref_matches_active(value: Any, app: "FastAPI") -> bool:
@@ -261,9 +273,7 @@ def _model_ref_matches_active(value: Any, app: "FastAPI") -> bool:
     return _model_ref_dict(value) == _active_lm_model_ref(app)
 
 
-def _bare_provider_kind_error(
-    value: Any, *, session_id: str, source: str
-) -> ErrorEnvelope | None:
+def _bare_provider_kind_error(value: Any, *, session_id: str, source: str) -> ErrorEnvelope | None:
     """A typed 400 when a model ref's ``provider_id`` is a bare provider KIND.
 
     A client that resolves identity by kind (the wire's ``provider`` field,
@@ -343,74 +353,24 @@ def _unsupported_model_ref_error(
     )
 
 
-#: Typed provenance for the active LM's vision answer. Each arm says WHY the gate
-#: answered as it did, so a refusal is explainable and a permission is auditable.
-VISION_CAPABILITY_REASONS: dict[str, str] = {
-    "live_modality_evidence": (
-        "the provider catalog holds discovery evidence for this exact provider/model and "
-        "that evidence names (or omits) image input"
-    ),
-    "catalog_default_no_modality_evidence_system": (
-        "this provider kind exposes no per-model modality evidence at all (an "
-        "OpenAI-compatible /models listing returns ids and nothing else), so the "
-        "registry's documented transport-level supports_vision flag permits image "
-        "delivery and leaves model compatibility to the upstream endpoint"
-    ),
-    "modality_evidence_unavailable": (
-        "this provider kind CAN evidence input modalities but none has been recorded for "
-        "this model yet; the capability is unproven, so image parts are refused rather "
-        "than assumed. Run an explicit model refresh to evidence it"
-    ),
-    "no_active_model": (
-        "no provider/model is bound, so there is nothing whose capability could be evidenced"
-    ),
-}
-
-
 def _vision_capability(app: "FastAPI", provider_id: str, model_id: str) -> tuple[bool, str]:
     """Resolve image-input capability for one provider/model, with a typed reason.
 
-    Consults the SAME evidence path delivery planning uses
-    (:func:`~clio_agent.gact.resource_delivery.live_model_modalities`), so the
-    route gate and the delivery planner cannot disagree about what a model can
-    receive. The static registry ``supports_vision`` flag is a documented
-    transport-level DEFAULT, used only where no modality-evidence system exists for
-    that provider kind — never as a substitute for evidence that could have been
-    collected. There is deliberately no provider-name allowlist: the previous
-    gate ended in a literal ``{"openai", "anthropic"}`` set, which no static flag
-    could ever reach past.
+    Delegates to :func:`~clio_agent.gact.modality_evidence.image_input_capability`,
+    the SAME decision delivery planning and the message route use, so the gates
+    cannot disagree about what a model can receive. The reason is a key of
+    :data:`~clio_agent.gact.modality_evidence.IMAGE_INPUT_REASONS`: known
+    modalities decide, and UNKNOWN is permitted under ``modality_unknown`` rather
+    than refused. There is deliberately no provider-name allowlist and no static
+    registry flag standing in for evidence.
     """
 
-    if not provider_id or not model_id:
-        return False, "no_active_model"
-    from clio_agent.gact.resource_delivery import (  # noqa: PLC0415 - avoid import cycle
-        EVIDENCED_MODALITY_SOURCES,
-        live_model_modalities,
+    from clio_agent.gact.modality_evidence import (  # noqa: PLC0415 - avoid import cycle
+        image_input_capability,
     )
     from clio_agent.gact.types import ModelRef  # noqa: PLC0415
 
-    modalities, evidence, _generated_at = live_model_modalities(
-        app, ModelRef(provider_id=provider_id, model_id=model_id)
-    )
-    if evidence in EVIDENCED_MODALITY_SOURCES:
-        return "image" in modalities, "live_modality_evidence"
-
-    from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
-    from clio_agent.providers.handshake import reports_input_modalities  # noqa: PLC0415
-
-    kind = _provider_runtime_kind(provider_id)
-    if reports_input_modalities(kind):
-        return False, "modality_evidence_unavailable"
-    # provider_id only: get_provider(kind) would be ambiguous by construction
-    # (several presets share a kind, e.g. "openai") and adds nothing here --
-    # _provider_runtime_kind already falls back to provider_id verbatim when
-    # get_provider(provider_id) fails to resolve it, so a get_provider(kind)
-    # fallback would just repeat that same failed lookup (Part 3).
-    provider = get_provider(provider_id)
-    return (
-        bool(getattr(provider, "supports_vision", False)),
-        "catalog_default_no_modality_evidence_system",
-    )
+    return image_input_capability(app, ModelRef(provider_id=provider_id, model_id=model_id))
 
 
 def _active_lm_supports_vision(app: "FastAPI") -> bool:
@@ -419,23 +379,17 @@ def _active_lm_supports_vision(app: "FastAPI") -> bool:
     return bool(_effective_lm_config(app).get("supports_vision"))
 
 
-#: Typed provenance for the active LM's PDF-document answer, mirroring
-#: :data:`VISION_CAPABILITY_REASONS`. PDF has no registry-level static default
-#: (see :func:`_pdf_capability`), so its no-evidence-system reason text differs.
+#: Typed provenance for the active LM's PDF-document answer. Unlike image input,
+#: an UNKNOWN PDF capability withholds native PDF delivery: the document still
+#: reaches the model as its structured conversion, so unknown loses nothing.
 PDF_CAPABILITY_REASONS: dict[str, str] = {
     "live_modality_evidence": (
-        "the provider catalog holds discovery evidence for this exact provider/model and "
-        "that evidence names (or omits) PDF document input"
+        "discovery evidence for this exact provider/model states its input modalities, and "
+        "they name (or omit) PDF document input"
     ),
-    "catalog_default_no_modality_evidence_system": (
-        "this provider kind exposes no per-model modality evidence system, and PDF input has "
-        "no static provider-registry default (unlike vision); it is refused until modality "
-        "evidence exists"
-    ),
-    "modality_evidence_unavailable": (
-        "this provider kind CAN evidence input modalities but none has been recorded for this "
-        "model yet; the capability is unproven, so PDF parts are refused rather than assumed. "
-        "Run an explicit model refresh to evidence it"
+    "modality_unknown": (
+        "no evidence establishes whether this model accepts PDF input; native PDF delivery "
+        "is withheld and the document is delivered as its structured conversion instead"
     ),
     "no_active_model": (
         "no provider/model is bound, so there is nothing whose capability could be evidenced"
@@ -446,34 +400,24 @@ PDF_CAPABILITY_REASONS: dict[str, str] = {
 def _pdf_capability(app: "FastAPI", provider_id: str, model_id: str) -> tuple[bool, str]:
     """Resolve PDF-document input capability for one provider/model, with a typed reason.
 
-    Mirrors :func:`_vision_capability` exactly, consulting the SAME live
-    modality evidence and checking ``"pdf"`` instead of ``"image"``. Unlike
-    vision, no provider-registry row carries a static ``supports_pdf``
-    default — PDF input is a newer, less commonly documented capability — so
-    the no-evidence-system fallback answers ``False`` rather than trusting an
-    undocumented transport-level default.
+    Reads the SAME three-valued modality evidence as :func:`_vision_capability`
+    and checks ``"pdf"``. Known modalities decide; unknown answers ``False``
+    under ``modality_unknown`` (see :data:`PDF_CAPABILITY_REASONS`).
     """
 
     if not provider_id or not model_id:
         return False, "no_active_model"
-    from clio_agent.gact.resource_delivery import (  # noqa: PLC0415 - avoid import cycle
+    from clio_agent.gact.modality_evidence import (  # noqa: PLC0415 - avoid import cycle
         EVIDENCED_MODALITY_SOURCES,
         live_model_modalities,
     )
     from clio_agent.gact.types import ModelRef  # noqa: PLC0415
 
-    modalities, evidence, _generated_at = live_model_modalities(
-        app, ModelRef(provider_id=provider_id, model_id=model_id)
-    )
-    if evidence in EVIDENCED_MODALITY_SOURCES:
-        return "pdf" in modalities, "live_modality_evidence"
-
-    from clio_agent.providers.handshake import reports_input_modalities  # noqa: PLC0415
-
-    kind = _provider_runtime_kind(provider_id)
-    if reports_input_modalities(kind):
-        return False, "modality_evidence_unavailable"
-    return False, "catalog_default_no_modality_evidence_system"
+    evidence = live_model_modalities(app, ModelRef(provider_id=provider_id, model_id=model_id))
+    if evidence.known and evidence.evidence in EVIDENCED_MODALITY_SOURCES:
+        assert evidence.modalities is not None
+        return "pdf" in evidence.modalities, "live_modality_evidence"
+    return False, "modality_unknown"
 
 
 def _image_part_error(

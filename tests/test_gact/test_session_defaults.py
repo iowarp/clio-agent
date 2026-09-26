@@ -251,3 +251,81 @@ def test_legacy_session_metadata_effort_is_read_as_unset() -> None:
     assert "effort" not in legacy
     chosen = session_to_v3(_session({"effort": "max", "effort_source": "user"}))
     assert chosen["effort"] == "max"
+
+
+def test_v3_session_omits_usage_before_any_turn() -> None:
+    """A brand-new session has no message yet -- usage keys are absent, not 0/null."""
+    from types import SimpleNamespace
+
+    from clio_agent.gact.protocol.v3.session import session_to_v3
+
+    fresh = session_to_v3(
+        SimpleNamespace(
+            id="sess_fresh",
+            title="t",
+            workspace_id="ws",
+            status="idle",
+            metadata={},
+            model=None,
+            parent_session_id="",
+            message_count=0,
+        )
+    )
+    assert "tokens_input" not in fresh
+    assert "tokens_output" not in fresh
+    assert "cost_usd" not in fresh
+
+
+def test_v3_session_serializes_known_usage_totals() -> None:
+    """A session with completed turns reports real cumulative totals."""
+    from types import SimpleNamespace
+
+    from clio_agent.gact.protocol.v3.session import session_to_v3
+
+    row = session_to_v3(
+        SimpleNamespace(
+            id="sess_billed",
+            title="t",
+            workspace_id="ws",
+            status="idle",
+            metadata={},
+            model=None,
+            parent_session_id="",
+            message_count=2,
+            tokens_input=120,
+            tokens_output=45,
+            cost_usd=0.0032,
+            cost_known=True,
+        )
+    )
+    assert row["tokens_input"] == 120
+    assert row["tokens_output"] == 45
+    assert row["cost_usd"] == pytest.approx(0.0032)
+
+
+def test_v3_session_reports_unknown_cost_as_null_not_zero() -> None:
+    """Turns ran (tokens counted) but no provider/price-table source ever
+    reported a cost -- honest null, never a fabricated $0.00 (#775)."""
+    from types import SimpleNamespace
+
+    from clio_agent.gact.protocol.v3.session import session_to_v3
+
+    row = session_to_v3(
+        SimpleNamespace(
+            id="sess_local_model",
+            title="t",
+            workspace_id="ws",
+            status="idle",
+            metadata={},
+            model=None,
+            parent_session_id="",
+            message_count=2,
+            tokens_input=300,
+            tokens_output=90,
+            cost_usd=0.0,
+            cost_known=False,
+        )
+    )
+    assert row["tokens_input"] == 300
+    assert row["tokens_output"] == 90
+    assert row["cost_usd"] is None

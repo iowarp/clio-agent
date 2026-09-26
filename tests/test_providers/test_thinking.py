@@ -96,7 +96,7 @@ def test_effort_providers_map_level_to_reasoning_effort(provider: str) -> None:
 def test_codex_maps_level_to_codex_reasoning_effort() -> None:
     """Codex has a dedicated key + an explicit ``none`` for off (#896).
 
-    ``codex_reasoning_effort`` (not ``reasoning_effort``) so the codex CustomLLM
+    ``codex_reasoning_effort`` (not ``reasoning_effort``) so the Codex CustomLLM
     reads it and pins it on ``turn/start`` (LiteLLM drops ``reasoning_effort`` on
     the CustomLLM path — the old silent no-op). ``off`` → ``"none"`` (disable), NOT
     an omitted kwarg (which would inherit the ambient ``config.toml`` effort).
@@ -106,16 +106,16 @@ def test_codex_maps_level_to_codex_reasoning_effort() -> None:
     }
     assert resolve_thinking("codex", "low", 0).litellm_kwargs == {"codex_reasoning_effort": "low"}
     assert resolve_thinking("codex", "high", 0).litellm_kwargs == {"codex_reasoning_effort": "high"}
-    # off maps to codex's explicit disable, never omit-and-inherit-ambient.
+    # off maps to the backend's explicit disable, never omit-and-inherit-ambient.
     assert resolve_thinking("codex", "off", 0).litellm_kwargs == {"codex_reasoning_effort": "none"}
-    # unset → nothing pinned (codex's own default governs).
+    # unset → nothing pinned (the backend's own default governs).
     assert resolve_thinking("codex", None, 0).litellm_kwargs == {}
     assert resolve_thinking("codex", "high", 0).supported is True
     assert resolve_thinking("codex", "high", 0).sdk_thinking is None
 
 
 def test_codex_maps_max_and_ultra_efforts() -> None:
-    """Newer Codex models report 'max'/'ultra' efforts (#1436) -- not dropped."""
+    """Newer Codex (Codex-backend) models report 'max'/'ultra' efforts (#1436) -- not dropped."""
     plan_max = resolve_thinking("codex", "max", 0)
     assert plan_max.supported is True
     assert plan_max.litellm_kwargs == {"codex_reasoning_effort": "max"}

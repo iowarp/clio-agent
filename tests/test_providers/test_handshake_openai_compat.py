@@ -168,6 +168,86 @@ async def test_http_401_is_reachable_but_rejected() -> None:
     conn = await handshake.check_connectivity(client, ctx)
     assert conn.connectivity is ConnectivityState.OK
     assert conn.auth is AuthState.REJECTED
+    assert conn.error_code == "api_key_rejected"
+
+
+def _openrouter_ctx(api_key: str) -> HandshakeContext:
+    return HandshakeContext(
+        provider_id="openrouter",
+        provider_kind="openai",
+        api_base="https://openrouter.ai/api/v1",
+        api_key=api_key,
+        allow_external_sources=False,
+    )
+
+
+_OPENROUTER_MODELS = {"data": [{"id": "openai/gpt-oss-120b:free"}]}
+
+
+@pytest.mark.asyncio
+async def test_a_public_model_listing_never_proves_a_fake_key() -> None:
+    """OpenRouter lists its models to anyone, so a fake key would sail through a
+    /models probe. The registry's ``key_check_path`` makes the handshake ask an
+    endpoint that answers only a valid key -- and a 401 there is a rejected key."""
+    client = FakeAsyncClient(
+        routes={
+            "https://openrouter.ai/api/v1/models": FakeResponse(200, _OPENROUTER_MODELS),
+            "https://openrouter.ai/api/v1/key": FakeResponse(401, {"error": "No auth"}),
+        }
+    )
+    handshake = OpenAICompatHandshake(provider=object())
+
+    conn = await handshake.check_connectivity(client, _openrouter_ctx("sk-or-v1-fake"))
+
+    assert conn.auth is AuthState.REJECTED
+    assert conn.error_code == "api_key_rejected"
+    assert ("https://openrouter.ai/api/v1/key", {"Authorization": "Bearer sk-or-v1-fake"}) in (
+        client.calls
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_key_the_key_check_accepts_is_ok() -> None:
+    client = FakeAsyncClient(
+        routes={
+            "https://openrouter.ai/api/v1/models": FakeResponse(200, _OPENROUTER_MODELS),
+            "https://openrouter.ai/api/v1/key": FakeResponse(200, {"data": {"label": "k"}}),
+        }
+    )
+    handshake = OpenAICompatHandshake(provider=object())
+
+    conn = await handshake.check_connectivity(client, _openrouter_ctx("sk-or-v1-real"))
+
+    assert conn.auth is AuthState.OK
+
+
+@pytest.mark.asyncio
+async def test_an_unavailable_key_check_is_a_typed_deferred_never_a_pass() -> None:
+    client = FakeAsyncClient(
+        routes={
+            "https://openrouter.ai/api/v1/models": FakeResponse(200, _OPENROUTER_MODELS),
+            "https://openrouter.ai/api/v1/key": FakeResponse(503, {}),
+        }
+    )
+    handshake = OpenAICompatHandshake(provider=object())
+
+    conn = await handshake.check_connectivity(client, _openrouter_ctx("sk-or-v1-real"))
+
+    assert conn.auth is AuthState.DEFERRED
+    assert conn.error.startswith("key_check_unavailable")
+
+
+@pytest.mark.asyncio
+async def test_a_provider_without_a_key_check_path_makes_no_extra_call() -> None:
+    client = FakeAsyncClient(
+        routes={"https://api.example.com/v1/models": FakeResponse(200, {"data": [{"id": "m"}]})}
+    )
+    handshake = OpenAICompatHandshake(provider=object())
+
+    conn = await handshake.check_connectivity(client, _ctx())
+
+    assert conn.auth is AuthState.OK
+    assert [url for url, _ in client.calls] == ["https://api.example.com/v1/models"]
 
 
 @pytest.mark.asyncio
@@ -227,30 +307,13 @@ async def test_embedding_models_are_skipped() -> None:
     assert [r["id"] for r in raw_models] == ["gpt-4o"]
 
 
-@pytest.mark.asyncio
-async def test_ollama_no_auth_and_tags_fallback() -> None:
-    """Ollama needs no key; ``/v1/models`` 404 -> ``/api/tags`` fallback parses names."""
-    ctx = _ctx(provider_kind="ollama", api_key="", api_base="http://127.0.0.1:11434/v1")
-    tags_payload = {
-        "models": [
-            {"name": "llama3.2:latest", "model": "llama3.2:latest"},
-            {"name": "nomic-embed-text:latest", "model": "nomic-embed-text:latest"},
-        ]
-    }
-    routes = {
-        # /v1/models intentionally absent -> FakeAsyncClient returns a 404.
-        "http://127.0.0.1:11434/api/tags": FakeResponse(200, tags_payload),
-    }
-    client = FakeAsyncClient(routes=routes)
-    handshake = OpenAICompatHandshake(provider=object())
-
-    conn = await handshake.check_connectivity(client, ctx)
-    assert conn.connectivity is ConnectivityState.OK
-    assert conn.auth is AuthState.NOT_REQUIRED
-
-    raw_models = await handshake.discover_models(client, ctx)
-    # Embedding model filtered out -> only the chat model remains.
-    assert [r["id"] for r in raw_models] == ["llama3.2:latest"]
+# NOTE: the Ollama /api/tags fallback that used to live here (in the GENERIC
+# OpenAICompatHandshake) was removed in the #1447 consolidation review --
+# provider_kind == "ollama" always dispatches to OllamaHandshake
+# (handshake/__init__.py's _BY_KIND), so that branch was dead in production
+# and duplicated the real reader in dialects/ollama.py. Equivalent coverage
+# lives on the real class: test_handshake_ollama.py::
+# test_discover_models_lists_tags_and_drops_the_embedding_row.
 
 
 @pytest.mark.asyncio
@@ -270,6 +333,87 @@ async def test_bare_list_payload_is_parsed() -> None:
     assert all(not handshake._is_embedding(r) for r in raw_models)
     facts = await handshake.discover_model_config(client, ctx, raw_models[0])
     assert not facts.model.context_max.known
+
+
+# --------------------------------------------------------------------------- dialect dispatch (#1447 consolidation)
+#
+# discover_model_config no longer reads/parses any dialect-specific field
+# itself -- it resolves the dialect and calls that dialect adapter. These
+# tests confirm the DISPATCH wiring; the field-mapping details themselves are
+# covered by each dialect module's own contract tests
+# (test_dialect_vllm.py / test_dialect_openrouter.py / test_dialect_llama_cpp.py
+# / test_dialect_cloud.py).
+
+
+@pytest.mark.asyncio
+async def test_discover_model_config_routes_vllm_dialect_to_the_vllm_adapter() -> None:
+    ctx = _ctx(provider_kind="vllm", api_key="", api_base="http://localhost:8000/v1")
+    row = {"id": "Qwen/Qwen3-8B", "root": "Qwen/Qwen3-8B", "max_model_len": 40960}
+    handshake = OpenAICompatHandshake(provider=object())
+
+    facts = await handshake.discover_model_config(client=None, ctx=ctx, raw=row)
+
+    assert facts.deployment.context_served.value == 40960
+    assert facts.deployment.context_served.detail == "vllm /v1/models max_model_len"
+    assert facts.model.model_key == "Qwen/Qwen3-8B"
+
+
+@pytest.mark.asyncio
+async def test_discover_model_config_routes_openrouter_dialect_to_the_openrouter_adapter() -> None:
+    ctx = _ctx(provider_kind="openrouter", api_base="https://openrouter.ai/api/v1")
+    row = {
+        "id": "openai/gpt-4o-mini",
+        "context_length": 128000,
+        "architecture": {"input_modalities": ["text", "image"]},
+        "top_provider": {"context_length": 128000, "max_completion_tokens": 16384},
+        "supported_parameters": ["temperature", "tools"],
+    }
+    handshake = OpenAICompatHandshake(provider=object())
+
+    facts = await handshake.discover_model_config(client=None, ctx=ctx, raw=row)
+
+    assert facts.model.context_max.value == 128000
+    assert facts.model.context_max.source == "openrouter"
+    assert facts.deployment.route_params.value == frozenset({"temperature", "tools"})
+
+
+@pytest.mark.asyncio
+async def test_discover_model_config_routes_llama_cpp_dialect_to_the_llama_cpp_adapter() -> None:
+    """``provider_kind`` alone can't name llama.cpp (it shares ``"openai"``); the
+    ``provider_id`` substring sniff in ``dialect_for_provider`` is what routes it."""
+    ctx = HandshakeContext(
+        provider_id="llama_cpp",
+        provider_kind="openai",
+        api_base="http://127.0.0.1:9088/v1",
+        api_key="",
+        allow_external_sources=False,
+    )
+    props_payload = {
+        "default_generation_settings": {"n_ctx": 8192},
+        "total_slots": 2,
+        "build_info": "1234 (abc)",
+    }
+    client = FakeAsyncClient(routes={"http://127.0.0.1:9088/props": FakeResponse(200, props_payload)})
+    handshake = OpenAICompatHandshake(provider=object())
+
+    facts = await handshake.discover_model_config(client, ctx, {"id": "local-model"})
+
+    assert facts.deployment.context_served.value == 8192
+    assert facts.deployment.slots.value == 2
+
+
+@pytest.mark.asyncio
+async def test_discover_model_config_routes_a_cloud_dialect_to_no_restriction_defaults() -> None:
+    """A recognized cloud dialect (``openai``, the default ``_ctx()`` kind) gets the
+    brief-4.2 "no restriction" deployment defaults, not an unknown/guessed one."""
+    ctx = _ctx()  # provider_kind="openai" -> dialect "openai", a CLOUD_DIALECTS member
+    handshake = OpenAICompatHandshake(provider=object())
+
+    facts = await handshake.discover_model_config(client=None, ctx=ctx, raw={"id": "gpt-4o"})
+
+    assert facts.deployment.modalities_enabled.known
+    assert facts.deployment.modalities_enabled.source == "dialect"
+    assert facts.deployment.tools_enabled.value is True
 
 
 # ----------------------------------------------------------------------------- NoOp
@@ -371,3 +515,30 @@ def _const_client(client: Any) -> Any:
         return client
 
     return _open
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_key_ends_the_handshake_before_model_discovery() -> None:
+    """A refused key must not go on to list (and enrich) a public catalog of
+    hundreds of models: one /models probe, one key check, then the verdict."""
+    client = FakeAsyncClient(
+        routes={
+            "https://openrouter.ai/api/v1/models": FakeResponse(200, _OPENROUTER_MODELS),
+            "https://openrouter.ai/api/v1/key": FakeResponse(401, {"error": "No auth"}),
+        }
+    )
+    handshake = OpenAICompatHandshake(provider=object())
+
+    async def _client(_ctx: HandshakeContext) -> FakeAsyncClient:
+        return client
+
+    handshake._open_client = _client  # type: ignore[method-assign]
+    report = await handshake.handshake(_openrouter_ctx("sk-or-v1-fake"))
+
+    assert report.auth is AuthState.REJECTED
+    assert report.error_code == "api_key_rejected"
+    assert report.models == ()
+    assert [url for url, _ in client.calls] == [
+        "https://openrouter.ai/api/v1/models",
+        "https://openrouter.ai/api/v1/key",
+    ]

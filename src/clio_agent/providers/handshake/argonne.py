@@ -19,9 +19,13 @@ Reaching them requires a short-lived Globus bearer token tied to an
   the ALCF gateway returns per-model vLLM config — ``max_model_len``,
   ``reasoning_parser``, ``tool_call_parser``, ``enable_auto_tool_choice`` — so
   ``context_window`` and the reasoning / native-tool flags resolve *live* with
-  no models.dev fallback needed. A companion ``/jobs`` endpoint reports which
-  models are currently hot (a running vLLM job), which we fold into
-  ``is_loaded``.
+  no models.dev fallback needed. Mapping that row onto the capability records
+  is :mod:`clio_agent.providers.capabilities.dialects.alcf`'s job (reusing
+  :mod:`.vllm`'s own ``max_model_len``/``root`` parsing for the fields this
+  gateway shares with vanilla vLLM); this class owns only what's genuinely
+  ALCF-specific -- OAuth, ``/jobs`` discovery, and the request plumbing. A
+  companion ``/jobs`` endpoint reports which models are currently hot (a
+  running vLLM job), which we fold into ``is_loaded``.
 """
 
 from __future__ import annotations
@@ -32,18 +36,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from clio_agent.providers.capabilities.link import deployment_model_key_fact
-from clio_agent.providers.capabilities.records import (
-    DeploymentCapabilities,
-    Fact,
-    ModelCapabilities,
-    unknown,
-)
+from clio_agent.providers.capabilities.dialects import alcf as alcf_dialect
+from clio_agent.providers.capabilities.records import ModelCapabilities
 from clio_agent.providers.handshake.base import (
     ConnectivityResult,
     DiscoveryAuthRejected,
     HandshakeContext,
     ProviderHandshake,
+    describe_exception,
 )
 from clio_agent.providers.handshake.model import (
     AuthState,
@@ -253,11 +253,21 @@ class ArgonneHandshake(ProviderHandshake):
 
             try:
                 refreshed = argonne_auth.get_access_token(False, allow_interactive=False)
+            except argonne_auth.GlobusUnavailable as exc:
+                # The 'argonne' extra (globus-sdk) itself is not installed --
+                # no amount of re-signing-in helps; a typed code so the
+                # catalog can offer Install rather than a generic failure.
+                return ConnectivityResult(
+                    connectivity=ConnectivityState.SKIPPED,
+                    auth=AuthState.MISSING,
+                    error=f"argonne_sdk_missing: {describe_exception(exc)}",
+                    error_code="argonne_sdk_missing",
+                )
             except Exception as exc:  # noqa: BLE001 - token refresh failure surfaced as SKIPPED connectivity
                 return ConnectivityResult(
                     connectivity=ConnectivityState.SKIPPED,
                     auth=AuthState.MISSING,
-                    error=f"argonne token unavailable: {exc}",
+                    error=f"argonne token unavailable: {describe_exception(exc)}",
                 )
             token = (refreshed or "").strip() or None
 
@@ -265,10 +275,12 @@ class ArgonneHandshake(ProviderHandshake):
             from clio_agent.providers import argonne_auth  # noqa: PLC0415
 
             stored = argonne_auth.tokens_exist()
+            error_code = "argonne_sdk_missing" if lookup.reason == "argonne_sdk_missing" else ""
             return ConnectivityResult(
                 connectivity=ConnectivityState.SKIPPED,
                 auth=AuthState.DEFERRED if stored else AuthState.MISSING,
                 error=lookup.error,
+                error_code=error_code,
             )
 
         return ConnectivityResult(
@@ -343,71 +355,29 @@ class ArgonneHandshake(ProviderHandshake):
         """Build a :class:`DiscoveredModelFacts` from one ALCF model row.
 
         Every value here is self-reported by the vLLM backend the gateway
-        fronts, and per brief Part 6 (the vLLM section) this is all DEPLOYMENT
-        evidence -- how THIS server is currently running the model -- not a
-        fact about the weights themselves:
-
-        * ``max_model_len`` -> ``DeploymentCapabilities.context_served``
-        * non-empty ``reasoning_parser`` -> ``DeploymentCapabilities.reasoning_enabled=True``
-        * ``tool_call_parser`` present **or** ``enable_auto_tool_choice`` truthy
-          -> ``DeploymentCapabilities.tools_enabled=True``
-
-        The model's own mechanism/ceiling stay unknown here (no HF/overlay
-        layer exists in this slice); ``enrich_capabilities`` fills the ceiling
-        from the community-catalog cascade.
+        fronts, and per brief Part 6 this is all DEPLOYMENT evidence -- how
+        THIS server is currently running the model -- not a fact about the
+        weights themselves. The mapping itself lives in
+        :func:`clio_agent.providers.capabilities.dialects.alcf.
+        parse_gateway_model_row` (reusing :mod:`.vllm`'s own ``max_model_len``/
+        ``root`` reading for the fields ALCF's gateway shares with vanilla
+        vLLM); this method reads and parses nothing itself. The model's own
+        mechanism/ceiling stay unknown here (no HF/overlay layer exists in
+        this slice); ``enrich_capabilities`` fills the ceiling from the
+        community-catalog cascade.
         """
         model_id = str(raw.get("id") or "")
         observed_at = _now_iso()
 
-        context_window = raw.get("max_model_len")
-        if context_window is not None:
-            context_window = int(context_window)
-
-        reasoning_parser = raw.get("reasoning_parser") or None
-        tool_call_parser = raw.get("tool_call_parser") or None
-        auto_tool = bool(raw.get("enable_auto_tool_choice"))
-        native_tool_calling = tool_call_parser is not None or auto_tool
-
-        from clio_agent.providers.capabilities.model_overlay import (  # noqa: PLC0415
-            overlay_match_for_link,
+        deployment = alcf_dialect.parse_gateway_model_row(
+            raw, provider_id=ctx.provider_id, api_base=ctx.api_base, observed_at=observed_at
+        )
+        model = ModelCapabilities(
+            model_key=deployment.model_key.value or model_id,
+            model_type=alcf_dialect.gateway_model_type_fact(raw, observed_at=observed_at),
         )
 
-        model_key_fact = deployment_model_key_fact(
-            model_id, observed_at=observed_at, overlay_match=overlay_match_for_link
-        )
-        model_key = model_key_fact.value or model_id
-        model = ModelCapabilities(model_key=model_key)
-        deployment = DeploymentCapabilities(
-            provider_id=ctx.provider_id,
-            api_base=ctx.api_base,
-            model_id=model_id,
-            model_key=model_key_fact,
-            context_served=(
-                Fact(
-                    value=context_window,
-                    source="server_report",
-                    observed_at=observed_at,
-                    detail="ALCF gateway /models max_model_len (vLLM self-reported)",
-                )
-                if context_window is not None
-                else unknown()
-            ),
-            reasoning_enabled=Fact(
-                value=reasoning_parser is not None,
-                source="server_report",
-                observed_at=observed_at,
-                detail=f"ALCF gateway /models reasoning_parser={reasoning_parser!r}",
-            ),
-            tools_enabled=Fact(
-                value=native_tool_calling,
-                source="server_report",
-                observed_at=observed_at,
-                detail=(
-                    f"ALCF gateway /models tool_call_parser={tool_call_parser!r} "
-                    f"enable_auto_tool_choice={auto_tool!r}"
-                ),
-            ),
-        )
+        reasoning_parser, tool_call_parser = alcf_dialect.gateway_row_identity(raw)
         discovered = DiscoveredModel(
             id=model_id,
             is_loaded=bool(raw.get("is_loaded")),

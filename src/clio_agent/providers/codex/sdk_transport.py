@@ -1,8 +1,9 @@
-"""LiteLLM ``CustomLLM`` provider for the official OpenAI Codex Python SDK.
+"""LiteLLM ``CustomLLM`` provider for the official OpenAI Codex Python SDK (S1b).
 
-Routes ``dspy.LM(model="codex/<model>", ...)`` through :mod:`openai_codex`
-so the user's existing ChatGPT/Codex authentication is reused without CLIO
-owning a shell, CLI, or app-server protocol transport.
+Routes ``dspy.LM(model=f"{LITELLM_PROVIDER_SDK}/<model>", ...)`` through
+:mod:`openai_codex` so the user's own Codex CLI sign-in (their OWN
+``CODEX_HOME``) is reused directly -- CLIO owns no shell, CLI, or app-server
+protocol transport, and never reads or writes the user's ``auth.json``.
 
 Design notes
 ------------
@@ -11,27 +12,23 @@ Design notes
   built-in shell/filesystem tools are inert; each turn produces only an
   answer. Clio's planner does the real orchestration.
 
-- **One transport.** ``transport="sdk"`` imports the published Python SDK.
-  ``exec`` and CLIO-owned app-server transports do not exist and never serve as
-  fallbacks.
-
-- **Auth lives in the SDK runtime.** CLIO never receives the user's ChatGPT
-  cookie or OpenAI key; the SDK reuses the existing Codex authentication.
+- **Auth lives in the SDK runtime.** CLIO never receives the user's Codex
+  credential; the SDK reuses the existing Codex authentication from the
+  user's own ``CODEX_HOME`` (see :mod:`clio_agent.providers.codex.sdk_client`).
 
 - **Streaming.** The SDK's typed turn stream carries real assistant deltas,
   provider reasoning summaries, optional raw reasoning deltas, and usage.
-  ``streaming()`` / ``astreaming()`` MUST return a real
-  (async) iterator (a bare coroutine produced the #708 mid-stream crash).
+  ``streaming()`` / ``astreaming()`` MUST return a real (async) iterator (a
+  bare coroutine produced the historical #708 mid-stream crash).
 
-- **Registration is lazy + idempotent.** ``ensure_registered()`` is
-  called from ``config.create_lm()`` / ``create_planner_lm()`` only when
-  ``config.provider == "codex"`` — keeps Codex out of the import graph
-  for tests / installs that don't use it.
+- **Registration is lazy + idempotent.** ``ensure_registered()`` is called
+  from ``lm/factory.py::_ensure_provider_registered`` only when the bound
+  ``codex`` config selects the ``sdk`` variant -- keeps the SDK out of the
+  import graph for installs/tests that only use the direct transport.
 """
 
 from __future__ import annotations
 
-import logging
 import tempfile
 import time
 import uuid
@@ -44,9 +41,10 @@ from clio_agent.providers._cli_provider import (
     messages_to_prompt,
     register_custom_provider,
 )
-from clio_agent.providers.codex_stream import (
+from clio_agent.providers.codex.constants import LITELLM_PROVIDER_SDK
+from clio_agent.providers.codex.errors import CodexSDKError
+from clio_agent.providers.codex.sdk_client import (
     DEFAULT_TURN_TIMEOUT_S,
-    CodexSDKError,
     _next_call_index,
     astream_sdk,
     run_sdk,
@@ -59,8 +57,6 @@ from clio_agent.providers.native_attachment_bounds import (
     check_total_bytes,
 )
 
-logger = logging.getLogger(__name__)
-
 try:
     from litellm import CustomLLM
     from litellm.types.utils import (
@@ -72,12 +68,7 @@ try:
         Usage,
     )
 except ImportError as e:  # pragma: no cover - litellm is a hard dep
-    raise ImportError("litellm must be installed to use the Codex provider") from e
-
-
-#: The sole transport: the published official Python SDK.
-Transport = str
-DEFAULT_TRANSPORT: Transport = "sdk"
+    raise ImportError("litellm must be installed to use the Codex SDK provider") from e
 
 
 def _resolve_codex_cwd(params: dict[str, Any]) -> str:
@@ -91,7 +82,7 @@ def _resolve_codex_cwd(params: dict[str, Any]) -> str:
     return str(configured) if configured else tempfile.gettempdir()
 
 
-class CodexUnsupportedMultimodalError(CodexSDKError):
+class CodexSDKUnsupportedMultimodalError(CodexSDKError):
     """Raised when the Codex SDK transport receives content it would drop."""
 
 
@@ -101,21 +92,17 @@ def _messages_to_codex_prompt(messages: list[dict[str, Any]]) -> str:
     Codex takes a single prompt string per turn, so we cannot pass native
     chat messages through. Thin wrapper over the shared prompt
     serializer (:func:`clio_agent.providers._cli_provider.messages_to_prompt`)
-    with Codex's own unsupported-multimodal exception + transport label.
+    with Codex SDK's own unsupported-multimodal exception + transport label.
     """
     return messages_to_prompt(
         messages,
-        unsupported_multimodal_exc=CodexUnsupportedMultimodalError,
-        transport_label="Codex",
+        unsupported_multimodal_exc=CodexSDKUnsupportedMultimodalError,
+        transport_label="Codex SDK",
     )
 
 
 def _data_url_bytes(value: str) -> int:
-    """Decoded byte length of a base64 data URL, or ``0`` for a non-data URL.
-
-    Arithmetic only — an oversized image is refused without ever being decoded.
-    A remote URL is not CLIO's payload to size, so it contributes nothing here.
-    """
+    """Decoded byte length of a base64 data URL, or ``0`` for a non-data URL."""
 
     if not value.startswith("data:"):
         return 0
@@ -126,17 +113,12 @@ def _data_url_bytes(value: str) -> int:
 
 
 def _check_image_bytes(value: str) -> None:
-    """Refuse one oversized Codex image before it is expanded into a request.
-
-    Shares the bounds module with the Claude attach path so the two providers
-    cannot drift; the SDK would otherwise accept the value, expand it, and fail
-    the round-trip with a raw transport error instead of an explainable refusal.
-    """
+    """Refuse one oversized Codex image before it is expanded into a request."""
 
     try:
         check_block_bytes("image", _data_url_bytes(value))
     except NativeAttachmentTooLargeError as exc:
-        raise CodexUnsupportedMultimodalError(str(exc)) from exc
+        raise CodexSDKUnsupportedMultimodalError(str(exc)) from exc
 
 
 def _check_total_image_bytes(values: list[str]) -> None:
@@ -145,16 +127,11 @@ def _check_total_image_bytes(values: list[str]) -> None:
     try:
         check_total_bytes(sum(_data_url_bytes(value) for value in values))
     except NativeAttachmentTooLargeError as exc:
-        raise CodexUnsupportedMultimodalError(str(exc)) from exc
+        raise CodexSDKUnsupportedMultimodalError(str(exc)) from exc
 
 
 def _messages_to_codex_input(messages: list[dict[str, Any]]) -> tuple[str, list[str]]:
-    """Return the hardened transcript plus native SDK image inputs.
-
-    The Codex SDK accepts data URLs as typed ``ImageInput`` values.  Keep those
-    values out of the serialized transcript and audit log while preserving all
-    text and role boundaries through the existing hardened serializer.
-    """
+    """Return the hardened transcript plus native SDK image inputs."""
 
     text_messages: list[dict[str, Any]] = []
     image_urls: list[str] = []
@@ -176,7 +153,7 @@ def _messages_to_codex_input(messages: list[dict[str, Any]]) -> tuple[str, list[
             if isinstance(image_value, dict):
                 image_value = image_value.get("url")
             if not isinstance(image_value, str) or not image_value.strip():
-                raise CodexUnsupportedMultimodalError(
+                raise CodexSDKUnsupportedMultimodalError(
                     "Codex SDK image message parts require a non-empty URL"
                 )
             resolved = image_value.strip()
@@ -194,13 +171,15 @@ def _build_model_response(
     usage_payload: dict[str, Any] | None = None,
     request_id: str | None = None,
 ) -> ModelResponse:
-    """Wrap a Codex completion in a LiteLLM ``ModelResponse``.
+    """Wrap a Codex SDK completion in a LiteLLM ``ModelResponse``.
 
     ``usage_payload`` is the normalized SDK token breakdown; ``None`` stubs
-    zeros (cost-tracking callers fall back to the price-table heuristic in
-    ``gact/app.py``). Codex's
-    ``input_tokens`` already includes the cached subset and ``output_tokens``
-    already includes reasoning, so we do NOT re-sum them (that would double-count).
+    zeros. Codex's ``input_tokens`` already includes the cached subset and
+    ``output_tokens`` already includes reasoning, so we do NOT re-sum them.
+    Threading this through ``ModelResponse.usage`` (rather than a side
+    channel) is what lets session cost/usage totals include SDK turns the
+    same way they include every other provider (see
+    ``claude_code_bridge.sdk_result_usage`` for the sibling pattern).
     """
     usage_payload = usage_payload or {}
     prompt_tokens = int(usage_payload.get("input_tokens", 0) or 0)
@@ -208,7 +187,7 @@ def _build_model_response(
     reasoning_tokens = int(usage_payload.get("reasoning_output_tokens", 0) or 0)
     total = int(usage_payload.get("total_tokens", 0) or 0) or (prompt_tokens + completion_tokens)
     return ModelResponse(
-        id=request_id or f"codex-{uuid.uuid4().hex}",
+        id=request_id or f"codex-sdk-{uuid.uuid4().hex}",
         choices=[
             Choices(
                 index=0,
@@ -217,7 +196,7 @@ def _build_model_response(
             )
         ],
         created=int(time.time()),
-        model=f"codex/{model}",
+        model=f"{LITELLM_PROVIDER_SDK}/{model}",
         object="chat.completion",
         usage=Usage(
             prompt_tokens=prompt_tokens,
@@ -229,30 +208,22 @@ def _build_model_response(
 
 
 def _resolve_effort(params: dict[str, Any]) -> ReasoningEffort | None:
-    """Resolve the codex reasoning effort from the #895 thinking plan.
+    """Resolve the codex reasoning effort from the thinking plan.
 
     ``codex_reasoning_effort`` is set by ``providers.thinking.resolve_thinking``
-    (off→``none``, low/medium/high pass through). ``None`` means the knob was
-    unset — no effort is pinned and codex uses its own default. This is the fix
-    for the silent no-op: a requested level now reaches ``turn/start``.
+    (off->``none``, low/medium/high pass through). ``None`` means the knob was
+    unset -- no effort is pinned and codex uses its own default.
     """
     effort = params.get("codex_reasoning_effort")
     return ReasoningEffort(str(effort)) if effort else None
 
 
-class CodexLLM(CustomLLM):
-    """LiteLLM custom handler routing ``codex/<model>`` to ``openai_codex``."""
+def _clean_model(model: str) -> str:
+    return model.removeprefix(f"{LITELLM_PROVIDER_SDK}/").removeprefix("cg-")
 
-    @staticmethod
-    def _resolve_transport(params: dict) -> str:
-        """Resolve the sole SDK transport or raise a typed hard error."""
-        transport = params.get("codex_transport") or DEFAULT_TRANSPORT
-        if transport != "sdk":
-            raise CodexSDKError(
-                f"codex transport {transport!r} is unsupported — the official "
-                "Python SDK is the only Codex provider transport"
-            )
-        return transport
+
+class CodexSDKLLM(CustomLLM):
+    """LiteLLM custom handler routing ``codex_sdk/<model>`` to ``openai_codex``."""
 
     def completion(
         self,
@@ -274,8 +245,7 @@ class CodexLLM(CustomLLM):
         client: Any = None,
     ) -> ModelResponse:
         params = optional_params or {}
-        clean_model = model.removeprefix("codex/").removeprefix("cdx-")
-        self._resolve_transport(params)
+        clean_model = _clean_model(model)
         prompt, images = _messages_to_codex_input(messages)
         text, usage = run_sdk(
             prompt=prompt,
@@ -308,8 +278,7 @@ class CodexLLM(CustomLLM):
         client: Any = None,
     ) -> ModelResponse:
         params = optional_params or {}
-        clean_model = model.removeprefix("codex/").removeprefix("cdx-")
-        self._resolve_transport(params)
+        clean_model = _clean_model(model)
         parts: list[str] = []
         usage: dict[str, int] = {}
         prompt, images = _messages_to_codex_input(messages)
@@ -355,13 +324,12 @@ class CodexLLM(CustomLLM):
         timeout: Any = None,
         client: Any = None,
     ) -> Iterator[GenericStreamingChunk]:
-        # #708: clio/DSPy request streaming by default, so this MUST be a real
+        # clio/DSPy request streaming by default, so this MUST be a real
         # generator (NOT a coroutine). The SDK streams token deltas, but the
         # SYNC path drains them and yields one terminal chunk (DSPy drives turns
         # through astreaming; sync streaming is the compatibility fallback).
         params = optional_params or {}
-        clean_model = model.removeprefix("codex/").removeprefix("cdx-")
-        self._resolve_transport(params)
+        clean_model = _clean_model(model)
         prompt, images = _messages_to_codex_input(messages)
         text, usage = run_sdk(
             prompt=prompt,
@@ -404,12 +372,11 @@ class CodexLLM(CustomLLM):
         timeout: Any = None,
         client: Any = None,
     ) -> AsyncIterator[GenericStreamingChunk]:
-        # #708: must be an async GENERATOR (real async iterator), not a coroutine
-        # that returns one. The SDK streams real token deltas into the frozen
-        # chunk pipeline.
+        # Must be an async GENERATOR (real async iterator), not a coroutine
+        # that returns one (#708). The SDK streams real token deltas into the
+        # frozen chunk pipeline.
         params = optional_params or {}
-        clean_model = model.removeprefix("codex/").removeprefix("cdx-")
-        self._resolve_transport(params)
+        clean_model = _clean_model(model)
         prompt, images = _messages_to_codex_input(messages)
         async for chunk in astream_sdk(
             prompt=prompt,
@@ -424,14 +391,12 @@ class CodexLLM(CustomLLM):
 
 
 # The registration guard (idempotent append to `litellm.custom_provider_map`,
-# once per process — without it, hot-swapping providers via PUT /v1/providers/lm
-# grows the map without bound) is the shared custom-provider machinery.
-ensure_registered, _reset_for_tests = register_custom_provider("codex", CodexLLM)
+# once per process) is the shared custom-provider machinery.
+ensure_registered, _reset_for_tests = register_custom_provider(LITELLM_PROVIDER_SDK, CodexSDKLLM)
 
 
 __all__ = [
-    "CodexLLM",
+    "CodexSDKLLM",
+    "CodexSDKUnsupportedMultimodalError",
     "ensure_registered",
-    "astream_sdk",
-    "run_sdk",
 ]

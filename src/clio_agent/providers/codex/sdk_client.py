@@ -1,8 +1,20 @@
-"""Official Python Codex SDK transport for the subscription provider.
+"""Official Python Codex SDK transport client (S1b restore).
 
 CLIO imports :mod:`openai_codex` and consumes its typed turn stream. The SDK
 owns the pinned runtime and JSON-RPC lifecycle; CLIO never shells out to
-``codex``, speaks app-server JSON-RPC, or falls back to a CLI transport.
+``codex``, speaks app-server JSON-RPC itself, or falls back to a CLI transport.
+
+**Credentials stay the SDK/runtime's own.** Earlier revisions of this module
+copied ``~/.codex/auth.json`` into a private, CLIO-managed temp home and wrote
+rotated tokens back. Per the owner ruling that restored this transport, CLIO
+must never read or write that file: the client below passes NO ``env``
+override to :class:`~openai_codex.CodexConfig`, so the spawned ``codex``
+runtime inherits this process's real environment verbatim (the user's own
+``CODEX_HOME``, or the SDK's own ``~/.codex`` default when unset) and owns its
+own login/refresh end to end. ``config_overrides`` still zeroes the bare-LM
+feature surface (mcp servers, plugins, apps, ...) so this stays a pure
+completion backend -- that mechanism does not touch credentials or the home
+directory at all.
 
 Provider-exposed reasoning text and reasoning summaries remain distinct. A
 summary is never relabelled as full provider reasoning.
@@ -44,14 +56,17 @@ from clio_agent.providers.claude_code_cancel import (
     register_sdk_stream,
     unregister_sdk_stream,
 )
-from clio_agent.providers.codex_audit import (
+from clio_agent.providers.codex.errors import (
+    CODEX_AUTHENTICATION_ERROR_MESSAGE,
+    CodexSDKError,
+    contains_codex_authentication_error,
+)
+from clio_agent.providers.codex.sdk_audit import (
     emit_call_started,
     emit_call_usage,
     emit_normalized,
     emit_raw_event,
 )
-from clio_agent.providers.codex_credential_home import IsolatedCodexHome
-from clio_agent.providers.codex_errors import normalize_codex_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +83,7 @@ _SDK_SHUTDOWN_TIMEOUT_S = 2.0
 #: caller supplies no ``timeout``. It is a CEILING, not the operative deadline:
 #: :func:`_sdk_progress_timeout_s` clamps it with the configured
 #: ``limits.codex_sdk_progress_timeout_s``, which is what actually governs how
-#: long one exchange may go without progress. Kept as a single named constant so
-#: the four ``codex_litellm`` entry points cannot drift apart from it.
+#: long one exchange may go without progress.
 DEFAULT_TURN_TIMEOUT_S = 180.0
 
 
@@ -144,10 +158,6 @@ _CODEX_MODEL_REJECTION_PATTERN = re.compile(
 )
 
 
-class CodexSDKError(RuntimeError):
-    """Typed failure raised by the sole Codex SDK provider transport."""
-
-
 def _sdk_progress_timeout_s(requested_timeout: float) -> float:
     """Resolve the maximum silence allowed for one SDK exchange or event."""
     from clio_agent import conf  # noqa: PLC0415
@@ -162,7 +172,7 @@ def _sdk_progress_timeout_s(requested_timeout: float) -> float:
 
 
 def _next_call_index() -> int:
-    """Return a process-local Codex provider call index for audit correlation."""
+    """Return a process-local Codex SDK provider call index for audit correlation."""
     global _CALL_COUNTER  # noqa: PLW0603
     with _CALL_COUNTER_LOCK:
         _CALL_COUNTER += 1
@@ -172,6 +182,15 @@ def _next_call_index() -> int:
 def _is_codex_model_rejection(text: str, *, model: str) -> bool:
     """Return whether ``text`` is the verified account/model rejection shape."""
     return bool(text and model and model in text and _CODEX_MODEL_REJECTION_PATTERN.search(text))
+
+
+def _normalize_sdk_turn_error(message: str) -> str:
+    """Replace a missing-authentication SDK failure with an actionable message."""
+    return (
+        CODEX_AUTHENTICATION_ERROR_MESSAGE
+        if contains_codex_authentication_error(message)
+        else message
+    )
 
 
 def usage_chunk(usage: dict[str, int] | None) -> dict[str, int] | None:
@@ -214,15 +233,6 @@ def _item_root(payload: Any) -> Any:
 
 def _item_type(payload: Any) -> str:
     return str(getattr(_item_root(payload), "type", "") or "")
-
-
-def _is_model_activity(event: Any) -> bool:
-    if str(getattr(event, "method", "")) in _MODEL_ACTIVITY_METHODS:
-        return True
-    return str(getattr(event, "method", "")) == "item/started" and _item_type(event.payload) in {
-        "agentMessage",
-        "reasoning",
-    }
 
 
 def _validate_bare_lm_event(event: Any) -> None:
@@ -269,7 +279,7 @@ def _raise_failed_turn(event: Any) -> None:
     if str(status) != "failed":
         return
     error = getattr(turn, "error", None)
-    message = normalize_codex_error_message(
+    message = _normalize_sdk_turn_error(
         str(getattr(error, "message", "") or "Codex SDK turn failed")
     )
     raise CodexSDKError(message)
@@ -284,7 +294,6 @@ class CodexSDKClient:
         self._thread: threading.Thread | None = None
         self._client: AsyncCodex | None = None
         self._client_lock: asyncio.Lock | None = None
-        self._sdk_home: IsolatedCodexHome | None = None
         # The SDK client is a process-wide singleton shared by every concurrent codex
         # turn. ``_generation`` identifies which client a pump is holding, ``_client_users``
         # counts the pumps still holding it, and ``_reset_pending`` records a teardown
@@ -308,30 +317,20 @@ class CodexSDKClient:
             self._client_lock = asyncio.Lock()
         async with self._client_lock:
             if self._client is None:
-                sdk_home = IsolatedCodexHome()
-                started = False
-                try:
-                    client = AsyncCodex(
-                        CodexConfig(
-                            cwd=tempfile.gettempdir(),
-                            config_overrides=BARE_LM_CONFIG_OVERRIDES,
-                            env=sdk_home.start(),
-                            client_name="clio_agent",
-                            client_title="CLIO Agent",
-                        )
+                # No ``env=`` override: the runtime inherits THIS process's real
+                # environment, so it sees the user's own CODEX_HOME (or its
+                # ~/.codex default) and owns its own login/refresh. CLIO never
+                # constructs, reads, or writes an auth.json path.
+                client = AsyncCodex(
+                    CodexConfig(
+                        cwd=tempfile.gettempdir(),
+                        config_overrides=BARE_LM_CONFIG_OVERRIDES,
+                        client_name="clio_agent",
+                        client_title="CLIO Agent",
                     )
-                    await client.__aenter__()
-                    started = True
-                finally:
-                    # ``__aenter__`` spawns the runtime subprocess and runs the JSON-RPC
-                    # handshake, so a Stop or the startup progress deadline lands here as
-                    # ``CancelledError`` -- a ``BaseException`` an ``except Exception``
-                    # cleanup cannot see. The leaked home would strand a 0600 copy of the
-                    # user's credentials and permanently consume one live-home slot.
-                    if not started:
-                        sdk_home.close()
+                )
+                await client.__aenter__()
                 self._client = client
-                self._sdk_home = sdk_home
                 self._generation += 1
                 self._client_users = 0
                 self._reset_pending = False
@@ -348,16 +347,11 @@ class CodexSDKClient:
     async def _close_locked(self) -> None:
         """Close and forget the current client. The caller must hold ``_client_lock``."""
         client, self._client = self._client, None
-        sdk_home, self._sdk_home = self._sdk_home, None
         self._client_users = 0
         self._reset_pending = False
         self._generation += 1
-        try:
-            if client is not None:
-                await _cleanup_sdk_action("client_close", client.close())
-        finally:
-            if sdk_home is not None:
-                sdk_home.close()
+        if client is not None:
+            await _cleanup_sdk_action("client_close", client.close())
 
     async def _release_client(self, generation: int, *, reset: bool) -> None:
         """Drop one turn's hold on the shared client, tearing it down only when safe.
@@ -501,6 +495,9 @@ class CodexSDKClient:
         def _cancel_future() -> None:
             future.cancel()
 
+        # The turn cancel contract (L1): registered here exactly as it was
+        # before restoration, so CLIO's session cancel path interrupts the SDK
+        # turn the same way it interrupts any other provider's stream.
         handle = register_sdk_stream(gact_sid, _cancel_future)
         try:
             while True:
@@ -649,9 +646,9 @@ async def astream_sdk(
         message = str(exc)
         if _is_codex_model_rejection(message, model=model):
             raise_model_rejected(
-                message=f"codex rejected model {model!r}: {message}",
-                model=f"codex/{model}",
-                llm_provider="codex",
+                message=f"codex sdk rejected model {model!r}: {message}",
+                model=f"codex_sdk/{model}",
+                llm_provider="codex_sdk",
                 cause=exc,
             )
         raise CodexSDKError(f"Codex SDK stream failed (model={model}): {exc}") from exc
@@ -737,9 +734,10 @@ def run_sdk(
 
 
 __all__ = [
+    "BARE_LM_CONFIG_OVERRIDES",
     "CodexSDKClient",
-    "CodexSDKError",
     "DEFAULT_SDK_PROGRESS_TIMEOUT_S",
+    "DEFAULT_TURN_TIMEOUT_S",
     "_SDK_CLIENT",
     "_next_call_index",
     "astream_sdk",

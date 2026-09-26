@@ -176,6 +176,11 @@ class Session:
     tokens_input: int = 0
     tokens_output: int = 0
     cost_usd: float = 0.0
+    # True once any turn accumulated onto cost_usd with a REAL cost source
+    # (provider report or a price-table match). False means no turn has ever
+    # produced a known cost for this session -- the wire projection serializes
+    # cost_usd as null rather than an indistinguishable $0.00 (#775).
+    cost_known: bool = False
     # iowarp/clio-agent — capabilities.plan_mode + edit_modes:
     # mode controls what the agent can do; edit_mode controls how
     # it proposes changes when it can. Default {edit, diff}.
@@ -226,6 +231,12 @@ class Session:
         wire["mode"] = normalize_stored_mode(self.mode)
         wire["status"] = normalize_stored_status(self.status)
         wire.pop("approval_profile", None)
+        # cost_known is bookkeeping, not part of the wire contract -- it
+        # decides whether cost_usd is a real number or null, never rides
+        # along itself (#775: no turn ever reporting a cost must read as
+        # unknown here too, matching the v3 projection's cost_known check).
+        if not wire.pop("cost_known", False):
+            wire["cost_usd"] = None
         return wire
 
 
@@ -465,7 +476,7 @@ class SessionStore:
         message_count: Optional[int] = None,
         add_tokens_input: int = 0,
         add_tokens_output: int = 0,
-        add_cost_usd: float = 0.0,
+        add_cost_usd: Optional[float] = None,
         mode: Optional[str] = None,
         edit_mode: Optional[str] = None,
         routing_mode: Optional[str] = None,
@@ -482,7 +493,10 @@ class SessionStore:
         stamp additional keys without clobbering the rest. The
         ``add_tokens_*`` / ``add_cost_usd`` params accumulate onto
         the session rollup — pass a turn's numbers after each
-        forward() call.
+        forward() call. ``add_cost_usd=None`` (the default) means "no cost
+        source for this turn" and leaves ``cost_usd``/``cost_known``
+        untouched; pass a real float (0.0 included) only when the turn
+        actually produced one, which is what flips ``cost_known`` True.
         """
 
         with self._lock:
@@ -510,8 +524,9 @@ class SessionStore:
                 sess.tokens_input += add_tokens_input
             if add_tokens_output:
                 sess.tokens_output += add_tokens_output
-            if add_cost_usd:
+            if add_cost_usd is not None:
                 sess.cost_usd += add_cost_usd
+                sess.cost_known = True
             if mode is not None and mode in {"plan", "edit", "architect"}:
                 sess.mode = mode
             if edit_mode is not None and edit_mode in {"diff", "whole", "patch"}:

@@ -41,6 +41,7 @@ from clio_agent.providers.capabilities.records import (
     DeploymentCapabilities,
     Fact,
     ModelCapabilities,
+    model_type_fact,
     unknown,
 )
 from clio_agent.providers.handshake.model import DiscoveredModel, HandshakeReport
@@ -146,6 +147,8 @@ def _capability_snapshot(report: HandshakeReport, model_id: str) -> dict[str, An
             snapshot["tools"] = model.tools.value
         if model.input_modalities.known:
             snapshot["input_modalities"] = sorted(model.input_modalities.value or ())
+        if model.model_type.known:
+            snapshot["model_type"] = model.model_type.value
     if deployment is not None:
         if deployment.context_served.known:
             snapshot["context_served"] = deployment.context_served.value
@@ -261,6 +264,12 @@ def _seed_capability_store(
         return
     model = ModelCapabilities(
         model_key=model_id,
+        model_type=model_type_fact(
+            snapshot.get("model_type"),
+            source="server_report",
+            observed_at=generated_at,
+            detail="persisted last-good model_type",
+        ),
         context_max=(
             Fact(value=snapshot["context_max"], source="server_report", observed_at=generated_at)
             if "context_max" in snapshot

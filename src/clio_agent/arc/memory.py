@@ -224,23 +224,21 @@ class ARCMemory:
 
         # Thread safety.
         #
-        # INVARIANT — ``_lock`` guards ONLY the hot in-memory structures that have
-        # no lock of their own: the invocation B-tree (``_inv_index``), the
-        # ``_disk_reads`` / ``_disk_writes`` counters, and multi-step *composite*
-        # reads/writes over the cache (e.g. scanning ``_cache._cache`` internals, or
-        # a cache+index pair that a reader must see consistently). It is NEVER held
-        # across ``_store`` I/O (clio-core RPCs / LocalFS reads) or ``_lsm`` writes — those
-        # sub-components carry their own locks (``LRUCache._lock`` cache.py,
-        # ``LSMTree._lock`` with double-buffered flush lsm.py, ``SegmentStore``
-        # per-scope locks segments.py), and holding this lock across their I/O
-        # serialized every session behind one slow store RPC. So the pattern in
-        # every method below is: encode / ``store.get`` / ``store.put`` /
-        # ``store.scan`` / ``lsm.write`` OUTSIDE the lock; ``_inv_index`` surgery,
-        # counter bumps, and cache-composite ops UNDER it. A plain
-        # ``LRUCache.put/get/invalidate`` is atomic on its own lock, so those may run
-        # outside ``_lock`` when not part of a composite. Reentrancy note: helpers
-        # that take ``_lock`` for a counter (``get_invocation``) must be called with
-        # ``_lock`` RELEASED (``threading.Lock`` is not reentrant).
+        # INVARIANT — ``_lock`` guards ONLY the hot in-memory structures that have no lock
+        # of their own: the invocation B-tree (``_inv_index``), the ``_disk_reads`` /
+        # ``_disk_writes`` counters, and multi-step *composite* reads/writes over the cache
+        # (e.g. scanning ``_cache._cache`` internals, or a cache+index pair that a reader
+        # must see consistently). It is NEVER held across ``_store`` I/O (clio-core RPCs /
+        # LocalFS reads) or ``_lsm`` writes — those sub-components carry their own locks
+        # (``LRUCache._lock`` cache.py, ``LSMTree._lock`` with double-buffered flush lsm.py,
+        # ``SegmentStore`` per-scope locks segments.py), and holding this lock across their
+        # I/O serialized every session behind one slow store RPC. So the pattern in every
+        # method below is: encode / ``store.get`` / ``store.put`` / ``store.scan`` /
+        # ``lsm.write`` OUTSIDE the lock; ``_inv_index`` surgery, counter bumps, and
+        # cache-composite ops UNDER it. A plain ``LRUCache.put/get/invalidate`` is atomic on
+        # its own lock, so those may run outside ``_lock`` when not part of a composite.
+        # Reentrancy note: helpers that take ``_lock`` for a counter (``get_invocation``)
+        # must be called with ``_lock`` RELEASED (``threading.Lock`` is not reentrant).
         self._lock = threading.Lock()
 
         # Per-session conversation lock. ``store_conversation`` and
@@ -450,12 +448,11 @@ class ARCMemory:
                 },
             )
 
-            # Hot structures under the ARC lock: cache + index must be updated as a
-            # consistent pair (a reader takes _lock to see both), and _inv_index has no
-            # lock of its own. The trace_id is part of the composite index key so two
-            # invocations in the same session that share a timestamp (coarse clocks
-            # resolve sub-millisecond calls to the same tick) do not collide and
-            # silently drop one another.
+            # Hot structures under the ARC lock: cache + index must be updated as a consistent pair
+            # (a reader takes _lock to see both), and _inv_index has no lock of its own. The
+            # trace_id is part of the composite index key so two invocations in the same session
+            # that share a timestamp (coarse clocks resolve sub-millisecond calls to the same tick)
+            # do not collide and silently drop one another.
             index_key = (session_id, timestamp, trace_id)
             with self._lock:
                 self._cache.put(cache_key, invocation)
@@ -1094,6 +1091,10 @@ class ARCMemory:
         """Whether scope search uses real BM25 (clio-core backend) vs the naive fallback."""
         return self._segments.supports_search()
 
+    def segment_search_degradation_reason(self) -> str:
+        """Typed reason real search is degraded (#905), or ``""`` when fully available."""
+        return self._segments.search_degradation_reason()
+
     def _enter_inflight(self, session_id: str) -> None:
         """Register an in-flight invocation write for ``session_id`` (#804).
 
@@ -1174,15 +1175,14 @@ class ARCMemory:
 
             evicted_index = self._inv_index.delete_session(session_id)
 
-        # Outside the lock: LiveRuntimeContext and SegmentStore have their own locks.
-        # The observer's release ERASES the reserved ``_events`` scope (the single
-        # persisted raw semantic-event stream it projects over) so an idle server
-        # returns to baseline — but ONLY when the durable trace actually keeps the
-        # full history. The trace backend defaults to "none" (opt-in), so erasing
-        # unconditionally destroyed the ONLY copy of the session event log (#762).
-        # When the trace is disabled the log is RETAINED; the segment release below
-        # still drops the hot in-memory copy (write-through, nothing lost), so the
-        # heap returns toward baseline either way. Both paths log their reason.
+        # Outside the lock: LiveRuntimeContext and SegmentStore have their own locks. The
+        # observer's release ERASES the reserved ``_events`` scope (the single persisted raw
+        # semantic-event stream it projects over) so an idle server returns to baseline --
+        # but ONLY when the durable trace actually keeps the full history. The trace backend
+        # defaults to "none" (opt-in), so erasing unconditionally destroyed the ONLY copy of
+        # the session event log (#762). When the trace is disabled the log is RETAINED; the
+        # segment release below still drops the hot in-memory copy (write-through, nothing
+        # lost), so the heap returns toward baseline either way. Both paths log their reason.
         backend = _durable_trace_backend()
         if backend in _DISABLED_TRACE_BACKENDS:
             live = 0

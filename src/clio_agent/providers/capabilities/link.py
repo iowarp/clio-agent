@@ -21,9 +21,9 @@ Only the first two rule FAMILIES are implemented as real logic here:
    ``org/repo-GGUF[:quant]``.
 
 The third rule (an overlay ``matchPatterns`` entry, P6/brief Part 8) is now
-wired: ``overlay_match`` is the real
+wired: :func:`deployment_model_key_fact` passes the real
 :func:`clio_agent.providers.capabilities.model_overlay.overlay_match_for_link`
-at every call site. Per the brief ("matches against the wire id, the GGUF
+by default, so every adapter and dialect gets it. Per the brief ("matches against the wire id, the GGUF
 filename and the Ollama model name"), the rule tries every DISTINCT candidate
 string a caller supplies -- ``wire_id`` first, then ``gguf_filename`` when it
 differs -- so a wire id an endpoint spells generically (llama.cpp router mode's
@@ -177,6 +177,16 @@ def deployment_model_key_fact(
     that no rule matched.
     """
 
+    if "overlay_match" not in link_kwargs:
+        # Rule 3 is on for every deployment: the real overlay matcher is the
+        # default here (one place) rather than threaded through each adapter
+        # and dialect call site. Imported lazily -- model_overlay reaches
+        # providers.model_discovery, which imports the handshake package.
+        from clio_agent.providers.capabilities.model_overlay import (  # noqa: PLC0415
+            overlay_match_for_link,
+        )
+
+        link_kwargs["overlay_match"] = overlay_match_for_link
     result = link_model(wire_id, **link_kwargs)  # type: ignore[arg-type]
     if result.model_key:
         return Fact(

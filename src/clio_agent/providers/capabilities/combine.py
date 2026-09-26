@@ -127,6 +127,7 @@ class EffectiveCapabilities:
     """The combined view of a model/endpoint/deployment triple (brief 5.5)."""
 
     model_key: str | None
+    model_type: Decision[str]
     context: Decision[int]
     output_max: Decision[int]
     input_modalities: Decision[frozenset[str]]
@@ -212,6 +213,23 @@ def _intersect_modalities(
             deployment.value, "deployment", "model modalities unknown", source, observed_at
         )
     return _unknown("neither model nor deployment reports modalities")
+
+
+def _model_type(model: ModelCapabilities | None) -> Decision[str]:
+    """The model's type is a model-record fact alone: no endpoint or deployment narrows it."""
+    if model is None or not model.model_type.known:
+        return _unknown(
+            (model.model_type.detail if model is not None else "")
+            or "no source states the model type"
+        )
+    source, observed_at = _provenance(model.model_type)
+    return Decision(
+        model.model_type.value,
+        "model",
+        model.model_type.detail or f"model: {model.model_type.value}",
+        source,
+        observed_at,
+    )
 
 
 def _effective_params(
@@ -405,6 +423,7 @@ def combine_capabilities(
 
     return EffectiveCapabilities(
         model_key=model_key,
+        model_type=_model_type(model),
         context=context,
         output_max=output_max,
         input_modalities=modalities,

@@ -125,13 +125,15 @@ def _cost_map(*, allow_fetch: bool = True) -> dict[str, Any]:
         return {}
 
 
-def _get_model_info(candidate: str, *, allow_fetch: bool = True) -> dict[str, Any] | None:
-    info = _cost_map(allow_fetch=allow_fetch).get(candidate)
-    return dict(info) if isinstance(info, dict) else None
+def _positive_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
 def lookup_litellm(model_id: str, *, allow_fetch: bool = True) -> tuple[int | None, int | None]:
     """Return ``(context_window, output_limit)`` from LiteLLM, or ``(None, None)``.
+
+    The map is loaded ONCE per call, then every id variant is probed against it
+    (the first variant carrying either limit wins).
 
     Args:
         model_id: The raw model identifier (with or without a provider prefix).
@@ -140,25 +142,78 @@ def lookup_litellm(model_id: str, *, allow_fetch: bool = True) -> tuple[int | No
     """
     if not (model_id or "").strip():
         return None, None
+    cost_map = _cost_map(allow_fetch=allow_fetch)
     for candidate in _id_variants(model_id):
-        info = _get_model_info(candidate, allow_fetch=allow_fetch)
-        if not info:
+        info = cost_map.get(candidate)
+        if not isinstance(info, dict):
             continue
-        raw_ctx = info.get("max_input_tokens") or info.get("max_tokens")
-        raw_out = info.get("max_output_tokens")
-        ctx = (
-            raw_ctx
-            if isinstance(raw_ctx, int) and not isinstance(raw_ctx, bool) and raw_ctx > 0
-            else None
-        )
-        out = (
-            raw_out
-            if isinstance(raw_out, int) and not isinstance(raw_out, bool) and raw_out > 0
-            else None
-        )
+        ctx = _positive_int(info.get("max_input_tokens") or info.get("max_tokens"))
+        out = _positive_int(info.get("max_output_tokens"))
         if ctx or out:
             return ctx, out
     return None, None
+
+
+def lookup_litellm_info(
+    model_id: str, *, allow_fetch: bool = True
+) -> tuple[str, dict[str, Any]] | None:
+    """Return ``(matched_key, info)`` for the first id variant LiteLLM lists, or None.
+
+    One map load per call; the matched key is returned so a caller can name
+    exactly which LiteLLM row its facts came from.
+    """
+    if not (model_id or "").strip():
+        return None
+    cost_map = _cost_map(allow_fetch=allow_fetch)
+    for candidate in _id_variants(model_id):
+        info = cost_map.get(candidate)
+        if isinstance(info, dict):
+            return candidate, dict(info)
+    return None
+
+
+#: LiteLLM ``mode`` -> CLIO model type. LiteLLM's own spellings ARE the model
+#: type vocabulary (see ``records.ModelType``); ``responses`` is a chat model
+#: served only through the Responses API, which LiteLLM bridges for chat. Any
+#: other mode (``completion``, ``moderation``, ...) is not mapped: it stays
+#: unknown rather than being forced into the nearest type.
+_MODE_TO_MODEL_TYPE: dict[str, str] = {
+    "chat": "chat",
+    "responses": "chat",
+    "embedding": "embedding",
+    "rerank": "rerank",
+    "audio_transcription": "audio_transcription",
+    "audio_speech": "audio_speech",
+    "image_generation": "image_generation",
+}
+
+
+def model_type_from_info(info: dict[str, Any]) -> str | None:
+    """The CLIO model type a LiteLLM row's ``mode`` names, or None."""
+    mode = info.get("mode")
+    return _MODE_TO_MODEL_TYPE.get(mode) if isinstance(mode, str) else None
+
+
+def modalities_from_info(info: dict[str, Any]) -> frozenset[str] | None:
+    """Input modalities from a LiteLLM row's ``supports_*`` flags, or None.
+
+    LiteLLM omits a flag far more often than it sets one to ``False``, so the set
+    is only known when the row states ``supports_vision`` explicitly -- an entry
+    with no vision flag at all is no evidence of a text-only model. When it is
+    stated, ``supports_audio_input`` and ``supports_pdf_input`` add their
+    modality only when explicitly ``True``.
+    """
+    vision = info.get("supports_vision")
+    if not isinstance(vision, bool):
+        return None
+    modalities = {"text"}
+    if vision:
+        modalities.add("image")
+    if info.get("supports_audio_input") is True:
+        modalities.add("audio")
+    if info.get("supports_pdf_input") is True:
+        modalities.add("pdf")
+    return frozenset(modalities)
 
 
 def lookup_litellm_context(model_id: str, *, allow_fetch: bool = True) -> int | None:

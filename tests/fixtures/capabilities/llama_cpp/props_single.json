@@ -1,0 +1,21 @@
+{
+  "default_generation_settings": {
+    "n_ctx": 8192,
+    "n_predict": -1,
+    "model": "qwen3-8b-q4_k_m.gguf"
+  },
+  "total_slots": 4,
+  "modalities": {
+    "vision": false
+  },
+  "chat_template_caps": {
+    "supports_tools": true,
+    "supports_tool_calls": true,
+    "supports_parallel_tool_calls": false,
+    "supports_system_role": true,
+    "supports_reasoning_effort": true,
+    "supports_preserve_reasoning": true
+  },
+  "build_info": "5678 (b1234-abcdef0)",
+  "model_path": "/models/qwen3-8b-q4_k_m.gguf"
+}
