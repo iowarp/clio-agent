@@ -1,0 +1,39 @@
+{
+  "id": "Qwen/Qwen3.6-35B-A3B",
+  "modelId": "Qwen/Qwen3.6-35B-A3B",
+  "sha": "995ad96eacd98c81ed38be0c5b274b04031597b0",
+  "createdAt": "2026-04-15T05:59:19.000Z",
+  "lastModified": "2026-04-24T02:53:42.000Z",
+  "pipeline_tag": "image-text-to-text",
+  "library_name": "transformers",
+  "tags": [
+    "transformers",
+    "safetensors",
+    "qwen3_5_moe",
+    "image-text-to-text",
+    "conversational",
+    "license:apache-2.0",
+    "eval-results",
+    "endpoints_compatible",
+    "deploy:sagemaker",
+    "deploy:azure",
+    "region:us"
+  ],
+  "safetensors": {
+    "parameters": {
+      "BF16": 35951822704
+    },
+    "total": 35951822704
+  },
+  "config": {
+    "architectures": [
+      "Qwen3_5MoeForConditionalGeneration"
+    ],
+    "model_type": "qwen3_5_moe"
+  },
+  "siblings": [
+    {
+      "rfilename": "config.json"
+    }
+  ]
+}

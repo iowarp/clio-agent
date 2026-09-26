@@ -32,6 +32,7 @@ from hashlib import sha256
 from typing import Any
 
 from clio_agent.providers.capabilities.link import deployment_model_key_fact
+from clio_agent.providers.capabilities.model_facts import ParameterCount, positive_int
 from clio_agent.providers.capabilities.records import (
     DeploymentCapabilities,
     EndpointCapabilities,
@@ -180,9 +181,31 @@ def parse_v1_models_context_max(payload: Any, model_id: str) -> Fact[int]:
     return unknown("llama.cpp /v1/models: no matching row or no meta.n_ctx_train")
 
 
+def parse_v1_models_parameters(v1_models_payload: Any, model_id: str) -> Fact[ParameterCount]:
+    """``meta.n_params`` (the GGUF's exact parameter count) from ``GET /v1/models``, or unknown."""
+    rows = v1_models_payload.get("data") if isinstance(v1_models_payload, dict) else None
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict) or (model_id and row.get("id") != model_id):
+            continue
+        meta = row.get("meta")
+        total = positive_int(meta.get("n_params")) if isinstance(meta, dict) else None
+        if total is not None:
+            return Fact(
+                ParameterCount(total=total),
+                "server_report",
+                _now_iso(),
+                f"llama.cpp /v1/models meta.n_params={total}",
+            )
+    return unknown()
+
+
 def build_model_capabilities(model_key: str, v1_models_payload: Any, model_id: str) -> ModelCapabilities:
-    """The model-record side of ``GET /v1/models`` (brief: ``meta.n_ctx_train``)."""
-    return ModelCapabilities(model_key=model_key, context_max=parse_v1_models_context_max(v1_models_payload, model_id))
+    """The model-record side of ``GET /v1/models`` (``meta.n_ctx_train``, ``meta.n_params``)."""
+    return ModelCapabilities(
+        model_key=model_key,
+        context_max=parse_v1_models_context_max(v1_models_payload, model_id),
+        parameters=parse_v1_models_parameters(v1_models_payload, model_id),
+    )
 
 
 # --------------------------------------------------------------------------- fetch (plain HTTP)

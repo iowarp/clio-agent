@@ -2,9 +2,9 @@
 
 Fixture: ``tests/fixtures/capabilities/openrouter/api_v1_models_all.json`` is a
 recorded live response (628 models, fetched with ``?output_modalities=all``),
-slimmed to the fields the adapter reads (``id``, ``name``, ``context_length``,
-``architecture``, ``pricing``, ``top_provider``, ``supported_parameters``);
-model descriptions are dropped.
+slimmed to the fields the adapter reads (``id``, ``name``, ``created``,
+``description``, ``hugging_face_id``, ``context_length``, ``architecture``,
+``pricing``, ``top_provider``, ``supported_parameters``).
 
 The real :class:`OpenAICompatHandshake` runs over it for the ``openrouter``
 preset (a fake client serves the recording), so the listing URL, the
@@ -15,6 +15,7 @@ are all exercised end to end.
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,7 @@ from clio_agent.gact.types import LMProviderPreset
 from clio_agent.providers.capabilities import accessor, invalidation
 from clio_agent.providers.capabilities.accessor import get_effective_capabilities
 from clio_agent.providers.capabilities.dialects import openrouter
+from clio_agent.providers.capabilities.model_facts import Price, TokenPricing
 from clio_agent.providers.catalog import get_provider
 from clio_agent.providers.handshake.base import HandshakeContext
 from clio_agent.providers.handshake.model import HandshakeReport
@@ -155,7 +157,10 @@ def test_perceptron_gets_its_four_modalities_and_parameters() -> None:
     assert model.context_max.value == 36864
     assert deployment.output_max.value == 8192
     assert "tools" in (deployment.route_params.value or ())
-    assert deployment.pricing.value == {"prompt": "0.00000015", "completion": "0.0000015"}
+    # OpenRouter's per-token strings, converted to USD per 1M tokens exactly.
+    assert deployment.pricing.value == TokenPricing(
+        Price("usd", Decimal("0.15")), Price("usd", Decimal("1.5"))
+    )
     assert deployment.free.value is False
     assert deployment.router.value is False
 
@@ -172,7 +177,7 @@ def test_a_minus_one_price_is_variable_never_zero() -> None:
     _model, deployment = openrouter.parse_model_row(
         _row("openrouter/auto"), provider_id="openrouter", api_base=API_BASE
     )
-    assert deployment.pricing.value == {"prompt": "variable", "completion": "variable"}
+    assert deployment.pricing.value == TokenPricing(Price("variable"), Price("variable"))
     assert deployment.free.value is False
     assert deployment.router.value is True
 
@@ -241,7 +246,11 @@ async def test_the_wire_carries_the_openrouter_facts() -> None:
 
     jev = rows["typesafe/jev-router"]
     assert jev["modalities"] == ["audio", "image", "pdf", "text", "video"]
-    assert jev["pricing"] == {"prompt": "variable", "completion": "variable"}
+    assert jev["model_facts"]["pricing"]["value"] == {
+        "unit": "usd_per_1m_tokens",
+        "input": {"kind": "variable", "per_1m": None},
+        "output": {"kind": "variable", "per_1m": None},
+    }
 
     free = rows["openrouter/free"]
     assert free["free"] is True and free["router"] is True
@@ -326,7 +335,7 @@ def test_effective_view_exposes_the_deployment_facts() -> None:
     effective = get_effective_capabilities("openrouter", API_BASE, "openrouter/free")
     assert effective.free.value is True
     assert effective.router.value is True
-    assert effective.pricing.value == {"prompt": "0", "completion": "0"}
+    assert effective.pricing.value == TokenPricing(Price("usd", Decimal(0)), Price("usd", Decimal(0)))
 
 
 # --------------------------------------------------------------------------- capability tags

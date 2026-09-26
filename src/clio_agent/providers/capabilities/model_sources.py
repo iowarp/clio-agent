@@ -30,8 +30,9 @@ bare ``None`` sitting outside the type.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import datetime, timezone
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 from clio_agent.providers.capabilities.records import (
     Fact,
@@ -59,6 +60,11 @@ _FACT_FIELDS: tuple[str, ...] = (
     "forbidden_params",
     "sampling_thinking",
     "sampling_instruct",
+    "description",
+    "released_at",
+    "parameters",
+    "catalog_pricing",
+    "hf_repo",
 )
 
 
@@ -120,6 +126,19 @@ def community_catalog_facts(model_id: str) -> ModelCapabilities | None:
 
     if not (model_id or "").strip():
         return None
+    from clio_agent.providers.capabilities.catalog_facts import (  # noqa: PLC0415
+        descriptive_catalog_facts,
+    )
+
+    limits = _catalog_limit_facts(model_id, sources)
+    descriptive = descriptive_catalog_facts(model_id)
+    if limits is None and descriptive is None:
+        return None
+    return merge_model_layers(model_id, limits, descriptive)
+
+
+def _catalog_limit_facts(model_id: str, sources: Any) -> ModelCapabilities | None:
+    """Limits, modalities and task from models.dev / LiteLLM / the local DB."""
     observed_at = _now_iso()
     context, context_source = sources.resolve_context(model_id, "")
     output = sources.resolve_output_limit(model_id, "")
@@ -238,20 +257,35 @@ def resolve_model_capabilities(
 
         overlay_source = default_overlay_source()
     overlay_facts = overlay_source.facts(model_key)
-    hf_facts = hf_repo.facts(model_key) if hf_repo is not None else None
     catalog_facts = community_catalog_facts(community_lookup_id or model_key)
+    if hf_repo is None:
+        hf_repo = _linked_hf_source(user_override, server_report, overlay_facts, catalog_facts)
+    hf_facts = hf_repo.facts(model_key) if hf_repo is not None else None
     if authoritative_report:
-        return merge_model_layers(
-            model_key, user_override, server_report, overlay_facts, hf_facts, catalog_facts
-        )
-    return merge_model_layers(
-        model_key,
-        user_override,
-        overlay_facts,
-        server_report,
-        hf_facts,
-        catalog_facts,
-    )
+        top = (user_override, server_report, overlay_facts)
+    else:
+        top = (user_override, overlay_facts, server_report)
+    merged = merge_model_layers(model_key, *top, hf_facts, catalog_facts)
+    # A release date: a curated catalog's release_date outranks the Hub repo's
+    # createdAt (a repo can be created, or re-uploaded, apart from the release).
+    released = merge_model_layers(model_key, *top, catalog_facts, hf_facts).released_at
+    return replace(merged, released_at=released)
+
+
+def _linked_hf_source(*layers: ModelCapabilities | None) -> HfRepoSource | None:
+    """A metadata-only Hub layer for the repo a source LINKED these weights to, if any.
+
+    Reached only when the endpoint's own dialect serves no Hub weights (so no
+    full Hub layer was wired): OpenRouter's ``hugging_face_id``, a models.dev
+    ``weights`` link, an overlay or user statement. No link, no lookup.
+    """
+    from clio_agent.providers.capabilities.hf_facts import HfMetadataSource  # noqa: PLC0415
+    from clio_agent.providers.capabilities.hf_repo import is_repo_id  # noqa: PLC0415
+
+    for layer in layers:
+        if layer is not None and layer.hf_repo.known and is_repo_id(str(layer.hf_repo.value)):
+            return HfMetadataSource(str(layer.hf_repo.value))
+    return None
 
 
 __all__ = [

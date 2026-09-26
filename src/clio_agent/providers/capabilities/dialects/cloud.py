@@ -21,11 +21,19 @@ as a self-hosted one nobody has evidenced yet -- which is not the same fact.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
+from typing import Any
 
 from clio_agent.providers.capabilities.link import deployment_model_key_fact
+from clio_agent.providers.capabilities.model_facts import (
+    ReleaseDate,
+    release_from_text,
+    release_from_unix,
+)
 from clio_agent.providers.capabilities.records import (
     DeploymentCapabilities,
+    Fact,
     no_restriction,
 )
 
@@ -75,4 +83,42 @@ def build_deployment_capabilities(provider_id: str, api_base: str, model_id: str
     )
 
 
-__all__ = ["CLOUD_DIALECTS", "build_deployment_capabilities"]
+#: The ``/models`` row field that states WHEN a cloud model was created, per
+#: dialect, with its encoding: OpenAI's ``created`` (unix seconds) and
+#: Anthropic's ``created_at`` (RFC 3339). Every other dialect's rows either
+#: carry no such field or one that means something else (a server's own clock),
+#: so they state no release date.
+RELEASE_FIELDS: dict[str, tuple[str, Callable[[Any], ReleaseDate | None]]] = {
+    "openai": ("created", release_from_unix),
+    "anthropic": ("created_at", release_from_text),
+}
+
+
+def model_row_facts(dialect: str, row: Mapping[str, Any], *, observed_at: str) -> dict[str, Fact]:
+    """``released_at`` / ``description`` from one cloud ``/models`` row, when it states them.
+
+    The release date comes only from the dialect's own creation field
+    (:data:`RELEASE_FIELDS`); ``description`` from a row that carries one
+    (Gemini's model list does).
+    """
+    facts: dict[str, Fact] = {}
+    spec = RELEASE_FIELDS.get(dialect)
+    if spec is not None:
+        field_name, parse = spec
+        released = parse(row.get(field_name))
+        if released is not None:
+            facts["released_at"] = Fact(
+                released,
+                "server_report",
+                observed_at,
+                f"{dialect} /models {field_name}={row.get(field_name)!r}",
+            )
+    description = row.get("description")
+    if isinstance(description, str) and description.strip():
+        facts["description"] = Fact(
+            description, "server_report", observed_at, f"{dialect} /models description"
+        )
+    return facts
+
+
+__all__ = ["CLOUD_DIALECTS", "RELEASE_FIELDS", "build_deployment_capabilities", "model_row_facts"]

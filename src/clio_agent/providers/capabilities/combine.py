@@ -19,6 +19,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
+from clio_agent.providers.capabilities.model_facts import (
+    ParameterCount,
+    ReleaseDate,
+    TokenPricing,
+)
 from clio_agent.providers.capabilities.records import (
     DeploymentCapabilities,
     EndpointCapabilities,
@@ -168,11 +173,26 @@ class EffectiveCapabilities:
     #: Endpoint pricing / cost / routing facts -- deployment-record facts only
     #: (what THIS endpoint charges and whether this id is a router), never a
     #: property of the weights.
-    pricing: Decision[dict[str, str]] = field(
+    pricing: Decision[TokenPricing] = field(
         default_factory=lambda: _unknown("no pricing reported")
     )
     free: Decision[bool] = field(default_factory=lambda: _unknown("no pricing reported"))
     router: Decision[bool] = field(default_factory=lambda: _unknown("no router evidence"))
+    #: Descriptive model-record facts (:mod:`.model_facts`), passed through.
+    description: Decision[str] = field(
+        default_factory=lambda: _unknown("no source states a description")
+    )
+    released_at: Decision[ReleaseDate] = field(
+        default_factory=lambda: _unknown("no source states a release date")
+    )
+    parameters: Decision[ParameterCount] = field(
+        default_factory=lambda: _unknown("no source states a parameter count")
+    )
+    #: A community catalog's list price for the weights (a model-record fact),
+    #: shown beside -- never instead of -- what this endpoint charges.
+    catalog_pricing: Decision[TokenPricing] = field(
+        default_factory=lambda: _unknown("no catalog list price")
+    )
 
 
 def _tri_and(*facts: tuple[Fact[bool] | None, str]) -> Decision[bool]:
@@ -497,6 +517,18 @@ def combine_capabilities(
         ),
         free=_single(deployment.free if deployment else None, "deployment", "no pricing reported"),
         router=_single(deployment.router if deployment else None, "deployment", "no router evidence"),
+        description=_single(
+            model.description if model else None, "model", "no source states a description"
+        ),
+        released_at=_single(
+            model.released_at if model else None, "model", "no source states a release date"
+        ),
+        parameters=_single(
+            model.parameters if model else None, "model", "no source states a parameter count"
+        ),
+        catalog_pricing=_single(
+            model.catalog_pricing if model else None, "model", "no catalog list price"
+        ),
     )
 
 

@@ -56,10 +56,14 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
+from clio_agent.providers.capabilities.catalog_facts import descriptive_catalog_facts
 from clio_agent.providers.capabilities.link import deployment_model_key_fact
+from clio_agent.providers.capabilities.model_facts import SUBSCRIPTION
+from clio_agent.providers.capabilities.model_sources import merge_model_layers
 from clio_agent.providers.capabilities.records import (
     DeploymentCapabilities,
     Fact,
@@ -228,6 +232,32 @@ class CliCatalogHandshake(NoOpHandshake):
     async def discover_model_config(
         self, client: Any, ctx: HandshakeContext, raw: dict[str, Any]
     ) -> DiscoveredModelFacts:
+        """The row's facts (:meth:`_row_facts`) plus the plan pricing and cached catalog facts.
+
+        A CLI provider bills through the user's SUBSCRIPTION: its deployment
+        pricing is the typed ``subscription`` value (never $0, never "free").
+        The model's description, release date and list price come from the
+        models.dev / LiteLLM DISK caches only (``allow_fetch=False``) -- this
+        passive read path never touches the network (D4) -- and fill only
+        fields the row itself left unknown.
+        """
+        facts = await self._row_facts(client, ctx, raw)
+        deployment = replace(
+            facts.deployment,
+            pricing=Fact(
+                SUBSCRIPTION,
+                "dialect",
+                _now_iso(),
+                f"{ctx.provider_kind}: billed through the signed-in subscription plan",
+            ),
+        )
+        catalog = descriptive_catalog_facts(facts.discovered.id, allow_fetch=False)
+        model = merge_model_layers(facts.model.model_key, facts.model, catalog)
+        return replace(facts, model=model, deployment=deployment)
+
+    async def _row_facts(
+        self, client: Any, ctx: HandshakeContext, raw: dict[str, Any]
+    ) -> DiscoveredModelFacts:
         """Build :class:`DiscoveredModelFacts`, pre-filled from the overlay when available (D4).
 
         An overlay-sourced row (flagged by :meth:`discover_models`) already
@@ -286,6 +316,11 @@ class CliCatalogHandshake(NoOpHandshake):
                 else unknown()
             ),
             thinking=_thinking_fact_for(ctx.provider_kind, raw),
+            description=(
+                Fact(value=raw["description"], source="server_report", observed_at=observed_at, detail=detail)
+                if isinstance(raw.get("description"), str) and raw["description"].strip()
+                else unknown()
+            ),
         )
         deployment = DeploymentCapabilities(
             provider_id=ctx.provider_id,
