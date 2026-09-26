@@ -48,6 +48,7 @@ from clio_agent.providers.capabilities.records import (
     ModelCapabilities,
     ThinkingSpec,
     modalities_from_capabilities,
+    task_fact,
     unknown,
 )
 
@@ -251,9 +252,21 @@ def parse_show(data: Any, *, model_key: str, observed_at: str | None = None) -> 
     if arch and isinstance(info, dict):
         context_window = _positive_int(info.get(f"{arch}.context_length"))
     capabilities_known = bool(caps)
+    # The exhaustive capabilities list names the task: ``embedding`` models
+    # embed; ``completion`` models generate text.
+    task = (
+        "feature-extraction"
+        if "embedding" in caps
+        else "text-generation"
+        if "completion" in caps
+        else None
+    )
 
     return ModelCapabilities(
         model_key=model_key,
+        task=task_fact(
+            task, source="server_report", observed_at=observed_at, detail="ollama /api/show capabilities"
+        ),
         context_max=(
             Fact(context_window, "server_report", observed_at, "ollama /api/show model_info.<arch>.context_length")
             if context_window is not None

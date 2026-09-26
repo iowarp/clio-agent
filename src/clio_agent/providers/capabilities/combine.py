@@ -127,7 +127,7 @@ class EffectiveCapabilities:
     """The combined view of a model/endpoint/deployment triple (brief 5.5)."""
 
     model_key: str | None
-    model_type: Decision[str]
+    task: Decision[str]
     context: Decision[int]
     output_max: Decision[int]
     input_modalities: Decision[frozenset[str]]
@@ -146,6 +146,18 @@ class EffectiveCapabilities:
     sampling_instruct: Decision[dict[str, float]] = field(
         default_factory=lambda: _unknown("no model sampling record")
     )
+    #: What the model produces (a model-record fact).
+    output_modalities: Decision[frozenset[str]] = field(
+        default_factory=lambda: _unknown("no source states output modalities")
+    )
+    #: Endpoint pricing / cost / routing facts -- deployment-record facts only
+    #: (what THIS endpoint charges and whether this id is a router), never a
+    #: property of the weights.
+    pricing: Decision[dict[str, str]] = field(
+        default_factory=lambda: _unknown("no pricing reported")
+    )
+    free: Decision[bool] = field(default_factory=lambda: _unknown("no pricing reported"))
+    router: Decision[bool] = field(default_factory=lambda: _unknown("no router evidence"))
 
 
 def _tri_and(*facts: tuple[Fact[bool] | None, str]) -> Decision[bool]:
@@ -215,18 +227,26 @@ def _intersect_modalities(
     return _unknown("neither model nor deployment reports modalities")
 
 
-def _model_type(model: ModelCapabilities | None) -> Decision[str]:
-    """The model's type is a model-record fact alone: no endpoint or deployment narrows it."""
-    if model is None or not model.model_type.known:
+def _single(fact: Fact[T] | None, owner: str, missing: str) -> Decision[T]:
+    """A fact only one record carries, passed through with its provenance."""
+    if fact is None or not fact.known:
+        return _unknown((fact.detail if fact is not None else "") or missing)
+    source, observed_at = _provenance(fact)
+    return Decision(fact.value, owner, fact.detail or f"{owner}: reported", source, observed_at)
+
+
+def _task(model: ModelCapabilities | None) -> Decision[str]:
+    """The model's task is a model-record fact alone: no endpoint or deployment narrows it."""
+    if model is None or not model.task.known:
         return _unknown(
-            (model.model_type.detail if model is not None else "")
-            or "no source states the model type"
+            (model.task.detail if model is not None else "")
+            or "no source states the model task"
         )
-    source, observed_at = _provenance(model.model_type)
+    source, observed_at = _provenance(model.task)
     return Decision(
-        model.model_type.value,
+        model.task.value,
         "model",
-        model.model_type.detail or f"model: {model.model_type.value}",
+        model.task.detail or f"model: {model.task.value}",
         source,
         observed_at,
     )
@@ -423,7 +443,7 @@ def combine_capabilities(
 
     return EffectiveCapabilities(
         model_key=model_key,
-        model_type=_model_type(model),
+        task=_task(model),
         context=context,
         output_max=output_max,
         input_modalities=modalities,
@@ -434,6 +454,14 @@ def combine_capabilities(
         thinking=thinking,
         sampling_thinking=sampling_thinking,
         sampling_instruct=sampling_instruct,
+        output_modalities=_single(
+            model.output_modalities if model else None, "model", "no source states output modalities"
+        ),
+        pricing=_single(
+            deployment.pricing if deployment else None, "deployment", "no pricing reported"
+        ),
+        free=_single(deployment.free if deployment else None, "deployment", "no pricing reported"),
+        router=_single(deployment.router if deployment else None, "deployment", "no router evidence"),
     )
 
 

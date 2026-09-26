@@ -42,7 +42,7 @@ from functools import lru_cache
 from typing import Any
 
 from clio_agent.providers.capabilities.hf_modalities import (
-    PIPELINE_MODEL_TYPES,
+    PIPELINE_TASKS,
     PROCESSOR_FILES,
     modalities_from_repo,
 )
@@ -50,7 +50,7 @@ from clio_agent.providers.capabilities.records import (
     Fact,
     ModelCapabilities,
     ThinkingSpec,
-    model_type_fact,
+    task_fact,
     unknown,
 )
 from clio_agent.providers.fetched_catalog import FetchedCatalog, FetchedCatalogUnavailable
@@ -474,8 +474,8 @@ class HfRepoCatalogSource:
         modalities, modality_detail = modalities_from_repo(
             resolution, config=config, processor=processor, params=params
         )
-        type_fact = model_type_fact(
-            PIPELINE_MODEL_TYPES.get(resolution.pipeline_tag),
+        type_fact = task_fact(
+            PIPELINE_TASKS.get(resolution.pipeline_tag),
             source="hf_repo",
             observed_at=observed_at,
             detail=f"{detail_repo}: pipeline_tag={resolution.pipeline_tag!r}",
@@ -487,7 +487,7 @@ class HfRepoCatalogSource:
         is_reasoning = thinking is not None and thinking.mechanism != "none"
         return ModelCapabilities(
             model_key=model_key,
-            model_type=type_fact,
+            task=type_fact,
             input_modalities=(
                 Fact(
                     modalities,

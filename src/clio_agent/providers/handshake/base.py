@@ -55,6 +55,12 @@ logger = logging.getLogger(__name__)
 #: Hugging Face layer.
 _HF_REPO_DIALECTS: frozenset[str] = frozenset({"vllm", "llama_cpp", "lm_studio", "ollama"})
 
+#: Dialects whose own model catalog is the source of truth for their models
+#: ("golden" providers): their adapter's facts rank directly below a user
+#: override, above the overlay. OpenRouter's ``/api/v1/models`` states every
+#: model's modalities, parameters, limits and pricing itself.
+_AUTHORITATIVE_DIALECTS: frozenset[str] = frozenset({"openrouter"})
+
 #: How many model rows are discovered + enriched at once. Enrichment reads the
 #: community catalogs and the Hugging Face layer (network on a cold cache), so
 #: a 40-model gateway must not run them one after another.
@@ -312,6 +318,7 @@ class ProviderHandshake(abc.ABC):
             server_report=model,
             hf_repo=hf_source,
             community_lookup_id=facts.discovered.id,
+            authoritative_report=self._endpoint_dialect(ctx) in _AUTHORITATIVE_DIALECTS,
         )
         if resolved == model:
             return facts
@@ -319,21 +326,26 @@ class ProviderHandshake(abc.ABC):
 
     def _hf_source(self, ctx: HandshakeContext, model_key: str) -> Any:
         """The Hugging Face layer for ``model_key`` on this endpoint, or ``None``."""
-        from clio_agent.providers.capabilities import invalidation  # noqa: PLC0415
         from clio_agent.providers.capabilities.hf_repo import (  # noqa: PLC0415
             HfRepoCatalogSource,
             is_repo_id,
         )
-        from clio_agent.providers.identity import endpoint_key  # noqa: PLC0415
 
         if not is_repo_id(model_key):
             return None
+        if self._endpoint_dialect(ctx) not in _HF_REPO_DIALECTS:
+            return None
+        return HfRepoCatalogSource()
+
+    def _endpoint_dialect(self, ctx: HandshakeContext) -> str:
+        """This endpoint's recorded dialect ("" before its record exists)."""
+        from clio_agent.providers.capabilities import invalidation  # noqa: PLC0415
+        from clio_agent.providers.identity import endpoint_key  # noqa: PLC0415
+
         endpoint = invalidation.get_endpoint_capabilities(
             endpoint_key(ctx.provider_id, ctx.api_base)
         )
-        if endpoint is None or endpoint.dialect not in _HF_REPO_DIALECTS:
-            return None
-        return HfRepoCatalogSource()
+        return endpoint.dialect if endpoint is not None else ""
 
     # ------------------------------------------------------------------ helpers
     def _record_model_facts(self, facts: DiscoveredModelFacts) -> None:

@@ -34,7 +34,7 @@ class OllamaHandshake(OpenAICompatHandshake):
     async def discover_models(self, client: Any, ctx: HandshakeContext) -> list[dict[str, Any]]:
         """List installed models from the native ``/api/tags``."""
         rows = await ollama_dialect.fetch_tags(client, native_root(ctx.api_base))
-        return [r for r in rows if not self._is_embedding(r)]
+        return rows
 
     async def discover_model_config(
         self, client: Any, ctx: HandshakeContext, raw: dict[str, Any]

@@ -67,7 +67,6 @@ API_KEY_REJECTED = "api_key_rejected"
 
 #: Substrings that mark a model row as an embedding/reranker model we skip — the
 #: handshake catalogs only chat-completion models.
-_EMBEDDING_MARKERS = ("embed", "embedding", "rerank", "reranker")
 
 
 def _now_iso() -> str:
@@ -160,7 +159,14 @@ class OpenAICompatHandshake(ProviderHandshake):
         return None
 
     def _models_url(self, ctx: HandshakeContext) -> str:
-        """The ``/models`` listing URL for this provider's ``api_base``."""
+        """The ``/models`` listing URL for this provider's ``api_base``.
+
+        OpenRouter's listing hides every non-text-output model unless asked for
+        all output modalities (:func:`~clio_agent.providers.capabilities.
+        dialects.openrouter.models_url`).
+        """
+        if self._dialect(ctx) == openrouter_dialect.DIALECT:
+            return openrouter_dialect.models_url(ctx.api_base)
         return f"{ctx.api_base.rstrip('/')}/models"
 
     async def check_connectivity(self, client: Any, ctx: HandshakeContext) -> ConnectivityResult:
@@ -214,13 +220,14 @@ class OpenAICompatHandshake(ProviderHandshake):
         )
 
     async def discover_models(self, client: Any, ctx: HandshakeContext) -> list[dict[str, Any]]:
-        """List the provider's chat models as raw rows.
+        """List the provider's models as raw rows.
 
         Parses the OpenAI ``{"data": [{"id", ...}]}`` shape (or a bare list, for
-        a server that skips the wrapper). Embedding/reranker rows are dropped.
-        Ollama routes through :class:`~clio_agent.providers.handshake.ollama.
+        a server that skips the wrapper). Ollama routes through :class:`~clio_agent.providers.handshake.ollama.
         OllamaHandshake` instead (its native ``/api/tags`` reports nothing
-        useful through this generic ``/models`` shim).
+        useful through this generic ``/models`` shim). Every row is listed: a
+        surrogate (embedding, rerank, ...) is a first-class model identified by its
+        task fact and refused only as the CHAT model, never dropped by its name.
         """
         headers = self._auth_header(ctx)
         rows: list[dict[str, Any]] = []
@@ -231,7 +238,7 @@ class OpenAICompatHandshake(ProviderHandshake):
                 rows = self._rows_from_openai_payload(payload)
         except Exception:  # noqa: BLE001 - unparseable models payload yields no rows
             rows = []
-        return [r for r in rows if not self._is_embedding(r)]
+        return rows
 
     def _rows_from_openai_payload(self, payload: Any) -> list[dict[str, Any]]:
         """Extract model rows from an OpenAI ``/models`` JSON payload."""
@@ -242,14 +249,6 @@ class OpenAICompatHandshake(ProviderHandshake):
         if isinstance(payload, list):  # some servers return a bare list
             return [r for r in payload if isinstance(r, dict)]
         return []
-
-    def _is_embedding(self, raw: dict[str, Any]) -> bool:
-        """Heuristically detect an embedding/reranker row to skip it."""
-        model_id = str(raw.get("id", "")).lower()
-        if any(marker in model_id for marker in _EMBEDDING_MARKERS):
-            return True
-        row_type = str(raw.get("type", "")).lower()
-        return row_type in {"embeddings", "embedding", "rerank", "reranker"}
 
     def _dialect(self, ctx: HandshakeContext) -> str:
         """Resolve this endpoint's dialect the SAME way the endpoint record does.
