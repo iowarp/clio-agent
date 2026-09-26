@@ -54,9 +54,18 @@ HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
 WORKSPACE_ID = workspace_catalog_id()
 BASIC_ID = basic_catalog_id()
 MINIMAL_ID = "https://example.test/a2ui/catalogs/minimal"
+OWN_ID = "https://example.test/a2ui/catalogs/own"
 MARKETPLACE = Path(__file__).resolve().parents[2] / "external" / "clio-agent-marketplace"
-EARTHSCOPE_ID = "https://iowarp.ai/a2ui/catalogs/earthscope-stations/v1"
 UNDECLARED_PACK = FIXTURE_PACKS / "undeclared"
+# In-repo stand-ins for the shipped declaration shapes, so the allowlist behavior
+# tests run on any checkout: ``base-agent`` declares ``[clio-workspace]`` and
+# ``earthscope-single-agent`` declares ``[clio-workspace, <its own catalog>]``.
+WORKSPACE_ONLY_PACK = FIXTURE_PACKS / "workspace-only"
+WORKSPACE_ONLY_PACK_ID = "a2ui-workspace-only-pack"
+WORKSPACE_THEN_OWN_PACK = FIXTURE_PACKS / "workspace-then-own"
+WORKSPACE_THEN_OWN_PACK_ID = "a2ui-workspace-then-own-pack"
+# Packs whose declarations the shipped-pack test must see; guards against a vacuous pass.
+SHIPPED_PACKS_WITH_DECLARATIONS = ("base-agent", "earthscope-single-agent")
 PRODUCER_TOOLS = {
     "create_a2ui_surface",
     "update_a2ui_components",
@@ -301,16 +310,15 @@ def test_declared_agent_gets_producer_tools(
 
 
 # --------------------------------------------------------------------------- #
-# Shipped agents: base-agent and EarthScope                                   #
+# The shipped declaration shapes: builtin-only, and builtin then own catalog  #
 # --------------------------------------------------------------------------- #
 
 
-def test_base_agent_gets_exactly_clio_workspace(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _at_pack_floor(monkeypatch)
+def test_workspace_only_agent_gets_exactly_clio_workspace(tmp_path: Path) -> None:
+    """base-agent's shape: ``[clio-workspace]`` yields that catalog and its skill only."""
+
     app, sid = _app_session(tmp_path)
-    bind_session_blueprint(app, sid, MARKETPLACE / "base-agent", "base-agent")
+    bind_session_blueprint(app, sid, WORKSPACE_ONLY_PACK, WORKSPACE_ONLY_PACK_ID)
 
     assert session_producible_catalog_ids(app, sid) == [WORKSPACE_ID]
     runtime = skill_runtime_for_agent(app, _root_agent(), session_id=sid)
@@ -318,25 +326,34 @@ def test_base_agent_gets_exactly_clio_workspace(
     assert catalog_skills == ["a2ui-catalog-clio-workspace"]
 
 
-def test_earthscope_gets_clio_workspace_then_its_own_catalog(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _at_pack_floor(monkeypatch)
-    app, sid = _app_session(tmp_path)
-    bind_session_blueprint(
-        app, sid, MARKETPLACE / "earthscope-single-agent", "earthscope-single-agent"
-    )
+def test_agent_gets_clio_workspace_then_its_own_catalog(tmp_path: Path) -> None:
+    """earthscope-single-agent's shape: the builtin first, then the pack's own catalog."""
 
-    assert session_producible_catalog_ids(app, sid) == [WORKSPACE_ID, EARTHSCOPE_ID]
+    app, sid = _app_session(tmp_path)
+    bind_session_blueprint(app, sid, WORKSPACE_THEN_OWN_PACK, WORKSPACE_THEN_OWN_PACK_ID)
+
+    assert session_producible_catalog_ids(app, sid) == [WORKSPACE_ID, OWN_ID]
     assert agent_capabilities(app, sid)["v0.9"]["supportedCatalogIds"] == [
         WORKSPACE_ID,
-        EARTHSCOPE_ID,
+        OWN_ID,
     ]
 
 
 def test_shipped_marketplace_packs_validate_with_their_declarations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The one test here about SHIPPED content: the pinned marketplace submodule.
+
+    It cannot be self-contained (its subject is the submodule), so its requirement is
+    explicit: CI checks out submodules, and a local checkout without it fails here with
+    the command that fixes it, instead of globbing an empty directory and passing.
+    """
+
+    missing = [p for p in SHIPPED_PACKS_WITH_DECLARATIONS if not (MARKETPLACE / p).is_dir()]
+    assert not missing, (
+        f"the marketplace submodule is not checked out (missing {missing} under "
+        f"{MARKETPLACE}); run: git submodule update --init external/clio-agent-marketplace"
+    )
     _at_pack_floor(monkeypatch)
     for agent_md in sorted(MARKETPLACE.glob("*/AGENT.md")):
         pack = agent_md.parent.name
@@ -369,12 +386,9 @@ def test_unnamed_surface_selects_the_first_declared_catalog_the_client_supports(
     assert created["catalog_id"] == WORKSPACE_ID
 
 
-def test_basic_is_not_producible_unless_declared(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _at_pack_floor(monkeypatch)
+def test_basic_is_not_producible_unless_declared(tmp_path: Path) -> None:
     app, sid = _app_session(tmp_path)
-    bind_session_blueprint(app, sid, MARKETPLACE / "base-agent", "base-agent")
+    bind_session_blueprint(app, sid, WORKSPACE_ONLY_PACK, WORKSPACE_ONLY_PACK_ID)
     _advertise(app, sid, [BASIC_ID])
 
     assert BASIC_ID not in session_producible_catalog_ids(app, sid)

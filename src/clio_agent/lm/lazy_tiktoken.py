@@ -92,6 +92,11 @@ def install_lazy_cl100k() -> bool:
     """
 
     global _installed
+    # The vendored rank files must be hash-valid before ANY load in this process, or
+    # tiktoken deletes and re-downloads them (see lm.tiktoken_vendored). Once per process.
+    from clio_agent.lm.tiktoken_vendored import repair_vendored_rank_files  # noqa: PLC0415
+
+    repair_vendored_rank_files()
     if _installed:
         return True
     try:
