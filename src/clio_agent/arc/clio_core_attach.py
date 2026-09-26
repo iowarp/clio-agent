@@ -23,6 +23,10 @@ a process-local record of where it is -- ``starting`` / ``attached`` /
 ``unavailable(reason)`` / ``not_selected`` -- that the doctor turns into the
 ``clio_core_attach`` row (:func:`clio_agent.runtime.clio_core_health.probe_clio_core_attach`).
 It only reports what already happened; it never times anything out.
+
+POST-ATTACH PROBE. A clean ``clio_init`` + ``initialize_cte`` does not prove the
+binding works; :func:`verify_post_attach` runs one real RPC before the store is
+handed out, so a half-attached client degrades typed at init, not mid-session.
 """
 
 from __future__ import annotations
@@ -40,7 +44,7 @@ from typing import TYPE_CHECKING
 from clio_agent.arc.init_degradation import CLIO_CORE_CLIENT_ATTACH_FAILED
 
 if TYPE_CHECKING:
-    from clio_agent.arc.storage import ARCStore
+    from clio_agent.arc.storage import ARCStore, ClioCoreStore
 
 logger = logging.getLogger(__name__)
 
@@ -142,12 +146,18 @@ class ClioCoreAttachError(RuntimeError):
 
     degradation_reason = CLIO_CORE_CLIENT_ATTACH_FAILED
 
-    def __init__(self, *, port: int, config_path: str) -> None:
+    def __init__(self, *, port: int, config_path: str, stage: str = "client_init") -> None:
         self.port = port
         self.config_path = config_path
+        self.stage = stage
+        what = (
+            "the native client handshake did not complete"
+            if stage == "client_init"
+            else "the first RPC after the attach did not answer"
+        )
         super().__init__(
-            f"clio-core client attach failed: a daemon is listening on port {port}, but the "
-            f"native client handshake did not complete (config: {config_path or '<none>'}, "
+            f"clio-core client attach failed at stage={stage}: a daemon is listening on port "
+            f"{port}, but {what} (config: {config_path or '<none>'}, "
             f"CLIO_SERVER_CONF={os.environ.get('CLIO_SERVER_CONF', '') or '<unset>'})."
         )
 
@@ -181,7 +191,9 @@ def build_tracked_store(cfg: str, *, backend: str | None, data_dir: "str | Path"
         )
         mark_unavailable(record.reason, str(exc), cfg, port)
         return storage.LocalFSStore(data_dir)
-    mark_attached(cfg, port)
+    # The daemon's config, when this process adopted it (first config wins).
+    effective = getattr(store, "_config_path", "") or cfg
+    mark_attached(effective, storage._resolve_runtime_port(effective))
     return store
 
 
@@ -222,5 +234,30 @@ def attach_native_client(
         return
     on_failure()
     error = ClioCoreAttachError(port=port, config_path=config_path)
+    logger.error("%s reason=%s", error, CLIO_CORE_CLIENT_ATTACH_FAILED)
+    raise error
+
+
+def verify_post_attach(store: "ClioCoreStore", *, on_failure: Callable[[], None]) -> None:
+    """Prove a freshly attached store answers ONE real RPC before it is handed out.
+
+    A clean ``clio_init`` + ``initialize_cte`` does not prove the binding works; the
+    first RPC does. This reuses the store's own liveness sentinel
+    (:func:`~clio_agent.arc.rpc_liveness.store_rpc_health_probe`: ``GetBlobSize`` on a
+    key that never exists, bounded by the configured stall window, no new timeout). A
+    failure runs ``on_failure`` (client deregistration) and raises typed, so ARC
+    degrades loudly at init instead of hanging or crashing mid-session.
+
+    Raises:
+        ClioCoreAttachError: ``stage="post_attach_probe"`` when the probe RPC fails.
+    """
+    from clio_agent.arc.rpc_liveness import store_rpc_health_probe  # noqa: PLC0415 - cycle
+
+    if store_rpc_health_probe(store, kind=store._HEALTH_PROBE_KIND, name=store._HEALTH_PROBE_NAME):
+        return
+    on_failure()
+    error = ClioCoreAttachError(
+        port=store._gate.port, config_path=store._config_path, stage="post_attach_probe"
+    )
     logger.error("%s reason=%s", error, CLIO_CORE_CLIENT_ATTACH_FAILED)
     raise error

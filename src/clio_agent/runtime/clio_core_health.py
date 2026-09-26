@@ -244,6 +244,59 @@ def probe_clio_core_attach(*, state: object | None = None) -> list[IntegrationSt
     ]
 
 
+def probe_clio_core_config_adoption(*, record: object | None = None) -> list[IntegrationStatus]:
+    """Surface a first-config-wins adoption as the ``clio_core_config_adoption`` row.
+
+    One clio-core daemon runs per machine. When this process asked for a different
+    config than the running daemon's, it attached with the daemon's config
+    (:func:`clio_agent.arc.clio_core_daemon_version.resolve_effective_config`); this row
+    names the settings that differ so the substitution is never silent. DEGRADED (this
+    CLIO's own settings are not in effect) but not required, so it never trips a 503.
+
+    Args:
+        record: Optional injected ``ConfigAdoption`` for testing; defaults to the live
+            process record.
+
+    Returns:
+        One row when this process adopted the daemon's config, else empty.
+    """
+    from clio_agent.arc.clio_core_daemon_version import (  # noqa: PLC0415 - keep import light
+        CLIO_CORE_CONFIG_ADOPTED_FROM_DAEMON,
+        ConfigAdoption,
+        config_adoption_snapshot,
+    )
+
+    snap = record if isinstance(record, ConfigAdoption) else config_adoption_snapshot()
+    if snap is None:
+        return []
+    keys = ", ".join(sorted(snap.diffs)) or "unspecified keys"
+    return [
+        IntegrationStatus(
+            name="clio_core_config_adoption",
+            state=IntegrationState.DEGRADED,
+            summary=(
+                f"clio-core is running another CLIO's config ({snap.effective_config_path}); "
+                f"this CLIO asked for {snap.requested_config_path}, which differs in: {keys}. "
+                "The first config wins on the one daemon per machine."
+            ),
+            config_source="runtime:clio_core_config_adoption",
+            next_action=(
+                "No action needed to keep running. To apply this CLIO's settings, stop "
+                "every CLIO on this machine so the daemon exits, then start this one first."
+            ),
+            endpoint=snap.effective_config_path,
+            fallback="none",
+            details={
+                "reason": CLIO_CORE_CONFIG_ADOPTED_FROM_DAEMON,
+                "requested_config_path": snap.requested_config_path,
+                "effective_config_path": snap.effective_config_path,
+                "diffs": snap.diffs,
+            },
+            required=False,
+        )
+    ]
+
+
 def probe_clio_core_liveness(*, snapshot: list[dict] | None = None) -> list[IntegrationStatus]:
     """Surface a quarantined (daemon-lost) clio-core store as a doctor row (#892).
 
@@ -668,7 +721,7 @@ def probe_clio_core_write_health(
 
 
 def probe_clio_core_health(*, env: Mapping[str, str] | None = None) -> list[IntegrationStatus]:
-    """Aggregate the clio-core doctor rows: attach + init (#897) + ram cap (#890) + liveness (#892) + daemon mem (#891) + cold-tier disk (#1001).
+    """Aggregate the clio-core doctor rows: attach + config adoption + init (#897) + ram cap (#890) + liveness (#892) + daemon mem (#891) + cold-tier disk (#1001).
 
     A single collection seam so the doctor wires ONE call for all clio-core sub-checks.
 
@@ -681,6 +734,7 @@ def probe_clio_core_health(*, env: Mapping[str, str] | None = None) -> list[Inte
     """
     return [
         *probe_clio_core_attach(),
+        *probe_clio_core_config_adoption(),
         *probe_clio_core_init_degradation(),
         *probe_clio_core_ram_cap(env=env),
         *probe_clio_core_liveness(),

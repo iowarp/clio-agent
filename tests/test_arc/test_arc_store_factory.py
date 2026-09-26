@@ -16,6 +16,7 @@ import time
 import msgspec
 import pytest
 
+from clio_agent.arc import clio_core_daemon_version as daemon_version
 from clio_agent.arc import runtime_stop, storage
 from clio_agent.arc.clio_core_config import host_key
 from clio_agent.arc.memory import ARCMemory
@@ -216,7 +217,13 @@ def test_ensure_runtime_daemon_connects_when_already_up(monkeypatch, tmp_path):
         raise AssertionError("spawned a daemon when one was already running")
 
     monkeypatch.setattr(storage, "_spawn_runtime_daemon", fail_spawn)
-    storage._ensure_runtime_daemon(object(), "", "error")  # no raise == connect path
+    cfg = tmp_path / "cte.yaml"
+    cfg.write_text("networking:\n  port: 4321\n", encoding="utf-8")
+    daemon_version.record_daemon_version(
+        storage.runtime_state_dir(), daemon_binary="clio_run", config_path=str(cfg)
+    )
+    # no raise == connect path; the running daemon's config is the effective one
+    assert storage._ensure_runtime_daemon(object(), str(cfg), "error") == str(cfg)
     assert os.getpid() in storage._live_client_pids()  # AND we registered as a client
 
 
@@ -445,7 +452,7 @@ def test_ensure_runtime_registers_atexit_release(monkeypatch, tmp_path):
     fake_clio_core.initialize_cte = lambda *a, **k: None
     monkeypatch.setitem(sys.modules, "iowarp_core", fake_iowarp)
     monkeypatch.setitem(sys.modules, "clio_cte_core_ext", fake_clio_core)
-    monkeypatch.setattr(storage, "_ensure_runtime_daemon", lambda *a, **k: None)
+    monkeypatch.setattr(storage, "_ensure_runtime_daemon", lambda _core, cfg, _lvl: cfg)
     monkeypatch.setattr(storage.time, "sleep", lambda *_a, **_k: None)
     monkeypatch.setattr(storage.ClioCoreStore, "_initialized", False)
 
