@@ -440,7 +440,7 @@ def test_ensure_runtime_registers_atexit_release(monkeypatch, tmp_path):
     fake_clio_core = _types.ModuleType("clio_cte_core_ext")
     fake_clio_core.ChimaeraMode = SimpleNamespace(kClient=object())
     fake_clio_core.PoolQuery = SimpleNamespace(Dynamic=lambda: object())
-    fake_clio_core.chimaera_init = lambda *a, **k: None
+    fake_clio_core.chimaera_init = lambda *a, **k: True  # the binding returns a bool
     fake_clio_core.initialize_cte = lambda *a, **k: None
     monkeypatch.setitem(sys.modules, "iowarp_core", fake_iowarp)
     monkeypatch.setitem(sys.modules, "clio_cte_core_ext", fake_clio_core)

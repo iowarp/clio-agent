@@ -36,12 +36,10 @@ $ErrorActionPreference = 'Stop'
 if ($env:CLIO_PREFIX) { $Prefix = $env:CLIO_PREFIX } else { $Prefix = Join-Path $HOME 'AppData\Local\clio' }
 if ($env:CLIO_PORT)   { $Port   = [int]$env:CLIO_PORT } else { $Port = 17800 }
 if ($env:CLIO_BIN_DIR){ $BinDir = $env:CLIO_BIN_DIR } else { $BinDir = Join-Path $HOME 'AppData\Local\Microsoft\WindowsApps' }
-# Keep runtime state, CTE storage, and agent data with the selected install.
-# User overrides remain authoritative; these defaults prevent cross-install
-# coordination collisions and follow a non-system installation drive.
+# Agent data stays with the selected install. The clio-core daemon does NOT: there
+# is exactly one per machine (host-global ~/.clio state, fixed ports, one CTE
+# config), shared by every CLIO, so the launcher never scopes its identity.
 if (-not $env:CLIO_DATA_DIR) { $env:CLIO_DATA_DIR = Join-Path $Prefix 'data' }
-if (-not $env:CLIO_ARC_CTE_DIR) { $env:CLIO_ARC_CTE_DIR = Join-Path $Prefix 'cte' }
-if (-not $env:CLIO_RUNTIME_STATE_DIR) { $env:CLIO_RUNTIME_STATE_DIR = Join-Path $Prefix 'runtime-state' }
 $env:PATH = "$BinDir;$env:PATH"
 
 $PidFile   = Join-Path $Prefix 'clio-server.pid'
