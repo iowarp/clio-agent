@@ -1,0 +1,19 @@
+# Salesforce SFR-Embedding-Mistral: an embedding model (Hub pipeline_tag
+# feature-extraction, MistralModel with no LM head; recorded in tests/fixtures).
+# contextWindow is its config.json max_position_embeddings; maxTokens is 1 because
+# an embedding model returns one vector and no text (the schema requires a positive value).
+- family: sfr-embedding-mistral
+  matchPatterns:
+    - sfr-embedding-mistral
+  capabilities:
+    chat: false
+    tools: false
+    reasoning: false
+    structuredOutputs: null
+    vision: false
+    audio: false
+    embeddings: true
+    rerank: false
+    fim: false
+    contextWindow: 32768
+    maxTokens: 1

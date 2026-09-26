@@ -83,19 +83,16 @@ async def test_discover_model_config_maps_qwen_fields() -> None:
     by_id = {row["id"]: row for row in raw_rows}
     assert "qwopus3.5-9b-v3" in by_id
 
-    profile = await handshake.discover_model_config(client, ctx, by_id["qwopus3.5-9b-v3"])
+    facts = await handshake.discover_model_config(client, ctx, by_id["qwopus3.5-9b-v3"])
 
-    assert profile.id == "qwopus3.5-9b-v3"
-    assert profile.context_window == 262144
-    assert profile.loaded_context_window == 65536
-    assert profile.loaded_context_window is not None
-    assert profile.native_tool_calling is True
-    assert profile.quantization == "Q4_K_M"
-    assert profile.arch == "qwen35"
-    assert profile.is_loaded is True
-    assert profile.context_source == "live"
-    # effective window is the loaded (runtime) one, not the ceiling
-    assert profile.effective_context_window == 65536
+    assert facts.discovered.id == "qwopus3.5-9b-v3"
+    assert facts.model.context_max.value == 262144
+    assert facts.model.context_max.source == "server_report"
+    assert facts.deployment.context_served.value == 65536
+    assert facts.model.tools.value is True
+    assert facts.discovered.raw["quantization"] == "Q4_K_M"
+    assert facts.discovered.raw["arch"] == "qwen35"
+    assert facts.discovered.is_loaded is True
 
 
 @pytest.mark.asyncio
@@ -109,10 +106,9 @@ async def test_non_tool_model_has_no_native_tool_calling() -> None:
     embed = await handshake.discover_model_config(
         _FakeAsyncClient({}), ctx, by_id["text-embedding-nomic-embed-text-v1.5"]
     )
-    assert embed.native_tool_calling is False
-    assert embed.capabilities == ()
-    assert embed.is_loaded is False
-    assert embed.loaded_context_window is None
+    assert not embed.model.tools.known  # no capabilities list reported: unknown, not False
+    assert embed.discovered.is_loaded is False
+    assert not embed.deployment.context_served.known
 
 
 @pytest.mark.asyncio
@@ -129,15 +125,15 @@ async def test_connectivity_ok_no_auth_required() -> None:
 
 @pytest.mark.asyncio
 async def test_connectivity_falls_back_to_openai_models() -> None:
-    """When ``/api/v0/models`` is absent, the OpenAI ``/models`` route still passes."""
+    """When neither native endpoint answers, the OpenAI ``/models`` route still passes."""
     handshake = LMStudioHandshake(provider=None)
     client = _FakeAsyncClient({f"{API_BASE}/models": _FakeResponse(200, {"data": []})})
 
     result = await handshake.check_connectivity(client, _ctx())
     assert result.connectivity is ConnectivityState.OK
     assert result.auth is AuthState.NOT_REQUIRED
-    # native endpoint was tried first, then the fallback
-    assert client.requested == [f"{ROOT}/api/v0/models", f"{API_BASE}/models"]
+    # v1, then v0, then the OpenAI-compatible fallback (brief Part 6: v1 first).
+    assert client.requested == [f"{ROOT}/api/v1/models", f"{ROOT}/api/v0/models", f"{API_BASE}/models"]
 
 
 @pytest.mark.asyncio
@@ -153,8 +149,31 @@ async def test_connectivity_unreachable() -> None:
 
 
 @pytest.mark.asyncio
-async def test_root_strips_trailing_v1() -> None:
-    """``_root`` strips a trailing ``/v1`` (with or without a trailing slash)."""
-    assert LMStudioHandshake._root("http://h:1234/v1") == "http://h:1234"
-    assert LMStudioHandshake._root("http://h:1234/v1/") == "http://h:1234"
-    assert LMStudioHandshake._root("http://h:1234") == "http://h:1234"
+async def test_discover_models_prefers_v1_over_v0() -> None:
+    """P4b: when ``/api/v1/models`` answers, it wins over the v0 fallback (brief Part 6)."""
+    capability_fixtures = Path(__file__).parent.parent / "fixtures" / "capabilities" / "lm_studio"
+    v1_payload = json.loads((capability_fixtures / "api_v1_models.json").read_text(encoding="utf-8"))
+    v0_payload = _load_fixture("lmstudio_v0_models.json")
+    handshake = LMStudioHandshake(provider=None)
+    client = _FakeAsyncClient(
+        {
+            f"{ROOT}/api/v1/models": _FakeResponse(200, v1_payload),
+            f"{ROOT}/api/v0/models": _FakeResponse(200, v0_payload),
+        }
+    )
+    ctx = _ctx()
+
+    raw_rows = await handshake.discover_models(client, ctx)
+
+    assert client.requested == [f"{ROOT}/api/v1/models"]  # v0 never even queried
+    assert [row["id"] for row in raw_rows] == ["qwen/qwen3-8b"]
+
+    facts = await handshake.discover_model_config(client, ctx, raw_rows[0])
+
+    assert facts.discovered.id == "qwen/qwen3-8b"
+    assert facts.model.context_max.value == 40960
+    assert facts.model.tools.value is True
+    assert facts.deployment.context_served.value == 8192
+    assert facts.deployment.template_caps.value == {
+        "reasoning_allowed_options": ["low", "medium", "high"]
+    }

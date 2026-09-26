@@ -261,12 +261,16 @@ def test_capabilities_and_provider_catalog_report_image_part_support(client: Tes
     caps = client.get("/v1/capabilities").json()["capabilities"]
     assert caps["multimodal_image_parts"] is True
 
+    # model-capabilities brief 9.1: GET /v1/providers' per-row `metadata` no
+    # longer carries a static `supports_vision` flag (deleted from `Provider`
+    # and `_provider_to_wire`) -- whether a provider/model actually accepts an
+    # image part is now an evidence-based, per-MODEL question answered by
+    # `_vision_capability`/`_effective_lm_config` (see
+    # test_vision_capability_gate.py), never a per-provider catalog row.
     providers = client.get("/v1/providers").json()["providers"]
     by_id = {row["id"]: row for row in providers}
-    assert by_id["openai"]["metadata"]["supports_vision"] is True
-    assert by_id["anthropic"]["metadata"]["supports_vision"] is True
-    assert by_id["codex"]["metadata"]["supports_vision"] is True
-    assert by_id["claude_code"]["metadata"]["supports_vision"] is True
+    for provider_id in ("openai", "anthropic", "codex", "claude_code"):
+        assert "supports_vision" not in by_id[provider_id]["metadata"]
 
 
 def test_post_message_rejects_image_parts_for_text_only_provider(
@@ -275,14 +279,34 @@ def test_post_message_rejects_image_parts_for_text_only_provider(
 ) -> None:
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=fake_agent)
     # NO hand-set ``supports_vision``: no production writer ever set that key, so
-    # a test that supplied it proved nothing about the real gate. codex HAS a
-    # modality-evidence system (its discovery overlay), and nothing has evidenced
-    # this model, so the refusal must come from the evidence path itself.
+    # a test that supplied it proved nothing about the real gate. Only KNOWN
+    # modalities that omit image refuse, so the catalog evidences this model as
+    # text-only and the refusal must come from that evidence.
     app.state.lm_config = {"provider": "codex", "model": "gpt-5.5"}
     with TestClient(app) as c:
-        assert _effective_lm_config(app)["supports_vision_source"] == (
-            "modality_evidence_unavailable"
-        )
+        app.state.provider_catalog = {
+            "providers": [
+                {
+                    "id": "codex",
+                    "health": "ready",
+                    "models": [
+                        {
+                            "model_id": "gpt-5.5",
+                            "availability": "available",
+                            "modalities": ["text"],
+                            "evidence": {
+                                "evidenced": True,
+                                "modality_evidenced": True,
+                                "live": True,
+                                "source": "live",
+                                "generated_at": "2026-09-03T00:00:00+00:00",
+                            },
+                        }
+                    ],
+                }
+            ]
+        }
+        assert _effective_lm_config(app)["supports_vision_source"] == ("live_modality_evidence")
         sid = c.post("/v1/sessions", json={"title": "vision"}).json()["id"]
         resp = c.post(
             f"/v1/sessions/{sid}/messages",
@@ -315,15 +339,14 @@ def test_post_message_preserves_image_parts_for_vision_capable_provider(
     from .conftest import complete_turn
 
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=fake_agent)
-    # Again no hand-set flag: openai's /models listing cannot report modalities at
-    # all, so the registry's documented catalog-level supports_vision default is
-    # the honest stand-in -- and that arm must actually be reachable, which the
-    # deleted name allowlist made impossible.
+    # Again no hand-set flag, and no discovery evidence for this model at all: its
+    # image input is UNKNOWN, which is permitted under a typed reason rather than
+    # refused -- the upstream endpoint decides.
     app.state.lm_config = {"provider": "openai", "model": "gpt-4o"}
     with TestClient(app) as c:
         cfg = _effective_lm_config(app)
         assert cfg["supports_vision"] is True
-        assert cfg["supports_vision_source"] == "catalog_default_no_modality_evidence_system"
+        assert cfg["supports_vision_source"] == "modality_unknown"
         sid = c.post("/v1/sessions", json={"title": "vision"}).json()["id"]
         assistant = complete_turn(
             c,
@@ -523,7 +546,7 @@ def test_post_message_without_agent_returns_structured_503(
         inner = body["error"]
         assert inner.get("error") == "agent_not_available"
         assert inner["details"]["agent_status"] == "not_configured"
-        assert "No executable CLIO agent is configured" in inner.get("message", "")
+        assert "No model is selected for this session" in inner.get("message", "")
         assert c.get(f"/v1/sessions/{sid}/messages").json()["messages"] == []
         assert c.get(f"/v1/sessions/{sid}").json()["status"] == "idle"
 
@@ -1512,7 +1535,7 @@ def test_post_message_live_discovered_model_override_executes_and_records_route(
                 "health": "ready",
                 "models": [
                     {
-                        "model_id": "gpt-5.3-codex-spark",
+                        "model_id": "gpt-5.3-cg-spark",
                         "availability": "available",
                         "modalities": ["text"],
                         "evidence": {
@@ -1532,7 +1555,7 @@ def test_post_message_live_discovered_model_override_executes_and_records_route(
         "route this turn",
         json_override={
             "client_message_id": "msg_spark_route",
-            "model": {"provider_id": "codex", "model_id": "gpt-5.3-codex-spark"},
+            "model": {"provider_id": "codex", "model_id": "gpt-5.3-cg-spark"},
         },
     )
     messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
@@ -1541,14 +1564,14 @@ def test_post_message_live_discovered_model_override_executes_and_records_route(
     assert fake_agent.calls == [("route this turn", sid)]
     assert user["metadata"]["effective_model"] == {
         "provider_id": "codex",
-        "model_id": "gpt-5.3-codex-spark",
+        "model_id": "gpt-5.3-cg-spark",
         "variant": "",
     }
     assert user["metadata"]["model_selection_source"] == "per_message"
     runtime_model = assistant["metadata"]["agent_runtime"]["model"]
     assert runtime_model == {
         "provider_id": "codex",
-        "model_id": "gpt-5.3-codex-spark",
+        "model_id": "gpt-5.3-cg-spark",
         "provider_source": "per_message",
         "model_source": "per_message",
         "fallback_to_global": False,
@@ -1663,7 +1686,7 @@ def test_post_message_turn_timeout_surfaces_error(
     assert assistant["stop_reason"] == "error"
     assert assistant["error_info"]["error"] == "provider_timeout"
     assert assistant["error_info"]["details"]["timeout_s"] == 0.2
-    assert assistant["error_info"]["details"]["executor_work_may_continue"] is True
+    assert assistant["error_info"]["details"]["execution_cancellation"] == "best_effort"
     assert sess["status"] == "error"
     assert sess["message_count"] == 2
     assert len(agent.calls) <= 1

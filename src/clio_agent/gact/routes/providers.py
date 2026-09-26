@@ -5,8 +5,8 @@ drives:
 
 * ``GET /v1/providers`` + ``GET /v1/providers/{provider_id}`` (SPEC §6.12) -- the
   generic provider catalog (one row per preset) and the per-provider detail row.
-* ``POST /v1/providers/{provider_id}/auth`` -- start or complete provider-specific
-  auth (browser-based Globus OAuth for ALCF/argonne; 405 hint otherwise).
+* ``POST /v1/providers/{provider_id}/auth`` -- the generic sign-in API
+  (start/complete/status/logout; ALCF and Codex today, 405 hint otherwise).
 * ``GET /v1/providers/{provider_id}/models`` + ``.../handshake`` -- the per-provider
   model catalog and connectivity/auth/per-model handshake via the unified async
   handshake (passive auth -- browsing never triggers interactive OAuth).
@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
-import os
 import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -47,6 +46,9 @@ from fastapi import FastAPI, HTTPException
 
 from clio_agent.gact.agent_initialization import mark_agent_ready
 from clio_agent.gact.events import Event
+from clio_agent.gact.lm_provider_types import preset_api_key_env
+from clio_agent.gact.local_server_store import with_saved_address
+from clio_agent.gact.model_selection import surrogate_selection_error
 from clio_agent.gact.providers.auth import (
     _is_placeholder_api_key,
     _resolve_argonne_runtime_api_key,
@@ -64,8 +66,11 @@ from clio_agent.gact.providers.lmstudio import (
 )
 from clio_agent.gact.providers.request_normalization import normalize_lm_provider_request
 from clio_agent.gact.relay_wiring import construct_agent_with_relay
+from clio_agent.gact.routes.codex_variant import apply_codex_readiness_gate
+from clio_agent.gact.routes.provider_auth import supports_logout
 from clio_agent.gact.routes.provider_catalog_routes import register_provider_catalog_routes
-from clio_agent.gact.runtime.globals import _process_arc, _set_app_arc
+from clio_agent.gact.runtime.globals import _set_app_arc
+from clio_agent.gact.server_boot import process_arc_off_loop
 from clio_agent.gact.types import (
     ErrorEnvelope,
     ErrorInfo,
@@ -73,6 +78,7 @@ from clio_agent.gact.types import (
     LMProviderPreset,
     LMProviderRequest,
 )
+from clio_agent.providers.model_discovery import resolve_cloud_api_key
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -108,11 +114,10 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     # ---- /v1/providers (#15) ------------------------------------------
 
-    # Derived from clio_agent.providers.catalog. Add new presets to
-    # the catalog, not here -- this list reflects whatever the catalog
-    # contains at registration time. Polaris preset removed for the time
-    # being -- the inference-api gateway returns 400 'cluster polaris
-    # does not exist' for /resource_server/polaris/vllm/v1.
+    # Derived from clio_agent.providers.catalog. Add new presets to the catalog,
+    # not here -- this list reflects the catalog at registration time. Polaris
+    # is removed for now: the inference-api gateway returns 400 'cluster
+    # polaris does not exist' for /resource_server/polaris/vllm/v1.
     from clio_agent.providers.catalog import as_lm_presets as _build_lm_presets
 
     _LM_PRESETS: list[LMProviderPreset] = _build_lm_presets()
@@ -137,21 +142,15 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
     def _codex_readiness(*, ignore_startup: bool = False) -> tuple[str, str, bool, str]:
         """Return status, message, verified flag, and live default for Codex."""
 
-        if importlib.util.find_spec("openai_codex") is None:
-            return (
-                "unavailable",
-                "official openai-codex Python SDK is not installed",
-                False,
-                "",
-            )
-        from clio_agent.providers.codex_credential_home import (  # noqa: PLC0415
-            codex_credentials_present,
+        from clio_agent.providers.codex.credentials import CodexCredentialStore  # noqa: PLC0415
+        from clio_agent.providers.codex.errors import (  # noqa: PLC0415
+            CODEX_AUTHENTICATION_ERROR_MESSAGE,
         )
 
-        if not codex_credentials_present():
+        if not CodexCredentialStore().is_signed_in():
             return (
                 "auth_required",
-                "Codex sign-in is required on the connected agent",
+                CODEX_AUTHENTICATION_ERROR_MESSAGE,
                 False,
                 "",
             )
@@ -167,7 +166,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         if overlay and overlay.get("models") and not overlay.get("staleness"):
             return (
                 "ready",
-                "Codex credentials validated by the SDK",
+                "Codex credentials validated",
                 True,
                 str(overlay.get("default_model") or ""),
             )
@@ -220,8 +219,8 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
           AND globus-sdk is importable.
         - cloud (requires_api_key=True): api_key auth; authenticated when
           the matching env var is set.
-        - codex: subscription credentials must exist and have a fresh successful
-          SDK catalog check.
+        - codex: a signed-in credential must exist and have a fresh successful
+          catalog check.
         - local (lm_studio/ollama): no auth required.
         """
         if preset.provider == "codex":
@@ -237,7 +236,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
 
                 authed = (
                     argonne_auth.tokens_exist()
-                    and importlib.util.find_spec("globus_sdk") is not None
+                    and argonne_auth.sdk_available()
                     and argonne_auth.check_auth_status()
                 )
             except Exception:  # noqa: BLE001 - auth probe failure treated as not-authed
@@ -245,11 +244,9 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             return ["oauth"], authed
 
         if preset.requires_api_key:
-            env_var = {
-                "anthropic": "ANTHROPIC_API_KEY",
-                "openai": "OPENAI_API_KEY",
-            }.get(preset.provider, "CLIO_LM_API_KEY")
-            return ["api_key"], bool(os.environ.get(env_var) or os.environ.get("CLIO_LM_API_KEY"))
+            # Keyed by preset id (saved key, then its own env var), never a
+            # kind-keyed table -- openrouter shares kind "openai" (Part 3).
+            return ["api_key"], bool(resolve_cloud_api_key(preset.id))
 
         return ["none"], True
 
@@ -284,7 +281,6 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             "metadata": {
                 "provider_kind": preset.provider,
                 "requires_api_key": preset.requires_api_key,
-                "supports_vision": bool(getattr(preset, "supports_vision", False)),
             },
         }
 
@@ -310,57 +306,23 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     # ---- /v1/providers/lm ------------------------
 
-    def _preset_api_key_env(preset: LMProviderPreset) -> str:
-        if preset.api_key_env:
-            return preset.api_key_env
-        return {
-            "openai": "OPENAI_API_KEY",
-            "anthropic": "ANTHROPIC_API_KEY",
-            "openrouter": "OPENROUTER_API_KEY",
-        }.get(preset.id, "CLIO_LM_API_KEY")
-
     def _preset_with_status(preset: LMProviderPreset) -> LMProviderPreset:
-        update: dict[str, Any] = {}
+        update: dict[str, Any] = {"supports_logout": supports_logout(preset.provider)}
         if preset.provider == "argonne":
-            env_token = (
-                os.environ.get("CLIO_ARGONNE_TOKEN", "").strip()
-                or os.environ.get("ALCF_INFERENCE_TOKEN", "").strip()
-            )
-            if env_token:
-                update["status"] = "ready"
-                update["status_message"] = "ALCF token present in environment"
-                update["is_authenticated"] = True
-                return preset.model_copy(update=update)
             try:
                 from clio_agent.providers import argonne_auth  # noqa: PLC0415
+
+                status, message, authed = argonne_auth.readiness()
             except Exception as exc:  # noqa: BLE001 - argonne unavailability surfaced in status/status_message
-                update["status"] = "unavailable"
-                update["status_message"] = f"argonne auth unavailable: {exc}"
-                update["is_authenticated"] = False
-                return preset.model_copy(update=update)
-            if not argonne_auth.tokens_exist():
-                update["status"] = "auth_required"
-                update["status_message"] = (
-                    "no Globus token stored; authenticate ALCF before connecting"
-                )
-                update["is_authenticated"] = False
-                return preset.model_copy(update=update)
-            if argonne_auth.check_auth_status():
-                update["status"] = "ready"
-                update["status_message"] = "Globus token validated"
-                update["is_authenticated"] = True
-                return preset.model_copy(update=update)
-            update["status"] = "auth_required"
-            update["status_message"] = (
-                "stored Globus token could not be refreshed; authenticate ALCF"
-            )
-            update["is_authenticated"] = False
+                status, message, authed = "unavailable", f"argonne auth unavailable: {exc}", False
+            update["status"] = status
+            update["status_message"] = message
+            update["is_authenticated"] = authed
             return preset.model_copy(update=update)
         if preset.requires_api_key:
-            env_key = _preset_api_key_env(preset)
-            if not (os.environ.get(env_key) or os.environ.get("CLIO_LM_API_KEY")):
+            if not resolve_cloud_api_key(preset.id):
                 update["status"] = "missing_key"
-                update["status_message"] = f"missing {env_key}"
+                update["status_message"] = f"missing {preset_api_key_env(preset)}"
                 update["is_authenticated"] = False
                 return preset.model_copy(update=update)
             update["is_authenticated"] = True
@@ -390,7 +352,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     def _lm_presets_with_status() -> list[LMProviderPreset]:
         return sorted(
-            (_preset_with_status(preset) for preset in _LM_PRESETS),
+            (_preset_with_status(with_saved_address(preset)) for preset in _LM_PRESETS),
             key=lambda p: p.label.lower(),
         )
 
@@ -697,8 +659,9 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 thinking_budget=req.thinking_budget,
                 thinking_level=requested_thinking_level(app, req),  # #895: see its provenance rule
                 # Per-provider transport (v0.8.0): only the bound provider's field reads req.transport.
-                codex_transport=(req.transport or "sdk") if is_codex else "sdk",  # type: ignore[arg-type]  # LMProviderConfig validates
+                codex_transport=(req.transport or "websocket") if is_codex else "websocket",  # type: ignore[arg-type]  # LMProviderConfig validates
                 claude_code_transport=(req.transport or "sdk") if is_cc else "sdk",  # type: ignore[arg-type]  # LMProviderConfig validates; deleted values 400 typed
+                codex_variant=(req.variant or "direct").lower() if is_codex else "",  # type: ignore[arg-type]
             )
             if is_cc:
                 status, message, verified, default_model = _claude_code_readiness()
@@ -728,24 +691,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 if not req.model and default_model:
                     cfg.model = default_model
             if is_codex:
-                status, message, verified, default_model = _codex_readiness()
-                if not verified:
-                    raise HTTPException(
-                        status_code=(
-                            401 if status in {"auth_required", "auth_check_required"} else 503
-                        ),
-                        detail=ErrorEnvelope(
-                            error=ErrorInfo(
-                                error="codex_auth_required"
-                                if status in {"auth_required", "auth_check_required"}
-                                else "codex_unavailable",
-                                message=message,
-                                recoverable=True,
-                            )
-                        ).model_dump(exclude_none=True),
-                    )
-                if not req.model and default_model:
-                    cfg.model = default_model
+                await apply_codex_readiness_gate(cfg, req, _codex_readiness)
             # Per-provider handshake: discover connectivity + per-model config and
             # fold it into cfg — context-aware max_tokens (replacing the static ALCF
             # 4096 cap on 128-256K-context models), reasoning/tool capability flags,
@@ -821,13 +767,12 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 # win over a from-scratch rebuild.
                 agent = _copy.copy(existing)
             else:
-                # Build the first agent directly with the selected, handshake-applied
-                # provider.  Reading the ambient boot default here used to construct a
-                # throwaway LM Studio agent first, making a clean desktop's initial
-                # Codex/Claude selection wait through local-provider retries.
+                # Build the first agent directly with the selected, handshake-applied provider
+                # (never a throwaway ambient-default LM Studio agent first); the ARC is awaited
+                # off-loop, sharing any in-flight boot construction (server_boot).
                 agent = await construct_agent_with_relay(
                     app,
-                    arc=_process_arc(app),
+                    arc=await process_arc_off_loop(app),
                     provider_config=cfg,
                 )
             agent.rebind_lms(cfg)  # both paths need this cfg bound; done once, unconditionally
@@ -916,7 +861,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         deps.clear_session_model_refs(app)
         # Invalidate the normalized provider catalog. It is a per-app snapshot of
         # ONE discovery pass, and delivery planning reads modalities straight out
-        # of it (resource_delivery._catalog_modalities). Leaving it in place after
+        # of it (modality_evidence._catalog_modalities). Leaving it in place after
         # a provider swap meant the next attachment was routed against the
         # PREVIOUS provider's capability evidence -- a sticky cache deciding what
         # bytes reach a model it never described. The next GET /v1/provider-catalog
@@ -1048,6 +993,8 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         """Start or perform an LM provider swap without freezing the backend."""
 
         req = normalize_lm_provider_request(req, _LM_PRESETS, _default_model_for)
+        if refused := surrogate_selection_error(app, req.provider_id or req.provider, req.model):
+            raise HTTPException(status_code=422, detail=refused.model_dump(exclude_none=True))
         running_task = getattr(app.state, "lm_config_task", None)
         if running_task is not None and not running_task.done():
             status = _lm_provider_status()

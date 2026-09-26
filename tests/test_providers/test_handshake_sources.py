@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from clio_agent.providers import fetched_catalog
 from clio_agent.providers.handshake.sources import (
     SOURCE_DB,
     SOURCE_MODELS_DEV,
@@ -44,6 +45,26 @@ def offline_models_dev(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def offline_litellm_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The litellm cascade step falls back to its bundled snapshot -- never the net.
+
+    Raising a transport error (rather than a bare assertion) keeps this an
+    honest simulation of "GitHub unreachable": ``FetchedCatalog`` catches it and
+    degrades to the bundled snapshot exactly as it would in a real offline
+    environment, so a cascade miss there (as with the ``ibm/granite-*`` ids
+    below) still falls through to the DB tier. This only removes this file's
+    accidental dependency on live GitHub connectivity that the fetched_catalog
+    migration introduced -- no real network call is ever attempted.
+    """
+    import httpx  # noqa: PLC0415
+
+    def _offline(*_a: object, **_kw: object) -> None:
+        raise httpx.ConnectError("network disabled for this test suite")
+
+    monkeypatch.setattr(fetched_catalog.httpx, "get", _offline)
+
+
+@pytest.fixture(autouse=True)
 def isolated_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     """Point the writable DB at a tmp file (seed merges beneath; writes stay in tmp)."""
     db_file = tmp_path / "model_limits.json"
@@ -57,11 +78,10 @@ def test_lookup_models_dev_exact_and_basename() -> None:
     assert lookup_models_dev("gemma-4-31b-it", path=MODELS_DEV_FIXTURE) == 262144
 
 
-def test_models_dev_offline_path_never_fetches(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _boom() -> str | None:
-        raise AssertionError("network fetch attempted in offline test")
-
-    monkeypatch.setattr(models_dev_mod, "_fetch_catalog", _boom)
+def test_models_dev_offline_path_never_fetches() -> None:
+    # The ``path=`` seam (exercised via the ``offline_models_dev`` fixture's stub
+    # above, and for real in test_models_dev.py) never touches the network --
+    # this just pins that the cascade's own call site keeps using it correctly.
     assert lookup_models_dev("openai/gpt-4o", path=MODELS_DEV_FIXTURE) == 128000
 
 
@@ -173,23 +193,52 @@ def test_db_record_logs_mismatch(isolated_db: Path) -> None:
 
 
 def test_db_record_report_records_only_live() -> None:
+    from clio_agent.providers.capabilities import invalidation
+    from clio_agent.providers.capabilities.records import (
+        DeploymentCapabilities,
+        Fact,
+        ModelCapabilities,
+    )
     from clio_agent.providers.handshake.model import (
         AuthState,
         ConnectivityState,
+        DiscoveredModel,
         HandshakeReport,
-        ModelProfile,
     )
+
+    invalidation.clear_all()
+    now = "2026-01-01T00:00:00+00:00"
+
+    def _seed(model_id: str, context: int, source: str) -> None:
+        invalidation.record_model_capabilities(
+            ModelCapabilities(
+                model_key=model_id,
+                context_max=Fact(value=context, source=source, observed_at=now),
+            )
+        )
+        invalidation.record_deployment_capabilities(
+            DeploymentCapabilities(
+                provider_id="p",
+                api_base="",
+                model_id=model_id,
+                model_key=Fact(value=model_id, source=source, observed_at=now),
+            )
+        )
+
+    _seed("vendor/live-model", 99999, "server_report")
+    _seed("vendor/dev-model", 11111, "models.dev")
 
     rep = HandshakeReport(
         provider_id="p",
         provider_kind="argonne",
         connectivity=ConnectivityState.OK,
         auth=AuthState.OK,
+        api_base="",
         models=(
-            ModelProfile(id="vendor/live-model", context_window=99999, context_source="live"),
-            ModelProfile(id="vendor/dev-model", context_window=11111, context_source="models.dev"),
+            DiscoveredModel(id="vendor/live-model"),
+            DiscoveredModel(id="vendor/dev-model"),
         ),
     )
     db_mod.record_report(rep)
-    assert db_mod.lookup_context("vendor/live-model") == 99999  # live recorded
-    assert db_mod.lookup_context("vendor/dev-model") is None  # non-live NOT recorded
+    assert db_mod.lookup_context("vendor/live-model") == 99999  # server_report recorded
+    assert db_mod.lookup_context("vendor/dev-model") is None  # cascade-sourced NOT recorded

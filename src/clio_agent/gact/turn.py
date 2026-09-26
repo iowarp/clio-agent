@@ -98,6 +98,7 @@ from clio_agent.gact.turn_usage import roll_up_usage
 from clio_agent.gact.turn_watchdog import make_turn_cancel_event
 from clio_agent.gact.types import ErrorInfo, Message, Part, Session
 from clio_agent.gact.usage import _snapshot_lm_history_index
+from clio_agent.runtime import turn_lm_ledger
 
 # NOTE (#714): every turn helper above is imported from its true *leaf* owner,
 # not from ``clio_agent.gact.app``. The turn loop originally lived in ``app.py``
@@ -291,7 +292,9 @@ async def _run_turn_in_background(
     # to asyncio executor threads (so dspy.settings.usage_tracker is
     # unreliable from worker threads), but ``lm.history`` IS shared
     # across threads — list.append under the GIL gives us a clean,
-    # thread-safe ledger. We diff history[start:end] post-turn.
+    # thread-safe ledger. We diff history[start:end] post-turn. The LMs the
+    # forward builds itself (one per expert forward) join the turn LM ledger.
+    lm_ledger_token = turn_lm_ledger.open_ledger()
     state.history_start = _snapshot_lm_history_index(state.app)
     _pop_stream_fallback(state.app, state.sid)
     # #767 Phase B Slice 5: mint + register the cancel event and derive the
@@ -320,11 +323,7 @@ async def _run_turn_in_background(
         if state.sid in state.app.state.cancel_flags:
             state.app.state.cancel_flags.discard(state.sid)
             raise _TurnCancelled(
-                _cancelled_error_info(
-                    state.sid,
-                    execution_cancellation="turn_boundary",
-                    executor_work_may_continue=False,
-                )
+                _cancelled_error_info(state.sid, execution_cancellation="turn_boundary")
             )
 
         # #948 S6 [1]/[4]: commit-to-run seam — past the last abort/veto seam, the
@@ -479,9 +478,7 @@ async def _run_turn_in_background(
         if state.sid in state.app.state.cancel_flags:
             state.app.state.cancel_flags.discard(state.sid)
             state.error_info = _cancelled_error_info(
-                state.sid,
-                execution_cancellation="turn_boundary",
-                executor_work_may_continue=False,
+                state.sid, execution_cancellation="turn_boundary"
             )
             state.answer_text = ""
             state.tools_called = []
@@ -518,7 +515,6 @@ async def _run_turn_in_background(
                 "timeout_s": exc.timeout_s,
                 "partial_output": partial_output,
                 "execution_cancellation": "best_effort",
-                "executor_work_may_continue": True,
                 "recovery_actions": [
                     "retry",
                     "increase_turn_timeout",
@@ -677,16 +673,20 @@ async def _run_turn_in_background(
             recoverable=True,
         )
 
-    # #756 / #1339 round 5: everything finalize does (answer grounding, part assembly,
+    # #756 / #1339 / L1: everything finalize does (answer grounding, part assembly,
     # diff indexing, nanoagent spawn, publishes, persistence) reads prologue-derived
-    # state -- ``turn_prologue_guard`` gates it on ``state.prologue_completed`` (a
-    # turn whose prologue never ran settles typed instead of crashing on an unset
-    # field) and keeps the #756 envelope for an ordinary finalize-region crash.
-    await run_finalize_or_settle_prologue_gap(
-        state,
-        drain_observed_tool_calls=_drain_observed_tool_calls,
-        update_retry_attempt=_update_retry_attempt,
-    )
+    # state -- ``turn_prologue_guard`` gates it on ``state.prologue_phase`` (a turn
+    # whose prologue never ran or was cancelled mid-flight settles typed instead of
+    # crashing on an unset field) and keeps the #756 envelope for an ordinary
+    # finalize-region crash.
+    try:
+        await run_finalize_or_settle_prologue_gap(
+            state,
+            drain_observed_tool_calls=_drain_observed_tool_calls,
+            update_retry_attempt=_update_retry_attempt,
+        )
+    finally:
+        turn_lm_ledger.close_ledger(lm_ledger_token)
 
 
 def _start_background_user_turn(

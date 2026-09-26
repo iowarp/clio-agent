@@ -197,9 +197,9 @@ def test_v3_session_and_transcript_are_normalized(tmp_path: Path) -> None:
                 sequence=1,
                 metadata={
                     "stream_source": "live",
-                    "signature_field_name": "provider_thinking:codex_sdk_reasoning",
+                    "signature_field_name": "provider_thinking:codex_reasoning",
                     "thinking_source": "provider",
-                    "provider_source": "codex_sdk_reasoning",
+                    "provider_source": "codex_reasoning",
                     "default_collapsed": True,
                 },
             ),
@@ -271,12 +271,12 @@ def test_v3_session_and_transcript_are_normalized(tmp_path: Path) -> None:
         "type": "reasoning",
         "text": "Comparing the observed campaigns before choosing an action.",
         "source": "provider",
-        "provider_source": "codex_sdk_reasoning",
+        "provider_source": "codex_reasoning",
         "default_collapsed": True,
         "agent_id": "main",
         "sequence": 1,
         "stream_source": "live",
-        "channel": "provider_thinking:codex_sdk_reasoning",
+        "channel": "provider_thinking:codex_reasoning",
     }
     assert projected["blocks"][1]["channel"] == "next_thought"
     assert projected["blocks"][1]["agent_id"] == "spotter"

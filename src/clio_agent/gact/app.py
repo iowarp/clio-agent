@@ -55,7 +55,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from clio_agent import conf
 from clio_agent.arc import loop_guard
-from clio_agent.gact import composer_runtime
+from clio_agent.gact import composer_runtime, server_boot
 from clio_agent.gact.auth import configure_bearer_auth
 from clio_agent.gact.cors import gact_cors_origins as _gact_cors_origins
 from clio_agent.gact.error_middleware import error_code_for_status, install_error_envelope
@@ -194,6 +194,7 @@ from clio_agent.gact.session_store import (  # noqa: E402,F401
 
 
 def _cancellation_attempt_summary(attempt: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Project the durable ``cancel_attempts`` record (what was actually stopped)."""
     if not attempt:
         return {}
     return {
@@ -206,9 +207,9 @@ def _cancellation_attempt_summary(attempt: Mapping[str, Any] | None) -> dict[str
             "cooperative_signal_sent",
             "asyncio_task_cancel_scheduled",
             "asyncio_task_cancel_sent",
-            "hard_abort_supported",
-            "upstream_abort",
-            "executor_work_may_continue",
+            "children_cancelled",
+            "provider_streams_killed",
+            "composer_autostart_suspended",
         )
         if key in attempt
     }
@@ -230,8 +231,6 @@ def _enrich_cancellation_error_info(
     details = error_info.details
     details.setdefault("cancellation_attempt_id", attempt.get("id", ""))
     details.setdefault("cancellation_attempt", _cancellation_attempt_summary(attempt))
-    details.setdefault("hard_abort_supported", attempt.get("hard_abort_supported", False))
-    details.setdefault("upstream_abort", attempt.get("upstream_abort", "not_supported"))
     return error_info
 
 
@@ -814,17 +813,16 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.sandbox = install_sandbox()
 
-    # Reap proven CLIO orphans before the MCP-cache liveness check (order matters, off-loop).
+    # Reap proven CLIO orphans before the MCP-cache liveness check (order matters,
+    # off-loop). The direct Codex provider owns one durable credential file,
+    # not a spawned CLI's scratch home, so unlike the deleted Codex SDK
+    # provider's IsolatedCodexHome there is nothing here for it to reap.
     from clio_agent.gact import default_registry_migration as _registry_resync  # noqa: PLC0415
     from clio_agent.gact.routes.system import _prime_orphan_scan_cache  # noqa: PLC0415
-    from clio_agent.providers.codex_credential_home import (  # noqa: PLC0415
-        _reap_orphaned_codex_homes,
-    )
     from clio_agent.tools.mcp_cache import boot_prune_off_loop  # noqa: PLC0415
 
     async def _reap_orphans_then_prune_mcp_cache() -> None:
         await _prime_orphan_scan_cache(app)
-        await asyncio.to_thread(_reap_orphaned_codex_homes)
         await boot_prune_off_loop()
 
     app.state.mcp_cache_prune_task = asyncio.create_task(_reap_orphans_then_prune_mcp_cache())
@@ -835,6 +833,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         task = asyncio.create_task(_scheduler_tick(app))
         app.state.scheduler_task = task
 
+    server_boot.start(app)  # clio-core attach + first doctor pass, both off-loop (typed rows)
     agent_task: Optional[asyncio.Task] = None
     if getattr(app.state, "want_agent", False) and app.state.agent is None:
         agent_task = asyncio.create_task(_construct_agent_async(app))
@@ -967,11 +966,10 @@ async def _construct_agent_async(app: "FastAPI") -> None:
     # a server that advertises provider readiness while every turn returns the vague
     # ``not_configured`` state.
     try:
-        # Construct (or reuse) the ONE per-process ARC up front and inject it into the
-        # build, so the agent does not mint a fresh ARC — the same instance is
-        # app.state.arc for the whole process across every later LM bind (no per-build
-        # ARC churn / trace ⊋ ARC split).
-        arc = _process_arc(app)
+        # The ONE per-process ARC, injected so the agent never mints its own (no per-build
+        # ARC churn / trace ⊋ ARC split). Built on a worker thread (server_boot): a clio-core
+        # attach can take tens of seconds and must never block /v1/health on this loop.
+        arc = await server_boot.process_arc_off_loop(app)
         relay_kwargs = await relay_wiring.relay_agent_kwargs(app)
         # Pre-import the heavy LM stack ON THIS THREAD before any builder thread
         # runs: the deferred init here and a concurrent provider bind otherwise
@@ -1411,9 +1409,8 @@ def build_app(
     # independent stores instead of racing one process-global. Additive/shadow:
     # nothing routes LM resolution through it yet. load_config_from_env may raise
     # for a misconfigured cloud provider (missing key); that must not fail app
-    # construction (baseline: the deferred agent build tolerates it), so we fall
-    # back to the plain provider-default spec and let the deferred build surface
-    # the real error.
+    # construction, so we fall back to the plain provider-default spec (the
+    # deferred agent build tolerates it and surfaces the real error).
     from clio_agent.config import LMProviderConfig, load_config_from_env
     from clio_agent.gact.providers.profile_store import ProviderProfileStore
     from clio_agent.providers.lm_spec import spec_from_config
@@ -1739,7 +1736,7 @@ def build_app(
     # call/reconnect/uninstall + tools/resources/prompts + handshake) are owned
     # by routes/mcp.py; registered below via register_mcp_routes(app, deps).
 
-    # ---- /v1/sessions/{sid}/compact (Codex/CC parity) -----------------
+    # ---- /v1/sessions/{sid}/compact (Codex/CC parity) ----------------
     # Transcript compaction into an evidence-preserving compact memory is
     # owned by routes/sessions.py and registered below via
     # register_sessions_routes(app, deps); the deterministic evidence index
@@ -2363,10 +2360,9 @@ def run_server(
     ``clio-agent-gact`` console script (:func:`main`) and the
     ``clio-agent serve`` subcommand. It blocks until the server exits.
 
-    When ``CLIO_LM_PROVIDER`` is set (and ``no_agent`` is False) the real
-    ``ClioAgent`` is constructed by the lifespan startup task so POST
-    /messages drives a real LM; otherwise the app runs agent-less (fine for
-    capability introspection, 503s on /messages).
+    When the user selected a provider (config file / ``CLIO_LM_PROVIDER``; not the
+    committed default) and ``no_agent`` is False, the lifespan builds the real
+    ``ClioAgent``; otherwise the app runs agent-less until a provider is bound.
 
     Args:
         host: Bind host.
@@ -2389,11 +2385,12 @@ def run_server(
     # 503s until app.state.agent is stamped by the background task.
     app_to_run: FastAPI = build_app()
     app_to_run.state.refresh_provider_catalog_on_startup = True
-    if (
-        not no_agent
-        and conf.resolve("lm.provider", env="CLIO_LM_PROVIDER", default="", cast=conf.as_str) != ""
-    ):
-        app_to_run.state.want_agent = True
+    app_to_run.state.server_boot = True  # real server: owns clio-core attach + boot doctor
+    from clio_agent.gact.providers.boot_selection import explicit_lm_provider  # noqa: PLC0415
+
+    # Only a USER-selected provider builds an agent at boot; the committed lm_studio default
+    # is not a selection (a headless host has no LM Studio -> lm_provider stays unconfigured).
+    app_to_run.state.want_agent = not no_agent and bool(explicit_lm_provider())
 
     if reload:
         uvicorn.run(

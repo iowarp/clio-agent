@@ -345,6 +345,93 @@ def test_timeout_kills_child_process_not_just_the_hook(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Cancel contract (L1 slice, #1339 follow-on) — a turn's cancel token kills an     #
+# already-running hook subprocess (its whole process tree), never resolving a    #
+# decision for it.                                                               #
+# --------------------------------------------------------------------------- #
+
+
+def test_cancel_event_kills_a_running_hook_and_raises_hook_cancelled(tmp_path: Path) -> None:
+    """A hook subprocess already running when the cancel token trips is killed —
+    never left to finish, never resolved to a decision (deny/allow/...)."""
+
+    from clio_agent.gact.hooks.wire import HookCancelled
+
+    marker = tmp_path / "child_pid.txt"
+    body = (
+        "import subprocess, sys, time\n"
+        f"child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        f"open({str(marker)!r}, 'w', encoding='utf-8').write(str(child.pid))\n"
+        "time.sleep(30)\n"
+    )
+    disp = make_command_dispatcher(
+        tmp_path,
+        event=PRE_TOOL_USE,
+        body=body,
+        fail_closed=True,
+        timeout_ms=60_000,  # far longer than the cancel below -- proves cancel, not timeout
+        hook_id="cancel-me",
+    )
+    cancel_event = threading.Event()
+
+    def _trip_once_child_spawned() -> None:
+        # Rendezvous on the marker (not a fixed sleep): the cancel must land while
+        # the hook subprocess is GENUINELY running, not before it even started.
+        for _ in range(100):
+            if marker.exists():
+                break
+            time.sleep(0.05)
+        cancel_event.set()
+
+    watcher = threading.Thread(target=_trip_once_child_spawned, daemon=True)
+    watcher.start()
+
+    start = time.monotonic()
+    with pytest.raises(HookCancelled) as excinfo:
+        disp.dispatch(PRE_TOOL_USE, _pre_tool_env(), cancel_event=cancel_event)
+    elapsed = time.monotonic() - start
+    assert elapsed < 10.0, "cancel must kill the hook promptly, not wait out its timeout"
+    assert excinfo.value.hook_id == "cancel-me"
+    watcher.join(timeout=5.0)
+
+    reasons = [r for r in hook_reasons() if r["reason"] == "hook_cancelled"]
+    assert any(r.get("hook_id") == "cancel-me" for r in reasons)
+
+    for _ in range(50):
+        if marker.exists():
+            break
+        time.sleep(0.1)
+    assert marker.exists(), "hook never reached the point of spawning its child"
+
+    if sys.platform == "win32":
+        return  # no POSIX process-group semantics to prove here (see the timeout test above)
+
+    child_pid = int(marker.read_text(encoding="utf-8").strip())
+    child_alive = True
+    for _ in range(50):
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            child_alive = False
+            break
+        time.sleep(0.1)
+    assert not child_alive, "cancel kill leaked the hook's forked child process"
+
+
+def test_cancel_never_disturbs_a_hook_that_finishes_on_its_own(tmp_path: Path) -> None:
+    """An UNSET cancel token (the common case) must not change ordinary behavior."""
+
+    disp = make_command_dispatcher(
+        tmp_path,
+        event=PRE_TOOL_USE,
+        body="print('{}')",
+        fail_closed=True,
+    )
+    outcome = disp.dispatch(PRE_TOOL_USE, _pre_tool_env(), cancel_event=threading.Event())
+    assert not outcome.denied
+
+
+# --------------------------------------------------------------------------- #
 # Wire annotation projection (FIX 1) — destructive reads the real destructiveHint #
 # --------------------------------------------------------------------------- #
 
@@ -776,7 +863,14 @@ class _RecordingDispatcher(HookDispatcher):
         self.events: list[tuple[str, HookEnvelope]] = []
         self.changed = threading.Condition()
 
-    def dispatch(self, event: str, envelope: HookEnvelope) -> HookOutcome:  # type: ignore[override]
+    def dispatch(  # type: ignore[override]
+        self,
+        event: str,
+        envelope: HookEnvelope,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> HookOutcome:
+        del cancel_event
         with self.changed:
             self.events.append((event, envelope))
             self.changed.notify_all()

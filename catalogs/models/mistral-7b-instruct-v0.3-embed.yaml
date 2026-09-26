@@ -1,0 +1,19 @@
+# ALCF serves an embedding endpoint under this id (no public Hub repo: the metadata
+# call answers 401). It is an embedding model, not a chat model. contextWindow is
+# Mistral-7B-v0.3's 32768; maxTokens is 1 because an embedding model returns one
+# vector and no text (the schema requires a positive value).
+- family: mistral-7b-instruct-v0.3-embed
+  matchPatterns:
+    - mistral-7b-instruct-v0.3-embed
+  capabilities:
+    chat: false
+    tools: false
+    reasoning: false
+    structuredOutputs: null
+    vision: false
+    audio: false
+    embeddings: true
+    rerank: false
+    fim: false
+    contextWindow: 32768
+    maxTokens: 1

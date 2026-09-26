@@ -23,67 +23,23 @@ from __future__ import annotations
 from typing import Any
 
 from clio_agent.providers.catalog_types import (
-    ModelEntry,
     Provider,
     ProviderConfigurationField,
 )
-
-# -- shared catalogs --------------------------------------------------
-
-#: Argonne ALCF hosted model families. Sophia / Metis / local_vllm run
-#: behind dynamic gateway jobs; the live ``/jobs`` endpoint reports the
-#: actual subset loaded right now. Keep this static catalog as a
-#: fallback/example list, not as a claim of current availability.
-_ARGONNE_MODELS: tuple[ModelEntry, ...] = (
-    ModelEntry(
-        "openai/gpt-oss-120b",
-        "GPT-OSS 120B (Sophia)",
-        "Preferred modern Sophia baseline when loaded; verify with live discovery.",
-    ),
-    ModelEntry(
-        "openai/gpt-oss-20b",
-        "GPT-OSS 20B (Sophia)",
-        "Lower-latency GPT-OSS option when loaded on Sophia.",
-    ),
-    ModelEntry(
-        "gpt-oss-120b",
-        "GPT-OSS 120B (Metis)",
-        "Preferred modern Metis baseline when loaded.",
-    ),
-    ModelEntry(
-        "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
-        "Llama 4 Maverick",
-        "Modern Llama 4 fallback; availability depends on running ALCF jobs.",
-    ),
-    ModelEntry(
-        "meta-llama/Llama-4-Scout-17B-16E-Instruct",
-        "Llama 4 Scout",
-        "Modern Llama 4 fallback; useful when GPT-OSS is unavailable.",
-    ),
-    ModelEntry(
-        "meta-llama/Meta-Llama-3.1-8B-Instruct",
-        "Llama 3.1 8B Instruct (legacy)",
-        "Legacy compatibility entry; prefer GPT-OSS or Llama 4 when available.",
-    ),
-    ModelEntry(
-        "meta-llama/Meta-Llama-3.1-70B-Instruct",
-        "Llama 3.1 70B Instruct (legacy)",
-        "Legacy compatibility entry; not recommended as the default baseline.",
-    ),
-    ModelEntry(
-        "meta-llama/Meta-Llama-3.1-405B-Instruct",
-        "Llama 3.1 405B Instruct (legacy)",
-        "Legacy compatibility entry; often offline, check active models first.",
-    ),
-    ModelEntry(
-        "mistralai/Mistral-7B-Instruct-v0.3",
-        "Mistral 7B Instruct v0.3",
-        "Lightweight legacy fallback; check active models first.",
-    ),
-)
-
+from clio_agent.providers.codex.constants import LITELLM_PROVIDER as _CODEX_LITELLM_PREFIX
 
 # -- the catalog ------------------------------------------------------
+#
+# No static per-provider model lists or capability flags live here anymore
+# (model-capabilities brief 9.1: the static `model_catalog` tuples --
+# including the old `_ARGONNE_MODELS` fallback -- and the `supports_vision`/
+# `max_tokens_default` flags are deleted). Model lists come from live
+# discovery (`/v1/models`, a provider's `/jobs` endpoint, ...) or the
+# community catalogs for clouds that can't list; when nothing is known the
+# picker shows "enter a model id" rather than a stale compiled-in list.
+# Vision/tool/thinking support comes from the effective capabilities
+# (`providers.capabilities.accessor.get_effective_capabilities`, Part 5.5),
+# never a static per-provider flag.
 
 #: Canonical provider list. Ordered roughly local-first -> cloud -> ALCF
 #: so gact's modal lists them in a sensible order.
@@ -109,13 +65,6 @@ PROVIDERS: tuple[Provider, ...] = (
         auth_method="none",
         supports_runtime_sizing=True,
         is_kind_default=True,
-        model_catalog=(
-            ModelEntry(
-                "",
-                "(auto-discovered)",
-                "LM Studio reports the loaded model on /v1/models.",
-            ),
-        ),
     ),
     Provider(
         id="ollama",
@@ -123,26 +72,22 @@ PROVIDERS: tuple[Provider, ...] = (
         description="Locally-hosted models via Ollama.",
         provider_kind="ollama",
         litellm_prefix="ollama_chat",
-        api_base="http://127.0.0.1:11434/v1",
-        suggested_model="granite3.1-dense:8b",
+        # NOT "/v1": LiteLLM's native ollama_chat provider appends its own
+        # /api/chat to this base (OllamaChatConfig.get_complete_url), so a
+        # /v1 suffix here doubles into /v1/api/chat and 404s (#1413). The
+        # discovery handshake still reaches the OpenAI-compatible /v1 shim by
+        # going through native_root() the other way where it needs to.
+        api_base="http://127.0.0.1:11434",
+        # Empty means "discover the loaded model from Ollama's /api/tags".
+        # A hardcoded id (#1413's own root cause family: a stale suggestion
+        # papering over what discovery should answer) goes stale the moment
+        # the user pulls a different model.
+        suggested_model="",
         api_key_default="ollama",
         requires_api_key=False,
         auth_method="none",
         supports_runtime_sizing=True,
         is_kind_default=True,
-        model_catalog=(
-            ModelEntry(
-                "granite3.1-dense:8b",
-                "Granite 3.1 Dense 8B",
-                "Default Ollama model in clio. Local; matches the wire default.",
-            ),
-            ModelEntry("llama3.2", "Llama 3.2", "Lightweight, broadly available."),
-            ModelEntry(
-                "qwen2.5-coder:14b",
-                "Qwen2.5 Coder 14B",
-                "Better at code than llama3.2; same speed band.",
-            ),
-        ),
     ),
     Provider(
         id="llama_cpp",
@@ -151,21 +96,20 @@ PROVIDERS: tuple[Provider, ...] = (
         provider_kind="openai",
         litellm_prefix="openai",
         api_base="http://127.0.0.1:8088/v1",
-        suggested_model="local-model",
+        # Empty means "discover the loaded model from llama.cpp's /v1/models".
+        # A hardcoded "local-model" id (#1418) was never what the server
+        # actually serves, so it was never a usable message route.
+        suggested_model="",
         api_key_default="llama-cpp",
         requires_api_key=False,
         auth_method="none",
-        supports_vision=True,
         supports_runtime_sizing=True,
         managed_service_id="llama_cpp",
-        model_catalog=(
-            ModelEntry("local-model", "Loaded GGUF model", "The model served by llama.cpp."),
-        ),
     ),
     # ----- cloud / proxy ---------------------------------------------
     Provider(
         id="openai",
-        label="OpenAI / ChatGPT",
+        label="OpenAI API",
         description=(
             "Direct OpenAI API. Requires "
             "an OPENAI_API_KEY. Defaults to gpt-4o-mini for low cost; "
@@ -174,27 +118,13 @@ PROVIDERS: tuple[Provider, ...] = (
         provider_kind="openai",
         litellm_prefix="openai",
         api_base="https://api.openai.com/v1",
-        suggested_model="gpt-4o-mini",
+        # Model entitlement/pricing tiers change independently of CLIO
+        # releases; a compiled-in default goes stale (the brief's own example:
+        # "gpt-4o-mini" was already superseded). Live discovery / the
+        # community catalog supplies the current default.
+        suggested_model="",
         api_key_env="OPENAI_API_KEY",
         is_kind_default=True,
-        supports_vision=True,
-        model_catalog=(
-            ModelEntry(
-                "gpt-4o-mini",
-                "GPT-4o mini",
-                "OpenAI's cheap fast model. Good default.",
-            ),
-            ModelEntry(
-                "gpt-4o",
-                "GPT-4o",
-                "OpenAI's flagship multimodal model.",
-            ),
-            ModelEntry(
-                "gpt-4-turbo",
-                "GPT-4 Turbo",
-                "Higher capability, slower + pricier.",
-            ),
-        ),
     ),
     Provider(
         id="anthropic",
@@ -203,27 +133,9 @@ PROVIDERS: tuple[Provider, ...] = (
         provider_kind="anthropic",
         litellm_prefix="anthropic",
         api_base="https://api.anthropic.com/v1",
-        suggested_model="claude-sonnet-4-20250514",
+        suggested_model="",
         api_key_env="ANTHROPIC_API_KEY",
         is_kind_default=True,
-        supports_vision=True,
-        model_catalog=(
-            ModelEntry(
-                "claude-haiku-4-5-20251001",
-                "Claude Haiku 4.5",
-                "Direct Anthropic. Fast + cheap.",
-            ),
-            ModelEntry(
-                "claude-sonnet-4-6-20251001",
-                "Claude Sonnet 4.6",
-                "Direct Anthropic. Balanced.",
-            ),
-            ModelEntry(
-                "claude-opus-4-6-20251001",
-                "Claude Opus 4.6",
-                "Direct Anthropic. Highest capability.",
-            ),
-        ),
     ),
     Provider(
         id="azure_openai",
@@ -235,7 +147,6 @@ PROVIDERS: tuple[Provider, ...] = (
         suggested_model="",
         api_key_env="AZURE_API_KEY",
         supports_live_catalog=False,
-        supports_vision=True,
         configuration_fields=(
             ProviderConfigurationField(
                 "api_version",
@@ -253,13 +164,9 @@ PROVIDERS: tuple[Provider, ...] = (
         provider_kind="openai",
         litellm_prefix="gemini",
         api_base="https://generativelanguage.googleapis.com/v1beta",
-        suggested_model="gemini-2.5-flash",
+        suggested_model="",
         api_key_env="GOOGLE_API_KEY",
         supports_live_catalog=False,
-        supports_vision=True,
-        model_catalog=(
-            ModelEntry("gemini-2.5-flash", "Gemini 2.5 Flash", "Fast Gemini baseline."),
-        ),
     ),
     Provider(
         id="vertex_ai",
@@ -268,11 +175,11 @@ PROVIDERS: tuple[Provider, ...] = (
         provider_kind="openai",
         litellm_prefix="vertex_ai",
         api_base="https://aiplatform.googleapis.com",
-        suggested_model="gemini-2.5-flash",
+        suggested_model="",
         requires_api_key=False,
         auth_method="none",
+        host_credentials="google_cloud",
         supports_live_catalog=False,
-        supports_vision=True,
         configuration_fields=(
             ProviderConfigurationField(
                 "vertex_project",
@@ -284,9 +191,6 @@ PROVIDERS: tuple[Provider, ...] = (
                 "vertex_location", "Google Cloud location", "Vertex region.", "us-central1", True
             ),
         ),
-        model_catalog=(
-            ModelEntry("gemini-2.5-flash", "Gemini 2.5 Flash", "Vertex-hosted Gemini model."),
-        ),
     ),
     Provider(
         id="bedrock",
@@ -295,24 +199,17 @@ PROVIDERS: tuple[Provider, ...] = (
         provider_kind="openai",
         litellm_prefix="bedrock",
         api_base="https://bedrock-runtime.us-east-1.amazonaws.com",
-        suggested_model="anthropic.claude-3-5-sonnet-20240620-v1:0",
+        suggested_model="",
         requires_api_key=False,
         auth_method="none",
+        host_credentials="aws",
         supports_live_catalog=False,
-        supports_vision=True,
         configuration_fields=(
             ProviderConfigurationField(
                 "aws_region_name", "AWS region", "Region containing the model.", "us-east-1", True
             ),
             ProviderConfigurationField(
                 "aws_profile_name", "AWS profile", "Optional shared AWS profile name."
-            ),
-        ),
-        model_catalog=(
-            ModelEntry(
-                "anthropic.claude-3-5-sonnet-20240620-v1:0",
-                "Claude 3.5 Sonnet",
-                "Bedrock model identifier.",
             ),
         ),
     ),
@@ -323,15 +220,9 @@ PROVIDERS: tuple[Provider, ...] = (
         provider_kind="openai",
         litellm_prefix="nvidia_nim",
         api_base="https://integrate.api.nvidia.com/v1",
-        suggested_model="meta/llama-3.1-70b-instruct",
+        suggested_model="",
         api_key_env="NVIDIA_NIM_API_KEY",
         supports_live_catalog=False,
-        supports_vision=True,
-        model_catalog=(
-            ModelEntry(
-                "meta/llama-3.1-70b-instruct", "Llama 3.1 70B Instruct", "NVIDIA NIM model."
-            ),
-        ),
     ),
     Provider(
         id="openrouter",
@@ -344,68 +235,39 @@ PROVIDERS: tuple[Provider, ...] = (
         provider_kind="openai",
         litellm_prefix="openrouter",
         api_base="https://openrouter.ai/api/v1",
-        suggested_model="openai/gpt-oss-120b:free",
+        suggested_model="",
         api_key_env="OPENROUTER_API_KEY",
-        supports_vision=True,
-        model_catalog=(
-            ModelEntry(
-                "openai/gpt-oss-120b:free",
-                "GPT-OSS 120B (free)",
-                "Free tier. Heavily rate-limited.",
-            ),
-            ModelEntry(
-                "anthropic/claude-haiku-4-5",
-                "Claude Haiku 4.5 via OpenRouter",
-                "Pay-per-token via OpenRouter.",
-            ),
-            ModelEntry(
-                "anthropic/claude-sonnet-4-6",
-                "Claude Sonnet 4.6 via OpenRouter",
-                "Pay-per-token via OpenRouter.",
-            ),
-        ),
+        # GET /api/v1/key describes the calling key; 401 for a bad one.
+        key_check_path="/key",
     ),
     Provider(
         id="codex",
-        label="OpenAI Codex",
+        label="Codex",
         description=(
-            "Uses the official OpenAI Codex Python SDK so calls reuse "
-            "your ChatGPT / Codex subscription instead of paying "
-            "per-token on the OpenAI API. Authenticate Codex once on "
-            "this machine; the SDK owns its pinned runtime."
+            "Signs in with your Codex account and calls the Codex backend "
+            "directly from CLIO's own process -- no Codex CLI, no Codex SDK. "
+            "Usage counts against your Codex plan limits."
         ),
         provider_kind="codex",
-        litellm_prefix="codex",
-        # Codex does not use an HTTP base. This is an identity marker only;
-        # the official Python SDK owns its pinned runtime.
-        api_base="codex://sdk",
-        # Codex model entitlement is account-specific and changes independently
-        # of CLIO releases. Never auto-select a compiled-in candidate; a
-        # successful SDK catalog check supplies the account's live default.
+        # The litellm wire prefix is kept separate from the catalog id
+        # ("codex") on purpose: this module was ORIGINALLY registered under
+        # "chatgpt" (its catalog id at the time), and litellm ships its own
+        # native "chatgpt" provider that silently intercepted every turn
+        # before ours ever ran. See providers.codex.constants.LITELLM_PROVIDER
+        # for the full story -- this indirection is the permanent fix.
+        litellm_prefix=_CODEX_LITELLM_PREFIX,
+        # No HTTP base to configure -- an identity marker only. The actual
+        # transport endpoints (chatgpt.com/backend-api) live in
+        # providers.codex.constants, never here.
+        api_base="codex://direct",
+        # The maintained catalog (catalogs/codex-models.json) supplies the
+        # live default; never auto-select a compiled-in candidate.
         suggested_model="",
         requires_api_key=False,
         auth_method="subscription",
         is_kind_default=True,
-        supports_vision=True,
         supports_live_catalog=False,
         parse_retry_capability="single_attempt",
-        model_catalog=(
-            ModelEntry(
-                "gpt-5.5",
-                "GPT-5.5 (via Codex)",
-                "Candidate Codex SDK model id; not guaranteed by account entitlement.",
-            ),
-            ModelEntry(
-                "gpt-5.5-codex",
-                "GPT-5.5 Codex",
-                "Candidate Codex-tuned model id; not guaranteed by account entitlement.",
-            ),
-            ModelEntry(
-                "gpt-5.1",
-                "GPT-5.1 (via Codex)",
-                "Fallback candidate model id; not guaranteed by account entitlement.",
-            ),
-        ),
     ),
     Provider(
         id="claude_code",
@@ -425,7 +287,6 @@ PROVIDERS: tuple[Provider, ...] = (
         requires_api_key=False,
         auth_method="subscription",
         is_kind_default=True,
-        supports_vision=True,
         supports_live_catalog=False,
         # "fable" is the CLI's own current default alias (verified live
         # 2026-08-14: a bare `claude -p` call with no --model resolves to
@@ -450,32 +311,23 @@ PROVIDERS: tuple[Provider, ...] = (
         # explicit refresh time, and CliCatalogHandshake reads it back
         # pre-filled (skipping the cascade entirely on every later passive
         # call) -- see providers/handshake/cli_catalog.py.
-        model_catalog=(
-            ModelEntry(
-                "fable",
-                "Claude Fable (Claude Code alias)",
-                "Candidate Claude Code alias; not guaranteed by account entitlement.",
-                ("text", "image"),
-            ),
-            ModelEntry(
-                "haiku",
-                "Claude Haiku (Claude Code alias)",
-                "Candidate Claude Code alias; not guaranteed by account entitlement.",
-                ("text", "image"),
-            ),
-            ModelEntry(
-                "sonnet",
-                "Claude Sonnet (Claude Code alias)",
-                "Candidate Claude Code alias; not guaranteed by account entitlement.",
-                ("text", "image"),
-            ),
-            ModelEntry(
-                "opus",
-                "Claude Opus (Claude Code alias)",
-                "Candidate Claude Code alias; not guaranteed by account entitlement.",
-                ("text", "image"),
-            ),
-        ),
+        #
+        # No static model_catalog (model-capabilities brief 9.1): model
+        # existence AND per-model vision/pdf modality evidence for claude_code
+        # come from exactly ONE trusted source now, the maintained catalog
+        # document `catalogs/claude-code-models.json`
+        # (providers/model_discovery/claude_code_catalog.py), read through the
+        # refresh overlay when populated and through
+        # ClaudeCodeCatalogHandshake._fallback_models's own disk cache before
+        # the first refresh -- never a second, hand-typed candidate list here
+        # that could drift from it (that was the previous four-row exception;
+        # it is now a real data source, not a compiled-in tuple).
+        # B7 not adopted (S2 Claude SDK tuning): CLIO's own DSPy ReAct loop
+        # drives every claude_code turn end-to-end (tools=[] on the SDK
+        # session — see build_sdk_options); Claude Code is a bare model
+        # engine, never its own inner loop. Explicit (matches the dataclass
+        # default) so the ruling is documented on the record itself.
+        inner_loop_owner="clio",
     ),
     # ----- argonne ALCF ----------------------------------------------
     # NB: api_key for argonne presets is resolved lazily via
@@ -495,15 +347,14 @@ PROVIDERS: tuple[Provider, ...] = (
         provider_kind="argonne",
         litellm_prefix="hosted_vllm",
         api_base="https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
-        suggested_model="openai/gpt-oss-120b",
+        # Sophia's loaded model varies by running job; the live /jobs
+        # discovery (kept as-is by this slice) reports the actual subset.
+        suggested_model="",
         requires_api_key=False,
         auth_method="oauth",
         auth_label="Globus Auth",
-        max_tokens_default=4096,
         strip_openai_prefix=False,
         is_kind_default=True,
-        supports_vision=True,
-        model_catalog=_ARGONNE_MODELS,
     ),
     Provider(
         id="argonne_metis",
@@ -521,14 +372,11 @@ PROVIDERS: tuple[Provider, ...] = (
         # Sophia does. Same Globus auth, same /jobs schema for live
         # model discovery, different chat-completions path.
         api_base="https://inference-api.alcf.anl.gov/resource_server/metis/api/v1",
-        suggested_model="gpt-oss-120b",
+        suggested_model="",
         requires_api_key=False,
         auth_method="oauth",
         auth_label="Globus Auth",
-        supports_vision=True,
-        max_tokens_default=4096,
         strip_openai_prefix=False,
-        model_catalog=_ARGONNE_MODELS,
     ),
     Provider(
         id="vllm",
@@ -546,10 +394,8 @@ PROVIDERS: tuple[Provider, ...] = (
         suggested_model="",
         requires_api_key=False,
         auth_method="none",
-        supports_vision=True,
         supports_runtime_sizing=True,
         managed_service_id="vllm",
-        model_catalog=_ARGONNE_MODELS,
     ),
 )
 
@@ -613,10 +459,7 @@ def provider_defaults(provider: Provider) -> dict[str, Any]:
         "api_base": provider.api_base,
         "model": provider.suggested_model,
         "api_key": provider.api_key_default,
-        "supports_vision": provider.supports_vision,
     }
-    if provider.max_tokens_default != 32000:
-        entry["max_tokens"] = provider.max_tokens_default
     if not provider.strip_openai_prefix:
         entry["strip_openai_prefix"] = False
     if provider.parse_retry_capability != "bounded":
@@ -645,18 +488,19 @@ def as_provider_defaults_dict() -> dict[str, dict[str, Any]]:
 
 
 def as_cloud_api_key_env() -> dict[str, str]:
-    """Build the legacy ``_CLOUD_API_KEY_ENV`` mapping.
+    """Build the legacy ``_CLOUD_API_KEY_ENV`` mapping, keyed by ``provider_id``.
 
-    Maps each provider_kind that has an ``api_key_env`` on its
-    kind-default to that env var name. Used by ``__post_init__`` to
-    fill ``api_key`` from the process environment when the wire field
-    is blank.
+    Used by ``__post_init__`` to fill ``api_key`` from the process environment
+    when the wire field is blank. Keyed by id only (never by ``provider_kind``,
+    Part 3): nine presets share the kind ``"openai"``, so a kind-keyed entry
+    would resolve openrouter or nvidia_nim to whichever of them happened to be
+    that kind's default -- the literal OpenAI provider's ``OPENAI_API_KEY``.
+    A previous kind-keyed second pass here was a pure no-op (the only kinds
+    with an ``is_kind_default`` provider that also declares ``api_key_env`` are
+    "openai" and "anthropic", each already covered by its own id), so it added
+    nothing and is deleted rather than kept as dead scaffolding.
     """
-    out = {p.id: p.api_key_env for p in PROVIDERS if p.api_key_env}
-    out.update(
-        {p.provider_kind: p.api_key_env for p in PROVIDERS if p.is_kind_default and p.api_key_env}
-    )
-    return out
+    return {p.id: p.api_key_env for p in PROVIDERS if p.api_key_env}
 
 
 def as_lm_presets() -> list[Any]:
@@ -687,7 +531,6 @@ def as_lm_presets() -> list[Any]:
             is_authenticated=p.auth_method == "none",
             description=p.description,
             supports_live_catalog=p.supports_live_catalog,
-            supports_vision=p.supports_vision,
             configuration_fields=[
                 LMProviderConfigurationField(
                     id=field.id,

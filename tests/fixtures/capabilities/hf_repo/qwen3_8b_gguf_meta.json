@@ -1,0 +1,11 @@
+{
+  "id": "bartowski/Qwen3-8B-GGUF",
+  "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "cardData": {
+    "base_model": ["Qwen/Qwen3-8B"],
+    "quantized_by": "bartowski"
+  },
+  "siblings": [
+    {"rfilename": "Qwen3-8B-Q4_K_M.gguf"}
+  ]
+}

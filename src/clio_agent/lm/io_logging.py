@@ -467,7 +467,11 @@ def _io_logging_lm_cls() -> Any:
 
                 async def _produce() -> None:
                     try:
-                        with dspy.settings.context(send_stream=send):
+                        # track_usage makes DSPy ask for the provider's own usage
+                        # block on the stream (stream_options.include_usage);
+                        # without it an OpenAI-compatible server (vLLM, ALCF)
+                        # sends none and litellm only estimates the tokens.
+                        with dspy.settings.context(send_stream=send, track_usage=True):
                             holder["result"] = await self.acall(
                                 prompt=prompt, messages=messages, **kwargs
                             )

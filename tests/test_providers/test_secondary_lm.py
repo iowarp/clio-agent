@@ -52,6 +52,9 @@ def test_provider_change_drops_foreign_endpoint_credential_and_options(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("CLIO_SUMMARIZER_PROVIDER", "ollama")
+    # A provider switch carries no model over, and ollama ships no compiled-in
+    # default model (model-capabilities brief 9.1), so the role names its own.
+    monkeypatch.setenv("CLIO_SUMMARIZER_MODEL", "qwen3:8b")
     conf.reload()
     lm, adapter = _caller(
         "acting-model", "http://foreign.test/v1", "foreign-key", stamp_option=True
@@ -59,6 +62,7 @@ def test_provider_change_drops_foreign_endpoint_credential_and_options(
     route = resolve_secondary_lm("summarizer", caller_lm=lm, caller_adapter=adapter)
     config = route.lm._clio_provider_config
     assert config.provider == "ollama"
+    assert config.model == "qwen3:8b"
     assert config.api_base != "http://foreign.test/v1"
     assert config.api_key != "foreign-key"
     assert config.provider_options == {}

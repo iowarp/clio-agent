@@ -194,7 +194,8 @@ class Session(_WireModel):
     agent: AgentRef = Field(default_factory=AgentRef)
     tokens_input: int = 0
     tokens_output: int = 0
-    cost_usd: float = 0.0
+    # None when no turn reported a real cost; 0.0 is a provider-confirmed free turn.
+    cost_usd: float | None = None
     mode: str = "edit"  # P1.1 #1063: ``chat`` mode removed (unenforced == edit)
     edit_mode: str = "diff"
     routing_mode: str = "auto"
@@ -283,7 +284,8 @@ class Message(_WireModel):
     updated_at: str = ""
     parts: list[Part] = Field(default_factory=list)
     tokens: Tokens = Field(default_factory=Tokens)
-    cost_usd: float = 0.0
+    # None when the provider reported no cost for this message.
+    cost_usd: float | None = None
     stop_reason: str = ""
     error_info: ErrorInfo | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -624,7 +626,7 @@ class LMProvider(_WireModel):
     provider: str = ""
     api_base: str = ""
     model: str = ""
-    temperature: float = 0.0
+    temperature: float | None = None
     max_tokens: int = 0
     context_length: int = 0
     chosen_context: int | None = None

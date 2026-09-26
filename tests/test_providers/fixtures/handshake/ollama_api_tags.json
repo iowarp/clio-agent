@@ -1,0 +1,34 @@
+{
+  "models": [
+    {
+      "name": "qwen3:8b",
+      "model": "qwen3:8b",
+      "modified_at": "2026-01-01T00:00:00.000000000Z",
+      "size": 5225376657,
+      "digest": "sha256:e4b6696e6ee3f7bf9f6c3f5bd3f1d3b45f2f1e7c1c7e8b1b0c9c5a2b1c0d9e8f",
+      "details": {
+        "parent_model": "",
+        "format": "gguf",
+        "family": "qwen3",
+        "families": ["qwen3"],
+        "parameter_size": "8.2B",
+        "quantization_level": "Q4_K_M"
+      }
+    },
+    {
+      "name": "nomic-embed-text:latest",
+      "model": "nomic-embed-text:latest",
+      "modified_at": "2025-11-02T00:00:00.000000000Z",
+      "size": 274302450,
+      "digest": "sha256:0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947a76ee6081119",
+      "details": {
+        "parent_model": "",
+        "format": "gguf",
+        "family": "nomic-bert",
+        "families": ["nomic-bert"],
+        "parameter_size": "137M",
+        "quantization_level": "F16"
+      }
+    }
+  ]
+}

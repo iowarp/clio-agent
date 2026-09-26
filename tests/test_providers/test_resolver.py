@@ -29,12 +29,20 @@ import pytest
 from clio_agent.config import PROVIDER_DEFAULTS, LMProviderConfig
 from clio_agent.gact.types import AgentDef
 from clio_agent.providers import resolver as resolver_mod
+from clio_agent.providers.capabilities import invalidation
+from clio_agent.providers.capabilities.records import (
+    DeploymentCapabilities,
+    Fact,
+    ModelCapabilities,
+    ThinkingSpec,
+    unknown,
+)
 from clio_agent.providers.credentials import CredentialResolver
 from clio_agent.providers.handshake.model import (
     AuthState,
     ConnectivityState,
+    DiscoveredModel,
     HandshakeReport,
-    ModelProfile,
 )
 from clio_agent.providers.lm_spec import LMSpec, build_spec, spec_from_config
 from clio_agent.providers.resolver import (
@@ -42,9 +50,62 @@ from clio_agent.providers.resolver import (
     resolve_endpoint_and_handshake,
 )
 
+_NOW = "2026-01-01T00:00:00+00:00"
+
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
+
+
+@pytest.fixture(autouse=True)
+def _clear_capability_store():
+    invalidation.clear_all()
+    yield
+    invalidation.clear_all()
+
+
+def _seed_model(
+    provider: str,
+    model_id: str,
+    *,
+    context_window: int | None,
+    output_limit: int | None,
+    is_reasoning: bool,
+) -> None:
+    """Seed the capability store the way a real handshake would.
+
+    ``context_window`` feeds BOTH the model's own ceiling and what this
+    deployment serves -- none of these tests exercise the model-vs-deployment
+    split (brief 5.5), only that a discovered window/output/reasoning fact
+    reaches ``LMProviderConfig`` via the effective-capabilities accessor.
+    """
+    invalidation.record_model_capabilities(
+        ModelCapabilities(
+            model_key=model_id,
+            context_max=Fact(value=context_window, source="server_report", observed_at=_NOW)
+            if context_window is not None
+            else unknown(),
+            output_max=Fact(value=output_limit, source="server_report", observed_at=_NOW)
+            if output_limit is not None
+            else unknown(),
+            thinking=Fact(
+                value=ThinkingSpec(mechanism="on_off"), source="server_report", observed_at=_NOW
+            )
+            if is_reasoning
+            else unknown(),
+        )
+    )
+    invalidation.record_deployment_capabilities(
+        DeploymentCapabilities(
+            provider_id=provider,
+            api_base="",
+            model_id=model_id,
+            model_key=Fact(value=model_id, source="server_report", observed_at=_NOW),
+            context_served=Fact(value=context_window, source="server_report", observed_at=_NOW)
+            if context_window is not None
+            else unknown(),
+        )
+    )
 
 
 def _report(
@@ -56,9 +117,9 @@ def _report(
     output_limit: int | None = None,
     is_reasoning: bool = False,
     ok: bool = True,
-    models: tuple[ModelProfile, ...] | None = None,
+    models: tuple[DiscoveredModel, ...] | None = None,
 ) -> HandshakeReport:
-    """Build a :class:`HandshakeReport` with one model profile (or a failure)."""
+    """Build a :class:`HandshakeReport` with one discovered model (or a failure)."""
     if not ok:
         return HandshakeReport(
             provider_id=provider,
@@ -66,23 +127,25 @@ def _report(
             connectivity=ConnectivityState.UNREACHABLE,
             auth=AuthState.MISSING,
             error="backend unreachable",
+            api_base="",
             models=(),
         )
     if models is None:
-        models = (
-            ModelProfile(
-                id=model_id,
-                context_window=context_window,
-                loaded_context_window=loaded_context_window,
-                output_limit=output_limit,
-                is_reasoning=is_reasoning,
-            ),
+        del loaded_context_window  # no test exercises a served/ceiling split here
+        _seed_model(
+            provider,
+            model_id,
+            context_window=context_window,
+            output_limit=output_limit,
+            is_reasoning=is_reasoning,
         )
+        models = (DiscoveredModel(id=model_id),)
     return HandshakeReport(
         provider_id=provider,
         provider_kind=provider,
         connectivity=ConnectivityState.OK,
         auth=AuthState.OK,
+        api_base="",
         models=models,
     )
 
@@ -246,6 +309,25 @@ def test_handshake_unreachable_records_reason_and_static_caps(
     assert cfg.max_tokens == 0
 
 
+def test_kind_only_spec_resolves_identity_before_the_handshake(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bare-kind LMSpec (no provider_id -- e.g. ``provider="argonne"``) must
+    resolve to a real preset id (``argonne_sophia``) BEFORE the handshake runs,
+    both on the config skeleton and in the handshake's own cache key -- never
+    leak the bare kind "argonne" into either (model-capabilities brief Part 3).
+    A kind with no matching preset id is not itself a real identity, so
+    reaching the handshake with it unresolved would be a regression."""
+    calls = _patch_handshake(monkeypatch, _report(provider="argonne", model_id="x", ok=False))
+
+    spec = LMSpec(provider="argonne", model="openai/gpt-oss-120b")
+    resolved = resolve_endpoint_and_handshake(spec)
+
+    assert resolved.config_skeleton.provider_id == "argonne_sophia"
+    assert len(calls) == 1
+    assert calls[0].provider_id == "argonne_sophia"
+
+
 def test_handshake_error_records_reason(monkeypatch: pytest.MonkeyPatch) -> None:
     """A handshake that raises is caught and recorded as ``handshake_error``."""
     _patch_handshake(monkeypatch, RuntimeError("boom"))
@@ -259,8 +341,8 @@ def test_handshake_error_records_reason(monkeypatch: pytest.MonkeyPatch) -> None
 
 def test_handshake_model_unresolved_records_reason(monkeypatch: pytest.MonkeyPatch) -> None:
     """A report that lists other models (no match) records ``handshake_model_unresolved``."""
-    other = ModelProfile(id="some-other-model", context_window=4096)
-    also = ModelProfile(id="yet-another", context_window=4096)
+    other = DiscoveredModel(id="some-other-model")
+    also = DiscoveredModel(id="yet-another")
     _patch_handshake(
         monkeypatch, _report(provider="openai", model_id="gpt-4o", models=(other, also))
     )

@@ -17,6 +17,7 @@ import msgspec
 import pytest
 
 from clio_agent.arc import runtime_stop, storage
+from clio_agent.arc.clio_core_config import host_key
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.storage import LocalFSStore, make_arc_store
 
@@ -86,7 +87,7 @@ def test_default_clio_core_dir_falls_back_to_user_data(monkeypatch, tmp_path):
     from clio_agent import paths
 
     monkeypatch.setattr(paths, "user_data_dir", lambda: tmp_path / "data")
-    assert storage._default_cte_dir() == tmp_path / "data" / "cte"
+    assert storage._default_cte_dir() == tmp_path / "data" / "cte" / "hosts" / host_key()
 
 
 def test_factory_local(tmp_path):
@@ -440,7 +441,7 @@ def test_ensure_runtime_registers_atexit_release(monkeypatch, tmp_path):
     fake_clio_core = _types.ModuleType("clio_cte_core_ext")
     fake_clio_core.ChimaeraMode = SimpleNamespace(kClient=object())
     fake_clio_core.PoolQuery = SimpleNamespace(Dynamic=lambda: object())
-    fake_clio_core.chimaera_init = lambda *a, **k: None
+    fake_clio_core.chimaera_init = lambda *a, **k: True  # the binding returns a bool
     fake_clio_core.initialize_cte = lambda *a, **k: None
     monkeypatch.setitem(sys.modules, "iowarp_core", fake_iowarp)
     monkeypatch.setitem(sys.modules, "clio_cte_core_ext", fake_clio_core)

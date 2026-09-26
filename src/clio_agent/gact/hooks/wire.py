@@ -179,6 +179,13 @@ _HOOK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
             "(never an infinite loop)"
         ),
     },
+    "hook_cancelled": {
+        "severity": "warning",
+        "detail": (
+            "the turn's cancel token fired while the hook subprocess was running; "
+            "its whole process tree was killed"
+        ),
+    },
 }
 
 _HOOK_REASONS_MAX = 256
@@ -233,6 +240,26 @@ class HookInfraError(Exception):
     def __init__(self, reason: str, message: str, *, hook_id: str = "") -> None:
         super().__init__(message)
         self.reason = reason
+        self.hook_id = hook_id
+
+
+class HookCancelled(Exception):
+    """The turn's cancel token fired while this hook's subprocess was running (L1).
+
+    STRUCTURALLY distinct from :class:`HookInfraError`: an infra failure (timeout,
+    crash, missing binary) is resolved by the dispatcher's per-hook fail-open/
+    fail-closed posture into an ordinary (possibly ``deny``) decision. A cancelled
+    hook must never resolve to ANY decision — the turn is being torn down — so this
+    propagates straight out of :meth:`HookDispatcher.dispatch` uncaught, aborting
+    every remaining hook for that event too. ``turn_start_offloop.prepare_turn_off_loop``
+    treats an escaping ``HookCancelled`` exactly like its own cooperative-cancel
+    checkpoints (``TurnCancelledDuringPrologue``): the turn's ``prologue_phase``
+    stays ``"running"``, which ``turn_prologue_guard`` reads as "cancelled
+    mid-prologue".
+    """
+
+    def __init__(self, hook_id: str) -> None:
+        super().__init__(f"hook {hook_id!r} was cancelled by a turn cancel")
         self.hook_id = hook_id
 
 

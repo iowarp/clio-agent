@@ -9,14 +9,45 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 
+from clio_agent.gact.local_server_store import saved_address_for_preset
+from clio_agent.gact.provider_catalog import probe_api_key
 from clio_agent.gact.provider_catalog_snapshot import invalidate_provider
 from clio_agent.gact.routes._body import json_body
+from clio_agent.gact.routes.provider_auth import handle_auth_action
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, LMProviderPreset
 from clio_agent.providers.dependencies import (
     ProviderDependencyInstallError,
-    ensure_argonne_support,
-    ensure_claude_code_support,
+    ProviderExtraNotInstallableError,
+    ensure_provider_support,
 )
+
+
+def _install_failure_copy(provider_kind: str) -> tuple[str, str]:
+    """Provider kind -> (typed error code, user-facing failure message).
+
+    The install MECHANISM (:func:`ensure_provider_support`) is fully generic;
+    only the copy shown on failure is provider-specific, and lives here next
+    to the route that renders it.
+    """
+    from clio_agent.providers.argonne_auth import ARGONNE_INSTALL_FAILED_MESSAGE  # noqa: PLC0415
+    from clio_agent.providers.claude_code_errors import (  # noqa: PLC0415
+        CLAUDE_CODE_INSTALL_FAILED_MESSAGE,
+    )
+
+    copy = {
+        "argonne": ("argonne_install_failed", ARGONNE_INSTALL_FAILED_MESSAGE),
+        "claude_code": ("claude_code_install_failed", CLAUDE_CODE_INSTALL_FAILED_MESSAGE),
+    }
+    return copy.get(
+        provider_kind,
+        ("provider_install_failed", f"CLIO could not install support for '{provider_kind}'."),
+    )
+
+
+_INSTALL_SUCCESS_INSTRUCTIONS: dict[str, str] = {
+    "argonne": "ALCF sign-in support is installed. Check the provider to verify sign-in.",
+    "claude_code": "Claude Code support is installed. Check the provider to verify sign-in.",
+}
 
 Readiness = Callable[..., tuple[str, str, bool, str]]
 
@@ -35,17 +66,23 @@ def register_provider_catalog_routes(
     _codex_readiness = codex_readiness
     _claude_code_readiness = claude_code_readiness
 
+    # Saved local/self-hosted servers: registered here so the literal
+    # ``/v1/providers/servers`` paths precede ``GET /v1/providers/{provider_id}``.
+    from clio_agent.gact.routes.local_servers import register_local_server_routes  # noqa: PLC0415
+
+    register_local_server_routes(app, presets)
+
     @app.post("/v1/providers/{provider_id}/auth")
     async def auth_provider(provider_id: str, request: Request) -> dict[str, Any]:
-        """SPEC §6.12 — kick off provider-specific auth.
+        """The generic provider sign-in API (start/complete/status/logout/save_api_key/clear_api_key).
 
-        For argonne_*, ``action=start`` returns the Globus login URL and an
-        opaque flow id. ``action=complete`` exchanges the one-time code on the
-        connected agent, where the refresh token must live. This works for both
-        local and remote agents without trying to open a terminal on that host.
-
-        Other providers (cloud / local) use api_key / no-auth and
-        return 405 with a hint pointing to PUT /v1/providers/lm.
+        start/complete/status/logout are dispatched by provider kind in
+        :mod:`clio_agent.gact.routes.provider_auth` -- ALCF (Globus OAuth) and
+        the direct Codex provider both go through this one interface.
+        save_api_key/clear_api_key are generic across every `requires_api_key`
+        preset (OpenAI, Anthropic, OpenRouter, ...): they set/clear the
+        provider's own credential WITHOUT binding it as the active default,
+        unlike PUT /v1/providers/lm. Any other combination gets a 405.
         """
 
         preset = next((p for p in _LM_PRESETS if p.id == provider_id), None)
@@ -61,89 +98,11 @@ def register_provider_catalog_routes(
                 ).model_dump(exclude_none=True),
             )
 
-        if preset.provider != "argonne":
-            raise HTTPException(
-                status_code=405,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="unsupported",
-                        message=(
-                            f"provider '{provider_id}' uses "
-                            f"{'api_key' if preset.requires_api_key else 'no'} "
-                            "auth; pass api_key directly to PUT /v1/providers/lm."
-                        ),
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-
-        try:
-            installed_support = await asyncio.to_thread(ensure_argonne_support)
-        except ProviderDependencyInstallError as exc:
-            raise HTTPException(
-                status_code=503,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="dependency_install_failed",
-                        message=(
-                            "CLIO could not install ALCF sign-in support on the connected agent: "
-                            f"{exc}"
-                        ),
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from exc
-
         body = await json_body(request, route="POST /v1/providers/{provider_id}/auth")
         action = str(body.get("action", "start")).strip().lower()
-        try:
-            from clio_agent.providers import argonne_auth  # noqa: PLC0415
-
-            if action == "complete":
-                flow_id = str(body.get("flow_id", ""))
-                authorization_code = str(body.get("authorization_code", ""))
-                await asyncio.to_thread(
-                    argonne_auth.complete_authentication,
-                    flow_id,
-                    authorization_code,
-                )
-                # The Globus tokens are shared by every ALCF cluster, so every
-                # argonne provider's catalog evidence was produced under the old
-                # (signed-out) credential; the next catalog read re-probes them.
-                for argonne_preset in (p for p in _LM_PRESETS if p.provider == "argonne"):
-                    invalidate_provider(app, argonne_preset.id)
-                return {
-                    "is_authenticated": True,
-                    "provider_id": provider_id,
-                    "instructions": "ALCF sign-in complete. Checking available models.",
-                }
-            if action != "start":
-                raise ValueError(f"unknown authentication action: {action}")
-
-            pending = await asyncio.to_thread(argonne_auth.begin_authentication)
-        except Exception as exc:
-            raise HTTPException(
-                status_code=502,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="argonne_auth_failed",
-                        message=f"Could not complete Globus authentication: {exc}",
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            ) from exc
-
-        return {
-            "is_authenticated": False,
-            "provider_id": provider_id,
-            "instructions": (
-                ("Installed ALCF sign-in support on this agent. " if installed_support else "")
-                + f"Continue in {preset.auth_label or 'Globus'}, then paste the authorization "
-                "code here."
-            ),
-            "authorization_url": pending.authorization_url,
-            "flow_id": pending.flow_id,
-        }
+        return await handle_auth_action(
+            preset=preset, action=action, body=body, app=app, presets=_LM_PRESETS
+        )
 
     @app.get("/v1/providers/{provider_id}/models")
     async def list_provider_models(provider_id: str, api_base: str = "") -> dict[str, Any]:
@@ -154,9 +113,11 @@ def register_provider_catalog_routes(
             run_handshake,
         )
 
+        # provider_id names a preset's own id, never its wire KIND (#1418):
+        # nine presets share kind "openai", so a kind-based fallback here
+        # silently returned the FIRST such preset (by catalog order) rather
+        # than the one actually configured.
         preset = next((p for p in _LM_PRESETS if p.id == provider_id), None)
-        if preset is None:
-            preset = next((p for p in _LM_PRESETS if p.provider == provider_id), None)
         if preset is None:
             # Last-ditch static for known provider ids only.
             models = _PROVIDER_MODELS.get(provider_id)
@@ -233,50 +194,56 @@ def register_provider_catalog_routes(
         ctx = HandshakeContext(
             provider_id=preset.id,
             provider_kind=preset.provider,
-            api_base=(api_base or preset.api_base or ""),
-            api_key=model_discovery.resolve_cloud_api_key(preset.provider),
+            # The address saved on Settings > Providers, when there is one.
+            api_base=(api_base or saved_address_for_preset(preset.id) or preset.api_base or ""),
+            api_key=probe_api_key(preset),
             auth_mode="passive",
             allow_external_sources=True,
         )
         report = await run_handshake(ctx)
-        wire = report.to_models_wire()
+        wire = report.models_wire()
         return wire
 
     @app.post("/v1/providers/{provider_id}/install")
     async def install_provider_support(provider_id: str) -> dict[str, Any]:
-        """Install optional runtime support for a provider on the connected agent."""
+        """Install the optional runtime support a provider's own extra declares.
+
+        Dispatched by provider KIND through :func:`ensure_provider_support` --
+        one generic registry, never a per-provider branch here. The package
+        spec it installs always comes from CLIO's own declared extras
+        (never this request), runs with the active backend interpreter, and
+        re-checking the provider afterward is the caller's job (the picker
+        and Settings both re-run their check on a successful install).
+        """
 
         preset = next((p for p in _LM_PRESETS if p.id == provider_id), None)
         if preset is None:
             raise HTTPException(status_code=404, detail=f"unknown provider: {provider_id}")
-        if preset.provider != "claude_code":
+
+        try:
+            installed = await asyncio.to_thread(ensure_provider_support, preset.provider)
+        except ProviderExtraNotInstallableError as exc:
             raise HTTPException(
                 status_code=405,
                 detail=f"provider '{provider_id}' has no installable runtime support",
-            )
-        from clio_agent.providers.claude_code_errors import (  # noqa: PLC0415
-            CLAUDE_CODE_INSTALL_FAILED_MESSAGE,
-        )
-
-        try:
-            installed = await asyncio.to_thread(ensure_claude_code_support)
+            ) from exc
         except ProviderDependencyInstallError as exc:
+            error, message = _install_failure_copy(preset.provider)
             raise HTTPException(
                 status_code=503,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
-                        error="claude_code_install_failed",
-                        message=CLAUDE_CODE_INSTALL_FAILED_MESSAGE,
+                        error=error,
+                        message=message,
                         details={"diagnostic": str(exc)},
                         recoverable=True,
                     )
                 ).model_dump(exclude_none=True),
             ) from exc
-        return {
-            "provider_id": preset.id,
-            "installed": installed,
-            "instructions": "Claude Code support is installed. Check the provider to verify sign-in.",
-        }
+        instructions = _INSTALL_SUCCESS_INSTRUCTIONS.get(
+            preset.provider, "Support is installed. Check the provider to verify sign-in."
+        )
+        return {"provider_id": preset.id, "installed": installed, "instructions": instructions}
 
     @app.get("/v1/providers/{provider_id}/handshake")
     async def provider_handshake(
@@ -286,7 +253,7 @@ def register_provider_catalog_routes(
 
         Report-only (no runtime mutation). Runs the per-provider handshake and
         returns the discovered context windows, reasoning/tool capabilities and
-        provenance alongside the legacy model list (``to_models_wire`` shape).
+        provenance alongside the legacy model list (``HandshakeReport.models_wire`` shape).
         Cached for the handshake TTL; ``refresh=true`` forces a re-probe. Argonne
         resolves its own stored token (passive, never interactive).
         """
@@ -296,9 +263,9 @@ def register_provider_catalog_routes(
             run_handshake,
         )
 
+        # provider_id names a preset's own id, never its wire KIND (#1418) --
+        # see the matching comment on list_provider_models above.
         preset = next((p for p in _LM_PRESETS if p.id == provider_id), None)
-        if preset is None:
-            preset = next((p for p in _LM_PRESETS if p.provider == provider_id), None)
         if preset is None:
             raise HTTPException(
                 status_code=404,
@@ -318,7 +285,7 @@ def register_provider_catalog_routes(
             status, message, verified, _ = _codex_readiness()
             if refresh and status in {"auth_check_required", "ready"}:
                 from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
-                from clio_agent.providers.codex_errors import (  # noqa: PLC0415
+                from clio_agent.providers.codex.errors import (  # noqa: PLC0415
                     CODEX_AUTHENTICATION_ERROR_MESSAGE,
                     contains_codex_authentication_error,
                 )
@@ -398,13 +365,14 @@ def register_provider_catalog_routes(
         ctx = HandshakeContext(
             provider_id=preset.id,
             provider_kind=preset.provider,
-            api_base=(api_base or preset.api_base or ""),
-            api_key=model_discovery.resolve_cloud_api_key(preset.provider),
+            # The address saved on Settings > Providers, when there is one.
+            api_base=(api_base or saved_address_for_preset(preset.id) or preset.api_base or ""),
+            api_key=probe_api_key(preset),
             auth_mode="passive",
             allow_external_sources=True,
         )
         report = await run_handshake(ctx, force=refresh)
-        out = report.to_models_wire()
+        out = report.models_wire()
         out["connectivity"] = report.connectivity.value
         out["auth"] = report.auth.value
         out["latency_ms"] = report.latency_ms

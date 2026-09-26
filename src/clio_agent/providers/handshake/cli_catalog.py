@@ -9,10 +9,15 @@ also consults the persisted refresh overlay
 This handshake NEVER re-runs discovery itself: the handshake's read path is hit on
 every connect/doctor/model-picker-open, and a live CLI probe there would mean every
 one of those pays a real (for claude_code, BILLED) round-trip. It only reads
-whatever the last refresh wrote, falling back to the static registry catalog (the
-:class:`NoOpHandshake` behavior) when no overlay entry exists yet (fresh install) —
-this is what keeps the #740 guarantee (a CLI provider's models always resolve a
-context window) intact regardless of whether a refresh has ever run.
+whatever the last refresh wrote, falling back to :meth:`CliCatalogHandshake.
+_fallback_models` when no overlay entry exists yet (fresh install) -- this is
+what keeps the #740 guarantee (a CLI provider's models always resolve a
+context window) intact regardless of whether a refresh has ever run. The
+DEFAULT fallback is :class:`NoOpHandshake`'s static registry catalog
+(``provider.model_catalog``); :class:`ClaudeCodeCatalogHandshake` overrides it
+to read the maintained catalog's own disk cache instead (see that class), since
+per owner ruling Claude Code's model identity and capabilities have exactly
+ONE trusted source, never a second hand-typed candidate list.
 
 **Context/output limits (#1211 review D4).** ``model_discovery`` resolves each
 discovered model's context/output limit ONCE, at explicit refresh time, and
@@ -51,11 +56,32 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
+from clio_agent.providers.capabilities.link import deployment_model_key_fact
+from clio_agent.providers.capabilities.records import (
+    DeploymentCapabilities,
+    Fact,
+    ModelCapabilities,
+    ThinkingSpec,
+    modalities_from_capabilities,
+    unknown,
+)
 from clio_agent.providers.handshake.base import ConnectivityResult, HandshakeContext
-from clio_agent.providers.handshake.model import AuthState, ConnectivityState, ModelProfile
+from clio_agent.providers.handshake.model import (
+    AuthState,
+    ConnectivityState,
+    DiscoveredModel,
+    DiscoveredModelFacts,
+    raw_aliases,
+)
 from clio_agent.providers.handshake.noop import NoOpHandshake
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
 
 logger = logging.getLogger(__name__)
 
@@ -79,15 +105,33 @@ def _overlay_capabilities(row: dict[str, Any]) -> tuple[str, ...]:
     return tuple(str(value).strip() for value in values if str(value).strip())
 
 
+def _thinking_fact_for(provider_kind: str, raw: dict[str, Any]) -> Fact[ThinkingSpec]:
+    """This overlay-sourced row's ``ThinkingSpec`` fact, dispatched by CLI provider.
+
+    Codex's own SDK effort vocabulary and Claude Code's CLI-reported effort
+    levels need different per-provider translation
+    (:mod:`clio_agent.providers.capabilities.dialects.codex`/``.claude_code``);
+    every other (future) no-HTTP-surface CLI provider has no known thinking
+    story here yet, so it stays unknown.
+    """
+
+    if provider_kind == "codex":
+        from clio_agent.providers.capabilities.dialects import (
+            codex as codex_dialect,  # noqa: PLC0415
+        )
+
+        return codex_dialect.build_thinking_spec(raw)
+    if provider_kind == "claude_code":
+        from clio_agent.providers.capabilities.dialects import (  # noqa: PLC0415
+            claude_code as claude_code_dialect,
+        )
+
+        return claude_code_dialect.build_thinking_spec(raw)
+    return unknown()
+
+
 class CliCatalogHandshake(NoOpHandshake):
     """:class:`NoOpHandshake` variant whose model list prefers the refresh overlay."""
-
-    #: The overlay carries the capabilities an explicit discovery run evidenced
-    #: (the Codex SDK's reported input modalities, the maintained claude_code
-    #: catalog's declared capabilities), so this provider kind HAS a
-    #: modality-evidence system -- absence of a modality here means "not
-    #: evidenced yet", never "nobody could ask".
-    reports_input_modalities = True
 
     async def discover_models(self, client: Any, ctx: HandshakeContext) -> list[dict[str, Any]]:
         """Return the overlay's discovered models when present, else the static catalog.
@@ -133,7 +177,7 @@ class CliCatalogHandshake(NoOpHandshake):
                     # of arriving as an anonymous empty list.
                     "capability_evidence": m.get("capability_evidence") or {},
                     # Per-model reasoning efforts the discovery run recorded
-                    # (Codex SDK catalog); the provider catalog derives the
+                    # (the maintained Codex catalog); the provider catalog derives the
                     # selectable thinking levels from them.
                     "supported_reasoning_efforts": list(m.get("supported_reasoning_efforts") or []),
                     "default_reasoning_effort": str(m.get("default_reasoning_effort") or ""),
@@ -141,17 +185,34 @@ class CliCatalogHandshake(NoOpHandshake):
                     "supported_effort_levels": list(m.get("supported_effort_levels") or []),
                     "cli_values": list(m.get("cli_values") or []),
                     "effort_evidence_failure": str(m.get("effort_evidence_failure") or ""),
+                    # The maintained claude-code-models.json catalog's own
+                    # shipped-default thinking level for this model, when it
+                    # declares one (data, never a name-matched heuristic).
+                    "shipped_default_effort": str(m.get("shipped_default_effort") or ""),
                     _OVERLAY_CHECKED_KEY: True,
                 }
                 for m in wire["models"]
                 if isinstance(m, dict) and m.get("id")
             ]
+        return await self._fallback_models(client, ctx)
+
+    async def _fallback_models(self, client: Any, ctx: HandshakeContext) -> list[dict[str, Any]]:
+        """The "no overlay yet" fallback (a fresh install, never refreshed).
+
+        Default: :class:`~clio_agent.providers.handshake.noop.NoOpHandshake`'s
+        generic registry-catalog read (``provider.model_catalog``) -- the right
+        answer for a CLI provider with no other data source. A subclass with a
+        richer offline data source (see :class:`ClaudeCodeCatalogHandshake`)
+        overrides this instead of ``discover_models`` itself, so the overlay-
+        first logic above is never duplicated.
+        """
+
         return await super().discover_models(client, ctx)
 
     def models_provenance(self, ctx: HandshakeContext) -> tuple[str, str]:
         """Report ``overlay`` + the discovery run's own timestamp, else ``static``.
 
-        The overlay is real evidence — a Codex SDK catalog read or a claude_code
+        The overlay is real evidence — a Codex catalog read or a claude_code
         alias probe actually ran — but it is not THIS run's evidence, and it can
         be arbitrarily old. Both facts are reported rather than collapsed into
         the ``live`` the base class used to stamp unconditionally. With no
@@ -166,78 +227,119 @@ class CliCatalogHandshake(NoOpHandshake):
 
     async def discover_model_config(
         self, client: Any, ctx: HandshakeContext, raw: dict[str, Any]
-    ) -> ModelProfile:
-        """Build a :class:`ModelProfile`, pre-filled from the overlay when available (D4).
+    ) -> DiscoveredModelFacts:
+        """Build :class:`DiscoveredModelFacts`, pre-filled from the overlay when available (D4).
 
         An overlay-sourced row (flagged by :meth:`discover_models`) already
         carries its context/output limit resolved at refresh time — real values
         OR a confirmed miss (``None``); either way, that information rides onto
-        the profile here so :meth:`enrich_capabilities` can skip the cascade
-        entirely. A static-catalog-sourced row (no overlay yet) falls through to
-        the base :class:`NoOpHandshake` behavior unchanged (context left unset,
-        so the cascade still runs for it — the pre-#1211 behavior, unaffected).
+        the model record here so :meth:`enrich_capabilities` can skip the
+        cascade entirely (it checks the SAME ``_OVERLAY_CHECKED_KEY`` sentinel
+        on the raw row, not whether a fact is known, so a confirmed miss is
+        never mistaken for "not checked yet" and re-attempted). A
+        static-catalog-sourced row (no overlay yet) falls through to the base
+        :class:`NoOpHandshake` behavior unchanged (the cascade still runs for
+        it — the pre-#1211 behavior, unaffected).
         """
         if not raw.get(_OVERLAY_CHECKED_KEY):
             return await super().discover_model_config(client, ctx, raw)
+        model_id = str(raw.get("id", "")).strip()
         context_window = raw.get("context_window")
         output_limit = raw.get("output_limit")
-        return ModelProfile(
-            id=str(raw.get("id", "")).strip(),
-            context_window=context_window
-            if isinstance(context_window, int) and context_window > 0
-            else None,
-            output_limit=output_limit
-            if isinstance(output_limit, int) and output_limit > 0
-            else None,
-            capabilities=_overlay_capabilities(raw),
-            context_source=str(raw.get("context_source") or "overlay"),
+        # The evidence's OWN timestamp (when the discovery run that produced
+        # this overlay row happened), never the wall clock of this passive read.
+        observed_at = str(ctx.extra.get(_OVERLAY_GENERATED_AT_KEY) or "") or _now_iso()
+        caps = _overlay_capabilities(raw)
+        detail = "persisted refresh-overlay evidence (clio_agent.providers.model_discovery.overlay)"
+        model_key_fact = deployment_model_key_fact(model_id, observed_at=observed_at)
+        model_key = model_key_fact.value or model_id
+        model = ModelCapabilities(
+            model_key=model_key,
+            context_max=(
+                Fact(
+                    value=context_window,
+                    source="server_report",
+                    observed_at=observed_at,
+                    detail=detail,
+                )
+                if isinstance(context_window, int) and context_window > 0
+                else unknown()
+            ),
+            output_max=(
+                Fact(
+                    value=output_limit,
+                    source="server_report",
+                    observed_at=observed_at,
+                    detail=detail,
+                )
+                if isinstance(output_limit, int) and output_limit > 0
+                else unknown()
+            ),
+            input_modalities=(
+                Fact(
+                    value=modalities_from_capabilities(caps),
+                    source="server_report",
+                    observed_at=observed_at,
+                    detail=detail,
+                )
+                if caps
+                else unknown()
+            ),
+            thinking=_thinking_fact_for(ctx.provider_kind, raw),
+        )
+        deployment = DeploymentCapabilities(
+            provider_id=ctx.provider_id,
+            api_base=ctx.api_base,
+            model_id=model_id,
+            model_key=model_key_fact,
+        )
+        discovered = DiscoveredModel(
+            id=model_id,
+            aliases=raw_aliases(raw),
             evidence_generated_at=str(ctx.extra.get(_OVERLAY_GENERATED_AT_KEY) or ""),
             raw=dict(raw),
         )
+        return DiscoveredModelFacts(discovered=discovered, model=model, deployment=deployment)
 
     async def enrich_capabilities(
-        self, profile: ModelProfile, ctx: HandshakeContext
-    ) -> ModelProfile:
-        """Skip the context-source cascade entirely for an overlay-checked profile (D4).
+        self, facts: DiscoveredModelFacts, ctx: HandshakeContext
+    ) -> DiscoveredModelFacts:
+        """Skip the community-catalog cascade entirely for an overlay-checked row (D4).
 
-        The base :meth:`ProviderHandshake.enrich_capabilities` re-runs
-        ``resolve_context``/``resolve_output_limit`` whenever ``context_window``/
-        ``output_limit`` is ``None`` — which is indistinguishable from "never
-        checked" unless the caller marks it. An overlay-sourced profile WAS
-        checked (at refresh time, by ``attach_context_limits``); a ``None`` here
-        means a CONFIRMED miss, not an unresolved value, so re-running the
-        cascade on every ambient handshake call would just repeat the same
-        (possibly network-touching) miss forever. Returns the profile unchanged
-        for those; delegates to the base cascade for everything else.
+        The base
+        :meth:`~clio_agent.providers.handshake.base.ProviderHandshake.enrich_capabilities`
+        re-runs the cascade whenever ``context_max``/``output_max`` is unknown
+        -- which is indistinguishable from "never checked" unless the caller
+        marks it. An overlay-sourced row WAS checked (at refresh time, by
+        ``attach_context_limits``); an unknown fact here means a CONFIRMED
+        miss, not an unresolved value, so re-running the cascade on every
+        ambient handshake call would just repeat the same (possibly
+        network-touching) miss forever. Returns ``facts`` unchanged for those;
+        delegates to the base cascade for everything else.
         """
-        if profile.raw.get(_OVERLAY_CHECKED_KEY):
-            return profile
-        return await super().enrich_capabilities(profile, ctx)
+        if facts.discovered.raw.get(_OVERLAY_CHECKED_KEY):
+            return facts
+        return await super().enrich_capabilities(facts, ctx)
 
 
 class CodexCatalogHandshake(CliCatalogHandshake):
-    """Codex catalog handshake gated by verified subscription credentials."""
+    """Codex catalog handshake gated by a verified, signed-in credential."""
 
     async def check_connectivity(self, client: Any, ctx: HandshakeContext) -> ConnectivityResult:
-        """Reject synthetic readiness until a fresh SDK catalog check exists."""
+        """Reject synthetic readiness until a signed-in credential and a fresh catalog check exist."""
 
         del client
-        if importlib.util.find_spec("openai_codex") is None:
-            return ConnectivityResult(
-                connectivity=ConnectivityState.UNREACHABLE,
-                auth=AuthState.MISSING,
-                error="official openai-codex Python SDK is not installed",
-            )
         from clio_agent.providers import model_discovery  # noqa: PLC0415
-        from clio_agent.providers.codex_credential_home import (  # noqa: PLC0415
-            codex_credentials_present,
+        from clio_agent.providers.codex.credentials import CodexCredentialStore  # noqa: PLC0415
+        from clio_agent.providers.codex.errors import (  # noqa: PLC0415
+            CODEX_AUTHENTICATION_ERROR_MESSAGE,
         )
 
-        if not codex_credentials_present():
+        if not CodexCredentialStore().is_signed_in():
             return ConnectivityResult(
                 connectivity=ConnectivityState.SKIPPED,
                 auth=AuthState.MISSING,
-                error="Codex sign-in is required on the connected agent",
+                error=CODEX_AUTHENTICATION_ERROR_MESSAGE,
             )
         try:
             overlay = model_discovery.overlay_models_wire(ctx.provider_id, ctx.provider_kind)
@@ -297,5 +399,47 @@ class ClaudeCodeCatalogHandshake(CliCatalogHandshake):
             error="Claude Code is installed but has not been verified. Check the provider to sign in.",
         )
 
+    async def _fallback_models(self, client: Any, ctx: HandshakeContext) -> list[dict[str, Any]]:
+        """Before any refresh has ever run: the maintained catalog's OWN disk cache.
 
-__all__ = ["ClaudeCodeCatalogHandshake", "CliCatalogHandshake", "CodexCatalogHandshake"]
+        NEVER the generic :class:`~clio_agent.providers.handshake.noop.NoOpHandshake`
+        registry-catalog read (``provider.catalog.Provider.model_catalog``) --
+        per owner ruling, Claude Code model existence and per-model modality
+        capabilities come from ONE trusted source, the maintained GitHub
+        catalog document (:mod:`clio_agent.providers.model_discovery.
+        claude_code_catalog`), never a second, hand-typed candidate list that
+        can drift from it. :func:`~.claude_code_catalog.cached_claude_code_catalog`
+        is disk-only (no network), matching this ambient/passive path's zero-
+        network-call contract -- the same guarantee
+        :class:`~clio_agent.providers.handshake.noop.NoOpHandshake` makes, just
+        backed by a real (if possibly stale) fetched document instead of a
+        compiled-in Python tuple. Each row's ``capability_evidence`` (already
+        typed by the catalog module itself, ``reason="modality_cataloged"``/
+        ``"modality_uncataloged"``) rides through unchanged.
+
+        No disk cache at all (never fetched, on this exact machine) degrades to
+        an empty candidate list -- honest "nothing known yet", never a guess.
+        """
+
+        del client
+        from clio_agent.providers.model_discovery.claude_code_catalog import (  # noqa: PLC0415
+            cached_claude_code_catalog,
+        )
+
+        catalog, _error = cached_claude_code_catalog()
+        if catalog is None:
+            return []
+        return [
+            {
+                "id": model["id"],
+                "name": model["name"],
+                "description": "",
+                "capabilities": list(model.get("capabilities") or []),
+                "capability_evidence": model.get("capability_evidence") or {},
+                "shipped_default_effort": str(model.get("shipped_default_effort") or ""),
+            }
+            for model in catalog.models
+        ]
+
+
+__all__ = ["CodexCatalogHandshake", "ClaudeCodeCatalogHandshake", "CliCatalogHandshake"]

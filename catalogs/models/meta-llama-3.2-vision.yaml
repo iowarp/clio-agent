@@ -1,0 +1,21 @@
+# Llama 3.2 Vision (11B/90B Instruct): image input. Evidence (recorded in tests/fixtures):
+# Hub pipeline_tag image-text-to-text, MllamaForConditionalGeneration with a
+# preprocessor_config.json; models.dev meta/llama-3.2-11b-vision-instruct
+# modalities.input [text, image], limit 128000/4096. Tool calls are for text turns.
+- family: meta-llama-3.2-vision
+  matchPatterns:
+    - llama-3.2-90b-vision
+    - llama-3.2-11b-vision
+  capabilities:
+    chat: true
+    tools: true
+    toolCallFormat: openai
+    reasoning: false
+    structuredOutputs: json-schema
+    vision: true
+    audio: false
+    embeddings: false
+    rerank: false
+    fim: false
+    contextWindow: 128000
+    maxTokens: 4096

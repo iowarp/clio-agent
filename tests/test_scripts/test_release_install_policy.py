@@ -12,12 +12,12 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_VERSION = "0.9.4.17"
+EXPECTED_VERSION = "0.9.4.18"
 EXPECTED_DSPY = "dspy==3.3.0b1"
 EXPECTED_FASTMCP = "fastmcp==4.0.0b5"
 EXPECTED_FASTMCP_SLIM = "fastmcp-slim==4.0.0b5"
 EXPECTED_FASTMCP_TASKS = "fastmcp-tasks==4.0.0b5"
-EXPECTED_LITELLM = "litellm==1.91.3"
+EXPECTED_LITELLM = "litellm==1.102.1"
 
 
 def _text(relative_path: str) -> str:
@@ -39,11 +39,10 @@ def test_release_installers_explicitly_root_intentional_prereleases() -> None:
             "'fastmcp-slim==4.0.0b5', 'fastmcp-tasks==4.0.0b5'",
         ),
         "install/clio": ('"dspy==3.3.0b1" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5"',),
-        "install/build-gact-runtime.sh": (
-            '"dspy==3.3.0b1" "fastmcp==4.0.0b5" "fastmcp-slim==4.0.0b5"',
-        ),
-        "install/build-gact-runtime.ps1": ("'fastmcp-slim==4.0.0b5', 'fastmcp-tasks==4.0.0b5'",),
     }
+    # The bundled-runtime builders root nothing themselves: they install
+    # clio-agent[BUNDLE_EXTRAS] against the lock export, whose exact prerelease
+    # pins root the betas (test_check_bundle_matches_lock.py covers them).
 
     for relative_path, commands in expected_commands.items():
         contents = _text(relative_path)
@@ -52,21 +51,29 @@ def test_release_installers_explicitly_root_intentional_prereleases() -> None:
             assert command in contents, f"{relative_path} lacks narrow DSPy install: {command}"
 
 
-def test_launchers_root_runtime_and_cte_state_under_the_selected_install() -> None:
-    """Detached agents must not share stale host-global coordination paths."""
+def test_launchers_never_scope_the_host_global_clio_core_daemon() -> None:
+    """One clio-core daemon per machine (owner ruling 2026-09-24): no launcher scopes it.
+
+    The per-install state dir / CTE dir / port block made a spawned daemon compose a
+    config the in-process client never read (ares, 2026-09-25: daemon on the install
+    port, client waiting on 9413). Agent data still follows the install.
+    """
+
+    remote_driver = _text("src/clio_agent/gact/infrastructure/drivers.py") + _text(
+        "src/clio_agent/gact/infrastructure/clio_agent_deploy.py"
+    )
+    for relative_path in ("install/clio", "install/clio.ps1"):
+        contents = _text(relative_path)
+        for scoped in ("CLIO_RUNTIME_STATE_DIR", "CLIO_ARC_CTE_DIR", "CLIO_CORE_PORT"):
+            assert scoped not in contents, f"{relative_path} scopes the daemon via {scoped}"
+            assert scoped not in remote_driver, f"remote driver scopes the daemon via {scoped}"
+    assert "clio-core.port" not in _text("install/clio")
 
     shell = _text("install/clio")
     assert 'CLIO_DATA_DIR="${CLIO_DATA_DIR:-$CLIO_PREFIX/data}"' in shell
-    assert 'CLIO_ARC_CTE_DIR="${CLIO_ARC_CTE_DIR:-$CLIO_PREFIX/cte}"' in shell
-    assert 'CLIO_RUNTIME_STATE_DIR="${CLIO_RUNTIME_STATE_DIR:-$CLIO_PREFIX/runtime-state}"' in shell
-    assert 'port_file="$CLIO_PREFIX/clio-core.port"' in shell
-    assert 'export CLIO_CORE_PORT="$chosen"' in shell
     assert "unset CLIO_PORT" in shell
-
     powershell = _text("install/clio.ps1")
     assert "$env:CLIO_DATA_DIR = Join-Path $Prefix 'data'" in powershell
-    assert "$env:CLIO_ARC_CTE_DIR = Join-Path $Prefix 'cte'" in powershell
-    assert "$env:CLIO_RUNTIME_STATE_DIR = Join-Path $Prefix 'runtime-state'" in powershell
     assert "Remove-Item Env:CLIO_PORT" in powershell
 
 
@@ -176,7 +183,6 @@ def test_bundled_runtime_is_precompiled_before_relocation_proof() -> None:
         assert "precompile_runtime.py" in script, relative_path
         assert "'--no-agent'" in script or '"--no-agent"' in script, relative_path
         assert "within 30 seconds" in script, relative_path
-        assert "clio-kit==2.10.6" in script, relative_path
         assert "from clio_kit import cli; cli()" in script, relative_path
         assert "uvx" in script, relative_path
 

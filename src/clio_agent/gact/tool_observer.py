@@ -768,10 +768,7 @@ def _make_tool_observer(app: "FastAPI"):
                 completion_error = (
                     completion_error or "tool call completed after session cancellation"
                 )
-                cancellation_metadata = {
-                    "execution_cancellation": "best_effort",
-                    "executor_work_may_continue": True,
-                }
+                cancellation_metadata = {"execution_cancellation": "best_effort"}
             ok = completion_error is None
             # A native tool may DECLARE its own typed structured payload (P5 wire
             # semantics — the same declared-presentation contract an MCP tool's

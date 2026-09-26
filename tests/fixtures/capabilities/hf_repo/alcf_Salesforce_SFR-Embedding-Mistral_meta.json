@@ -1,0 +1,107 @@
+{
+ "id": "Salesforce/SFR-Embedding-Mistral",
+ "modelId": "Salesforce/SFR-Embedding-Mistral",
+ "sha": "33a60fe7b5e00b9414981280c571e8a4f9f42f1b",
+ "private": false,
+ "gated": false,
+ "pipeline_tag": "feature-extraction",
+ "library_name": "sentence-transformers",
+ "tags": [
+  "sentence-transformers",
+  "safetensors",
+  "mistral",
+  "feature-extraction",
+  "mteb",
+  "transformers",
+  "en",
+  "arxiv:2210.07316",
+  "arxiv:2310.06825",
+  "arxiv:2401.00368",
+  "arxiv:2104.08663",
+  "license:cc-by-nc-4.0",
+  "model-index",
+  "text-embeddings-inference",
+  "endpoints_compatible",
+  "deploy:sagemaker",
+  "deploy:azure",
+  "region:us"
+ ],
+ "config": {
+  "architectures": [
+   "MistralModel"
+  ],
+  "model_type": "mistral",
+  "tokenizer_config": {
+   "bos_token": "<s>",
+   "eos_token": "</s>",
+   "pad_token": "</s>",
+   "unk_token": "<unk>",
+   "use_default_system_prompt": false
+  }
+ },
+ "cardData": {
+  "tags": [
+   "mteb",
+   "sentence-transformers",
+   "transformers"
+  ],
+  "license": "cc-by-nc-4.0"
+ },
+ "siblings": [
+  {
+   "rfilename": ".DS_Store"
+  },
+  {
+   "rfilename": ".gitattributes"
+  },
+  {
+   "rfilename": "1_Pooling/config.json"
+  },
+  {
+   "rfilename": "README.md"
+  },
+  {
+   "rfilename": "config.json"
+  },
+  {
+   "rfilename": "config_sentence_transformers.json"
+  },
+  {
+   "rfilename": "lora/adapter_config.json"
+  },
+  {
+   "rfilename": "lora/adapter_model.safetensors"
+  },
+  {
+   "rfilename": "model-00001-of-00003.safetensors"
+  },
+  {
+   "rfilename": "model-00002-of-00003.safetensors"
+  },
+  {
+   "rfilename": "model-00003-of-00003.safetensors"
+  },
+  {
+   "rfilename": "model.safetensors.index.json"
+  },
+  {
+   "rfilename": "modules.json"
+  },
+  {
+   "rfilename": "sentence_bert_config.json"
+  },
+  {
+   "rfilename": "special_tokens_map.json"
+  },
+  {
+   "rfilename": "tokenizer.json"
+  },
+  {
+   "rfilename": "tokenizer.model"
+  },
+  {
+   "rfilename": "tokenizer_config.json"
+  }
+ ],
+ "lastModified": "2025-02-04T21:01:42.000Z"
+}

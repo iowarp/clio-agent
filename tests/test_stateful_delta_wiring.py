@@ -4,12 +4,14 @@ These lock the three fixes whose *wiring* (not the shared detector, proved in
 ``test_claude_code_stateful``) is the deliverable:
 
 * **T1 — V2+codex routing.** A codex model id that collides with a litellm-registered
-  OpenAI model name (``gpt-5.6-sol``) must reach the codex ``CustomLLM`` handler, NOT
-  litellm's OpenAI handler (which raises ``'codex' is not a valid LlmProviders``). The
-  clio-side guard is the ``cdx-`` namespace marker in
+  OpenAI model name (``gpt-5.6-sol``) must reach clio's own ``CodexLLM`` custom handler,
+  NOT litellm's OpenAI handler. The litellm-facing prefix is ``codex_direct`` -- never
+  bare ``codex``, which collides with litellm's OWN native ``codex`` provider
+  (:data:`clio_agent.providers.codex.constants.LITELLM_PROVIDER`) -- and the clio-side
+  collision guard is the ``cg-`` namespace marker in
   :func:`clio_agent.lm.factory._resolve_model_name`. **Sabotage:** drop the marker →
-  ``create_lm`` yields the bare ``codex/gpt-5.6-sol`` → litellm routes it to OpenAI →
-  this test goes red.
+  ``create_lm`` yields the bare ``codex_direct/gpt-5.6-sol`` → litellm routes it to
+  OpenAI → this test goes red.
 
 * **T2 — ops_reset.** When ARC autocompaction rewrites the History prefix
   (``_RetainingReActV2._maybe_autocompact`` → ``arc.summarize_segments``), the active
@@ -53,19 +55,25 @@ def _key(scope: str) -> tuple[Any, ...]:
 # T1 — V2+codex routing: the collision-avoidance marker reaches the transport. #
 # --------------------------------------------------------------------------- #
 def test_codex_colliding_model_reaches_custom_handler(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A codex model whose id collides with an OpenAI model name still routes to codex.
+    """A codex model whose id collides with an OpenAI model name still routes to clio's
+    own custom handler, never litellm's OpenAI dialect NOR litellm's own native
+    "codex" provider.
 
     The regression pin for the V2+codex routing bug: ``gpt-5.6-sol`` is a litellm-
-    registered OpenAI chat model, so the bare ``codex/gpt-5.6-sol`` is hijacked to
-    litellm's OpenAI handler (``'codex' is not a valid LlmProviders``). ``create_lm``'s
-    ``cdx-`` marker (``_resolve_model_name``) is the guard: the resolved
-    ``codex/cdx-gpt-5.6-sol`` reaches the codex ``CustomLLM`` handler instead. Removing
-    the marker turns both assertions red.
+    registered OpenAI chat model, so a bare ``codex_direct/gpt-5.6-sol`` risks being
+    hijacked to litellm's OpenAI handler. ``create_lm``'s ``cg-`` marker
+    (``_resolve_model_name``) is the guard: the resolved ``codex_direct/cg-gpt-5.6-sol``
+    reaches clio's ``CodexLLM`` custom handler instead. Removing the marker turns both
+    assertions red. Separately (not this test's sabotage target, but load-bearing): the
+    litellm-facing prefix itself must never be bare ``codex`` -- litellm ships its own
+    native ``codex`` provider (a real device-code OAuth flow against
+    auth.openai.com), so that name would silently route every turn there instead of
+    ever reaching this handler at all.
     """
     import litellm
 
     from clio_agent.config import LMProviderConfig, create_lm
-    from clio_agent.providers import codex_litellm
+    from clio_agent.providers.codex import litellm_adapter as codex_litellm
 
     codex_litellm.ensure_registered()
     litellm.utils.custom_llm_setup()
@@ -85,8 +93,9 @@ def test_codex_colliding_model_reaches_custom_handler(monkeypatch: pytest.Monkey
 
     cfg = LMProviderConfig(provider="codex", model="gpt-5.6-sol")
     resolved = create_lm(cfg).model
-    # The marker namespaces the id out of the OpenAI collision set.
-    assert resolved == "codex/cdx-gpt-5.6-sol"
+    # The marker namespaces the id out of the OpenAI collision set, and the
+    # litellm-facing prefix is "codex_direct" (never litellm's native "codex").
+    assert resolved == "codex_direct/cg-gpt-5.6-sol"
 
     reached: dict[str, Any] = {}
 
@@ -102,11 +111,12 @@ def test_codex_colliding_model_reaches_custom_handler(monkeypatch: pytest.Monkey
             messages=[{"role": "user", "content": "hi"}],
             stream=False,
         )
-    # NOT the OpenAI-hijack routing error; the codex handler WAS reached (litellm hands
-    # the custom handler the provider-prefix-stripped id — the ``cdx-`` marker survives
-    # so the handler's own ``removeprefix('cdx-')`` recovers the real ``gpt-5.6-sol``).
+    # NOT the OpenAI-hijack routing error; clio's CodexLLM handler WAS reached
+    # (litellm hands the custom handler the provider-prefix-stripped id — the ``cg-``
+    # marker survives so the handler's own ``removeprefix('cg-')`` recovers the real
+    # ``gpt-5.6-sol``).
     assert "is not a valid LlmProviders" not in str(excinfo.value)
-    assert reached.get("model") == "cdx-gpt-5.6-sol"
+    assert reached.get("model") == "cg-gpt-5.6-sol"
 
 
 # --------------------------------------------------------------------------- #
@@ -320,82 +330,54 @@ def test_tier1_shaped_forward_deltas_on_call_two(monkeypatch: pytest.MonkeyPatch
 
 
 # --------------------------------------------------------------------------- #
-# T4 — scope-keyed stream connections (the AGENT-COPPER12 cross-conversation   #
-# defect): concurrent expert loops must never multiplex ENGAGED (delta-capable)#
-# sends over one pooled SDK connection — the connection, not the per-call      #
-# session_id, is the real conversation boundary for resumed sends.             #
+# T4 — S2 (B1): the stream pool isolates by GACT SESSION id, not react-loop
+# scope, and (unlike the pre-S2 scope-keyed design) a stateful_scope's exit
+# must NOT close the pool's connection — B1's whole point is that the SAME
+# client survives across every turn (every forward) of one session. The
+# #901 stateful-delta layer's own scope-keyed correctness (the AGENT-COPPER12
+# cross-conversation defect this used to guard) is untouched: see
+# test_claude_code_stateful.py / this file's T3 above for that guarantee —
+# it lives entirely in the registry pinned there, independent of which
+# physical client a query rides on.
 # --------------------------------------------------------------------------- #
-def test_stream_pool_isolates_engaged_scopes() -> None:
-    """Distinct stateful scopes get distinct pooled connections; base is shared.
+def test_stream_pool_isolates_by_gact_session_not_scope() -> None:
+    """Distinct GACT sessions get distinct pooled connections; one session's
+    connection is reused across calls regardless of which stateful scope (or
+    none) is active for a given call.
 
-    **Sabotage:** drop ``scope`` from the pool key -> both scopes share one entry
-    -> a child expert's delta rides the parent's conversation -> red.
+    **Sabotage:** drop ``session_id`` from the pool key (or key on scope again)
+    -> two unrelated sessions share one connection -> red.
     """
     from clio_agent.providers.claude_code_sessions import ClaudeStreamClientPool
 
     pool = ClaudeStreamClientPool()
     try:
-        base_one = pool.entry_for(model="m", cwd=None, thinking=None)
-        base_two = pool.entry_for(model="m", cwd=None, thinking=None, scope=None)
-        scope_a = pool.entry_for(model="m", cwd=None, thinking=None, scope="loop-a")
-        scope_a2 = pool.entry_for(model="m", cwd=None, thinking=None, scope="loop-a")
-        scope_b = pool.entry_for(model="m", cwd=None, thinking=None, scope="loop-b")
-        assert base_one is base_two  # non-engaged sends share the base connection
-        assert scope_a is scope_a2  # one connection per loop, reused across its calls
-        assert scope_a is not base_one
-        assert scope_b is not scope_a
+        sess_a = pool.entry_for(session_id="sess-a")
+        sess_a_again = pool.entry_for(session_id="sess-a")
+        sess_b = pool.entry_for(session_id="sess-b")
+        off_turn_one = pool.entry_for(session_id="")
+        off_turn_two = pool.entry_for(session_id="")
+        assert sess_a is sess_a_again  # one connection per session, reused
+        assert sess_a is not sess_b  # distinct sessions never share a connection
+        assert off_turn_one is off_turn_two  # the off-turn fallback key is shared
+        assert off_turn_one is not sess_a
     finally:
         pool.close_blocking()
 
 
-def test_stream_pool_releases_scope_entries_on_scope_exit() -> None:
-    """``stateful_scope`` exit closes the loop's own connection; base survives.
+def test_stream_pool_entry_survives_a_stateful_scope_exit() -> None:
+    """B1: a session's connection OUTLIVES the react-loop forward that used it.
 
-    The registered-pool seam: the process singleton implements the scope-registry
-    protocol, so the react forward's scope teardown drops the forward's stateful
-    connection (#900 -- a loop's session never outlives the loop).
-    **Sabotage:** unregister the pool (or no-op ``release``) -> the entry persists
-    across loops -> red.
+    The pre-S2 design tore the connection down at every ``stateful_scope()``
+    exit (a fresh connection — and a cold reconnect — every turn). B1 requires
+    the opposite: the SAME entry serves the next turn's forward too.
+    **Sabotage:** re-register the pool onto ``stateful_scope``'s per-forward
+    scope-registry protocol -> the entry is dropped on scope exit -> red.
     """
     from clio_agent.providers.claude_code_sessions import _STREAM_CLIENT_POOL
 
-    with stateful_scope("loop-rel"):
-        held = _STREAM_CLIENT_POOL.entry_for(model="m", cwd=None, thinking=None, scope="loop-rel")
-        again = _STREAM_CLIENT_POOL.entry_for(model="m", cwd=None, thinking=None, scope="loop-rel")
-        assert held is again
-    fresh = _STREAM_CLIENT_POOL.entry_for(model="m", cwd=None, thinking=None, scope="loop-rel")
-    assert fresh is not held  # the scope's connection was closed+dropped on exit
-    _STREAM_CLIENT_POOL.release("loop-rel")
-
-
-def test_stream_scope_derivation_follows_engagement() -> None:
-    """Engaged sends carry their scope to the pool; full/fresh sends stay base.
-
-    **Sabotage:** route every send to the base entry (ignore ``engaged``) -> red.
-    """
-    from clio_agent.providers.claude_code_sessions import stream_scope_for
-    from clio_agent.providers.claude_code_stateful import StatefulSend
-
-    engaged = StatefulSend(
-        payload="p",
-        session_id="s",
-        mode="delta",
-        reason=None,
-        delta_chars=1,
-        engaged=True,
-        session_key=("sc", "m", None, None),
-        scope_token="sc",
-        call_id="c",
-    )
-    inert = StatefulSend(
-        payload="p",
-        session_id="s2",
-        mode="full",
-        reason=None,
-        delta_chars=1,
-        engaged=False,
-        call_id="c2",
-    )
-    assert stream_scope_for(engaged) == "sc"
-    assert stream_scope_for(inert) is None
-    assert stream_scope_for(None) is None
+    with stateful_scope("turn-1"):
+        held = _STREAM_CLIENT_POOL.entry_for(session_id="sess-persist")
+    still_here = _STREAM_CLIENT_POOL.entry_for(session_id="sess-persist")
+    assert still_here is held  # NOT torn down by the forward's own scope exit
+    _STREAM_CLIENT_POOL.release("sess-persist")

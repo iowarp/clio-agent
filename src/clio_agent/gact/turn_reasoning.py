@@ -8,9 +8,10 @@ The level is overlaid onto the turn's LOCAL agent copy as
 ``parameters["thinking_level"]`` — the same per-expert override
 :func:`clio_agent.providers.lm_spec.build_spec` already honors — so it flows
 through the ordinary spec -> resolver -> ``create_lm`` chain and is translated
-by :func:`clio_agent.providers.thinking.resolve_thinking` (the single level ->
-kwargs mapping) into the provider-correct kwargs of the LM that runs under the
-turn's ``dspy.context``. Nothing global is mutated; the next turn without a
+by :func:`clio_agent.lm.request_builder.build_request_kwargs` (via
+:func:`clio_agent.lm.dialect_wire.thinking_wire`, driven by the model's own
+``ThinkingSpec``) into the provider-correct kwargs of the LM that runs under
+the turn's ``dspy.context``. Nothing global is mutated; the next turn without a
 per-message level runs on the configured level again.
 
 :func:`turn_reasoning_provenance` records what was requested and what the
@@ -186,17 +187,22 @@ def turn_reasoning_provenance(
     """Describe the thinking level this turn's LM runs with (non-secret).
 
     Mirrors how :func:`~clio_agent.providers.lm_spec.build_spec` resolves the
-    level (the agent's ``parameters`` over the active default profile) and asks
-    :func:`~clio_agent.providers.thinking.resolve_thinking` what the provider
-    receives for it.
+    level (the agent's ``parameters`` over the active default profile) and
+    asks the SAME :func:`~clio_agent.lm.dialect_wire.thinking_wire` the
+    request builder uses what the provider actually receives for it -- a
+    display derivation off the real effective capabilities
+    (model-capabilities brief 5.5), never a second thinking-mapping engine.
     """
 
     from clio_agent.gact.providers.config import (  # noqa: PLC0415
         _effective_lm_config,
         _provider_runtime_kind,
     )
-    from clio_agent.providers.reasoning_levels import model_effort_levels  # noqa: PLC0415
-    from clio_agent.providers.thinking import resolve_thinking  # noqa: PLC0415
+    from clio_agent.lm import dialect_wire  # noqa: PLC0415
+    from clio_agent.lm.request_builder import local_first_effective  # noqa: PLC0415
+    from clio_agent.providers.capabilities import endpoint as capability_endpoint  # noqa: PLC0415
+    from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
+    from clio_agent.providers.thinking_levels import normalize_level  # noqa: PLC0415
 
     active = _effective_lm_config(app)
     parameters = agent_def.parameters or {}
@@ -210,12 +216,7 @@ def turn_reasoning_provenance(
     budget = int(parameters.get("thinking_budget") or active.get("thinking_budget") or 0)
     provider_kind = _provider_runtime_kind(provider_id) or str(active.get("provider") or "")
     try:
-        plan = resolve_thinking(
-            provider_kind,
-            requested or None,
-            budget,
-            effort_levels=model_effort_levels(provider_kind, model_id),
-        )
+        level = normalize_level(requested or None)
     except ValueError as exc:
         return {
             "requested_level": requested,
@@ -224,18 +225,38 @@ def turn_reasoning_provenance(
             "effective_level": "invalid",
             "reason": str(exc),
         }
-    kwargs = dict(plan.litellm_kwargs)
-    if plan.sdk_thinking is not None:
-        kwargs["claude_code_thinking"] = plan.sdk_thinking
+
+    preset = get_provider(provider_id)
+    litellm_prefix = preset.litellm_prefix if preset is not None else provider_kind
+    dialect = capability_endpoint.dialect_for_provider(provider_kind, litellm_prefix, provider_id)
+    api_base = str(active.get("api_base") or "")
+    effective = local_first_effective(
+        provider_id,
+        api_base,
+        model_id or str(active.get("model") or ""),
+        dialect=dialect,
+        litellm_prefix=litellm_prefix,
+    )
+    kwargs = dialect_wire.thinking_wire(
+        dialect, effective.thinking, level=level, budget_tokens=budget
+    )
+
+    effective_level: str
+    if level in (None, "off"):
+        effective_level = "default" if level is None else "off"
+    elif kwargs:
+        effective_level = str(level)
+    else:
+        effective_level = "unsupported"
     record: dict[str, Any] = {
         "requested_level": requested,
         "source": source,
         "provider": provider_kind,
-        "effective_level": plan.effective_level,
+        "effective_level": effective_level,
         "lm_kwargs": kwargs,
     }
-    if not plan.supported:
-        record["reason"] = plan.unsupported_reason or ""
+    if effective_level == "unsupported":
+        record["reason"] = effective.thinking.reason or "not controllable here"
     inheritance = agent_def.metadata.get(TURN_REASONING_INHERITANCE_KEY)
     if isinstance(inheritance, dict):
         record.update(inheritance)

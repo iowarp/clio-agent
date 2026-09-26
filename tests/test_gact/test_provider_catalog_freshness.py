@@ -21,15 +21,23 @@ from clio_agent.gact.app import build_app
 from clio_agent.gact.provider_catalog import discover_provider
 from clio_agent.gact.types import LMProviderPreset
 from clio_agent.providers import model_discovery
+from clio_agent.providers.capabilities import invalidation
+from clio_agent.providers.capabilities.records import (
+    DeploymentCapabilities,
+    Fact,
+    ModelCapabilities,
+)
 from clio_agent.providers.handshake import cache as handshake_cache
 from clio_agent.providers.handshake.model import (
     AuthState,
     ConnectivityState,
+    DiscoveredModel,
     HandshakeReport,
-    ModelProfile,
 )
 
 METIS_BASE = "https://inference-api.alcf.anl.gov/resource_server/metis/api/v1"
+_METIS_MODEL = "openai/gpt-oss-120b"
+_NOW = "2026-09-22T10:00:00+00:00"
 
 
 @pytest.fixture(autouse=True)
@@ -38,6 +46,30 @@ def _fresh_confirmations(monkeypatch: pytest.MonkeyPatch) -> None:
     from clio_agent.providers.model_discovery import last_good
 
     monkeypatch.setattr(last_good, "_CONFIRMED_IN_PROCESS", {}, raising=False)
+    invalidation.clear_all()
+    yield
+    invalidation.clear_all()
+
+
+def _seed_metis_capabilities() -> None:
+    """Seed the capability store the way a real Argonne handshake would.
+
+    ``_live_report()`` only carries bare identity now (brief Part 4); the
+    context/tool facts ``model_catalog_row`` and the overlay's persisted
+    capability snapshot both read come from here.
+    """
+    invalidation.record_model_capabilities(ModelCapabilities(model_key=_METIS_MODEL))
+    invalidation.record_deployment_capabilities(
+        DeploymentCapabilities(
+            provider_id="argonne_metis",
+            api_base=METIS_BASE,
+            model_id=_METIS_MODEL,
+            model_key=Fact(value=_METIS_MODEL, source="server_report", observed_at=_NOW),
+            context_served=Fact(value=131_072, source="server_report", observed_at=_NOW),
+            tools_enabled=Fact(value=True, source="server_report", observed_at=_NOW),
+            reasoning_enabled=Fact(value=True, source="server_report", observed_at=_NOW),
+        )
+    )
 
 
 def _metis() -> LMProviderPreset:
@@ -51,23 +83,17 @@ def _metis() -> LMProviderPreset:
 
 
 def _live_report() -> HandshakeReport:
+    _seed_metis_capabilities()
     return HandshakeReport(
         provider_id="argonne_metis",
         provider_kind="argonne",
         connectivity=ConnectivityState.OK,
         auth=AuthState.OK,
+        api_base=METIS_BASE,
         models_source="live",
         generated_at="2026-09-22T10:00:00+00:00",
         evidence_generated_at="2026-09-22T10:00:00+00:00",
-        models=(
-            ModelProfile(
-                id="openai/gpt-oss-120b",
-                context_window=131_072,
-                is_reasoning=True,
-                reasoning_param="openai_gptoss",
-                native_tool_calling=True,
-            ),
-        ),
+        models=(DiscoveredModel(id=_METIS_MODEL),),
     )
 
 
@@ -79,6 +105,7 @@ def _skipped_report() -> HandshakeReport:
         auth=AuthState.DEFERRED,
         error="argonne_stored_token_unusable: a Globus sign-in is stored but ...",
         models_source="unavailable",
+        api_base=METIS_BASE,
         generated_at="2026-09-23T08:00:00+00:00",
     )
 
@@ -99,7 +126,7 @@ def test_live_answer_is_persisted_and_served_stale_when_the_probe_is_empty(
     # The real store: the overlay file now holds the live list under the exact id.
     stored = json.loads(model_discovery.overlay_path().read_text(encoding="utf-8"))
     assert stored["argonne_metis"]["source"] == model_discovery.HTTP_SOURCE
-    assert stored["argonne_metis"]["models"][0]["context_window"] == 131_072
+    assert stored["argonne_metis"]["models"][0]["capability_snapshot"]["context_served"] == 131_072
 
     restarted = asyncio.run(discover_provider(_metis()))
     assert [row["model_id"] for row in restarted["models"]] == ["openai/gpt-oss-120b"]
@@ -119,6 +146,39 @@ def test_live_answer_is_persisted_and_served_stale_when_the_probe_is_empty(
     assert restarted["health"] == "unavailable"
 
 
+def test_a_rejected_credential_never_brings_back_the_last_good_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refused key is fresher, definitive evidence: the provider reports no
+    usable models and its rejection -- never the dated last-good list beside
+    it (which read as "maybe still available" next to "your key was rejected")."""
+    rejected = HandshakeReport(
+        provider_id="argonne_metis",
+        provider_kind="argonne",
+        connectivity=ConnectivityState.OK,
+        auth=AuthState.REJECTED,
+        error="api_key_rejected: the provider refused the API key (HTTP 401)",
+        error_code="api_key_rejected",
+        models_source="unavailable",
+        generated_at="2026-09-23T08:00:00+00:00",
+    )
+    reports = [_live_report(), rejected]
+
+    async def _handshake(*_args: object, **_kwargs: object) -> HandshakeReport:
+        return reports.pop(0)
+
+    monkeypatch.setattr("clio_agent.gact.provider_catalog.run_handshake", _handshake)
+
+    asyncio.run(discover_provider(_metis()))
+    after = asyncio.run(discover_provider(_metis()))
+
+    assert after["models"] == []
+    assert after["health"] == "unavailable"
+    assert after["failure"].startswith("api_key_rejected")
+    assert "staleness" not in after["freshness"]
+    assert after["freshness"]["source"] != "last_good"
+
+
 def test_no_last_good_list_means_no_models(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _handshake(*_args: object, **_kwargs: object) -> HandshakeReport:
         return _skipped_report()
@@ -135,9 +195,9 @@ def test_last_good_lookup_is_exact_provider_id(monkeypatch: pytest.MonkeyPatch) 
     assert model_discovery.persist_live_catalog("argonne_metis", _live_report())
     assert model_discovery.last_good_catalog("argonne_sophia") is None
     assert model_discovery.last_good_catalog("argonne") is None
-    catalog = model_discovery.last_good_catalog("argonne_metis")
+    catalog = model_discovery.last_good_catalog("argonne_metis", api_base=METIS_BASE)
     assert catalog is not None
-    assert catalog.profiles[0].reasoning_param == "openai_gptoss"
+    assert catalog.models[0].id == _METIS_MODEL
 
 
 def test_only_live_answers_are_persisted() -> None:
@@ -146,8 +206,9 @@ def test_only_live_answers_are_persisted() -> None:
         provider_kind="argonne",
         connectivity=ConnectivityState.OK,
         auth=AuthState.OK,
+        api_base=METIS_BASE,
         models_source="static",
-        models=(ModelProfile(id="guess"),),
+        models=(DiscoveredModel(id="guess"),),
     )
     assert model_discovery.persist_live_catalog("argonne_metis", static) is False
     assert model_discovery.persist_live_catalog("argonne_metis", _skipped_report()) is False
@@ -155,6 +216,8 @@ def test_only_live_answers_are_persisted() -> None:
 
 
 def test_invalidate_provider_drops_every_api_base_variant() -> None:
+    # The cache is process-global; count only the entries this test puts.
+    handshake_cache.invalidate()
     handshake_cache.put_cached(("argonne_metis", "a"), _live_report())
     handshake_cache.put_cached(("argonne_metis", "b"), _live_report())
     handshake_cache.put_cached(("argonne_sophia", "a"), _live_report())
@@ -211,7 +274,11 @@ def test_refresh_for_one_provider_probes_only_that_provider(
     assert probed == [("argonne_metis", True)]
     names = {row["id"]: row["name"] for row in response.json()["providers"]}
     assert names == {"codex": "codex", "argonne_metis": "fresh"}
-    assert app.state.provider_catalog == response.json()
+    # The stored snapshot is what was served, minus the per-response live
+    # "checking" overlay (never persisted -- it describes this instant).
+    served = response.json()
+    assert all(row.pop("checking") is False for row in served["providers"])
+    assert app.state.provider_catalog == served
 
 
 def test_unknown_provider_refresh_is_not_found(tmp_path: Path) -> None:
@@ -239,7 +306,7 @@ def test_sign_in_completion_retires_every_alcf_entry(
 
     monkeypatch.setattr("clio_agent.gact.provider_catalog_snapshot.discover_provider", _discover)
     monkeypatch.setattr(
-        "clio_agent.gact.routes.provider_catalog_routes.ensure_argonne_support", lambda: False
+        "clio_agent.gact.routes.provider_auth.ensure_argonne_support", lambda: False
     )
     monkeypatch.setattr(argonne_auth, "complete_authentication", lambda *_args: None)
 
@@ -448,7 +515,7 @@ def test_older_reprobe_never_merges_over_a_newer_refresh(
     newer = _record("argonne_metis", source="live")
     newer["name"] = "newer refresh"
 
-    async def _discover(ids: list[str], *, refresh: bool) -> list[dict[str, Any]]:
+    async def _discover(_app: Any, ids: list[str], *, refresh: bool) -> list[dict[str, Any]]:
         # A refresh lands while this re-probe attempt is in flight.
         provider_catalog_snapshot.commit(
             app, {"catalog_id": "active", "providers": [newer]}, ["argonne_metis"]
@@ -469,7 +536,7 @@ def test_invalidation_during_a_read_is_kept_for_the_next_read(
     app = build_app(sessions_path=tmp_path / "sessions.json")
     monkeypatch.setattr(provider_catalog_snapshot, "as_lm_presets", lambda: [_metis()])
 
-    async def _discover(ids: list[str], *, refresh: bool) -> list[dict[str, Any]]:
+    async def _discover(_app: Any, ids: list[str], *, refresh: bool) -> list[dict[str, Any]]:
         provider_catalog_snapshot.invalidate_provider(app, "argonne_metis")
         return [_record(pid) for pid in ids]
 
@@ -505,6 +572,39 @@ def test_unchanged_last_good_list_is_not_rewritten() -> None:
     before = path.stat().st_mtime_ns
     assert model_discovery.persist_live_catalog("argonne_metis", _live_report()) is False
     assert path.stat().st_mtime_ns == before
+
+
+def test_a_changed_api_base_stamps_a_different_freshness_key(tmp_path: Path) -> None:
+    """A provider whose configured endpoint changes must never read as fresh
+    evidence for its OLD endpoint (model-capabilities brief Part 3): the
+    freshness ledger is keyed by (provider_id, normalized api_base), not just
+    provider_id."""
+    from clio_agent.gact import provider_catalog_snapshot as snapshot
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    old_base = "http://127.0.0.1:8088/v1"
+    new_base = "http://127.0.0.1:9000/v1"
+
+    snapshot.commit(
+        app,
+        {"catalog_id": "active", "providers": [{**_record("llama_cpp"), "endpoint": old_base}]},
+        ["llama_cpp"],
+    )
+    before = snapshot.provider_seq(app, "llama_cpp", old_base)
+    assert before != 0
+    # The new endpoint has never been stamped -- its own freshness key is 0,
+    # entirely independent of the old endpoint's.
+    assert snapshot.provider_seq(app, "llama_cpp", new_base) == 0
+
+    snapshot.commit(
+        app,
+        {"catalog_id": "active", "providers": [{**_record("llama_cpp"), "endpoint": new_base}]},
+        ["llama_cpp"],
+    )
+    # The old endpoint's freshness entry is untouched by the new commit.
+    assert snapshot.provider_seq(app, "llama_cpp", old_base) == before
+    assert snapshot.provider_seq(app, "llama_cpp", new_base) != 0
+    assert snapshot.provider_seq(app, "llama_cpp", new_base) != before
 
 
 def test_last_confirmed_tracks_every_live_confirmation(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -567,7 +667,7 @@ def test_reprobe_logs_quiet_down_after_three_failures(
     )
     answers = ["last_good"] * 5 + ["live"]
 
-    async def _discover(ids: list[str], *, refresh: bool) -> list[dict[str, Any]]:
+    async def _discover(_app: Any, ids: list[str], *, refresh: bool) -> list[dict[str, Any]]:
         return [_record("argonne_metis", source=answers.pop(0))]
 
     monkeypatch.setattr(provider_catalog_snapshot, "discover", _discover)
@@ -600,7 +700,7 @@ def test_full_refresh_never_overwrites_a_newer_reprobe_answer(
     newer = _record("argonne_metis", source="live")
     newer["name"] = "re-probe answer"
 
-    async def _discover(ids: list[str], *, refresh: bool) -> list[dict[str, Any]]:
+    async def _discover(_app: Any, ids: list[str], *, refresh: bool) -> list[dict[str, Any]]:
         # A background re-probe answers while this (older) refresh is in flight.
         provider_catalog_snapshot.commit(
             app, {"catalog_id": "active", "providers": [newer]}, ["argonne_metis"]

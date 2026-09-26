@@ -8,18 +8,31 @@ from the official SDK. CLIO does not probe models through the SDK/CLI to
 learn what exists or what a model can do; :mod:`.claude_code` still runs one
 small, separate ``auth status`` check to learn whether Claude Code is
 installed and signed in, but that check never touches model identity.
+
+Fetch / cache / offline policy is owned by the generic
+:mod:`clio_agent.providers.fetched_catalog` mechanism: a disk cache with a TTL
+and ETag under ``paths.user_cache_dir()/catalogs/claude-code-models.json``,
+atomic writes, and a last-good copy that a failed fetch or a failed schema
+validation never clears (this used to be an in-memory-only cache that a failed
+fetch CLEARED outright -- a transient GitHub hiccup used to take the whole
+catalog down with it; it no longer does). There is no bundled cold-start
+fallback: a true cold start with no disk cache and no network is a typed
+:class:`ClaudeCodeCatalogError`, same as before.
 """
 
 from __future__ import annotations
 
+import json
 import re
-import threading
 from dataclasses import dataclass
 from typing import Any
 
-import httpx
-
+from clio_agent.providers.fetched_catalog import (
+    FetchedCatalog,
+    FetchedCatalogUnavailable,
+)
 from clio_agent.providers.model_discovery.modality_evidence import modality_evidence
+from clio_agent.providers.thinking_levels import THINKING_LEVELS
 
 CLAUDE_CODE_CATALOG_URL = (
     "https://raw.githubusercontent.com/iowarp/clio-agent/develop/catalogs/claude-code-models.json"
@@ -28,9 +41,13 @@ _MODEL_ID = re.compile(r"^claude-[a-z0-9]+(?:-[a-z0-9]+)*$")
 #: The only input modalities the catalog document may declare.
 _KNOWN_CAPABILITIES = frozenset({"text", "image", "pdf"})
 
-_cache_lock = threading.Lock()
-_cached_catalog: ClaudeCodeCatalog | None = None
-_cached_error = ""
+#: How long a fetched catalog is served before a normal (non-forced) read
+#: re-fetches. Short: this is a small, cheap document and staying current
+#: matters more than saving a request.
+DEFAULT_TTL_S = 60 * 60.0
+
+_FETCH_TIMEOUT_S = 8.0
+_MAX_BYTES = 65_536
 
 
 class ClaudeCodeCatalogError(RuntimeError):
@@ -86,21 +103,24 @@ def _capabilities_from_row(model_id: str, raw: Any) -> tuple[list[str], dict[str
     return list(raw), modality_evidence(source="claude_code_catalog", reason="modality_cataloged")
 
 
-def load_claude_code_catalog() -> ClaudeCodeCatalog:
-    """Fetch and validate the current catalog snapshot; never substitute bundled data."""
+def _parse_catalog(payload: bytes) -> ClaudeCodeCatalog:
+    """Validate one catalog document's bytes into a :class:`ClaudeCodeCatalog`.
+
+    Pure parse+validate, no I/O -- the ``parse`` callable handed to
+    :class:`~clio_agent.providers.fetched_catalog.FetchedCatalog`. Raises
+    :class:`ClaudeCodeCatalogError` on any schema violation, which
+    ``FetchedCatalog`` treats as a validation failure (never substituted
+    silently; the last good copy rides through instead).
+    """
 
     try:
-        response = httpx.get(CLAUDE_CODE_CATALOG_URL, timeout=8.0, follow_redirects=False)
-        response.raise_for_status()
-        if len(response.content) > 65_536:
-            raise ClaudeCodeCatalogError("Claude Code model catalog is too large")
-        payload: Any = response.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        raise ClaudeCodeCatalogError(f"Could not fetch Claude Code model catalog: {exc}") from exc
+        payload_obj: Any = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise ClaudeCodeCatalogError(f"Claude Code model catalog is not valid JSON: {exc}") from exc
 
-    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+    if not isinstance(payload_obj, dict) or payload_obj.get("schema_version") != 1:
         raise ClaudeCodeCatalogError("Claude Code model catalog has an unsupported schema")
-    rows = payload.get("models")
+    rows = payload_obj.get("models")
     if not isinstance(rows, list) or not rows:
         raise ClaudeCodeCatalogError("Claude Code model catalog contains no models")
 
@@ -122,16 +142,23 @@ def load_claude_code_catalog() -> ClaudeCodeCatalog:
             raise ClaudeCodeCatalogError("Claude Code model catalog contains an invalid model")
         seen.add(model_id)
         capabilities, evidence = _capabilities_from_row(model_id, row.get("capabilities"))
-        candidates.append(
-            {
-                "id": model_id,
-                "name": name.strip(),
-                "capabilities": capabilities,
-                "capability_evidence": evidence,
-            }
-        )
+        candidate: dict[str, Any] = {
+            "id": model_id,
+            "name": name.strip(),
+            "capabilities": capabilities,
+            "capability_evidence": evidence,
+        }
+        shipped_default = row.get("shipped_default_effort")
+        if shipped_default is not None:
+            if not isinstance(shipped_default, str) or shipped_default not in THINKING_LEVELS:
+                raise ClaudeCodeCatalogError(
+                    f"Claude Code model catalog has an invalid shipped_default_effort "
+                    f"for {model_id!r}: {shipped_default!r}"
+                )
+            candidate["shipped_default_effort"] = shipped_default
+        candidates.append(candidate)
 
-    default_model = payload.get("default_model")
+    default_model = payload_obj.get("default_model")
     if default_model is None:
         default_model = ""
         default_model_reason = "the maintained Claude Code catalog names no default model"
@@ -147,28 +174,62 @@ def load_claude_code_catalog() -> ClaudeCodeCatalog:
     )
 
 
-def refresh_claude_code_catalog() -> ClaudeCodeCatalog:
-    """Replace the process catalog from GitHub, including typed fetch failures."""
+_CATALOG: FetchedCatalog[ClaudeCodeCatalog] = FetchedCatalog(
+    "claude-code-models",
+    CLAUDE_CODE_CATALOG_URL,
+    parse=_parse_catalog,
+    ttl_s=DEFAULT_TTL_S,
+    max_bytes=_MAX_BYTES,
+    timeout_s=_FETCH_TIMEOUT_S,
+)
 
-    global _cached_catalog, _cached_error
+
+def _raise_unavailable(exc: FetchedCatalogUnavailable) -> ClaudeCodeCatalogError:
+    return ClaudeCodeCatalogError(f"Could not fetch Claude Code model catalog: {exc}")
+
+
+def load_claude_code_catalog() -> ClaudeCodeCatalog:
+    """Return the current catalog, using the disk cache/network per TTL policy.
+
+    Unlike before the fetched_catalog migration, a transient fetch failure no
+    longer fails this call outright when a previously-good copy is cached on
+    disk -- it is served instead, with the degradation logged as a typed
+    ``stale_reason`` (see :mod:`clio_agent.providers.fetched_catalog`). This
+    only raises :class:`ClaudeCodeCatalogError` on a true total miss: no cache,
+    no network (there is no bundled fallback for this catalog).
+    """
+
     try:
-        catalog = load_claude_code_catalog()
-    except ClaudeCodeCatalogError as exc:
-        with _cache_lock:
-            _cached_catalog = None
-            _cached_error = str(exc)
-        raise
-    with _cache_lock:
-        _cached_catalog = catalog
-        _cached_error = ""
-    return catalog
+        return _CATALOG.get().data
+    except FetchedCatalogUnavailable as exc:
+        raise _raise_unavailable(exc) from exc
+
+
+def refresh_claude_code_catalog() -> ClaudeCodeCatalog:
+    """Force a live re-fetch (bypassing TTL freshness), keeping last-good on failure.
+
+    Still typed-fails (:class:`ClaudeCodeCatalogError`) only when there is
+    truly nothing usable: no disk cache at all AND the live fetch failed.
+    """
+
+    try:
+        return _CATALOG.get(force_refresh=True).data
+    except FetchedCatalogUnavailable as exc:
+        raise _raise_unavailable(exc) from exc
 
 
 def cached_claude_code_catalog() -> tuple[ClaudeCodeCatalog | None, str]:
-    """Return the startup/explicit-refresh catalog without doing network I/O."""
+    """Return the last known-good catalog without touching the network.
 
-    with _cache_lock:
-        return _cached_catalog, _cached_error
+    Disk-only (no HTTP), matching the previous in-memory-only accessor's
+    contract of "no network I/O" -- the disk cache now makes this durable
+    across process restarts, which the in-memory version never was.
+    """
+
+    try:
+        return _CATALOG.get(allow_fetch=False).data, ""
+    except FetchedCatalogUnavailable as exc:
+        return None, str(exc)
 
 
 def load_claude_code_candidates() -> list[dict[str, Any]]:

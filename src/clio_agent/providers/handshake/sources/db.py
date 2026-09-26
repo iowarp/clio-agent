@@ -195,15 +195,64 @@ def _log_mismatches(path: Path, mismatches: list[dict[str, Any]]) -> None:
 
 
 def record_report(report: Any) -> None:
-    """Record every live-discovered limit in a handshake report. Never raises."""
-    for profile in getattr(report, "models", ()) or ():
-        if getattr(profile, "context_source", "") != "live":
+    """Record every live-discovered limit in a handshake report. Never raises.
+
+    A handshake no longer carries a flat ``context_window``/``context_source``
+    per model (that was ``ModelProfile``, split into the capability records) --
+    a discovered row's real limit is read back from whichever of
+    :class:`~clio_agent.providers.capabilities.records.ModelCapabilities.
+    context_max` (the model's own ceiling) or
+    :class:`~clio_agent.providers.capabilities.records.DeploymentCapabilities.
+    context_served` (what this server is currently serving) the adapter itself
+    evidenced this run (``source="server_report"``) -- never a value this same
+    cascade already supplied (``models.dev``/``litellm``/``db``), which would
+    just be writing a lookup back into itself.
+    """
+    from clio_agent.providers.capabilities import invalidation  # noqa: PLC0415
+    from clio_agent.providers.identity import deployment_key  # noqa: PLC0415
+
+    provider_id = getattr(report, "provider_id", "")
+    api_base = getattr(report, "api_base", "")
+    for discovered in getattr(report, "models", ()) or ():
+        model_id = getattr(discovered, "id", "")
+        if not model_id:
             continue
-        ctx = getattr(profile, "context_window", None)
-        out = getattr(profile, "output_limit", None)
+        deployment = invalidation.get_deployment_capabilities(
+            deployment_key(provider_id, api_base, model_id)
+        )
+        model_key = (
+            deployment.model_key.value if deployment and deployment.model_key.known else None
+        )
+        model = invalidation.get_model_capabilities(model_key) if model_key else None
+
+        ctx = out = None
+        if (
+            model is not None
+            and model.context_max.source == "server_report"
+            and model.context_max.known
+        ):
+            ctx = model.context_max.value
+        elif (
+            deployment is not None
+            and deployment.context_served.source == "server_report"
+            and deployment.context_served.known
+        ):
+            ctx = deployment.context_served.value
+        if (
+            model is not None
+            and model.output_max.source == "server_report"
+            and model.output_max.known
+        ):
+            out = model.output_max.value
+        elif (
+            deployment is not None
+            and deployment.output_max.source == "server_report"
+            and deployment.output_max.known
+        ):
+            out = deployment.output_max.value
         if ctx or out:
             record(
-                profile.id,
+                model_id,
                 context=ctx,
                 output=out,
                 source="live",

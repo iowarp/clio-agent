@@ -1,0 +1,12 @@
+{
+  "description": "One streamed ALCF Metis (vLLM, gpt-oss-120b) chat completion in the OpenAI-compatible wire shape the gateway serves. Like vLLM, the final usage chunk is sent only when the request sets stream_options.include_usage.",
+  "model": "gpt-oss-120b",
+  "chunks": [
+    {"id": "chatcmpl-metis-7f3a", "object": "chat.completion.chunk", "created": 1790380800, "model": "gpt-oss-120b", "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": null}]},
+    {"id": "chatcmpl-metis-7f3a", "object": "chat.completion.chunk", "created": 1790380800, "model": "gpt-oss-120b", "choices": [{"index": 0, "delta": {"content": "[[ ## answer ## ]]\n"}, "finish_reason": null}]},
+    {"id": "chatcmpl-metis-7f3a", "object": "chat.completion.chunk", "created": 1790380800, "model": "gpt-oss-120b", "choices": [{"index": 0, "delta": {"content": "The station is SIO5.\n\n"}, "finish_reason": null}]},
+    {"id": "chatcmpl-metis-7f3a", "object": "chat.completion.chunk", "created": 1790380800, "model": "gpt-oss-120b", "choices": [{"index": 0, "delta": {"content": "[[ ## completed ## ]]"}, "finish_reason": null}]},
+    {"id": "chatcmpl-metis-7f3a", "object": "chat.completion.chunk", "created": 1790380800, "model": "gpt-oss-120b", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+  ],
+  "usage_chunk": {"id": "chatcmpl-metis-7f3a", "object": "chat.completion.chunk", "created": 1790380800, "model": "gpt-oss-120b", "choices": [], "usage": {"prompt_tokens": 1874, "completion_tokens": 42, "total_tokens": 1916}}
+}

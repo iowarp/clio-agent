@@ -496,7 +496,7 @@ def test_failed_result_recovers_partial_route_evidence_from_semantic_events() ->
         session_id="sess_test",
         elapsed_s=300.0,
         message=message,
-        provider={"provider": "codex", "model": "gpt-5.5", "api_base": "codex://sdk"},
+        provider={"provider": "codex", "model": "gpt-5.5", "api_base": "codex://direct"},
         semantic_events=[
             {
                 "event_type": "agent.invocation.started",

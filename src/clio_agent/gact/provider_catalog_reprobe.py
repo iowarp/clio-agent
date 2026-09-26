@@ -111,14 +111,33 @@ async def _attempt(
     """
     failures = failures if failures is not None else {}
 
-    seqs = {provider_id: snapshot.provider_seq(app, provider_id) for provider_id in stale}
+    # The api_base each stale id's CURRENT entry carries -- its identity for the
+    # seq check below, so a rebind mid-attempt (whole snapshot swapped, endpoint
+    # possibly changed) reads as "superseded" rather than comparing across two
+    # different endpoints under the same id (model-capabilities brief Part 3).
+    current_records = {
+        str(record.get("id")): record
+        for record in (getattr(app.state, "provider_catalog", None) or {}).get("providers") or []
+        if isinstance(record, dict)
+    }
+    seqs = {
+        provider_id: snapshot.provider_seq(
+            app, provider_id, str(current_records.get(provider_id, {}).get("endpoint") or "")
+        )
+        for provider_id in stale
+    }
     for provider_id in stale:
         handshake_cache.invalidate_provider(provider_id)
-    records = await snapshot.discover(stale, refresh=False)
+    snapshot.mark_checking(app, stale)
+    try:
+        records = await snapshot.discover(app, stale, refresh=False)
+    finally:
+        snapshot.clear_checking(app, stale)
     fresh: list[dict[str, Any]] = []
     for record in records:
         provider_id = str(record.get("id") or "")
-        superseded = snapshot.provider_seq(app, provider_id) != seqs.get(provider_id)
+        api_base = str(record.get("endpoint") or "")
+        superseded = snapshot.provider_seq(app, provider_id, api_base) != seqs.get(provider_id)
         outcome = (
             "superseded" if superseded else "still_stale" if snapshot.is_stale(record) else "live"
         )

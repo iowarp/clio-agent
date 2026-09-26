@@ -30,7 +30,7 @@ Example:
 
 import os
 
-__version__ = "0.9.4.17"
+__version__ = "0.9.4.18"
 __author__ = "IOWarp Team"
 
 __all__ = [
@@ -96,6 +96,37 @@ def _avoid_windows_wmi_platform_probe() -> None:
 
 
 _avoid_windows_wmi_platform_probe()
+
+
+def _default_litellm_local_cost_map() -> None:
+    """Keep litellm's OWN community model-cost-map fetch off by default.
+
+    ``litellm>=1.100`` fetches its community ``model_prices_and_context_window.json``
+    over the network on first ``import litellm`` (with retries and a background
+    retry thread) unless ``LITELLM_LOCAL_MODEL_COST_MAP`` is set. clio-agent now
+    owns an equivalent, but properly governed, live fetch of that SAME map for its
+    own lookups (:mod:`clio_agent.providers.handshake.sources.litellm_catalog`,
+    via :mod:`clio_agent.providers.fetched_catalog`: disk cache, TTL, ETag,
+    last-good-on-failure, and a typed reason logged for every degradation).
+    Leaving litellm's internal fetch enabled would mean two independent,
+    uncoordinated network fetches of the same document, with litellm's own
+    attempt invisible to clio's trace/log (a silent-fallback violation) and a
+    source of import-time network flakiness (every bare ``import litellm`` —
+    including in tests that never touch a model — would attempt a live fetch).
+
+    Forcing local-only restores litellm's pre-upgrade behavior (``1.91.3`` had no
+    such fetch at all) for litellm's OWN internal consumers of the map (e.g. its
+    Anthropic adaptive-thinking capability lookups in
+    ``providers.capabilities.dialects.cloud_thinking``), while clio's own
+    lookups go through the live, cached, typed-degradation path instead.
+    ``setdefault`` so an operator who explicitly wants litellm's live fetch can
+    still opt back in.
+    """
+
+    os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "true")
+
+
+_default_litellm_local_cost_map()
 
 
 # PEP 562 lazy attribute access. ``from clio_agent import ClioAgent``

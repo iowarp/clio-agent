@@ -21,12 +21,61 @@ from clio_agent.gact.turn_reasoning import apply_turn_reasoning, message_reasoni
 from clio_agent.gact.types import AgentDef, Message
 from clio_agent.lm.factory import create_lm
 from clio_agent.providers import resolver as resolver_mod
+from clio_agent.providers.capabilities import invalidation
+from clio_agent.providers.capabilities.accessor import clear_cache
+from clio_agent.providers.capabilities.records import (
+    DeploymentCapabilities,
+    EndpointCapabilities,
+    Fact,
+    ModelCapabilities,
+    ThinkingSpec,
+)
 from clio_agent.providers.handshake.model import (
     AuthState,
     ConnectivityState,
+    DiscoveredModel,
     HandshakeReport,
-    ModelProfile,
 )
+
+_NOW = "2026-09-25T00:00:00+00:00"
+
+
+def _seed_thinking(
+    *,
+    provider_id: str,
+    api_base: str,
+    model_id: str,
+    dialect: str,
+    thinking_controls: frozenset[str],
+    thinking_spec: ThinkingSpec,
+) -> None:
+    """Seed the real per-model ThinkingSpec a live handshake would have
+    linked, so the request builder's fail-closed thinking_wire has known
+    evidence to work from (see dialect_wire.thinking_wire's docstring)."""
+
+    model_key = f"test:{provider_id}:{model_id}"
+    invalidation.record_endpoint_capabilities(
+        EndpointCapabilities(
+            provider_id=provider_id,
+            api_base=api_base,
+            dialect=dialect,
+            thinking_controls=Fact(thinking_controls, "dialect", _NOW),
+        )
+    )
+    invalidation.record_model_capabilities(
+        ModelCapabilities(
+            model_key=model_key,
+            thinking=Fact(thinking_spec, "server_report", _NOW),
+        )
+    )
+    invalidation.record_deployment_capabilities(
+        DeploymentCapabilities(
+            provider_id=provider_id,
+            api_base=api_base,
+            model_id=model_id,
+            model_key=Fact(model_key, "server_report", _NOW),
+        )
+    )
 
 
 def _message(effort: str | None) -> Message:
@@ -45,6 +94,15 @@ def _message(effort: str | None) -> Message:
 
 
 @pytest.fixture(autouse=True)
+def _reset_capability_state():
+    invalidation.clear_all()
+    clear_cache()
+    yield
+    invalidation.clear_all()
+    clear_cache()
+
+
+@pytest.fixture(autouse=True)
 def _isolate(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("clio_agent.gact.context.active_app", lambda: None)
 
@@ -54,7 +112,8 @@ def _isolate(monkeypatch: pytest.MonkeyPatch) -> None:
             provider_kind=ctx.provider_kind,
             connectivity=ConnectivityState.OK,
             auth=AuthState.OK,
-            models=(ModelProfile(id=ctx.target_model or "m"),),
+            api_base=ctx.api_base,
+            models=(DiscoveredModel(id=ctx.target_model or "m"),),
         )
 
     monkeypatch.setattr(resolver_mod, "run_handshake_sync", _handshake)
@@ -68,6 +127,18 @@ def _lm_kwargs(base: LMProviderConfig, effort: str | None) -> dict[str, Any]:
 
 
 def test_codex_message_effort_overrides_the_global_level() -> None:
+    _seed_thinking(
+        provider_id="codex",
+        api_base="codex://direct",
+        model_id="gpt-5.5",
+        dialect="codex",
+        thinking_controls=frozenset({"reasoning_effort"}),
+        thinking_spec=ThinkingSpec(
+            mechanism="effort_levels",
+            levels=("low", "high", "xhigh"),
+            effort_by_level={"low": "low", "high": "high", "xhigh": "xhigh"},
+        ),
+    )
     base = LMProviderConfig(provider="codex", model="gpt-5.5", thinking_level="low")
     assert _lm_kwargs(base, "high")["codex_reasoning_effort"] == "high"
     assert _lm_kwargs(base, "xhigh")["codex_reasoning_effort"] == "xhigh"
@@ -79,30 +150,72 @@ def test_openai_kind_message_effort_sets_reasoning_effort(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    _seed_thinking(
+        provider_id="openai",
+        api_base="https://api.openai.com/v1",
+        model_id="gpt-5",
+        dialect="openai",
+        thinking_controls=frozenset({"reasoning_effort"}),
+        thinking_spec=ThinkingSpec(mechanism="effort_levels", levels=("high",), effort_by_level={}),
+    )
     base = LMProviderConfig(provider="openai", model="gpt-5", api_key="sk-test")
     assert _lm_kwargs(base, "high")["reasoning_effort"] == "high"
+    # No message effort and no configured level: thinking is off, and this
+    # model reports no "off" level of its own -- nothing sent (fail closed).
     assert "reasoning_effort" not in _lm_kwargs(base, None)
 
 
 def test_argonne_message_effort_sets_reasoning_effort(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Argonne runs the vLLM dialect (brief 4.1): gpt-oss's own effort spelling
+    IS its chat-template kwarg name, sent under extra_body (never top-level)."""
     monkeypatch.setenv("CLIO_ARGONNE_TOKEN", "alcf-test")
+    api_base = "https://inference-api.alcf.anl.gov/resource_server/metis/api/v1"
+    _seed_thinking(
+        provider_id="argonne_metis",
+        api_base=api_base,
+        model_id="openai/gpt-oss-120b",
+        dialect="vllm",
+        thinking_controls=frozenset({"chat_template_kwargs"}),
+        thinking_spec=ThinkingSpec(
+            mechanism="effort_levels",
+            levels=("low", "medium", "high"),
+            template_kwarg="reasoning_effort",
+        ),
+    )
     base = LMProviderConfig(
         provider="argonne",
         provider_id="argonne_metis",
         model="openai/gpt-oss-120b",
         api_key="alcf-test",
     )
-    assert _lm_kwargs(base, "high")["reasoning_effort"] == "high"
+    kwargs = _lm_kwargs(base, "high")
+    assert kwargs["extra_body"]["chat_template_kwargs"] == {"reasoning_effort": "high"}
 
 
 def test_anthropic_message_effort_sets_a_thinking_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    _seed_thinking(
+        provider_id="anthropic",
+        api_base="https://api.anthropic.com/v1",
+        model_id="claude-sonnet-4-5",
+        dialect="anthropic",
+        thinking_controls=frozenset({"anthropic_thinking"}),
+        thinking_spec=ThinkingSpec(mechanism="budget_tokens"),
+    )
     base = LMProviderConfig(provider="anthropic", model="claude-sonnet-4-5", api_key="sk-ant")
     assert _lm_kwargs(base, "high")["thinking"] == {"type": "enabled", "budget_tokens": 24576}
     assert "thinking" not in _lm_kwargs(base, "off")
 
 
 def test_claude_code_message_effort_sets_the_sdk_thinking_config() -> None:
+    _seed_thinking(
+        provider_id="claude_code",
+        api_base="claude-code://sdk",
+        model_id="opus",
+        dialect="claude_code",
+        thinking_controls=frozenset({"claude_code_thinking"}),
+        thinking_spec=ThinkingSpec(mechanism="budget_tokens"),
+    )
     base = LMProviderConfig(provider="claude_code", model="opus")
     assert _lm_kwargs(base, "medium")["claude_code_thinking"] == {
         "type": "enabled",
@@ -126,11 +239,20 @@ def test_unset_effort_is_absent_not_a_fabricated_default() -> None:
     assert message_reasoning_effort(_message(None)) == ""
 
 
-def test_claude_code_message_effort_sends_the_sdk_effort(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_claude_code_message_effort_sends_the_sdk_effort() -> None:
     """A claude_code model reporting CLI effort levels gets the real SDK effort."""
-    monkeypatch.setattr(
-        "clio_agent.providers.reasoning_levels._claude_code_row",
-        lambda _model: {"supported_effort_levels": ["low", "medium", "high", "xhigh", "max"]},
+    levels = ("low", "medium", "high", "xhigh", "max")
+    _seed_thinking(
+        provider_id="claude_code",
+        api_base="claude-code://sdk",
+        model_id="claude-fable-5-1",
+        dialect="claude_code",
+        thinking_controls=frozenset({"effort", "claude_code_thinking"}),
+        thinking_spec=ThinkingSpec(
+            mechanism="effort_levels",
+            levels=levels,
+            effort_by_level={level: level for level in levels},
+        ),
     )
     base = LMProviderConfig(provider="claude_code", model="claude-fable-5-1")
     assert _lm_kwargs(base, "max")["claude_code_thinking"] == {
@@ -145,11 +267,31 @@ def test_anthropic_adaptive_model_message_effort_sends_reasoning_effort(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    _seed_thinking(
+        provider_id="anthropic",
+        api_base="https://api.anthropic.com/v1",
+        model_id="claude-opus-4-7",
+        dialect="anthropic",
+        thinking_controls=frozenset({"reasoning_effort", "anthropic_thinking"}),
+        thinking_spec=ThinkingSpec(
+            mechanism="effort_levels", levels=("low", "medium", "high", "max"), effort_by_level={}
+        ),
+    )
     base = LMProviderConfig(provider="anthropic", model="claude-opus-4-7", api_key="sk-ant")
     assert _lm_kwargs(base, "max")["reasoning_effort"] == "max"
 
 
 def test_codex_message_minimal_effort_is_sent() -> None:
+    _seed_thinking(
+        provider_id="codex",
+        api_base="codex://direct",
+        model_id="gpt-5.5",
+        dialect="codex",
+        thinking_controls=frozenset({"reasoning_effort"}),
+        thinking_spec=ThinkingSpec(
+            mechanism="effort_levels", levels=("minimal",), effort_by_level={"minimal": "minimal"}
+        ),
+    )
     base = LMProviderConfig(provider="codex", model="gpt-5.5")
     assert _lm_kwargs(base, "minimal")["codex_reasoning_effort"] == "minimal"
 
@@ -289,11 +431,22 @@ def test_put_lm_keeps_only_a_user_level_and_only_on_the_same_model() -> None:
     }
 
 
-def test_sonnet_to_opus_apply_runs_opus_on_its_own_default() -> None:
-    """End to end on the real config: sonnet ships low; opus must not inherit it."""
+def test_sonnet_to_opus_apply_runs_opus_on_its_own_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """End to end on the real config: sonnet ships low; opus must not inherit it.
+
+    The shipped default is DATA (catalogs/claude-code-models.json's own
+    ``shipped_default_effort`` field, resolved through the maintained
+    catalog's disk cache) -- patched directly here so this test stays
+    hermetic and focused on LMProviderConfig/requested_thinking_level's own
+    behavior, which is what it actually pins.
+    """
     from clio_agent.gact.lm_provider_types import LMProviderRequest
     from clio_agent.gact.providers.config import requested_thinking_level
 
+    monkeypatch.setattr(
+        "clio_agent.providers.capabilities.dialects.claude_code.shipped_default_effort_for_model",
+        lambda model_id: "low" if model_id == "sonnet" else "",
+    )
     sonnet = LMProviderConfig(provider="claude_code", model="sonnet")
     assert sonnet.thinking_level == "low"  # shipped default
     app = _lm_app(provider="claude_code", model="sonnet", thinking_level=sonnet.thinking_level)

@@ -27,19 +27,24 @@ from clio_agent.gact.events import Event
 from clio_agent.gact.loop_inbox import enqueue_user_steer
 from clio_agent.gact.message_intents import DuplicateIntentError, PendingSteer
 from clio_agent.gact.messaging import _user_message_parts, raise_on_reserved_metadata
+from clio_agent.gact.modality_evidence import (
+    EVIDENCED_MODALITY_SOURCES,
+    image_input_capability,
+    live_model_modalities,
+)
+from clio_agent.gact.model_selection import surrogate_selection_error
 from clio_agent.gact.part_atom_minter import run_transcript_job
 from clio_agent.gact.parts import Part
 from clio_agent.gact.providers.config import (
     _active_lm_supports_vision,
+    _bare_provider_kind_error,
     _image_part_error,
     _model_ref_dict,
     _model_ref_is_empty,
     _model_ref_matches_active,
 )
 from clio_agent.gact.resource_delivery import (
-    EVIDENCED_MODALITY_SOURCES,
     ResourceDeliveryRecord,
-    live_model_modalities,
     plan_resource_delivery,
 )
 from clio_agent.gact.runtime.globals import (
@@ -47,6 +52,7 @@ from clio_agent.gact.runtime.globals import (
     _iso_from_epoch,
     _new_message_id,
 )
+from clio_agent.gact.session_host_agent import ensure_host_agent
 from clio_agent.gact.transcript_projection import on_message_appended
 from clio_agent.gact.turn_runner import session_busy_error_payload
 from clio_agent.gact.types import (
@@ -293,6 +299,13 @@ def _validate_provider_and_payload(
         )
 
     selected_model = _selected_model(app, deps, sess, req)
+    _source = "per_message" if req.model is not None else "session"
+    bare_kind_error = _bare_provider_kind_error(selected_model, session_id=sid, source=_source)
+    if bare_kind_error is not None:
+        raise HTTPException(status_code=400, detail=bare_kind_error.model_dump(exclude_none=True))
+    surrogate = surrogate_selection_error(app, selected_model.provider_id, selected_model.model_id)
+    if surrogate is not None:
+        raise HTTPException(status_code=422, detail=surrogate.model_dump(exclude_none=True))
     if not _model_ref_matches_active(selected_model, app):
         # A selection the ACTIVE global LM does not serve is executable only when
         # the provider catalog holds real discovery EVIDENCE for that exact
@@ -301,13 +314,12 @@ def _validate_provider_and_payload(
         # naming which layer asked for it -- a mismatch is explicit and never
         # silently falls back to the active model (the session ref in particular
         # is preserved, not cleared).
-        _modalities, evidence, _generated_at = live_model_modalities(app, selected_model)
-        if evidence not in EVIDENCED_MODALITY_SOURCES:
+        if live_model_modalities(app, selected_model).evidence not in EVIDENCED_MODALITY_SOURCES:
             raise HTTPException(
                 status_code=501,
                 detail=deps.unsupported_model_ref_error(
                     session_id=sid,
-                    source="per_message" if req.model is not None else "session",
+                    source=_source,
                     model_ref=selected_model,
                     active_model=deps.active_lm_model_ref(app),
                 ).model_dump(exclude_none=True),
@@ -317,12 +329,9 @@ def _validate_provider_and_payload(
     images = req.image_parts()
     resources = req.resource_parts()
     context_references = [part for part in req.parts if part.type == "context_ref"]
-    selected_modalities, selected_evidence, _generated_at = live_model_modalities(
-        app, selected_model
-    )
-    selected_image_capable = (
-        "image" in selected_modalities and selected_evidence in EVIDENCED_MODALITY_SOURCES
-    )
+    # One decision for the selected model (modality_evidence.image_input_capability):
+    # known modalities decide, unknown is permitted under a typed reason.
+    selected_image_capable, _image_reason = image_input_capability(app, selected_model)
     active_image_capable = _model_ref_matches_active(
         selected_model, app
     ) and _active_lm_supports_vision(app)
@@ -502,6 +511,8 @@ async def accept_message_async(
 ) -> tuple[PostMessageResponse, int]:
     """Accept an async-produced message, optionally with private model-only context."""
 
+    # A session's selected model is enough to run its first turn (no global provider).
+    await ensure_host_agent(app, sid, req)
     prepared = await prepare_references(app, sid, req)
     return accept_message(
         app,

@@ -63,6 +63,24 @@ class TestDefaultCloudRef:
         # default handled by __post_init__, not a credential.
         assert credentials.resolve("lm_studio", "") == ""
 
+    def test_local_openai_kind_provider_never_leaks_the_cloud_openai_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """llama.cpp and vLLM share the catalog kind "openai" with the literal
+        cloud OpenAI provider but declare no ``api_key_env`` of their own; a
+        kind-keyed fallback here would hand them a real OPENAI_API_KEY set in
+        the environment instead of leaving them keyless (model-capabilities
+        brief Part 3)."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-real-openai-key")
+        assert credentials.resolve("llama_cpp", "") == ""
+        assert credentials.resolve("vllm", "") == ""
+
+    def test_llama_cpp_post_init_keeps_its_own_placeholder_not_a_leaked_cloud_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-real-openai-key")
+        assert LMProviderConfig(provider_id="llama_cpp").api_key == "llama-cpp"
+
     def test_resolve_does_not_write_environ(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
         before = dict(os.environ)

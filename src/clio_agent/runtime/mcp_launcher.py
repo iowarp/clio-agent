@@ -157,7 +157,9 @@ def probe_mcp_launchers(
     return findings
 
 
-def probe_mcp_yaml_declarations(*, env: Mapping[str, str] | None = None) -> list[IntegrationStatus]:
+def probe_mcp_yaml_declarations(
+    *, env: Mapping[str, str] | None = None, discovered: bool = False
+) -> list[IntegrationStatus]:
     """Report a structured finding for every unreadable/malformed ``mcp.yaml`` file (#1201).
 
     ``mcp_config.py::_read_mcp_yaml`` raises a typed ``MCPConfigError`` on a
@@ -171,13 +173,17 @@ def probe_mcp_yaml_declarations(*, env: Mapping[str, str] | None = None) -> list
     Args:
         env: Environment used for declaration discovery (defaults to the
             process environment).
+        discovered: True when the caller already ran discovery in this collection
+            (:func:`probe_mcp_launchers` does), so the unreadable-file snapshot is
+            current and a second full blueprint scan per health call is skipped.
 
     Returns:
         Zero or more findings -- one per unreadable file.
     """
     from clio_agent.tools.mcp_config import unreadable_mcp_yaml_snapshot
 
-    discover_declared_mcp_servers(env=env)
+    if not discovered:
+        discover_declared_mcp_servers(env=env)
     return [
         IntegrationStatus(
             name=f"mcp_yaml:{Path(row['path']).name}",

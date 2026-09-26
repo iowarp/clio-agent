@@ -19,9 +19,13 @@ Reaching them requires a short-lived Globus bearer token tied to an
   the ALCF gateway returns per-model vLLM config — ``max_model_len``,
   ``reasoning_parser``, ``tool_call_parser``, ``enable_auto_tool_choice`` — so
   ``context_window`` and the reasoning / native-tool flags resolve *live* with
-  no models.dev fallback needed. A companion ``/jobs`` endpoint reports which
-  models are currently hot (a running vLLM job), which we fold into
-  ``is_loaded``.
+  no models.dev fallback needed. Mapping that row onto the capability records
+  is :mod:`clio_agent.providers.capabilities.dialects.alcf`'s job (reusing
+  :mod:`.vllm`'s own ``max_model_len``/``root`` parsing for the fields this
+  gateway shares with vanilla vLLM); this class owns only what's genuinely
+  ALCF-specific -- OAuth, ``/jobs`` discovery, and the request plumbing. A
+  companion ``/jobs`` endpoint reports which models are currently hot (a
+  running vLLM job), which we fold into ``is_loaded``.
 """
 
 from __future__ import annotations
@@ -29,19 +33,29 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
+from clio_agent.providers.capabilities.dialects import alcf as alcf_dialect
+from clio_agent.providers.capabilities.records import ModelCapabilities
 from clio_agent.providers.handshake.base import (
     ConnectivityResult,
     DiscoveryAuthRejected,
     HandshakeContext,
     ProviderHandshake,
+    describe_exception,
 )
 from clio_agent.providers.handshake.model import (
     AuthState,
     ConnectivityState,
-    ModelProfile,
+    DiscoveredModel,
+    DiscoveredModelFacts,
 )
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
 
 #: Environment variables checked (in order) for a pre-supplied bearer token.
 #: These let a user or a batch job inject a token without the Globus flow.
@@ -239,11 +253,21 @@ class ArgonneHandshake(ProviderHandshake):
 
             try:
                 refreshed = argonne_auth.get_access_token(False, allow_interactive=False)
+            except argonne_auth.GlobusUnavailable as exc:
+                # The 'argonne' extra (globus-sdk) itself is not installed --
+                # no amount of re-signing-in helps; a typed code so the
+                # catalog can offer Install rather than a generic failure.
+                return ConnectivityResult(
+                    connectivity=ConnectivityState.SKIPPED,
+                    auth=AuthState.MISSING,
+                    error=f"argonne_sdk_missing: {describe_exception(exc)}",
+                    error_code="argonne_sdk_missing",
+                )
             except Exception as exc:  # noqa: BLE001 - token refresh failure surfaced as SKIPPED connectivity
                 return ConnectivityResult(
                     connectivity=ConnectivityState.SKIPPED,
                     auth=AuthState.MISSING,
-                    error=f"argonne token unavailable: {exc}",
+                    error=f"argonne token unavailable: {describe_exception(exc)}",
                 )
             token = (refreshed or "").strip() or None
 
@@ -251,10 +275,12 @@ class ArgonneHandshake(ProviderHandshake):
             from clio_agent.providers import argonne_auth  # noqa: PLC0415
 
             stored = argonne_auth.tokens_exist()
+            error_code = "argonne_sdk_missing" if lookup.reason == "argonne_sdk_missing" else ""
             return ConnectivityResult(
                 connectivity=ConnectivityState.SKIPPED,
                 auth=AuthState.DEFERRED if stored else AuthState.MISSING,
                 error=lookup.error,
+                error_code=error_code,
             )
 
         return ConnectivityResult(
@@ -325,43 +351,43 @@ class ArgonneHandshake(ProviderHandshake):
 
     async def discover_model_config(
         self, client: Any, ctx: HandshakeContext, raw: dict[str, Any]
-    ) -> ModelProfile:
-        """Build a :class:`ModelProfile` from one ALCF model row.
+    ) -> DiscoveredModelFacts:
+        """Build a :class:`DiscoveredModelFacts` from one ALCF model row.
 
-        Mapping (all values self-reported by the vLLM backend, so
-        ``context_source`` stays ``"live"``):
-
-        * ``max_model_len`` -> ``context_window``
-        * non-empty ``reasoning_parser`` -> ``is_reasoning=True`` +
-          ``reasoning_param=<value>``
-        * ``tool_call_parser`` present **or** ``enable_auto_tool_choice`` truthy
-          -> ``native_tool_calling=True`` (``tool_call_parser`` carries the
-          parser name when present)
+        Every value here is self-reported by the vLLM backend the gateway
+        fronts, and per brief Part 6 this is all DEPLOYMENT evidence -- how
+        THIS server is currently running the model -- not a fact about the
+        weights themselves. The mapping itself lives in
+        :func:`clio_agent.providers.capabilities.dialects.alcf.
+        parse_gateway_model_row` (reusing :mod:`.vllm`'s own ``max_model_len``/
+        ``root`` reading for the fields ALCF's gateway shares with vanilla
+        vLLM); this method reads and parses nothing itself. The model's own
+        mechanism/ceiling stay unknown here (no HF/overlay layer exists in
+        this slice); ``enrich_capabilities`` fills the ceiling from the
+        community-catalog cascade.
         """
-        model_id = raw.get("id", "")
+        model_id = str(raw.get("id") or "")
+        observed_at = _now_iso()
 
-        context_window = raw.get("max_model_len")
-        if context_window is not None:
-            context_window = int(context_window)
-
-        reasoning_parser = raw.get("reasoning_parser") or None
-        is_reasoning = reasoning_parser is not None
-
-        tool_call_parser = raw.get("tool_call_parser") or None
-        auto_tool = bool(raw.get("enable_auto_tool_choice"))
-        native_tool_calling = tool_call_parser is not None or auto_tool
-
-        return ModelProfile(
-            id=model_id,
-            context_window=context_window,
-            is_reasoning=is_reasoning,
-            reasoning_param=reasoning_parser,
-            native_tool_calling=native_tool_calling,
-            tool_call_parser=tool_call_parser,
-            is_loaded=bool(raw.get("is_loaded")),
-            context_source="live",
-            raw=dict(raw),
+        deployment = alcf_dialect.parse_gateway_model_row(
+            raw, provider_id=ctx.provider_id, api_base=ctx.api_base, observed_at=observed_at
         )
+        model = ModelCapabilities(
+            model_key=deployment.model_key.value or model_id,
+            task=alcf_dialect.gateway_task_fact(raw, observed_at=observed_at),
+        )
+
+        reasoning_parser, tool_call_parser = alcf_dialect.gateway_row_identity(raw)
+        discovered = DiscoveredModel(
+            id=model_id,
+            is_loaded=bool(raw.get("is_loaded")),
+            raw={
+                **dict(raw),
+                "reasoning_parser": reasoning_parser,
+                "tool_call_parser": tool_call_parser,
+            },
+        )
+        return DiscoveredModelFacts(discovered=discovered, model=model, deployment=deployment)
 
     # ------------------------------------------------------------------ helpers
     def _auth_header(self, ctx: HandshakeContext) -> dict[str, str]:
