@@ -56,6 +56,11 @@ from pathlib import Path
 
 import yaml
 
+from clio_agent.arc.clio_core_host_migration import (
+    migrate_legacy_cte_store,
+    migrate_legacy_runtime_state,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -104,9 +109,12 @@ def runtime_state_dir() -> Path:
     override = os.environ.get("CLIO_RUNTIME_STATE_DIR", "").strip()
     if override:
         state = Path(override).expanduser()
-    else:
-        state = Path.home() / ".clio" / "hosts" / host_key()
+        state.mkdir(parents=True, exist_ok=True)
+        return state
+    state = Path.home() / ".clio" / "hosts" / host_key()
     state.mkdir(parents=True, exist_ok=True)
+    # One-time move of the pre-host-key bookkeeping (~/.clio/clio-runtime.*).
+    migrate_legacy_runtime_state(Path.home() / ".clio", state)
     return state
 
 
@@ -360,7 +368,16 @@ def default_cte_config_path() -> str:
     surfaced by the doctor (:func:`clio_agent.runtime.clio_core_health.probe_clio_core_ram_cap`)
     rather than silently mutated (#890).
     """
+    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle
+
     cte_dir = _default_cte_dir()
+    legacy_dir = paths.user_data_dir() / "cte"
+    if cte_dir == legacy_dir / "hosts" / host_key():
+        # The default store (not an explicit arc.cte.dir): move the pre-host-key
+        # store in <data>/cte here once, instead of starting an empty one.
+        override = os.environ.get("CLIO_RUNTIME_STATE_DIR", "").strip()
+        runtime_root = Path(override).expanduser() if override else Path.home() / ".clio"
+        migrate_legacy_cte_store(legacy_dir, cte_dir, runtime_root=runtime_root)
     cte_dir.mkdir(parents=True, exist_ok=True)
     cfg = cte_dir / "cte.yaml"
     if not cfg.is_file():
