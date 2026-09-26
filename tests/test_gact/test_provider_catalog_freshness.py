@@ -21,15 +21,23 @@ from clio_agent.gact.app import build_app
 from clio_agent.gact.provider_catalog import discover_provider
 from clio_agent.gact.types import LMProviderPreset
 from clio_agent.providers import model_discovery
+from clio_agent.providers.capabilities import invalidation
+from clio_agent.providers.capabilities.records import (
+    DeploymentCapabilities,
+    Fact,
+    ModelCapabilities,
+)
 from clio_agent.providers.handshake import cache as handshake_cache
 from clio_agent.providers.handshake.model import (
     AuthState,
     ConnectivityState,
+    DiscoveredModel,
     HandshakeReport,
-    ModelProfile,
 )
 
 METIS_BASE = "https://inference-api.alcf.anl.gov/resource_server/metis/api/v1"
+_METIS_MODEL = "openai/gpt-oss-120b"
+_NOW = "2026-09-22T10:00:00+00:00"
 
 
 @pytest.fixture(autouse=True)
@@ -38,6 +46,30 @@ def _fresh_confirmations(monkeypatch: pytest.MonkeyPatch) -> None:
     from clio_agent.providers.model_discovery import last_good
 
     monkeypatch.setattr(last_good, "_CONFIRMED_IN_PROCESS", {}, raising=False)
+    invalidation.clear_all()
+    yield
+    invalidation.clear_all()
+
+
+def _seed_metis_capabilities() -> None:
+    """Seed the capability store the way a real Argonne handshake would.
+
+    ``_live_report()`` only carries bare identity now (brief Part 4); the
+    context/tool facts ``model_catalog_row`` and the overlay's persisted
+    capability snapshot both read come from here.
+    """
+    invalidation.record_model_capabilities(ModelCapabilities(model_key=_METIS_MODEL))
+    invalidation.record_deployment_capabilities(
+        DeploymentCapabilities(
+            provider_id="argonne_metis",
+            api_base=METIS_BASE,
+            model_id=_METIS_MODEL,
+            model_key=Fact(value=_METIS_MODEL, source="server_report", observed_at=_NOW),
+            context_served=Fact(value=131_072, source="server_report", observed_at=_NOW),
+            tools_enabled=Fact(value=True, source="server_report", observed_at=_NOW),
+            reasoning_enabled=Fact(value=True, source="server_report", observed_at=_NOW),
+        )
+    )
 
 
 def _metis() -> LMProviderPreset:
@@ -51,23 +83,17 @@ def _metis() -> LMProviderPreset:
 
 
 def _live_report() -> HandshakeReport:
+    _seed_metis_capabilities()
     return HandshakeReport(
         provider_id="argonne_metis",
         provider_kind="argonne",
         connectivity=ConnectivityState.OK,
         auth=AuthState.OK,
+        api_base=METIS_BASE,
         models_source="live",
         generated_at="2026-09-22T10:00:00+00:00",
         evidence_generated_at="2026-09-22T10:00:00+00:00",
-        models=(
-            ModelProfile(
-                id="openai/gpt-oss-120b",
-                context_window=131_072,
-                is_reasoning=True,
-                reasoning_param="openai_gptoss",
-                native_tool_calling=True,
-            ),
-        ),
+        models=(DiscoveredModel(id=_METIS_MODEL),),
     )
 
 
@@ -79,6 +105,7 @@ def _skipped_report() -> HandshakeReport:
         auth=AuthState.DEFERRED,
         error="argonne_stored_token_unusable: a Globus sign-in is stored but ...",
         models_source="unavailable",
+        api_base=METIS_BASE,
         generated_at="2026-09-23T08:00:00+00:00",
     )
 
@@ -99,7 +126,7 @@ def test_live_answer_is_persisted_and_served_stale_when_the_probe_is_empty(
     # The real store: the overlay file now holds the live list under the exact id.
     stored = json.loads(model_discovery.overlay_path().read_text(encoding="utf-8"))
     assert stored["argonne_metis"]["source"] == model_discovery.HTTP_SOURCE
-    assert stored["argonne_metis"]["models"][0]["context_window"] == 131_072
+    assert stored["argonne_metis"]["models"][0]["capability_snapshot"]["context_served"] == 131_072
 
     restarted = asyncio.run(discover_provider(_metis()))
     assert [row["model_id"] for row in restarted["models"]] == ["openai/gpt-oss-120b"]
@@ -168,9 +195,9 @@ def test_last_good_lookup_is_exact_provider_id(monkeypatch: pytest.MonkeyPatch) 
     assert model_discovery.persist_live_catalog("argonne_metis", _live_report())
     assert model_discovery.last_good_catalog("argonne_sophia") is None
     assert model_discovery.last_good_catalog("argonne") is None
-    catalog = model_discovery.last_good_catalog("argonne_metis")
+    catalog = model_discovery.last_good_catalog("argonne_metis", api_base=METIS_BASE)
     assert catalog is not None
-    assert catalog.profiles[0].reasoning_param == "openai_gptoss"
+    assert catalog.models[0].id == _METIS_MODEL
 
 
 def test_only_live_answers_are_persisted() -> None:
@@ -179,8 +206,9 @@ def test_only_live_answers_are_persisted() -> None:
         provider_kind="argonne",
         connectivity=ConnectivityState.OK,
         auth=AuthState.OK,
+        api_base=METIS_BASE,
         models_source="static",
-        models=(ModelProfile(id="guess"),),
+        models=(DiscoveredModel(id="guess"),),
     )
     assert model_discovery.persist_live_catalog("argonne_metis", static) is False
     assert model_discovery.persist_live_catalog("argonne_metis", _skipped_report()) is False

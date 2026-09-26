@@ -1,4 +1,9 @@
-"""Context-source factory: resolve a model's limits from the layered cascade.
+"""Context-source factory: resolve a model's limits, modalities and type from the cascade.
+
+Limits use the full cascade below. Input modalities and the model type come
+from the same two public catalogs (models.dev ``modalities``, LiteLLM
+``supports_*`` flags and ``mode``) through :func:`resolve_input_modalities` and
+:func:`resolve_model_type`; a miss there is UNKNOWN, never a text-only default.
 
 The full cascade is **provider-self-reported → models.dev → litellm catalog →
 local DB**. A provider's own metadata is authoritative; when it doesn't
@@ -17,9 +22,10 @@ returns the first hit with an exact provenance string:
    models no public catalog lists yet are still known offline next time.
 
 On a total miss the factory returns ``(None, "")`` and the caller keeps the
-profile's limit unset. Provenance strings are exactly ``models.dev`` | ``litellm``
-| ``db`` and feed :attr:`ModelProfile.context_source`. Nothing here fetches at
-import time.
+model's limit unset. Provenance strings are exactly ``models.dev`` | ``litellm``
+| ``db`` and feed the ``Fact.source`` on a
+:class:`~clio_agent.providers.capabilities.records.ModelCapabilities`. Nothing
+here fetches at import time.
 """
 
 from __future__ import annotations
@@ -27,11 +33,17 @@ from __future__ import annotations
 from clio_agent.providers.handshake.sources import db
 from clio_agent.providers.handshake.sources.litellm_catalog import (
     lookup_litellm_context,
+    lookup_litellm_info,
     lookup_litellm_output,
+    modalities_from_info,
+    model_type_from_info,
 )
 from clio_agent.providers.handshake.sources.models_dev import (
     lookup_models_dev,
+    lookup_models_dev_entry,
     lookup_models_dev_output,
+    modalities_from_entry,
+    model_type_from_output,
 )
 
 __all__ = [
@@ -42,6 +54,8 @@ __all__ = [
     "lookup_models_dev_output",
     "lookup_native_context",
     "resolve_context",
+    "resolve_input_modalities",
+    "resolve_model_type",
     "resolve_output_limit",
 ]
 
@@ -123,3 +137,62 @@ def resolve_output_limit(model_id: str, provider_kind: str) -> int | None:
     if output is not None:
         return output
     return db.lookup_output(model_id)
+
+
+def resolve_input_modalities(model_id: str) -> tuple[frozenset[str] | None, str, str]:
+    """Resolve a model's INPUT modalities via models.dev, then LiteLLM.
+
+    models.dev states ``modalities.input`` outright; LiteLLM only through its
+    ``supports_vision``/``supports_audio_input``/``supports_pdf_input`` flags,
+    and only counts when ``supports_vision`` is stated at all (see
+    :func:`~.litellm_catalog.modalities_from_info`). The local DB records limits
+    only, so it has no tier here.
+
+    Returns:
+        ``(modalities, source_name, detail)`` -- ``source_name`` is exactly
+        ``"models.dev"`` or ``"litellm"`` on a hit; ``(None, "", "")`` when no
+        catalog states the model's modalities. A miss is UNKNOWN, never "text".
+    """
+    if not (model_id or "").strip():
+        return None, "", ""
+    entry = lookup_models_dev_entry(model_id)
+    modalities, _output = modalities_from_entry(entry)
+    if modalities:
+        return modalities, SOURCE_MODELS_DEV, f"models.dev {_entry_id(entry)} modalities.input"
+    matched = lookup_litellm_info(model_id)
+    if matched is not None:
+        key, info = matched
+        modalities = modalities_from_info(info)
+        if modalities is not None:
+            return modalities, SOURCE_LITELLM, f"litellm {key} supports_vision/audio/pdf flags"
+    return None, "", ""
+
+
+def resolve_model_type(model_id: str) -> tuple[str | None, str, str]:
+    """Resolve a model's type via LiteLLM ``mode``, then models.dev output modalities.
+
+    LiteLLM's ``mode`` names the type directly and is tried first. models.dev has
+    no type field; its output modalities only decide a type when they lack text
+    (:func:`~.models_dev.model_type_from_output`).
+
+    Returns:
+        ``(model_type, source_name, detail)``, or ``(None, "", "")`` on a miss.
+    """
+    if not (model_id or "").strip():
+        return None, "", ""
+    matched = lookup_litellm_info(model_id)
+    if matched is not None:
+        key, info = matched
+        model_type = model_type_from_info(info)
+        if model_type is not None:
+            return model_type, SOURCE_LITELLM, f"litellm {key} mode={info.get('mode')!r}"
+    entry = lookup_models_dev_entry(model_id)
+    _input, output = modalities_from_entry(entry)
+    model_type = model_type_from_output(output)
+    if model_type is not None:
+        return model_type, SOURCE_MODELS_DEV, f"models.dev {_entry_id(entry)} modalities.output"
+    return None, "", ""
+
+
+def _entry_id(entry: object) -> str:
+    return str(entry.get("id") or "") if isinstance(entry, dict) else ""

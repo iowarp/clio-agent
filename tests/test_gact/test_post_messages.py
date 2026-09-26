@@ -275,14 +275,34 @@ def test_post_message_rejects_image_parts_for_text_only_provider(
 ) -> None:
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=fake_agent)
     # NO hand-set ``supports_vision``: no production writer ever set that key, so
-    # a test that supplied it proved nothing about the real gate. codex HAS a
-    # modality-evidence system (its discovery overlay), and nothing has evidenced
-    # this model, so the refusal must come from the evidence path itself.
+    # a test that supplied it proved nothing about the real gate. Only KNOWN
+    # modalities that omit image refuse, so the catalog evidences this model as
+    # text-only and the refusal must come from that evidence.
     app.state.lm_config = {"provider": "codex", "model": "gpt-5.5"}
     with TestClient(app) as c:
-        assert _effective_lm_config(app)["supports_vision_source"] == (
-            "modality_evidence_unavailable"
-        )
+        app.state.provider_catalog = {
+            "providers": [
+                {
+                    "id": "codex",
+                    "health": "ready",
+                    "models": [
+                        {
+                            "model_id": "gpt-5.5",
+                            "availability": "available",
+                            "modalities": ["text"],
+                            "evidence": {
+                                "evidenced": True,
+                                "modality_evidenced": True,
+                                "live": True,
+                                "source": "live",
+                                "generated_at": "2026-09-03T00:00:00+00:00",
+                            },
+                        }
+                    ],
+                }
+            ]
+        }
+        assert _effective_lm_config(app)["supports_vision_source"] == ("live_modality_evidence")
         sid = c.post("/v1/sessions", json={"title": "vision"}).json()["id"]
         resp = c.post(
             f"/v1/sessions/{sid}/messages",
@@ -315,15 +335,14 @@ def test_post_message_preserves_image_parts_for_vision_capable_provider(
     from .conftest import complete_turn
 
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=fake_agent)
-    # Again no hand-set flag: openai's /models listing cannot report modalities at
-    # all, so the registry's documented catalog-level supports_vision default is
-    # the honest stand-in -- and that arm must actually be reachable, which the
-    # deleted name allowlist made impossible.
+    # Again no hand-set flag, and no discovery evidence for this model at all: its
+    # image input is UNKNOWN, which is permitted under a typed reason rather than
+    # refused -- the upstream endpoint decides.
     app.state.lm_config = {"provider": "openai", "model": "gpt-4o"}
     with TestClient(app) as c:
         cfg = _effective_lm_config(app)
         assert cfg["supports_vision"] is True
-        assert cfg["supports_vision_source"] == "catalog_default_no_modality_evidence_system"
+        assert cfg["supports_vision_source"] == "modality_unknown"
         sid = c.post("/v1/sessions", json={"title": "vision"}).json()["id"]
         assistant = complete_turn(
             c,

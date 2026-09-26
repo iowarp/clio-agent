@@ -1,16 +1,26 @@
 """Typed data model for the per-provider handshake protocol.
 
 A handshake asks a provider (an LM backend or an MCP server) three questions —
-can I reach + authenticate to you, what models/tools do you serve, and what is
-each model's real configuration — and returns a :class:`HandshakeReport`. The
-report carries per-model :class:`ModelProfile` records whose ``context_window``,
-``loaded_context_window`` and capability flags drive clio's runtime config
-(``max_tokens`` sizing, LM Studio load-sizing, reasoning/tool decisions).
+can I reach + authenticate to you, what models do you serve, and what does
+each model actually support — and returns a :class:`HandshakeReport`.
 
-The shapes here deliberately mirror ``clio_agent.runtime.status.IntegrationStatus``
-so a report can be rendered into the existing ``/v1/health`` surface, and
-``to_models_wire`` preserves the legacy ``{"models", "source", "error"}`` contract
-the TUI model picker already consumes.
+Per-model CAPABILITY facts no longer live as flat fields here — that was
+``ModelProfile``, deleted per the model-capabilities brief (Part 4: "The
+per-provider ``supports_vision``, ``max_tokens_default`` and similar flags are
+deleted. ``handshake/model.py:ModelProfile`` is split into these records.").
+An adapter now evidences a discovered model as a
+:class:`~clio_agent.providers.capabilities.records.ModelCapabilities`
+(``source="server_report"``) plus a
+:class:`~clio_agent.providers.capabilities.records.DeploymentCapabilities`
+pair (:class:`DiscoveredModelFacts`), written into the shared record store
+(:mod:`clio_agent.providers.capabilities.invalidation`) as a side effect of the
+handshake. :class:`HandshakeReport` itself keeps only bare identity
+(:class:`DiscoveredModel`: the wire id, its own aliases, whether it's loaded,
+and the raw discovery row for the handful of purely-identity fields — a
+deployment name, a revision string — that were never capability facts) plus
+provenance (`models_source`, `generated_at`); every capability question routes
+through :func:`clio_agent.providers.capabilities.accessor.get_effective_capabilities`
+instead.
 """
 
 from __future__ import annotations
@@ -18,7 +28,13 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from clio_agent.providers.capabilities.records import (
+        DeploymentCapabilities,
+        ModelCapabilities,
+    )
 
 
 class ConnectivityState(str, Enum):
@@ -40,66 +56,64 @@ class AuthState(str, Enum):
     DEFERRED = "deferred"  # token stored but not validated (argonne passive)
 
 
-# Provenance of a model's ``context_window`` value. The factory tries these in
-# strict order and stops at the first that yields a value.
-ContextSource = str  # "live" | "models.dev" | "marketplace" | "static"
-
-
 @dataclass(frozen=True)
-class ModelProfile:
-    """Discovered configuration for a single model on a provider.
+class DiscoveredModel:
+    """One model a handshake found on a provider: bare identity, not capability.
 
-    ``context_window`` is the backend's hard ceiling (vLLM ``max_model_len`` /
-    LM Studio ``max_context_length``). ``loaded_context_window`` is the *runtime*
-    window an already-loaded model is serving (LM Studio ``loaded_context_length``)
-    — this is the value that actually bounds a request, and the source of the
-    "loaded at 8192 while max is 262144" class of failures. ``chosen_context`` is
-    the GPU-aware value clio decided to use (``min(window, cap, override)``); it is
-    the authoritative, queryable "active context limit".
-
-    ``native_context_window`` is the model's published MAXIMUM context from an
-    offline catalog (LiteLLM / bundled ``model_limits.json``). It may exceed the
-    served ``context_window`` when a vLLM instance is launched with a smaller
-    ``--max-model-len`` (e.g. 32 768 served vs. 131 072 native for granite-4.2-30b).
-    None when the catalog has no entry for the model.
+    Attributes:
+        id: The id the SERVER uses on the wire (a
+            :class:`~clio_agent.providers.identity.DeploymentKey`'s ``model_id``).
+        is_loaded: Whether this model is the (or a) currently loaded one, when
+            the provider reports load state.
+        aliases: This model's own recorded aliases (e.g. claude_code CLI values
+            like ``"sonnet"``), sourced from the SAME discovery evidence that
+            produced ``id`` — never a hand-typed table. Empty for providers
+            with no alias concept.
+        evidence_generated_at: When THIS model's row was actually evidenced —
+            a persisted overlay/last-good row's own timestamp, or empty when
+            the evidence is this handshake run itself (the report's own
+            ``generated_at`` applies then).
+        raw: The provider's raw discovery row, kept for the handful of
+            purely-identity fields (a deployment/owned_by name, a revision
+            string, ``capability_evidence`` provenance, CLI catalog metadata
+            like ``supported_reasoning_efforts``) that are not capability
+            facts and so have no home in the capability records.
     """
 
     id: str
-    context_window: int | None = None
-    loaded_context_window: int | None = None
-    chosen_context: int | None = None
-    native_context_window: int | None = None
-    output_limit: int | None = None
-    is_reasoning: bool = False
-    reasoning_param: str | None = None
-    native_tool_calling: bool = False
-    tool_call_parser: str | None = None
-    quantization: str | None = None
-    arch: str | None = None
-    capabilities: tuple[str, ...] = ()
     is_loaded: bool = False
-    context_source: ContextSource = "live"
-    #: When this profile's CAPABILITY evidence was actually produced. A handshake
-    #: that reads persisted discovery evidence (the CLI-provider overlay) carries
-    #: the timestamp of the probe that produced it, not the wall clock of the
-    #: read; empty when the evidence is the handshake run itself.
+    aliases: tuple[str, ...] = ()
     evidence_generated_at: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
 
-    @property
-    def effective_context_window(self) -> int | None:
-        """The window that actually bounds a request: loaded if known, else the ceiling."""
-        return self.loaded_context_window or self.context_window
+
+@dataclass(frozen=True)
+class DiscoveredModelFacts:
+    """One ``discover_model_config`` result: identity plus what it evidenced.
+
+    ``model`` carries ``source="server_report"`` facts about the WEIGHTS
+    (shared across every endpoint that serves them); ``deployment`` carries
+    facts about how THIS server is running them right now. Both are written
+    into the shared record store by
+    :class:`~clio_agent.providers.handshake.base.ProviderHandshake` so the
+    capabilities accessor can see them; :class:`HandshakeReport` itself only
+    keeps ``discovered``.
+    """
+
+    discovered: DiscoveredModel
+    model: "ModelCapabilities"
+    deployment: "DeploymentCapabilities"
 
 
-def _raw_aliases(raw: dict[str, Any]) -> tuple[str, ...]:
-    """Return a profile's own recorded CLI aliases (``cli_values``), defensively typed.
+def raw_aliases(raw: dict[str, Any]) -> tuple[str, ...]:
+    """Return a discovery row's own recorded CLI aliases (``cli_values``), defensively typed.
 
     ``raw`` is passthrough evidence from a handshake/overlay payload, not a
     validated model -- a malformed or absent ``cli_values`` (not a list, or a
     list with non-string entries) must degrade to "no aliases" rather than
     letting a stray string be iterated character-by-character into false alias
-    matches.
+    matches. Adapters call this when building a
+    :class:`DiscoveredModel`'s ``aliases`` from their raw discovery row.
     """
 
     values = raw.get("cli_values")
@@ -113,7 +127,7 @@ def resolve_model_id(candidates: Iterable[tuple[str, Sequence[str]]], query: str
 
     ``candidates`` is an iterable of ``(canonical_id, aliases)`` pairs drawn from
     ONE evidence source for ONE provider -- a :class:`HandshakeReport`'s own
-    profiles (``profile.id``, ``profile.raw["cli_values"]``) or a provider
+    :class:`DiscoveredModel` rows (``.id``, ``.aliases``) or a provider
     catalog's own model rows (``row["model_id"]``, ``row["aliases"]``). Both
     alias lists are populated from the same discovery evidence (#1436's
     ``cli_values``/``aliases``), so this reads existing alias data rather than
@@ -127,13 +141,12 @@ def resolve_model_id(candidates: Iterable[tuple[str, Sequence[str]]], query: str
     candidate.
 
     This is the ONE place a configured model value (which may be an alias) is
-    reconciled against discovered model identity. Every capability decision that
-    needs to match a configured id against catalog/handshake evidence --
-    :meth:`HandshakeReport.model` (and through it, context-window/reasoning
-    folding in ``LMProviderConfig.apply_handshake`` and the cross-provider
-    resolver), plus ``gact.resource_delivery._catalog_modalities`` (vision/PDF/
-    delivery-planning modality lookups) -- routes through here so they cannot
-    disagree about which model a configured alias names.
+    reconciled against discovered model identity — every capability decision
+    that needs to match a configured id against catalog/handshake evidence
+    routes through here (directly, or through
+    :meth:`HandshakeReport.model` / the model-link rules in
+    :mod:`clio_agent.providers.capabilities.link`) so they cannot disagree
+    about which model a configured alias names.
     """
 
     if not query:
@@ -152,16 +165,18 @@ class HandshakeReport:
     provider_kind: str
     connectivity: ConnectivityState
     auth: AuthState
+    #: The endpoint this report is about (:class:`~clio_agent.providers.identity.EndpointKey`'s
+    #: second half). Needed so a capability lookup for one of ``models`` can be
+    #: keyed correctly — the report is the one place that already carries it.
+    api_base: str = ""
     latency_ms: float | None = None
     error: str | None = None
-    models: tuple[ModelProfile, ...] = ()
+    models: tuple[DiscoveredModel, ...] = ()
     #: Catalog-level provenance, reported by the handshake that ran rather than
     #: assumed: ``live`` (this run probed the provider), ``overlay`` (persisted
     #: evidence from an earlier explicit discovery run), ``static`` (the
     #: compiled-in registry catalog -- candidates, not evidence), or
-    #: ``unavailable``. It was previously hardcoded to ``live`` whenever ANY
-    #: model existed, which made the zero-network NoOp/CliCatalog handshakes
-    #: claim a live probe they never performed.
+    #: ``unavailable``.
     models_source: str = "live"
     #: Wall clock of THIS handshake run.
     generated_at: str = ""
@@ -188,31 +203,60 @@ class HandshakeReport:
             AuthState.DEFERRED,
         }
 
-    def model(self, model_id: str) -> ModelProfile | None:
-        """Return the profile for ``model_id``, or None.
+    def model(self, model_id: str) -> DiscoveredModel | None:
+        """Return the discovered row for ``model_id``, or None.
 
-        ``model_id`` may be an exact profile id or one of a profile's own
-        recorded aliases (e.g. claude_code CLI values like ``"sonnet"`` for
+        ``model_id`` may be an exact row id or one of a row's own recorded
+        aliases (e.g. claude_code CLI values like ``"sonnet"`` for
         ``"claude-sonnet-5"``) -- see :func:`resolve_model_id`, the shared
         resolution point every alias-tolerant model lookup routes through.
         """
         canonical = resolve_model_id(
-            ((profile.id, _raw_aliases(profile.raw)) for profile in self.models),
+            ((row.id, row.aliases) for row in self.models),
             model_id,
         )
-        for profile in self.models:
-            if profile.id == canonical:
-                return profile
+        for row in self.models:
+            if row.id == canonical:
+                return row
         return None
 
-    def to_models_wire(self) -> dict[str, Any]:
-        """Render to the legacy model-picker contract, with per-model fields added.
+    def match_model(self, model_id: str) -> DiscoveredModel | None:
+        """Resolve ``model_id`` to a discovered row with the fuller bind-time tolerance.
 
-        Preserves ``{"models": [...], "source": ..., "error": ...}`` so existing
-        ``GET /v1/providers/{id}/models`` consumers keep working; the discovered
-        config (``context_window``, ``chosen_context``, ``is_reasoning``, ...) rides
-        along as additive keys on each model dict.
+        Tries, in order: an exact id/alias match (:meth:`model`); a vendor-prefix
+        basename match (``"gpt-oss-120b"`` matches a discovered
+        ``"openai/gpt-oss-120b"``); the sole discovered model, when exactly one
+        was found. Both :meth:`clio_agent.config.LMProviderConfig.apply_handshake`
+        and :mod:`clio_agent.providers.resolver` route through this single
+        method so they cannot disagree about which model a handshake resolved.
         """
+        if not self.models:
+            return None
+        found = self.model(model_id)
+        if found is not None:
+            return found
+        want = model_id.rsplit("/", 1)[-1].lower()
+        found = next(
+            (row for row in self.models if row.id.rsplit("/", 1)[-1].lower() == want), None
+        )
+        if found is not None:
+            return found
+        return self.models[0] if len(self.models) == 1 else None
+
+    def models_wire(self) -> dict[str, Any]:
+        """Render to the legacy model-picker contract (``{"models", "source", "error"}``).
+
+        Preserves the wire shape ``to_models_wire`` used to produce (so
+        existing ``GET /v1/providers/{id}/models`` clients keep working)
+        but sources every per-model capability field from
+        :func:`clio_agent.providers.capabilities.accessor.get_effective_capabilities`
+        instead of a flat ``ModelProfile`` — there is no longer a flat field
+        for this method to read.
+        """
+        from clio_agent.providers.capabilities.accessor import (  # noqa: PLC0415
+            get_effective_capabilities,
+        )
+
         if not self.ok and not self.models:
             source = "unavailable"
         else:
@@ -220,21 +264,19 @@ class HandshakeReport:
         rows: list[dict[str, Any]] = []
         for m in self.models:
             row: dict[str, Any] = {"id": m.id, "name": m.id}
-            if m.context_window is not None:
-                row["context_window"] = m.context_window
-            if m.loaded_context_window is not None:
-                row["loaded_context_window"] = m.loaded_context_window
-            if m.chosen_context is not None:
-                row["chosen_context"] = m.chosen_context
-            if m.is_reasoning:
-                row["is_reasoning"] = True
-            if m.native_tool_calling:
+            effective = get_effective_capabilities(self.provider_id, self.api_base, m.id)
+            if effective.context.known:
+                row["context_window"] = effective.context.value
+            if effective.tools.value:
                 row["native_tool_calling"] = True
-            if m.quantization:
-                row["quantization"] = m.quantization
+            if effective.thinking.known:
+                row["is_reasoning"] = True
+            quantization = m.raw.get("quantization")
+            if quantization:
+                row["quantization"] = quantization
             if m.is_loaded:
                 row["loaded"] = True
-            row["context_source"] = m.context_source
+            row["context_source"] = effective.context.decided_by
             rows.append(row)
         return {"models": rows, "source": source, "error": self.error}
 
@@ -275,17 +317,23 @@ class HandshakeReport:
         if self.latency_ms is not None:
             details["latency_ms"] = round(self.latency_ms, 1)
         if self.models:
-            details["models"] = [
-                {
-                    "id": m.id,
-                    "context_window": m.context_window,
-                    "chosen_context": m.chosen_context,
-                    "is_reasoning": m.is_reasoning,
-                    "native_tool_calling": m.native_tool_calling,
-                    "context_source": m.context_source,
-                }
-                for m in self.models[:20]
-            ]
+            from clio_agent.providers.capabilities.accessor import (  # noqa: PLC0415
+                get_effective_capabilities,
+            )
+
+            model_details = []
+            for m in self.models[:20]:
+                effective = get_effective_capabilities(self.provider_id, self.api_base, m.id)
+                model_details.append(
+                    {
+                        "id": m.id,
+                        "context_window": effective.context.value,
+                        "is_reasoning": effective.thinking.known,
+                        "native_tool_calling": bool(effective.tools.value),
+                        "context_source": effective.context.decided_by,
+                    }
+                )
+            details["models"] = model_details
         next_action = ""
         if state == IntegrationState.MISCONFIGURED and self.auth == AuthState.REJECTED:
             next_action = "Provider rejected the credential; refresh or re-enter the API key/token."
@@ -300,3 +348,14 @@ class HandshakeReport:
             capabilities=caps,
             details=details,
         )
+
+
+__all__ = [
+    "AuthState",
+    "ConnectivityState",
+    "DiscoveredModel",
+    "DiscoveredModelFacts",
+    "HandshakeReport",
+    "raw_aliases",
+    "resolve_model_id",
+]

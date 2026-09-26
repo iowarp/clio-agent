@@ -4,7 +4,7 @@ Zero tests existed on this path before this change (flagged explicitly in
 review). Covers: overlay-first ``discover_models`` (falling back to the static
 registry catalog when absent/malformed, logging the malformed case — review
 R5), and the D4 fix itself — an overlay-sourced model's context/output limit is
-pre-filled onto its ``ModelProfile`` in ``discover_model_config`` and
+pre-filled onto its ``ModelCapabilities`` in ``discover_model_config`` and
 ``enrich_capabilities`` SKIPS the models.dev/litellm/local-DB cascade entirely
 for it (whether the persisted value is a real number or a confirmed miss),
 while a static-catalog-sourced row (no overlay yet) still runs the cascade
@@ -223,12 +223,12 @@ def test_discover_model_config_prefills_from_overlay_row() -> None:
         "capabilities": ["text", "image"],
         "_overlay_context_checked": True,
     }
-    profile = asyncio.run(handshake.discover_model_config(client=None, ctx=_ctx(), raw=raw))
-    assert profile.id == "gpt-5.6-sol"
-    assert profile.context_window == 272000
-    assert profile.output_limit == 64000
-    assert profile.capabilities == ("text", "image")
-    assert profile.context_source == "models.dev"
+    facts = asyncio.run(handshake.discover_model_config(client=None, ctx=_ctx(), raw=raw))
+    assert facts.discovered.id == "gpt-5.6-sol"
+    assert facts.model.context_max.value == 272000
+    assert facts.model.output_max.value == 64000
+    assert facts.model.input_modalities.value == frozenset({"text", "image"})
+    assert facts.model.context_max.source == "server_report"
 
 
 def test_discover_model_config_prefills_a_confirmed_miss_as_none() -> None:
@@ -243,10 +243,10 @@ def test_discover_model_config_prefills_a_confirmed_miss_as_none() -> None:
         "context_source": "",
         "_overlay_context_checked": True,
     }
-    profile = asyncio.run(handshake.discover_model_config(client=None, ctx=_ctx(), raw=raw))
-    assert profile.context_window is None
-    assert profile.output_limit is None
-    assert profile.raw.get("_overlay_context_checked") is True
+    facts = asyncio.run(handshake.discover_model_config(client=None, ctx=_ctx(), raw=raw))
+    assert not facts.model.context_max.known
+    assert not facts.model.output_max.known
+    assert facts.discovered.raw.get("_overlay_context_checked") is True
 
 
 def test_discover_model_config_static_row_falls_through_to_noop_base() -> None:
@@ -254,9 +254,9 @@ def test_discover_model_config_static_row_falls_through_to_noop_base() -> None:
     same behavior as before #1211, the cascade still runs for it downstream."""
     handshake = CliCatalogHandshake(provider=None)
     raw = {"id": "gpt-5.5", "name": "GPT-5.5", "description": "candidate"}
-    profile = asyncio.run(handshake.discover_model_config(client=None, ctx=_ctx(), raw=raw))
-    assert profile.id == "gpt-5.5"
-    assert profile.context_window is None  # unresolved -- NoOpHandshake's base behavior
+    facts = asyncio.run(handshake.discover_model_config(client=None, ctx=_ctx(), raw=raw))
+    assert facts.discovered.id == "gpt-5.5"
+    assert not facts.model.context_max.known  # unresolved -- NoOpHandshake's base behavior
 
 
 def test_enrich_capabilities_skips_the_cascade_for_an_overlay_checked_profile(
@@ -264,9 +264,13 @@ def test_enrich_capabilities_skips_the_cascade_for_an_overlay_checked_profile(
 ) -> None:
     """#1211 D4 -- the real fix: enrich_capabilities must NEVER call
     resolve_context/resolve_output_limit for an overlay-checked profile, even
-    when its context_window is a confirmed-miss None (never re-attempt the
+    when its context_max is a confirmed-miss unknown (never re-attempt the
     cascade)."""
-    from clio_agent.providers.handshake.model import ModelProfile
+    from clio_agent.providers.capabilities.records import (
+        DeploymentCapabilities,
+        ModelCapabilities,
+    )
+    from clio_agent.providers.handshake.model import DiscoveredModel, DiscoveredModelFacts
 
     calls: list[str] = []
     monkeypatch.setattr(
@@ -279,14 +283,15 @@ def test_enrich_capabilities_skips_the_cascade_for_an_overlay_checked_profile(
     )
 
     handshake = CliCatalogHandshake(provider=None)
-    checked_profile = ModelProfile(
-        id="some-obscure-model",
-        context_window=None,
-        output_limit=None,
-        raw={"_overlay_context_checked": True},
+    checked_facts = DiscoveredModelFacts(
+        discovered=DiscoveredModel(id="some-obscure-model", raw={"_overlay_context_checked": True}),
+        model=ModelCapabilities(model_key="some-obscure-model"),
+        deployment=DeploymentCapabilities(
+            provider_id="codex", api_base="codex://sdk", model_id="some-obscure-model"
+        ),
     )
-    out = asyncio.run(handshake.enrich_capabilities(checked_profile, _ctx()))
-    assert out is checked_profile  # unchanged, cascade never touched
+    out = asyncio.run(handshake.enrich_capabilities(checked_facts, _ctx()))
+    assert out is checked_facts  # unchanged, cascade never touched
     assert calls == []
 
 
@@ -295,7 +300,11 @@ def test_enrich_capabilities_still_runs_the_cascade_for_a_non_overlay_profile(
 ) -> None:
     """A static-catalog-sourced profile (no overlay yet) keeps the PRE-#1211
     behavior: the cascade still runs to try to resolve its context window."""
-    from clio_agent.providers.handshake.model import ModelProfile
+    from clio_agent.providers.capabilities.records import (
+        DeploymentCapabilities,
+        ModelCapabilities,
+    )
+    from clio_agent.providers.handshake.model import DiscoveredModel, DiscoveredModelFacts
 
     calls: list[str] = []
     monkeypatch.setattr(
@@ -308,9 +317,15 @@ def test_enrich_capabilities_still_runs_the_cascade_for_a_non_overlay_profile(
     )
 
     handshake = CliCatalogHandshake(provider=None)
-    unchecked_profile = ModelProfile(id="gpt-5.5", context_window=None, output_limit=None, raw={})
-    out = asyncio.run(handshake.enrich_capabilities(unchecked_profile, _ctx()))
-    assert out.context_window == 128000
+    unchecked_facts = DiscoveredModelFacts(
+        discovered=DiscoveredModel(id="gpt-5.5"),
+        model=ModelCapabilities(model_key="gpt-5.5"),
+        deployment=DeploymentCapabilities(
+            provider_id="codex", api_base="codex://sdk", model_id="gpt-5.5"
+        ),
+    )
+    out = asyncio.run(handshake.enrich_capabilities(unchecked_facts, _ctx()))
+    assert out.model.context_max.value == 128000
     assert "resolve_context" in calls
 
 
@@ -351,8 +366,12 @@ def test_full_handshake_never_hits_the_cascade_once_overlay_populated(
     handshake = CliCatalogHandshake(provider=None)
     report = asyncio.run(handshake.handshake(_ctx()))
     assert [m.id for m in report.models] == ["gpt-5.6-sol"]
-    assert report.models[0].context_window == 272000
-    assert report.models[0].output_limit == 64000
+
+    from clio_agent.providers.capabilities.accessor import get_effective_capabilities
+
+    effective = get_effective_capabilities(report.provider_id, report.api_base, "gpt-5.6-sol")
+    assert effective.context.value == 272000
+    assert effective.output_max.value == 64000
 
 
 # --------------------------------------------------------------------------- #
@@ -418,7 +437,7 @@ def test_static_catalog_handshake_reports_static_not_live(
     assert report.models  # the static registry candidates are still surfaced
     assert report.models_source == "static"
     # A static row carries no capability evidence, so no modality can be claimed.
-    assert all(profile.capabilities == () for profile in report.models)
+    assert all(profile.raw.get("capabilities") == [] for profile in report.models)
 
 
 def test_http_handshake_still_reports_live() -> None:

@@ -7,19 +7,31 @@ a single authenticated ``GET {api_base}/models`` — the same call that lists th
 catalog — so connectivity, auth and model discovery share one round trip's worth
 of plumbing.
 
-None of these endpoints report a model's real context window through ``/models``
-(OpenAI returns only ``{"id", "object", ...}``), so
-:meth:`OpenAICompatHandshake.discover_model_config` deliberately returns a
-:class:`ModelProfile` with ``context_window=None``. The base class's
-``enrich_capabilities`` step then resolves the window through the context-source
-factory (models.dev / marketplace) — see
-:mod:`clio_agent.providers.handshake.base`.
+None of these endpoints report a model's own MAXIMUM context through
+``/models`` (OpenAI returns only ``{"id", "object", ...}``), so
+:meth:`OpenAICompatHandshake.discover_model_config` always leaves
+``ModelCapabilities.context_max`` unknown; the base class's
+:meth:`~clio_agent.providers.handshake.base.ProviderHandshake.enrich_capabilities`
+step then resolves it through the community-catalog cascade (models.dev /
+litellm / the local DB). Some backends DO self-report what they are CURRENTLY
+SERVING on the ``/models`` row itself (vLLM's ``max_model_len``, OpenRouter's
+``context_length`` / ``top_provider.*``) — per the brief (Part 6) that is a
+**deployment** fact, not the model's own ceiling, so it is recorded as
+``DeploymentCapabilities.context_served``/``output_max`` instead.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
+from clio_agent.providers.capabilities.link import deployment_model_key_fact
+from clio_agent.providers.capabilities.records import (
+    DeploymentCapabilities,
+    Fact,
+    ModelCapabilities,
+    unknown,
+)
 from clio_agent.providers.handshake.base import (
     ConnectivityResult,
     HandshakeContext,
@@ -28,9 +40,9 @@ from clio_agent.providers.handshake.base import (
 from clio_agent.providers.handshake.model import (
     AuthState,
     ConnectivityState,
-    ModelProfile,
+    DiscoveredModel,
+    DiscoveredModelFacts,
 )
-from clio_agent.providers.handshake.sources import lookup_native_context
 
 #: ``provider_kind`` values that authenticate via Anthropic's header scheme
 #: (``x-api-key`` + a pinned API version) rather than a bearer token.
@@ -51,12 +63,16 @@ API_KEY_REJECTED = "api_key_rejected"
 _EMBEDDING_MARKERS = ("embed", "embedding", "rerank", "reranker")
 
 
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 class OpenAICompatHandshake(ProviderHandshake):
     """Handshake for OpenAI-compatible HTTP providers.
 
     One authenticated ``GET /models`` drives connectivity, auth and discovery.
-    Per-model config is intentionally thin (``context_window=None``) because these
-    endpoints do not report context; the base enrich step fills it in.
+    Per-model config is intentionally thin because these endpoints do not
+    report a model's own ceiling; the base enrich step fills it in.
     """
 
     def _requires_key(self, ctx: HandshakeContext) -> bool:
@@ -260,48 +276,96 @@ class OpenAICompatHandshake(ProviderHandshake):
 
     async def discover_model_config(
         self, client: Any, ctx: HandshakeContext, raw: dict[str, Any]
-    ) -> ModelProfile:
-        """Build a :class:`ModelProfile` from one ``/models`` row.
+    ) -> DiscoveredModelFacts:
+        """Build a :class:`DiscoveredModelFacts` from one ``/models`` row.
 
-        Bare OpenAI/Anthropic ``/models`` rows carry only an id, so the profile is
-        thin and the base ``enrich_capabilities`` step resolves the window via the
-        context-source factory. But some OpenAI-compatible backends DO self-report
-        config on the row, which we extract live (provenance stays ``"live"``):
+        Bare OpenAI/Anthropic ``/models`` rows carry only an id, so the model
+        record is thin and the base ``enrich_capabilities`` step resolves the
+        ceiling via the community-catalog cascade. But some OpenAI-compatible
+        backends DO self-report what they're CURRENTLY SERVING on the row,
+        which is a **deployment** fact (brief Part 6):
 
         * **vLLM** -> ``max_model_len`` (the served context window);
-        * **OpenRouter** -> ``context_length`` (and ``top_provider.context_length`` /
-          ``top_provider.max_completion_tokens`` for the active route).
+        * **OpenRouter** -> ``context_length`` / ``top_provider.context_length``
+          and ``top_provider.max_completion_tokens`` for the active route.
         """
         model_id = str(raw.get("id", "")).strip()
+        observed_at = _now_iso()
         _tp = raw.get("top_provider")
         top: dict[str, Any] = _tp if isinstance(_tp, dict) else {}
-        context_window = _first_positive_int(
+        context_served = _first_positive_int(
             raw.get("max_model_len"),  # vLLM
             raw.get("context_length"),  # OpenRouter (top-level)
             top.get("context_length"),  # OpenRouter (active route)
         )
-        output_limit = _first_positive_int(
+        output_served = _first_positive_int(
             raw.get("max_completion_tokens"),
             top.get("max_completion_tokens"),
         )
-        # Populate native_context_window from the offline catalog when the provider
-        # self-reports a served context window (vLLM / OpenRouter). This lets
-        # apply_handshake fire the context_window_below_native warning when
-        # vLLM is launched with --max-model-len smaller than the model's true max.
-        # The lookup is LiteLLM catalog first, then bundled model_limits.json —
-        # no network call. We only set it when context_window is known so there is
-        # something meaningful to compare against.
-        native_context_window: int | None = None
-        if context_window is not None and model_id:
-            native_context_window = lookup_native_context(model_id)
-        return ModelProfile(
-            id=model_id,
-            context_window=context_window,
-            native_context_window=native_context_window,
-            output_limit=output_limit,
-            context_source="live",
-            raw=dict(raw),
+        # vLLM's /v1/models row names the Hugging Face repo it loaded as `root`
+        # (brief 5.4 rule 2); every other OpenAI-shaped backend has nothing
+        # comparable, so this is None for them and the wire id stands in.
+        vllm_root = raw.get("root")
+        model_key_fact = deployment_model_key_fact(
+            model_id,
+            observed_at=observed_at,
+            vllm_root=str(vllm_root) if isinstance(vllm_root, str) and vllm_root else None,
         )
+        model_key = model_key_fact.value or model_id
+        # An OFFLINE-ONLY (no network) catalog lookup for the model's own published
+        # maximum, so the deployment's self-reported served window can be compared
+        # against it (Part 3's context_window_below_native warning) even when
+        # ``allow_external_sources=False`` keeps the network-allowed cascade in
+        # ``enrich_capabilities`` from running. Only attempted when a served window
+        # is actually known -- otherwise there's nothing to compare it against.
+        native_context_max: int | None = None
+        if context_served is not None and model_id:
+            from clio_agent.providers.handshake.sources import (
+                lookup_native_context,  # noqa: PLC0415
+            )
+
+            native_context_max = lookup_native_context(model_id)
+        model = ModelCapabilities(
+            model_key=model_key,
+            context_max=(
+                Fact(
+                    value=native_context_max,
+                    source="litellm",
+                    observed_at=observed_at,
+                    detail="offline catalog lookup (no network), compared against the served window",
+                )
+                if native_context_max is not None
+                else unknown()
+            ),
+        )
+        deployment = DeploymentCapabilities(
+            provider_id=ctx.provider_id,
+            api_base=ctx.api_base,
+            model_id=model_id,
+            model_key=model_key_fact,
+            context_served=(
+                Fact(
+                    value=context_served,
+                    source="server_report",
+                    observed_at=observed_at,
+                    detail="self-reported on the /models row (max_model_len / context_length)",
+                )
+                if context_served is not None
+                else unknown()
+            ),
+            output_max=(
+                Fact(
+                    value=output_served,
+                    source="server_report",
+                    observed_at=observed_at,
+                    detail="self-reported on the /models row (max_completion_tokens)",
+                )
+                if output_served is not None
+                else unknown()
+            ),
+        )
+        discovered = DiscoveredModel(id=model_id, raw=dict(raw))
+        return DiscoveredModelFacts(discovered=discovered, model=model, deployment=deployment)
 
 
 def _first_positive_int(*values: Any) -> int | None:

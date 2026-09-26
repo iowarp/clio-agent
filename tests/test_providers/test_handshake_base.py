@@ -11,6 +11,7 @@ import asyncio
 import logging
 from typing import Any
 
+from clio_agent.providers.capabilities.records import DeploymentCapabilities, ModelCapabilities
 from clio_agent.providers.handshake.base import (
     ConnectivityResult,
     HandshakeContext,
@@ -19,7 +20,8 @@ from clio_agent.providers.handshake.base import (
 from clio_agent.providers.handshake.model import (
     AuthState,
     ConnectivityState,
-    ModelProfile,
+    DiscoveredModel,
+    DiscoveredModelFacts,
 )
 
 
@@ -32,22 +34,25 @@ class _StubHandshake(ProviderHandshake):
     async def _close_client(self, client: Any) -> None:
         return None
 
-    async def check_connectivity(
-        self, client: Any, ctx: HandshakeContext
-    ) -> ConnectivityResult:
+    async def check_connectivity(self, client: Any, ctx: HandshakeContext) -> ConnectivityResult:
         return ConnectivityResult(ConnectivityState.OK, AuthState.OK)
 
-    async def discover_models(
-        self, client: Any, ctx: HandshakeContext
-    ) -> list[dict[str, Any]]:
+    async def discover_models(self, client: Any, ctx: HandshakeContext) -> list[dict[str, Any]]:
         return [{"id": "good-model"}, {"id": "broken-model"}]
 
     async def discover_model_config(
         self, client: Any, ctx: HandshakeContext, raw: dict[str, Any]
-    ) -> ModelProfile:
+    ) -> DiscoveredModelFacts:
         if raw.get("id") == "broken-model":
             raise ValueError("bad row: boom")
-        return ModelProfile(id=str(raw["id"]))
+        model_id = str(raw["id"])
+        return DiscoveredModelFacts(
+            discovered=DiscoveredModel(id=model_id),
+            model=ModelCapabilities(model_key=model_id),
+            deployment=DeploymentCapabilities(
+                provider_id=ctx.provider_id, api_base=ctx.api_base, model_id=model_id
+            ),
+        )
 
 
 def _ctx() -> HandshakeContext:
@@ -79,15 +84,11 @@ def test_bad_model_row_is_dropped_and_warned(caplog) -> None:
 
 def test_all_rows_valid_emits_no_drop_warning(caplog) -> None:
     class _AllGood(_StubHandshake):
-        async def discover_models(
-            self, client: Any, ctx: HandshakeContext
-        ) -> list[dict[str, Any]]:
+        async def discover_models(self, client: Any, ctx: HandshakeContext) -> list[dict[str, Any]]:
             return [{"id": "a"}, {"id": "b"}]
 
     with caplog.at_level(logging.WARNING, logger="clio_agent.providers.handshake.base"):
         report = asyncio.run(_AllGood(provider=None).handshake(_ctx()))
 
     assert [m.id for m in report.models] == ["a", "b"]
-    assert not [
-        r for r in caplog.records if "model_row_discovery_failed" in r.getMessage()
-    ]
+    assert not [r for r in caplog.records if "model_row_discovery_failed" in r.getMessage()]

@@ -9,16 +9,16 @@ from __future__ import annotations
 import pytest
 
 from clio_agent.config import LMProviderConfig
-from clio_agent.providers.handshake.model import ModelProfile
+from clio_agent.providers.handshake.model import DiscoveredModel
 from clio_agent.providers.reasoning_levels import model_reasoning
 from clio_agent.providers.thinking import accepted_levels, resolve_thinking
 
 
-def _codex_profile(efforts: list[str] | None, default: str = "") -> ModelProfile:
+def _codex_profile(efforts: list[str] | None, default: str = "") -> DiscoveredModel:
     raw: dict[str, object] = {"default_reasoning_effort": default}
     if efforts is not None:
         raw["supported_reasoning_efforts"] = efforts
-    return ModelProfile(id="gpt-5.6-sol", raw=raw)
+    return DiscoveredModel(id="gpt-5.6-sol", raw=raw)
 
 
 def test_codex_levels_come_from_the_maintained_catalog() -> None:
@@ -61,14 +61,14 @@ _CLI_EFFORT = ["low", "medium", "high", "xhigh", "max"]
 def test_claude_code_offers_the_cli_reported_effort_levels() -> None:
     fable = model_reasoning(
         "claude_code",
-        ModelProfile(id="claude-fable-5-1", raw={"supported_effort_levels": _CLI_EFFORT}),
+        DiscoveredModel(id="claude-fable-5-1", raw={"supported_effort_levels": _CLI_EFFORT}),
     )
     assert fable["levels"] == ["off", "low", "medium", "high", "xhigh", "max"]
     assert fable["source"] == "claude_code_sdk"
     assert fable["default"] == "high"  # the SDK documents high as its default effort
     sonnet = model_reasoning(
         "claude_code",
-        ModelProfile(id="claude-sonnet-5", raw={"supported_effort_levels": _CLI_EFFORT}),
+        DiscoveredModel(id="claude-sonnet-5", raw={"supported_effort_levels": _CLI_EFFORT}),
     )
     assert sonnet["default"] == "low"  # clio ships low for sonnet
 
@@ -76,7 +76,7 @@ def test_claude_code_offers_the_cli_reported_effort_levels() -> None:
 def test_claude_code_model_without_effort_offers_the_thinking_budget() -> None:
     haiku = model_reasoning(
         "claude_code",
-        ModelProfile(id="claude-haiku-4-5-20251001", raw={"supported_effort_levels": []}),
+        DiscoveredModel(id="claude-haiku-4-5-20251001", raw={"supported_effort_levels": []}),
     )
     assert haiku["levels"] == ["off", "low", "medium", "high"]
     assert haiku["source"] == "claude_code_sdk_thinking_budget"
@@ -84,16 +84,16 @@ def test_claude_code_model_without_effort_offers_the_thinking_budget() -> None:
 
 def test_claude_code_missing_effort_evidence_is_typed() -> None:
     row = {"effort_evidence_failure": "claude_code_cli_model_catalog_unavailable: boom"}
-    block = model_reasoning("claude_code", ModelProfile(id="claude-sonnet-5", raw=row))
+    block = model_reasoning("claude_code", DiscoveredModel(id="claude-sonnet-5", raw=row))
     assert block["levels"] == ["off", "low", "medium", "high"]
     assert block["reason"].startswith("claude_code_cli_model_catalog_unavailable")
 
 
 def test_anthropic_adaptive_model_offers_output_config_effort() -> None:
-    block = model_reasoning("anthropic", ModelProfile(id="claude-opus-4-7"))
+    block = model_reasoning("anthropic", DiscoveredModel(id="claude-opus-4-7"))
     assert block["levels"] == ["off", "low", "medium", "high", "xhigh", "max"]
     assert block["source"] == "litellm_model_info_effort"
-    assert model_reasoning("anthropic", ModelProfile(id="claude-sonnet-4-6"))["levels"] == [
+    assert model_reasoning("anthropic", DiscoveredModel(id="claude-sonnet-4-6"))["levels"] == [
         "off",
         "low",
         "medium",
@@ -103,44 +103,46 @@ def test_anthropic_adaptive_model_offers_output_config_effort() -> None:
 
 
 def test_anthropic_levels_follow_litellm_model_info() -> None:
-    thinking = model_reasoning("anthropic", ModelProfile(id="claude-sonnet-4-5"))
+    thinking = model_reasoning("anthropic", DiscoveredModel(id="claude-sonnet-4-5"))
     assert thinking["levels"] == ["off", "low", "medium", "high"]
     assert thinking["default"] == "off"
-    old = model_reasoning("anthropic", ModelProfile(id="claude-3-5-haiku-20241022"))
+    old = model_reasoning("anthropic", DiscoveredModel(id="claude-3-5-haiku-20241022"))
     assert old["levels"] == []
     assert old["supported"] is False
 
 
 def test_alcf_gpt_oss_offers_low_medium_high() -> None:
-    profile = ModelProfile(
-        id="openai/gpt-oss-120b", is_reasoning=True, reasoning_param="openai_gptoss"
+    # is_reasoning/reasoning_param are now the CALLER's effective-capabilities
+    # decision (brief 5.5), not flat profile fields -- passed as keywords.
+    profile = DiscoveredModel(id="openai/gpt-oss-120b")
+    reasoning = model_reasoning(
+        "argonne", profile, is_reasoning=True, reasoning_param="openai_gptoss"
     )
-    reasoning = model_reasoning("argonne", profile)
     assert reasoning["levels"] == ["low", "medium", "high"]
     assert reasoning["default"] == "medium"
     assert reasoning["parameter"] == "openai_gptoss"
 
 
 def test_alcf_reasoning_model_that_ignores_effort_offers_no_levels() -> None:
-    profile = ModelProfile(id="Qwen/Qwen3-32B", is_reasoning=True, reasoning_param="qwen3")
-    reasoning = model_reasoning("argonne", profile)
+    profile = DiscoveredModel(id="Qwen/Qwen3-32B")
+    reasoning = model_reasoning("argonne", profile, is_reasoning=True, reasoning_param="qwen3")
     assert reasoning["supported"] is True  # it reasons...
     assert reasoning["levels"] == []  # ...but reasoning_effort does nothing
 
 
 def test_openai_levels_include_xhigh_only_where_reported() -> None:
-    assert model_reasoning("openai", ModelProfile(id="gpt-5"))["levels"] == [
+    assert model_reasoning("openai", DiscoveredModel(id="gpt-5"))["levels"] == [
         "minimal",
         "low",
         "medium",
         "high",
     ]
-    assert "xhigh" in model_reasoning("openai", ModelProfile(id="gpt-5.1-codex-max"))["levels"]
-    assert model_reasoning("openai", ModelProfile(id="gpt-4o"))["levels"] == []
+    assert "xhigh" in model_reasoning("openai", DiscoveredModel(id="gpt-5.1-codex-max"))["levels"]
+    assert model_reasoning("openai", DiscoveredModel(id="gpt-4o"))["levels"] == []
 
 
 def test_provider_without_a_thinking_mapping_offers_nothing() -> None:
-    reasoning = model_reasoning("openrouter", ModelProfile(id="x", is_reasoning=True))
+    reasoning = model_reasoning("openrouter", DiscoveredModel(id="x"), is_reasoning=True)
     assert reasoning["levels"] == []
     assert reasoning["source"] == "no_thinking_mapping"
 
@@ -149,17 +151,17 @@ def test_provider_without_a_thinking_mapping_offers_nothing() -> None:
     ("kind", "profile"),
     [
         ("codex", _codex_profile(["none", "low", "medium", "high", "xhigh"])),
-        ("claude_code", ModelProfile(id="haiku")),
-        ("claude_code", ModelProfile(id="opus", raw={"supported_effort_levels": _CLI_EFFORT})),
-        ("anthropic", ModelProfile(id="claude-opus-4-7")),
-        ("openai", ModelProfile(id="gpt-5")),
-        ("anthropic", ModelProfile(id="claude-sonnet-4-5")),
-        ("argonne", ModelProfile(id="openai/gpt-oss-20b", reasoning_param="openai_gptoss")),
-        ("openai", ModelProfile(id="gpt-5.1-codex-max")),
+        ("claude_code", DiscoveredModel(id="haiku")),
+        ("claude_code", DiscoveredModel(id="opus", raw={"supported_effort_levels": _CLI_EFFORT})),
+        ("anthropic", DiscoveredModel(id="claude-opus-4-7")),
+        ("openai", DiscoveredModel(id="gpt-5")),
+        ("anthropic", DiscoveredModel(id="claude-sonnet-4-5")),
+        ("argonne", DiscoveredModel(id="openai/gpt-oss-20b")),
+        ("openai", DiscoveredModel(id="gpt-5.1-codex-max")),
     ],
 )
 def test_every_offered_level_is_mapped_by_resolve_thinking(
-    kind: str, profile: ModelProfile
+    kind: str, profile: DiscoveredModel
 ) -> None:
     levels = model_reasoning(kind, profile)["levels"]
     assert levels
@@ -197,14 +199,18 @@ def test_catalog_row_carries_the_model_levels() -> None:
         HandshakeReport,
     )
 
-    profile = ModelProfile(
-        id="openai/gpt-oss-120b", is_reasoning=True, reasoning_param="openai_gptoss"
-    )
+    # No handshake ran for this identity, so the effective capabilities have no
+    # endpoint/deployment thinking-control evidence to choose a "parameter"
+    # from (brief 5.5/7 -- that's now the CHOSEN wire control, not a raw
+    # per-adapter parser name); "supported"/"levels" still come from the id-
+    # based gpt-oss heuristic in reasoning_levels._served, independent of it.
+    profile = DiscoveredModel(id="openai/gpt-oss-120b")
     report = HandshakeReport(
         provider_id="argonne_metis",
         provider_kind="argonne",
         connectivity=ConnectivityState.OK,
         auth=AuthState.OK,
+        api_base="https://x",
         models=(profile,),
     )
     preset = LMProviderPreset(
@@ -216,7 +222,7 @@ def test_catalog_row_carries_the_model_levels() -> None:
     )
     assert model_catalog_row(preset, report, profile)["reasoning"] == {
         "supported": True,
-        "parameter": "openai_gptoss",
+        "parameter": "",
         "levels": ["low", "medium", "high"],
         "default": "medium",
         "default_source": "provider",
@@ -249,8 +255,8 @@ def test_codex_overlay_efforts_reach_the_catalog_profile(
     hs = CliCatalogHandshake(provider=None)
     ctx = HandshakeContext(provider_id="codex", provider_kind="codex", api_base="codex://direct")
     rows = asyncio.run(hs.discover_models(None, ctx))
-    profile = asyncio.run(hs.discover_model_config(None, ctx, rows[0]))
-    reasoning = model_reasoning("codex", profile)
+    facts = asyncio.run(hs.discover_model_config(None, ctx, rows[0]))
+    reasoning = model_reasoning("codex", facts.discovered)
     assert reasoning["levels"] == ["low", "medium", "high", "xhigh"]
     assert reasoning["default"] == "high"
 
@@ -368,7 +374,7 @@ def test_resolve_configured_model_id_follows_the_cli_alias() -> None:
 
 def test_default_source_names_a_clio_shipped_default() -> None:
     effort = {"supported_effort_levels": ["low", "medium", "high", "xhigh", "max"]}
-    sonnet = model_reasoning("claude_code", ModelProfile(id="claude-sonnet-5", raw=effort))
+    sonnet = model_reasoning("claude_code", DiscoveredModel(id="claude-sonnet-5", raw=effort))
     assert (sonnet["default"], sonnet["default_source"]) == ("low", "clio_shipped")
-    opus = model_reasoning("claude_code", ModelProfile(id="claude-opus-5", raw=effort))
+    opus = model_reasoning("claude_code", DiscoveredModel(id="claude-opus-5", raw=effort))
     assert (opus["default"], opus["default_source"]) == ("high", "provider")

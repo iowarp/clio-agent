@@ -193,23 +193,52 @@ def test_db_record_logs_mismatch(isolated_db: Path) -> None:
 
 
 def test_db_record_report_records_only_live() -> None:
+    from clio_agent.providers.capabilities import invalidation
+    from clio_agent.providers.capabilities.records import (
+        DeploymentCapabilities,
+        Fact,
+        ModelCapabilities,
+    )
     from clio_agent.providers.handshake.model import (
         AuthState,
         ConnectivityState,
+        DiscoveredModel,
         HandshakeReport,
-        ModelProfile,
     )
+
+    invalidation.clear_all()
+    now = "2026-01-01T00:00:00+00:00"
+
+    def _seed(model_id: str, context: int, source: str) -> None:
+        invalidation.record_model_capabilities(
+            ModelCapabilities(
+                model_key=model_id,
+                context_max=Fact(value=context, source=source, observed_at=now),
+            )
+        )
+        invalidation.record_deployment_capabilities(
+            DeploymentCapabilities(
+                provider_id="p",
+                api_base="",
+                model_id=model_id,
+                model_key=Fact(value=model_id, source=source, observed_at=now),
+            )
+        )
+
+    _seed("vendor/live-model", 99999, "server_report")
+    _seed("vendor/dev-model", 11111, "models.dev")
 
     rep = HandshakeReport(
         provider_id="p",
         provider_kind="argonne",
         connectivity=ConnectivityState.OK,
         auth=AuthState.OK,
+        api_base="",
         models=(
-            ModelProfile(id="vendor/live-model", context_window=99999, context_source="live"),
-            ModelProfile(id="vendor/dev-model", context_window=11111, context_source="models.dev"),
+            DiscoveredModel(id="vendor/live-model"),
+            DiscoveredModel(id="vendor/dev-model"),
         ),
     )
     db_mod.record_report(rep)
-    assert db_mod.lookup_context("vendor/live-model") == 99999  # live recorded
-    assert db_mod.lookup_context("vendor/dev-model") is None  # non-live NOT recorded
+    assert db_mod.lookup_context("vendor/live-model") == 99999  # server_report recorded
+    assert db_mod.lookup_context("vendor/dev-model") is None  # cascade-sourced NOT recorded

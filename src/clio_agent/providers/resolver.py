@@ -45,7 +45,7 @@ from clio_agent.providers.handshake import run_handshake_sync
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from clio_agent.config import LMProviderConfig
-    from clio_agent.providers.handshake.model import HandshakeReport, ModelProfile
+    from clio_agent.providers.handshake.model import DiscoveredModel, HandshakeReport
     from clio_agent.providers.lm_spec import LMSpec
 
 __all__ = [
@@ -131,27 +131,15 @@ def handshake_fallback_payload(reason: str, message: str = "") -> dict[str, Any]
     return payload
 
 
-def _matched_profile(report: "HandshakeReport", model: str) -> "ModelProfile | None":
-    """Return the profile a handshake ``report`` would fold for ``model``.
+def _matched_profile(report: "HandshakeReport", model: str) -> "DiscoveredModel | None":
+    """Return the discovered model a handshake ``report`` would fold for ``model``.
 
-    Mirrors the matching order in :meth:`LMProviderConfig.apply_handshake` (exact
-    id → vendor-prefix basename → the sole model when only one is served) so the
-    resolver can decide whether a real fold happened and, if not, record a
-    structured fallback reason.
+    Delegates to :meth:`HandshakeReport.match_model` (exact id -> vendor-prefix
+    basename -> the sole model when only one is served) -- the SAME method
+    :meth:`LMProviderConfig.apply_handshake` uses, so the resolver's "did a real
+    fold happen" decision can never disagree with what actually got folded.
     """
-    models = getattr(report, "models", None) or ()
-    if not models:
-        return None
-    profile = report.model(model) if hasattr(report, "model") else None
-    if profile is not None:
-        return profile
-    want = model.rsplit("/", 1)[-1].lower()
-    profile = next((m for m in models if m.id.rsplit("/", 1)[-1].lower() == want), None)
-    if profile is not None:
-        return profile
-    if len(models) == 1:
-        return models[0]
-    return None
+    return report.match_model(model) if hasattr(report, "match_model") else None
 
 
 @dataclass(frozen=True)

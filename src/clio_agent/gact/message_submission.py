@@ -27,6 +27,11 @@ from clio_agent.gact.events import Event
 from clio_agent.gact.loop_inbox import enqueue_user_steer
 from clio_agent.gact.message_intents import DuplicateIntentError, PendingSteer
 from clio_agent.gact.messaging import _user_message_parts, raise_on_reserved_metadata
+from clio_agent.gact.modality_evidence import (
+    EVIDENCED_MODALITY_SOURCES,
+    image_input_capability,
+    live_model_modalities,
+)
 from clio_agent.gact.part_atom_minter import run_transcript_job
 from clio_agent.gact.parts import Part
 from clio_agent.gact.providers.config import (
@@ -38,9 +43,7 @@ from clio_agent.gact.providers.config import (
     _model_ref_matches_active,
 )
 from clio_agent.gact.resource_delivery import (
-    EVIDENCED_MODALITY_SOURCES,
     ResourceDeliveryRecord,
-    live_model_modalities,
     plan_resource_delivery,
 )
 from clio_agent.gact.runtime.globals import (
@@ -306,8 +309,7 @@ def _validate_provider_and_payload(
         # naming which layer asked for it -- a mismatch is explicit and never
         # silently falls back to the active model (the session ref in particular
         # is preserved, not cleared).
-        _modalities, evidence, _generated_at = live_model_modalities(app, selected_model)
-        if evidence not in EVIDENCED_MODALITY_SOURCES:
+        if live_model_modalities(app, selected_model).evidence not in EVIDENCED_MODALITY_SOURCES:
             raise HTTPException(
                 status_code=501,
                 detail=deps.unsupported_model_ref_error(
@@ -322,12 +324,9 @@ def _validate_provider_and_payload(
     images = req.image_parts()
     resources = req.resource_parts()
     context_references = [part for part in req.parts if part.type == "context_ref"]
-    selected_modalities, selected_evidence, _generated_at = live_model_modalities(
-        app, selected_model
-    )
-    selected_image_capable = (
-        "image" in selected_modalities and selected_evidence in EVIDENCED_MODALITY_SOURCES
-    )
+    # One decision for the selected model (modality_evidence.image_input_capability):
+    # known modalities decide, unknown is permitted under a typed reason.
+    selected_image_capable, _image_reason = image_input_capability(app, selected_model)
     active_image_capable = _model_ref_matches_active(
         selected_model, app
     ) and _active_lm_supports_vision(app)

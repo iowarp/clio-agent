@@ -188,7 +188,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # load_config_from_env. A dataclass field's own validation/env-plumbing has
     # no owner module to move to; this IS its owner. Ratchet down as config.py's
     # modular decomposition continues.
-    "src/clio_agent/config.py": 857,
+    # P4a (capability records) nets config.py -2 on top of S1b: ratcheted to 855.
+    "src/clio_agent/config.py": 855,
     # #1326: adapters.py was 780 lines (under the 800 cap). +56 for: a new
     # _ContextOverflowError typed exception, a _check_context_overflow pre-flight
     # helper (mirrors the guided path's _bound_guided_output_kwargs shape), pre-

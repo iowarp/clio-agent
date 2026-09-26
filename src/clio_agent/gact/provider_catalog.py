@@ -16,9 +16,24 @@ from typing import Any
 
 from clio_agent.gact.types import LMProviderPreset
 from clio_agent.providers import model_discovery
+from clio_agent.providers.capabilities import invalidation
+from clio_agent.providers.capabilities.accessor import get_effective_capabilities
+from clio_agent.providers.capabilities.records import (
+    DeploymentCapabilities,
+    Fact,
+    ModelCapabilities,
+    modalities_from_capabilities,
+    unknown,
+)
 from clio_agent.providers.catalog import get_provider
 from clio_agent.providers.handshake import HandshakeContext, HandshakeReport, run_handshake
-from clio_agent.providers.handshake.model import AuthState, ConnectivityState, ModelProfile
+from clio_agent.providers.handshake.model import (
+    AuthState,
+    ConnectivityState,
+    DiscoveredModel,
+    DiscoveredModelFacts,
+)
+from clio_agent.providers.identity import deployment_key
 from clio_agent.providers.reasoning_levels import model_reasoning
 
 logger = logging.getLogger(__name__)
@@ -85,6 +100,14 @@ async def _ensure_codex_live_catalog(preset: LMProviderPreset) -> str:
 #: snapshot and is never evidence.
 EVIDENCED_CATALOG_SOURCES: frozenset[str] = frozenset({"live", "overlay"})
 
+#: ``availability`` of a row whose model is KNOWN not to be a chat model (an
+#: embedding, rerank, segmentation, ... model). Reachability is not the question
+#: for such a row -- it cannot serve a chat turn at all -- so it is neither
+#: ``available`` nor ``candidate`` and a chat picker must not offer it. The row
+#: still lists the model, with its ``model_type``, so a client can show it as
+#: what it is.
+NOT_CHAT_AVAILABILITY = "not_chat"
+
 #: Provider kinds whose catalog is the discovery overlay itself (no HTTP probe).
 #: Every other kind is probed live and keeps a last-good list for empty probes.
 _CLI_CATALOG_KINDS: frozenset[str] = frozenset({"codex", "claude_code"})
@@ -119,29 +142,21 @@ def _resolve_health(*, ok: bool, models: Any, error: str, error_code: str) -> tu
     return "ready", ""
 
 
-def _modalities(profile: ModelProfile) -> list[str]:
-    """Normalize only modalities reported by the live provider handshake."""
-
-    normalized: set[str] = {"text"}
-    for capability in profile.capabilities:
-        value = capability.strip().lower().replace("-", "_")
-        if value in {"vision", "image", "images", "image_input"}:
-            normalized.add("image")
-        elif value in {"pdf", "document", "documents", "pdf_input"}:
-            normalized.add("pdf")
-        elif value in {"audio", "audio_input"}:
-            normalized.add("audio")
-        elif value in {"video", "video_input"}:
-            normalized.add("video")
-    return sorted(normalized)
-
-
 def model_catalog_row(
     preset: LMProviderPreset,
     report: HandshakeReport,
-    profile: ModelProfile,
+    profile: DiscoveredModel,
 ) -> dict[str, Any]:
-    """Return one normalized model row with explicit discovery evidence."""
+    """Return one normalized model row with explicit discovery evidence.
+
+    Every capability field (``modalities``, ``native_tool_calling``,
+    ``context_window``, ``output_limit``, the ``reasoning`` block) is read from
+    the effective capabilities (model-capabilities brief 5.5) for
+    ``(provider_id, api_base, model_id)`` -- never a flat per-provider profile
+    field. ``capabilities_provenance`` adds the source/observed_at/decided_by
+    each effective value carries, for the P7 UI (show provenance, don't tell
+    it) -- the wire contract's existing keys are otherwise unchanged.
+    """
 
     evidenced = report.models_source in EVIDENCED_CATALOG_SOURCES and report.ok
     capability_evidence = profile.raw.get("capability_evidence") or {}
@@ -149,6 +164,27 @@ def model_catalog_row(
         isinstance(capability_evidence, dict)
         and capability_evidence.get("reason") == "modality_documented"
     )
+    effective = get_effective_capabilities(report.provider_id, report.api_base, profile.id)
+    deployment = invalidation.get_deployment_capabilities(
+        deployment_key(report.provider_id, report.api_base, profile.id)
+    )
+    loaded_context_window = (
+        deployment.context_served.value if deployment and deployment.context_served.known else None
+    )
+    # Three-valued: a row whose discovery never established its modalities says
+    # so (``modalities: []`` + ``modality_evidenced: false`` + the provenance
+    # reason) instead of presenting "text" -- a gateway /models listing that
+    # carries no modality fields is no proof of a text-only model.
+    modality_evidenced = (evidenced or modality_evidenced) and effective.input_modalities.known
+    modalities = sorted(effective.input_modalities.value or ()) if modality_evidenced else []
+    model_type = effective.model_type.value if effective.model_type.known else None
+    # An unknown type stays selectable (the model was offered by a chat
+    # endpoint); only a model KNOWN to be another type is withheld from chat.
+    chat_selectable = model_type in (None, "chat")
+    if not chat_selectable:
+        availability = NOT_CHAT_AVAILABILITY
+    else:
+        availability = "available" if evidenced else "candidate"
     return {
         "provider_id": preset.id,
         "provider_kind": preset.provider,
@@ -160,15 +196,24 @@ def model_catalog_row(
         # the same resolution the provider itself uses (claude_code_effort.py),
         # never a hand-typed table. Empty for providers with no alias concept.
         "aliases": [str(a) for a in profile.raw.get("cli_values") or [] if str(a).strip()],
-        "modalities": _modalities(profile) if evidenced or modality_evidenced else ["text"],
+        "modalities": modalities,
+        # chat / embedding / rerank / audio_transcription / audio_speech /
+        # image_generation / segmentation, or null when no source states it.
+        "model_type": model_type,
+        "chat_selectable": chat_selectable,
         # The levels a person can actually choose for THIS model, derived from
         # provider truth and restricted to what resolve_thinking maps.
-        "reasoning": model_reasoning(preset.provider, profile),
-        "native_tool_calling": profile.native_tool_calling,
-        "context_window": profile.context_window,
-        "loaded_context_window": profile.loaded_context_window,
-        "output_limit": profile.output_limit,
-        "availability": "available" if evidenced else "candidate",
+        "reasoning": model_reasoning(
+            preset.provider,
+            profile,
+            is_reasoning=effective.thinking.known,
+            reasoning_param=effective.thinking.control or "",
+        ),
+        "native_tool_calling": bool(effective.tools.value),
+        "context_window": effective.context.value,
+        "loaded_context_window": loaded_context_window,
+        "output_limit": effective.output_max.value,
+        "availability": availability,
         "evidence": {
             "source": report.models_source,
             # WHEN the evidence was produced -- a persisted discovery run's own
@@ -180,13 +225,32 @@ def model_catalog_row(
             or report.generated_at,
             "read_at": report.generated_at,
             "evidenced": evidenced,
-            "modality_evidenced": evidenced or modality_evidenced,
+            "modality_evidenced": modality_evidenced,
             # ``live`` now means what it says: this run probed the provider.
             "live": report.models_source == "live" and report.ok,
-            "context_source": profile.context_source,
+            "context_source": effective.context.decided_by,
             "capability_evidence": capability_evidence,
         },
+        "capabilities_provenance": {
+            "context_window": _provenance_row(effective.context),
+            "output_limit": _provenance_row(effective.output_max),
+            "native_tool_calling": _provenance_row(effective.tools),
+            "modalities": _provenance_row(effective.input_modalities),
+            "model_type": _provenance_row(effective.model_type),
+            "reasoning": _provenance_row(effective.thinking),
+        },
         "failure": report.error or "",
+    }
+
+
+def _provenance_row(decision: Any) -> dict[str, Any]:
+    """One effective value's provenance, for the P7 UI (source/observed_at/decided_by)."""
+
+    return {
+        "source": getattr(decision, "source", "") or "",
+        "observed_at": getattr(decision, "observed_at", "") or "",
+        "decided_by": getattr(decision, "decided_by", "unknown"),
+        "reason": getattr(decision, "reason", ""),
     }
 
 
@@ -227,12 +291,14 @@ async def _with_last_good(
         # A refused credential is fresher, definitive evidence: the last-good
         # list must not come back dated as "maybe still available" beside it.
         return report, {}
-    last_good = await asyncio.to_thread(model_discovery.last_good_catalog, preset.id)
+    last_good = await asyncio.to_thread(
+        model_discovery.last_good_catalog, preset.id, api_base=preset.api_base
+    )
     if last_good is None:
         return report, {}
     served = replace(
         report,
-        models=last_good.profiles,
+        models=last_good.models,
         models_source=model_discovery.LAST_GOOD_CATALOG_SOURCE,
         evidence_generated_at=last_good.generated_at,
     )
@@ -244,6 +310,12 @@ async def _with_last_good(
 #: (``providers.codex.credentials``/``codex_catalog.py``) and must never be
 #: overwritten by the SDK's live probe result.
 _CODEX_SDK_OVERLAY_KEY = "codex_sdk"
+
+#: The SDK transport's own endpoint identity (the ``codex://sdk`` pseudo-scheme
+#: the runtime status probe already names). The direct transport is the preset's
+#: ``codex://direct``; keying the SDK's capability records apart keeps one
+#: transport's facts from overwriting the other's for a shared model id.
+_CODEX_SDK_API_BASE = "codex://sdk"
 
 #: A reason prefix meaning "we simply have not asked yet" -- the least
 #: actionable of all possible unavailable reasons, so a transport that HAS
@@ -313,17 +385,14 @@ async def _codex_sdk_transport_row(preset: LMProviderPreset, *, refresh: bool) -
             (f"{_UNCHECKED_REASON_PREFIX}: run an explicit provider check to ask the Codex SDK"),
         )
     profiles = tuple(
-        ModelProfile(
-            id=str(row["id"]),
-            capabilities=tuple(row.get("capabilities") or ()),
-            raw=row,
-        )
+        _record_sdk_model(preset.id, row, observed_at=evidence_generated_at or now)
         for row in discovered
         if isinstance(row, dict) and row.get("id")
     )
     sdk_report = HandshakeReport(
         provider_id=preset.id,
         provider_kind=preset.provider,
+        api_base=_CODEX_SDK_API_BASE,
         connectivity=ConnectivityState.OK if health == "ready" else ConnectivityState.UNREACHABLE,
         auth=AuthState.OK if health == "ready" else AuthState.MISSING,
         error=failure or None,
@@ -350,11 +419,50 @@ async def _codex_sdk_transport_row(preset: LMProviderPreset, *, refresh: bool) -
     }
 
 
+def _record_sdk_model(provider_id: str, row: dict[str, Any], *, observed_at: str) -> DiscoveredModel:
+    """Record one SDK-discovered model's facts and return its bare identity.
+
+    The SDK transport is its own endpoint (:data:`_CODEX_SDK_API_BASE`), so its
+    records never overwrite the direct transport's for the same model id. The
+    row's ``capabilities`` list is the SDK's own report of the model's input
+    modalities; with no list, modalities stay unknown.
+    """
+    model_id = str(row["id"])
+    capabilities = row.get("capabilities")
+    detail = "Codex SDK model/list capabilities"
+    key_fact = Fact(value=model_id, source="server_report", observed_at=observed_at, detail=detail)
+    facts = DiscoveredModelFacts(
+        discovered=DiscoveredModel(id=model_id, evidence_generated_at=observed_at, raw=dict(row)),
+        model=ModelCapabilities(
+            model_key=model_id,
+            input_modalities=(
+                Fact(
+                    value=modalities_from_capabilities(capabilities),
+                    source="server_report",
+                    observed_at=observed_at,
+                    detail=detail,
+                )
+                if isinstance(capabilities, list) and capabilities
+                else unknown()
+            ),
+        ),
+        deployment=DeploymentCapabilities(
+            provider_id=provider_id,
+            api_base=_CODEX_SDK_API_BASE,
+            model_id=model_id,
+            model_key=key_fact,
+        ),
+    )
+    invalidation.record_model_capabilities(facts.model)
+    invalidation.record_deployment_capabilities(facts.deployment)
+    return facts.discovered
+
+
 def _codex_direct_transport_row(
     preset: LMProviderPreset,
     *,
     report: HandshakeReport,
-    models: tuple[ModelProfile, ...],
+    models: tuple[DiscoveredModel, ...],
     health: str,
     failure: str,
 ) -> dict[str, Any]:
@@ -495,6 +603,7 @@ async def discover_provider(preset: LMProviderPreset, *, refresh: bool = False) 
 __all__ = [
     "EVIDENCED_CATALOG_SOURCES",
     "NEEDS_INSTALL_ERROR_CODES",
+    "NOT_CHAT_AVAILABILITY",
     "discover_provider",
     "model_catalog_row",
 ]

@@ -367,59 +367,57 @@ class LMProviderConfig:
     def apply_handshake(self, report: Any, *, user_set_max_tokens: bool = False) -> None:
         """Fold a provider handshake report into this config (call at bind time).
 
-        Sets the discovered context window and reasoning/tool capabilities.
-        Output caps remain operator choices: zero omits the cap, and positive
-        values are preserved. ``user_set_max_tokens`` is retained for callers
-        using the earlier signature. No-op when the report has no usable profile.
+        Sets the discovered context window and reasoning/tool capabilities from
+        the effective capabilities (model-capabilities brief 5.5), not a flat
+        per-provider profile. Output caps remain operator choices: zero omits
+        the cap, and positive values are preserved. ``user_set_max_tokens`` is
+        retained for callers using the earlier signature. No-op with no usable
+        discovered model.
 
-        Context window precedence (highest to lowest):
-          1. ``lm.context_window`` / ``CLIO_LM_CONTEXT_WINDOW`` explicit override (>0)
-          2. Handshake-discovered effective window (``loaded_context_window`` or
-             ``context_window`` — faithfully reflects what vLLM is serving).
-        When the served window is below the model's native maximum (from the offline
-        catalog), a structured ``context_window_below_native`` warning is logged at
-        bind time so the mismatch is always visible in the trace.
+        Context precedence: an explicit ``lm.context_window`` /
+        ``CLIO_LM_CONTEXT_WINDOW`` override (>0), else the effective context
+        (the smaller of the model's own ceiling and what this deployment is
+        actually serving) — logging a ``context_window_below_native`` warning
+        when the served window is below the model's native maximum.
         """
-        profile = None
-        models = getattr(report, "models", None) or ()
-        if models:
-            if hasattr(report, "model"):
-                profile = report.model(self.model)
-            if profile is None:
-                # tolerate vendor-prefix differences (e.g. "gpt-oss-120b" vs
-                # "openai/gpt-oss-120b") by matching on the basename.
-                want = self.model.rsplit("/", 1)[-1].lower()
-                profile = next((m for m in models if m.id.rsplit("/", 1)[-1].lower() == want), None)
-            if profile is None and len(models) == 1:
-                profile = models[0]
-        if profile is None:
+        discovered = report.match_model(self.model) if hasattr(report, "match_model") else None
+        if discovered is None:
             return
-        self.context_window = profile.context_window
-        self.is_reasoning = bool(profile.is_reasoning)
-        self.reasoning_param = profile.reasoning_param
-        self.native_tool_calling = bool(profile.native_tool_calling)
-        self.tool_call_parser = profile.tool_call_parser
-        self.native_context_window = getattr(profile, "native_context_window", None)
-        window = profile.effective_context_window
 
-        # Config override: ``lm.context_window`` / ``CLIO_LM_CONTEXT_WINDOW`` >0
-        # lets an operator assert a larger (or different) window than vLLM serves.
-        # The default is 0 (auto — use the discovered window). This is the only
-        # place the override is resolved; it does NOT suppress the served<native
-        # warning, which is about provider configuration, not operator intent.
         from clio_agent import conf  # noqa: PLC0415 - keep config.py a leaf; lazy
+        from clio_agent.providers.capabilities import invalidation  # noqa: PLC0415
+        from clio_agent.providers.capabilities.accessor import (
+            get_effective_capabilities,  # noqa: PLC0415
+        )
+        from clio_agent.providers.identity import deployment_key  # noqa: PLC0415
 
+        provider_id, api_base = getattr(report, "provider_id", ""), getattr(report, "api_base", "")
+        effective = get_effective_capabilities(provider_id, api_base, discovered.id)
+        self.is_reasoning = effective.thinking.known
+        self.reasoning_param = effective.thinking.control
+        self.native_tool_calling = bool(effective.tools.value)
+        self.tool_call_parser = None  # dialect-specific parser naming folds into Part 7
+
+        dep = invalidation.get_deployment_capabilities(
+            deployment_key(provider_id, api_base, discovered.id)
+        )
+        model_key = dep.model_key.value if dep and dep.model_key.known else None
+        model = invalidation.get_model_capabilities(model_key) if model_key else None
+        self.native_context_window = (
+            model.context_max.value if model and model.context_max.known else None
+        )
+        window = self.context_window = effective.context.value
+
+        # Config override: ``lm.context_window``/``CLIO_LM_CONTEXT_WINDOW`` >0 lets an
+        # operator assert a different window than the deployment serves (auto by default).
+        # Does NOT suppress the served<native warning below (a config fact, not intent).
         override = conf.resolve(
             "lm.context_window", env="CLIO_LM_CONTEXT_WINDOW", default=0, cast=conf.as_int
         )
-        if override and override > 0:
-            self.chosen_context = override
-        else:
-            self.chosen_context = window
+        self.chosen_context = override if override and override > 0 else window
 
-        # Part 3: warn when the served window is below the model's native max.
-        # This fires even when the operator override is in effect — the mismatch
-        # is a provider configuration fact, not an operator intent.
+        # Warn when the served window is below the model's native max, even
+        # with the override in effect — the mismatch is a config fact, not intent.
         if (
             self.native_context_window
             and window is not None

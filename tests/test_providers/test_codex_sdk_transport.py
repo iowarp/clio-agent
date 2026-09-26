@@ -246,8 +246,8 @@ async def test_catalog_lists_both_transports_with_their_own_models(
     from clio_agent.providers.handshake.model import (
         AuthState,
         ConnectivityState,
+        DiscoveredModel,
         HandshakeReport,
-        ModelProfile,
     )
 
     preset = _preset()
@@ -259,7 +259,7 @@ async def test_catalog_lists_both_transports_with_their_own_models(
             connectivity=ConnectivityState.OK,
             auth=AuthState.NOT_REQUIRED,
             models_source="overlay",
-            models=(ModelProfile(id="gpt-5.5"),),
+            models=(DiscoveredModel(id="gpt-5.5"),),
         )
 
     async def _refresh(**_kw: object) -> list[dict[str, object]]:

@@ -114,12 +114,11 @@ async def test_openai_models_data_list_yields_profiles_with_no_context() -> None
     assert [r["id"] for r in raw_models] == ["gpt-4o", "gpt-4o-mini"]
 
     profiles = [await handshake.discover_model_config(client, ctx, raw) for raw in raw_models]
-    assert [p.id for p in profiles] == ["gpt-4o", "gpt-4o-mini"]
-    assert all(p.context_window is None for p in profiles)
-    # Base enrich is a no-op when external sources are disabled -> still None.
+    assert [p.discovered.id for p in profiles] == ["gpt-4o", "gpt-4o-mini"]
+    assert all(not p.model.context_max.known for p in profiles)
+    # Base enrich is a no-op when external sources are disabled -> still unknown.
     enriched = [await handshake.enrich_capabilities(p, ctx) for p in profiles]
-    assert all(p.context_window is None for p in enriched)
-    assert all(p.context_source == "live" for p in enriched)
+    assert all(not p.model.context_max.known for p in enriched)
 
 
 @pytest.mark.asyncio
@@ -138,7 +137,11 @@ async def test_full_handshake_no_external_sources() -> None:
     assert report.ok
     assert report.connectivity is ConnectivityState.OK
     assert [m.id for m in report.models] == ["gpt-4o"]
-    assert all(m.context_window is None for m in report.models)
+    from clio_agent.providers.capabilities.accessor import get_effective_capabilities
+
+    for m in report.models:
+        effective = get_effective_capabilities(report.provider_id, report.api_base, m.id)
+        assert not effective.context.known
 
 
 @pytest.mark.asyncio
@@ -345,8 +348,8 @@ async def test_bare_list_payload_is_parsed() -> None:
     assert embed_count > 0  # fixture really does contain embedding rows
     assert len(raw_models) == len(payload) - embed_count
     assert all(not handshake._is_embedding(r) for r in raw_models)
-    profile = await handshake.discover_model_config(client, ctx, raw_models[0])
-    assert profile.context_window is None
+    facts = await handshake.discover_model_config(client, ctx, raw_models[0])
+    assert not facts.model.context_max.known
 
 
 # ----------------------------------------------------------------------------- NoOp
@@ -376,8 +379,8 @@ async def test_noop_makes_zero_network_calls() -> None:
     models = await handshake.discover_models(client, ctx)
     assert {m["id"] for m in models} == {"fable", "sonnet", "opus", "haiku"}
 
-    profile = await handshake.discover_model_config(client, ctx, {"id": "x"})
-    assert profile.id == "x"
+    facts = await handshake.discover_model_config(client, ctx, {"id": "x"})
+    assert facts.discovered.id == "x"
 
     assert client.calls == []  # the contract: zero network traffic
 
@@ -409,11 +412,11 @@ async def test_noop_preserves_documented_claude_image_input() -> None:
 
     models = await handshake.discover_models(FakeAsyncClient(), ctx)
     sonnet = next(model for model in models if model["id"] == "sonnet")
-    profile = await handshake.discover_model_config(FakeAsyncClient(), ctx, sonnet)
+    facts = await handshake.discover_model_config(FakeAsyncClient(), ctx, sonnet)
 
-    assert sorted(profile.capabilities) == ["image", "text"]
-    assert profile.raw["capability_evidence"]["source"] == "provider_documentation"
-    assert profile.raw["capability_evidence"]["reason"] == "modality_documented"
+    assert facts.model.input_modalities.value == frozenset({"image", "text"})
+    assert facts.discovered.raw["capability_evidence"]["source"] == "provider_documentation"
+    assert facts.discovered.raw["capability_evidence"]["reason"] == "modality_documented"
 
 
 @pytest.mark.asyncio

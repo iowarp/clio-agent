@@ -30,7 +30,7 @@ async def discover_http(preset: Provider, *, api_key: str) -> ProviderDiscoveryR
         allow_external_sources=True,
     )
     report = await run_handshake(ctx, force=True)
-    wire = report.to_models_wire()
+    wire = report.models_wire()
     models = wire.get("models") or []
     if not models:
         reason = report.error or (

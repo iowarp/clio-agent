@@ -22,41 +22,80 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from clio_agent.gact import context as gact_context
 from clio_agent.gact.agents.declared_native_tools import (
     declared_native_capabilities,
     resolve_declared_native_tools,
 )
 from clio_agent.gact.catalog import _builtin_main_agent
+from clio_agent.gact.modality_evidence import live_model_modalities
 from clio_agent.gact.providers.config import _pdf_capability, _vision_capability
-from clio_agent.gact.resource_delivery import live_model_modalities
 from clio_agent.gact.types import ModelRef
+from clio_agent.providers.capabilities import invalidation
+from clio_agent.providers.capabilities.records import (
+    DeploymentCapabilities,
+    Fact,
+    ModelCapabilities,
+)
 from clio_agent.providers.handshake.model import (
     AuthState,
     ConnectivityState,
+    DiscoveredModel,
     HandshakeReport,
-    ModelProfile,
     resolve_model_id,
 )
 
 _CANONICAL = "claude-sonnet-5"
 _ALIAS = "sonnet"
 _UNRELATED = "sonnet-x"
+_NOW = "2026-09-24T00:00:00+00:00"
+
+
+@pytest.fixture(autouse=True)
+def _clear_capability_store():
+    invalidation.clear_all()
+    yield
+    invalidation.clear_all()
 
 
 def _handshake_report() -> HandshakeReport:
+    """A report + the capability-store facts ``live_model_modalities`` needs.
+
+    ``HandshakeReport`` itself only carries bare identity (:class:`DiscoveredModel`);
+    the modalities a caller resolves through it now come from the accessor, so
+    this seeds the SAME store a real handshake would have written to.
+    """
+    invalidation.record_model_capabilities(
+        ModelCapabilities(
+            model_key=_CANONICAL,
+            input_modalities=Fact(
+                value=frozenset({"image", "pdf", "text"}), source="server_report", observed_at=_NOW
+            ),
+        )
+    )
+    invalidation.record_deployment_capabilities(
+        DeploymentCapabilities(
+            provider_id="claude_code",
+            api_base="",
+            model_id=_CANONICAL,
+            model_key=Fact(value=_CANONICAL, source="server_report", observed_at=_NOW),
+        )
+    )
     return HandshakeReport(
         provider_id="claude_code",
         provider_kind="claude_code",
         connectivity=ConnectivityState.OK,
         auth=AuthState.OK,
+        api_base="",
         models_source="overlay",
         generated_at="2026-09-24T00:00:00+00:00",
         models=(
-            ModelProfile(
+            DiscoveredModel(
                 id=_CANONICAL,
-                capabilities=("image", "pdf", "text"),
-                raw={"cli_values": [_ALIAS]},
+                aliases=(_ALIAS,),
+                raw={"cli_values": [_ALIAS], "capabilities": ["image", "pdf", "text"]},
             ),
         ),
     )
@@ -144,30 +183,24 @@ def test_handshake_report_model_does_not_match_an_unrelated_id() -> None:
 
 def test_live_model_modalities_resolves_the_alias_against_the_catalog() -> None:
     app = _app(catalog=_catalog_payload())
-    modalities, evidence, _generated_at = live_model_modalities(
-        app, ModelRef(provider_id="claude_code", model_id=_ALIAS)
-    )
-    assert "image" in modalities
-    assert "pdf" in modalities
-    assert evidence == "discovery_overlay"
+    found = live_model_modalities(app, ModelRef(provider_id="claude_code", model_id=_ALIAS))
+    assert "image" in (found.modalities or ())
+    assert "pdf" in (found.modalities or ())
+    assert found.evidence == "discovery_overlay"
 
 
 def test_live_model_modalities_resolves_the_alias_against_a_handshake_report() -> None:
     app = _app(report=_handshake_report())
-    modalities, evidence, _generated_at = live_model_modalities(
-        app, ModelRef(provider_id="claude_code", model_id=_ALIAS)
-    )
-    assert "image" in modalities
-    assert evidence == "discovery_overlay"
+    found = live_model_modalities(app, ModelRef(provider_id="claude_code", model_id=_ALIAS))
+    assert "image" in (found.modalities or ())
+    assert found.evidence == "discovery_overlay"
 
 
 def test_live_model_modalities_does_not_resolve_an_unrelated_id() -> None:
     app = _app(catalog=_catalog_payload())
-    modalities, evidence, _generated_at = live_model_modalities(
-        app, ModelRef(provider_id="claude_code", model_id=_UNRELATED)
-    )
-    assert modalities == {"text"}
-    assert evidence == "unavailable"
+    found = live_model_modalities(app, ModelRef(provider_id="claude_code", model_id=_UNRELATED))
+    assert found.modalities is None
+    assert found.evidence == "unavailable"
 
 
 # ---------------------------------------------------------------------------
@@ -185,16 +218,17 @@ def test_pdf_capability_is_true_for_an_alias_bound_model() -> None:
     assert _pdf_capability(app, "claude_code", _ALIAS) == (True, "live_modality_evidence")
 
 
-def test_vision_and_pdf_capability_refuse_an_unrelated_id() -> None:
+def test_vision_and_pdf_capability_treat_an_unrelated_id_as_unknown() -> None:
+    """An id the catalog does not resolve borrows nothing: its capability is UNKNOWN.
+
+    Unknown image input is permitted under ``modality_unknown`` (the upstream
+    endpoint decides); unknown PDF input withholds native PDF. Neither answer
+    claims the alias's evidence.
+    """
+
     app = _app(catalog=_catalog_payload())
-    assert _vision_capability(app, "claude_code", _UNRELATED) == (
-        False,
-        "modality_evidence_unavailable",
-    )
-    assert _pdf_capability(app, "claude_code", _UNRELATED) == (
-        False,
-        "modality_evidence_unavailable",
-    )
+    assert _vision_capability(app, "claude_code", _UNRELATED) == (True, "modality_unknown")
+    assert _pdf_capability(app, "claude_code", _UNRELATED) == (False, "modality_unknown")
 
 
 # ---------------------------------------------------------------------------
@@ -223,9 +257,7 @@ def test_default_agent_resolves_view_image_and_view_pdf_for_an_alias_bound_model
         agent = _builtin_main_agent()
         assert "view_image" in agent.tools
         assert "view_pdf" in agent.tools
-        requested, available, _gateway = resolve_declared_native_tools(
-            agent, {}, **capabilities
-        )
+        requested, available, _gateway = resolve_declared_native_tools(agent, {}, **capabilities)
         assert "view_image" in requested
         assert "view_image" in available
         assert "view_pdf" in requested

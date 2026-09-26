@@ -36,8 +36,8 @@ from clio_agent.providers.handshake.mcp import MCPServerReport, handshake_mcp_se
 from clio_agent.providers.handshake.model import (
     AuthState,
     ConnectivityState,
+    DiscoveredModel,
     HandshakeReport,
-    ModelProfile,
 )
 from clio_agent.providers.handshake.noop import NoOpHandshake
 from clio_agent.providers.handshake.ollama import OllamaHandshake
@@ -50,7 +50,7 @@ __all__ = [
     "ConnectivityResult",
     "DiscoveryAuthRejected",
     "HandshakeReport",
-    "ModelProfile",
+    "DiscoveredModel",
     "ConnectivityState",
     "AuthState",
     "MCPServerReport",
@@ -61,7 +61,6 @@ __all__ = [
     "handshake_mcp_servers",
     "resolve_context",
     "get_handshake_for",
-    "reports_input_modalities",
     "run_handshake",
     "run_handshake_sync",
 ]
@@ -89,20 +88,6 @@ def get_handshake_for(provider_kind: str, provider: Any = None) -> ProviderHands
     """Return the handshake for a ``provider_kind`` (defaults to OpenAI-compatible)."""
     cls = _BY_KIND.get(provider_kind, OpenAICompatHandshake)
     return cls(provider)
-
-
-def reports_input_modalities(provider_kind: str) -> bool:
-    """Whether ANY evidence system can report this kind's per-model input modalities.
-
-    Declared by the handshake class rather than inferred from a provider name.
-    ``False`` means the question cannot be asked here at all — an
-    OpenAI-compatible ``/models`` listing returns ids and nothing else — which is
-    the only situation where a catalog-level capability default may honestly
-    stand in for evidence. ``True`` with no modality recorded means "not
-    evidenced yet", a different and actionable answer.
-    """
-
-    return bool(_BY_KIND.get(provider_kind, OpenAICompatHandshake).reports_input_modalities)
 
 
 async def run_handshake(

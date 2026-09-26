@@ -24,8 +24,8 @@ from clio_agent.providers import resolver as resolver_mod
 from clio_agent.providers.handshake.model import (
     AuthState,
     ConnectivityState,
+    DiscoveredModel,
     HandshakeReport,
-    ModelProfile,
 )
 
 
@@ -54,7 +54,8 @@ def _isolate(monkeypatch: pytest.MonkeyPatch) -> None:
             provider_kind=ctx.provider_kind,
             connectivity=ConnectivityState.OK,
             auth=AuthState.OK,
-            models=(ModelProfile(id=ctx.target_model or "m"),),
+            api_base=ctx.api_base,
+            models=(DiscoveredModel(id=ctx.target_model or "m"),),
         )
 
     monkeypatch.setattr(resolver_mod, "run_handshake_sync", _handshake)

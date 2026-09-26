@@ -29,7 +29,7 @@ from clio_agent.providers.handshake.base import (
     ProviderHandshake,
     describe_exception,
 )
-from clio_agent.providers.handshake.model import AuthState, ConnectivityState, ModelProfile
+from clio_agent.providers.handshake.model import AuthState, ConnectivityState, DiscoveredModel
 
 
 def _preset(provider: str = "argonne_metis", provider_kind: str = "argonne") -> LMProviderPreset:
@@ -80,7 +80,7 @@ def test_resolve_health_zero_models_claimed_success_is_never_ready() -> None:
 
 def test_resolve_health_ready_requires_both_ok_and_models() -> None:
     health, failure = _resolve_health(
-        ok=True, models=(ModelProfile(id="m"),), error="", error_code=""
+        ok=True, models=(DiscoveredModel(id="m"),), error="", error_code=""
     )
     assert (health, failure) == ("ready", "")
 
@@ -89,7 +89,7 @@ def test_resolve_health_recorded_failure_is_never_ready_even_with_models() -> No
     # A cached/last-good list can be non-empty on a report that still carries
     # a live failure; the failure must win.
     health, failure = _resolve_health(
-        ok=True, models=(ModelProfile(id="m"),), error="upstream 500", error_code=""
+        ok=True, models=(DiscoveredModel(id="m"),), error="upstream 500", error_code=""
     )
     assert health == "unavailable"
     assert failure == "upstream 500"

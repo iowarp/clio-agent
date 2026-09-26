@@ -6,6 +6,8 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from clio_agent.gact.provider_catalog import discover_provider, model_catalog_row
 from clio_agent.gact.resource_custody import ResourceRecord
 from clio_agent.gact.resource_delivery import (
@@ -14,12 +16,91 @@ from clio_agent.gact.resource_delivery import (
     plan_resource_delivery,
 )
 from clio_agent.gact.types import LMProviderPreset, ModelRef
+from clio_agent.providers.capabilities import invalidation
+from clio_agent.providers.capabilities.records import (
+    DeploymentCapabilities,
+    EndpointCapabilities,
+    Fact,
+    ModelCapabilities,
+    ThinkingSpec,
+    modalities_from_capabilities,
+    unknown,
+)
 from clio_agent.providers.handshake.model import (
     AuthState,
     ConnectivityState,
+    DiscoveredModel,
     HandshakeReport,
-    ModelProfile,
 )
+
+_NOW = "2026-01-01T00:00:00+00:00"
+
+
+@pytest.fixture(autouse=True)
+def _clear_capability_store():
+    invalidation.clear_all()
+    yield
+    invalidation.clear_all()
+
+
+def _seed(
+    provider_id: str,
+    api_base: str,
+    model_id: str,
+    *,
+    capabilities: tuple[str, ...] = (),
+    context_window: int | None = None,
+    output_limit: int | None = None,
+    is_reasoning: bool = False,
+    reasoning_control: str = "",
+    native_tool_calling: bool = False,
+) -> None:
+    """Seed the shared capability store the way a real handshake would."""
+    model_key_fact = Fact(value=model_id, source="server_report", observed_at=_NOW)
+    invalidation.record_model_capabilities(
+        ModelCapabilities(
+            model_key=model_id,
+            context_max=Fact(value=context_window, source="server_report", observed_at=_NOW)
+            if context_window is not None
+            else unknown(),
+            output_max=Fact(value=output_limit, source="server_report", observed_at=_NOW)
+            if output_limit is not None
+            else unknown(),
+            input_modalities=Fact(
+                value=modalities_from_capabilities(capabilities),
+                source="server_report",
+                observed_at=_NOW,
+            )
+            if capabilities
+            else unknown(),
+            tools=Fact(value=native_tool_calling, source="server_report", observed_at=_NOW)
+            if native_tool_calling
+            else unknown(),
+            thinking=Fact(
+                value=ThinkingSpec(mechanism="effort_levels"),
+                source="server_report",
+                observed_at=_NOW,
+            )
+            if is_reasoning
+            else unknown(),
+        )
+    )
+    invalidation.record_deployment_capabilities(
+        DeploymentCapabilities(
+            provider_id=provider_id, api_base=api_base, model_id=model_id, model_key=model_key_fact
+        )
+    )
+    if reasoning_control:
+        invalidation.record_endpoint_capabilities(
+            EndpointCapabilities(
+                provider_id=provider_id,
+                api_base=api_base,
+                dialect="openai",
+                thinking_controls=Fact(
+                    value=frozenset({reasoning_control}), source="dialect", observed_at=_NOW
+                ),
+            )
+        )
 
 
 def _preset() -> LMProviderPreset:
@@ -33,24 +114,26 @@ def _preset() -> LMProviderPreset:
 
 
 def _report(*, source: str = "live") -> HandshakeReport:
+    _seed(
+        "local-lab",
+        "http://127.0.0.1:9000/v1",
+        "vision-local",
+        capabilities=("vision", "pdf_input"),
+        context_window=131_072,
+        output_limit=8_192,
+        is_reasoning=True,
+        reasoning_control="reasoning_effort",
+        native_tool_calling=True,
+    )
     return HandshakeReport(
         provider_id="local-lab",
         provider_kind="openai",
         connectivity=ConnectivityState.OK,
         auth=AuthState.NOT_REQUIRED,
+        api_base="http://127.0.0.1:9000/v1",
         models_source=source,
         generated_at="2026-08-31T12:00:00+00:00",
-        models=(
-            ModelProfile(
-                id="vision-local",
-                capabilities=("vision", "pdf_input"),
-                context_window=131_072,
-                output_limit=8_192,
-                is_reasoning=True,
-                reasoning_param="reasoning_effort",
-                native_tool_calling=True,
-            ),
-        ),
+        models=(DiscoveredModel(id="vision-local"),),
     )
 
 
@@ -78,7 +161,8 @@ def test_catalog_uses_modalities_only_from_current_live_evidence() -> None:
     static_report = _report(source="static")
     static = model_catalog_row(_preset(), static_report, static_report.models[0])
     assert static["availability"] == "candidate"
-    assert static["modalities"] == ["text"]
+    assert static["modalities"] == []
+    assert static["evidence"]["modality_evidenced"] is False
     assert static["evidence"]["live"] is False
 
 
@@ -103,8 +187,9 @@ def test_catalog_row_carries_claude_code_cli_aliases() -> None:
         auth=AuthState.OK,
         models_source="overlay",
         generated_at="2026-09-24T00:00:00+00:00",
+        api_base="claude-code://sdk",
         models=(
-            ModelProfile(
+            DiscoveredModel(
                 id="claude-sonnet-5",
                 raw={"cli_values": ["sonnet"], "supported_effort_levels": ["low", "high"]},
             ),
@@ -126,14 +211,16 @@ def test_live_codex_catalog_advertises_its_typed_image_input() -> None:
         api_base="codex://direct",
         suggested_model="gpt-5.6-luna",
     )
+    _seed("codex", "codex://sdk", "gpt-5.6-luna", capabilities=("text", "image"))
     report = HandshakeReport(
         provider_id="codex",
         provider_kind="codex",
         connectivity=ConnectivityState.OK,
         auth=AuthState.NOT_REQUIRED,
+        api_base="codex://sdk",
         models_source="live",
         generated_at="2026-09-02T12:00:00+00:00",
-        models=(ModelProfile(id="gpt-5.6-luna", capabilities=("text", "image")),),
+        models=(DiscoveredModel(id="gpt-5.6-luna"),),
     )
 
     row = model_catalog_row(preset, report, report.models[0])
@@ -179,7 +266,7 @@ def test_normalized_codex_catalog_bootstraps_live_discovery(
             connectivity=ConnectivityState.OK,
             auth=AuthState.NOT_REQUIRED,
             models_source="live",
-            models=(ModelProfile(id="gpt-5.6-luna"),),
+            models=(DiscoveredModel(id="gpt-5.6-luna"),),
         )
 
     monkeypatch.setattr(
@@ -221,7 +308,7 @@ def test_normalized_codex_catalog_hides_static_candidates_after_discovery_failur
             connectivity=ConnectivityState.OK,
             auth=AuthState.NOT_REQUIRED,
             models_source="static",
-            models=(ModelProfile(id="gpt-5.5"),),
+            models=(DiscoveredModel(id="gpt-5.5"),),
         )
 
     monkeypatch.setattr("clio_agent.gact.provider_catalog.model_discovery.refresh_all", _refresh)
@@ -233,7 +320,7 @@ def test_normalized_codex_catalog_hides_static_candidates_after_discovery_failur
     assert provider["failure"] == "app-server unavailable"
 
 
-def test_planner_never_uses_unverified_native_or_changes_provider() -> None:
+def test_planner_delivers_images_by_evidence_and_never_changes_provider() -> None:
     app = SimpleNamespace(state=SimpleNamespace(lm_handshake_report=_report()))
     model = ModelRef(provider_id="local-lab", model_id="vision-local")
     native = plan_resource_delivery(
@@ -246,16 +333,35 @@ def test_planner_never_uses_unverified_native_or_changes_provider() -> None:
     assert native.provider_id == "local-lab"
     assert native.evidence_source == "live_handshake"
 
+    # No evidence for the model at all: its image input is UNKNOWN. Unknown is not
+    # refused -- the image rides natively under a reason code naming the unknown.
     app.state.lm_handshake_report = _report(source="static")
-    unknown = plan_resource_delivery(
+    unknown_plan = plan_resource_delivery(
         app,
         resource=_resource(media_type="image/png"),
         message_id="msg_unknown",
         model=model,
     )
-    assert unknown.representation == "metadata_only"
-    assert unknown.provider_id == "local-lab"
-    assert unknown.evidence_source == "unavailable"
+    assert unknown_plan.representation == "native"
+    assert unknown_plan.reason_code == "native_image_modality_unknown"
+    assert unknown_plan.provider_id == "local-lab"
+    assert unknown_plan.evidence_source == "unavailable"
+
+
+def test_planner_refuses_native_images_only_for_known_text_only_models() -> None:
+    """KNOWN modalities that omit image are the one case an image is not native."""
+
+    report = _report()
+    _seed("local-lab", "http://127.0.0.1:9000/v1", "vision-local", capabilities=("text",))
+    app = SimpleNamespace(state=SimpleNamespace(lm_handshake_report=report))
+    plan = plan_resource_delivery(
+        app,
+        resource=_resource(media_type="image/png"),
+        message_id="msg_text_only",
+        model=ModelRef(provider_id="local-lab", model_id="vision-local"),
+    )
+    assert plan.representation == "metadata_only"
+    assert plan.evidence_source == "live_handshake"
 
 
 def test_planner_uses_current_in_process_catalog_without_active_handshake() -> None:
@@ -337,18 +443,19 @@ def test_overlay_evidence_is_available_and_dates_itself_to_the_probe() -> None:
         api_base="codex://direct",
         suggested_model="gpt-5.6-luna",
     )
+    _seed("codex", "codex://sdk", "gpt-5.6-luna", capabilities=("text", "image"))
     report = HandshakeReport(
         provider_id="codex",
         provider_kind="codex",
         connectivity=ConnectivityState.OK,
         auth=AuthState.NOT_REQUIRED,
+        api_base="codex://sdk",
         models_source="overlay",
         generated_at="2026-09-03T09:00:00+00:00",
         evidence_generated_at="2026-01-02T03:04:05+00:00",
         models=(
-            ModelProfile(
+            DiscoveredModel(
                 id="gpt-5.6-luna",
-                capabilities=("text", "image"),
                 evidence_generated_at="2026-01-02T03:04:05+00:00",
             ),
         ),
@@ -378,15 +485,17 @@ def test_static_catalog_rows_are_never_evidence() -> None:
         provider_kind="codex",
         connectivity=ConnectivityState.OK,
         auth=AuthState.NOT_REQUIRED,
+        api_base="codex://sdk",
         models_source="static",
         generated_at="2026-09-03T09:00:00+00:00",
-        models=(ModelProfile(id="gpt-5.5", capabilities=("text", "image")),),
+        models=(DiscoveredModel(id="gpt-5.5"),),
     )
 
     row = model_catalog_row(preset, report, report.models[0])
 
     assert row["availability"] == "candidate"
-    assert row["modalities"] == ["text"]
+    assert row["modalities"] == []
+    assert row["evidence"]["modality_evidenced"] is False
     assert row["evidence"]["evidenced"] is False
     assert row["evidence"]["live"] is False
 
@@ -401,17 +510,18 @@ def test_documented_claude_vision_survives_the_static_catalog_boundary() -> None
         api_base="claude-code://sdk",
         suggested_model="sonnet",
     )
+    _seed("claude_code", "claude-code://sdk", "sonnet", capabilities=("text", "image"))
     report = HandshakeReport(
         provider_id="claude_code",
         provider_kind="claude_code",
         connectivity=ConnectivityState.OK,
         auth=AuthState.NOT_REQUIRED,
+        api_base="claude-code://sdk",
         models_source="static",
         generated_at="2026-09-20T12:00:00+00:00",
         models=(
-            ModelProfile(
+            DiscoveredModel(
                 id="sonnet",
-                capabilities=("text", "image"),
                 raw={
                     "capability_evidence": {
                         "source": "provider_documentation",
@@ -556,7 +666,7 @@ def test_a_stale_overlay_triggers_rediscovery_instead_of_being_served_forever(
             connectivity=ConnectivityState.OK,
             auth=AuthState.NOT_REQUIRED,
             models_source="overlay",
-            models=(ModelProfile(id="gpt-5.6-luna"),),
+            models=(DiscoveredModel(id="gpt-5.6-luna"),),
         )
 
     monkeypatch.setattr(
@@ -612,7 +722,7 @@ def test_a_failed_rediscovery_over_prior_evidence_stays_available_but_marked_sta
             connectivity=ConnectivityState.OK,
             auth=AuthState.NOT_REQUIRED,
             models_source="overlay",
-            models=(ModelProfile(id="gpt-5.6-luna"),),
+            models=(DiscoveredModel(id="gpt-5.6-luna"),),
         )
 
     monkeypatch.setattr("clio_agent.gact.provider_catalog.model_discovery.refresh_all", _refresh)

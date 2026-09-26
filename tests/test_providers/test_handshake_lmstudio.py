@@ -83,19 +83,16 @@ async def test_discover_model_config_maps_qwen_fields() -> None:
     by_id = {row["id"]: row for row in raw_rows}
     assert "qwopus3.5-9b-v3" in by_id
 
-    profile = await handshake.discover_model_config(client, ctx, by_id["qwopus3.5-9b-v3"])
+    facts = await handshake.discover_model_config(client, ctx, by_id["qwopus3.5-9b-v3"])
 
-    assert profile.id == "qwopus3.5-9b-v3"
-    assert profile.context_window == 262144
-    assert profile.loaded_context_window == 65536
-    assert profile.loaded_context_window is not None
-    assert profile.native_tool_calling is True
-    assert profile.quantization == "Q4_K_M"
-    assert profile.arch == "qwen35"
-    assert profile.is_loaded is True
-    assert profile.context_source == "live"
-    # effective window is the loaded (runtime) one, not the ceiling
-    assert profile.effective_context_window == 65536
+    assert facts.discovered.id == "qwopus3.5-9b-v3"
+    assert facts.model.context_max.value == 262144
+    assert facts.model.context_max.source == "server_report"
+    assert facts.deployment.context_served.value == 65536
+    assert facts.model.tools.value is True
+    assert facts.discovered.raw["quantization"] == "Q4_K_M"
+    assert facts.discovered.raw["arch"] == "qwen35"
+    assert facts.discovered.is_loaded is True
 
 
 @pytest.mark.asyncio
@@ -109,10 +106,9 @@ async def test_non_tool_model_has_no_native_tool_calling() -> None:
     embed = await handshake.discover_model_config(
         _FakeAsyncClient({}), ctx, by_id["text-embedding-nomic-embed-text-v1.5"]
     )
-    assert embed.native_tool_calling is False
-    assert embed.capabilities == ()
-    assert embed.is_loaded is False
-    assert embed.loaded_context_window is None
+    assert not embed.model.tools.known  # no capabilities list reported: unknown, not False
+    assert embed.discovered.is_loaded is False
+    assert not embed.deployment.context_served.known
 
 
 @pytest.mark.asyncio
