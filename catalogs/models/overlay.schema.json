@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/iowarp/clio-agent/develop/catalogs/models/overlay.schema.json",
+  "title": "CLIO model overlay entry",
+  "description": "One model/family entry in the manual model overlay (model-capabilities brief Part 8). Each catalogs/models/<family>.yaml file is a LIST of these entries, one per model family or size variant. The shape is clio-coder's own knowledge-base entry format, adopted as-is (brief Part 8.4) so a later move to a folder shared with clio-coder is a copy, not a migration -- fields clio-coder records that clio-agent does not yet read (gpuTiers, runtimePreference, llamaCpp, kvCache, chatTemplate, serving, leakageNote, thinkingControl, ...) are still accepted verbatim (additionalProperties) rather than rejected.",
+  "type": "array",
+  "minItems": 1,
+  "items": { "$ref": "#/$defs/entry" },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "required": ["family", "matchPatterns", "capabilities"],
+      "additionalProperties": false,
+      "properties": {
+        "family": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The family name. Also the file's own basename (catalogs/models/<family>.yaml) by convention."
+        },
+        "matchPatterns": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true,
+          "description": "Substrings matched case-insensitively against a wire/model id. Longest match across every loaded entry wins (brief Part 8.2/8.4); ties are broken by which overlay root loaded last (brief Part 8.6)."
+        },
+        "capabilities": { "$ref": "#/$defs/capabilities" },
+        "quirks": { "$ref": "#/$defs/quirks" }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "description": "clio-coder's CapabilityFlags shape, adopted as-is.",
+      "required": [
+        "chat", "tools", "reasoning", "structuredOutputs",
+        "vision", "audio", "embeddings", "rerank", "fim",
+        "contextWindow", "maxTokens"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "chat": { "type": "boolean" },
+        "tools": { "type": "boolean" },
+        "toolCallFormat": { "type": "string" },
+        "reasoning": { "type": "boolean" },
+        "thinkingFormat": { "type": "string" },
+        "structuredOutputs": { "type": ["string", "boolean", "null"] },
+        "vision": { "type": "boolean" },
+        "audio": { "type": "boolean" },
+        "embeddings": { "type": "boolean" },
+        "rerank": { "type": "boolean" },
+        "fim": { "type": "boolean" },
+        "contextWindow": { "type": "integer", "exclusiveMinimum": 0 },
+        "maxTokens": { "type": "integer", "exclusiveMinimum": 0 }
+      }
+    },
+    "quirks": {
+      "type": "object",
+      "description": "Engine-visible quirks (model-catalog.md: 'Engine-visible quirks belong in quirks.kvCache, quirks.sampling, and quirks.thinking'). Only sampling/thinking/measuredUnder are validated in depth (brief Part 8.4); every other clio-coder quirk key (gpuTiers, runtimePreference, llamaCpp, kvCache, chatTemplate, serving, leakageNote, thinkingControl, ...) rides through verbatim.",
+      "additionalProperties": true,
+      "properties": {
+        "sampling": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "thinking": { "$ref": "#/$defs/samplingProfile" },
+            "instruct": { "$ref": "#/$defs/samplingProfile" }
+          }
+        },
+        "thinking": {
+          "type": "object",
+          "required": ["mechanism"],
+          "additionalProperties": true,
+          "properties": {
+            "mechanism": {
+              "type": "string",
+              "enum": ["none", "always-on", "on-off", "effort-levels", "budget-tokens"]
+            },
+            "effortByLevel": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            },
+            "budgetByLevel": {
+              "type": "object",
+              "additionalProperties": { "type": "integer", "minimum": 0 }
+            },
+            "chatTemplateKwargs": { "type": "object" },
+            "guidance": { "type": "string" }
+          }
+        },
+        "measuredUnder": {
+          "type": "object",
+          "description": "Provenance for the quirks above: what was actually measured and under which runtime (brief Part 8.4). Never deployment data -- see brief Part 8.4 last paragraph.",
+          "additionalProperties": true,
+          "properties": {
+            "hardware": { "type": "string" },
+            "runtime": { "type": "string" },
+            "build": { "type": "string" },
+            "flags": { "type": "string" },
+            "date": { "type": "string" }
+          }
+        }
+      }
+    },
+    "samplingProfile": {
+      "type": "object",
+      "additionalProperties": { "type": "number" },
+      "description": "A flat map of numeric sampling fields (temperature, topP, topK, minP, presencePenalty, repetitionPenalty, maxTokens, reasoningBudget, ...); the exact field set varies by family."
+    }
+  }
+}

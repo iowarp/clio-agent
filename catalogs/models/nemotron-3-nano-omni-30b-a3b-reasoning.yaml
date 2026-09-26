@@ -1,0 +1,61 @@
+# Seeded verbatim from clio-coder's local-models/clio-local-coding-targets.yaml (model-capabilities brief Part 8.5).
+- family: nemotron-3-nano-omni-30b-a3b-reasoning
+  matchPatterns:
+    - nvidia-nemotron-3-nano-omni-30b-a3b-reasoning
+    - nemotron-3-nano-omni-30b-a3b-reasoning-ud-q4_k_m
+    - nemotron-3-nano-omni-30b-a3b-reasoning
+    - nemotron-3-nano-omni
+    - nemotron-nano-omni
+  capabilities:
+    chat: true
+    tools: true
+    toolCallFormat: qwen
+    reasoning: true
+    thinkingFormat: qwen-chat-template
+    structuredOutputs: json-schema
+    vision: true
+    audio: true
+    embeddings: false
+    rerank: false
+    fim: false
+    contextWindow: 1048576
+    maxTokens: 131072
+  quirks:
+    sampling:
+      thinking:
+        temperature: 0.6
+        topP: 0.95
+        topK: 20
+        maxTokens: 20480
+        reasoningBudget: 16384
+        gracePeriod: 1024
+      instruct:
+        temperature: 0.2
+        topK: 1
+        maxTokens: 1024
+    gpuTiers:
+      "24gb": "Use a 4-bit quant with reduced load context for evaluation. Prefer the 32GB tier for sustained Clio writes."
+      "32gb": "Primary strong local model for multimodal main-agent work. Keep openai-compat available for tool-call fallback."
+    runtimePreference:
+      lmstudioNative: "Use only when the target's server lifecycle is Clio-managed or the model is already loaded at the requested context."
+      openaiCompat: "Preferred fallback for LM Studio gateway tool-call extraction."
+      llamaCpp: "OpenAI-compatible chat completions with --jinja."
+    llamaCpp:
+      ctxSize: 819200
+      cacheTypeK: q8_0
+      cacheTypeV: q8_0
+      flashAttn: true
+      nGpuLayers: 99
+      parallel: 4
+    thinking:
+      mechanism: budget-tokens
+      budgetByLevel:
+        low: 1024
+        medium: 4096
+        high: 16384
+      guidance: |
+        Reasoning is template-driven; thinking blocks emit through the qwen
+        chat template. Preserve thinking across coding-task turns when the
+        chain matters; otherwise let the budget cap output growth.
+    serving: "Use qwen3_coder tool parsing when served through OpenAI-compatible HTTP. LM Studio native uses SDK rawTools, but openai-compat remains the fallback for template-specific tool extraction issues."
+

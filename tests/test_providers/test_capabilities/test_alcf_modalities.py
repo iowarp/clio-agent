@@ -16,7 +16,9 @@ in for the fetched catalogs and recorded Hugging Face responses
 where the repo is not gated, ``config.json``/``processor_config.json``/
 ``params.json`` at the pinned commit) served for huggingface.co. A URL with no
 recording answers 404, and the gated repos' files answer 401 exactly as the
-Hub does anonymously.
+Hub does anonymously. The model overlay (``catalogs/models/*.yaml``, the
+compiled bundled copy) is live: it outranks the Hugging Face layer and the
+community catalogs (brief 5.1), so every model it lists is decided by it.
 """
 
 from __future__ import annotations
@@ -71,15 +73,17 @@ HF_RECORDED = {
 HF_GATED = {repo for repo in HF_RECORDED if repo.startswith(("meta-llama/", "google/gemma-3"))}
 
 #: All eight ALCF vision models: expected effective modalities + which layer decided.
+#: Each has an overlay entry (Llama-4's corrected to vision: true), which outranks
+#: the Hugging Face layer and the community catalogs.
 VISION = {
-    "google/gemma-4-31B-it": ({"text", "image"}, "models.dev"),
-    "google/gemma-4-26B-A4B-it": ({"text", "image"}, "models.dev"),
-    "google/gemma-4-E4B-it": ({"text", "image", "audio"}, "hf_repo"),
-    "google/gemma-3-27b-it": ({"text", "image"}, "hf_repo"),
-    "meta-llama/Llama-3.2-90B-Vision-Instruct": ({"text", "image"}, "hf_repo"),
-    "meta-llama/Llama-4-Maverick-17B-128E-Instruct": ({"text", "image"}, "hf_repo"),
-    "meta-llama/Llama-4-Scout-17B-16E-Instruct": ({"text", "image"}, "hf_repo"),
-    "mistralai/Mistral-Large-3-675B-Instruct-2512": ({"text", "image"}, "hf_repo"),
+    "google/gemma-4-31B-it": ({"text", "image"}, "overlay"),
+    "google/gemma-4-26B-A4B-it": ({"text", "image"}, "overlay"),
+    "google/gemma-4-E4B-it": ({"text", "image", "audio"}, "overlay"),
+    "google/gemma-3-27b-it": ({"text", "image"}, "overlay"),
+    "meta-llama/Llama-3.2-90B-Vision-Instruct": ({"text", "image"}, "overlay"),
+    "meta-llama/Llama-4-Maverick-17B-128E-Instruct": ({"text", "image"}, "overlay"),
+    "meta-llama/Llama-4-Scout-17B-16E-Instruct": ({"text", "image"}, "overlay"),
+    "mistralai/Mistral-Large-3-675B-Instruct-2512": ({"text", "image"}, "overlay"),
 }
 
 
@@ -251,21 +255,25 @@ async def test_all_eight_vision_models_get_their_real_modalities() -> None:
 
 
 @pytest.mark.asyncio
-async def test_hf_evidence_names_the_file_or_metadata_field_it_came_from() -> None:
+async def test_overlay_decides_and_names_the_matched_family() -> None:
     await _handshake()
+    scout = get_effective_capabilities(
+        PROVIDER_ID, SOPHIA, "meta-llama/Llama-4-Scout-17B-16E-Instruct"
+    )
+    assert scout.model_key == "meta-llama-4-scout"  # link rule 3 (overlay matchPatterns)
+    assert scout.input_modalities.source == "overlay"
+    e4b = get_effective_capabilities(PROVIDER_ID, SOPHIA, "google/gemma-4-E4B-it")
+    assert e4b.model_key == "gemma-4-e4b"
 
-    def detail(model_id: str) -> str:
-        record = invalidation.get_model_capabilities(model_id)
-        assert record is not None
-        return record.input_modalities.detail
 
-    # Gated: config.json is 401 anonymously -> the public pipeline_tag decides.
-    assert "pipeline_tag=image-text-to-text" in detail("meta-llama/Llama-4-Scout-17B-16E-Instruct")
-    # Readable config.json -> vision_config + audio_config.
-    e4b = detail("google/gemma-4-E4B-it")
-    assert "config.json vision_config" in e4b and "config.json audio_config" in e4b
-    # No config.json at all (Mistral native format) -> processor config / params.json.
-    assert "image_processor" in detail("mistralai/Mistral-Large-3-675B-Instruct-2512")
+@pytest.mark.asyncio
+async def test_hf_still_resolves_models_the_overlay_does_not_list() -> None:
+    """An overlay-less repo still resolves through the Hugging Face layer."""
+
+    await _handshake()
+    llama33 = get_effective_capabilities(PROVIDER_ID, SOPHIA, "meta-llama/Llama-3.3-70B-Instruct")
+    assert llama33.input_modalities.value == frozenset({"text"})
+    assert llama33.input_modalities.source == "hf_repo"
 
 
 @pytest.mark.asyncio
@@ -273,7 +281,7 @@ async def test_known_text_only_models_are_text_only_from_evidence() -> None:
     report = await _handshake()
     rows = _rows(report)
     gpt_oss = get_effective_capabilities(PROVIDER_ID, SOPHIA, "openai/gpt-oss-120b")
-    assert gpt_oss.input_modalities.value == frozenset({"text"})  # models.dev
+    assert gpt_oss.input_modalities.value == frozenset({"text"})  # overlay: vision false
     llama33 = get_effective_capabilities(PROVIDER_ID, SOPHIA, "meta-llama/Llama-3.3-70B-Instruct")
     assert llama33.input_modalities.value == frozenset({"text"})  # LlamaForCausalLM, no processor
     assert llama33.input_modalities.source == "hf_repo"
@@ -313,13 +321,17 @@ async def test_surrogates_are_listed_and_refused_only_as_the_chat_model() -> Non
     report = await _handshake()
     rows = _rows(report)
 
-    sfr = rows["Salesforce/SFR-Embedding-Mistral"]
-    assert sfr["task"] == "feature-extraction"  # HF pipeline_tag
-    assert sfr["role"] == "surrogate"
-    assert sfr["chat_selectable"] is False
-    assert sfr["availability"] == "available"  # listed, first-class
-    sfr_type = get_effective_capabilities(PROVIDER_ID, SOPHIA, "Salesforce/SFR-Embedding-Mistral")
-    assert sfr_type.task.source == "hf_repo"
+    for embed_id in (
+        "Salesforce/SFR-Embedding-Mistral",
+        "mistralai/Mistral-7B-Instruct-v0.3-embed",
+    ):
+        row = rows[embed_id]
+        assert row["task"] == "feature-extraction", embed_id  # overlay embeddings: true
+        assert row["role"] == "surrogate", embed_id
+        assert row["chat_selectable"] is False, embed_id
+        assert row["availability"] == "available", embed_id  # listed, first-class
+        effective = get_effective_capabilities(PROVIDER_ID, SOPHIA, embed_id)
+        assert effective.task.source == "overlay", embed_id
 
     sam3 = rows["sam3"]
     assert sam3["task"] == "mask-generation"  # ALCF framework=sam3service

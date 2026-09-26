@@ -20,11 +20,20 @@ Only the first two rule FAMILIES are implemented as real logic here:
    pulled-model name, and a llama.cpp router id of the form
    ``org/repo-GGUF[:quant]``.
 
-The third rule (an overlay ``matchPatterns`` entry) is P6 work -- the overlay
-itself does not exist yet (brief Part 8). ``overlay_match`` is accepted as an
-injected callable purely so the call site here never has to change again once
-P6 lands; passing ``None`` (the default) makes that rule a no-op, which is
-exactly "no overlay to consult yet", not "the overlay found nothing".
+The third rule (an overlay ``matchPatterns`` entry, P6/brief Part 8) is now
+wired: :func:`deployment_model_key_fact` passes the real
+:func:`clio_agent.providers.capabilities.model_overlay.overlay_match_for_link`
+by default, so every adapter and dialect gets it. Per the brief ("matches against the wire id, the GGUF
+filename and the Ollama model name"), the rule tries every DISTINCT candidate
+string a caller supplies -- ``wire_id`` first, then ``gguf_filename`` when it
+differs -- so a wire id an endpoint spells generically (llama.cpp router mode's
+``local-model``) can still match a family pattern that only appears in the
+loaded GGUF's filename. Ollama's own wire id already IS "the Ollama model
+name" (:mod:`...handshake.ollama` passes ``/api/tags``' ``model``/``name``
+straight through), so no separate parameter exists for it. Passing
+``overlay_match=None`` (still the default for a caller with none, e.g. a unit
+test) makes the rule a no-op, which is exactly "no overlay to consult", not
+"the overlay found nothing".
 """
 
 from __future__ import annotations
@@ -87,11 +96,15 @@ def link_model(
             vLLM's own convention, so it is trusted directly.
         gguf_filename: The GGUF filename from llama.cpp's ``/props``
             ``model_path`` (basename, no directories), when available -- tried
-            against the router-id shape in addition to ``wire_id`` itself.
-        overlay_match: The P6 overlay's ``matchPatterns`` lookup. ``None`` means
-            no overlay exists yet in this slice, which is distinct from "the
-            overlay ran and found nothing" (that would return ``None`` from a
-            *call*, not from omitting the callable).
+            against the router-id shape in addition to ``wire_id`` itself, and
+            also offered to ``overlay_match`` (rule 3) when it differs from
+            ``wire_id``.
+        overlay_match: The overlay's ``matchPatterns`` lookup (brief Part 8 /
+            P6): given one candidate string, returns the matching family's
+            ``model_key``, or ``None`` for no match. ``None`` (the default)
+            means no overlay was wired for this call, which is distinct from
+            "the overlay ran and found nothing" (that would return ``None``
+            from a *call*, not from omitting the callable).
 
     Returns:
         A :class:`LinkResult` naming which rule matched, or ``"no_link"``.
@@ -130,12 +143,20 @@ def link_model(
             )
 
     if overlay_match is not None:
-        try:
-            matched = overlay_match(cleaned)
-        except Exception:  # noqa: BLE001 - a broken overlay lookup must not break linking
-            matched = None
-        if matched:
-            return LinkResult(matched, "overlay_match", f"overlay matchPatterns -> {matched!r}")
+        candidates = [cleaned]
+        if gguf_filename and gguf_filename != cleaned:
+            candidates.append(gguf_filename)
+        for candidate in candidates:
+            try:
+                matched = overlay_match(candidate)
+            except Exception:  # noqa: BLE001 - a broken overlay lookup must not break linking
+                matched = None
+            if matched:
+                return LinkResult(
+                    matched,
+                    "overlay_match",
+                    f"overlay matchPatterns -> {matched!r} (candidate={candidate!r})",
+                )
 
     return LinkResult(None, "no_link", f"no rule matched {cleaned!r}")
 
@@ -156,6 +177,16 @@ def deployment_model_key_fact(
     that no rule matched.
     """
 
+    if "overlay_match" not in link_kwargs:
+        # Rule 3 is on for every deployment: the real overlay matcher is the
+        # default here (one place) rather than threaded through each adapter
+        # and dialect call site. Imported lazily -- model_overlay reaches
+        # providers.model_discovery, which imports the handshake package.
+        from clio_agent.providers.capabilities.model_overlay import (  # noqa: PLC0415
+            overlay_match_for_link,
+        )
+
+        link_kwargs["overlay_match"] = overlay_match_for_link
     result = link_model(wire_id, **link_kwargs)  # type: ignore[arg-type]
     if result.model_key:
         return Fact(

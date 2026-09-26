@@ -290,19 +290,27 @@ class ProviderHandshake(abc.ABC):
     async def enrich_capabilities(
         self, facts: DiscoveredModelFacts, ctx: HandshakeContext
     ) -> DiscoveredModelFacts:
-        """Resolve the model record through the brief 5.1 precedence below ``server_report``.
+        """Resolve the model record through brief 5.1's per-field precedence.
 
-        The adapter's own ``server_report`` facts win field by field; what they
-        leave unknown comes from the Hugging Face repo layer (brief 6.1:
-        ``config.json`` / processor / ``params.json`` modalities, the
-        ``pipeline_tag`` model type, sampling, a chat-template scan) and then the
-        community catalogs (models.dev -> litellm -> the local DB), via
+        The **overlay** (priority 2, brief Part 8) wins field by field over the
+        adapter's own ``server_report`` facts (priority 3) -- a measured
+        overlay correction beats what a server/template misreports. What
+        neither establishes comes from the **Hugging Face repo layer**
+        (priority 4, brief 6.1: ``config.json`` / processor / ``params.json``
+        modalities, the ``pipeline_tag`` model type, sampling, a chat-template
+        scan) and then the **community catalogs** (priority 5: models.dev ->
+        litellm -> the local DB), via
         :func:`~clio_agent.providers.capabilities.model_sources.resolve_model_capabilities`.
-        The Hugging Face layer is consulted only for an ``org/name`` key on a
-        dialect that serves Hub weights (:data:`_HF_REPO_DIALECTS`). Runs off the
-        event loop: both layers read disk caches and, when cold, the network.
-        Gated on ``allow_external_sources``. A field no layer states stays
-        UNKNOWN -- a server that reports no modalities is never read as text-only.
+        (Priority 1, a user override, is not reached from this step.)
+
+        The Hugging Face layer is consulted only for a Hub repo id on a dialect
+        that serves Hub weights (:data:`_HF_REPO_DIALECTS`) -- the model key
+        when it is one, else the wire id (an overlay-linked deployment is keyed
+        by its family name, but its weights still live in the served repo).
+        Runs off the event loop: the layers read disk caches and, when cold,
+        the network. Gated on ``allow_external_sources``. A field no layer
+        states stays UNKNOWN -- a server that reports no modalities is never
+        read as text-only.
         """
         if not ctx.allow_external_sources:
             return facts
@@ -311,7 +319,7 @@ class ProviderHandshake(abc.ABC):
         )
 
         model = facts.model
-        hf_source = self._hf_source(ctx, model.model_key)
+        hf_source = self._hf_source(ctx, model.model_key, facts.discovered.id)
         resolved = await asyncio.to_thread(
             resolve_model_capabilities,
             model.model_key,
@@ -324,18 +332,23 @@ class ProviderHandshake(abc.ABC):
             return facts
         return replace(facts, model=resolved)
 
-    def _hf_source(self, ctx: HandshakeContext, model_key: str) -> Any:
-        """The Hugging Face layer for ``model_key`` on this endpoint, or ``None``."""
+    def _hf_source(self, ctx: HandshakeContext, model_key: str, wire_id: str) -> Any:
+        """The Hugging Face layer for this deployment, or ``None``.
+
+        Bound to the Hub repo the endpoint actually serves: ``model_key`` when
+        it has the ``org/name`` shape, else ``wire_id`` when that does.
+        """
         from clio_agent.providers.capabilities.hf_repo import (  # noqa: PLC0415
             HfRepoCatalogSource,
             is_repo_id,
         )
 
-        if not is_repo_id(model_key):
+        repo_id = next((c for c in (model_key, wire_id) if is_repo_id(c)), None)
+        if repo_id is None:
             return None
         if self._endpoint_dialect(ctx) not in _HF_REPO_DIALECTS:
             return None
-        return HfRepoCatalogSource()
+        return HfRepoCatalogSource(repo_id=repo_id)
 
     def _endpoint_dialect(self, ctx: HandshakeContext) -> str:
         """This endpoint's recorded dialect ("" before its record exists)."""

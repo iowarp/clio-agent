@@ -432,11 +432,14 @@ class HfRepoCatalogSource:
     the overlay) already uses.
     """
 
-    def __init__(self, *, allow_fetch: bool = True) -> None:
+    def __init__(self, *, allow_fetch: bool = True, repo_id: str | None = None) -> None:
         self._allow_fetch = allow_fetch
+        #: The Hub repo to read when the caller's ``model_key`` is not itself a
+        #: repo id (an overlay family key); ``None`` reads ``model_key``.
+        self._repo_id = repo_id
 
     def facts(self, model_key: str) -> ModelCapabilities | None:
-        resolution = resolve_repo(model_key, allow_fetch=self._allow_fetch)
+        resolution = resolve_repo(self._repo_id or model_key, allow_fetch=self._allow_fetch)
         if resolution is None:
             return None
         observed_at = _now_iso()

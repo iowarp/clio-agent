@@ -70,6 +70,39 @@ def test_overlay_match_is_consulted_last_when_provided() -> None:
     assert result.rule == "overlay_match"
 
 
+def test_overlay_match_rule_3_also_tries_the_gguf_filename() -> None:
+    """brief 5.4 rule 3: the overlay is tried against the GGUF filename too,
+    not only the wire id -- a router alias like 'local-model' carries no
+    family signal on its own, but the loaded GGUF's filename usually does."""
+    seen: list[str] = []
+
+    def _overlay_match(candidate: str) -> str | None:
+        seen.append(candidate)
+        return "qwen3.6-27b" if "qwen3.6-27b" in candidate.lower() else None
+
+    result = link_model(
+        "local-model",
+        gguf_filename="unsloth/Qwen3.6-27B-not-a-router-shape.gguf",
+        overlay_match=_overlay_match,
+    )
+    assert result.model_key == "qwen3.6-27b"
+    assert result.rule == "overlay_match"
+    # wire id tried first, then the GGUF filename (brief order: "the wire id,
+    # the GGUF filename").
+    assert seen == ["local-model", "unsloth/Qwen3.6-27B-not-a-router-shape.gguf"]
+
+
+def test_overlay_match_rule_3_does_not_retry_an_identical_gguf_filename() -> None:
+    seen: list[str] = []
+
+    def _overlay_match(candidate: str) -> str | None:
+        seen.append(candidate)
+        return None
+
+    link_model("same-value", gguf_filename="same-value", overlay_match=_overlay_match)
+    assert seen == ["same-value"]
+
+
 def test_overlay_match_omitted_is_not_the_same_as_overlay_found_nothing() -> None:
     """No overlay wired (P6 not landed yet) -> no_link; never silently treated as evidence."""
     result = link_model("Weird-Custom-Name")

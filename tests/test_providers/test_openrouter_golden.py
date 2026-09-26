@@ -279,7 +279,6 @@ async def test_surrogates_are_listed_and_refused_only_as_the_chat_model() -> Non
 @pytest.mark.asyncio
 async def test_openrouter_facts_outrank_the_overlay(monkeypatch: pytest.MonkeyPatch) -> None:
     """A golden provider's own report ranks above the overlay (a curated guess)."""
-    from clio_agent.providers.capabilities import model_sources
     from clio_agent.providers.capabilities.records import Fact, ModelCapabilities
 
     class _WrongOverlay:
@@ -289,7 +288,9 @@ async def test_openrouter_facts_outrank_the_overlay(monkeypatch: pytest.MonkeyPa
                 input_modalities=Fact(frozenset({"text"}), "overlay", "", "overlay says text only"),
             )
 
-    monkeypatch.setattr(model_sources, "EmptyOverlaySource", _WrongOverlay)
+    from clio_agent.providers.capabilities import model_overlay
+
+    monkeypatch.setattr(model_overlay, "default_overlay_source", lambda: _WrongOverlay())
     report, client = await _handshake()
     del client
     # allow_external_sources=False skips enrichment; run it explicitly.
