@@ -48,9 +48,11 @@ import yaml
 
 from clio_agent import paths
 from clio_agent.providers.capabilities.records import (
+    DOMAINS,
     Fact,
     ModelCapabilities,
     ThinkingSpec,
+    is_task,
     task_fact,
     unknown,
 )
@@ -275,12 +277,20 @@ def _modalities_fact(capabilities: dict[str, Any], *, observed_at: str, detail: 
 
 
 def _task_fact(capabilities: dict[str, Any], *, observed_at: str, detail: str) -> Fact:
-    """The task the entry's ``embeddings``/``rerank``/``chat`` flags state.
+    """The task the entry states: an explicit ``task``, else its flags.
 
-    clio-coder's flags are independent booleans; the one that names what the
-    model PRODUCES decides: an embedding or rerank model is that surrogate task
-    even if a chat flag were also set. No flag set leaves the task unknown.
+    An explicit ``task`` (a Hub ``pipeline_tag`` id or a ``clio:<id>``, e.g.
+    ``clio:weather-emulation`` for a scientific surrogate) is the entry saying
+    exactly what the model does, so it wins. Otherwise clio-coder's flags are
+    independent booleans; the one that names what the model PRODUCES decides:
+    an embedding or rerank model is that surrogate task even if a chat flag were
+    also set. No task and no flag leaves the task unknown.
     """
+    explicit = capabilities.get("task")
+    if explicit is not None:
+        if is_task(explicit):
+            return task_fact(explicit, source="overlay", observed_at=observed_at, detail=detail)
+        logger.warning("model_overlay: reason=unknown_task task=%r %s", explicit, detail)
     if capabilities.get("embeddings") is True:
         value: str | None = "feature-extraction"
     elif capabilities.get("rerank") is True:
@@ -290,6 +300,25 @@ def _task_fact(capabilities: dict[str, Any], *, observed_at: str, detail: str) -
     else:
         value = None
     return task_fact(value, source="overlay", observed_at=observed_at, detail=detail)
+
+
+def _domains_fact(capabilities: dict[str, Any], *, observed_at: str, detail: str) -> Fact:
+    """The subject domains the entry's ``domains`` list states (closed :data:`DOMAINS`).
+
+    A value outside the closed list is logged and left out, never mapped to a
+    near match; an entry with no ``domains`` key states nothing.
+    """
+    raw = capabilities.get("domains")
+    if raw is None:
+        return unknown()
+    values = raw if isinstance(raw, list) else [raw]
+    domains = frozenset(value for value in values if value in DOMAINS)
+    rejected = [value for value in values if value not in DOMAINS]
+    if rejected:
+        logger.warning("model_overlay: reason=unknown_domain domains=%r %s", rejected, detail)
+    if not domains:
+        return unknown()
+    return Fact(value=domains, source="overlay", observed_at=observed_at, detail=detail)
 
 
 def _bool_fact(capabilities: dict[str, Any], key: str, *, observed_at: str, detail: str) -> Fact:
@@ -422,6 +451,7 @@ def entry_to_model_capabilities(
         ),
         output_max=_int_fact(capabilities, "maxTokens", observed_at=observed_at, detail=detail),
         input_modalities=_modalities_fact(capabilities, observed_at=observed_at, detail=detail),
+        domains=_domains_fact(capabilities, observed_at=observed_at, detail=detail),
         tools=_bool_fact(capabilities, "tools", observed_at=observed_at, detail=detail),
         parallel_tool_calls=unknown(),
         structured_output=_structured_output_fact(

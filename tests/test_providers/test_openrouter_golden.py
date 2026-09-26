@@ -327,3 +327,156 @@ def test_effective_view_exposes_the_deployment_facts() -> None:
     assert effective.free.value is True
     assert effective.router.value is True
     assert effective.pricing.value == {"prompt": "0", "completion": "0"}
+
+
+# --------------------------------------------------------------------------- capability tags
+
+
+def _tag_values(tags: list[dict[str, Any]]) -> list[str]:
+    return [tag["value"] for tag in tags]
+
+
+@pytest.mark.asyncio
+async def test_the_wire_carries_capability_tags_with_evidence() -> None:
+    """``capability_tags`` (clio_schemas.ModelCapabilityTags) on the recorded listing."""
+    from clio_schemas import ModelCapabilityTags
+
+    report, _client = await _handshake()
+    rows = _rows(report)
+    for row in rows.values():  # every row validates against the shared schema
+        ModelCapabilityTags.model_validate(row["capability_tags"])
+
+    jev_router = rows["typesafe/jev-router"]["capability_tags"]
+    assert _tag_values(jev_router["input_modalities"]) == ["audio", "image", "pdf", "text", "video"]
+    assert jev_router["input_modalities"][0]["evidence"][0]["source"] == "openrouter"
+    assert jev_router["capabilities"] == []  # empty supported_parameters states nothing
+
+    jev = rows["~typesafe/jev-latest"]["capability_tags"]
+    assert jev["model_type"]["value"] == "classification"
+    assert jev["role"]["value"] == "surrogate"
+    assert _tag_values(jev["tasks"]) == ["text-classification"]
+    assert _tag_values(jev["output_modalities"]) == ["scores"]
+    evidence = jev["model_type"]["evidence"][0]
+    assert evidence["source"] == "openrouter"
+    assert "architecture.output_modalities" in evidence["detail"]
+    assert "decisions" in evidence["detail"]
+
+    free = rows["openrouter/free"]["capability_tags"]
+    assert free["free"]["value"] is True and free["router"]["value"] is True
+    assert free["role"]["value"] == "general"
+    assert "pricing" in free["free"]["evidence"][0]["detail"]
+
+    auto = rows["openrouter/auto"]["capability_tags"]
+    assert auto["free"]["value"] is False  # a -1 (variable) price is never free
+    assert auto["router"]["value"] is True
+
+    image_gen_id, image_gen = next(
+        (model_id, row["capability_tags"])
+        for model_id, row in rows.items()
+        if row["output_modalities"] == ["image"]
+    )
+    assert image_gen["model_type"]["value"] == "image_generation", image_gen_id
+    assert image_gen["role"]["value"] == "surrogate"
+    assert _tag_values(image_gen["tasks"]) == ["text-to-image"]
+    assert _tag_values(image_gen["output_modalities"]) == ["image"]
+
+    gemma = rows["google/gemma-4-31b-it"]["capability_tags"]
+    assert "image" in _tag_values(gemma["input_modalities"])  # vision
+    assert "tool_calling" in _tag_values(gemma["capabilities"])
+
+    perceptron = rows["perceptron/perceptron-mk1.5"]["capability_tags"]
+    assert _tag_values(perceptron["capabilities"]) == [
+        "tool_calling",
+        "structured_output",
+        "reasoning",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_every_openrouter_output_kind_gets_a_model_type_and_role() -> None:
+    report, _client = await _handshake()
+    rows = _rows(report)
+    expected = {
+        ("text",): ("chat", "general"),
+        ("image", "text"): ("chat", "general"),
+        ("audio", "text"): ("chat", "general"),
+        ("image",): ("image_generation", "surrogate"),
+        ("video",): ("video_generation", "surrogate"),
+        ("embeddings",): ("embedding", "surrogate"),
+        ("transcription",): ("audio_transcription", "surrogate"),
+        ("speech",): ("audio_speech", "surrogate"),
+        ("rerank",): ("rerank", "surrogate"),
+        ("decisions",): ("classification", "surrogate"),
+    }
+    for model_id, row in rows.items():
+        raw = tuple(sorted(_row(model_id)["architecture"]["output_modalities"]))
+        tags = row["capability_tags"]
+        assert (tags["model_type"]["value"], tags["role"]["value"]) == expected[raw], model_id
+        # The picker's chat refusal and the tags never disagree.
+        assert row["chat_selectable"] is (tags["role"]["value"] == "general"), model_id
+
+
+@pytest.mark.asyncio
+async def test_run_handshake_resolves_the_registry_row_and_lists_every_output_modality(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The catalog's own entry point (``run_handshake`` with no ``provider=``).
+
+    Defect this locks: ``provider_catalog.discover_provider`` called
+    ``run_handshake(ctx)`` without the registry row, so the dialect fell back to
+    ``provider_kind`` ("openai"): the probe fetched the default text-only
+    listing (458 of 628 models) and every surrogate (image/video generators,
+    embeddings, speech, rerank, the jev classifiers) never reached the picker.
+    """
+    from clio_agent.providers.handshake import cache, run_handshake
+
+    client = _Client()
+
+    async def _open(self: OpenAICompatHandshake, ctx: HandshakeContext) -> Any:
+        return client
+
+    monkeypatch.setattr(OpenAICompatHandshake, "_open_client", _open)
+    cache.invalidate()
+    ctx = HandshakeContext(
+        provider_id="openrouter",
+        provider_kind="openai",
+        api_base=API_BASE,
+        api_key="sk-or-fixture",
+        auth_mode="passive",
+        allow_external_sources=False,
+    )
+    try:
+        report = await run_handshake(ctx, force=True)
+    finally:
+        cache.invalidate()  # the handshake cache is process-global: leave it clean
+    assert report.ok, report.error
+    assert any(url.endswith("/models?output_modalities=all") for url in client.urls)
+    assert len(report.models) == 628
+    rows = _rows(report)
+    assert rows["~typesafe/jev-latest"]["capability_tags"]["role"]["value"] == "surrogate"
+    surrogates = [row for row in rows.values() if row["chat_selectable"] is False]
+    assert len(surrogates) == 170  # every non-text-output model, listed and tagged
+
+
+def test_an_audio_only_transcriber_does_not_accept_text() -> None:
+    """OpenRouter's input list is exhaustive: no implicit ``text`` for audio-only models.
+
+    Defect this locks: every OpenRouter row got ``text`` added to its inputs, so
+    the 24 audio-only transcribers matched the picker's default
+    ``input:text output:text`` filter and were listed as chat candidates.
+    """
+    model, _deployment = openrouter.parse_model_row(
+        _row("google/gemini-3.5-transcribe"), provider_id="openrouter", api_base=API_BASE
+    )
+    assert model.input_modalities.value == frozenset({"audio"})
+    audio_only = [
+        row["id"]
+        for row in _payload()["data"]
+        if "text" not in row["architecture"]["input_modalities"]
+    ]
+    assert audio_only  # the recording has them
+    for model_id in audio_only:
+        parsed, _ = openrouter.parse_model_row(
+            _row(model_id), provider_id="openrouter", api_base=API_BASE
+        )
+        assert "text" not in (parsed.input_modalities.value or ()), model_id

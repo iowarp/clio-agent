@@ -27,6 +27,7 @@ from clio_agent.providers.capabilities.records import (
     role_for_task,
     unknown,
 )
+from clio_agent.providers.capabilities.tags import capability_tags
 from clio_agent.providers.catalog import get_provider
 from clio_agent.providers.handshake import HandshakeContext, HandshakeReport, run_handshake
 from clio_agent.providers.handshake.model import (
@@ -296,6 +297,11 @@ def model_catalog_row(
         "free": effective.free.value,
         "router": effective.router.value,
         "pricing": dict(effective.pricing.value or {}) if effective.pricing.known else None,
+        # Every tag the picker renders and filters on, each with its evidence
+        # (clio_schemas.ModelCapabilityTags). Absent tag = no source stated it.
+        "capability_tags": capability_tags(
+            effective, model_key=effective.model_key or profile.id
+        ).model_dump(mode="json"),
         # The levels a person can actually choose for THIS model, derived
         # directly from the effective capabilities' own ThinkingDecision --
         # never a second, provider-name-keyed mapping table.
