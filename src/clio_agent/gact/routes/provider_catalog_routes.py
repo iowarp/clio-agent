@@ -64,6 +64,12 @@ def register_provider_catalog_routes(
     _codex_readiness = codex_readiness
     _claude_code_readiness = claude_code_readiness
 
+    # Saved local/self-hosted servers: registered here so the literal
+    # ``/v1/providers/servers`` paths precede ``GET /v1/providers/{provider_id}``.
+    from clio_agent.gact.routes.local_servers import register_local_server_routes  # noqa: PLC0415
+
+    register_local_server_routes(app, presets)
+
     @app.post("/v1/providers/{provider_id}/auth")
     async def auth_provider(provider_id: str, request: Request) -> dict[str, Any]:
         """The generic provider sign-in API (start/complete/status/logout/save_api_key/clear_api_key).

@@ -47,6 +47,7 @@ from fastapi import FastAPI, HTTPException
 from clio_agent.gact.agent_initialization import mark_agent_ready
 from clio_agent.gact.events import Event
 from clio_agent.gact.lm_provider_types import preset_api_key_env
+from clio_agent.gact.local_server_store import saved_address_for_preset
 from clio_agent.gact.providers.auth import (
     _is_placeholder_api_key,
     _resolve_argonne_runtime_api_key,
@@ -308,6 +309,8 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     def _preset_with_status(preset: LMProviderPreset) -> LMProviderPreset:
         update: dict[str, Any] = {"supports_logout": supports_logout(preset.provider)}
+        if saved := saved_address_for_preset(preset.id):
+            update["api_base"] = saved  # the address saved on Settings > Providers
         if preset.provider == "argonne":
             try:
                 from clio_agent.providers import argonne_auth  # noqa: PLC0415

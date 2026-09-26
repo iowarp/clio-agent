@@ -227,11 +227,23 @@ def _resolve_presets(app: "FastAPI") -> dict[str, "LMProviderPreset"]:
     so the two stay consistent (:func:`_configured_preset_override`).
     """
 
-    presets = {preset.id: preset for preset in as_lm_presets()}
+    presets = {preset.id: _with_saved_address(preset) for preset in as_lm_presets()}
     override = _configured_preset_override(app)
     if override is not None:
         presets[override[0]] = override[1]
     return presets
+
+
+def _with_saved_address(preset: "LMProviderPreset") -> "LMProviderPreset":
+    """The preset at the address the person saved for it (Settings > Providers), if any.
+
+    A local runtime moved to another port or host is probed THERE; the bound
+    provider's own configured address (above) still wins over it.
+    """
+    from clio_agent.gact.local_server_store import saved_address_for_preset  # noqa: PLC0415
+
+    saved = saved_address_for_preset(preset.id)
+    return preset.model_copy(update={"api_base": saved}) if saved else preset
 
 
 async def discover(
