@@ -119,11 +119,6 @@ lm.defer_tiktoken: true
 # response_format; set true if a provider 400s on it.
 lm.disable_json_adapter_fallback: false
 
-# CLIO_LM_DISABLE_THINKING  (bool)  <- src/clio_agent/lm/factory.py
-# Turns off reasoning/"thinking" sampling for the active LM; set true to
-# force a reasoning-capable model into non-reasoning mode.
-lm.disable_thinking: false
-
 # CLIO_LM_GUIDED_OUTPUT  (bool)  <- src/clio_agent/lm/adapters.py
 # Switches to schema-constrained JSON output instead of the text
 # ChatAdapter; enable per-model when a reasoning model drops required
@@ -170,19 +165,16 @@ lm.lmstudio_flash_attention: true
 # codex, claude_code); change to switch which provider clio talks to.
 lm.provider: "lm_studio"
 
-# CLIO_LM_REASONING_MODEL  (str)  <- src/clio_agent/lm/adapters.py
-# Forces/forbids reasoning-model behavior for the active model, overriding
-# auto-detection; set when auto-detection misclassifies a model.
-# lm.reasoning_model:  # default unset; resolved in code
-
-# CLIO_LM_STOP_SEQUENCES  (str)  <- src/clio_agent/lm/factory.py
-# ||-joined stop sequences for reasoning models to truncate output after the
-# final field; override if a model's trace leaks past stop points.
+# CLIO_LM_STOP_SEQUENCES  (str)  <- src/clio_agent/lm/request_builder.py
+# ||-joined override for the DSPy trajectory-regurgitation stop sequences,
+# sent whenever the endpoint's effective parameter set accepts `stop`;
+# override if a model's trace leaks past stop points.
 # lm.stop_sequences:  # default unset; resolved in code
 
 # CLIO_LM_TEMPERATURE  (float)  <- src/clio_agent/config.py
-# Sampling temperature for the main agentic LM calls; defaults to 0.0 since
-# clio drives structured tool-call output, raise for creative sampling.
+# Sampling temperature for the main agentic LM calls; unset by default so
+# the provider/model's own sampling default applies (model-capabilities
+# brief Part 7 item 1) -- set to force a specific value.
 # lm.temperature:  # default unset; resolved in code
 
 # CLIO_LM_THINKING_BUDGET  (int)  <- src/clio_agent/config.py

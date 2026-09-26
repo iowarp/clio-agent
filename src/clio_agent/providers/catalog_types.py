@@ -66,14 +66,16 @@ class Provider:
     #: canonical display name.
     auth_label: str = ""
     api_key_env: str | None = None
+    #: The host credential chain a provider signs with instead of an API key
+    #: (``providers.host_credentials``): ``"google_cloud"`` (Application Default
+    #: Credentials) or ``"aws"`` (the AWS credential chain). Empty for the rest.
+    host_credentials: Literal["", "google_cloud", "aws"] = ""
     #: A path under ``api_base`` that answers only with a valid key, for a
     #: provider whose model listing is public (OpenRouter's ``/models`` lists
     #: every model to anyone, so listing it proves nothing about the key).
     #: ``None``: the authenticated ``/models`` call is itself the key check.
     key_check_path: str | None = None
     supports_live_catalog: bool = True
-    supports_vision: bool = False
-    max_tokens_default: int = 32000
     strip_openai_prefix: bool = True
     parse_retry_capability: Literal["bounded", "single_attempt"] = "bounded"
     configuration_fields: tuple[ProviderConfigurationField, ...] = ()

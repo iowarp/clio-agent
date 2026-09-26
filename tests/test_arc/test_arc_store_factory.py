@@ -18,6 +18,7 @@ import pytest
 
 from clio_agent.arc import clio_core_daemon_version as daemon_version
 from clio_agent.arc import runtime_stop, storage
+from clio_agent.arc.clio_core_config import host_key
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.storage import LocalFSStore, make_arc_store
 
@@ -87,7 +88,7 @@ def test_default_clio_core_dir_falls_back_to_user_data(monkeypatch, tmp_path):
     from clio_agent import paths
 
     monkeypatch.setattr(paths, "user_data_dir", lambda: tmp_path / "data")
-    assert storage._default_cte_dir() == tmp_path / "data" / "cte"
+    assert storage._default_cte_dir() == tmp_path / "data" / "cte" / "hosts" / host_key()
 
 
 def test_factory_local(tmp_path):

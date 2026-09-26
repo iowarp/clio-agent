@@ -46,8 +46,9 @@ CLIO_PREFIX="${CLIO_PREFIX:-$HOME/.local/share/clio}"
 CLIO_PORT="${CLIO_PORT:-17800}"
 CLIO_BIN_DIR="${CLIO_BIN_DIR:-$HOME/.local/bin}"
 # Agent data stays with the selected install. The clio-core daemon does NOT: there
-# is exactly one per machine (host-global ~/.clio state, fixed ports, one CTE
-# config), shared by every CLIO, so the launcher never scopes its identity.
+# is exactly one per machine (its state under ~/.clio/hosts/<host>, fixed ports,
+# one CTE config per host), shared by every CLIO on that machine, so the
+# launcher never scopes its identity.
 export CLIO_DATA_DIR="${CLIO_DATA_DIR:-$CLIO_PREFIX/data}"
 export PATH="$CLIO_BIN_DIR:$PATH"
 # The installer provisions supported MCP launchers into CLIO_BIN_DIR. Ensure a
@@ -55,8 +56,19 @@ export PATH="$CLIO_BIN_DIR:$PATH"
 # non-interactive SSH session whose login profile did not extend PATH.
 # File access defaults to clio's active workspace + /tmp (the file policy injects
 # the workspace root); set CLIO_ALLOWED_ROOTS only to deliberately widen that.
-PIDFILE="$CLIO_PREFIX/clio-server.pid"
-SERVER_LOG="${CLIO_LOG:-$CLIO_PREFIX/clio-server.log}"
+# The install prefix is often on a home directory shared by every node of a
+# cluster (login and compute nodes mount the same NFS home). A server and its
+# pid belong to one host, so the launcher's per-server files are keyed by it:
+# a login node's pidfile must never describe a compute node's server.
+CLIO_HOST_ID="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo localhost)"
+PIDFILE="$CLIO_PREFIX/clio-server.$CLIO_HOST_ID.pid"
+SERVER_LOG="${CLIO_LOG:-$CLIO_PREFIX/clio-server.$CLIO_HOST_ID.log}"
+# Loopback is this host: never send it to a site proxy. Cluster nodes often
+# export http_proxy for the whole environment, and a proxied check of
+# http://127.0.0.1:PORT is answered by the proxy (a compute node's squid
+# replied 503) for a server that is not running here.
+export no_proxy="127.0.0.1,localhost,::1${no_proxy:+,$no_proxy}"
+export NO_PROXY="127.0.0.1,localhost,::1${NO_PROXY:+,$NO_PROXY}"
 GACT_LOG="$CLIO_PREFIX/gact-stderr.log"
 SERVER_BIN="$CLIO_PREFIX/clio-agent/.venv/bin/clio-agent"
 GACT_BIN="$CLIO_PREFIX/gact"
@@ -80,13 +92,13 @@ err()  { printf "${RED}xx${RESET} %s\n" "$*" >&2; }
 # "server is up" so the TUI can surface and resolve the dependency state.
 health() {
   local code
-  code="$(curl -sS -m 1 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$CLIO_PORT/v1/health" 2>/dev/null || true)"
+  code="$(curl --noproxy '*' -sS -m 1 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$CLIO_PORT/v1/health" 2>/dev/null || true)"
   [[ "$code" = "200" || "$code" = "503" ]]
 }
 
 # serving_web returns 0 when the running server is serving the web SPA at "/".
 serving_web() {
-  curl -sS -m 1 "http://127.0.0.1:$CLIO_PORT/" 2>/dev/null | grep -qiE "<html|<!doctype html"
+  curl --noproxy '*' -sS -m 1 "http://127.0.0.1:$CLIO_PORT/" 2>/dev/null | grep -qiE "<html|<!doctype html"
 }
 
 # update_check prints a one-line hint when the installed clio-agent is behind

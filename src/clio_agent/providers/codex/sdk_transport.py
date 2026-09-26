@@ -210,9 +210,12 @@ def _build_model_response(
 def _resolve_effort(params: dict[str, Any]) -> ReasoningEffort | None:
     """Resolve the codex reasoning effort from the thinking plan.
 
-    ``codex_reasoning_effort`` is set by ``providers.thinking.resolve_thinking``
-    (off->``none``, low/medium/high pass through). ``None`` means the knob was
-    unset -- no effort is pinned and codex uses its own default.
+    ``codex_reasoning_effort`` is set by ``lm.dialect_wire.thinking_wire``'s
+    codex branch, driven by the model's own ``ThinkingSpec``
+    (``providers.capabilities.dialects.codex``): off -> ``none``, a level ->
+    its SDK-native spelling. ``None`` means the knob was unset — no effort is
+    pinned and codex uses its own default. This is the fix for the silent
+    no-op: a requested level now reaches ``turn/start``.
     """
     effort = params.get("codex_reasoning_effort")
     return ReasoningEffort(str(effort)) if effort else None

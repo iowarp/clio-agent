@@ -104,6 +104,11 @@ class _FlowResult:
     reason: str = ""
     lock: threading.Lock = field(default_factory=threading.Lock)
     claimed: bool = False
+    #: Set exactly when ``status`` leaves ``"pending"`` -- the flow's own
+    #: settlement signal, so a waiter observes the terminal state itself
+    #: rather than an upstream event (e.g. the loopback callback) that the
+    #: background resolver thread has not finished acting on yet.
+    settled: threading.Event = field(default_factory=threading.Event)
 
 
 class CodexLoginFlow:
@@ -206,13 +211,31 @@ class CodexLoginFlow:
         """Abandon the flow: close the loopback listener and mark it failed."""
 
         if self._claim():
-            with self._result.lock:
-                self._result.status, self._result.reason = "failed", "cancelled"
+            self._settle("failed", "cancelled")
         self._close_loopback()
 
     def status(self) -> tuple[FlowState, str]:
         with self._result.lock:
             return self._result.status, self._result.reason
+
+    def wait_settled(self, timeout: float) -> tuple[FlowState, str]:
+        """Block until the flow leaves ``"pending"`` (or ``timeout`` elapses).
+
+        The browser/device paths resolve on background threads, so
+        :meth:`status` read right after the triggering event (a loopback
+        callback, a device-poll answer) can still be ``"pending"``. This waits
+        on the flow's own settlement signal instead of that upstream event.
+
+        Args:
+            timeout: Maximum seconds to wait.
+
+        Returns:
+            The ``(status, reason)`` pair at return time -- still
+            ``("pending", "")`` only if ``timeout`` elapsed first.
+        """
+
+        self._result.settled.wait(timeout=timeout)
+        return self.status()
 
     def credential(self) -> CodexCredential | None:
         return self._credential
@@ -259,14 +282,17 @@ class CodexLoginFlow:
             expires_at_ms=int(time.time() * 1000) + tokens.expires_in * 1000,
             account_id=account_id,
         )
-        with self._result.lock:
-            self._result.status = "complete"
+        self._settle("complete", "")
         self._close_loopback()
 
     def _finish_failed(self, message: str) -> None:
-        with self._result.lock:
-            self._result.status, self._result.reason = "failed", message
+        self._settle("failed", message)
         self._close_loopback()
+
+    def _settle(self, status: FlowState, reason: str) -> None:
+        with self._result.lock:
+            self._result.status, self._result.reason = status, reason
+        self._result.settled.set()
 
     def _close_loopback(self) -> None:
         if self._loopback is not None:

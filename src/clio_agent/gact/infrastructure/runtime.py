@@ -16,6 +16,7 @@ import httpx
 
 from clio_agent.gact.infrastructure.clio_agent_deploy import ClaimResult, parse_claim
 from clio_agent.gact.infrastructure.drivers import (
+    LOOPBACK_ONLY_SERVICES,
     DriverPlan,
     build_driver_plan,
     service_connection_port,
@@ -158,6 +159,7 @@ class InfrastructureRuntime:
                     url, strategy = await self._resolve_connection(
                         target_id,
                         port,
+                        service_id=service.id,
                         previous_url=refreshed.connection_url,
                         previous_strategy=refreshed.connection_strategy,
                     )
@@ -396,6 +398,7 @@ class InfrastructureRuntime:
                 connection_url, strategy = await self._resolve_connection(
                     request.target_id,
                     connection_port,
+                    service_id=service_id,
                     previous_url=connection_url,
                     previous_strategy=strategy,
                     wait_for_direct=request.action in {"install", "reinstall", "start"},
@@ -421,10 +424,18 @@ class InfrastructureRuntime:
         target_id: str,
         port: int,
         *,
+        service_id: str,
         previous_url: str | None = None,
         previous_strategy: ConnectionStrategy | None = None,
         wait_for_direct: bool = False,
     ) -> tuple[str, ConnectionStrategy]:
+        """Where the desktop reaches a running service, and how.
+
+        A service that listens on the target's loopback only
+        (:data:`LOOPBACK_ONLY_SERVICES`) is never tried at the host's address:
+        that attempt cannot succeed, and on a route through jump hosts it
+        spent half a minute on retries before the forward even started.
+        """
         target = self.store.target(target_id)
         if target is None:
             raise KeyError(target_id)
@@ -440,7 +451,7 @@ class InfrastructureRuntime:
         if target.kind != "ssh" or target.ssh is None:
             raise ValueError("Managed services require a local or SSH target")
         host = target.ssh.host.strip()
-        if host:
+        if host and service_id not in LOOPBACK_ONLY_SERVICES:
             direct = f"http://{host}:{port}"
             attempts = 10 if wait_for_direct else 1
             for attempt in range(attempts):

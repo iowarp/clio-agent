@@ -19,7 +19,10 @@ set -euo pipefail
 CLIO_PREFIX="${CLIO_PREFIX:-$HOME/.local/share/clio}"
 CLIO_PORT="${CLIO_PORT:-17800}"
 CLIO_BIN_DIR="${CLIO_BIN_DIR:-$HOME/.local/bin}"
-PIDFILE="$CLIO_PREFIX/clio-server.pid"
+# Per-host, like the launcher's (shared cluster homes); the unkeyed name is
+# what launchers before that change wrote.
+PIDFILE="$CLIO_PREFIX/clio-server.$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo localhost).pid"
+[ -f "$PIDFILE" ] || PIDFILE="$CLIO_PREFIX/clio-server.pid"
 CLIO_CONFIG="$HOME/.config/clio-agent"
 GACT_CONFIG="$HOME/.config/gact"
 LAUNCHER="$CLIO_BIN_DIR/clio"

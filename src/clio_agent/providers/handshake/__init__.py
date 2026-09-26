@@ -101,7 +101,19 @@ async def run_handshake(
 
     On a fresh (non-cached) run, live-discovered limits are recorded into the local
     model-limits DB (and disagreements logged), so the cascade learns over time.
+
+    ``provider`` defaults to the registry row for ``ctx.provider_id``: the
+    handshake resolves its endpoint DIALECT from that row's ``litellm_prefix``
+    (``provider_kind`` alone collapses OpenRouter, a self-hosted vLLM server and
+    every cloud OpenAI-compatible API onto ``"openai"``). Without it an
+    OpenRouter probe fetched the default text-only listing (458 of 628 models)
+    and never ran the OpenRouter adapter. A custom endpoint with no registry row
+    keeps ``None`` and resolves from its kind, as before.
     """
+    if provider is None:
+        from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
+
+        provider = get_provider(ctx.provider_id)
     handshake = get_handshake_for(ctx.provider_kind, provider)
     key = cache.cache_key(ctx.provider_id, ctx.api_base)
 

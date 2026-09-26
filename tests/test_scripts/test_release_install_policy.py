@@ -59,7 +59,9 @@ def test_launchers_never_scope_the_host_global_clio_core_daemon() -> None:
     port, client waiting on 9413). Agent data still follows the install.
     """
 
-    remote_driver = _text("src/clio_agent/gact/infrastructure/drivers.py")
+    remote_driver = _text("src/clio_agent/gact/infrastructure/drivers.py") + _text(
+        "src/clio_agent/gact/infrastructure/clio_agent_deploy.py"
+    )
     for relative_path in ("install/clio", "install/clio.ps1"):
         contents = _text(relative_path)
         for scoped in ("CLIO_RUNTIME_STATE_DIR", "CLIO_ARC_CTE_DIR", "CLIO_CORE_PORT"):

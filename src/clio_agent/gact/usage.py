@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any, Optional
 # runtime.globals (where _active_lm_last_reasoning consumes it). Reuse it here
 # instead of carrying a second copy.
 from clio_agent.gact.runtime.globals import _entry_reasoning_text
-from clio_agent.runtime import trace
+from clio_agent.runtime import trace, turn_lm_ledger
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -114,6 +114,11 @@ def _all_known_lms(app: "FastAPI") -> list[Any]:
         side = getattr(agent, attr, None) if agent is not None else None
         if side is not None and side not in lms:
             lms.append(side)
+    # The LMs this turn built for itself -- every expert / dynamic-agent forward
+    # makes a fresh one from its resolved provider spec (runtime.turn_lm_ledger).
+    for built in turn_lm_ledger.ledger_lms():
+        if not any(built is known for known in lms):
+            lms.append(built)
     return lms
 
 

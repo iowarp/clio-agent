@@ -134,9 +134,9 @@ def build_sdk_options(
     if stderr is not None:
         kwargs["stderr"] = stderr
     if thinking is not None:
-        # resolve_thinking carries the SDK effort inside the thinking config so
-        # every path (and the session-pool key) sees one value; the SDK takes it
-        # as its own option (CLI ``--effort``).
+        # dialect_wire.thinking_wire carries the SDK effort inside the
+        # claude_code_thinking config so every path (and the session-pool key)
+        # sees one value; the SDK takes it as its own option (CLI ``--effort``).
         config = dict(thinking)
         effort = config.pop("effort", None)
         kwargs["thinking"] = config

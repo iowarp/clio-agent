@@ -12,31 +12,17 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
+from clio_schemas.model_capabilities import HF_PIPELINE_TAGS
+
 if TYPE_CHECKING:
     from clio_agent.providers.capabilities.hf_repo import RepoResolution
 
 
-#: Hub ``pipeline_tag`` -> task (``records.TASKS``: the Hub's own spelling, plus
-#: two synonyms folded in). A tag not listed decides nothing.
-PIPELINE_TASKS: dict[str, str] = {
-    tag: tag
-    for tag in (
-        "text-generation",
-        "image-text-to-text",
-        "audio-text-to-text",
-        "any-to-any",
-        "text-classification",
-        "feature-extraction",
-        "text-ranking",
-        "automatic-speech-recognition",
-        "text-to-speech",
-        "text-to-image",
-        "text-to-video",
-        "mask-generation",
-        "image-segmentation",
-    )
-} | {
-    # Hub synonyms folded onto the recorded tag.
+#: Hub ``pipeline_tag`` -> task (``records.TASKS``: every Hub id verbatim, plus
+#: two synonyms folded onto the tag the rest of CLIO records for that kind of
+#: model -- an embedding model is ``feature-extraction`` whichever the card
+#: says). A value outside the Hub vocabulary decides nothing.
+PIPELINE_TASKS: dict[str, str] = {tag: tag for tag in HF_PIPELINE_TAGS} | {
     "sentence-similarity": "feature-extraction",
     "text-to-audio": "text-to-speech",
 }

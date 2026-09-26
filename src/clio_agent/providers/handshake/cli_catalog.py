@@ -9,10 +9,15 @@ also consults the persisted refresh overlay
 This handshake NEVER re-runs discovery itself: the handshake's read path is hit on
 every connect/doctor/model-picker-open, and a live CLI probe there would mean every
 one of those pays a real (for claude_code, BILLED) round-trip. It only reads
-whatever the last refresh wrote, falling back to the static registry catalog (the
-:class:`NoOpHandshake` behavior) when no overlay entry exists yet (fresh install) —
-this is what keeps the #740 guarantee (a CLI provider's models always resolve a
-context window) intact regardless of whether a refresh has ever run.
+whatever the last refresh wrote, falling back to :meth:`CliCatalogHandshake.
+_fallback_models` when no overlay entry exists yet (fresh install) -- this is
+what keeps the #740 guarantee (a CLI provider's models always resolve a
+context window) intact regardless of whether a refresh has ever run. The
+DEFAULT fallback is :class:`NoOpHandshake`'s static registry catalog
+(``provider.model_catalog``); :class:`ClaudeCodeCatalogHandshake` overrides it
+to read the maintained catalog's own disk cache instead (see that class), since
+per owner ruling Claude Code's model identity and capabilities have exactly
+ONE trusted source, never a second hand-typed candidate list.
 
 **Context/output limits (#1211 review D4).** ``model_discovery`` resolves each
 discovered model's context/output limit ONCE, at explicit refresh time, and
@@ -59,6 +64,7 @@ from clio_agent.providers.capabilities.records import (
     DeploymentCapabilities,
     Fact,
     ModelCapabilities,
+    ThinkingSpec,
     modalities_from_capabilities,
     unknown,
 )
@@ -97,6 +103,31 @@ def _overlay_capabilities(row: dict[str, Any]) -> tuple[str, ...]:
     if not isinstance(values, list):
         return ()
     return tuple(str(value).strip() for value in values if str(value).strip())
+
+
+def _thinking_fact_for(provider_kind: str, raw: dict[str, Any]) -> Fact[ThinkingSpec]:
+    """This overlay-sourced row's ``ThinkingSpec`` fact, dispatched by CLI provider.
+
+    Codex's own SDK effort vocabulary and Claude Code's CLI-reported effort
+    levels need different per-provider translation
+    (:mod:`clio_agent.providers.capabilities.dialects.codex`/``.claude_code``);
+    every other (future) no-HTTP-surface CLI provider has no known thinking
+    story here yet, so it stays unknown.
+    """
+
+    if provider_kind == "codex":
+        from clio_agent.providers.capabilities.dialects import (
+            codex as codex_dialect,  # noqa: PLC0415
+        )
+
+        return codex_dialect.build_thinking_spec(raw)
+    if provider_kind == "claude_code":
+        from clio_agent.providers.capabilities.dialects import (  # noqa: PLC0415
+            claude_code as claude_code_dialect,
+        )
+
+        return claude_code_dialect.build_thinking_spec(raw)
+    return unknown()
 
 
 class CliCatalogHandshake(NoOpHandshake):
@@ -154,11 +185,28 @@ class CliCatalogHandshake(NoOpHandshake):
                     "supported_effort_levels": list(m.get("supported_effort_levels") or []),
                     "cli_values": list(m.get("cli_values") or []),
                     "effort_evidence_failure": str(m.get("effort_evidence_failure") or ""),
+                    # The maintained claude-code-models.json catalog's own
+                    # shipped-default thinking level for this model, when it
+                    # declares one (data, never a name-matched heuristic).
+                    "shipped_default_effort": str(m.get("shipped_default_effort") or ""),
                     _OVERLAY_CHECKED_KEY: True,
                 }
                 for m in wire["models"]
                 if isinstance(m, dict) and m.get("id")
             ]
+        return await self._fallback_models(client, ctx)
+
+    async def _fallback_models(self, client: Any, ctx: HandshakeContext) -> list[dict[str, Any]]:
+        """The "no overlay yet" fallback (a fresh install, never refreshed).
+
+        Default: :class:`~clio_agent.providers.handshake.noop.NoOpHandshake`'s
+        generic registry-catalog read (``provider.model_catalog``) -- the right
+        answer for a CLI provider with no other data source. A subclass with a
+        richer offline data source (see :class:`ClaudeCodeCatalogHandshake`)
+        overrides this instead of ``discover_models`` itself, so the overlay-
+        first logic above is never duplicated.
+        """
+
         return await super().discover_models(client, ctx)
 
     def models_provenance(self, ctx: HandshakeContext) -> tuple[str, str]:
@@ -237,6 +285,7 @@ class CliCatalogHandshake(NoOpHandshake):
                 if caps
                 else unknown()
             ),
+            thinking=_thinking_fact_for(ctx.provider_kind, raw),
         )
         deployment = DeploymentCapabilities(
             provider_id=ctx.provider_id,
@@ -349,6 +398,48 @@ class ClaudeCodeCatalogHandshake(CliCatalogHandshake):
             auth=AuthState.DEFERRED,
             error="Claude Code is installed but has not been verified. Check the provider to sign in.",
         )
+
+    async def _fallback_models(self, client: Any, ctx: HandshakeContext) -> list[dict[str, Any]]:
+        """Before any refresh has ever run: the maintained catalog's OWN disk cache.
+
+        NEVER the generic :class:`~clio_agent.providers.handshake.noop.NoOpHandshake`
+        registry-catalog read (``provider.catalog.Provider.model_catalog``) --
+        per owner ruling, Claude Code model existence and per-model modality
+        capabilities come from ONE trusted source, the maintained GitHub
+        catalog document (:mod:`clio_agent.providers.model_discovery.
+        claude_code_catalog`), never a second, hand-typed candidate list that
+        can drift from it. :func:`~.claude_code_catalog.cached_claude_code_catalog`
+        is disk-only (no network), matching this ambient/passive path's zero-
+        network-call contract -- the same guarantee
+        :class:`~clio_agent.providers.handshake.noop.NoOpHandshake` makes, just
+        backed by a real (if possibly stale) fetched document instead of a
+        compiled-in Python tuple. Each row's ``capability_evidence`` (already
+        typed by the catalog module itself, ``reason="modality_cataloged"``/
+        ``"modality_uncataloged"``) rides through unchanged.
+
+        No disk cache at all (never fetched, on this exact machine) degrades to
+        an empty candidate list -- honest "nothing known yet", never a guess.
+        """
+
+        del client
+        from clio_agent.providers.model_discovery.claude_code_catalog import (  # noqa: PLC0415
+            cached_claude_code_catalog,
+        )
+
+        catalog, _error = cached_claude_code_catalog()
+        if catalog is None:
+            return []
+        return [
+            {
+                "id": model["id"],
+                "name": model["name"],
+                "description": "",
+                "capabilities": list(model.get("capabilities") or []),
+                "capability_evidence": model.get("capability_evidence") or {},
+                "shipped_default_effort": str(model.get("shipped_default_effort") or ""),
+            }
+            for model in catalog.models
+        ]
 
 
 __all__ = ["CodexCatalogHandshake", "ClaudeCodeCatalogHandshake", "CliCatalogHandshake"]

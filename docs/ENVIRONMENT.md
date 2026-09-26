@@ -149,7 +149,6 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_LM_API_BASE` | `lm.api_base` | str | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_LM_CONTEXT_WINDOW` | `lm.context_window` | int | `0` | `src/clio_agent/config.py` |
 | `CLIO_LM_DEFER_TIKTOKEN` | `lm.defer_tiktoken` | bool | `true` | `src/clio_agent/lm/factory.py` |
-| `CLIO_LM_DISABLE_THINKING` | `lm.disable_thinking` | bool | `false` | `src/clio_agent/lm/factory.py` |
 | `CLIO_LM_GUIDED_OUTPUT` | `lm.guided_output` | bool | `false` | `src/clio_agent/lm/adapters.py` |
 | `CLIO_LM_INTER_TOKEN_IDLE_S` | `limits.lm_inter_token_idle_s` | float | `120.0` | `src/clio_agent/runtime/lm_activity.py` |
 | `CLIO_LM_MAX_TOKENS` | `lm.max_tokens` | int | _(unset)_ | `src/clio_agent/config.py` |
@@ -160,8 +159,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_LM_PLANNER_TEMPERATURE` | `lm.planner_temperature` | float | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_LM_PRESENCE_PENALTY` | `lm.presence_penalty` | float | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_LM_PROVIDER` | `lm.provider` | str | `lm_studio` | `src/clio_agent/config.py` |
-| `CLIO_LM_REASONING_MODEL` | `lm.reasoning_model` | str | _(unset)_ | `src/clio_agent/lm/adapters.py` |
-| `CLIO_LM_STOP_SEQUENCES` | `lm.stop_sequences` | str | _(unset)_ | `src/clio_agent/lm/factory.py` |
+| `CLIO_LM_STOP_SEQUENCES` | `lm.stop_sequences` | str | _(unset)_ | `src/clio_agent/lm/request_builder.py` |
 | `CLIO_LM_TEMPERATURE` | `lm.temperature` | float | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_LM_THINKING_BUDGET` | `lm.thinking_budget` | int | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_LM_THINKING_LEVEL` | `lm.thinking_level` | str | _(unset)_ | `src/clio_agent/config.py` |

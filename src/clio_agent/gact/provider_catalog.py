@@ -14,6 +14,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
+from clio_agent.gact.modality_evidence import DOCUMENTED_MODALITY_REASONS
 from clio_agent.gact.types import LMProviderPreset
 from clio_agent.providers import model_discovery
 from clio_agent.providers.capabilities import invalidation
@@ -26,6 +27,7 @@ from clio_agent.providers.capabilities.records import (
     role_for_task,
     unknown,
 )
+from clio_agent.providers.capabilities.tags import capability_tags
 from clio_agent.providers.catalog import get_provider
 from clio_agent.providers.handshake import HandshakeContext, HandshakeReport, run_handshake
 from clio_agent.providers.handshake.model import (
@@ -35,7 +37,6 @@ from clio_agent.providers.handshake.model import (
     DiscoveredModelFacts,
 )
 from clio_agent.providers.identity import deployment_key
-from clio_agent.providers.reasoning_levels import model_reasoning
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,74 @@ EVIDENCED_CATALOG_SOURCES: frozenset[str] = frozenset({"live", "overlay"})
 #: Every other kind is probed live and keeps a last-good list for empty probes.
 _CLI_CATALOG_KINDS: frozenset[str] = frozenset({"codex", "claude_code"})
 
+#: Codex SDK reasoning-effort vocabulary -> CLIO level, for reading a raw
+#: discovered row's own ``default_reasoning_effort`` back into CLIO
+#: vocabulary in :func:`_reasoning_wire_block` (the catalog's ``reasoning.
+#: default`` field) -- the SAME table :mod:`.capabilities.dialects.codex`
+#: uses to build the model's ``ThinkingSpec`` in the first place.
+def _codex_to_level() -> dict[str, str]:
+    from clio_agent.providers.capabilities.dialects.codex import CODEX_TO_LEVEL  # noqa: PLC0415
+
+    return CODEX_TO_LEVEL
+
+
+def _reasoning_wire_block(effective_thinking: Any, profile: DiscoveredModel) -> dict[str, Any]:
+    """Build the catalog's ``reasoning`` wire block straight off the effective
+    ``ThinkingDecision`` (model-capabilities brief 5.5) -- the levels a person
+    can actually choose for THIS model, never a second, provider-name-keyed
+    mapping table (the deleted ``providers.reasoning_levels.model_reasoning``).
+
+    ``default``/``default_source`` prefer a model's own shipped default
+    (``profile.raw["shipped_default_effort"]`` -- data, e.g. claude_code's
+    maintained catalog) over a provider-reported default
+    (``profile.raw["default_reasoning_effort"]`` -- codex's own SDK default,
+    translated through its own vocabulary table), and are empty when neither
+    applies or the value isn't among this model's own effective levels.
+    """
+
+    spec = effective_thinking.spec
+    if spec is None:
+        return {
+            "supported": False,
+            "parameter": "",
+            "levels": [],
+            "default": "",
+            "default_source": "",
+            "source": "no_thinking_record",
+        }
+    if spec.mechanism in ("none", "always_on"):
+        levels: list[str] = []
+    elif spec.levels:
+        levels = ["off", *spec.levels]
+    else:
+        # budget_tokens with no explicit per-model levels: CLIO's own generic
+        # ladder is what the request builder actually offers (dialect_wire.py).
+        levels = ["off", "low", "medium", "high"]
+
+    default = ""
+    default_source = ""
+    shipped = str(profile.raw.get("shipped_default_effort") or "")
+    if shipped and shipped in levels:
+        default, default_source = shipped, "clio_shipped"
+    else:
+        raw_default = str(profile.raw.get("default_reasoning_effort") or "")
+        mapped = _codex_to_level().get(raw_default, "") if raw_default else ""
+        if mapped and mapped in levels:
+            default, default_source = mapped, "provider"
+
+    block: dict[str, Any] = {
+        "supported": bool(levels) or effective_thinking.known,
+        "parameter": effective_thinking.control or "",
+        "levels": levels,
+        "default": default,
+        "default_source": default_source,
+        "source": effective_thinking.decided_by,
+    }
+    failure = str(profile.raw.get("effort_evidence_failure") or "")
+    if failure:
+        block["reason"] = failure
+    return block
+
 #: Typed :class:`~clio_agent.providers.handshake.model.HandshakeReport.error_code`
 #: values that mean "a missing OPTIONAL dependency", never a generic failure --
 #: the UI can offer an Install action instead of just reporting broken. Kept
@@ -173,7 +242,7 @@ def model_catalog_row(
     capability_evidence = profile.raw.get("capability_evidence") or {}
     modality_evidenced = (
         isinstance(capability_evidence, dict)
-        and capability_evidence.get("reason") == "modality_documented"
+        and capability_evidence.get("reason") in DOCUMENTED_MODALITY_REASONS
     )
     effective = get_effective_capabilities(report.provider_id, report.api_base, profile.id)
     deployment = invalidation.get_deployment_capabilities(
@@ -228,14 +297,15 @@ def model_catalog_row(
         "free": effective.free.value,
         "router": effective.router.value,
         "pricing": dict(effective.pricing.value or {}) if effective.pricing.known else None,
-        # The levels a person can actually choose for THIS model, derived from
-        # provider truth and restricted to what resolve_thinking maps.
-        "reasoning": model_reasoning(
-            preset.provider,
-            profile,
-            is_reasoning=effective.thinking.known,
-            reasoning_param=effective.thinking.control or "",
-        ),
+        # Every tag the picker renders and filters on, each with its evidence
+        # (clio_schemas.ModelCapabilityTags). Absent tag = no source stated it.
+        "capability_tags": capability_tags(
+            effective, model_key=effective.model_key or profile.id
+        ).model_dump(mode="json"),
+        # The levels a person can actually choose for THIS model, derived
+        # directly from the effective capabilities' own ThinkingDecision --
+        # never a second, provider-name-keyed mapping table.
+        "reasoning": _reasoning_wire_block(effective.thinking, profile),
         "native_tool_calling": bool(effective.tools.value),
         "context_window": effective.context.value,
         "loaded_context_window": loaded_context_window,
@@ -415,6 +485,7 @@ async def _codex_sdk_transport_row(preset: LMProviderPreset, *, refresh: bool) -
             "unavailable",
             (f"{_UNCHECKED_REASON_PREFIX}: run an explicit provider check to ask the Codex SDK"),
         )
+    _record_sdk_endpoint(preset.id)
     profiles = tuple(
         _record_sdk_model(preset.id, row, observed_at=evidence_generated_at or now)
         for row in discovered
@@ -450,16 +521,34 @@ async def _codex_sdk_transport_row(preset: LMProviderPreset, *, refresh: bool) -
     }
 
 
-def _record_sdk_model(
-    provider_id: str, row: dict[str, Any], *, observed_at: str
-) -> DiscoveredModel:
+def _record_sdk_endpoint(provider_id: str) -> None:
+    """Record the SDK transport's endpoint record (the codex dialect's thinking control)."""
+    from clio_agent.providers.capabilities import endpoint as capability_endpoint  # noqa: PLC0415
+    from clio_agent.providers.codex.constants import LITELLM_PROVIDER_SDK  # noqa: PLC0415
+
+    invalidation.record_endpoint_capabilities(
+        capability_endpoint.build_endpoint_capabilities(
+            provider_id,
+            _CODEX_SDK_API_BASE,
+            "codex",
+            "",
+            custom_llm_provider=LITELLM_PROVIDER_SDK,
+        )
+    )
+
+
+def _record_sdk_model(provider_id: str, row: dict[str, Any], *, observed_at: str) -> DiscoveredModel:
     """Record one SDK-discovered model's facts and return its bare identity.
 
     The SDK transport is its own endpoint (:data:`_CODEX_SDK_API_BASE`), so its
     records never overwrite the direct transport's for the same model id. The
     row's ``capabilities`` list is the SDK's own report of the model's input
-    modalities; with no list, modalities stay unknown.
+    modalities; with no list, modalities stay unknown. Its reasoning efforts
+    become the model's ``ThinkingSpec`` through the SAME codex dialect mapping
+    the direct transport's handshake uses.
     """
+    from clio_agent.providers.capabilities.dialects import codex as codex_dialect  # noqa: PLC0415
+
     model_id = str(row["id"])
     capabilities = row.get("capabilities")
     detail = "Codex SDK model/list capabilities"
@@ -478,6 +567,7 @@ def _record_sdk_model(
                 if isinstance(capabilities, list) and capabilities
                 else unknown()
             ),
+            thinking=codex_dialect.build_thinking_spec(row),
         ),
         deployment=DeploymentCapabilities(
             provider_id=provider_id,

@@ -83,6 +83,17 @@ _EVIDENCE_LABEL_BY_SOURCE: dict[str, str] = {
     "overlay": "discovery_overlay",
 }
 
+#: capability_evidence reasons (providers/model_discovery/modality_evidence.py)
+#: that count as a real, non-guessed "documented_catalog" claim on a ``static``
+#: models_source row -- never a live probe, but never a guess either:
+#: ``modality_documented`` is NoOpHandshake's generic registry claim and
+#: ``modality_cataloged`` the Claude Code maintained-catalog fallback. The
+#: negative-evidence reasons (``modality_unreported``/``modality_uncataloged``)
+#: are not this arm.
+DOCUMENTED_MODALITY_REASONS: frozenset[str] = frozenset(
+    {"modality_documented", "modality_cataloged"}
+)
+
 
 def _catalog_row_aliases(row: dict[str, Any]) -> tuple[str, ...]:
     """A catalog row's own recorded aliases (:func:`~clio_agent.gact.provider_catalog.
@@ -209,7 +220,7 @@ def live_model_modalities(app: Any, model: ModelRef) -> ModalityEvidence:
     if report is not None and report.ok and report.models_source == "static":
         discovered = report.model(model.model_id)
         evidence = discovered.raw.get("capability_evidence") if discovered is not None else None
-        if isinstance(evidence, dict) and evidence.get("reason") == "modality_documented":
+        if isinstance(evidence, dict) and evidence.get("reason") in DOCUMENTED_MODALITY_REASONS:
             from clio_agent.providers.capabilities.accessor import (  # noqa: PLC0415
                 get_effective_capabilities,
             )
@@ -267,6 +278,7 @@ def image_input_capability(app: Any, model: ModelRef) -> tuple[bool, str]:
 
 
 __all__ = [
+    "DOCUMENTED_MODALITY_REASONS",
     "EVIDENCED_MODALITY_SOURCES",
     "IMAGE_INPUT_REASONS",
     "ModalityEvidence",

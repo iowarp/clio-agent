@@ -389,7 +389,7 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
 #
 # The shared daemon is released when the LAST client detaches ("I leave the TUI,
 # everything gets released" — permanence rides the on-disk storage tier, not a warm
-# process). Each process registers its PID under ``~/.clio/clio-runtime.clients/`` and,
+# process). Each process registers its PID under ``~/.clio/hosts/<host>/clio-runtime.clients/`` and,
 # on graceful shutdown, deregisters + stops the daemon iff no LIVE client remains. A
 # SIGKILLed client's stale PID file is pruned by the liveness check (start-time guards
 # against PID reuse) on the next register/release — at most one warm instance, no leak.
