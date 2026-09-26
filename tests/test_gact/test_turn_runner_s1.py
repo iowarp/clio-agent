@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -28,6 +29,7 @@ from clio_agent.gact.turn_runner import (
     TurnRunner,
     session_busy_error_payload,
 )
+from tests.turn_signals import TURN_SIGNAL_BACKSTOP_S
 
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
 # test's ``build_app(agent=...)`` host fake.
@@ -248,6 +250,36 @@ class _SlowAgent:
         )()
 
 
+class _InFlightUntilAgent:
+    """Holds a turn's executor thread in flight until a condition on the app holds.
+
+    The shutdown tests used to sleep 10 s / 30 s here, and the lifespan exit then
+    waited for that executor thread to finish (the whole sleep, 31 s measured) long
+    after the drain had settled the turn. Returning once the drain has done its part
+    keeps the same path under test without the dead wait.
+    """
+
+    def __init__(self, until: str) -> None:
+        self.until = until  # "cooperative_cancel" | "task_hard_cancelled"
+        self.app: Any = None
+
+    def _released(self, session_id: str) -> bool:
+        if self.until == "cooperative_cancel":
+            return session_id in self.app.state.cancel_flags
+        # Ignores the cooperative signal: returns only after the drain hard-cancelled
+        # the turn's asyncio task, like a provider call that never checks the flag.
+        return not self.app.state.turn_runner.busy(session_id)
+
+    def forward(self, question: str, session_id: str):
+        deadline = time.monotonic() + TURN_SIGNAL_BACKSTOP_S
+        while not self._released(session_id):
+            assert time.monotonic() < deadline, f"never released ({self.until})"
+            time.sleep(0.01)
+        return type(
+            "Pred", (), {"answer": "done", "selected_expert": "", "routing_rationale": ""}
+        )()
+
+
 def _new_session(client: TestClient) -> str:
     return client.post("/v1/sessions", json={"title": "t"}).json()["id"]
 
@@ -344,7 +376,7 @@ def test_three_accepted_steers_keep_three_identities_through_idle_boundaries(
             assert by_id[message_id]["metadata"]["mid_turn_steer"] is True
 
 
-def _wait_busy(app, sid: str, timeout: float = 3.0) -> None:
+def _wait_busy(app, sid: str, timeout: float = TURN_SIGNAL_BACKSTOP_S) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline and not app.state.turn_runner.busy(sid):
         time.sleep(0.02)
@@ -497,7 +529,9 @@ def test_shutdown_does_not_redrive_deferred_resume(tmp_path: Path) -> None:
 
     from clio_agent.gact.loop_inbox import enqueue_user_steer
 
-    app = build_app(sessions_path=tmp_path / "s.json", agent=_SlowAgent(sleep_s=10.0))
+    agent = _InFlightUntilAgent("cooperative_cancel")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    agent.app = app
     with TestClient(app) as client:
         sid = _new_session(client)
         assert _post_message(client, sid, "intervening").status_code == 200
@@ -514,20 +548,21 @@ def test_shutdown_drains_in_flight_turn(tmp_path: Path) -> None:
     """Lifespan shutdown settles an in-flight turn deterministically — the drain
     outcome records it and no task is left pending."""
 
-    app = build_app(sessions_path=tmp_path / "s.json", agent=_SlowAgent(sleep_s=30.0))
+    agent = _InFlightUntilAgent("task_hard_cancelled")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    agent.app = app
     with TestClient(app) as client:
         sid = _new_session(client)
         assert _post_message(client, sid, "hi").status_code == 200
         # Ensure the turn is actually in flight before we tear down.
-        deadline = time.monotonic() + 3.0
-        while time.monotonic() < deadline and not app.state.turn_runner.busy(sid):
-            time.sleep(0.02)
-        assert app.state.turn_runner.busy(sid) is True
+        _wait_busy(app, sid)
     # TestClient context exit ran the lifespan shutdown → drain.
     outcome = app.state.turn_drain_outcome
     assert outcome.total >= 1
     assert outcome.reason == DRAIN_REASON_SERVER_SHUTDOWN
     # Every in-flight turn was accounted for (settled or hard-cancelled) — none
-    # left pending.
+    # left pending. This turn ignored the cooperative signal, so the drain's grace
+    # ran out and it was hard-cancelled.
     assert outcome.settled + outcome.hard_cancelled == outcome.total
+    assert outcome.hard_cancelled == 1
     assert app.state.turn_runner.active_count() == 0
