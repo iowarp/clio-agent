@@ -487,6 +487,11 @@ def finalize_turn(
         completed_payload["error_info"] = state.error_info.model_dump(exclude_none=True)
     if state.assistant_metadata:
         completed_payload["metadata"] = state.assistant_metadata
+    # Persist BEFORE the completion events: a client acts on message.completed with a
+    # GET of this message id. #1339: close the registry FIRST -- persist's mint_remainder
+    # RPC can release the GIL while the message is already visible (#1334 append-first).
+    state.app.state.turn_transcripts.close(state.sid)
+    persist_finalized_message(state.app, state.sid, assistant_msg)  # #1334: barrier first
     # #737 S5: the final_message byte-copy rides the DURABLE turn.completed only under
     # the LEGACY regime; the atoms regime derives it from the message_part atoms so the
     # byte-copy dies (embed -> {}). SSE strips it either way (SENSITIVE_KEYS).
@@ -524,17 +529,12 @@ def finalize_turn(
         )
     )
 
-    # Persist + settle. #1339: close the registry FIRST -- persist's mint_remainder
-    # RPC can release the GIL while the message is already visible (#1334 append-
-    # first), letting an observer see it before the registry entry clears.
     final_status = (
         "cancelled" if state.cancelled_turn else ("error" if state.error_info else "idle")
     )
     retry_status = (
         "cancelled" if state.cancelled_turn else ("failed" if state.error_info else "completed")
     )
-    state.app.state.turn_transcripts.close(state.sid)
-    persist_finalized_message(state.app, state.sid, assistant_msg)  # #1334: barrier first
     # #767 PR3: already frozen by transcript.finalize(); close() below no-ops.
     settle_turn_transcript(state)
     getattr(state.app.state, "live_assistant_message_ids", {}).pop(state.sid, None)
@@ -752,6 +752,14 @@ def settle_failed_finalize(
     }
     bus: EventBus = app.state.bus
     try:
+        persist_finalized_message(app, sid, assistant_msg)  # before the completion events
+    except Exception:  # noqa: BLE001 - persistence degraded; the status flip must still happen
+        logger.exception(
+            "assistant error-message persistence failed during finalize settle: session=%s turn=%s",
+            sid,
+            turn_id,
+        )
+    try:
         _emit_semantic_event(
             app,
             sid,
@@ -781,14 +789,6 @@ def settle_failed_finalize(
             payload=completed_payload,
         )
     )
-    try:
-        persist_finalized_message(app, sid, assistant_msg)  # #1337: remainder + envelope
-    except Exception:  # noqa: BLE001 - persistence degraded; the status flip must still happen
-        logger.exception(
-            "assistant error-message persistence failed during finalize settle: session=%s turn=%s",
-            sid,
-            turn_id,
-        )
     close_turn_minter(app, sid)  # #1334: after the persist; the thread stops here
     try:
         update_retry_attempt(
