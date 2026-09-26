@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
@@ -111,6 +112,11 @@ class TurnRunner:
         self._handles: dict[str, TurnHandle] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
         self._on_session_idle: Callable[[str], None] | None = None
+        # Settle callbacks a finishing turn registered to run once its slot is
+        # released (see :meth:`run_when_released`). Keyed by the owning task;
+        # registered from the turn executor thread, drained on the loop.
+        self._release_callbacks: dict["asyncio.Task[object]", list[Callable[[], None]]] = {}
+        self._release_lock = threading.Lock()
 
     def set_idle_hook(self, hook: Callable[[str], None] | None) -> None:
         """Register a callback fired (on the event loop) when a session's turn slot
@@ -168,6 +174,38 @@ class TurnRunner:
             return None
         return self._handles.get(sid)
 
+    def run_when_released(self, sid: str, callback: Callable[[], None]) -> None:
+        """Run ``callback`` once ``sid``'s in-flight turn releases its slot.
+
+        A finishing turn publishes its terminal session status through this seam
+        so the status a client observes never runs ahead of the busy gate: the
+        callback fires from the task's done-callback, AFTER the slot clears and
+        BEFORE the idle hook re-drives deferred work. With no turn in flight for
+        ``sid`` (a turn driven outside the runner) it runs immediately.
+
+        Safe to call from the turn executor thread: the owning task is suspended
+        on that executor while its finalize runs, so it cannot finish between the
+        busy check and the registration.
+        """
+
+        with self._release_lock:
+            task = self._in_flight.get(sid)
+            if task is not None and not task.done():
+                self._release_callbacks.setdefault(task, []).append(callback)
+                return
+        callback()
+
+    def _run_release_callbacks(self, finished: "asyncio.Task[object]", sid: str) -> None:
+        """Fire the settle callbacks ``finished`` registered (on the loop)."""
+
+        with self._release_lock:
+            callbacks = self._release_callbacks.pop(finished, [])
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception:  # noqa: BLE001 - one settle error must not break task cleanup
+                logger.exception("turn-runner release callback failed for session %s", sid)
+
     def spawn(
         self,
         coro: "Coroutine[object, object, object]",
@@ -199,6 +237,9 @@ class TurnRunner:
                 self._in_flight.pop(_sid, None)
                 self._handles.pop(_sid, None)
                 slot_cleared = True
+            # The finishing turn's terminal status publishes now, with the gate
+            # already open, and before the idle hook starts any follow-up turn.
+            self._run_release_callbacks(finished, _sid)
             # The session just became free — re-drive anything deferred because it
             # was busy (e.g. an ask-user resume). Guard on not-busy so a fast
             # sequential reuse doesn't fire the hook while another turn holds the slot.

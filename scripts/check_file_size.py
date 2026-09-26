@@ -909,7 +909,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # gact/stream_fallbacks.py, only the stamp lands here.
     # 861 -> 856 (#1333): the GOAL judge step moved to turn_finalize_goal.py (awaited).
     # 856 -> 839 (#1334): file_diff indexing moved to the guarded diff_ledger.py owner.
-    "src/clio_agent/gact/turn_finalize.py": 835,  # Interaction pause ownership moved to user_question_pause.py.; #1333: 837 -> 835, context_usage_by_scope moved to turn_usage.context_usage_metadata_patch
+    "src/clio_agent/gact/turn_finalize.py": 814,  # Interaction pause ownership moved to user_question_pause.py.; #1333: 837 -> 835, context_usage_by_scope moved to turn_usage.context_usage_metadata_patch; 835 -> 814: terminal status publish moved to turn_settle_status.py (runs on slot release)
     # P5 (owner ask 2026-08-06): +7 for the child/subagent artifact-rollup call
     # site (comment + function-local import + one-line invocation, matching the
     # P4.1/P4.2/P1.6d dispatch idiom already used lower in this file); the
@@ -1021,7 +1021,10 @@ RATCHET_BASELINE: dict[str, int] = {
     # background-connect logic lives in that owner module, not here, mirroring
     # how sweep_idle_session_entries/reap_idle_session_entry already reach into
     # the pool from that sibling file).
-    "src/clio_agent/providers/claude_code_sessions.py": 841,
+    # Idle-reaper fix (841 -> 805): the timer-driven reap lives in the owner
+    # module claude_code_idle_reaper.py and the transport-failure catalog moved
+    # to claude_code_transport_reasons.py; only the wake wiring stays here.
+    "src/clio_agent/providers/claude_code_sessions.py": 805,
     # #900: +2 for wiring probe_process_tree into the doctor collect().
     # owner ruling 2026-07-14: +3 for the DEGRADED-by-policy local-ARC doctor row.
     # #947 DEBT (recorded 2026-07-18, #948 S4): residual over the pre-#947 count
