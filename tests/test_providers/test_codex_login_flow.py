@@ -12,6 +12,8 @@ old one -- closing its listener -- before a new one starts.
 
 from __future__ import annotations
 
+import threading
+
 import httpx
 import pytest
 
@@ -103,7 +105,48 @@ class TestForceCancelsTheOldFlowBeforeStartingAFreshOne:
         assert rejected.status_code == 400
         with pytest.raises(login_flow.OAuthError):
             new_flow._loopback.wait_for_code(5.0)  # noqa: SLF001
-        status, reason = new_flow.status()
+        # The listener's callback event fires BEFORE the flow's background
+        # resolver thread records the failure; read the status only once the
+        # flow itself has settled, never off the listener event.
+        status, reason = new_flow.wait_settled(5.0)
+        assert status == "failed"
+        assert "state" in reason
+
+    def test_status_is_read_off_the_flows_settlement_not_the_listener_event(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression for the CI flake ``assert 'pending' == 'failed'``: the
+        loopback's callback event wakes every waiter at once, so the flow's
+        background resolver thread can lag behind a caller that also waited
+        on that event. Hold the resolver back deliberately and prove
+        ``wait_settled`` still observes the recorded failure."""
+        from clio_agent.providers.codex import oauth as codex_oauth
+
+        resolver_released = threading.Event()
+        original_wait = codex_oauth.LoopbackListener.wait_for_code
+
+        def lagging_wait(listener: codex_oauth.LoopbackListener, timeout: float) -> tuple[str, str]:
+            try:
+                return original_wait(listener, timeout)
+            finally:
+                if threading.current_thread().name == "codex-oauth-wait":
+                    resolver_released.wait(5.0)
+
+        monkeypatch.setattr(codex_oauth.LoopbackListener, "wait_for_code", lagging_wait)
+        started = login_flow.start_login(method="browser", force=False)
+        flow = login_flow.get_login_flow(started.flow_id)
+        assert flow is not None
+        port = _listener_port(flow)
+        assert port is not None
+
+        rejected = httpx.get(f"http://127.0.0.1:{port}/auth/callback?code=abc&state=wrong")
+        assert rejected.status_code == 400
+        with pytest.raises(login_flow.OAuthError):
+            flow._loopback.wait_for_code(5.0)  # noqa: SLF001
+        # The listener event has fired but the resolver has not acted yet.
+        assert flow.wait_settled(0.05) == ("pending", "")
+        resolver_released.set()
+        status, reason = flow.wait_settled(5.0)
         assert status == "failed"
         assert "state" in reason
 
