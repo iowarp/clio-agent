@@ -47,7 +47,8 @@ from fastapi import FastAPI, HTTPException
 from clio_agent.gact.agent_initialization import mark_agent_ready
 from clio_agent.gact.events import Event
 from clio_agent.gact.lm_provider_types import preset_api_key_env
-from clio_agent.gact.local_server_store import saved_address_for_preset
+from clio_agent.gact.local_server_store import with_saved_address
+from clio_agent.gact.model_selection import surrogate_selection_error
 from clio_agent.gact.providers.auth import (
     _is_placeholder_api_key,
     _resolve_argonne_runtime_api_key,
@@ -113,11 +114,10 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     # ---- /v1/providers (#15) ------------------------------------------
 
-    # Derived from clio_agent.providers.catalog. Add new presets to
-    # the catalog, not here -- this list reflects whatever the catalog
-    # contains at registration time. Polaris preset removed for the time
-    # being -- the inference-api gateway returns 400 'cluster polaris
-    # does not exist' for /resource_server/polaris/vllm/v1.
+    # Derived from clio_agent.providers.catalog. Add new presets to the catalog,
+    # not here -- this list reflects the catalog at registration time. Polaris
+    # is removed for now: the inference-api gateway returns 400 'cluster
+    # polaris does not exist' for /resource_server/polaris/vllm/v1.
     from clio_agent.providers.catalog import as_lm_presets as _build_lm_presets
 
     _LM_PRESETS: list[LMProviderPreset] = _build_lm_presets()
@@ -309,8 +309,6 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     def _preset_with_status(preset: LMProviderPreset) -> LMProviderPreset:
         update: dict[str, Any] = {"supports_logout": supports_logout(preset.provider)}
-        if saved := saved_address_for_preset(preset.id):
-            update["api_base"] = saved  # the address saved on Settings > Providers
         if preset.provider == "argonne":
             try:
                 from clio_agent.providers import argonne_auth  # noqa: PLC0415
@@ -355,7 +353,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     def _lm_presets_with_status() -> list[LMProviderPreset]:
         return sorted(
-            (_preset_with_status(preset) for preset in _LM_PRESETS),
+            (_preset_with_status(with_saved_address(preset)) for preset in _LM_PRESETS),
             key=lambda p: p.label.lower(),
         )
 
@@ -996,6 +994,8 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         """Start or perform an LM provider swap without freezing the backend."""
 
         req = normalize_lm_provider_request(req, _LM_PRESETS, _default_model_for)
+        if (refused := surrogate_selection_error(app, req.provider_id or req.provider, req.model)):
+            raise HTTPException(status_code=422, detail=refused.model_dump(exclude_none=True))
         running_task = getattr(app.state, "lm_config_task", None)
         if running_task is not None and not running_task.done():
             status = _lm_provider_status()

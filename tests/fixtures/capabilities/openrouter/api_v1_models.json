@@ -1,0 +1,41 @@
+{
+  "data": [
+    {
+      "id": "qwen/qwen3-235b-a22b",
+      "name": "Qwen: Qwen3 235B A22B",
+      "context_length": 131072,
+      "architecture": {
+        "input_modalities": ["text"],
+        "output_modalities": ["text"]
+      },
+      "top_provider": {
+        "context_length": 40960,
+        "max_completion_tokens": 8192,
+        "is_moderated": false
+      },
+      "supported_parameters": [
+        "temperature",
+        "top_p",
+        "top_k",
+        "reasoning",
+        "tools",
+        "tool_choice"
+      ]
+    },
+    {
+      "id": "openai/gpt-4o-mini",
+      "name": "OpenAI: GPT-4o mini",
+      "context_length": 128000,
+      "architecture": {
+        "input_modalities": ["text", "image"],
+        "output_modalities": ["text"]
+      },
+      "top_provider": {
+        "context_length": 128000,
+        "max_completion_tokens": 16384,
+        "is_moderated": true
+      },
+      "supported_parameters": ["temperature", "top_p", "tools", "tool_choice"]
+    }
+  ]
+}

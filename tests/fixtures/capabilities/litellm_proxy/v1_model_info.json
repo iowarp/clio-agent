@@ -1,0 +1,40 @@
+{
+  "data": [
+    {
+      "model_name": "team-gpt",
+      "litellm_params": {"model": "azure/gpt-4o", "api_base": "https://a.openai.azure.com"},
+      "model_info": {
+        "id": "deployment-a",
+        "max_input_tokens": 128000,
+        "max_output_tokens": 16384,
+        "supports_function_calling": true,
+        "supports_parallel_function_calling": true,
+        "supports_response_schema": true
+      }
+    },
+    {
+      "model_name": "team-gpt",
+      "litellm_params": {"model": "openai/gpt-4o-mini", "api_base": "https://api.openai.com/v1"},
+      "model_info": {
+        "id": "deployment-b",
+        "max_input_tokens": 64000,
+        "max_output_tokens": 4096,
+        "supports_function_calling": true,
+        "supports_parallel_function_calling": false,
+        "supports_response_schema": true
+      }
+    },
+    {
+      "model_name": "team-vision",
+      "litellm_params": {"model": "openai/gpt-4o"},
+      "model_info": {
+        "id": "deployment-c",
+        "max_input_tokens": 128000,
+        "max_output_tokens": 16384,
+        "supports_function_calling": true,
+        "supports_parallel_function_calling": true,
+        "supports_response_schema": true
+      }
+    }
+  ]
+}

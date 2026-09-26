@@ -29,13 +29,17 @@ import threading
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import yaml
 
 from clio_agent import conf, paths
 
+if TYPE_CHECKING:
+    from clio_agent.gact.lm_provider_types import LMProviderPreset
+
 logger = logging.getLogger(__name__)
+PresetT = TypeVar("PresetT", bound="LMProviderPreset")
 
 __all__ = [
     "CUSTOM_SERVER_PRESET_ID",
@@ -49,6 +53,7 @@ __all__ = [
     "saved_address_for_preset",
     "update_server",
     "user_config_path",
+    "with_saved_address",
 ]
 
 #: The OpenAI-compatible preset every custom (non-catalog) server is reached through.
@@ -212,6 +217,16 @@ def saved_address_for_preset(preset_id: str) -> str | None:
         )
         return None
     return entry.address if entry is not None and not entry.custom else None
+
+
+def with_saved_address(preset: PresetT) -> PresetT:
+    """``preset`` at the address saved for it on Settings > Providers, if any.
+
+    One helper for every reader (the provider list and discovery), so a
+    runtime moved to another port or host is reported and probed THERE.
+    """
+    saved = saved_address_for_preset(preset.id)
+    return preset.model_copy(update={"api_base": saved}) if saved else preset
 
 
 def _slug(label: str) -> str:

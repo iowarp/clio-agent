@@ -172,26 +172,26 @@ def lookup_litellm_info(
     return None
 
 
-#: LiteLLM ``mode`` -> CLIO model type. LiteLLM's own spellings ARE the model
-#: type vocabulary (see ``records.ModelType``); ``responses`` is a chat model
-#: served only through the Responses API, which LiteLLM bridges for chat. Any
-#: other mode (``completion``, ``moderation``, ...) is not mapped: it stays
-#: unknown rather than being forced into the nearest type.
-_MODE_TO_MODEL_TYPE: dict[str, str] = {
-    "chat": "chat",
-    "responses": "chat",
-    "embedding": "embedding",
-    "rerank": "rerank",
-    "audio_transcription": "audio_transcription",
-    "audio_speech": "audio_speech",
-    "image_generation": "image_generation",
+#: LiteLLM ``mode`` -> task (the Hugging Face ``pipeline_tag`` spelling, see
+#: ``records.TASKS``). ``responses`` is a chat model served only through the
+#: Responses API, which LiteLLM bridges for chat. Any other mode
+#: (``completion``, ``moderation``, ...) is not mapped: it stays unknown rather
+#: than being forced into the nearest task.
+_MODE_TO_TASK: dict[str, str] = {
+    "chat": "text-generation",
+    "responses": "text-generation",
+    "embedding": "feature-extraction",
+    "rerank": "text-ranking",
+    "audio_transcription": "automatic-speech-recognition",
+    "audio_speech": "text-to-speech",
+    "image_generation": "text-to-image",
 }
 
 
-def model_type_from_info(info: dict[str, Any]) -> str | None:
-    """The CLIO model type a LiteLLM row's ``mode`` names, or None."""
+def task_from_info(info: dict[str, Any]) -> str | None:
+    """The task a LiteLLM row's ``mode`` names, or None."""
     mode = info.get("mode")
-    return _MODE_TO_MODEL_TYPE.get(mode) if isinstance(mode, str) else None
+    return _MODE_TO_TASK.get(mode) if isinstance(mode, str) else None
 
 
 def modalities_from_info(info: dict[str, Any]) -> frozenset[str] | None:
