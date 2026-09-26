@@ -10,6 +10,7 @@ re-ran the client init. Binding-free: the native modules are faked in ``sys.modu
 from __future__ import annotations
 
 import sys
+import time
 import types
 from pathlib import Path
 from types import SimpleNamespace
@@ -212,42 +213,90 @@ def test_attach_state_not_selected_for_explicit_local(tmp_path):
     assert attach_state_snapshot().phase is ClioCoreAttachPhase.NOT_SELECTED
 
 
-def _probe_store(port: int = 21045) -> SimpleNamespace:
+class _Future:
+    """A stand-in binding ``Future``: answers with ``code`` or never answers at all."""
+
+    def __init__(self, *, code: int | None) -> None:
+        self.code = code
+        self.waits: list[float] = []
+
+    def done(self) -> bool:
+        return self.code is not None
+
+    def wait(self, max_sec: float = -1.0) -> int:
+        assert max_sec >= 0, "an unbounded wait can hang the interpreter"
+        self.waits.append(max_sec)
+        if self.code is None:
+            time.sleep(min(max_sec, 0.05))  # a stuck daemon: the bounded wait just expires
+            return -1
+        return self.code
+
+
+def _probe_store(future: _Future, seen: dict[str, Any] | None = None) -> SimpleNamespace:
+    def async_tag_query(regex: str, max_tags: int, query: object) -> _Future:
+        if seen is not None:
+            seen["query"] = (regex, max_tags, query)
+        return future
+
     return SimpleNamespace(
-        _HEALTH_PROBE_KIND="segments",
         _HEALTH_PROBE_NAME="__probe__",
-        _gate=SimpleNamespace(port=port),
+        _client=SimpleNamespace(AsyncTagQuery=async_tag_query),
+        _cte=SimpleNamespace(PoolQuery=SimpleNamespace(Dynamic=lambda: "dynamic")),
+        _gate=SimpleNamespace(port=21045),
         _config_path="cte.yaml",
     )
 
 
-def test_post_attach_probe_failure_raises_typed_and_deregisters(monkeypatch):
-    """A clean clio_init/initialize_cte whose first RPC fails degrades typed at init."""
+def _short_window(monkeypatch, seconds: float) -> None:
     from clio_agent.arc import rpc_liveness  # noqa: PLC0415
 
-    monkeypatch.setattr(rpc_liveness, "store_rpc_health_probe", lambda *a, **k: False)
+    monkeypatch.setattr(rpc_liveness, "health_probe_window_s", lambda policy=None: seconds)
+
+
+def test_post_attach_probe_against_a_stuck_daemon_expires_typed(monkeypatch):
+    """A daemon that never answers costs the bound, then a typed error; never a hang."""
+    _short_window(monkeypatch, 0.3)
+    future = _Future(code=None)
     deregistered: list[bool] = []
+    started = time.monotonic()
 
     with pytest.raises(ClioCoreAttachError) as info:
         clio_core_attach.verify_post_attach(
-            _probe_store(), on_failure=lambda: deregistered.append(True)
+            _probe_store(future), on_failure=lambda: deregistered.append(True)
         )
 
+    assert time.monotonic() - started < 5.0
     assert info.value.stage == "post_attach_probe"
-    assert "stage=post_attach_probe" in str(info.value) and "21045" in str(info.value)
+    assert "did not answer within 0.3s" in str(info.value) and "21045" in str(info.value)
     assert classify_init_failure(info.value) == CLIO_CORE_CLIENT_ATTACH_FAILED
     assert deregistered == [True]
+    assert future.waits and all(0 <= w <= 0.3 for w in future.waits)
+
+
+def test_post_attach_probe_nonzero_code_raises_typed(monkeypatch):
+    _short_window(monkeypatch, 5.0)
+    with pytest.raises(ClioCoreAttachError) as info:
+        clio_core_attach.verify_post_attach(_probe_store(_Future(code=7)), on_failure=lambda: None)
+    assert "return code 7" in str(info.value)
 
 
 def test_post_attach_probe_success_hands_the_store_out(monkeypatch):
+    _short_window(monkeypatch, 5.0)
+    seen: dict[str, Any] = {}
+    clio_core_attach.verify_post_attach(
+        _probe_store(_Future(code=0), seen), on_failure=lambda: pytest.fail("no")
+    )
+    assert seen["query"] == ("__probe__", 1, "dynamic")  # the sentinel, async, no Tag()
+
+
+def test_post_attach_window_derives_from_the_liveness_policy(monkeypatch):
     from clio_agent.arc import rpc_liveness  # noqa: PLC0415
 
-    seen: dict[str, Any] = {}
-
-    def probe(store: object, *, kind: str, name: str) -> bool:
-        seen["probe"] = (kind, name)
-        return True
-
-    monkeypatch.setattr(rpc_liveness, "store_rpc_health_probe", probe)
-    clio_core_attach.verify_post_attach(_probe_store(), on_failure=lambda: pytest.fail("no"))
-    assert seen["probe"] == ("segments", "__probe__")  # the store's own liveness sentinel
+    policy = rpc_liveness.LivenessPolicy(
+        stall_after_s=2.5, retries=1, backoff_initial_s=1.0, backoff_max_s=1.0
+    )
+    assert rpc_liveness.health_probe_window_s(policy) == 2.5
+    long = rpc_liveness.LivenessPolicy(
+        stall_after_s=300.0, retries=1, backoff_initial_s=1.0, backoff_max_s=1.0
+    )
+    assert rpc_liveness.health_probe_window_s(long) == rpc_liveness._HEALTH_PROBE_MAX_S

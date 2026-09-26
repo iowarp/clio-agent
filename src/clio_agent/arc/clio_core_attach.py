@@ -25,8 +25,9 @@ a process-local record of where it is -- ``starting`` / ``attached`` /
 It only reports what already happened; it never times anything out.
 
 POST-ATTACH PROBE. A clean ``clio_init`` + ``initialize_cte`` does not prove the
-binding works; :func:`verify_post_attach` runs one real RPC before the store is
-handed out, so a half-attached client degrades typed at init, not mid-session.
+binding works; :func:`verify_post_attach` runs one real RPC, bounded through the
+async ``Future`` API (the blocking binding calls hold the GIL), before the store is
+handed out, so a half-attached client degrades typed at init instead of hanging.
 """
 
 from __future__ import annotations
@@ -146,11 +147,13 @@ class ClioCoreAttachError(RuntimeError):
 
     degradation_reason = CLIO_CORE_CLIENT_ATTACH_FAILED
 
-    def __init__(self, *, port: int, config_path: str, stage: str = "client_init") -> None:
+    def __init__(
+        self, *, port: int, config_path: str, stage: str = "client_init", detail: str = ""
+    ) -> None:
         self.port = port
         self.config_path = config_path
         self.stage = stage
-        what = (
+        what = detail or (
             "the native client handshake did not complete"
             if stage == "client_init"
             else "the first RPC after the attach did not answer"
@@ -239,25 +242,47 @@ def attach_native_client(
 
 
 def verify_post_attach(store: "ClioCoreStore", *, on_failure: Callable[[], None]) -> None:
-    """Prove a freshly attached store answers ONE real RPC before it is handed out.
+    """Prove a freshly attached store answers ONE real RPC, within a bound, before handing it out.
 
     A clean ``clio_init`` + ``initialize_cte`` does not prove the binding works; the
-    first RPC does. This reuses the store's own liveness sentinel
-    (:func:`~clio_agent.arc.rpc_liveness.store_rpc_health_probe`: ``GetBlobSize`` on a
-    key that never exists, bounded by the configured stall window, no new timeout). A
-    failure runs ``on_failure`` (client deregistration) and raises typed, so ARC
-    degrades loudly at init instead of hanging or crashing mid-session.
+    first RPC does. The probe MUST be bounded: the binding's blocking calls
+    (``Tag(...)``, ``GetBlobSize``, ``GetBlob``, ...) hold the GIL for the whole RPC, so a
+    daemon that never answers freezes the entire interpreter, stall watchers included.
+    So the probe uses the ASYNC API -- ``AsyncTagQuery`` on the store's liveness
+    sentinel (a pure RPC: no tag is created, no ``Tag`` constructor runs) -- and waits on
+    its ``Future`` with ``wait(max_sec)``, which returns when the bound expires. The bound
+    is the configured health-probe window
+    (:func:`~clio_agent.arc.rpc_liveness.health_probe_window_s`). A timeout or a
+    non-zero return code runs ``on_failure`` (client deregistration) and raises typed,
+    so ARC degrades loudly at init instead of hanging.
 
     Raises:
-        ClioCoreAttachError: ``stage="post_attach_probe"`` when the probe RPC fails.
+        ClioCoreAttachError: ``stage="post_attach_probe"`` when the probe fails.
     """
-    from clio_agent.arc.rpc_liveness import store_rpc_health_probe  # noqa: PLC0415 - cycle
+    from clio_agent.arc.rpc_liveness import health_probe_window_s  # noqa: PLC0415 - cycle
 
-    if store_rpc_health_probe(store, kind=store._HEALTH_PROBE_KIND, name=store._HEALTH_PROBE_NAME):
-        return
+    window = health_probe_window_s()
+    future = store._client.AsyncTagQuery(
+        store._HEALTH_PROBE_NAME, 1, store._cte.PoolQuery.Dynamic()
+    )
+    deadline = time.monotonic() + window
+    while not future.done():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            detail = f"the first RPC after the attach did not answer within {window:g}s"
+            break
+        future.wait(remaining)
+    else:
+        code = future.wait(0)
+        if code == 0:
+            return
+        detail = f"the first RPC after the attach answered with return code {code}"
     on_failure()
     error = ClioCoreAttachError(
-        port=store._gate.port, config_path=store._config_path, stage="post_attach_probe"
+        port=store._gate.port,
+        config_path=store._config_path,
+        stage="post_attach_probe",
+        detail=detail,
     )
     logger.error("%s reason=%s", error, CLIO_CORE_CLIENT_ATTACH_FAILED)
     raise error
