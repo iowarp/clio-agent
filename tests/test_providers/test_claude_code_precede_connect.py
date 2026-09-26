@@ -358,7 +358,9 @@ def test_idle_reap_evicts_an_unclaimed_precede_connected_entry(
     monkeypatch.setattr(csb, "session_idle_ttl_s", lambda: 15.0)
 
     state = _install_fake_sdk(monkeypatch)
-    pool = ClaudeStreamClientPool(max_concurrent=4)
+    # Fake clock: pin the entry_for sweep path alone (the timer reaper's own
+    # precede-connect pin is in test_claude_code_idle_reaper.py).
+    pool = ClaudeStreamClientPool(max_concurrent=4, reap_on_timer=False)
 
     pool.precede_connect(session_id="sess-abandoned", model="haiku")
     # Wait for the WHOLE background attempt (connect + its own _mark_idle())
