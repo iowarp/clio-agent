@@ -268,6 +268,8 @@ def _build_key_less_skeleton(spec: "LMSpec") -> tuple["LMProviderConfig", str]:
     }
     if provider == "codex" and spec.transport:
         kwargs["codex_transport"] = spec.transport
+    if provider == "codex" and spec.variant:
+        kwargs["codex_variant"] = spec.variant
     if provider == "claude_code" and spec.transport:
         kwargs["claude_code_transport"] = spec.transport
     config = LMProviderConfig(**kwargs)  # type: ignore[arg-type]
