@@ -70,7 +70,8 @@ def test_committed_catalog_file_parses_via_real_validator() -> None:
     catalog = model_overlay_catalog._parse_catalog(REPO_COMPILED_OVERLAY.read_bytes())
     families = {row["family"] for row in catalog.entries}
     assert "qwen3.6-27b" in families
-    assert len(catalog.entries) == 14
+    assert {"gemma-3", "gemma-4-e4b", "meta-llama-3.2-vision", "mistral-large-3"} <= families
+    assert len(catalog.entries) == 20
 
 
 def test_bundled_copy_is_byte_identical_to_the_committed_catalog() -> None:

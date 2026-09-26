@@ -1,0 +1,29 @@
+# Gemma 4 E4B (instruction-tuned): image AND audio input. Evidence (recorded in
+# tests/fixtures): models.dev google/gemma-4-E4B-it modalities.input [text, image, audio],
+# limit 131072/8192; Hub config.json at the pinned commit carries vision_config and
+# audio_config (Gemma4ForConditionalGeneration).
+- family: gemma-4-e4b
+  matchPatterns:
+    - gemma-4-e4b-it
+    - gemma-4-e4b
+    - gemma4-e4b
+  capabilities:
+    chat: true
+    tools: true
+    toolCallFormat: openai
+    reasoning: true
+    thinkingFormat: qwen-chat-template
+    structuredOutputs: json-schema
+    vision: true
+    audio: true
+    embeddings: false
+    rerank: false
+    fim: false
+    contextWindow: 131072
+    maxTokens: 8192
+  quirks:
+    thinking:
+      mechanism: on-off
+      guidance: |
+        Gemma 4 chat templates expose thinking only as on or off via
+        enable_thinking, the same as the rest of the Gemma 4 family.

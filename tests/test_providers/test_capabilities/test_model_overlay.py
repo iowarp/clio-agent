@@ -268,3 +268,42 @@ def test_malformed_local_entry_is_skipped_and_logged(
         source = CatalogOverlaySource(cwd=tmp_path)
         assert source.facts("incomplete") is None
     assert any("malformed_local_entry" in r.getMessage() for r in caplog.records)
+
+
+#: The real compiled overlay (disk cache / bundled copy) -- captured before the
+#: autouse fixture swaps it out, for the tests that assert the shipped entries.
+_REAL_FETCHED_ENTRIES = model_overlay._fetched_entries
+
+
+def test_a_linked_family_key_refinds_its_entry_without_containing_a_pattern(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rule 3 keys a deployment by the family name; ``gemma-3`` contains none of
+    its own patterns (``gemma-3-27b-it``, ...), yet its facts must still apply."""
+    monkeypatch.setattr(model_overlay, "_fetched_entries", _REAL_FETCHED_ENTRIES)
+    from clio_agent.providers.capabilities.model_overlay import (
+        default_overlay_source,
+        overlay_match_for_link,
+    )
+
+    assert overlay_match_for_link("google/gemma-3-27b-it") == "gemma-3"
+    facts = default_overlay_source().facts("gemma-3")
+    assert facts is not None
+    assert facts.input_modalities.value == frozenset({"text", "image"})
+    assert facts.model_type.value == "chat"
+    vision = default_overlay_source().facts("meta-llama-3.2-vision")
+    assert vision is not None and "image" in (vision.input_modalities.value or ())
+
+
+def test_overlay_flags_decide_the_model_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    from clio_agent.providers.capabilities.model_overlay import default_overlay_source
+
+    monkeypatch.setattr(model_overlay, "_fetched_entries", _REAL_FETCHED_ENTRIES)
+
+    embed = default_overlay_source().facts("mistralai/Mistral-7B-Instruct-v0.3-embed")
+    assert embed is not None
+    assert embed.model_type.value == "embedding"
+    assert embed.model_type.source == "overlay"
+    scout = default_overlay_source().facts("meta-llama/Llama-4-Scout-17B-16E-Instruct")
+    assert scout is not None
+    assert scout.input_modalities.value == frozenset({"text", "image"})  # corrected entry

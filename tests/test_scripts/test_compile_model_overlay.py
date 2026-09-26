@@ -32,7 +32,7 @@ def test_real_seed_files_all_validate_against_the_schema() -> None:
     schema = c._load_schema(c.OVERLAY_SCHEMA_PATH)
     validator = Draft202012Validator(schema)
     files = c._family_files()
-    assert len(files) == 14
+    assert len(files) == 20
     for path in files:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
         errors = list(validator.iter_errors(raw))
@@ -51,9 +51,10 @@ def test_real_claude_code_catalog_validates() -> None:
     assert problems == []
 
 
-def test_real_codex_catalog_is_absent_and_therefore_skipped() -> None:
-    """S1's codex-models.json has not landed on this branch yet -- must no-op, not fail."""
-    assert not c.CODEX_CATALOG_PATH.exists()
+def test_real_codex_catalog_passes_its_schema() -> None:
+    """S1's codex-models.json has landed; it now validates against its own schema."""
+    assert c.CODEX_CATALOG_PATH.exists()
+    assert c.CODEX_SCHEMA_PATH.exists()
     problems = c._validate_catalog_if_present(
         c.CODEX_CATALOG_PATH, c.CODEX_SCHEMA_PATH, label="codex catalog"
     )

@@ -51,6 +51,7 @@ from clio_agent.providers.capabilities.records import (
     Fact,
     ModelCapabilities,
     ThinkingSpec,
+    model_type_fact,
     unknown,
 )
 from clio_agent.providers.model_discovery.model_overlay_catalog import (
@@ -273,6 +274,24 @@ def _modalities_fact(capabilities: dict[str, Any], *, observed_at: str, detail: 
     )
 
 
+def _model_type_fact(capabilities: dict[str, Any], *, observed_at: str, detail: str) -> Fact:
+    """The model type the entry's ``embeddings``/``rerank``/``chat`` flags state.
+
+    clio-coder's flags are independent booleans; the one that names what the
+    model PRODUCES decides: an embedding or rerank model is that type even if a
+    chat flag were also set. No flag set leaves the type unknown.
+    """
+    if capabilities.get("embeddings") is True:
+        value: str | None = "embedding"
+    elif capabilities.get("rerank") is True:
+        value = "rerank"
+    elif capabilities.get("chat") is True:
+        value = "chat"
+    else:
+        value = None
+    return model_type_fact(value, source="overlay", observed_at=observed_at, detail=detail)
+
+
 def _bool_fact(capabilities: dict[str, Any], key: str, *, observed_at: str, detail: str) -> Fact:
     value = capabilities.get(key)
     if not isinstance(value, bool):
@@ -397,6 +416,7 @@ def entry_to_model_capabilities(
     capabilities = entry.capabilities
     return ModelCapabilities(
         model_key=model_key,
+        model_type=_model_type_fact(capabilities, observed_at=observed_at, detail=detail),
         context_max=_int_fact(
             capabilities, "contextWindow", observed_at=observed_at, detail=detail
         ),
@@ -417,10 +437,10 @@ def entry_to_model_capabilities(
 class CatalogOverlaySource:
     """The real :class:`~clio_agent.providers.capabilities.model_sources.OverlaySource`.
 
-    ``facts(model_key)`` matches ``model_key`` against every loaded entry's
-    ``matchPatterns`` (:func:`best_overlay_match`) the same way
-    :func:`overlay_match_for_link` does, so a deployment already linked to a
-    family name (rule 3) reliably re-finds that same family's facts here.
+    ``facts(model_key)`` first looks ``model_key`` up as a family name (a
+    deployment rule 3 already linked is keyed by it), then matches it against
+    every loaded entry's ``matchPatterns`` (:func:`best_overlay_match`) the same
+    way :func:`overlay_match_for_link` does.
     """
 
     def __init__(self, *, cwd: "str | Path | None" = None) -> None:
@@ -434,10 +454,29 @@ class CatalogOverlaySource:
         ) as exc:  # pragma: no cover - defensive; see module docstring
             logger.warning("model_overlay: reason=overlay_load_failed error=%s", exc)
             return None
-        match = best_overlay_match(model_key, entries)
+        match = _family_match(model_key, entries) or best_overlay_match(model_key, entries)
         if match is None:
             return None
         return entry_to_model_capabilities(model_key, match.entry, match.pattern)
+
+
+def _family_match(model_key: str, entries: list[OverlayEntry]) -> OverlayMatch | None:
+    """The entry whose ``family`` IS ``model_key`` (a deployment rule 3 already linked).
+
+    A linked deployment is keyed by the family name, which need not contain any
+    of its own ``matchPatterns`` (``gemma-3`` vs ``gemma-3-27b-it``), so the
+    family is looked up by name before any pattern match. Several roots may
+    carry the same family; the highest-ranked root wins, as for a pattern tie.
+    """
+    best: OverlayMatch | None = None
+    best_rank = -1
+    for entry in entries:
+        if entry.family != model_key:
+            continue
+        rank = _ROOT_RANK.get(entry.root, 0)
+        if rank > best_rank:
+            best, best_rank = OverlayMatch(entry=entry, pattern=entry.family), rank
+    return best
 
 
 _DEFAULT_SOURCE = CatalogOverlaySource()

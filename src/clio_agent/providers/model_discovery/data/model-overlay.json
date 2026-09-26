@@ -69,6 +69,34 @@
       "capabilities": {
         "audio": false,
         "chat": true,
+        "contextWindow": 131072,
+        "embeddings": false,
+        "fim": false,
+        "maxTokens": 131072,
+        "reasoning": false,
+        "rerank": false,
+        "structuredOutputs": "json-schema",
+        "toolCallFormat": "openai",
+        "tools": true,
+        "vision": true
+      },
+      "family": "gemma-3",
+      "matchPatterns": [
+        "gemma-3-27b-it",
+        "gemma-3-27b",
+        "gemma-3-12b-it",
+        "gemma-3-12b",
+        "gemma-3-4b-it",
+        "gemma-3-4b",
+        "gemma3:27b",
+        "gemma3:12b",
+        "gemma3:4b"
+      ]
+    },
+    {
+      "capabilities": {
+        "audio": false,
+        "chat": true,
         "contextWindow": 122880,
         "embeddings": false,
         "fim": false,
@@ -125,6 +153,35 @@
         "serving": "LilaRest publishes no per-model sampler; values inherit the gemma family default per the official Google Gemma 4 31B card. KV cache budget at f16, ctx=122880 is roughly 57 GB on top of ~21 GB of NVFP4 weights.",
         "thinking": {
           "guidance": "Gemma 4 chat template exposes thinking only as on or off; intermediate\nlevels coerce to on. NVFP4 quantization can corrupt JSON tool-call\noutput under aggressive sampling, so the instruct profile pins\ntemperature at 0.7. The lmstudio-native adapter re-classifies the\nchannel-marker thought region into ThinkingContent so markers do not\nleak into visible text.\n",
+          "mechanism": "on-off"
+        }
+      }
+    },
+    {
+      "capabilities": {
+        "audio": true,
+        "chat": true,
+        "contextWindow": 131072,
+        "embeddings": false,
+        "fim": false,
+        "maxTokens": 8192,
+        "reasoning": true,
+        "rerank": false,
+        "structuredOutputs": "json-schema",
+        "thinkingFormat": "qwen-chat-template",
+        "toolCallFormat": "openai",
+        "tools": true,
+        "vision": true
+      },
+      "family": "gemma-4-e4b",
+      "matchPatterns": [
+        "gemma-4-e4b-it",
+        "gemma-4-e4b",
+        "gemma4-e4b"
+      ],
+      "quirks": {
+        "thinking": {
+          "guidance": "Gemma 4 chat templates expose thinking only as on or off via\nenable_thinking, the same as the rest of the Gemma 4 family.\n",
           "mechanism": "on-off"
         }
       }
@@ -253,6 +310,27 @@
       "capabilities": {
         "audio": false,
         "chat": true,
+        "contextWindow": 128000,
+        "embeddings": false,
+        "fim": false,
+        "maxTokens": 4096,
+        "reasoning": false,
+        "rerank": false,
+        "structuredOutputs": "json-schema",
+        "toolCallFormat": "openai",
+        "tools": true,
+        "vision": true
+      },
+      "family": "meta-llama-3.2-vision",
+      "matchPatterns": [
+        "llama-3.2-90b-vision",
+        "llama-3.2-11b-vision"
+      ]
+    },
+    {
+      "capabilities": {
+        "audio": false,
+        "chat": true,
         "contextWindow": 131072,
         "embeddings": false,
         "fim": false,
@@ -262,7 +340,7 @@
         "structuredOutputs": "json-schema",
         "toolCallFormat": "openai",
         "tools": true,
-        "vision": false
+        "vision": true
       },
       "family": "meta-llama-4-maverick",
       "matchPatterns": [
@@ -283,12 +361,52 @@
         "structuredOutputs": "json-schema",
         "toolCallFormat": "openai",
         "tools": true,
-        "vision": false
+        "vision": true
       },
       "family": "meta-llama-4-scout",
       "matchPatterns": [
         "meta-llama/llama-4-scout",
         "llama-4-scout"
+      ]
+    },
+    {
+      "capabilities": {
+        "audio": false,
+        "chat": false,
+        "contextWindow": 32768,
+        "embeddings": true,
+        "fim": false,
+        "maxTokens": 1,
+        "reasoning": false,
+        "rerank": false,
+        "structuredOutputs": null,
+        "tools": false,
+        "vision": false
+      },
+      "family": "mistral-7b-instruct-v0.3-embed",
+      "matchPatterns": [
+        "mistral-7b-instruct-v0.3-embed"
+      ]
+    },
+    {
+      "capabilities": {
+        "audio": false,
+        "chat": true,
+        "contextWindow": 262144,
+        "embeddings": false,
+        "fim": false,
+        "maxTokens": 262144,
+        "reasoning": false,
+        "rerank": false,
+        "structuredOutputs": "json-schema",
+        "toolCallFormat": "openai",
+        "tools": true,
+        "vision": true
+      },
+      "family": "mistral-large-3",
+      "matchPatterns": [
+        "mistral-large-3",
+        "mistral-large-2512"
       ]
     },
     {
@@ -776,6 +894,25 @@
           "mechanism": "budget-tokens"
         }
       }
+    },
+    {
+      "capabilities": {
+        "audio": false,
+        "chat": false,
+        "contextWindow": 32768,
+        "embeddings": true,
+        "fim": false,
+        "maxTokens": 1,
+        "reasoning": false,
+        "rerank": false,
+        "structuredOutputs": null,
+        "tools": false,
+        "vision": false
+      },
+      "family": "sfr-embedding-mistral",
+      "matchPatterns": [
+        "sfr-embedding-mistral"
+      ]
     }
   ],
   "schema_version": 1
