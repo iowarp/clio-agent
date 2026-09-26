@@ -9,6 +9,8 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 
+from clio_agent.gact.local_server_store import saved_address_for_preset
+from clio_agent.gact.provider_catalog import probe_api_key
 from clio_agent.gact.provider_catalog_snapshot import invalidate_provider
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.routes.provider_auth import handle_auth_action
@@ -192,8 +194,9 @@ def register_provider_catalog_routes(
         ctx = HandshakeContext(
             provider_id=preset.id,
             provider_kind=preset.provider,
-            api_base=(api_base or preset.api_base or ""),
-            api_key=model_discovery.resolve_cloud_api_key(preset.id),
+            # The address saved on Settings > Providers, when there is one.
+            api_base=(api_base or saved_address_for_preset(preset.id) or preset.api_base or ""),
+            api_key=probe_api_key(preset),
             auth_mode="passive",
             allow_external_sources=True,
         )
@@ -362,8 +365,9 @@ def register_provider_catalog_routes(
         ctx = HandshakeContext(
             provider_id=preset.id,
             provider_kind=preset.provider,
-            api_base=(api_base or preset.api_base or ""),
-            api_key=model_discovery.resolve_cloud_api_key(preset.id),
+            # The address saved on Settings > Providers, when there is one.
+            api_base=(api_base or saved_address_for_preset(preset.id) or preset.api_base or ""),
+            api_key=probe_api_key(preset),
             auth_mode="passive",
             allow_external_sources=True,
         )

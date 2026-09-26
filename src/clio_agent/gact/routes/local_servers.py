@@ -68,7 +68,7 @@ def _checks(app: FastAPI) -> dict[str, dict[str, Any]]:
 
 async def check_address(preset: "LMProviderPreset", address: str) -> dict[str, Any]:
     """One live handshake of ``preset`` at ``address``: reachability and served models."""
-    from clio_agent.providers import model_discovery  # noqa: PLC0415
+    from clio_agent.gact.provider_catalog import probe_api_key  # noqa: PLC0415
     from clio_agent.providers.handshake import HandshakeContext, run_handshake  # noqa: PLC0415
 
     report = await run_handshake(
@@ -76,7 +76,7 @@ async def check_address(preset: "LMProviderPreset", address: str) -> dict[str, A
             provider_id=preset.id,
             provider_kind=preset.provider,
             api_base=address,
-            api_key=model_discovery.resolve_cloud_api_key(preset.id),
+            api_key=probe_api_key(preset),
             auth_mode="passive",
             allow_external_sources=True,
         ),

@@ -208,3 +208,21 @@ def test_removing_a_runtime_address_puts_the_preset_back_at_its_own(client: Test
     client.delete("/v1/providers/servers/lm_studio")
     presets = {p["id"]: p for p in client.get("/v1/providers/lm").json()["presets"]}
     assert presets["lm_studio"]["api_base"] == "http://127.0.0.1:1234/v1"
+
+
+def test_a_keyless_server_is_probed_with_the_placeholder_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A keyless OpenAI-compatible preset (vLLM, a custom server) must actually be
+    asked: the handshake skips a probe that carries no key at all."""
+    from clio_agent.gact.provider_catalog import KEYLESS_PROBE_API_KEY, probe_api_key
+    from clio_agent.providers import model_discovery
+    from clio_agent.providers.catalog import as_lm_presets
+
+    presets = {p.id: p for p in as_lm_presets()}
+    monkeypatch.setattr(model_discovery, "resolve_cloud_api_key", lambda _id: "")
+    assert probe_api_key(presets["vllm"]) == KEYLESS_PROBE_API_KEY
+    # A provider that needs a key is never sent a made-up one.
+    assert probe_api_key(presets["openrouter"]) == ""
+    monkeypatch.setattr(model_discovery, "resolve_cloud_api_key", lambda _id: "sk-stored")
+    assert probe_api_key(presets["vllm"]) == "sk-stored"
