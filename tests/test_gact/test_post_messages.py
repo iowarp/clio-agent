@@ -542,7 +542,7 @@ def test_post_message_without_agent_returns_structured_503(
         inner = body["error"]
         assert inner.get("error") == "agent_not_available"
         assert inner["details"]["agent_status"] == "not_configured"
-        assert "No executable CLIO agent is configured" in inner.get("message", "")
+        assert "No model is selected for this session" in inner.get("message", "")
         assert c.get(f"/v1/sessions/{sid}/messages").json()["messages"] == []
         assert c.get(f"/v1/sessions/{sid}").json()["status"] == "idle"
 

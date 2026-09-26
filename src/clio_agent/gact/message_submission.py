@@ -52,6 +52,7 @@ from clio_agent.gact.runtime.globals import (
     _iso_from_epoch,
     _new_message_id,
 )
+from clio_agent.gact.session_host_agent import ensure_host_agent
 from clio_agent.gact.transcript_projection import on_message_appended
 from clio_agent.gact.turn_runner import session_busy_error_payload
 from clio_agent.gact.types import (
@@ -510,6 +511,8 @@ async def accept_message_async(
 ) -> tuple[PostMessageResponse, int]:
     """Accept an async-produced message, optionally with private model-only context."""
 
+    # A session's selected model is enough to run its first turn (no global provider).
+    await ensure_host_agent(app, sid, req)
     prepared = await prepare_references(app, sid, req)
     return accept_message(
         app,

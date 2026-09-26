@@ -645,11 +645,11 @@ class AgentDef(BaseModel):
     prompt_profile: str = ""
     default_provider: str = ""
     default_model: str = ""
-    # Per-expert provider identity (#818). All data, never inline secrets: an
-    # empty value means "inherit the default profile" (today's behaviour).
+    # Per-expert provider identity (#818): data only, never secrets; empty inherits the default.
     api_base: str = ""  # explicit endpoint override for this expert's provider
     credential_ref: str = ""  # KEY into a credential source (e.g. "openai:acctB"), never a secret
     transport: str = ""  # transport hint: Codex (websocket/sse) or Claude Code (sdk)
+    variant: str = ""  # multi-transport provider half: Codex "sdk" | "direct" (ModelRef.variant)
     parameters: dict[str, Any] = Field(default_factory=dict)
     module: dict[str, Any] = Field(default_factory=dict)
     signature: dict[str, Any] = Field(default_factory=dict)
