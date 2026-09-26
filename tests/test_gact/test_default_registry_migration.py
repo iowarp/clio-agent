@@ -10,6 +10,7 @@ lock, one atomic swap per pack, never raising, with backoff after failures.
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
@@ -29,6 +30,7 @@ from clio_agent.gact.agent_blueprints import (
     install_agent_blueprint,
     read_install_metadata,
 )
+from tests._config_layer import set_config
 
 FIXTURE_PACK = Path(__file__).resolve().parents[1] / "fixtures" / "a2ui_packs" / "builtins"
 _GIT_ENV = {
@@ -71,6 +73,33 @@ def _reasons(reason: str, **match: object) -> list[dict[str, object]]:
         for row in recorded_blueprint_install_reasons()
         if row["reason"] == reason and all(row.get(k) == v for k, v in match.items())
     ]
+
+
+@pytest.fixture(autouse=True)
+def _reasons_must_record(caplog: pytest.LogCaptureFixture) -> Iterator[None]:
+    """Every migration test fails if a typed reason could not be recorded.
+
+    ``_record`` must not let an audit-leg failure break the migration, so it
+    logs ``default_registry_reason_unrecorded`` instead of raising. That kept a
+    real defect hidden (``stream_audit() got multiple values for argument
+    'stage'`` on every ``stage=`` reason) while the ring-based assertions still
+    passed; this guard makes any such swallowed defect a test failure.
+    """
+
+    # Attach directly: trace._install_handler may have set propagate=False on
+    # the "clio_agent" logger, which would hide records from the root handler.
+    clio_logger = logging.getLogger("clio_agent")
+    clio_logger.addHandler(caplog.handler)
+    try:
+        yield
+    finally:
+        clio_logger.removeHandler(caplog.handler)
+    unrecorded = [
+        record.getMessage()
+        for record in caplog.records
+        if "default_registry_reason_unrecorded" in record.getMessage()
+    ]
+    assert unrecorded == []
 
 
 @pytest.fixture
@@ -385,4 +414,54 @@ def test_first_run_marker_write_failure_never_escapes_discovery(
     monkeypatch.setattr(migration, "record_sync_version", refuse)
     migration.record_first_run_version(tmp_path / "install-root")  # must not raise
 
-    assert _reasons("default_registry_migration_failed", stage="first_run_marker")
+    assert _reasons("default_registry_migration_failed", migration_stage="first_run_marker")
+
+
+# ---- registry setup: typed reasons reach every audit leg ---------------------------
+
+
+def test_registry_setup_with_a_held_lock_records_its_reason_without_a_type_error(
+    registry: tuple[Path, Path, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    """Boot-time registry setup while another process holds the registry lock.
+
+    Regression: ``lock_busy_diagnostic`` recorded its reason with a ``stage=``
+    field, which ``record_blueprint_install_reason`` forwarded as ``**row`` into
+    ``stream_audit(stage, **fields)`` -- a ``TypeError`` (``got multiple values
+    for argument 'stage'``) swallowed into ``default_registry_reason_unrecorded``
+    on every live boot that lost the lock race. The audit log is enabled here so
+    the stream-audit leg really writes, and the autouse guard fails on any
+    unrecorded reason.
+    """
+
+    import json
+
+    from filelock import FileLock
+
+    from clio_agent.gact import agent_blueprint_refresh as refresh
+
+    source, home, cwd, install_root = registry
+    audit_log = tmp_path / "stream-audit.jsonl"
+    monkeypatch.setenv("CLIO_STREAM_AUDIT_LOG", str(audit_log))
+    set_config("agents.disable_default_registry_bootstrap", False)
+    monkeypatch.setattr(refresh, "default_registry_install_source", lambda: str(source))
+    other_process = FileLock(str(install_root / migration.LOCK_NAME), timeout=0)
+    other_process.acquire()
+    try:
+        refresh.ensure_default_registry_bootstrap(home=home, cwd=cwd)
+    finally:
+        other_process.release()
+
+    assert _reasons("default_registry_migration_busy", migration_stage="local_sync")
+    assert not [r for r in caplog.records if "TypeError" in r.getMessage()]
+    rows = [json.loads(line) for line in audit_log.read_text(encoding="utf-8").splitlines()]
+    busy = [
+        row
+        for row in rows
+        if row["stage"] == "blueprint_install_reason"
+        and row.get("reason") == "default_registry_migration_busy"
+    ]
+    assert busy and busy[-1]["migration_stage"] == "local_sync"
