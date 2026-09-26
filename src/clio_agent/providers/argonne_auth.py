@@ -501,6 +501,9 @@ def _main() -> None:  # pragma: no cover - thin CLI wrapper
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
+    from clio_agent.runtime.console_encoding import ensure_utf8_console  # noqa: PLC0415
+
+    ensure_utf8_console()
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(levelname)s | %(message)s",

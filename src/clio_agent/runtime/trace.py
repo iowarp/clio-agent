@@ -77,7 +77,15 @@ def _install_handler() -> None:
     Sets ``propagate=False`` so trace output is not duplicated by a root handler
     (e.g. under uvicorn), and pins the logger to WARNING when unset so the
     instrumentation (emitted at WARNING) is actually shown.
+
+    This is the process's console-output setup (the CLI and the GACT server both
+    reach it via ``configure()`` before any server/ARC work), so it also makes
+    ``sys.stdout``/``sys.stderr`` UTF-8 with ``errors="replace"``: every ``⚑``
+    line and banner must survive a redirected cp1252 Windows console.
     """
+    from clio_agent.runtime.console_encoding import ensure_utf8_console  # noqa: PLC0415
+
+    ensure_utf8_console()
     if any(getattr(h, _HANDLER_MARK, False) for h in _LOG.handlers):
         return
     handler = logging.StreamHandler()
