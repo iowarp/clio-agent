@@ -94,11 +94,12 @@ jobs:
       # (measured 79% on develop @ 2026-07-07; floor 78) so a genuine
       # regression fails CI while normal noise does not. Ratchet intent:
       # raise this toward the 80% target as gact code gains tests (#31/#773).
-      # -n auto: one xdist worker per runner core (each worker gets its own private
-      # clio-core daemon, tests/_cte_isolation.py); pytest-cov combines the workers'
+      # -n logical: one xdist worker per logical CPU (4 on ubuntu-latest; ``-n auto``
+      # counts PHYSICAL cores and started only 2). Each worker gets its own private
+      # clio-core daemon (tests/_cte_isolation.py); pytest-cov combines the workers'
       # coverage before the floor is checked. worksteal rebalances the long tail.
       # --durations keeps the slowest tests visible in every run's log.
-      - run: uv run pytest tests/ -m "not integration" -n auto --dist worksteal --durations=30 --cov=clio_agent --cov-branch --cov-report=term-missing --cov-fail-under=78
+      - run: uv run pytest tests/ -m "not integration" -n logical --dist worksteal --durations=30 --cov=clio_agent --cov-branch --cov-report=term-missing --cov-fail-under=78
 
   bundle-lock-resolve:
     # The bundled CLIO Desktop runtime installs clio-agent[BUNDLE_EXTRAS]
