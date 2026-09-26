@@ -1,0 +1,13 @@
+{
+  "models": [
+    {
+      "name": "qwen3:8b",
+      "model": "qwen3:8b",
+      "digest": "sha256:abc123def456",
+      "size": 5000000000,
+      "size_vram": 5000000000,
+      "context_length": 8192,
+      "expires_at": "2026-09-24T12:00:00Z"
+    }
+  ]
+}

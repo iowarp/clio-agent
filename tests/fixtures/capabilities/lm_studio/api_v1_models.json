@@ -1,0 +1,19 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "qwen/qwen3-8b",
+      "object": "model",
+      "type": "llm",
+      "max_context_length": 40960,
+      "loaded_context_length": 8192,
+      "capabilities": {
+        "vision": false
+      },
+      "trained_for_tool_use": true,
+      "reasoning": {
+        "allowed_options": ["low", "medium", "high"]
+      }
+    }
+  ]
+}

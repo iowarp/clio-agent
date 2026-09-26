@@ -42,15 +42,22 @@ class _FakeResponse:
 class _FakeAsyncClient:
     """In-memory fake serving the recorded Ollama fixtures by URL/method."""
 
-    def __init__(self, *, tags: Any, show_by_model: dict[str, Any]) -> None:
+    def __init__(
+        self, *, tags: Any, show_by_model: dict[str, Any], ps: Any = None
+    ) -> None:
         self._tags = tags
         self._show_by_model = show_by_model
+        self._ps = ps if ps is not None else {"models": []}
         self.requested: list[str] = []
 
     async def get(self, url: str, **_: object) -> _FakeResponse:
         self.requested.append(url)
         if url.endswith("/api/tags"):
             return _FakeResponse(200, self._tags)
+        if url.endswith("/api/ps"):
+            return _FakeResponse(200, self._ps)
+        if url.endswith("/api/version"):
+            return _FakeResponse(200, {"version": "0.5.4"})
         if url.endswith("/models"):
             # The OpenAI-compat connectivity probe OllamaHandshake inherits;
             # Ollama's /v1/models shim reports nothing useful, just reachability.
@@ -83,11 +90,12 @@ def _ctx() -> HandshakeContext:
 
 
 @pytest.mark.asyncio
-async def test_discover_models_lists_tags_and_drops_the_embedding_row() -> None:
+async def test_discover_models_lists_every_tag_including_the_embedding_model() -> None:
     handshake = OllamaHandshake(provider=None)
     rows = await handshake.discover_models(_client(), _ctx())
     ids = [row.get("id") or row.get("model") for row in rows]
-    assert ids == ["qwen3:8b"]  # nomic-embed-text is an embedding model, filtered out
+    # nomic-embed-text is a surrogate: listed, and refused only as the chat model.
+    assert ids == ["qwen3:8b", "nomic-embed-text:latest"]
 
 
 @pytest.mark.asyncio
@@ -152,4 +160,48 @@ async def test_full_handshake_reports_live_provenance() -> None:
     report = await handshake.handshake(_ctx())
     assert report.connectivity is ConnectivityState.OK
     assert report.models_source == "live"
-    assert [m.id for m in report.models] == ["qwen3:8b"]
+    assert [m.id for m in report.models] == ["qwen3:8b", "nomic-embed-text:latest"]
+
+
+@pytest.mark.asyncio
+async def test_discover_model_config_layers_on_ps_loaded_context() -> None:
+    """P4b (``ollama-probe-context``): /api/ps's loaded context narrows the Modelfile's num_ctx."""
+    handshake = OllamaHandshake(provider=None)
+    client = _FakeAsyncClient(
+        tags=_load("ollama_api_tags.json"),
+        show_by_model={"qwen3:8b": _load("ollama_api_show_qwen3.json")},
+        ps={
+            "models": [
+                {"model": "qwen3:8b", "digest": "sha256:abc123", "context_length": 8192}
+            ]
+        },
+    )
+    ctx = _ctx()
+    rows = await handshake.discover_models(client, ctx)
+
+    facts = await handshake.discover_model_config(client, ctx, rows[0])
+
+    # the Modelfile's own num_ctx (40960, from ollama_api_show_qwen3.json) is
+    # narrowed by what's actually loaded right now (8192).
+    assert facts.deployment.context_served.value == 8192
+    assert facts.deployment.fingerprint == "ollama:digest=sha256:abc123:loaded_context=8192"
+
+
+@pytest.mark.asyncio
+async def test_full_handshake_records_the_endpoint_fingerprint_from_api_version() -> None:
+    """P4b: the base engine's dialect-aware fingerprint hook (brief 5.6) fires for ollama."""
+    from clio_agent.providers.capabilities import invalidation
+    from clio_agent.providers.identity import endpoint_key
+
+    handshake = OllamaHandshake(provider=None)
+
+    async def _open_client(ctx: HandshakeContext) -> _FakeAsyncClient:
+        return _client()
+
+    handshake._open_client = _open_client  # type: ignore[method-assign]
+    await handshake.handshake(_ctx())
+
+    endpoint = invalidation.get_endpoint_capabilities(endpoint_key("ollama", API_BASE))
+    assert endpoint is not None
+    assert endpoint.fingerprint == "ollama:version=0.5.4"
+    assert endpoint.server_version.value == "0.5.4"

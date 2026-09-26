@@ -32,6 +32,7 @@ from clio_agent.gact.modality_evidence import (
     image_input_capability,
     live_model_modalities,
 )
+from clio_agent.gact.model_selection import surrogate_selection_error
 from clio_agent.gact.part_atom_minter import run_transcript_job
 from clio_agent.gact.parts import Part
 from clio_agent.gact.providers.config import (
@@ -301,6 +302,9 @@ def _validate_provider_and_payload(
     bare_kind_error = _bare_provider_kind_error(selected_model, session_id=sid, source=_source)
     if bare_kind_error is not None:
         raise HTTPException(status_code=400, detail=bare_kind_error.model_dump(exclude_none=True))
+    surrogate = surrogate_selection_error(app, selected_model.provider_id, selected_model.model_id)
+    if surrogate is not None:
+        raise HTTPException(status_code=422, detail=surrogate.model_dump(exclude_none=True))
     if not _model_ref_matches_active(selected_model, app):
         # A selection the ACTIVE global LM does not serve is executable only when
         # the provider catalog holds real discovery EVIDENCE for that exact

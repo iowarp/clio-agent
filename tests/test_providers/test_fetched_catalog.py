@@ -325,6 +325,45 @@ def test_write_is_atomic_no_tmp_file_left_and_content_is_valid(
     assert json.loads(on_disk_2["payload"]) == {"a": 2}
 
 
+def test_write_retries_a_transient_windows_sharing_race(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The disk-cache write goes through ``platform_paths.atomic_replace`` --
+    the SAME helper ``model_discovery/overlay.py`` uses -- so it retries the
+    exact transient Windows race (WinError 5/32) P4a saw there, rather than a
+    second, non-retrying tmp+replace implementation."""
+    import sys
+
+    from clio_agent import platform_paths
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(platform_paths.time, "sleep", lambda _seconds: None)
+    calls: list[int] = []
+    real_replace = platform_paths.os.replace
+
+    def flaky_replace(src: str, dst: str) -> None:
+        calls.append(1)
+        if len(calls) < 2:
+            exc = PermissionError("sharing violation")
+            exc.winerror = 32  # type: ignore[attr-defined]
+            raise exc
+        real_replace(src, dst)
+
+    monkeypatch.setattr(platform_paths.os, "replace", flaky_replace)
+
+    catalog = _catalog(tmp_path)
+    monkeypatch.setattr(
+        "clio_agent.providers.fetched_catalog.httpx.get",
+        lambda *_a, **_kw: _response('{"a": 1}', etag='"e1"'),
+    )
+
+    result = catalog.get()
+
+    assert result.data == {"a": 1}
+    assert len(calls) == 2
+    assert json.loads(catalog.cache_path.read_text(encoding="utf-8"))["payload"] == '{"a": 1}'
+
+
 def test_corrupt_disk_cache_is_treated_as_absent(tmp_path: Path) -> None:
     catalog = _catalog(tmp_path, bundled=lambda: {"bundled": True})
     catalog.cache_path.parent.mkdir(parents=True, exist_ok=True)

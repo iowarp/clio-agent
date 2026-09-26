@@ -1,9 +1,9 @@
-"""Context-source factory: resolve a model's limits, modalities and type from the cascade.
+"""Context-source factory: resolve a model's limits, modalities and task from the cascade.
 
-Limits use the full cascade below. Input modalities and the model type come
+Limits use the full cascade below. Input modalities and the model task come
 from the same two public catalogs (models.dev ``modalities``, LiteLLM
 ``supports_*`` flags and ``mode``) through :func:`resolve_input_modalities` and
-:func:`resolve_model_type`; a miss there is UNKNOWN, never a text-only default.
+:func:`resolve_task`; a miss there is UNKNOWN, never a text-only default.
 
 The full cascade is **provider-self-reported → models.dev → litellm catalog →
 local DB**. A provider's own metadata is authoritative; when it doesn't
@@ -36,14 +36,14 @@ from clio_agent.providers.handshake.sources.litellm_catalog import (
     lookup_litellm_info,
     lookup_litellm_output,
     modalities_from_info,
-    model_type_from_info,
+    task_from_info,
 )
 from clio_agent.providers.handshake.sources.models_dev import (
     lookup_models_dev,
     lookup_models_dev_entry,
     lookup_models_dev_output,
     modalities_from_entry,
-    model_type_from_output,
+    task_from_output,
 )
 
 __all__ = [
@@ -55,7 +55,7 @@ __all__ = [
     "lookup_native_context",
     "resolve_context",
     "resolve_input_modalities",
-    "resolve_model_type",
+    "resolve_task",
     "resolve_output_limit",
 ]
 
@@ -168,29 +168,29 @@ def resolve_input_modalities(model_id: str) -> tuple[frozenset[str] | None, str,
     return None, "", ""
 
 
-def resolve_model_type(model_id: str) -> tuple[str | None, str, str]:
-    """Resolve a model's type via LiteLLM ``mode``, then models.dev output modalities.
+def resolve_task(model_id: str) -> tuple[str | None, str, str]:
+    """Resolve a model's task via LiteLLM ``mode``, then models.dev output modalities.
 
-    LiteLLM's ``mode`` names the type directly and is tried first. models.dev has
+    LiteLLM's ``mode`` names the task directly and is tried first. models.dev has
     no type field; its output modalities only decide a type when they lack text
-    (:func:`~.models_dev.model_type_from_output`).
+    (:func:`~.models_dev.task_from_output`).
 
     Returns:
-        ``(model_type, source_name, detail)``, or ``(None, "", "")`` on a miss.
+        ``(task, source_name, detail)``, or ``(None, "", "")`` on a miss.
     """
     if not (model_id or "").strip():
         return None, "", ""
     matched = lookup_litellm_info(model_id)
     if matched is not None:
         key, info = matched
-        model_type = model_type_from_info(info)
-        if model_type is not None:
-            return model_type, SOURCE_LITELLM, f"litellm {key} mode={info.get('mode')!r}"
+        task = task_from_info(info)
+        if task is not None:
+            return task, SOURCE_LITELLM, f"litellm {key} mode={info.get('mode')!r}"
     entry = lookup_models_dev_entry(model_id)
     _input, output = modalities_from_entry(entry)
-    model_type = model_type_from_output(output)
-    if model_type is not None:
-        return model_type, SOURCE_MODELS_DEV, f"models.dev {_entry_id(entry)} modalities.output"
+    task = task_from_output(output)
+    if task is not None:
+        return task, SOURCE_MODELS_DEV, f"models.dev {_entry_id(entry)} modalities.output"
     return None, "", ""
 
 

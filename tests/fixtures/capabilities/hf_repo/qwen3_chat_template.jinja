@@ -1,0 +1,23 @@
+{#- Qwen3-style chat template excerpt (hand-authored, representative of the
+    publicly documented enable_thinking on/off control -- not a verbatim
+    download; no real network probe is available in this environment). -#}
+{%- for message in messages %}
+{%- if message.role == "user" %}
+{{ '<|im_start|>user\n' + message.content + '<|im_end|>\n' }}
+{%- elif message.role == "assistant" %}
+{{ '<|im_start|>assistant\n' + message.content + '<|im_end|>\n' }}
+{%- endif %}
+{%- endfor %}
+{%- if add_generation_prompt %}
+{{ '<|im_start|>assistant\n' }}
+{%- if enable_thinking is defined and enable_thinking %}
+{{ '<think>\n' }}
+{%- else %}
+{{ '<think>\n\n</think>\n\n' }}
+{%- endif %}
+{%- endif %}
+{%- if tools %}
+{%- for tool in tools %}
+{{ tool }}
+{%- endfor %}
+{%- endif %}
