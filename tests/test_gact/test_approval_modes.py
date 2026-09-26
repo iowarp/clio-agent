@@ -36,6 +36,7 @@ from clio_agent.gact.permission_gate import (
 from clio_agent.gact.sessions import SessionStore
 from clio_agent.gact.types import Session as WireSession
 from clio_agent.gact.types import Tool
+from tests.turn_signals import TURN_SIGNAL_BACKSTOP_S
 
 # Default sessions run the blueprint react ``main``; route it to each test's host fake.
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
@@ -47,7 +48,7 @@ _UNCLASSIFIED = "shell.exec"
 _ALL_MODES = ("ask", "auto-edits", "bypass", "ai-review", "spotter-ai")
 
 
-def _wait_for_row(app, *, timeout: float = 2.5) -> dict:
+def _wait_for_row(app, *, timeout: float = TURN_SIGNAL_BACKSTOP_S) -> dict:
     """Block until the gate registers a permission row; fail if none appears."""
     deadline = time.time() + timeout
     while time.time() < deadline:

@@ -52,6 +52,7 @@ from clio_agent.gact.part_atoms import (
 )
 from clio_agent.gact.types import ErrorInfo, Message, Part, Tokens
 from tests.equivalence.normalizers import first_divergence
+from tests.turn_signals import post_turn_and_wait
 
 # #948 S4b: the one end-to-end turn here runs the blueprint react ``main``; route
 # it to the ``build_app(agent=FakeClioAgent(...))`` host fake.
@@ -380,7 +381,6 @@ def test_real_turn_persist_seam_mints_reproducible_atoms(tmp_path: Path) -> None
     persisted ``Message.model_dump(exclude_none=True)`` (the exact ``final_message``
     shape) — the step-4 gate on live finalize output, field-path-diffed.
     """
-    import time
 
     from fastapi.testclient import TestClient
 
@@ -392,16 +392,11 @@ def test_real_turn_persist_seam_mints_reproducible_atoms(tmp_path: Path) -> None
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=agent, arc=arc)
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "s4"}).json()["id"]
-        ack = client.post(
-            f"/v1/sessions/{sid}/messages",
-            json={"parts": [{"type": "text", "text": "how many dense stations near LA?"}]},
+        post_turn_and_wait(
+            client,
+            sid,
+            {"parts": [{"type": "text", "text": "how many dense stations near LA?"}]},
         )
-        assert ack.status_code == 200, ack.text
-        deadline = time.monotonic() + 10.0
-        while time.monotonic() < deadline:
-            if client.get(f"/v1/sessions/{sid}").json()["status"] != "running":
-                break
-            time.sleep(0.05)
         persisted = list(app.state.messages.get(sid, []))
 
     assert [m.role for m in persisted] == ["user", "assistant"]

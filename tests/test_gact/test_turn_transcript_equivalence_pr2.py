@@ -25,11 +25,12 @@ from __future__ import annotations
 
 import json
 import os
-import time
 from pathlib import Path
 from typing import Any
 
 from fastapi.testclient import TestClient
+
+from tests.turn_signals import wait_for_terminal_status
 
 from .test_turn_transcript_equivalence import (
     _build,
@@ -73,15 +74,10 @@ def scenario_error_envelope_turn(tmp_path: Path, monkeypatch: Any) -> dict[str, 
     app = _build(tmp_path, "errenvelope", _PlainAgent("unused"))
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "e"}).json()["id"]
+        cursor = app.state.bus.latest_event_id(sid)
         ack = client.post(f"/v1/sessions/{sid}/messages", json={"text": "stream then crash"})
         assert ack.status_code == 200, ack.text
-        deadline = time.monotonic() + 30.0
-        status = "running"
-        while time.monotonic() < deadline:
-            status = client.get(f"/v1/sessions/{sid}").json()["status"]
-            if status != "running":
-                break
-            time.sleep(0.05)
+        status = wait_for_terminal_status(app.state.bus, sid, after_event_id=cursor)
         assert status == "error", f"envelope did not settle the session: {status!r}"
         trace = _normalized_trace(app, client, sid)
     completed = [e for e in trace["events"] if e["type"] == "message.completed"]

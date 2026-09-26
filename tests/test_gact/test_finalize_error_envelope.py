@@ -11,7 +11,6 @@ and a terminal session status.
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
+from tests.turn_signals import wait_for_terminal_status
 
 # #948 S4b: default sessions run the blueprint react ``main``; route it to the
 # ``build_app(agent=...)`` host fake.
@@ -44,6 +44,7 @@ def test_finalize_exception_settles_turn_with_error_envelope(
     app = build_app(sessions_path=tmp_path / "s.json", agent=FakeClioAgent(answer="ok"))
     with TestClient(app) as c:
         sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
+        cursor = app.state.bus.latest_event_id(sid)
         ack = c.post(
             f"/v1/sessions/{sid}/messages",
             json={"parts": [{"type": "text", "text": "hi"}]},
@@ -51,16 +52,10 @@ def test_finalize_exception_settles_turn_with_error_envelope(
         assert ack.status_code == 200, ack.text
         user_id = ack.json()["message_id"]
 
-        # Poll until the session leaves 'running' (or time out — the pre-fix
-        # symptom: the background task dies silently and the status never
-        # changes, so this loop exhausts and the assert below reports it).
-        deadline = time.monotonic() + 5.0
-        status = "running"
-        while time.monotonic() < deadline:
-            status = c.get(f"/v1/sessions/{sid}").json()["status"]
-            if status != "running":
-                break
-            time.sleep(0.05)
+        # Wait for the turn's terminal status event (the pre-fix symptom: the
+        # background task dies silently and never publishes one, so the wait's
+        # backstop fails the test).
+        status = wait_for_terminal_status(app.state.bus, sid, after_event_id=cursor)
 
         history = app.state.bus._history.get(sid, [])
         completed = [ev for ev in history if ev.type == "message.completed"]
