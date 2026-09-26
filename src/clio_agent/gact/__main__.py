@@ -18,8 +18,12 @@ from __future__ import annotations
 
 from clio_agent.gact.desktop_boot import start_desktop_boot_heartbeat
 from clio_agent.gact.runtime_bytecode_repair import repair_bundled_runtime_bytecode
+from clio_agent.runtime.console_encoding import ensure_utf8_console
 
 if __name__ == "__main__":
+    # First: the sidecar's stdout/stderr are pipes opened in the locale code
+    # page on Windows; every later print/log line must encode as UTF-8.
+    ensure_utf8_console()
     start_desktop_boot_heartbeat()
     # Before ANY dependency import: an in-place-upgraded bundled runtime can
     # still hold the previous release's unchecked bytecode.
