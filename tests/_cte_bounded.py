@@ -33,13 +33,14 @@ from tests import _hang_guard
 CALL_BOUND_ENV = "CLIO_TEST_CTE_CALL_BOUND_S"
 ATTACH_BOUND_ENV = "CLIO_TEST_CTE_ATTACH_BOUND_S"
 
-# Measured on the private suite daemon (Windows, -n 2, 2026-09-26): the slowest single
-# store op across the whole suite took well under a second; 15s is headroom for a
-# loaded CI runner while still failing a stuck daemon in seconds.
+# Measured on the private suite daemon (Windows, -n 2, 2026-09-26, 3559 bounded calls
+# across tests/test_arc, tests/test_equivalence and the gact cte legs): the slowest
+# store op took 0.89 s, so 15 s is ~17x headroom for a loaded CI runner while a stuck
+# daemon still fails the test in seconds.
 DEFAULT_CALL_BOUND_S = 15.0
 # The constructor can cold-spawn the daemon (``clio_run start`` + port bind + client
-# handshake + ``initialize_cte``); measured cold spawns took a few seconds.
-DEFAULT_ATTACH_BOUND_S = 60.0
+# handshake + ``initialize_cte``): 1.88 s measured cold, bounded at ~16x.
+DEFAULT_ATTACH_BOUND_S = 30.0
 
 _BOUNDED_METHODS = ("put", "get", "exists", "delete", "clear", "search")
 
