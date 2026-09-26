@@ -23,7 +23,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-__all__ = ["HOST_CREDENTIALS_MISSING", "missing_reason", "present"]
+__all__ = ["HOST_CREDENTIALS_MISSING", "chain_for", "missing_reason", "present"]
 
 #: The typed reason code for an empty host credential chain.
 HOST_CREDENTIALS_MISSING = "host_credentials_missing"
@@ -76,6 +76,20 @@ def _chain(name: str) -> _Chain:
     if chain is None:
         raise ValueError(f"unknown host credential chain: {name!r}")
     return chain
+
+
+def chain_for(provider_id: str) -> str:
+    """The host credential chain the catalog provider ``provider_id`` signs with, or ``""``.
+
+    Keyed by provider identity, never by kind (Vertex AI and Bedrock share the
+    ``openai`` kind with keyed providers), and read from the catalog so every
+    caller -- whatever preset shape it holds -- gets the same answer.
+    """
+
+    from clio_agent.providers.catalog import get_provider  # noqa: PLC0415 - catalog imports heavy
+
+    preset = get_provider(provider_id) if provider_id else None
+    return preset.host_credentials if preset is not None else ""
 
 
 def present(name: str) -> bool:

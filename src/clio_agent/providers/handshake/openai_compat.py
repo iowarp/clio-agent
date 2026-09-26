@@ -88,7 +88,7 @@ class OpenAICompatHandshake(ProviderHandshake):
         Local backends (Ollama, a bare vLLM server) accept any/no key; cloud
         providers (OpenAI, Anthropic, OpenRouter) require one.
         """
-        if getattr(self.provider, "host_credentials", ""):
+        if host_credentials.chain_for(ctx.provider_id):
             return False  # signs with the host's credentials, never an API key
         return ctx.provider_kind not in _NO_AUTH_KINDS
 
@@ -181,7 +181,7 @@ class OpenAICompatHandshake(ProviderHandshake):
         - otherwise -> ``(OK, OK)`` (or ``NOT_REQUIRED`` for keyless local kinds),
           carrying the resolved ``auth_header`` forward for later phases.
         """
-        chain = getattr(self.provider, "host_credentials", "")
+        chain = host_credentials.chain_for(ctx.provider_id)
         if chain and not host_credentials.present(chain):
             return ConnectivityResult(
                 connectivity=ConnectivityState.SKIPPED,

@@ -156,3 +156,20 @@ def test_refresh_skips_host_credential_providers_without_credentials(bare_host: 
     adc.parent.mkdir(parents=True)
     adc.write_text("{}", encoding="utf-8")
     assert is_provider_configured(vertex)
+
+
+@pytest.mark.asyncio
+async def test_the_catalog_probe_shape_gets_the_same_reason(bare_host: Path) -> None:
+    """The provider catalog hands the handshake a gact preset without the field.
+
+    The chain is resolved from the catalog by provider id, so that shape (here any
+    object with no ``host_credentials``) reports the same typed reason.
+    """
+
+    conn = await OpenAICompatHandshake(provider=object()).check_connectivity(
+        _NoNetworkClient(), _ctx("vertex_ai", "EMPTY")
+    )
+
+    assert conn.error == (
+        "host_credentials_missing: Google Cloud credentials not found on this computer"
+    )
