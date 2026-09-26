@@ -32,6 +32,8 @@ from typing import Any, Generic, Literal, TypeVar, get_args
 
 from clio_schemas.model_capabilities import HF_PIPELINE_TAGS, TASK_ID_PATTERN, Domain
 
+from clio_agent.providers.capabilities.model_facts import ParameterCount, ReleaseDate, TokenPricing
+
 T = TypeVar("T")
 
 #: Where a :class:`Fact`'s value came from. Ordered here the same way the
@@ -269,6 +271,22 @@ class ModelCapabilities:
     forbidden_params: Fact[frozenset[str]] = field(default_factory=_unknown_field)
     sampling_thinking: Fact[dict[str, float]] = field(default_factory=_unknown_field)
     sampling_instruct: Fact[dict[str, float]] = field(default_factory=_unknown_field)
+    #: What the model is, in its source's own words (raw text; a router's
+    #: description is how a person learns what it routes between).
+    description: Fact[str] = field(default_factory=_unknown_field)
+    #: When the model was released (:mod:`.model_facts`); ``recent`` is derived
+    #: from it at serve time, never stored.
+    released_at: Fact[ReleaseDate] = field(default_factory=_unknown_field)
+    #: Parameter count (total, plus MoE active/experts when a source states them).
+    parameters: Fact[ParameterCount] = field(default_factory=_unknown_field)
+    #: A community catalog's list price for these weights (LiteLLM) -- what the
+    #: model costs from its maker, as opposed to what one endpoint charges
+    #: (:attr:`DeploymentCapabilities.pricing`).
+    catalog_pricing: Fact[TokenPricing] = field(default_factory=_unknown_field)
+    #: The Hugging Face repo these weights ARE, as a source states it
+    #: (OpenRouter ``hugging_face_id``, a models.dev ``weights`` link) -- the
+    #: link the Hub layer reads parameters and release date through.
+    hf_repo: Fact[str] = field(default_factory=_unknown_field)
 
 
 @dataclass(frozen=True)
@@ -322,11 +340,11 @@ class DeploymentCapabilities:
     default_template_kwargs: Fact[dict[str, Any]] = field(default_factory=_unknown_field)
     #: Extra per-route narrowing (e.g. OpenRouter ``supported_parameters``).
     route_params: Fact[frozenset[str]] = field(default_factory=_unknown_field)
-    #: Per-token prices this endpoint charges, ``{"prompt": str, "completion": str}``
-    #: as the provider states them (decimal strings), or ``"variable"`` for a
-    #: side whose price depends on the routed model (OpenRouter's ``-1``) --
-    #: never recorded as 0.
-    pricing: Fact[dict[str, str]] = field(default_factory=_unknown_field)
+    #: What this endpoint charges, per 1M tokens (:class:`.model_facts.TokenPricing`):
+    #: a USD rate per side, ``variable`` for a side whose price depends on the
+    #: routed model (OpenRouter's ``-1``), or ``subscription`` for a plan-billed
+    #: CLI provider -- never recorded as 0.
+    pricing: Fact[TokenPricing] = field(default_factory=_unknown_field)
     #: Whether this endpoint serves the model at no cost (both prices exactly 0).
     free: Fact[bool] = field(default_factory=_unknown_field)
     #: Whether this model id is a ROUTER that picks another model per request
