@@ -51,6 +51,24 @@ def _wait_for_settled_turn(
     raise TimeoutError(f"turn {user_message_id} did not settle within {timeout:g}s")
 
 
+def _wait_for_idle_session(client: ClioClient, session_id: str, timeout: float = 10.0) -> None:
+    """Poll until the session leaves ``running``.
+
+    The assistant message joins the ledger before the turn publishes
+    ``message.completed`` (#1469), so a ledger hit alone does not mean every
+    event of the turn is on the bus. The terminal status flips only after the
+    turn task releases its slot (#1466), i.e. after the last publish, so it is
+    the signal that the whole turn is replayable.
+    """
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if client.sessions.get(session_id).status != "running":
+            return
+        time.sleep(0.05)
+    raise TimeoutError(f"session {session_id} did not leave running within {timeout:g}s")
+
+
 def test_post_text_and_read_settled_ledger(client: ClioClient, stub_agent: StubAgent) -> None:
     sess = client.sessions.create(title="turn test")
 
@@ -122,6 +140,7 @@ def test_replay_and_last_event_id_resume(client: ClioClient) -> None:
     sess = client.sessions.create(title="sse resume")
     ack = client.messages.post(sess.id, text="replay me")
     _wait_for_settled_turn(client, sess.id, ack.message_id)
+    _wait_for_idle_session(client, sess.id)
 
     # Full replay from 0: everything re-delivered with replay=True.
     replayed: list[StreamEvent] = []
