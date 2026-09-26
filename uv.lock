@@ -607,7 +607,7 @@ requires-dist = [
     { name = "claude-agent-sdk", marker = "extra == 'claude-code'", specifier = ">=0.2.156" },
     { name = "clio-agent", extras = ["optimizers", "adios", "argonne", "claude-code", "desktop", "flowcept", "dev"], marker = "extra == 'all'" },
     { name = "clio-kit", marker = "extra == 'desktop'", specifier = "==2.10.6" },
-    { name = "clio-schemas", git = "https://github.com/iowarp/clio-schemas.git?rev=e45d08133e976fbd9089ac82a0c981fa1f82b45c" },
+    { name = "clio-schemas", specifier = "==0.3.3" },
     { name = "ddgs", marker = "extra == 'desktop'", specifier = ">=6.0" },
     { name = "dspy", specifier = "==3.3.0b1" },
     { name = "fastapi", specifier = ">=0.140" },
@@ -679,11 +679,15 @@ wheels = [
 [[package]]
 name = "clio-schemas"
 version = "0.3.3"
-source = { git = "https://github.com/iowarp/clio-schemas.git?rev=e45d08133e976fbd9089ac82a0c981fa1f82b45c#e45d08133e976fbd9089ac82a0c981fa1f82b45c" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jsonschema", extra = ["format"] },
     { name = "pydantic" },
     { name = "referencing" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/83/09/346fb37d65d84de15cdde8f668ad68cc7cc85f2d5f39148a8d04cfd97dd3/clio_schemas-0.3.3.tar.gz", hash = "sha256:3d743fee96fe2b2c55fa5cc43212fe677db2a43f41a10dbbbbb95a2b004f3239", size = 153911, upload-time = "2026-09-26T06:55:22.322Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5d/94/59f9863ddf3f65fe51f20d3a8296b0ca801eca5548364a293fc04240083e/clio_schemas-0.3.3-py3-none-any.whl", hash = "sha256:6fd69a6ecb322071b0db02fc5ad3a3f113dc487eb2229f0c89d979ed1ce33ee9", size = 111944, upload-time = "2026-09-26T06:55:21.233Z" },
 ]
 
 [[package]]

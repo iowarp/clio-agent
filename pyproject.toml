@@ -326,11 +326,3 @@ also_copy = ["src/clio_agent/", "tests/"]
 # combination's import surface is test-verified, the live session smoke runs
 # at the phase gate. Drop this override when upstream supports mcp 2.
 override-dependencies = ["mcp>=2.0.0"]
-
-[tool.uv.sources]
-# M1 model-capability tags: clio-schemas 0.3.3 (patch bump). Adds
-# ModelCapabilityTags (clio_schemas.model_capabilities) -- the tag record the
-# provider catalog serves per model row as ``capability_tags``. Pinned to the
-# iowarp/clio-schemas feat/model-capability-tags head (PR #12) until it merges;
-# re-pin to the main merge commit then.
-clio-schemas = { git = "https://github.com/iowarp/clio-schemas.git", rev = "e45d08133e976fbd9089ac82a0c981fa1f82b45c" }
