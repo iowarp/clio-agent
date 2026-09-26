@@ -380,6 +380,29 @@ def _restore_clio_logger():
 
 
 @pytest.fixture(autouse=True)
+def _restore_dspy_process_default():
+    """Snapshot + restore dspy's process-default LM and adapter around every test.
+
+    The admin bind (``PUT /v1/providers/lm``) deliberately installs the bound LM and
+    adapter as dspy's process default (``runtime.ambient_lm.install_process_default_lm``
+    writes ``main_thread_config['lm'/'adapter']``). A test that drives a bind with stub
+    factories and does not pin those keys itself leaves its stubs installed for every
+    later test in the same worker: ``dspy.context(lm=DummyLM(...))`` then resolves the
+    leaked ``SimpleNamespace`` adapter and fails with "object is not callable"
+    (``test_module_variants_s5`` after ``test_lm_bind_process_default``). Restoring the
+    two keys around every test removes the whole class.
+    """
+    from dspy.dsp.utils.settings import main_thread_config  # noqa: PLC0415
+
+    saved = {key: main_thread_config.get(key) for key in ("lm", "adapter")}
+    try:
+        yield
+    finally:
+        for key, value in saved.items():
+            main_thread_config[key] = value
+
+
+@pytest.fixture(autouse=True)
 def _reset_runtime_context():
     """Isolate each test from the single GACT runtime contextvar (#714).
 
