@@ -429,3 +429,35 @@ def test_offline_state_is_logged_once_and_every_read_keeps_its_typed_reason(
     assert set(reasons) == {"catalog_unavailable_offline"}
     logged = [r for r in caplog.records if "catalog_unavailable_offline" in r.getMessage()]
     assert len(logged) == 1
+
+
+def test_library_offline_copy_is_used_only_with_no_cache_and_is_tagged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A third-party library's own packaged data (never a CLIO catalog)."""
+    catalog = FetchedCatalog(
+        "widgets",
+        "https://example/catalog.json",
+        parse=_parse_dict,
+        ttl_s=0.0,
+        timeout_s=1.0,
+        library_offline=lambda: {"library": True},
+        cache_path=tmp_path / "widgets.json",
+    )
+    cold = catalog.get(allow_fetch=False)
+    assert cold.source == "library_packaged"
+    assert cold.data == {"library": True}
+    assert cold.stale_reason == "library_packaged: fetch_disabled"
+
+    monkeypatch.setattr(
+        "clio_agent.providers.fetched_catalog.httpx.get",
+        lambda *_a, **_kw: _response('{"a": 1}'),
+    )
+    catalog.get()
+
+    def _boom(*_a: object, **_kw: object) -> httpx.Response:
+        raise httpx.ConnectError("offline")
+
+    monkeypatch.setattr("clio_agent.providers.fetched_catalog.httpx.get", _boom)
+    # Once any disk cache exists, the last good fetch wins over the library copy.
+    assert catalog.get().data == {"a": 1}

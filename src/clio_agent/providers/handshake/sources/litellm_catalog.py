@@ -11,10 +11,11 @@ This module fetches the SAME map LiteLLM itself would (its own
 :mod:`clio_agent.providers.fetched_catalog` mechanism: a disk cache with a TTL
 and ETag under ``paths.user_cache_dir()/catalogs/litellm-model-cost-map.json``,
 atomic writes, and a last-good copy that a failed fetch or a failed validation
-never clears. The copy bundled inside the ``litellm`` wheel is NOT read
-(coordinator decision D18: everything is referenced online): a first run with
-no network and no disk cache is a typed ``catalog_unavailable_offline`` miss.
-Reproducibility comes from the recorded ETag/version in every
+never clears. With no disk cache and no network, the map packaged inside the
+``litellm`` wheel itself (``model_prices_and_context_window_backup.json``, the
+library's own data -- not a CLIO catalog) is the offline source, tagged
+``source="library_packaged"``. Reproducibility comes from the recorded
+ETag/version in every
 :class:`~clio_agent.providers.fetched_catalog.CatalogResult`, which any lookup
 can be re-run against.
 
@@ -26,6 +27,7 @@ from __future__ import annotations
 
 import json
 from functools import lru_cache
+from importlib import resources
 from typing import Any
 
 from clio_agent.providers.fetched_catalog import FetchedCatalog, FetchedCatalogUnavailable
@@ -71,6 +73,16 @@ def _parse_cost_map(payload: bytes) -> dict[str, Any]:
     return {key: value for key, value in data.items() if isinstance(key, str)}
 
 
+def _library_packaged_cost_map() -> dict[str, Any]:
+    """The cost map the installed ``litellm`` wheel ships (the library's own data)."""
+    text = (
+        resources.files("litellm")
+        .joinpath("model_prices_and_context_window_backup.json")
+        .read_text(encoding="utf-8")
+    )
+    return _parse_cost_map(text.encode("utf-8"))
+
+
 @lru_cache(maxsize=1)
 def _catalog() -> FetchedCatalog[dict[str, Any]]:
     """The (process-singleton, lazily built) :class:`FetchedCatalog` for the live cost map.
@@ -88,6 +100,7 @@ def _catalog() -> FetchedCatalog[dict[str, Any]]:
         ttl_s=DEFAULT_TTL_S,
         max_bytes=_MAX_BYTES,
         timeout_s=_FETCH_TIMEOUT_S,
+        library_offline=_library_packaged_cost_map,
     )
 
 
@@ -125,7 +138,7 @@ def lookup_litellm(model_id: str, *, allow_fetch: bool = True) -> tuple[int | No
     Args:
         model_id: The raw model identifier (with or without a provider prefix).
         allow_fetch: When ``False``, never touch the network -- the disk cache
-            from an earlier successful fetch only.
+            or the litellm wheel's own packaged map only.
     """
     if not (model_id or "").strip():
         return None, None

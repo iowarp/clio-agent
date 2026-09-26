@@ -5,7 +5,8 @@
   from raw GitHub ``main`` through :mod:`clio_agent.providers.fetched_catalog`.
 * A first run with no network is the typed ``catalog_unavailable_offline``
   state per catalog; a later outage serves the last good disk copy.
-* No runtime read path of a packaged catalog copy is left in ``src/``.
+* No runtime read path of a packaged CLIO catalog copy is left in ``src/``
+  (third-party libraries' own packaged data, e.g. LiteLLM's map, is out of scope).
 
 The fetch tests run a REAL local HTTP server serving the repository's own
 ``catalogs/`` files (the bytes raw GitHub serves) and point the catalog base
@@ -32,6 +33,7 @@ from clio_agent.providers.fetched_catalog import (
     clio_catalog_url,
 )
 from clio_agent.providers.handshake.sources import db as model_limits_db
+from clio_agent.providers.handshake.sources import litellm_catalog
 from clio_agent.providers.model_discovery import (
     claude_code_catalog,
     model_overlay_catalog,
@@ -155,9 +157,12 @@ def test_startup_refresh_reports_each_unavailable_catalog_typed(
 
     failures = refresh.refresh_online_catalogs()
 
-    assert set(failures) == {"model-overlay", "model-limits", "litellm-model-cost-map"}
+    # CLIO's own catalogs have no packaged copy; LiteLLM's third-party map falls
+    # back to the copy the litellm wheel itself ships (the library's own data).
+    assert set(failures) == {"model-overlay", "model-limits"}
     assert all(CATALOG_UNAVAILABLE_OFFLINE in failure for failure in failures.values())
-    # Lookups in the offline state are typed misses, never a packaged answer.
+    assert litellm_catalog._catalog().get(allow_fetch=False).source == "library_packaged"
+    # Lookups of CLIO's catalogs offline are typed misses, never a packaged answer.
     assert model_limits_db.lookup_context("openai/gpt-4o") is None
     entries, error = model_overlay_catalog.cached_model_overlay_entries()
     assert entries is None
@@ -165,14 +170,16 @@ def test_startup_refresh_reports_each_unavailable_catalog_typed(
 
 
 def test_no_packaged_catalog_read_path_is_left() -> None:
-    """Grep guard: no runtime read of a catalog copy shipped inside the wheel."""
+    """Grep guard: no runtime read of a CLIO catalog copy shipped inside our wheel.
+
+    Third-party libraries' own packaged data (the litellm wheel's cost map) is
+    out of scope and deliberately still the offline source for that map.
+    """
 
     offenders: list[str] = []
     patterns = [
-        re.compile(r"bundled=[A-Za-z_]"),  # FetchedCatalog's deleted packaged-fallback kwarg
-        re.compile(r"model_prices_and_context_window_backup"),  # litellm's in-wheel map
+        re.compile(r"bundled=[A-Za-z_]"),  # the deleted CLIO-copy fallback kwarg
         re.compile(r"[\"']data[\"']\s*/\s*[\"'](model[-_]limits|model-overlay)"),
-        re.compile(r"resources\.files\(\s*[\"']litellm[\"']"),
     ]
     for path in _SRC.rglob("*.py"):
         text = path.read_text(encoding="utf-8")

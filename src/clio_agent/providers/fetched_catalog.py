@@ -26,11 +26,14 @@ truth, and going stale is always a *typed* fact, never a silent one. Concretely:
 * A conditional GET (``If-None-Match``) is used whenever the cache carries an
   ETag; a ``304`` only refreshes ``fetched_at`` (the payload didn't change, so
   there is nothing new to validate or write).
-* **Online-first, no packaged copies.** Every catalog is referenced online (CLIO's
-  own catalogs from raw GitHub, :func:`clio_catalog_url`); nothing is read from a
-  copy shipped inside the wheel. A first run with no network and no disk cache
+* **Online-first.** Every catalog is referenced online. CLIO's OWN catalogs
+  come from raw GitHub (:func:`clio_catalog_url`) and never from a copy shipped
+  inside the clio-agent wheel. The optional ``library_offline`` loader exists
+  ONLY for a THIRD-PARTY library's own packaged data (LiteLLM's cost map ships
+  in the litellm wheel): used when there is no disk cache and no live data, and
+  always tagged ``source="library_packaged"``. With neither, a first run offline
   raises :class:`FetchedCatalogUnavailable` with the typed reason
-  ``catalog_unavailable_offline`` -- never a stale packaged list.
+  ``catalog_unavailable_offline``.
 
 Thread safety: ``FetchedCatalog.get`` takes a plain :class:`threading.Lock` around
 each refresh. Every known caller in this codebase is synchronous OR reaches this
@@ -117,7 +120,8 @@ class CatalogResult(Generic[T]):
         data: The parsed, validated catalog payload.
         source: Where ``data`` came from: ``"network"`` (a live fetch just
             happened, including a ``304`` confirming the cache), ``"disk_cache"``
-            (served from the local cache, fresh or stale).
+            (served from the local cache, fresh or stale), or
+            ``"library_packaged"`` (a third-party library's own packaged copy).
         source_url: The URL this catalog fetches from.
         etag: The upstream ``ETag`` backing ``data``, or ``""`` when none was
             recorded (an upstream that sends none).
@@ -211,6 +215,9 @@ class FetchedCatalog(Generic[T]):
         max_bytes: A fetched response larger than this is treated as a fetch
             failure (never parsed, never cached).
         timeout_s: Per-attempt HTTP timeout.
+        library_offline: Optional zero-arg loader for a THIRD-PARTY library's own
+            packaged copy of the document (never a CLIO catalog), used only when
+            there is no disk cache and no live data.
         cache_path: Override the disk-cache location (tests).
     """
 
@@ -223,6 +230,7 @@ class FetchedCatalog(Generic[T]):
         ttl_s: float,
         max_bytes: int = DEFAULT_MAX_BYTES,
         timeout_s: float = DEFAULT_TIMEOUT_S,
+        library_offline: Callable[[], T] | None = None,
         cache_path: Path | None = None,
     ) -> None:
         if not name.strip():
@@ -242,6 +250,8 @@ class FetchedCatalog(Generic[T]):
         # one full parse per model-id variant, thousands per provider refresh.
         self._fresh: tuple[Path, CatalogResult[T]] | None = None
         self._unavailable_logged = False
+        self._library_offline = library_offline
+        self._library_data: tuple[T] | None = None
 
     @property
     def cache_path(self) -> Path:
@@ -333,6 +343,34 @@ class FetchedCatalog(Generic[T]):
                     version=cached.version,
                     fetched_at=cached.fetched_at,
                     stale_reason=fetch_failure_reason,
+                )
+
+        if self._library_offline is not None:
+            if self._library_data is None:
+                try:
+                    self._library_data = (self._library_offline(),)
+                except Exception as exc:  # noqa: BLE001 - a bad library copy is "no offline data"
+                    logger.warning(
+                        "fetched_catalog: reason=library_packaged_load_failed name=%s: %s",
+                        self.name,
+                        exc,
+                    )
+                else:
+                    logger.warning(
+                        "fetched_catalog: reason=library_packaged name=%s (no disk cache; "
+                        "fetch=%s) using the library's own packaged copy",
+                        self.name,
+                        fetch_failure_reason,
+                    )
+            if self._library_data is not None:
+                return CatalogResult(
+                    data=self._library_data[0],
+                    source="library_packaged",
+                    source_url=self.url,
+                    etag="",
+                    version="library_packaged",
+                    fetched_at=_now_iso(),
+                    stale_reason=f"library_packaged: {fetch_failure_reason}",
                 )
 
         if not self._unavailable_logged:

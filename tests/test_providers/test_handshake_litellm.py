@@ -94,14 +94,30 @@ def test_offline_lookup_reports_disk_cache_provenance(isolated_catalog: FetchedC
     assert result.version == "sha256:recorded"
 
 
-def test_first_run_offline_is_a_typed_miss_not_a_packaged_map(
-    isolated_catalog: FetchedCatalog,
+def test_first_run_offline_serves_the_litellm_wheels_own_map(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    isolated_catalog.cache_path.unlink()
-    with pytest.raises(fetched_catalog.FetchedCatalogUnavailable) as error:
-        isolated_catalog.get(allow_fetch=False)
-    assert error.value.reason == "catalog_unavailable_offline"
-    assert lc.lookup_litellm("gpt-4o", allow_fetch=False) == (None, None)
+    """A fresh machine with no cache and no network still knows gpt-4o/gpt-5:
+    the map the litellm wheel itself ships (third-party data, not a CLIO catalog)."""
+    fresh: FetchedCatalog = FetchedCatalog(
+        "litellm-model-cost-map-fresh",
+        lc._cost_map_url(),
+        parse=lc._parse_cost_map,
+        ttl_s=lc.DEFAULT_TTL_S,
+        library_offline=lc._library_packaged_cost_map,
+        cache_path=tmp_path / "fresh.json",
+    )
+    monkeypatch.setattr(lc, "_catalog", lambda: fresh)
+
+    def _boom(*_a: object, **_kw: object) -> httpx.Response:
+        raise AssertionError("allow_fetch=False must never hit the network")
+
+    monkeypatch.setattr(fetched_catalog.httpx, "get", _boom)
+    result = fresh.get(allow_fetch=False)
+    assert result.source == "library_packaged"
+    assert result.stale_reason == "library_packaged: fetch_disabled"
+    assert lc.lookup_litellm_context("gpt-4o", allow_fetch=False) == 128000
+    assert lc.lookup_litellm_info("gpt-5", allow_fetch=False) is not None
 
 
 # ---- id-variant probing + prefix fall-through ----

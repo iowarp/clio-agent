@@ -77,8 +77,9 @@ def refresh_online_catalogs() -> dict[str, str]:
     hot path), so this startup fetch is what makes a fresh install learn them:
     CLIO's own ``model-overlay`` and ``model-limits`` (raw GitHub) and the
     LiteLLM community cost map. A fetch inside the TTL is a no-op. A failure
-    keeps the previous disk copy (typed stale) or, with none, leaves the typed
-    ``catalog_unavailable_offline`` state -- logged here, never a packaged copy.
+    keeps the previous disk copy (typed stale); with none, CLIO's own catalogs
+    are in the typed ``catalog_unavailable_offline`` state (never a packaged
+    CLIO copy), while LiteLLM falls back to its own wheel-packaged map.
     """
     from clio_agent.providers.fetched_catalog import FetchedCatalogUnavailable  # noqa: PLC0415
     from clio_agent.providers.handshake.sources import db as model_limits_db  # noqa: PLC0415
