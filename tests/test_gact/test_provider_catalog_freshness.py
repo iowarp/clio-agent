@@ -126,7 +126,8 @@ def test_live_answer_is_persisted_and_served_stale_when_the_probe_is_empty(
     # The real store: the overlay file now holds the live list under the exact id.
     stored = json.loads(model_discovery.overlay_path().read_text(encoding="utf-8"))
     assert stored["argonne_metis"]["source"] == model_discovery.HTTP_SOURCE
-    assert stored["argonne_metis"]["models"][0]["capability_snapshot"]["context_served"] == 131_072
+    deployment = stored["argonne_metis"]["models"][0]["capability_records"]["deployment"]
+    assert deployment["context_served"]["value"] == 131_072
 
     restarted = asyncio.run(discover_provider(_metis()))
     assert [row["model_id"] for row in restarted["models"]] == ["openai/gpt-oss-120b"]

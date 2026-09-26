@@ -489,3 +489,63 @@ def test_an_audio_only_transcriber_does_not_accept_text() -> None:
             _row(model_id), provider_id="openrouter", api_base=API_BASE
         )
         assert "text" not in (parsed.input_modalities.value or ()), model_id
+
+
+# --------------------------------------------------------------------------- last-good regression
+
+
+@pytest.mark.asyncio
+async def test_a_served_last_good_list_keeps_every_openrouter_fact() -> None:
+    """Regression: a last-good OpenRouter list lost reasoning/structured/router/pricing.
+
+    The last-good snapshot used to persist a hand-picked subset (limits, tools,
+    modalities, task), so when the catalog served the persisted list (an empty
+    or keyless probe) the picker's Reasoning facet fell from 328 to ~0. The
+    whole records now round-trip: "reasoning" is tagged on exactly the models
+    whose ``supported_parameters`` state reasoning, live AND last-good.
+    """
+    from dataclasses import replace
+
+    from clio_agent.providers import model_discovery
+
+    stated = {
+        row["id"]
+        for row in _payload()["data"]
+        if set(row["supported_parameters"]) & {"reasoning", "include_reasoning", "reasoning_effort"}
+    }
+    assert len(stated) == 328
+
+    def _reasoning(rows: dict[str, dict[str, Any]]) -> set[str]:
+        return {
+            model_id
+            for model_id, row in rows.items()
+            if "reasoning" in _tag_values(row["capability_tags"]["capabilities"])
+        }
+
+    report, _client = await _handshake()
+    live = _rows(report)
+    assert _reasoning(live) == stated
+
+    assert model_discovery.persist_live_catalog("openrouter", report)
+    invalidation.clear_all()
+    accessor.clear_cache()
+    last_good = model_discovery.last_good_catalog("openrouter", api_base=API_BASE)
+    assert last_good is not None
+    served = _rows(replace(report, models=last_good.models, models_source="last_good"))
+    assert _reasoning(served) == stated
+
+    def _values(tags: dict[str, Any]) -> dict[str, Any]:
+        # The thinking CONTROL lives on the endpoint record, which a probe that
+        # never connected has not written; the tags themselves must match.
+        return {
+            axis: sorted(_tag_values(v)) if isinstance(v, list) else (v or {}).get("value")
+            for axis, v in tags.items()
+            if axis != "model_key"
+        }
+
+    for model_id, row in live.items():
+        assert _values(served[model_id]["capability_tags"]) == _values(row["capability_tags"])
+        assert served[model_id]["model_facts"] == row["model_facts"], model_id
+    # An unchanged re-probe does not rewrite the shared overlay file.
+    report_again, _client = await _handshake()
+    assert not model_discovery.persist_live_catalog("openrouter", report_again)
