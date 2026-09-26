@@ -56,10 +56,27 @@ def test_counts_match_eager_encoding():
 
 
 def test_other_encodings_pass_through_unproxied():
-    lazy_tiktoken.install_lazy_cl100k()
-    # A non-cl100k encoding is returned as the real object, not a lazy proxy.
-    other = tiktoken.get_encoding("gpt2")
-    assert not isinstance(other, lazy_tiktoken._LazyEncoding)
+    """A non-cl100k name, or an explicit-args call, reaches the real getter untouched.
+
+    The real getter is a recording stub: loading a real non-vendored encoding (gpt2)
+    downloads it from the network into a shared cache, which is not what this test is
+    about and made it depend on connectivity and on cache state left by earlier runs.
+    """
+    calls: list[tuple[str, tuple, dict]] = []
+    sentinel = object()
+
+    def real_get(name, *args, **kwargs):
+        calls.append((name, args, kwargs))
+        return sentinel
+
+    tiktoken.get_encoding = real_get  # the fixture restores the original
+    assert lazy_tiktoken.install_lazy_cl100k() is True
+    assert tiktoken.get_encoding("gpt2") is sentinel
+    assert tiktoken.get_encoding("cl100k_base", "extra") is sentinel
+    assert calls == [("gpt2", (), {}), ("cl100k_base", ("extra",), {})]
+    # Only the plain cl100k lookup is deferred, and it does not call the real getter.
+    assert isinstance(tiktoken.get_encoding("cl100k_base"), lazy_tiktoken._LazyEncoding)
+    assert len(calls) == 2
 
 
 def test_idempotent_install():
