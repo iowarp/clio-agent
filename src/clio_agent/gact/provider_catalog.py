@@ -23,6 +23,7 @@ from clio_agent.providers.capabilities.records import (
     Fact,
     ModelCapabilities,
     modalities_from_capabilities,
+    role_for_task,
     unknown,
 )
 from clio_agent.providers.catalog import get_provider
@@ -100,14 +101,6 @@ async def _ensure_codex_live_catalog(preset: LMProviderPreset) -> str:
 #: snapshot and is never evidence.
 EVIDENCED_CATALOG_SOURCES: frozenset[str] = frozenset({"live", "overlay"})
 
-#: ``availability`` of a row whose model is KNOWN not to be a chat model (an
-#: embedding, rerank, segmentation, ... model). Reachability is not the question
-#: for such a row -- it cannot serve a chat turn at all -- so it is neither
-#: ``available`` nor ``candidate`` and a chat picker must not offer it. The row
-#: still lists the model, with its ``model_type``, so a client can show it as
-#: what it is.
-NOT_CHAT_AVAILABILITY = "not_chat"
-
 #: Provider kinds whose catalog is the discovery overlay itself (no HTTP probe).
 #: Every other kind is probed live and keeps a last-good list for empty probes.
 _CLI_CATALOG_KINDS: frozenset[str] = frozenset({"codex", "claude_code"})
@@ -177,14 +170,14 @@ def model_catalog_row(
     # carries no modality fields is no proof of a text-only model.
     modality_evidenced = (evidenced or modality_evidenced) and effective.input_modalities.known
     modalities = sorted(effective.input_modalities.value or ()) if modality_evidenced else []
-    model_type = effective.model_type.value if effective.model_type.known else None
-    # An unknown type stays selectable (the model was offered by a chat
-    # endpoint); only a model KNOWN to be another type is withheld from chat.
-    chat_selectable = model_type in (None, "chat")
-    if not chat_selectable:
-        availability = NOT_CHAT_AVAILABILITY
-    else:
-        availability = "available" if evidenced else "candidate"
+    task = effective.task.value if effective.task.known else None
+    role = role_for_task(task)
+    # Surrogates (embedding, rerank, classification, generation, ...) are
+    # first-class catalog rows with their real availability; only choosing one
+    # as the CHAT model is refused (typed ``surrogate_model_not_chat``). An
+    # unknown role stays selectable -- a chat endpoint offered the model.
+    chat_selectable = role != "surrogate"
+    availability = "available" if evidenced else "candidate"
     return {
         "provider_id": preset.id,
         "provider_kind": preset.provider,
@@ -197,10 +190,26 @@ def model_catalog_row(
         # never a hand-typed table. Empty for providers with no alias concept.
         "aliases": [str(a) for a in profile.raw.get("cli_values") or [] if str(a).strip()],
         "modalities": modalities,
-        # chat / embedding / rerank / audio_transcription / audio_speech /
-        # image_generation / segmentation, or null when no source states it.
-        "model_type": model_type,
+        # task: the Hugging Face pipeline_tag spelling (text-generation,
+        # feature-extraction, text-to-image, text-classification, ...); role:
+        # "general" (a chat model) or "surrogate" (everything else). Both null
+        # when no source states them.
+        "task": task,
+        "role": role,
         "chat_selectable": chat_selectable,
+        # Evidenced facts the picker renders as tags and filters on; null when
+        # no source states them. ``pricing`` is per token, as the provider
+        # states it, with "variable" for a price that depends on the routed
+        # model (never 0).
+        "output_modalities": (
+            sorted(effective.output_modalities.value or ())
+            if effective.output_modalities.known
+            else None
+        ),
+        "structured_output": effective.structured_output.value,
+        "free": effective.free.value,
+        "router": effective.router.value,
+        "pricing": dict(effective.pricing.value or {}) if effective.pricing.known else None,
         # The levels a person can actually choose for THIS model, derived from
         # provider truth and restricted to what resolve_thinking maps.
         "reasoning": model_reasoning(
@@ -236,7 +245,11 @@ def model_catalog_row(
             "output_limit": _provenance_row(effective.output_max),
             "native_tool_calling": _provenance_row(effective.tools),
             "modalities": _provenance_row(effective.input_modalities),
-            "model_type": _provenance_row(effective.model_type),
+            "task": _provenance_row(effective.task),
+            "output_modalities": _provenance_row(effective.output_modalities),
+            "pricing": _provenance_row(effective.pricing),
+            "free": _provenance_row(effective.free),
+            "router": _provenance_row(effective.router),
             "reasoning": _provenance_row(effective.thinking),
         },
         "failure": report.error or "",
@@ -603,7 +616,6 @@ async def discover_provider(preset: LMProviderPreset, *, refresh: bool = False) 
 __all__ = [
     "EVIDENCED_CATALOG_SOURCES",
     "NEEDS_INSTALL_ERROR_CODES",
-    "NOT_CHAT_AVAILABILITY",
     "discover_provider",
     "model_catalog_row",
 ]

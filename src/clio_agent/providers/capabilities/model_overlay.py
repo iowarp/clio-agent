@@ -51,7 +51,7 @@ from clio_agent.providers.capabilities.records import (
     Fact,
     ModelCapabilities,
     ThinkingSpec,
-    model_type_fact,
+    task_fact,
     unknown,
 )
 from clio_agent.providers.model_discovery.model_overlay_catalog import (
@@ -274,22 +274,22 @@ def _modalities_fact(capabilities: dict[str, Any], *, observed_at: str, detail: 
     )
 
 
-def _model_type_fact(capabilities: dict[str, Any], *, observed_at: str, detail: str) -> Fact:
-    """The model type the entry's ``embeddings``/``rerank``/``chat`` flags state.
+def _task_fact(capabilities: dict[str, Any], *, observed_at: str, detail: str) -> Fact:
+    """The task the entry's ``embeddings``/``rerank``/``chat`` flags state.
 
     clio-coder's flags are independent booleans; the one that names what the
-    model PRODUCES decides: an embedding or rerank model is that type even if a
-    chat flag were also set. No flag set leaves the type unknown.
+    model PRODUCES decides: an embedding or rerank model is that surrogate task
+    even if a chat flag were also set. No flag set leaves the task unknown.
     """
     if capabilities.get("embeddings") is True:
-        value: str | None = "embedding"
+        value: str | None = "feature-extraction"
     elif capabilities.get("rerank") is True:
-        value = "rerank"
+        value = "text-ranking"
     elif capabilities.get("chat") is True:
-        value = "chat"
+        value = "text-generation"
     else:
         value = None
-    return model_type_fact(value, source="overlay", observed_at=observed_at, detail=detail)
+    return task_fact(value, source="overlay", observed_at=observed_at, detail=detail)
 
 
 def _bool_fact(capabilities: dict[str, Any], key: str, *, observed_at: str, detail: str) -> Fact:
@@ -416,7 +416,7 @@ def entry_to_model_capabilities(
     capabilities = entry.capabilities
     return ModelCapabilities(
         model_key=model_key,
-        model_type=_model_type_fact(capabilities, observed_at=observed_at, detail=detail),
+        task=_task_fact(capabilities, observed_at=observed_at, detail=detail),
         context_max=_int_fact(
             capabilities, "contextWindow", observed_at=observed_at, detail=detail
         ),

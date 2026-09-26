@@ -290,20 +290,20 @@ def test_a_linked_family_key_refinds_its_entry_without_containing_a_pattern(
     facts = default_overlay_source().facts("gemma-3")
     assert facts is not None
     assert facts.input_modalities.value == frozenset({"text", "image"})
-    assert facts.model_type.value == "chat"
+    assert facts.task.value == "text-generation"
     vision = default_overlay_source().facts("meta-llama-3.2-vision")
     assert vision is not None and "image" in (vision.input_modalities.value or ())
 
 
-def test_overlay_flags_decide_the_model_type(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_overlay_flags_decide_the_task(monkeypatch: pytest.MonkeyPatch) -> None:
     from clio_agent.providers.capabilities.model_overlay import default_overlay_source
 
     monkeypatch.setattr(model_overlay, "_fetched_entries", _REAL_FETCHED_ENTRIES)
 
     embed = default_overlay_source().facts("mistralai/Mistral-7B-Instruct-v0.3-embed")
     assert embed is not None
-    assert embed.model_type.value == "embedding"
-    assert embed.model_type.source == "overlay"
+    assert embed.task.value == "feature-extraction"
+    assert embed.task.source == "overlay"
     scout = default_overlay_source().facts("meta-llama/Llama-4-Scout-17B-16E-Instruct")
     assert scout is not None
     assert scout.input_modalities.value == frozenset({"text", "image"})  # corrected entry

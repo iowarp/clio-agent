@@ -110,7 +110,8 @@ def no_restriction(value: T, *, observed_at: str, detail: str) -> Fact[T]:
 #: copied into each adapter.
 _MODALITY_ALIASES: dict[str, tuple[str, ...]] = {
     "image": ("vision", "image", "images", "image_input"),
-    "pdf": ("pdf", "document", "documents", "pdf_input"),
+    # OpenRouter's ``file`` input is a document attachment (PDF).
+    "pdf": ("pdf", "document", "documents", "pdf_input", "file"),
     "audio": ("audio", "audio_input"),
     "video": ("video", "video_input"),
 }
@@ -136,47 +137,54 @@ def modalities_from_capabilities(capabilities: object) -> frozenset[str]:
     return frozenset(normalized)
 
 
-#: What KIND of model this is -- what it produces, which decides whether it can
-#: be offered as a chat model at all. Spellings follow LiteLLM's own ``mode``
-#: vocabulary (``chat``, ``embedding``, ``rerank``, ``audio_transcription``,
-#: ``audio_speech``, ``image_generation``) so a LiteLLM row maps verbatim, plus
-#: ``segmentation`` (e.g. SAM-style mask models), which LiteLLM has no mode for.
-#: An unknown type stays an unknown :class:`Fact` -- never defaulted to "chat".
-ModelType = Literal[
-    "chat",
-    "embedding",
-    "rerank",
-    "audio_transcription",
-    "audio_speech",
-    "image_generation",
-    "segmentation",
-]
-
-#: Every :data:`ModelType` spelling, for validating an evidence source's value.
-MODEL_TYPES: frozenset[str] = frozenset(
+#: What a model DOES, spelled as the Hugging Face Hub ``pipeline_tag`` does, so a
+#: Hub repo's own tag maps verbatim and every other source (LiteLLM ``mode``,
+#: OpenRouter output modalities, an ALCF ``framework``, the overlay's flags)
+#: maps onto the same vocabulary. Only these tags are recorded; any other value
+#: stays an unknown :class:`Fact` rather than a guess.
+TASKS: frozenset[str] = frozenset(
     {
-        "chat",
-        "embedding",
-        "rerank",
-        "audio_transcription",
-        "audio_speech",
-        "image_generation",
-        "segmentation",
+        "text-generation",
+        "image-text-to-text",
+        "audio-text-to-text",
+        "any-to-any",
+        "text-classification",
+        "feature-extraction",
+        "text-ranking",
+        "automatic-speech-recognition",
+        "text-to-speech",
+        "text-to-image",
+        "text-to-video",
+        "mask-generation",
+        "image-segmentation",
     }
 )
 
+#: The tasks of a GENERAL (conversational) model -- one that can run a chat
+#: turn. Every other task is a SURROGATE: a first-class model listed in the
+#: catalog, but never selectable as the chat model.
+GENERAL_TASKS: frozenset[str] = frozenset(
+    {"text-generation", "image-text-to-text", "audio-text-to-text", "any-to-any"}
+)
 
-def model_type_fact(
-    value: str | None, *, source: FactSource, observed_at: str, detail: str
-) -> Fact[str]:
-    """A :data:`ModelType` fact, or an honest unknown when ``value`` is not a known type.
+#: A model's role, derived from its task.
+ModelRole = Literal["general", "surrogate"]
 
-    Every evidence source (LiteLLM ``mode``, a Hugging Face ``pipeline_tag``, an
-    ALCF gateway ``framework``, the overlay's flags) maps its own vocabulary to a
-    :data:`ModelType` first; this is the single place that refuses a value
-    outside that closed set rather than letting a stray spelling through.
+
+def role_for_task(task: str | None) -> ModelRole | None:
+    """``general`` for a conversational task, ``surrogate`` for any other, None if unknown."""
+    if task is None:
+        return None
+    return "general" if task in GENERAL_TASKS else "surrogate"
+
+
+def task_fact(value: str | None, *, source: FactSource, observed_at: str, detail: str) -> Fact[str]:
+    """A task fact (a :data:`TASKS` tag), or an honest unknown for any other value.
+
+    Every evidence source maps its own vocabulary onto :data:`TASKS` first; this
+    is the single place that refuses a value outside that closed set.
     """
-    if value in MODEL_TYPES:
+    if value in TASKS:
         return Fact(value=value, source=source, observed_at=observed_at, detail=detail)
     return unknown(detail)
 
@@ -226,13 +234,17 @@ class ModelCapabilities:
     """
 
     model_key: str
-    #: The :data:`ModelType` (``chat``, ``embedding``, ...). Unknown means no
-    #: source has said -- a picker treats it as selectable for chat, since the
-    #: model was offered by a chat endpoint, but never RECORDS it as chat.
-    model_type: Fact[str] = field(default_factory=_unknown_field)
+    #: The model's task (a :data:`TASKS` tag, e.g. ``text-generation``,
+    #: ``feature-extraction``); its role follows (:func:`role_for_task`).
+    #: Unknown means no source has said -- the model stays selectable for chat
+    #: (a chat endpoint offered it) but is never RECORDED as general.
+    task: Fact[str] = field(default_factory=_unknown_field)
     context_max: Fact[int] = field(default_factory=_unknown_field)
     output_max: Fact[int] = field(default_factory=_unknown_field)
     input_modalities: Fact[frozenset[str]] = field(default_factory=_unknown_field)
+    #: What the model PRODUCES (``text``, ``image``, ``audio``, ``video``, ...),
+    #: when a source states it (OpenRouter's ``architecture.output_modalities``).
+    output_modalities: Fact[frozenset[str]] = field(default_factory=_unknown_field)
     tools: Fact[bool] = field(default_factory=_unknown_field)
     parallel_tool_calls: Fact[bool] = field(default_factory=_unknown_field)
     structured_output: Fact[bool] = field(default_factory=_unknown_field)
@@ -293,6 +305,16 @@ class DeploymentCapabilities:
     default_template_kwargs: Fact[dict[str, Any]] = field(default_factory=_unknown_field)
     #: Extra per-route narrowing (e.g. OpenRouter ``supported_parameters``).
     route_params: Fact[frozenset[str]] = field(default_factory=_unknown_field)
+    #: Per-token prices this endpoint charges, ``{"prompt": str, "completion": str}``
+    #: as the provider states them (decimal strings), or ``"variable"`` for a
+    #: side whose price depends on the routed model (OpenRouter's ``-1``) --
+    #: never recorded as 0.
+    pricing: Fact[dict[str, str]] = field(default_factory=_unknown_field)
+    #: Whether this endpoint serves the model at no cost (both prices exactly 0).
+    free: Fact[bool] = field(default_factory=_unknown_field)
+    #: Whether this model id is a ROUTER that picks another model per request
+    #: (OpenRouter's ``openrouter/auto``/``free``/... meta-models).
+    router: Fact[bool] = field(default_factory=_unknown_field)
     #: Invalidation key (brief 5.6): changes when the LOADED model changes
     #: (llama.cpp ``model_path``, vLLM's ``/v1/models`` row, Ollama ``digest``
     #: + loaded context, LM Studio's model key + loaded context length).
@@ -304,13 +326,15 @@ __all__ = [
     "EndpointCapabilities",
     "Fact",
     "FactSource",
-    "MODEL_TYPES",
+    "GENERAL_TASKS",
     "ModelCapabilities",
-    "ModelType",
+    "ModelRole",
+    "TASKS",
     "ThinkingMechanism",
     "ThinkingSpec",
     "modalities_from_capabilities",
-    "model_type_fact",
+    "role_for_task",
+    "task_fact",
     "no_restriction",
     "unknown",
 ]

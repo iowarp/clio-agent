@@ -90,11 +90,12 @@ def _ctx() -> HandshakeContext:
 
 
 @pytest.mark.asyncio
-async def test_discover_models_lists_tags_and_drops_the_embedding_row() -> None:
+async def test_discover_models_lists_every_tag_including_the_embedding_model() -> None:
     handshake = OllamaHandshake(provider=None)
     rows = await handshake.discover_models(_client(), _ctx())
     ids = [row.get("id") or row.get("model") for row in rows]
-    assert ids == ["qwen3:8b"]  # nomic-embed-text is an embedding model, filtered out
+    # nomic-embed-text is a surrogate: listed, and refused only as the chat model.
+    assert ids == ["qwen3:8b", "nomic-embed-text:latest"]
 
 
 @pytest.mark.asyncio
@@ -159,7 +160,7 @@ async def test_full_handshake_reports_live_provenance() -> None:
     report = await handshake.handshake(_ctx())
     assert report.connectivity is ConnectivityState.OK
     assert report.models_source == "live"
-    assert [m.id for m in report.models] == ["qwen3:8b"]
+    assert [m.id for m in report.models] == ["qwen3:8b", "nomic-embed-text:latest"]
 
 
 @pytest.mark.asyncio

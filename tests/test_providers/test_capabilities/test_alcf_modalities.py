@@ -32,7 +32,8 @@ import httpx
 import pytest
 
 from clio_agent.gact.modality_evidence import image_input_capability
-from clio_agent.gact.provider_catalog import NOT_CHAT_AVAILABILITY, model_catalog_row
+from clio_agent.gact.model_selection import SURROGATE_NOT_CHAT, surrogate_selection_error
+from clio_agent.gact.provider_catalog import model_catalog_row
 from clio_agent.gact.types import LMProviderPreset, ModelRef
 from clio_agent.providers import fetched_catalog
 from clio_agent.providers.capabilities import accessor, hf_repo, invalidation
@@ -226,6 +227,19 @@ def _app(report: HandshakeReport) -> Any:
     )
 
 
+def _app_with(rows: dict[str, dict[str, Any]], provider_id: str) -> Any:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        state=SimpleNamespace(
+            provider_catalog={
+                "providers": [{"id": provider_id, "health": "ready", "models": list(rows.values())}]
+            },
+            lm_handshake_report=None,
+        )
+    )
+
+
 @pytest.mark.asyncio
 async def test_all_eight_vision_models_get_their_real_modalities() -> None:
     report = await _handshake()
@@ -236,7 +250,7 @@ async def test_all_eight_vision_models_get_their_real_modalities() -> None:
         assert effective.input_modalities.source == source, model_id
         assert rows[model_id]["modalities"] == sorted(expected), model_id
         assert rows[model_id]["evidence"]["modality_evidenced"] is True, model_id
-        assert rows[model_id]["model_type"] in {"chat", None}, model_id
+        assert rows[model_id]["role"] in {"general", None}, model_id
         assert rows[model_id]["chat_selectable"] is True, model_id
 
 
@@ -303,7 +317,7 @@ async def test_image_gate_allows_vision_refuses_known_text_and_passes_unknown() 
 
 
 @pytest.mark.asyncio
-async def test_embedding_and_segmentation_models_are_listed_by_type_not_for_chat() -> None:
+async def test_surrogates_are_listed_and_refused_only_as_the_chat_model() -> None:
     report = await _handshake()
     rows = _rows(report)
 
@@ -312,19 +326,23 @@ async def test_embedding_and_segmentation_models_are_listed_by_type_not_for_chat
         "mistralai/Mistral-7B-Instruct-v0.3-embed",
     ):
         row = rows[embed_id]
-        assert row["model_type"] == "embedding", embed_id  # overlay embeddings: true
+        assert row["task"] == "feature-extraction", embed_id  # overlay embeddings: true
+        assert row["role"] == "surrogate", embed_id
         assert row["chat_selectable"] is False, embed_id
-        assert row["availability"] == NOT_CHAT_AVAILABILITY, embed_id
+        assert row["availability"] == "available", embed_id  # listed, first-class
         effective = get_effective_capabilities(PROVIDER_ID, SOPHIA, embed_id)
-        assert effective.model_type.source == "overlay", embed_id
+        assert effective.task.source == "overlay", embed_id
 
     sam3 = rows["sam3"]
-    assert sam3["model_type"] == "segmentation"  # ALCF framework=sam3service
-    assert sam3["chat_selectable"] is False
-    assert sam3["availability"] == NOT_CHAT_AVAILABILITY
-    assert get_effective_capabilities(PROVIDER_ID, SOPHIA, "sam3").model_type.source == (
-        "server_report"
-    )
+    assert sam3["task"] == "mask-generation"  # ALCF framework=sam3service
+    assert sam3["role"] == "surrogate"
+    assert sam3["availability"] == "available"
+    # Only SELECTING a surrogate as the chat model is refused, with a typed reason.
+    app = _app_with(rows, PROVIDER_ID)
+    refused = surrogate_selection_error(app, PROVIDER_ID, "sam3")
+    assert refused is not None and refused.error.error == SURROGATE_NOT_CHAT
+    assert surrogate_selection_error(app, PROVIDER_ID, "google/gemma-3-27b-it") is None
+    assert get_effective_capabilities(PROVIDER_ID, SOPHIA, "sam3").task.source == ("server_report")
 
 
 @pytest.mark.asyncio
@@ -338,13 +356,13 @@ async def test_a_second_handshake_does_not_re_ask_the_hub_about_misses(hub: _Hub
     assert len(hub.requested) == first
 
 
-def test_litellm_embedding_mode_is_an_embedding_type() -> None:
+def test_litellm_embedding_mode_is_feature_extraction() -> None:
     from clio_agent.providers.capabilities.model_sources import community_catalog_facts
 
     facts = community_catalog_facts("mistral/mistral-embed")
     assert facts is not None
-    assert facts.model_type.value == "embedding"
-    assert facts.model_type.source == "litellm"
+    assert facts.task.value == "feature-extraction"
+    assert facts.task.source == "litellm"
 
 
 def test_litellm_modalities_need_an_explicit_vision_flag() -> None:
@@ -357,8 +375,8 @@ def test_litellm_modalities_need_an_explicit_vision_flag() -> None:
     ) == frozenset({"text", "image", "audio", "pdf"})
 
 
-def test_models_dev_output_decides_a_type_only_without_text() -> None:
-    assert models_dev.model_type_from_output(frozenset({"text"})) is None
-    assert models_dev.model_type_from_output(frozenset({"image"})) == "image_generation"
-    assert models_dev.model_type_from_output(frozenset({"audio"})) == "audio_speech"
-    assert models_dev.model_type_from_output(None) is None
+def test_models_dev_output_decides_a_task_only_without_text() -> None:
+    assert models_dev.task_from_output(frozenset({"text"})) is None
+    assert models_dev.task_from_output(frozenset({"image"})) == "text-to-image"
+    assert models_dev.task_from_output(frozenset({"audio"})) == "text-to-speech"
+    assert models_dev.task_from_output(None) is None
