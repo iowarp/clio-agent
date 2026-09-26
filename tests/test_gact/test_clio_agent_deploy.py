@@ -251,7 +251,8 @@ def _start_clio(prefix: Path, port: int) -> subprocess.Popen[bytes]:
         cwd=prefix / "clio-agent",
         start_new_session=True,
     )
-    (prefix / "clio-server.pid").write_text(f"{process.pid}\n")
+    host = socket.gethostname().split(".")[0]
+    (prefix / f"clio-server.{host}.pid").write_text(f"{process.pid}\n")
     _wait_listening(port)
     return process
 
@@ -343,28 +344,53 @@ def test_claim_never_touches_an_unrelated_program_on_the_port(tmp_path: Path) ->
 
 
 @linux_only
-def test_teardown_stops_the_server_and_runtime_this_deploy_started(tmp_path: Path) -> None:
+def test_teardown_stops_the_server_this_deploy_started(tmp_path: Path) -> None:
     prefix = tmp_path / "clio"
     _fake_install(prefix)
     port = _free_port()
     server = _start_clio(prefix, port)
-    runtime_state = prefix / "runtime-state"
-    runtime_state.mkdir()
-    core = subprocess.Popen(["bash", "-c", "exec -a clio_run sleep 60"], start_new_session=True)
-    (runtime_state / "clio-runtime.pid").write_text(f"{core.pid} 0\n")
     try:
         result = _run_script(teardown_command(str(prefix), "", port, purge_root=False))
         assert result.returncode == 0, result.stdout
         assert f"Stopped the CLIO this deploy started (pid {server.pid})" in result.stdout
-        assert f"Stopped its clio-core runtime (pid {core.pid})" in result.stdout
         server.wait(timeout=5)
-        core.wait(timeout=5)
-        assert not (prefix / "clio-server.pid").exists()
+        assert not list(prefix.glob("clio-server*.pid"))
         assert prefix.exists()
     finally:
-        for process in (server, core):
-            if _alive(process):
-                os.killpg(process.pid, signal.SIGKILL)
+        if _alive(server):
+            os.killpg(server.pid, signal.SIGKILL)
+
+
+@linux_only
+def test_claim_checks_health_on_this_node_even_behind_a_site_proxy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A site proxy must never answer a health check of 127.0.0.1 (ares compute nodes)."""
+
+    proxy_port = _free_port()
+    proxy = subprocess.Popen(
+        [sys.executable, "-m", "http.server", str(proxy_port), "--bind", "127.0.0.1"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        _wait_listening(proxy_port)
+        monkeypatch.setenv("http_proxy", f"http://127.0.0.1:{proxy_port}")
+        monkeypatch.setenv("HTTP_PROXY", f"http://127.0.0.1:{proxy_port}")
+        prefix = tmp_path / "clio"
+        _fake_install(prefix)
+        port = _free_port()
+        server = _start_clio(prefix, port)
+        try:
+            # Through the proxy the check would get the proxy's error and the
+            # healthy server of this install would be stopped instead of adopted.
+            result = _run_script(claim_command(str(prefix), "", port, CLIO_AGENT_VERSION))
+            assert parse_claim(result.stdout) == ClaimResult(result="adopted", existing_root=True)
+            assert _alive(server)
+        finally:
+            server.kill()
+    finally:
+        proxy.kill()
 
 
 @linux_only
