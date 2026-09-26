@@ -16,12 +16,17 @@ therefore *claims* the port:
 
 A CLIO server is recognized only by what CLIO's own launcher leaves: the
 command line ``<prefix>/clio-agent/.venv/bin/clio-agent serve`` confirmed by
-that prefix's ``clio-server.pid`` or the process's working directory
+that prefix's pidfile for this host (``clio-server.<host>.pid``; older
+launchers wrote ``clio-server.pid``) or the process's working directory
 ``<prefix>/clio-agent``. The port alone never identifies a process.
 
+Health checks of this node pass ``--noproxy``: cluster nodes often export
+``http_proxy``, and a proxied check of ``127.0.0.1`` is answered by the proxy.
+
 When the deploy then fails or is cancelled, :func:`teardown_command` removes
-what this deploy started: the server, the clio-core runtime it spawned, their
-pid files, and the install root itself when this deploy created it.
+what this deploy started: the server (stopped gracefully, so it releases the
+machine's shared clio-core daemon, which stops when its last client leaves),
+its pid file, and the install root itself when this deploy created it.
 
 Every command carries a ``# clio-deploy:<step>`` tag so the desktop can show
 it as its own stage, and ends with one ``clio-deploy result=...`` line that
@@ -43,6 +48,7 @@ _COMMON = r"""
 root="$1"; if [ -z "$root" ]; then root="$HOME/.local/share/clio"; fi
 bin="$2"; if [ -z "$bin" ]; then bin="$HOME/.local/bin"; fi
 port="$3"
+host_id="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo localhost)"
 say() { printf '==> %s\n' "$*"; }
 fail() { printf 'xx %s\n' "$*"; exit 75; }
 listener_pid() {
@@ -70,7 +76,7 @@ clio_prefix_of() {
   [ -n "$script" ] || return 1
   script="${script% serve*}"
   prefix="${script%/clio-agent/.venv/bin/clio-agent}"
-  recorded="$(cat "$prefix/clio-server.pid" 2>/dev/null || true)"
+  recorded="$(cat "$prefix/clio-server.$host_id.pid" 2>/dev/null || cat "$prefix/clio-server.pid" 2>/dev/null || true)"
   cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
   if [ "$recorded" = "$pid" ] || [ "$cwd" = "$prefix/clio-agent" ]; then
     printf '%s' "$prefix"
@@ -115,7 +121,7 @@ fi
 owner="$(clio_prefix_of "$pid")" || fail "Port $port is used by another program (pid $pid: $(cmdline_of "$pid" | cut -c1-160))"
 if [ "$(real "$owner")" = "$(real "$root")" ]; then
   installed="$("$root/clio-agent/.venv/bin/python" -c 'import importlib.metadata as m; print(m.version("clio-agent"))' 2>/dev/null || true)"
-  code="$(curl -sS -m 3 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/v1/health" 2>/dev/null || true)"
+  code="$(curl --noproxy '*' -sS -m 3 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/v1/health" 2>/dev/null || true)"
   if [ "$installed" = "$version" ] && { [ "$code" = "200" ] || [ "$code" = "503" ]; }; then
     say "Reusing the running CLIO (pid $pid, $owner)"
     printf 'clio-deploy result=adopted existing_root=%s pid=%s\n' "$existing_root" "$pid"
@@ -139,26 +145,20 @@ _TEARDOWN = (
     + r"""
 purge_root="$4"
 did=0
-pid="$(cat "$root/clio-server.pid" 2>/dev/null || true)"
+pidfile="$root/clio-server.$host_id.pid"
+[ -f "$pidfile" ] || pidfile="$root/clio-server.pid"
+pid="$(cat "$pidfile" 2>/dev/null || true)"
 if [ -n "$pid" ] && alive "$pid"; then
   owner="$(clio_prefix_of "$pid" || true)"
   if [ -n "$owner" ] && [ "$(real "$owner")" = "$(real "$root")" ]; then
+    # Graceful first: the server releases this machine's shared clio-core
+    # daemon, which stops once its last client has gone.
     stop_clio_server "$pid" || fail "The CLIO this deploy started (pid $pid) did not stop"
     say "Stopped the CLIO this deploy started (pid $pid)"
     did=1
   fi
 fi
-rm -f "$root/clio-server.pid"
-runtime_pidfile="$root/runtime-state/clio-runtime.pid"
-core="$(cut -d' ' -f1 "$runtime_pidfile" 2>/dev/null || true)"
-if [ -n "$core" ] && alive "$core" && cmdline_of "$core" | grep -q 'clio_run'; then
-  kill -TERM "$core" 2>/dev/null || true
-  for i in $(seq 1 20); do alive "$core" || break; sleep 0.25; done
-  kill -KILL "$core" 2>/dev/null || true
-  say "Stopped its clio-core runtime (pid $core)"
-  did=1
-fi
-rm -f "$runtime_pidfile"
+rm -f "$pidfile"
 if [ "$purge_root" = "1" ] && [ -f "$root/.clio-managed-install" ]; then
   rm -rf -- "$root"
   say "Removed the install this deploy created ($root)"
