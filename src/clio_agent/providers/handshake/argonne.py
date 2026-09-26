@@ -374,7 +374,7 @@ class ArgonneHandshake(ProviderHandshake):
         )
         model = ModelCapabilities(
             model_key=deployment.model_key.value or model_id,
-            model_type=alcf_dialect.gateway_model_type_fact(raw, observed_at=observed_at),
+            task=alcf_dialect.gateway_task_fact(raw, observed_at=observed_at),
         )
 
         reasoning_parser, tool_call_parser = alcf_dialect.gateway_row_identity(raw)

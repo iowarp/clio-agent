@@ -282,3 +282,13 @@ async def test_fetch_tags_empty_on_failure() -> None:
     client = _FakeAsyncClient(fail=True)
 
     assert await ollama_dialect.fetch_tags(client, ROOT) == []
+
+
+def test_parse_show_capabilities_name_the_task() -> None:
+    """Ollama's exhaustive capabilities list names the task: an embedding model
+    is a surrogate (feature-extraction), a completion model generates text."""
+    embed = ollama_dialect.parse_show({"capabilities": ["embedding"]}, model_key="nomic-embed-text")
+    assert embed.task.value == "feature-extraction"
+    chat = ollama_dialect.parse_show({"capabilities": ["completion", "tools"]}, model_key="qwen3:8b")
+    assert chat.task.value == "text-generation"
+    assert not ollama_dialect.parse_show({}, model_key="x").task.known

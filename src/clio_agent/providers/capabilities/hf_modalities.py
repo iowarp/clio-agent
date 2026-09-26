@@ -16,22 +16,29 @@ if TYPE_CHECKING:
     from clio_agent.providers.capabilities.hf_repo import RepoResolution
 
 
-#: Hub ``pipeline_tag`` -> CLIO model type (``records.ModelType``). A tag not
-#: listed decides nothing -- the type stays unknown rather than guessed.
-PIPELINE_MODEL_TYPES: dict[str, str] = {
-    "text-generation": "chat",
-    "image-text-to-text": "chat",
-    "audio-text-to-text": "chat",
-    "any-to-any": "chat",
-    "feature-extraction": "embedding",
-    "sentence-similarity": "embedding",
-    "text-ranking": "rerank",
-    "automatic-speech-recognition": "audio_transcription",
-    "text-to-speech": "audio_speech",
-    "text-to-audio": "audio_speech",
-    "text-to-image": "image_generation",
-    "mask-generation": "segmentation",
-    "image-segmentation": "segmentation",
+#: Hub ``pipeline_tag`` -> task (``records.TASKS``: the Hub's own spelling, plus
+#: two synonyms folded in). A tag not listed decides nothing.
+PIPELINE_TASKS: dict[str, str] = {
+    tag: tag
+    for tag in (
+        "text-generation",
+        "image-text-to-text",
+        "audio-text-to-text",
+        "any-to-any",
+        "text-classification",
+        "feature-extraction",
+        "text-ranking",
+        "automatic-speech-recognition",
+        "text-to-speech",
+        "text-to-image",
+        "text-to-video",
+        "mask-generation",
+        "image-segmentation",
+    )
+} | {
+    # Hub synonyms folded onto the recorded tag.
+    "sentence-similarity": "feature-extraction",
+    "text-to-audio": "text-to-speech",
 }
 
 #: ``pipeline_tag`` values that name an input modality outright.
@@ -107,4 +114,4 @@ def modalities_from_repo(
     return None, "no modality evidence in the repo"
 
 
-__all__ = ["PIPELINE_MODEL_TYPES", "PROCESSOR_FILES", "modalities_from_repo"]
+__all__ = ["PIPELINE_TASKS", "PROCESSOR_FILES", "modalities_from_repo"]

@@ -38,8 +38,8 @@ def test_parse_model_row_reads_model_and_deployment_fields() -> None:
     assert model.context_max.value == 131072
     assert model.context_max.source == "openrouter"
     assert model.input_modalities.value == frozenset({"text"})
-    assert model.model_type.value == "chat"  # architecture.output_modalities = ["text"]
-    assert model.model_type.source == "openrouter"
+    assert model.task.value == "text-generation"  # architecture.output_modalities = ["text"]
+    assert model.task.source == "openrouter"
 
     assert deployment.context_served.value == 40960  # top_provider, smaller than context_length
     assert deployment.output_max.value == 8192
@@ -81,7 +81,7 @@ def test_parse_model_row_missing_fields_are_unknown() -> None:
 
     assert not model.context_max.known
     assert not model.input_modalities.known
-    assert not model.model_type.known
+    assert not model.task.known
     assert not deployment.context_served.known
     assert not deployment.route_params.known
     assert deployment.fingerprint == ""
@@ -92,7 +92,7 @@ def test_require_parameters_flag_shape() -> None:
 
 
 def test_output_modalities_without_text_name_a_generation_type() -> None:
-    assert openrouter.model_type_from_output_modalities(["image"]) == "image_generation"
-    assert openrouter.model_type_from_output_modalities(["audio"]) == "audio_speech"
-    assert openrouter.model_type_from_output_modalities(["image", "text"]) == "chat"
-    assert openrouter.model_type_from_output_modalities(None) is None
+    assert openrouter.task_from_output_modalities(["image"]) == "text-to-image"
+    assert openrouter.task_from_output_modalities(["speech"]) == "text-to-speech"
+    assert openrouter.task_from_output_modalities(["image", "text"]) == "text-generation"
+    assert openrouter.task_from_output_modalities(None) is None

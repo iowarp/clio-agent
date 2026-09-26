@@ -47,6 +47,7 @@ from fastapi import FastAPI, HTTPException
 from clio_agent.gact.agent_initialization import mark_agent_ready
 from clio_agent.gact.events import Event
 from clio_agent.gact.lm_provider_types import preset_api_key_env
+from clio_agent.gact.model_selection import surrogate_selection_error
 from clio_agent.gact.providers.auth import (
     _is_placeholder_api_key,
     _resolve_argonne_runtime_api_key,
@@ -992,6 +993,8 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         """Start or perform an LM provider swap without freezing the backend."""
 
         req = normalize_lm_provider_request(req, _LM_PRESETS, _default_model_for)
+        if (refused := surrogate_selection_error(app, req.provider_id or req.provider, req.model)):
+            raise HTTPException(status_code=422, detail=refused.model_dump(exclude_none=True))
         running_task = getattr(app.state, "lm_config_task", None)
         if running_task is not None and not running_task.done():
             status = _lm_provider_status()

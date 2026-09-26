@@ -399,14 +399,14 @@ def test_a_multimodal_architecture_with_no_named_modality_stays_unknown() -> Non
     assert "no file names the modality" in detail
 
 
-def test_pipeline_tag_decides_the_model_type() -> None:
-    assert hf_repo.PIPELINE_MODEL_TYPES["feature-extraction"] == "embedding"
-    assert hf_repo.PIPELINE_MODEL_TYPES["image-text-to-text"] == "chat"
-    assert hf_repo.PIPELINE_MODEL_TYPES["mask-generation"] == "segmentation"
-    assert "text-classification" not in hf_repo.PIPELINE_MODEL_TYPES
+def test_pipeline_tag_decides_the_task() -> None:
+    assert hf_repo.PIPELINE_TASKS["feature-extraction"] == "feature-extraction"
+    assert hf_repo.PIPELINE_TASKS["image-text-to-text"] == "image-text-to-text"
+    assert hf_repo.PIPELINE_TASKS["sentence-similarity"] == "feature-extraction"
+    assert "summarization" not in hf_repo.PIPELINE_TASKS
 
 
-def test_embedding_repo_facts_carry_the_embedding_type(router: _UrlRouter) -> None:
+def test_embedding_repo_facts_carry_the_feature_extraction_task(router: _UrlRouter) -> None:
     meta = _alcf_meta("Salesforce_SFR-Embedding-Mistral")
     router.add_json(f"https://huggingface.co/api/models/{meta['id']}", meta)
     router.add_text(
@@ -417,8 +417,8 @@ def test_embedding_repo_facts_carry_the_embedding_type(router: _UrlRouter) -> No
     facts = hf_repo.HfRepoCatalogSource().facts(meta["id"])
 
     assert facts is not None
-    assert facts.model_type.value == "embedding"
-    assert facts.model_type.source == "hf_repo"
+    assert facts.task.value == "feature-extraction"
+    assert facts.task.source == "hf_repo"
     # MistralModel (no LM head) is not a causal LM: no modality claim either way.
     assert not facts.input_modalities.known
 

@@ -105,13 +105,21 @@ def _catalog_row_aliases(row: dict[str, Any]) -> tuple[str, ...]:
     return tuple(str(value) for value in values if isinstance(value, str) and value)
 
 
-def _catalog_modalities(app: Any, model: ModelRef) -> ModalityEvidence:
+def catalog_model_rows(app: Any, model: ModelRef) -> list[dict[str, Any]]:
+    """Every catalog row of ``model``'s ready provider that names this exact model.
+
+    A configured model id may be an alias (e.g. claude_code's "sonnet" for
+    "claude-sonnet-5"); it is resolved against the provider's own catalog rows
+    through the same resolution point ``HandshakeReport.model`` uses, so an
+    alias-bound selection is never treated as an unknown model. More than one
+    row can match (one per transport, e.g. codex sdk/direct).
+    """
     catalog = getattr(app.state, "provider_catalog", None)
     if not isinstance(catalog, dict):
-        return _UNAVAILABLE
+        return []
     providers = catalog.get("providers")
     if not isinstance(providers, list):
-        return _UNAVAILABLE
+        return []
     provider = next(
         (
             row
@@ -123,27 +131,24 @@ def _catalog_modalities(app: Any, model: ModelRef) -> ModalityEvidence:
         None,
     )
     if provider is None or not isinstance(provider.get("models"), list):
-        return _UNAVAILABLE
+        return []
     rows = [row for row in provider["models"] if isinstance(row, dict)]
-    # A configured model id may be an alias (e.g. claude_code's "sonnet" for
-    # "claude-sonnet-5"); resolve it against this provider's own catalog rows
-    # before matching, through the same resolution point ``HandshakeReport.model``
-    # uses, so an alias-bound selection is never treated as an unknown model.
     canonical_id = resolve_model_id(
         ((str(row.get("model_id") or ""), _catalog_row_aliases(row)) for row in rows),
         model.model_id,
     )
+    return [row for row in rows if row.get("model_id") == canonical_id]
+
+
+def _catalog_modalities(app: Any, model: ModelRef) -> ModalityEvidence:
     profile = next(
         (
             row
-            for row in rows
-            if row.get("model_id") == canonical_id
-            and (
-                row.get("availability") == "available"
-                or (
-                    isinstance(row.get("evidence"), dict)
-                    and row["evidence"].get("modality_evidenced") is True
-                )
+            for row in catalog_model_rows(app, model)
+            if row.get("availability") == "available"
+            or (
+                isinstance(row.get("evidence"), dict)
+                and row["evidence"].get("modality_evidenced") is True
             )
         ),
         None,
@@ -277,6 +282,7 @@ __all__ = [
     "EVIDENCED_MODALITY_SOURCES",
     "IMAGE_INPUT_REASONS",
     "ModalityEvidence",
+    "catalog_model_rows",
     "image_input_capability",
     "live_model_modalities",
 ]

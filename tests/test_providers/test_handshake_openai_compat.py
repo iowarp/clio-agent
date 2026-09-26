@@ -325,8 +325,8 @@ async def test_bearer_header_for_openai() -> None:
 
 
 @pytest.mark.asyncio
-async def test_embedding_models_are_skipped() -> None:
-    """Embedding/reranker rows are dropped from discovery."""
+async def test_surrogate_rows_are_listed_never_dropped_by_name() -> None:
+    """Embedding/reranker rows are first-class models: listed, identified by task."""
     ctx = _ctx()
     payload = {
         "data": [
@@ -339,7 +339,11 @@ async def test_embedding_models_are_skipped() -> None:
     client = FakeAsyncClient(routes={url: FakeResponse(200, payload)})
     handshake = OpenAICompatHandshake(provider=object())
     raw_models = await handshake.discover_models(client, ctx)
-    assert [r["id"] for r in raw_models] == ["gpt-4o"]
+    assert [r["id"] for r in raw_models] == [
+        "gpt-4o",
+        "text-embedding-3-large",
+        "some-reranker",
+    ]
 
 
 # NOTE: the Ollama /api/tags fallback that used to live here (in the GENERIC
@@ -348,7 +352,7 @@ async def test_embedding_models_are_skipped() -> None:
 # (handshake/__init__.py's _BY_KIND), so that branch was dead in production
 # and duplicated the real reader in dialects/ollama.py. Equivalent coverage
 # lives on the real class: test_handshake_ollama.py::
-# test_discover_models_lists_tags_and_drops_the_embedding_row.
+# test_discover_models_lists_every_tag_including_the_embedding_model.
 
 
 @pytest.mark.asyncio
@@ -361,11 +365,9 @@ async def test_bare_list_payload_is_parsed() -> None:
     client = FakeAsyncClient(routes={url: FakeResponse(200, payload)})
     handshake = OpenAICompatHandshake(provider=object())
     raw_models = await handshake.discover_models(client, ctx)
-    # Every row parsed, minus the embedding models that get filtered out.
-    embed_count = sum(1 for r in payload if handshake._is_embedding(r))
-    assert embed_count > 0  # fixture really does contain embedding rows
-    assert len(raw_models) == len(payload) - embed_count
-    assert all(not handshake._is_embedding(r) for r in raw_models)
+    # Every row parsed -- the embedding rows included (they are surrogates,
+    # refused only as the chat model).
+    assert len(raw_models) == len(payload)
     facts = await handshake.discover_model_config(client, ctx, raw_models[0])
     assert not facts.model.context_max.known
 

@@ -37,7 +37,7 @@ from clio_agent.providers.capabilities.records import (
     Fact,
     FactSource,
     ModelCapabilities,
-    model_type_fact,
+    task_fact,
     unknown,
 )
 
@@ -46,10 +46,11 @@ logger = logging.getLogger(__name__)
 #: The field names merged, in the exact order :class:`ModelCapabilities` (and
 #: therefore :func:`merge_model_layers`) declares them.
 _FACT_FIELDS: tuple[str, ...] = (
-    "model_type",
+    "task",
     "context_max",
     "output_max",
     "input_modalities",
+    "output_modalities",
     "tools",
     "parallel_tool_calls",
     "structured_output",
@@ -97,8 +98,8 @@ def community_catalog_facts(model_id: str) -> ModelCapabilities | None:
     * ``input_modalities`` -- models.dev ``modalities.input``, else LiteLLM's
       ``supports_vision``/``supports_audio_input``/``supports_pdf_input``
       (:func:`~clio_agent.providers.handshake.sources.resolve_input_modalities`);
-    * ``model_type`` -- LiteLLM ``mode``, else a models.dev output list that
-      lacks text (:func:`~clio_agent.providers.handshake.sources.resolve_model_type`).
+    * ``task`` -- LiteLLM ``mode``, else a models.dev output list that
+      lacks text (:func:`~clio_agent.providers.handshake.sources.resolve_task`).
 
     Every id goes through the sources' shared normalization
     (:mod:`~clio_agent.providers.handshake.sources._normalize`), so an
@@ -122,8 +123,8 @@ def community_catalog_facts(model_id: str) -> ModelCapabilities | None:
     context, context_source = sources.resolve_context(model_id, "")
     output = sources.resolve_output_limit(model_id, "")
     modalities, modality_source, modality_detail = sources.resolve_input_modalities(model_id)
-    model_type, type_source, type_detail = sources.resolve_model_type(model_id)
-    if context is None and output is None and modalities is None and model_type is None:
+    task, type_source, type_detail = sources.resolve_task(model_id)
+    if context is None and output is None and modalities is None and task is None:
         return None
     # resolve_context's provenance strings are exactly "models.dev" | "litellm" | "db"
     # (or "" on a miss) -- all valid FactSource members already.
@@ -149,15 +150,15 @@ def community_catalog_facts(model_id: str) -> ModelCapabilities | None:
         if modalities is not None
         else unknown("no community catalog states this model's input modalities")
     )
-    type_fact = model_type_fact(
-        model_type,
+    type_fact = task_fact(
+        task,
         source=cast(FactSource, type_source or "unknown"),
         observed_at=observed_at,
-        detail=type_detail or "no community catalog states this model's type",
+        detail=type_detail or "no community catalog states this model's task",
     )
     return ModelCapabilities(
         model_key=model_id,
-        model_type=type_fact,
+        task=type_fact,
         context_max=context_fact,
         output_max=output_fact,
         input_modalities=modality_fact,
@@ -202,6 +203,7 @@ def resolve_model_capabilities(
     server_report: ModelCapabilities | None = None,
     hf_repo: HfRepoSource | None = None,
     community_lookup_id: str | None = None,
+    authoritative_report: bool = False,
 ) -> ModelCapabilities:
     """Resolve one model's effective facts through the full brief 5.1 precedence.
 
@@ -214,6 +216,10 @@ def resolve_model_capabilities(
         server_report: The facts the live handshake adapter evidenced this run.
         hf_repo: The Hugging Face repo source to consult, when one is wired
             (P4b); omitted entirely when the caller has none.
+        authoritative_report: The server report comes from a provider whose
+            own catalog is the model's source of truth (OpenRouter's
+            ``/api/v1/models``, see ``handshake.base._AUTHORITATIVE_DIALECTS``):
+            it then ranks directly below a user override, above the overlay.
         community_lookup_id: The wire/catalog id to resolve through
             :func:`community_catalog_facts`, when different from ``model_key``
             (e.g. before a link is established). Defaults to ``model_key``.
@@ -233,6 +239,10 @@ def resolve_model_capabilities(
     overlay_facts = overlay_source.facts(model_key)
     hf_facts = hf_repo.facts(model_key) if hf_repo is not None else None
     catalog_facts = community_catalog_facts(community_lookup_id or model_key)
+    if authoritative_report:
+        return merge_model_layers(
+            model_key, user_override, server_report, overlay_facts, hf_facts, catalog_facts
+        )
     return merge_model_layers(
         model_key,
         user_override,

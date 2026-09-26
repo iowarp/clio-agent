@@ -319,17 +319,17 @@ def modalities_from_entry(
     return _modality_set(block.get("input")), _modality_set(block.get("output"))
 
 
-def model_type_from_output(output: frozenset[str] | None) -> str | None:
-    """The model type a models.dev OUTPUT list proves, when it proves one.
+def task_from_output(output: frozenset[str] | None) -> str | None:
+    """The task a models.dev OUTPUT list proves, when it proves one.
 
-    models.dev has no type field and lists embedding models with a ``text``
+    models.dev has no task field and lists embedding models with a ``text``
     output, so a ``text`` output decides nothing. Only an output that lacks text
-    names a type: image output is image generation, audio output is speech.
+    names a task: image output is ``text-to-image``, audio output ``text-to-speech``.
     """
     if not output or "text" in output:
         return None
     if "image" in output:
-        return "image_generation"
+        return "text-to-image"
     if "audio" in output:
-        return "audio_speech"
+        return "text-to-speech"
     return None
