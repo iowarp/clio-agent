@@ -6,6 +6,75 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.4.18] — 2026-09-26
+
+### Added
+
+- Every provider-catalog model row carries `capability_tags`: input and output
+  modalities, capabilities, model type and role, tasks, domains and free or
+  router flags, each with the source and detail it came from. No tag is
+  served for a fact no source states. OpenRouter lists every output modality,
+  and non-chat models are tagged as surrogates and refused as the chat model.
+- `GET/POST /v1/providers/servers`, `PATCH/DELETE /v1/providers/servers/{id}`
+  and `POST /v1/providers/servers/{id}/check` keep local and self-hosted model
+  server addresses without making them the default provider. Every change and
+  check runs one live handshake and returns what it found.
+- The `codex` provider has two transports: `sdk` (the Codex SDK with your own
+  Codex sign-in) and `direct`, which talks to your ChatGPT subscription from
+  CLIO's own process with browser, device code or paste sign-in and no Codex
+  CLI. The provider is offered when either transport is usable, and the
+  catalog lists each model once per transport. `POST
+  /v1/providers/{id}/auth` (start, complete, status, logout) is one sign-in
+  API for every provider that needs one, ALCF included.
+- `view_image` and `view_pdf` results carry a `workspace_file` presentation
+  block (`workspace_id`, `path`, `media_type`, `sha256`, `pages`) so clients
+  can show the file the agent looked at.
+- The v3 session projection carries `tokens_input`, `tokens_output` and
+  `cost_usd`. Cost is `null` when no source reports one, never a made up
+  `0.0`. `GET /v1/system/latest-release` returns the latest CLIO release.
+- An uploaded resource becomes a citable source artifact when it is copied
+  into the workspace, so deliverables can show it in their lineage.
+- Model capability detection reads each server type directly (llama.cpp,
+  vLLM, Ollama, LM Studio, OpenRouter, ALCF) plus Hugging Face repository
+  data and a maintained model overlay; ALCF vision and embedding models are
+  recognized.
+
+### Changed
+
+- A request sends sampling parameters only when you set them or the model's
+  recommended settings name one; `temperature` defaults to unset. Reasoning
+  is mapped per model and server type.
+- The Claude Code provider keeps one SDK client per session across turns.
+- A message that names a model runs its session on that model with no global
+  provider apply first. A Codex pick carries its transport (`variant`).
+- One clio-core daemon per machine: every CLIO on a machine shares one
+  daemon, and the client attaches with the daemon's own configuration.
+  clio-core state is kept per host (`~/.clio/hosts/<host>`, CTE data under
+  `<data>/cte/hosts/<host>`), so nodes sharing a home directory do not
+  collide; the old location is moved once on first start. A new
+  `clio_core_attach` health row reports `starting`, `attached` or
+  `unavailable` with a reason.
+- clio-core (iowarp-core) is 2.2.1.
+- A remote deploy installs exactly the CLIO version the desktop runs, adopts
+  or stops a CLIO already on the remote port, and cleans up after a failed or
+  cancelled deploy. Remote status comes from the node's `/v1/health`.
+
+### Fixed
+
+- A remote server answers `/v1/health` at once while it boots and attaches to
+  the clio-core daemon it started. The launcher works behind a site HTTP
+  proxy and on a home directory shared by login and compute nodes.
+- SSH targets accept an unset key file or install location, and the
+  infrastructure transport negotiates its WebSocket subprotocol.
+- ALCF turns record token usage; Vertex AI and Bedrock name missing host
+  credentials instead of asking for an API key.
+- Ollama no longer returns 404, and providers that share a wire kind are no
+  longer confused with each other.
+- Model aliases such as `sonnet` get their model's image and PDF support.
+- Writes under deep workspace paths work on Windows without long path
+  support.
+- A crashed or cancelled turn start reports its real cause.
+
 ## [0.9.4.17] — 2026-09-24
 
 ### Changed
