@@ -90,6 +90,13 @@ TUI/HTTP surface aren't tracked here.
 - The assistant message is saved before `message.completed` and
   `turn.completed` are published, so fetching it right after the event no
   longer returns 404.
+- Token counting works offline: the bundled tokenizer files are used as
+  shipped instead of being downloaded again, and concurrent first loads no
+  longer race.
+- On Windows, a console or redirected output in a legacy code page no longer
+  crashes the server or CLI on non-ASCII output; console streams are UTF-8.
+- Default registry setup records its reasons again (the `stage` field
+  collided with the audit envelope and the reason was dropped).
 
 ## [0.9.4.17] — 2026-09-24
 

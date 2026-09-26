@@ -28,6 +28,7 @@ from clio_agent.gact.app import build_app
 from clio_agent.gact.providers.config import _effective_lm_config
 from clio_agent.gact.sessions import SessionStore
 from tests._config_layer import set_config
+from tests.turn_signals import TURN_SIGNAL_BACKSTOP_S, wait_for_terminal_status
 
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
 # test's ``build_app(agent=...)`` host fake (agent=None ingress paths return their
@@ -454,6 +455,8 @@ def test_running_turn_persists_exact_user_message_count(tmp_path: Path) -> None:
             json={"parts": [{"type": "text", "text": "hold this turn"}]},
         )
         assert response.status_code == 200
+        # The turn is provably mid-flight: held inside the agent, not merely "posted".
+        assert agent.entered.wait(TURN_SIGNAL_BACKSTOP_S), "turn never reached the agent"
 
         running = client.get(f"/v1/sessions/{sid}").json()
         cold_running = SessionStore(sessions_path).get(sid)
@@ -463,13 +466,12 @@ def test_running_turn_persists_exact_user_message_count(tmp_path: Path) -> None:
         assert cold_running.status == "running"
         assert cold_running.message_count == 1
 
+        cursor = app.state.bus.latest_event_id(sid)
         agent.release.set()
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline:
-            settled = client.get(f"/v1/sessions/{sid}").json()
-            if settled["status"] != "running":
-                break
-            time.sleep(0.02)
+        # Settled = the terminal status event the runner publishes after the slot
+        # releases, not a guess at how long finalization takes.
+        assert wait_for_terminal_status(app.state.bus, sid, after_event_id=cursor) == "idle"
+        settled = client.get(f"/v1/sessions/{sid}").json()
         assert settled["status"] == "idle"
         assert settled["message_count"] == 2
 
