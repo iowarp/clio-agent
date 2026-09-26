@@ -269,6 +269,7 @@ python_functions = ["test_*"]
 asyncio_mode = "auto"  # SSE tests use async httpx
 markers = [
     "integration: marks tests requiring full-stack/external runtime behavior",
+    "marketplace: reads shipped packs from the pinned external/clio-agent-marketplace submodule; FAILS (never skips) with the fix when the checkout is missing (tests/_marketplace.py)",
     "real_dependency_installer: exercises providers.dependencies' installer itself (subprocess stubbed); exempt from the suite-wide no-real-install guard",
     "benchmark: marks long real-provider stress benchmark tests",
     "real_case: end-to-end live CLIO blueprint case (a tier above unit/integration; needs CLIO_RUN_LIVE=1)",

@@ -6,6 +6,8 @@ import importlib.util
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 _REPO = Path(__file__).resolve().parents[2]
 _SCRIPT = _REPO / "scripts" / "live_gate_observe_1000.py"
 
@@ -19,6 +21,7 @@ def _load_script() -> ModuleType:
     return module
 
 
+@pytest.mark.marketplace
 def test_live_gate_inherits_model_and_uses_real_marketplace_blueprint() -> None:
     """The gate must not pin a model or reference the removed experiment tree."""
     module = _load_script()

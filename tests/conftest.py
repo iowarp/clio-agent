@@ -66,6 +66,7 @@ from tests._cte_isolation import (
     reap_private_daemon,
     remove_private_cte_root,
 )
+from tests._marketplace import MARKETPLACE_MISSING_MESSAGE, marketplace_checked_out
 from tests._process_hygiene import (
     SKIP_ENV,
     ProcessHygieneAudit,
@@ -106,6 +107,16 @@ def pytest_configure(config: pytest.Config) -> None:
     tempfile.tempdir = str(runtime.temp_dir)
     config.option.basetemp = str(runtime.pytest_dir)
     _TEST_RUNTIME = runtime
+
+
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    """Fail a ``marketplace`` test loudly when the pinned submodule is not checked out.
+
+    A skip would let a CI checkout regression pass unnoticed; the failure names
+    the one command that fixes a fresh worktree (tests/_marketplace.py).
+    """
+    if item.get_closest_marker("marketplace") is not None and not marketplace_checked_out():
+        pytest.fail(MARKETPLACE_MISSING_MESSAGE, pytrace=False)
 
 
 @pytest.hookimpl(trylast=True)
