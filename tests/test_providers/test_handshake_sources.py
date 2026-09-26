@@ -1,9 +1,10 @@
 """Offline tests for the context-source factory + the local model-limits DB.
 
 The cascade is provider-live -> models.dev -> local DB. models.dev is forced to a
-captured fixture (no network); the writable DB is pointed at a tmp file (the packaged
-seed merges beneath it, so seed lookups work and write-backs land in tmp, never the
-repo). No test hits the network.
+captured fixture (no network); the writable DB is pointed at a tmp file and the
+model-limits seed catalog's disk cache is seeded from the repository's
+``catalogs/model-limits.json`` (the bytes raw GitHub serves), so seed lookups work
+and write-backs land in tmp, never the repo. No test hits the network.
 """
 
 from __future__ import annotations
@@ -25,10 +26,11 @@ from clio_agent.providers.handshake.sources import (
 )
 from clio_agent.providers.handshake.sources import models_dev as models_dev_mod
 from clio_agent.providers.handshake.sources.models_dev import lookup_models_dev
+from tests._catalog_seed import REPO_CATALOGS, seed_repo_catalog
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "handshake"
 MODELS_DEV_FIXTURE = FIXTURE_DIR / "models_dev_subset.json"
-SEED_DB = Path(db_mod.__file__).resolve().parent / "data" / "model_limits.json"
+SEED_DB = REPO_CATALOGS / "model-limits.json"
 
 
 @pytest.fixture(autouse=True)
@@ -69,6 +71,7 @@ def isolated_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     """Point the writable DB at a tmp file (seed merges beneath; writes stay in tmp)."""
     db_file = tmp_path / "model_limits.json"
     monkeypatch.setenv("CLIO_MODEL_DB", str(db_file))
+    seed_repo_catalog("model-limits.json", "model-limits")
     return db_file
 
 
@@ -125,8 +128,8 @@ def test_resolve_output_limit_from_models_dev() -> None:
     assert resolve_output_limit("google/gemma-4-31b-it", "openai_compat") == 32768
 
 
-# ---- packaged seed is read-only; writes go to the user data dir (#763) ----
-def test_record_never_touches_packaged_seed(
+# ---- the seed catalog is read-only; writes go to the user data dir (#763) ----
+def test_record_never_touches_the_seed_catalog(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A fresh handshake record() must not mutate the repo-shipped seed file.
@@ -138,6 +141,7 @@ def test_record_never_touches_packaged_seed(
     """
     monkeypatch.delenv("CLIO_MODEL_DB", raising=False)
     monkeypatch.setenv("CLIO_USER_DIR", str(tmp_path / "user"))
+    seed_repo_catalog("model-limits.json", "model-limits")
     seed_bytes = SEED_DB.read_bytes()
     seed_mtime = SEED_DB.stat().st_mtime_ns
 

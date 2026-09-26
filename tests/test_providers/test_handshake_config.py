@@ -32,6 +32,7 @@ from clio_agent.providers.handshake.model import (
     DiscoveredModel,
     HandshakeReport,
 )
+from tests._catalog_seed import seed_litellm_cost_map
 
 _PROVIDER_ID = "p"
 _API_BASE = ""
@@ -355,6 +356,7 @@ async def test_native_context_window_populated_from_catalog_and_warning_fires(
     Confirms the served context (deployment.context_served) is NOT overwritten
     with the native value.
     """
+    seed_litellm_cost_map()
     import logging
 
     from clio_agent.providers.handshake.base import HandshakeContext

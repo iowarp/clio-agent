@@ -23,7 +23,10 @@ Rules, all from evidence rather than a guess:
   own default, nothing sent.
 * ``stop`` and thinking controls are deliberately not tunables here: clio owns
   its stop sequences (the adapter's trajectory markers), and thinking has its
-  own control (the catalog row's ``reasoning`` block).
+  own control (the catalog row's ``reasoning`` block). The two "unknown" rules
+  differ on purpose: an unknown accepted set offers and sends no setting,
+  while a requested effort for a model whose reasoning levels are unknown
+  still passes through (``reasoning_levels_unknown``, lm.dialect_wire).
 
 :func:`validate_settings` checks saved values against this same projection, so
 a stored value outside an accepted setting's range is refused at the boundary.
@@ -410,13 +413,14 @@ def accepted_parameters(
     load_settings = LOAD_SETTINGS_BY_DIALECT.get(dialect, {})
     rows: list[dict[str, Any]] = []
     for spec in TUNABLES:
+        membership: list[dict[str, str] | None]
         if spec.name in load_settings:
             membership = [
                 _evidence("dialect", f"clio applies it when loading: {load_settings[spec.name]}")
             ]
         elif is_accepted(spec, accepted):
-            membership = _membership_evidence(
-                spec, facts, dialect=dialect, litellm_prefix=litellm_prefix
+            membership = list(
+                _membership_evidence(spec, facts, dialect=dialect, litellm_prefix=litellm_prefix)
             )
         else:
             continue
@@ -448,6 +452,34 @@ def accepted_parameters(
             ).model_dump(mode="json")
         )
     return rows
+
+
+def accepted_parameters_for(
+    preset_id: str,
+    provider_kind: str,
+    provider_id: str,
+    api_base: str,
+    model_id: str,
+    effective: EffectiveCapabilities,
+) -> list[dict[str, Any]]:
+    """:func:`accepted_parameters` for a catalog preset, resolving its dialect.
+
+    The dialect and LiteLLM provider come from the preset's own catalog row
+    (``litellm_prefix``), the same resolution the request builder uses.
+    """
+
+    from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
+
+    preset = get_provider(preset_id)
+    litellm_prefix = preset.litellm_prefix if preset is not None else provider_kind
+    return accepted_parameters(
+        provider_id,
+        api_base,
+        model_id,
+        dialect=capability_endpoint.dialect_for_provider(provider_kind, litellm_prefix, preset_id),
+        litellm_prefix=litellm_prefix,
+        effective=effective,
+    )
 
 
 def validate_settings(
@@ -485,6 +517,7 @@ __all__ = [
     "Tunable",
     "accepted_param_set",
     "accepted_parameters",
+    "accepted_parameters_for",
     "is_accepted",
     "tunable",
     "validate_settings",

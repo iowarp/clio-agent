@@ -41,6 +41,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any
 
+from clio_agent.providers.capabilities.hf_facts import metadata_facts
 from clio_agent.providers.capabilities.hf_modalities import (
     PIPELINE_TASKS,
     PROCESSOR_FILES,
@@ -168,6 +169,9 @@ class RepoResolution:
     pipeline_tag: str = ""
     architectures: tuple[str, ...] = ()
     siblings: frozenset[str] = field(default_factory=frozenset)
+    #: The public metadata document itself (``safetensors``, ``createdAt``,
+    #: ``config``), for the descriptive facts :mod:`.hf_facts` reads from it.
+    metadata: Mapping[str, Any] = field(default_factory=dict, compare=False, repr=False)
 
     def lists(self, filename: str) -> bool:
         """Whether this commit may hold ``filename`` (True when siblings are unknown)."""
@@ -253,6 +257,7 @@ def _resolution(repo: str, sha: str, requested: str, meta: Mapping[str, Any]) ->
         )
         if isinstance(siblings, list)
         else frozenset(),
+        metadata=meta,
     )
 
 
@@ -484,7 +489,14 @@ class HfRepoCatalogSource:
             detail=f"{detail_repo}: pipeline_tag={resolution.pipeline_tag!r}",
         )
 
-        if not sampling and thinking is None and modalities is None and not type_fact.known:
+        descriptive = metadata_facts(resolution, config=config, observed_at=observed_at)
+        if (
+            not sampling
+            and thinking is None
+            and modalities is None
+            and not type_fact.known
+            and not descriptive
+        ):
             return None
 
         is_reasoning = thinking is not None and thinking.mechanism != "none"
@@ -521,6 +533,8 @@ class HfRepoCatalogSource:
                 if sampling and not is_reasoning
                 else unknown()
             ),
+            released_at=descriptive.get("released_at", unknown()),
+            parameters=descriptive.get("parameters", unknown()),
         )
 
 

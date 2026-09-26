@@ -10,10 +10,10 @@ of, one submodule per concern (kept split to respect the #775 file-size ratchet)
 * :mod:`.overlay` — the refresh overlay: read/write/delta, malformed-vs-unreadable
   typed errors, the ``ProviderDiscoveryResult`` shape, and the context/output-limit
   enrichment persisted at refresh time (#1211 review D4).
-* :mod:`.codex_catalog` / :mod:`.codex` — the maintained Codex model
-  catalog document plus a credential-store sign-in check (see
-  :func:`discover_codex`) -- the direct provider has no account model-
-  enumeration RPC the way the deleted ``openai_codex`` SDK offered.
+* :mod:`.codex` — the Codex Direct transport's LIVE account model list (the
+  backend's ``GET /backend-api/codex/models``, asked with CLIO's own Codex
+  credential; see :func:`discover_codex`). The SDK transport's live list is
+  :mod:`clio_agent.providers.codex.sdk_discovery` (the SDK's ``model/list``).
 * :mod:`.claude_code_catalog` — the maintained GitHub catalog document
   (:data:`~clio_agent.providers.model_discovery.claude_code_catalog.CLAUDE_CODE_CATALOG_URL`):
   the single source of Claude Code model ids, per-model input-modality
@@ -73,6 +73,7 @@ from clio_agent.providers.model_discovery.modality_evidence import (
 )
 from clio_agent.providers.model_discovery.overlay import (
     CLAUDE_CODE_SOURCE,
+    CODEX_SDK_SOURCE,
     CODEX_SOURCE,
     HTTP_SOURCE,
     OVERLAY_STALENESS_REASONS,
@@ -98,6 +99,7 @@ from clio_agent.providers.model_discovery.refresh import (
 )
 
 __all__ = [
+    "CODEX_SDK_SOURCE",
     "CODEX_SOURCE",
     "CLAUDE_CODE_AUTH_STATUS_TIMEOUT_S",
     "CLAUDE_CODE_SOURCE",

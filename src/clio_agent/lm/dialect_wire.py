@@ -168,6 +168,36 @@ def _budget_for_level(decision: ThinkingDecision, level: str, explicit_budget: i
     return LEVEL_BUDGET.get(level, LEVEL_BUDGET["medium"])
 
 
+#: Typed reason: a thinking level was requested for a model whose reasoning
+#: levels are not known yet (no discovery has linked a model record). Unknown
+#: is not unsupported: the requested effort is passed through in the dialect's
+#: own effort field and the upstream decides.
+REASONING_LEVELS_UNKNOWN = "reasoning_levels_unknown"
+
+
+def _unknown_levels_wire(dialect: str, level: str) -> dict[str, Any]:
+    """Pass a requested effort through for a model with unknown reasoning levels.
+
+    Each dialect's own effort field (dialect knowledge only); a dialect with no
+    effort-shaped field (vLLM's budget/template kwargs need a per-model spec)
+    sends nothing and the caller records the level as unknown, not unsupported.
+    """
+
+    if dialect in {"openai", "anthropic", "lm_studio", "llama_cpp"}:
+        return {"reasoning_effort": level}
+    if dialect == "codex":
+        return {"codex_reasoning_effort": level}
+    if dialect == "openrouter":
+        return {"reasoning": {"effort": level}}
+    if dialect == "ollama":
+        return {"think": level}
+    if dialect == "claude_code":
+        return {
+            "claude_code_thinking": {"type": "adaptive", "display": "summarized", "effort": level}
+        }
+    return {}
+
+
 def thinking_wire(
     dialect: str,
     decision: ThinkingDecision,
@@ -179,13 +209,15 @@ def thinking_wire(
     """Build the on/off/level thinking kwargs for one dialect (Part 7 item 4).
 
     ``decision`` is the effective :class:`ThinkingDecision`
-    (:mod:`clio_agent.providers.capabilities.combine`): its ``control`` is
-    ``None`` when the model needs no control at all (``none``/``always_on``),
-    when nothing is known about the model's thinking mechanism yet (no
-    handshake has linked a model record), or when nothing offered can carry
-    the model's mechanism ("not controllable here", brief 5.5) -- all three
-    cases return ``{}`` here, so a cold or unlinked deployment sends no
-    thinking directive at all rather than guessing (fail closed).
+    (:mod:`clio_agent.providers.capabilities.combine`). A KNOWN spec whose
+    ``control`` is ``None`` (the model needs no control, ``none``/
+    ``always_on``, or nothing offered can carry its mechanism -- "not
+    controllable here", brief 5.5) returns ``{}``: that is a known "no".
+    An UNKNOWN spec (no discovery has linked a model record yet) is not a
+    "no": a requested level is passed through in the dialect's own effort
+    field (:func:`_unknown_levels_wire`, typed
+    :data:`REASONING_LEVELS_UNKNOWN`) and the upstream decides; off/unset
+    sends nothing.
 
     ``level`` is the user's/shipped CLIO level (``None``/``"off"`` means off).
     ``budget_tokens`` is an explicit ``config.thinking_budget`` override, used
@@ -199,7 +231,11 @@ def thinking_wire(
     now, never a second, provider-name-keyed mapping table).
     """
 
-    if decision.spec is None or decision.control is None:
+    if decision.spec is None:
+        if level is None or level == "off":
+            return {}
+        return _unknown_levels_wire(dialect, str(level))
+    if decision.control is None:
         return {}
     control = decision.control
     off = level is None or level == "off"
@@ -285,9 +321,14 @@ def thinking_wire(
         return {"thinking": {"type": "enabled", "budget_tokens": budget}}
 
     if dialect == "codex":
-        # Codex NEVER omits the field, even off: an omitted value inherits the
-        # ambient config.toml effort rather than actually disabling it.
-        value = "none" if off else _effort_value(decision, wire_level)
+        # Off sends an explicit "none" (an omitted value inherits the ambient
+        # config.toml effort rather than disabling it) -- but ONLY for a model
+        # that lists "none": the backend refuses an unlisted effort outright
+        # (live 2026-09-26: gpt-6-astra rejects 'none'). For such a model "off"
+        # is not offered, and no level means the model's own default effort.
+        if off:
+            return {"codex_reasoning_effort": "none"} if "off" in decision.spec.levels else {}
+        value = _effort_value(decision, wire_level)
         return {"codex_reasoning_effort": value} if value is not None else {}
 
     if dialect == "claude_code":
@@ -368,6 +409,7 @@ def apply_thinking_wire(extras: dict[str, Any], dialect: str, wire: dict[str, An
 __all__ = [
     "HTTP_DIALECTS",
     "PARAM_SPELLING_BY_DIALECT",
+    "REASONING_LEVELS_UNKNOWN",
     "apply_thinking_wire",
     "openrouter_require_parameters",
     "place_optional_param",

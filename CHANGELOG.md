@@ -8,6 +8,17 @@ TUI/HTTP surface aren't tracked here.
 
 ### Added
 
+- Provider catalog model rows carry `model_facts` next to `capability_tags`:
+  the model's description (raw text, plain text with markdown links reduced to
+  labels, and the links), release date at the precision its source states,
+  `recent` (released within six months, judged when the catalog is served),
+  pricing per 1M tokens, and parameter count (total, plus mixture-of-experts
+  active and expert counts when a source states them). Each fact names the
+  sources that state it and is `null` when none does; a size is never read
+  from a model's name. A price is `usd` with a number, or `variable` (it
+  depends on the routed model) or `subscription` (Claude Code, Codex) with no
+  number. What the endpoint charges comes first; a LiteLLM list price is used
+  when the endpoint states none, and is otherwise listed as an alternative.
 - Every provider-catalog model row carries `accepted_parameters`
   (`clio_schemas.AcceptedParameter`, clio-schemas 0.4.1): only the response
   settings that model and its endpoint accept -- temperature, top_p, top_k,
@@ -24,12 +35,21 @@ TUI/HTTP surface aren't tracked here.
 
 ### Changed
 
+- The per-token `pricing` field on provider catalog model rows is removed;
+  `model_facts.pricing` replaces it.
 - A saved setting the bound model does not accept is kept and never sent, and
   each drop is logged (`response_setting_not_sent`). Codex and Claude Code no
   longer receive sampling fields their SDKs ignore. Ollama's `top_k`, `min_p`,
   `repeat_penalty` and `num_ctx` now reach its `options`; LM Studio receives
   `top_k` and `repeat_penalty`; OpenRouter receives `top_k`, `min_p` and
   `repetition_penalty` where the route supports them.
+
+### Fixed
+
+- A provider served from its last-good model list (for example OpenRouter with
+  no usable key) lost every fact except limits, tools, modalities and task, so
+  its models showed no reasoning, structured output, router, free or pricing
+  tags. The full records are now kept and restored.
 
 ## [0.9.4.18] — 2026-09-26
 

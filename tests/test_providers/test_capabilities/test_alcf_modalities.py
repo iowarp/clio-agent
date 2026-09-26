@@ -42,6 +42,7 @@ from clio_agent.providers.handshake.argonne import ArgonneHandshake
 from clio_agent.providers.handshake.base import ConnectivityResult, HandshakeContext
 from clio_agent.providers.handshake.model import AuthState, ConnectivityState, HandshakeReport
 from clio_agent.providers.handshake.sources import db, litellm_catalog, models_dev
+from tests._catalog_seed import seed_model_overlay
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 HF_FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "capabilities" / "hf_repo"
@@ -176,6 +177,7 @@ def _recorded_catalogs(monkeypatch: pytest.MonkeyPatch, hub: _HubRouter) -> None
     hf_repo.clear_miss_cache()
     hf_repo._metadata_catalog.cache_clear()
     hf_repo._file_catalog.cache_clear()
+    seed_model_overlay()
     md = _load(FIXTURES / "catalogs" / "models_dev_snippet.json")
     ll = _load(FIXTURES / "catalogs" / "litellm_snippet.json")
     monkeypatch.setattr(models_dev, "_load_models_dev", lambda *a, **k: md)

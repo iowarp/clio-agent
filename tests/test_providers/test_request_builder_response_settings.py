@@ -134,3 +134,22 @@ def test_openrouter_route_without_top_k_withholds_it(caplog: pytest.LogCaptureFi
     assert "top_k" not in (extras.get("extra_body") or {})
     fields = " ".join(_not_sent(caplog))
     assert "field=temperature" in fields and "field=top_k" in fields
+
+
+def test_unknown_sampling_withholds_settings_while_unknown_levels_pass_through(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Two different "unknown" rules, kept apart on purpose: no evidence that
+    # Codex accepts sampling means none is offered or sent, while a requested
+    # effort for a model whose reasoning levels are not known yet still rides
+    # through (reasoning_levels_unknown) -- reasoning is not an accepted
+    # parameter; it has its own control.
+    caplog.set_level(logging.INFO, logger="clio_agent.lm.request_builder")
+    extras = build_request_kwargs(
+        _cfg("codex", "gpt-unlisted", temperature=0.4, thinking_level="high")
+    )
+    assert extras["codex_reasoning_effort"] == "high"
+    assert "temperature" not in extras
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("reason=reasoning_levels_unknown" in m for m in messages)
+    assert any("response_setting_not_sent" in m and "field=temperature" in m for m in messages)

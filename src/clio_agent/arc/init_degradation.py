@@ -28,6 +28,12 @@ import os
 import threading
 from dataclasses import dataclass
 
+from clio_agent.arc.clio_core_daemon_version import (
+    CLIO_CORE_DAEMON_CONFIG_UNKNOWN,
+    CLIO_CORE_DAEMON_VERSION_UNKNOWN,
+    CLIO_CORE_VERSION_MISMATCH,
+)
+
 logger = logging.getLogger(__name__)
 
 CLIO_CORE_FILE_CAPACITY_UNAVAILABLE = "clio_core_file_capacity_unavailable"
@@ -40,6 +46,9 @@ ARC_INIT_DEGRADE_REASONS = (
     "clio_core_daemon_spawn_failed",  # launcher missing or the daemon never bound its port
     CLIO_CORE_FILE_CAPACITY_UNAVAILABLE,  # configured file bdev cannot fit safely
     CLIO_CORE_CLIENT_ATTACH_FAILED,  # daemon listening, native client handshake failed
+    CLIO_CORE_VERSION_MISMATCH,  # daemon runs a different iowarp-core version: refused
+    CLIO_CORE_DAEMON_VERSION_UNKNOWN,  # daemon has no version record: refused
+    CLIO_CORE_DAEMON_CONFIG_UNKNOWN,  # daemon's recorded config is unreadable: refused
     "clio_core_init_error",  # any other clio-core initialization failure
 )
 
@@ -54,7 +63,8 @@ def classify_init_failure(error: BaseException) -> str:
         ``"clio_core_binding_absent"`` for a missing clio-core Python binding,
         ``"clio_core_daemon_spawn_failed"`` for a launcher/port-bind failure,
         the error's own typed ``degradation_reason`` when it carries a known one
-        (file-tier preflight, client attach), else ``"clio_core_init_error"``.
+        (file-tier preflight, client attach, daemon version/config refusal), else
+        ``"clio_core_init_error"``.
     """
     if isinstance(error, (ImportError, ModuleNotFoundError)):
         return "clio_core_binding_absent"

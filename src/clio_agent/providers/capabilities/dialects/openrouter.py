@@ -21,12 +21,17 @@ One row carries model AND per-route deployment facts together:
   those stay unknown.
 * [D] ``top_provider.context_length`` / ``max_completion_tokens`` (what the
   currently routed upstream serves); ``supported_parameters`` -> ``route_params``
-  (the accepted-parameter set); ``pricing`` -> the per-token prices, ``free``
-  (both exactly 0 -- never inferred from a ``:free`` suffix), with OpenRouter's
-  ``-1`` recorded as ``"variable"``, never 0; the ``openrouter/`` author
+  (the accepted-parameter set); ``pricing`` -> the prices per 1M tokens
+  (converted from OpenRouter's per-token decimal strings), ``free`` (both
+  exactly 0 -- never inferred from a ``:free`` suffix), with OpenRouter's ``-1``
+  recorded as a typed ``variable`` price, never a number; the ``openrouter/`` author
   namespace -> ``router`` (OpenRouter's own meta-models: ``auto``, ``free``,
   ``fusion``, ...). The ``Router`` tokenizer is NOT used: it also tags the
   ``~vendor/*-latest`` version aliases, which point at one model.
+* [M] ``description`` -> the model's description (raw; a router's is how a
+  person learns what it routes between); ``created`` (unix) -> the release
+  date; ``hugging_face_id`` -> the Hub repo the weights are, which the Hub
+  layer reads the parameter count through (an empty id links nothing).
 
 When an optional parameter is sent, the request builder (Part 7 / P5) must set
 ``provider: {"require_parameters": true}`` so OpenRouter refuses to silently
@@ -38,10 +43,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from clio_agent.providers.capabilities.link import deployment_model_key_fact
+from clio_agent.providers.capabilities.model_facts import (
+    pricing_from_per_token,
+    release_from_unix,
+)
 from clio_agent.providers.capabilities.records import (
     DeploymentCapabilities,
     Fact,
@@ -89,9 +97,6 @@ _EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high")
 #: model per request).
 _ROUTER_AUTHOR = "openrouter"
 
-#: OpenRouter's price for "depends on the routed model".
-_VARIABLE_PRICE = "-1"
-VARIABLE = "variable"
 
 
 def _now_iso() -> str:
@@ -118,37 +123,38 @@ def task_from_output_modalities(output: object) -> str | None:
     return None
 
 
-def _price(value: Any) -> str | None:
-    """One price as OpenRouter states it: a decimal string, ``"variable"``, or None."""
-    text = str(value).strip() if isinstance(value, (str, int, float)) else ""
-    if not text:
-        return None
-    if text == _VARIABLE_PRICE:
-        return VARIABLE
-    try:
-        Decimal(text)
-    except InvalidOperation:
-        return None
-    return text
-
-
-def _is_zero(price: str | None) -> bool:
-    return price is not None and price != VARIABLE and Decimal(price) == 0
-
-
 def _pricing_facts(row: Mapping[str, Any], observed_at: str) -> tuple[Fact, Fact]:
     pricing = row.get("pricing")
     if not isinstance(pricing, Mapping):
         return unknown("openrouter row has no pricing"), unknown("openrouter row has no pricing")
-    prompt = _price(pricing.get("prompt"))
-    completion = _price(pricing.get("completion"))
-    if prompt is None or completion is None:
+    stated = pricing_from_per_token(pricing.get("prompt"), pricing.get("completion"))
+    if stated is None:
         return unknown("openrouter pricing incomplete"), unknown("openrouter pricing incomplete")
     detail = f"openrouter pricing prompt={pricing.get('prompt')!r} completion={pricing.get('completion')!r}"
     return (
-        Fact({"prompt": prompt, "completion": completion}, "server_report", observed_at, detail),
-        Fact(_is_zero(prompt) and _is_zero(completion), "server_report", observed_at, detail),
+        Fact(stated, "server_report", observed_at, detail),
+        Fact(stated.free, "server_report", observed_at, detail),
     )
+
+
+def _descriptive_facts(row: Mapping[str, Any], observed_at: str) -> dict[str, Fact]:
+    """``description`` / ``created`` / ``hugging_face_id`` -> model-record facts."""
+    facts: dict[str, Fact] = {}
+    description = row.get("description")
+    if isinstance(description, str) and description.strip():
+        facts["description"] = Fact(description, "openrouter", observed_at, "openrouter description")
+    created = row.get("created")
+    released = release_from_unix(created)
+    if released is not None:
+        facts["released_at"] = Fact(
+            released, "openrouter", observed_at, f"openrouter created={created!r}"
+        )
+    repo = row.get("hugging_face_id")
+    if isinstance(repo, str) and repo.strip():
+        facts["hf_repo"] = Fact(
+            repo.strip(), "openrouter", observed_at, f"openrouter hugging_face_id={repo.strip()!r}"
+        )
+    return facts
 
 
 def _param_fact(
@@ -211,6 +217,7 @@ def parse_model_row(
     model_key_fact = deployment_model_key_fact(model_id, observed_at=observed_at)
     model_key = model_key_fact.value or model_id
     pricing, free = _pricing_facts(row, observed_at)
+    descriptive = _descriptive_facts(row, observed_at)
     author = model_id.split("/", 1)[0] if "/" in model_id else ""
 
     model = ModelCapabilities(
@@ -254,6 +261,9 @@ def parse_model_row(
         tools=_param_fact(params, _TOOL_PARAMS, observed_at, "tools"),
         structured_output=_param_fact(params, _STRUCTURED_PARAMS, observed_at, "structured output"),
         thinking=_thinking_fact(params, observed_at),
+        description=descriptive.get("description", unknown()),
+        released_at=descriptive.get("released_at", unknown()),
+        hf_repo=descriptive.get("hf_repo", unknown()),
     )
     deployment = DeploymentCapabilities(
         provider_id=provider_id,
@@ -308,7 +318,6 @@ __all__ = [
     "DIALECT",
     "MODELS_QUERY",
     "REQUIRE_PARAMETERS_FLAG",
-    "VARIABLE",
     "models_url",
     "parse_model_row",
     "task_from_output_modalities",

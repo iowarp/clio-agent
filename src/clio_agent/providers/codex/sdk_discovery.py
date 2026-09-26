@@ -16,7 +16,7 @@ Codex installed and ready"):
 * ``codex_sdk_probe_failed`` -- the SDK started and (as far as we know) has an
   account, but the live probe itself failed (network, timeout, transport).
 
-A successful probe reuses the maintained catalog's discovery *result* shape
+A successful probe reuses the Direct model list's discovery *result* shape
 (:class:`~clio_agent.providers.model_discovery.overlay.ProviderDiscoveryResult`)
 so both codex transports' raw discovery output has one common contract.
 """
@@ -31,7 +31,7 @@ from clio_agent.providers.model_discovery.modality_evidence import (
     reported_modalities,
 )
 from clio_agent.providers.model_discovery.overlay import (
-    CODEX_SOURCE,
+    CODEX_SDK_SOURCE,
     ProviderDiscoveryResult,
 )
 
@@ -122,7 +122,7 @@ async def _probe(timeout: float) -> ProviderDiscoveryResult:
         return ProviderDiscoveryResult(
             provider="codex_sdk",
             discovered=[],
-            source=CODEX_SOURCE,
+            source=CODEX_SDK_SOURCE,
             failed_reason=_typed_failure("codex_sdk_not_installed", detail=str(exc)),
         )
 
@@ -147,14 +147,14 @@ async def _probe(timeout: float) -> ProviderDiscoveryResult:
         return ProviderDiscoveryResult(
             provider="codex_sdk",
             discovered=[],
-            source=CODEX_SOURCE,
+            source=CODEX_SDK_SOURCE,
             failed_reason=_typed_failure("codex_sdk_not_installed", detail=str(exc)),
         )
     except (OSError, CodexError, RuntimeError, TimeoutError) as exc:
         return ProviderDiscoveryResult(
             provider="codex_sdk",
             discovered=[],
-            source=CODEX_SOURCE,
+            source=CODEX_SDK_SOURCE,
             failed_reason=_typed_failure("codex_sdk_probe_failed", detail=str(exc) or repr(exc)),
         )
 
@@ -162,7 +162,7 @@ async def _probe(timeout: float) -> ProviderDiscoveryResult:
         return ProviderDiscoveryResult(
             provider="codex_sdk",
             discovered=[],
-            source=CODEX_SOURCE,
+            source=CODEX_SDK_SOURCE,
             failed_reason=_typed_failure("codex_sdk_signed_out"),
         )
 
@@ -182,14 +182,14 @@ async def _probe(timeout: float) -> ProviderDiscoveryResult:
         return ProviderDiscoveryResult(
             provider="codex_sdk",
             discovered=[],
-            source=CODEX_SOURCE,
+            source=CODEX_SDK_SOURCE,
             failed_reason=_typed_failure("codex_sdk_zero_models"),
         )
     default_model = next((str(row.id) for row in rows if row.is_default), "")
     return ProviderDiscoveryResult(
         provider="codex_sdk",
         discovered=discovered,
-        source=CODEX_SOURCE,
+        source=CODEX_SDK_SOURCE,
         default_model=default_model,
     )
 
@@ -210,7 +210,7 @@ def discover_codex_sdk(*, timeout: float = _DEFAULT_PROBE_TIMEOUT_S) -> Provider
         return ProviderDiscoveryResult(
             provider="codex_sdk",
             discovered=[],
-            source=CODEX_SOURCE,
+            source=CODEX_SDK_SOURCE,
             failed_reason=_typed_failure("codex_sdk_probe_failed", detail=str(exc)),
         )
 

@@ -241,13 +241,16 @@ def turn_reasoning_provenance(
         dialect, effective.thinking, level=level, budget_tokens=budget
     )
 
+    # Unknown is not unsupported: only a KNOWN spec that cannot carry the level
+    # is "unsupported". An unknown spec passes the level through (typed reason).
+    levels_unknown = not effective.thinking.known and level not in (None, "off")
     effective_level: str
     if level in (None, "off"):
         effective_level = "default" if level is None else "off"
     elif kwargs:
         effective_level = str(level)
     else:
-        effective_level = "unsupported"
+        effective_level = "unknown" if levels_unknown else "unsupported"
     record: dict[str, Any] = {
         "requested_level": requested,
         "source": source,
@@ -255,7 +258,9 @@ def turn_reasoning_provenance(
         "effective_level": effective_level,
         "lm_kwargs": kwargs,
     }
-    if effective_level == "unsupported":
+    if levels_unknown:
+        record["reason"] = dialect_wire.REASONING_LEVELS_UNKNOWN
+    elif effective_level == "unsupported":
         record["reason"] = effective.thinking.reason or "not controllable here"
     inheritance = agent_def.metadata.get(TURN_REASONING_INHERITANCE_KEY)
     if isinstance(inheritance, dict):

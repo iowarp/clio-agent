@@ -369,6 +369,17 @@ def _reconnect_before_retry(reconnect: Callable[[], None], op_name: str, port: i
         )
 
 
+def health_probe_window_s(policy: Optional[LivenessPolicy] = None) -> float:
+    """The bound on ONE single-attempt RPC health probe: ``min(stall_after_s, 10 s)``.
+
+    Shared by the quarantine-recovery probe (:func:`probe_rpc_health`) and the
+    post-attach probe (:func:`clio_agent.arc.clio_core_attach.verify_post_attach`), so
+    both derive from the configured ``arc.liveness.stall_after_s``.
+    """
+    policy = policy or resolve_liveness_policy()
+    return min(policy.stall_after_s, _HEALTH_PROBE_MAX_S)
+
+
 def probe_rpc_health(
     *,
     reconnect: Callable[[], None],
@@ -397,8 +408,7 @@ def probe_rpc_health(
     Returns:
         ``True`` iff the probe RPC returned cleanly within the window; ``False`` otherwise.
     """
-    policy = policy or resolve_liveness_policy()
-    window = min(policy.stall_after_s, _HEALTH_PROBE_MAX_S)
+    window = health_probe_window_s(policy)
     try:
         reconnect()
     except Exception as exc:  # noqa: BLE001 - a reconnect that fails is NOT recovered

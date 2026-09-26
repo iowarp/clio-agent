@@ -93,19 +93,15 @@ def validate_request(req: LMProviderRequest) -> None:
     from clio_agent.providers.capabilities.accessor import (  # noqa: PLC0415
         get_effective_capabilities,
     )
-    from clio_agent.providers.capabilities.endpoint import dialect_for_provider  # noqa: PLC0415
-    from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
 
     provider_id = req.provider_id or req.provider
-    preset = get_provider(provider_id)
-    litellm_prefix = preset.litellm_prefix if preset is not None else req.provider
-    parameters = accepted_parameters.accepted_parameters(
+    parameters = accepted_parameters.accepted_parameters_for(
+        provider_id,
+        req.provider,
         provider_id,
         req.api_base,
         req.model,
-        dialect=dialect_for_provider(req.provider, litellm_prefix, provider_id),
-        litellm_prefix=litellm_prefix,
-        effective=get_effective_capabilities(provider_id, req.api_base, req.model),
+        get_effective_capabilities(provider_id, req.api_base, req.model),
     )
     problems = accepted_parameters.validate_settings(_settings(req), parameters)
     if not problems:

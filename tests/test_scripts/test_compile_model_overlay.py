@@ -51,21 +51,6 @@ def test_real_claude_code_catalog_validates() -> None:
     assert problems == []
 
 
-def test_real_codex_catalog_passes_its_schema() -> None:
-    """S1's codex-models.json has landed; it now validates against its own schema."""
-    assert c.CODEX_CATALOG_PATH.exists()
-    assert c.CODEX_SCHEMA_PATH.exists()
-    problems = c._validate_catalog_if_present(
-        c.CODEX_CATALOG_PATH, c.CODEX_SCHEMA_PATH, label="codex catalog"
-    )
-    assert problems == []
-
-
-# --------------------------------------------------------------------------- #
-# Schema rejects a malformed entry (isolated -- does not touch the repo tree).
-# --------------------------------------------------------------------------- #
-
-
 def test_schema_rejects_an_entry_missing_match_patterns() -> None:
     schema = c._load_schema(c.OVERLAY_SCHEMA_PATH)
     validator = Draft202012Validator(schema)
@@ -143,19 +128,16 @@ def isolated_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(c, "MODELS_DIR", models_dir)
     monkeypatch.setattr(c, "OVERLAY_SCHEMA_PATH", models_dir / "overlay.schema.json")
     monkeypatch.setattr(c, "COMPILED_OVERLAY_PATH", tmp_path / "catalogs" / "model-overlay.json")
-    monkeypatch.setattr(
-        c,
-        "BUNDLED_OVERLAY_PATH",
-        tmp_path / "bundled" / "model-overlay.json",
-    )
+    limits = tmp_path / "catalogs" / "model-limits.json"
+    limits.parent.mkdir(parents=True, exist_ok=True)
+    limits.write_text('{"acme/model": {"context": 8192}}', encoding="utf-8")
+    monkeypatch.setattr(c, "MODEL_LIMITS_PATH", limits)
     monkeypatch.setattr(
         c, "CLAUDE_CODE_CATALOG_PATH", tmp_path / "catalogs" / "claude-code-models.json"
     )
     monkeypatch.setattr(
         c, "CLAUDE_CODE_SCHEMA_PATH", tmp_path / "catalogs" / "claude-code-models.schema.json"
     )
-    monkeypatch.setattr(c, "CODEX_CATALOG_PATH", tmp_path / "catalogs" / "codex-models.json")
-    monkeypatch.setattr(c, "CODEX_SCHEMA_PATH", tmp_path / "catalogs" / "codex-models.schema.json")
     return tmp_path
 
 
@@ -170,11 +152,11 @@ def test_compile_output_is_deterministic(isolated_tree: Path) -> None:
     assert [e["family"] for e in doc["entries"]] == ["alpha", "beta"]
 
 
-def test_main_writes_both_the_canonical_and_bundled_copies(isolated_tree: Path) -> None:
+def test_main_writes_only_the_canonical_catalog(isolated_tree: Path) -> None:
+    """No packaged copy is written into the source tree (decision D18)."""
     assert c.main([]) == 0
     assert c.COMPILED_OVERLAY_PATH.exists()
-    assert c.BUNDLED_OVERLAY_PATH.exists()
-    assert c.COMPILED_OVERLAY_PATH.read_text() == c.BUNDLED_OVERLAY_PATH.read_text()
+    assert not hasattr(c, "BUNDLED_OVERLAY_PATH")
 
 
 def test_check_fails_when_compiled_json_was_never_written(isolated_tree: Path) -> None:
@@ -197,9 +179,11 @@ def test_check_fails_when_the_committed_json_is_stale(isolated_tree: Path) -> No
     assert c.main(["--check"]) == 1
 
 
-def test_check_fails_when_only_the_bundled_copy_is_stale(isolated_tree: Path) -> None:
+def test_check_fails_on_an_invalid_model_limits_seed(isolated_tree: Path) -> None:
     assert c.main([]) == 0
-    c.BUNDLED_OVERLAY_PATH.write_text('{"schema_version": 1, "entries": []}\n', encoding="utf-8")
+    c.MODEL_LIMITS_PATH.write_text('{"acme/model": {"context": -1}}', encoding="utf-8")
+    assert c.main(["--check"]) == 1
+    c.MODEL_LIMITS_PATH.write_text("[]", encoding="utf-8")
     assert c.main(["--check"]) == 1
 
 
@@ -239,8 +223,3 @@ def test_claude_code_catalog_present_without_a_schema_fails_main(isolated_tree: 
     c.CLAUDE_CODE_CATALOG_PATH.write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
     assert not c.CLAUDE_CODE_SCHEMA_PATH.exists()
     assert c.main([]) == 1
-
-
-def test_codex_catalog_absent_does_not_fail_main(isolated_tree: Path) -> None:
-    assert not c.CODEX_CATALOG_PATH.exists()
-    assert c.main([]) == 0
