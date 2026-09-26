@@ -79,6 +79,9 @@ TUI/HTTP surface aren't tracked here.
   409.
 - Idle Claude Code CLI processes are released after their idle timeout,
   instead of staying resident until the next session starts.
+- The assistant message is saved before `message.completed` and
+  `turn.completed` are published, so fetching it right after the event no
+  longer returns 404.
 
 ## [0.9.4.17] — 2026-09-24
 
