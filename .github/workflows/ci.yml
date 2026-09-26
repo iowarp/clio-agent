@@ -7,12 +7,16 @@ on:
     branches: [main, develop, "campaign/**", "codex/**"]
 
 jobs:
-  check:
+  # Every job carries timeout-minutes just above its measured normal duration, so a
+  # hang fails the job in minutes instead of running to GitHub's 6-hour limit. The
+  # per-test limit (pytest-timeout, tests/_hang_guard.py) fails a hung TEST first,
+  # with every thread's stack in the log; the job limit is the outer backstop.
+  lint:
+    # Static checks, split from the test leg so they run in parallel with it
+    # (measured ~2 min; they used to add that to the serial check job).
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
-      # fail-fast off: a 3.13 discovery must not cancel the 3.12 leg the
-      # release gate reads (utah-cluster class: hosts we deploy to already
-      # run 3.13, so both interpreters are release-relevant).
       fail-fast: false
       matrix:
         python-version: ["3.12", "3.13"]
@@ -59,6 +63,27 @@ jobs:
         run: uv run python scripts/check_silent_fallbacks.py
       - run: bash -n scripts/homelab-env.sh
       - run: uv run mypy src/
+
+  check:
+    runs-on: ubuntu-latest
+    # Provisional until this PR's CI run measures the parallel leg; then set just
+    # above that duration (the serial leg took 44-68 min before this change).
+    timeout-minutes: 30
+    strategy:
+      # fail-fast off: a 3.13 discovery must not cancel the 3.12 leg the
+      # release gate reads (utah-cluster class: hosts we deploy to already
+      # run 3.13, so both interpreters are release-relevant).
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+      - run: uv sync --python ${{ matrix.python-version }} --extra dev --extra optimizers
       # Coverage floor lowered to 70 as the v0.5 merge brought in
       # large under-tested gact code; tracked in iowarp/clio-agent#31
       # to ratchet back up to 80% as the new code gets tests.
@@ -69,7 +94,11 @@ jobs:
       # (measured 79% on develop @ 2026-07-07; floor 78) so a genuine
       # regression fails CI while normal noise does not. Ratchet intent:
       # raise this toward the 80% target as gact code gains tests (#31/#773).
-      - run: uv run pytest tests/ -m "not integration" --cov=clio_agent --cov-branch --cov-report=term-missing --cov-fail-under=78
+      # -n auto: one xdist worker per runner core (each worker gets its own private
+      # clio-core daemon, tests/_cte_isolation.py); pytest-cov combines the workers'
+      # coverage before the floor is checked. worksteal rebalances the long tail.
+      # --durations keeps the slowest tests visible in every run's log.
+      - run: uv run pytest tests/ -m "not integration" -n auto --dist worksteal --durations=30 --cov=clio_agent --cov-branch --cov-report=term-missing --cov-fail-under=78
 
   bundle-lock-resolve:
     # The bundled CLIO Desktop runtime installs clio-agent[BUNDLE_EXTRAS]
@@ -78,6 +107,7 @@ jobs:
     # every bundled target here, so a conflict (the hardcoded clio-kit pin vs
     # the locked click) fails the PR instead of the release.
     runs-on: ubuntu-latest
+    timeout-minutes: 5  # measured ~15 s
     steps:
       - uses: actions/checkout@v4
         with:
@@ -93,6 +123,7 @@ jobs:
     # marker) and would silently rot as skip-only — this job installs the
     # flowcept extra and actually exercises it (#1247).
     runs-on: ubuntu-latest
+    timeout-minutes: 5  # measured ~40 s
     steps:
       - uses: actions/checkout@v4
         with:
@@ -120,6 +151,7 @@ jobs:
     # from ``check`` so its parallel/repeat flags never touch the coverage-gated
     # main run.
     runs-on: ubuntu-latest
+    timeout-minutes: 10  # measured ~2.5 min
     steps:
       - uses: actions/checkout@v4
         with:
