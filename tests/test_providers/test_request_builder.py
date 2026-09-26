@@ -330,11 +330,13 @@ def test_ollama_never_sends_reasoning_effort() -> None:
     assert "reasoning_effort" not in (extras.get("extra_body") or {})
 
 
-def test_ollama_with_no_evidence_sends_no_thinking_directive() -> None:
-    """Fail closed: no model/deployment record yet -> no thinking config guessed."""
+def test_ollama_with_no_evidence_passes_the_requested_level_through() -> None:
+    """Unknown is not unsupported: no model record yet -> the requested level
+    rides through in Ollama's own ``think`` field and the server decides."""
     extras = build_request_kwargs(_cfg("ollama", "unknown-model", thinking_level="high"))
-    assert "think" not in extras
-    assert "think" not in (extras.get("extra_body") or {})
+    assert (extras.get("extra_body") or {}).get("think") == "high"
+    off = build_request_kwargs(_cfg("ollama", "unknown-model", thinking_level="off"))
+    assert "think" not in (off.get("extra_body") or {})
 
 
 # --------------------------------------------------------------------------- #
@@ -888,3 +890,24 @@ def test_local_thinking_names_its_source_and_never_guesses() -> None:
         litellm_prefix="hosted_vllm",
     )
     assert not unknown_dialect.thinking.known
+
+
+@pytest.mark.parametrize(
+    ("dialect", "expected"),
+    [
+        ("openai", {"reasoning_effort": "high"}),
+        ("codex", {"codex_reasoning_effort": "high"}),
+        ("openrouter", {"reasoning": {"effort": "high"}}),
+        ("vllm", {}),  # no effort-shaped field: recorded unknown, never "unsupported"
+    ],
+)
+def test_unknown_reasoning_levels_pass_the_requested_level_through(
+    dialect: str, expected: dict[str, object]
+) -> None:
+    from clio_agent.lm import dialect_wire
+    from clio_agent.providers.capabilities.combine import ThinkingDecision
+
+    unknown = ThinkingDecision(spec=None, control=None, decided_by="none")
+    assert dialect_wire.thinking_wire(dialect, unknown, level="high") == expected
+    assert dialect_wire.thinking_wire(dialect, unknown, level="off") == {}
+    assert dialect_wire.thinking_wire(dialect, unknown, level=None) == {}

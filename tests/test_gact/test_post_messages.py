@@ -1946,14 +1946,57 @@ def test_tool_call_part_carries_thought_and_invoking_expert(tmp_path: Path) -> N
 # The restates_part_id echo TAG (mechanism 6's replacement labeling) ships in PR4.
 
 
+def test_post_message_reasoning_effort_with_unknown_levels_passes_through(
+    client: TestClient,
+    fake_agent: FakeClioAgent,
+) -> None:
+    """Unknown is not unsupported: an undiscovered model still gets the effort.
+
+    With no discovery evidence for the model's reasoning levels (no cached
+    catalog, no handshake), the requested effort rides through in the
+    dialect's own field with the typed ``reasoning_levels_unknown`` reason --
+    only a KNOWN level list that lacks the level is "unsupported".
+    """
+
+    from .conftest import complete_turn
+
+    client.app.state.lm_config = {
+        "provider_id": "openai",
+        "provider": "openai",
+        "model": "gpt-undiscovered-9",
+    }
+    sid = _create_session(client)
+    turn = complete_turn(
+        client,
+        sid,
+        "think hard",
+        json_override={
+            "client_message_id": "msg_unknown",
+            "behavior": {"reasoning_effort": "high"},
+        },
+    )
+
+    reasoning = turn["metadata"]["agent_runtime"]["reasoning"]
+    assert reasoning["requested_level"] == "high"
+    assert reasoning["effective_level"] == "high"
+    assert reasoning["lm_kwargs"] == {"reasoning_effort": "high"}
+    assert reasoning["reason"] == "reasoning_levels_unknown"
+
+
 def test_post_message_reasoning_effort_is_applied_and_recorded(
     client: TestClient,
     fake_agent: FakeClioAgent,
 ) -> None:
     """The message's reasoning effort reaches the turn and its provenance (I)."""
 
+    from tests._catalog_seed import seed_litellm_cost_map
+
     from .conftest import complete_turn
 
+    # gpt-5's reasoning levels come from the online LiteLLM cost map; seed its
+    # disk cache the way an earlier fetch leaves it (a recorded slice), so the
+    # KNOWN-levels path is what this test exercises.
+    seed_litellm_cost_map()
     # A real active provider, so the recorded level is the provider-mapped one.
     client.app.state.lm_config = {"provider_id": "openai", "provider": "openai", "model": "gpt-5"}
     sid = _create_session(client)
@@ -1979,6 +2022,7 @@ def test_post_message_reasoning_effort_is_applied_and_recorded(
     assert reasoning["effective_level"] == "high"
     assert reasoning["provider"] == "openai"
     assert reasoning["lm_kwargs"] == {"reasoning_effort": "high"}
+    assert "reason" not in reasoning  # known levels: no unknown-pass-through reason
     assert without["metadata"]["agent_runtime"]["reasoning"]["source"] != "per_message"
     assert messages["msg_effort"]["metadata"]["behavior"]["reasoning_effort"] == "high"
     # Unset is absent -- never a fabricated "medium" that would override the setting.

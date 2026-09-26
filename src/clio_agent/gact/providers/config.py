@@ -180,16 +180,16 @@ def _thinking_effective_display(cfg: dict[str, Any]) -> str:
     dialect = capability_endpoint.dialect_for_provider(provider_kind, litellm_prefix, provider_id)
     effective = get_effective_capabilities(provider_id, api_base, model)
 
-    if not effective.thinking.known:
-        if level not in (None, "off"):
-            return (
-                f"unavailable (reason=no thinking evidence for this model yet, requested={level})"
-            )
-        return "default (no thinking evidence for this model yet)"
-
     wire = dialect_wire.thinking_wire(
         dialect, effective.thinking, level=level, budget_tokens=budget
     )
+    if not effective.thinking.known:
+        if level not in (None, "off"):
+            unknown = dialect_wire.REASONING_LEVELS_UNKNOWN
+            if wire:
+                return f"{level} (passed through; reason={unknown})"
+            return f"unknown (reason={unknown}, requested={level})"
+        return "default (no thinking evidence for this model yet)"
     if level in (None, "off"):
         return "default (provider default)" if level is None else "off"
     if not wire:

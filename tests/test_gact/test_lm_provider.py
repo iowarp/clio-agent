@@ -2487,9 +2487,10 @@ def test_effective_lm_config_surfaces_supported_thinking_effective() -> None:
     assert cfg["thinking_effective"] == "high (budget 24576)"
 
 
-def test_effective_lm_config_surfaces_unavailable_thinking_with_no_evidence_yet() -> None:
+def test_effective_lm_config_surfaces_unknown_thinking_with_no_evidence_yet() -> None:
     """No handshake has linked this model's thinking evidence yet -- a typed
-    'unavailable', never a silent drop and never a guessed value (#895)."""
+    ``reasoning_levels_unknown`` (unknown is not unsupported), never a silent
+    drop (#895). This transport has no effort field to pass the level through."""
     from clio_agent.providers.capabilities import invalidation
 
     invalidation.clear_all()
@@ -2508,7 +2509,8 @@ def test_effective_lm_config_surfaces_unavailable_thinking_with_no_evidence_yet(
     cfg = _effective_lm_config(app)  # type: ignore[arg-type]
 
     assert cfg["thinking_level"] == "high"
-    assert cfg["thinking_effective"].startswith("unavailable")
+    assert cfg["thinking_effective"].startswith("unknown")
+    assert "reasoning_levels_unknown" in cfg["thinking_effective"]
     assert "high" in cfg["thinking_effective"]
 
 
