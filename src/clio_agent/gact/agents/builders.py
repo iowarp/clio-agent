@@ -168,13 +168,12 @@ def _dynamic_agent_lm_config(base_agent: Any, agent_def: "AgentDef") -> "Resolve
     boot_key = str(getattr(base_config, "api_key", "") or "")
     declared_provider = str(getattr(agent_def, "default_provider", "") or "")
     if declared_provider and declared_provider != default_spec.provider:
-        # Cross-provider expert: the endpoint / model / credential-ref / transport
+        # Cross-provider expert: endpoint / model / credential-ref / transport / variant
         # are provider-scoped, so inheriting the default provider's values would
         # point the new provider at the wrong endpoint (and a foreign credential).
         # Blank them — the resolver fills the new provider's PROVIDER_DEFAULTS and
-        # its own default credential — while the provider-agnostic sampling params
-        # still inherit. This preserves the old ``same_provider`` endpoint/model
-        # semantics (design §2 the gap; §4).
+        # its own default credential — while provider-agnostic sampling params
+        # still inherit (the old ``same_provider`` semantics, design §2; §4).
         default_spec = replace(
             default_spec,
             provider=declared_provider,
@@ -182,6 +181,7 @@ def _dynamic_agent_lm_config(base_agent: Any, agent_def: "AgentDef") -> "Resolve
             api_base="",
             credential_ref="",
             transport="",
+            variant="",
         )
     spec = build_spec(agent_def, default_spec)
     # Thread the boot credential only when the expert resolves to the boot
@@ -262,11 +262,7 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
             )  # P1.2 #1064: kept for a stable forward() signature; mode is surfaced upstream in turn.py enrichment (inject_plan_mode_reminder), not here.
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
-                    _cancelled_error_info(
-                        session_id,
-                        execution_cancellation="cooperative",
-                        executor_work_may_continue=False,
-                    )
+                    _cancelled_error_info(session_id, execution_cancellation="cooperative")
                 )
             # Resolve the credential fresh for this call (tokens rotate); the
             # dspy.context boundary itself is unchanged (design §4).
@@ -283,11 +279,7 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
                 )
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
-                    _cancelled_error_info(
-                        session_id,
-                        execution_cancellation="cooperative",
-                        executor_work_may_continue=False,
-                    )
+                    _cancelled_error_info(session_id, execution_cancellation="cooperative")
                 )
             answer = str(getattr(result, "answer", "") or "")
             return dspy.Prediction(
@@ -1155,30 +1147,11 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             )  # P1.2 #1064: kept for a stable forward() signature; mode is surfaced upstream in turn.py enrichment (inject_plan_mode_reminder), not here.
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
-                    _cancelled_error_info(
-                        session_id,
-                        execution_cancellation="cooperative",
-                        executor_work_may_continue=False,
-                    )
+                    _cancelled_error_info(session_id, execution_cancellation="cooperative")
                 )
             if trace.HF_ON:
                 trace.hot("FWD-ENTER", "%s kind=%s", getattr(self.agent_def, "id", "?"), self.kind)
             runtime_system_prompt = self.system_prompt
-            # Qwen-family models (qwopus), with thinking disabled, write free-form prose
-            # instead of the structured field format and never emit a terminator, so they
-            # generate unboundedly (→ truncation / >900s wedge). Tell them to output only
-            # the required fields and stop. Env-gated so it rides with CLIO_LM_DISABLE_THINKING
-            # and never touches the well-behaved remote models.
-            from clio_agent.config import _thinking_disabled  # noqa: PLC0415
-
-            if _thinking_disabled():
-                runtime_system_prompt = (
-                    runtime_system_prompt
-                    + "\n\nOUTPUT DISCIPLINE: Produce ONLY the required output fields, each "
-                    "filled in directly and once. Do NOT write a prose narrative, do NOT "
-                    "restate your reasoning, do NOT repeat or re-explain fields. After the "
-                    "last required field, STOP immediately."
-                )
             active_app = _ctx.active_app()
             active_session_id = _ctx.active_session_id()
             if active_app is not None:
@@ -1310,11 +1283,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     _ctx.reset(blueprint_tool_rows_token)
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
-                    _cancelled_error_info(
-                        session_id,
-                        execution_cancellation="cooperative",
-                        executor_work_may_continue=False,
-                    )
+                    _cancelled_error_info(session_id, execution_cancellation="cooperative")
                 )
             answer = str(getattr(result, "answer", "") or "")
             tools_called: list[dict[str, Any]] = []
@@ -1463,11 +1432,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             )  # P1.2 #1064: kept for a stable forward() signature; mode is surfaced upstream in turn.py enrichment (inject_plan_mode_reminder), not here.
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
-                    _cancelled_error_info(
-                        session_id,
-                        execution_cancellation="cooperative",
-                        executor_work_may_continue=False,
-                    )
+                    _cancelled_error_info(session_id, execution_cancellation="cooperative")
                 )
             # ARC live-context-plane wiring; #878: module.kind rides the scope token.
             _scope_id = str(getattr(self.agent_def, "id", ""))
@@ -1518,11 +1483,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                 _ctx.reset(_react_scope_token)
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
-                    _cancelled_error_info(
-                        session_id,
-                        execution_cancellation="cooperative",
-                        executor_work_may_continue=False,
-                    )
+                    _cancelled_error_info(session_id, execution_cancellation="cooperative")
                 )
             answer = str(getattr(result, "answer", "") or "")
             tools_called = _extract_tools_called_from_trajectory(

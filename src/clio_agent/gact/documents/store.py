@@ -30,6 +30,7 @@ from clio_agent.gact.documents.native_comments import (
     UnsafeDocumentArchiveError,
     extract_native_comments,
 )
+from clio_agent.platform_paths import short_stage_name, win_extended_path
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -76,10 +77,19 @@ def _safe_filename(name: str) -> str:
 
 
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    tmp.write_text(json.dumps(payload, sort_keys=True, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    """Write JSON via tmp+rename in the same directory, long-path-safe on win32.
+
+    A working-copy manifest lives under the workspace root's ``.clio/agent/
+    documents/working-copies/<id>/`` -- deep enough on a long workspace root
+    to exceed Windows' 260-character ``MAX_PATH``, so every OS call here
+    routes through :func:`win_extended_path` (a no-op off win32).
+    """
+    os.makedirs(win_extended_path(path.parent), exist_ok=True)
+    tmp = path.with_name(short_stage_name())
+    extended_tmp = win_extended_path(tmp)
+    with open(extended_tmp, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, sort_keys=True, indent=2))
+    os.replace(extended_tmp, win_extended_path(path))
 
 
 class DocumentStore:
@@ -184,7 +194,7 @@ class DocumentStore:
             working_copy_id = _new_id("docwc")
             root = self._workspace_root(workspace_id)
             workdir = self._documents_root(root) / "working-copies" / working_copy_id
-            workdir.mkdir(parents=True, exist_ok=False)
+            os.makedirs(win_extended_path(workdir), exist_ok=False)
             target = workdir / _safe_filename(record.name)
             self._copy_verified_version(root, version, target)
             now = _now_iso()
@@ -250,7 +260,7 @@ class DocumentStore:
             if current.status == "closed":
                 return current
             path = Path(current.path)
-            if not path.is_file():
+            if not os.path.isfile(win_extended_path(path)):
                 updated = current.model_copy(
                     update={"status": "missing", "updated_at": _now_iso(), "error": "file missing"}
                 )
@@ -404,7 +414,7 @@ class DocumentStore:
             for row in rows:
                 path = Path(row.path)
                 try:
-                    stat = path.stat()
+                    stat = os.stat(win_extended_path(path))
                 except OSError:
                     continue
                 signature = (int(stat.st_size), int(stat.st_mtime_ns))
@@ -434,20 +444,20 @@ class DocumentStore:
         source: Path | None = None
         if version.custody == Custody.CAS and version.sha256:
             candidate = CASStore(workspace_root).blob_path(version.sha256)
-            if candidate.is_file():
+            if os.path.isfile(win_extended_path(candidate)):
                 source = candidate
         if source is None and version.path:
             candidate = Path(version.path)
-            if candidate.is_file():
+            if os.path.isfile(win_extended_path(candidate)):
                 source = candidate
         if source is None:
             raise DocumentStoreError("artifact version bytes are unavailable")
         if version.sha256 and sha256_file(source) != version.sha256:
             raise DocumentIntegrityError("artifact bytes do not match their recorded hash")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-        shutil.copyfile(source, tmp)
-        os.replace(tmp, target)
+        os.makedirs(win_extended_path(target.parent), exist_ok=True)
+        tmp = target.with_name(short_stage_name())
+        shutil.copyfile(win_extended_path(source), win_extended_path(tmp))
+        os.replace(win_extended_path(tmp), win_extended_path(target))
 
     def _ingest_new_native_comments(
         self,
@@ -539,8 +549,8 @@ class DocumentStore:
     def _append_review(self, review: ArtifactReview) -> None:
         root = self._workspace_root(review.workspace_id)
         ledger = self._documents_root(root) / "reviews.jsonl"
-        ledger.parent.mkdir(parents=True, exist_ok=True)
-        with ledger.open("a", encoding="utf-8") as handle:
+        os.makedirs(win_extended_path(ledger.parent), exist_ok=True)
+        with open(win_extended_path(ledger), "a", encoding="utf-8") as handle:
             handle.write(review.model_dump_json())
             handle.write("\n")
 
@@ -616,7 +626,7 @@ def _sha256_stable(path: Path) -> str:
     """Hash one stable file using a same-handle stat check."""
 
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
+    with open(win_extended_path(path), "rb") as handle:
         before = os.fstat(handle.fileno())
         while True:
             chunk = handle.read(_HASH_CHUNK_BYTES)

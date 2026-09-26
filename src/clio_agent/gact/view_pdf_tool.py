@@ -169,6 +169,26 @@ def _parse_pages(pages: str, page_count: int) -> list[int]:
     return sorted(seen)
 
 
+def resolved_view_pdf_pages(pages: str, page_count: int) -> list[int]:
+    """The sorted 1-based page numbers a retained ``pages`` range resolves to.
+
+    Reuses :func:`_parse_pages`'s exact range semantics so a presenter (the
+    ``workspace_file`` block's ``pages`` list) can recover which pages a
+    descriptor's REQUESTED range refers to without re-deriving parsing rules
+    of its own. Returns ``[]`` rather than raising when the range no longer
+    parses against ``page_count`` (e.g. the document changed page count since
+    the tool ran) -- a presenter degrades to no page list, it never fails the
+    tool result.
+    """
+
+    if page_count <= 0:
+        return []
+    try:
+        return _parse_pages(pages, page_count)
+    except ViewPdfError:
+        return []
+
+
 def _pdf_page_count(data: bytes, *, label: str) -> int:
     """Return the page count, refusing an unreadable, encrypted, or empty PDF.
 
@@ -435,6 +455,9 @@ def promote_view_pdf_tool_messages(messages: list[dict[str, Any]]) -> list[dict[
 def build_view_pdf_tool() -> Any:
     """Build the declared native tool that inspects one workspace PDF."""
 
+    from clio_agent.gact.agents.native_presenters_workspace_file import (  # noqa: PLC0415
+        workspace_file_presentation,
+    )
     from clio_agent.gact.agents.tool_instrumentation import native_tool  # noqa: PLC0415
 
     def view_pdf(path: str, pages: str = "") -> dict[str, Any]:
@@ -454,7 +477,7 @@ def build_view_pdf_tool() -> Any:
     return native_tool(
         view_pdf,
         name="view_pdf",
-        presentation="fields:path,pages,page_count,size_bytes",
+        presentation=workspace_file_presentation,
         domain="workspace",
         desc=view_pdf.__doc__,
         title="View PDF",
@@ -482,6 +505,7 @@ __all__ = [
     "build_view_pdf_tool",
     "hydrate_view_pdf_results",
     "promote_view_pdf_tool_messages",
+    "resolved_view_pdf_pages",
     "view_pdf_max_pages",
     "view_pdf_source_max_bytes",
 ]

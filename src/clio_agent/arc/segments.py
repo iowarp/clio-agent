@@ -1,18 +1,16 @@
 """SegmentStore: the ARC live context plane.
 
-An ordered, scoped, mutable sequence of :class:`~clio_agent.arc.schema.Segment`s
-that the gact ReAct loop reads from on every iteration. The loop *writes* one
-segment per produced piece (thought / tool_call / observation) and *reads* the
-prompt back by rendering the live ordered set (see ``render_keys``). The context
-operations — ``append`` / ``insert`` / ``delete`` / ``summarize`` / ``replace`` —
-mutate segments between renders, so an out-of-band edit changes the *next*
-prompt. That is the whole point of the live plane.
+An ordered, scoped, mutable sequence of :class:`~clio_agent.arc.schema.Segment`s that the gact
+ReAct loop reads from on every iteration. The loop *writes* one segment per produced piece
+(thought / tool_call / observation) and *reads* the prompt back by rendering the live ordered
+set (see ``render_keys``). The context operations — ``append`` / ``insert`` / ``delete`` /
+``summarize`` / ``replace`` — mutate segments between renders, so an out-of-band edit changes
+the *next* prompt. That is the whole point of the live plane.
 
 Design (docs/archive/arc-live-context-plane.md, docs/archive/implementation-spec.md):
-    * Composed by ``ARCMemory`` (sibling of ``LiveRuntimeContext``); persists
-      through the injected ``ARCStore`` as one record per ``(session_id, scope)``
-      — ``render`` is the every-iteration hot path, so the whole scope is batched
-      into a single get/decode.
+    * Composed by ``ARCMemory`` (sibling of ``LiveRuntimeContext``); persists through the
+      injected ``ARCStore`` as one record per ``(session_id, scope)`` — ``render`` is the
+      every-iteration hot path, so the whole scope is batched into a single get/decode.
     * ``order`` is a gap-allocated float: a mid-sequence ``insert`` picks a
       midpoint and never renumbers later segments.
     * ``delete`` tombstones (never erases) so segments survive for Trace
@@ -262,16 +260,14 @@ class SegmentStore:
 
         Args:
             store: Durable backend (one record per ``(session_id, scope)``).
-            op_logger: Optional callable that logs an applied op to the durable
-                Trace and returns the emitted event dict (with ``"event_id"``).
-                Injected so ``arc/`` never depends on ``gact/``; ``None`` (unit
-                tests / memory-only) means ops still work, just unlogged.
-            search_indexed: Optional predicate ``scope -> bool`` deciding whether a
-                scope's persist writes the plain-text search companion. ``None``
-                (default) indexes every scope (historical behavior). ARCMemory injects
-                a predicate that returns ``False`` for the reserved ``_events`` chunk
-                family so the semantic-event log never pollutes scope search — a
-                deliberate, scope-level exclusion (not per-op) that holds for EVERY
+            op_logger: Optional callable that logs an applied op to the durable Trace and returns
+                the emitted event dict (with ``"event_id"``). Injected so ``arc/`` never depends on
+                ``gact/``; ``None`` (unit tests / memory-only) means ops still work, just unlogged.
+            search_indexed: Optional predicate ``scope -> bool`` deciding whether a scope's persist
+                writes the plain-text search companion. ``None`` (default) indexes every scope
+                (historical behavior). ARCMemory injects a predicate that returns ``False`` for the
+                reserved ``_events`` chunk family so the semantic-event log never pollutes scope
+                search — a deliberate, scope-level exclusion (not per-op) that holds for EVERY
                 write to those scopes regardless of the op path.
         """
         self._store = store
@@ -889,9 +885,8 @@ class SegmentStore:
                     len(segs),
                 )
                 return live
-            # Live-as-of-T: created at/before T (logical_time is the immutable
-            # creation clock) AND not yet tombstoned at T (tombstoned_at == 0 means
-            # never tombstoned).
+            # Live-as-of-T: created at/before T (logical_time is the immutable creation clock) AND
+            # not yet tombstoned at T (tombstoned_at == 0 means never tombstoned).
             visible = [
                 s
                 for s in segs
@@ -1005,6 +1000,11 @@ class SegmentStore:
         """Whether the backend does real BM25 ranking (clio-core) vs the naive fallback."""
         fn = getattr(self._store, "supports_search", None)
         return bool(fn()) if callable(fn) else False
+
+    def search_degradation_reason(self) -> str:
+        """Typed reason real search is unavailable (#905), or ``""`` (works, or LocalFS)."""
+        fn = getattr(self._store, "search_degradation_reason", None)
+        return str(fn()) if callable(fn) else ""
 
     def search_scopes(
         self, session_id: str, query_text: str, *, scope_prefix: str = "", k: int = 10

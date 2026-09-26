@@ -370,26 +370,35 @@ def test_streamed_call_propagates_lm_error(monkeypatch):
 
 
 def test_provider_lm_kwargs_exposes_sampling_surface():
+    # llama.cpp (provider_id="llama_cpp"), not lm_studio: model-capabilities
+    # brief 5.2's supplement table only adds top_k/min_p to llama.cpp's and
+    # vLLM's accepted-parameter set -- LM Studio's real LiteLLM-mapped set
+    # never includes them, so they are correctly OMITTED for lm_studio now
+    # (fail closed, request_builder.py), not sent unconditionally as before.
     c = cfg.LMProviderConfig(
-        provider="lm_studio",
+        provider="openai",
+        provider_id="llama_cpp",
         model="qwopus3.5-9b-v3",
+        api_base="http://127.0.0.1:8088/v1",
         top_p=0.95,
         top_k=20,
         min_p=0.0,
         presence_penalty=0.5,
     )
-    extras = cfg._provider_lm_kwargs(c)
+    extras = cfg.build_request_kwargs(c)
     # OpenAI-standard -> direct kwargs.
     assert extras["top_p"] == 0.95
     assert extras["presence_penalty"] == 0.5
-    # Non-OpenAI -> extra_body (llama.cpp/LM Studio/vLLM).
+    # Non-OpenAI -> extra_body (llama.cpp/vLLM).
     assert extras["extra_body"]["top_k"] == 20
     assert extras["extra_body"]["min_p"] == 0.0
 
 
 def test_provider_lm_kwargs_omits_unset_sampling():
-    c = cfg.LMProviderConfig(provider="lm_studio", model="m")
-    extras = cfg._provider_lm_kwargs(c)
+    c = cfg.LMProviderConfig(
+        provider="openai", provider_id="llama_cpp", model="m", api_base="http://127.0.0.1:8088/v1"
+    )
+    extras = cfg.build_request_kwargs(c)
     assert "top_p" not in extras
     assert "presence_penalty" not in extras
     assert "top_k" not in (extras.get("extra_body") or {})
@@ -679,9 +688,7 @@ def test_process_completion_uses_actual_reasoning_for_unclassified_provider(
 
     import dspy.clients.base_lm as base_lm
 
-    def fake_super(
-        self: Any, response: Any, merged_kwargs: dict[str, Any]
-    ) -> list[dict[str, str]]:
+    def fake_super(self: Any, response: Any, merged_kwargs: dict[str, Any]) -> list[dict[str, str]]:
         return [{"text": "", "reasoning_content": "[[ ## answer ## ]]\nready"}]
 
     monkeypatch.setattr(base_lm.BaseLM, "_process_completion", fake_super)

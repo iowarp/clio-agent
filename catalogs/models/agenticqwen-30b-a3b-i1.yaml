@@ -1,0 +1,58 @@
+# Seeded verbatim from clio-coder's local-models/clio-local-coding-targets.yaml (model-capabilities brief Part 8.5).
+- family: agenticqwen-30b-a3b-i1
+  matchPatterns:
+    - agenticqwen-30b-a3b-i1
+    - agenticqwen-30b-a3b-i1-q4_k_m
+    - agenticqwen
+  capabilities:
+    chat: true
+    tools: true
+    toolCallFormat: qwen
+    reasoning: true
+    thinkingFormat: qwen-chat-template
+    structuredOutputs: json-schema
+    vision: false
+    audio: false
+    embeddings: false
+    rerank: false
+    fim: false
+    contextWindow: 262144
+    maxTokens: 65536
+  quirks:
+    sampling:
+      thinking:
+        temperature: 0.5
+        topP: 0.9
+        topK: 20
+        maxTokens: 16384
+        reasoningBudget: 4096
+      instruct:
+        temperature: 0.5
+        topP: 0.9
+        topK: 20
+        maxTokens: 4096
+    gpuTiers:
+      "32gb": "Default mini llama.cpp orchestrator model; benchmarked with 1 GiB VRAM headroom on a 31.859 GiB card."
+    runtimePreference:
+      llamaCpp: "OpenAI-compatible chat completions with --jinja. Deployed mini preset uses ctx=262144, parallel=4, batch=2048, ubatch=512, and q8 KV cache."
+      openaiCompat: "Use only when a gateway fronts the same llama.cpp chat-completions surface."
+    llamaCpp:
+      ctxSize: 262144
+      cacheTypeK: q8_0
+      cacheTypeV: q8_0
+      parallel: 4
+      batchSize: 2048
+      ubatchSize: 512
+    thinking:
+      mechanism: budget-tokens
+      budgetByLevel:
+        low: 1024
+        medium: 4096
+        high: 16384
+      guidance: |
+        AgenticQwen is the tuned local default for Clio source work on
+        mini's llama.cpp server. Thinking emits through the qwen chat template;
+        keep high reasoning for main-agent work and preserve visible thinking
+        blocks in receipts.
+    serving: "Use the mini llama-server preset from docs/.superpowers/reference/llama-bench-findings.md."
+

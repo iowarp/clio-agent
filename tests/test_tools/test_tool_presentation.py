@@ -117,6 +117,10 @@ def test_unknown_mcp_with_ok_false_structured_content_surfaces_failed() -> None:
                 "detail": "",
                 "items": [],
                 "action_label": "",
+                "workspace_id": "",
+                "path": "",
+                "sha256": "",
+                "pages": [],
                 "severity": "error",
             }
         ],
@@ -150,6 +154,10 @@ def test_standard_presentation_marks_typed_tool_errors_failed() -> None:
             "detail": "",
             "items": [],
             "action_label": "",
+            "workspace_id": "",
+            "path": "",
+            "sha256": "",
+            "pages": [],
             "severity": "error",
         }
     ]

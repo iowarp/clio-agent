@@ -269,3 +269,68 @@ def test_probe_wired_into_collect(tmp_path):
     ).collect()
     row = report.by_name("clio_core_ram_cap")
     assert row.state is IntegrationState.DEGRADED
+
+
+# ---- clio_core_attach row: typed attach progress (starting|attached|unavailable) ----
+
+
+def _attach_state(phase: str, **kw):
+    from clio_agent.arc.clio_core_attach import ClioCoreAttachPhase, ClioCoreAttachState
+
+    defaults = {"reason": f"clio_core_{phase}", "config_path": "/c/cte.yaml", "port": 9413}
+    defaults.update(kw)
+    return ClioCoreAttachState(phase=ClioCoreAttachPhase(phase), **defaults)
+
+
+def test_attach_row_starting_is_degraded_but_never_a_503_by_itself():
+    from clio_agent.runtime.clio_core_health import probe_clio_core_attach
+
+    (row,) = probe_clio_core_attach(state=_attach_state("starting"))
+    assert row.name == "clio_core_attach"
+    assert row.state is IntegrationState.DEGRADED
+    assert row.required is False  # an in-flight attach never reds /v1/health on its own
+    assert row.details["phase"] == "starting"
+    assert row.details["reason"] == "clio_core_starting"
+    assert "9413" in row.summary and "/c/cte.yaml" in row.summary
+
+
+def test_attach_row_attached_is_ready():
+    from clio_agent.runtime.clio_core_health import probe_clio_core_attach
+
+    (row,) = probe_clio_core_attach(state=_attach_state("attached"))
+    assert row.state is IntegrationState.READY
+    assert row.details["reason"] == "clio_core_attached"
+    assert row.endpoint == "127.0.0.1:9413"
+
+
+def test_attach_row_unavailable_names_the_typed_reason():
+    from clio_agent.runtime.clio_core_health import probe_clio_core_attach
+
+    state = _attach_state(
+        "unavailable", reason="clio_core_client_attach_failed", error="handshake failed"
+    )
+    (row,) = probe_clio_core_attach(state=state)
+    assert row.state is IntegrationState.DEGRADED
+    assert row.required is True
+    assert row.fallback == "local"
+    assert row.details["reason"] == "clio_core_client_attach_failed"
+    assert "handshake failed" in row.summary
+
+
+def test_attach_row_absent_when_idle_or_local_chosen():
+    from clio_agent.runtime.clio_core_health import probe_clio_core_attach
+
+    assert probe_clio_core_attach(state=_attach_state("idle")) == []
+    assert probe_clio_core_attach(state=_attach_state("not_selected")) == []
+
+
+def test_attach_row_wired_into_the_clio_core_aggregate(monkeypatch):
+    from clio_agent.arc import clio_core_attach
+    from clio_agent.runtime.clio_core_health import probe_clio_core_health
+
+    clio_core_attach.mark_starting("/c/cte.yaml", 9413)
+    try:
+        names = [row.name for row in probe_clio_core_health(env={"CLIO_ARC_STORE": "local"})]
+    finally:
+        clio_core_attach.reset_attach_state()
+    assert "clio_core_attach" in names

@@ -41,12 +41,10 @@ def agent_not_available_error(app: Any, sid: str) -> ErrorEnvelope:
         recovery_actions = ["check_server_logs", "fix_lm_configuration", "restart_agent"]
     else:
         status = "not_configured"
-        message = (
-            "No executable CLIO agent is configured for this backend. Launch `clio-agent-gact` "
-            "with an LM provider configured before sending messages."
-        )
-        recoverable = False
-        recovery_actions = ["configure_lm_provider", "restart_agent"]
+        # A message naming a model builds the host (session_host_agent); this one named none.
+        message = "No model is selected for this session. Choose a model, then send again."
+        recoverable = True
+        recovery_actions = ["select_session_model", "retry"]
 
     details: dict[str, Any] = {
         "session_id": sid,

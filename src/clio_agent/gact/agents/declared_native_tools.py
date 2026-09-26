@@ -28,7 +28,22 @@ def declared_view_image_capability(config: Any) -> bool:
 
     app = context.active_app()
     if app is None:
-        return bool(getattr(config, "supports_vision", False))
+        # No GACT app context (e.g. a bare CLI/optimizer run): fall back to the
+        # effective capabilities directly by identity -- this is a pure,
+        # network-free cache read (no handshake needed to answer; see
+        # `lm.request_builder`'s "local-first" note for why that matters),
+        # never the deleted per-provider `supports_vision` static flag.
+        from clio_agent.providers.capabilities.accessor import (  # noqa: PLC0415
+            get_effective_capabilities,
+        )
+
+        effective = get_effective_capabilities(
+            str(getattr(config, "provider_id", "") or getattr(config, "provider", "") or ""),
+            str(getattr(config, "api_base", "") or ""),
+            str(getattr(config, "model", "") or ""),
+        )
+        modalities = effective.input_modalities.value or frozenset()
+        return "image" in modalities
     from clio_agent.gact.providers.config import _vision_capability  # noqa: PLC0415
 
     supported, _reason = _vision_capability(

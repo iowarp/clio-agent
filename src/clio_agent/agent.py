@@ -887,11 +887,7 @@ class ClioAgent(dspy.Module):
         if cancellation_requested():
             raise CancellationError(
                 "turn cancelled by client",
-                details={
-                    "execution_cancellation": "cooperative",
-                    "executor_work_may_continue": False,
-                    "stage": stage,
-                },
+                details={"execution_cancellation": "cooperative", "stage": stage},
             )
 
     def _known_tool_names(self) -> set[str]:

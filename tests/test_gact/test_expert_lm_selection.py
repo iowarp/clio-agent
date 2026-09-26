@@ -33,16 +33,32 @@ from clio_agent.gact.agents.builders import (
 )
 from clio_agent.gact.types import AgentDef
 from clio_agent.providers import resolver as resolver_mod
+from clio_agent.providers.capabilities import invalidation
+from clio_agent.providers.capabilities.records import (
+    DeploymentCapabilities,
+    Fact,
+    ModelCapabilities,
+    unknown,
+)
 from clio_agent.providers.handshake.model import (
     AuthState,
     ConnectivityState,
+    DiscoveredModel,
     HandshakeReport,
-    ModelProfile,
 )
+
+_NOW = "2026-01-01T00:00:00+00:00"
 
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #
+
+
+@pytest.fixture(autouse=True)
+def _clear_capability_store():
+    invalidation.clear_all()
+    yield
+    invalidation.clear_all()
 
 
 def _report(
@@ -54,7 +70,14 @@ def _report(
     output_limit: int | None = None,
     ok: bool = True,
 ) -> HandshakeReport:
-    """Build a one-model :class:`HandshakeReport` (or a connectivity failure)."""
+    """Build a one-model :class:`HandshakeReport` (or a connectivity failure).
+
+    Seeds the shared capability store the way a real handshake would --
+    ``context_window`` feeds both the model's own ceiling and this deployment's
+    served window (none of these tests exercise the model/deployment split,
+    brief 5.5), so the effective context these tests assert on resolves exactly
+    to the value given.
+    """
     if not ok:
         return HandshakeReport(
             provider_id=provider,
@@ -62,21 +85,39 @@ def _report(
             connectivity=ConnectivityState.UNREACHABLE,
             auth=AuthState.MISSING,
             error="backend unreachable",
+            api_base="",
             models=(),
         )
+    served = loaded_context_window if loaded_context_window is not None else context_window
+    invalidation.record_model_capabilities(
+        ModelCapabilities(
+            model_key=model_id,
+            context_max=Fact(value=context_window, source="server_report", observed_at=_NOW)
+            if context_window is not None
+            else unknown(),
+            output_max=Fact(value=output_limit, source="server_report", observed_at=_NOW)
+            if output_limit is not None
+            else unknown(),
+        )
+    )
+    invalidation.record_deployment_capabilities(
+        DeploymentCapabilities(
+            provider_id=provider,
+            api_base="",
+            model_id=model_id,
+            model_key=Fact(value=model_id, source="server_report", observed_at=_NOW),
+            context_served=Fact(value=served, source="server_report", observed_at=_NOW)
+            if served is not None
+            else unknown(),
+        )
+    )
     return HandshakeReport(
         provider_id=provider,
         provider_kind=provider,
         connectivity=ConnectivityState.OK,
         auth=AuthState.OK,
-        models=(
-            ModelProfile(
-                id=model_id,
-                context_window=context_window,
-                loaded_context_window=loaded_context_window,
-                output_limit=output_limit,
-            ),
-        ),
+        api_base="",
+        models=(DiscoveredModel(id=model_id),),
     )
 
 

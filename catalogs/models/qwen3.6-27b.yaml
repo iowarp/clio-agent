@@ -1,0 +1,55 @@
+# Seeded verbatim from clio-coder's local-models/clio-local-coding-targets.yaml (model-capabilities brief Part 8.5).
+- family: qwen3.6-27b
+  matchPatterns:
+    - qwen3.6-27b
+    - qwen3_6-27b
+    - qwen3-6-27b
+  capabilities:
+    chat: true
+    tools: true
+    toolCallFormat: qwen
+    reasoning: true
+    thinkingFormat: qwen-chat-template
+    structuredOutputs: json-schema
+    vision: true
+    audio: false
+    embeddings: false
+    rerank: false
+    fim: false
+    contextWindow: 262144
+    maxTokens: 32768
+  quirks:
+    sampling:
+      thinking:
+        temperature: 0.6
+        topP: 0.95
+        topK: 20
+        minP: 0.0
+        presencePenalty: 0.0
+        repetitionPenalty: 1.0
+        maxTokens: 32768
+      instruct:
+        temperature: 0.7
+        topP: 0.80
+        topK: 20
+        minP: 0.0
+        presencePenalty: 1.5
+        repetitionPenalty: 1.0
+        maxTokens: 32768
+    gpuTiers:
+      "32gb": "Fits at f16 KV with parallel=1 and ctx=262144 (Q4_K_XL weights ~19.5 GB plus ~32 GB KV)."
+    runtimePreference:
+      lmstudioNative: "Primary path; standard <think> tagging works correctly with the SDK classifier."
+      openaiCompat: "Verified parity for tool calls; reasoning_content surfaces and completion_tokens_details.reasoning_tokens is reported."
+    thinking:
+      mechanism: budget-tokens
+      budgetByLevel:
+        low: 1024
+        medium: 4096
+        high: 16384
+      guidance: |
+        Qwen chat template drives thinking via standard <think> blocks.
+        Coding sampler is the precise variant. Preserve thinking blocks across
+        turns when the workflow is iterative; the budget caps runaway chains.
+    serving: "Official Qwen card recommends max output 32768 tokens for standard queries (81920 only for math/code competitions). Coding sampler is the precise variant; preserve thinking blocks across turns for iterative workflows."
+

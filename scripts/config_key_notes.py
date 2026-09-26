@@ -8,7 +8,7 @@
 SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
     (
         "Runtime + paths",
-        ("runtime", "paths", "sandbox"),
+        ("runtime", "paths", "sandbox", "system"),
         "Process identity, filesystem locations and the global runtime toggles.",
     ),
     (
@@ -589,8 +589,12 @@ KEY_NOTES: dict[str, str] = {
         "explicit contract check, not a tuning knob."
     ),
     "lm.codex_transport": (
-        'Selects the Codex transport; "sdk" is the only supported value, kept as an explicit '
-        "contract check, not a tuning knob."
+        'Selects the Codex transport; "websocket" (default, with delta continuation) or "sse" '
+        "to force the automatic-fallback transport."
+    ),
+    "lm.codex_variant": (
+        'Selects which Codex transport a config binds: "direct" (default, CLIO sign-in) or '
+        '"sdk" (the local Codex app login).'
     ),
     "lm.context_window": (
         "Override the effective context window (tokens); 0 auto-derives from the "
@@ -604,10 +608,6 @@ KEY_NOTES: dict[str, str] = {
     "lm.disable_json_adapter_fallback": (
         "Force-disables the JSON-adapter fallback for cloud providers that reject response_format; "
         "set true if a provider 400s on it."
-    ),
-    "lm.disable_thinking": (
-        'Turns off reasoning/"thinking" sampling for the active LM; set true to force a '
-        "reasoning-capable model into non-reasoning mode."
     ),
     "lm.guided_output": (
         "Switches to schema-constrained JSON output instead of the text ChatAdapter; enable "
@@ -645,17 +645,15 @@ KEY_NOTES: dict[str, str] = {
         "Selects the LM backend (lm_studio, ollama, openai, anthropic, argonne, codex, "
         "claude_code); change to switch which provider clio talks to."
     ),
-    "lm.reasoning_model": (
-        "Forces/forbids reasoning-model behavior for the active model, overriding auto-detection; "
-        "set when auto-detection misclassifies a model."
-    ),
     "lm.stop_sequences": (
-        "||-joined stop sequences for reasoning models to truncate output after the final field; "
-        "override if a model's trace leaks past stop points."
+        "||-joined override for the DSPy trajectory-regurgitation stop sequences, sent whenever "
+        "the endpoint's effective parameter set accepts `stop`; override if a model's trace "
+        "leaks past stop points."
     ),
     "lm.temperature": (
-        "Sampling temperature for the main agentic LM calls; defaults to 0.0 since clio drives "
-        "structured tool-call output, raise for creative sampling."
+        "Sampling temperature for the main agentic LM calls; unset by default so the "
+        "provider/model's own sampling default applies (model-capabilities brief Part 7 item 1) "
+        "-- set to force a specific value."
     ),
     "lm.thinking_budget": (
         "Explicit reasoning token-budget override, mapped per-provider (Anthropic/Claude Code "
@@ -805,29 +803,21 @@ KEY_NOTES: dict[str, str] = {
         "Process-wide cap on concurrently-connected claude CLI subprocesses; a connect beyond it "
         "waits, raise for more concurrent sessions."
     ),
-    "providers.claude_code.session_reuse": (
-        "Keeps a pooled/reused SDK connection per scope instead of a fresh client per call; set "
-        "false to restore pre-#891 fresh-connect behavior."
-    ),
     "providers.claude_code.auth_status_timeout_s": (
         "Seconds the Claude Code `auth status` sign-in check may run before it is abandoned as "
         "inconclusive; raise on hosts where cold CLI startup is slow."
     ),
-    "providers.claude_code.max_base_connections": (
-        "Max idle shared Claude Code connections (one per model and reasoning level) kept "
-        "pooled before the least recently used is closed; raise if you switch levels often."
+    "providers.claude_code.max_precede_connects": (
+        "Max session-open Claude Code SDK pre-connects (B2) pending at once; 0 disables "
+        "session-open pre-connect entirely, raise for more sessions starting at once."
     ),
     "providers.claude_code.stateful_capacity": (
         "Max live Claude Code stateful-session entries before LRU eviction; raise on a host "
         "running many concurrent stateful sessions."
     ),
     "providers.claude_code.stream_idle_ttl_s": (
-        "Seconds a scope-keyed pooled Claude Code connection may sit idle before the next request "
+        "Seconds a session's pooled Claude Code connection may sit idle before the next request "
         "reaps it; lower to free idle connections sooner."
-    ),
-    "providers.codex.credential_home_capacity": (
-        "Max simultaneous private CODEX_HOME credential-dir copies the Codex SDK transport keeps "
-        "alive; raise for many concurrent Codex sessions."
     ),
     "providers.native_image_url_allowlist": (
         "Comma-separated hosts whose http(s) image URLs may be handed to a provider to fetch; "
@@ -1094,6 +1084,10 @@ KEY_NOTES: dict[str, str] = {
     "spotter.watcher_blueprint_id": (
         "Agent-Blueprint id used to build the SPOTTER standing watcher child session; change to "
         "point spotter-ai at a custom watcher blueprint."
+    ),
+    "system.release_manifest_url": (
+        "Release manifest the server reads to report the latest CLIO release to clients; point "
+        "at a mirror or a fork's releases feed."
     ),
     "spotter.watcher_expert_id": (
         "Expert id within the watcher blueprint SPOTTER arms as the standing watcher; change "

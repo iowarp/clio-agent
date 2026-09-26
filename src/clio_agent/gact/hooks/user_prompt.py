@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from clio_agent.gact.events import Event
 from clio_agent.gact.hooks.defer import HOOK_DEFER_RESUME_META, suspend_turn_defer
 from clio_agent.gact.runtime.globals import _emit_semantic_event
+from clio_agent.gact.turn_settle_status import publish_turn_settled_status
 
 if TYPE_CHECKING:
     from clio_agent.gact.turn_state import TurnState
@@ -66,6 +67,10 @@ def run_user_prompt_submit(
             session_id=state.sid,
             turn_id=state.turn_id,
             cwd=str(getattr(state.sess, "workspace_root", "") or ""),
+            # Cancel contract (L1): the turn's own cancel token, so a hook
+            # subprocess already running when a hard /cancel lands is killed
+            # (whole process tree) instead of left to finish.
+            cancel_event=state.turn_cancel_event,
         )
         if outcome.is_defer:
             return _suspend_for_defer(state, outcome)
@@ -173,7 +178,6 @@ def _settle_blocked(
             },
         )
     )
-    state.app.state.sessions.update(state.sid, status="error")
     update_retry_attempt(
         "failed",
         metadata_patch={
@@ -181,15 +185,6 @@ def _settle_blocked(
             "executed_user_message_id": state.user_msg.id,
         },
     )
-    state.bus.publish(
-        Event(
-            type="session.status_changed",
-            session_id=state.sid,
-            payload={
-                "session_id": state.sid,
-                "status": "error",
-                "prev_status": "running",
-                "reason": "pre_message hook blocked turn",
-            },
-        )
+    publish_turn_settled_status(
+        state.app, state.sid, "error", payload_extra={"reason": "pre_message hook blocked turn"}
     )

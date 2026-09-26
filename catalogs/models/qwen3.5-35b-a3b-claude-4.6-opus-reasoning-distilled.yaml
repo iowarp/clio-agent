@@ -1,0 +1,55 @@
+# Seeded verbatim from clio-coder's local-models/clio-local-coding-targets.yaml (model-capabilities brief Part 8.5).
+- family: qwen3.5-35b-a3b-claude-4.6-opus-reasoning-distilled
+  matchPatterns:
+    - qwen3.5-35b-a3b-claude-4.6-opus-reasoning-distilled
+    - qwen3.5-35b-a3b-claude-4.6-opus-reasoning-distilled-i1
+    - qwen3.5-35b-a3b-claude-4.6-opus-reasoning-distilled-i1-q4_k_m
+    - qwen35-distilled
+    - qwen35-distilled-i1
+    - qwen35-distilled-i1-q4_k_m
+  capabilities:
+    chat: true
+    tools: true
+    toolCallFormat: qwen
+    reasoning: true
+    thinkingFormat: qwen-chat-template
+    structuredOutputs: json-schema
+    vision: false
+    audio: false
+    embeddings: false
+    rerank: false
+    fim: false
+    contextWindow: 262144
+    maxTokens: 32768
+  quirks:
+    sampling:
+      thinking:
+        temperature: 0.6
+        topP: 0.95
+        topK: 20
+        maxTokens: 16384
+        reasoningBudget: 4096
+      instruct:
+        temperature: 0.2
+        topP: 0.9
+        topK: 20
+        maxTokens: 4096
+    gpuTiers:
+      "32gb": "Distilled Opus-style reasoning at Qwen3.5 35B A3B scale. Use as a strong local main agent when GPU room is available."
+    runtimePreference:
+      lmstudioNative: "Verified usable on LM Studio when loaded with the Qwen-style preset."
+      openaiCompat: "Preferred fallback when SDK rawTools yield empty arguments for the distilled template."
+      llamaCpp: "OpenAI-compatible chat completions with --jinja. Match qwen3 reasoning parser flags upstream."
+    thinking:
+      mechanism: budget-tokens
+      budgetByLevel:
+        low: 1024
+        medium: 4096
+        high: 16384
+      guidance: |
+        Distilled Opus reasoning over Qwen3.5 35B A3B; thinking emits via the
+        qwen chat template. Preserve thinking blocks across coding-task turns;
+        the budget caps runaway chains while keeping iterative reasoning
+        coherent.
+    serving: "Distilled from Claude 4.6 Opus reasoning traces; expect stronger thinking-then-answer behavior than vanilla Qwen3.5 35B A3B."
+

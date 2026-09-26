@@ -404,18 +404,14 @@ def _agent_streaming_unsupported_reason(agent: Any) -> str:
 
 
 def _config_is_reasoning_model(provider_config: Any) -> bool:
-    """Whether a provider config is a reasoning model (handshake ``is_reasoning``
-    / per-model capability). Used to keep reasoning models off streaming paths
-    that lose the reasoning_content channel."""
+    """Whether a provider config is a reasoning model (handshake-derived
+    ``is_reasoning`` -- the effective capabilities' thinking mechanism is known,
+    model-capabilities brief 5.5). Used to keep reasoning models off streaming
+    paths that lose the reasoning_content channel."""
 
     if provider_config is None:
         return False
-    try:
-        from clio_agent.config import _reasoning_model_capability  # noqa: PLC0415
-
-        return bool(_reasoning_model_capability(provider_config))
-    except Exception:  # noqa: BLE001 - reasoning-capability probe falls back to the provider flag
-        return bool(getattr(provider_config, "is_reasoning", False))
+    return bool(getattr(provider_config, "is_reasoning", False))
 
 
 def _stream_response_prefix(field_name: str, previous_field_name: str) -> str:

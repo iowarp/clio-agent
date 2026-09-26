@@ -53,6 +53,7 @@ from clio_agent.gact.hooks.events import (
     is_deny_capable,
 )
 from clio_agent.gact.hooks.wire import (
+    HookCancelled,
     HookDecision,
     HookEnvelope,
     HookInfraError,
@@ -111,19 +112,33 @@ class HookDispatcher:
             entries = list(self._entries)
         return any(entry.enabled and entry.is_trusted and event in entry.on for entry in entries)
 
-    def dispatch(self, event: str, envelope: HookEnvelope) -> HookOutcome:
+    def dispatch(
+        self,
+        event: str,
+        envelope: HookEnvelope,
+        *,
+        cancel_event: "threading.Event | None" = None,
+    ) -> HookOutcome:
         """Run every matching hook for ``event`` and merge to one outcome.
 
         A hook infra failure is resolved by the per-hook fail-closed posture: for a
         deny-capable event a ``failClosed`` hook denies (with a typed, non-"user
         rejected" reason); otherwise it is non-blocking. Observation events can
         never block, so an infra failure there is always non-blocking.
+
+        ``cancel_event`` (L1 slice), when given, is checked before EVERY hook and
+        handed to the adapter so an already-running subprocess is killed too. A
+        :class:`~clio_agent.gact.hooks.wire.HookCancelled` — from either source —
+        propagates straight out, uncaught: a cancelled event never resolves to a
+        decision, and no further hook for it runs.
         """
 
         deny_capable = is_deny_capable(event)
         decisions: list[HookDecision] = []
         records: list[dict[str, Any]] = []
         for entry in self.matching(event, envelope):
+            if cancel_event is not None and cancel_event.is_set():
+                raise HookCancelled(entry.id)
             adapter = self._adapters.get(entry.run.type)
             record: dict[str, Any] = {
                 "hook_id": entry.id,
@@ -140,7 +155,7 @@ class HookDispatcher:
                 records.append(record)
                 continue
             try:
-                decision = adapter.invoke(entry, envelope)
+                decision = adapter.invoke(entry, envelope, cancel_event=cancel_event)
             except HookInfraError as exc:
                 record["status"] = "error"
                 record["error"] = str(exc)
@@ -393,8 +408,14 @@ def dispatch_user_prompt_submit(
     session_id: str = "",
     turn_id: str = "",
     cwd: str = "",
+    cancel_event: "threading.Event | None" = None,
 ) -> HookOutcome:
-    """Fire ``UserPromptSubmit`` hooks. Deny-capable — a deny vetoes the turn."""
+    """Fire ``UserPromptSubmit`` hooks. Deny-capable — a deny vetoes the turn.
+
+    ``cancel_event`` (L1 slice) is the turn's own cancel token: passed through so a
+    hook subprocess already running when a hard ``/cancel`` lands is killed rather
+    than left to finish (see :meth:`HookDispatcher.dispatch`).
+    """
 
     dispatcher = _GLOBAL
     if dispatcher is None:
@@ -406,7 +427,7 @@ def dispatch_user_prompt_submit(
         cwd=cwd,
         prompt=text,
     )
-    return dispatcher.dispatch(USER_PROMPT_SUBMIT, envelope)
+    return dispatcher.dispatch(USER_PROMPT_SUBMIT, envelope, cancel_event=cancel_event)
 
 
 def dispatch_stop(

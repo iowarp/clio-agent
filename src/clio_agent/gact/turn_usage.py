@@ -24,6 +24,7 @@ from clio_agent.gact.usage import (
     _estimate_cost_usd,
     _estimated_prompt_usage,
     _last_prompt_usage_from_history_slice,
+    _price_table_match,
     _snapshot_lm_history_index,
     _usage_from_dspy_history,
     _usage_from_history_slice,
@@ -94,6 +95,7 @@ def roll_up_usage(state: "TurnState", pred: Any) -> None:
         for key in state.turn_tokens:
             state.turn_tokens[key] = int(usage.get(key, 0) or 0)
         state.turn_cost = float(usage.get("cost_usd", 0.0) or 0.0)
+        state.turn_cost_known = bool(usage.get("cost_known", False))
         # Char-based fallback only when the LM actually fired
         # this turn (history grew) but the upstream proxy
         # reported zero usage. Don't synthesize numbers when
@@ -110,12 +112,19 @@ def roll_up_usage(state: "TurnState", pred: Any) -> None:
             if state.turn_tokens["input"] == 0 and state.enriched_text:
                 state.turn_tokens["input"] = max(1, len(state.enriched_text) // 4)
                 estimate_strategies.append("input_chars_div_4")
-            if state.turn_cost == 0.0:
+            if not state.turn_cost_known:
+                # A second attempt keyed off the CURRENT LM's model id (the
+                # history slice's ``last_model`` may be blank for providers
+                # that omit it per-entry). Still honestly unknown when this
+                # model id has no price-table entry either (#775 no silent
+                # fallback -- state.turn_cost stays 0.0 and NOT "known").
+                model_id = _current_lm_model_id()
                 state.turn_cost = _estimate_cost_usd(
-                    _current_lm_model_id(),
+                    model_id,
                     state.turn_tokens["input"],
                     state.turn_tokens["output"],
                 )
+                state.turn_cost_known = _price_table_match(model_id) is not None
                 estimate_strategies.append("price_table_estimate")
             if estimate_strategies:
                 logger.warning(
@@ -125,8 +134,11 @@ def roll_up_usage(state: "TurnState", pred: Any) -> None:
                     ",".join(estimate_strategies),
                     state.sid,
                 )
-    if not state.turn_cost:
-        state.turn_cost = float(getattr(pred, "cost_usd", 0.0) or 0.0)
+    if not state.turn_cost_known:
+        pred_cost = getattr(pred, "cost_usd", None)
+        if pred_cost is not None:
+            state.turn_cost = float(pred_cost or 0.0)
+            state.turn_cost_known = True
     state.last_prompt_usage = _last_prompt_usage_from_history_slice(state.history_start, state.app)
     if (
         not state.last_prompt_usage

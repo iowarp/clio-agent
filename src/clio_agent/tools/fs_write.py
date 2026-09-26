@@ -6,6 +6,7 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
+from clio_agent.platform_paths import win_extended_path
 from clio_agent.tools.file_policy import validate_non_empty_string, validate_write_path
 
 
@@ -38,9 +39,13 @@ def write_text_with_policy(filepath: str, new_content: str) -> dict[str, Any]:
     safe = validate_write_path(filepath, field="filepath")
     path = Path(safe)
     body = new_content if isinstance(new_content, str) else str(new_content)
-    with path.open("w", encoding="utf-8", newline="") as handle:
+    # A validated parent directory can still be short enough to pass policy
+    # while the full target path (parent + filename) exceeds Windows' 260-char
+    # ``MAX_PATH`` -- win_extended_path is a no-op off win32.
+    with open(win_extended_path(path), "w", encoding="utf-8", newline="") as handle:
         handle.write(body)
-    on_disk = path.read_bytes()
+    with open(win_extended_path(path), "rb") as handle:
+        on_disk = handle.read()
     return {
         "path": str(path),
         # #1247: the same value under the RECOGNIZED result-designation key.

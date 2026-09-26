@@ -967,20 +967,15 @@ def _not_implemented(capability: str) -> ErrorEnvelope:
     )
 
 
-def _cancelled_error_info(
-    sid: str,
-    *,
-    execution_cancellation: str,
-    executor_work_may_continue: bool,
-) -> "ErrorInfo":
-    """Return the structured ``ErrorInfo`` for a client-cancelled turn."""
+def _cancelled_error_info(sid: str, *, execution_cancellation: str) -> "ErrorInfo":
+    """ErrorInfo for a client-cancelled turn (the old, always-redundant
+    ``executor_work_may_continue`` boolean is deleted, L1 slice)."""
     return ErrorInfo(
         error="cancelled",
         message="turn cancelled by client",
         details={
             "session_id": sid,
             "execution_cancellation": execution_cancellation,
-            "executor_work_may_continue": executor_work_may_continue,
         },
         recoverable=True,
     )

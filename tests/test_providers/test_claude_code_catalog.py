@@ -1,43 +1,82 @@
-"""The GitHub-hosted Claude Code catalog is fetched and validated on every read.
+"""The GitHub-hosted Claude Code catalog is fetched, cached, and validated.
 
 Per owner ruling, Claude Code model existence, per-model input-modality
 capabilities, and the account default all come from this document -- never
-from an SDK/CLI probe. These tests pin the validation contract.
+from an SDK/CLI probe. These tests pin the validation contract, plus the
+fetched_catalog-backed caching contract: a fresh disk cache short-circuits the
+network, and a failed fetch or a failed validation NEVER clears a previously
+good catalog (the old in-memory cache used to clear itself on any failure).
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import httpx
 import pytest
 
+from clio_agent.providers import fetched_catalog
+from clio_agent.providers.fetched_catalog import FetchedCatalog
 from clio_agent.providers.model_discovery import claude_code_catalog
 
+REPO_CATALOG = Path(__file__).resolve().parents[2] / "catalogs" / "claude-code-models.json"
 
-def _response(payload: str, *, status: int = 200) -> httpx.Response:
+
+def _response(payload: str, *, status: int = 200, etag: str = "") -> httpx.Response:
+    headers = {"etag": etag} if etag else {}
     return httpx.Response(
         status,
         text=payload,
+        headers=headers,
         request=httpx.Request("GET", claude_code_catalog.CLAUDE_CODE_CATALOG_URL),
     )
 
 
-def test_claude_code_catalog_reads_github_on_every_call(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.fixture(autouse=True)
+def isolated_catalog(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> FetchedCatalog:
+    """Point the module's catalog singleton at a per-test disk cache.
+
+    Exercises the REAL module functions end to end (no stubbing of
+    ``load_claude_code_catalog`` et al.), isolated from both the real network
+    and any other test's cache file.
+    """
+    fresh: FetchedCatalog = FetchedCatalog(
+        "claude-code-models-test",
+        claude_code_catalog.CLAUDE_CODE_CATALOG_URL,
+        parse=claude_code_catalog._parse_catalog,
+        ttl_s=claude_code_catalog.DEFAULT_TTL_S,
+        max_bytes=claude_code_catalog._MAX_BYTES,
+        timeout_s=claude_code_catalog._FETCH_TIMEOUT_S,
+        cache_path=tmp_path / "claude-code-models.json",
+    )
+    monkeypatch.setattr(claude_code_catalog, "_CATALOG", fresh)
+    return fresh
+
+
+def test_committed_catalog_file_parses_via_real_validator() -> None:
+    """The repo-shipped ``catalogs/claude-code-models.json`` must itself be valid."""
+    catalog = claude_code_catalog._parse_catalog(REPO_CATALOG.read_bytes())
+    ids = {row["id"] for row in catalog.models}
+    assert "claude-sonnet-5" in ids
+    assert catalog.default_model in ids
+    for row in catalog.models:
+        assert "text" in row["capabilities"]
+
+
+def test_first_read_fetches_then_ttl_serves_disk_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 
     def _get(url: str, **kwargs: object) -> httpx.Response:
         calls.append(url)
-        assert kwargs["timeout"] == 8.0
         return _response(
-            '{"schema_version":1,"models":[{"id":"claude-opus-5-'
-            + str(len(calls))
-            + '","name":"Claude Opus"}]}'
+            '{"schema_version":1,"models":[{"id":"claude-opus-5","name":"Claude Opus"}]}'
         )
 
-    monkeypatch.setattr(claude_code_catalog.httpx, "get", _get)
+    monkeypatch.setattr(fetched_catalog.httpx, "get", _get)
     first = claude_code_catalog.load_claude_code_candidates()
     second = claude_code_catalog.load_claude_code_candidates()
 
-    assert first[0]["id"] == "claude-opus-5-1"
+    assert first[0]["id"] == "claude-opus-5"
     assert first[0]["name"] == "Claude Opus"
     # No "capabilities" key in the source row -> text-only, typed unevidenced.
     assert first[0]["capabilities"] == ["text"]
@@ -45,8 +84,27 @@ def test_claude_code_catalog_reads_github_on_every_call(monkeypatch: pytest.Monk
     assert evidence["source"] == "claude_code_catalog"
     assert evidence["reason"] == "modality_uncataloged"
     assert evidence["unevidenced"] == ["image", "pdf"]
+    assert second[0]["id"] == "claude-opus-5"
+    # Second read is within the TTL -> served from disk, no second network call.
+    assert calls == [claude_code_catalog.CLAUDE_CODE_CATALOG_URL]
+
+
+def test_refresh_forces_a_live_fetch_past_the_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"n": 0}
+
+    def _get(url: str, **kwargs: object) -> httpx.Response:
+        calls["n"] += 1
+        return _response(
+            f'{{"schema_version":1,"models":[{{"id":"claude-opus-5-{calls["n"]}","name":"Opus"}}]}}'
+        )
+
+    monkeypatch.setattr(fetched_catalog.httpx, "get", _get)
+    first = claude_code_catalog.load_claude_code_candidates()
+    second = claude_code_catalog.refresh_claude_code_candidates()
+
+    assert first[0]["id"] == "claude-opus-5-1"
     assert second[0]["id"] == "claude-opus-5-2"
-    assert calls == [claude_code_catalog.CLAUDE_CODE_CATALOG_URL] * 2
+    assert calls["n"] == 2
 
 
 @pytest.mark.parametrize(
@@ -75,21 +133,34 @@ def test_claude_code_catalog_reads_github_on_every_call(monkeypatch: pytest.Monk
         '{"schema_version":1,"default_model":5,"models":[{"id":"claude-opus-5","name":"Opus"}]}',
     ],
 )
-def test_claude_code_catalog_rejects_bad_data(
+def test_claude_code_catalog_rejects_bad_data_on_cold_start(
     monkeypatch: pytest.MonkeyPatch, payload: str
 ) -> None:
-    monkeypatch.setattr(claude_code_catalog.httpx, "get", lambda *_a, **_kw: _response(payload))
+    """Invalid data with NO existing cache is a total miss -> typed error."""
+    monkeypatch.setattr(fetched_catalog.httpx, "get", lambda *_a, **_kw: _response(payload))
     with pytest.raises(claude_code_catalog.ClaudeCodeCatalogError):
         claude_code_catalog.load_claude_code_candidates()
 
 
-def test_claude_code_catalog_network_failure_is_typed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_network_failure_on_cold_start_is_typed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        claude_code_catalog.httpx,
+        fetched_catalog.httpx,
         "get",
         lambda *_a, **_kw: _response("upstream unavailable", status=503),
     )
     with pytest.raises(claude_code_catalog.ClaudeCodeCatalogError, match="Could not fetch"):
+        claude_code_catalog.load_claude_code_candidates()
+
+
+def test_oversized_response_on_cold_start_is_typed(monkeypatch: pytest.MonkeyPatch) -> None:
+    huge = (
+        '{"schema_version":1,"models":['
+        + ",".join('{"id":"claude-opus-5","name":"' + ("x" * 200) + '"}' for _ in range(400))
+        + "]}"
+    )
+    assert len(huge.encode("utf-8")) > claude_code_catalog._MAX_BYTES
+    monkeypatch.setattr(fetched_catalog.httpx, "get", lambda *_a, **_kw: _response(huge))
+    with pytest.raises(claude_code_catalog.ClaudeCodeCatalogError):
         claude_code_catalog.load_claude_code_candidates()
 
 
@@ -98,7 +169,7 @@ def test_catalog_with_default_and_capabilities_round_trips(
 ) -> None:
     """A fully-declared catalog row: explicit capabilities + a valid default."""
     monkeypatch.setattr(
-        claude_code_catalog.httpx,
+        fetched_catalog.httpx,
         "get",
         lambda *_a, **_kw: _response(
             '{"schema_version":1,"default_model":"claude-sonnet-5","models":['
@@ -122,7 +193,7 @@ def test_catalog_without_default_model_key_reports_typed_reason(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        claude_code_catalog.httpx,
+        fetched_catalog.httpx,
         "get",
         lambda *_a, **_kw: _response(
             '{"schema_version":1,"models":[{"id":"claude-sonnet-5","name":"Claude Sonnet 5"}]}'
@@ -138,7 +209,7 @@ def test_catalog_missing_capabilities_defaults_to_text_only_unevidenced(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        claude_code_catalog.httpx,
+        fetched_catalog.httpx,
         "get",
         lambda *_a, **_kw: _response(
             '{"schema_version":1,"models":[{"id":"claude-sonnet-5","name":"Claude Sonnet 5"}]}'
@@ -153,49 +224,101 @@ def test_catalog_missing_capabilities_defaults_to_text_only_unevidenced(
     assert evidence["unevidenced"] == ["image", "pdf"]
 
 
-def test_refresh_replaces_candidate_cache_and_clears_it_on_failure(
-    monkeypatch: pytest.MonkeyPatch,
+def test_refresh_survives_a_failed_fetch_and_keeps_last_good(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    monkeypatch.setattr(claude_code_catalog, "_cached_catalog", None)
-    monkeypatch.setattr(claude_code_catalog, "_cached_error", "")
+    """The core behavior change: a failed fetch no longer clears the catalog."""
     monkeypatch.setattr(
-        claude_code_catalog,
-        "load_claude_code_catalog",
-        lambda: claude_code_catalog.ClaudeCodeCatalog(
-            models=[
-                {
-                    "id": "claude-opus-5-5",
-                    "name": "Claude Opus 5.5",
-                    "capabilities": ["text"],
-                    "capability_evidence": {},
-                }
-            ],
-            default_model="",
-            default_model_reason="",
+        fetched_catalog.httpx,
+        "get",
+        lambda *_a, **_kw: _response(
+            '{"schema_version":1,"models":[{"id":"claude-opus-5-5","name":"Claude Opus 5.5"}]}'
         ),
     )
-    claude_code_catalog.refresh_claude_code_catalog()
+    good = claude_code_catalog.refresh_claude_code_catalog()
+    assert good.models[0]["id"] == "claude-opus-5-5"
+
+    def _boom(*_a: object, **_kw: object) -> httpx.Response:
+        raise httpx.ConnectError("network is unreachable")
+
+    monkeypatch.setattr(fetched_catalog.httpx, "get", _boom)
+    with caplog.at_level("WARNING"):
+        survived = claude_code_catalog.refresh_claude_code_catalog()
+    assert survived.models[0]["id"] == "claude-opus-5-5"
+    assert any("reason=" in record.message for record in caplog.records)
+
     cached, error = claude_code_catalog.cached_claude_code_catalog()
+    assert error == ""
     assert cached is not None
     assert cached.models[0]["id"] == "claude-opus-5-5"
-    assert error == ""
     assert claude_code_catalog.cached_claude_code_candidates() == (
         [
             {
                 "id": "claude-opus-5-5",
                 "name": "Claude Opus 5.5",
                 "capabilities": ["text"],
-                "capability_evidence": {},
+                "capability_evidence": cached.models[0]["capability_evidence"],
             }
         ],
         "",
     )
 
-    def _offline() -> claude_code_catalog.ClaudeCodeCatalog:
-        raise claude_code_catalog.ClaudeCodeCatalogError("GitHub unavailable")
 
-    monkeypatch.setattr(claude_code_catalog, "load_claude_code_catalog", _offline)
+def test_refresh_survives_a_failed_validation_and_keeps_last_good(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        fetched_catalog.httpx,
+        "get",
+        lambda *_a, **_kw: _response(
+            '{"schema_version":1,"models":[{"id":"claude-opus-6","name":"Claude Opus 6"}]}'
+        ),
+    )
+    good = claude_code_catalog.refresh_claude_code_catalog()
+    assert good.models[0]["id"] == "claude-opus-6"
+
+    monkeypatch.setattr(
+        fetched_catalog.httpx,
+        "get",
+        lambda *_a, **_kw: _response('{"schema_version":1,"models":[]}'),
+    )
+    survived = claude_code_catalog.refresh_claude_code_catalog()
+    assert survived.models[0]["id"] == "claude-opus-6"
+
+
+def test_cached_claude_code_catalog_never_touches_the_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        fetched_catalog.httpx,
+        "get",
+        lambda *_a, **_kw: _response(
+            '{"schema_version":1,"models":[{"id":"claude-opus-5","name":"Claude Opus"}]}'
+        ),
+    )
+    claude_code_catalog.refresh_claude_code_catalog()
+
+    def _boom(*_a: object, **_kw: object) -> httpx.Response:
+        raise AssertionError("cached_claude_code_catalog must never hit the network")
+
+    monkeypatch.setattr(fetched_catalog.httpx, "get", _boom)
+    cached, error = claude_code_catalog.cached_claude_code_catalog()
+    assert error == ""
+    assert cached is not None
+    assert cached.models[0]["id"] == "claude-opus-5"
+
+
+def test_cold_start_with_no_cache_and_no_network_is_typed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No prior successful fetch, no bundled fallback for this catalog -> typed error."""
+
+    def _boom(*_a: object, **_kw: object) -> httpx.Response:
+        raise httpx.ConnectError("network is unreachable")
+
+    monkeypatch.setattr(fetched_catalog.httpx, "get", _boom)
+    cached, error = claude_code_catalog.cached_claude_code_catalog()
+    assert cached is None
+    assert error != ""
     with pytest.raises(claude_code_catalog.ClaudeCodeCatalogError):
-        claude_code_catalog.refresh_claude_code_catalog()
-    assert claude_code_catalog.cached_claude_code_catalog() == (None, "GitHub unavailable")
-    assert claude_code_catalog.cached_claude_code_candidates() == (None, "GitHub unavailable")
+        claude_code_catalog.load_claude_code_catalog()

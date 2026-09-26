@@ -1,0 +1,11 @@
+{
+  "id": "Qwen/Qwen3-8B",
+  "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "cardData": {
+    "license": "apache-2.0"
+  },
+  "siblings": [
+    {"rfilename": "generation_config.json"},
+    {"rfilename": "tokenizer_config.json"}
+  ]
+}

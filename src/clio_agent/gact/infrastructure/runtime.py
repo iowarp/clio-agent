@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import socket
 import subprocess
 from collections import defaultdict
@@ -13,7 +14,10 @@ from urllib.parse import urlsplit
 import anyio
 import httpx
 
+from clio_agent.gact.infrastructure.clio_agent_deploy import ClaimResult, parse_claim
 from clio_agent.gact.infrastructure.drivers import (
+    LOOPBACK_ONLY_SERVICES,
+    DriverPlan,
     build_driver_plan,
     service_connection_port,
     service_definitions,
@@ -34,10 +38,15 @@ from clio_agent.gact.infrastructure.models import (
 )
 from clio_agent.gact.infrastructure.probe import probe_target
 from clio_agent.gact.infrastructure.store import InfrastructureStore
-from clio_agent.gact.infrastructure.transport import InfrastructureTransportRegistry
+from clio_agent.gact.infrastructure.transport import (
+    InfrastructureTransportRegistry,
+    TransportUnavailableError,
+)
 from clio_agent.providers.credentials import resolve as resolve_credential
 
 MAX_OPERATION_LOG_CHARS = 16_000
+
+logger = logging.getLogger(__name__)
 
 
 def _bounded(value: str) -> str:
@@ -150,6 +159,7 @@ class InfrastructureRuntime:
                     url, strategy = await self._resolve_connection(
                         target_id,
                         port,
+                        service_id=service.id,
                         previous_url=refreshed.connection_url,
                         previous_strategy=refreshed.connection_strategy,
                     )
@@ -264,6 +274,8 @@ class InfrastructureRuntime:
         row = self.store.put_operation(
             row.model_copy(update={"state": "running", "progress": "Inspecting target"})
         )
+        plan: DriverPlan | None = None
+        claim: ClaimResult | None = None
         try:
             catalog = await self.catalog(request.target_id)
             definition = next(
@@ -295,6 +307,11 @@ class InfrastructureRuntime:
                         or result.stdout.strip()
                         or f"{spec.program} exited with code {result.exit_code}"
                     )
+                claim = parse_claim(result.stdout) or claim
+                if claim is not None and claim.result == "adopted":
+                    # The healthy server of this exact install and version
+                    # keeps running; installing or starting again is not needed.
+                    break
                 if spec.settle_seconds:
                     await asyncio.sleep(spec.settle_seconds)
             await self._settle_service(row.service_id, request, plan.connection_port, output)
@@ -309,19 +326,45 @@ class InfrastructureRuntime:
                 )
             )
         except asyncio.CancelledError:
+            cleanup = await self._teardown(request.target_id, plan, claim)
             self.store.put_operation(
                 row.model_copy(
                     update={
                         "state": "cancelled",
-                        "progress": "Cancelled; inspect actual service state before retrying.",
+                        "progress": f"Cancelled. {cleanup}",
                     }
                 )
             )
             raise
         except (KeyError, OSError, RuntimeError, ValueError) as exc:
+            cleanup = await self._teardown(request.target_id, plan, claim)
             self.store.put_operation(
-                row.model_copy(update={"state": "failed", "progress": "Failed", "error": str(exc)})
+                row.model_copy(
+                    update={"state": "failed", "progress": f"Failed. {cleanup}", "error": str(exc)}
+                )
             )
+
+    async def _teardown(
+        self, target_id: str, plan: DriverPlan | None, claim: ClaimResult | None
+    ) -> str:
+        """Undo what a failed or cancelled plan started; report what happened.
+
+        Runs only after the claim step: before it, this plan started nothing,
+        and an adopted server was already running, so it is left alone.
+        """
+
+        if plan is None or plan.teardown is None or claim is None or claim.result == "adopted":
+            return "Nothing this deploy started needed cleaning up."
+        try:
+            result = await self._execute(target_id, plan.teardown(claim))
+        except (OSError, RuntimeError, TransportUnavailableError) as exc:
+            logger.warning(
+                "infrastructure teardown failed: reason=teardown_error target=%s", target_id
+            )
+            return f"Cleanup failed: {exc}"
+        if result.exit_code != 0:
+            return f"Cleanup failed: {(result.stderr or result.stdout).strip()}"
+        return "Cleaned up what this deploy started."
 
     async def _settle_service(
         self,
@@ -355,6 +398,7 @@ class InfrastructureRuntime:
                 connection_url, strategy = await self._resolve_connection(
                     request.target_id,
                     connection_port,
+                    service_id=service_id,
                     previous_url=connection_url,
                     previous_strategy=strategy,
                     wait_for_direct=request.action in {"install", "reinstall", "start"},
@@ -380,10 +424,18 @@ class InfrastructureRuntime:
         target_id: str,
         port: int,
         *,
+        service_id: str,
         previous_url: str | None = None,
         previous_strategy: ConnectionStrategy | None = None,
         wait_for_direct: bool = False,
     ) -> tuple[str, ConnectionStrategy]:
+        """Where the desktop reaches a running service, and how.
+
+        A service that listens on the target's loopback only
+        (:data:`LOOPBACK_ONLY_SERVICES`) is never tried at the host's address:
+        that attempt cannot succeed, and on a route through jump hosts it
+        spent half a minute on retries before the forward even started.
+        """
         target = self.store.target(target_id)
         if target is None:
             raise KeyError(target_id)
@@ -399,7 +451,7 @@ class InfrastructureRuntime:
         if target.kind != "ssh" or target.ssh is None:
             raise ValueError("Managed services require a local or SSH target")
         host = target.ssh.host.strip()
-        if host:
+        if host and service_id not in LOOPBACK_ONLY_SERVICES:
             direct = f"http://{host}:{port}"
             attempts = 10 if wait_for_direct else 1
             for attempt in range(attempts):

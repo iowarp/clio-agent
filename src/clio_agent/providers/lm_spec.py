@@ -49,8 +49,12 @@ class LMSpec:
         credential_ref: A credential *reference* (never an inline secret).
             Empty selects the provider's default credential.
         transport: Transport selector for providers that have one
-            (``codex`` / ``claude_code``: ``"exec"`` or ``"sdk"``). Empty for
-            providers with no transport choice.
+            (``codex``: ``"websocket"``/``"sse"``; ``claude_code``: ``"sdk"``).
+            Empty for providers with no transport choice.
+        variant: WHICH implementation of a multi-transport provider to bind
+            (``codex``: ``"sdk"`` or ``"direct"``), mirroring ``ModelRef.variant``
+            on a session/message model reference. Empty inherits the default
+            profile's variant; empty on a fresh ``codex`` config means Direct.
         temperature: Sampling temperature (``None`` omits → provider default).
         max_tokens: Per-reply output cap (``None`` omits → resolver default).
         thinking_budget: Reasoning/thinking token budget (``None`` omits).
@@ -67,6 +71,7 @@ class LMSpec:
     credential_ref: str = ""
     provider_options: dict[str, str] = field(default_factory=dict)
     transport: str = ""
+    variant: str = ""
     temperature: float | None = None
     max_tokens: int | None = None
     thinking_budget: int | None = None
@@ -107,6 +112,7 @@ def spec_from_config(cfg: "LMProviderConfig") -> LMSpec:
         credential_ref="",
         provider_options=dict(cfg.provider_options),
         transport=transport,
+        variant=cfg.codex_variant if cfg.provider == "codex" else "",
         temperature=cfg.temperature,
         max_tokens=cfg.max_tokens,
         thinking_budget=cfg.thinking_budget,
@@ -181,6 +187,7 @@ def build_spec(agent_def: "AgentDef", default_spec: LMSpec) -> LMSpec:
     api_base = getattr(agent_def, "api_base", "") or default_spec.api_base
     credential_ref = getattr(agent_def, "credential_ref", "") or default_spec.credential_ref
     transport = getattr(agent_def, "transport", "") or default_spec.transport
+    variant = getattr(agent_def, "variant", "") or default_spec.variant
     return LMSpec(
         provider=provider,
         model=model,
@@ -189,6 +196,7 @@ def build_spec(agent_def: "AgentDef", default_spec: LMSpec) -> LMSpec:
         credential_ref=credential_ref,
         provider_options=dict(default_spec.provider_options),
         transport=transport,
+        variant=variant,
         temperature=_opt_float(params, "temperature", default_spec.temperature),
         max_tokens=_opt_int(params, "max_tokens", default_spec.max_tokens),
         thinking_budget=_opt_int(params, "thinking_budget", default_spec.thinking_budget),

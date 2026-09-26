@@ -24,8 +24,9 @@ import asyncio
 import contextlib
 import sys
 import threading
+import time
 from types import ModuleType
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 
@@ -41,6 +42,25 @@ def _clean_pool() -> Any:
     _reset_sessions_for_tests()
     yield
     _reset_sessions_for_tests()
+
+
+async def _wait_until(
+    predicate: Callable[[], bool], *, timeout: float = 5.0, interval: float = 0.01
+) -> None:
+    """Poll ``predicate`` until true, instead of sleeping a fixed duration and
+    checking once (#S2 follow-up: a fixed sleep races the background poll
+    loop's real ``poll_interval_s``-paced attempts on a loaded box -- a slow
+    scheduler tick means the sleep window closes before enough attempts ran,
+    failing a correct implementation). This waits for the ACTUAL observable
+    condition and returns the instant it holds; ``timeout`` is a generous
+    ceiling that only ever fires on a genuine break, never on scheduling noise.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        await asyncio.sleep(interval)
+    raise AssertionError(f"condition not met within {timeout}s: {predicate!r}")
 
 
 def _install_fake_sdk(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
@@ -104,7 +124,9 @@ async def test_await_connect_slot_emits_typed_surfacing(monkeypatch: pytest.Monk
         csb.await_connect_slot(slots, session_id="sess-surface", poll_interval_s=0.01)
     )
     try:
-        await asyncio.sleep(0.05)
+        # Wait for the actual row, not a fixed sleep -- see _wait_until's
+        # docstring for why a fixed duration races the poll loop under load.
+        await _wait_until(lambda: any(r["event"] == "provider.connect_wait" for r in rows))
     finally:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -151,7 +173,12 @@ async def test_await_connect_slot_surfacing_cadence_expands(
         csb.await_connect_slot(slots, session_id="sess-cadence", poll_interval_s=0.01)
     )
     try:
-        await asyncio.sleep(0.3)
+        # Wait for enough rows to prove the gap GROWS (needs >= 3 rows for a
+        # non-degenerate first-gap-vs-last-gap comparison), not a fixed sleep.
+        def _enough_rows() -> bool:
+            return len([r for r in rows if r["event"] == "provider.connect_wait"]) >= 3
+
+        await _wait_until(_enough_rows, timeout=3.0)
     finally:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -194,7 +221,7 @@ async def test_await_connect_slot_feeds_lm_activity_liveness(
             csb.await_connect_slot(slots, session_id=sid, poll_interval_s=0.01)
         )
         try:
-            await asyncio.sleep(0.05)
+            await _wait_until(lambda: lm_activity._STATE[sid]["queued_last"] > 0.0)
         finally:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -236,8 +263,8 @@ async def test_queued_connect_does_not_burn_the_per_call_sdk_timeout(
     """
     state = _install_fake_sdk(monkeypatch)
     slots = threading.Semaphore(1)
-    entry_a = ccs._StreamClientEntry(lambda: object(), connect_slots=slots)
-    entry_b = ccs._StreamClientEntry(lambda: object(), connect_slots=slots)
+    entry_a = ccs._StreamClientEntry(connect_slots=slots)
+    entry_b = ccs._StreamClientEntry(connect_slots=slots)
 
     await entry_a._ensure_client(lambda: None)  # holds the only slot
     assert state["connected"] == 1
@@ -296,8 +323,8 @@ async def test_abandoning_a_queued_stream_never_consumes_a_slot_or_spawns_a_cli(
     """
     state = _install_fake_sdk(monkeypatch)
     slots = threading.Semaphore(1)
-    entry_a = ccs._StreamClientEntry(lambda: object(), connect_slots=slots)
-    entry_b = ccs._StreamClientEntry(lambda: object(), connect_slots=slots)
+    entry_a = ccs._StreamClientEntry(connect_slots=slots)
+    entry_b = ccs._StreamClientEntry(connect_slots=slots)
 
     await entry_a._ensure_client(lambda: None)  # holds the only slot
     assert state["connected"] == 1
@@ -380,7 +407,7 @@ async def test_disconnect_runs_to_completion_despite_concurrent_consumer_unwind(
     fake_sdk.ClaudeSDKClient = FakeClient
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
 
-    entry = ccs._StreamClientEntry(lambda: object())
+    entry = ccs._StreamClientEntry()
 
     with pytest.raises(RuntimeError, match="boom"):
         async for _msg in entry.stream(
@@ -448,7 +475,7 @@ async def test_prompt_slot_acquire_emits_no_new_events(monkeypatch: pytest.Monke
 async def test_connect_gate_still_a_noop_when_uncapped(monkeypatch: pytest.MonkeyPatch) -> None:
     """``connect_slots=None`` never gates or surfaces -- unchanged by #1305."""
     state = _install_fake_sdk(monkeypatch)
-    entry = ccs._StreamClientEntry(lambda: object())  # no connect_slots
+    entry = ccs._StreamClientEntry()  # no connect_slots
     await asyncio.wait_for(
         entry._ensure_client(lambda: None, gact_session_id="sess-z"), timeout=0.3
     )

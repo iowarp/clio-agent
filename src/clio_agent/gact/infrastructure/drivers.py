@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import ntpath
 import posixpath
+from collections.abc import Callable
 from dataclasses import dataclass
 
+from clio_agent.gact.infrastructure.clio_agent_deploy import (
+    LAUNCHER_PRELUDE,
+    ClaimResult,
+    claim_command,
+    install_command,
+    status_command,
+    teardown_command,
+)
 from clio_agent.gact.infrastructure.models import (
     CommandSpec,
     InfrastructureTarget,
@@ -25,8 +35,17 @@ LLAMA_WINDOWS_CPU_ARCHIVE = (
     f"{LLAMA_BUILD}/llama-{LLAMA_BUILD}-bin-win-cpu-x64.zip"
 )
 RELAY_VERSION = "1.6.8"
-CLIO_AGENT_VERSION = "0.9.4.17"
 CLIO_AGENT_PORT = 17_800
+# Services whose server listens on the target's loopback only: nothing can
+# reach them at the host's address, so they are always reached through an SSH
+# forward. CLIO's launcher binds 127.0.0.1.
+LOOPBACK_ONLY_SERVICES = frozenset({"clio_agent"})
+
+
+def clio_agent_version() -> str:
+    """The clio-agent version this CLIO runs: the one a remote CLIO installs."""
+
+    return importlib.metadata.version("clio-agent")
 
 
 @dataclass(frozen=True)
@@ -35,6 +54,9 @@ class DriverPlan:
 
     commands: tuple[CommandSpec, ...]
     connection_port: int | None = None
+    # Undo what this plan started when it fails or is cancelled, given what
+    # its claim step found (see clio_agent_deploy); None when nothing to undo.
+    teardown: Callable[[ClaimResult], CommandSpec] | None = None
 
 
 def service_connection_port(service_id: str) -> int | None:
@@ -213,12 +235,13 @@ def service_definitions(facts: TargetFacts) -> list[ManagedServiceDefinition]:
         description="Install and operate a CLIO service on this SSH host.",
         recommended_variant="released",
         variants=[
+            # Exactly this CLIO's version, so the desktop and remote match.
             ServiceVariant(
                 id="released",
                 label="Published release",
-                version=CLIO_AGENT_VERSION,
+                version=clio_agent_version(),
                 install_type="bootstrap",
-                artifact=f"iowarp/clio-agent@v{CLIO_AGENT_VERSION}",
+                artifact=f"clio-agent=={clio_agent_version()} (PyPI)",
                 compatible=facts.os == "linux" and facts.target_id != "local",
                 reason="Remote CLIO deployment requires a Linux SSH target.",
             )
@@ -639,84 +662,43 @@ def _clio_agent_plan(action: str, target: InfrastructureTarget | None) -> Driver
     if target is None or target.kind != "ssh":
         raise ValueError("Remote CLIO deployment requires an SSH infrastructure target")
     root = target.install_root.strip()
-    bin_dir = f"{root}/bin" if root else ""
-    launcher_script = (
-        'root="$1"; if [ -z "$root" ]; then root="$HOME/.local/share/clio"; fi; '
-        'bin="$2"; if [ -z "$bin" ]; then bin="$HOME/.local/bin"; fi; '
-        'export CLIO_PREFIX="$root" CLIO_DATA_DIR="$root/data" '
-        'CLIO_ARC_CTE_DIR="$root/cte" CLIO_RUNTIME_STATE_DIR="$root/runtime-state"; '
-    )
+
+    def launcher(script: str) -> CommandSpec:
+        return CommandSpec(program="bash", args=["-lc", LAUNCHER_PRELUDE + script, "clio", root])
+
     if action == "status":
-        return DriverPlan(
-            (
-                CommandSpec(
-                    program="bash",
-                    args=["-lc", launcher_script + '"$bin/clio" status', "clio", root, bin_dir],
-                ),
-            ),
-            connection_port=CLIO_AGENT_PORT,
-        )
+        return DriverPlan((status_command(root, CLIO_AGENT_PORT),), connection_port=CLIO_AGENT_PORT)
     if action == "logs":
-        return DriverPlan(
-            (
-                CommandSpec(
-                    program="bash",
-                    args=["-lc", launcher_script + '"$bin/clio" logs', "clio", root, bin_dir],
-                ),
-            ),
-            connection_port=CLIO_AGENT_PORT,
-        )
+        return DriverPlan((launcher('"$bin/clio" logs'),), connection_port=CLIO_AGENT_PORT)
     if action == "stop":
+        return DriverPlan((launcher('"$bin/clio" stop'),))
+    if action == "uninstall":
         return DriverPlan(
             (
-                CommandSpec(
-                    program="bash",
-                    args=["-lc", launcher_script + '"$bin/clio" stop', "clio", root, bin_dir],
+                launcher(
+                    'marker="$root/.clio-managed-install"; '
+                    'if [ ! -f "$marker" ]; then '
+                    "echo 'Refusing to remove an unmarked install root' >&2; exit 73; fi; "
+                    '"$bin/clio" stop || true; rm -rf -- "$root"'
                 ),
             )
-        )
-    if action == "uninstall":
-        script = (
-            launcher_script + 'marker="$root/.clio-managed-install"; '
-            'if [ ! -f "$marker" ]; then '
-            "echo 'Refusing to remove an unmarked install root' >&2; exit 73; fi; "
-            '"$bin/clio" stop || true; rm -rf -- "$root"'
-        )
-        return DriverPlan(
-            (CommandSpec(program="bash", args=["-lc", script, "clio", root, bin_dir]),)
         )
     commands: list[CommandSpec] = []
     if action == "reinstall":
         commands.extend(_clio_agent_plan("uninstall", target).commands)
     if action not in {"install", "reinstall", "start"}:
         raise ValueError(f"Unsupported CLIO lifecycle action {action!r}")
+    version = clio_agent_version()
+    # Adopt this install's healthy server of this version, or stop any other
+    # CLIO on the port, before touching anything; never start beside one.
+    commands.append(claim_command(root, CLIO_AGENT_PORT, version))
     if action in {"install", "reinstall"}:
-        script = (
-            launcher_script + f"export CLIO_VERSION={CLIO_AGENT_VERSION} "
-            f'CLIO_INSTALLER_REF=v{CLIO_AGENT_VERSION} CLIO_PREFIX="$root" '
-            'CLIO_BIN_DIR="$bin" UV_INSTALL_DIR="$bin" '
-            'UV_PYTHON_INSTALL_DIR="$root/uv-python" UV_CACHE_DIR="$root/uv-cache" '
-            "UV_NO_MODIFY_PATH=1; "
-            'export PATH="$CLIO_BIN_DIR:$HOME/.local/bin:$PATH"; '
-            'mkdir -p "$root"; touch "$root/.clio-managed-install"; '
-            "if ! command -v uv >/dev/null 2>&1; then "
-            "curl -LsSf https://astral.sh/uv/install.sh | sh; fi; "
-            'export PATH="$CLIO_BIN_DIR:$HOME/.local/bin:$PATH"; '
-            f"curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/"
-            f"v{CLIO_AGENT_VERSION}/install/install.sh | bash; "
-            "true"
-        )
-        commands.append(
-            CommandSpec(
-                program="bash",
-                args=["-lc", script, "clio", root, bin_dir],
-                timeout_seconds=900,
-            )
-        )
-    commands.append(
-        CommandSpec(
-            program="bash",
-            args=["-lc", launcher_script + '"$bin/clio" start', "clio", root, bin_dir],
-        )
+        commands.append(install_command(root, version))
+    commands.append(launcher('"$bin/clio" start'))
+    return DriverPlan(
+        tuple(commands),
+        connection_port=CLIO_AGENT_PORT,
+        teardown=lambda claim: teardown_command(
+            root, CLIO_AGENT_PORT, purge_root=not claim.existing_root
+        ),
     )
-    return DriverPlan(tuple(commands), connection_port=CLIO_AGENT_PORT)

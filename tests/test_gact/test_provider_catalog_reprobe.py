@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 
 from clio_agent.gact import provider_catalog_reprobe as reprobe
+from clio_agent.gact import provider_catalog_snapshot as snapshot
 from clio_agent.providers.model_discovery import LAST_GOOD_CATALOG_SOURCE
 
 
@@ -102,6 +103,60 @@ async def test_reprobe_until_live_returns_immediately_when_only_reauth_required_
     # A real bug here would hang for REPROBE_BACKOFF_S[0] == 5s and this
     # timeout would fail the test.
     await asyncio.wait_for(reprobe.reprobe_until_live(app), timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_attempt_marks_the_provider_as_checking_only_while_the_probe_is_in_flight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The client-visible ``checking`` overlay (#1446 follow-up) must be true
+    for exactly the duration of the real handshake -- neither before it starts
+    nor after it (or a failed attempt) settles."""
+    payload = {
+        "authoritative": "live_handshake",
+        "providers": [
+            _stale_record("argonne_metis", failure="connectivity=unreachable auth=missing")
+        ],
+    }
+    app = _FakeApp(payload)
+    seen_during: frozenset[str] = frozenset()
+
+    async def fake_discover(app_arg: Any, ids: list[str], *, refresh: bool = False) -> list[Any]:
+        nonlocal seen_during
+        seen_during = snapshot.checking_provider_ids(app_arg)
+        return []
+
+    monkeypatch.setattr(reprobe.snapshot, "discover", fake_discover)
+
+    assert snapshot.checking_provider_ids(app) == frozenset()
+    await reprobe._attempt(app, 1, ["argonne_metis"])
+
+    assert seen_during == frozenset({"argonne_metis"})
+    assert snapshot.checking_provider_ids(app) == frozenset()
+
+
+@pytest.mark.asyncio
+async def test_attempt_clears_checking_even_when_the_probe_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A crashed attempt must never leave a provider permanently "checking"."""
+    payload = {
+        "authoritative": "live_handshake",
+        "providers": [
+            _stale_record("argonne_metis", failure="connectivity=unreachable auth=missing")
+        ],
+    }
+    app = _FakeApp(payload)
+
+    async def failing_discover(app_arg: Any, ids: list[str], *, refresh: bool = False) -> list[Any]:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(reprobe.snapshot, "discover", failing_discover)
+
+    with pytest.raises(RuntimeError):
+        await reprobe._attempt(app, 1, ["argonne_metis"])
+
+    assert snapshot.checking_provider_ids(app) == frozenset()
 
 
 @pytest.mark.asyncio

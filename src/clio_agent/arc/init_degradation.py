@@ -31,6 +31,7 @@ from dataclasses import dataclass
 logger = logging.getLogger(__name__)
 
 CLIO_CORE_FILE_CAPACITY_UNAVAILABLE = "clio_core_file_capacity_unavailable"
+CLIO_CORE_CLIENT_ATTACH_FAILED = "clio_core_client_attach_failed"
 
 # Typed reason codes for an init-time degrade to LocalFS. The vocabulary mirrors
 # the #892 liveness/quarantine reasons so operators read one consistent language.
@@ -38,6 +39,7 @@ ARC_INIT_DEGRADE_REASONS = (
     "clio_core_binding_absent",  # iowarp_core / clio_cte_core_ext not importable
     "clio_core_daemon_spawn_failed",  # launcher missing or the daemon never bound its port
     CLIO_CORE_FILE_CAPACITY_UNAVAILABLE,  # configured file bdev cannot fit safely
+    CLIO_CORE_CLIENT_ATTACH_FAILED,  # daemon listening, native client handshake failed
     "clio_core_init_error",  # any other clio-core initialization failure
 )
 
@@ -51,13 +53,14 @@ def classify_init_failure(error: BaseException) -> str:
     Returns:
         ``"clio_core_binding_absent"`` for a missing clio-core Python binding,
         ``"clio_core_daemon_spawn_failed"`` for a launcher/port-bind failure,
-        ``"clio_core_file_capacity_unavailable"`` for a file-tier preflight failure,
-        else ``"clio_core_init_error"``.
+        the error's own typed ``degradation_reason`` when it carries a known one
+        (file-tier preflight, client attach), else ``"clio_core_init_error"``.
     """
     if isinstance(error, (ImportError, ModuleNotFoundError)):
         return "clio_core_binding_absent"
-    if getattr(error, "degradation_reason", None) == CLIO_CORE_FILE_CAPACITY_UNAVAILABLE:
-        return CLIO_CORE_FILE_CAPACITY_UNAVAILABLE
+    typed = getattr(error, "degradation_reason", None)
+    if typed in ARC_INIT_DEGRADE_REASONS:
+        return str(typed)
     message = str(error).lower()
     if isinstance(error, RuntimeError) and (
         "launcher" in message or "never bound port" in message or "clio_run" in message

@@ -15,6 +15,26 @@ precede everything the turn appends), then the event, enrichment, the frame, the
 event, the hooks. The ``run_user_prompt_submit`` outcome is returned; anything but
 ``"proceed"`` ends the turn in the orchestrator, as before. An attached-context failure
 is carried on ``state.context_file_error`` and raised at the commit-to-run seam.
+
+Cancel contract (L1 slice, #1339 follow-on): a turn has ONE cancel token, the
+per-turn ``threading.Event`` ``state.turn_cancel_event`` (the same one a hard
+``/cancel`` trips via ``cancel_session_state``). :func:`prepare_turn_off_loop`
+checks it before EVERY step below and stops immediately -- emitting nothing
+further -- the moment it is set, by raising
+:class:`~clio_agent.gact.turn_state.TurnCancelledDuringPrologue`. That leaves
+:attr:`~clio_agent.gact.turn_state.TurnState.prologue_phase` at ``"running"``
+(never flipped to ``"completed"``), which is the ONE signal
+``turn_prologue_guard`` needs to settle the turn typed instead of either
+crashing on unset fields or mislabeling it ``turn_prologue_never_ran``. The
+``UserPromptSubmit`` hook dispatch is handed the SAME token
+(``cancel_event=state.turn_cancel_event``): a hook subprocess already spawned
+when the cancel fires is killed (its whole process tree) by
+:mod:`clio_agent.gact.hooks.adapters`, which raises
+:class:`~clio_agent.gact.hooks.wire.HookCancelled` -- treated identically to
+the checkpoint signal. Any exception that is NOT one of these two cancel
+signals is a REAL prologue crash: :func:`prepare_turn_off_loop` records it on
+``state.prologue_error`` and flips the phase to ``"failed"`` so the guard can
+settle with the actual cause.
 """
 
 from __future__ import annotations
@@ -41,7 +61,14 @@ from clio_agent.gact.runtime.globals import (
 )
 from clio_agent.gact.session_store import _compile_session_conversation_history
 from clio_agent.gact.todos import inject_todo_recitation
-from clio_agent.gact.turn_state import DeferredTranscriptJob
+from clio_agent.gact.turn_state import (
+    PROLOGUE_COMPLETED,
+    PROLOGUE_FAILED,
+    PROLOGUE_RUNNING,
+    DeferredTranscriptJob,
+    TurnCancelledDuringPrologue,
+)
+from clio_agent.gact.turn_watchdog import cancel_requested
 from clio_agent.runtime.stream_audit import stream_audit
 
 if TYPE_CHECKING:
@@ -104,21 +131,40 @@ def spawn_user_turn(
     return task
 
 
-def prepare_turn_off_loop(state: "TurnState", *, update_retry_attempt: Callable[..., Any]) -> str:
-    """Run the turn prologue on the executor. Returns the ``UserPromptSubmit`` outcome.
+def _check_not_cancelled(state: "TurnState") -> None:
+    """Raise if this turn's cancel token has tripped.
 
-    Raises whatever the deferred transcript job raises (``TranscriptIngestError``: the
-    user message could not be persisted — the orchestrator settles an error turn, never
-    a half-committed transcript).
+    The ONE cooperative checkpoint every prologue step below is gated on (Cancel
+    contract, L1 slice): ``prepare_turn_off_loop`` calls this before EVERY step, so a
+    hard ``/cancel`` landing anywhere in the prologue stops it before the NEXT step
+    runs -- no further semantic events, no further RPCs, no hook subprocess started.
     """
 
+    if cancel_requested(state):
+        raise TurnCancelledDuringPrologue(state.turn_id)
+
+
+def _prepare_turn_off_loop_steps(
+    state: "TurnState", *, update_retry_attempt: Callable[..., Any]
+) -> str:
+    """The prologue's linear body -- see :func:`prepare_turn_off_loop` for the
+    phase/cancel wrapper around this. Raises ``TurnCancelledDuringPrologue`` (via
+    :func:`_check_not_cancelled`) the moment the turn's cancel token trips, and
+    whatever the deferred transcript job raises (``TranscriptIngestError``: the user
+    message could not be persisted).
+    """
+
+    _check_not_cancelled(state)
     # #1334 / #1337: the session's minter takes every later deferred persist (a steer,
     # an a2ui part); the user message's own persist runs first, inline, must-succeed.
     open_turn_minter(state.app, state.sid, state.turn_id)
+
+    _check_not_cancelled(state)
     job = state.transcript_job.take() if state.transcript_job is not None else None
     if job is not None:
         job()
 
+    _check_not_cancelled(state)
     _emit_semantic_event(
         state.app,
         state.sid,
@@ -149,6 +195,7 @@ def prepare_turn_off_loop(state: "TurnState", *, update_retry_attempt: Callable[
         state.app, state.sid, status="prepared"
     )
     state.memory_search_metadata = {}
+    _check_not_cancelled(state)  # the memory-search/enrichment step is checked too
     try:
         # #1215 S5: enrich_turn_context times BOTH mechanisms below as ONE
         # "enrichment" bring-up phase (owner module gact/enrichment.py).
@@ -182,6 +229,7 @@ def prepare_turn_off_loop(state: "TurnState", *, update_retry_attempt: Callable[
         state.context_file_provenance = _context_file_turn_provenance(
             state.app, state.sid, status="error"
         )
+    _check_not_cancelled(state)
     state.context_frame = _record_context_frame(
         state.app,
         state.sid,
@@ -192,6 +240,7 @@ def prepare_turn_off_loop(state: "TurnState", *, update_retry_attempt: Callable[
         context_error=state.context_file_error,
     )
     if state.memory_search_metadata:
+        _check_not_cancelled(state)
         _emit_semantic_event(
             state.app,
             state.sid,
@@ -203,11 +252,6 @@ def prepare_turn_off_loop(state: "TurnState", *, update_retry_attempt: Callable[
             subject={"message_id": state.user_msg.id},
             payload=state.memory_search_metadata,
         )
-    # #1339 round 5: every prologue-derived field above (context_frame,
-    # context_file_provenance, enriched_text, memory_search_metadata) is now
-    # assigned -- flip the ONE structural fact ``turn_prologue_guard`` gates finalize
-    # on, before either return below (both are reached only from this point).
-    state.prologue_completed = True
     # P2.2 #1070 / P2.6 #1074: UserPromptSubmit hooks (the ported ``pre_message``
     # consumer). A deny VETOES the turn (session -> error); a ``defer`` SUSPENDS it for
     # out-of-band approval (waiting_user, resume as a new turn). The whole finalize-
@@ -215,9 +259,40 @@ def prepare_turn_off_loop(state: "TurnState", *, update_retry_attempt: Callable[
     # the call site: any non-"proceed" outcome ends the turn in the orchestrator.
     if state.context_file_error is not None:
         return "proceed"
+    _check_not_cancelled(state)
     from clio_agent.gact.hooks.user_prompt import run_user_prompt_submit  # noqa: PLC0415
 
     return run_user_prompt_submit(state, update_retry_attempt=update_retry_attempt)
+
+
+def prepare_turn_off_loop(state: "TurnState", *, update_retry_attempt: Callable[..., Any]) -> str:
+    """Run the turn prologue on the executor. Returns the ``UserPromptSubmit`` outcome.
+
+    Sets :attr:`~clio_agent.gact.turn_state.TurnState.prologue_phase` on entry
+    (``"running"``) and exit (``"completed"`` on a clean return). A
+    ``TurnCancelledDuringPrologue``/``HookCancelled`` escaping :func:`
+    _prepare_turn_off_loop_steps` leaves the phase at ``"running"`` (re-raised
+    unchanged, no ``prologue_error``) -- ``turn_prologue_guard`` reads that as
+    "cancelled mid-prologue". Any OTHER exception (the deferred transcript job
+    raising ``TranscriptIngestError``, or a genuine bug in an enrichment/hook step)
+    is captured on ``state.prologue_error`` and flips the phase to ``"failed"`` so
+    the guard settles with the REAL cause instead of a fabricated one.
+    """
+
+    from clio_agent.gact.hooks.wire import HookCancelled  # noqa: PLC0415
+
+    state.prologue_phase = PROLOGUE_RUNNING
+    try:
+        outcome = _prepare_turn_off_loop_steps(state, update_retry_attempt=update_retry_attempt)
+    except (TurnCancelledDuringPrologue, HookCancelled):
+        raise
+    except BaseException as exc:  # noqa: BLE001 - carry the REAL cause to the guard
+        state.prologue_error = exc
+        state.prologue_phase = PROLOGUE_FAILED
+        raise
+    else:
+        state.prologue_phase = PROLOGUE_COMPLETED
+        return outcome
 
 
 __all__ = ["DEFERRED_JOB_ORPHANED", "prepare_turn_off_loop", "spawn_user_turn"]

@@ -1,12 +1,15 @@
-"""Shared machinery for the CLI-backed LiteLLM ``CustomLLM`` providers.
+"""Shared machinery for clio-owned LiteLLM ``CustomLLM`` providers.
 
-Both the Codex (:mod:`clio_agent.providers.codex_litellm`) and Claude Code
-(:mod:`clio_agent.providers.claude_code_litellm`) providers route ``dspy.LM``
-calls through a local CLI subprocess. Their ``CustomLLM`` shells have *diverged*
-(trace instrumentation, an SDK session pool, different streaming semantics) and
-are intentionally NOT merged. But three pieces were byte-for-byte duplicated
-between them, so they live here — a fix to prompt hardening or the registration
-lifecycle now lands once:
+The Claude Code provider (:mod:`clio_agent.providers.claude_code_litellm`)
+routes ``dspy.LM`` calls through a local CLI subprocess and uses
+:func:`normalise_message_content`/:func:`messages_to_prompt` to flatten chat
+messages into a role-hardened prompt string, which a CLI's single ``exec``
+argument requires. The direct Codex provider
+(:mod:`clio_agent.providers.codex.litellm_adapter`) is not CLI-backed --
+it builds native Responses-API ``input`` items instead
+(:mod:`clio_agent.providers.codex.responses`) -- but still shares the two
+provider-lifecycle pieces below, so a fix to the registration lifecycle or the
+model-rejection classification lands once for every clio-owned ``CustomLLM``:
 
 * :func:`normalise_message_content` — collapse OpenAI message content into
   bounded text, rejecting image parts a text-only CLI would silently drop.
@@ -28,9 +31,10 @@ lifecycle now lands once:
   — an honest classification, no gact-layer changes needed since the transcript's
   generic tail already interpolates ``str(exc)`` verbatim.
 
-Both callers pass their own provider-specific ``CustomLLM`` unsupported-multimodal
-exception type and a transport label so the raised error and the module keep
-their existing identity.
+Every CLI-transport caller of ``normalise_message_content``/``messages_to_prompt``
+passes its own provider-specific ``CustomLLM`` unsupported-multimodal exception
+type and a transport label so the raised error and the module keep their
+existing identity.
 """
 
 from __future__ import annotations
@@ -59,8 +63,8 @@ def normalise_message_content(
             or arbitrary JSON-able value).
         unsupported_multimodal_exc: The provider's exception type raised when an
             image part is present (a text-only CLI can't carry it).
-        transport_label: Human label for the CLI (e.g. ``"Codex"``,
-            ``"Claude Code"``) used in the raised error message.
+        transport_label: Human label for the CLI (e.g. ``"Claude Code"``)
+            used in the raised error message.
 
     Returns:
         The normalised text.
@@ -189,9 +193,9 @@ def raise_model_rejected(
 ) -> NoReturn:
     """Raise the typed, non-retryable exception for a DEFINITIVE model rejection.
 
-    ``model`` is the litellm-facing id (e.g. ``"codex/gpt-5.5-codex"`` or
-    ``"claude_code/bogus"``); ``llm_provider`` is the bare kind (``"codex"`` /
-    ``"claude_code"``). Callers pass the provider's own rejection TEXT in
+    ``model`` is the litellm-facing id (e.g. ``"codex_direct/gpt-5.5"`` or
+    ``"claude_code/bogus"``); ``llm_provider`` is the bare kind (``"codex_direct"``
+    / ``"claude_code"``). Callers pass the provider's own rejection TEXT in
     ``message`` (a provider error string; claude_code's ``result``
     field) — it survives verbatim into ``str(exc)``, which the transcript's
     generic error tail already interpolates, so the rejection reason reaches

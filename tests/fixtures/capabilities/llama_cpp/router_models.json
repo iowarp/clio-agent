@@ -1,0 +1,36 @@
+{
+  "models": [
+    {
+      "id": "org/qwen3-8b-GGUF:Q4_K_M",
+      "architecture": {
+        "input_modalities": ["text"]
+      },
+      "status": {
+        "state": "loaded",
+        "args": [
+          "--model", "/models/qwen3-8b.gguf",
+          "--ctx-size", "16384",
+          "--parallel", "2",
+          "--jinja",
+          "--reasoning", "on",
+          "--chat-template-kwargs", "{\"enable_thinking\": true}"
+        ]
+      }
+    },
+    {
+      "id": "org/qwen3-vl-8b-GGUF:Q4_K_M",
+      "architecture": {
+        "input_modalities": ["text", "image"]
+      },
+      "status": {
+        "state": "loaded",
+        "args": [
+          "--model", "/models/qwen3-vl-8b.gguf",
+          "--ctx-size", "32768",
+          "--kv-unified",
+          "--mmproj", "/models/qwen3-vl-mmproj.gguf"
+        ]
+      }
+    }
+  ]
+}

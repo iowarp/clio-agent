@@ -42,21 +42,20 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _codex_signed_in(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Present (unvalidated) Codex credentials in an isolated CODEX_HOME."""
-    codex_home = tmp_path / "codex-home"
-    codex_home.mkdir(exist_ok=True)
-    (codex_home / "auth.json").write_text('{"token":"test"}', encoding="utf-8")
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+def _codex_signed_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Present a (unvalidated) signed-in Codex credential."""
+    from clio_agent.providers.codex.credentials import CodexCredentialStore
+
+    monkeypatch.setattr(CodexCredentialStore, "is_signed_in", lambda self: True)
 
 
 def test_get_models_unverified_codex_is_unavailable_not_static(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Subscription availability: with no SDK-validated catalog, Codex reports
+    """Subscription availability: with no validated catalog, Codex reports
     ``unavailable`` with a reason instead of the frozen static pins, which named
     models an unverified account might not be able to use."""
-    _codex_signed_in(tmp_path, monkeypatch)
+    _codex_signed_in(monkeypatch)
     body = client.get("/v1/providers/codex/models").json()
     assert body["source"] == "unavailable"
     assert body["models"] == []
@@ -69,7 +68,7 @@ def test_get_models_overlay_present_is_served_verbatim(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The core overlay-first contract: a fresh, validated list is served as-is."""
-    _codex_signed_in(tmp_path, monkeypatch)
+    _codex_signed_in(monkeypatch)
     _write_overlay(
         tmp_path,
         {
@@ -78,14 +77,14 @@ def test_get_models_overlay_present_is_served_verbatim(
                     {"id": "gpt-5.6-sol", "name": "GPT-5.6-Sol", "description": "live"},
                     {"id": "gpt-5.6-terra", "name": "GPT-5.6-Terra", "description": "live"},
                 ],
-                "source": "codex_sdk",
+                "source": "codex_catalog",
                 "default_model": "gpt-5.6-sol",
                 "generated_at": _now(),
             }
         },
     )
     body = client.get("/v1/providers/codex/models").json()
-    assert body["source"] == "codex_sdk"
+    assert body["source"] == "codex_catalog"
     ids = {m["id"] for m in body["models"]}
     assert ids == {"gpt-5.6-sol", "gpt-5.6-terra"}
     # SABOTAGE-sensitive: none of the STALE static ids leak through once an
@@ -184,7 +183,7 @@ def test_post_refresh_returns_the_discovery_results_verbatim(
         {
             "provider": "codex",
             "discovered": [{"id": "gpt-5.6-sol", "name": "Sol", "description": ""}],
-            "source": "codex_sdk",
+            "source": "codex_catalog",
             "default_model": "gpt-5.6-sol",
             "generated_at": "2026-08-14T00:00:00+00:00",
             "added": ["gpt-5.6-sol"],

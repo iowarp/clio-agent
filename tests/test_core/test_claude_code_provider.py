@@ -214,7 +214,17 @@ def test_custom_llm_sdk_transport_routes_to_run_sdk(monkeypatch) -> None:
     # native_blocks is required, not optional: the seam passes it from EVERY
     # call site now, empty or not, so a signature that omits it would be a
     # signature the transport never actually sees.
-    def _fake_sdk(*, prompt, native_blocks, model, timeout, cwd, thinking=None):
+    def _fake_sdk(
+        *,
+        prompt,
+        native_blocks,
+        model,
+        timeout,
+        cwd,
+        thinking=None,
+        system_prompt=None,
+        call_index=0,
+    ):
         seen["model"] = model
         seen["thinking"] = thinking
         seen["native_blocks"] = native_blocks
@@ -440,6 +450,206 @@ async def test_astream_sdk_translates_stream_events(monkeypatch) -> None:
         "completion_tokens": 3,
         "total_tokens": 5,
     }
+
+
+async def test_astream_sdk_result_message_carries_real_usage_and_cost(monkeypatch) -> None:
+    """#775 root-cause fix: the Agent SDK's ``ResultMessage`` carries a REAL
+    ``total_cost_usd`` -- a subscription-priced number, not a price-table
+    guess -- as a field SIBLING to ``usage``, not nested inside it. The old
+    code read only ``usage`` and dropped ``total_cost_usd`` on the floor, so
+    every claude_code turn's cost was silently lost before it ever reached
+    ``roll_up_usage`` / the session rollup."""
+
+    class FakeTextBlock:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    class FakeAssistantMessage:
+        def __init__(self) -> None:
+            self.content = [FakeTextBlock("Hello")]
+            self.usage = {"input_tokens": 120, "output_tokens": 45}
+            self.stop_reason = "end_turn"
+
+    class FakeResultMessage:
+        # Real Agent SDK shape (claude_agent_sdk.ResultMessage): usage and
+        # total_cost_usd are separate top-level fields.
+        usage = {"input_tokens": 120, "output_tokens": 45, "cache_read_input_tokens": 10}
+        total_cost_usd = 0.00412
+        stop_reason = "end_turn"
+        result = "Hello"
+        is_error = False
+
+    class FakeClaudeAgentOptions:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+
+    class FakeClaudeSDKClient:
+        def __init__(self, options: FakeClaudeAgentOptions) -> None:
+            self.queries: list[tuple[str, str]] = []
+
+        async def connect(self) -> None:
+            return None
+
+        async def disconnect(self) -> None:
+            return None
+
+        async def query(self, prompt: str, session_id: str = "default") -> None:
+            self.queries.append((prompt, session_id))
+
+        async def receive_response(self) -> AsyncIterator[Any]:
+            yield FakeAssistantMessage()
+            yield FakeResultMessage()
+
+    fake_sdk = ModuleType("claude_agent_sdk")
+    fake_sdk.AssistantMessage = FakeAssistantMessage
+    fake_sdk.ClaudeAgentOptions = FakeClaudeAgentOptions
+    fake_sdk.ClaudeSDKClient = FakeClaudeSDKClient
+    fake_sdk.ResultMessage = FakeResultMessage
+    fake_sdk.StreamEvent = type("FakeStreamEvent", (), {})
+    fake_sdk.TextBlock = FakeTextBlock
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
+
+    chunks = [
+        chunk
+        async for chunk in claude_code_litellm._astream_sdk(
+            prompt="hello",
+            model="sonnet-5",
+            timeout=5.0,
+            cwd="/tmp/clio",
+        )
+    ]
+
+    final_usage = chunks[-1]["usage"]
+    assert final_usage["prompt_tokens"] == 130  # 120 input + 10 cache_read
+    assert final_usage["completion_tokens"] == 45
+    assert final_usage["cost_usd"] == pytest.approx(0.00412)
+
+
+async def test_astream_sdk_falls_back_to_model_usage_when_flat_usage_is_empty(monkeypatch) -> None:
+    """Some CLI turns report NOTHING on the flat ``usage`` field but DO
+    populate the per-model ``model_usage`` breakdown (camelCase keys, verbatim
+    from the CLI's ``modelUsage``). Falling back to it is what keeps tokens
+    from silently reading as zero for those turns."""
+
+    class FakeTextBlock:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+    class FakeAssistantMessage:
+        def __init__(self) -> None:
+            self.content = [FakeTextBlock("Hello")]
+            self.usage = None
+            self.stop_reason = "end_turn"
+
+    class FakeResultMessage:
+        usage = None
+        total_cost_usd = None
+        model_usage = {
+            "claude-sonnet-5": {
+                "inputTokens": 300,
+                "outputTokens": 90,
+                "cacheReadInputTokens": 0,
+                "cacheCreationInputTokens": 0,
+                "costUSD": 0.0018,
+            },
+        }
+        stop_reason = "end_turn"
+        result = "Hello"
+        is_error = False
+
+    class FakeClaudeAgentOptions:
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+
+    class FakeClaudeSDKClient:
+        def __init__(self, options: FakeClaudeAgentOptions) -> None:
+            pass
+
+        async def connect(self) -> None:
+            return None
+
+        async def disconnect(self) -> None:
+            return None
+
+        async def query(self, prompt: str, session_id: str = "default") -> None:
+            return None
+
+        async def receive_response(self) -> AsyncIterator[Any]:
+            yield FakeAssistantMessage()
+            yield FakeResultMessage()
+
+    fake_sdk = ModuleType("claude_agent_sdk")
+    fake_sdk.AssistantMessage = FakeAssistantMessage
+    fake_sdk.ClaudeAgentOptions = FakeClaudeAgentOptions
+    fake_sdk.ClaudeSDKClient = FakeClaudeSDKClient
+    fake_sdk.ResultMessage = FakeResultMessage
+    fake_sdk.StreamEvent = type("FakeStreamEvent", (), {})
+    fake_sdk.TextBlock = FakeTextBlock
+    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
+
+    chunks = [
+        chunk
+        async for chunk in claude_code_litellm._astream_sdk(
+            prompt="hello",
+            model="sonnet-5",
+            timeout=5.0,
+            cwd="/tmp/clio",
+        )
+    ]
+
+    final_usage = chunks[-1]["usage"]
+    assert final_usage["prompt_tokens"] == 300
+    assert final_usage["completion_tokens"] == 90
+    assert final_usage["cost_usd"] == pytest.approx(0.0018)
+
+
+def test_custom_llm_completion_reports_real_cost_via_hidden_params() -> None:
+    """The blocking path's cost must reach ``ModelResponse._hidden_params
+    ["response_cost"]`` -- the exact field ``dspy.clients.base_lm`` reads into
+    its history entry's top-level ``"cost"`` -- not just the Usage object."""
+    with patch("clio_agent.providers.claude_code_litellm._run_sdk") as run_mock:
+        run_mock.return_value = (
+            "assistant text",
+            {"input_tokens": 4, "output_tokens": 3, "cost_usd": 0.0007},
+        )
+        resp = ClaudeCodeLLM().completion(
+            model="claude_code/cc-sonnet",
+            messages=[{"role": "user", "content": "hi"}],
+            api_base="",
+            custom_prompt_dict={},
+            model_response=MagicMock(),
+            print_verbose=None,
+            encoding=None,
+            api_key=None,
+            logging_obj=None,
+            optional_params={},
+        )
+
+    assert resp._hidden_params["response_cost"] == pytest.approx(0.0007)
+    assert dict(resp.usage)["cost_usd"] == pytest.approx(0.0007)
+
+
+def test_custom_llm_completion_reports_no_cost_field_when_sdk_reported_none() -> None:
+    """No cost source (no total_cost_usd, no model_usage match) must leave the
+    response with NO cost signal at all -- never a fabricated $0.00 that would
+    look identical to a provider-confirmed free turn."""
+    with patch("clio_agent.providers.claude_code_litellm._run_sdk") as run_mock:
+        run_mock.return_value = ("assistant text", {"input_tokens": 4, "output_tokens": 3})
+        resp = ClaudeCodeLLM().completion(
+            model="claude_code/cc-sonnet",
+            messages=[{"role": "user", "content": "hi"}],
+            api_base="",
+            custom_prompt_dict={},
+            model_response=MagicMock(),
+            print_verbose=None,
+            encoding=None,
+            api_key=None,
+            logging_obj=None,
+            optional_params={},
+        )
+
+    assert "response_cost" not in resp._hidden_params
+    assert "cost_usd" not in dict(resp.usage)
 
 
 async def test_astream_sdk_model_rejection_raises_typed_not_transient(monkeypatch) -> None:
@@ -685,7 +895,17 @@ def test_acompletion_does_not_hold_the_callers_loop(monkeypatch) -> None:
     started = threading.Event()
     release = threading.Event()
 
-    def _parked_sdk(*, prompt, native_blocks, model, timeout, cwd, thinking=None):
+    def _parked_sdk(
+        *,
+        prompt,
+        native_blocks,
+        model,
+        timeout,
+        cwd,
+        thinking=None,
+        system_prompt=None,
+        call_index=0,
+    ):
         started.set()
         assert release.wait(timeout=5.0)
         return "judged", {"input_tokens": 1, "output_tokens": 1}

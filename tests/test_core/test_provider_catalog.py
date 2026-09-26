@@ -55,11 +55,10 @@ class TestRegistryInvariants:
             assert p.label, f"{p.id}: empty label"
             assert p.provider_kind, f"{p.id}: empty provider_kind"
             # api_base may be conceptually empty for future providers
-            # (e.g. Codex SDK transport doesn't need a URL), but every
-            # entry shipped today must have one. When the codex
-            # registry entry switches to the CustomLLM path in #51, this
-            # check may need a "provider_kind == 'codex' or api_base"
-            # exemption.
+            # (e.g. the direct Codex transport doesn't need an HTTP
+            # URL -- its api_base is the identity marker
+            # "codex://direct"), but every entry shipped today must
+            # have one.
             assert p.api_base or p.litellm_prefix in {"azure", "gemini", "vertex_ai", "bedrock"}, (
                 f"{p.id}: empty api_base without a cloud-native LiteLLM route"
             )
@@ -120,6 +119,21 @@ class TestLookups:
     def test_get_provider_returns_none_for_unknown(self) -> None:
         assert get_provider("does-not-exist") is None
 
+    def test_inner_loop_owner_defaults_to_clio_for_every_provider(self) -> None:
+        """Every direct provider's tool/reasoning loop is CLIO's own DSPy
+        ReAct loop -- the flag defaults true rather than needing an explicit
+        entry per provider."""
+        assert all(p.inner_loop_owner == "clio" for p in PROVIDERS)
+
+    def test_claude_code_declares_inner_loop_owner_clio(self) -> None:
+        """S2 (B7 not adopted): claude_code's own SDK never runs its own tool
+        loop for CLIO -- ``tools=[]`` on the SDK session means CLIO's ReAct
+        loop drives every turn end-to-end. Explicit on the record (not just
+        the dataclass default) so the ruling is documented in one place."""
+        p = get_provider("claude_code")
+        assert p is not None
+        assert p.inner_loop_owner == "clio"
+
     def test_kind_default_resolves_argonne_sophia(self) -> None:
         p = kind_default("argonne")
         assert p is not None
@@ -153,9 +167,12 @@ class TestDerivedViews:
                 assert key in row, f"{kind}: missing {key}"
 
     def test_provider_defaults_argonne_overrides(self) -> None:
+        # model-capabilities brief 9.1: no static suggested model id, no static
+        # max_tokens_default override -- live discovery / the handshake-derived
+        # output limit decide both, not a compiled-in ALCF gateway guess.
         row = as_provider_defaults_dict()["argonne"]
-        assert row["model"] == "openai/gpt-oss-120b"
-        assert row["max_tokens"] == 4096
+        assert row["model"] == ""
+        assert "max_tokens" not in row
         assert row["strip_openai_prefix"] is False
 
     def test_codex_parse_retry_is_a_catalog_capability(self) -> None:
@@ -163,12 +180,11 @@ class TestDerivedViews:
         assert defaults["codex"]["parse_retry_capability"] == "single_attempt"
         assert defaults["anthropic"].get("parse_retry_capability", "bounded") == "bounded"
 
-    def test_argonne_catalog_prefers_modern_models_before_legacy_llama31(self) -> None:
-        models = as_provider_models_dict()["argonne_sophia"]
-        ids = [row["id"] for row in models]
-        assert ids[:3] == ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "gpt-oss-120b"]
-        assert "meta-llama/Meta-Llama-3.1-8B-Instruct" in ids
-        assert ids.index("openai/gpt-oss-120b") < ids.index("meta-llama/Meta-Llama-3.1-8B-Instruct")
+    def test_argonne_catalog_has_no_static_model_list(self) -> None:
+        # model-capabilities brief 9.1: the static _ARGONNE_MODELS fallback is
+        # deleted. The live /jobs discovery (unchanged) is the only source of
+        # ALCF model rows now; the static catalog fallback is empty.
+        assert as_provider_models_dict()["argonne_sophia"] == []
 
     def test_cloud_api_key_env_only_cloud_kinds(self) -> None:
         env_map = as_cloud_api_key_env()
@@ -197,17 +213,19 @@ class TestDerivedViews:
         # up by wire kind.
         assert "argonne" in models
 
-    def test_codex_catalog_uses_user_facing_model_ids(self) -> None:
-        models = as_provider_models_dict()["codex"]
-        ids = {row["id"] for row in models}
-        assert {"gpt-5.5", "gpt-5.5-codex", "gpt-5.1"} <= ids
-        assert all(not model_id.startswith("cdx-") for model_id in ids)
+    def test_codex_catalog_has_no_static_model_list(self) -> None:
+        # model-capabilities brief 9.1: codex's compiled-in candidate model ids
+        # are deleted -- the maintained catalog check is the only source of
+        # a codex model id now, never a stale compiled-in guess.
+        assert as_provider_models_dict()["codex"] == []
 
-    def test_claude_code_catalog_uses_user_facing_model_ids(self) -> None:
-        models = as_provider_models_dict()["claude_code"]
-        ids = {row["id"] for row in models}
-        assert {"sonnet", "opus", "haiku"} <= ids
-        assert all(not model_id.startswith("cc-") for model_id in ids)
+    def test_claude_code_catalog_has_no_static_model_list(self) -> None:
+        # Follow-up to model-capabilities brief 9.1: claude_code's own former
+        # exception (fable/haiku/sonnet/opus rows with real vision evidence)
+        # is deleted too -- that evidence now comes from the maintained
+        # catalog document (catalogs/claude-code-models.json), read through
+        # ClaudeCodeCatalogHandshake, never a second static list here.
+        assert as_provider_models_dict()["claude_code"] == []
 
     def test_local_vllm_is_not_labeled_as_alcf_provider(self) -> None:
         provider = get_provider("argonne_local_vllm")
@@ -253,7 +271,6 @@ def test_provider_dataclass_round_trip() -> None:
     )
     assert p.requires_api_key is True  # default
     assert p.auth_method == "api_key"
-    assert p.max_tokens_default == 32000
     assert p.strip_openai_prefix is True
     assert p.is_kind_default is False
     assert p.model_catalog == ()

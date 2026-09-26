@@ -21,7 +21,7 @@ and [claude_code](claude_code.md) for CLI-backed examples).
 | `openai` | `openai` | `OPENAI_API_KEY` | Direct OpenAI API (per-token billing) |
 | `anthropic` | `anthropic` | `ANTHROPIC_API_KEY` | Direct Anthropic API (per-token billing) |
 | `openrouter` | `openai` | api_key | OpenAI-compat gateway to many providers; free tier available |
-| [`codex`](codex.md) | `codex` | `codex login` | Your ChatGPT / Codex subscription, no per-token cost |
+| [`codex`](codex.md) | `codex` | in-app sign-in (OAuth) | Your Codex subscription, no per-token cost |
 | [`claude_code`](claude_code.md) | `claude_code` | `claude login` | Your Claude Code subscription, no Anthropic API key |
 | `argonne_sophia` | `argonne` | Globus OAuth | ALCF Sophia inference gateway (vLLM) |
 | `argonne_metis` | `argonne` | Globus OAuth | ALCF Metis inference gateway (gpt-oss-120b) |
@@ -55,7 +55,7 @@ litellm.completion()              (matches provider prefix → handler)
   ↓
 either:
   - native LiteLLM handler        (openai/, anthropic/, …)
-  - CustomLLM in custom_provider_map  (codex/, claude_code/)
+  - CustomLLM in custom_provider_map  (codex_direct/, claude_code/)
 ```
 
 The `CustomLLM` handlers for codex and Claude Code are registered lazily
@@ -64,7 +64,7 @@ that do not use those providers.
 
 ## Provider-specific docs
 
-- [OpenAI Codex](codex.md) — uses your ChatGPT / Codex subscription
+- [Codex](codex.md) — uses your Codex subscription
 - [Claude Code](claude_code.md) — uses your Claude subscription
 
 ## Local reasoning model profiles

@@ -56,7 +56,7 @@ That's it — no `git`, no `go`.
 ### Persistent backend-only install with uv
 
 CLIO intentionally pins DSPy, FastMCP, and FastMCP Tasks prereleases and
-`litellm==1.91.3` as its tested stable provider boundary. Registry-backed uv tool
+`litellm==1.102.1` as its tested stable provider boundary. Registry-backed uv tool
 resolution requires those exact prereleases as explicit roots, which keeps unrelated
 dependencies on stable releases.
 
@@ -64,7 +64,7 @@ If you only need the long-running `clio-agent` backend, install it as a persiste
 tool rather than using the ephemeral `uvx` / `uv tool run` environment:
 
 ```sh
-uv tool install --with dspy==3.3.0b1 --with fastmcp==4.0.0b5 --with fastmcp-slim==4.0.0b5 --with fastmcp-tasks==4.0.0b5 clio-agent==0.9.4.17
+uv tool install --with dspy==3.3.0b1 --with fastmcp==4.0.0b5 --with fastmcp-slim==4.0.0b5 --with fastmcp-tasks==4.0.0b5 clio-agent==0.9.4.18
 clio-agent serve
 ```
 
@@ -109,7 +109,7 @@ CLIO_REF=develop CLIO_GIT_PROTOCOL=ssh \
 
 ```sh
 # Pin the PyPI version and matching clio-agent GitHub release tag
-CLIO_VERSION=0.9.4.17 \
+CLIO_VERSION=0.9.4.18 \
   curl -fsSL https://raw.githubusercontent.com/iowarp/clio-agent/main/install/install.sh | bash
 ```
 

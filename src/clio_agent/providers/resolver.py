@@ -45,7 +45,7 @@ from clio_agent.providers.handshake import run_handshake_sync
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from clio_agent.config import LMProviderConfig
-    from clio_agent.providers.handshake.model import HandshakeReport, ModelProfile
+    from clio_agent.providers.handshake.model import DiscoveredModel, HandshakeReport
     from clio_agent.providers.lm_spec import LMSpec
 
 __all__ = [
@@ -131,27 +131,15 @@ def handshake_fallback_payload(reason: str, message: str = "") -> dict[str, Any]
     return payload
 
 
-def _matched_profile(report: "HandshakeReport", model: str) -> "ModelProfile | None":
-    """Return the profile a handshake ``report`` would fold for ``model``.
+def _matched_profile(report: "HandshakeReport", model: str) -> "DiscoveredModel | None":
+    """Return the discovered model a handshake ``report`` would fold for ``model``.
 
-    Mirrors the matching order in :meth:`LMProviderConfig.apply_handshake` (exact
-    id → vendor-prefix basename → the sole model when only one is served) so the
-    resolver can decide whether a real fold happened and, if not, record a
-    structured fallback reason.
+    Delegates to :meth:`HandshakeReport.match_model` (exact id -> vendor-prefix
+    basename -> the sole model when only one is served) -- the SAME method
+    :meth:`LMProviderConfig.apply_handshake` uses, so the resolver's "did a real
+    fold happen" decision can never disagree with what actually got folded.
     """
-    models = getattr(report, "models", None) or ()
-    if not models:
-        return None
-    profile = report.model(model) if hasattr(report, "model") else None
-    if profile is not None:
-        return profile
-    want = model.rsplit("/", 1)[-1].lower()
-    profile = next((m for m in models if m.id.rsplit("/", 1)[-1].lower() == want), None)
-    if profile is not None:
-        return profile
-    if len(models) == 1:
-        return models[0]
-    return None
+    return report.match_model(model) if hasattr(report, "match_model") else None
 
 
 @dataclass(frozen=True)
@@ -256,12 +244,20 @@ def _build_key_less_skeleton(spec: "LMSpec") -> tuple["LMProviderConfig", str]:
     provider = spec.provider
     kwargs: dict[str, Any] = {
         "provider": provider,
-        "provider_id": spec.provider_id or provider,
+        # Leave provider_id EMPTY rather than defaulting it to the kind: an
+        # explicit provider_id is an identity claim and gets no kind_default
+        # fallback (Part 3), so passing the kind here as a stand-in would
+        # reject a legitimate no-id LMSpec (e.g. provider="argonne", which has
+        # no preset of that id -- only argonne_sophia/argonne_metis). Leaving
+        # it empty lets LMProviderConfig.__post_init__'s own bare-kind
+        # convenience resolution apply, exactly as if the caller had passed
+        # only ``provider=`` directly.
+        "provider_id": spec.provider_id,
         "api_base": spec.api_base,
         "model": spec.model,
         "provider_options": dict(spec.provider_options),
         "api_key": _CRED_DEFERRED_SENTINEL,
-        "temperature": spec.temperature if spec.temperature is not None else 0.0,
+        "temperature": spec.temperature,
         "max_tokens": spec.max_tokens or 0,
         "thinking_budget": spec.thinking_budget or 0,
         "thinking_level": spec.thinking_level,
@@ -272,6 +268,8 @@ def _build_key_less_skeleton(spec: "LMSpec") -> tuple["LMProviderConfig", str]:
     }
     if provider == "codex" and spec.transport:
         kwargs["codex_transport"] = spec.transport
+    if provider == "codex" and spec.variant:
+        kwargs["codex_variant"] = spec.variant
     if provider == "claude_code" and spec.transport:
         kwargs["claude_code_transport"] = spec.transport
     config = LMProviderConfig(**kwargs)  # type: ignore[arg-type]
@@ -308,7 +306,12 @@ def _fold_handshake(
     try:
         report = run_handshake_sync(
             HandshakeContext(
-                provider_id=spec.provider_id or spec.provider,
+                # config.provider_id, not spec.provider_id or spec.provider: the
+                # skeleton already carries the RESOLVED identity (Part 3) --
+                # e.g. "argonne_sophia", never the bare kind "argonne" a
+                # kind-only LMSpec would otherwise leak into the handshake
+                # cache key.
+                provider_id=config.provider_id,
                 provider_kind=spec.provider,
                 api_base=config.api_base,
                 api_key="",

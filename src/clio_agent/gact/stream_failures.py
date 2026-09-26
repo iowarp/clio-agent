@@ -12,15 +12,15 @@ from clio_agent.providers.claude_code_errors import (
     CLAUDE_CODE_INSTALL_FAILED_MESSAGE,
     contains_claude_code_dependency_error,
 )
-from clio_agent.providers.codex_errors import (
+from clio_agent.providers.codex.errors import (
     CODEX_AUTHENTICATION_ERROR_MESSAGE,
     contains_codex_authentication_error,
 )
 
 # Leaf-scan order for an exception group that matched nothing at the top
 # level. The top-level check already recurses for Claude Code (its detector
-# walks ``.exceptions``) but not for Codex auth, so a group holding both kinds
-# of leaf reports the Claude Code message.
+# walks ``.exceptions``) but not for Codex auth, so a group holding both
+# kinds of leaf reports the Claude Code message.
 CLI_PROVIDER_FAILURE_MESSAGES: tuple[str, ...] = (
     CODEX_AUTHENTICATION_ERROR_MESSAGE,
     CLAUDE_CODE_INSTALL_FAILED_MESSAGE,
@@ -34,8 +34,8 @@ def cli_provider_stream_failure(exc: BaseException) -> str | None:
         exc: The exception raised by a streamed provider call.
 
     Returns:
-        The stable message when ``exc`` is a Codex authentication failure or a
-        missing Claude Code dependency, otherwise ``None``.
+        The stable message when ``exc`` is a Codex authentication failure or
+        a missing Claude Code dependency, otherwise ``None``.
     """
     if contains_codex_authentication_error(exc):
         return CODEX_AUTHENTICATION_ERROR_MESSAGE

@@ -64,14 +64,14 @@ def test_selecting_sdk_transport_stream_yields_typed_error(
     assert "could not install Claude Code support" in str(excinfo.value)
 
 
-def test_sdk_pool_complete_yields_typed_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The pooled SDK seam surfaces the typed error, not an ImportError trace."""
+def test_run_sdk_yields_typed_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The blocking completion seam (S2: rides the same session pool the
+    streaming path uses) surfaces the typed error, not an ImportError trace."""
 
-    from clio_agent.providers.claude_code_sdk_pool import _SdkSession
+    from clio_agent.providers.claude_code_blocking import _run_sdk
 
     _force_sdk_absent(monkeypatch)
 
-    session = _SdkSession()
     with pytest.raises(ClaudeCodeCLIUnavailableError) as excinfo:
-        session.complete(prompt="hi", model="claude-x", timeout=5.0, cwd=None)
+        _run_sdk(prompt="hi", model="claude-x", timeout=5.0, cwd=None)
     assert "could not install Claude Code support" in str(excinfo.value)

@@ -56,18 +56,22 @@ def detect_declared_used_edges(
 
     Each ref resolves against the registry: an ``artifact_<hex>`` id resolves
     DIRECTLY (:meth:`ArtifactRegistry.get_by_artifact_id`, workspace-agnostic —
-    the model may cite an input it read from a sibling workspace); an exact
+    the model may cite an input it read from a sibling workspace); a
+    ``res_<hex>`` id resolves via the resource it names — WORKSPACE-SCOPED —
+    to its registered source artifact (:mod:`resource_sources`, A1); an exact
     HTTP(S) URL becomes an assertion-class external source; anything else is a
     workspace path, containment-checked against the bound root and
     matched by :meth:`ArtifactRegistry.find_version_by_path` (the SAME matcher
     ``transform_edges.detect_used_edges`` uses for the generic arg-scan
     channel — which excludes THIS arg via ``_DECLARED_CHANNEL_ARG_NAMES`` so
-    the two never double-edge the same ref). Precision over recall (#966.10):
-    an unresolvable ref is NEVER fabricated into an edge — it lands as a typed
-    ``used_ref_unresolved`` note so the miss is detectable on the trace, never
-    silently dropped. Absent/blank ``used`` -> no edges, no notes at all (the
-    regression pin: an ordinary ``create_artifact`` call without declared
-    inputs stays exactly as before).
+    the two never double-edge the same ref; a source artifact's own
+    ``.clio/inputs/<res_id>/<name>`` working-copy path resolves here too, once
+    ``resource_sources.register_resource_source`` has registered it). Precision
+    over recall (#966.10): an unresolvable ref is NEVER fabricated into an edge
+    — it lands as a typed ``used_ref_unresolved`` note so the miss is
+    detectable on the trace, never silently dropped. Absent/blank ``used`` ->
+    no edges, no notes at all (the regression pin: an ordinary
+    ``create_artifact`` call without declared inputs stays exactly as before).
     """
     short = tool_name.rsplit(".", 1)[-1] if "." in tool_name else tool_name
     if short != _CREATE_ARTIFACT_TOOL_NAME:
@@ -91,7 +95,9 @@ def detect_declared_used_edges(
         if url_edge is not None:
             edges.append(url_edge)
             continue
-        resolved = _resolve_declared_used_ref(registry, root, workspace_id, ref, _contained)
+        resolved = _resolve_declared_used_ref(
+            app, registry, root, workspace_id, ref, _contained
+        )
         if resolved is None:
             notes.append({"reason": "used_ref_unresolved", "arg": "used", "ref": ref})
             continue
@@ -134,6 +140,7 @@ def _declared_url_edge(ref: str) -> ProvEdge | None:
 
 
 def _resolve_declared_used_ref(
+    app: "FastAPI",
     registry: Any,
     root: Optional[Path],
     workspace_id: str,
@@ -142,13 +149,16 @@ def _resolve_declared_used_ref(
 ) -> Optional[tuple[Any, Any]]:
     """Resolve one declared ``used`` ref to ``(record, version)``, or ``None``.
 
-    An ``artifact_<hex>`` ref resolves DIRECTLY by id; anything else is a
+    An ``artifact_<hex>`` ref resolves DIRECTLY by id; a ``res_<hex>`` ref
+    resolves via :func:`_resolve_resource_source_ref`; anything else is a
     workspace path, resolved relative to the bound root and matched by its
     recorded ``version.path``. ``None`` means the caller records a typed miss
     — this never raises and never guesses.
     """
     if ref.startswith("artifact_"):
         return registry.get_by_artifact_id(ref)
+    if ref.startswith("res_"):
+        return _resolve_resource_source_ref(app, registry, workspace_id, ref)
     if root is None:
         return None
     try:
@@ -161,6 +171,25 @@ def _resolve_declared_used_ref(
     except (TypeError, ValueError, OSError):
         return None
     return registry.find_version_by_path(workspace_id, resolved_path)
+
+
+def _resolve_resource_source_ref(
+    app: "FastAPI", registry: Any, workspace_id: str, ref: str
+) -> Optional[tuple[Any, Any]]:
+    """Resolve a model-cited ``res_<hex>`` id to its registered source artifact.
+
+    Workspace-scoped (unlike the workspace-agnostic ``artifact_<hex>`` form):
+    a resource id only ever names a resource IN the citing workspace. ``None``
+    — a typed miss, never a guess — when the resource is unknown, not yet
+    registered (:mod:`resource_sources`), or its registration failed.
+    """
+    store = getattr(app.state, "resource_store", None)
+    if store is None:
+        return None
+    record = store.get(workspace_id, ref)
+    if record is None or not record.source_artifact_id:
+        return None
+    return registry.get_by_artifact_id(record.source_artifact_id)
 
 
 __all__ = [

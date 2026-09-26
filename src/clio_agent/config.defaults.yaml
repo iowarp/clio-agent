@@ -71,6 +71,11 @@ runtime.lm_token_liveness: true
 # trusted local dev where sandbox setup gets in the way.
 sandbox.enabled: true
 
+# CLIO_RELEASE_MANIFEST_URL  (str)  <- src/clio_agent/gact/routes/latest_release.py
+# Release manifest the server reads to report the latest CLIO release to
+# clients; point at a mirror or a fork's releases feed.
+system.release_manifest_url: "https://github.com/iowarp/clio-agent/releases/latest/download/latest-lite.json"
+
 # ==========================================================================
 # Language models + providers
 # ==========================================================================
@@ -88,9 +93,14 @@ sandbox.enabled: true
 # lm.claude_code_transport:  # default unset; resolved in code
 
 # CLIO_CODEX_TRANSPORT  (str)  <- src/clio_agent/config.py
-# Selects the Codex transport; "sdk" is the only supported value, kept as an
-# explicit contract check, not a tuning knob.
+# Selects the Codex transport; "websocket" (default, with delta
+# continuation) or "sse" to force the automatic-fallback transport.
 # lm.codex_transport:  # default unset; resolved in code
+
+# CLIO_CODEX_VARIANT  (str)  <- src/clio_agent/config.py
+# Selects which Codex transport a config binds: "direct" (default, CLIO
+# sign-in) or "sdk" (the local Codex app login).
+# lm.codex_variant:  # default unset; resolved in code
 
 # CLIO_LM_CONTEXT_WINDOW  (int)  <- src/clio_agent/config.py
 # Override the effective context window (tokens); 0 auto-derives from the
@@ -108,11 +118,6 @@ lm.defer_tiktoken: true
 # Force-disables the JSON-adapter fallback for cloud providers that reject
 # response_format; set true if a provider 400s on it.
 lm.disable_json_adapter_fallback: false
-
-# CLIO_LM_DISABLE_THINKING  (bool)  <- src/clio_agent/lm/factory.py
-# Turns off reasoning/"thinking" sampling for the active LM; set true to
-# force a reasoning-capable model into non-reasoning mode.
-lm.disable_thinking: false
 
 # CLIO_LM_GUIDED_OUTPUT  (bool)  <- src/clio_agent/lm/adapters.py
 # Switches to schema-constrained JSON output instead of the text
@@ -160,19 +165,16 @@ lm.lmstudio_flash_attention: true
 # codex, claude_code); change to switch which provider clio talks to.
 lm.provider: "lm_studio"
 
-# CLIO_LM_REASONING_MODEL  (str)  <- src/clio_agent/lm/adapters.py
-# Forces/forbids reasoning-model behavior for the active model, overriding
-# auto-detection; set when auto-detection misclassifies a model.
-# lm.reasoning_model:  # default unset; resolved in code
-
-# CLIO_LM_STOP_SEQUENCES  (str)  <- src/clio_agent/lm/factory.py
-# ||-joined stop sequences for reasoning models to truncate output after the
-# final field; override if a model's trace leaks past stop points.
+# CLIO_LM_STOP_SEQUENCES  (str)  <- src/clio_agent/lm/request_builder.py
+# ||-joined override for the DSPy trajectory-regurgitation stop sequences,
+# sent whenever the endpoint's effective parameter set accepts `stop`;
+# override if a model's trace leaks past stop points.
 # lm.stop_sequences:  # default unset; resolved in code
 
 # CLIO_LM_TEMPERATURE  (float)  <- src/clio_agent/config.py
-# Sampling temperature for the main agentic LM calls; defaults to 0.0 since
-# clio drives structured tool-call output, raise for creative sampling.
+# Sampling temperature for the main agentic LM calls; unset by default so
+# the provider/model's own sampling default applies (model-capabilities
+# brief Part 7 item 1) -- set to force a specific value.
 # lm.temperature:  # default unset; resolved in code
 
 # CLIO_LM_THINKING_BUDGET  (int)  <- src/clio_agent/config.py
@@ -201,21 +203,16 @@ lm.provider: "lm_studio"
 # abandoned as inconclusive; raise on hosts where cold CLI startup is slow.
 providers.claude_code.auth_status_timeout_s: 20.0
 
-# CLIO_CLAUDE_CODE_MAX_BASE_CONNECTIONS  (int)  <- src/clio_agent/providers/claude_code_stream_bounds.py
-# Max idle shared Claude Code connections (one per model and reasoning
-# level) kept pooled before the least recently used is closed; raise if you
-# switch levels often.
-providers.claude_code.max_base_connections: 4
-
 # CLIO_CLAUDE_CODE_MAX_CONCURRENT_PROCESSES  (float)  <- src/clio_agent/providers/claude_code_stream_bounds.py
 # Process-wide cap on concurrently-connected claude CLI subprocesses; a
 # connect beyond it waits, raise for more concurrent sessions.
 providers.claude_code.max_concurrent_processes: 4.0
 
-# CLIO_CLAUDE_CODE_SESSION_REUSE  (bool)  <- src/clio_agent/providers/claude_code_sessions.py
-# Keeps a pooled/reused SDK connection per scope instead of a fresh client
-# per call; set false to restore pre-#891 fresh-connect behavior.
-providers.claude_code.session_reuse: true
+# CLIO_CLAUDE_CODE_MAX_PRECEDE_CONNECTS  (float)  <- src/clio_agent/providers/claude_code_stream_bounds.py
+# Max session-open Claude Code SDK pre-connects (B2) pending at once; 0
+# disables session-open pre-connect entirely, raise for more sessions
+# starting at once.
+providers.claude_code.max_precede_connects: 2.0
 
 # CLIO_CLAUDE_CODE_STATEFUL_CAPACITY  (float)  <- src/clio_agent/providers/claude_code_stateful.py
 # Max live Claude Code stateful-session entries before LRU eviction; raise
@@ -223,14 +220,9 @@ providers.claude_code.session_reuse: true
 providers.claude_code.stateful_capacity: 128.0
 
 # CLIO_CLAUDE_CODE_STREAM_IDLE_TTL_S  (float)  <- src/clio_agent/providers/claude_code_stream_bounds.py
-# Seconds a scope-keyed pooled Claude Code connection may sit idle before
-# the next request reaps it; lower to free idle connections sooner.
+# Seconds a session's pooled Claude Code connection may sit idle before the
+# next request reaps it; lower to free idle connections sooner.
 providers.claude_code.stream_idle_ttl_s: 15.0
-
-# CLIO_CODEX_CREDENTIAL_HOME_CAPACITY  (int)  <- src/clio_agent/providers/codex_credential_home.py
-# Max simultaneous private CODEX_HOME credential-dir copies the Codex SDK
-# transport keeps alive; raise for many concurrent Codex sessions.
-providers.codex.credential_home_capacity: 4
 
 # CLIO_MODEL_CATALOG_TTL_S  (float)  <- src/clio_agent/providers/model_discovery/overlay.py
 # Seconds a discovered provider model catalog is served as fresh before
@@ -293,7 +285,7 @@ limits.agent_task_artifact_context_chars: 64000
 # sooner.
 limits.agent_task_output_digest_chars: 8000
 
-# CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S  (float)  <- src/clio_agent/providers/codex_stream.py
+# CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S  (float)  <- src/clio_agent/providers/codex/sdk_client.py
 # Max silence (seconds) for one Codex SDK exchange/event, resetting on every
 # progress event rather than a fixed clock; raise for long turns.
 limits.codex_sdk_progress_timeout_s: 120.0

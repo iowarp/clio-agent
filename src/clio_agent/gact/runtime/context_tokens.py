@@ -114,7 +114,7 @@ _TIKTOKEN_MODEL_PREFIXES = (
     "o1",
     "o3",
     "o4",
-    "chatgpt",
+    "codex",
     "text-",
     "davinci",
     "babbage",

@@ -178,7 +178,7 @@ def test_e9_completions_capability_exists_but_clio_never_surfaces_it() -> None:
 
     # Unambiguous MCP-specific signal, not the bare ".complete(" substring
     # (which also matches unrelated completions, e.g. the Claude Agent SDK's
-    # own session.complete() for LM calls in providers/claude_code_sdk_pool.py).
+    # own client transport for LM calls in providers/claude_code_sessions.py).
     src_root = Path("src/clio_agent")
     call_sites = [
         str(path)

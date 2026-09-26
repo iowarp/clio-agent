@@ -4,7 +4,7 @@ Zero tests existed on this path before this change (flagged explicitly in
 review). Covers: overlay-first ``discover_models`` (falling back to the static
 registry catalog when absent/malformed, logging the malformed case — review
 R5), and the D4 fix itself — an overlay-sourced model's context/output limit is
-pre-filled onto its ``ModelProfile`` in ``discover_model_config`` and
+pre-filled onto its ``ModelCapabilities`` in ``discover_model_config`` and
 ``enrich_capabilities`` SKIPS the models.dev/litellm/local-DB cascade entirely
 for it (whether the persisted value is a real number or a confirmed miss),
 while a static-catalog-sourced row (no overlay yet) still runs the cascade
@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 
+from clio_agent.providers.codex.credentials import CodexCredentialStore
 from clio_agent.providers.handshake.base import HandshakeContext
 from clio_agent.providers.handshake.cli_catalog import (
     ClaudeCodeCatalogHandshake,
@@ -40,32 +41,20 @@ def _ctx(provider_id: str = "codex", provider_kind: str = "codex") -> HandshakeC
     return HandshakeContext(
         provider_id=provider_id,
         provider_kind=provider_kind,
-        api_base="codex://sdk",
+        api_base="codex://direct",
         allow_external_sources=True,
     )
 
 
-def _codex_auth(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    home = tmp_path / "codex-home"
-    home.mkdir(exist_ok=True)
-    (home / "auth.json").write_text('{"token":"test"}', encoding="utf-8")
-    monkeypatch.setenv("CODEX_HOME", str(home))
-
-
-def _codex_sdk_present(monkeypatch: pytest.MonkeyPatch) -> None:
-    original = importlib.util.find_spec
-    monkeypatch.setattr(
-        importlib.util,
-        "find_spec",
-        lambda name: object() if name == "openai_codex" else original(name),
-    )
+def _codex_signed_in(monkeypatch: pytest.MonkeyPatch, *, signed_in: bool) -> None:
+    monkeypatch.setattr(CodexCredentialStore, "is_signed_in", lambda self: signed_in)
 
 
 def test_codex_handshake_requires_credentials(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing"))
-    _codex_sdk_present(monkeypatch)
+    _codex_signed_in(monkeypatch, signed_in=False)
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     report = asyncio.run(CodexCatalogHandshake(provider=None).handshake(_ctx()))
     assert report.connectivity is ConnectivityState.SKIPPED
     assert report.auth is AuthState.MISSING
@@ -75,9 +64,8 @@ def test_codex_handshake_requires_credentials(
 def test_codex_handshake_requires_a_live_verification(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _codex_auth(tmp_path, monkeypatch)
+    _codex_signed_in(monkeypatch, signed_in=True)
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
-    _codex_sdk_present(monkeypatch)
     report = asyncio.run(CodexCatalogHandshake(provider=None).handshake(_ctx()))
     assert report.connectivity is ConnectivityState.SKIPPED
     assert report.auth is AuthState.DEFERRED
@@ -87,9 +75,8 @@ def test_codex_handshake_requires_a_live_verification(
 def test_codex_handshake_ready_only_after_verified_catalog(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _codex_auth(tmp_path, monkeypatch)
+    _codex_signed_in(monkeypatch, signed_in=True)
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
-    _codex_sdk_present(monkeypatch)
     record_refresh(
         ProviderDiscoveryResult(
             provider="codex",
@@ -162,13 +149,81 @@ def test_claude_code_handshake_ready_only_after_live_probe(
 def test_discover_models_absent_overlay_falls_back_to_static_catalog(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """codex's ``Provider.model_catalog`` is empty (model-capabilities brief
+    9.1: no compiled-in candidate ids -- only a verified SDK catalog check
+    supplies one), so the generic :class:`NoOpHandshake` fallback this
+    exercises (via the base :meth:`CliCatalogHandshake._fallback_models`)
+    correctly returns nothing until an explicit refresh has run."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     handshake = CliCatalogHandshake(provider=None)
     rows = asyncio.run(handshake.discover_models(client=None, ctx=_ctx()))
-    # The static registry catalog for codex (3 candidate ids); none carry the
-    # overlay marker.
-    assert rows
-    assert all("_overlay_context_checked" not in r for r in rows)
+    assert rows == []
+
+
+def test_claude_code_fallback_reads_the_maintained_catalog_disk_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """No overlay yet (fresh install): ClaudeCodeCatalogHandshake reads the
+    maintained catalog's OWN disk cache instead of a static registry list --
+    real, typed capability_evidence rides through, never a compiled-in claim."""
+    from clio_agent.providers.model_discovery import claude_code_catalog
+
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    evidence = {
+        "source": "claude_code_catalog",
+        "source_description": "CLIO's maintained Claude Code model catalog document",
+        "reason": "modality_cataloged",
+        "description": "the maintained Claude Code catalog declares these input modalities for the model",
+    }
+    fake_catalog = claude_code_catalog.ClaudeCodeCatalog(
+        models=[
+            {
+                "id": "claude-sonnet-5",
+                "name": "Claude Sonnet 5",
+                "capabilities": ["text", "image", "pdf"],
+                "capability_evidence": evidence,
+            }
+        ],
+        default_model="claude-sonnet-5",
+        default_model_reason="",
+    )
+    monkeypatch.setattr(
+        claude_code_catalog, "cached_claude_code_catalog", lambda: (fake_catalog, "")
+    )
+
+    handshake = ClaudeCodeCatalogHandshake(provider=None)
+    rows = asyncio.run(
+        handshake.discover_models(
+            client=None, ctx=_ctx(provider_id="claude_code", provider_kind="claude_code")
+        )
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["id"] == "claude-sonnet-5"
+    assert rows[0]["capabilities"] == ["text", "image", "pdf"]
+    assert rows[0]["capability_evidence"] == evidence
+    assert "_overlay_context_checked" not in rows[0]
+
+
+def test_claude_code_fallback_is_empty_with_no_disk_cache_at_all(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A true cold start (never fetched on this machine, no network in this
+    passive/ambient path): an honest empty list, never a guess."""
+    from clio_agent.providers.model_discovery import claude_code_catalog
+
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    monkeypatch.setattr(
+        claude_code_catalog, "cached_claude_code_catalog", lambda: (None, "no cache, no network")
+    )
+
+    handshake = ClaudeCodeCatalogHandshake(provider=None)
+    rows = asyncio.run(
+        handshake.discover_models(
+            client=None, ctx=_ctx(provider_id="claude_code", provider_kind="claude_code")
+        )
+    )
+    assert rows == []
 
 
 def test_discover_models_present_overlay_served_with_context_marker(
@@ -206,16 +261,15 @@ def test_discover_models_malformed_overlay_degrades_to_static_and_logs(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """The passive/ambient path must never crash on a corrupt overlay (RULE 2);
-    it degrades to static -- but the degrade is LOGGED (#1211 review R5), never
-    silent."""
+    it degrades to the (for codex, empty -- brief 9.1) static fallback -- but
+    the degrade is LOGGED (#1211 review R5), never silent."""
     overlay_file = tmp_path / "overlay.json"
     overlay_file.write_text("{not valid json", encoding="utf-8")
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(overlay_file))
     handshake = CliCatalogHandshake(provider=None)
     with caplog.at_level(logging.WARNING):
         rows = asyncio.run(handshake.discover_models(client=None, ctx=_ctx()))
-    assert rows  # degraded to the static catalog, not an empty/crashed result
-    assert all("_overlay_context_checked" not in r for r in rows)
+    assert rows == []
     assert any("overlay malformed" in rec.message for rec in caplog.records)
 
 
@@ -236,12 +290,12 @@ def test_discover_model_config_prefills_from_overlay_row() -> None:
         "capabilities": ["text", "image"],
         "_overlay_context_checked": True,
     }
-    profile = asyncio.run(handshake.discover_model_config(client=None, ctx=_ctx(), raw=raw))
-    assert profile.id == "gpt-5.6-sol"
-    assert profile.context_window == 272000
-    assert profile.output_limit == 64000
-    assert profile.capabilities == ("text", "image")
-    assert profile.context_source == "models.dev"
+    facts = asyncio.run(handshake.discover_model_config(client=None, ctx=_ctx(), raw=raw))
+    assert facts.discovered.id == "gpt-5.6-sol"
+    assert facts.model.context_max.value == 272000
+    assert facts.model.output_max.value == 64000
+    assert facts.model.input_modalities.value == frozenset({"text", "image"})
+    assert facts.model.context_max.source == "server_report"
 
 
 def test_discover_model_config_prefills_a_confirmed_miss_as_none() -> None:
@@ -256,10 +310,10 @@ def test_discover_model_config_prefills_a_confirmed_miss_as_none() -> None:
         "context_source": "",
         "_overlay_context_checked": True,
     }
-    profile = asyncio.run(handshake.discover_model_config(client=None, ctx=_ctx(), raw=raw))
-    assert profile.context_window is None
-    assert profile.output_limit is None
-    assert profile.raw.get("_overlay_context_checked") is True
+    facts = asyncio.run(handshake.discover_model_config(client=None, ctx=_ctx(), raw=raw))
+    assert not facts.model.context_max.known
+    assert not facts.model.output_max.known
+    assert facts.discovered.raw.get("_overlay_context_checked") is True
 
 
 def test_discover_model_config_static_row_falls_through_to_noop_base() -> None:
@@ -267,9 +321,9 @@ def test_discover_model_config_static_row_falls_through_to_noop_base() -> None:
     same behavior as before #1211, the cascade still runs for it downstream."""
     handshake = CliCatalogHandshake(provider=None)
     raw = {"id": "gpt-5.5", "name": "GPT-5.5", "description": "candidate"}
-    profile = asyncio.run(handshake.discover_model_config(client=None, ctx=_ctx(), raw=raw))
-    assert profile.id == "gpt-5.5"
-    assert profile.context_window is None  # unresolved -- NoOpHandshake's base behavior
+    facts = asyncio.run(handshake.discover_model_config(client=None, ctx=_ctx(), raw=raw))
+    assert facts.discovered.id == "gpt-5.5"
+    assert not facts.model.context_max.known  # unresolved -- NoOpHandshake's base behavior
 
 
 def test_enrich_capabilities_skips_the_cascade_for_an_overlay_checked_profile(
@@ -277,9 +331,13 @@ def test_enrich_capabilities_skips_the_cascade_for_an_overlay_checked_profile(
 ) -> None:
     """#1211 D4 -- the real fix: enrich_capabilities must NEVER call
     resolve_context/resolve_output_limit for an overlay-checked profile, even
-    when its context_window is a confirmed-miss None (never re-attempt the
+    when its context_max is a confirmed-miss unknown (never re-attempt the
     cascade)."""
-    from clio_agent.providers.handshake.model import ModelProfile
+    from clio_agent.providers.capabilities.records import (
+        DeploymentCapabilities,
+        ModelCapabilities,
+    )
+    from clio_agent.providers.handshake.model import DiscoveredModel, DiscoveredModelFacts
 
     calls: list[str] = []
     monkeypatch.setattr(
@@ -292,14 +350,15 @@ def test_enrich_capabilities_skips_the_cascade_for_an_overlay_checked_profile(
     )
 
     handshake = CliCatalogHandshake(provider=None)
-    checked_profile = ModelProfile(
-        id="some-obscure-model",
-        context_window=None,
-        output_limit=None,
-        raw={"_overlay_context_checked": True},
+    checked_facts = DiscoveredModelFacts(
+        discovered=DiscoveredModel(id="some-obscure-model", raw={"_overlay_context_checked": True}),
+        model=ModelCapabilities(model_key="some-obscure-model"),
+        deployment=DeploymentCapabilities(
+            provider_id="codex", api_base="codex://sdk", model_id="some-obscure-model"
+        ),
     )
-    out = asyncio.run(handshake.enrich_capabilities(checked_profile, _ctx()))
-    assert out is checked_profile  # unchanged, cascade never touched
+    out = asyncio.run(handshake.enrich_capabilities(checked_facts, _ctx()))
+    assert out is checked_facts  # unchanged, cascade never touched
     assert calls == []
 
 
@@ -308,7 +367,11 @@ def test_enrich_capabilities_still_runs_the_cascade_for_a_non_overlay_profile(
 ) -> None:
     """A static-catalog-sourced profile (no overlay yet) keeps the PRE-#1211
     behavior: the cascade still runs to try to resolve its context window."""
-    from clio_agent.providers.handshake.model import ModelProfile
+    from clio_agent.providers.capabilities.records import (
+        DeploymentCapabilities,
+        ModelCapabilities,
+    )
+    from clio_agent.providers.handshake.model import DiscoveredModel, DiscoveredModelFacts
 
     calls: list[str] = []
     monkeypatch.setattr(
@@ -321,9 +384,15 @@ def test_enrich_capabilities_still_runs_the_cascade_for_a_non_overlay_profile(
     )
 
     handshake = CliCatalogHandshake(provider=None)
-    unchecked_profile = ModelProfile(id="gpt-5.5", context_window=None, output_limit=None, raw={})
-    out = asyncio.run(handshake.enrich_capabilities(unchecked_profile, _ctx()))
-    assert out.context_window == 128000
+    unchecked_facts = DiscoveredModelFacts(
+        discovered=DiscoveredModel(id="gpt-5.5"),
+        model=ModelCapabilities(model_key="gpt-5.5"),
+        deployment=DeploymentCapabilities(
+            provider_id="codex", api_base="codex://sdk", model_id="gpt-5.5"
+        ),
+    )
+    out = asyncio.run(handshake.enrich_capabilities(unchecked_facts, _ctx()))
+    assert out.model.context_max.value == 128000
     assert "resolve_context" in calls
 
 
@@ -364,8 +433,12 @@ def test_full_handshake_never_hits_the_cascade_once_overlay_populated(
     handshake = CliCatalogHandshake(provider=None)
     report = asyncio.run(handshake.handshake(_ctx()))
     assert [m.id for m in report.models] == ["gpt-5.6-sol"]
-    assert report.models[0].context_window == 272000
-    assert report.models[0].output_limit == 64000
+
+    from clio_agent.providers.capabilities.accessor import get_effective_capabilities
+
+    effective = get_effective_capabilities(report.provider_id, report.api_base, "gpt-5.6-sol")
+    assert effective.context.value == 272000
+    assert effective.output_max.value == 64000
 
 
 # --------------------------------------------------------------------------- #
@@ -415,7 +488,9 @@ def test_overlay_backed_handshake_reports_overlay_not_live(
 def test_static_catalog_handshake_reports_static_not_live(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """With no overlay the rows ARE the compiled-in candidates -- never evidence."""
+    """With no overlay AND no compiled-in candidates (codex, brief 9.1), the
+    handshake still reports cleanly -- ``static`` provenance, zero models,
+    never a crash or a fabricated row."""
 
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     monkeypatch.setattr(
@@ -428,10 +503,8 @@ def test_static_catalog_handshake_reports_static_not_live(
 
     report = asyncio.run(CliCatalogHandshake(provider=None).handshake(_ctx()))
 
-    assert report.models  # the static registry candidates are still surfaced
+    assert report.models == ()
     assert report.models_source == "static"
-    # A static row carries no capability evidence, so no modality can be claimed.
-    assert all(profile.capabilities == () for profile in report.models)
 
 
 def test_http_handshake_still_reports_live() -> None:

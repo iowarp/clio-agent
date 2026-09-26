@@ -16,11 +16,14 @@ import os
 import signal
 import subprocess
 import sys
+import threading
+import time
 from abc import ABC, abstractmethod
 from typing import Any
 
 from clio_agent.gact.hooks.config import HookEntry
 from clio_agent.gact.hooks.wire import (
+    HookCancelled,
     HookDecision,
     HookEnvelope,
     HookInfraError,
@@ -36,12 +39,21 @@ class HookAdapter(ABC):
     """One transport for invoking a hook. Returns a decision or raises infra error."""
 
     @abstractmethod
-    def invoke(self, entry: HookEntry, envelope: HookEnvelope) -> HookDecision:
+    def invoke(
+        self,
+        entry: HookEntry,
+        envelope: HookEnvelope,
+        *,
+        cancel_event: "threading.Event | None" = None,
+    ) -> HookDecision:
         """Invoke ``entry`` for ``envelope``.
 
         Returns the parsed :class:`HookDecision` on success (exit 0 / exit 2).
         Raises :class:`HookInfraError` on any infrastructure failure (timeout,
-        crash, missing binary) — DISTINCT from a ``deny`` decision.
+        crash, missing binary) — DISTINCT from a ``deny`` decision. ``cancel_event``
+        (L1 slice), when given, is polled while waiting on the hook; a transport
+        that supports killing in-flight work raises :class:`HookCancelled` instead
+        of resolving a decision when it trips.
         """
 
 
@@ -54,7 +66,13 @@ class SubprocessAdapter(HookAdapter):
     non-blocking :class:`HookInfraError` the dispatcher resolves via ``failClosed``.
     """
 
-    def invoke(self, entry: HookEntry, envelope: HookEnvelope) -> HookDecision:
+    def invoke(
+        self,
+        entry: HookEntry,
+        envelope: HookEnvelope,
+        *,
+        cancel_event: "threading.Event | None" = None,
+    ) -> HookDecision:
         import json  # noqa: PLC0415 - local; keeps module import graph lean
 
         argv = [entry.run.command, *entry.run.args]
@@ -89,7 +107,10 @@ class SubprocessAdapter(HookAdapter):
 
         timeout_s = entry.timeout_s if entry.timeout_s > 0 else None
         try:
-            stdout, stderr = proc.communicate(input=stdin_blob, timeout=timeout_s)
+            if cancel_event is None:
+                stdout, stderr = proc.communicate(input=stdin_blob, timeout=timeout_s)
+            else:
+                stdout, stderr = _communicate_cancellable(proc, stdin_blob, timeout_s, cancel_event)
         except subprocess.TimeoutExpired:
             _kill_process_group(proc)
             record_hook_reason(
@@ -103,6 +124,13 @@ class SubprocessAdapter(HookAdapter):
                 f"hook {entry.id!r} exceeded its {entry.timeout_ms}ms timeout",
                 hook_id=entry.id,
             ) from None
+        except _HookCancelledWait:
+            # Cancel contract (L1): kill the WHOLE process tree, never resolve a
+            # decision for a cancelled hook (HookCancelled propagates uncaught
+            # through HookDispatcher.dispatch, unlike HookInfraError).
+            _kill_process_group(proc)
+            record_hook_reason("hook_cancelled", hook_id=entry.id, event=envelope.hook_event_name)
+            raise HookCancelled(entry.id) from None
         except BaseException:
             # Any other failure (including KeyboardInterrupt) while waiting: clean up
             # the whole process group too, then re-raise unchanged.
@@ -139,6 +167,58 @@ class SubprocessAdapter(HookAdapter):
             f"hook {entry.id!r} exited {returncode}: {(stderr or '').strip()[:200]}",
             hook_id=entry.id,
         )
+
+
+class _HookCancelledWait(Exception):
+    """Internal signal: the ``cancel_event`` tripped while waiting on the hook.
+
+    Never escapes :func:`_communicate_cancellable`'s caller — ``SubprocessAdapter.
+    invoke`` catches it, kills the process tree, and raises the public
+    :class:`~clio_agent.gact.hooks.wire.HookCancelled` instead.
+    """
+
+
+def _communicate_cancellable(
+    proc: "subprocess.Popen[str]",
+    stdin_blob: str,
+    timeout_s: float | None,
+    cancel_event: threading.Event,
+    poll_s: float = 0.05,
+) -> tuple[str, str]:
+    """Feed ``stdin_blob`` and wait for the hook to exit, honoring BOTH the
+    configured timeout and a cooperative cancel token.
+
+    ``Popen.communicate`` blocks with no way to interrupt it early, so the actual
+    communicate call runs on a background thread while THIS thread polls the
+    cancel token on a short cadence -- the same poll-don't-disturb shape
+    ``turn_watchdog.await_turn_work`` uses for the no-progress watchdog: a hook
+    that finishes on its own is never disturbed. A cancel firing first raises
+    :class:`_HookCancelledWait`; the timeout firing first raises the stdlib
+    ``subprocess.TimeoutExpired`` unchanged, so the caller's existing timeout
+    handling is untouched either way.
+    """
+
+    outcome: dict[str, Any] = {}
+
+    def _run() -> None:
+        try:
+            outcome["stdout"], outcome["stderr"] = proc.communicate(input=stdin_blob)
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the waiting thread below
+            outcome["exc"] = exc
+
+    worker = threading.Thread(target=_run, daemon=True)
+    worker.start()
+    deadline = time.monotonic() + timeout_s if timeout_s is not None else None
+    while worker.is_alive():
+        if cancel_event.is_set():
+            raise _HookCancelledWait()
+        if deadline is not None and time.monotonic() >= deadline:
+            assert timeout_s is not None  # noqa: S101 - deadline is only set from timeout_s
+            raise subprocess.TimeoutExpired(proc.args, timeout_s)
+        worker.join(timeout=poll_s)
+    if "exc" in outcome:
+        raise outcome["exc"]
+    return outcome.get("stdout", ""), outcome.get("stderr", "")
 
 
 def _no_tty_kwargs() -> dict[str, Any]:
@@ -229,7 +309,14 @@ class _NotImplementedAdapter(HookAdapter):
     def __init__(self, transport: str) -> None:
         self._transport = transport
 
-    def invoke(self, entry: HookEntry, envelope: HookEnvelope) -> HookDecision:
+    def invoke(
+        self,
+        entry: HookEntry,
+        envelope: HookEnvelope,
+        *,
+        cancel_event: "threading.Event | None" = None,
+    ) -> HookDecision:
+        del cancel_event
         raise HookInfraError(
             "hook_crashed",
             f"hook {entry.id!r}: run.type {self._transport!r} is not implemented in this build",

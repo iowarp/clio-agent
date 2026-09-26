@@ -1,0 +1,55 @@
+# Seeded verbatim from clio-coder's local-models/clio-local-coding-targets.yaml (model-capabilities brief Part 8.5).
+- family: qwen3.6-35b-a3b
+  matchPatterns:
+    - qwen3.6-35b-a3b
+    - qwen3_6-35b-a3b
+    - qwen3-6-35b-a3b
+    - qwen3.6-35b
+    - qwen3.6-35b-a3b-ud
+    - qwen3.6-35b-a3b-ud-q4_k_xl
+  capabilities:
+    chat: true
+    tools: true
+    toolCallFormat: qwen
+    reasoning: true
+    thinkingFormat: qwen-chat-template
+    structuredOutputs: json-schema
+    vision: true
+    audio: false
+    embeddings: false
+    rerank: false
+    fim: false
+    contextWindow: 262144
+    maxTokens: 65536
+  quirks:
+    sampling:
+      thinking:
+        temperature: 0.6
+        topP: 0.95
+        topK: 20
+        maxTokens: 16384
+        reasoningBudget: 4096
+    gpuTiers:
+      "32gb": "Main-agent candidate on 32GB targets when Nemotron Omni is unavailable or tool behavior is better for text-only work."
+    runtimePreference:
+      lmstudioNative: "Usable for text and vision when loaded in LM Studio. Keep openai-compat available for tool fallback."
+      openaiCompat: "Preferred local gateway path for tool-call stress tests."
+      llamaCpp: "OpenAI-compatible chat completions with --jinja. Current mini preset emits reasoning_content without a separate --reasoning flag."
+    llamaCpp:
+      ctxSize: 262144
+      cacheTypeK: q8_0
+      cacheTypeV: q8_0
+      flashAttn: true
+      nGpuLayers: 99
+    thinking:
+      mechanism: budget-tokens
+      budgetByLevel:
+        low: 1024
+        medium: 4096
+        high: 16384
+      guidance: |
+        Qwen chat template emits thinking blocks. The card recommends at least
+        128K context for thinking quality. Preserve thinking blocks across
+        coding-task turns so iterative reasoning chains do not restart cold.
+    serving: "Official card recommends at least 128K context for thinking quality. Use 262K when memory allows."
+

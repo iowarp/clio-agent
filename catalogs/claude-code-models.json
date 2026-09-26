@@ -11,12 +11,14 @@
     {
       "id": "claude-sonnet-5",
       "name": "Claude Sonnet 5",
-      "capabilities": ["text", "image", "pdf"]
+      "capabilities": ["text", "image", "pdf"],
+      "shipped_default_effort": "low"
     },
     {
       "id": "claude-haiku-4-5-20251001",
       "name": "Claude Haiku 4.5",
-      "capabilities": ["text", "image", "pdf"]
+      "capabilities": ["text", "image", "pdf"],
+      "shipped_default_effort": "low"
     }
   ]
 }

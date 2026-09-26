@@ -1,25 +1,46 @@
 """``OpenAICompatHandshake`` — the handshake for OpenAI-shaped HTTP backends.
 
-Covers every provider that speaks the OpenAI ``/v1`` REST contract: cloud OpenAI
-and Anthropic, OpenRouter, a self-hosted vLLM server, and Ollama (which also
-exposes a compatible ``/v1/models``, with a ``/api/tags`` fallback). The probe is
-a single authenticated ``GET {api_base}/models`` — the same call that lists the
-catalog — so connectivity, auth and model discovery share one round trip's worth
-of plumbing.
+Covers every provider that speaks the OpenAI ``/v1`` REST contract: cloud
+OpenAI/Anthropic/Azure/Bedrock/Vertex/Gemini/NVIDIA NIM, OpenRouter, a
+self-hosted vLLM server, and a single-mode llama.cpp server. The probe is a
+single authenticated ``GET {api_base}/models`` — the same call that lists the
+catalog — so connectivity, auth and model discovery share one round trip's
+worth of plumbing.
 
-None of these endpoints report a model's real context window through ``/models``
-(OpenAI returns only ``{"id", "object", ...}``), so
-:meth:`OpenAICompatHandshake.discover_model_config` deliberately returns a
-:class:`ModelProfile` with ``context_window=None``. The base class's
-``enrich_capabilities`` step then resolves the window through the context-source
-factory (models.dev / marketplace) — see
-:mod:`clio_agent.providers.handshake.base`.
+:meth:`discover_model_config` reads NOTHING itself beyond the bare ``id`` on a
+``/models`` row: it resolves this endpoint's dialect
+(:func:`clio_agent.providers.capabilities.endpoint.dialect_for_provider`, the
+same resolution :class:`~clio_agent.providers.handshake.base.ProviderHandshake`
+uses for the endpoint record) and calls that dialect's OWN adapter in
+:mod:`clio_agent.providers.capabilities.dialects` for every field a server
+self-reports -- vLLM's ``max_model_len``/``root``, OpenRouter's
+``context_length``/``top_provider.*``/``supported_parameters``, llama.cpp's
+``/props``, or a cloud dialect's "no restriction" deployment defaults. A
+dialect with no adapter here (an unrecognized OpenAI-compatible server) gets a
+bare model/deployment record; the base class's
+:meth:`~clio_agent.providers.handshake.base.ProviderHandshake.enrich_capabilities`
+step then resolves ``context_max`` through the community-catalog cascade
+(models.dev / litellm / the local DB).
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
+from clio_agent.providers import host_credentials
+from clio_agent.providers.capabilities import endpoint as capability_endpoint
+from clio_agent.providers.capabilities.dialects import cloud as cloud_dialect
+from clio_agent.providers.capabilities.dialects import cloud_thinking
+from clio_agent.providers.capabilities.dialects import llama_cpp as llama_cpp_dialect
+from clio_agent.providers.capabilities.dialects import openrouter as openrouter_dialect
+from clio_agent.providers.capabilities.dialects import vllm as vllm_dialect
+from clio_agent.providers.capabilities.link import deployment_model_key_fact
+from clio_agent.providers.capabilities.records import (
+    DeploymentCapabilities,
+    Fact,
+    ModelCapabilities,
+)
 from clio_agent.providers.handshake.base import (
     ConnectivityResult,
     HandshakeContext,
@@ -28,9 +49,9 @@ from clio_agent.providers.handshake.base import (
 from clio_agent.providers.handshake.model import (
     AuthState,
     ConnectivityState,
-    ModelProfile,
+    DiscoveredModel,
+    DiscoveredModelFacts,
 )
-from clio_agent.providers.handshake.sources import lookup_native_context
 
 #: ``provider_kind`` values that authenticate via Anthropic's header scheme
 #: (``x-api-key`` + a pinned API version) rather than a bearer token.
@@ -42,17 +63,24 @@ _ANTHROPIC_VERSION = "2023-06-01"
 #: ``provider_kind`` values that require no API key (purely local backends).
 _NO_AUTH_KINDS = frozenset({"ollama", "vllm", "local"})
 
+#: ``error_code`` of a key the provider refused -- the client words it as
+#: "Your <provider> API key was rejected."
+API_KEY_REJECTED = "api_key_rejected"
+
 #: Substrings that mark a model row as an embedding/reranker model we skip — the
 #: handshake catalogs only chat-completion models.
-_EMBEDDING_MARKERS = ("embed", "embedding", "rerank", "reranker")
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class OpenAICompatHandshake(ProviderHandshake):
     """Handshake for OpenAI-compatible HTTP providers.
 
     One authenticated ``GET /models`` drives connectivity, auth and discovery.
-    Per-model config is intentionally thin (``context_window=None``) because these
-    endpoints do not report context; the base enrich step fills it in.
+    Per-model config is intentionally thin because these endpoints do not
+    report a model's own ceiling; the base enrich step fills it in.
     """
 
     def _requires_key(self, ctx: HandshakeContext) -> bool:
@@ -61,6 +89,8 @@ class OpenAICompatHandshake(ProviderHandshake):
         Local backends (Ollama, a bare vLLM server) accept any/no key; cloud
         providers (OpenAI, Anthropic, OpenRouter) require one.
         """
+        if host_credentials.chain_for(ctx.provider_id):
+            return False  # signs with the host's credentials, never an API key
         return ctx.provider_kind not in _NO_AUTH_KINDS
 
     def _auth_header(self, ctx: HandshakeContext) -> dict[str, str]:
@@ -79,8 +109,68 @@ class OpenAICompatHandshake(ProviderHandshake):
             headers["Authorization"] = f"Bearer {ctx.api_key}"
         return headers
 
+    def _key_check_url(self, ctx: HandshakeContext) -> str | None:
+        """The provider's own key-check endpoint, when its model listing is public.
+
+        Read from the provider registry (``Provider.key_check_path``), never a
+        per-provider branch here.
+        """
+        from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
+
+        provider = get_provider(ctx.provider_id)
+        path = provider.key_check_path if provider is not None else None
+        return f"{ctx.api_base.rstrip('/')}{path}" if path else None
+
+    def _rejected(self, status: int, headers: dict[str, str]) -> ConnectivityResult:
+        return ConnectivityResult(
+            connectivity=ConnectivityState.OK,
+            auth=AuthState.REJECTED,
+            error=f"{API_KEY_REJECTED}: the provider refused the API key (HTTP {status})",
+            error_code=API_KEY_REJECTED,
+            auth_header=headers,
+        )
+
+    async def _check_key(
+        self, client: Any, ctx: HandshakeContext, headers: dict[str, str]
+    ) -> ConnectivityResult | None:
+        """Prove the key against ``key_check_path``; ``None`` when it is accepted.
+
+        A 401/403 is a rejected key. Any other failure means the key could not
+        be proven either way: reported as ``DEFERRED`` with the typed reason,
+        never as a silent pass.
+        """
+        url = self._key_check_url(ctx)
+        if url is None:
+            return None
+        try:
+            response = await client.get(url, headers=headers)
+        except Exception as exc:  # noqa: BLE001 - surfaced as a typed DEFERRED reason
+            return ConnectivityResult(
+                connectivity=ConnectivityState.OK,
+                auth=AuthState.DEFERRED,
+                error=f"key_check_unavailable: {type(exc).__name__}: {exc}",
+                auth_header=headers,
+            )
+        if response.status_code in (401, 403):
+            return self._rejected(response.status_code, headers)
+        if response.status_code >= 400:
+            return ConnectivityResult(
+                connectivity=ConnectivityState.OK,
+                auth=AuthState.DEFERRED,
+                error=f"key_check_unavailable: HTTP {response.status_code}",
+                auth_header=headers,
+            )
+        return None
+
     def _models_url(self, ctx: HandshakeContext) -> str:
-        """The ``/models`` listing URL for this provider's ``api_base``."""
+        """The ``/models`` listing URL for this provider's ``api_base``.
+
+        OpenRouter's listing hides every non-text-output model unless asked for
+        all output modalities (:func:`~clio_agent.providers.capabilities.
+        dialects.openrouter.models_url`).
+        """
+        if self._dialect(ctx) == openrouter_dialect.DIALECT:
+            return openrouter_dialect.models_url(ctx.api_base)
         return f"{ctx.api_base.rstrip('/')}/models"
 
     async def check_connectivity(self, client: Any, ctx: HandshakeContext) -> ConnectivityResult:
@@ -92,6 +182,14 @@ class OpenAICompatHandshake(ProviderHandshake):
         - otherwise -> ``(OK, OK)`` (or ``NOT_REQUIRED`` for keyless local kinds),
           carrying the resolved ``auth_header`` forward for later phases.
         """
+        chain = host_credentials.chain_for(ctx.provider_id)
+        if chain and not host_credentials.present(chain):
+            return ConnectivityResult(
+                connectivity=ConnectivityState.SKIPPED,
+                auth=AuthState.MISSING,
+                error=host_credentials.missing_reason(chain),
+                error_code=host_credentials.HOST_CREDENTIALS_MISSING,
+            )
         if self._requires_key(ctx) and not ctx.api_key:
             return ConnectivityResult(
                 connectivity=ConnectivityState.SKIPPED,
@@ -109,12 +207,11 @@ class OpenAICompatHandshake(ProviderHandshake):
             )
         status = response.status_code
         if status in (401, 403):
-            return ConnectivityResult(
-                connectivity=ConnectivityState.OK,
-                auth=AuthState.REJECTED,
-                error=f"auth rejected (HTTP {status})",
-                auth_header=headers,
-            )
+            return self._rejected(status, headers)
+        if self._requires_key(ctx) and status < 400:
+            key_check = await self._check_key(client, ctx, headers)
+            if key_check is not None:
+                return key_check
         auth_ok = AuthState.OK if self._requires_key(ctx) else AuthState.NOT_REQUIRED
         if status >= 400:
             # Reachable but the listing failed for a non-auth reason (e.g. 404 on
@@ -135,11 +232,14 @@ class OpenAICompatHandshake(ProviderHandshake):
         )
 
     async def discover_models(self, client: Any, ctx: HandshakeContext) -> list[dict[str, Any]]:
-        """List the provider's chat models as raw rows.
+        """List the provider's models as raw rows.
 
-        Parses the OpenAI ``{"data": [{"id", ...}]}`` shape. For Ollama, falls back
-        to ``GET {root}/api/tags`` (``{"models": [{"model"|"name"}]}``) when the
-        ``/v1/models`` route is unavailable. Embedding/reranker rows are dropped.
+        Parses the OpenAI ``{"data": [{"id", ...}]}`` shape (or a bare list, for
+        a server that skips the wrapper). Ollama routes through :class:`~clio_agent.providers.handshake.ollama.
+        OllamaHandshake` instead (its native ``/api/tags`` reports nothing
+        useful through this generic ``/models`` shim). Every row is listed: a
+        surrogate (embedding, rerank, ...) is a first-class model identified by its
+        task fact and refused only as the CHAT model, never dropped by its name.
         """
         headers = self._auth_header(ctx)
         rows: list[dict[str, Any]] = []
@@ -150,9 +250,7 @@ class OpenAICompatHandshake(ProviderHandshake):
                 rows = self._rows_from_openai_payload(payload)
         except Exception:  # noqa: BLE001 - unparseable models payload yields no rows
             rows = []
-        if not rows and ctx.provider_kind == "ollama":
-            rows = await self._discover_ollama_tags(client, ctx, headers)
-        return [r for r in rows if not self._is_embedding(r)]
+        return rows
 
     def _rows_from_openai_payload(self, payload: Any) -> list[dict[str, Any]]:
         """Extract model rows from an OpenAI ``/models`` JSON payload."""
@@ -164,93 +262,119 @@ class OpenAICompatHandshake(ProviderHandshake):
             return [r for r in payload if isinstance(r, dict)]
         return []
 
-    async def _discover_ollama_tags(
-        self, client: Any, ctx: HandshakeContext, headers: dict[str, str]
-    ) -> list[dict[str, Any]]:
-        """Ollama fallback: ``GET {root}/api/tags`` -> normalized ``{"id"}`` rows.
+    def _dialect(self, ctx: HandshakeContext) -> str:
+        """Resolve this endpoint's dialect the SAME way the endpoint record does.
 
-        The ``root`` is ``api_base`` with a trailing ``/v1`` stripped, since the
-        native Ollama API lives at the server root, not under ``/v1``.
+        (:func:`clio_agent.providers.handshake.base.ProviderHandshake.
+        _record_endpoint_capabilities` computes it identically -- both read the
+        registry ``Provider`` row's own ``litellm_prefix`` rather than
+        ``ctx.provider_kind`` alone, since kind only selects the wire format
+        and collapses several real server types onto the same value.)
         """
-        base = ctx.api_base.rstrip("/")
-        root = base[: -len("/v1")] if base.endswith("/v1") else base
-        url = f"{root}/api/tags"
-        try:
-            response = await client.get(url, headers=headers)
-            if response.status_code >= 400:
-                return []
-            payload = response.json()
-        except Exception:  # noqa: BLE001 - unparseable payload yields no models
-            return []
-        models = payload.get("models") if isinstance(payload, dict) else None
-        if not isinstance(models, list):
-            return []
-        rows: list[dict[str, Any]] = []
-        for entry in models:
-            if not isinstance(entry, dict):
-                continue
-            model_id = entry.get("model") or entry.get("name")
-            if model_id:
-                rows.append({"id": model_id, **entry})
-        return rows
-
-    def _is_embedding(self, raw: dict[str, Any]) -> bool:
-        """Heuristically detect an embedding/reranker row to skip it."""
-        model_id = str(raw.get("id", "")).lower()
-        if any(marker in model_id for marker in _EMBEDDING_MARKERS):
-            return True
-        row_type = str(raw.get("type", "")).lower()
-        return row_type in {"embeddings", "embedding", "rerank", "reranker"}
+        litellm_prefix = str(getattr(self.provider, "litellm_prefix", "") or ctx.provider_kind)
+        return capability_endpoint.dialect_for_provider(
+            ctx.provider_kind, litellm_prefix, ctx.provider_id
+        )
 
     async def discover_model_config(
         self, client: Any, ctx: HandshakeContext, raw: dict[str, Any]
-    ) -> ModelProfile:
-        """Build a :class:`ModelProfile` from one ``/models`` row.
+    ) -> DiscoveredModelFacts:
+        """Build a :class:`DiscoveredModelFacts` from one ``/models`` row.
 
-        Bare OpenAI/Anthropic ``/models`` rows carry only an id, so the profile is
-        thin and the base ``enrich_capabilities`` step resolves the window via the
-        context-source factory. But some OpenAI-compatible backends DO self-report
-        config on the row, which we extract live (provenance stays ``"live"``):
-
-        * **vLLM** -> ``max_model_len`` (the served context window);
-        * **OpenRouter** -> ``context_length`` (and ``top_provider.context_length`` /
-          ``top_provider.max_completion_tokens`` for the active route).
+        Dispatches to this endpoint's OWN dialect adapter
+        (:mod:`clio_agent.providers.capabilities.dialects`) for every field a
+        server self-reports on the row -- this class reads and parses nothing
+        dialect-specific itself. A dialect with no adapter here gets a bare
+        model/deployment record; the base ``enrich_capabilities`` step then
+        resolves ``context_max`` via the community-catalog cascade.
         """
         model_id = str(raw.get("id", "")).strip()
-        _tp = raw.get("top_provider")
-        top: dict[str, Any] = _tp if isinstance(_tp, dict) else {}
-        context_window = _first_positive_int(
-            raw.get("max_model_len"),  # vLLM
-            raw.get("context_length"),  # OpenRouter (top-level)
-            top.get("context_length"),  # OpenRouter (active route)
-        )
-        output_limit = _first_positive_int(
-            raw.get("max_completion_tokens"),
-            top.get("max_completion_tokens"),
-        )
-        # Populate native_context_window from the offline catalog when the provider
-        # self-reports a served context window (vLLM / OpenRouter). This lets
-        # apply_handshake fire the context_window_below_native warning when
-        # vLLM is launched with --max-model-len smaller than the model's true max.
-        # The lookup is LiteLLM catalog first, then bundled model_limits.json —
-        # no network call. We only set it when context_window is known so there is
-        # something meaningful to compare against.
-        native_context_window: int | None = None
-        if context_window is not None and model_id:
-            native_context_window = lookup_native_context(model_id)
-        return ModelProfile(
-            id=model_id,
-            context_window=context_window,
-            native_context_window=native_context_window,
-            output_limit=output_limit,
-            context_source="live",
-            raw=dict(raw),
-        )
+        dialect = self._dialect(ctx)
 
+        if dialect == vllm_dialect.DIALECT:
+            deployment = vllm_dialect.parse_models_row(
+                raw, provider_id=ctx.provider_id, api_base=ctx.api_base
+            )
+            model_key = deployment.model_key.value or model_id
+            model = vllm_dialect.build_model_capabilities(model_key, raw)
+            model = await self._compare_against_native_context(model, deployment, model_id)
+        elif dialect == openrouter_dialect.DIALECT:
+            model, deployment = openrouter_dialect.parse_model_row(
+                raw, provider_id=ctx.provider_id, api_base=ctx.api_base
+            )
+        elif dialect == llama_cpp_dialect.DIALECT:
+            from clio_agent.providers.api_base import native_root  # noqa: PLC0415
 
-def _first_positive_int(*values: Any) -> int | None:
-    """Return the first value that is a positive int (ignoring bools/None/0)."""
-    for value in values:
-        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-            return value
-    return None
+            props = await llama_cpp_dialect.fetch_props(client, native_root(ctx.api_base))
+            deployment = llama_cpp_dialect.parse_props(
+                props or {}, provider_id=ctx.provider_id, api_base=ctx.api_base, model_id=model_id
+            )
+            model_key = deployment.model_key.value or model_id
+            model = llama_cpp_dialect.build_model_capabilities(model_key, {"data": [raw]}, model_id)
+        elif dialect in cloud_dialect.CLOUD_DIALECTS:
+            deployment = cloud_dialect.build_deployment_capabilities(
+                ctx.provider_id, ctx.api_base, model_id
+            )
+            model = ModelCapabilities(
+                model_key=self._bare_model_key(model_id),
+                thinking=self._thinking_fact(dialect, model_id),
+            )
+        else:
+            # No adapter for this dialect (an unrecognized OpenAI-compatible
+            # server): a bare record, no field guessing. The base class's
+            # enrich_capabilities cascade is the only thing that can fill this in.
+            model = ModelCapabilities(model_key=self._bare_model_key(model_id))
+            deployment = DeploymentCapabilities(
+                provider_id=ctx.provider_id,
+                api_base=ctx.api_base,
+                model_id=model_id,
+                model_key=deployment_model_key_fact(model_id, observed_at=_now_iso()),
+            )
+
+        discovered = DiscoveredModel(id=model_id, raw=dict(raw))
+        return DiscoveredModelFacts(discovered=discovered, model=model, deployment=deployment)
+
+    def _bare_model_key(self, model_id: str) -> str:
+        fact = deployment_model_key_fact(model_id, observed_at=_now_iso())
+        return fact.value or model_id
+
+    def _thinking_fact(self, dialect: str, model_id: str) -> Fact[Any]:
+        """The model's ``ThinkingSpec`` fact, for the two cloud dialects with a
+        real per-model thinking/reasoning story (anthropic, openai) --
+        :mod:`clio_agent.providers.capabilities.dialects.cloud_thinking`'s pure,
+        network-free LiteLLM introspection. Every other cloud dialect (Azure,
+        Bedrock, Vertex, Gemini, NVIDIA NIM) has no known per-model reasoning
+        story here yet, so it stays unknown rather than guessed.
+        """
+        return cloud_thinking.local_thinking_spec(dialect, model_id)
+
+    async def _compare_against_native_context(
+        self, model: ModelCapabilities, deployment: DeploymentCapabilities, model_id: str
+    ) -> ModelCapabilities:
+        """vLLM-only: an OFFLINE-ONLY (no network) catalog lookup for the model's own
+        published maximum, so the deployment's self-reported served window can be
+        compared against it (Part 3's context_window_below_native warning) even
+        when ``allow_external_sources=False`` keeps the network-allowed cascade
+        in ``enrich_capabilities`` from running. vLLM's own ``/v1/models`` row
+        carries no model-level ceiling (:func:`vllm_dialect.build_model_capabilities`
+        always returns one unknown), so this only ever fills a gap, never
+        overwrites a dialect's own self-reported ceiling.
+        """
+        if model.context_max.known or not deployment.context_served.known or not model_id:
+            return model
+        from dataclasses import replace  # noqa: PLC0415
+
+        from clio_agent.providers.handshake.sources import lookup_native_context  # noqa: PLC0415
+
+        native_context_max = lookup_native_context(model_id)
+        if native_context_max is None:
+            return model
+        return replace(
+            model,
+            context_max=Fact(
+                value=native_context_max,
+                source="litellm",
+                observed_at=_now_iso(),
+                detail="offline catalog lookup (no network), compared against the served window",
+            ),
+        )

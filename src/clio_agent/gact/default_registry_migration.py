@@ -137,7 +137,9 @@ def record_first_run_version(install_root: Path) -> None:
     try:
         record_sync_version(install_root, running_clio_agent_version())
     except Exception as exc:  # noqa: BLE001 - typed, recorded, never escapes discovery
-        _record("default_registry_migration_failed", stage="first_run_marker", error=repr(exc))
+        _record(
+            "default_registry_migration_failed", migration_stage="first_run_marker", error=repr(exc)
+        )
 
 
 def _record(reason: str, **fields: Any) -> None:
@@ -183,7 +185,7 @@ def lock_busy_diagnostic() -> str:
     surface it as a disabled blueprint row; the next discovery call retries.
     """
 
-    _record("default_registry_migration_busy", stage="local_sync")
+    _record("default_registry_migration_busy", migration_stage="local_sync")
     return ""
 
 
@@ -504,7 +506,7 @@ def run_default_registry_migration(
 
         source = default_registry_install_source()
     except Exception as exc:  # noqa: BLE001 - typed, never escapes
-        _record("default_registry_migration_failed", stage="source", error=repr(exc))
+        _record("default_registry_migration_failed", migration_stage="source", error=repr(exc))
         return f"default registry re-sync failed: {exc}"
 
     def _invalidate() -> None:

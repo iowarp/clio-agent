@@ -10,11 +10,11 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.resource_custody import ResourceMaterialization, windows_safe_filename
+from clio_agent.platform_paths import short_stage_name, win_extended_path
 
 if TYPE_CHECKING:
     from clio_agent.gact.resource_custody import ResourceRecord, ResourceStore
@@ -48,6 +48,12 @@ def materialize_resource(
 
     This deliberately uses a byte copy rather than a hardlink. The workspace
     input is a mutable working copy; editing it must not alter immutable custody.
+
+    A workspace root is user-chosen and arbitrarily deep, so the composed
+    destination (and its short-named staging sibling) can exceed Windows'
+    260-character ``MAX_PATH`` even though every parent directory exists
+    (observed live). Every OS-level call below routes its path through
+    :func:`win_extended_path`, which is a no-op off win32.
     """
 
     source = store.content_path(record)
@@ -57,24 +63,34 @@ def materialize_resource(
     destination.relative_to(root)
 
     recorded = Path(record.workspace_path).resolve(strict=False) if record.workspace_path else None
-    if recorded == destination and destination.is_file():
+    if recorded == destination and os.path.isfile(win_extended_path(destination)):
         return record
 
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+    os.makedirs(win_extended_path(destination.parent), exist_ok=True)
+    temporary = destination.with_name(short_stage_name())
     try:
-        with source.open("rb") as reader, temporary.open("xb") as writer:
+        with (
+            open(win_extended_path(source), "rb") as reader,
+            open(win_extended_path(temporary), "xb") as writer,
+        ):
             shutil.copyfileobj(reader, writer, length=1024 * 1024)
             writer.flush()
             os.fsync(writer.fileno())
-        os.replace(temporary, destination)
+        os.replace(win_extended_path(temporary), win_extended_path(destination))
     finally:
-        temporary.unlink(missing_ok=True)
+        _silent_unlink(temporary)
 
     updated = store.set_workspace_path(record.id, str(destination))
     if recorded is not None and recorded != destination:
         remove_materialized_resource(record)
     return updated
+
+
+def _silent_unlink(path: Path) -> None:
+    """Remove ``path`` if present (long-path-safe); a missing file is a no-op."""
+    extended = win_extended_path(path)
+    if os.path.exists(extended):
+        os.remove(extended)
 
 
 def materialize_resource_for_app(app: Any, record: "ResourceRecord") -> "ResourceRecord":
@@ -103,10 +119,12 @@ def remove_materialized_resource(record: "ResourceRecord") -> None:
         or clio_dir.name != ".clio"
     ):
         raise ValueError("recorded workspace input path is outside the managed layout")
-    if resource_dir.exists():
-        shutil.rmtree(resource_dir)
-    if inputs_dir.exists() and not any(inputs_dir.iterdir()):
-        inputs_dir.rmdir()
+    extended_resource_dir = win_extended_path(resource_dir)
+    if os.path.isdir(extended_resource_dir):
+        shutil.rmtree(extended_resource_dir)
+    extended_inputs_dir = win_extended_path(inputs_dir)
+    if os.path.isdir(extended_inputs_dir) and not os.listdir(extended_inputs_dir):
+        os.rmdir(extended_inputs_dir)
 
 
 def materialize_once(app: Any, record: "ResourceRecord") -> "ResourceRecord":
@@ -141,28 +159,39 @@ def materialize_once(app: Any, record: "ResourceRecord") -> "ResourceRecord":
     NEVER raises: a failure is recorded as a typed ``materialization`` state
     on the resource and returned, so the caller can carry on to the next
     resource instead of one failure aborting everything.
+
+    Once materialized (fresh or already-``ready``), this is ALSO the one place
+    a resource is registered as a citable ``source`` artifact
+    (:func:`clio_agent.gact.artifacts.resource_sources.register_resource_source`)
+    — the SAME choke point, not a second one, so a resource uploaded before
+    that feature shipped gets registered lazily on its next ready-touch (the
+    one-time migration this doubles as) instead of a separate boot pass.
     """
 
     if record.state != "ready":
         return record
-    if record.materialization.state == "ready":
-        return record
-    try:
-        materialize_resource_for_app(app, record)
-    except (OSError, ValueError) as exc:
-        logger.warning(
-            "resource materialization failed reason=resource_materialization_failed "
-            "workspace_id=%s resource_id=%s error=%s",
-            record.workspace_id,
-            record.id,
-            exc,
+    if record.materialization.state != "ready":
+        try:
+            materialize_resource_for_app(app, record)
+        except (OSError, ValueError) as exc:
+            logger.warning(
+                "resource materialization failed reason=resource_materialization_failed "
+                "workspace_id=%s resource_id=%s error=%s",
+                record.workspace_id,
+                record.id,
+                exc,
+            )
+            return app.state.resource_store.set_materialization(
+                record.id, ResourceMaterialization(state="failed", reason=str(exc))
+            )
+        record = app.state.resource_store.set_materialization(
+            record.id, ResourceMaterialization(state="ready")
         )
-        return app.state.resource_store.set_materialization(
-            record.id, ResourceMaterialization(state="failed", reason=str(exc))
-        )
-    return app.state.resource_store.set_materialization(
-        record.id, ResourceMaterialization(state="ready")
+    from clio_agent.gact.artifacts.resource_sources import (  # noqa: PLC0415
+        register_resource_source,
     )
+
+    return register_resource_source(app, record)
 
 
 __all__ = [

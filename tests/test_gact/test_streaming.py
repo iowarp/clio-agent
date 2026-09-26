@@ -31,7 +31,7 @@ from clio_agent.gact.app import (
 )
 from clio_agent.gact.types import AgentDef
 from clio_agent.providers.claude_code_errors import CLAUDE_CODE_INSTALL_FAILED_MESSAGE
-from clio_agent.providers.codex_errors import CODEX_AUTHENTICATION_ERROR_MESSAGE
+from clio_agent.providers.codex.errors import CODEX_AUTHENTICATION_ERROR_MESSAGE
 from tests._config_layer import set_config
 
 # #948 S4b: turns that POST through the engine now run the default blueprint react
@@ -539,8 +539,8 @@ def test_argonne_streaming_is_not_force_classified_as_batch() -> None:
     """iowarp/clio-agent#160: ALCF (Sophia + Metis) is a plain OpenAI-compatible
     SSE endpoint that streams at the provider AND through LiteLLM (verified with a
     live multi-chunk probe). CLIO must NOT force-classify it as batch -- doing so
-    bypassed the streamify pump for every ALCF run. Codex's official SDK is also
-    a real streaming transport."""
+    bypassed the streamify pump for every ALCF run. The direct Codex provider is
+    also a real streaming transport."""
 
     from clio_agent.gact.app import _agent_streaming_unsupported_reason
 
@@ -565,7 +565,8 @@ def test_argonne_streaming_is_not_force_classified_as_batch() -> None:
         == ""
     )
 
-    # Codex SDK emits text/reasoning notifications and must use the stream pump.
+    # The direct Codex provider emits text/reasoning notifications and must
+    # use the stream pump.
     assert _agent_streaming_unsupported_reason(_agent("codex")) == ""
 
 
@@ -579,10 +580,10 @@ async def test_dynamic_agent_module_carries_streaming_codex_provider_config(
     base_agent = SimpleNamespace(
         _provider_config=LMProviderConfig(
             provider="codex",
-            api_base="codex://sdk",
+            api_base="codex://direct",
             model="gpt-5.5",
             api_key="x",
-            codex_transport="sdk",
+            codex_transport="websocket",
         )
     )
     module = _build_prompt_user_agent_module(
@@ -595,7 +596,7 @@ async def test_dynamic_agent_module_carries_streaming_codex_provider_config(
         ),
     )
     assert module._provider_config.provider == "codex"
-    assert module._provider_config.codex_transport == "sdk"
+    assert module._provider_config.codex_transport == "websocket"
     assert _agent_streaming_unsupported_reason(module) == ""
 
 
@@ -944,9 +945,9 @@ def test_codex_missing_auth_surfaces_clean_error(
             "provider stream failed",
             [
                 RuntimeError(
-                    "[cdx-gpt-5.5] unexpected status 401 Unauthorized: "
-                    "Missing bearer or basic authentication in header, "
-                    "url: https://api.openai.com/v1/responses"
+                    "[codex-gpt-5.5] unexpected status 401 Unauthorized: "
+                    "access token rejected, "
+                    "url: https://chatgpt.com/backend-api/codex/responses"
                 )
             ],
         )
@@ -975,7 +976,7 @@ def test_codex_missing_auth_surfaces_clean_error(
     assistant = [message for message in messages if message["role"] == "assistant"][-1]
     assert assistant["error_info"]["message"] == CODEX_AUTHENTICATION_ERROR_MESSAGE
     assert "live streaming failed" not in assistant["error_info"]["message"]
-    assert "api.openai.com" not in assistant["error_info"]["message"]
+    assert "chatgpt.com" not in assistant["error_info"]["message"]
 
 
 def test_claude_code_missing_sdk_surfaces_clean_error(

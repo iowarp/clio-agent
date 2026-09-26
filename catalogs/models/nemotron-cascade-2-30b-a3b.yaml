@@ -1,0 +1,55 @@
+# Seeded verbatim from clio-coder's local-models/clio-local-coding-targets.yaml (model-capabilities brief Part 8.5).
+- family: nemotron-cascade-2-30b-a3b
+  matchPatterns:
+    - nemotron-cascade-2
+    - nemotron-cascade-2-30b-a3b
+    - nemotron-cascade-2-30b-a3b-i1
+    - nemotron-cascade-2-30b-a3b-i1-q4_k_m
+    - nemotron-cascade2
+    - nemotron-cascade-2-30b
+  capabilities:
+    chat: true
+    tools: true
+    toolCallFormat: qwen
+    reasoning: true
+    thinkingFormat: qwen-chat-template
+    structuredOutputs: json-schema
+    vision: false
+    audio: false
+    embeddings: false
+    rerank: false
+    fim: false
+    contextWindow: 1048576
+    maxTokens: 65536
+  quirks:
+    sampling:
+      instruct:
+        temperature: 0.3
+        topP: 0.9
+        topK: 20
+        maxTokens: 8192
+    gpuTiers:
+      "32gb": "Preferred local worker model when a text-only worker is enough."
+    runtimePreference:
+      lmstudioNative: "Use when LM Studio SDK tool extraction is verified for the loaded template."
+      openaiCompat: "Preferred fallback for LM Studio gateway tool calls."
+      anthropicCompat: "Do not select for the current mini llama.cpp target; /v1/messages returned 404 while /v1/models and OpenAI-compatible chat worked."
+      llamaCpp: "OpenAI-compatible chat completions with --jinja. Current mini preset disables thinking in chat_template_kwargs."
+    llamaCpp:
+      ctxSize: 1048576
+      cacheTypeK: q8_0
+      cacheTypeV: q8_0
+      flashAttn: true
+      nGpuLayers: 99
+      parallel: 4
+      chatTemplateKwargs:
+        enable_thinking: false
+    thinking:
+      mechanism: on-off
+      guidance: |
+        Nemotron Cascade 2 chat template exposes thinking through
+        chat_template_kwargs.enable_thinking. Intermediate levels coerce to on.
+        The mini llama.cpp preset disables thinking in the template kwargs by
+        default; flip via the runtime override when reasoning is needed.
+    serving: "NVIDIA card recommends vLLM with nemotron_v3 reasoning and qwen3_coder tool parsing."
+

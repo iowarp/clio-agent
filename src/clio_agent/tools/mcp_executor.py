@@ -141,7 +141,7 @@ class UncertainMutatingToolOutcomeError(RuntimeError):
         super().__init__(
             "UncertainMutatingToolOutcomeError("
             f"tool={tool!r}, status='outcome_unknown', timeout_seconds={timeout_seconds:g}, "
-            "retry_safe=False, executor_work_may_continue=True, action='do_not_retry', "
+            "retry_safe=False, action='do_not_retry', "
             f"message={phase!r}; no durable result was received; query durable status or "
             "reconcile the remote system before any new mutation)"
         )

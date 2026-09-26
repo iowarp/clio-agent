@@ -170,3 +170,16 @@ def test_well_formed_mcp_yaml_produces_no_doctor_row(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "discover_declared_mcp_servers", _discover)
 
     assert module.probe_mcp_yaml_declarations(env=env) == []
+
+
+def test_yaml_probe_reuses_the_collections_discovery(monkeypatch):
+    """discovered=True skips the second full blueprint scan per health call (ares, 2026-09-25)."""
+    from clio_agent.runtime import mcp_launcher as module
+
+    calls: list[object] = []
+    monkeypatch.setattr(module, "discover_declared_mcp_servers", lambda **k: calls.append(k))
+
+    module.probe_mcp_yaml_declarations(env={}, discovered=True)
+    assert calls == []
+    module.probe_mcp_yaml_declarations(env={})
+    assert len(calls) == 1

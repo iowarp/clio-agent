@@ -1,0 +1,66 @@
+# Seeded verbatim from clio-coder's local-models/clio-local-coding-targets.yaml (model-capabilities brief Part 8.5).
+- family: gemma-4-31b-it-nvfp4-turbo
+  matchPatterns:
+    - gemma-4-31b-it-nvfp4-turbo
+    - gemma-4-31b-it-nvfp4
+    - gemma-4-31b-it-turbo
+    - gemma-4-31b-it
+    - gemma-4-31b
+  capabilities:
+    chat: true
+    tools: true
+    toolCallFormat: openai
+    reasoning: true
+    thinkingFormat: qwen-chat-template
+    structuredOutputs: json-schema
+    vision: true
+    audio: false
+    embeddings: false
+    rerank: false
+    fim: false
+    contextWindow: 122880
+    maxTokens: 32768
+  quirks:
+    kvCache:
+      kQuant: q8_0
+      vQuant: q8_0
+    sampling:
+      thinking:
+        temperature: 1.0
+        topP: 0.95
+        topK: 64
+        minP: 0.0
+        presencePenalty: 0.0
+        repetitionPenalty: 1.0
+        maxTokens: 32768
+      instruct:
+        temperature: 0.7  # 0.7 keeps tool-call JSON parseable; gemma card's 1.0 is for chat
+        topP: 0.95
+        topK: 64
+        minP: 0.0
+        maxTokens: 32768
+    chatTemplate: "gemma-channel"
+    leakageNote: |
+      LM Studio's gemma4 chat template emits chain-of-thought as plain text
+      bracketed by literal '<|channel>thought\n' and '<channel|>' markers
+      rather than reasoningType=reasoning fragments. Clio's lmstudio-native
+      adapter buffers and re-classifies these regions into ThinkingContent
+      so the markers do not leak into the visible TUI text and reasoning
+      tokens are accounted via the chars/4 estimator.
+    gpuTiers:
+      "48gb": "Fits at f16 KV when parallel=1 and ctx=122880; drop to q8_0 KV at parallel=4."
+      "80gb": "Comfortable at f16 KV with parallel=1 and ctx=122880."
+    runtimePreference:
+      lmstudioNative: "Verified path. Pin parallel=1 in the LM Studio per-model preset to give a single agent the full 122880 context."
+      openaiCompat: "Fallback path; the openai-compat surface does not expose the channel-marker classifier so visible text shows the raw markers."
+    thinking:
+      mechanism: on-off
+      guidance: |
+        Gemma 4 chat template exposes thinking only as on or off; intermediate
+        levels coerce to on. NVFP4 quantization can corrupt JSON tool-call
+        output under aggressive sampling, so the instruct profile pins
+        temperature at 0.7. The lmstudio-native adapter re-classifies the
+        channel-marker thought region into ThinkingContent so markers do not
+        leak into visible text.
+    serving: "LilaRest publishes no per-model sampler; values inherit the gemma family default per the official Google Gemma 4 31B card. KV cache budget at f16, ctx=122880 is roughly 57 GB on top of ~21 GB of NVFP4 weights."
+

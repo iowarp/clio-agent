@@ -46,10 +46,31 @@ class LMProviderPreset(BaseModel):
     ] = "unknown"
     status_message: str = ""
     supports_live_catalog: bool = True
-    supports_vision: bool = False
     configuration_fields: list[LMProviderConfigurationField] = Field(default_factory=list)
     supports_runtime_sizing: bool = False
     managed_service_id: str = ""
+    #: Whether this provider has a real POST .../auth {action: logout} handler
+    #: (the SAME registry the route itself dispatches through -- never
+    #: inferred client-side from auth_method, which cannot tell a CLIO-owned
+    #: subscription like Codex's apart from Claude Code's own CLI login).
+    supports_logout: bool = False
+
+
+#: Presets whose env var name doesn't follow ``CLIO_LM_API_KEY`` (the fallback
+#: every other preset uses) -- kept next to :class:`LMProviderPreset` so a new
+#: preset's key lookup and its wire shape stay in one place.
+_WELL_KNOWN_API_KEY_ENV: dict[str, str] = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+}
+
+
+def preset_api_key_env(preset: LMProviderPreset) -> str:
+    """Return the environment variable ``preset``'s API key is read from."""
+    if preset.api_key_env:
+        return preset.api_key_env
+    return _WELL_KNOWN_API_KEY_ENV.get(preset.id, "CLIO_LM_API_KEY")
 
 
 class LMProviderInfo(BaseModel):
@@ -70,7 +91,7 @@ class LMProviderInfo(BaseModel):
     #: aliases like "sonnet" -> "claude-sonnet-5"); equal to ``model`` when the
     #: provider has no alias concept or none is known yet.
     resolved_model_id: str = ""
-    temperature: float = 0.0
+    temperature: float | None = None
     max_tokens: int = 0
     context_length: int = 0
     chosen_context: int | None = None
@@ -83,7 +104,7 @@ class LMProviderInfo(BaseModel):
     thinking_level_source: str | None = None
     thinking_effective: str = ""
     thinking_budget: int = 0
-    transport: Literal["sdk"] | None = None
+    transport: Literal["sdk", "websocket", "sse"] | None = None
     state: Literal["idle", "configuring", "ready", "error"] = "idle"
     status_message: str = ""
     error: str = ""
@@ -101,11 +122,16 @@ class LMProviderInfo(BaseModel):
         an ``LMProviderInfo`` having to remember to call it.
         """
         if not self.resolved_model_id and self.model:
-            from clio_agent.providers.reasoning_levels import (  # noqa: PLC0415
-                resolve_configured_model_id,
-            )
+            if self.provider == "claude_code":
+                from clio_agent.providers.capabilities.dialects.claude_code import (  # noqa: PLC0415
+                    resolve_configured_model_id,
+                )
 
-            self.resolved_model_id = resolve_configured_model_id(self.provider, self.model)
+                self.resolved_model_id = resolve_configured_model_id(self.model)
+            else:
+                # Only claude_code reports CLI aliases; every other provider's
+                # configured model already IS its catalog id.
+                self.resolved_model_id = self.model
         return self
 
 
@@ -118,9 +144,9 @@ class LMProviderRequest(BaseModel):
 
     ``temperature`` + ``max_tokens`` are forwarded to dspy.LM so
     the user can tune behaviour from the TUI without touching env
-    vars. Defaults match LMProviderConfig's defaults
-    (temperature=0.0 — deterministic, structured/tool-calling agentic
-    output; max_tokens=0 omits the client output cap).
+    vars. Defaults match LMProviderConfig's defaults (temperature
+    unset — the provider/model's own sampling default applies;
+    max_tokens=0 omits the client output cap).
     """
 
     provider: str
@@ -129,7 +155,7 @@ class LMProviderRequest(BaseModel):
     model: str
     api_key: str = "x"
     provider_options: dict[str, str] = Field(default_factory=dict)
-    temperature: float = 0.0
+    temperature: float | None = None
     max_tokens: int = 0
     top_p: float | None = None
     top_k: int | None = None
@@ -139,6 +165,13 @@ class LMProviderRequest(BaseModel):
     parallel: int = 0
     turn_timeout_s: float = 0.0
     transport: str | None = None
+    # WHICH of a multi-transport provider's implementations to bind (S1b).
+    # Only the ``codex`` provider reads this today (``"sdk"`` | ``"direct"``,
+    # default ``"direct"``) -- distinct from ``transport`` above, which is a
+    # provider's own internal delivery choice (codex direct's websocket/sse,
+    # claude_code's sdk). Named ``variant`` to mirror ``ModelRef.variant``,
+    # which a session/message model ref uses to request the same transport.
+    variant: str = ""
     thinking_level: (
         Literal["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] | None
     ) = None

@@ -66,9 +66,16 @@ class Provider:
     #: canonical display name.
     auth_label: str = ""
     api_key_env: str | None = None
+    #: The host credential chain a provider signs with instead of an API key
+    #: (``providers.host_credentials``): ``"google_cloud"`` (Application Default
+    #: Credentials) or ``"aws"`` (the AWS credential chain). Empty for the rest.
+    host_credentials: Literal["", "google_cloud", "aws"] = ""
+    #: A path under ``api_base`` that answers only with a valid key, for a
+    #: provider whose model listing is public (OpenRouter's ``/models`` lists
+    #: every model to anyone, so listing it proves nothing about the key).
+    #: ``None``: the authenticated ``/models`` call is itself the key check.
+    key_check_path: str | None = None
     supports_live_catalog: bool = True
-    supports_vision: bool = False
-    max_tokens_default: int = 32000
     strip_openai_prefix: bool = True
     parse_retry_capability: Literal["bounded", "single_attempt"] = "bounded"
     configuration_fields: tuple[ProviderConfigurationField, ...] = ()
@@ -76,3 +83,11 @@ class Provider:
     managed_service_id: str = ""
     is_kind_default: bool = False
     model_catalog: tuple[ModelEntry, ...] = ()
+    #: Who drives the tool/reasoning loop for this provider. ``"clio"`` (the
+    #: default, and true for every direct provider): CLIO's own DSPy ReAct
+    #: loop owns iteration end-to-end. A provider whose own SDK/CLI could run
+    #: an agentic loop of its own (e.g. claude_code, if its built-in tools were
+    #: ever enabled) would report something else here — checked instead of
+    #: assumed, so the rest of CLIO never silently assumes context-policy
+    #: parity (rewind/compaction/etc.) it does not actually have.
+    inner_loop_owner: str = "clio"

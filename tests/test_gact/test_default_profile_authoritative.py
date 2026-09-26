@@ -37,8 +37,8 @@ from clio_agent.providers import resolver as resolver_mod
 from clio_agent.providers.handshake.model import (
     AuthState,
     ConnectivityState,
+    DiscoveredModel,
     HandshakeReport,
-    ModelProfile,
 )
 from clio_agent.providers.lm_spec import LMSpec, spec_from_config
 
@@ -51,13 +51,21 @@ _BOOT_ENV_KEYS = (
 
 
 def _report(*, provider: str, model_id: str, context_window: int | None = None) -> HandshakeReport:
-    """Build a one-model OK :class:`HandshakeReport`."""
+    """Build a one-model OK :class:`HandshakeReport`.
+
+    ``context_window`` is accepted for call-site compatibility but no longer
+    lands on a flat profile field (capability facts route through the shared
+    store, model-capabilities brief Part 4); none of this file's assertions
+    depend on it, only on the resolved ``dspy.LM`` identity.
+    """
+    del context_window
     return HandshakeReport(
         provider_id=provider,
         provider_kind=provider,
         connectivity=ConnectivityState.OK,
         auth=AuthState.OK,
-        models=(ModelProfile(id=model_id, context_window=context_window),),
+        api_base="",
+        models=(DiscoveredModel(id=model_id),),
     )
 
 

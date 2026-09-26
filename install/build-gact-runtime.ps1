@@ -110,34 +110,70 @@ $pyBin = Join-Path $Out 'python\python.exe'
 if (-not (Test-Path $pyBin)) { throw "build-gact-runtime: $pyBinRel missing in dist" }
 
 # --- 2. install clio-agent + the portable science launcher -------------
+# $checkout always ends up a local clio-agent tree with its OWN pyproject.toml
+# + uv.lock -- $Source directly, or a fresh clone of $Ref otherwise -- so step
+# 2b can export that EXACT lock as a constraint file. Without this, the
+# `uv pip install $spec ...` below is an unlocked resolve against whatever is
+# on PyPI at build time: the incident this fixes shipped iowarp-core 2.2.1 in
+# a bundle while uv.lock (and CI) were still on 2.1.0.
+$cleanupCheckout = $null
 if ($Source) {
   if (-not (Test-Path (Join-Path $Source 'pyproject.toml'))) {
     throw "build-gact-runtime: Source=$Source is not a clio-agent checkout"
   }
-  $spec = (Resolve-Path $Source).Path
+  $checkout = (Resolve-Path $Source).Path
+  $spec = $checkout
 } else {
-  $spec = "clio-agent @ git+https://github.com/iowarp/clio-agent.git@$Ref"
+  $checkout = Join-Path ([System.IO.Path]::GetTempPath()) ("clio-agent-ref-checkout-" + [System.IO.Path]::GetRandomFileName())
+  $cleanupCheckout = $checkout
+  Write-Host "[build-gact-runtime] cloning clio-agent@$Ref to export its lock"
+  Invoke-Native -Exe 'git' -Args @('clone', '--quiet', '--depth', '1', '--branch', $Ref, 'https://github.com/iowarp/clio-agent.git', $checkout)
+  $spec = $checkout
 }
-$clioKitSpec = 'clio-kit==2.10.6'
-Write-Host "[build-gact-runtime] installing: $spec + $clioKitSpec"
-Invoke-Native -Exe $uv.Source -Args @(
-    'pip', 'install', '--python', $pyBin, $spec, $clioKitSpec, 'globus-sdk>=3.0.0',
-    'dspy==3.3.0b1', 'fastmcp==4.0.0b5',
-    'fastmcp-slim==4.0.0b5', 'fastmcp-tasks==4.0.0b5'
-)
+
+# --- 2b. export uv.lock as a constraint so the resolve below cannot drift ---
+# $BundleExtras is THE bundle's install set, defined once: the export below and
+# the install after it both use it, so the constraint file covers every package
+# the install can pull in (an extra missing from the export resolves unpinned --
+# how pytz drifted off the lock). Everything the bundle ships beyond base deps
+# lives in the `desktop` extra of pyproject.toml, never as a pin in this script:
+# a separate pin is resolved against the lock only at build time, which is how a
+# hardcoded clio-kit==2.10.6 (click>=8.3.3) broke against the locked click.
+# scripts/check_bundle_matches_lock.py BUNDLE_EXTRAS must equal this list
+# (tests/test_scripts/test_check_bundle_matches_lock.py enforces it).
+$BundleExtras = @('argonne', 'desktop')
+$constraints = Join-Path $Out '.lock-constraints.txt'
+Write-Host "[build-gact-runtime] exporting $checkout\uv.lock (extras: $($BundleExtras -join ',')) as an install constraint"
+$exportArgs = @('export', '--project', $checkout, '--frozen', '--no-hashes', '--no-emit-project', '-o', $constraints)
+foreach ($extra in $BundleExtras) { $exportArgs += @('--extra', $extra) }
+Invoke-Native -Exe $uv.Source -Args $exportArgs | Select-Object -Last 5
+if (-not (Test-Path $constraints) -or (Get-Item $constraints).Length -eq 0) {
+  throw 'build-gact-runtime: uv export produced no constraints'
+}
+
+$bundleSpec = "$spec[$($BundleExtras -join ',')]"
+Write-Host "[build-gact-runtime] installing: $bundleSpec (locked)"
+Invoke-Native -Exe $uv.Source -Args @('pip', 'install', '--python', $pyBin, '--constraint', $constraints, $bundleSpec)
+if ($cleanupCheckout) { Remove-Item -LiteralPath $cleanupCheckout -Recurse -Force -ErrorAction SilentlyContinue }
 
 # Web Search is the recommended installer-selected service. Install its
 # source-locked adapter into the main relocatable runtime now, rather than
-# making the first desktop connection build a 100-package environment.
+# making the first desktop connection build a 100-package environment. Its
+# dependencies are already installed from the `desktop` extra; the constraint
+# keeps any it adds on the lock (and check_bundle_matches_lock.py fails on a
+# package the lock does not cover).
 $webMcpProject = Join-Path $Out 'python\clio-kit-mcp-servers\web'
 if (-not (Test-Path (Join-Path $webMcpProject 'pyproject.toml'))) {
   throw "build-gact-runtime: bundled CLIO Web Search MCP project missing at $webMcpProject"
 }
 Write-Host "[build-gact-runtime] installing bundled CLIO Web Search adapter"
-Invoke-Native -Exe $uv.Source -Args @(
-    'pip', 'install', '--python', $pyBin, $webMcpProject,
-    'fastmcp==4.0.0b5', 'fastmcp-slim==4.0.0b5', 'fastmcp-tasks==4.0.0b5'
-)
+Invoke-Native -Exe $uv.Source -Args @('pip', 'install', '--python', $pyBin, '--constraint', $constraints, $webMcpProject)
+Remove-Item -LiteralPath $constraints -Force -ErrorAction SilentlyContinue
+
+# check_bundle_matches_lock.py is the automated proof this constraint actually
+# took effect (release-time backstop, not a substitute for it) -- run from the
+# CI workflow right after this script, against $checkout's uv.lock (the exact
+# tree this runtime was built from -- $env:GITHUB_WORKSPACE\uv.lock in CI).
 
 # clio-kit materializes each locked MCP server with uv on first use. Ship uv
 # beside the relocatable runtime instead of requiring a fresh desktop user to

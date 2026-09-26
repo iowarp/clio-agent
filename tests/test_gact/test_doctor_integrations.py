@@ -23,8 +23,8 @@ from clio_agent.gact.app import build_app
 from clio_agent.providers.handshake.model import (
     AuthState,
     ConnectivityState,
+    DiscoveredModel,
     HandshakeReport,
-    ModelProfile,
 )
 from clio_agent.runtime.status import (
     IntegrationState,
@@ -91,6 +91,9 @@ def _ready_probe(tmp_path: Path, **overrides: Any) -> RuntimeProbe:
 
 
 def _health(app: Any, monkeypatch: pytest.MonkeyPatch, probe: RuntimeProbe):
+    # A user-selected provider: an unselected one is reported ``unconfigured`` instead
+    # of probed (see test_health_does_not_treat_an_unselected_provider_as_an_outage).
+    monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")
     _patch_engine(monkeypatch, probe)
     return TestClient(app).get("/v1/health")
 
@@ -122,7 +125,7 @@ def test_health_probes_the_runtime_provider_binding(
     app = build_app(sessions_path=tmp_path / "s.json")
     app.state.lm_config = {
         "provider": "codex",
-        "api_base": "codex://sdk",
+        "api_base": "codex://direct",
         "model": "gpt-5.6-luna",
     }
 
@@ -130,7 +133,7 @@ def test_health_probes_the_runtime_provider_binding(
 
     assert response.status_code == 200
     assert observed["CLIO_LM_PROVIDER"] == "codex"
-    assert observed["CLIO_LM_API_BASE"] == "codex://sdk"
+    assert observed["CLIO_LM_API_BASE"] == "codex://direct"
     assert observed["CLIO_LM_MODEL"] == "gpt-5.6-luna"
 
 
@@ -157,9 +160,9 @@ def test_health_probes_the_persisted_provider_bound_to_the_agent(
     agent = SimpleNamespace(
         _provider_config=SimpleNamespace(
             provider="codex",
-            api_base="codex://sdk",
+            api_base="codex://direct",
             model="gpt-5.6-sol",
-            codex_transport="sdk",
+            codex_transport="websocket",
         )
     )
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
@@ -169,17 +172,17 @@ def test_health_probes_the_persisted_provider_bound_to_the_agent(
     assert response.status_code == 200
     assert app.state.lm_config is None
     assert observed["CLIO_LM_PROVIDER"] == "codex"
-    assert observed["CLIO_LM_API_BASE"] == "codex://sdk"
+    assert observed["CLIO_LM_API_BASE"] == "codex://direct"
     assert observed["CLIO_LM_MODEL"] == "gpt-5.6-sol"
 
 
-def test_health_does_not_treat_an_unselected_desktop_provider_as_an_outage(
+def test_health_does_not_treat_an_unselected_provider_as_an_outage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A fresh desktop selects its provider in the composer, not at boot."""
+    """Any fresh server (desktop or a headless remote host) selects its provider later."""
 
     monkeypatch.delenv("CLIO_LM_PROVIDER", raising=False)
-    monkeypatch.setenv("CLIO_DESKTOP_BOOT_HEARTBEAT", "1")
+    monkeypatch.delenv("CLIO_DESKTOP_BOOT_HEARTBEAT", raising=False)
 
     def _unselected_provider(**kwargs: Any) -> RuntimeReport:
         return RuntimeReport(
@@ -215,6 +218,7 @@ def test_health_does_not_treat_an_unselected_desktop_provider_as_an_outage(
     assert lm["status"] == "ready"
     assert lm["required"] is False
     assert lm["summary"] == "Choose a language model when starting a session."
+    assert lm["reason"] == "lm_provider_unconfigured"
 
 
 def test_health_returns_probe_engine_rows_not_hand_rolled(
@@ -327,7 +331,7 @@ def test_lm_row_carries_cached_handshake_summary(
         provider_kind="lm_studio",
         connectivity=ConnectivityState.OK,
         auth=AuthState.NOT_REQUIRED,
-        models=(ModelProfile(id="qwen"), ModelProfile(id="granite")),
+        models=(DiscoveredModel(id="qwen"), DiscoveredModel(id="granite")),
     )
     resp = _health(app, monkeypatch, _ready_probe(tmp_path))
     assert resp.status_code == 200
@@ -368,7 +372,7 @@ def test_stale_ready_handshake_does_not_mask_live_down_lm(
         provider_kind="lm_studio",
         connectivity=ConnectivityState.OK,
         auth=AuthState.NOT_REQUIRED,
-        models=(ModelProfile(id="qwen"),),
+        models=(DiscoveredModel(id="qwen"),),
     )
     # ...but the live probe now finds the provider unreachable.
     resp = _health(app, monkeypatch, _ready_probe(tmp_path, http_get=_refused))

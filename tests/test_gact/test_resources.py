@@ -593,7 +593,7 @@ def test_text_only_selected_model_rejects_image_resource_before_turn(
                 "health": "ready",
                 "models": [
                     {
-                        "model_id": "gpt-5.3-codex-spark",
+                        "model_id": "gpt-5.3-cg-spark",
                         "availability": "available",
                         "modalities": ["text"],
                         "evidence": {
@@ -626,7 +626,7 @@ def test_text_only_selected_model_rejects_image_resource_before_turn(
             f"/v1/sessions/{sid}/messages",
             json={
                 "client_message_id": "msg_text_only_image",
-                "model": {"provider_id": "codex", "model_id": "gpt-5.3-codex-spark"},
+                "model": {"provider_id": "codex", "model_id": "gpt-5.3-cg-spark"},
                 "parts": [
                     {"type": "text", "text": "What is in this image?"},
                     {
@@ -646,7 +646,7 @@ def test_text_only_selected_model_rejects_image_resource_before_turn(
             "resource_id": resource["id"],
             "media_type": "image/png",
             "provider": "codex",
-            "model": "gpt-5.3-codex-spark",
+            "model": "gpt-5.3-cg-spark",
             "representation": "metadata_only",
             "evidence_source": "live_handshake",
             "recovery_actions": [

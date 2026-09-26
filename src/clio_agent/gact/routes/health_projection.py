@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import os
 from typing import Literal
 
+from clio_agent.gact.providers.boot_selection import LM_PROVIDER_UNCONFIGURED
 from clio_agent.gact.types import Integration
 from clio_agent.runtime.status import (
     IntegrationState,
@@ -33,22 +33,30 @@ def integration_to_wire(item: IntegrationStatus) -> Integration:
         next_action=item.next_action or None,
         endpoint=item.endpoint,
         required=item.required,
+        reason=_row_reason(item),
     )
 
 
-def desktop_provider_report(
-    report: RuntimeReport,
-    *,
-    lm_config: object | None,
-    provider_configured: bool,
-) -> RuntimeReport:
-    """Make an unselected desktop provider an optional setup choice, not an outage."""
+def _row_reason(item: IntegrationStatus) -> str | None:
+    """The row's typed ``details["reason"]`` for the wire, when the probe set one."""
 
-    if (
-        os.environ.get("CLIO_DESKTOP_BOOT_HEARTBEAT") != "1"
-        or lm_config is not None
-        or provider_configured
-    ):
+    reason = (item.details or {}).get("reason")
+    return str(reason) if reason else None
+
+
+def unconfigured_provider_report(
+    report: RuntimeReport, *, provider_configured: bool
+) -> RuntimeReport:
+    """Report an unselected LM provider as ``unconfigured`` -- a setup choice, not an outage.
+
+    Until the user picks a provider (``PUT /v1/providers/lm``, the config file, or
+    ``CLIO_LM_PROVIDER`` -- never the committed ``lm_studio`` default), the probe
+    engine's default-LM-Studio row says nothing true about this server: a headless
+    remote host has no LM Studio by design. The row becomes SKIPPED (wire ``ready``,
+    not required) with the typed reason ``lm_provider_unconfigured``.
+    """
+
+    if provider_configured:
         return report
     integrations = [
         IntegrationStatus(
@@ -57,6 +65,7 @@ def desktop_provider_report(
             summary="Choose a language model when starting a session.",
             config_source="session:model-selection",
             next_action="Select a provider and model in the message composer.",
+            details={"reason": LM_PROVIDER_UNCONFIGURED},
             required=False,
         )
         if item.name == "lm_provider"

@@ -1,0 +1,21 @@
+# Mistral Large 3 (675B, 2512): image input. Evidence (recorded in tests/fixtures):
+# Hub params.json vision_encoder and processor_config.json image_processor (the repo
+# ships no config.json); LiteLLM mistral/mistral-large-3 supports_vision true,
+# supports_function_calling true, 262144 input / 262144 output.
+- family: mistral-large-3
+  matchPatterns:
+    - mistral-large-3
+    - mistral-large-2512
+  capabilities:
+    chat: true
+    tools: true
+    toolCallFormat: openai
+    reasoning: false
+    structuredOutputs: json-schema
+    vision: true
+    audio: false
+    embeddings: false
+    rerank: false
+    fim: false
+    contextWindow: 262144
+    maxTokens: 262144

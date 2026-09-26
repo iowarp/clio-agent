@@ -1,0 +1,242 @@
+{
+ "id": "meta-llama/Llama-3.2-90B-Vision-Instruct",
+ "modelId": "meta-llama/Llama-3.2-90B-Vision-Instruct",
+ "sha": "e305d2a43a4adc6987308fe7d896fb8ec5f1a5d8",
+ "private": false,
+ "gated": "manual",
+ "pipeline_tag": "image-text-to-text",
+ "library_name": "transformers",
+ "tags": [
+  "transformers",
+  "safetensors",
+  "mllama",
+  "image-text-to-text",
+  "facebook",
+  "meta",
+  "pytorch",
+  "llama",
+  "llama-3",
+  "conversational",
+  "en",
+  "de",
+  "fr",
+  "it",
+  "pt",
+  "hi",
+  "es",
+  "th",
+  "arxiv:2204.05149",
+  "license:llama3.2",
+  "eval-results",
+  "text-generation-inference",
+  "endpoints_compatible",
+  "region:us"
+ ],
+ "config": {
+  "architectures": [
+   "MllamaForConditionalGeneration"
+  ],
+  "model_type": "mllama",
+  "processor_config": {
+   "chat_template": "{{- bos_token }}\n{%- if custom_tools is defined %}\n    {%- set tools = custom_tools %}\n{%- endif %}\n{%- if not tools_in_user_message is defined %}\n    {%- set tools_in_user_message = true %}\n{%- endif %}\n{%- if not date_string is defined %}\n    {%- if strftime_now is defined %}\n        {%- set date_string = strftime_now(\"%d %b %Y\") %}\n    {%- else %}\n        {%- set date_string = \"26 Jul 2024\" %}\n    {%- endif %}\n{%- endif %}\n{%- if not tools is defined %}\n    {%- set tools = none %}\n{%- endif %}\n\n{#- This block extracts the system message, so we can slot it into the right place. #}\n{%- if messages[0]['role'] == 'system' %}\n    {%- set system_message = messages[0]['content']|trim %}\n    {%- set messages = messages[1:] %}\n    {%- set user_supplied_system_message = true %}\n{%- else %}\n    {%- set system_message = \"\" %}\n    {%- set user_supplied_system_message = false %}\n{%- endif %}\n\n{#- Find out if there are any images #}\n{% set image_ns = namespace(has_images=false) %}      \n{%- for message in messages %}\n    {%- for content in message['content'] %}\n        {%- if content['type'] == 'image' %}\n            {%- set image_ns.has_images = true %}\n        {%- endif %}\n    {%- endfor %}\n{%- endfor %}\n\n{#- System message if there are no images, or if the user supplied one #}\n{%- if user_supplied_system_message or not image_ns.has_images %}\n    {{- \"<|start_header_id|>system<|end_header_id|>\\n\\n\" }}\n    {%- if tools is not none %}\n        {{- \"Environment: ipython\\n\" }}\n    {%- endif %}\n    {{- \"Cutting Knowledge Date: December 2023\\n\" }}\n    {{- \"Today Date: \" + date_string + \"\\n\\n\" }}\n    {%- if tools is not none and not tools_in_user_message %}\n        {{- \"You have access to the following functions. To call a function, please respond with JSON for a function call.\" }}\n        {{- 'Respond in the format {\"name\": function name, \"parameters\": dictionary of argument name and its value}.' }}\n        {{- \"Do not use variables.\\n\\n\" }}\n        {%- for t in tools %}\n            {{- t | tojson(indent=4) }}\n            {{- \"\\n\\n\" }}\n        {%- endfor %}\n    {%- endif %}\n    {{- system_message }}\n    {{- \"<|eot_id|>\" }}\n{%- endif %}\n\n{#- Custom tools are passed in a user message with some extra guidance #}\n{%- if tools_in_user_message and not tools is none %}\n    {#- Extract the first user message so we can plug it in here #}\n    {%- if messages | length != 0 %}\n        {%- set first_user_message = messages[0]['content']|trim %}\n        {%- set messages = messages[1:] %}\n    {%- else %}\n        {{- raise_exception(\"Cannot put tools in the first user message when there's no first user message!\") }}\n{%- endif %}\n    {{- '<|start_header_id|>user<|end_header_id|>\\n\\n' -}}\n    {{- \"Given the following functions, please respond with a JSON for a function call \" }}\n    {{- \"with its proper arguments that best answers the given prompt.\\n\\n\" }}\n    {{- 'Respond in the format {\"name\": function name, \"parameters\": dictionary of argument name and its value}.' }}\n    {{- \"Do not use variables.\\n\\n\" }}\n    {%- for t in tools %}\n        {{- t | tojson(indent=4) }}\n        {{- \"\\n\\n\" }}\n    {%- endfor %}\n    {{- first_user_message + \"<|eot_id|>\"}}\n{%- endif %}\n\n{%- for message in messages %}\n    {%- if not (message.role == 'ipython' or message.role == 'tool' or 'tool_calls' in message) %}\n    {{- '<|start_header_id|>' + message['role'] + '<|end_header_id|>\\n\\n' }}\n        {%- if message['content'] is string %}\n            {{- message['content'] }}\n        {%- else %}\n            {%- for content in message['content'] %}\n                {%- if content['type'] == 'image' %}\n                    {{- '<|image|>' }}\n                {%- elif content['type'] == 'text' %}\n                    {{- content['text'] }}\n                {%- endif %}\n            {%- endfor %}\n        {%- endif %}\n        {{- '<|eot_id|>' }}\n    {%- elif 'tool_calls' in message %}\n        {%- if not message.tool_calls|length == 1 %}\n            {{- raise_exception(\"This model only supports single tool-calls at once!\") }}\n        {%- endif %}\n        {%- set tool_call = message.tool_calls[0].function %}\n        {{- '<|start_header_id|>assistant<|end_header_id|>\\n\\n' -}}\n        {{- '{\"name\": \"' + tool_call.name + '\", ' }}\n        {{- '\"parameters\": ' }}\n        {{- tool_call.arguments | tojson }}\n        {{- \"}\" }}\n        {{- \"<|eot_id|>\" }}\n    {%- elif message.role == \"tool\" or message.role == \"ipython\" %}\n        {{- \"<|start_header_id|>ipython<|end_header_id|>\\n\\n\" }}\n        {%- if message.content is mapping or message.content is iterable %}\n            {{- message.content | tojson }}\n        {%- else %}\n            {{- message.content }}\n        {%- endif %}\n        {{- \"<|eot_id|>\" }}\n    {%- endif %}\n{%- endfor %}\n{%- if add_generation_prompt %}\n    {{- '<|start_header_id|>assistant<|end_header_id|>\\n\\n' }}\n{%- endif %}\n"
+  },
+  "tokenizer_config": {
+   "bos_token": "<|begin_of_text|>",
+   "chat_template": "{{- bos_token }}\n{%- if custom_tools is defined %}\n    {%- set tools = custom_tools %}\n{%- endif %}\n{%- if not tools_in_user_message is defined %}\n    {%- set tools_in_user_message = true %}\n{%- endif %}\n{%- if not date_string is defined %}\n    {%- if strftime_now is defined %}\n        {%- set date_string = strftime_now(\"%d %b %Y\") %}\n    {%- else %}\n        {%- set date_string = \"26 Jul 2024\" %}\n    {%- endif %}\n{%- endif %}\n{%- if not tools is defined %}\n    {%- set tools = none %}\n{%- endif %}\n\n{#- This block extracts the system message, so we can slot it into the right place. #}\n{%- if messages[0]['role'] == 'system' %}\n    {%- set system_message = messages[0]['content']|trim %}\n    {%- set messages = messages[1:] %}\n    {%- set user_supplied_system_message = true %}\n{%- else %}\n    {%- set system_message = \"\" %}\n    {%- set user_supplied_system_message = false %}\n{%- endif %}\n\n{#- Find out if there are any images #}\n{% set image_ns = namespace(has_images=false) %}      \n{%- for message in messages %}\n    {%- for content in message['content'] %}\n        {%- if content['type'] == 'image' %}\n            {%- set image_ns.has_images = true %}\n        {%- endif %}\n    {%- endfor %}\n{%- endfor %}\n\n{#- System message if there are no images, or if the user supplied one #}\n{%- if user_supplied_system_message or not image_ns.has_images %}\n    {{- \"<|start_header_id|>system<|end_header_id|>\\n\\n\" }}\n    {%- if tools is not none %}\n        {{- \"Environment: ipython\\n\" }}\n    {%- endif %}\n    {{- \"Cutting Knowledge Date: December 2023\\n\" }}\n    {{- \"Today Date: \" + date_string + \"\\n\\n\" }}\n    {%- if tools is not none and not tools_in_user_message %}\n        {{- \"You have access to the following functions. To call a function, please respond with JSON for a function call.\" }}\n        {{- 'Respond in the format {\"name\": function name, \"parameters\": dictionary of argument name and its value}.' }}\n        {{- \"Do not use variables.\\n\\n\" }}\n        {%- for t in tools %}\n            {{- t | tojson(indent=4) }}\n            {{- \"\\n\\n\" }}\n        {%- endfor %}\n    {%- endif %}\n    {{- system_message }}\n    {{- \"<|eot_id|>\" }}\n{%- endif %}\n\n{#- Custom tools are passed in a user message with some extra guidance #}\n{%- if tools_in_user_message and not tools is none %}\n    {#- Extract the first user message so we can plug it in here #}\n    {%- if messages | length != 0 %}\n        {%- set first_user_message = messages[0]['content']|trim %}\n        {%- set messages = messages[1:] %}\n    {%- else %}\n        {{- raise_exception(\"Cannot put tools in the first user message when there's no first user message!\") }}\n{%- endif %}\n    {{- '<|start_header_id|>user<|end_header_id|>\\n\\n' -}}\n    {{- \"Given the following functions, please respond with a JSON for a function call \" }}\n    {{- \"with its proper arguments that best answers the given prompt.\\n\\n\" }}\n    {{- 'Respond in the format {\"name\": function name, \"parameters\": dictionary of argument name and its value}.' }}\n    {{- \"Do not use variables.\\n\\n\" }}\n    {%- for t in tools %}\n        {{- t | tojson(indent=4) }}\n        {{- \"\\n\\n\" }}\n    {%- endfor %}\n    {{- first_user_message + \"<|eot_id|>\"}}\n{%- endif %}\n\n{%- for message in messages %}\n    {%- if not (message.role == 'ipython' or message.role == 'tool' or 'tool_calls' in message) %}\n    {{- '<|start_header_id|>' + message['role'] + '<|end_header_id|>\\n\\n' }}\n        {%- if message['content'] is string %}\n            {{- message['content'] }}\n        {%- else %}\n            {%- for content in message['content'] %}\n                {%- if content['type'] == 'image' %}\n                    {{- '<|image|>' }}\n                {%- elif content['type'] == 'text' %}\n                    {{- content['text'] }}\n                {%- endif %}\n            {%- endfor %}\n        {%- endif %}\n        {{- '<|eot_id|>' }}\n    {%- elif 'tool_calls' in message %}\n        {%- if not message.tool_calls|length == 1 %}\n            {{- raise_exception(\"This model only supports single tool-calls at once!\") }}\n        {%- endif %}\n        {%- set tool_call = message.tool_calls[0].function %}\n        {{- '<|start_header_id|>assistant<|end_header_id|>\\n\\n' -}}\n        {{- '{\"name\": \"' + tool_call.name + '\", ' }}\n        {{- '\"parameters\": ' }}\n        {{- tool_call.arguments | tojson }}\n        {{- \"}\" }}\n        {{- \"<|eot_id|>\" }}\n    {%- elif message.role == \"tool\" or message.role == \"ipython\" %}\n        {{- \"<|start_header_id|>ipython<|end_header_id|>\\n\\n\" }}\n        {%- if message.content is mapping or message.content is iterable %}\n            {{- message.content | tojson }}\n        {%- else %}\n            {{- message.content }}\n        {%- endif %}\n        {{- \"<|eot_id|>\" }}\n    {%- endif %}\n{%- endfor %}\n{%- if add_generation_prompt %}\n    {{- '<|start_header_id|>assistant<|end_header_id|>\\n\\n' }}\n{%- endif %}\n",
+   "eos_token": "<|eot_id|>",
+   "pad_token": "<|finetune_right_pad_id|>"
+  }
+ },
+ "cardData": {
+  "library_name": "transformers",
+  "pipeline_tag": "image-text-to-text",
+  "tags": [
+   "facebook",
+   "meta",
+   "pytorch",
+   "llama",
+   "llama-3"
+  ],
+  "license": "llama3.2"
+ },
+ "siblings": [
+  {
+   "rfilename": ".gitattributes"
+  },
+  {
+   "rfilename": "LICENSE.txt"
+  },
+  {
+   "rfilename": "README.md"
+  },
+  {
+   "rfilename": "USE_POLICY.md"
+  },
+  {
+   "rfilename": "chat_template.json"
+  },
+  {
+   "rfilename": "config.json"
+  },
+  {
+   "rfilename": "generation_config.json"
+  },
+  {
+   "rfilename": "model-00001-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00002-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00003-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00004-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00005-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00006-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00007-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00008-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00009-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00010-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00011-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00012-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00013-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00014-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00015-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00016-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00017-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00018-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00019-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00020-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00021-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00022-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00023-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00024-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00025-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00026-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00027-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00028-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00029-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00030-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00031-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00032-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00033-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00034-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00035-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00036-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model-00037-of-00037.safetensors"
+  },
+  {
+   "rfilename": "model.safetensors.index.json"
+  },
+  {
+   "rfilename": "original/consolidated.00.pth"
+  },
+  {
+   "rfilename": "original/consolidated.01.pth"
+  },
+  {
+   "rfilename": "original/consolidated.02.pth"
+  },
+  {
+   "rfilename": "original/consolidated.03.pth"
+  },
+  {
+   "rfilename": "original/consolidated.04.pth"
+  },
+  {
+   "rfilename": "original/consolidated.05.pth"
+  },
+  {
+   "rfilename": "original/consolidated.06.pth"
+  },
+  {
+   "rfilename": "original/consolidated.07.pth"
+  },
+  {
+   "rfilename": "original/params.json"
+  },
+  {
+   "rfilename": "original/tokenizer.model"
+  },
+  {
+   "rfilename": "preprocessor_config.json"
+  },
+  {
+   "rfilename": "special_tokens_map.json"
+  },
+  {
+   "rfilename": "tokenizer.json"
+  },
+  {
+   "rfilename": "tokenizer_config.json"
+  }
+ ],
+ "lastModified": "2025-03-04T17:28:46.000Z"
+}

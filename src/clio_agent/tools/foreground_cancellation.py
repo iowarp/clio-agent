@@ -22,12 +22,10 @@ def _tool_cancellation_error(
     wire_settled: bool | None = None,
 ) -> CancellationError:
     execution_cancellation = "cooperative"
-    executor_work_may_continue = False
     wire_cancellation = "not_needed"
     details: dict[str, Any] = {"tool": tool, "stage": stage}
     if wire_settled is not None:
         wire_cancellation = "requested" if wire_settled else "unavailable"
-        executor_work_may_continue = not wire_settled
         if wire_settled:
             execution_cancellation = "mcp_wire"
         else:
@@ -35,7 +33,6 @@ def _tool_cancellation_error(
     details.update(
         {
             "execution_cancellation": execution_cancellation,
-            "executor_work_may_continue": executor_work_may_continue,
             "mcp_wire_cancellation": wire_cancellation,
         }
     )
@@ -103,10 +100,7 @@ def _run_foreground_coroutine(
                         raise cancellation_error(wire_settled) from None
                     raise CancellationError(
                         "operation cancelled by client",
-                        details={
-                            "execution_cancellation": "mcp_wire",
-                            "executor_work_may_continue": not wire_settled,
-                        },
+                        details={"execution_cancellation": "mcp_wire"},
                     ) from None
             if deadline is None or time.monotonic() < deadline:
                 continue

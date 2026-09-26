@@ -56,26 +56,33 @@ class TestLMProviderConfig:
         assert config.api_key == "lm-studio"
 
     def test_ollama_defaults(self):
-        """Ollama defaults should match PROVIDER_DEFAULTS."""
+        """Ollama defaults should match PROVIDER_DEFAULTS.
+
+        No trailing ``/v1``: LiteLLM's native ``ollama_chat`` provider appends
+        its own ``/api/chat`` to this base (#1413) — a ``/v1`` suffix here
+        would double into ``/v1/api/chat`` and 404.
+        """
+        # model-capabilities brief 9.1: no compiled-in suggested model id --
+        # discovery (/api/tags) supplies it; the catalog default is "".
         config = LMProviderConfig(provider="ollama")
-        assert config.api_base == "http://127.0.0.1:11434/v1"
-        assert config.model == "granite3.1-dense:8b"
+        assert config.api_base == "http://127.0.0.1:11434"
+        assert config.model == ""
         assert config.api_key == "ollama"
 
     def test_openai_defaults(self):
-        """OpenAI defaults should load correct api_base and model."""
+        """OpenAI defaults should load correct api_base; model is discovery-only now."""
         with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test-123"}, clear=False):
             config = LMProviderConfig(provider="openai")
             assert config.api_base == "https://api.openai.com/v1"
-            assert config.model == "gpt-4o-mini"
+            assert config.model == ""
             assert config.api_key == "sk-test-123"
 
     def test_anthropic_defaults(self):
-        """Anthropic defaults should load correct api_base and model."""
+        """Anthropic defaults should load correct api_base; model is discovery-only now."""
         with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-ant-test"}, clear=False):
             config = LMProviderConfig(provider="anthropic")
             assert config.api_base == "https://api.anthropic.com/v1"
-            assert config.model == "claude-sonnet-4-20250514"
+            assert config.model == ""
             assert config.api_key == "sk-ant-test"
 
     def test_explicit_values_override_defaults(self):
@@ -91,9 +98,11 @@ class TestLMProviderConfig:
         assert config.api_key == "custom-key"
 
     def test_default_temperature(self):
-        """Default agentic temperature should be 0.0 (deterministic structured output)."""
+        """Default temperature is unset (model-capabilities brief Part 7 item 1):
+        with no value, the provider/model's own sampling default applies instead
+        of clio forcing temp-0 on every model."""
         config = LMProviderConfig()
-        assert config.temperature == 0.0
+        assert config.temperature is None
 
     def test_default_planner_temperature(self):
         """Default planner temperature should be 0.3."""
@@ -114,14 +123,20 @@ class TestLMProviderConfig:
         assert config.planner_max_tokens == 0
 
     def test_qwopus_profile_keeps_exact_inherited_cap(self):
+        # model-capabilities brief 9.1: the qwen-name heuristic
+        # (_uses_local_reasoning_model_profile / _apply_model_profile_defaults)
+        # that used to force planner_temperature/router_temperature to 0.0 for a
+        # "qwopus"-named model is deleted -- no per-model-name matching in code.
+        # planner_temperature keeps its own explicit default (0.3) regardless of
+        # the model name; only the inherited max_tokens cap is asserted here.
         config = LMProviderConfig(
             provider="lm_studio",
             model="qwopus3.5-9b-v3",
             max_tokens=1024,
         )
         assert config.max_tokens == 1024
-        assert config.planner_temperature == 0.0
-        assert config.router_temperature == 0.0
+        assert config.planner_temperature == 0.3
+        assert config.router_temperature == 0.3
         assert config.planner_max_tokens == 1024
 
     def test_qwopus_profile_respects_exact_explicit_planner_cap(self):
@@ -151,9 +166,9 @@ class TestLMProviderConfig:
         assert config.environment == "dev"
 
     def test_default_codex_transport(self):
-        """Codex transport defaults to the official Python SDK."""
+        """Codex transport defaults to the direct websocket transport (A.6)."""
         config = LMProviderConfig(provider="codex")
-        assert config.codex_transport == "sdk"
+        assert config.codex_transport == "websocket"
         assert config.parse_retry_capability == "single_attempt"
 
     def test_invalid_codex_transport_rejected(self):
@@ -176,6 +191,39 @@ class TestLMProviderConfig:
         """
         with pytest.raises(ValueError, match="claude_code_transport"):
             LMProviderConfig(provider="claude_code", claude_code_transport="bogus")  # type: ignore[arg-type]
+
+
+class TestProviderIdIsAnIdentityNotAKind:
+    """provider_id names a real preset; it gets no kind_default fallback (Part 3).
+
+    Only the no-provider_id convenience form (``LMProviderConfig(provider=...)``)
+    resolves through the kind default -- an explicit provider_id is an identity
+    claim and a bogus one is a typed error, never a silent redirect to
+    whichever preset happens to share that kind.
+    """
+
+    def test_unknown_provider_id_is_a_typed_error(self):
+        with pytest.raises(ValueError, match="Unknown LM provider"):
+            LMProviderConfig(provider_id="not-a-real-provider")
+
+    def test_a_bare_kind_string_as_provider_id_is_a_typed_error(self):
+        """"argonne" is a kind, not a preset id (the presets are argonne_sophia /
+        argonne_metis); passed explicitly as provider_id it must error rather
+        than silently resolve to the kind's default preset."""
+        with pytest.raises(ValueError, match="Unknown LM provider"):
+            LMProviderConfig(provider_id="argonne")
+
+    def test_bare_kind_construction_still_resolves_via_kind_default(self):
+        """With no provider_id at all, ``provider="argonne"`` is still a valid
+        convenience construction (used throughout the test suite) and resolves
+        to the kind's designated default preset."""
+        config = LMProviderConfig(provider="argonne")
+        assert config.provider_id == "argonne_sophia"
+
+    def test_explicit_provider_id_is_preserved_exactly(self):
+        config = LMProviderConfig(provider_id="argonne_metis")
+        assert config.provider_id == "argonne_metis"
+        assert config.provider == "argonne"
 
 
 class TestLoadConfigFromEnv:
@@ -209,12 +257,12 @@ class TestLoadConfigFromEnv:
         assert config.provider == "lm_studio"
 
     def test_ollama_provider_from_env(self):
-        """CLIO_LM_PROVIDER=ollama should configure ollama defaults."""
+        """CLIO_LM_PROVIDER=ollama should configure ollama defaults (no /v1, #1413)."""
         with isolated_environ({"CLIO_LM_PROVIDER": "ollama"}):
             config = load_config_from_env()
             assert config.provider == "ollama"
-            assert config.api_base == "http://127.0.0.1:11434/v1"
-            assert config.model == "granite3.1-dense:8b"
+            assert config.api_base == "http://127.0.0.1:11434"
+            assert config.model == ""
 
     def test_env_model_overrides_provider_default(self):
         """CLIO_LM_MODEL should override provider's default model."""
@@ -260,7 +308,8 @@ class TestLoadConfigFromEnv:
             assert config.planner_max_tokens == 2048
 
     def test_env_qwopus_profile_without_manual_planner_tuning(self):
-        """Qwopus via LM Studio should apply its planner profile from env config."""
+        """No per-model-name planner profile any more (brief 9.1) -- planner_temperature
+        keeps its own explicit default regardless of the configured model's name."""
         env = {
             "CLIO_LM_PROVIDER": "lm_studio",
             "CLIO_LM_MODEL": "qwopus3.5-9b-v3",
@@ -268,7 +317,7 @@ class TestLoadConfigFromEnv:
         }
         with isolated_environ(env):
             config = load_config_from_env()
-            assert config.planner_temperature == 0.0
+            assert config.planner_temperature == 0.3
             assert config.planner_max_tokens == 1024
 
     def test_env_qwopus_profile_preserves_small_manual_planner_cap(self):
@@ -320,17 +369,17 @@ class TestLoadConfigFromEnv:
             assert config.api_key == "sk-native"
 
     def test_codex_transport_from_env(self):
-        """CLIO_CODEX_TRANSPORT accepts only the official SDK."""
-        env = {"CLIO_LM_PROVIDER": "codex", "CLIO_CODEX_TRANSPORT": "sdk"}
+        """CLIO_CODEX_TRANSPORT accepts websocket (default, A.6) or sse."""
+        env = {"CLIO_LM_PROVIDER": "codex", "CLIO_CODEX_TRANSPORT": "sse"}
         with isolated_environ(env):
             config = load_config_from_env()
-            assert config.codex_transport == "sdk"
+            assert config.codex_transport == "sse"
 
-    def test_codex_removed_transport_from_env_raises(self):
-        """A deleted transport in the env is a loud config error, not a downgrade."""
+    def test_codex_invalid_transport_from_env_raises(self):
+        """An invalid transport in the env is a loud config error, not a silent downgrade."""
         env = {"CLIO_LM_PROVIDER": "codex", "CLIO_CODEX_TRANSPORT": "exec"}
         with isolated_environ(env):
-            with pytest.raises(ValueError, match="official Python SDK"):
+            with pytest.raises(ValueError, match="codex_transport"):
                 load_config_from_env()
 
     def test_claude_code_transport_from_env(self):
@@ -488,7 +537,9 @@ class TestCreateLM:
 
     def test_ollama_uses_native_litellm_prefix(self):
         """Ollama chat models use LiteLLM's explicit Ollama chat route."""
-        config = LMProviderConfig(provider="ollama")
+        # model-capabilities brief 9.1: no compiled-in suggested model any
+        # more, so an explicit model is required to actually construct an LM.
+        config = LMProviderConfig(provider="ollama", model="llama3.2")
         lm = create_lm(config)
         assert lm.model.startswith("ollama_chat/")
 
@@ -534,45 +585,97 @@ class TestCreateLM:
     def test_openai_uses_native_prefix(self):
         """OpenAI models should get openai/ prefix (native)."""
         with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}, clear=False):
-            config = LMProviderConfig(provider="openai")
+            config = LMProviderConfig(provider="openai", model="gpt-4o-mini")
             lm = create_lm(config)
             assert lm.model.startswith("openai/")
 
     def test_anthropic_uses_native_prefix(self):
         """Anthropic models should get anthropic/ prefix."""
         with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-ant"}, clear=False):
-            config = LMProviderConfig(provider="anthropic")
+            config = LMProviderConfig(provider="anthropic", model="claude-haiku-4-5")
             lm = create_lm(config)
             assert lm.model.startswith("anthropic/")
 
     def test_codex_uses_custom_provider_prefix_with_internal_marker(self):
-        """Codex should keep user-facing model ids clean and mark internally."""
+        """Codex should keep user-facing model ids clean and mark internally.
+
+        The litellm-facing prefix is "codex_direct" (never bare "codex" --
+        litellm ships its own native "codex" provider; see
+        providers.codex.constants.LITELLM_PROVIDER).
+        """
         config = LMProviderConfig(provider="codex", model="gpt-5.5")
         lm = create_lm(config)
-        assert lm.model == "codex/cdx-gpt-5.5"
-        assert lm.kwargs["codex_transport"] == "sdk"
+        assert lm.model == "codex_direct/cg-gpt-5.5"
+        assert lm.kwargs["codex_transport"] == "websocket"
 
     def test_codex_model_marker_is_not_doubled(self):
         """Codex should accept already-prefixed config values idempotently."""
-        config = LMProviderConfig(provider="codex", model="codex/cdx-gpt-5.5")
+        config = LMProviderConfig(provider="codex", model="codex_direct/cg-gpt-5.5")
         lm = create_lm(config)
-        assert lm.model == "codex/cdx-gpt-5.5"
+        assert lm.model == "codex_direct/cg-gpt-5.5"
+
+    def test_codex_legacy_prefix_is_stripped_defensively(self):
+        """A config persisted before the litellm-prefix rename (bare 'codex/')
+        still resolves to the current 'codex_direct/' wire prefix, never doubled."""
+        config = LMProviderConfig(provider="codex", model="codex/cg-gpt-5.5")
+        lm = create_lm(config)
+        assert lm.model == "codex_direct/cg-gpt-5.5"
 
     def test_codex_transport_passes_litellm_kwarg(self):
         """The codex transport should flow into dspy.LM kwargs."""
         config = LMProviderConfig(
             provider="codex",
             model="gpt-5.5",
-            codex_transport="sdk",
+            codex_transport="sse",
         )
         lm = create_lm(config)
-        assert lm.kwargs["codex_transport"] == "sdk"
+        assert lm.kwargs["codex_transport"] == "sse"
 
     def test_codex_thinking_level_passes_codex_reasoning_effort_kwarg(self):
         """SEAM (#896): the #895 thinking level survives the factory into the LM
         kwargs as codex_reasoning_effort — the same optional_params lane
         codex_transport already proves reaches the CustomLLM. off → codex's
         explicit 'none' (never omit-and-inherit-ambient)."""
+        from clio_agent.providers.capabilities import invalidation
+        from clio_agent.providers.capabilities.records import (
+            DeploymentCapabilities,
+            EndpointCapabilities,
+            Fact,
+            ModelCapabilities,
+            ThinkingSpec,
+        )
+
+        invalidation.clear_all()
+        now = "2026-01-01T00:00:00+00:00"
+        invalidation.record_endpoint_capabilities(
+            EndpointCapabilities(
+                provider_id="codex",
+                api_base="codex://direct",
+                dialect="codex",
+                thinking_controls=Fact(frozenset({"reasoning_effort"}), "dialect", now),
+            )
+        )
+        invalidation.record_model_capabilities(
+            ModelCapabilities(
+                model_key="test:codex:gpt-5.5",
+                thinking=Fact(
+                    ThinkingSpec(
+                        mechanism="effort_levels", levels=("high",), effort_by_level={}
+                    ),
+                    "server_report",
+                    now,
+                ),
+            )
+        )
+        invalidation.record_deployment_capabilities(
+            DeploymentCapabilities(
+                provider_id="codex",
+                api_base="codex://direct",
+                model_id="gpt-5.5",
+                model_key=Fact("test:codex:gpt-5.5", "server_report", now),
+            )
+        )
+
         config = LMProviderConfig(provider="codex", model="gpt-5.5", thinking_level="high")
         lm = create_lm(config)
         assert lm.kwargs["codex_reasoning_effort"] == "high"
@@ -581,8 +684,13 @@ class TestCreateLM:
         lm_off = create_lm(config_off)
         assert lm_off.kwargs["codex_reasoning_effort"] == "none"
 
-        # Unset level → no effort kwarg at all (codex's own default governs).
-        config_default = LMProviderConfig(provider="codex", model="gpt-5.5")
+        # Unset level on a model with NO linked evidence yet (no handshake has
+        # run for this identity) → no effort kwarg at all, never a guess
+        # (fail closed; model-capabilities brief 5.5). A model WITH known
+        # evidence sends codex's explicit 'none' even when unset (dialect_wire
+        # docstring: never omit-and-inherit-ambient) -- this is the distinct
+        # "nothing is known yet" case, covered with its own, unseeded model id.
+        config_default = LMProviderConfig(provider="codex", model="gpt-5.5-unseeded")
         lm_default = create_lm(config_default)
         assert "codex_reasoning_effort" not in lm_default.kwargs
 
@@ -602,7 +710,7 @@ class TestCreateLM:
     def test_each_provider_returns_lm(self):
         """All providers should produce valid dspy.LM instances."""
         for provider in ("lm_studio", "ollama"):
-            model = "loaded-model" if provider == "lm_studio" else ""
+            model = "loaded-model" if provider == "lm_studio" else "llama3.2"
             config = LMProviderConfig(provider=provider, model=model)
             lm = create_lm(config)
             assert isinstance(lm, dspy.LM), f"Failed for {provider}"
@@ -644,6 +752,7 @@ class TestCreatePlannerLM:
         """Planner LM should respect custom planner_temperature."""
         config = LMProviderConfig(
             provider="ollama",
+            model="llama3.2",
             planner_temperature=0.1,
         )
         lm = create_planner_lm(config)
@@ -714,6 +823,9 @@ class TestSetupDspy:
         env = {
             "CLIO_LM_PROVIDER": "openai",
             "CLIO_LM_API_KEY": "sk-test",
+            # model-capabilities brief 9.1: no compiled-in suggested model any
+            # more, so an explicit model is required to construct an LM.
+            "CLIO_LM_MODEL": "gpt-4o-mini",
         }
         with isolated_environ(env):
             # config.py imports dspy lazily via _dspy() — patch the

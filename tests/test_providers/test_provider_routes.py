@@ -7,7 +7,8 @@ from unittest.mock import patch
 import pytest
 
 from clio_agent.config import LMProviderConfig
-from clio_agent.lm.factory import _provider_lm_kwargs, _resolve_model_name
+from clio_agent.lm.factory import _connection_kwargs, _resolve_model_name
+from clio_agent.lm.request_builder import build_request_kwargs
 from clio_agent.providers import credentials
 from clio_agent.providers.catalog import get_provider
 
@@ -67,7 +68,9 @@ from clio_agent.providers.catalog import get_provider
             "https://inference-api.alcf.anl.gov/resource_server/sophia/vllm/v1",
             {},
         ),
-        ("ollama", "qwen3", "ollama_chat/", "http://127.0.0.1:11434/v1", {}),
+        # No /v1: LiteLLM's native ollama_chat provider appends its own
+        # /api/chat to the base (#1413).
+        ("ollama", "qwen3", "ollama_chat/", "http://127.0.0.1:11434", {}),
         ("lm_studio", "local", "openai/", "http://127.0.0.1:1234/v1", {}),
         ("llama_cpp", "local-model", "openai/", "http://127.0.0.1:8088/v1", {}),
     ],
@@ -88,11 +91,66 @@ def test_catalog_provider_routes_to_exact_litellm_prefix(
     )
 
     assert config.provider_id == provider_id
-    kwargs = _provider_lm_kwargs(config)
+    kwargs = build_request_kwargs(config)
     assert _resolve_model_name(config).startswith(prefix)
     assert config.api_base == endpoint
     for key, value in options.items():
         assert kwargs[key] == value
+
+
+def test_ollama_connection_strips_saved_v1_suffix() -> None:
+    """A config saved before #1413 (api_base still carrying /v1) is repaired.
+
+    ``_connection_kwargs`` -- not just the catalog default -- must strip a
+    trailing ``/v1`` for the resolved ``ollama_chat`` prefix, or an existing
+    saved config keeps 404ing after the fix ships.
+    """
+    config = LMProviderConfig(
+        provider="ollama",  # type: ignore[arg-type]
+        provider_id="ollama",
+        model="qwen3",
+        api_base="http://127.0.0.1:11434/v1",
+        api_key="ollama",
+    )
+    assert _connection_kwargs(config) == {"api_base": "http://127.0.0.1:11434"}
+
+
+def test_ollama_connection_leaves_v1_suffix_for_non_ollama_dialects() -> None:
+    """Only the resolved ``ollama_chat`` prefix gets the /v1 strip."""
+    config = LMProviderConfig(
+        provider="llama_cpp",  # type: ignore[arg-type]
+        provider_id="llama_cpp",
+        model="local-model",
+        api_base="http://127.0.0.1:8088/v1",
+        api_key="llama-cpp",
+    )
+    assert _connection_kwargs(config) == {"api_base": "http://127.0.0.1:8088/v1"}
+
+
+def test_ollama_connection_combined_url_matches_litellm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The connection this factory builds must combine into the REAL Ollama URL.
+
+    Regression for #1413: the previous tests checked the prefix and the base
+    URL separately, which is exactly how a base that still doubled into
+    ``/v1/api/chat`` slipped through. This calls LiteLLM's own
+    ``OllamaChatConfig.get_complete_url`` (litellm 1.91.3) on what the factory
+    actually produces.
+    """
+    from litellm.llms.ollama.chat.transformation import OllamaChatConfig
+
+    config = LMProviderConfig(provider="ollama", model="qwen3", api_key="ollama")  # type: ignore[arg-type]
+    connection = _connection_kwargs(config)
+    model_name = _resolve_model_name(config)
+    assert model_name == "ollama_chat/qwen3"
+
+    url = OllamaChatConfig().get_complete_url(
+        api_base=connection.get("api_base"),
+        api_key=config.api_key,
+        model=model_name,
+        optional_params={},
+        litellm_params={},
+    )
+    assert url == "http://127.0.0.1:11434/api/chat"
 
 
 def test_legacy_catalog_id_recovers_identity_before_runtime_kind() -> None:
@@ -131,6 +189,17 @@ def test_provider_options_reject_unknown_keys() -> None:
         )
 
 
+# NOTE (model-capabilities brief 9.1 / campaign slice P5):
+# ``test_litellm_transport_routes_accept_image_parts`` asserted the deleted
+# static ``Provider.supports_vision`` flag. Vision support for these routes is
+# no longer a compiled-in per-provider promise -- it comes from the effective
+# capabilities (``providers.capabilities.accessor.get_effective_capabilities``,
+# Part 5.5): the cloud dialects' "no restriction at this layer" deployment
+# default (already covered by ``tests/test_providers/test_dialect_cloud.py``)
+# combined with whatever the model record's own ``input_modalities`` says, and
+# for llama.cpp/vLLM a REAL deployment fact from ``/props``/a probe, never a
+# blanket True. Re-asserting the old boolean here would just re-introduce the
+# static flag under a different name.
 @pytest.mark.parametrize(
     "provider_id",
     [
@@ -148,7 +217,8 @@ def test_provider_options_reject_unknown_keys() -> None:
         "llama_cpp",
     ],
 )
-def test_litellm_transport_routes_accept_image_parts(provider_id: str) -> None:
+def test_provider_catalog_row_exists_for_every_vision_capable_route(provider_id: str) -> None:
+    """Every route this parametrization names is still a real catalog entry."""
     provider = get_provider(provider_id)
     assert provider is not None
-    assert provider.supports_vision is True
+    assert provider.id == provider_id

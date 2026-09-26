@@ -32,6 +32,7 @@ def session_to_v3(session: Any) -> dict[str, Any]:
     else:
         agent_id = getattr(agent, "id", "")
     status = str(getattr(session, "status", "") or "idle")
+    message_count = max(0, int(getattr(session, "message_count", 0) or 0))
     row: dict[str, Any] = {
         "id": str(getattr(session, "id", "") or ""),
         "workspace_id": str(getattr(session, "workspace_id", "") or ""),
@@ -44,10 +45,24 @@ def session_to_v3(session: Any) -> dict[str, Any]:
             or getattr(session, "created_at", "")
             or utcnow_iso()
         ),
-        "message_count": max(0, int(getattr(session, "message_count", 0) or 0)),
+        "message_count": message_count,
         "pinned": bool(metadata.get("pinned", False)),
         "archived": bool(getattr(session, "archived", False)),
     }
+    # Usage rollup — absent (not even null) until the session has actually
+    # exchanged a message, matching this projection's missing-vs-null
+    # convention. Once populated, cost_usd is null (not 0.0) whenever no turn
+    # ever produced a real cost source (provider report or price-table match)
+    # — see SessionRecord.cost_known / turn_usage.roll_up_usage. A client must
+    # not read null as "free"; it means "unknown."
+    if message_count:
+        row["tokens_input"] = max(0, int(getattr(session, "tokens_input", 0) or 0))
+        row["tokens_output"] = max(0, int(getattr(session, "tokens_output", 0) or 0))
+        row["cost_usd"] = (
+            float(getattr(session, "cost_usd", 0.0) or 0.0)
+            if bool(getattr(session, "cost_known", False))
+            else None
+        )
     optional = {
         "provider_id": model.get("provider_id"),
         "model_id": model.get("model_id"),

@@ -1,0 +1,55 @@
+# Seeded verbatim from clio-coder's local-models/clio-local-coding-targets.yaml (model-capabilities brief Part 8.5).
+- family: qwopus3.6-27b-v1-preview
+  matchPatterns:
+    - qwopus3.6-27b-v1-preview
+    - qwopus3.6-27b
+    - qwopus3.6
+  capabilities:
+    chat: true
+    tools: true
+    toolCallFormat: qwen
+    reasoning: true
+    thinkingFormat: qwen-chat-template
+    structuredOutputs: json-schema
+    vision: false
+    audio: false
+    embeddings: false
+    rerank: false
+    fim: false
+    contextWindow: 262144
+    maxTokens: 32768
+  quirks:
+    sampling:
+      thinking:
+        temperature: 0.6
+        topP: 0.95
+        topK: 20
+        minP: 0.0
+        presencePenalty: 0.0
+        repetitionPenalty: 1.0
+        maxTokens: 32768
+      instruct:
+        temperature: 0.7
+        topP: 0.80
+        topK: 20
+        minP: 0.0
+        presencePenalty: 1.5
+        repetitionPenalty: 1.0
+        maxTokens: 32768
+    gpuTiers:
+      "32gb": "Fits at f16 KV with parallel=1 and ctx=262144 thanks to the Q4_K_M weights (~16.5 GB)."
+    runtimePreference:
+      lmstudioNative: "Primary path; thinking is emitted via standard <think> tags so the SDK classifier accounts reasoning correctly."
+      openaiCompat: "Verified for tool-call extraction parity; reasoning_content surfaces."
+    thinking:
+      mechanism: budget-tokens
+      budgetByLevel:
+        low: 1024
+        medium: 4096
+        high: 16384
+      guidance: |
+        Distilled Opus reasoning traces over Qwen3.6 27B; thinking emits via
+        standard <think> tags. Coding-task sampler is the precise variant.
+        Preserve thinking blocks across turns for iterative workflows.
+    serving: "Distilled from Claude 4.6 Opus reasoning traces onto Qwen3.6 27B. Coding-task sampler is the precise variant: temperature 0.6, top_p 0.95, top_k 20."
+

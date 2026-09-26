@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Literal, Optional
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.runtime.constants import _CTX_MAX_BYTES
@@ -35,6 +35,60 @@ if TYPE_CHECKING:
     from clio_agent.gact.transcript import TurnTranscript
     from clio_agent.gact.types import AgentDef, ErrorInfo, Message, Session
     from clio_agent.gact.workflow_state.schema import WorkflowStateSchema
+
+#: The turn's off-loop prologue (:func:`~clio_agent.gact.turn_start_offloop.
+#: prepare_turn_off_loop`) lifecycle, replacing the old single completion boolean
+#: (L1 slice, #1339 follow-on). Four REAL states instead of one bit:
+#:
+#: * ``not_started`` -- the default. The prologue callable never began running
+#:   (a cancel landed while it was still queued on the executor -- see
+#:   ``turn_start_offloop.DEFERRED_JOB_ORPHANED`` for the matching proof on the
+#:   deferred transcript job).
+#: * ``running`` -- set as the FIRST statement inside ``prepare_turn_off_loop``.
+#:   Stays ``running`` (never reaches ``completed``/``failed``) ONLY when a
+#:   ``TurnCancelledDuringPrologue`` (or a hook's ``HookCancelled``) escapes the
+#:   function -- i.e. the turn's cancel token tripped mid-prologue.
+#: * ``completed`` -- the prologue ran to its own end (whatever outcome string
+#:   it returned: proceed/blocked/deferred). Every prologue-derived field
+#:   (context_frame/context_file_provenance/enriched_text/memory_search_metadata)
+#:   is assigned by this point.
+#: * ``failed`` -- an exception OTHER than a cancel signal escaped the
+#:   prologue (e.g. the deferred transcript job raising ``TranscriptIngestError``).
+#:   The real exception is captured on :attr:`TurnState.prologue_error` so the
+#:   guard can settle with its REAL cause instead of a fabricated one.
+ProloguePhase = Literal["not_started", "running", "completed", "failed"]
+
+PROLOGUE_NOT_STARTED: ProloguePhase = "not_started"
+PROLOGUE_RUNNING: ProloguePhase = "running"
+PROLOGUE_COMPLETED: ProloguePhase = "completed"
+PROLOGUE_FAILED: ProloguePhase = "failed"
+
+
+class TurnCancelledDuringPrologue(RuntimeError):
+    """The turn's cancel token tripped while its off-loop prologue was running.
+
+    Raised directly by :func:`~clio_agent.gact.turn_start_offloop.prepare_turn_off_loop`'s
+    cooperative-cancel checkpoints (one before every prologue step) and treated
+    identically to a :class:`~clio_agent.gact.hooks.wire.HookCancelled` escaping a
+    killed ``UserPromptSubmit`` hook subprocess: BOTH leave
+    :attr:`TurnState.prologue_phase` at ``"running"`` (never ``"failed"``), which is
+    the ONE signal :func:`~clio_agent.gact.turn_prologue_guard.run_finalize_or_settle_prologue_gap`
+    needs to settle the turn with this typed reason instead of a fabricated
+    ``turn_prologue_never_ran`` or a generic ``agent_error``.
+
+    Carries the typed settle reason through ``settle_failed_finalize`` unmodified,
+    mirroring ``turn_prologue_guard._TurnPrologueNeverRan``'s own contract.
+    """
+
+    settle_reason = "turn_cancelled_during_prologue"
+    settle_error_code = "turn_cancelled_during_prologue"
+
+    def __init__(self, turn_id: str) -> None:
+        super().__init__(
+            f"turn {turn_id} was cancelled while its off-loop prologue "
+            "(prepare_turn_off_loop) was still running"
+        )
+        self.turn_id = turn_id
 
 
 class DeferredTranscriptJob:
@@ -127,15 +181,15 @@ class TurnState:
     # ``turn_watchdog.py`` (no longer state-carried closures).
     turn_progress_timeout_s: float = 0.0
     _watchdog_poll_s: float = 0.0
-    # #1339 round 5: true only once ``prepare_turn_off_loop`` has run to completion
-    # and assigned every prologue-derived field below (context_frame, context_file_
-    # provenance, enriched_text, memory_search_metadata). A turn interrupted before
-    # entering the prologue (see ``turn_start_offloop.DEFERRED_JOB_ORPHANED`` for the
-    # same "never entered" proof on the deferred transcript job) reaches ``turn.py``'s
-    # finalize dispatch with this still ``False`` -- the ONE guard
-    # ``turn_prologue_guard.run_finalize_or_settle_prologue_gap`` checks, replacing a
-    # None-check per field.
-    prologue_completed: bool = field(default=False, init=False)
+    # L1 slice (#1339 follow-on): replaces the old single completion boolean
+    # with the four-state :data:`ProloguePhase` (see its docstring above) --
+    # ``turn_prologue_guard.run_finalize_or_settle_prologue_gap`` is the ONE reader,
+    # branching on the phase instead of a single None-check-shaped bit.
+    prologue_phase: ProloguePhase = field(default=PROLOGUE_NOT_STARTED, init=False)
+    # The REAL exception ``prepare_turn_off_loop`` caught when the phase is
+    # ``"failed"`` -- carried so the guard can settle with its actual cause
+    # instead of a fabricated ``turn_prologue_never_ran``.
+    prologue_error: "Optional[BaseException]" = field(default=None, init=False, repr=False)
     history_start: dict[int, int] = field(default_factory=dict)
     context_frame: Any = None
     context_file_provenance: dict[str, Any] = field(default_factory=_unset_context_file_provenance)
@@ -181,6 +235,11 @@ class TurnState:
         }
     )
     turn_cost: float = 0.0
+    # True once a REAL cost source (provider report or a price-table match) set
+    # ``turn_cost`` -- False means the number is a placeholder 0.0, not a
+    # provider-confirmed free turn. Session/event projections use this to
+    # serialize cost_usd as null (unknown) instead of a fabricated zero.
+    turn_cost_known: bool = False
     last_prompt_usage: dict[str, Any] = field(default_factory=dict)
     pred: Any = None
     cancelled_turn: bool = False

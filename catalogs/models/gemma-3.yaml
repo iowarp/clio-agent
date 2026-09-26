@@ -1,0 +1,28 @@
+# Gemma 3 (4B/12B/27B instruction-tuned): image input, no audio. The 1B model is
+# text-only and is deliberately not matched. Evidence (recorded in tests/fixtures):
+# models.dev google/gemma-3-27b-it modalities.input [text, image], limit 131072/131072;
+# Hub pipeline_tag image-text-to-text, Gemma3ForConditionalGeneration.
+- family: gemma-3
+  matchPatterns:
+    - gemma-3-27b-it
+    - gemma-3-27b
+    - gemma-3-12b-it
+    - gemma-3-12b
+    - gemma-3-4b-it
+    - gemma-3-4b
+    - gemma3:27b
+    - gemma3:12b
+    - gemma3:4b
+  capabilities:
+    chat: true
+    tools: true
+    toolCallFormat: openai
+    reasoning: false
+    structuredOutputs: json-schema
+    vision: true
+    audio: false
+    embeddings: false
+    rerank: false
+    fim: false
+    contextWindow: 131072
+    maxTokens: 131072

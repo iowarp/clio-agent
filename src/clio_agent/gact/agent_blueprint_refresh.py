@@ -317,6 +317,13 @@ def clear_uninstall_tombstones(
 _SYNC_COMPLETED_FOR: set[tuple[str, str]] = set()
 _SYNC_LOCK = threading.Lock()
 
+# Stale-root refreshes that did NOT repair the root, keyed (root, pin, installed commit)
+# -> the diagnostic. Discovery runs on every /v1/health (twice); without this a registry
+# whose own snapshot is root-disabled, or an unreachable one, was re-cloned on EVERY call
+# (~1.2 s of git per call on ares, 2026-09-25: health never answered inside the launcher's
+# 1 s probe). The typed diagnostic still surfaces each call; a new boot retries.
+_UNREPAIRED_REFRESH: dict[tuple[str, str, str], str] = {}
+
 
 def reset_registry_sync_for_tests() -> None:
     """Clear the once-per-process sync gate (test isolation)."""
@@ -326,6 +333,7 @@ def reset_registry_sync_for_tests() -> None:
     )
 
     _SYNC_COMPLETED_FOR.clear()
+    _UNREPAIRED_REFRESH.clear()
     reset_default_registry_migration_for_tests()
 
 
@@ -696,6 +704,9 @@ def _refresh_stale_default_registry_install(
 
     registry = default_registry_url()
     old_commit = str(read_install_metadata(root).get("commit") or "").strip() or "(unknown)"
+    attempted = _UNREPAIRED_REFRESH.get((str(root), pinned, old_commit))
+    if attempted is not None:
+        return attempted  # this snapshot was already refreshed without repair this process
     try:
         result = install_agent_blueprint(
             source=default_registry_install_source(),
@@ -715,11 +726,13 @@ def _refresh_stale_default_registry_install(
             exc,
         )
         detail = "; ".join(root_errors) or "root disabled"
-        return (
+        failed = (
             f"default registry {DEFAULT_AGENT_BLUEPRINT_ID} root expert is disabled by "
             f"validation ({detail}) and the refresh from {registry} failed: {exc}; "
             "stale install kept"
         )
+        _UNREPAIRED_REFRESH[(str(root), pinned, old_commit)] = failed
+        return failed
     new_commit = ""
     for installed in result.get("installed") or []:
         if not isinstance(installed, dict) or installed.get("id") != DEFAULT_AGENT_BLUEPRINT_ID:
@@ -741,9 +754,12 @@ def _refresh_stale_default_registry_install(
         # the refresh ran but did not repair the declared root. The freshly
         # installed copy is kept; surface the still-disabled diagnostic loudly.
         detail = "; ".join(errors_after) or "root disabled"
-        return (
+        still = (
             f"default registry {DEFAULT_AGENT_BLUEPRINT_ID} refreshed from {registry} "
             f"(new_commit={new_commit or '(unknown)'}) but the root expert is still "
             f"disabled by validation ({detail})"
         )
+        for commit in {old_commit, new_commit or "(unknown)"}:
+            _UNREPAIRED_REFRESH[(str(root), pinned, commit)] = still
+        return still
     return ""

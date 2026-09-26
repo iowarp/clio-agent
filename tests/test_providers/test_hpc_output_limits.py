@@ -10,24 +10,49 @@ import pytest
 from litellm import ModelResponse
 
 from clio_agent.config import LMProviderConfig, create_lm, create_planner_lm
+from clio_agent.providers.capabilities import invalidation
+from clio_agent.providers.capabilities.records import (
+    DeploymentCapabilities,
+    Fact,
+    ModelCapabilities,
+)
 from clio_agent.providers.handshake.model import (
     AuthState,
     ConnectivityState,
+    DiscoveredModel,
     HandshakeReport,
-    ModelProfile,
 )
+
+_NOW = "2026-01-01T00:00:00+00:00"
 
 
 @pytest.mark.parametrize("provider", ["vllm", "lm_studio", "argonne", "openai"])
 def test_zero_survives_config_copy_and_handshake(provider: str) -> None:
+    invalidation.clear_all()
     config = LMProviderConfig(provider=provider, model="granite-4.2-30b", api_key="test")
+    invalidation.record_model_capabilities(
+        ModelCapabilities(
+            model_key=config.model,
+            output_max=Fact(value=8192, source="server_report", observed_at=_NOW),
+        )
+    )
+    invalidation.record_deployment_capabilities(
+        DeploymentCapabilities(
+            provider_id=provider,
+            api_base="",
+            model_id=config.model,
+            model_key=Fact(value=config.model, source="server_report", observed_at=_NOW),
+            context_served=Fact(value=131072, source="server_report", observed_at=_NOW),
+        )
+    )
     config.apply_handshake(
         HandshakeReport(
             provider_id=provider,
             provider_kind=config.provider,
             connectivity=ConnectivityState.OK,
             auth=AuthState.OK,
-            models=(ModelProfile(id=config.model, context_window=131072, output_limit=8192),),
+            api_base="",
+            models=(DiscoveredModel(id=config.model),),
         )
     )
     assert config.max_tokens == config.planner_max_tokens == 0

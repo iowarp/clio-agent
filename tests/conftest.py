@@ -180,9 +180,9 @@ def _no_real_provider_dependency_install(request, monkeypatch):
         return
     from clio_agent.providers import dependencies as _dependencies
 
-    def _refuse(_python_executable: str, requirement: str) -> list[str]:
+    def _refuse(_python_executable: str, requirements: list[str]) -> list[str]:
         raise _dependencies.ProviderDependencyInstallError(
-            f"real dependency installs are disabled in tests: {requirement}"
+            f"real dependency installs are disabled in tests: {', '.join(requirements)}"
         )
 
     monkeypatch.setattr(_dependencies, "_install_command", _refuse)
@@ -204,6 +204,27 @@ def claude_sdk_installed(monkeypatch):
     sdk = _ModuleType("claude_agent_sdk")
     sdk.__spec__ = _machinery.ModuleSpec("claude_agent_sdk", None)
     monkeypatch.setitem(_sys.modules, "claude_agent_sdk", sdk)
+    return sdk
+
+
+@pytest.fixture
+def globus_sdk_installed(monkeypatch):
+    """Make ``find_spec("globus_sdk")`` succeed without the real SDK.
+
+    ALCF status reports ``install_required`` before any auth check runs when
+    the 'argonne' extra is missing (G: Install must show regardless of
+    sign-in state). Tests that pin the auth/token states declare this
+    precondition here instead of depending on the suite venv's install state
+    (CI syncs without the argonne extra, and real installs are refused
+    suite-wide).
+    """
+    import importlib.machinery as _machinery
+    import sys as _sys
+    from types import ModuleType as _ModuleType
+
+    sdk = _ModuleType("globus_sdk")
+    sdk.__spec__ = _machinery.ModuleSpec("globus_sdk", None)
+    monkeypatch.setitem(_sys.modules, "globus_sdk", sdk)
     return sdk
 
 
@@ -356,6 +377,29 @@ def _restore_clio_logger():
         lg.propagate = saved_propagate
         lg.level = saved_level
         lg.handlers[:] = saved_handlers
+
+
+@pytest.fixture(autouse=True)
+def _restore_dspy_process_default():
+    """Snapshot + restore dspy's process-default LM and adapter around every test.
+
+    The admin bind (``PUT /v1/providers/lm``) deliberately installs the bound LM and
+    adapter as dspy's process default (``runtime.ambient_lm.install_process_default_lm``
+    writes ``main_thread_config['lm'/'adapter']``). A test that drives a bind with stub
+    factories and does not pin those keys itself leaves its stubs installed for every
+    later test in the same worker: ``dspy.context(lm=DummyLM(...))`` then resolves the
+    leaked ``SimpleNamespace`` adapter and fails with "object is not callable"
+    (``test_module_variants_s5`` after ``test_lm_bind_process_default``). Restoring the
+    two keys around every test removes the whole class.
+    """
+    from dspy.dsp.utils.settings import main_thread_config  # noqa: PLC0415
+
+    saved = {key: main_thread_config.get(key) for key in ("lm", "adapter")}
+    try:
+        yield
+    finally:
+        for key, value in saved.items():
+            main_thread_config[key] = value
 
 
 @pytest.fixture(autouse=True)

@@ -49,27 +49,57 @@ from __future__ import annotations
 import logging
 import os
 import re
+import socket
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 
+from clio_agent.arc.clio_core_host_migration import (
+    migrate_legacy_cte_store,
+    migrate_legacy_runtime_state,
+)
+
 logger = logging.getLogger(__name__)
 
 
-def runtime_state_dir() -> Path:
-    """Return the directory holding the clio-core runtime's host bookkeeping.
+_HOST_KEY_UNSAFE = re.compile(r"[^a-z0-9_-]+")
 
-    This is where the connect-or-spawn lifecycle keeps its coordination state — the
+
+def host_key() -> str:
+    """Return the name that keys this MACHINE's clio-core state.
+
+    There is one clio-core daemon per machine. Cluster login and compute nodes
+    mount the same NFS home, so a path under ``~`` names every node at once; the
+    daemon's bookkeeping and storage are therefore keyed by host. The key is the
+    first label of :func:`socket.gethostname` (``ares.ares.local`` -> ``ares``),
+    lowercased and reduced to ``[a-z0-9_-]``, so it is a safe directory name and
+    matches what the desktop computes for the same machine. A machine with no
+    usable name gets ``localhost``.
+
+    Returns:
+        The host key for this machine.
+    """
+    label = socket.gethostname().split(".", 1)[0].strip().lower()
+    return _HOST_KEY_UNSAFE.sub("-", label).strip("-") or "localhost"
+
+
+def runtime_state_dir() -> Path:
+    """Return the directory holding THIS machine's clio-core runtime bookkeeping.
+
+    This is where the connect-or-spawn lifecycle keeps its coordination state: the
     spawn lock (``clio-runtime.lock``), the daemon pidfile (``clio-runtime.pid``), the
     client refcount registry (``clio-runtime.clients/``), and the daemon log
-    (``clio-runtime.log``). Default: ``~/.clio`` — the host-global location that lets
-    every clio-agent process on the machine share ONE daemon.
+    (``clio-runtime.log``). Default: ``~/.clio/hosts/<host>`` (:func:`host_key`), one
+    directory per machine, shared by every clio-agent process on that machine and by
+    no process on another. A home directory shared over NFS (a cluster's login and
+    compute nodes) therefore never lets one node's pidfile, lock or client registry
+    stand for another node's daemon.
 
     ``CLIO_RUNTIME_STATE_DIR`` overrides it (explicit selection, not a degrade): a
-    process family that must NOT share the host daemon — the test suite's hermetic
-    private daemon (``tests/_cte_isolation.py``), or a sandboxed deployment — points
+    process family that must NOT share the host daemon (the test suite's hermetic
+    private daemon, ``tests/_cte_isolation.py``, or a sandboxed deployment) points
     this at its own directory, and its spawn lock / pidfile / registry / last-one-out
     stop all move coherently with it. The directory is created if absent.
 
@@ -77,8 +107,14 @@ def runtime_state_dir() -> Path:
         The state directory path (guaranteed to exist).
     """
     override = os.environ.get("CLIO_RUNTIME_STATE_DIR", "").strip()
-    state = Path(override).expanduser() if override else Path.home() / ".clio"
+    if override:
+        state = Path(override).expanduser()
+        state.mkdir(parents=True, exist_ok=True)
+        return state
+    state = Path.home() / ".clio" / "hosts" / host_key()
     state.mkdir(parents=True, exist_ok=True)
+    # One-time move of the pre-host-key bookkeeping (~/.clio/clio-runtime.*).
+    migrate_legacy_runtime_state(Path.home() / ".clio", state)
     return state
 
 
@@ -96,6 +132,37 @@ def runtime_state_dir() -> Path:
 # user-designated dir (arc.cte.dir): disk-only data means no RAM data tier,
 # no eviction pressure, no rc=13 class (owner: "data is in memory or is in
 # disk"). Disk stays effectively unbounded at the user's endpoint.
+#
+# INDEXER CHIMOD (clio-core 2.2.0, upstream issue #905): ``SemanticSearch`` (the BM25
+# scope search Thread D relies on) moved OUT of ``clio_cte_core`` into a separate,
+# optional ``clio_cte_indexer`` chimod -- the core no longer implements it at all, so
+# every scope search against clio-core >=2.2.0 now silently returns zero hits (verified
+# empirically against 2.2.1; it does not raise). The chimod itself would fix this
+# (declared in ``compose`` + the client bound to its pool via ``CLIO_CTE_POOL``), but
+# is NOT wired in here: live-testing that config on Windows surfaced an intermittent
+# hang on the FIRST ``PutBlob`` after client attach WHENEVER the indexer chimod is
+# merely declared -- reproduced with and without ``CLIO_CTE_POOL`` set, so it is not
+# an artifact of the routing choice.
+#
+# ROOT CAUSE (2026-09-24): the daemon log shows ``PoolManager: ChiMod
+# 'clio_cte_indexer' not found`` at compose time on EVERY run, whether or not the
+# client routes there -- the published iowarp-core 2.2.1 wheels (checked win_amd64
+# and manylinux_2_28/x86_64) simply do not ship a ``clio_cte_indexer`` binary
+# (``.dll``/``.so``), unlike every sibling chimod (cache/core/filesystem/replication
+# are all present). Declaring a pool for a chimod the daemon cannot find means that
+# pool never actually exists; a client routed there (via ``CLIO_CTE_POOL``) sends
+# tasks into a void with no "pool not found" fast-fail, hence the hang -- not a race,
+# not a clio-agent config defect (pool ids/ordering/``restart``/tier sizes all match
+# clio-core's own ``test_indexer_restart_compose.yaml`` exactly). Filed upstream:
+# https://github.com/iowarp/clio-core/issues/905#issuecomment-5826003299
+#
+# Tracked upstream rather than shipped; :func:`warn_if_search_indexer_absent` only
+# reports the gap loudly (#775 no-silent-fallback) until a wheel that actually ships
+# the chimod is available. ``564.0`` is upstream's own reserved constant for the
+# indexer pool (``clio::cte::indexer::kIndexerPoolId``), kept here for the warning
+# message and the real fix once it is safe, not a clio-agent invention.
+_DEFAULT_CTE_INDEXER_POOL_ID = "564.0"
+
 _DEFAULT_CTE_CONFIG_TEMPLATE = """\
 networking:
   port: {core_port}
@@ -209,7 +276,12 @@ def _default_cte_dir() -> Path:
     if configured:
         return Path(configured).expanduser()
 
-    return paths.user_data_dir() / "cte"
+    # Keyed by host like the runtime state (:func:`runtime_state_dir`): the
+    # file tier, metadata log and runtime conf belong to ONE machine's daemon,
+    # and a data dir on a shared home would otherwise hand a login node's
+    # storage to a compute node's daemon. An explicit ``arc.cte.dir`` is used
+    # exactly as given.
+    return paths.user_data_dir() / "cte" / "hosts" / host_key()
 
 
 def _default_cte_file_capacity() -> str:
@@ -296,7 +368,16 @@ def default_cte_config_path() -> str:
     surfaced by the doctor (:func:`clio_agent.runtime.clio_core_health.probe_clio_core_ram_cap`)
     rather than silently mutated (#890).
     """
+    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle
+
     cte_dir = _default_cte_dir()
+    legacy_dir = paths.user_data_dir() / "cte"
+    if cte_dir == legacy_dir / "hosts" / host_key():
+        # The default store (not an explicit arc.cte.dir): move the pre-host-key
+        # store in <data>/cte here once, instead of starting an empty one.
+        override = os.environ.get("CLIO_RUNTIME_STATE_DIR", "").strip()
+        runtime_root = Path(override).expanduser() if override else Path.home() / ".clio"
+        migrate_legacy_cte_store(legacy_dir, cte_dir, runtime_root=runtime_root)
     cte_dir.mkdir(parents=True, exist_ok=True)
     cfg = cte_dir / "cte.yaml"
     if not cfg.is_file():
@@ -400,6 +481,25 @@ def _read_ram_caps_from_file(path: Path) -> tuple[str | None, str | None, str | 
     return tier_cap, bdev_cap, final_cap
 
 
+def _has_indexer_chimod(path: Path) -> bool:
+    """Return whether ``path`` declares a ``clio_cte_indexer`` chimod in ``compose``.
+
+    ``False`` on a missing/invalid/unparseable file (never raises — mirrors
+    :func:`_read_ram_caps_from_file`).
+    """
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return False
+    if not isinstance(data, Mapping):
+        return False
+    return any(
+        isinstance(module, Mapping)
+        and str(module.get("mod_name", "")).strip() == "clio_cte_indexer"
+        for module in data.get("compose", []) or []
+    )
+
+
 def _resolve_config_path(env: Mapping[str, str]) -> Path:
     """Resolve the ``cte.yaml`` the clio-core backend would use, WITHOUT seeding it.
 
@@ -466,6 +566,76 @@ def effective_ram_cap(
         parse_error=parse_error,
         bdev_capacity=bdev_cap,
         final_tier_capacity=final_cap,
+    )
+
+
+# Typed reason (clio-core 2.2.0 indexer extraction, upstream issue #905): the
+# resolved ``cte.yaml`` has no ``clio_cte_indexer`` chimod, so ``SemanticSearch``
+# (BM25 scope search, Thread D) silently returns zero hits against clio-core
+# >=2.2.0 no matter what the caller queries. DIAGNOSIS ONLY (#775 no-silent-
+# fallback) -- see the module docstring's INDEXER CHIMOD note for why the actual
+# fix (declaring the chimod) is NOT applied here: root-caused live (2026-09-24)
+# to the chimod's binary being absent from the published iowarp-core 2.2.1
+# wheels themselves (checked win_amd64 and manylinux_2_28/x86_64 -- neither
+# ships a clio_cte_indexer .dll/.so, unlike every sibling chimod), which is why
+# declaring it hangs the first PutBlob after client attach instead of just not
+# working. Filed upstream:
+# https://github.com/iowarp/clio-core/issues/905#issuecomment-5826003299
+CLIO_CORE_SEARCH_INDEXER_ABSENT = "clio_core_search_indexer_absent"
+UPSTREAM_INDEXER_ISSUE = "https://github.com/iowarp/clio-core/issues/905#issuecomment-5826003299"
+
+
+def indexer_chimod_present(
+    *, env: Mapping[str, str], config_path: str | Path | None = None
+) -> bool:
+    """Report whether the resolved ``cte.yaml`` declares the ``clio_cte_indexer`` chimod.
+
+    Read-only; mirrors :func:`effective_ram_cap`'s resolution order -- an explicit
+    ``config_path`` from a caller who already resolved it (``storage.ClioCoreStore``,
+    which knows the exact file it is about to load) takes precedence over the
+    env-based selection order (``CLIO_ARC_STORE_CONFIG`` -> workspace -> default CTE
+    dir), used by the doctor. Never seeds a file; a missing file reports ``False``.
+
+    Args:
+        env: Environment mapping driving the config-path resolution when
+            ``config_path`` is not given.
+        config_path: The exact ``cte.yaml`` to inspect, when the caller already
+            resolved it. Defaults to the env-based resolution.
+
+    Returns:
+        ``True`` only when the file exists and declares ``mod_name: clio_cte_indexer``
+        somewhere in ``compose``.
+    """
+    path = Path(config_path).expanduser() if config_path else _resolve_config_path(env)
+    return path.is_file() and _has_indexer_chimod(path)
+
+
+def warn_if_search_indexer_absent(config_path: str | Path) -> None:
+    """Log a loud, typed warning when the resolved config can't serve BM25 search.
+
+    Read-only: never seeds a file, never touches ``CLIO_CTE_POOL`` or the compose
+    config (see :data:`CLIO_CORE_SEARCH_INDEXER_ABSENT` for why a real fix is not
+    attempted -- filed upstream at :data:`UPSTREAM_INDEXER_ISSUE`). Called once from
+    ``storage.ClioCoreStore._ensure_runtime`` so the gap is diagnosed at boot instead
+    of surfacing as a confused "search always empty" bug report.
+
+    Args:
+        config_path: The resolved ``cte.yaml`` the store is about to load. A missing
+            file (falls back to ``~/.clio/clio.yaml``) is reported the same way.
+    """
+    # An empty config_path (falls back to ~/.clio/clio.yaml, unresolved here) is
+    # conservatively treated as absent, matching the pre-refactor behavior: env={}
+    # is inert below since a truthy config_path always short-circuits its resolution.
+    if config_path and indexer_chimod_present(env={}, config_path=config_path):
+        return
+    logger.warning(
+        "reason=%s config=%s problem=%s upstream=%s",
+        CLIO_CORE_SEARCH_INDEXER_ABSENT,
+        config_path or "~/.clio/clio.yaml",
+        "no clio_cte_indexer chimod declared; ARCMemory.search_segment_scopes will "
+        "return zero hits against clio-core >=2.2.0 (the chimod's binary is absent "
+        "from the published 2.2.1 wheels -- not fixable in clio-agent config)",
+        UPSTREAM_INDEXER_ISSUE,
     )
 
 

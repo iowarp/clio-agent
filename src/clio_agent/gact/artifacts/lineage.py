@@ -59,6 +59,25 @@ def _node_type(version: ArtifactVersion) -> str:
     return "gap" if version.mechanism is Mechanism.NONE else "artifact"
 
 
+def _presentation_kind(version: ArtifactVersion) -> str:
+    """The wire ``kind`` a node SHOWS — ``source`` for an uploaded resource's
+    artifact (A1), else the version's own schema ``kind``.
+
+    A user upload is registered with the schema-validated ``ArtifactKind.OTHER``
+    (clio-schemas' curated enum, a separate pinned repository, has no ``source``
+    member) — this derives the honest presentation label from the real
+    ``resource-upload`` mint-time marker instead, the SAME pattern
+    :func:`_node_type` already uses to show a mechanism-``none`` version as a
+    ``"gap"`` node without touching ``ArtifactKind`` either.
+    """
+    from clio_agent.gact.artifacts.resource_sources import (  # noqa: PLC0415
+        SOURCE_PRESENTATION_KIND,
+        is_resource_source,
+    )
+
+    return SOURCE_PRESENTATION_KIND if is_resource_source(version) else version.kind.value
+
+
 def _artifact_node(record: ArtifactRecord, version: ArtifactVersion) -> dict[str, Any]:
     """Wire dict for an artifact / gap node."""
     return {
@@ -67,7 +86,7 @@ def _artifact_node(record: ArtifactRecord, version: ArtifactVersion) -> dict[str
         "workspace_id": record.workspace_id,
         "name": record.name,
         "version": version.version,
-        "kind": version.kind.value,
+        "kind": _presentation_kind(version),
         "sha256": version.sha256,
         "mechanism": version.mechanism.value,
         "custody_gap": version.custody_gap,

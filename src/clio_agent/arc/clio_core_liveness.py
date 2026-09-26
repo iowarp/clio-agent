@@ -74,6 +74,7 @@ def _current_crash_record() -> dict | None:
 
     return read_crash_record(runtime_state_dir())
 
+
 _DEFAULT_RUNTIME_PORT = 9413
 
 # The quarantine reason set when the per-RPC stall ladder exhausts against a zombie
@@ -124,12 +125,18 @@ def _read_yaml_port(path: str) -> Optional[int]:
 def _resolve_runtime_port(config_path: str) -> int:
     """Resolve the chimaera RPC port so liveness probes match what the daemon binds.
 
-    Honours the ``CLIO_CORE_PORT`` override, then mirrors clio-core's config lookup
-    order (``$CLIO_SERVER_CONF`` / ``$CHI_SERVER_CONF``, the passed ``config_path``,
+    Single source: when ``config_path`` declares ``networking.port`` that port wins --
+    the daemon is spawned with ``CLIO_SERVER_CONF=config_path`` and the native client
+    is pointed at the same file (:mod:`clio_agent.arc.clio_core_attach`), so nothing
+    else can be what they bind. Otherwise honours the ``CLIO_CORE_PORT`` override, then
+    clio-core's own lookup order (``$CLIO_SERVER_CONF`` / ``$CHI_SERVER_CONF``,
     ``~/.clio/clio.yaml``), defaulting to :data:`_DEFAULT_RUNTIME_PORT`.
     """
     from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
 
+    declared = _read_yaml_port(config_path) if config_path else None
+    if declared is not None:
+        return declared
     override = conf.resolve(
         "arc.core_port", env="CLIO_CORE_PORT", default="", cast=conf.as_str
     ).strip()
@@ -143,7 +150,6 @@ def _resolve_runtime_port(config_path: str) -> int:
             "arc.server_conf", env="CLIO_SERVER_CONF", default="", cast=conf.as_str
         ).strip(),
         os.environ.get("CHI_SERVER_CONF", "").strip(),
-        config_path,
         str(Path.home() / ".clio" / "clio.yaml"),
     ]
     for cand in candidates:

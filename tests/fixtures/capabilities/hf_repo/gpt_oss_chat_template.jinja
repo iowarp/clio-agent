@@ -1,0 +1,19 @@
+{#- gpt-oss-style chat template excerpt (hand-authored, representative of the
+    publicly documented reasoning_effort low/medium/high control -- not a
+    verbatim download; no real network probe is available in this
+    environment). -#}
+{%- if reasoning_effort not in ["low", "medium", "high"] %}
+{{ raise_exception("reasoning_effort must be one of low, medium, high") }}
+{%- endif %}
+{{ '<|start|>system<|message|>Reasoning: ' + reasoning_effort + '<|end|>' }}
+{%- for message in messages %}
+{{ '<|start|>' + message.role + '<|message|>' + message.content + '<|end|>' }}
+{%- endfor %}
+{%- if tools %}
+{%- for tool in tools %}
+{{ '<|start|>tool<|message|>' + tool.function.name + '<|end|>' }}
+{%- endfor %}
+{%- endif %}
+{%- if messages and messages[-1].tool_calls %}
+{{ 'tool_calls seen' }}
+{%- endif %}

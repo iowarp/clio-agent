@@ -1,0 +1,46 @@
+# Seeded verbatim from clio-coder's local-models/clio-local-coding-targets.yaml (model-capabilities brief Part 8.5).
+- family: openai-gpt-oss
+  matchPatterns:
+    - openai/gpt-oss
+    - gpt-oss
+    - gpt-oss-20b
+    - gpt-oss-120b
+  capabilities:
+    chat: true
+    tools: true
+    toolCallFormat: openai
+    reasoning: true
+    thinkingFormat: harmony
+    structuredOutputs: json-schema
+    vision: false
+    audio: false
+    embeddings: false
+    rerank: false
+    fim: false
+    contextWindow: 131072
+    maxTokens: 32768
+  quirks:
+    sampling:
+      thinking:
+        temperature: 1
+        topP: 1
+        maxTokens: 32768
+      instruct:
+        temperature: 1
+        topP: 1
+        maxTokens: 8192
+    runtimePreference:
+      llamaCpp: "Use the OpenAI-compatible chat-completions surface with chat_template_kwargs.reasoning_effort set to low, medium, or high."
+      openaiCompat: "Preferred for Harmony reasoning-effort control when the local gateway exposes chat_template_kwargs."
+    thinking:
+      mechanism: effort-levels
+      effortByLevel:
+        low: low
+        medium: medium
+        high: high
+      guidance: |
+        GPT-OSS uses OpenAI Harmony formatting and supports low, medium, and
+        high reasoning effort. Clio coerces off/minimal to low, captures
+        non-final Harmony channels as ThinkingContent, and strips Harmony
+        control tokens from visible output.
+

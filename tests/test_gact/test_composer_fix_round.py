@@ -469,7 +469,8 @@ def test_v3_session_projection_carries_the_cancellation_envelope(tmp_path: Path)
         assert carrying, "the v3 session projection dropped the cancellation envelope"
         cancellation = carrying[-1]["payload"]["cancellation"]
         assert cancellation["execution_cancellation"] == "cooperative_pending"
-        assert cancellation["executor_work_may_continue"] is True
+        # L1: the redundant executor_work_may_continue field is deleted repo-wide.
+        assert "executor_work_may_continue" not in cancellation
         assert cancellation["cancellation_attempt"]
         assert cancellation["composer_autostart"]["reason"] == "session_cancelled"
         _wait_idle(app, sid)

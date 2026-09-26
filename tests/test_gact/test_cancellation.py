@@ -69,9 +69,14 @@ def test_cancel_flips_status_and_publishes_event(tmp_path: Path) -> None:
     attempt = status_events[-1].payload["cancellation_attempt"]
     assert attempt["session_id"] == sid
     assert attempt["in_flight"] is False
-    assert attempt["hard_abort_supported"] is False
-    assert attempt["upstream_abort"] == "not_supported"
-    assert attempt["executor_work_may_continue"] is False
+    # L1: the record reports what was ACTUALLY stopped -- no children/streams to
+    # stop for an idle session -- never the deleted, always-constant
+    # hard_abort_supported/upstream_abort/executor_work_may_continue triad.
+    assert "hard_abort_supported" not in attempt
+    assert "upstream_abort" not in attempt
+    assert "executor_work_may_continue" not in attempt
+    assert attempt["children_cancelled"] == 0
+    assert attempt["provider_streams_killed"] == 0
 
 
 def test_cancel_unknown_session_404s_with_v0_2_envelope(tmp_path: Path) -> None:
@@ -172,15 +177,19 @@ def test_cancel_during_turn_marks_turn_as_cancelled(tmp_path: Path) -> None:
         settle_turn_slot(c, sid)
         assert assistant["error_info"]["error"] == "cancelled"
         assert assistant["error_info"]["details"]["execution_cancellation"] == "best_effort"
-        assert assistant["error_info"]["details"]["executor_work_may_continue"] is True
-        assert assistant["error_info"]["details"]["hard_abort_supported"] is False
-        assert assistant["error_info"]["details"]["upstream_abort"] == "not_supported"
+        # L1: the deleted, always-constant triad must not reappear anywhere on the
+        # settled error turn.
+        assert "executor_work_may_continue" not in assistant["error_info"]["details"]
+        assert "hard_abort_supported" not in assistant["error_info"]["details"]
+        assert "upstream_abort" not in assistant["error_info"]["details"]
         attempt = assistant["error_info"]["details"]["cancellation_attempt"]
         assert attempt["session_id"] == sid
         assert attempt["in_flight"] is True
         assert attempt["cooperative_signal_sent"] is True
         assert attempt["asyncio_task_cancel_scheduled"] is True
-        assert attempt["executor_work_may_continue"] is True
+        assert "executor_work_may_continue" not in attempt
+        assert attempt["children_cancelled"] == 0
+        assert attempt["provider_streams_killed"] == 0
         status_events = [
             e
             for e in app.state.bus._history.get(sid, [])
@@ -188,7 +197,7 @@ def test_cancel_during_turn_marks_turn_as_cancelled(tmp_path: Path) -> None:
         ]
         assert status_events
         assert status_events[-1].payload["execution_cancellation"] == "best_effort"
-        assert status_events[-1].payload["executor_work_may_continue"] is True
+        assert "executor_work_may_continue" not in status_events[-1].payload
         assert status_events[-1].payload["cancellation_attempt"]["id"] == attempt["id"]
 
         # The executor thread can still finish after the GACT envelope
@@ -203,7 +212,12 @@ def test_cancel_before_turn_skips_agent_forward(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A cancellation committed at the turn boundary prevents provider work."""
+    """L1 cancel contract: a cancel already committed before the turn's prologue
+    even starts is caught by the prologue's OWN first cooperative checkpoint --
+    before ``open_turn_minter``, before ``turn.started``, before anything -- and
+    settles typed ``turn_cancelled_during_prologue``. This used to only be caught
+    by the LATER turn-boundary check in ``turn.py`` (after the whole prologue had
+    already run, per #1339's Bug 2); provider work is skipped either way."""
 
     import time as _time
 
@@ -236,7 +250,8 @@ def test_cancel_before_turn_skips_agent_forward(
                     message
                     for message in messages
                     if message["role"] == "assistant"
-                    and message.get("error_info", {}).get("error") == "cancelled"
+                    and message.get("error_info", {}).get("error")
+                    == "turn_cancelled_during_prologue"
                 ),
                 None,
             )
@@ -244,10 +259,10 @@ def test_cancel_before_turn_skips_agent_forward(
                 break
             _time.sleep(0.05)
 
-        assert assistant is not None, "turn-boundary cancellation did not settle"
+        assert assistant is not None, "prologue-boundary cancellation did not settle"
         assert agent.calls == 0
-        assert assistant["error_info"]["details"]["execution_cancellation"] == "turn_boundary"
-        assert assistant["error_info"]["details"]["executor_work_may_continue"] is False
+        assert assistant["error_info"]["details"]["reason"] == "turn_cancelled_during_prologue"
+        assert "executor_work_may_continue" not in assistant["error_info"]["details"]
 
 
 def test_late_tool_completion_after_cancel_is_not_reported_as_success(
@@ -297,7 +312,7 @@ def test_late_tool_completion_after_cancel_is_not_reported_as_success(
         assert not any(e.payload.get("ok") is True for e in completed_events)
         assert completed_events[-1].payload["ok"] is False
         assert completed_events[-1].payload["execution_cancellation"] == "best_effort"
-        assert completed_events[-1].payload["executor_work_may_continue"] is True
+        assert "executor_work_may_continue" not in completed_events[-1].payload
 
         app.state.agent = _Agent()
         next_assistant = complete_turn(c, sid, "next turn")

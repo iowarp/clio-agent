@@ -11,6 +11,12 @@ from typing import Any
 
 _LOCK = threading.Lock()
 
+#: Envelope keys :func:`stream_audit` writes itself. A caller field with one
+#: of these names would either collide with the ``stage`` parameter (the
+#: ``got multiple values for argument 'stage'`` TypeError the default-registry
+#: migration hit) or silently overwrite the envelope, so both are refused.
+RESERVED_AUDIT_KEYS: frozenset[str] = frozenset({"ts", "iso", "stage"})
+
 
 def _utc_iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, timezone.utc).isoformat()
@@ -27,13 +33,29 @@ def stream_audit_enabled() -> bool:
     )
 
 
-def stream_audit(stage: str, **fields: Any) -> None:
+def stream_audit(stage: str, /, **fields: Any) -> None:
     """Append one timestamped stream-audit record if configured.
 
     The audit log is intentionally separate from the normal trace logger: it is
     low-level evidence used to compare raw provider chunk generation, bridge
     scheduling, normalized transcript events, and raw SSE receive times.
+
+    ``stage`` is positional-only so a caller forwarding a free-form ``**row``
+    can never bind it by keyword. The envelope keys (:data:`RESERVED_AUDIT_KEYS`)
+    are validated unconditionally -- also when the audit log is disabled -- so a
+    colliding caller fails in every test run instead of only in the rare
+    configured one.
+
+    Raises:
+        ValueError: when ``fields`` carries a reserved envelope key.
     """
+
+    collisions = RESERVED_AUDIT_KEYS.intersection(fields)
+    if collisions:
+        raise ValueError(
+            f"stream_audit({stage!r}) fields use reserved envelope key(s) "
+            f"{sorted(collisions)}; rename them"
+        )
 
     from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
 

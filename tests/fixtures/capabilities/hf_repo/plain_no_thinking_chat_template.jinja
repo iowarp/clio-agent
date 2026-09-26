@@ -1,0 +1,7 @@
+{#- A template with no thinking control at all (e.g. a plain instruct model). -#}
+{%- for message in messages %}
+{{ '<|' + message.role + '|>\n' + message.content + '\n' }}
+{%- endfor %}
+{%- if add_generation_prompt %}
+{{ '<|assistant|>\n' }}
+{%- endif %}

@@ -1,4 +1,4 @@
-"""#1305 owner ruling: connection lifetime = subagent lifetime.
+"""S2 (B1) + #1305 owner ruling: connection lifetime = subagent lifetime.
 
 A subagent's provider connection must die DETERMINISTICALLY the moment its
 work is done -- never left to the idle-TTL sweep alone. This module pins the
@@ -11,6 +11,15 @@ terminal paths that dispatch it via the shared
 round F3: the completion fold, the cancel cascade, and both
 ``child_forward.py`` HITL-edge terminals). Each pin carries an inline
 SABOTAGE note.
+
+S2 rekeyed the pool by GACT session id directly (B1) -- there is at most ONE
+entry per session id, and it IS the dict entry at that key -- so the pre-S2
+scope<->session ownership bookkeeping (``_session_scopes``/``_scope_session``)
+this file used to pin no longer exists: ``release_session_resources`` is now
+a single dict pop at the session's own key, not a lookup through a separate
+registry. The correctness guarantees (non-blocking, in-flight-safe, F6b
+dead-marking, the stateful-delta hazard notification) are unchanged and
+re-pinned below against the simpler shape.
 """
 
 from __future__ import annotations
@@ -82,38 +91,13 @@ def _isolated_lifecycle_providers() -> Any:
 
 
 # --------------------------------------------------------------------------- #
-# ClaudeStreamClientPool: session<->scope ownership bookkeeping (#1305).
-# --------------------------------------------------------------------------- #
-def test_entry_for_records_session_ownership_for_a_scoped_entry() -> None:
-    pool = ccs.ClaudeStreamClientPool(max_concurrent=2)
-    pool.entry_for(model="m", cwd="/w", thinking=None, scope="loop-a", gact_session_id="sess-1")
-    # SABOTAGE: drop the note_scope_owner call from entry_for -> both empty -> red
-    assert pool._session_scopes.get("sess-1") == {"loop-a"}
-    assert pool._scope_session.get("loop-a") == "sess-1"
-
-
-def test_entry_for_records_nothing_without_a_gact_session_id() -> None:
-    pool = ccs.ClaudeStreamClientPool(max_concurrent=2)
-    pool.entry_for(model="m", cwd="/w", thinking=None, scope="loop-a")  # no gact_session_id
-    assert pool._session_scopes == {}
-    assert pool._scope_session == {}
-
-
-def test_entry_for_never_tracks_ownership_for_the_shared_base_entry() -> None:
-    pool = ccs.ClaudeStreamClientPool(max_concurrent=2)
-    pool.entry_for(
-        model="m", cwd="/w", thinking=None, gact_session_id="sess-1"
-    )  # scope=None -> base
-    assert pool._session_scopes == {}
-    assert pool._scope_session == {}
-
-
-# --------------------------------------------------------------------------- #
 # B2 BLOCKER (#1305 round 3): release_session_resources_nonblocking must tell
 # the claude_code stateful delta registry, exactly like
-# reap_idle_stream_entry already does for the idle-TTL path (pinned in
+# reap_idle_session_entry already does for the idle-TTL path (pinned in
 # test_claude_code_idle_reap.py's key-shape style: session_key =
-# (scope, model, cwd, thinking)).
+# (scope, model, cwd, thinking)) -- derived here from the entry's own
+# ``_last_scope``/``_model``/``_cwd``/``_thinking_key`` bookkeeping (S2), not
+# a separate scope<->session registry.
 # --------------------------------------------------------------------------- #
 def test_release_session_resources_forces_the_next_stateful_send_to_a_full_resend() -> None:
     """Without this, the registry still thinks its last-seen prefix is live
@@ -122,10 +106,10 @@ def test_release_session_resources_forces_the_next_stateful_send_to_a_full_resen
     that never saw the prefix -- a silent conversation-coherence bug, not
     merely a reconnect.
 
-    SABOTAGE: drop the ``stateful_registry().note_provider_error(...)`` call
-    from ``release_session_resources_nonblocking`` -> the registry still
-    thinks its last-seen prefix is live, the next ``plan()`` call classifies
-    as delta, and this goes red.
+    SABOTAGE: drop the ``_note_scope_provider_error(...)`` call from
+    ``release_session_resources_nonblocking`` -> the registry still thinks
+    its last-seen prefix is live, the next ``plan()`` call classifies as
+    delta, and this goes red.
     """
     from clio_agent.providers import claude_code_stateful as cst
 
@@ -140,7 +124,8 @@ def test_release_session_resources_forces_the_next_stateful_send_to_a_full_resen
             session_key=session_key, scope_token=scope, messages=[{"role": "user", "content": "a"}]
         )
 
-        pool.entry_for(model="m", cwd="/w", thinking=None, scope=scope, gact_session_id="sess-1")
+        entry = pool.entry_for(session_id="sess-1")
+        entry._model, entry._cwd, entry._thinking_key, entry._last_scope = "m", "/w", None, scope
 
         pool.release_session_resources("sess-1")
 
@@ -164,68 +149,44 @@ def test_release_session_resources_emits_a_typed_row_distinct_from_idle_reaped(
     reason, never ``idle_reaped`` -- misattributing a deterministic release
     as an idle-TTL reap would misrepresent WHY the connection actually died.
     """
-    from clio_agent.providers import claude_code_stateful as cst
-
-    cst.stateful_registry().reset_for_tests()
     rows: list[dict[str, Any]] = []
     monkeypatch.setattr(ccs, "stream_audit_enabled", lambda: True)
     monkeypatch.setattr(
         ccs, "stream_audit", lambda event, **fields: rows.append({"event": event, **fields})
     )
-    try:
-        pool = ccs.ClaudeStreamClientPool(max_concurrent=2)
-        pool.entry_for(model="m", cwd="/w", thinking=None, scope="loop-a", gact_session_id="sess-1")
+    pool = ccs.ClaudeStreamClientPool(max_concurrent=2)
+    pool.entry_for(session_id="sess-1")
 
-        pool.release_session_resources("sess-1")
+    pool.release_session_resources("sess-1")
 
-        released = [r for r in rows if r.get("reason") == "session_lifecycle_released"]
-        assert released  # SABOTAGE: drop the stream_audit call -> empty -> red
-        assert released[0]["category"] == "session_lifecycle_release"
-        assert not any(r.get("reason") == "idle_reaped" for r in rows)
-    finally:
-        cst.stateful_registry().reset_for_tests()
+    released = [r for r in rows if r.get("reason") == "session_lifecycle_released"]
+    assert released  # SABOTAGE: drop the stream_audit call -> empty -> red
+    assert released[0]["category"] == "session_lifecycle_release"
+    assert not any(r.get("reason") == "idle_reaped" for r in rows)
 
 
 # --------------------------------------------------------------------------- #
 # ClaudeStreamClientPool.release_session_resources -- the claude_code leg.
 # --------------------------------------------------------------------------- #
-def test_release_session_resources_closes_and_drops_the_scoped_entry() -> None:
+def test_release_session_resources_closes_and_drops_the_entry() -> None:
     pool = ccs.ClaudeStreamClientPool(max_concurrent=2)
-    pool.entry_for(model="m", cwd="/w", thinking=None, scope="loop-a", gact_session_id="sess-1")
+    pool.entry_for(session_id="sess-1")
 
     pool.release_session_resources("sess-1")
 
     # SABOTAGE: make release_session_resources a no-op -> the entry survives -> red.
-    assert pool._entries.get(("m", "/w", None, "loop-a")) is None
-    assert pool._session_scopes == {}
-    assert pool._scope_session == {}
+    assert pool._entries.get("sess-1") is None
 
 
-def test_release_session_resources_never_touches_a_sibling_sessions_scope() -> None:
+def test_release_session_resources_never_touches_a_sibling_session() -> None:
     pool = ccs.ClaudeStreamClientPool(max_concurrent=2)
-    pool.entry_for(model="m", cwd="/w", thinking=None, scope="loop-a", gact_session_id="sess-1")
-    sibling = pool.entry_for(
-        model="m", cwd="/w", thinking=None, scope="loop-b", gact_session_id="sess-2"
-    )
+    pool.entry_for(session_id="sess-1")
+    sibling = pool.entry_for(session_id="sess-2")
 
     pool.release_session_resources("sess-1")
 
-    # SABOTAGE: release EVERY scope-keyed entry regardless of owner -> sibling
-    # is gone too -> red.
-    assert pool.entry_for(model="m", cwd="/w", thinking=None, scope="loop-b") is sibling
-    assert pool._session_scopes.get("sess-2") == {"loop-b"}
-
-
-def test_release_session_resources_never_touches_the_shared_base_entry() -> None:
-    pool = ccs.ClaudeStreamClientPool(max_concurrent=2)
-    base = pool.entry_for(model="m", cwd="/w", thinking=None)  # scope=None -> the shared base entry
-    pool.entry_for(model="m", cwd="/w", thinking=None, scope="loop-a", gact_session_id="sess-1")
-
-    pool.release_session_resources("sess-1")
-
-    # SABOTAGE: release the base entry too (it could be serving OTHER
-    # sessions concurrently) -> red.
-    assert pool.entry_for(model="m", cwd="/w", thinking=None) is base
+    # SABOTAGE: release every entry regardless of key -> sibling is gone too -> red.
+    assert pool.entry_for(session_id="sess-2") is sibling
 
 
 def test_release_session_resources_is_a_noop_for_an_unknown_session() -> None:
@@ -233,50 +194,26 @@ def test_release_session_resources_is_a_noop_for_an_unknown_session() -> None:
     pool.release_session_resources("nonexistent")  # must not raise
 
 
-def test_release_via_scope_also_clears_the_1305_bookkeeping() -> None:
-    """The PRE-EXISTING ``stateful_scope`` teardown path (``pool.release(scope)``)
-    must ALSO clear the #1305 session<->scope bookkeeping, so a LATER
-    ``release_session_resources`` call (e.g. the new GACT hook firing after
-    the react loop's own scope teardown already ran) is a clean no-op --
-    never a double-close, never a leaked mapping.
-    """
-    pool = ccs.ClaudeStreamClientPool(max_concurrent=2)
-    pool.entry_for(model="m", cwd="/w", thinking=None, scope="loop-a", gact_session_id="sess-1")
-
-    pool.release("loop-a")  # the pre-existing scope-registry teardown path
-
-    # SABOTAGE: drop forget_scope_owner from release() -> the mapping survives
-    # (a leak) -> red.
-    assert pool._session_scopes == {}
-    assert pool._scope_session == {}
-    pool.release_session_resources("sess-1")  # must be a clean no-op, not raise
-
-
 # --------------------------------------------------------------------------- #
-# Resurrection: a released scope reconnects cleanly on its next use.
+# Resurrection: a released session reconnects cleanly on its next use.
 # --------------------------------------------------------------------------- #
 def test_released_session_resurrects_a_fresh_entry_on_next_use() -> None:
     pool = ccs.ClaudeStreamClientPool(max_concurrent=2)
-    entry = pool.entry_for(
-        model="m", cwd="/w", thinking=None, scope="loop-a", gact_session_id="sess-1"
-    )
+    entry = pool.entry_for(session_id="sess-1")
 
     pool.release_session_resources("sess-1")
-    fresh = pool.entry_for(
-        model="m", cwd="/w", thinking=None, scope="loop-a", gact_session_id="sess-1"
-    )
+    fresh = pool.entry_for(session_id="sess-1")
 
     # SABOTAGE: entry_for stops minting a NEW entry once a key was ever seen
     # (a stale reuse-after-release cache) -> `fresh is entry` -> red.
     assert fresh is not entry
-    assert pool._session_scopes.get("sess-1") == {"loop-a"}  # re-tracked on the new use
 
 
 async def test_released_session_resurrects_and_reconnects_live(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """End-to-end resurrection through the REAL connect path (fake SDK): a
-    released scope's next call reconnects cleanly and works."""
+    released session's next call reconnects cleanly and works."""
     import sys
     from types import ModuleType
 
@@ -302,18 +239,14 @@ async def test_released_session_resurrects_and_reconnects_live(
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
 
     pool = ccs.ClaudeStreamClientPool(max_concurrent=2)
-    entry = pool.entry_for(
-        model="m", cwd="/w", thinking=None, scope="loop-a", gact_session_id="sess-1"
-    )
-    await entry._ensure_client(lambda: None, gact_session_id="sess-1")
+    entry = pool.entry_for(session_id="sess-1")
+    await entry._ensure_client(lambda: None, gact_session_id="sess-1", model="m")
     assert state["connected"] == 1
 
     pool.release_session_resources("sess-1")
 
-    fresh = pool.entry_for(
-        model="m", cwd="/w", thinking=None, scope="loop-a", gact_session_id="sess-1"
-    )
-    await fresh._ensure_client(lambda: None, gact_session_id="sess-1")
+    fresh = pool.entry_for(session_id="sess-1")
+    await fresh._ensure_client(lambda: None, gact_session_id="sess-1", model="m")
     # SABOTAGE: a released-but-not-truly-disconnected entry would report only
     # 1 connect total (the stale client silently reused) -> red.
     assert state["connected"] == 2
@@ -322,19 +255,17 @@ async def test_released_session_resurrects_and_reconnects_live(
 # --------------------------------------------------------------------------- #
 # F1 (#1305 review round): release_session_resources MUST NOT block -- it
 # runs on the server's own event loop (the task done-callback chain), and
-# close_blocking's up-to-15s-per-entry wait would stall every other
-# coroutine on that loop.
+# close_blocking's up-to-15s wait would stall every other coroutine on that
+# loop.
 # --------------------------------------------------------------------------- #
 def test_release_session_resources_uses_close_nonblocking_not_close_blocking(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """SABOTAGE: call ``self.release(scope)`` (close_blocking) instead of the
-    non-blocking free function -> ``blocking_calls`` gets an entry -> red.
+    """SABOTAGE: call ``entry.close_blocking()`` instead of the non-blocking
+    method -> ``blocking_calls`` gets an entry -> red.
     """
     pool = ccs.ClaudeStreamClientPool(max_concurrent=2)
-    entry = pool.entry_for(
-        model="m", cwd="/w", thinking=None, scope="loop-a", gact_session_id="sess-1"
-    )
+    entry = pool.entry_for(session_id="sess-1")
     blocking_calls: list[int] = []
     nonblocking_calls: list[int] = []
     monkeypatch.setattr(entry, "close_blocking", lambda: blocking_calls.append(1))
@@ -357,9 +288,7 @@ def test_release_session_resources_defers_a_genuinely_in_flight_entry(
     closed anyway -> both assertions below go red.
     """
     pool = ccs.ClaudeStreamClientPool(max_concurrent=2)
-    entry = pool.entry_for(
-        model="m", cwd="/w", thinking=None, scope="loop-a", gact_session_id="sess-1"
-    )
+    entry = pool.entry_for(session_id="sess-1")
     entry._mark_busy()  # genuinely mid-stream -- never reap-eligible
 
     rows: list[dict[str, Any]] = []
@@ -370,7 +299,7 @@ def test_release_session_resources_defers_a_genuinely_in_flight_entry(
 
     pool.release_session_resources("sess-1")
 
-    assert pool._entries.get(("m", "/w", None, "loop-a")) is entry  # untouched
+    assert pool._entries.get("sess-1") is entry  # untouched
     assert entry._dead is False
     deferred = [r for r in rows if r.get("reason") == "session_release_deferred_in_flight"]
     assert deferred
@@ -378,32 +307,10 @@ def test_release_session_resources_defers_a_genuinely_in_flight_entry(
     assert deferred[0]["session_id"] == "sess-1"
 
 
-def test_release_session_resources_closes_an_idle_entry_alongside_a_busy_sibling(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The in-flight guard is per-entry, not all-or-nothing for the session:
-    an idle entry still gets released even when a SIBLING scope for the
-    SAME session is genuinely busy."""
-    pool = ccs.ClaudeStreamClientPool(max_concurrent=2)
-    busy_entry = pool.entry_for(
-        model="m", cwd="/w", thinking=None, scope="loop-busy", gact_session_id="sess-1"
-    )
-    idle_entry = pool.entry_for(
-        model="m", cwd="/w", thinking=None, scope="loop-idle", gact_session_id="sess-1"
-    )
-    busy_entry._mark_busy()
-
-    pool.release_session_resources("sess-1")
-
-    assert pool._entries.get(("m", "/w", None, "loop-busy")) is busy_entry
-    assert pool._entries.get(("m", "/w", None, "loop-idle")) is None
-    assert idle_entry._dead is True
-
-
 # --------------------------------------------------------------------------- #
 # F6b: the orphaned-entry window -- a release landing between entry_for()
 # and the caller's own connect must refuse (typed, retryable), never
-# silently reconnect a slot+CLI invisible to sweep/close.
+# silently reconnect a slot+CLI invisible to the pool.
 # --------------------------------------------------------------------------- #
 async def test_dead_entry_refuses_a_connect_after_being_released_mid_flight() -> None:
     """SABOTAGE: drop the ``self._dead`` check from ``_ensure_client`` -> the
@@ -411,9 +318,7 @@ async def test_dead_entry_refuses_a_connect_after_being_released_mid_flight() ->
     this goes red.
     """
     pool = ccs.ClaudeStreamClientPool(max_concurrent=2)
-    entry = pool.entry_for(
-        model="m", cwd="/w", thinking=None, scope="loop-a", gact_session_id="sess-1"
-    )
+    entry = pool.entry_for(session_id="sess-1")
     # Simulate the release landing in the window between entry_for() and the
     # caller actually starting stream()/_ensure_client() (a genuine
     # cross-thread race: the release runs on the server loop, the caller may
@@ -422,7 +327,7 @@ async def test_dead_entry_refuses_a_connect_after_being_released_mid_flight() ->
 
     assert entry._dead is True
     with pytest.raises(RuntimeError, match=cc_lifecycle.DEAD_ENTRY_MARKER):
-        await entry._ensure_client(lambda: None)
+        await entry._ensure_client(lambda: None, model="m")
 
 
 def test_dead_entry_marker_is_a_recognized_transient_reason() -> None:
@@ -479,7 +384,7 @@ async def test_pump_queues_stream_end_before_the_abnormal_end_reset(
     fake_sdk.ClaudeSDKClient = FakeClient
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
 
-    entry = ccs._StreamClientEntry(lambda: object())
+    entry = ccs._StreamClientEntry()
 
     calls: list[str] = []
     original_areset_client = entry._areset_client

@@ -40,6 +40,7 @@ from typing import Iterator, Optional
 
 from clio_agent import conf, paths
 from clio_agent.gact.artifacts.records import Custody, IdentityEvidence
+from clio_agent.platform_paths import win_extended_path
 
 logger = logging.getLogger(__name__)
 
@@ -137,15 +138,15 @@ class CASStore:
 
     def has_blob(self, sha256: str) -> bool:
         """Whether a blob for ``sha256`` is present on disk."""
-        return bool(sha256) and self.blob_path(sha256).is_file()
+        return bool(sha256) and os.path.isfile(win_extended_path(self.blob_path(sha256)))
 
     def _tmp_dir(self) -> Path:
         tmp = self._root / ".tmp"
-        tmp.mkdir(parents=True, exist_ok=True)
+        os.makedirs(win_extended_path(tmp), exist_ok=True)
         return tmp
 
     def finalize_temp(
-        self, tmp_path: Path, sha256: str, size_bytes: int, *, trust_stat: bool
+        self, tmp_path: str | Path, sha256: str, size_bytes: int, *, trust_stat: bool
     ) -> tuple[Path, str]:
         """Publish a freshly-hashed temp file to its addressed blob path.
 
@@ -154,10 +155,13 @@ class CASStore:
         size matches) — and the temp discarded (``dedup_existing``); a corrupt
         present blob is SELF-HEALED by replacing it with the fresh temp bytes
         (``self_healed``). Otherwise the temp is atomically renamed into place
-        (``ingested``).
+        (``ingested``). ``tmp_path`` and the addressed blob path are both routed
+        through :func:`win_extended_path` -- a CAS root nested under a deep
+        workspace can exceed Windows' 260-character ``MAX_PATH``.
         """
         blob = self.blob_path(sha256)
-        if blob.is_file():
+        extended_blob = win_extended_path(blob)
+        if os.path.isfile(extended_blob):
             if self._blob_valid(blob, sha256, size_bytes, trust_stat=trust_stat):
                 _silent_unlink(tmp_path)
                 return (blob, "dedup_existing")
@@ -168,11 +172,11 @@ class CASStore:
                 sha256,
                 blob,
             )
-            blob.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(tmp_path, blob)
+            os.makedirs(win_extended_path(blob.parent), exist_ok=True)
+            os.replace(win_extended_path(tmp_path), extended_blob)
             return (blob, "self_healed")
-        blob.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(tmp_path, blob)
+        os.makedirs(win_extended_path(blob.parent), exist_ok=True)
+        os.replace(win_extended_path(tmp_path), extended_blob)
         return (blob, "ingested")
 
     def _blob_valid(self, blob: Path, sha256: str, size_bytes: int, *, trust_stat: bool) -> bool:
@@ -183,7 +187,7 @@ class CASStore:
         """
         try:
             if trust_stat:
-                return blob.stat().st_size == size_bytes
+                return os.stat(win_extended_path(blob)).st_size == size_bytes
             return sha256_file(blob) == sha256
         except OSError:
             return False
@@ -310,9 +314,14 @@ class IngestedIdentity:
 
 
 def sha256_file(path: str | Path) -> str:
-    """Stream a file's sha256 (bounded memory). Raises ``OSError`` on read failure."""
+    """Stream a file's sha256 (bounded memory). Raises ``OSError`` on read failure.
+
+    Used across artifact/document code on workspace-composed paths, so the
+    open routes through :func:`win_extended_path` -- a no-op off win32, and
+    the only thing standing between a deep workspace and ``MAX_PATH``.
+    """
     digest = hashlib.sha256()
-    with open(path, "rb") as handle:
+    with open(win_extended_path(path), "rb") as handle:
         while True:
             chunk = handle.read(_HASH_CHUNK_BYTES)
             if not chunk:
@@ -329,7 +338,7 @@ def _stream_hash_tee(path: Path, tmp_handle) -> tuple[str, int]:
     """
     digest = hashlib.sha256()
     size = 0
-    with open(path, "rb") as src:
+    with open(win_extended_path(path), "rb") as src:
         while True:
             chunk = src.read(_HASH_CHUNK_BYTES)
             if not chunk:
@@ -360,7 +369,7 @@ def ingest_identity(
     handles a designation error, never a silent skip.
     """
     resolved = Path(str(path))
-    stat = resolved.stat()
+    stat = os.stat(win_extended_path(resolved))
     size = int(stat.st_size)
     mtime = float(stat.st_mtime)
 
@@ -401,8 +410,13 @@ def ingest_identity(
     store = CASStore(workspace_root)
     trust = hash_stat_cache() if trust_stat is None else trust_stat
     tmp_dir = store._tmp_dir()
-    fd, tmp_name = tempfile.mkstemp(dir=str(tmp_dir), prefix="ingest-")
-    tmp_path = Path(tmp_name)
+    # ``dir`` is passed in its win32 extended-length form (a no-op elsewhere) so
+    # mkstemp's own path composition survives a deep workspace's CAS root; the
+    # returned name then already carries that form end-to-end (kept a plain
+    # ``str`` below, never re-wrapped in ``Path`` -- pathlib does not reliably
+    # round-trip an already ``\\?\``-prefixed string).
+    fd, tmp_name = tempfile.mkstemp(dir=win_extended_path(tmp_dir), prefix="ingest-")
+    tmp_path = tmp_name
     try:
         with os.fdopen(fd, "wb") as tmp_handle:
             sha, streamed = _stream_hash_tee(resolved, tmp_handle)
@@ -451,10 +465,10 @@ def harness_write_identity(
         )
 
 
-def _silent_unlink(path: Path) -> None:
+def _silent_unlink(path: str | Path) -> None:
     """Remove ``path`` if present; a missing file is a no-op (never raises)."""
     try:
-        path.unlink()
+        os.remove(win_extended_path(path))
     except OSError:
         pass
 

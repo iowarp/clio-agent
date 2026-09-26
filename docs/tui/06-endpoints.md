@@ -111,7 +111,7 @@ live-door `timeline_row` payload uses schema `clio.relay-timeline-row.v1` and ca
 those run fields plus `sequence`, `event_type`, `source`, `summary`, `occurred_at`,
 and `payload`.
 
-Cancellation is also explicit rather than hidden. Cancelling a running turn settles the GACT envelope as cancelled; if provider/tool work is already inside an executor thread, `session.status_changed` marks `execution_cancellation="best_effort"` and `executor_work_may_continue=true`.
+Cancellation is also explicit rather than hidden. Cancelling a running turn settles the GACT envelope as cancelled; if provider/tool work is already inside an executor thread, `session.status_changed` marks `execution_cancellation="best_effort"`. A cancel landing while the turn's off-loop prologue is still running settles as `error_info.error="turn_cancelled_during_prologue"` instead (see `docs/CANCELLATION_SEMANTICS.md`).
 
 ## Legacy REST health shape
 
