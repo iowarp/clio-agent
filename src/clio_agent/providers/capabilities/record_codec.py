@@ -21,7 +21,6 @@ import logging
 import types
 import typing
 from decimal import Decimal, InvalidOperation
-from functools import cache
 from typing import Any, TypeVar, get_args, get_origin
 
 from clio_agent.providers.capabilities.records import (
@@ -40,15 +39,20 @@ class _Undecodable(ValueError):
     """A persisted value that does not fit its field's type."""
 
 
-@cache
+_FACT_TYPES: dict[str, dict[str, Any]] = {}
+
+
 def _fact_types(record_type: type) -> dict[str, Any]:
-    """``field name -> X`` for every ``Fact[X]`` field of a record dataclass."""
-    hints = typing.get_type_hints(record_type)
-    return {
-        name: get_args(hint)[0]
-        for name, hint in hints.items()
-        if get_origin(hint) is Fact and get_args(hint)
-    }
+    """``field name -> X`` for every ``Fact[X]`` field of a record dataclass (memoized)."""
+    key = f"{record_type.__module__}.{record_type.__qualname__}"
+    if key not in _FACT_TYPES:
+        hints = typing.get_type_hints(record_type)
+        _FACT_TYPES[key] = {
+            name: get_args(hint)[0]
+            for name, hint in hints.items()
+            if get_origin(hint) is Fact and get_args(hint)
+        }
+    return _FACT_TYPES[key]
 
 
 def _encode(value: Any) -> Any:
