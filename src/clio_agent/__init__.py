@@ -117,9 +117,10 @@ def _default_litellm_local_cost_map() -> None:
     Forcing local-only restores litellm's pre-upgrade behavior (``1.91.3`` had no
     such fetch at all) for litellm's OWN internal consumers of the map (e.g. its
     Anthropic adaptive-thinking capability lookups in
-    ``providers.reasoning_levels``), while clio's own lookups go through the
-    live, cached, typed-degradation path instead. ``setdefault`` so an operator
-    who explicitly wants litellm's live fetch can still opt back in.
+    ``providers.capabilities.dialects.cloud_thinking``), while clio's own
+    lookups go through the live, cached, typed-degradation path instead.
+    ``setdefault`` so an operator who explicitly wants litellm's live fetch can
+    still opt back in.
     """
 
     os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "true")

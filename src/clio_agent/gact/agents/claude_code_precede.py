@@ -63,18 +63,23 @@ def precede_connect_claude_code_session(config: Any, signature: Any, *, session_
     try:
         import dspy  # noqa: PLC0415
 
+        from clio_agent.lm import dialect_wire  # noqa: PLC0415
+        from clio_agent.providers.capabilities.accessor import (
+            get_effective_capabilities,  # noqa: PLC0415
+        )
         from clio_agent.providers.claude_code_sessions import _STREAM_CLIENT_POOL  # noqa: PLC0415
-        from clio_agent.providers.reasoning_levels import model_effort_levels  # noqa: PLC0415
-        from clio_agent.providers.thinking import resolve_thinking  # noqa: PLC0415
 
         model = str(getattr(config, "model", "") or "") or None
-        plan = resolve_thinking(
-            config.provider,
-            getattr(config, "thinking_level", None),
-            int(getattr(config, "thinking_budget", 0) or 0),
-            effort_levels=model_effort_levels(config.provider, config.model or ""),
+        provider_id = str(getattr(config, "provider_id", "") or "claude_code")
+        api_base = str(getattr(config, "api_base", "") or "")
+        effective = get_effective_capabilities(provider_id, api_base, config.model or "")
+        wire = dialect_wire.thinking_wire(
+            "claude_code",
+            effective.thinking,
+            level=getattr(config, "thinking_level", None),
+            budget_tokens=int(getattr(config, "thinking_budget", 0) or 0),
         )
-        thinking = plan.sdk_thinking if plan.supported else None
+        thinking = wire.get("claude_code_thinking")
         system_prompt = str(dspy.ChatAdapter().format_system_message(signature) or "") or None
         _STREAM_CLIENT_POOL.precede_connect(
             session_id=session_id, model=model, thinking=thinking, system_prompt=system_prompt

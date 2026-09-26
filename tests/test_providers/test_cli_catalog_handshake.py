@@ -149,13 +149,81 @@ def test_claude_code_handshake_ready_only_after_live_probe(
 def test_discover_models_absent_overlay_falls_back_to_static_catalog(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """codex's ``Provider.model_catalog`` is empty (model-capabilities brief
+    9.1: no compiled-in candidate ids -- only a verified SDK catalog check
+    supplies one), so the generic :class:`NoOpHandshake` fallback this
+    exercises (via the base :meth:`CliCatalogHandshake._fallback_models`)
+    correctly returns nothing until an explicit refresh has run."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     handshake = CliCatalogHandshake(provider=None)
     rows = asyncio.run(handshake.discover_models(client=None, ctx=_ctx()))
-    # The static registry catalog for codex (2 candidate ids); none carry the
-    # overlay marker.
-    assert rows
-    assert all("_overlay_context_checked" not in r for r in rows)
+    assert rows == []
+
+
+def test_claude_code_fallback_reads_the_maintained_catalog_disk_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """No overlay yet (fresh install): ClaudeCodeCatalogHandshake reads the
+    maintained catalog's OWN disk cache instead of a static registry list --
+    real, typed capability_evidence rides through, never a compiled-in claim."""
+    from clio_agent.providers.model_discovery import claude_code_catalog
+
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    evidence = {
+        "source": "claude_code_catalog",
+        "source_description": "CLIO's maintained Claude Code model catalog document",
+        "reason": "modality_cataloged",
+        "description": "the maintained Claude Code catalog declares these input modalities for the model",
+    }
+    fake_catalog = claude_code_catalog.ClaudeCodeCatalog(
+        models=[
+            {
+                "id": "claude-sonnet-5",
+                "name": "Claude Sonnet 5",
+                "capabilities": ["text", "image", "pdf"],
+                "capability_evidence": evidence,
+            }
+        ],
+        default_model="claude-sonnet-5",
+        default_model_reason="",
+    )
+    monkeypatch.setattr(
+        claude_code_catalog, "cached_claude_code_catalog", lambda: (fake_catalog, "")
+    )
+
+    handshake = ClaudeCodeCatalogHandshake(provider=None)
+    rows = asyncio.run(
+        handshake.discover_models(
+            client=None, ctx=_ctx(provider_id="claude_code", provider_kind="claude_code")
+        )
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["id"] == "claude-sonnet-5"
+    assert rows[0]["capabilities"] == ["text", "image", "pdf"]
+    assert rows[0]["capability_evidence"] == evidence
+    assert "_overlay_context_checked" not in rows[0]
+
+
+def test_claude_code_fallback_is_empty_with_no_disk_cache_at_all(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A true cold start (never fetched on this machine, no network in this
+    passive/ambient path): an honest empty list, never a guess."""
+    from clio_agent.providers.model_discovery import claude_code_catalog
+
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    monkeypatch.setattr(
+        claude_code_catalog, "cached_claude_code_catalog", lambda: (None, "no cache, no network")
+    )
+
+    handshake = ClaudeCodeCatalogHandshake(provider=None)
+    rows = asyncio.run(
+        handshake.discover_models(
+            client=None, ctx=_ctx(provider_id="claude_code", provider_kind="claude_code")
+        )
+    )
+    assert rows == []
 
 
 def test_discover_models_present_overlay_served_with_context_marker(
@@ -193,16 +261,15 @@ def test_discover_models_malformed_overlay_degrades_to_static_and_logs(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """The passive/ambient path must never crash on a corrupt overlay (RULE 2);
-    it degrades to static -- but the degrade is LOGGED (#1211 review R5), never
-    silent."""
+    it degrades to the (for codex, empty -- brief 9.1) static fallback -- but
+    the degrade is LOGGED (#1211 review R5), never silent."""
     overlay_file = tmp_path / "overlay.json"
     overlay_file.write_text("{not valid json", encoding="utf-8")
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(overlay_file))
     handshake = CliCatalogHandshake(provider=None)
     with caplog.at_level(logging.WARNING):
         rows = asyncio.run(handshake.discover_models(client=None, ctx=_ctx()))
-    assert rows  # degraded to the static catalog, not an empty/crashed result
-    assert all("_overlay_context_checked" not in r for r in rows)
+    assert rows == []
     assert any("overlay malformed" in rec.message for rec in caplog.records)
 
 
@@ -421,7 +488,9 @@ def test_overlay_backed_handshake_reports_overlay_not_live(
 def test_static_catalog_handshake_reports_static_not_live(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """With no overlay the rows ARE the compiled-in candidates -- never evidence."""
+    """With no overlay AND no compiled-in candidates (codex, brief 9.1), the
+    handshake still reports cleanly -- ``static`` provenance, zero models,
+    never a crash or a fabricated row."""
 
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     monkeypatch.setattr(
@@ -434,10 +503,8 @@ def test_static_catalog_handshake_reports_static_not_live(
 
     report = asyncio.run(CliCatalogHandshake(provider=None).handshake(_ctx()))
 
-    assert report.models  # the static registry candidates are still surfaced
+    assert report.models == ()
     assert report.models_source == "static"
-    # A static row carries no capability evidence, so no modality can be claimed.
-    assert all(profile.raw.get("capabilities") == [] for profile in report.models)
 
 
 def test_http_handshake_still_reports_live() -> None:

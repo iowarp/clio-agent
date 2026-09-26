@@ -626,7 +626,7 @@ class LMProvider(_WireModel):
     provider: str = ""
     api_base: str = ""
     model: str = ""
-    temperature: float = 0.0
+    temperature: float | None = None
     max_tokens: int = 0
     context_length: int = 0
     chosen_context: int | None = None

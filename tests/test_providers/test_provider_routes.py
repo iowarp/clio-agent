@@ -7,7 +7,8 @@ from unittest.mock import patch
 import pytest
 
 from clio_agent.config import LMProviderConfig
-from clio_agent.lm.factory import _connection_kwargs, _provider_lm_kwargs, _resolve_model_name
+from clio_agent.lm.factory import _connection_kwargs, _resolve_model_name
+from clio_agent.lm.request_builder import build_request_kwargs
 from clio_agent.providers import credentials
 from clio_agent.providers.catalog import get_provider
 
@@ -90,7 +91,7 @@ def test_catalog_provider_routes_to_exact_litellm_prefix(
     )
 
     assert config.provider_id == provider_id
-    kwargs = _provider_lm_kwargs(config)
+    kwargs = build_request_kwargs(config)
     assert _resolve_model_name(config).startswith(prefix)
     assert config.api_base == endpoint
     for key, value in options.items():
@@ -188,6 +189,17 @@ def test_provider_options_reject_unknown_keys() -> None:
         )
 
 
+# NOTE (model-capabilities brief 9.1 / campaign slice P5):
+# ``test_litellm_transport_routes_accept_image_parts`` asserted the deleted
+# static ``Provider.supports_vision`` flag. Vision support for these routes is
+# no longer a compiled-in per-provider promise -- it comes from the effective
+# capabilities (``providers.capabilities.accessor.get_effective_capabilities``,
+# Part 5.5): the cloud dialects' "no restriction at this layer" deployment
+# default (already covered by ``tests/test_providers/test_dialect_cloud.py``)
+# combined with whatever the model record's own ``input_modalities`` says, and
+# for llama.cpp/vLLM a REAL deployment fact from ``/props``/a probe, never a
+# blanket True. Re-asserting the old boolean here would just re-introduce the
+# static flag under a different name.
 @pytest.mark.parametrize(
     "provider_id",
     [
@@ -205,7 +217,8 @@ def test_provider_options_reject_unknown_keys() -> None:
         "llama_cpp",
     ],
 )
-def test_litellm_transport_routes_accept_image_parts(provider_id: str) -> None:
+def test_provider_catalog_row_exists_for_every_vision_capable_route(provider_id: str) -> None:
+    """Every route this parametrization names is still a real catalog entry."""
     provider = get_provider(provider_id)
     assert provider is not None
-    assert provider.supports_vision is True
+    assert provider.id == provider_id

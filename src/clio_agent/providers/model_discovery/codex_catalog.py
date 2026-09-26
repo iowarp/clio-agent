@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from clio_agent.providers.fetched_catalog import FetchedCatalog, FetchedCatalogUnavailable
-from clio_agent.providers.thinking import THINKING_LEVELS
+from clio_agent.providers.thinking_levels import THINKING_LEVELS
 
 CODEX_CATALOG_URL = (
     "https://raw.githubusercontent.com/iowarp/clio-agent/develop/catalogs/codex-models.json"

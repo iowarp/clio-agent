@@ -102,8 +102,19 @@ THINKING_CONTROLS_BY_DIALECT: dict[str, frozenset[str]] = {
     "ollama": frozenset({"think"}),
     "lm_studio": frozenset({"reasoning_effort"}),
     "openrouter": frozenset({"reasoning_object"}),
+    # anthropic offers BOTH controls: "reasoning_effort" (LiteLLM's own kwarg,
+    # translated into thinking=adaptive + output_config.effort) when the model
+    # reports adaptive-thinking effort levels, "anthropic_thinking" (a token
+    # budget) for a model with no effort evidence -- combine.py's per-
+    # mechanism priority picks whichever the model's own ThinkingSpec needs.
     "openai": frozenset({"reasoning_effort"}),
-    "anthropic": frozenset({"anthropic_thinking"}),
+    "anthropic": frozenset({"reasoning_effort", "anthropic_thinking"}),
+    # SDK/CLI transports (not an HTTP request body): the "control" here just
+    # names which SDK option channel carries thinking, for combine.py's
+    # control-priority selection -- lm/dialect_wire.py spells the actual
+    # kwarg (codex_reasoning_effort / claude_code_thinking).
+    "codex": frozenset({"reasoning_effort"}),
+    "claude_code": frozenset({"effort", "claude_code_thinking"}),
 }
 
 #: Dialect knowledge: structured-output modes a server type offers. Best-effort

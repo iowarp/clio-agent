@@ -31,6 +31,7 @@ from typing import Any
 from clio_agent.providers import host_credentials
 from clio_agent.providers.capabilities import endpoint as capability_endpoint
 from clio_agent.providers.capabilities.dialects import cloud as cloud_dialect
+from clio_agent.providers.capabilities.dialects import cloud_thinking
 from clio_agent.providers.capabilities.dialects import llama_cpp as llama_cpp_dialect
 from clio_agent.providers.capabilities.dialects import openrouter as openrouter_dialect
 from clio_agent.providers.capabilities.dialects import vllm as vllm_dialect
@@ -314,7 +315,10 @@ class OpenAICompatHandshake(ProviderHandshake):
             deployment = cloud_dialect.build_deployment_capabilities(
                 ctx.provider_id, ctx.api_base, model_id
             )
-            model = ModelCapabilities(model_key=self._bare_model_key(model_id))
+            model = ModelCapabilities(
+                model_key=self._bare_model_key(model_id),
+                thinking=self._thinking_fact(dialect, model_id),
+            )
         else:
             # No adapter for this dialect (an unrecognized OpenAI-compatible
             # server): a bare record, no field guessing. The base class's
@@ -333,6 +337,16 @@ class OpenAICompatHandshake(ProviderHandshake):
     def _bare_model_key(self, model_id: str) -> str:
         fact = deployment_model_key_fact(model_id, observed_at=_now_iso())
         return fact.value or model_id
+
+    def _thinking_fact(self, dialect: str, model_id: str) -> Fact[Any]:
+        """The model's ``ThinkingSpec`` fact, for the two cloud dialects with a
+        real per-model thinking/reasoning story (anthropic, openai) --
+        :mod:`clio_agent.providers.capabilities.dialects.cloud_thinking`'s pure,
+        network-free LiteLLM introspection. Every other cloud dialect (Azure,
+        Bedrock, Vertex, Gemini, NVIDIA NIM) has no known per-model reasoning
+        story here yet, so it stays unknown rather than guessed.
+        """
+        return cloud_thinking.local_thinking_spec(dialect, model_id)
 
     async def _compare_against_native_context(
         self, model: ModelCapabilities, deployment: DeploymentCapabilities, model_id: str

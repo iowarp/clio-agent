@@ -1152,21 +1152,6 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             if trace.HF_ON:
                 trace.hot("FWD-ENTER", "%s kind=%s", getattr(self.agent_def, "id", "?"), self.kind)
             runtime_system_prompt = self.system_prompt
-            # Qwen-family models (qwopus), with thinking disabled, write free-form prose
-            # instead of the structured field format and never emit a terminator, so they
-            # generate unboundedly (→ truncation / >900s wedge). Tell them to output only
-            # the required fields and stop. Env-gated so it rides with CLIO_LM_DISABLE_THINKING
-            # and never touches the well-behaved remote models.
-            from clio_agent.config import _thinking_disabled  # noqa: PLC0415
-
-            if _thinking_disabled():
-                runtime_system_prompt = (
-                    runtime_system_prompt
-                    + "\n\nOUTPUT DISCIPLINE: Produce ONLY the required output fields, each "
-                    "filled in directly and once. Do NOT write a prose narrative, do NOT "
-                    "restate your reasoning, do NOT repeat or re-explain fields. After the "
-                    "last required field, STOP immediately."
-                )
             active_app = _ctx.active_app()
             active_session_id = _ctx.active_session_id()
             if active_app is not None:

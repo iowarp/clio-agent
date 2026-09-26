@@ -166,6 +166,136 @@ def test_catalog_uses_modalities_only_from_current_live_evidence() -> None:
     assert static["evidence"]["live"] is False
 
 
+def test_reasoning_default_prefers_the_clio_shipped_effort_over_the_provider_default() -> None:
+    """profile.raw's own 'shipped_default_effort' (data, e.g. claude_code's
+    maintained catalog) wins over a provider-reported default -- never a
+    second, provider-name-keyed mapping table (the deleted
+    ``providers.reasoning_levels.model_reasoning``)."""
+    _seed(
+        "claude_code",
+        "claude-code://sdk",
+        "claude-sonnet-5",
+        is_reasoning=True,
+        reasoning_control="effort",
+    )
+    invalidation.record_model_capabilities(
+        ModelCapabilities(
+            model_key="claude-sonnet-5",
+            thinking=Fact(
+                value=ThinkingSpec(
+                    mechanism="effort_levels", levels=("low", "medium", "high", "max")
+                ),
+                source="server_report",
+                observed_at=_NOW,
+            ),
+        )
+    )
+    profile = DiscoveredModel(
+        id="claude-sonnet-5",
+        raw={"shipped_default_effort": "low", "default_reasoning_effort": "medium"},
+    )
+    report = HandshakeReport(
+        provider_id="claude_code",
+        provider_kind="claude_code",
+        connectivity=ConnectivityState.OK,
+        auth=AuthState.NOT_REQUIRED,
+        api_base="claude-code://sdk",
+        models=(profile,),
+    )
+    preset = LMProviderPreset(
+        id="claude_code",
+        label="Claude Code",
+        provider="claude_code",
+        api_base="claude-code://sdk",
+        suggested_model="",
+    )
+    reasoning = model_catalog_row(preset, report, profile)["reasoning"]
+    assert (reasoning["default"], reasoning["default_source"]) == ("low", "clio_shipped")
+    assert reasoning["levels"] == ["off", "low", "medium", "high", "max"]
+
+
+def test_reasoning_default_falls_back_to_the_codex_reported_effort() -> None:
+    """With no shipped default, codex's own SDK default (translated through
+    its own vocabulary table) is used, tagged 'provider'."""
+    _seed(
+        "codex_acct",
+        "codex://sdk",
+        "gpt-5.6-sol",
+        is_reasoning=True,
+        reasoning_control="reasoning_effort",
+    )
+    invalidation.record_model_capabilities(
+        ModelCapabilities(
+            model_key="gpt-5.6-sol",
+            thinking=Fact(
+                value=ThinkingSpec(mechanism="effort_levels", levels=("low", "medium", "high")),
+                source="server_report",
+                observed_at=_NOW,
+            ),
+        )
+    )
+    profile = DiscoveredModel(id="gpt-5.6-sol", raw={"default_reasoning_effort": "high"})
+    report = HandshakeReport(
+        provider_id="codex_acct",
+        provider_kind="codex",
+        connectivity=ConnectivityState.OK,
+        auth=AuthState.NOT_REQUIRED,
+        api_base="codex://sdk",
+        models=(profile,),
+    )
+    preset = LMProviderPreset(
+        id="codex_acct",
+        label="Codex",
+        provider="codex",
+        api_base="codex://sdk",
+        suggested_model="",
+    )
+    reasoning = model_catalog_row(preset, report, profile)["reasoning"]
+    assert (reasoning["default"], reasoning["default_source"]) == ("high", "provider")
+
+
+def test_reasoning_levels_fall_back_to_the_generic_budget_ladder_with_no_model_levels() -> None:
+    """A ``budget_tokens`` mechanism with no per-model levels still offers
+    CLIO's own generic off/low/medium/high ladder -- the same ladder the
+    request builder actually uses (dialect_wire.py)."""
+    _seed(
+        "claude_code",
+        "claude-code://sdk",
+        "claude-haiku-4-5-20251001",
+        is_reasoning=True,
+        reasoning_control="claude_code_thinking",
+    )
+    invalidation.record_model_capabilities(
+        ModelCapabilities(
+            model_key="claude-haiku-4-5-20251001",
+            thinking=Fact(
+                value=ThinkingSpec(mechanism="budget_tokens"),
+                source="server_report",
+                observed_at=_NOW,
+            ),
+        )
+    )
+    profile = DiscoveredModel(id="claude-haiku-4-5-20251001")
+    report = HandshakeReport(
+        provider_id="claude_code",
+        provider_kind="claude_code",
+        connectivity=ConnectivityState.OK,
+        auth=AuthState.NOT_REQUIRED,
+        api_base="claude-code://sdk",
+        models=(profile,),
+    )
+    preset = LMProviderPreset(
+        id="claude_code",
+        label="Claude Code",
+        provider="claude_code",
+        api_base="claude-code://sdk",
+        suggested_model="",
+    )
+    reasoning = model_catalog_row(preset, report, profile)["reasoning"]
+    assert reasoning["levels"] == ["off", "low", "medium", "high"]
+    assert reasoning["supported"] is True
+
+
 def test_catalog_row_carries_claude_code_cli_aliases() -> None:
     """A claude_code row exposes the CLI aliases that select it (e.g. 'sonnet').
 

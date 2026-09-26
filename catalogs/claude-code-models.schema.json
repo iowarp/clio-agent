@@ -27,6 +27,10 @@
             "minLength": 1,
             "maxLength": 120
           },
+          "shipped_default_effort": {
+            "description": "CLIO's own default thinking level for this model (read by providers.capabilities.dialects.claude_code); never the model's own reported default.",
+            "enum": ["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+          },
           "capabilities": {
             "type": "array",
             "minItems": 1,

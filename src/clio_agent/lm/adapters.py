@@ -444,37 +444,6 @@ def _live_streaming_enabled() -> bool:
         return True
 
 
-def _reasoning_model_capability(config: LMProviderConfig) -> bool:
-    """Per-model: is this a reasoning model (qwopus / qwen3-family ...)?
-
-    Reasoning models route their real output into the ``reasoning_content``
-    channel and, under the text protocol, intermittently drop a field on a single
-    draw. Two reasoning-only behaviors hang off this flag — the
-    ``content<-reasoning_content`` extraction (:meth:`IOLoggingLM._process_completion`)
-    and the bounded parse re-sample (the lenient adapter) — so both are applied
-    PER MODEL, not globally (today only qwopus/qwen match; others are untouched).
-
-    Override with ``CLIO_LM_REASONING_MODEL`` (1/0); otherwise the per-model
-    capability (the handshake ``is_reasoning`` flag, else the name-marker
-    detection that reliably identifies qwopus/qwen) decides. This is the interim
-    home for what tasks #33/#34 move into the model DB.
-    """
-    from clio_agent import conf  # noqa: PLC0415 - keep config.py a leaf module
-    from clio_agent.config import _uses_local_reasoning_model_profile  # noqa: PLC0415
-
-    # Tri-state: an explicit file/env value forces the flag; absence falls through
-    # to the per-model capability detection below.
-    raw = conf.resolve("lm.reasoning_model", env="CLIO_LM_REASONING_MODEL", default=None)
-    if raw is not None:
-        try:
-            return conf.as_bool(raw)
-        except ValueError:
-            pass
-    if bool(getattr(config, "is_reasoning", False)):
-        return True
-    return _uses_local_reasoning_model_profile(config.provider, config.model)
-
-
 def _parse_retry_attempts(config: LMProviderConfig) -> int:
     """How many times to re-sample the LM on an unrecoverable adapter parse
     failure. Per-model: reasoning models (temp>0, independent re-draws) benefit;
@@ -502,7 +471,7 @@ def _parse_retry_attempts(config: LMProviderConfig) -> int:
             config.model,
         )
         return 0
-    return 2 if _reasoning_model_capability(config) else 0
+    return 2 if bool(getattr(config, "is_reasoning", False)) else 0
 
 
 def _fix_guided_schema(part: Any) -> None:

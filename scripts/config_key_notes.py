@@ -609,10 +609,6 @@ KEY_NOTES: dict[str, str] = {
         "Force-disables the JSON-adapter fallback for cloud providers that reject response_format; "
         "set true if a provider 400s on it."
     ),
-    "lm.disable_thinking": (
-        'Turns off reasoning/"thinking" sampling for the active LM; set true to force a '
-        "reasoning-capable model into non-reasoning mode."
-    ),
     "lm.guided_output": (
         "Switches to schema-constrained JSON output instead of the text ChatAdapter; enable "
         "per-model when a reasoning model drops required fields."
@@ -649,17 +645,15 @@ KEY_NOTES: dict[str, str] = {
         "Selects the LM backend (lm_studio, ollama, openai, anthropic, argonne, codex, "
         "claude_code); change to switch which provider clio talks to."
     ),
-    "lm.reasoning_model": (
-        "Forces/forbids reasoning-model behavior for the active model, overriding auto-detection; "
-        "set when auto-detection misclassifies a model."
-    ),
     "lm.stop_sequences": (
-        "||-joined stop sequences for reasoning models to truncate output after the final field; "
-        "override if a model's trace leaks past stop points."
+        "||-joined override for the DSPy trajectory-regurgitation stop sequences, sent whenever "
+        "the endpoint's effective parameter set accepts `stop`; override if a model's trace "
+        "leaks past stop points."
     ),
     "lm.temperature": (
-        "Sampling temperature for the main agentic LM calls; defaults to 0.0 since clio drives "
-        "structured tool-call output, raise for creative sampling."
+        "Sampling temperature for the main agentic LM calls; unset by default so the "
+        "provider/model's own sampling default applies (model-capabilities brief Part 7 item 1) "
+        "-- set to force a specific value."
     ),
     "lm.thinking_budget": (
         "Explicit reasoning token-budget override, mapped per-provider (Anthropic/Claude Code "

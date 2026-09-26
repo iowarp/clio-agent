@@ -16,11 +16,12 @@ import logging
 import pytest
 
 from clio_agent.config import LMProviderConfig
-from clio_agent.lm.factory import _provider_lm_kwargs, _warn_dropped_params, create_lm
+from clio_agent.lm.factory import _warn_dropped_params, create_lm
+from clio_agent.lm.request_builder import build_request_kwargs
 
 
 def test_drop_params_is_on_by_default() -> None:
-    extras = _provider_lm_kwargs(LMProviderConfig(provider="openai", model="gpt-5", api_key="k"))
+    extras = build_request_kwargs(LMProviderConfig(provider="openai", model="gpt-5", api_key="k"))
     assert extras["drop_params"] is True
 
 
@@ -29,10 +30,10 @@ def test_explicit_provider_option_overrides_the_default() -> None:
     # provider's declared configuration fields, and `drop_params` is not one of
     # them (it is an internal safety net, not a user-facing setting) -- so the
     # override is set post-construction here, exercising exactly the same
-    # `extras.update(config.provider_options)` -> `setdefault` code path.
+    # `dict(config.provider_options)` -> `setdefault` code path.
     config = LMProviderConfig(provider="openai", model="gpt-5", api_key="k")
     config.provider_options = {"drop_params": False}
-    extras = _provider_lm_kwargs(config)
+    extras = build_request_kwargs(config)
     assert extras["drop_params"] is False
 
 

@@ -37,7 +37,7 @@ def _reasoning_row(model: dict[str, Any]) -> dict[str, Any]:
     """Persist the catalog's effort levels in the SAME field names Codex's SDK
     discovery used (``supported_reasoning_efforts``/``default_reasoning_effort``)
     so :mod:`clio_agent.providers.handshake.cli_catalog` and
-    :mod:`clio_agent.providers.reasoning_levels` need no shape change."""
+    :mod:`clio_agent.providers.capabilities.dialects.codex` need no shape change."""
 
     levels = [str(v) for v in model.get("effort_levels") or []]
     default = "medium" if "medium" in levels else (levels[0] if levels else "")

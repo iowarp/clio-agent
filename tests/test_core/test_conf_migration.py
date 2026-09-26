@@ -89,60 +89,18 @@ class TestGactTurnTimeout:
 # --------------------------------------------------------------------------- #
 
 
-class TestThinkingDisabled:
-    """``lm.disable_thinking`` / ``CLIO_LM_DISABLE_THINKING`` — the single shared
-    truthy knob read by both ``_provider_lm_kwargs`` and the builders prompt."""
-
-    def test_default(self, monkeypatch):
-        from clio_agent.config import _thinking_disabled
-
-        monkeypatch.delenv("CLIO_LM_DISABLE_THINKING", raising=False)
-        assert _thinking_disabled() is False
-
-    def test_env(self, monkeypatch):
-        from clio_agent.config import _thinking_disabled
-
-        monkeypatch.setenv("CLIO_LM_DISABLE_THINKING", "yes")
-        assert _thinking_disabled() is True
-
-    def test_file_wins(self, monkeypatch, tmp_path):
-        from clio_agent.config import _thinking_disabled
-
-        monkeypatch.setenv("CLIO_LM_DISABLE_THINKING", "1")
-        _write_user_config(monkeypatch, tmp_path, "lm:\n  disable_thinking: false\n")
-        assert _thinking_disabled() is False
-
-
-class TestReasoningModelCapability:
-    """``lm.reasoning_model`` / ``CLIO_LM_REASONING_MODEL`` — tri-state: an
-    explicit file/env value forces the flag; absence falls through to detection."""
-
-    @staticmethod
-    def _cfg(is_reasoning=False, provider="openai"):
-        from types import SimpleNamespace
-
-        return SimpleNamespace(provider=provider, model="gpt-4o", is_reasoning=is_reasoning)
-
-    def test_default_falls_through_to_detection(self, monkeypatch):
-        from clio_agent.config import _reasoning_model_capability
-
-        monkeypatch.delenv("CLIO_LM_REASONING_MODEL", raising=False)
-        assert _reasoning_model_capability(self._cfg(is_reasoning=False)) is False
-        assert _reasoning_model_capability(self._cfg(is_reasoning=True)) is True
-
-    def test_env_forces_true(self, monkeypatch):
-        from clio_agent.config import _reasoning_model_capability
-
-        monkeypatch.setenv("CLIO_LM_REASONING_MODEL", "1")
-        assert _reasoning_model_capability(self._cfg(is_reasoning=False)) is True
-
-    def test_file_forces_false_over_detection(self, monkeypatch, tmp_path):
-        from clio_agent.config import _reasoning_model_capability
-
-        monkeypatch.delenv("CLIO_LM_REASONING_MODEL", raising=False)
-        _write_user_config(monkeypatch, tmp_path, "lm:\n  reasoning_model: false\n")
-        # capability detection would say True, but the explicit file value wins.
-        assert _reasoning_model_capability(self._cfg(is_reasoning=True)) is False
+# NOTE (model-capabilities brief 9.1 / campaign slice P5): ``TestThinkingDisabled``
+# was deleted alongside ``CLIO_LM_DISABLE_THINKING`` / ``_thinking_disabled`` --
+# the unconditional ``chat_template_kwargs.enable_thinking=false`` injection it
+# gated is gone; thinking is now driven per-dialect off the model's own
+# ``ThinkingSpec`` (``lm.request_builder`` / ``lm.dialect_wire``), never a
+# global on/off knob. ``TestReasoningModelCapability`` was deleted alongside
+# ``_reasoning_model_capability`` / ``CLIO_LM_REASONING_MODEL`` -- the qwen-name
+# heuristic (``_uses_local_reasoning_model_profile``) it fell back to is
+# deleted too; every caller (``_parse_retry_attempts`` below,
+# ``gact.streaming._config_is_reasoning_model``) now reads
+# ``config.is_reasoning`` directly (the handshake-derived effective-capabilities
+# fact, model-capabilities brief 5.5), with no separate env override.
 
 
 class TestParseRetryAttempts:
@@ -339,37 +297,32 @@ class TestFilePolicyMappingSymlinks:
 
 
 class TestStopSequencesOverride:
-    """``lm.stop_sequences`` — env stays ``||``-joined; the file layer takes a list."""
+    """``lm.stop_sequences`` — env stays ``||``-joined; the file layer takes a list.
+
+    Sent whenever the effective parameter set accepts ``stop`` (model-
+    capabilities brief Part 7 item 3) -- no reasoning-model heuristic gate any
+    more. lm_studio's real LiteLLM-mapped parameter set includes ``stop``
+    (a pure, network-free local lookup -- no handshake needed), so a bare
+    ``LMProviderConfig`` already exercises the override branch.
+    """
 
     @staticmethod
     def _cfg():
-        from types import SimpleNamespace
+        from clio_agent.config import LMProviderConfig
 
-        # lm_studio + qwopus so _reasoning_model_capability() is True and the stop
-        # override branch runs.
-        return SimpleNamespace(
-            provider="lm_studio",
-            model="qwopus",
-            is_reasoning=True,
-            top_p=None,
-            presence_penalty=None,
-            top_k=None,
-            min_p=None,
-            codex_transport="",
-            claude_code_transport="",
-        )
+        return LMProviderConfig(provider="lm_studio", model="qwen3-8b")
 
     def test_env_double_pipe_split(self, monkeypatch):
-        from clio_agent.config import _provider_lm_kwargs
+        from clio_agent.lm.request_builder import build_request_kwargs
 
         monkeypatch.setenv("CLIO_LM_STOP_SEQUENCES", "</s>||STOP")
-        assert _provider_lm_kwargs(self._cfg())["stop"] == ["</s>", "STOP"]
+        assert build_request_kwargs(self._cfg())["stop"] == ["</s>", "STOP"]
 
     def test_default_when_unset(self, monkeypatch):
-        from clio_agent.config import _provider_lm_kwargs
+        from clio_agent.lm.request_builder import build_request_kwargs
 
         monkeypatch.delenv("CLIO_LM_STOP_SEQUENCES", raising=False)
-        stop = _provider_lm_kwargs(self._cfg())["stop"]
+        stop = build_request_kwargs(self._cfg())["stop"]
         assert stop == [
             "[[ ## observation",
             "[[ ## thought_",
@@ -378,11 +331,11 @@ class TestStopSequencesOverride:
         ]
 
     def test_file_list_wins(self, monkeypatch, tmp_path):
-        from clio_agent.config import _provider_lm_kwargs
+        from clio_agent.lm.request_builder import build_request_kwargs
 
         monkeypatch.setenv("CLIO_LM_STOP_SEQUENCES", "</s>")
         _write_user_config(monkeypatch, tmp_path, "lm:\n  stop_sequences:\n    - AAA\n    - BBB\n")
-        assert _provider_lm_kwargs(self._cfg())["stop"] == ["AAA", "BBB"]
+        assert build_request_kwargs(self._cfg())["stop"] == ["AAA", "BBB"]
 
 
 class TestArcCorePort:
