@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from clio_agent.providers.codex.responses import (
     build_request_body,
     chat_messages_to_responses_input,
@@ -202,3 +204,53 @@ def test_build_request_body_includes_tools_and_reasoning_effort() -> None:
     )
     assert body["tools"] == tools
     assert body["reasoning"] == {"effort": "high", "summary": "auto"}
+
+
+# --------------------------------------------------------------------------- #
+# PDF attachments -> Responses ``input_file`` (verified live 2026-09-26).
+# --------------------------------------------------------------------------- #
+
+_PDF_URL = "data:application/pdf;base64,JVBERi0xLjQK"
+
+
+def test_pdf_file_part_becomes_input_file() -> None:
+    """DSPy's ``dspy.File`` part shape is delivered, not dropped."""
+
+    _instructions, items = chat_messages_to_responses_input(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "summarize"},
+                    {"type": "file", "file": {"file_data": _PDF_URL, "filename": "paper.pdf"}},
+                ],
+            }
+        ]
+    )
+    assert items[0]["content"] == [
+        {"type": "input_text", "text": "summarize"},
+        {"type": "input_file", "filename": "paper.pdf", "file_data": _PDF_URL},
+    ]
+
+
+def test_non_pdf_or_id_only_file_parts_are_refused_loudly() -> None:
+    from clio_agent.providers.codex.errors import CodexUnsupportedInputError
+
+    for file in (
+        {"file_data": "data:text/csv;base64,YSxi", "filename": "t.csv"},
+        {"file_id": "file-abc"},
+    ):
+        with pytest.raises(CodexUnsupportedInputError):
+            chat_messages_to_responses_input(
+                [{"role": "user", "content": [{"type": "file", "file": file}]}]
+            )
+
+
+def test_oversized_pdf_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    from clio_agent.providers.codex.errors import CodexUnsupportedInputError
+
+    monkeypatch.setenv("CLIO_RESOURCE_NATIVE_DOCUMENT_MAX_BYTES", "4")
+    with pytest.raises(CodexUnsupportedInputError, match="per-document ceiling"):
+        chat_messages_to_responses_input(
+            [{"role": "user", "content": [{"type": "file", "file": {"file_data": _PDF_URL}}]}]
+        )

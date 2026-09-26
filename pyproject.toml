@@ -49,11 +49,11 @@ dependencies = [
     # OWN CODEX_HOME (default ~/.codex) so the Codex runtime owns its own
     # login/refresh -- CLIO never reads or writes auth.json. Same pin as
     # before S1 deleted this transport.
-    "openai-codex>=0.147.0,<0.148.0",
+    "openai-codex>=0.157.1,<0.158.0",
     # The bundled codex binary stays a DIRECT dependency because the Windows
     # shell sandbox (runtime/sandbox_codex.py) spawns it as its enforcement
     # rung -- unrelated to either LM provider transport.
-    "openai-codex-cli-bin>=0.147.0,<0.148.0",
+    "openai-codex-cli-bin>=0.157.1,<0.158.0",
     # The direct Codex provider's WebSocket transport (A.6); already present
     # transitively (litellm/fastmcp's own tree), declared explicitly now that
     # first-party code imports it directly.

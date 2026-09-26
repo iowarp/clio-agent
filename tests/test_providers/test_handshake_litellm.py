@@ -10,6 +10,7 @@ guaranteed-present offline fallback, exactly like before the refactor.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import httpx
@@ -24,9 +25,9 @@ from clio_agent.providers.handshake.sources import litellm_catalog as lc
 def isolated_catalog(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> FetchedCatalog:
     """Point the module's catalog singleton at a per-test disk cache.
 
-    Keeps the real bundled-fallback wiring (so the offline tests below still
-    exercise it) while isolating each test's disk cache from the real one and
-    from other tests.
+    The cache is seeded the way an earlier successful fetch leaves it (a
+    recorded slice of the live map), so the offline lookups below read a disk
+    cache -- there is no packaged fallback to read.
     """
     fresh: FetchedCatalog = FetchedCatalog(
         "litellm-model-cost-map-test",
@@ -35,14 +36,32 @@ def isolated_catalog(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Fetched
         ttl_s=lc.DEFAULT_TTL_S,
         max_bytes=lc._MAX_BYTES,
         timeout_s=lc._FETCH_TIMEOUT_S,
-        bundled=lc._bundled_model_cost_map,
         cache_path=tmp_path / "litellm-model-cost-map.json",
+    )
+    fresh.cache_path.write_text(
+        json.dumps(
+            {
+                "fetched_at": "2020-01-01T00:00:00+00:00",  # stale: live tests re-fetch
+                "etag": "",
+                "source_url": fresh.url,
+                "version": "sha256:recorded",
+                "payload": json.dumps(_RECORDED_MAP),
+            }
+        ),
+        encoding="utf-8",
     )
     monkeypatch.setattr(lc, "_catalog", lambda: fresh)
     return fresh
 
 
-# ---- bundled catalog, offline (no cache, network disabled -> bundled fallback) ----
+#: A recorded slice of LiteLLM's live model_prices_and_context_window.json.
+_RECORDED_MAP = {
+    "gpt-4o": {"max_input_tokens": 128000, "max_output_tokens": 16384},
+    "claude-sonnet-4-5": {"max_input_tokens": 200000, "max_output_tokens": 64000},
+}
+
+
+# ---- offline lookups read the disk cache of an earlier fetch ----
 def test_real_catalog_gpt4o() -> None:
     assert lc.lookup_litellm_context("gpt-4o", allow_fetch=False) == 128000
     assert (lc.lookup_litellm_output("gpt-4o", allow_fetch=False) or 0) > 0
@@ -69,11 +88,36 @@ def test_offline_lookup_never_touches_the_network(
     assert lc.lookup_litellm_context("gpt-4o", allow_fetch=False) == 128000
 
 
-def test_offline_lookup_reports_bundled_provenance(isolated_catalog: FetchedCatalog) -> None:
+def test_offline_lookup_reports_disk_cache_provenance(isolated_catalog: FetchedCatalog) -> None:
     result = isolated_catalog.get(allow_fetch=False)
-    assert result.source == "bundled"
-    assert result.stale_reason == "bundled_cold_start"
-    assert result.version == "bundled"
+    assert result.source == "disk_cache"
+    assert result.version == "sha256:recorded"
+
+
+def test_first_run_offline_serves_the_litellm_wheels_own_map(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A fresh machine with no cache and no network still knows gpt-4o/gpt-5:
+    the map the litellm wheel itself ships (third-party data, not a CLIO catalog)."""
+    fresh: FetchedCatalog = FetchedCatalog(
+        "litellm-model-cost-map-fresh",
+        lc._cost_map_url(),
+        parse=lc._parse_cost_map,
+        ttl_s=lc.DEFAULT_TTL_S,
+        library_offline=lc._library_packaged_cost_map,
+        cache_path=tmp_path / "fresh.json",
+    )
+    monkeypatch.setattr(lc, "_catalog", lambda: fresh)
+
+    def _boom(*_a: object, **_kw: object) -> httpx.Response:
+        raise AssertionError("allow_fetch=False must never hit the network")
+
+    monkeypatch.setattr(fetched_catalog.httpx, "get", _boom)
+    result = fresh.get(allow_fetch=False)
+    assert result.source == "library_packaged"
+    assert result.stale_reason == "library_packaged: fetch_disabled"
+    assert lc.lookup_litellm_context("gpt-4o", allow_fetch=False) == 128000
+    assert lc.lookup_litellm_info("gpt-5", allow_fetch=False) is not None
 
 
 # ---- id-variant probing + prefix fall-through ----

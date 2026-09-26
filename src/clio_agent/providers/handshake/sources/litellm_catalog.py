@@ -11,11 +11,11 @@ This module fetches the SAME map LiteLLM itself would (its own
 :mod:`clio_agent.providers.fetched_catalog` mechanism: a disk cache with a TTL
 and ETag under ``paths.user_cache_dir()/catalogs/litellm-model-cost-map.json``,
 atomic writes, and a last-good copy that a failed fetch or a failed validation
-never clears. The map bundled with the installed ``litellm`` wheel
-(``model_prices_and_context_window_backup.json``) is used ONLY as the cold-start
-fallback when there is no disk cache yet and no network — never as a ceiling on
-freshness. Reproducibility no longer comes from freezing to the pinned wheel's
-snapshot; it comes from the recorded ETag/version in every
+never clears. With no disk cache and no network, the map packaged inside the
+``litellm`` wheel itself (``model_prices_and_context_window_backup.json``, the
+library's own data -- not a CLIO catalog) is the offline source, tagged
+``source="library_packaged"``. Reproducibility comes from the recorded
+ETag/version in every
 :class:`~clio_agent.providers.fetched_catalog.CatalogResult`, which any lookup
 can be re-run against.
 
@@ -73,8 +73,8 @@ def _parse_cost_map(payload: bytes) -> dict[str, Any]:
     return {key: value for key, value in data.items() if isinstance(key, str)}
 
 
-def _bundled_model_cost_map() -> dict[str, Any]:
-    """Cold-start-only fallback: the map bundled with the pinned litellm wheel."""
+def _library_packaged_cost_map() -> dict[str, Any]:
+    """The cost map the installed ``litellm`` wheel ships (the library's own data)."""
     text = (
         resources.files("litellm")
         .joinpath("model_prices_and_context_window_backup.json")
@@ -100,7 +100,7 @@ def _catalog() -> FetchedCatalog[dict[str, Any]]:
         ttl_s=DEFAULT_TTL_S,
         max_bytes=_MAX_BYTES,
         timeout_s=_FETCH_TIMEOUT_S,
-        bundled=_bundled_model_cost_map,
+        library_offline=_library_packaged_cost_map,
     )
 
 
@@ -137,8 +137,8 @@ def lookup_litellm(model_id: str, *, allow_fetch: bool = True) -> tuple[int | No
 
     Args:
         model_id: The raw model identifier (with or without a provider prefix).
-        allow_fetch: When ``False``, never touch the network -- disk cache or
-            the bundled wheel snapshot only (the offline-safe test path).
+        allow_fetch: When ``False``, never touch the network -- the disk cache
+            or the litellm wheel's own packaged map only.
     """
     if not (model_id or "").strip():
         return None, None
