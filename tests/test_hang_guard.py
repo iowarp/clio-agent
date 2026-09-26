@@ -15,6 +15,7 @@ import re
 
 import pytest
 
+from tests._cte_isolation import cte_isolation_available
 from tests._hang_guard_probe import HANG_LIMIT_S
 from tests._inner_suite import REPO_ROOT, inner_runtime_parent, run_inner_pytest
 
@@ -49,6 +50,12 @@ def test_both_hang_shapes_fail_their_test_with_a_dump_and_the_run_continues() ->
     assert "while the GIL was held" in gil_hang, gil_hang
     assert "most recent call first" in gil_hang, gil_hang
     assert "in test_hangs_holding_the_gil" in gil_hang, gil_hang
+
+    if cte_isolation_available():
+        # The crashed worker's private daemon is described next to its stacks.
+        for section in (python_hang, gil_hang):
+            assert "private clio-core daemon of worker pid" in section, section
+            assert "clio-runtime.log" in section, section
 
 
 def _failure_section(output: str, test_name: str) -> str:

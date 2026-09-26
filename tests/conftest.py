@@ -59,7 +59,7 @@ import pytest  # noqa: E402
 import yaml  # noqa: E402
 
 import clio_agent  # noqa: E402, F401
-from tests import _cte_bounded, _hang_guard
+from tests import _cte_bounded, _hang_guard, _worker_leaks
 from tests._cte_isolation import (
     cte_isolation_available,
     eagerly_attach_private_daemon,
@@ -104,6 +104,8 @@ def pytest_configure(config: pytest.Config) -> None:
     config.pluginmanager.register(_hang_guard, "clio-hang-guard")
     # Every real clio-core store call gets a seconds-scale hard bound on that watchdog.
     _cte_bounded.install()
+    # Background threads a test's objects start are stopped at its teardown.
+    _worker_leaks.install()
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
@@ -347,6 +349,18 @@ def _clio_process_hygiene_audit(request, _clio_private_cte_daemon):
     result = audit.finalize(own_pid=os.getpid())
     if not result.clean:
         raise AssertionError(result.format_failure())
+
+
+@pytest.fixture(autouse=True)
+def _close_background_workers():
+    """Stop the LSM compaction / provenance worker threads this test's objects started.
+
+    See :mod:`tests._worker_leaks`: left running they accumulate to thousands per xdist
+    worker and push the stuck test's own stack out of the hang guard's 100-thread dump.
+    """
+    position = _worker_leaks.mark()
+    yield
+    _worker_leaks.close_created_since(position)
 
 
 @pytest.fixture(autouse=True)

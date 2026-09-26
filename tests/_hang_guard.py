@@ -45,6 +45,8 @@ from typing import IO, Any
 
 import pytest
 
+from tests._crash_forensics import worker_daemon_report
+
 HANG_DUMP_DIR_ENV = "CLIO_TEST_HANG_DUMP_DIR"
 
 # Seconds between the Python header timer (at the limit) and the C watchdog's
@@ -207,23 +209,27 @@ def pytest_handlecrashitem(crashitem: str, report: pytest.TestReport, sched: Any
     worker_id = getattr(getattr(node, "gateway", None), "id", None)
     if not dump_dir or not worker_id:
         return
-    dumps = sorted(
-        (p for p in Path(dump_dir).glob(f"{worker_id}-*.log") if p.stat().st_size > 0),
-        key=lambda p: p.stat().st_mtime,
+    # One dump file per worker process (``<worker>-<pid>.log``), created empty at its
+    # start; the newest is the process that just died.
+    candidates = sorted(
+        Path(dump_dir).glob(f"{worker_id}-*.log"), key=lambda path: path.stat().st_mtime
     )
-    if not dumps:
-        report.longrepr = (
-            f"{report.longrepr}\n(no hang dump from {worker_id}: the worker died without "
-            "reaching a time limit, so this is a crash, not a timeout)"
-        )
+    if not candidates:
         return
-    latest = dumps[-1]
+    latest = candidates[-1]
+    worker_pid = int(latest.stem.rsplit("-", 1)[1])
     text = latest.read_text(encoding="utf-8", errors="replace")
     latest.rename(latest.with_suffix(".reported"))
-    if _TIMEOUT_BANNER not in text:
+    if not text:
+        text = (
+            f"(no hang dump from {worker_id}: the worker died without reaching a time "
+            "limit, so this is a crash, not a timeout)"
+        )
+    elif _TIMEOUT_BANNER not in text:
         text = (
             f"{_TIMEOUT_BANNER}\nA hard time limit fired while the GIL was held (no Python "
             "thread could run), typically a native clio-core call past its bound "
             "(tests/_cte_bounded.py). Every thread's stack:\n" + text
         )
-    report.longrepr = f"{report.longrepr}\n{text}"
+    daemon = worker_daemon_report(worker_pid)
+    report.longrepr = f"{report.longrepr}\n{text}" + (f"\n{daemon}" if daemon else "")
