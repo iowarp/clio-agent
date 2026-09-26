@@ -26,8 +26,11 @@ brief Part 4.2. This distinction feeds the three-valued AND in
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
-from typing import Any, Generic, Literal, TypeVar
+from typing import Any, Generic, Literal, TypeVar, get_args
+
+from clio_schemas.model_capabilities import HF_PIPELINE_TAGS, TASK_ID_PATTERN, Domain
 
 T = TypeVar("T")
 
@@ -117,19 +120,29 @@ _MODALITY_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 
-def modalities_from_capabilities(capabilities: object) -> frozenset[str]:
+def modalities_from_capabilities(
+    capabilities: object, *, implicit_text: bool = True
+) -> frozenset[str]:
     """Normalize a provider's raw capability-string list into CLIO's modality vocabulary.
 
-    Every model implicitly accepts ``"text"``. Anything not in
-    :data:`_MODALITY_ALIASES` (case/dash-insensitive) is ignored rather than
-    guessed at -- an unrecognized capability string names a capability this
-    layer has no modality opinion about, not evidence of a new modality.
+    A capability list (Ollama/LM Studio ``vision``, ...) names only what a model
+    accepts BEYOND text, so ``implicit_text`` (the default) adds ``"text"``. An
+    exhaustive input-modality list (OpenRouter's ``architecture.
+    input_modalities``) passes ``implicit_text=False``: there ``text`` is
+    stated when accepted, and an audio-only transcriber must stay audio-only.
+    Anything not in :data:`_MODALITY_ALIASES` (case/dash-insensitive) is
+    ignored rather than guessed at -- an unrecognized capability string names a
+    capability this layer has no modality opinion about, not evidence of a new
+    modality.
     """
 
-    normalized = {"text"}
+    normalized = {"text"} if implicit_text else set()
     if isinstance(capabilities, (list, tuple, set, frozenset)):
         for capability in capabilities:
             value = str(capability).strip().lower().replace("-", "_")
+            if value == "text":
+                normalized.add("text")
+                continue
             for modality, aliases in _MODALITY_ALIASES.items():
                 if value in aliases:
                     normalized.add(modality)
@@ -139,33 +152,34 @@ def modalities_from_capabilities(capabilities: object) -> frozenset[str]:
 
 #: What a model DOES, spelled as the Hugging Face Hub ``pipeline_tag`` does, so a
 #: Hub repo's own tag maps verbatim and every other source (LiteLLM ``mode``,
-#: OpenRouter output modalities, an ALCF ``framework``, the overlay's flags)
-#: maps onto the same vocabulary. Only these tags are recorded; any other value
-#: stays an unknown :class:`Fact` rather than a guess.
-TASKS: frozenset[str] = frozenset(
-    {
-        "text-generation",
-        "image-text-to-text",
-        "audio-text-to-text",
-        "any-to-any",
-        "text-classification",
-        "feature-extraction",
-        "text-ranking",
-        "automatic-speech-recognition",
-        "text-to-speech",
-        "text-to-image",
-        "text-to-video",
-        "mask-generation",
-        "image-segmentation",
-    }
-)
+#: OpenRouter output modalities, an ALCF ``framework``, the overlay's flags or
+#: explicit ``task``) maps onto the same vocabulary. The closed set is the shared
+#: schema's (``clio_schemas.model_capabilities.HF_PIPELINE_TAGS``); a task the
+#: Hub has no term for is a ``clio:<kebab-id>``, stated only by the overlay or a
+#: user. Any other value stays an unknown :class:`Fact` rather than a guess.
+TASKS: frozenset[str] = frozenset(HF_PIPELINE_TAGS)
 
 #: The tasks of a GENERAL (conversational) model -- one that can run a chat
 #: turn. Every other task is a SURROGATE: a first-class model listed in the
 #: catalog, but never selectable as the chat model.
 GENERAL_TASKS: frozenset[str] = frozenset(
-    {"text-generation", "image-text-to-text", "audio-text-to-text", "any-to-any"}
+    {
+        "text-generation",
+        "image-text-to-text",
+        "audio-text-to-text",
+        "video-text-to-text",
+        "any-to-any",
+    }
 )
+
+#: Subject domains a model can be tagged with (the shared schema's closed list).
+DOMAINS: frozenset[str] = frozenset(get_args(Domain))
+
+
+def is_task(value: object) -> bool:
+    """Whether ``value`` is a recordable task: a Hub ``pipeline_tag`` or a ``clio:`` id."""
+    return isinstance(value, str) and re.fullmatch(TASK_ID_PATTERN, value) is not None
+
 
 #: A model's role, derived from its task.
 ModelRole = Literal["general", "surrogate"]
@@ -182,9 +196,10 @@ def task_fact(value: str | None, *, source: FactSource, observed_at: str, detail
     """A task fact (a :data:`TASKS` tag), or an honest unknown for any other value.
 
     Every evidence source maps its own vocabulary onto :data:`TASKS` first; this
-    is the single place that refuses a value outside that closed set.
+    is the single place that refuses a value outside that closed set (or the
+    ``clio:<id>`` gap spelling, :func:`is_task`).
     """
-    if value in TASKS:
+    if is_task(value):
         return Fact(value=value, source=source, observed_at=observed_at, detail=detail)
     return unknown(detail)
 
@@ -245,6 +260,8 @@ class ModelCapabilities:
     #: What the model PRODUCES (``text``, ``image``, ``audio``, ``video``, ...),
     #: when a source states it (OpenRouter's ``architecture.output_modalities``).
     output_modalities: Fact[frozenset[str]] = field(default_factory=_unknown_field)
+    #: Subject domains (:data:`DOMAINS`) a source states the model is built for.
+    domains: Fact[frozenset[str]] = field(default_factory=_unknown_field)
     tools: Fact[bool] = field(default_factory=_unknown_field)
     parallel_tool_calls: Fact[bool] = field(default_factory=_unknown_field)
     structured_output: Fact[bool] = field(default_factory=_unknown_field)
@@ -322,6 +339,7 @@ class DeploymentCapabilities:
 
 
 __all__ = [
+    "DOMAINS",
     "DeploymentCapabilities",
     "EndpointCapabilities",
     "Fact",
@@ -332,6 +350,7 @@ __all__ = [
     "TASKS",
     "ThinkingMechanism",
     "ThinkingSpec",
+    "is_task",
     "modalities_from_capabilities",
     "role_for_task",
     "task_fact",

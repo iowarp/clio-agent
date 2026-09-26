@@ -61,7 +61,7 @@ dependencies = [
     "fastmcp==4.0.0b5",  # 2026-07-28 line (#1107); b1->b5 beta-track hardening bump (#1285
     # C1-S5 item 5, LAST commit -- everything else verified green on b1 first).
     "fastmcp-tasks==4.0.0b5",
-    "clio-schemas==0.3.2",
+    "clio-schemas==0.3.3",
     "pydantic>=2.12,<2.14",
     # A2UI catalog validation: official catalog.json files are validated at runtime
     # with Draft 2020-12 (docs/design/a2ui-compat-campaign-2026-09.md, S2).
@@ -326,13 +326,3 @@ also_copy = ["src/clio_agent/", "tests/"]
 # combination's import surface is test-verified, the live session smoke runs
 # at the phase gate. Drop this override when upstream supports mcp 2.
 override-dependencies = ["mcp>=2.0.0"]
-
-[tool.uv.sources]
-# A2UI compat S5b: clio-schemas 0.3.2 (docs/design/a2ui-compat-campaign-2026-09.md).
-# Patch bump: CatalogSidecar.events[<name>].narration (a template over the
-# resolved context, placeholders validated against context_schema.properties)
-# and clio_schemas.a2ui.sidecar.render_narration(route, context) -> str | None
-# let the pack author declare an event's meaning instead of clio inferring it
-# from prose. Pinned to main @ d68c72c8393bc155c22de0c66d1ee6ee5e5d46c0;
-# see `git -C <clio-schemas checkout> rev-parse origin/main`.
-clio-schemas = { git = "https://github.com/iowarp/clio-schemas.git", rev = "d68c72c8393bc155c22de0c66d1ee6ee5e5d46c0" }
