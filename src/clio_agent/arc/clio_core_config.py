@@ -49,27 +49,57 @@ from __future__ import annotations
 import logging
 import os
 import re
+import socket
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 
+from clio_agent.arc.clio_core_host_migration import (
+    migrate_legacy_cte_store,
+    migrate_legacy_runtime_state,
+)
+
 logger = logging.getLogger(__name__)
 
 
-def runtime_state_dir() -> Path:
-    """Return the directory holding the clio-core runtime's host bookkeeping.
+_HOST_KEY_UNSAFE = re.compile(r"[^a-z0-9_-]+")
 
-    This is where the connect-or-spawn lifecycle keeps its coordination state — the
+
+def host_key() -> str:
+    """Return the name that keys this MACHINE's clio-core state.
+
+    There is one clio-core daemon per machine. Cluster login and compute nodes
+    mount the same NFS home, so a path under ``~`` names every node at once; the
+    daemon's bookkeeping and storage are therefore keyed by host. The key is the
+    first label of :func:`socket.gethostname` (``ares.ares.local`` -> ``ares``),
+    lowercased and reduced to ``[a-z0-9_-]``, so it is a safe directory name and
+    matches what the desktop computes for the same machine. A machine with no
+    usable name gets ``localhost``.
+
+    Returns:
+        The host key for this machine.
+    """
+    label = socket.gethostname().split(".", 1)[0].strip().lower()
+    return _HOST_KEY_UNSAFE.sub("-", label).strip("-") or "localhost"
+
+
+def runtime_state_dir() -> Path:
+    """Return the directory holding THIS machine's clio-core runtime bookkeeping.
+
+    This is where the connect-or-spawn lifecycle keeps its coordination state: the
     spawn lock (``clio-runtime.lock``), the daemon pidfile (``clio-runtime.pid``), the
     client refcount registry (``clio-runtime.clients/``), and the daemon log
-    (``clio-runtime.log``). Default: ``~/.clio`` — the host-global location that lets
-    every clio-agent process on the machine share ONE daemon.
+    (``clio-runtime.log``). Default: ``~/.clio/hosts/<host>`` (:func:`host_key`), one
+    directory per machine, shared by every clio-agent process on that machine and by
+    no process on another. A home directory shared over NFS (a cluster's login and
+    compute nodes) therefore never lets one node's pidfile, lock or client registry
+    stand for another node's daemon.
 
     ``CLIO_RUNTIME_STATE_DIR`` overrides it (explicit selection, not a degrade): a
-    process family that must NOT share the host daemon — the test suite's hermetic
-    private daemon (``tests/_cte_isolation.py``), or a sandboxed deployment — points
+    process family that must NOT share the host daemon (the test suite's hermetic
+    private daemon, ``tests/_cte_isolation.py``, or a sandboxed deployment) points
     this at its own directory, and its spawn lock / pidfile / registry / last-one-out
     stop all move coherently with it. The directory is created if absent.
 
@@ -77,8 +107,14 @@ def runtime_state_dir() -> Path:
         The state directory path (guaranteed to exist).
     """
     override = os.environ.get("CLIO_RUNTIME_STATE_DIR", "").strip()
-    state = Path(override).expanduser() if override else Path.home() / ".clio"
+    if override:
+        state = Path(override).expanduser()
+        state.mkdir(parents=True, exist_ok=True)
+        return state
+    state = Path.home() / ".clio" / "hosts" / host_key()
     state.mkdir(parents=True, exist_ok=True)
+    # One-time move of the pre-host-key bookkeeping (~/.clio/clio-runtime.*).
+    migrate_legacy_runtime_state(Path.home() / ".clio", state)
     return state
 
 
@@ -240,7 +276,12 @@ def _default_cte_dir() -> Path:
     if configured:
         return Path(configured).expanduser()
 
-    return paths.user_data_dir() / "cte"
+    # Keyed by host like the runtime state (:func:`runtime_state_dir`): the
+    # file tier, metadata log and runtime conf belong to ONE machine's daemon,
+    # and a data dir on a shared home would otherwise hand a login node's
+    # storage to a compute node's daemon. An explicit ``arc.cte.dir`` is used
+    # exactly as given.
+    return paths.user_data_dir() / "cte" / "hosts" / host_key()
 
 
 def _default_cte_file_capacity() -> str:
@@ -327,7 +368,16 @@ def default_cte_config_path() -> str:
     surfaced by the doctor (:func:`clio_agent.runtime.clio_core_health.probe_clio_core_ram_cap`)
     rather than silently mutated (#890).
     """
+    from clio_agent import paths  # noqa: PLC0415 - avoid import cycle
+
     cte_dir = _default_cte_dir()
+    legacy_dir = paths.user_data_dir() / "cte"
+    if cte_dir == legacy_dir / "hosts" / host_key():
+        # The default store (not an explicit arc.cte.dir): move the pre-host-key
+        # store in <data>/cte here once, instead of starting an empty one.
+        override = os.environ.get("CLIO_RUNTIME_STATE_DIR", "").strip()
+        runtime_root = Path(override).expanduser() if override else Path.home() / ".clio"
+        migrate_legacy_cte_store(legacy_dir, cte_dir, runtime_root=runtime_root)
     cte_dir.mkdir(parents=True, exist_ok=True)
     cfg = cte_dir / "cte.yaml"
     if not cfg.is_file():

@@ -1,4 +1,4 @@
-"""Remote CLIO deploy: adopt-or-stop on the API port, and teardown on failure/cancel."""
+"""Remote CLIO deploy: adopt-or-stop, the pinned install, status, teardown."""
 
 from __future__ import annotations
 
@@ -19,13 +19,15 @@ import pytest
 from clio_agent.gact.infrastructure.clio_agent_deploy import (
     ClaimResult,
     claim_command,
+    install_command,
     parse_claim,
+    status_command,
     teardown_command,
 )
 from clio_agent.gact.infrastructure.drivers import (
     CLIO_AGENT_PORT,
-    CLIO_AGENT_VERSION,
     build_driver_plan,
+    clio_agent_version,
 )
 from clio_agent.gact.infrastructure.models import (
     CommandResult,
@@ -40,6 +42,9 @@ from clio_agent.gact.infrastructure.store import InfrastructureStore
 # ---------------------------------------------------------------------------
 # Plan and runtime semantics (platform-independent)
 # ---------------------------------------------------------------------------
+
+# The remote installs exactly the version this CLIO runs.
+VERSION = clio_agent_version()
 
 
 def _target(store: InfrastructureStore, install_root: str = "") -> Any:
@@ -63,13 +68,20 @@ def _plan(store: InfrastructureStore) -> Any:
     )
 
 
-def test_install_claims_the_port_before_installing(tmp_path: Path) -> None:
+def test_install_claims_the_port_then_installs_this_clios_version(tmp_path: Path) -> None:
     plan = _plan(InfrastructureStore(tmp_path / "infra.json"))
-    tags = [spec.args[1].splitlines()[0] if spec.args else "" for spec in plan.commands]
-    assert tags[0] == "# clio-deploy:claim"
-    assert "install/install.sh" in plan.commands[1].args[1]
+    tags = [spec.args[1].splitlines()[0] for spec in plan.commands]
+    assert tags[:2] == ["# clio-deploy:claim", "# clio-deploy:install"]
     assert plan.commands[2].args[1].rstrip().endswith('"$bin/clio" start')
-    assert plan.commands[0].args[-2:] == [str(CLIO_AGENT_PORT), CLIO_AGENT_VERSION]
+    assert plan.commands[0].args[-2:] == [str(CLIO_AGENT_PORT), VERSION]
+    install = plan.commands[1]
+    assert install.args[-3:] == [
+        VERSION,
+        f"https://pypi.org/pypi/clio-agent/{VERSION}/json",
+        f"https://raw.githubusercontent.com/iowarp/clio-agent/v{VERSION}/install/install.sh",
+    ]
+    # A failed install fails the step: nothing swallows it.
+    assert "; true" not in install.args[1] and "set -o pipefail" in install.args[1]
     assert plan.teardown is not None
     fresh = plan.teardown(ClaimResult(result="free", existing_root=False))
     kept = plan.teardown(ClaimResult(result="stopped", existing_root=True))
@@ -104,8 +116,6 @@ class _ScriptedTransports:
             return "probe"
         if script.startswith("# clio-deploy:"):
             return script.splitlines()[0].removeprefix("# clio-deploy:")
-        if "install/install.sh" in script:
-            return "install"
         if '"$bin/clio" start' in script:
             return "start"
         return "other"
@@ -229,7 +239,7 @@ def _wait_listening(port: int) -> None:
     raise AssertionError(f"nothing listens on {port}")
 
 
-def _fake_install(prefix: Path, version: str = CLIO_AGENT_VERSION) -> Path:
+def _fake_install(prefix: Path, version: str = VERSION) -> Path:
     bin_dir = prefix / "clio-agent" / ".venv" / "bin"
     bin_dir.mkdir(parents=True)
     server = bin_dir / "clio-agent"
@@ -270,7 +280,7 @@ def _alive(process: subprocess.Popen[bytes]) -> bool:
 @linux_only
 def test_claim_on_a_free_port_reports_free(tmp_path: Path) -> None:
     port = _free_port()
-    result = _run_script(claim_command(str(tmp_path / "clio"), "", port, CLIO_AGENT_VERSION))
+    result = _run_script(claim_command(str(tmp_path / "clio"), port, VERSION))
     assert result.returncode == 0, result.stdout
     assert parse_claim(result.stdout) == ClaimResult(result="free", existing_root=False)
 
@@ -282,7 +292,7 @@ def test_claim_adopts_this_installs_healthy_server_of_the_target_version(tmp_pat
     port = _free_port()
     server = _start_clio(prefix, port)
     try:
-        result = _run_script(claim_command(str(prefix), "", port, CLIO_AGENT_VERSION))
+        result = _run_script(claim_command(str(prefix), port, VERSION))
         assert result.returncode == 0, result.stdout
         assert parse_claim(result.stdout) == ClaimResult(result="adopted", existing_root=True)
         assert f"Reusing the running CLIO (pid {server.pid}" in result.stdout
@@ -299,7 +309,7 @@ def test_claim_stops_another_installs_clio_holding_the_port(tmp_path: Path) -> N
     port = _free_port()
     stale = _start_clio(other, port)
     try:
-        result = _run_script(claim_command(str(ours), "", port, CLIO_AGENT_VERSION))
+        result = _run_script(claim_command(str(ours), port, VERSION))
         assert result.returncode == 0, result.stdout
         assert parse_claim(result.stdout) == ClaimResult(result="stopped", existing_root=False)
         assert f"Stopped an old CLIO (pid {stale.pid}, {other})" in result.stdout
@@ -316,7 +326,7 @@ def test_claim_stops_this_installs_old_version(tmp_path: Path) -> None:
     port = _free_port()
     old = _start_clio(prefix, port)
     try:
-        result = _run_script(claim_command(str(prefix), "", port, CLIO_AGENT_VERSION))
+        result = _run_script(claim_command(str(prefix), port, VERSION))
         assert parse_claim(result.stdout) == ClaimResult(result="stopped", existing_root=True)
         old.wait(timeout=5)
     finally:
@@ -334,7 +344,7 @@ def test_claim_never_touches_an_unrelated_program_on_the_port(tmp_path: Path) ->
     )
     try:
         _wait_listening(port)
-        result = _run_script(claim_command(str(tmp_path / "clio"), "", port, CLIO_AGENT_VERSION))
+        result = _run_script(claim_command(str(tmp_path / "clio"), port, VERSION))
         assert result.returncode == 75
         last = result.stdout.strip().splitlines()[-1]
         assert last.startswith(f"xx Port {port} is used by another program (pid {unrelated.pid}:")
@@ -350,7 +360,7 @@ def test_teardown_stops_the_server_this_deploy_started(tmp_path: Path) -> None:
     port = _free_port()
     server = _start_clio(prefix, port)
     try:
-        result = _run_script(teardown_command(str(prefix), "", port, purge_root=False))
+        result = _run_script(teardown_command(str(prefix), port, purge_root=False))
         assert result.returncode == 0, result.stdout
         assert f"Stopped the CLIO this deploy started (pid {server.pid})" in result.stdout
         server.wait(timeout=5)
@@ -384,7 +394,7 @@ def test_claim_checks_health_on_this_node_even_behind_a_site_proxy(
         try:
             # Through the proxy the check would get the proxy's error and the
             # healthy server of this install would be stopped instead of adopted.
-            result = _run_script(claim_command(str(prefix), "", port, CLIO_AGENT_VERSION))
+            result = _run_script(claim_command(str(prefix), port, VERSION))
             assert parse_claim(result.stdout) == ClaimResult(result="adopted", existing_root=True)
             assert _alive(server)
         finally:
@@ -397,7 +407,7 @@ def test_claim_checks_health_on_this_node_even_behind_a_site_proxy(
 def test_teardown_removes_an_install_this_deploy_created(tmp_path: Path) -> None:
     prefix = tmp_path / "clio"
     _fake_install(prefix)
-    result = _run_script(teardown_command(str(prefix), "", _free_port(), purge_root=True))
+    result = _run_script(teardown_command(str(prefix), _free_port(), purge_root=True))
     assert result.returncode == 0, result.stdout
     assert f"Removed the install this deploy created ({prefix})" in result.stdout
     assert not prefix.exists()
@@ -407,6 +417,109 @@ def test_teardown_removes_an_install_this_deploy_created(tmp_path: Path) -> None
 def test_teardown_with_nothing_started_says_so_and_keeps_unmarked_dirs(tmp_path: Path) -> None:
     prefix = tmp_path / "not-ours"
     prefix.mkdir()
-    result = _run_script(teardown_command(str(prefix), "", _free_port(), purge_root=True))
+    result = _run_script(teardown_command(str(prefix), _free_port(), purge_root=True))
     assert "Nothing to clean up" in result.stdout
     assert prefix.exists()
+
+
+_FAKE_CURL = textwrap.dedent(
+    """\
+    #!/bin/sh
+    # Stands in for curl: PyPI answers $FAKE_PYPI_CODE; the installer is $FAKE_INSTALLER.
+    for arg in "$@"; do
+      case "$arg" in
+        *pypi.org/pypi/*) printf '%s' "$FAKE_PYPI_CODE"; exit 0 ;;
+        *install/install.sh) cat "$FAKE_INSTALLER"; exit 0 ;;
+      esac
+    done
+    exit 22
+    """
+)
+
+
+def _install(tmp_path: Path, *, pypi: str, installer: str) -> subprocess.CompletedProcess[str]:
+    """Run the install step against a stand-in PyPI and release installer."""
+
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for name, body in (("curl", _FAKE_CURL), ("uv", "#!/bin/sh\nexit 0\n")):
+        (tools / name).write_text(body)
+        (tools / name).chmod(0o755)
+    (tmp_path / "installer.sh").write_text(installer)
+    spec = install_command(str(tmp_path / "clio"), "0.9.4.18")
+    return subprocess.run(
+        [spec.program, *spec.args],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={
+            **os.environ,
+            "PATH": f"{tools}:{os.environ['PATH']}",
+            "FAKE_PYPI_CODE": pypi,
+            "FAKE_INSTALLER": str(tmp_path / "installer.sh"),
+        },
+    )
+
+
+@linux_only
+def test_an_unpublished_version_fails_the_install_with_one_plain_line(tmp_path: Path) -> None:
+    result = _install(tmp_path, pypi="404", installer="echo SHOULD-NOT-RUN\n")
+    assert result.returncode == 78
+    assert result.stdout.strip().splitlines()[-1] == (
+        "CLIO 0.9.4.18 isn't published; deploy from a released CLIO."
+    )
+    assert "SHOULD-NOT-RUN" not in result.stdout
+
+
+@linux_only
+def test_an_unreachable_pypi_fails_the_install_and_says_so(tmp_path: Path) -> None:
+    result = _install(tmp_path, pypi="000", installer="echo SHOULD-NOT-RUN\n")
+    assert result.returncode == 75
+    assert "Could not reach PyPI to check CLIO 0.9.4.18 (HTTP 000)." in result.stdout
+
+
+@linux_only
+def test_a_published_version_runs_its_own_installer_pinned_inside_the_root(
+    tmp_path: Path,
+) -> None:
+    installer = (
+        'printf "%s|%s|%s|%s|%s|%s\\n" "$CLIO_VERSION" "$CLIO_INSTALLER_REF" '
+        '"$CLIO_PREFIX" "$CLIO_BIN_DIR" "$UV_CACHE_DIR" "$UV_TOOL_BIN_DIR"\n'
+    )
+    result = _install(tmp_path, pypi="200", installer=installer)
+    assert result.returncode == 0, result.stdout + result.stderr
+    root = tmp_path / "clio"
+    assert result.stdout.strip().splitlines()[-1] == "|".join(
+        [
+            "0.9.4.18",
+            "v0.9.4.18",
+            str(root),
+            str(root / "bin"),
+            str(root / "uv-cache"),
+            str(root / "bin"),
+        ]
+    )
+    assert (root / ".clio-managed-install").is_file()
+
+
+@linux_only
+def test_a_failing_installer_fails_the_install_step(tmp_path: Path) -> None:
+    result = _install(tmp_path, pypi="200", installer="echo 'xx disk quota exceeded'\nexit 9\n")
+    assert result.returncode == 9
+    assert "xx disk quota exceeded" in result.stdout
+
+
+@linux_only
+def test_status_is_running_only_when_the_clio_api_answers(tmp_path: Path) -> None:
+    prefix = tmp_path / "clio"
+    _fake_install(prefix)
+    port = _free_port()
+    stopped = _run_script(status_command(str(prefix), port))
+    assert stopped.stdout.strip() == "stopped"
+    server = _start_clio(prefix, port)
+    try:
+        running = _run_script(status_command(str(prefix), port))
+        assert running.returncode == 0
+        assert running.stdout.strip() == "running"
+    finally:
+        server.kill()

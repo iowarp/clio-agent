@@ -1,4 +1,4 @@
-"""Adopt-or-stop and teardown for a remote CLIO deployment.
+"""The remote steps of a CLIO deployment: claim, install, status, teardown.
 
 A remote host can already run a CLIO the user did not mention: a leftover
 from an earlier deploy, or another install on a shared login node holding the
@@ -23,14 +23,25 @@ launchers wrote ``clio-server.pid``) or the process's working directory
 Health checks of this node pass ``--noproxy``: cluster nodes often export
 ``http_proxy``, and a proxied check of ``127.0.0.1`` is answered by the proxy.
 
+The install is exactly this CLIO's own clio-agent version, from PyPI
+(:func:`install_command`), so the desktop and the remote always run the same
+release. A version PyPI does not have (a development build) fails at once
+with one plain line instead of installing something else. Everything the
+install writes (the launcher, uv, its cache, Python and tools) stays under
+the install root.
+
+A server's state is read from a real answer: :func:`status_command` asks the
+server's own ``/v1/health`` on this node and reports ``running`` only when
+the CLIO API answered.
+
 When the deploy then fails or is cancelled, :func:`teardown_command` removes
 what this deploy started: the server (stopped gracefully, so it releases the
 machine's shared clio-core daemon, which stops when its last client leaves),
 its pid file, and the install root itself when this deploy created it.
 
-Every command carries a ``# clio-deploy:<step>`` tag so the desktop can show
-it as its own stage, and ends with one ``clio-deploy result=...`` line that
-:func:`parse_claim` reads.
+Every step carries a ``# clio-deploy:<step>`` tag so the desktop can show it
+as its own stage; the claim ends with one ``clio-deploy result=...`` line
+that :func:`parse_claim` reads.
 """
 
 from __future__ import annotations
@@ -41,13 +52,12 @@ from typing import Literal
 
 from clio_agent.gact.infrastructure.models import CommandSpec
 
-# Shared by both scripts: resolve the install root and launcher directory the
-# same way the install and start commands do, find a TCP listener's pid, and
-# recognize a CLIO server process.
+# Shared by both scripts: resolve the install root the same way the install
+# and start commands do, find a TCP listener's pid, and recognize a CLIO
+# server process.
 _COMMON = r"""
 root="$1"; if [ -z "$root" ]; then root="$HOME/.local/share/clio"; fi
-bin="$2"; if [ -z "$bin" ]; then bin="$HOME/.local/bin"; fi
-port="$3"
+port="$2"
 host_id="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo localhost)"
 say() { printf '==> %s\n' "$*"; }
 fail() { printf 'xx %s\n' "$*"; exit 75; }
@@ -107,7 +117,7 @@ _CLAIM = (
     "# clio-deploy:claim\n"
     + _COMMON
     + r"""
-version="$4"
+version="$3"
 existing_root=0; [ -d "$root" ] && existing_root=1
 if ! port_busy "$port"; then
   say "Port $port is free"
@@ -143,7 +153,7 @@ _TEARDOWN = (
     "# clio-deploy:teardown\n"
     + _COMMON
     + r"""
-purge_root="$4"
+purge_root="$3"
 did=0
 pidfile="$root/clio-server.$host_id.pid"
 [ -f "$pidfile" ] || pidfile="$root/clio-server.pid"
@@ -181,23 +191,118 @@ class ClaimResult:
 _RESULT_LINE = re.compile(r"clio-deploy result=(\w+)((?: \w+=\S+)*)")
 
 
-def claim_command(root: str, bin_dir: str, port: int, version: str) -> CommandSpec:
+def claim_command(root: str, port: int, version: str) -> CommandSpec:
     """The adopt-or-stop step that runs before installing."""
 
     return CommandSpec(
         program="bash",
-        args=["-lc", _CLAIM, "clio", root, bin_dir, str(port), version],
+        args=["-lc", _CLAIM, "clio", root, str(port), version],
         timeout_seconds=90,
     )
 
 
-def teardown_command(root: str, bin_dir: str, port: int, *, purge_root: bool) -> CommandSpec:
+def teardown_command(root: str, port: int, *, purge_root: bool) -> CommandSpec:
     """Undo what a failed or cancelled deploy started."""
 
     return CommandSpec(
         program="bash",
-        args=["-lc", _TEARDOWN, "clio", root, bin_dir, str(port), "1" if purge_root else "0"],
+        args=["-lc", _TEARDOWN, "clio", root, str(port), "1" if purge_root else "0"],
         timeout_seconds=90,
+    )
+
+
+# Resolve the install root the same way every step does, and keep the
+# launcher and agent data inside it, so removing the root removes the install.
+LAUNCHER_PRELUDE = (
+    'root="$1"; if [ -z "$root" ]; then root="$HOME/.local/share/clio"; fi; bin="$root/bin"; '
+    'export CLIO_PREFIX="$root" CLIO_BIN_DIR="$bin" CLIO_DATA_DIR="$root/data"; '
+)
+
+PYPI_RELEASE_URL = "https://pypi.org/pypi/clio-agent/{version}/json"
+INSTALLER_URL = "https://raw.githubusercontent.com/iowarp/clio-agent/v{version}/install/install.sh"
+
+_INSTALL = (
+    "# clio-deploy:install\n"
+    + LAUNCHER_PRELUDE
+    + r"""
+set -o pipefail
+version="$2"
+export UV_INSTALL_DIR="$bin" UV_PYTHON_INSTALL_DIR="$root/uv-python" UV_CACHE_DIR="$root/uv-cache"
+export UV_TOOL_DIR="$root/uv-tools" UV_TOOL_BIN_DIR="$bin" UV_NO_MODIFY_PATH=1
+export PATH="$bin:$PATH"
+mkdir -p "$bin" || exit 75
+touch "$root/.clio-managed-install"
+# The remote runs exactly this CLIO's version; nothing else is installed.
+code="$(curl -sS -m 30 -o /dev/null -w '%{http_code}' "$3" 2>/dev/null || true)"
+case "$code" in
+  200) ;;
+  404)
+    printf "CLIO %s isn't published; deploy from a released CLIO.\n" "$version"
+    exit 78
+    ;;
+  *)
+    printf 'Could not reach PyPI to check CLIO %s (HTTP %s).\n' "$version" "${code:-none}"
+    exit 75
+    ;;
+esac
+if ! command -v uv >/dev/null 2>&1; then
+  printf '==> Installing uv into %s\n' "$bin"
+  curl -LsSf https://astral.sh/uv/install.sh | sh || { printf 'Could not install uv.\n'; exit 75; }
+fi
+export CLIO_VERSION="$version" CLIO_INSTALLER_REF="v$version"
+curl -fsSL "$4" | bash
+"""
+)
+
+
+def install_command(root: str, version: str) -> CommandSpec:
+    """Install exactly ``version`` of clio-agent from PyPI under ``root``.
+
+    Checks PyPI first: a version it does not have fails the step with one
+    plain line (``CLIO 0.9.4.99 isn't published; deploy from a released
+    CLIO.``). Then runs that release's own installer (its tag on GitHub)
+    with the version pinned; any failure fails the step.
+    """
+
+    return CommandSpec(
+        program="bash",
+        args=[
+            "-lc",
+            _INSTALL,
+            "clio",
+            root,
+            version,
+            PYPI_RELEASE_URL.format(version=version),
+            INSTALLER_URL.format(version=version),
+        ],
+        timeout_seconds=900,
+    )
+
+
+_STATUS = (
+    "# clio-deploy:status\n"
+    + LAUNCHER_PRELUDE
+    + r"""
+code="$(curl --noproxy '*' -sS -m 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$2/v1/health" 2>/dev/null || true)"
+case "$code" in
+  200|503) echo running ;;
+  *) echo stopped ;;
+esac
+"""
+)
+
+
+def status_command(root: str, port: int) -> CommandSpec:
+    """``running`` when this node's CLIO API answers ``/v1/health``, else ``stopped``.
+
+    A 503 is a CLIO that answered while a dependency is still coming up; any
+    other outcome (nothing listening, a timeout) is ``stopped``.
+    """
+
+    return CommandSpec(
+        program="bash",
+        args=["-lc", _STATUS, "clio", root, str(port)],
+        timeout_seconds=30,
     )
 
 

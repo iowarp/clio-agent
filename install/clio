@@ -46,8 +46,9 @@ CLIO_PREFIX="${CLIO_PREFIX:-$HOME/.local/share/clio}"
 CLIO_PORT="${CLIO_PORT:-17800}"
 CLIO_BIN_DIR="${CLIO_BIN_DIR:-$HOME/.local/bin}"
 # Agent data stays with the selected install. The clio-core daemon does NOT: there
-# is exactly one per machine (host-global ~/.clio state, fixed ports, one CTE
-# config), shared by every CLIO, so the launcher never scopes its identity.
+# is exactly one per machine (its state under ~/.clio/hosts/<host>, fixed ports,
+# one CTE config per host), shared by every CLIO on that machine, so the
+# launcher never scopes its identity.
 export CLIO_DATA_DIR="${CLIO_DATA_DIR:-$CLIO_PREFIX/data}"
 export PATH="$CLIO_BIN_DIR:$PATH"
 # The installer provisions supported MCP launchers into CLIO_BIN_DIR. Ensure a
