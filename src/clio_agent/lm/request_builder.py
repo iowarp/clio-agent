@@ -324,6 +324,16 @@ def build_request_kwargs(
     if wire:
         dialect_wire.apply_thinking_wire(extras, dialect, wire)
         sent_optional = True
+        if not effective.thinking.known:
+            # Unknown is not unsupported: the level rides through untranslated
+            # and the upstream decides -- recorded, never a silent pass-through.
+            logger.info(
+                "thinking_passthrough provider=%s dialect=%s requested_level=%s reason=%s",
+                config.provider,
+                dialect,
+                config.thinking_level,
+                dialect_wire.REASONING_LEVELS_UNKNOWN,
+            )
     elif getattr(config, "thinking_level", None) not in (None, "off"):
         # No silent no-op (ground rule): a thinking level was explicitly
         # requested but nothing was sent -- either this dialect has no
@@ -335,7 +345,9 @@ def build_request_kwargs(
             config.provider,
             dialect,
             config.thinking_level,
-            "no_thinking_control" if effective.thinking.known else "thinking_spec_unknown",
+            "no_thinking_control"
+            if effective.thinking.known
+            else dialect_wire.REASONING_LEVELS_UNKNOWN,
         )
 
     # -- stop sequences (item 3) -------------------------------------------
