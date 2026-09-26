@@ -247,7 +247,7 @@ async def test_connection_strategy_prefers_direct_then_falls_back_to_forward(
         transports,  # type: ignore[arg-type]
         endpoint_reachable=reachable,
     )
-    assert await runtime._resolve_connection(target.id, 8089) == (  # noqa: SLF001
+    assert await runtime._resolve_connection(target.id, 8089, service_id="web_search") == (  # noqa: SLF001
         "http://10.0.0.102:8089",
         "direct",
     )
@@ -261,7 +261,7 @@ async def test_connection_strategy_prefers_direct_then_falls_back_to_forward(
         transports,  # type: ignore[arg-type]
         endpoint_reachable=unreachable,
     )
-    assert await runtime._resolve_connection(target.id, 8089) == (  # noqa: SLF001
+    assert await runtime._resolve_connection(target.id, 8089, service_id="web_search") == (  # noqa: SLF001
         "http://127.0.0.1:18089",
         "ssh_forward",
     )
@@ -269,6 +269,7 @@ async def test_connection_strategy_prefers_direct_then_falls_back_to_forward(
     assert await runtime._resolve_connection(  # noqa: SLF001
         target.id,
         8089,
+        service_id="web_search",
         previous_url="http://127.0.0.1:19000",
         previous_strategy="ssh_forward",
     ) == ("http://127.0.0.1:19000", "ssh_forward")
@@ -301,10 +302,45 @@ async def test_start_waits_for_a_reachable_direct_endpoint_before_forwarding(
     )
 
     assert await runtime._resolve_connection(  # noqa: SLF001
-        target.id, 8089, wait_for_direct=True
+        target.id, 8089, service_id="web_search", wait_for_direct=True
     ) == ("http://10.0.0.102:8089", "direct")
     assert attempts == 3
     assert transports.forward_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_a_remote_clio_is_reached_through_the_forward_at_once(tmp_path: Path) -> None:
+    """CLIO listens on the node's loopback: its host address is never probed.
+
+    Through ares to a compute node, ten direct probes of ``ares-comp-11:17800``
+    spent half a minute before the forward started, with no stage running.
+    """
+
+    store = InfrastructureStore(tmp_path / "infrastructure.json")
+    target = store.create_target(
+        CreateTargetRequest(
+            label="ares-comp-11",
+            kind="ssh",
+            ssh=SshRoute(host="ares-comp-11", user="alice", jump_hosts=["ares"]),
+        )
+    )
+    transports = _FakeTransports()
+    probed: list[str] = []
+
+    async def reachable(url: str) -> bool:
+        probed.append(url)
+        return True
+
+    runtime = InfrastructureRuntime(
+        store,
+        transports,  # type: ignore[arg-type]
+        endpoint_reachable=reachable,
+    )
+    assert await runtime._resolve_connection(  # noqa: SLF001
+        target.id, 17800, service_id="clio_agent", wait_for_direct=True
+    ) == ("http://127.0.0.1:27800", "ssh_forward")
+    assert probed == []
+    assert transports.forward_calls == 1
 
 
 @pytest.mark.asyncio
@@ -324,7 +360,7 @@ async def test_local_start_waits_for_loopback_endpoint(tmp_path: Path) -> None:
     )
 
     assert await runtime._resolve_connection(  # noqa: SLF001
-        "local", 8089, wait_for_direct=True
+        "local", 8089, service_id="web_search", wait_for_direct=True
     ) == ("http://127.0.0.1:8089", "loopback")
     assert attempts == 3
 
