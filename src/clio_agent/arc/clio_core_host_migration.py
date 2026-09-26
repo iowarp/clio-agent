@@ -205,10 +205,13 @@ def _relocate_config(config: Path, legacy_dir: Path, host_dir: Path) -> None:
 
     text = config.read_text(encoding="utf-8")
     relocated = text
-    for old, new in (
-        (legacy_dir.as_posix().rstrip("/") + "/", host_dir.as_posix().rstrip("/") + "/"),
-        (str(legacy_dir).rstrip("\\/") + os.sep, str(host_dir).rstrip("\\/") + os.sep),
-    ):
+    # The POSIX spelling (what CLIO writes) and the native one; on POSIX they are
+    # the same string, which must be replaced once, not twice.
+    spellings = {
+        legacy_dir.as_posix().rstrip("/") + "/": host_dir.as_posix().rstrip("/") + "/",
+        str(legacy_dir).rstrip("\\/") + os.sep: str(host_dir).rstrip("\\/") + os.sep,
+    }
+    for old, new in spellings.items():
         relocated = relocated.replace(old, new)
     if relocated != text:
         config.write_text(relocated, encoding="utf-8")
