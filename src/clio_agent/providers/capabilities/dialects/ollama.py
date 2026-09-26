@@ -41,6 +41,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 from clio_agent.providers.capabilities.link import deployment_model_key_fact
+from clio_agent.providers.capabilities.model_facts import (
+    ParameterCount,
+    parameters_from_size_field,
+    positive_int,
+)
 from clio_agent.providers.capabilities.records import (
     DeploymentCapabilities,
     EndpointCapabilities,
@@ -235,6 +240,44 @@ def show_identity(data: Any) -> tuple[str | None, tuple[str, ...]]:
     return arch, caps
 
 
+def parameters_from_show(data: Any, arch: str | None, observed_at: str) -> Fact:
+    """The parameter count ``/api/show`` states, or unknown.
+
+    ``model_info.general.parameter_count`` (the GGUF header's exact count) wins;
+    else ``details.parameter_size`` (Ollama's rounded display size, e.g.
+    ``'7.6B'``). A mixture-of-experts GGUF also states
+    ``model_info.<arch>.expert_count`` / ``expert_used_count``.
+    """
+    if not isinstance(data, dict):
+        return unknown()
+    raw_info, raw_details = data.get("model_info"), data.get("details")
+    info: dict[str, Any] = raw_info if isinstance(raw_info, dict) else {}
+    details: dict[str, Any] = raw_details if isinstance(raw_details, dict) else {}
+    exact = positive_int(info.get("general.parameter_count"))
+    rounded = parameters_from_size_field(details.get("parameter_size"))
+    experts_total = positive_int(info.get(f"{arch}.expert_count")) if arch else None
+    experts_active = positive_int(info.get(f"{arch}.expert_used_count")) if arch else None
+    count = ParameterCount(
+        total=exact if exact is not None else rounded,
+        experts_total=experts_total,
+        experts_active=experts_active,
+        precision="exact" if exact is not None or rounded is None else "rounded",
+    )
+    if not count.known:
+        return unknown()
+    stated = (
+        [f"model_info.general.parameter_count={exact}"]
+        if exact is not None
+        else [f"details.parameter_size={details.get('parameter_size')!r}"]
+        if rounded is not None
+        else []
+    )
+    if experts_total is not None or experts_active is not None:
+        stated.append(f"model_info.{arch}.expert_count={experts_total}")
+        stated.append(f"model_info.{arch}.expert_used_count={experts_active}")
+    return Fact(count, "server_report", observed_at, f"ollama /api/show {' '.join(stated)}")
+
+
 def parse_show(data: Any, *, model_key: str, observed_at: str | None = None) -> ModelCapabilities:
     """Build the MODEL half of ``POST /api/show`` (brief Part 6 Ollama section).
 
@@ -297,6 +340,9 @@ def parse_show(data: Any, *, model_key: str, observed_at: str | None = None) -> 
             if capabilities_known
             else unknown()
         ),
+        # ``modified_at`` is when the model was pulled onto THIS box, never a
+        # release date, so it is not read.
+        parameters=parameters_from_show(data, arch, observed_at),
     )
 
 

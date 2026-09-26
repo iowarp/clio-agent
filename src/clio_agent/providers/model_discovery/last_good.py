@@ -15,18 +15,18 @@ live probe did not replace it. Rows served this way are never evidence of
 current availability (the catalog marks them ``candidate``); the next live probe
 that answers replaces them.
 
-Per the model-capabilities brief, what gets persisted is now the
+Per the model-capabilities brief, what gets persisted is the WHOLE
 :class:`~clio_agent.providers.capabilities.records.ModelCapabilities` /
 :class:`~clio_agent.providers.capabilities.records.DeploymentCapabilities`
-facts each model carried (a compact snapshot: context/output limits, tools,
-modalities) alongside the bare
-:class:`~clio_agent.providers.handshake.model.DiscoveredModel` identity — not
-the deleted flat ``ModelProfile``. Reloading a last-good catalog writes that
-snapshot straight back into the shared capability store
-(:mod:`clio_agent.providers.capabilities.invalidation`) with
-``source="server_report"`` (the evidence really did come from a server, just
-not THIS run), so every downstream capability question still routes through
-the one accessor.
+pair each model carried (:mod:`clio_agent.providers.capabilities.record_codec`:
+every known fact with its own source, detail and evidence time) alongside the
+bare :class:`~clio_agent.providers.handshake.model.DiscoveredModel` identity.
+Reloading a last-good catalog writes those records straight back into the
+shared capability store (:mod:`clio_agent.providers.capabilities.invalidation`),
+so a served last-good row answers every capability question -- reasoning,
+structured output, router, pricing, size -- exactly as the live probe that
+produced it did. (A hand-picked subset used to be persisted instead, and a
+served last-good OpenRouter list lost every fact it did not list.)
 """
 
 from __future__ import annotations
@@ -37,12 +37,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from clio_agent.providers.capabilities import invalidation
+from clio_agent.providers.capabilities.record_codec import decode_record, encode_record
 from clio_agent.providers.capabilities.records import (
     DeploymentCapabilities,
-    Fact,
     ModelCapabilities,
-    task_fact,
-    unknown,
 )
 from clio_agent.providers.handshake.model import DiscoveredModel, HandshakeReport
 from clio_agent.providers.model_discovery.overlay import (
@@ -121,8 +119,12 @@ def _note_confirmation(provider_id: str, previous: dict[str, Any], confirmed_at:
         )
 
 
-def _capability_snapshot(report: HandshakeReport, model_id: str) -> dict[str, Any]:
-    """A compact, JSON-safe snapshot of one model's currently-known facts.
+#: Row key of the persisted records (:func:`_capability_records`).
+_RECORDS_KEY = "capability_records"
+
+
+def _capability_records(report: HandshakeReport, model_id: str) -> dict[str, Any]:
+    """The model's full model/deployment records as the store holds them right now.
 
     Reads straight from the capability store (whatever this handshake run just
     wrote there) rather than recomputing anything — persistence is a pure
@@ -136,38 +138,30 @@ def _capability_snapshot(report: HandshakeReport, model_id: str) -> dict[str, An
     )
     model_key = deployment.model_key.value if deployment and deployment.model_key.known else None
     model = invalidation.get_model_capabilities(model_key) if model_key else None
-
-    snapshot: dict[str, Any] = {}
+    records: dict[str, Any] = {}
     if model is not None:
-        if model.context_max.known:
-            snapshot["context_max"] = model.context_max.value
-        if model.output_max.known:
-            snapshot["output_max"] = model.output_max.value
-        if model.tools.known:
-            snapshot["tools"] = model.tools.value
-        if model.input_modalities.known:
-            snapshot["input_modalities"] = sorted(model.input_modalities.value or ())
-        if model.task.known:
-            snapshot["task"] = model.task.value
+        records["model"] = encode_record(model)
     if deployment is not None:
-        if deployment.context_served.known:
-            snapshot["context_served"] = deployment.context_served.value
-        if deployment.output_max.known:
-            snapshot["deployment_output_max"] = deployment.output_max.value
-        if deployment.tools_enabled.known:
-            snapshot["tools_enabled"] = deployment.tools_enabled.value
-        if deployment.reasoning_enabled.known:
-            snapshot["reasoning_enabled"] = deployment.reasoning_enabled.value
-    return snapshot
+        records["deployment"] = encode_record(deployment)
+    return records
+
+
+def _without_times(value: Any) -> Any:
+    """``value`` minus every ``observed_at`` (a re-probe restamps unchanged evidence)."""
+    if isinstance(value, dict):
+        return {k: _without_times(v) for k, v in value.items() if k != "observed_at"}
+    if isinstance(value, list):
+        return [_without_times(item) for item in value]
+    return value
 
 
 def discovered_model_rows(report: HandshakeReport) -> list[dict[str, Any]]:
     """Serialize a report's discovered models to overlay rows.
 
     Each row carries the bare :class:`~clio_agent.providers.handshake.model.
-    DiscoveredModel` identity plus a compact capability snapshot
-    (:func:`_capability_snapshot`) so a later reload can rebuild usable
-    capability records, not just an id.
+    DiscoveredModel` identity plus its full capability records
+    (:func:`_capability_records`) so a later reload rebuilds the same records,
+    not just an id.
     """
 
     rows: list[dict[str, Any]] = []
@@ -189,7 +183,7 @@ def discovered_model_rows(report: HandshakeReport) -> list[dict[str, Any]]:
             value = row_model.raw.get(passthrough)
             if value:
                 row[passthrough] = value
-        row["capability_snapshot"] = _capability_snapshot(report, row_model.id)
+        row[_RECORDS_KEY] = _capability_records(report, row_model.id)
         rows.append(row)
     return rows
 
@@ -216,7 +210,7 @@ def persist_live_catalog(provider_id: str, report: HandshakeReport) -> bool:
     if (
         isinstance(previous, dict)
         and previous.get("source") == HTTP_SOURCE
-        and previous.get("models") == rows
+        and _without_times(previous.get("models")) == _without_times(rows)
         and not previous.get("failed_reason")
     ):
         # Unchanged list: no rewrite (the overlay file is shared by every
@@ -245,92 +239,28 @@ def persist_live_catalog(provider_id: str, report: HandshakeReport) -> bool:
     return True
 
 
-def _int_or_none(value: Any) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
-
-
 def _seed_capability_store(
-    provider_id: str, api_base: str, model_id: str, snapshot: dict[str, Any], generated_at: str
+    provider_id: str, api_base: str, model_id: str, records: dict[str, Any]
 ) -> None:
-    """Write a persisted snapshot back into the shared capability store.
+    """Write a row's persisted records back into the shared capability store.
 
-    ``source="server_report"``: the evidence really came from a live server at
-    some point, it just isn't from THIS run -- exactly the same honesty
-    :meth:`~clio_agent.providers.handshake.base.ProviderHandshake.models_provenance`
-    already applies at the report level for ``last_good``/``overlay`` rows.
+    The deployment is re-keyed to the caller's CURRENT ``(provider_id,
+    api_base)`` (the overlay does not persist an endpoint); every fact keeps
+    the source and evidence time the live probe recorded.
     """
 
-    if not snapshot:
-        return
-    model = ModelCapabilities(
-        model_key=model_id,
-        task=task_fact(
-            snapshot.get("task"),
-            source="server_report",
-            observed_at=generated_at,
-            detail="persisted last-good task",
-        ),
-        context_max=(
-            Fact(value=snapshot["context_max"], source="server_report", observed_at=generated_at)
-            if "context_max" in snapshot
-            else unknown()
-        ),
-        output_max=(
-            Fact(value=snapshot["output_max"], source="server_report", observed_at=generated_at)
-            if "output_max" in snapshot
-            else unknown()
-        ),
-        tools=(
-            Fact(value=snapshot["tools"], source="server_report", observed_at=generated_at)
-            if "tools" in snapshot
-            else unknown()
-        ),
-        input_modalities=(
-            Fact(
-                value=frozenset(snapshot["input_modalities"]),
-                source="server_report",
-                observed_at=generated_at,
-            )
-            if "input_modalities" in snapshot
-            else unknown()
-        ),
-    )
-    deployment = DeploymentCapabilities(
+    model = decode_record(ModelCapabilities, records.get("model"))
+    deployment = decode_record(
+        DeploymentCapabilities,
+        records.get("deployment"),
         provider_id=provider_id,
         api_base=api_base,
         model_id=model_id,
-        model_key=Fact(value=model_id, source="server_report", observed_at=generated_at),
-        context_served=(
-            Fact(value=snapshot["context_served"], source="server_report", observed_at=generated_at)
-            if "context_served" in snapshot
-            else unknown()
-        ),
-        output_max=(
-            Fact(
-                value=snapshot["deployment_output_max"],
-                source="server_report",
-                observed_at=generated_at,
-            )
-            if "deployment_output_max" in snapshot
-            else unknown()
-        ),
-        tools_enabled=(
-            Fact(value=snapshot["tools_enabled"], source="server_report", observed_at=generated_at)
-            if "tools_enabled" in snapshot
-            else unknown()
-        ),
-        reasoning_enabled=(
-            Fact(
-                value=snapshot["reasoning_enabled"],
-                source="server_report",
-                observed_at=generated_at,
-            )
-            if "reasoning_enabled" in snapshot
-            else unknown()
-        ),
     )
-    invalidation.record_model_capabilities(model)
-    invalidation.record_deployment_capabilities(deployment)
+    if model is not None:
+        invalidation.record_model_capabilities(model)
+    if deployment is not None:
+        invalidation.record_deployment_capabilities(deployment)
 
 
 def _discovered_from_row(row: dict[str, Any], generated_at: str) -> DiscoveredModel:
@@ -387,9 +317,16 @@ def last_good_catalog(provider_id: str, *, api_base: str = "") -> LastGoodCatalo
         if not isinstance(row, dict) or not str(row.get("id") or ""):
             continue
         models.append(_discovered_from_row(row, generated_at))
-        snapshot = row.get("capability_snapshot")
-        if isinstance(snapshot, dict):
-            _seed_capability_store(provider_id, api_base, str(row["id"]), snapshot, generated_at)
+        records = row.get(_RECORDS_KEY)
+        if isinstance(records, dict):
+            _seed_capability_store(provider_id, api_base, str(row["id"]), records)
+        else:
+            logger.info(
+                "last-good row carries no capability records: reason=last_good_records_absent "
+                "provider=%s model=%s (facts stay unknown until a live probe answers)",
+                provider_id,
+                row["id"],
+            )
     if not models:
         return None
     confirmed_at = _latest(
