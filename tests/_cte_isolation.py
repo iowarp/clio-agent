@@ -298,3 +298,20 @@ def reap_private_daemon(state_dir: Path) -> None:
             proc.kill()
     except Exception:  # noqa: BLE001,S110 - already gone / psutil missing: best-effort kill
         pass
+
+
+def reap_stale_suite_runtimes(parent: Path) -> None:
+    """Reap the private daemons of dead suite runs under ``parent``, then their run roots.
+
+    A run is stale when the pid recorded in its root is gone (a finished or killed
+    suite, or an xdist worker the hang guard ended before its teardown).
+    """
+    from tests._test_runtime_isolation import (  # noqa: PLC0415
+        cleanup_test_runtime,
+        stale_test_runtimes,
+    )
+
+    for stale in stale_test_runtimes(parent):
+        for state_dir in stale.glob("cte/*/clio-state"):
+            reap_private_daemon(state_dir)
+        cleanup_test_runtime(stale, parent)

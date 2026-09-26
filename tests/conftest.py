@@ -59,11 +59,13 @@ import pytest  # noqa: E402
 import yaml  # noqa: E402
 
 import clio_agent  # noqa: E402, F401
+from tests import _cte_bounded, _hang_guard
 from tests._cte_isolation import (
     cte_isolation_available,
     eagerly_attach_private_daemon,
     isolate_cte_env,
     reap_private_daemon,
+    reap_stale_suite_runtimes,
     remove_private_cte_root,
 )
 from tests._process_hygiene import (
@@ -78,18 +80,9 @@ from tests._test_runtime_isolation import (
     cleanup_test_runtime,
     create_test_runtime,
     resolve_test_runtime_parent,
-    stale_test_runtimes,
 )
 
 _TEST_RUNTIME: TestRuntime | None = None
-
-
-def _reap_stale_test_runtimes(parent: Path) -> None:
-    """Reap dead prior suites before removing their authenticated scratch roots."""
-    for stale in stale_test_runtimes(parent):
-        for state_dir in stale.glob("cte/*/clio-state"):
-            reap_private_daemon(state_dir)
-        cleanup_test_runtime(stale, parent)
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -101,11 +94,22 @@ def pytest_configure(config: pytest.Config) -> None:
         return
     checkout = Path(__file__).resolve().parents[1]
     parent = resolve_test_runtime_parent(checkout, os.environ)
-    _reap_stale_test_runtimes(parent)
+    reap_stale_suite_runtimes(parent)
     runtime = create_test_runtime(checkout, os.environ)
     tempfile.tempdir = str(runtime.temp_dir)
     config.option.basetemp = str(runtime.pytest_dir)
     _TEST_RUNTIME = runtime
+    # Per-test hard limit on a GIL-independent watchdog (see tests/_hang_guard.py).
+    _hang_guard.configure(config, runtime.root / "hang-dumps")
+    config.pluginmanager.register(_hang_guard, "clio-hang-guard")
+    # Every real clio-core store call gets a seconds-scale hard bound on that watchdog.
+    _cte_bounded.install()
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    """Close the hang guard's dump stream."""
+    del config
+    _hang_guard.unconfigure()
 
 
 @pytest.hookimpl(trylast=True)
@@ -118,6 +122,12 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     if runtime is None:
         return
     try:
+        if not hasattr(session.config, "workerinput"):
+            # An xdist worker the hang guard ended (tests/_hang_guard.py) never ran its
+            # own teardown: its private daemon and run root are left behind. Every worker
+            # is gone by the time the controller finishes, so reap them now instead of
+            # leaving the daemon running until the next suite starts.
+            reap_stale_suite_runtimes(runtime.parent)
         cleanup_test_runtime(runtime.root, runtime.parent)
     except (OSError, RuntimeError) as exc:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
