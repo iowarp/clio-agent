@@ -29,6 +29,7 @@ from clio_agent.gact.types import AgentDef
 from clio_agent.lm import hooked_lm as hooked_lm_mod
 from clio_agent.lm.io_logging import LMOutputTruncatedError
 from tests.test_gact.test_reactv2_repair import _build, _WsSig
+from tests.turn_signals import wait_for_terminal_status
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
@@ -184,23 +185,20 @@ def test_output_truncation_is_visible_terminal_state(tmp_path: Path) -> None:
         def forward(self, question: str, session_id: str) -> Any:
             raise LMOutputTruncatedError("openai/session-model")
 
-    import time
-
     from fastapi.testclient import TestClient
 
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=TruncatedAgent())
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "truncated"}).json()["id"]
+        cursor = app.state.bus.latest_event_id(sid)
         response = client.post(
             f"/v1/sessions/{sid}/messages",
             json={"parts": [{"type": "text", "text": "long report"}]},
         )
         assert response.status_code == 200
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            if client.get(f"/v1/sessions/{sid}").json()["status"] == "error":
-                break
-            time.sleep(0.05)
+        # Settled = the terminal status event (published after completion events are
+        # persisted), not a fixed window a cold first turn can outlast.
+        assert wait_for_terminal_status(app.state.bus, sid, after_event_id=cursor) == "error"
         completed = [
             event for event in app.state.bus._history[sid] if event.type == "message.completed"
         ]

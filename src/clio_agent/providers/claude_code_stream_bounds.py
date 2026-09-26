@@ -9,8 +9,10 @@ rather than ``(model, cwd, thinking, scope)``:
 
 * **Idle reap** (:func:`session_idle_ttl_s`, :func:`sweep_idle_session_entries`,
   :func:`reap_idle_session_entry`) — a session's connection that has gone
-  quiet (its last call finished and nothing new has come in) is reclaimed the
-  next time ANY session wants a connection. Only ever touches entries
+  quiet (its last call finished and nothing new has come in) is reclaimed once
+  the idle TTL passes, by the pool's timer
+  (:mod:`~clio_agent.providers.claude_code_idle_reaper`), and also the next
+  time ANY session wants a connection. Only ever touches entries
   :meth:`~claude_code_sessions._StreamClientEntry.idle_for` reports reapable
   (never mid-stream — a live-in-use connection is never pulled from under its
   own caller). Every entry is session-keyed now, so — unlike the pre-S2 design
@@ -378,8 +380,6 @@ def precede_connect(
     key = session_id or ""
     if not key:
         return
-    from clio_agent.providers.claude_code_sessions import _StreamClientEntry  # noqa: PLC0415
-
     entry: _StreamClientEntry | None = None
     at_cap = False
     with pool._guard:  # noqa: SLF001 - this module is claude_code_sessions' owner-split sibling
@@ -387,16 +387,14 @@ def precede_connect(
             if len(pool._precede_pending) >= max_precede_connects():  # noqa: SLF001
                 at_cap = True
             else:
-                entry = _StreamClientEntry(
-                    connect_slots=pool._connect_slots,  # noqa: SLF001
-                    reclaim_idle_slot=pool._reclaim_idle_for_slot,  # noqa: SLF001
-                )
+                entry = pool.new_entry()
                 pool._entries[key] = entry  # noqa: SLF001
                 pool._precede_pending.add(key)  # noqa: SLF001
     if entry is None:
         if at_cap:
             log_precede_connect_skipped(key)
         return
+    pool.wake_reaper()  # an unclaimed warm client is reaped on the same idle timer
     threading.Thread(
         target=_precede_connect_blocking,
         args=(pool, key, entry, model, cwd, thinking, system_prompt),

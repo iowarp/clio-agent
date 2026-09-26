@@ -74,6 +74,7 @@ from clio_agent.providers.claude_code_cancel import (
     register_sdk_stream,
     unregister_sdk_stream,
 )
+from clio_agent.providers.claude_code_idle_reaper import IdleSessionReaper
 from clio_agent.providers.claude_code_multimodal import sdk_prompt
 from clio_agent.providers.claude_code_options import build_sdk_options, thinking_key
 from clio_agent.providers.claude_code_stderr_ring import StderrRing
@@ -87,6 +88,10 @@ from clio_agent.providers.claude_code_stream_bounds import (
 )
 from clio_agent.providers.claude_code_stream_bounds import (
     precede_connect as precede_connect_impl,
+)
+from clio_agent.providers.claude_code_transport_reasons import (
+    TRANSPORT_FAILURE_REASONS,
+    transport_failure_payload,
 )
 from clio_agent.runtime.stream_audit import stream_audit, stream_audit_enabled
 
@@ -104,50 +109,6 @@ __all__ = [
     "_STREAM_CLIENT_POOL",
     "_reset_sessions_for_tests",
 ]
-
-# --------------------------------------------------------------------------- #
-# Typed transport-failure reason catalog (no silent divergence — #775 ground
-# rule). Same shape/discipline as providers.resolver.HANDSHAKE_FALLBACK_REASONS
-# and gact.streaming._stream_fallback_payload: a connection drop is queryable
-# structured data, never an invisible re-key.
-# --------------------------------------------------------------------------- #
-TRANSPORT_FAILURE_REASONS: dict[str, dict[str, Any]] = {
-    "send_failed": {
-        "category": "session_transport_error",
-        "description": (
-            "A query on the pooled Claude CLI connection failed mid-flight (the "
-            "subprocess died or the stream broke). The poisoned client is dropped and "
-            "the failure surfaces as a typed transient error so the LM retry layer "
-            "re-issues the call on a fresh connection."
-        ),
-    },
-    "idle_reaped": {
-        "category": "session_idle_reap",
-        "description": (
-            "A session's pooled connection sat connected but unused past the idle "
-            "TTL. Proactively dropped to bound resident claude-sdk-cli subprocess "
-            "count; the session's next call reconnects fresh."
-        ),
-    },
-    "config_change_requires_restart": {
-        "category": "session_reconnect",
-        "description": (
-            "A thinking/system_prompt/cwd change on an existing session's connection "
-            "cannot be applied live in this SDK version (no set_effort/set_thinking/"
-            "set_cwd control request exists — only set_model and set_permission_mode "
-            "mutate a connected client). The client reconnected with the new config."
-        ),
-    },
-    "dead_client_replaced": {
-        "category": "session_health",
-        "description": (
-            "A session's connection ended abnormally (a transport error, a timed-out "
-            "query, or the caller abandoning the stream mid-flight). The dead client "
-            "was replaced with a fresh connect, so the session's next call is never "
-            "handed a poisoned client."
-        ),
-    },
-}
 
 
 def _streaming_chunk(
@@ -171,23 +132,6 @@ def _streaming_chunk(
         "tool_use": None,
         "usage": usage,
     }
-
-
-def transport_failure_payload(reason: str, message: str = "") -> dict[str, Any]:
-    """Build a structured transport-failure reason payload (catalog style).
-
-    Mirrors :func:`clio_agent.gact.streaming._stream_fallback_payload`: looks
-    ``reason`` up in :data:`TRANSPORT_FAILURE_REASONS`, copies its audited
-    metadata, and appends an optional free-text ``message``. Raises ``ValueError``
-    on an unknown reason so a typo cannot silently produce an empty reason.
-    """
-    definition = TRANSPORT_FAILURE_REASONS.get(reason)
-    if definition is None:
-        raise ValueError(f"Unknown transport failure reason: {reason}")
-    payload: dict[str, Any] = {"reason": reason, **definition}
-    if message:
-        payload["message"] = message
-    return payload
 
 
 # --------------------------------------------------------------------------- #
@@ -298,7 +242,9 @@ class _StreamClientEntry:
         self,
         connect_slots: threading.Semaphore | None = None,
         reclaim_idle_slot: Any | None = None,
+        on_idle: Any | None = None,
     ) -> None:
+        self._on_idle = on_idle  # wakes the pool's IdleSessionReaper (timer reap)
         self._lock = threading.Lock()  # guards loop/thread construction
         self._loop: Any = None
         self._thread: threading.Thread | None = None
@@ -346,6 +292,8 @@ class _StreamClientEntry:
         with self._activity_lock:
             self._in_flight = False
             self._idle_since = time.monotonic()
+        if self._on_idle is not None:
+            self._on_idle()
 
     def idle_for(self) -> float | None:
         """Seconds since the last call finished (``None`` while one is in flight)."""
@@ -695,7 +643,10 @@ class ClaudeStreamClientPool:
     turn asks for it — see the module docstring for the full contract.
     """
 
-    def __init__(self, *, max_concurrent: int | None = None) -> None:
+    def __init__(self, *, max_concurrent: int | None = None, reap_on_timer: bool = True) -> None:
+        # Timer-driven idle reap (claude_code_idle_reaper): memory returns to
+        # baseline once load stops, not only when another session connects.
+        self._reaper = IdleSessionReaper(self) if reap_on_timer else None
         self._entries: dict[str, _StreamClientEntry] = {}
         self._precede_pending: set[str] = set()
         self._guard = threading.Lock()
@@ -725,11 +676,9 @@ class ClaudeStreamClientPool:
                 entry = None
                 replaced_dead_entry = True
             if entry is None:
-                entry = _StreamClientEntry(
-                    connect_slots=self._connect_slots,
-                    reclaim_idle_slot=self._reclaim_idle_for_slot,
-                )
+                entry = self.new_entry()
                 self._entries[key] = entry
+        self.wake_reaper()
         if replaced_dead_entry:
             log_dead_client_replaced(key)
         return entry
@@ -758,6 +707,19 @@ class ClaudeStreamClientPool:
             thinking=thinking,
             system_prompt=system_prompt,
         )
+
+    def new_entry(self) -> _StreamClientEntry:
+        """Mint an unconnected entry wired to this pool's slots and reaper."""
+        return _StreamClientEntry(
+            connect_slots=self._connect_slots,
+            reclaim_idle_slot=self._reclaim_idle_for_slot,
+            on_idle=self.wake_reaper,
+        )
+
+    def wake_reaper(self) -> None:
+        """Tell the idle reaper a new idle deadline may exist (no-op when disabled)."""
+        if self._reaper is not None:
+            self._reaper.wake()
 
     def _reclaim_idle_for_slot(self) -> int:
         """Reap idle session entries when a connect is queued behind the cap."""
@@ -804,7 +766,9 @@ class ClaudeStreamClientPool:
             return self._construct_count
 
     def close_blocking(self) -> None:
-        """Disconnect every pooled client and stop its loop-thread."""
+        """Stop the idle reaper, then disconnect every pooled client and its loop-thread."""
+        if self._reaper is not None:
+            self._reaper.stop()
         with self._guard:
             entries = list(self._entries.values())
             self._entries.clear()

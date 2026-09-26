@@ -19,6 +19,11 @@ derived from the entry's own ``_last_scope`` bookkeeping instead of a
 separate scope<->pool-key registry).
 
 Each pin carries an inline SABOTAGE note.
+
+These pins drive a fake monotonic clock, so they build pools with
+``reap_on_timer=False``: the timer reaper (pinned on a real clock in
+``test_claude_code_idle_reaper.py``) would otherwise race the explicit sweep
+under test.
 """
 
 from __future__ import annotations
@@ -99,7 +104,7 @@ def test_idle_for_counts_from_construction_when_never_streamed(
 # --------------------------------------------------------------------------- #
 def test_sweep_never_touches_a_busy_entry(monkeypatch: pytest.MonkeyPatch) -> None:
     clock = _install_clock(monkeypatch)
-    pool = ClaudeStreamClientPool()
+    pool = ClaudeStreamClientPool(reap_on_timer=False)
     entry = pool.entry_for(session_id="sess-a")
     entry._mark_busy()
     clock.advance(1000.0)
@@ -109,7 +114,7 @@ def test_sweep_never_touches_a_busy_entry(monkeypatch: pytest.MonkeyPatch) -> No
 
 def test_sweep_reaps_an_idle_entry_past_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
     clock = _install_clock(monkeypatch)
-    pool = ClaudeStreamClientPool()
+    pool = ClaudeStreamClientPool(reap_on_timer=False)
     entry = pool.entry_for(session_id="sess-a")
     entry._mark_idle()
     clock.advance(20.0)
@@ -123,7 +128,7 @@ def test_sweep_reaps_an_idle_entry_past_ttl(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_sweep_leaves_a_not_yet_idle_entry_alone(monkeypatch: pytest.MonkeyPatch) -> None:
     clock = _install_clock(monkeypatch)
-    pool = ClaudeStreamClientPool()
+    pool = ClaudeStreamClientPool(reap_on_timer=False)
     entry = pool.entry_for(session_id="sess-a")
     entry._mark_idle()
     clock.advance(5.0)  # under the 15s TTL
@@ -148,7 +153,7 @@ def test_entry_for_new_session_reaps_an_idle_sibling_session(
     """
     monkeypatch.setattr(csb, "session_idle_ttl_s", lambda: 15.0)
     clock = _install_clock(monkeypatch)
-    pool = ClaudeStreamClientPool()
+    pool = ClaudeStreamClientPool(reap_on_timer=False)
     parent_entry = pool.entry_for(session_id="parent")
     parent_entry._mark_idle()
     clock.advance(16.0)  # past the (pinned) 15s TTL
@@ -167,7 +172,7 @@ def test_entry_for_leaves_a_fresh_sibling_session_alone(monkeypatch: pytest.Monk
     legitimate concurrency, not capping it."""
     monkeypatch.setattr(csb, "session_idle_ttl_s", lambda: 15.0)
     clock = _install_clock(monkeypatch)
-    pool = ClaudeStreamClientPool()
+    pool = ClaudeStreamClientPool(reap_on_timer=False)
     data_entry = pool.entry_for(session_id="data")
     data_entry._mark_busy()  # still actively streaming
     clock.advance(16.0)
@@ -211,7 +216,7 @@ def test_reap_forces_the_next_stateful_send_to_a_full_resend(
     monkeypatch.setattr(csb, "session_idle_ttl_s", lambda: 15.0)
     monkeypatch.setattr(ccs, "stream_audit_enabled", lambda: False)  # audit is a side channel here
     clock = _install_clock(monkeypatch)
-    pool = ClaudeStreamClientPool()
+    pool = ClaudeStreamClientPool(reap_on_timer=False)
 
     scope = "loop-a"
     session_key = (scope, "haiku", "/w", None)
@@ -247,7 +252,7 @@ def test_reap_emits_a_typed_audit_row(monkeypatch: pytest.MonkeyPatch) -> None:
     silent resource drop."""
     monkeypatch.setattr(csb, "session_idle_ttl_s", lambda: 15.0)
     clock = _install_clock(monkeypatch)
-    pool = ClaudeStreamClientPool()
+    pool = ClaudeStreamClientPool(reap_on_timer=False)
 
     rows: list[dict[str, Any]] = []
     monkeypatch.setattr(ccs, "stream_audit_enabled", lambda: True)
