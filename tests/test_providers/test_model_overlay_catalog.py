@@ -1,8 +1,7 @@
-"""The GitHub-hosted model overlay is fetched, cached, validated, and has a
-REAL bundled cold-start fallback (brief Part 8.1) -- unlike the Claude Code
-catalog, which deliberately has none. These tests mirror
-``test_claude_code_catalog.py``'s fetched_catalog-backed caching contract and
-add the cold-start case that catalog doesn't need.
+"""The GitHub-hosted model overlay is fetched, cached, and validated. There is
+no packaged copy (coordinator decision D18): a cold start with no network is
+the typed ``catalog_unavailable_offline`` state. These tests mirror
+``test_claude_code_catalog.py``'s fetched_catalog-backed caching contract.
 """
 
 from __future__ import annotations
@@ -17,7 +16,6 @@ from clio_agent.providers.fetched_catalog import FetchedCatalog
 from clio_agent.providers.model_discovery import model_overlay_catalog
 
 REPO_COMPILED_OVERLAY = Path(__file__).resolve().parents[2] / "catalogs" / "model-overlay.json"
-BUNDLED_OVERLAY = model_overlay_catalog._BUNDLED_OVERLAY
 
 
 def _response(payload: str, *, status: int = 200, etag: str = "") -> httpx.Response:
@@ -46,25 +44,6 @@ def isolated_catalog(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Fetched
     return fresh
 
 
-@pytest.fixture
-def isolated_catalog_with_bundled(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> FetchedCatalog:
-    """Same as above, but WITH the real bundled fallback wired (the cold-start case)."""
-    fresh: FetchedCatalog = FetchedCatalog(
-        "model-overlay-test-bundled",
-        model_overlay_catalog.MODEL_OVERLAY_CATALOG_URL,
-        parse=model_overlay_catalog._parse_catalog,
-        ttl_s=model_overlay_catalog.DEFAULT_TTL_S,
-        max_bytes=model_overlay_catalog._MAX_BYTES,
-        timeout_s=model_overlay_catalog._FETCH_TIMEOUT_S,
-        bundled=model_overlay_catalog._load_bundled,
-        cache_path=tmp_path / "model-overlay.json",
-    )
-    monkeypatch.setattr(model_overlay_catalog, "_CATALOG", fresh)
-    return fresh
-
-
 def test_committed_catalog_file_parses_via_real_validator() -> None:
     """The repo-shipped catalogs/model-overlay.json must itself be valid."""
     catalog = model_overlay_catalog._parse_catalog(REPO_COMPILED_OVERLAY.read_bytes())
@@ -74,22 +53,22 @@ def test_committed_catalog_file_parses_via_real_validator() -> None:
     assert len(catalog.entries) == 20
 
 
-def test_bundled_copy_is_byte_identical_to_the_committed_catalog() -> None:
-    """The compile script keeps both copies in sync (see scripts/compile_model_overlay.py)."""
-    assert BUNDLED_OVERLAY.read_text(encoding="utf-8") == REPO_COMPILED_OVERLAY.read_text(
-        encoding="utf-8"
-    )
-
-
-def test_cold_start_with_no_disk_cache_and_no_network_serves_the_bundled_copy(
-    isolated_catalog_with_bundled: FetchedCatalog,
+def test_cold_start_with_no_disk_cache_and_no_network_is_the_typed_offline_state(
+    isolated_catalog: FetchedCatalog,
 ) -> None:
-    """brief Part 8.1: 'the committed file as the cold-start bundled source'."""
-    result = isolated_catalog_with_bundled.get(allow_fetch=False)
-    assert result.source == "bundled"
-    assert result.stale_reason == "bundled_cold_start"
-    families = {row["family"] for row in result.data.entries}
-    assert "qwen3.6-27b" in families
+    """No packaged copy: a first offline run has no overlay, and says so."""
+    entries, error = model_overlay_catalog.cached_model_overlay_entries()
+    assert entries is None
+    assert error.startswith("catalog_unavailable_offline")
+    with pytest.raises(fetched_catalog.FetchedCatalogUnavailable) as error_info:
+        isolated_catalog.get(allow_fetch=False)
+    assert error_info.value.reason == "catalog_unavailable_offline"
+
+
+def test_overlay_url_is_the_raw_github_main_catalog() -> None:
+    assert model_overlay_catalog.MODEL_OVERLAY_CATALOG_URL == (
+        "https://raw.githubusercontent.com/iowarp/clio-agent/main/catalogs/model-overlay.json"
+    )
 
 
 def test_first_read_fetches_then_ttl_serves_disk_cache(

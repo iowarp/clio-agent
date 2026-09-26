@@ -37,7 +37,10 @@ logger = logging.getLogger(__name__)
 
 _LOCK = threading.Lock()
 
-CODEX_SOURCE = "codex_catalog"
+#: The Codex Direct transport's live backend model list (``providers.codex.model_list``).
+CODEX_SOURCE = "codex_direct_model_list"
+#: The Codex SDK transport's live ``model/list`` RPC (``providers.codex.sdk_discovery``).
+CODEX_SDK_SOURCE = "codex_sdk_model_list"
 CLAUDE_CODE_SOURCE = "claude_code_catalog"
 HTTP_SOURCE = "live_handshake"
 
@@ -449,6 +452,7 @@ def update_entry_fields(provider: str, fields: Mapping[str, Any]) -> None:
 __all__ = [
     "CODEX_SOURCE",
     "CLAUDE_CODE_SOURCE",
+    "CODEX_SDK_SOURCE",
     "HTTP_SOURCE",
     "OVERLAY_STALENESS_REASONS",
     "OverlayMalformedError",

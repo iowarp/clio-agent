@@ -72,9 +72,9 @@ def lookup_native_context(model_id: str) -> int | None:
 
     Walks the same offline-only ladder as
     :func:`clio_agent.gact.runtime.context_tokens._resolve_expert_context_window`:
-    the LiteLLM catalog first (disk cache / bundled snapshot only --
-    ``allow_fetch=False``, so this never fetches), then the bundled
-    ``model_limits.json`` DB. No network call is made. Returns None when neither
+    the LiteLLM catalog first (disk cache only -- ``allow_fetch=False``, so this
+    never fetches), then the model-limits DB (the user DB plus the disk cache of
+    the fetched ``catalogs/model-limits.json``). No network call is made. Returns None when neither
     source has an entry, so the caller can leave ``native_context_window`` unset
     rather than guessing.
 

@@ -18,6 +18,19 @@ from __future__ import annotations
 
 from typing import Any
 
+from clio_agent.providers.codex.errors import CodexUnsupportedInputError
+from clio_agent.providers.native_attachment_bounds import (
+    NativeAttachmentTooLargeError,
+    base64_byte_length,
+    check_block_bytes,
+)
+
+#: The only file media type the Codex backend is verified to read from an
+#: ``input_file`` part (live 2026-09-26: gpt-6-sol and gpt-5.5 both recited a
+#: canary PDF's text; see ``model_discovery.modality_evidence``'s
+#: ``codex_direct_input_file`` source).
+_PDF_DATA_URL_PREFIX = "data:application/pdf;base64,"
+
 __all__ = [
     "build_request_body",
     "chat_messages_to_responses_input",
@@ -45,8 +58,44 @@ def _flatten_text(content: Any) -> str:
     return str(content)
 
 
+def _file_part(part: dict[str, Any]) -> dict[str, Any]:
+    """Convert one OpenAI-chat ``file`` part into a Responses ``input_file`` part.
+
+    DSPy/LiteLLM carry a PDF attachment as ``{"type": "file", "file":
+    {"file_data": "data:application/pdf;base64,...", "filename": ...}}``. The
+    Responses API takes the same data URL as ``input_file.file_data``.
+
+    Raises:
+        CodexUnsupportedInputError: a non-PDF file, a ``file_id``-only part
+            (``store: false`` leaves the backend nothing to resolve it
+            against), or a PDF over the native-document ceiling.
+    """
+
+    nested = part.get("file")
+    file: dict[str, Any] = nested if isinstance(nested, dict) else part
+    data = file.get("file_data")
+    filename = str(file.get("filename") or "document.pdf")
+    if not isinstance(data, str) or not data.startswith(_PDF_DATA_URL_PREFIX):
+        media = data.split(";", 1)[0].removeprefix("data:") if isinstance(data, str) else ""
+        shape = f"as {media}" if media else "without inline file_data"
+        raise CodexUnsupportedInputError(
+            f"the Codex Direct transport delivers PDF file parts only (got {filename!r} {shape})"
+        )
+    try:
+        check_block_bytes(
+            "document", base64_byte_length(data[len(_PDF_DATA_URL_PREFIX) :]), label=filename
+        )
+    except NativeAttachmentTooLargeError as exc:
+        raise CodexUnsupportedInputError(str(exc)) from exc
+    return {"type": "input_file", "filename": filename, "file_data": data}
+
+
 def _content_to_input_parts(content: Any) -> list[dict[str, Any]]:
-    """Convert one user message's content into Responses ``input_text``/``input_image`` parts."""
+    """Convert one user message's content into Responses input parts.
+
+    Text becomes ``input_text``, images ``input_image``, and PDF file parts
+    ``input_file`` (:func:`_file_part`).
+    """
 
     if content is None:
         return [{"type": "input_text", "text": ""}]
@@ -66,6 +115,9 @@ def _content_to_input_parts(content: Any) -> list[dict[str, Any]]:
                 url = url.get("url")
             if isinstance(url, str) and url:
                 parts.append({"type": "input_image", "image_url": url})
+            continue
+        if part_type in {"file", "input_file"}:
+            parts.append(_file_part(part))
     return parts or [{"type": "input_text", "text": ""}]
 
 
@@ -81,7 +133,7 @@ def chat_messages_to_responses_input(
     - ``assistant`` messages with ``tool_calls`` become one ``function_call``
       item per call, plus a ``message`` item for any text content.
     - Everything else (``user``, and any unrecognized role) becomes a
-      ``message`` item with ``input_text``/``input_image`` parts.
+      ``message`` item with ``input_text``/``input_image``/``input_file`` parts.
     """
 
     instructions_parts: list[str] = []

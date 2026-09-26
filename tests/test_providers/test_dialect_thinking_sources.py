@@ -19,6 +19,7 @@ from clio_agent.providers import fetched_catalog
 from clio_agent.providers.capabilities.dialects import claude_code, cloud_thinking, codex
 from clio_agent.providers.fetched_catalog import FetchedCatalog
 from clio_agent.providers.model_discovery import claude_code_catalog
+from tests._catalog_seed import seed_litellm_cost_map
 
 # --------------------------------------------------------------------------- #
 # codex
@@ -215,6 +216,7 @@ def test_anthropic_non_adaptive_model_falls_back_to_a_budget_spec() -> None:
 
 
 def test_openai_reasoning_model_offers_effort_levels() -> None:
+    seed_litellm_cost_map()
     fact = cloud_thinking.build_thinking_spec_openai("gpt-5")
     assert fact.value is not None
     assert fact.value.mechanism == "effort_levels"

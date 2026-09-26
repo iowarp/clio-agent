@@ -40,6 +40,7 @@ async def refresh_subscription_catalogs_at_startup() -> None:
         refresh_claude_code_candidates,
     )
 
+    await asyncio.to_thread(refresh_online_catalogs)
     presets = [
         preset
         for provider_id in ("codex", "claude_code")
@@ -67,6 +68,40 @@ async def refresh_subscription_catalogs_at_startup() -> None:
     # to a typed failure rather than raising when the SDK isn't installed.
     if get_provider("codex") is not None:
         await refresh_codex_sdk_transport()
+
+
+def refresh_online_catalogs() -> dict[str, str]:
+    """Fetch the online catalogs that hot paths read offline; return ``{name: failure}``.
+
+    Model lookups read these catalogs' disk caches only (never the network on a
+    hot path), so this startup fetch is what makes a fresh install learn them:
+    CLIO's own ``model-overlay`` and ``model-limits`` (raw GitHub) and the
+    LiteLLM community cost map. A fetch inside the TTL is a no-op. A failure
+    keeps the previous disk copy (typed stale) or, with none, leaves the typed
+    ``catalog_unavailable_offline`` state -- logged here, never a packaged copy.
+    """
+    from clio_agent.providers.fetched_catalog import FetchedCatalogUnavailable  # noqa: PLC0415
+    from clio_agent.providers.handshake.sources import db as model_limits_db  # noqa: PLC0415
+    from clio_agent.providers.handshake.sources import litellm_catalog  # noqa: PLC0415
+    from clio_agent.providers.model_discovery.model_overlay_catalog import (  # noqa: PLC0415
+        ModelOverlayCatalogError,
+        load_model_overlay_catalog,
+    )
+
+    failures: dict[str, str] = {}
+    try:
+        load_model_overlay_catalog()
+    except ModelOverlayCatalogError as exc:
+        failures["model-overlay"] = str(exc)
+    if limits_failure := model_limits_db.refresh_model_limits_seed():
+        failures["model-limits"] = limits_failure
+    try:
+        litellm_catalog._catalog().get()
+    except FetchedCatalogUnavailable as exc:
+        failures["litellm-model-cost-map"] = str(exc)
+    for name, failure in failures.items():
+        logger.warning("online catalog unavailable at startup name=%s: %s", name, failure)
+    return failures
 
 
 async def refresh_codex_sdk_transport() -> None:
@@ -155,7 +190,7 @@ async def refresh_all(
     #1211 review R3) is honored verbatim, un-filtered — the caller named exactly
     what they want probed.
 
-    Runs one discovery coroutine per preset (the maintained catalog for codex, the
+    Runs one discovery coroutine per preset (the backend's live model list for codex, the
     maintained GitHub catalog plus one CLI sign-in check for claude_code, the
     live handshake for everything else) via ``asyncio.gather`` so wall-clock
     is bounded by the SLOWEST single provider, not their sum. Each provider's
@@ -277,7 +312,7 @@ def build_refresh_provider_models_tool() -> Any:
 
     def refresh_provider_models() -> dict[str, Any]:
         """Refresh the LM provider model catalogs against each account's REAL
-        current state (codex's maintained catalog, claude_code's maintained
+        current state (codex's live backend model list, claude_code's maintained
         catalog plus a CLI sign-in check, every configured HTTP backend's live
         models endpoint) and report what changed. Returns
         ``{"results": [{"provider", "discovered", "source", "default_model",
@@ -305,6 +340,7 @@ __all__ = [
     "is_provider_configured",
     "refresh_all",
     "refresh_all_sync",
+    "refresh_online_catalogs",
     "refresh_codex_sdk_transport",
     "refresh_subscription_catalogs_at_startup",
 ]

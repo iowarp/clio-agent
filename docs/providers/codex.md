@@ -55,10 +55,21 @@ and the wire for this transport.
   device-code OAuth client against `auth.openai.com`) that this provider
   historically collided with when it was registered under a matching name.
   See `constants.py::LITELLM_PROVIDER` for the full story.
-- **Model catalog** (`model_discovery/codex_catalog.py`): data-driven
-  (`catalogs/codex-models.json`), since the Codex backend offers no account
-  model-enumeration RPC. `discover_codex` trusts the catalog's own
-  context-window/output-limit values rather than an external lookup.
+- **Model lists** (live, per transport): the `direct` transport asks the
+  Codex backend's account model list (`codex/model_list.py`:
+  `GET https://chatgpt.com/backend-api/codex/models?client_version=<v>`, the
+  endpoint the official Codex CLI reads, with CLIO's own credential); the
+  `sdk` transport asks the SDK's `model/list` RPC (`codex/sdk_discovery.py`).
+  The backend gates models on `minimal_client_version`, and both transports
+  present the version of the bundled `openai-codex-cli-bin` runtime, so they
+  see the same models. Both results are cached in the model-catalog overlay
+  (TTL `providers.model_catalog_ttl_s`, last-good kept on a failed ask, typed
+  staleness). There is no maintained or bundled Codex model list.
+- **PDF input:** the `direct` transport delivers PDF attachments as Responses
+  `input_file` parts (verified live; the model list itself reports only
+  text/image), so its rows carry `pdf` with evidence source
+  `codex_direct_input_file`. The `sdk` transport cannot carry files (the SDK's
+  `UserInput` has no file variant), so its rows do not.
 
 CLIO remains the only agent loop and the only owner of tool execution --
 the Codex backend is used purely as an inference endpoint, the same as any
@@ -123,8 +134,7 @@ downgraded.
   `sdk_discovery.py` for `sdk`; `oauth.py`/`transport_ws.py`/
   `transport_sse.py`/`litellm_adapter.py` for `direct`)
 - `src/clio_agent/providers/model_discovery/codex.py` /
-  `codex_catalog.py` -- the direct transport's model discovery (the
-  maintained catalog + the credential-store sign-in check)
+  `providers/codex/model_list.py` -- the direct transport's live model list
 - `src/clio_agent/gact/routes/codex_variant.py` -- the sdk-transport
   readiness probe + the sdk/direct bind dispatch
 - `src/clio_agent/gact/provider_catalog.py` -- the `transports` catalog row

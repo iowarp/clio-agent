@@ -18,17 +18,19 @@ truth, and going stale is always a *typed* fact, never a silent one. Concretely:
 * Every read returns a :class:`CatalogResult`, which carries the data PLUS its
   provenance (``source``, ``etag``/``version``, ``fetched_at``) and, when the data
   is not a fresh live fetch, a non-empty ``stale_reason`` explaining why (a failed
-  fetch, a failed validation, disabled fetching, or a bundled cold start). Nothing
-  here ever substitutes degraded data without saying so.
+  fetch, a failed validation, or disabled fetching). Nothing here ever
+  substitutes degraded data without saying so.
 * A failed fetch or a failed validation of NEWLY fetched data never touches the
   existing disk cache: the last good copy rides through untouched, and the caller
   is told (via ``stale_reason``) that today's answer is not fresh.
 * A conditional GET (``If-None-Match``) is used whenever the cache carries an
   ETag; a ``304`` only refreshes ``fetched_at`` (the payload didn't change, so
   there is nothing new to validate or write).
-* The optional ``bundled`` loader is a last resort, used ONLY when there is no
-  disk cache at all (a true cold start) and either fetching is disabled or the
-  live fetch also failed. Its result is always tagged ``source="bundled"``.
+* **Online-first, no packaged copies.** Every catalog is referenced online (CLIO's
+  own catalogs from raw GitHub, :func:`clio_catalog_url`); nothing is read from a
+  copy shipped inside the wheel. A first run with no network and no disk cache
+  raises :class:`FetchedCatalogUnavailable` with the typed reason
+  ``catalog_unavailable_offline`` -- never a stale packaged list.
 
 Thread safety: ``FetchedCatalog.get`` takes a plain :class:`threading.Lock` around
 each refresh. Every known caller in this codebase is synchronous OR reaches this
@@ -47,7 +49,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
-from typing import Generic, TypeVar, cast
+from typing import Generic, TypeVar
 
 import httpx
 
@@ -62,6 +64,20 @@ T = TypeVar("T")
 DEFAULT_TIMEOUT_S = 8.0
 DEFAULT_MAX_BYTES = 8 * 1024 * 1024
 
+#: Where CLIO's OWN catalogs are served from: the repository's ``catalogs/``
+#: directory on ``main`` via raw GitHub. The files stay in the repo (CI
+#: validates them); clients reference them online, never a packaged copy.
+CLIO_CATALOG_BASE_URL = "https://raw.githubusercontent.com/iowarp/clio-agent/main/catalogs"
+
+#: The typed reason a catalog has no data at all: no live fetch answered and no
+#: earlier successful fetch left a disk cache (e.g. a first run offline).
+CATALOG_UNAVAILABLE_OFFLINE = "catalog_unavailable_offline"
+
+
+def clio_catalog_url(filename: str) -> str:
+    """The raw-GitHub URL of one of CLIO's own catalogs (``catalogs/<filename>``)."""
+    return f"{CLIO_CATALOG_BASE_URL}/{filename}"
+
 
 def catalogs_dir() -> Path:
     """The shared disk-cache directory every :class:`FetchedCatalog` writes under."""
@@ -74,10 +90,23 @@ def cache_path_for(name: str) -> Path:
 
 
 class FetchedCatalogUnavailable(RuntimeError):
-    """No usable data anywhere: no fresh/stale disk cache, no bundled source, and
-    (when fetching was allowed) the live fetch also failed. Callers translate this
-    into their own domain error, or treat it as a plain miss -- this module never
-    decides that policy itself."""
+    """No usable data anywhere: no fresh/stale disk cache and (when fetching was
+    allowed) the live fetch also failed.
+
+    ``reason`` is the typed code (:data:`CATALOG_UNAVAILABLE_OFFLINE`) and
+    ``fetch_failure`` says why the fetch did not answer. Callers translate this
+    into their own domain error, or treat it as a typed miss -- this module never
+    decides that policy itself.
+    """
+
+    def __init__(self, name: str, fetch_failure: str) -> None:
+        self.name = name
+        self.reason = CATALOG_UNAVAILABLE_OFFLINE
+        self.fetch_failure = fetch_failure
+        super().__init__(
+            f"{CATALOG_UNAVAILABLE_OFFLINE}: {name}: no live fetch ({fetch_failure}) and no "
+            "cached copy from an earlier successful fetch"
+        )
 
 
 @dataclass(frozen=True)
@@ -88,21 +117,19 @@ class CatalogResult(Generic[T]):
         data: The parsed, validated catalog payload.
         source: Where ``data`` came from: ``"network"`` (a live fetch just
             happened, including a ``304`` confirming the cache), ``"disk_cache"``
-            (served from the local cache, fresh or stale), or ``"bundled"`` (the
-            packaged cold-start fallback).
+            (served from the local cache, fresh or stale).
         source_url: The URL this catalog fetches from.
         etag: The upstream ``ETag`` backing ``data``, or ``""`` when none was
-            recorded (e.g. the bundled fallback, or an upstream that sends none).
+            recorded (an upstream that sends none).
         version: A content version that survives a reproducible re-lookup:
             ``"etag:<value>"`` when an ETag is available, else
-            ``"sha256:<hex>"`` of the raw payload, or ``"bundled"``.
+            ``"sha256:<hex>"`` of the raw payload.
         fetched_at: ISO-8601 UTC timestamp of the evidence backing ``data`` (the
             last time this exact payload was confirmed live, not the time of
             this particular read).
         stale_reason: Empty when ``data`` is a fresh live fetch. Otherwise a
             short typed reason ``data`` is NOT fresh (e.g. ``"transport_error:
-            ..."``, ``"validation_failed: ..."``, ``"fetch_disabled"``,
-            ``"bundled_cold_start"``).
+            ..."``, ``"validation_failed: ..."``, ``"fetch_disabled"``).
     """
 
     data: T
@@ -184,8 +211,6 @@ class FetchedCatalog(Generic[T]):
         max_bytes: A fetched response larger than this is treated as a fetch
             failure (never parsed, never cached).
         timeout_s: Per-attempt HTTP timeout.
-        bundled: Optional zero-arg loader for a packaged cold-start fallback,
-            used ONLY when there is no disk cache at all and no live data.
         cache_path: Override the disk-cache location (tests).
     """
 
@@ -198,7 +223,6 @@ class FetchedCatalog(Generic[T]):
         ttl_s: float,
         max_bytes: int = DEFAULT_MAX_BYTES,
         timeout_s: float = DEFAULT_TIMEOUT_S,
-        bundled: Callable[[], T] | None = None,
         cache_path: Path | None = None,
     ) -> None:
         if not name.strip():
@@ -209,17 +233,15 @@ class FetchedCatalog(Generic[T]):
         self.ttl_s = ttl_s
         self.max_bytes = max_bytes
         self.timeout_s = timeout_s
-        self._bundled = bundled
         self._explicit_cache_path = cache_path
         self._lock = threading.Lock()
         # In-memory accelerators, never a second source of truth: a fresh
         # read is re-served from memory only while it is still inside its TTL
-        # (and for the same cache file), and the packaged snapshot is immutable.
+        # (and for the same cache file).
         # Without them every lookup re-read and re-parsed the whole document --
         # one full parse per model-id variant, thousands per provider refresh.
         self._fresh: tuple[Path, CatalogResult[T]] | None = None
-        self._bundled_loaded = False
-        self._bundled_data: T | None = None
+        self._unavailable_logged = False
 
     @property
     def cache_path(self) -> Path:
@@ -243,15 +265,15 @@ class FetchedCatalog(Generic[T]):
                 even if the disk cache is still fresh (still uses the cache's
                 ETag for a conditional GET).
             allow_fetch: When ``False``, never touch the network -- disk cache
-                or bundled data only. Used for read-only accessors that must
+                only. Used for read-only accessors that must
                 never block on I/O beyond the local disk.
 
         Returns:
             A :class:`CatalogResult`.
 
         Raises:
-            FetchedCatalogUnavailable: No disk cache, no bundled source, and
-                (when ``allow_fetch``) the live fetch also failed.
+            FetchedCatalogUnavailable: ``catalog_unavailable_offline`` -- no disk
+                cache and (when ``allow_fetch``) the live fetch also failed.
         """
         with self._lock:
             return self._get_locked(force_refresh=force_refresh, allow_fetch=allow_fetch)
@@ -291,6 +313,7 @@ class FetchedCatalog(Generic[T]):
                 # A later read of this payload is a read of the disk cache it
                 # was just written to -- memoised with that provenance.
                 self._fresh = (cache_path, replace(fetched, source="disk_cache"))
+                self._unavailable_logged = False
                 return fetched
 
         if cached is not None:
@@ -312,39 +335,18 @@ class FetchedCatalog(Generic[T]):
                     stale_reason=fetch_failure_reason,
                 )
 
-        if self._bundled is not None:
-            if not self._bundled_loaded:
-                try:
-                    self._bundled_data = self._bundled()
-                except Exception as exc:  # noqa: BLE001 - a bad bundled loader is just "no bundled data"
-                    logger.warning(
-                        "fetched_catalog: reason=bundled_load_failed name=%s: %s", self.name, exc
-                    )
-                else:
-                    self._bundled_loaded = True
-                    # Logged once per process (the snapshot is parsed once);
-                    # every result still carries the typed stale_reason.
-                    logger.warning(
-                        "fetched_catalog: reason=bundled_cold_start name=%s "
-                        "(no disk cache; fetch=%s) using the packaged snapshot",
-                        self.name,
-                        fetch_failure_reason if allow_fetch else "disabled",
-                    )
-            if self._bundled_loaded:
-                return CatalogResult(
-                    data=cast(T, self._bundled_data),
-                    source="bundled",
-                    source_url=self.url,
-                    etag="",
-                    version="bundled",
-                    fetched_at=_now_iso(),
-                    stale_reason="bundled_cold_start",
-                )
-
-        raise FetchedCatalogUnavailable(
-            f"{self.name}: no live fetch ({fetch_failure_reason}), no cached copy, "
-            "no bundled source available"
-        )
+        if not self._unavailable_logged:
+            # Logged once per process per catalog (lookups can hit this on every
+            # call); the raised error carries the same typed reason every time.
+            self._unavailable_logged = True
+            logger.warning(
+                "fetched_catalog: reason=%s name=%s url=%s fetch=%s",
+                CATALOG_UNAVAILABLE_OFFLINE,
+                self.name,
+                self.url,
+                fetch_failure_reason,
+            )
+        raise FetchedCatalogUnavailable(self.name, fetch_failure_reason)
 
     def _fetch(self, cached: _CacheEntry | None) -> tuple[CatalogResult[T] | None, str]:
         """Attempt one live fetch. Returns ``(result_or_None, reason_if_None)``."""
@@ -473,9 +475,12 @@ class FetchedCatalog(Generic[T]):
 
 
 __all__ = [
+    "CATALOG_UNAVAILABLE_OFFLINE",
+    "CLIO_CATALOG_BASE_URL",
     "CatalogResult",
     "FetchedCatalog",
     "FetchedCatalogUnavailable",
     "cache_path_for",
     "catalogs_dir",
+    "clio_catalog_url",
 ]
