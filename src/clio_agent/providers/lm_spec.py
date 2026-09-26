@@ -62,6 +62,8 @@ class LMSpec:
         top_k: Top-k sampling cutoff (``None`` omits).
         min_p: Minimum-probability cutoff (``None`` omits).
         presence_penalty: Presence penalty (``None`` omits).
+        frequency_penalty / repetition_penalty / seed: More sampling (``None`` omits).
+        context_length: Context size where the server takes one (``0`` omits).
     """
 
     provider: str
@@ -80,6 +82,10 @@ class LMSpec:
     top_k: int | None = None
     min_p: float | None = None
     presence_penalty: float | None = None
+    frequency_penalty: float | None = None
+    repetition_penalty: float | None = None
+    seed: int | None = None
+    context_length: int = 0
 
 
 def spec_from_config(cfg: "LMProviderConfig") -> LMSpec:
@@ -121,6 +127,10 @@ def spec_from_config(cfg: "LMProviderConfig") -> LMSpec:
         top_k=cfg.top_k,
         min_p=cfg.min_p,
         presence_penalty=cfg.presence_penalty,
+        frequency_penalty=cfg.frequency_penalty,
+        repetition_penalty=cfg.repetition_penalty,
+        seed=cfg.seed,
+        context_length=cfg.context_length,
     )
 
 
@@ -205,4 +215,10 @@ def build_spec(agent_def: "AgentDef", default_spec: LMSpec) -> LMSpec:
         top_k=_opt_int(params, "top_k", default_spec.top_k),
         min_p=_opt_float(params, "min_p", default_spec.min_p),
         presence_penalty=_opt_float(params, "presence_penalty", default_spec.presence_penalty),
+        frequency_penalty=_opt_float(params, "frequency_penalty", default_spec.frequency_penalty),
+        repetition_penalty=_opt_float(
+            params, "repetition_penalty", default_spec.repetition_penalty
+        ),
+        seed=_opt_int(params, "seed", default_spec.seed),
+        context_length=_opt_int(params, "context_length", default_spec.context_length) or 0,
     )

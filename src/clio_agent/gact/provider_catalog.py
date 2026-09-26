@@ -306,6 +306,9 @@ def model_catalog_row(
         # directly from the effective capabilities' own ThinkingDecision --
         # never a second, provider-name-keyed mapping table.
         "reasoning": _reasoning_wire_block(effective.thinking, profile),
+        # ONLY the request settings this model accepts, each with its evidence
+        # (clio_schemas.AcceptedParameter) -- the same set the request builder sends.
+        "accepted_parameters": _accepted_parameters(preset, report, profile.id, effective),
         "native_tool_calling": bool(effective.tools.value),
         "context_window": effective.context.value,
         "loaded_context_window": loaded_context_window,
@@ -342,6 +345,26 @@ def model_catalog_row(
         },
         "failure": report.error or "",
     }
+
+
+def _accepted_parameters(
+    preset: LMProviderPreset, report: HandshakeReport, model_id: str, effective: Any
+) -> list[dict[str, Any]]:
+    """The model's accepted request settings (``providers.capabilities.accepted_parameters``)."""
+
+    from clio_agent.providers.capabilities import accepted_parameters  # noqa: PLC0415
+    from clio_agent.providers.capabilities.endpoint import dialect_for_provider  # noqa: PLC0415
+
+    catalog_row = get_provider(preset.id)
+    litellm_prefix = catalog_row.litellm_prefix if catalog_row is not None else preset.provider
+    return accepted_parameters.accepted_parameters(
+        report.provider_id,
+        report.api_base,
+        model_id,
+        dialect=dialect_for_provider(preset.provider, litellm_prefix, preset.id),
+        litellm_prefix=litellm_prefix,
+        effective=effective,
+    )
 
 
 def _provenance_row(decision: Any) -> dict[str, Any]:
