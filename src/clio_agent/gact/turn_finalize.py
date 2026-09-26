@@ -76,6 +76,7 @@ from clio_agent.gact.tool_observer import (
     _sanitize_tools_called_metadata,
 )
 from clio_agent.gact.transcript_projection import final_message_embed
+from clio_agent.gact.turn_settle_status import publish_turn_settled_status
 from clio_agent.gact.turn_stream import assemble_stream_metadata, settle_turn_transcript
 from clio_agent.gact.turn_usage import context_usage_metadata_patch
 from clio_agent.gact.types import (
@@ -551,7 +552,6 @@ def finalize_turn(
     metadata_patch = context_usage_metadata_patch(state, current_session, assistant_msg)
     state.app.state.sessions.update(
         state.sid,
-        status=final_status,
         message_count=len(state.app.state.messages.get(state.sid, [])),
         add_tokens_input=state.turn_tokens["input"],
         add_tokens_output=state.turn_tokens["output"],
@@ -564,17 +564,10 @@ def finalize_turn(
             "execution_cancellation": state.error_info.details.get("execution_cancellation"),
             "cancellation_attempt": state.error_info.details.get("cancellation_attempt", {}),
         }
-    state.bus.publish(
-        Event(
-            type="session.status_changed",
-            session_id=state.sid,
-            payload={
-                "session_id": state.sid,
-                "status": final_status,
-                "prev_status": "running",
-                **cancellation_status,
-            },
-        )
+    # The terminal status publishes once the runner releases the slot (never ahead of
+    # the busy gate while the hooks / GOAL tail below still run inside this turn).
+    publish_turn_settled_status(
+        state.app, state.sid, final_status, payload_extra=cancellation_status
     )
     from clio_agent.gact.spotter_watcher import on_turn_finalized  # noqa: PLC0415
 
@@ -815,21 +808,7 @@ def settle_failed_finalize(
     getattr(app.state, "live_assistant_parts", {}).pop(sid, None)
     getattr(app.state, "live_assistant_part_keys", {}).pop(sid, None)
     if sess is not None:
-        app.state.sessions.update(
-            sid,
-            status="error",
-            message_count=len(app.state.messages.get(sid, [])),
-        )
-    bus.publish(
-        Event(
-            type="session.status_changed",
-            session_id=sid,
-            payload={
-                "session_id": sid,
-                "status": "error",
-                "prev_status": "running",
-            },
-        )
-    )
+        app.state.sessions.update(sid, message_count=len(app.state.messages.get(sid, [])))
+    publish_turn_settled_status(app, sid, "error")
     if app.state.cancel_events.get(sid) is turn_cancel_event:
         app.state.cancel_events.pop(sid, None)
