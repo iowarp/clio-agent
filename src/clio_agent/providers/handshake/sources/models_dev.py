@@ -103,7 +103,7 @@ def _load_models_dev(
     Otherwise resolution is delegated to :class:`~clio_agent.providers.fetched_catalog.FetchedCatalog`:
     a fresh disk cache short-circuits the network; a stale/absent cache tries to
     fetch (when ``allow_fetch``); a failed fetch or a failed validation falls
-    back to the last good disk copy; a total miss (no cache, no bundled source,
+    back to the last good disk copy; a total miss (no cache,
     fetch failed/disabled) returns ``{}`` rather than raising — models.dev being
     unreachable must never fail a handshake.
 

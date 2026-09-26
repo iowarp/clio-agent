@@ -77,14 +77,14 @@ def test_get_models_overlay_present_is_served_verbatim(
                     {"id": "gpt-5.6-sol", "name": "GPT-5.6-Sol", "description": "live"},
                     {"id": "gpt-5.6-terra", "name": "GPT-5.6-Terra", "description": "live"},
                 ],
-                "source": "codex_catalog",
+                "source": "codex_direct_model_list",
                 "default_model": "gpt-5.6-sol",
                 "generated_at": _now(),
             }
         },
     )
     body = client.get("/v1/providers/codex/models").json()
-    assert body["source"] == "codex_catalog"
+    assert body["source"] == "codex_direct_model_list"
     ids = {m["id"] for m in body["models"]}
     assert ids == {"gpt-5.6-sol", "gpt-5.6-terra"}
     # SABOTAGE-sensitive: none of the STALE static ids leak through once an
@@ -183,7 +183,7 @@ def test_post_refresh_returns_the_discovery_results_verbatim(
         {
             "provider": "codex",
             "discovered": [{"id": "gpt-5.6-sol", "name": "Sol", "description": ""}],
-            "source": "codex_catalog",
+            "source": "codex_direct_model_list",
             "default_model": "gpt-5.6-sol",
             "generated_at": "2026-08-14T00:00:00+00:00",
             "added": ["gpt-5.6-sol"],

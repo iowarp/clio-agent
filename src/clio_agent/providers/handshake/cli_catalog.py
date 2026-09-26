@@ -177,7 +177,7 @@ class CliCatalogHandshake(NoOpHandshake):
                     # of arriving as an anonymous empty list.
                     "capability_evidence": m.get("capability_evidence") or {},
                     # Per-model reasoning efforts the discovery run recorded
-                    # (the maintained Codex catalog); the provider catalog derives the
+                    # (the Codex live model lists); the provider catalog derives the
                     # selectable thinking levels from them.
                     "supported_reasoning_efforts": list(m.get("supported_reasoning_efforts") or []),
                     "default_reasoning_effort": str(m.get("default_reasoning_effort") or ""),

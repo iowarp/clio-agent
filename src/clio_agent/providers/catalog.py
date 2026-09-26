@@ -260,8 +260,8 @@ PROVIDERS: tuple[Provider, ...] = (
         # transport endpoints (chatgpt.com/backend-api) live in
         # providers.codex.constants, never here.
         api_base="codex://direct",
-        # The maintained catalog (catalogs/codex-models.json) supplies the
-        # live default; never auto-select a compiled-in candidate.
+        # The backend's live model list (providers.codex.model_list) supplies
+        # the default; never auto-select a compiled-in candidate.
         suggested_model="",
         requires_api_key=False,
         auth_method="subscription",

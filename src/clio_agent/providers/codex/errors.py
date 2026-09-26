@@ -79,6 +79,18 @@ class CodexTransportError(CodexError):
     reason = "codex_transport_error"
 
 
+class CodexUnsupportedInputError(CodexError):
+    """A message part the Direct transport cannot deliver (refused, never dropped).
+
+    The Direct transport carries text, ``input_image`` and PDF ``input_file``
+    parts; anything else in a file part (another media type, a bare
+    ``file_id`` the stateless backend cannot resolve, an oversized document)
+    fails the turn loudly instead of reaching the model without it.
+    """
+
+    reason = "codex_unsupported_input"
+
+
 class CodexSDKError(CodexError):
     """The local Codex SDK/runtime transport failed.
 

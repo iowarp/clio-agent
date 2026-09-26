@@ -56,6 +56,13 @@ TRANSPORT_LABELS: dict[str, str] = {
     TRANSPORT_SDK: "Codex (local)",
     TRANSPORT_DIRECT: "Direct",
 }
+#: Each transport's endpoint identity (a pseudo-scheme, never dialed). Capability
+#: DEPLOYMENT records are keyed by it, so one transport's facts for a shared model
+#: id (what the transport can carry, e.g. PDF input) never overwrite the other's.
+TRANSPORT_API_BASES: dict[str, str] = {
+    TRANSPORT_SDK: "codex://sdk",
+    TRANSPORT_DIRECT: "codex://direct",
+}
 
 #: The Codex CLI's public OAuth client id. Not a secret -- every open-source
 #: harness that reuses this login flow (pi, OpenCode, Cline) ships the same
@@ -97,6 +104,16 @@ DEVICE_SLOW_DOWN_ERROR = "slow_down"
 CODEX_BASE = "https://chatgpt.com/backend-api"
 CODEX_HTTP_URL = f"{CODEX_BASE}/codex/responses"
 CODEX_WS_URL = "wss://chatgpt.com/backend-api/codex/responses"
+#: The account model list the official Codex CLI reads (``codex-rs/codex-api``
+#: ``ModelsClient``: ``GET {base}/models?client_version=<v>``). The backend gates
+#: each model on ``minimal_client_version``, so the version sent decides which
+#: models come back.
+CODEX_MODELS_URL = f"{CODEX_BASE}/codex/models"
+#: The distribution whose version is the Codex client version CLIO presents to
+#: the backend on BOTH transports: the SDK's app-server sends its own runtime's
+#: version, and the Direct model list sends the same one, so the two halves are
+#: gated identically. Bumping the pin in pyproject.toml is the one knob.
+CODEX_CLIENT_DISTRIBUTION = "openai-codex-cli-bin"
 ORIGINATOR = "clio"
 OPENAI_BETA_SSE = "responses=experimental"
 OPENAI_BETA_WEBSOCKETS = "responses_websockets=2026-02-06"
@@ -154,7 +171,9 @@ __all__ = [
     "PROVIDER_LABEL",
     "CLIENT_ID",
     "CODEX_BASE",
+    "CODEX_CLIENT_DISTRIBUTION",
     "CODEX_HTTP_URL",
+    "CODEX_MODELS_URL",
     "CODEX_WS_URL",
     "DEFAULT_MAX_RETRIES",
     "DEVICE_AUTHORIZATION_PENDING_ERROR",
@@ -188,6 +207,7 @@ __all__ = [
     "RETRY_MAX_DELAY_MS",
     "SCOPE",
     "TOKEN_URL",
+    "TRANSPORT_API_BASES",
     "TRANSPORT_DIRECT",
     "TRANSPORT_LABELS",
     "TRANSPORT_SDK",

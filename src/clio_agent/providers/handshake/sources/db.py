@@ -4,10 +4,13 @@ The handshake resolves a model's limits **provider-self-reported -> models.dev -
 litellm catalog -> this DB**.
 The DB is split into two layers:
 
-- a **read-only seed shipped with the package** (``data/model_limits.json``) so a
-  fresh install already knows common models — it is **never written at runtime**
-  (writing it kept the git tree permanently dirty and silently no-oped on read-only
-  pip installs, #763), and
+- a **read-only seed catalog** (``catalogs/model-limits.json`` in the repository)
+  referenced ONLINE from raw GitHub through
+  :mod:`clio_agent.providers.fetched_catalog` (disk cache with a TTL and a
+  last-good copy). Nothing is read from a copy inside the wheel (coordinator
+  decision D18); a first run with no network and no earlier fetch has no seed --
+  the typed ``catalog_unavailable_offline`` state -- until a fetch succeeds. It is
+  **never written at runtime** (#763), and
 - a **user DB** under :func:`clio_agent.paths.user_data_dir` (or the ``CLIO_MODEL_DB``
   override) that is **written back on discovery**: whenever the handshake learns a
   model's context or output limit from a live provider, it is recorded there so a
@@ -20,7 +23,9 @@ overwritten-then-forgotten. An unwritable DB location degrades to lookup-only �
 recording is best-effort, logs a structured warning, and never raises.
 
 This module replaces the older ``marketplace``/``static`` sources; their seeds live in
-the shipped DB file (``data/model_limits.json``).
+``catalogs/model-limits.json``. Lookups never touch the network (they read the seed's
+disk cache); the server fetches the seed at startup
+(:func:`refresh_model_limits_seed`).
 """
 
 from __future__ import annotations
@@ -33,6 +38,11 @@ from pathlib import Path
 from typing import Any
 
 from clio_agent import paths
+from clio_agent.providers.fetched_catalog import (
+    FetchedCatalog,
+    FetchedCatalogUnavailable,
+    clio_catalog_url,
+)
 from clio_agent.providers.handshake.sources._normalize import (
     iter_id_candidates,
     normalize_id,
@@ -42,8 +52,45 @@ _LOGGER = logging.getLogger(__name__)
 
 _LOCK = threading.Lock()
 
-#: Packaged read-only seed — never written at runtime (#763).
-_SEED_DB = Path(__file__).resolve().parent / "data" / "model_limits.json"
+#: The read-only seed catalog, referenced online — never written at runtime (#763).
+MODEL_LIMITS_SEED_URL = clio_catalog_url("model-limits.json")
+_SEED_TTL_S = 24 * 60 * 60.0
+
+
+def _parse_seed(payload: bytes) -> dict[str, dict[str, Any]]:
+    """Validate the seed document: a JSON object of ``{model_key: {field: value}}``."""
+    data = json.loads(payload.decode("utf-8"))
+    if not isinstance(data, dict) or not all(
+        isinstance(key, str) and isinstance(entry, dict) for key, entry in data.items()
+    ):
+        raise ValueError("model-limits seed is not an object of objects")
+    return data
+
+
+_SEED = FetchedCatalog(
+    "model-limits",
+    MODEL_LIMITS_SEED_URL,
+    parse=_parse_seed,
+    ttl_s=_SEED_TTL_S,
+    max_bytes=1024 * 1024,
+)
+
+
+def _seed() -> dict[str, dict[str, Any]]:
+    """The seed's disk cache (no network), or ``{}`` in the typed offline state."""
+    try:
+        return _SEED.get(allow_fetch=False).data
+    except FetchedCatalogUnavailable:
+        return {}
+
+
+def refresh_model_limits_seed() -> str:
+    """Fetch the seed catalog now (startup); return ``""`` or the typed failure reason."""
+    try:
+        _SEED.get()
+    except FetchedCatalogUnavailable as exc:
+        return str(exc)
+    return ""
 
 
 def db_path() -> Path:
@@ -67,11 +114,10 @@ def _load(path: Path) -> dict[str, dict[str, Any]]:
 
 
 def _load_merged(path: Path) -> dict[str, dict[str, Any]]:
-    """The user DB with the packaged seed merged beneath it (user entries win)."""
+    """The user DB with the fetched seed merged beneath it (user entries win)."""
     merged = dict(_load(path))
-    if path != _SEED_DB:  # guard: CLIO_MODEL_DB pointed at the seed itself
-        for key, entry in _load(_SEED_DB).items():
-            merged.setdefault(key, entry)
+    for key, entry in _seed().items():
+        merged.setdefault(key, entry)
     return merged
 
 
@@ -125,9 +171,9 @@ def record(
 ) -> None:
     """Record discovered limits into the user DB; log disagreements as mismatches.
 
-    Writes only the user DB (or the ``CLIO_MODEL_DB`` override) — never the packaged
-    seed. Best-effort: an unwritable DB location skips persistence with a structured
-    warning — lookups still work from the shipped seed. Never raises.
+    Writes only the user DB (or the ``CLIO_MODEL_DB`` override) — never the seed
+    catalog. Best-effort: an unwritable DB location skips persistence with a
+    structured warning — lookups still work from the seed's cache. Never raises.
     """
     if not (model_id or "").strip() or (not context and not output):
         return

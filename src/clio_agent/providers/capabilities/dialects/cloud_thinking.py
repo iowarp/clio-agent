@@ -45,7 +45,7 @@ def _litellm_info(model: str) -> dict[str, Any]:
     -- the SAME source the live model map uses -- instead of calling
     ``litellm.get_model_info()`` directly. ``allow_fetch=False``: this runs on
     a handshake/discovery path and must never block on a live fetch; it reads
-    the disk cache / bundled snapshot only.
+    the disk cache from an earlier successful fetch only.
     """
 
     from clio_agent.providers.handshake.sources.litellm_catalog import (  # noqa: PLC0415

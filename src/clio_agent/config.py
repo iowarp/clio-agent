@@ -269,7 +269,7 @@ class LMProviderConfig:
     # ``chosen_context`` is the active context limit clio operates against
     # (queryable; for LM Studio it reflects the loaded/load-sized window).
     # ``native_context_window`` is the model's published max from the offline
-    # catalog (LiteLLM / bundled model_limits.json); None when unknown.
+    # catalogs (LiteLLM cost map / model-limits seed, disk caches); None when unknown.
     context_window: int | None = field(init=False, default=None)
     chosen_context: int | None = field(init=False, default=None)
     native_context_window: int | None = field(init=False, default=None)

@@ -207,7 +207,7 @@ class TestProviderIdIsAnIdentityNotAKind:
             LMProviderConfig(provider_id="not-a-real-provider")
 
     def test_a_bare_kind_string_as_provider_id_is_a_typed_error(self):
-        """"argonne" is a kind, not a preset id (the presets are argonne_sophia /
+        """ "argonne" is a kind, not a preset id (the presets are argonne_sophia /
         argonne_metis); passed explicitly as provider_id it must error rather
         than silently resolve to the kind's default preset."""
         with pytest.raises(ValueError, match="Unknown LM provider"):
@@ -659,9 +659,7 @@ class TestCreateLM:
             ModelCapabilities(
                 model_key="test:codex:gpt-5.5",
                 thinking=Fact(
-                    ThinkingSpec(
-                        mechanism="effort_levels", levels=("high",), effort_by_level={}
-                    ),
+                    ThinkingSpec(mechanism="effort_levels", levels=("high",), effort_by_level={}),
                     "server_report",
                     now,
                 ),
@@ -680,16 +678,16 @@ class TestCreateLM:
         lm = create_lm(config)
         assert lm.kwargs["codex_reasoning_effort"] == "high"
 
+        # This model does not list "none": the backend refuses an unlisted
+        # effort, so off sends nothing (the model's own default effort).
         config_off = LMProviderConfig(provider="codex", model="gpt-5.5", thinking_level="off")
         lm_off = create_lm(config_off)
-        assert lm_off.kwargs["codex_reasoning_effort"] == "none"
+        assert "codex_reasoning_effort" not in lm_off.kwargs
 
         # Unset level on a model with NO linked evidence yet (no handshake has
         # run for this identity) → no effort kwarg at all, never a guess
-        # (fail closed; model-capabilities brief 5.5). A model WITH known
-        # evidence sends codex's explicit 'none' even when unset (dialect_wire
-        # docstring: never omit-and-inherit-ambient) -- this is the distinct
-        # "nothing is known yet" case, covered with its own, unseeded model id.
+        # (fail closed; model-capabilities brief 5.5) -- the distinct "nothing
+        # is known yet" case, covered with its own, unseeded model id.
         config_default = LMProviderConfig(provider="codex", model="gpt-5.5-unseeded")
         lm_default = create_lm(config_default)
         assert "codex_reasoning_effort" not in lm_default.kwargs

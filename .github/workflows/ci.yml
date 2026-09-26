@@ -43,10 +43,9 @@ jobs:
       - name: "guard: no bare dspy.Tool outside the instrumentation factory/bridge (baseline 0)"
         run: uv run python scripts/check_tool_instrumentation.py
       # Model-capabilities brief Part 8 (P6). BLOCKING: fails if any
-      # catalogs/models/*.yaml is invalid, if catalogs/model-overlay.json (or
-      # its packaged bundled copy) is stale relative to the YAML sources, or
-      # if catalogs/claude-code-models.json (and catalogs/codex-models.json,
-      # once S1 lands it) no longer validates against its schema.
+      # catalogs/models/*.yaml is invalid, if catalogs/model-overlay.json is
+      # stale relative to the YAML sources, or
+      # if catalogs/claude-code-models.json no longer validates against its schema.
       - name: "guard: model overlay + catalog schemas are valid and up to date (brief Part 8)"
         run: uv run python scripts/compile_model_overlay.py --check
       - name: "warn: ruff complexity (C901, PLR0915) (#714)"

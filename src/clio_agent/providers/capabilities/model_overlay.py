@@ -4,8 +4,8 @@ Replaces :class:`~clio_agent.providers.capabilities.model_sources.EmptyOverlaySo
 (brief 5.1 layer 2). Three overlay ROOTS are consulted, in this fixed order
 (brief Part 8.6, "clio-coder's order"):
 
-1. **fetched** -- the compiled community catalog
    (:mod:`clio_agent.providers.model_discovery.model_overlay_catalog`), read
+   from its disk cache only (never a blocking network call from a per-model
    disk-cache/bundled-only (never a blocking network call from a per-model
    handshake lookup -- see :func:`_fetched_entries`).
 2. **user** -- ``<user config dir>/model-catalog.d/*.yaml``.
@@ -172,14 +172,15 @@ def _entries_from_dir(directory: Path, *, root: str) -> list[OverlayEntry]:
 
 
 def _fetched_entries() -> list[OverlayEntry]:
-    """Root 1: the compiled community catalog, disk-cache/bundled only.
+    """Root 1: the compiled community catalog, disk cache only.
 
     Never performs a blocking network fetch (:func:`cached_model_overlay_entries`
     passes ``allow_fetch=False``) -- a per-model handshake lookup must not stall
-    on a synchronous HTTP call, and the packaged bundled copy already makes a
-    fresh install correct offline. A missing/corrupt catalog degrades to no
-    entries from this root (logged), never raises -- the overlay is one of
-    several model-record layers (brief 5.1), never load-bearing on its own.
+    on a synchronous HTTP call; the server fetches the catalog from raw GitHub
+    at startup. With no earlier successful fetch (the typed
+    ``catalog_unavailable_offline`` state) this root yields no entries (logged),
+    never raises -- the overlay is one of several model-record layers (brief
+    5.1), never load-bearing on its own. There is no packaged copy.
     """
 
     entries, error = cached_model_overlay_entries()

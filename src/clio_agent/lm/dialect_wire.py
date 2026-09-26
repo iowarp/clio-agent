@@ -276,9 +276,14 @@ def thinking_wire(
         return {"thinking": {"type": "enabled", "budget_tokens": budget}}
 
     if dialect == "codex":
-        # Codex NEVER omits the field, even off: an omitted value inherits the
-        # ambient config.toml effort rather than actually disabling it.
-        value = "none" if off else _effort_value(decision, wire_level)
+        # Off sends an explicit "none" (an omitted value inherits the ambient
+        # config.toml effort rather than disabling it) -- but ONLY for a model
+        # that lists "none": the backend refuses an unlisted effort outright
+        # (live 2026-09-26: gpt-6-astra rejects 'none'). For such a model "off"
+        # is not offered, and no level means the model's own default effort.
+        if off:
+            return {"codex_reasoning_effort": "none"} if "off" in decision.spec.levels else {}
+        value = _effort_value(decision, wire_level)
         return {"codex_reasoning_effort": value} if value is not None else {}
 
     if dialect == "claude_code":

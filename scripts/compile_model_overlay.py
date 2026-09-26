@@ -20,13 +20,12 @@ This script has three jobs, all enforced in CI (the ``check`` job in
    document. Same input -> byte-identical output, always -- this is what lets
    ``--check`` catch a stale commit (someone hand-edited a YAML file and forgot
    to re-run this script).
-3. **Validate the two adjacent hand-maintained catalogs**
+3. **Validate the adjacent hand-maintained catalog**
    (``catalogs/claude-code-models.json`` against
-   ``catalogs/claude-code-models.schema.json``, and -- only if it exists yet --
-   ``catalogs/codex-models.json`` against ``catalogs/codex-models.schema.json``)
-   since neither had a schema check before this script (brief Part 8, deliverable
-   6). Skipped, not failed, when a catalog file is absent (the codex catalog is a
-   different slice's deliverable and may not have landed yet).
+   ``catalogs/claude-code-models.schema.json``), which had no schema check
+   before this script (brief Part 8, deliverable 6). Skipped, not failed, when
+   the catalog file is absent. (Codex has no maintained catalog: both of its
+   transports list models live from the backend.)
 
 Usage::
 
@@ -50,34 +49,11 @@ MODELS_DIR = REPO_ROOT / "catalogs" / "models"
 OVERLAY_SCHEMA_PATH = MODELS_DIR / "overlay.schema.json"
 COMPILED_OVERLAY_PATH = REPO_ROOT / "catalogs" / "model-overlay.json"
 
-#: Packaged read-only cold-start copy (brief Part 8.1: "the committed file as
-#: the cold-start bundled source"), mirroring the existing packaged-seed
-#: pattern for the model-limits DB (``providers/handshake/sources/data/
-#: model_limits.json``) rather than inventing a new one. This lives INSIDE
-#: ``src/clio_agent`` so it ships in the wheel/sdist the same way that seed
-#: does; ``catalogs/model-overlay.json`` stays the canonical, publicly
-#: fetchable copy (raw.githubusercontent.com serves the repo root, not
-#: package internals). Kept byte-identical to the canonical copy by this
-#: script -- never hand-edited.
-BUNDLED_OVERLAY_PATH = (
-    REPO_ROOT
-    / "src"
-    / "clio_agent"
-    / "providers"
-    / "model_discovery"
-    / "data"
-    / "model-overlay.json"
-)
-
 CLAUDE_CODE_CATALOG_PATH = REPO_ROOT / "catalogs" / "claude-code-models.json"
 CLAUDE_CODE_SCHEMA_PATH = REPO_ROOT / "catalogs" / "claude-code-models.schema.json"
+#: The model-limits seed (served from raw GitHub to providers.handshake.sources.db).
+MODEL_LIMITS_PATH = REPO_ROOT / "catalogs" / "model-limits.json"
 
-#: Brief Part 8, deliverable 6: "If catalogs/codex-models.json from S1 exists on
-#: develop when you merge, validate it too." Neither the catalog nor its schema
-#: exist in this tree yet -- both checks below no-op (never fail) until S1
-#: lands them, at which point they behave exactly like the Claude Code pair.
-CODEX_CATALOG_PATH = REPO_ROOT / "catalogs" / "codex-models.json"
-CODEX_SCHEMA_PATH = REPO_ROOT / "catalogs" / "codex-models.schema.json"
 
 SCHEMA_VERSION = 1
 
@@ -202,16 +178,40 @@ def _validate_catalog_if_present(catalog_path: Path, schema_path: Path, *, label
     return problems
 
 
-def validate_adjacent_catalogs() -> list[str]:
-    """Schema-validate the Claude Code catalog, and the codex one if it exists."""
+def validate_model_limits() -> list[str]:
+    """The model-limits seed must be an object of ``{model: {field: positive int}}``."""
 
-    problems = _validate_catalog_if_present(
-        CLAUDE_CODE_CATALOG_PATH, CLAUDE_CODE_SCHEMA_PATH, label="claude-code catalog"
-    )
-    problems += _validate_catalog_if_present(
-        CODEX_CATALOG_PATH, CODEX_SCHEMA_PATH, label="codex catalog"
-    )
+    if not MODEL_LIMITS_PATH.exists():
+        return [f"model-limits seed {MODEL_LIMITS_PATH.name} is missing"]
+    try:
+        data = json.loads(MODEL_LIMITS_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return [f"model-limits seed {MODEL_LIMITS_PATH.name} is not valid JSON: {exc}"]
+    if not isinstance(data, dict):
+        return [f"model-limits seed {MODEL_LIMITS_PATH.name} is not a JSON object"]
+    problems = []
+    for key, entry in data.items():
+        if not isinstance(entry, dict):
+            problems.append(f"model-limits seed entry {key!r} is not an object")
+            continue
+        for field in ("context", "output"):
+            value = entry.get(field)
+            if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool) or value <= 0
+            ):
+                problems.append(f"model-limits seed entry {key!r} has an invalid {field}")
     return problems
+
+
+def validate_adjacent_catalogs() -> list[str]:
+    """Schema-validate the Claude Code catalog when it exists, and the model-limits seed."""
+
+    return [
+        *_validate_catalog_if_present(
+            CLAUDE_CODE_CATALOG_PATH, CLAUDE_CODE_SCHEMA_PATH, label="claude-code catalog"
+        ),
+        *validate_model_limits(),
+    ]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -241,7 +241,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.check:
         stale: list[str] = []
-        for path in (COMPILED_OVERLAY_PATH, BUNDLED_OVERLAY_PATH):
+        for path in (COMPILED_OVERLAY_PATH,):
             if not path.exists():
                 stale.append(f"{path} does not exist")
             elif path.read_text(encoding="utf-8") != rendered:
@@ -254,16 +254,11 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 1
-        print(
-            f"OK: {COMPILED_OVERLAY_PATH} and its packaged copy are up to date "
-            f"({len(entries)} entries)."
-        )
+        print(f"OK: {COMPILED_OVERLAY_PATH} is up to date ({len(entries)} entries).")
         return 0
 
     COMPILED_OVERLAY_PATH.write_text(rendered, encoding="utf-8")
-    BUNDLED_OVERLAY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    BUNDLED_OVERLAY_PATH.write_text(rendered, encoding="utf-8")
-    print(f"wrote {COMPILED_OVERLAY_PATH} and {BUNDLED_OVERLAY_PATH} ({len(entries)} entries)")
+    print(f"wrote {COMPILED_OVERLAY_PATH} ({len(entries)} entries)")
     return 0
 
 

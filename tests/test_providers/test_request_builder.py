@@ -35,6 +35,7 @@ from clio_agent.providers.capabilities.records import (
     ThinkingSpec,
     unknown,
 )
+from tests._catalog_seed import seed_litellm_cost_map
 
 _NOW = "2026-09-25T00:00:00+00:00"
 
@@ -484,7 +485,7 @@ _CODEX_BASE = "codex://direct"
 _CODEX_LEVELS = ("low", "medium", "high", "xhigh")
 
 
-def _seed_codex(model_id: str = "gpt-5.6-sol") -> None:
+def _seed_codex(model_id: str = "gpt-5.6-sol", levels: tuple[str, ...] = _CODEX_LEVELS) -> None:
     _seed(
         provider_id="codex",
         api_base=_CODEX_BASE,
@@ -494,16 +495,25 @@ def _seed_codex(model_id: str = "gpt-5.6-sol") -> None:
         thinking_controls=frozenset({"reasoning_effort"}),
         thinking_spec=ThinkingSpec(
             mechanism="effort_levels",
-            levels=_CODEX_LEVELS,
-            effort_by_level={level: level for level in _CODEX_LEVELS},
+            levels=levels,
+            effort_by_level={level: ("none" if level == "off" else level) for level in levels},
         ),
     )
 
 
-def test_codex_thinking_off() -> None:
-    _seed_codex()
+def test_codex_thinking_off_sends_none_when_the_model_lists_it() -> None:
+    _seed_codex(levels=("off", *_CODEX_LEVELS))
     extras = build_request_kwargs(_cfg("codex", "gpt-5.6-sol", thinking_level="off"))
     assert extras["codex_reasoning_effort"] == "none"
+
+
+def test_codex_thinking_off_is_omitted_when_the_model_does_not_list_it() -> None:
+    """The backend refuses an unlisted effort (live: gpt-6-astra rejects 'none')."""
+    _seed_codex()
+    extras = build_request_kwargs(_cfg("codex", "gpt-5.6-sol", thinking_level="off"))
+    assert "codex_reasoning_effort" not in extras
+    unset = build_request_kwargs(_cfg("codex", "gpt-5.6-sol"))
+    assert "codex_reasoning_effort" not in unset
 
 
 @pytest.mark.parametrize("level", _CODEX_LEVELS)
@@ -855,11 +865,13 @@ def test_model_catalog_assignment_is_zero_everywhere() -> None:
 
 
 def test_openai_effort_applies_before_any_handshake() -> None:
+    seed_litellm_cost_map()
     extras = build_request_kwargs(_cfg("openai", "gpt-5", thinking_level="high"))
     assert extras["reasoning_effort"] == "high"
 
 
 def test_local_thinking_names_its_source_and_never_guesses() -> None:
+    seed_litellm_cost_map()
     from clio_agent.lm.request_builder import local_first_effective
 
     effective = local_first_effective(

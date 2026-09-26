@@ -5,8 +5,8 @@ This is the mechanism ``models_dev``, ``litellm_catalog``, and
 :mod:`clio_agent.providers.fetched_catalog`). These tests exercise the class
 directly, independent of any one caller: a fresh cache hit, TTL expiry, the
 ETag 304 path, a fetch failure keeping last-good with a typed reason, a
-validation failure keeping last-good, a cold start using the bundled source,
-and the atomic write.
+validation failure keeping last-good, the typed offline state on a cold start
+(there is no packaged fallback), and the atomic write.
 """
 
 from __future__ import annotations
@@ -47,7 +47,6 @@ def _catalog(
     *,
     ttl_s: float = 3600.0,
     max_bytes: int = 1024,
-    bundled: Any = None,
 ) -> FetchedCatalog[dict[str, Any]]:
     return FetchedCatalog(
         "widgets",
@@ -56,7 +55,6 @@ def _catalog(
         ttl_s=ttl_s,
         max_bytes=max_bytes,
         timeout_s=1.0,
-        bundled=bundled,
         cache_path=tmp_path / "widgets.json",
     )
 
@@ -224,30 +222,17 @@ def test_validation_failure_keeps_last_good(
     assert json.loads(on_disk["payload"]) == {"a": 1}
 
 
-# ---- cold start with no network uses bundled ----
-def test_cold_start_with_no_cache_and_no_network_uses_bundled(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    catalog = _catalog(tmp_path, bundled=lambda: {"bundled": True})
-
-    def _boom(*_a: object, **_kw: object) -> httpx.Response:
-        raise httpx.ConnectError("offline")
-
-    monkeypatch.setattr("clio_agent.providers.fetched_catalog.httpx.get", _boom)
-    result = catalog.get()
-    assert result.source == "bundled"
-    assert result.stale_reason == "bundled_cold_start"
-    assert result.data == {"bundled": True}
-    assert result.version == "bundled"
+# ---- cold start with no network: the typed offline state ----
+def test_disabled_fetch_with_no_cache_is_the_typed_offline_state(tmp_path: Path) -> None:
+    catalog = _catalog(tmp_path)
+    with pytest.raises(FetchedCatalogUnavailable) as error:
+        catalog.get(allow_fetch=False)
+    assert error.value.reason == "catalog_unavailable_offline"
+    assert error.value.fetch_failure == "fetch_disabled"
+    assert str(error.value).startswith("catalog_unavailable_offline: widgets")
 
 
-def test_disabled_fetch_with_no_cache_uses_bundled(tmp_path: Path) -> None:
-    catalog = _catalog(tmp_path, bundled=lambda: {"bundled": True})
-    result = catalog.get(allow_fetch=False)
-    assert result.source == "bundled"
-
-
-def test_cold_start_with_no_bundled_and_no_network_raises(
+def test_first_run_offline_is_the_typed_offline_state(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     catalog = _catalog(tmp_path)
@@ -256,31 +241,17 @@ def test_cold_start_with_no_bundled_and_no_network_raises(
         raise httpx.ConnectError("offline")
 
     monkeypatch.setattr("clio_agent.providers.fetched_catalog.httpx.get", _boom)
-    with pytest.raises(FetchedCatalogUnavailable):
+    with pytest.raises(FetchedCatalogUnavailable) as error:
         catalog.get()
+    assert error.value.reason == "catalog_unavailable_offline"
+    assert error.value.fetch_failure.startswith("transport_error")
 
 
-def test_bad_bundled_loader_still_raises_unavailable(
+# ---- a disk cache from an earlier fetch rides through a later outage ----
+def test_last_good_disk_cache_serves_through_a_later_outage(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    def _bad_bundled() -> dict[str, Any]:
-        raise RuntimeError("packaged file missing")
-
-    catalog = _catalog(tmp_path, bundled=_bad_bundled)
-
-    def _boom(*_a: object, **_kw: object) -> httpx.Response:
-        raise httpx.ConnectError("offline")
-
-    monkeypatch.setattr("clio_agent.providers.fetched_catalog.httpx.get", _boom)
-    with pytest.raises(FetchedCatalogUnavailable):
-        catalog.get()
-
-
-# ---- bundled is never preferred once ANY disk cache exists ----
-def test_bundled_is_only_used_when_disk_cache_is_totally_absent(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    catalog = _catalog(tmp_path, ttl_s=0.0, bundled=lambda: {"bundled": True})
+    catalog = _catalog(tmp_path, ttl_s=0.0)
     monkeypatch.setattr(
         "clio_agent.providers.fetched_catalog.httpx.get",
         lambda *_a, **_kw: _response('{"a": 1}'),
@@ -294,6 +265,7 @@ def test_bundled_is_only_used_when_disk_cache_is_totally_absent(
     result = catalog.get()
     assert result.source == "disk_cache"
     assert result.data == {"a": 1}
+    assert result.stale_reason.startswith("transport_error")
 
 
 # ---- atomic write ----
@@ -365,11 +337,12 @@ def test_write_retries_a_transient_windows_sharing_race(
 
 
 def test_corrupt_disk_cache_is_treated_as_absent(tmp_path: Path) -> None:
-    catalog = _catalog(tmp_path, bundled=lambda: {"bundled": True})
+    catalog = _catalog(tmp_path)
     catalog.cache_path.parent.mkdir(parents=True, exist_ok=True)
     catalog.cache_path.write_text("not json{{{", encoding="utf-8")
-    result = catalog.get(allow_fetch=False)
-    assert result.source == "bundled"
+    with pytest.raises(FetchedCatalogUnavailable) as error:
+        catalog.get(allow_fetch=False)
+    assert error.value.reason == "catalog_unavailable_offline"
 
 
 def test_provenance_round_trips_through_catalogresult() -> None:
@@ -442,19 +415,17 @@ def test_force_refresh_bypasses_the_in_memory_copy(
     assert catalog.get().data == {"n": 2}
 
 
-def test_bundled_snapshot_is_loaded_once_and_every_read_keeps_its_typed_reason(
+def test_offline_state_is_logged_once_and_every_read_keeps_its_typed_reason(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    loads = {"n": 0}
-
-    def _bundled() -> dict[str, Any]:
-        loads["n"] += 1
-        return {"bundled": True}
-
-    catalog = _catalog(tmp_path, bundled=_bundled)
+    catalog = _catalog(tmp_path)
+    reasons = []
     with caplog.at_level("WARNING", logger="clio_agent.providers.fetched_catalog"):
-        results = [catalog.get(allow_fetch=False) for _ in range(20)]
+        for _ in range(20):
+            with pytest.raises(FetchedCatalogUnavailable) as error:
+                catalog.get(allow_fetch=False)
+            reasons.append(error.value.reason)
 
-    assert loads["n"] == 1
-    assert {result.stale_reason for result in results} == {"bundled_cold_start"}
-    assert sum("bundled_cold_start" in record.getMessage() for record in caplog.records) == 1
+    assert set(reasons) == {"catalog_unavailable_offline"}
+    logged = [r for r in caplog.records if "catalog_unavailable_offline" in r.getMessage()]
+    assert len(logged) == 1
