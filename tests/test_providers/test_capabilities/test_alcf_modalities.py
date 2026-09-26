@@ -380,3 +380,34 @@ def test_models_dev_output_decides_a_task_only_without_text() -> None:
     assert models_dev.task_from_output(frozenset({"image"})) == "text-to-image"
     assert models_dev.task_from_output(frozenset({"audio"})) == "text-to-speech"
     assert models_dev.task_from_output(None) is None
+
+
+@pytest.mark.asyncio
+async def test_alcf_capability_tags() -> None:
+    """sam3 is a segmentation surrogate (framework), gemma-4 has vision (overlay)."""
+    from clio_schemas import ModelCapabilityTags
+
+    report = await _handshake()
+    rows = _rows(report)
+    for row in rows.values():
+        ModelCapabilityTags.model_validate(row["capability_tags"])
+
+    sam3 = rows["sam3"]["capability_tags"]
+    assert sam3["model_type"]["value"] == "segmentation"
+    assert sam3["role"]["value"] == "surrogate"
+    assert [t["value"] for t in sam3["tasks"]] == ["mask-generation"]
+    assert sam3["model_type"]["evidence"][0]["source"] == "server_report"
+    assert "sam3service" in sam3["model_type"]["evidence"][0]["detail"]
+    assert [t["value"] for t in sam3["output_modalities"]] == ["masks"]
+
+    gemma = rows["google/gemma-4-31B-it"]["capability_tags"]
+    assert [t["value"] for t in gemma["input_modalities"]] == ["image", "text"]
+    assert gemma["input_modalities"][0]["evidence"][0]["source"] == "overlay"
+
+    embed = rows["Salesforce/SFR-Embedding-Mistral"]["capability_tags"]
+    assert embed["model_type"]["value"] == "embedding"
+    assert embed["role"]["value"] == "surrogate"
+    assert [t["value"] for t in embed["output_modalities"]] == ["embeddings"]
+
+    tulu = rows["allenai/Llama-3.1-Tulu-3-405B"]["capability_tags"]
+    assert tulu["input_modalities"] == []  # unknown shows nothing, never "text"

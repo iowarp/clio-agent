@@ -403,7 +403,8 @@ def test_pipeline_tag_decides_the_task() -> None:
     assert hf_repo.PIPELINE_TASKS["feature-extraction"] == "feature-extraction"
     assert hf_repo.PIPELINE_TASKS["image-text-to-text"] == "image-text-to-text"
     assert hf_repo.PIPELINE_TASKS["sentence-similarity"] == "feature-extraction"
-    assert "summarization" not in hf_repo.PIPELINE_TASKS
+    assert hf_repo.PIPELINE_TASKS["summarization"] == "summarization"  # every Hub id verbatim
+    assert "not-a-hub-tag" not in hf_repo.PIPELINE_TASKS
 
 
 def test_embedding_repo_facts_carry_the_feature_extraction_task(router: _UrlRouter) -> None:

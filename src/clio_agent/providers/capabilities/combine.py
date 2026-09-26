@@ -150,6 +150,10 @@ class EffectiveCapabilities:
     output_modalities: Decision[frozenset[str]] = field(
         default_factory=lambda: _unknown("no source states output modalities")
     )
+    #: Subject domains the model is built for (a model-record fact).
+    domains: Decision[frozenset[str]] = field(
+        default_factory=lambda: _unknown("no source states domains")
+    )
     #: Endpoint pricing / cost / routing facts -- deployment-record facts only
     #: (what THIS endpoint charges and whether this id is a router), never a
     #: property of the weights.
@@ -457,6 +461,7 @@ def combine_capabilities(
         output_modalities=_single(
             model.output_modalities if model else None, "model", "no source states output modalities"
         ),
+        domains=_single(model.domains if model else None, "model", "no source states domains"),
         pricing=_single(
             deployment.pricing if deployment else None, "deployment", "no pricing reported"
         ),

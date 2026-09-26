@@ -51,6 +51,7 @@ _FACT_FIELDS: tuple[str, ...] = (
     "output_max",
     "input_modalities",
     "output_modalities",
+    "domains",
     "tools",
     "parallel_tool_calls",
     "structured_output",
