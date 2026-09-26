@@ -65,6 +65,23 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def describe_exception(exc: BaseException) -> str:
+    """Return a non-empty, actionable description of ``exc``.
+
+    Some exceptions (a bare ``ImportError()``, certain C-extension errors)
+    carry an empty ``str()``. Left alone, every ``f"... failed: {exc}"`` site
+    below turned that into a reason with no cause attached -- a real failure
+    (e.g. a missing optional dependency) reported to the catalog as an EMPTY
+    string, which is how a broken provider was able to read as healthy. Falls
+    back to the type name + ``repr()`` so the real cause always reaches the
+    trace/API (the no-silent-fallback ground rule) instead of vanishing.
+    """
+    text = str(exc).strip()
+    if text:
+        return text
+    return f"{type(exc).__name__}: {exc!r}"
+
+
 @dataclass
 class ConnectivityResult:
     """Outcome of the connectivity + auth phase."""
@@ -72,6 +89,11 @@ class ConnectivityResult:
     connectivity: ConnectivityState
     auth: AuthState
     error: str | None = None
+    # A typed code for ``error`` when the failure is a KNOWN condition a
+    # caller needs to branch on (e.g. a missing optional dependency) --
+    # threaded onto the resulting HandshakeReport.error_code. Empty for an
+    # ordinary failure with no such code.
+    error_code: str = ""
     # Auth material resolved during the probe, reused by later phases (e.g. a
     # bearer token) so we authenticate once.
     auth_header: dict[str, str] = field(default_factory=dict)
@@ -147,14 +169,31 @@ class ProviderHandshake(abc.ABC):
                 ctx,
                 ConnectivityState.UNREACHABLE,
                 AuthState.MISSING,
-                error=f"client init failed: {exc}",
+                error=f"client init failed: {describe_exception(exc)}",
                 started=started,
             )
         try:
             conn = await self.check_connectivity(client, ctx)
             if conn.connectivity != ConnectivityState.OK:
                 return self._report(
-                    ctx, conn.connectivity, conn.auth, error=conn.error, started=started
+                    ctx,
+                    conn.connectivity,
+                    conn.auth,
+                    error=conn.error,
+                    error_code=conn.error_code,
+                    started=started,
+                )
+            if conn.auth == AuthState.REJECTED:
+                # A refused credential ends the handshake: listing (and
+                # enriching) a public catalog under it proves nothing and, for
+                # a provider with hundreds of models, costs seconds.
+                return self._report(
+                    ctx,
+                    ConnectivityState.OK,
+                    AuthState.REJECTED,
+                    error=conn.error,
+                    error_code=conn.error_code,
+                    started=started,
                 )
             # thread the auth material resolved during connectivity to later phases
             if conn.auth_header:
@@ -174,7 +213,7 @@ class ProviderHandshake(abc.ABC):
                     ctx,
                     ConnectivityState.OK,
                     conn.auth,
-                    error=f"model discovery failed: {exc}",
+                    error=f"model discovery failed: {describe_exception(exc)}",
                     started=started,
                 )
             await self._record_endpoint_capabilities(client, ctx)
@@ -204,11 +243,16 @@ class ProviderHandshake(abc.ABC):
                     continue
                 self._record_model_facts(facts)
                 discovered.append(facts.discovered)
+            # An unproven credential keeps its typed reason even when the
+            # model listing itself answered (a public listing).
+            auth_reason = conn.auth == AuthState.DEFERRED
             return self._report(
                 ctx,
                 ConnectivityState.OK,
                 conn.auth,
                 models=tuple(discovered),
+                error=conn.error if auth_reason else None,
+                error_code=conn.error_code if auth_reason else "",
                 started=started,
             )
         except Exception as exc:  # final backstop — never raise out of a handshake  # noqa: BLE001 - final backstop surfaced in HandshakeReport.error
@@ -216,7 +260,7 @@ class ProviderHandshake(abc.ABC):
                 ctx,
                 ConnectivityState.UNREACHABLE,
                 AuthState.MISSING,
-                error=f"handshake error: {exc}",
+                error=f"handshake error: {describe_exception(exc)}",
                 started=started,
             )
         finally:
@@ -428,6 +472,7 @@ class ProviderHandshake(abc.ABC):
         *,
         models: tuple[DiscoveredModel, ...] = (),
         error: str | None = None,
+        error_code: str = "",
         started: float | None = None,
     ) -> HandshakeReport:
         latency = None if started is None else (time.monotonic() - started) * 1000.0
@@ -444,6 +489,7 @@ class ProviderHandshake(abc.ABC):
             api_base=ctx.api_base,
             latency_ms=latency,
             error=error,
+            error_code=error_code,
             models=models,
             models_source=source,
             generated_at=now,

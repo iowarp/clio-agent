@@ -168,6 +168,86 @@ async def test_http_401_is_reachable_but_rejected() -> None:
     conn = await handshake.check_connectivity(client, ctx)
     assert conn.connectivity is ConnectivityState.OK
     assert conn.auth is AuthState.REJECTED
+    assert conn.error_code == "api_key_rejected"
+
+
+def _openrouter_ctx(api_key: str) -> HandshakeContext:
+    return HandshakeContext(
+        provider_id="openrouter",
+        provider_kind="openai",
+        api_base="https://openrouter.ai/api/v1",
+        api_key=api_key,
+        allow_external_sources=False,
+    )
+
+
+_OPENROUTER_MODELS = {"data": [{"id": "openai/gpt-oss-120b:free"}]}
+
+
+@pytest.mark.asyncio
+async def test_a_public_model_listing_never_proves_a_fake_key() -> None:
+    """OpenRouter lists its models to anyone, so a fake key would sail through a
+    /models probe. The registry's ``key_check_path`` makes the handshake ask an
+    endpoint that answers only a valid key -- and a 401 there is a rejected key."""
+    client = FakeAsyncClient(
+        routes={
+            "https://openrouter.ai/api/v1/models": FakeResponse(200, _OPENROUTER_MODELS),
+            "https://openrouter.ai/api/v1/key": FakeResponse(401, {"error": "No auth"}),
+        }
+    )
+    handshake = OpenAICompatHandshake(provider=object())
+
+    conn = await handshake.check_connectivity(client, _openrouter_ctx("sk-or-v1-fake"))
+
+    assert conn.auth is AuthState.REJECTED
+    assert conn.error_code == "api_key_rejected"
+    assert ("https://openrouter.ai/api/v1/key", {"Authorization": "Bearer sk-or-v1-fake"}) in (
+        client.calls
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_key_the_key_check_accepts_is_ok() -> None:
+    client = FakeAsyncClient(
+        routes={
+            "https://openrouter.ai/api/v1/models": FakeResponse(200, _OPENROUTER_MODELS),
+            "https://openrouter.ai/api/v1/key": FakeResponse(200, {"data": {"label": "k"}}),
+        }
+    )
+    handshake = OpenAICompatHandshake(provider=object())
+
+    conn = await handshake.check_connectivity(client, _openrouter_ctx("sk-or-v1-real"))
+
+    assert conn.auth is AuthState.OK
+
+
+@pytest.mark.asyncio
+async def test_an_unavailable_key_check_is_a_typed_deferred_never_a_pass() -> None:
+    client = FakeAsyncClient(
+        routes={
+            "https://openrouter.ai/api/v1/models": FakeResponse(200, _OPENROUTER_MODELS),
+            "https://openrouter.ai/api/v1/key": FakeResponse(503, {}),
+        }
+    )
+    handshake = OpenAICompatHandshake(provider=object())
+
+    conn = await handshake.check_connectivity(client, _openrouter_ctx("sk-or-v1-real"))
+
+    assert conn.auth is AuthState.DEFERRED
+    assert conn.error.startswith("key_check_unavailable")
+
+
+@pytest.mark.asyncio
+async def test_a_provider_without_a_key_check_path_makes_no_extra_call() -> None:
+    client = FakeAsyncClient(
+        routes={"https://api.example.com/v1/models": FakeResponse(200, {"data": [{"id": "m"}]})}
+    )
+    handshake = OpenAICompatHandshake(provider=object())
+
+    conn = await handshake.check_connectivity(client, _ctx())
+
+    assert conn.auth is AuthState.OK
+    assert [url for url, _ in client.calls] == ["https://api.example.com/v1/models"]
 
 
 @pytest.mark.asyncio
@@ -435,3 +515,30 @@ def _const_client(client: Any) -> Any:
         return client
 
     return _open
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_key_ends_the_handshake_before_model_discovery() -> None:
+    """A refused key must not go on to list (and enrich) a public catalog of
+    hundreds of models: one /models probe, one key check, then the verdict."""
+    client = FakeAsyncClient(
+        routes={
+            "https://openrouter.ai/api/v1/models": FakeResponse(200, _OPENROUTER_MODELS),
+            "https://openrouter.ai/api/v1/key": FakeResponse(401, {"error": "No auth"}),
+        }
+    )
+    handshake = OpenAICompatHandshake(provider=object())
+
+    async def _client(_ctx: HandshakeContext) -> FakeAsyncClient:
+        return client
+
+    handshake._open_client = _client  # type: ignore[method-assign]
+    report = await handshake.handshake(_openrouter_ctx("sk-or-v1-fake"))
+
+    assert report.auth is AuthState.REJECTED
+    assert report.error_code == "api_key_rejected"
+    assert report.models == ()
+    assert [url for url, _ in client.calls] == [
+        "https://openrouter.ai/api/v1/models",
+        "https://openrouter.ai/api/v1/key",
+    ]

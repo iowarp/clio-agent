@@ -27,6 +27,7 @@ from clio_agent.providers.catalog_types import (
     Provider,
     ProviderConfigurationField,
 )
+from clio_agent.providers.codex.constants import LITELLM_PROVIDER as _CODEX_LITELLM_PREFIX
 
 # -- shared catalogs --------------------------------------------------
 
@@ -170,7 +171,7 @@ PROVIDERS: tuple[Provider, ...] = (
     # ----- cloud / proxy ---------------------------------------------
     Provider(
         id="openai",
-        label="OpenAI / ChatGPT",
+        label="OpenAI API",
         description=(
             "Direct OpenAI API. Requires "
             "an OPENAI_API_KEY. Defaults to gpt-4o-mini for low cost; "
@@ -351,6 +352,8 @@ PROVIDERS: tuple[Provider, ...] = (
         api_base="https://openrouter.ai/api/v1",
         suggested_model="openai/gpt-oss-120b:free",
         api_key_env="OPENROUTER_API_KEY",
+        # GET /api/v1/key describes the calling key; 401 for a bad one.
+        key_check_path="/key",
         supports_vision=True,
         model_catalog=(
             ModelEntry(
@@ -372,21 +375,26 @@ PROVIDERS: tuple[Provider, ...] = (
     ),
     Provider(
         id="codex",
-        label="OpenAI Codex",
+        label="Codex",
         description=(
-            "Uses the official OpenAI Codex Python SDK so calls reuse "
-            "your ChatGPT / Codex subscription instead of paying "
-            "per-token on the OpenAI API. Authenticate Codex once on "
-            "this machine; the SDK owns its pinned runtime."
+            "Signs in with your Codex account and calls the Codex backend "
+            "directly from CLIO's own process -- no Codex CLI, no Codex SDK. "
+            "Usage counts against your Codex plan limits."
         ),
         provider_kind="codex",
-        litellm_prefix="codex",
-        # Codex does not use an HTTP base. This is an identity marker only;
-        # the official Python SDK owns its pinned runtime.
-        api_base="codex://sdk",
-        # Codex model entitlement is account-specific and changes independently
-        # of CLIO releases. Never auto-select a compiled-in candidate; a
-        # successful SDK catalog check supplies the account's live default.
+        # The litellm wire prefix is kept separate from the catalog id
+        # ("codex") on purpose: this module was ORIGINALLY registered under
+        # "chatgpt" (its catalog id at the time), and litellm ships its own
+        # native "chatgpt" provider that silently intercepted every turn
+        # before ours ever ran. See providers.codex.constants.LITELLM_PROVIDER
+        # for the full story -- this indirection is the permanent fix.
+        litellm_prefix=_CODEX_LITELLM_PREFIX,
+        # No HTTP base to configure -- an identity marker only. The actual
+        # transport endpoints (chatgpt.com/backend-api) live in
+        # providers.codex.constants, never here.
+        api_base="codex://direct",
+        # The maintained catalog (catalogs/codex-models.json) supplies the
+        # live default; never auto-select a compiled-in candidate.
         suggested_model="",
         requires_api_key=False,
         auth_method="subscription",
@@ -396,19 +404,14 @@ PROVIDERS: tuple[Provider, ...] = (
         parse_retry_capability="single_attempt",
         model_catalog=(
             ModelEntry(
+                "gpt-5.6-sol",
+                "GPT-5.6 Sol (Codex)",
+                "Candidate Codex catalog model id; not guaranteed by account entitlement.",
+            ),
+            ModelEntry(
                 "gpt-5.5",
-                "GPT-5.5 (via Codex)",
-                "Candidate Codex SDK model id; not guaranteed by account entitlement.",
-            ),
-            ModelEntry(
-                "gpt-5.5-codex",
-                "GPT-5.5 Codex",
-                "Candidate Codex-tuned model id; not guaranteed by account entitlement.",
-            ),
-            ModelEntry(
-                "gpt-5.1",
-                "GPT-5.1 (via Codex)",
-                "Fallback candidate model id; not guaranteed by account entitlement.",
+                "GPT-5.5 (Codex)",
+                "Candidate Codex catalog model id; not guaranteed by account entitlement.",
             ),
         ),
     ),

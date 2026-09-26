@@ -43,6 +43,7 @@ from clio_agent.providers.handshake.base import (
     DiscoveryAuthRejected,
     HandshakeContext,
     ProviderHandshake,
+    describe_exception,
 )
 from clio_agent.providers.handshake.model import (
     AuthState,
@@ -252,11 +253,21 @@ class ArgonneHandshake(ProviderHandshake):
 
             try:
                 refreshed = argonne_auth.get_access_token(False, allow_interactive=False)
+            except argonne_auth.GlobusUnavailable as exc:
+                # The 'argonne' extra (globus-sdk) itself is not installed --
+                # no amount of re-signing-in helps; a typed code so the
+                # catalog can offer Install rather than a generic failure.
+                return ConnectivityResult(
+                    connectivity=ConnectivityState.SKIPPED,
+                    auth=AuthState.MISSING,
+                    error=f"argonne_sdk_missing: {describe_exception(exc)}",
+                    error_code="argonne_sdk_missing",
+                )
             except Exception as exc:  # noqa: BLE001 - token refresh failure surfaced as SKIPPED connectivity
                 return ConnectivityResult(
                     connectivity=ConnectivityState.SKIPPED,
                     auth=AuthState.MISSING,
-                    error=f"argonne token unavailable: {exc}",
+                    error=f"argonne token unavailable: {describe_exception(exc)}",
                 )
             token = (refreshed or "").strip() or None
 
@@ -264,10 +275,12 @@ class ArgonneHandshake(ProviderHandshake):
             from clio_agent.providers import argonne_auth  # noqa: PLC0415
 
             stored = argonne_auth.tokens_exist()
+            error_code = "argonne_sdk_missing" if lookup.reason == "argonne_sdk_missing" else ""
             return ConnectivityResult(
                 connectivity=ConnectivityState.SKIPPED,
                 auth=AuthState.DEFERRED if stored else AuthState.MISSING,
                 error=lookup.error,
+                error_code=error_code,
             )
 
         return ConnectivityResult(

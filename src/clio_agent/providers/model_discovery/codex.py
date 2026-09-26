@@ -1,168 +1,113 @@
-"""Codex model discovery through the official Python SDK."""
+"""Codex model discovery: the maintained catalog plus a credential-store check.
+
+Per owner ruling (A.8), the model list, its context/output limits, and its
+reasoning-effort levels come from the maintained catalog
+(:mod:`.codex_catalog`) -- the Codex backend offers no account model-
+enumeration RPC the way the deleted ``openai_codex`` SDK's ``client.models()``
+did. This module's only LIVE check is whether CLIO holds a signed-in Codex
+credential -- never a network probe, which would spend this passive discovery
+path on a token refresh nobody asked for.
+"""
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
-from clio_agent.providers.model_discovery.modality_evidence import (
-    modality_evidence,
-    reported_modalities,
+from clio_agent.providers.codex.credentials import CodexCredentialStore
+from clio_agent.providers.codex.errors import CODEX_AUTHENTICATION_ERROR_MESSAGE
+from clio_agent.providers.model_discovery.codex_catalog import (
+    CodexCatalogError,
+    refresh_codex_catalog,
 )
-from clio_agent.providers.model_discovery.overlay import (
-    CODEX_SOURCE,
-    ProviderDiscoveryResult,
-    attach_context_limits,
-)
-
-#: The modalities a Codex row can claim beyond text. Listed so an omitted
-#: ``input_modalities`` field records exactly which capabilities went
-#: unevidenced instead of leaving the negative anonymous.
-_CODEX_NON_TEXT_MODALITIES = ("image",)
+from clio_agent.providers.model_discovery.modality_evidence import modality_evidence
+from clio_agent.providers.model_discovery.overlay import CODEX_SOURCE, ProviderDiscoveryResult
 
 
-def _codex_capability_row(row: Any) -> dict[str, Any]:
-    """Return one discovered row's capabilities plus their typed evidence.
-
-    The pinned ``openai_codex`` SDK declares ``Model.input_modalities`` with a
-    schema default of ``["text", "image"]`` (verified in
-    ``openai_codex/generated/v2_all.py``), so reading the attribute directly
-    manufactures an image capability for any wire row that omitted the field —
-    and the typed negative could never fire in production. Capabilities are
-    therefore stamped ONLY from ``model_fields_set``; an omitted field records
-    no modality at all and a ``modality_unreported`` reason.
-    """
-
-    values = reported_modalities(row, "input_modalities")
-    if values is None:
-        return {
-            "capabilities": [],
-            "capability_evidence": modality_evidence(
-                source="codex_sdk_input_modalities",
-                reason="modality_unreported",
-                unevidenced=_CODEX_NON_TEXT_MODALITIES,
-            ),
-        }
+def _capability_row(model: dict[str, Any]) -> dict[str, Any]:
+    capabilities = [str(v) for v in model.get("capabilities") or ["text"]]
     return {
-        "capabilities": values,
+        "capabilities": capabilities,
         "capability_evidence": modality_evidence(
-            source="codex_sdk_input_modalities",
-            reason="modality_reported",
+            source="codex_catalog", reason="modality_cataloged"
         ),
     }
 
 
-def _effort_value(effort: Any) -> str:
-    return str(getattr(effort, "value", effort) or "")
+def _reasoning_row(model: dict[str, Any]) -> dict[str, Any]:
+    """Persist the catalog's effort levels in the SAME field names Codex's SDK
+    discovery used (``supported_reasoning_efforts``/``default_reasoning_effort``)
+    so :mod:`clio_agent.providers.handshake.cli_catalog` and
+    :mod:`clio_agent.providers.reasoning_levels` need no shape change."""
+
+    levels = [str(v) for v in model.get("effort_levels") or []]
+    default = "medium" if "medium" in levels else (levels[0] if levels else "")
+    return {"supported_reasoning_efforts": levels, "default_reasoning_effort": default}
 
 
-def _codex_reasoning_row(row: Any) -> dict[str, Any]:
-    """Return the reasoning efforts the Codex catalog reports for one model.
+def discover_codex(
+    *,
+    credential_store: CodexCredentialStore | None = None,
+    catalog_candidates: list[dict[str, Any]] | None = None,
+) -> ProviderDiscoveryResult:
+    """Trust the maintained catalog for models; verify sign-in via the credential store.
 
-    ``supportedReasoningEfforts`` / ``defaultReasoningEffort`` are REQUIRED fields
-    of the SDK's ``Model`` (``openai_codex/generated/v2_all.py``), so they are the
-    account's own per-model truth. They are persisted verbatim (Codex vocabulary:
-    ``none``/``minimal``/``low``/``medium``/``high``/``xhigh``); the catalog maps
-    them onto clio's thinking levels in :mod:`clio_agent.providers.reasoning_levels`.
+    Args:
+        credential_store: Injection seam for tests.
+        catalog_candidates: An explicit row list (diagnostic callers / tests)
+            bypassing the fetched catalog.
     """
 
-    options = getattr(row, "supported_reasoning_efforts", None) or []
-    supported = [
-        value
-        for value in (_effort_value(getattr(option, "reasoning_effort", "")) for option in options)
-        if value
-    ]
-    return {
-        "supported_reasoning_efforts": supported,
-        "default_reasoning_effort": _effort_value(getattr(row, "default_reasoning_effort", "")),
-    }
-
-
-# Deliberate injection seam for focused discovery tests.  The official SDK is
-# still imported only when discovery is requested; keeping the default as
-# ``None`` prevents provider startup from loading Codex for unrelated users.
-AsyncCodex: Any | None = None
-
-
-def discover_codex(*, timeout: float = 20.0) -> ProviderDiscoveryResult:
-    """Refresh the account's live Codex catalog through ``openai_codex``.
-
-    The Python SDK owns its pinned runtime and authentication. CLIO neither
-    resolves a ``codex`` executable nor opens an app-server protocol connection.
-    """
-
-    try:
-        from openai_codex import AsyncCodex as SDKAsyncCodex  # noqa: PLC0415
-        from openai_codex import CodexConfig, CodexError  # noqa: PLC0415
-
-        from clio_agent.providers.codex_credential_home import (  # noqa: PLC0415
-            IsolatedCodexHome,
-        )
-        from clio_agent.providers.codex_stream import (  # noqa: PLC0415
-            BARE_LM_CONFIG_OVERRIDES,
-        )
-    except (ImportError, OSError) as exc:
-        return ProviderDiscoveryResult(
-            provider="codex",
-            discovered=[],
-            source=CODEX_SOURCE,
-            failed_reason=f"Codex Python SDK is unavailable: {exc}",
-        )
-
-    sdk_client = AsyncCodex or SDKAsyncCodex
-
-    async def _query() -> Any:
-        sdk_home = IsolatedCodexHome()
+    if catalog_candidates is None:
         try:
-            async with sdk_client(
-                CodexConfig(
-                    config_overrides=BARE_LM_CONFIG_OVERRIDES,
-                    env=sdk_home.start(),
-                )
-            ) as client:
-                return await client.models()
-        finally:
-            sdk_home.close()
+            catalog = refresh_codex_catalog()
+        except CodexCatalogError as exc:
+            return ProviderDiscoveryResult(
+                provider="codex", discovered=[], source=CODEX_SOURCE, failed_reason=str(exc)
+            )
+        rows, default_model = catalog.models, catalog.default_model
+    else:
+        rows, default_model = catalog_candidates, ""
 
-    async def _bounded_query() -> Any:
-        return await asyncio.wait_for(_query(), timeout=timeout)
-
-    try:
-        response = asyncio.run(_bounded_query())
-    except (CodexError, OSError, RuntimeError, TimeoutError) as exc:
+    store = credential_store or CodexCredentialStore()
+    if not store.is_signed_in():
         return ProviderDiscoveryResult(
             provider="codex",
             discovered=[],
             source=CODEX_SOURCE,
-            failed_reason=f"Codex Python SDK model discovery failed: {exc}",
+            failed_reason=CODEX_AUTHENTICATION_ERROR_MESSAGE,
         )
 
-    rows = list(response.data)
     discovered = [
         {
-            "id": str(row.id),
-            "name": str(row.display_name or row.id),
-            "description": str(row.description or ""),
-            **_codex_capability_row(row),
-            **_codex_reasoning_row(row),
+            "id": str(row["id"]),
+            "name": str(row.get("name") or row["id"]),
+            "description": "",
+            # A.8: the maintained catalog IS the source of truth for these two
+            # -- never routed through overlay.attach_context_limits()'s
+            # models.dev/litellm/local-DB cascade. That cascade is for
+            # providers with no such catalog of their own (claude_code); for
+            # Codex it would look up candidate ids like "gpt-5.6-sol" that
+            # cascade has never heard of, miss, and silently overwrite a real
+            # catalog value with None (caught in review, never shipped).
+            "context_window": row.get("context_window"),
+            "output_limit": row.get("max_output_tokens"),
+            "context_source": "codex_catalog",
+            **_capability_row(row),
+            **_reasoning_row(row),
         }
         for row in rows
-        if row.id
+        if isinstance(row, dict) and row.get("id")
     ]
     if not discovered:
         return ProviderDiscoveryResult(
             provider="codex",
             discovered=[],
             source=CODEX_SOURCE,
-            failed_reason="Codex Python SDK returned zero models",
+            failed_reason="Codex catalog has zero models",
         )
-    default_model = next(
-        (str(row.id) for row in rows if row.is_default),
-        "",
-    )
     return ProviderDiscoveryResult(
         provider="codex",
-        discovered=attach_context_limits(discovered, "codex"),
+        discovered=discovered,
         source=CODEX_SOURCE,
         default_model=default_model,
     )

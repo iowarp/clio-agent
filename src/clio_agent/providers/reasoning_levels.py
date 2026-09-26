@@ -8,9 +8,11 @@ The same answer feeds :func:`~clio_agent.providers.thinking.resolve_thinking`
 (via :func:`model_effort_levels`) when a turn's LM is built, so what the catalog
 offers is exactly what is sent:
 
-* **codex** — the Codex SDK catalog reports ``supportedReasoningEfforts`` and
-  ``defaultReasoningEffort`` per model (persisted by discovery). Every effort
-  the SDK defines has a clio level (``none`` is ``off``).
+* **codex** — the maintained Codex catalog document reports each model's
+  ``effort_levels`` (persisted by discovery, in the SAME
+  ``supported_reasoning_efforts``/``default_reasoning_effort`` overlay-row
+  field names the deleted Codex SDK discovery used). Every effort the catalog
+  defines has a clio level (``none`` is ``off``).
 * **claude_code** — the Claude Code CLI reports each model's
   ``supportedEffortLevels`` in its ``initialize`` response (read once per
   discovery through the Agent SDK, no model turn; persisted on the overlay row).
@@ -39,8 +41,9 @@ from clio_agent.providers.thinking import LEVEL_ORDER, resolve_thinking, shipped
 
 logger = logging.getLogger(__name__)
 
-#: Codex ``ReasoningEffort`` values -> clio thinking levels. ``max``/``ultra``
-#: are reported by newer models (#1436) and map onto themselves like ``xhigh``.
+#: Codex (Codex backend) ``reasoning.effort`` values -> clio thinking levels.
+#: ``max``/``ultra`` are reported by newer models and map onto themselves like
+#: ``xhigh``.
 _CODEX_TO_LEVEL: dict[str, str] = {
     "none": "off",
     "minimal": "minimal",
@@ -196,14 +199,14 @@ def model_effort_levels(
 def _codex(profile: DiscoveredModel) -> tuple[list[str], str, str, str]:
     reported = profile.raw.get("supported_reasoning_efforts")
     if not isinstance(reported, list):
-        return [], "", "codex_sdk_unreported", ""
+        return [], "", "codex_catalog_unreported", ""
     unmapped = [str(v) for v in reported if str(v) not in _CODEX_TO_LEVEL]
     levels = [_CODEX_TO_LEVEL[str(v)] for v in reported if str(v) in _CODEX_TO_LEVEL]
     default = _CODEX_TO_LEVEL.get(str(profile.raw.get("default_reasoning_effort") or ""), "")
     reason = f"codex_effort_unmapped: {', '.join(unmapped)}" if unmapped else ""
     if unmapped:
         logger.warning("reasoning levels: %s (model=%s)", reason, profile.id)
-    return levels, default, "codex_sdk", reason
+    return levels, default, "codex_catalog", reason
 
 
 def _claude_code(profile: DiscoveredModel) -> tuple[list[str], str, str, str]:
