@@ -5,6 +5,9 @@ on:
     branches: [main, develop, "v*"]
   pull_request:
     branches: [main, develop, "campaign/**", "codex/**"]
+  # provider-sdk-bump.yml dispatches CI on its bump branch: a PR opened with
+  # GITHUB_TOKEN does not trigger pull_request workflows.
+  workflow_dispatch: {}
 
 jobs:
   check:

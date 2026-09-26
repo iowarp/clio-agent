@@ -824,6 +824,14 @@ KEY_NOTES: dict[str, str] = {
         "empty (the default) accepts only inline data: URIs, so no attachment leaves CLIO "
         "unbounded and unattributed."
     ),
+    "providers.component_updates.index_url": (
+        "PyPI JSON API base the provider SDK update check reads "
+        "(<index>/<distribution>/json); point at a mirror that serves the same API."
+    ),
+    "providers.component_updates.ttl_s": (
+        "Seconds one provider SDK update check (installed vs latest installable release) is "
+        "served before PyPI is asked again; an explicit check always asks again."
+    ),
     "providers.model_catalog_ttl_s": (
         "Seconds a discovered provider model catalog is served as fresh before every read marks "
         "it typed-stale (it is still served, never cleared); 0 disables the age check. Lower on "

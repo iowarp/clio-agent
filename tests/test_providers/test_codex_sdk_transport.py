@@ -506,3 +506,98 @@ async def test_cancel_interrupts_an_in_flight_sdk_turn(monkeypatch: pytest.Monke
     finally:
         gact_context.reset(session_token)
         client.close_blocking()
+
+
+def test_sdk_client_runs_the_selected_binary_and_restarts_when_it_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The SDK half launches the selected Codex binary; when the selection changes
+    (a newer CLI installed, an update replaced the bundled one) and no turn holds
+    the runtime, the next turn gets a runtime on the NEW binary.
+
+    SABOTAGE: drop the binary-change check -> the old runtime is reused -> red."""
+    from clio_agent.providers.components import client_binary
+
+    started: list[str | None] = []
+    closed: list[str | None] = []
+
+    class _FakeClient:
+        def __init__(self, config: Any) -> None:
+            self.bin = config.codex_bin
+            started.append(self.bin)
+
+        async def __aenter__(self) -> "_FakeClient":
+            return self
+
+        async def __aexit__(self, *_a: object) -> bool:
+            return False
+
+        async def close(self) -> None:
+            closed.append(self.bin)
+
+    selected = {"path": "C:/npm/codex.exe"}
+
+    def _selection() -> client_binary.ClientSelection:
+        return client_binary.ClientSelection(
+            client_binary.ClientBinary(selected["path"], "0.157.1", "installed"),
+            "codex_installed_cli",
+        )
+
+    monkeypatch.setattr(sdk_client, "AsyncCodex", _FakeClient)
+    monkeypatch.setattr(sdk_client, "codex_client", _selection)
+    client = sdk_client.CodexSDKClient()
+
+    async def _drive() -> None:
+        await client._ensure_client()
+        await client._ensure_client()
+        assert started == ["C:/npm/codex.exe"]
+        selected["path"] = "C:/npm/codex-0.158.exe"
+        client._client_users = 1  # a turn holds the runtime: never pulled from under it
+        await client._ensure_client()
+        assert started == ["C:/npm/codex.exe"]
+        client._client_users = 0
+        await client._ensure_client()
+
+    asyncio.run(_drive())
+    assert started == ["C:/npm/codex.exe", "C:/npm/codex-0.158.exe"]
+    assert closed == ["C:/npm/codex.exe"]
+
+
+def test_release_idle_runtime_refuses_while_a_turn_holds_it() -> None:
+    client = sdk_client.CodexSDKClient()
+    assert client.release_idle_runtime() is True  # nothing running
+    client._client = object()  # type: ignore[assignment]
+    client._client_users = 1
+    assert client.release_idle_runtime() is False
+
+
+def test_catalog_row_reports_the_client_the_sdk_half_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The provider row carries the typed ``client`` fact (installed vs bundled + version),
+    and an explicit check re-selects so a newly installed CLI shows up."""
+    from clio_agent.gact import provider_catalog
+    from clio_agent.providers.components import client_binary
+
+    resets: list[bool] = []
+    monkeypatch.setattr(client_binary, "reset_client_cache", lambda: resets.append(True))
+    monkeypatch.setattr(
+        client_binary,
+        "provider_client",
+        lambda kind: client_binary.ClientSelection(
+            client_binary.ClientBinary("C:/npm/codex.exe", "0.157.1", "installed"),
+            "codex_installed_cli",
+            bundled=client_binary.ClientBinary("C:/site/codex.exe", "0.147.0", "bundled"),
+        )
+        if kind == "codex"
+        else None,
+    )
+    fact = provider_catalog._client_fact("codex", refresh=True)
+    assert fact is not None
+    assert (fact["source"], fact["version"], fact["bundled_version"]) == (
+        "installed",
+        "0.157.1",
+        "0.147.0",
+    )
+    assert resets == [True]
+    provider_catalog._client_fact("codex", refresh=False)
+    assert resets == [True]
+    assert provider_catalog._client_fact("openai", refresh=False) is None

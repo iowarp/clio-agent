@@ -125,6 +125,7 @@ EVIDENCED_CATALOG_SOURCES: frozenset[str] = frozenset({"live", "overlay"})
 #: Every other kind is probed live and keeps a last-good list for empty probes.
 _CLI_CATALOG_KINDS: frozenset[str] = frozenset({"codex", "claude_code"})
 
+
 #: Codex SDK reasoning-effort vocabulary -> CLIO level, for reading a raw
 #: discovered row's own ``default_reasoning_effort`` back into CLIO
 #: vocabulary in :func:`_reasoning_wire_block` (the catalog's ``reasoning.
@@ -192,6 +193,7 @@ def _reasoning_wire_block(effective_thinking: Any, profile: DiscoveredModel) -> 
     if failure:
         block["reason"] = failure
     return block
+
 
 #: Typed :class:`~clio_agent.providers.handshake.model.HandshakeReport.error_code`
 #: values that mean "a missing OPTIONAL dependency", never a generic failure --
@@ -537,7 +539,9 @@ def _record_sdk_endpoint(provider_id: str) -> None:
     )
 
 
-def _record_sdk_model(provider_id: str, row: dict[str, Any], *, observed_at: str) -> DiscoveredModel:
+def _record_sdk_model(
+    provider_id: str, row: dict[str, Any], *, observed_at: str
+) -> DiscoveredModel:
     """Record one SDK-discovered model's facts and return its bare identity.
 
     The SDK transport is its own endpoint (:data:`_CODEX_SDK_API_BASE`), so its
@@ -648,6 +652,20 @@ def _combine_transport_health(transports: list[dict[str, Any]]) -> tuple[str, st
     return "unavailable", "no codex transport reported a health state"
 
 
+def _client_fact(provider_kind: str, *, refresh: bool) -> dict[str, Any] | None:
+    """The CLI binary a provider's SDK transport runs (installed vs bundled + version).
+
+    An explicit check (``refresh``) re-selects, so a CLI the user installed or
+    upgraded since the last check is picked up without a restart.
+    """
+    from clio_agent.providers.components import client_binary  # noqa: PLC0415
+
+    if refresh:
+        client_binary.reset_client_cache()
+    selection = client_binary.provider_client(provider_kind)
+    return selection.to_wire() if selection is not None else None
+
+
 async def discover_provider(preset: LMProviderPreset, *, refresh: bool = False) -> dict[str, Any]:
     """Run one passive handshake and return a normalized provider record."""
 
@@ -702,6 +720,10 @@ async def discover_provider(preset: LMProviderPreset, *, refresh: bool = False) 
         "failure": failure,
         "models": [model_catalog_row(preset, report, model) for model in models],
     }
+    if preset.provider in _CLI_CATALOG_KINDS:
+        # Which CLI the SDK transport runs, as a typed fact on the row (for
+        # Codex: the SDK half's binary; the Direct half runs none).
+        payload["client"] = await asyncio.to_thread(_client_fact, preset.provider, refresh=refresh)
     if preset.provider == "codex":
         # Two transports of the SAME catalog entry (S1b): the direct/OAuth
         # transport this pipeline already evidenced above, and the restored
