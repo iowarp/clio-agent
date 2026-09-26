@@ -19,6 +19,7 @@ from clio_agent.gact.types import LMProviderPreset
 from clio_agent.providers import model_discovery
 from clio_agent.providers.capabilities import invalidation
 from clio_agent.providers.capabilities.accessor import get_effective_capabilities
+from clio_agent.providers.capabilities.facts_wire import model_facts
 from clio_agent.providers.capabilities.records import (
     DeploymentCapabilities,
     Fact,
@@ -285,9 +286,7 @@ def model_catalog_row(
         "role": role,
         "chat_selectable": chat_selectable,
         # Evidenced facts the picker renders as tags and filters on; null when
-        # no source states them. ``pricing`` is per token, as the provider
-        # states it, with "variable" for a price that depends on the routed
-        # model (never 0).
+        # no source states them.
         "output_modalities": (
             sorted(effective.output_modalities.value or ())
             if effective.output_modalities.known
@@ -296,12 +295,14 @@ def model_catalog_row(
         "structured_output": effective.structured_output.value,
         "free": effective.free.value,
         "router": effective.router.value,
-        "pricing": dict(effective.pricing.value or {}) if effective.pricing.known else None,
         # Every tag the picker renders and filters on, each with its evidence
         # (clio_schemas.ModelCapabilityTags). Absent tag = no source stated it.
         "capability_tags": capability_tags(
             effective, model_key=effective.model_key or profile.id
         ).model_dump(mode="json"),
+        # Description, release date (+ serve-time ``recent``), pricing per 1M
+        # tokens and parameter count, each with its evidence (facts_wire).
+        "model_facts": model_facts(effective, model_key=effective.model_key or profile.id),
         # The levels a person can actually choose for THIS model, derived
         # directly from the effective capabilities' own ThinkingDecision --
         # never a second, provider-name-keyed mapping table.
@@ -335,7 +336,6 @@ def model_catalog_row(
             "modalities": _provenance_row(effective.input_modalities),
             "task": _provenance_row(effective.task),
             "output_modalities": _provenance_row(effective.output_modalities),
-            "pricing": _provenance_row(effective.pricing),
             "free": _provenance_row(effective.free),
             "router": _provenance_row(effective.router),
             "reasoning": _provenance_row(effective.thinking),

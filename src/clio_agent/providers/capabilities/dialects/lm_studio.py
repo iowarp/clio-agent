@@ -28,6 +28,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from clio_agent.providers.capabilities.link import deployment_model_key_fact
+from clio_agent.providers.capabilities.model_facts import (
+    ParameterCount,
+    parameters_from_size_field,
+)
 from clio_agent.providers.capabilities.records import (
     DeploymentCapabilities,
     EndpointCapabilities,
@@ -65,6 +69,19 @@ def _v1_allowed_reasoning_options(row: Mapping[str, Any]) -> tuple[str, ...] | N
     if not isinstance(options, list):
         return None
     return tuple(str(o) for o in options)
+
+
+def _v1_parameters(row: Mapping[str, Any], observed_at: str) -> Fact[ParameterCount]:
+    """``params_string`` (LM Studio's rounded display size, e.g. ``'8B'``), or unknown."""
+    total = parameters_from_size_field(row.get("params_string"))
+    if total is None:
+        return unknown()
+    return Fact(
+        ParameterCount(total=total, precision="rounded"),
+        "server_report",
+        observed_at,
+        f"lmstudio /api/v1/models params_string={row.get('params_string')!r}",
+    )
 
 
 def parse_v1_row(
@@ -112,6 +129,12 @@ def parse_v1_row(
                 "lmstudio /api/v1/models capabilities.vision",
             )
             if vision is not None
+            else unknown()
+        ),
+        parameters=_v1_parameters(row, observed_at),
+        description=(
+            Fact(row["description"], "server_report", observed_at, "lmstudio /api/v1/models description")
+            if isinstance(row.get("description"), str) and row["description"].strip()
             else unknown()
         ),
     )

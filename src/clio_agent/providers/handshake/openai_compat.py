@@ -40,6 +40,7 @@ from clio_agent.providers.capabilities.records import (
     DeploymentCapabilities,
     Fact,
     ModelCapabilities,
+    unknown,
 )
 from clio_agent.providers.handshake.base import (
     ConnectivityResult,
@@ -315,9 +316,12 @@ class OpenAICompatHandshake(ProviderHandshake):
             deployment = cloud_dialect.build_deployment_capabilities(
                 ctx.provider_id, ctx.api_base, model_id
             )
+            row_facts = cloud_dialect.model_row_facts(dialect, raw, observed_at=_now_iso())
             model = ModelCapabilities(
                 model_key=self._bare_model_key(model_id),
                 thinking=self._thinking_fact(dialect, model_id),
+                released_at=row_facts.get("released_at", unknown()),
+                description=row_facts.get("description", unknown()),
             )
         else:
             # No adapter for this dialect (an unrecognized OpenAI-compatible
