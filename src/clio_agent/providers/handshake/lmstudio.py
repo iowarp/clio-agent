@@ -32,6 +32,7 @@ from clio_agent.providers.handshake.model import (
     DiscoveredModel,
     DiscoveredModelFacts,
 )
+from clio_agent.providers.handshake.unreachable import unreachable_reason
 
 
 class LMStudioHandshake(ProviderHandshake):
@@ -41,17 +42,23 @@ class LMStudioHandshake(ProviderHandshake):
         """Reachable if either native endpoint answers; else the generic OpenAI fallback."""
         _rows, schema = await lm_studio_dialect.fetch_rows(client, ctx.api_base)
         if schema:
-            return ConnectivityResult(connectivity=ConnectivityState.OK, auth=AuthState.NOT_REQUIRED)
+            return ConnectivityResult(
+                connectivity=ConnectivityState.OK, auth=AuthState.NOT_REQUIRED
+            )
         try:
             response = await client.get(f"{ctx.api_base.rstrip('/')}/models")
         except Exception as exc:  # noqa: BLE001 - connection failure captured in the result
+            code, reason = unreachable_reason(ctx.provider_id, ctx.api_base, exc)
             return ConnectivityResult(
                 connectivity=ConnectivityState.UNREACHABLE,
                 auth=AuthState.NOT_REQUIRED,
-                error=f"LM Studio unreachable: {type(exc).__name__}: {exc}",
+                error=reason,
+                error_code=code,
             )
         if response.status_code < 400:
-            return ConnectivityResult(connectivity=ConnectivityState.OK, auth=AuthState.NOT_REQUIRED)
+            return ConnectivityResult(
+                connectivity=ConnectivityState.OK, auth=AuthState.NOT_REQUIRED
+            )
         return ConnectivityResult(
             connectivity=ConnectivityState.UNREACHABLE,
             auth=AuthState.NOT_REQUIRED,

@@ -54,6 +54,7 @@ from clio_agent.providers.handshake.model import (
     DiscoveredModel,
     DiscoveredModelFacts,
 )
+from clio_agent.providers.handshake.unreachable import unreachable_reason
 from clio_agent.providers.handshake.vllm_tools import vllm_tools_fact
 
 #: ``provider_kind`` values that authenticate via Anthropic's header scheme
@@ -203,10 +204,12 @@ class OpenAICompatHandshake(ProviderHandshake):
         try:
             response = await client.get(self._models_url(ctx), headers=headers)
         except Exception as exc:  # transport-level failure -> unreachable  # noqa: BLE001 - surfaced as UNREACHABLE connectivity
+            code, reason = unreachable_reason(ctx.provider_id, ctx.api_base, exc)
             return ConnectivityResult(
                 connectivity=ConnectivityState.UNREACHABLE,
                 auth=AuthState.MISSING if self._requires_key(ctx) else AuthState.NOT_REQUIRED,
-                error=f"{type(exc).__name__}: {exc}",
+                error=reason,
+                error_code=code,
             )
         status = response.status_code
         if status in (401, 403):
