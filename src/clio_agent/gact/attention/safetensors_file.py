@@ -4,7 +4,9 @@ The format is fixed and tiny: an 8-byte little-endian header length, a JSON
 header ``{name: {dtype, shape, data_offsets: [begin, end]}, "__metadata__":
 {str: str}}``, then the raw little-endian tensor bytes. A response's step
 tensors are ``[G, k]`` (up to ~200 MB per file), and a selection needs only a
-handful of rows, so rows are read by byte range instead of loading the file.
+handful of rows, so rows are read by byte range instead of loading the file --
+batched per call, because the bytes may come over a shell to the GPU node
+(:mod:`.byte_source`).
 
 Every structural problem is ``attention_record_malformed``; an unreadable file
 is ``attention_file_unavailable``. Nothing is guessed.
@@ -15,11 +17,11 @@ from __future__ import annotations
 import json
 import struct
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from clio_agent.gact.attention.byte_source import ByteSource
 from clio_agent.gact.attention.reasons import AttentionUnavailable
 
 _DTYPES = {
@@ -52,37 +54,23 @@ class TensorInfo:
         return inner * self.dtype.itemsize
 
 
-def _malformed(path: Path, detail: str) -> AttentionUnavailable:
-    return AttentionUnavailable(
-        "attention_record_malformed", f"{path.name}: {detail}", {"path": str(path)}
-    )
-
-
 class SafeTensorsFile:
-    """Header plus ranged reads over one SafeTensors file."""
+    """Header plus batched ranged reads over one SafeTensors file."""
 
-    def __init__(self, path: Path) -> None:
-        """Parse the header of ``path`` (raises a typed reason when unusable)."""
-        self.path = path
-        try:
-            with path.open("rb") as fh:
-                raw_len = fh.read(8)
-                if len(raw_len) != 8:
-                    raise _malformed(path, "shorter than a SafeTensors header")
-                (header_len,) = struct.unpack("<Q", raw_len)
-                if header_len <= 0 or header_len > _MAX_HEADER:
-                    raise _malformed(path, f"implausible header length {header_len}")
-                header_raw = fh.read(header_len)
-        except OSError as exc:
-            raise AttentionUnavailable(
-                "attention_file_unavailable",
-                f"cannot read {path}: {type(exc).__name__}: {exc}",
-                {"path": str(path)},
-            ) from exc
+    def __init__(self, source: ByteSource) -> None:
+        """Parse the header from ``source`` (raises a typed reason when unusable)."""
+        self.source = source
+        (raw_len,) = source.read_many([(0, 8)])
+        if len(raw_len) != 8:
+            raise self._malformed("shorter than a SafeTensors header")
+        (header_len,) = struct.unpack("<Q", raw_len)
+        if header_len <= 0 or header_len > _MAX_HEADER:
+            raise self._malformed(f"implausible header length {header_len}")
+        (header_raw,) = source.read_many([(8, header_len)])
         try:
             header: dict[str, Any] = json.loads(header_raw)
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            raise _malformed(path, f"header is not JSON: {exc}") from exc
+            raise self._malformed(f"header is not JSON: {exc}") from exc
         meta = header.pop("__metadata__", None) or {}
         self.metadata: dict[str, str] = {str(k): str(v) for k, v in meta.items()}
         self._data_start = 8 + header_len
@@ -93,46 +81,62 @@ class SafeTensorsFile:
                 shape = tuple(int(d) for d in spec["shape"])
                 begin, end = (int(v) for v in spec["data_offsets"])
             except (KeyError, TypeError, ValueError) as exc:
-                raise _malformed(path, f"tensor {name!r} header unreadable: {exc}") from exc
+                raise self._malformed(f"tensor {name!r} header unreadable: {exc}") from exc
             expected = int(np.prod(shape, dtype=np.int64)) * dtype.itemsize
             if end - begin != expected:
-                raise _malformed(
-                    path, f"tensor {name!r} spans {end - begin} bytes, shape needs {expected}"
+                raise self._malformed(
+                    f"tensor {name!r} spans {end - begin} bytes, shape needs {expected}"
                 )
             self.tensors[name] = TensorInfo(dtype, shape, begin, end)
+
+    def _malformed(self, detail: str) -> AttentionUnavailable:
+        return AttentionUnavailable(
+            "attention_record_malformed",
+            f"{self.source.label}: {detail}",
+            {"path": self.source.label},
+        )
 
     def info(self, name: str) -> TensorInfo:
         """The header entry for ``name`` (typed when the tensor is absent)."""
         if name not in self.tensors:
-            raise _malformed(self.path, f"no tensor {name!r}")
+            raise self._malformed(f"no tensor {name!r}")
         return self.tensors[name]
 
+    def read_tensors(self, names: list[str]) -> dict[str, np.ndarray]:
+        """Whole tensors (the ``[T]`` and segment tensors), one batched read."""
+        infos = [self.info(n) for n in names]
+        blobs = self.source.read_many(
+            [(self._data_start + i.begin, i.end - i.begin) for i in infos]
+        )
+        return {
+            n: self._array(i, blob, i.end - i.begin).reshape(i.shape)
+            for n, i, blob in zip(names, infos, blobs, strict=True)
+        }
+
     def read(self, name: str) -> np.ndarray:
-        """The whole tensor (use for the ``[T]`` and segment tensors only)."""
-        info = self.info(name)
-        return self._read_bytes(info, info.begin, info.end - info.begin).reshape(info.shape)
+        """One whole tensor."""
+        return self.read_tensors([name])[name]
+
+    def rows_many(self, names: list[str], first: int, last: int) -> dict[str, np.ndarray]:
+        """Leading-axis rows ``first..last`` inclusive of several ``[G, ...]`` tensors."""
+        infos = [self.info(n) for n in names]
+        for name, info in zip(names, infos, strict=True):
+            if not info.shape or first < 0 or last >= info.shape[0] or last < first:
+                raise self._malformed(f"rows {first}..{last} outside {name} shape {info.shape}")
+        count = last - first + 1
+        blobs = self.source.read_many(
+            [(self._data_start + i.begin + first * i.row_bytes, count * i.row_bytes) for i in infos]
+        )
+        return {
+            n: self._array(i, blob, count * i.row_bytes).reshape((count, *i.shape[1:]))
+            for n, i, blob in zip(names, infos, blobs, strict=True)
+        }
 
     def rows(self, name: str, first: int, last: int) -> np.ndarray:
-        """Leading-axis rows ``first..last`` inclusive of a ``[G, ...]`` tensor."""
-        info = self.info(name)
-        if not info.shape or first < 0 or last >= info.shape[0] or last < first:
-            raise _malformed(self.path, f"rows {first}..{last} outside {name} shape {info.shape}")
-        count = last - first + 1
-        offset = info.begin + first * info.row_bytes
-        arr = self._read_bytes(info, offset, count * info.row_bytes)
-        return arr.reshape((count, *info.shape[1:]))
+        """Rows of one tensor."""
+        return self.rows_many([name], first, last)[name]
 
-    def _read_bytes(self, info: TensorInfo, offset: int, size: int) -> np.ndarray:
-        try:
-            with self.path.open("rb") as fh:
-                fh.seek(self._data_start + offset)
-                raw = fh.read(size)
-        except OSError as exc:
-            raise AttentionUnavailable(
-                "attention_file_unavailable",
-                f"cannot read {self.path}: {type(exc).__name__}: {exc}",
-                {"path": str(self.path)},
-            ) from exc
-        if len(raw) != size:
-            raise _malformed(self.path, f"truncated: wanted {size} bytes, got {len(raw)}")
-        return np.frombuffer(raw, dtype=info.dtype)
+    def _array(self, info: TensorInfo, blob: bytes, size: int) -> np.ndarray:
+        if len(blob) != size:
+            raise self._malformed(f"truncated: wanted {size} bytes, got {len(blob)}")
+        return np.frombuffer(blob, dtype=info.dtype)

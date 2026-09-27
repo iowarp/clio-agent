@@ -207,6 +207,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_PLAN_REVIEW_CHARS` | `limits.plan_review_chars` | int | `256000` | `src/clio_agent/gact/plan_review.py` |
 | `CLIO_PROVENANCE_ATTENTION` | `provenance.attention` | bool | `false` | `src/clio_agent/provenance_config.py` |
 | `CLIO_PROVENANCE_ATTENTION_FILES_DIR` | `provenance.attention.files_dir` | str | _(unset)_ | `src/clio_agent/gact/attention/files.py` |
+| `CLIO_PROVENANCE_ATTENTION_REMOTE_SHELL` | `provenance.attention.remote_shell` | str | _(unset)_ | `src/clio_agent/gact/attention/byte_source.py` |
 | `CLIO_PROVENANCE_ATTENTION_TOKENIZER` | `provenance.attention.tokenizer` | str | _(unset)_ | `src/clio_agent/gact/attention/tokenizer_source.py` |
 | `CLIO_PROVENANCE_JSONL_PATH` | `provenance.agentic.jsonl.path` | str | _(unset)_ | `src/clio_agent/gact/provenance/factory.py` |
 | `CLIO_PROVENANCE_KVNORM` | `provenance.kvnorm` | bool | `false` | `src/clio_agent/provenance_config.py` |

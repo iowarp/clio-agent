@@ -12,7 +12,6 @@ Every miss is a typed reason.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import Any, Protocol
 
 import numpy as np
@@ -99,9 +98,9 @@ class AttentionStore:
         cached = self._open.get(record.request_id)
         if cached is not None:
             return cached
-        path: Path = files.locate(record, self._files_dir)
-        files.verify(record, path)
-        st = SafeTensorsFile(path)
+        source = files.locate(record, self._files_dir)
+        files.verify(record, source)
+        st = SafeTensorsFile(source)
         header_rid = st.metadata.get("request_id")
         if header_rid and header_rid != record.request_id:
             raise _malformed(f"file header names request {header_rid}", record)
@@ -119,13 +118,14 @@ class AttentionStore:
         """Descriptor plus the file's whole-prompt tensors, cross-checked."""
         record = self.record_for(response_id)
         st = self._file(record)
-        ids = st.read("prompt_token_ids").astype(np.int64)
+        whole = st.read_tensors(["prompt_token_ids", "segments", "attn_sum", "attn_peak"])
+        ids = whole["prompt_token_ids"].astype(np.int64)
         if len(ids) != record.prompt_tokens:
             raise _malformed(
                 f"prompt_token_ids has {len(ids)} entries, record says {record.prompt_tokens}",
                 record,
             )
-        raw = st.read("segments")
+        raw = whole["segments"]
         if raw.ndim != 2 or raw.shape[1] < 2:
             raise _malformed(f"segments shape {raw.shape} is not [n, 3]", record)
         segments = [(int(lo), int(hi)) for lo, hi in raw[:, :2]]
@@ -135,8 +135,8 @@ class AttentionStore:
             record=record,
             prompt_token_ids=ids,
             segments=segments,
-            attn_sum=st.read("attn_sum").astype(np.float64),
-            attn_peak=st.read("attn_peak").astype(np.float64),
+            attn_sum=whole["attn_sum"].astype(np.float64),
+            attn_peak=whole["attn_peak"].astype(np.float64),
             top_pct=float(top_pct) if top_pct else None,
         )
 
@@ -146,7 +146,7 @@ class AttentionStore:
         if not workflow_id or not callable(query):
             return ""
         try:
-            rows = query({"workflow_id": workflow_id}) or []
+            rows: list[dict[str, Any]] = query({"workflow_id": workflow_id}) or []
         except Exception as exc:  # noqa: BLE001 - backend errors become one typed reason
             raise AttentionUnavailable(
                 "attention_query_failed", f"workflow query: {type(exc).__name__}: {exc}"
@@ -159,10 +159,9 @@ class AttentionStore:
         if last < first:
             return []
         st = self._file(summary.record)
-        pos = st.rows("topk_pos", first, last)
-        vmax = st.rows("val_all_max", first, last)
-        mean = st.rows("val_all_avg", first, last)
-        residual = st.rows("topk_residual", first, last).reshape(-1)
+        rows = st.rows_many(list(STEP_TENSORS), first, last)
+        pos, vmax, mean = rows["topk_pos"], rows["val_all_max"], rows["val_all_avg"]
+        residual = rows["topk_residual"].reshape(-1)
         return [
             AttentionStep(
                 step=first + i,

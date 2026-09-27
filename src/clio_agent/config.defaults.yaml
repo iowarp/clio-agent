@@ -1569,6 +1569,12 @@ provenance.attention: false
 # reads files there.
 # provenance.attention.files_dir:  # default unset; resolved in code
 
+# CLIO_PROVENANCE_ATTENTION_REMOTE_SHELL  (str)  <- src/clio_agent/gact/attention/byte_source.py
+# Command that opens a shell on the attention connector's node (e.g. 'ssh
+# spotter-node'); the attention view reads only the byte ranges it needs
+# through it (needs python3 there).
+# provenance.attention.remote_shell:  # default unset; resolved in code
+
 # CLIO_PROVENANCE_ATTENTION_TOKENIZER  (str)  <- src/clio_agent/gact/attention/tokenizer_source.py
 # Local directory or Hugging Face id of the served model's tokenizer + chat
 # template (files only) for attention ranges; set for air-gapped nodes or

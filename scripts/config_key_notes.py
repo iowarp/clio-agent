@@ -806,6 +806,10 @@ KEY_NOTES: dict[str, str] = {
         "Local copy of the attention connector's out_dir (same <workflow_id>/<file> layout) "
         "for when CLIO does not run on the GPU node; the attention view reads files there."
     ),
+    "provenance.attention.remote_shell": (
+        "Command that opens a shell on the attention connector's node (e.g. 'ssh spotter-node'); "
+        "the attention view reads only the byte ranges it needs through it (needs python3 there)."
+    ),
     "provenance.attention.tokenizer": (
         "Local directory or Hugging Face id of the served model's tokenizer + chat template "
         "(files only) for attention ranges; set for air-gapped nodes or custom templates."
