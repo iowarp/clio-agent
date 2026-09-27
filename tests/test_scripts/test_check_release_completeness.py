@@ -7,6 +7,7 @@ listing, using the real ``EXPECTED_ASSETS`` matrix against fixture name lists.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from scripts.check_release_completeness import EXPECTED_ASSETS, find_missing, main
@@ -60,13 +61,78 @@ _SIGNING_ASSETS: list[str] = [
     "latest-lite.json",
 ]
 
+# The installer scripts + `clio` launchers the installers job uploads. The
+# check became the PUBLISH GATE (the release stays a draft until it passes),
+# so everything `releases/latest` consumers fetch is now expected. The
+# v0.5.17 fixture above had this "installer noise" stripped, so it is kept
+# separate too.
+_INSTALLER_ASSETS: list[str] = [
+    "install.sh",
+    "install.ps1",
+    "uninstall.sh",
+    "uninstall.ps1",
+    "clio",
+    "clio.cmd",
+    "clio.ps1",
+]
+
+_INSTALLER_LABELS: set[str] = {
+    "installer script (POSIX)",
+    "installer script (PowerShell)",
+    "uninstaller script (POSIX)",
+    "uninstaller script (PowerShell)",
+    "clio launcher (POSIX)",
+    "clio launcher (cmd)",
+    "clio launcher (PowerShell)",
+}
+
 # The complete listing = v0.5.17 plus the one asset it dropped, plus the
-# signing-era assets it predates.
+# signing-era and installer assets its fixture lacks.
 _COMPLETE_ASSETS: list[str] = [
     *_V0517_ASSETS,
     "CLIO.Desktop_0.7.1_aarch64-bundled.dmg",
     *_SIGNING_ASSETS,
+    *_INSTALLER_ASSETS,
 ]
+
+# The real, complete v0.9.4.18 release listing (`gh release view v0.9.4.18
+# --json assets`), captured 2026-09-27: the last release published under the
+# old side-effect-creation pipeline. The publish gate must pass on it -- a
+# gate that rejects a known-good release would strand every future release
+# as a draft.
+_V09418_ASSETS: list[str] = """
+clio clio-agent-aarch64-pc-windows-msvc.exe clio-desktop-aarch64-pc-windows-msvc.exe
+clio-tui-darwin-amd64 clio-tui-darwin-amd64.sha256 clio-tui-darwin-arm64
+clio-tui-darwin-arm64.sha256 clio-tui-linux-amd64 clio-tui-linux-amd64.sha256
+clio-tui-linux-arm64 clio-tui-linux-arm64.sha256 clio-tui-windows-amd64.exe
+clio-tui-windows-amd64.exe.sha256 clio-tui-windows-arm64.exe
+clio-tui-windows-arm64.exe.sha256 clio-web-0.9.4.18.zip clio.cmd
+CLIO.Desktop-0.9.4.18-1.aarch64-bundled.rpm CLIO.Desktop-0.9.4.18-1.aarch64.rpm
+CLIO.Desktop-0.9.4.18-1.x86_64-bundled.rpm CLIO.Desktop-0.9.4.18-1.x86_64.rpm
+CLIO.Desktop-aarch64-apple-darwin-bundled.app.tar.gz
+CLIO.Desktop-aarch64-apple-darwin-bundled.app.tar.gz.sig
+CLIO.Desktop-aarch64-apple-darwin.app.tar.gz
+CLIO.Desktop-aarch64-apple-darwin.app.tar.gz.sig
+CLIO.Desktop-x86_64-apple-darwin.app.tar.gz
+CLIO.Desktop-x86_64-apple-darwin.app.tar.gz.sig
+CLIO.Desktop_0.9.4.18_aarch64-bundled.dmg CLIO.Desktop_0.9.4.18_aarch64.AppImage
+CLIO.Desktop_0.9.4.18_aarch64.AppImage.sig CLIO.Desktop_0.9.4.18_aarch64.dmg
+CLIO.Desktop_0.9.4.18_amd64-bundled.deb CLIO.Desktop_0.9.4.18_amd64.AppImage
+CLIO.Desktop_0.9.4.18_amd64.AppImage.sig CLIO.Desktop_0.9.4.18_amd64.deb
+CLIO.Desktop_0.9.4.18_arm64-bundled.deb CLIO.Desktop_0.9.4.18_arm64.deb
+CLIO.Desktop_0.9.4.18_x64-setup-bundled.exe CLIO.Desktop_0.9.4.18_x64-setup-bundled.exe.sig
+CLIO.Desktop_0.9.4.18_x64-setup.exe CLIO.Desktop_0.9.4.18_x64-setup.exe.sig
+CLIO.Desktop_0.9.4.18_x64.dmg CLIO.Desktop_0.9.4.18_x64_en-US-bundled.msi
+CLIO.Desktop_0.9.4.18_x64_en-US-bundled.msi.sig CLIO.Desktop_0.9.4.18_x64_en-US.msi
+CLIO.Desktop_0.9.4.18_x64_en-US.msi.sig clio.ps1 install.ps1 install.sh latest-lite.json
+latest.json SHA256SUMS.aarch64-apple-darwin.bundled.txt
+SHA256SUMS.aarch64-apple-darwin.lite.txt SHA256SUMS.aarch64-pc-windows-msvc.lite.txt
+SHA256SUMS.aarch64-unknown-linux-gnu.bundled.txt SHA256SUMS.aarch64-unknown-linux-gnu.lite.txt
+SHA256SUMS.web.txt SHA256SUMS.x86_64-apple-darwin.lite.txt
+SHA256SUMS.x86_64-pc-windows-msvc.bundled.txt SHA256SUMS.x86_64-pc-windows-msvc.lite.txt
+SHA256SUMS.x86_64-unknown-linux-gnu.bundled.txt SHA256SUMS.x86_64-unknown-linux-gnu.lite.txt
+uninstall.ps1 uninstall.sh
+""".split()
 
 
 # The exact EXPECTED_ASSETS labels the signed-updater feature (v0.9.4.1
@@ -100,7 +166,7 @@ def test_v0517_flags_only_the_missing_bundled_dmg_and_predates_signing() -> None
     none of those)."""
     missing = find_missing(_V0517_ASSETS)
     labels = {label for label, _ in missing}
-    assert labels == {"bundled dmg (aarch64 macOS)"} | _SIGNING_LABELS
+    assert labels == {"bundled dmg (aarch64 macOS)"} | _SIGNING_LABELS | _INSTALLER_LABELS
 
 
 def test_complete_listing_has_no_gaps() -> None:
@@ -126,9 +192,45 @@ def test_empty_listing_reports_everything_missing() -> None:
 
 
 def test_extra_assets_are_ignored() -> None:
-    """Unexpected extras (checksums, launchers) never cause a failure."""
-    noisy = [*_COMPLETE_ASSETS, "SHA256SUMS.web.txt", "install.sh", "clio.cmd"]
+    """Unexpected extras (checksums, the lite ARM sidecar) never cause a failure."""
+    noisy = [
+        *_COMPLETE_ASSETS,
+        "SHA256SUMS.web.txt",
+        "clio-tui-linux-amd64.sha256",
+        "clio-agent-aarch64-pc-windows-msvc.exe",
+    ]
     assert find_missing(noisy) == []
+
+
+def test_real_v09418_release_passes_the_publish_gate() -> None:
+    """The last known-good release listing satisfies every expectation (no false gate)."""
+    assert find_missing(_V09418_ASSETS) == []
+
+
+def test_each_installer_asset_is_individually_required() -> None:
+    """Dropping any single installer script or launcher names exactly that asset.
+
+    These are fetched through ``releases/latest`` by the scripted install
+    pathway, so a release missing one must stay a draft.
+    """
+    for dropped in _INSTALLER_ASSETS:
+        listing = [name for name in _V09418_ASSETS if name != dropped]
+        missing = find_missing(listing)
+        assert len(missing) == 1, (dropped, missing)
+        label, pattern = missing[0]
+        assert label in _INSTALLER_LABELS
+        assert re.search(pattern, dropped)
+
+
+def test_release_without_updater_manifests_fails_the_gate() -> None:
+    """The v0.9.4.19 failure shape: every bundle uploaded, manifests not yet generated.
+
+    Publishing (and so becoming ``latest``) in this state is exactly what made
+    ``releases/latest/download/latest-lite.json`` 404; the gate must name both.
+    """
+    listing = [n for n in _V09418_ASSETS if n not in {"latest.json", "latest-lite.json"}]
+    labels = {label for label, _ in find_missing(listing)}
+    assert labels == {"Tauri update manifest (bundled)", "Tauri update manifest (lite)"}
 
 
 def test_main_exits_nonzero_on_incomplete_release(tmp_path: Path) -> None:
