@@ -147,6 +147,27 @@ class InfrastructureStore:
             self._flush()
             return updated.model_copy(deep=True)
 
+    def update_service(
+        self, target_id: str, service_id: str, **fields: object
+    ) -> ServiceRecord | None:
+        """Set only ``fields`` on the CURRENT record; ``None`` when it no longer exists.
+
+        Observers (a catalog refresh reconciling state, a connection or
+        effective-parameter update) must not write back a whole record they
+        read before running remote commands: an operation may have replaced
+        its ledger, or an uninstall deleted it, in the meantime.
+        """
+
+        with self._lock:
+            key = f"{target_id}:{service_id}"
+            current = self._services.get(key)
+            if current is None:
+                return None
+            updated = current.model_copy(update={**fields, "updated_at": utc_now()})
+            self._services[key] = updated
+            self._flush()
+            return updated.model_copy(deep=True)
+
     def delete_service(self, target_id: str, service_id: str) -> None:
         """Remove a service record after a verified uninstall."""
 

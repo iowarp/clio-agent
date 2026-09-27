@@ -16,6 +16,12 @@ from clio_agent.gact.infrastructure.models import (
     InfrastructureTarget,
     TargetFacts,
 )
+from clio_agent.gact.infrastructure.runtime_probe import (
+    POSIX_RUNTIME_PROBE,
+    local_identity,
+    local_runtime_facts,
+    parse_probe,
+)
 
 CommandExecutor = Callable[[CommandSpec], Awaitable[CommandResult]]
 
@@ -65,8 +71,11 @@ def _command_available(program: str, args: list[str]) -> bool:
 
 
 def _local_facts(target: InfrastructureTarget) -> TargetFacts:
-    docker_installed = _resolve_command("docker") is not None
-    docker_available = docker_installed and _command_available("docker", ["info"])
+    runtimes = local_runtime_facts(_resolve_command)
+    docker = next(fact for fact in runtimes if fact.name == "docker")
+    docker_installed = docker.installed
+    docker_available = docker.usable
+    identity, home = local_identity()
     accelerator = "none"
     if _command_available("nvidia-smi", ["--query-gpu=name", "--format=csv,noheader"]):
         accelerator = "nvidia"
@@ -82,6 +91,10 @@ def _local_facts(target: InfrastructureTarget) -> TargetFacts:
         docker_installed=docker_installed,
         uv_available=_command_available("uv", ["--version"]),
         transport_state="connected",
+        container_runtimes=runtimes,
+        identity=identity,
+        home=home,
+        hostname=platform.node().split(".")[0],
     )
 
 
@@ -139,9 +152,10 @@ async def probe_target(
                 '[ "$gpu" = none ] && command -v rocminfo >/dev/null 2>&1 && gpu=amd; '
                 "di=0; dr=0; uv=0; command -v docker >/dev/null 2>&1 && di=1; "
                 "docker info >/dev/null 2>&1 && dr=1; command -v uv >/dev/null 2>&1 && uv=1; "
-                'printf \'%s|%s|%s|%s|%s|%s\\n\' "$os" "$arch" "$gpu" "$di" "$dr" "$uv"',
+                'printf \'%s|%s|%s|%s|%s|%s\\n\' "$os" "$arch" "$gpu" "$di" "$dr" "$uv"; '
+                + POSIX_RUNTIME_PROBE,
             ],
-            timeout_seconds=20,
+            timeout_seconds=60,
         )
     result = await execute(spec)
     if result.exit_code != 0:
@@ -150,6 +164,7 @@ async def probe_target(
     fields = line.split("|")
     if len(fields) != 6:
         raise RuntimeError("Remote target returned an invalid capability probe")
+    runtimes, identity, home, hostname = parse_probe(result.stdout)
     return TargetFacts(
         target_id=target.id,
         label=target.label,
@@ -160,4 +175,8 @@ async def probe_target(
         docker_available=fields[4] == "1",
         uv_available=fields[5] == "1",
         transport_state=target.transport_state,
+        container_runtimes=runtimes,
+        identity=identity,
+        home=home,
+        hostname=hostname,
     )
