@@ -9,10 +9,12 @@ from pathlib import Path
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.testclient import WebSocketDenialResponse
 
 from clio_agent import conf
 from clio_agent.gact.app import build_app
 from clio_agent.gact.routes import sandbox_setup as sandbox_setup_routes
+from tests._config_layer import set_config
 
 EVIL = "https://evil.example"
 
@@ -62,10 +64,8 @@ def _post_plain(client: TestClient, path: str, headers: dict[str, str]):
     return client.post(path, content=b"", headers={"Content-Type": "text/plain", **headers})
 
 
-def _refused(response) -> bool:  # noqa: ANN001 - httpx.Response
-    return response.status_code == 403 and (
-        response.json().get("error", {}).get("error") == "origin_not_allowed"
-    )
+def _refused(response, reason: str = "origin_not_allowed") -> bool:  # noqa: ANN001
+    return response.status_code == 403 and (response.json().get("error", {}).get("error") == reason)
 
 
 @pytest.mark.parametrize("path", EXPOSED_ROUTES)
@@ -127,7 +127,7 @@ def test_a_rebound_host_name_is_not_same_origin(client: TestClient) -> None:
         {"Origin": "http://evil.example:18960", "Host": "evil.example:18960"},
     )
 
-    assert _refused(response)
+    assert _refused(response, "host_not_allowed")
 
 
 def test_a_foreign_get_is_left_to_cors(client: TestClient) -> None:
@@ -150,3 +150,96 @@ def test_a_valid_token_is_not_inspected(
     )
 
     assert not _refused(response), (response.status_code, response.text)
+
+
+# --- DNS rebinding: token-less requests must address an allowed Host ---------
+
+
+def test_a_rebound_host_cannot_read_without_a_token(
+    client: TestClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.WARNING, logger="clio_agent.gact.origin_guard")
+
+    response = client.get("/v1/sessions", headers={"Host": "evil.example"})
+
+    assert _refused(response, "host_not_allowed"), (response.status_code, response.text)
+    assert any("host_not_allowed" in record.getMessage() for record in caplog.records)
+
+
+def test_a_valid_token_reads_under_any_host(app: FastAPI, client: TestClient) -> None:
+    token = app.state.bearer_token
+    if token is None:
+        return  # nothing to present; the refusal above covers this app
+    response = client.get(
+        "/v1/sessions", headers={"Host": "evil.example", "Authorization": f"Bearer {token}"}
+    )
+
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.parametrize(
+    "host", ["localhost", "localhost:8080", "127.0.0.1:18960", "[::1]:8100", "[::1]"]
+)
+def test_loopback_host_names_read_without_a_token(client: TestClient, host: str) -> None:
+    assert client.get("/v1/sessions", headers={"Host": host}).status_code == 200
+
+
+def test_a_configured_lan_host_reads_without_a_token(client: TestClient) -> None:
+    set_config("gact.allowed_hosts", ["testserver", "clio.lab.example"])
+
+    assert client.get("/v1/sessions", headers={"Host": "clio.lab.example:8080"}).status_code == 200
+    assert _refused(
+        client.get("/v1/sessions", headers={"Host": "evil.example"}), "host_not_allowed"
+    )
+
+
+def test_the_same_origin_web_ui_on_a_configured_host_can_change_state(client: TestClient) -> None:
+    set_config("gact.allowed_hosts", ["testserver", "clio.lab.example"])
+
+    response = _post_plain(
+        client,
+        EXPOSED_ROUTES[0],
+        {"Host": "clio.lab.example:8080", "Origin": "http://clio.lab.example:8080"},
+    )
+
+    assert not _refused(response) and not _refused(response, "host_not_allowed")
+
+
+def test_a_rebound_websocket_upgrade_is_refused(client: TestClient) -> None:
+    with pytest.raises(WebSocketDenialResponse) as denied:
+        with client.websocket_connect(
+            "/v1/infrastructure/targets/local/transport", headers={"Host": "evil.example"}
+        ):
+            pass
+
+    assert denied.value.status_code == 403
+    assert denied.value.json()["error"]["error"] == "host_not_allowed"
+
+
+def test_the_clio_web_image_proxy_host_keeps_the_same_origin_ui_working(
+    client: TestClient,
+) -> None:
+    # docker/nginx-clio-web.conf forwards the browser's Host with its port
+    # ($http_host). nginx's $host drops the port, and the SPA's POSTs (Origin
+    # http://localhost:8080) would then no longer match their own origin.
+    with_port = _post_plain(
+        client,
+        EXPOSED_ROUTES[0],
+        {"Host": "localhost:8080", "Origin": "http://localhost:8080"},
+    )
+    without_port = _post_plain(
+        client, EXPOSED_ROUTES[0], {"Host": "localhost", "Origin": "http://localhost:8080"}
+    )
+
+    assert not _refused(with_port)
+    assert _refused(without_port)
+
+
+def test_the_clio_web_nginx_config_forwards_host_with_port_and_scheme() -> None:
+    conf_text = (Path(__file__).resolve().parents[2] / "docker" / "nginx-clio-web.conf").read_text(
+        encoding="utf-8"
+    )
+
+    assert "proxy_set_header Host $host;" not in conf_text
+    assert conf_text.count("proxy_set_header Host $http_host;") == 2
+    assert conf_text.count("proxy_set_header X-Forwarded-Proto $scheme;") == 2

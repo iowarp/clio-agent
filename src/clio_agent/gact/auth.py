@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hmac
 import ipaddress
 import os
@@ -14,7 +15,6 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from clio_agent import conf
-from clio_agent.gact.origin_guard import OriginGuardMiddleware
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 PeerAddressGetter = Callable[[Scope], str | None]
@@ -90,6 +90,44 @@ def _request_bearer_token(scope: Scope) -> str:
     return ""
 
 
+def websocket_protocol_token(scope: Scope) -> str:
+    """Decode a browser-compatible bearer carried as a ``clio-bearer.`` subprotocol.
+
+    Browsers cannot set ``Authorization`` on a WebSocket, so the Desktop sends
+    its token as an extra ``Sec-WebSocket-Protocol`` entry (urlsafe base64).
+    """
+
+    raw = Headers(scope=scope).get("sec-websocket-protocol", "")
+    for value in (part.strip() for part in raw.split(",")):
+        if not value.startswith("clio-bearer."):
+            continue
+        encoded = value.removeprefix("clio-bearer.")
+        padding = "=" * (-len(encoded) % 4)
+        try:
+            return base64.urlsafe_b64decode(encoded + padding).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return ""
+    return ""
+
+
+def supplied_bearer_token(scope: Scope) -> str:
+    """The bearer a request presents: header, SSE ``auth_token``, or WS subprotocol."""
+
+    token = _request_bearer_token(scope)
+    if not token and scope.get("type") == "websocket":
+        token = websocket_protocol_token(scope)
+    return token
+
+
+def has_valid_bearer(scope: Scope, expected: str | None) -> bool:
+    """Whether the request presents the configured bearer token."""
+
+    if expected is None:
+        return False
+    supplied = supplied_bearer_token(scope)
+    return bool(supplied) and hmac.compare_digest(supplied, expected)
+
+
 def _authentication_refusal() -> JSONResponse:
     envelope = ErrorEnvelope(
         error=ErrorInfo(
@@ -145,6 +183,8 @@ def configure_bearer_auth(app: FastAPI) -> None:
     # Inner to the bearer check: a request admitted without a valid token
     # (loopback, or no token configured) still may not change state from an
     # untrusted web page.
+    from clio_agent.gact.origin_guard import OriginGuardMiddleware  # noqa: PLC0415
+
     app.add_middleware(OriginGuardMiddleware, state=app.state)
     if token is not None:
         app.add_middleware(BearerAuthMiddleware, token=token, state=app.state)

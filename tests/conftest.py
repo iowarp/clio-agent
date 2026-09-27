@@ -526,6 +526,9 @@ def allow_pytest_tmp_path(request, tmp_path, monkeypatch):
                 "tools": {"file_policy": {"allowed_roots": allowed_roots}},
                 "lm": {"model": "ibm/granite-4-h-tiny"},
                 "arc": {"store": "local"},
+                # Starlette's TestClient addresses the app as ``testserver``;
+                # token-less requests must name an allowed host (origin guard).
+                "gact": {"allowed_hosts": ["testserver"]},
             },
             sort_keys=False,
         ),
