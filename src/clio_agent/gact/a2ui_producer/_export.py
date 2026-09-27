@@ -18,6 +18,13 @@ model sees exactly which path became which artifact -- nothing is rewritten
 silently. A path that names no file in the workspace is a typed refusal that
 says what a viewer can fetch; a value with any other scheme is left untouched
 for the catalog validator to judge.
+
+An external ``https:`` URL is admitted, but viewers never load it (they show
+a link naming the host), so each one is reported too (``external_urls`` plus
+an ``external_url_notice`` worded by :mod:`clio_agent.gact.a2ui_catalogs.
+media_sources`) and the model can switch to a downloaded workspace copy in
+one step. An ``http:`` URL is refused with the same recovery, since the
+validator would refuse it anyway with a hint about schemas, not media.
 """
 
 from __future__ import annotations
@@ -28,6 +35,10 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 from urllib.request import url2pathname
 
+from clio_agent.gact.a2ui_catalogs.media_sources import (
+    external_url_notice,
+    insecure_url_detail,
+)
 from clio_agent.gact.a2ui_catalogs.validation import A2UI_URL_KEYS, is_allowed_a2ui_url
 from clio_agent.gact.a2ui_producer._refusal import refusal
 
@@ -74,6 +85,7 @@ class _Exporter:
         self.workspace_id = _session_workspace_id(app, session_id)
         self.root = _workspace_root(app, self.workspace_id)
         self.exported: list[dict[str, Any]] = []
+        self.external: list[dict[str, Any]] = []
         self._minted: dict[Path, dict[str, Any]] = {}
 
     def resolve(self, raw: str, path: str) -> Path | dict[str, Any]:
@@ -174,7 +186,20 @@ class _Exporter:
             return None
         for key, item in value.items():
             if isinstance(item, str) and key.lower() in A2UI_URL_KEYS:
+                parts = urlsplit(item.strip())
+                scheme = parts.scheme.lower()
+                if scheme == "http":
+                    return refusal("a2ui_url_unresolved", detail=insecure_url_detail(item))
                 if is_allowed_a2ui_url(item):
+                    if scheme == "https":
+                        self.external.append(
+                            {
+                                "component_id": component_id,
+                                "property": key,
+                                "url": item,
+                                "host": parts.hostname or "",
+                            }
+                        )
                     continue
                 path = _path_candidate(item)
                 if path is None:
@@ -195,7 +220,7 @@ class _Exporter:
 
 def export_workspace_paths(
     app: "FastAPI", session_id: str, components: list[dict[str, Any]]
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]] | dict[str, Any]:
+) -> tuple[list[dict[str, Any]], dict[str, Any]] | dict[str, Any]:
     """Export workspace file paths in URL-keyed props as artifacts (see module doc).
 
     Args:
@@ -204,9 +229,12 @@ def export_workspace_paths(
         components: The producer call's components; never mutated.
 
     Returns:
-        ``(components, exported)`` -- a rewritten deep copy plus one entry per
+        ``(components, report)`` -- a rewritten deep copy plus the result fields
+        to merge into the tool result: ``exported_artifacts`` (one entry per
         exported property ``{component_id, property, path, artifact_id, uri,
-        name, version}`` -- or a typed refusal dict.
+        name, version}``) and ``external_urls`` / ``external_url_notice`` (one
+        entry per admitted external URL ``{component_id, property, url,
+        host}``), each present only when non-empty -- or a typed refusal dict.
     """
 
     rewritten = copy.deepcopy(components)
@@ -216,7 +244,13 @@ def export_workspace_paths(
         stop = exporter.walk(component, component_id)
         if stop is not None:
             return stop
-    return rewritten, exporter.exported
+    report: dict[str, Any] = {}
+    if exporter.exported:
+        report["exported_artifacts"] = exporter.exported
+    if exporter.external:
+        report["external_urls"] = exporter.external
+        report["external_url_notice"] = external_url_notice(exporter.external)
+    return rewritten, report
 
 
 __all__ = ["A2UI_EXPORT_DESIGNATION", "export_workspace_paths"]

@@ -552,18 +552,11 @@ def _validate_agent_tool_references(
     declared_server_names: Iterable[str] = (),
     runtime_tool_names: Collection[str] = (),
 ) -> list[AgentDef]:
-    # Built-in tools = in-process defaults (fs/shell, memory, ask_user, A2UI); else a
-    # declared MCP tool, valid iff declared via ``mcp_servers`` (``tools/*.md`` gated).
-    builtin_tools = set(TOOL_CATALOG) | {
-        "ask_user",
-        "create_a2ui_surface",
-        "update_a2ui_components",
-        "update_a2ui_data_model",
-        "delete_a2ui_surface",
-        "memory_search_sessions",
-        "memory_read_session_summary",
-        "memory_read_context_frame",
-    }
+    # Built-in tools = gateway defaults (fs/shell) + every declarable native tool; else
+    # a declared MCP tool, valid iff declared via ``mcp_servers`` (``tools/*.md`` gated).
+    from clio_agent.gact.agents.declared_native_tools import DECLARABLE_NATIVE_TOOLS
+
+    builtin_tools = set(TOOL_CATALOG) | DECLARABLE_NATIVE_TOOLS
     declared_namespaces = {str(n).strip() for n in declared_server_names if str(n).strip()}
     descriptor_tools: dict[str, dict[str, Any]] = {}
     for descriptor in mcp_descriptors:
