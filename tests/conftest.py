@@ -59,7 +59,7 @@ import pytest  # noqa: E402
 import yaml  # noqa: E402
 
 import clio_agent  # noqa: E402, F401
-from tests import _cte_bounded, _hang_guard, _worker_leaks
+from tests import _cte_bounded, _hang_guard, _sharding, _worker_leaks
 from tests._cte_isolation import (
     cte_isolation_available,
     eagerly_attach_private_daemon,
@@ -84,6 +84,17 @@ from tests._test_runtime_isolation import (
 )
 
 _TEST_RUNTIME: TestRuntime | None = None
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Register the CI sharding options (see tests/_sharding.py)."""
+    _sharding.addoption(parser)
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Keep only this run's shard when ``--num-shards`` is above 1."""
+    _sharding.select(config, items)
 
 
 @pytest.hookimpl(tryfirst=True)
