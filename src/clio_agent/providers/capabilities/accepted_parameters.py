@@ -350,10 +350,20 @@ def _limit(
 
     if spec.name == "max_tokens":
         decision = effective.output_max
-        if not decision.known or not decision.value:
+        if decision.known and decision.value:
+            detail = f"output limit {decision.value} ({decision.reason or decision.decided_by})"
+            return decision.value, _decision_evidence(decision, detail)
+        # No output limit recorded: a reply still cannot outgrow the context the
+        # route serves (vLLM answers 400 "max_tokens=32000 cannot be greater
+        # than max_model_len=4096", seen live on ares).
+        context = effective.context
+        if not context.known or not context.value:
             return None, []
-        detail = f"output limit {decision.value} ({decision.reason or decision.decided_by})"
-        return decision.value, _decision_evidence(decision, detail)
+        detail = (
+            f"no output limit recorded; bounded by the served context window {context.value} "
+            f"({context.reason or context.decided_by})"
+        )
+        return context.value, _decision_evidence(context, detail)
     if spec.name != "context_length":
         return None, []
     deployment = invalidation.get_deployment_capabilities(

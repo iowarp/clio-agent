@@ -289,3 +289,31 @@ def test_every_tunable_is_a_real_config_and_request_field() -> None:
         assert name in LMProviderInfo.model_fields
         if name != "parallel":  # a load-only setting
             assert name in LMProviderConfig.__dataclass_fields__
+
+
+def test_longest_reply_is_bounded_by_the_served_context_when_no_output_limit_is_known() -> None:
+    """Live on ares: vLLM with max_model_len 4096 refuses max_tokens=32000 (400)."""
+
+    base = "http://127.0.0.1:8000/v1"
+    invalidation.record_endpoint_capabilities(
+        build_endpoint_capabilities("vllm", base, "vllm", "q", custom_llm_provider="hosted_vllm")
+    )
+    invalidation.record_model_capabilities(
+        ModelCapabilities(
+            model_key="q", context_max=Fact(32768, "hf_repo", _NOW, "max_position_embeddings")
+        )
+    )
+    invalidation.record_deployment_capabilities(
+        DeploymentCapabilities(
+            provider_id="vllm",
+            api_base=base,
+            model_id="q",
+            model_key=Fact("q", "server_report", _NOW),
+            context_served=Fact(4096, "server_report", _NOW, "vLLM /v1/models max_model_len"),
+        )
+    )
+    rows = _rows("vllm", base, "q", dialect="vllm", prefix="hosted_vllm")
+
+    assert rows["max_tokens"]["maximum"] == 4096
+    details = [e["detail"] for e in rows["max_tokens"]["evidence"]]
+    assert any("served context window 4096" in detail for detail in details)
