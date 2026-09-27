@@ -45,13 +45,11 @@ from clio_agent.gact.routes.session_question_helpers import (
 )
 from clio_agent.gact.routes.session_rows import filter_session_rows, rows_to_wire
 from clio_agent.gact.runtime import bringup_timing
-from clio_agent.gact.runtime.globals import (
-    _new_attempt_id,
-    _new_question_id,
-)
+from clio_agent.gact.runtime.globals import _new_attempt_id, _new_question_id
 from clio_agent.gact.runtime.retention import enforce_dict_bound
 from clio_agent.gact.session_defaults import apply_default_effort
 from clio_agent.gact.session_descendants import purge_session_tasks
+from clio_agent.gact.session_tool_output import delete_session_tool_output
 from clio_agent.gact.types import (
     AnswerUserQuestionRequest,
     CreateSessionRequest,
@@ -313,6 +311,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         await run_off_loop(deps.delete_session_messages, app, sid)
         deps.delete_session_context_files(app, sid)
+        await run_off_loop(delete_session_tool_output, app, sess.workspace_id, sid)
         await run_off_loop(deps.release_session_arc, app, sid)  # #1334: drops _events scopes
         purge_session_tasks(app, sid)
         app.state.a2ui_catalogs.forget_session(sid)

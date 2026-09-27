@@ -16,8 +16,10 @@ of truth for:
 * **Runtime provenance** -- non-secret provenance for the dynamic agent used this
   turn (:func:`_dynamic_agent_runtime_provenance`).
 
-The module imports only leaves: stdlib plus the pure trajectory-key primitives in
-:mod:`clio_agent.gact.workflow_state.merge`. ``_active_lm_model_ref`` (the active
+The module imports only leaves: stdlib, the pure trajectory-key primitives in
+:mod:`clio_agent.gact.workflow_state.merge`, and the transcript-bound resolver in
+:mod:`clio_agent.tools.mcp_result_projection` (the single source for
+``limits.tool_result_chars``, shared with the shell tool's result sizing, #887). ``_active_lm_model_ref`` (the active
 LM reference reader in :mod:`clio_agent.gact.providers.config`) is imported lazily
 inside :func:`_dynamic_agent_runtime_provenance` to keep this module free of any
 provider-package import at module top. It never imports :mod:`clio_agent.gact.app`.
@@ -34,13 +36,13 @@ import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from clio_agent import conf
 from clio_agent.gact.workflow_state.merge import (
     _TRAJECTORY_TOOL_ARGS_KEYS,
     _TRAJECTORY_TOOL_NAME_KEYS,
     _TRAJECTORY_TOOL_RESULT_KEYS,
     _trajectory_key_index,
 )
+from clio_agent.tools.mcp_result_projection import transcript_tool_result_chars
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -123,12 +125,7 @@ def _bounded_tool_call_result(value: Any, *, max_result_chars: int | None = None
     if _is_bounded_tool_result(value):
         return value  # already bounded -> never re-wrap (idempotent)
     if max_result_chars is None:
-        max_result_chars = conf.resolve(
-            "limits.tool_result_chars",
-            env="CLIO_TOOL_RESULT_CHARS",
-            default=12_000,
-            cast=conf.as_int,
-        )
+        max_result_chars = transcript_tool_result_chars()
     preview = _tool_result_preview(value)
     if len(preview) <= max_result_chars:
         return value
