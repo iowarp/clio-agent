@@ -302,3 +302,19 @@ def test_natives_default_to_effectful_and_the_read_only_set_is_declared() -> Non
 
     assert getattr(_native("undeclared").func, READ_ONLY_ATTR) is False
     assert getattr(build_goal_status_tool().func, READ_ONLY_ATTR) is True
+
+
+def test_proposed_edits_cannot_be_applied_from_a_side_session(tmp_path: Path) -> None:
+    """A read-tagged proposal tool may draft an edit; applying it is a write, refused."""
+
+    app = build_app(sessions_path=tmp_path / "s.json")
+    with TestClient(app) as client:
+        side = _open_side(client, _parent_with_history(client, app)).json()["id"]
+        app.state.pending_diffs[side] = [
+            {"path": "notes.txt", "status": "pending", "new_content": "fajitas\n"}
+        ]
+        resp = client.post(f"/v1/sessions/{side}/diffs/apply", json={})
+
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["error"] == "side_session_read_only"
+    assert app.state.pending_diffs[side][0]["status"] == "pending"

@@ -82,6 +82,44 @@ def policy_deny_reason(mode: str) -> str:
     return REASON_READ_ONLY_SIDE_SESSION if mode == READ_ONLY_POLICY_MODE else "policy_deny"
 
 
+#: Typed refusal of a write route on a read-only side session.
+REFUSAL_SIDE_SESSION_READ_ONLY = "side_session_read_only"
+
+
+def refuse_side_session_write(session: Any, action: str) -> None:
+    """Raise a typed 422 when ``session`` is a read-only side session.
+
+    For the user-driven write routes a session exposes (applying the edits its
+    agent proposed): an aside's proposals are answers to read, never changes to
+    make, so applying them from the aside is refused. The same proposal can be
+    made, and applied, in the parent conversation.
+    """
+
+    if not is_read_only_side_session(session):
+        return
+    from fastapi import HTTPException  # noqa: PLC0415
+
+    from clio_agent.gact.types import ErrorEnvelope, ErrorInfo  # noqa: PLC0415
+
+    trace.event(
+        "SIDE-SESSION",
+        "side_session_write_refused session=%s action=%s",
+        getattr(session, "id", ""),
+        action,
+    )
+    raise HTTPException(
+        status_code=422,
+        detail=ErrorEnvelope(
+            error=ErrorInfo(
+                error=REFUSAL_SIDE_SESSION_READ_ONLY,
+                message=f"A read-only side conversation cannot {action}.",
+                details={"session_id": str(getattr(session, "id", ""))},
+                recoverable=False,
+            )
+        ).model_dump(exclude_none=True),
+    )
+
+
 def _selection(raw: Any) -> dict[str, str]:
     if not isinstance(raw, Mapping):
         return {}
@@ -167,10 +205,12 @@ async def open_side_session(
 __all__ = [
     "READ_ONLY_SIDE_PROFILE",
     "REASON_READ_ONLY_SIDE_SESSION",
+    "REFUSAL_SIDE_SESSION_READ_ONLY",
     "SIDE_SESSION_METADATA_KEY",
     "is_read_only_side_session",
     "open_side_session",
     "policy_deny_reason",
     "policy_mode",
+    "refuse_side_session_write",
     "side_sessions_of",
 ]
