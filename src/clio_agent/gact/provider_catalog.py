@@ -62,10 +62,12 @@ KEYLESS_PROBE_API_KEY = "EMPTY"
 def probe_api_key(preset: LMProviderPreset) -> str:
     """The API key a probe of ``preset`` sends: its stored one, else the keyless placeholder.
 
-    Keyed by provider_id, never provider_kind (Part 3): nine presets share the
-    kind "openai", and a kind-keyed lookup previously resolved
-    openrouter/nvidia_nim to the literal OpenAI provider's env var.
+    Keyed by provider_id, never provider_kind (Part 3). A sign-in provider
+    (oauth/subscription) gets none: its handshake reads the credential its own
+    sign-in stored -- the placeholder made ALCF send ``Bearer EMPTY``.
     """
+    if preset.auth_method in {"oauth", "subscription"}:
+        return ""
     stored = model_discovery.resolve_cloud_api_key(preset.id)
     if stored or preset.requires_api_key:
         return stored
