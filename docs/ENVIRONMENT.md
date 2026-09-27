@@ -325,7 +325,7 @@ These deliberately bypass the config store (a shared file must not be able to re
 | `CLIO_ONLYOFFICE_JWT_SECRET` | unmigrated | `src/clio_agent/gact/documents/editors.py` |
 | `CLIO_ONLYOFFICE_URL` | unmigrated | `src/clio_agent/gact/documents/editors.py` |
 | `CLIO_RELAY_API_TOKEN` | secret | `src/clio_agent/tools/relay_factory.py`, `src/clio_agent/tools/relay_transport.py` |
-| `CLIO_RUNTIME_STATE_DIR` | unmigrated | `src/clio_agent/arc/clio_core_config.py` |
+| `CLIO_RUNTIME_STATE_DIR` | unmigrated | `src/clio_agent/arc/clio_core_config.py`, `src/clio_agent/arc/clio_core_effective_runtime.py` |
 | `CLIO_SEMANTIC_TRACE_BACKEND` | unmigrated | `src/clio_agent/provenance_config.py` |
 | `CLIO_USER_DIR` | bootstrap | `src/clio_agent/paths.py` |
 

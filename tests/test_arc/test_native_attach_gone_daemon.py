@@ -1,15 +1,17 @@
-"""The post-attach probe stays bounded against a SUSPENDED (stuck) clio-core daemon.
+"""The native client attach is bounded by CLIO's liveness policy against a gone or stuck daemon.
 
-Regression for the #1439 CI hang: the first post-attach probe issued a blocking binding
-call (``Tag(...)`` + ``GetBlobSize``). The binding holds the GIL for the whole RPC, so a
-daemon that did not answer froze the entire interpreter, stall watchers included, until
-the 6-hour job timeout. The probe now waits on the async ``Future`` with a bound derived
-from the liveness policy; this test suspends a real private daemon and proves the probe
-returns a typed error within that bound.
+``clio_init(kClient)`` waits for the runtime to answer its ``ClientConnect`` handshake,
+and holds the GIL for the whole wait. The wait was the native default (30 s, from
+``CLIO_WAIT_SERVER``), whatever CLIO was configured with: a daemon that crashed right
+after binding its port (``kill``), or one alive but unresponsive (``suspend``), froze
+the interpreter for 30 s and then degraded with the generic
+``clio_core_client_attach_failed``. The attach now hands the native client CLIO's own
+bound (``arc.liveness.stall_after_s``) and an expired bound degrades with the typed
+``clio_core_client_attach_timeout``.
 
 Hermetic: a private daemon on a reserved port with its own state dir, driven from a
-subprocess (a regression hangs the CHILD, and ``subprocess.run(timeout=...)`` fails the
-test instead of freezing pytest). The daemon is always resumed and reaped.
+subprocess (a regression hangs the CHILD; the parent's timeout fails the test). The
+daemon is always resumed and reaped.
 """
 
 from __future__ import annotations
@@ -34,14 +36,14 @@ from tests.test_arc.test_clio_core_offload_spill import (  # noqa: E402 - after 
     _reserve_port_block,
 )
 
-_WINDOW_S = 3.0  # arc.liveness.stall_after_s for the child: the probe's bound
-_CHILD_TIMEOUT_S = 150.0  # attach + spawn headroom; a GIL hang blows through it
+_WINDOW_S = 3.0  # arc.liveness.stall_after_s for the child: the attach's bound
+_NATIVE_DEFAULT_S = 30.0  # what the native client waits when nobody tells it otherwise
+_CHILD_TIMEOUT_S = 150.0  # spawn + attach headroom; a GIL hang blows through it
 
 
-@pytest.mark.parametrize("mode", ["suspend", "kill"])
-def test_post_attach_probe_is_bounded_against_a_stuck_daemon(tmp_path: Path, mode: str) -> None:
-    """``suspend``: alive but unresponsive; ``kill``: gone (CI: a daemon that died at startup
-    left the probe's ``Future.wait(max_sec)`` blocking past its bound)."""
+@pytest.mark.parametrize("mode", ["kill", "suspend"])
+def test_native_attach_is_bounded_against_a_gone_or_stuck_daemon(tmp_path: Path, mode: str) -> None:
+    """``kill``: the daemon died after liveness saw its port; ``suspend``: alive, silent."""
     _require_launcher()
     private_home = tmp_path / "home"
     (private_home / ".clio").mkdir(parents=True)
@@ -63,6 +65,7 @@ def test_post_attach_probe_is_bounded_against_a_stuck_daemon(tmp_path: Path, mod
     )
     out_path = tmp_path / "result.json"
     env = os.environ.copy()
+    env.pop("CLIO_WAIT_SERVER", None)  # the bound must come from CLIO's own config
     env.update(
         USERPROFILE=str(private_home),
         HOME=str(private_home),
@@ -76,9 +79,8 @@ def test_post_attach_probe_is_bounded_against_a_stuck_daemon(tmp_path: Path, mod
         CLIO_STUCK_MODE=mode,
         CTP_LOG_LEVEL="error",
     )
-    client = Path(__file__).with_name("_clio_core_stuck_daemon_client.py")
-    # Output to FILES, not pipes: a daemon the child spawns inherits its handles, and a
-    # pipe it holds open would keep ``subprocess.run`` waiting after the child exited.
+    client = Path(__file__).with_name("_clio_core_gone_daemon_attach_client.py")
+    # Output to FILES, not pipes: the daemon the child spawns inherits its handles.
     log_path = tmp_path / "client.log"
     try:
         with log_path.open("w", encoding="utf-8") as log:
@@ -91,7 +93,8 @@ def test_post_attach_probe_is_bounded_against_a_stuck_daemon(tmp_path: Path, mod
             )
     except subprocess.TimeoutExpired:
         pytest.fail(
-            f"the probe hung past {_CHILD_TIMEOUT_S:g}s:" + chr(10)
+            f"the attach hung past {_CHILD_TIMEOUT_S:g}s:"
+            + chr(10)
             + log_path.read_text(encoding="utf-8", errors="replace")[-4000:]
         )
     finally:
@@ -102,11 +105,15 @@ def test_post_attach_probe_is_bounded_against_a_stuck_daemon(tmp_path: Path, mod
     assert out_path.is_file(), f"no result; rc={proc.returncode}\n{output[-3000:]}"
     result = json.loads(out_path.read_text(encoding="utf-8"))
     assert proc.returncode == 0, f"client failed: {result}\n{output[-3000:]}"
-    assert result["store_type"] == "ClioCoreStore", result
-    assert result["window_s"] == _WINDOW_S
-    assert result["outcome"] == "typed_error", result
-    assert result["stage_name"] == "post_attach_probe"
-    assert result["reason"] == "clio_core_post_attach_probe_timeout"
-    assert f"did not answer within {_WINDOW_S:g}s" in result["message"]
-    assert result["elapsed_s"] < _WINDOW_S + 2.0, result  # the bound, not a hang
-    assert result["deregistered"] == [True]
+    assert result["store_type"] == "LocalFSStore", result  # the loud degrade
+    # CLIO's bound, not the native 30 s default (and not a hang).
+    assert result["elapsed_s"] < _WINDOW_S + 12.0 < _NATIVE_DEFAULT_S, result
+    if result["elapsed_s"] >= _WINDOW_S:
+        # The whole bound ran out: the typed timeout (Windows TCP, and any stuck daemon).
+        assert result["reason"] == "clio_core_client_attach_timeout", result
+        assert f"no answer within {_WINDOW_S:g}s" in result["error"], result
+    else:
+        # The native client gave up sooner (a refused connect to a gone daemon, as over
+        # Linux's IPC socket): typed as a failed attach, never as a timeout.
+        assert mode == "kill", result
+        assert result["reason"] == "clio_core_client_attach_failed", result

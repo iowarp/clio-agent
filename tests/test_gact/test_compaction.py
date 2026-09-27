@@ -359,7 +359,7 @@ def test_auto_trigger_stages_and_flushes_after_the_turns_assistant_row(
     import clio_agent.gact.runtime.context_tokens as context_tokens
     from clio_agent.gact import context as _ctx
     from clio_agent.gact.compaction import maybe_autocompact
-    from clio_agent.gact.part_atom_minter import persist_finalized_message
+    from clio_agent.gact.part_atom_minter import close_turn_minter, persist_finalized_message
     from clio_agent.gact.transcript_projection import assemble_session_messages
 
     agent = _CapturingAgent(["auto summary"])
@@ -426,6 +426,11 @@ def test_auto_trigger_stages_and_flushes_after_the_turns_assistant_row(
         assert part_types == ["text", "text", "compaction"]
         assert ledger[-1].parts[0].auto is True
 
+        # The flushed checkpoint's atoms are minted on the turn's minter thread
+        # (FIFO behind the assistant row). A reload is only consistent once the
+        # turn exits, which closes (drains) the minter -- do that here, as the
+        # turn's settle does, instead of racing the minter thread.
+        close_turn_minter(app, sid)
         reloaded = assemble_session_messages(arc, sid)
         assert [m.id for m in reloaded] == [m.id for m in ledger]
 

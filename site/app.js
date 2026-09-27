@@ -366,7 +366,9 @@
         var primaryKey = {
           windows: "windows-exe",
           macos: "macos-dmg",
-          linux: "linux-appimage"
+          // Linux ships bundled builds only as .deb/.rpm (the AppImage is the
+          // attach-only lite build, #1412/#875), so the hero points at the .deb.
+          linux: "linux-deb"
         }[os];
         var heroDownload = document.getElementById("heroDownload");
         if (heroDownload && primaryKey) {
