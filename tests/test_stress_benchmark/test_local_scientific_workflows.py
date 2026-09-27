@@ -448,9 +448,7 @@ def test_local_multistage_scientific_workflow_records_grounded_evidence(
         expected_terms=("dashboard", ".png"),
     )
     artifacts = [
-        path
-        for path in _registry_artifact_paths(http, session_id)
-        if path.lower().endswith(".png")
+        path for path in _registry_artifact_paths(http, session_id) if path.lower().endswith(".png")
     ]
     assert artifacts, _text(visualization_answer)
     assert any(Path(path).exists() for path in artifacts), artifacts

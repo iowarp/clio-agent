@@ -138,9 +138,7 @@ def main(argv: list[str] | None = None) -> int:
     repo_root = _repo_root()
     violations = check_no_settle_vocabulary(repo_root / SRC_ROOT, rel_to=repo_root)
     if not violations:
-        print(
-            f"OK: no settle/synthesis routing vocabulary under {SRC_ROOT} (baseline 0, #948 S4)."
-        )
+        print(f"OK: no settle/synthesis routing vocabulary under {SRC_ROOT} (baseline 0, #948 S4).")
         return 0
     print(f"FAIL: {len(violations)} settle/synthesis vocabulary hit(s) (#948 S4):")
     for entry in violations:

@@ -250,8 +250,7 @@ def structured_payload(
             return dict(structured)
     if envelope_detected:
         raise JarvisJobError(
-            f"{tool_name} reached a relay job envelope with no reachable "
-            "structured result",
+            f"{tool_name} reached a relay job envelope with no reachable structured result",
             reason="jarvis_result_unwrap_failed",
             details={
                 "tool": tool_name or None,

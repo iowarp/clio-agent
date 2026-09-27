@@ -71,7 +71,10 @@ def test_needle_arc_is_the_context(arc, needle):
             SID, SCOPE, "observation", {"text": "Case file opened; routine metadata only."}, step=0
         )
         needle_seg = arc.insert_segment(  # INJECTION via insert (recorded as arc.op insert)
-            SID, SCOPE, 1, "observation",
+            SID,
+            SCOPE,
+            1,
+            "observation",
             {"text": f"CONFIDENTIAL: the vault override code is {needle}."},
         )
 
@@ -81,7 +84,9 @@ def test_needle_arc_is_the_context(arc, needle):
     arc.delete_segments(SID, SCOPE, [needle_seg.id])  # DELETION (recorded as arc.op delete)
 
     deleted = _probe(agent, lm, arc, question)
-    assert needle not in deleted, f"model recalled a DELETED needle (ARC is not the context): {deleted!r}"
+    assert needle not in deleted, (
+        f"model recalled a DELETED needle (ARC is not the context): {deleted!r}"
+    )
 
 
 def test_real_auto_compaction_on_alcf(arc):
@@ -93,12 +98,22 @@ def test_real_auto_compaction_on_alcf(arc):
     trajectory = [
         ("thought", {"text": "Investigating the incident timeline."}),
         ("tool_call", {"name": "search", "args": {"q": "incident"}}),
-        ("observation", {"text": "At 02:14 UTC the primary node lost quorum; failover to "
-                                 "node-B took 38s; 1,204 requests queued; no data loss; root "
-                                 "cause: a stale lease on node-A."}),
+        (
+            "observation",
+            {
+                "text": "At 02:14 UTC the primary node lost quorum; failover to "
+                "node-B took 38s; 1,204 requests queued; no data loss; root "
+                "cause: a stale lease on node-A."
+            },
+        ),
         ("thought", {"text": "Now checking the remediation steps applied."}),
-        ("observation", {"text": "Remediation: lease TTL lowered to 5s; quorum monitor alert "
-                                 "added; node-A rebooted and rejoined at 02:31 UTC."}),
+        (
+            "observation",
+            {
+                "text": "Remediation: lease TTL lowered to 5s; quorum monitor alert "
+                "added; node-A rebooted and rejoined at 02:31 UTC."
+            },
+        ),
     ]
     with live_plane_context(arc, session=SID, scope=SCOPE):
         for i, (kind, content) in enumerate(trajectory):
@@ -119,10 +134,13 @@ def test_real_auto_compaction_on_alcf(arc):
 
     after = arc.render_segments(SID, SCOPE)
     assert len(after) == 1 and after[0].kind == "summary", "did not collapse to one summary"
-    assert len(after[0].content.get("text", "")) > 20, "summary is empty/placeholder, not a real LLM summary"
+    assert len(after[0].content.get("text", "")) > 20, (
+        "summary is empty/placeholder, not a real LLM summary"
+    )
     # the originals survive (tombstoned) for replay
     tombstoned = [
-        s for s in arc._segments.list_segments(SID, SCOPE, include_tombstoned=True)
+        s
+        for s in arc._segments.list_segments(SID, SCOPE, include_tombstoned=True)
         if s.status == "tombstoned"
     ]
     assert len(tombstoned) == 5

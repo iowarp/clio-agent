@@ -308,15 +308,28 @@ def parse_show(data: Any, *, model_key: str, observed_at: str | None = None) -> 
     return ModelCapabilities(
         model_key=model_key,
         task=task_fact(
-            task, source="server_report", observed_at=observed_at, detail="ollama /api/show capabilities"
+            task,
+            source="server_report",
+            observed_at=observed_at,
+            detail="ollama /api/show capabilities",
         ),
         context_max=(
-            Fact(context_window, "server_report", observed_at, "ollama /api/show model_info.<arch>.context_length")
+            Fact(
+                context_window,
+                "server_report",
+                observed_at,
+                "ollama /api/show model_info.<arch>.context_length",
+            )
             if context_window is not None
             else unknown()
         ),
         tools=(
-            Fact(value="tools" in caps, source="server_report", observed_at=observed_at, detail="ollama /api/show capabilities")
+            Fact(
+                value="tools" in caps,
+                source="server_report",
+                observed_at=observed_at,
+                detail="ollama /api/show capabilities",
+            )
             if capabilities_known
             else unknown()
         ),
@@ -373,7 +386,10 @@ def build_deployment_extra(
     configured: Fact[int] = unknown()
     if context_served is None and num_ctx is not None:
         configured = Fact(
-            num_ctx, "server_report", observed_at, "ollama /api/show Modelfile num_ctx (applies when loaded)"
+            num_ctx,
+            "server_report",
+            observed_at,
+            "ollama /api/show Modelfile num_ctx (applies when loaded)",
         )
     elif context_served is None and server_default is not None and server_default.known:
         configured = server_default

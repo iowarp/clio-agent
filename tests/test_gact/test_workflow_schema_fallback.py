@@ -78,7 +78,9 @@ def test_bool_only_pack_resolves_generic_and_records_once(monkeypatch: pytest.Mo
     """A ``workflow_state: true`` (bool-only) blueprint resolves GENERIC and records
     exactly one ``workflow_state_schema_absent`` reason — the cache dedupes repeats."""
     app = _app()
-    _pin_active_blueprint(monkeypatch, blueprint_id="bp-boolonly", metadata={"workflow_state": True})
+    _pin_active_blueprint(
+        monkeypatch, blueprint_id="bp-boolonly", metadata={"workflow_state": True}
+    )
 
     first = _active_workflow_state_schema(app, "sess-1")
     second = _active_workflow_state_schema(app, "sess-1")  # cache hit, no second record

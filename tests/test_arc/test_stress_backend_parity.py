@@ -155,8 +155,7 @@ def _assert_parity(
         strict=True,
     ):
         assert lv["scopes"][lsid] == cv["scopes"][csid], (
-            f"[{label}] scan_scopes mismatch local={lv['scopes'][lsid]} "
-            f"cte={cv['scopes'][csid]}"
+            f"[{label}] scan_scopes mismatch local={lv['scopes'][lsid]} cte={cv['scopes'][csid]}"
         )
 
     # render keys / text / tokens parity (paired by position)
@@ -207,8 +206,12 @@ def _script_append_only(arc: ARCMemory, sid: str) -> list[tuple[str, str]]:
     scope = "agentA"
     arc.append_segment(sid, scope, "thought", {"text": "think 0"}, step=0, token_count=3)
     arc.append_segment(
-        sid, scope, "tool_call", {"name": "grep", "args": {"q": "x", "n": 5}},
-        step=0, token_count=7,
+        sid,
+        scope,
+        "tool_call",
+        {"name": "grep", "args": {"q": "x", "n": 5}},
+        step=0,
+        token_count=7,
     )
     arc.append_segment(sid, scope, "observation", {"text": "OBS_0"}, step=0, token_count=11)
     arc.append_segment(sid, scope, "thought", {"text": "think 1"}, step=1, token_count=3)
@@ -309,20 +312,27 @@ def _script_binary_hostile(arc: ARCMemory, sid: str) -> list[tuple[str, str]]:
     scope = "agentBin"
     # raw non-UTF-8 bytes stored as a bytes value inside content (msgpack-native)
     arc.append_segment(
-        sid, scope, "observation",
+        sid,
+        scope,
+        "observation",
         {"text": "ok-text", "raw": b"\x00\x83\xff\x81\xfe", "n": 7},
-        step=0, token_count=9,
+        step=0,
+        token_count=9,
     )
     # tool_call whose args carry bytes + nested structure
     arc.append_segment(
-        sid, scope, "tool_call",
+        sid,
+        scope,
+        "tool_call",
         {"name": "bintool", "args": {"blob": b"\xff\xd8\xff\xe0", "ratio": 0.5}},
         step=0,
     )
     # control chars / newlines / tabs / a high unicode astral char in a text field
     arc.append_segment(
-        sid, scope, "thought",
-        {"text": "line1\nline2\tTAB\x07BELL\x00NUL emoji-\U0001F9EA-end"},
+        sid,
+        scope,
+        "thought",
+        {"text": "line1\nline2\tTAB\x07BELL\x00NUL emoji-\U0001f9ea-end"},
         step=1,
     )
     return [(sid, scope)]
@@ -333,8 +343,11 @@ def _script_large_content(arc: ARCMemory, sid: str) -> list[tuple[str, str]]:
     big = "X" * 200_000  # 200 KB text payload in one segment
     arc.append_segment(sid, scope, "observation", {"text": big}, step=0, token_count=50_000)
     arc.append_segment(
-        sid, scope, "tool_call",
-        {"name": "dump", "args": {"rows": list(range(2_000))}}, step=0,
+        sid,
+        scope,
+        "tool_call",
+        {"name": "dump", "args": {"rows": list(range(2_000))}},
+        step=0,
     )
     arc.append_segment(sid, scope, "thought", {"text": "after big"}, step=1)
     return [(sid, scope)]
@@ -399,7 +412,8 @@ def test_backend_parity_op_battery(tmp_path, clio_core_arc, name: str, script: S
     )
 
     _assert_parity(
-        local, clio_core_arc,
+        local,
+        clio_core_arc,
         {"local": local_scopes, "cte": clio_core_scopes},
         label=name,
     )
@@ -430,12 +444,10 @@ def test_persistence_parity_second_arcmemory(
     local2 = ARCMemory(data_dir=str(tmp_path / "arc_p_local2"), store=store2)
 
     for sid, scope in local_scopes:
-        assert local2.render_segments_keys(sid, scope) == local1.render_segments_keys(
-            sid, scope
-        ), f"[{name}] LOCAL persistence: second ARCMemory render diverged"
-        assert local2.render_segment_text(sid, scope) == local1.render_segment_text(
-            sid, scope
+        assert local2.render_segments_keys(sid, scope) == local1.render_segments_keys(sid, scope), (
+            f"[{name}] LOCAL persistence: second ARCMemory render diverged"
         )
+        assert local2.render_segment_text(sid, scope) == local1.render_segment_text(sid, scope)
         assert local2.segment_tokens_by_kind(sid, scope) == local1.segment_tokens_by_kind(
             sid, scope
         )
@@ -448,17 +460,21 @@ def test_persistence_parity_second_arcmemory(
     clio_core2 = _clio_core_arc()  # new client into the same in-process shared-memory runtime
     try:
         for sid, scope in clio_core_scopes:
-            assert clio_core2.render_segments_keys(sid, scope) == clio_core_arc.render_segments_keys(
+            assert clio_core2.render_segments_keys(
                 sid, scope
-            ), f"[{name}] clio-core persistence: second ARCMemory render diverged"
+            ) == clio_core_arc.render_segments_keys(sid, scope), (
+                f"[{name}] clio-core persistence: second ARCMemory render diverged"
+            )
             assert clio_core2.render_segment_text(sid, scope) == clio_core_arc.render_segment_text(
                 sid, scope
             )
-            assert clio_core2.segment_tokens_by_kind(sid, scope) == clio_core_arc.segment_tokens_by_kind(
+            assert clio_core2.segment_tokens_by_kind(
                 sid, scope
-            )
+            ) == clio_core_arc.segment_tokens_by_kind(sid, scope)
         for sid in _unique_sessions(clio_core_scopes):
-            assert clio_core2._segments.scan_scopes(sid[0]) == clio_core_arc._segments.scan_scopes(sid[0])
+            assert clio_core2._segments.scan_scopes(sid[0]) == clio_core_arc._segments.scan_scopes(
+                sid[0]
+            )
 
         # And local persisted render == cte persisted render (the full cross-backend tie)
         for (lsid_, lscope), (csid_, cscope) in zip(local_scopes, clio_core_scopes, strict=True):
@@ -539,7 +555,9 @@ def _scripted_lm() -> DummyLM:
             },
             {
                 "next_thought": "done",
-                "tool_calls": {"tool_calls": [{"name": "submit", "args": {"answer": "FINAL_ANSWER"}}]},
+                "tool_calls": {
+                    "tool_calls": [{"name": "submit", "args": {"answer": "FINAL_ANSWER"}}]
+                },
             },
             {"reasoning": "because", "answer": "FINAL_ANSWER"},
         ]

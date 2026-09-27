@@ -67,7 +67,9 @@ def test_planning_skill_body_has_four_phases_and_turn_ending_contract() -> None:
 def test_invoking_planning_skill_enters_plan_mode_and_engages_machinery(tmp_path: Path) -> None:
     app = build_app(sessions_path=tmp_path / "s.json")
     sess = app.state.sessions.create(workspace_id="ws_default", title="t", mode="edit")
-    agent = AgentDef(id="main", source="expert_pack", title="Main", skills=["planning"], metadata={})
+    agent = AgentDef(
+        id="main", source="expert_pack", title="Main", skills=["planning"], metadata={}
+    )
     rt = SkillRuntime(resolutions=_catalog().resolve_declared(["planning"]))
     tool = build_load_skill_tool(agent, rt)
 

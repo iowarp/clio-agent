@@ -139,7 +139,9 @@ def _wait_for_idle(client: TestClient, sid: str, timeout: float = TURN_SIGNAL_BA
     raise AssertionError("session did not return to idle")
 
 
-def _wait_for_status(client: TestClient, sid: str, status: str, timeout: float = TURN_SIGNAL_BACKSTOP_S) -> None:
+def _wait_for_status(
+    client: TestClient, sid: str, status: str, timeout: float = TURN_SIGNAL_BACKSTOP_S
+) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if client.get(f"/v1/sessions/{sid}").json()["status"] == status:

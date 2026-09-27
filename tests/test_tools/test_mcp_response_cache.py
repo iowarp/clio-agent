@@ -53,7 +53,9 @@ class _RecordingStore:
 async def test_cache_hinted_server_second_list_tools_is_served_from_cache() -> None:
     server = build_exerciser_server(cache_ttl=60, cache_scope="private")
     store = _RecordingStore()
-    async with Client(server, cache=CacheConfig(store=store, partition="test", target_id="exerciser")) as client:
+    async with Client(
+        server, cache=CacheConfig(store=store, partition="test", target_id="exerciser")
+    ) as client:
         first = await client.list_tools()
         second = await client.list_tools()
 
@@ -69,7 +71,9 @@ async def test_uncached_server_never_populates_the_store() -> None:
 
     server = build_exerciser_server()  # no cache_ttl
     store = _RecordingStore()
-    async with Client(server, cache=CacheConfig(store=store, partition="test", target_id="exerciser")) as client:
+    async with Client(
+        server, cache=CacheConfig(store=store, partition="test", target_id="exerciser")
+    ) as client:
         await client.list_tools()
         await client.list_tools()
 

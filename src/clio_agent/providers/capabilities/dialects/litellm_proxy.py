@@ -67,7 +67,9 @@ def _deployments_for_alias(payload: Any, alias: str) -> list[Mapping[str, Any]]:
             continue
         model_name = row.get("model_name")
         info = row.get("model_info")
-        alias_id = model_name if model_name else (info.get("id") if isinstance(info, Mapping) else None)
+        alias_id = (
+            model_name if model_name else (info.get("id") if isinstance(info, Mapping) else None)
+        )
         if alias_id == alias:
             matches.append(row)
     return matches
@@ -96,7 +98,9 @@ def parse_model_info(
 
     model_flags: dict[str, bool] = {}
     for source_field, target_field in _SUPPORTS_FIELD_MAP.items():
-        values = [_model_info(row).get(source_field) for row in rows if source_field in _model_info(row)]
+        values = [
+            _model_info(row).get(source_field) for row in rows if source_field in _model_info(row)
+        ]
         known = [bool(v) for v in values if isinstance(v, bool)]
         if known:
             model_flags[target_field] = all(known)
@@ -104,7 +108,12 @@ def parse_model_info(
     model = ModelCapabilities(
         model_key=alias,
         tools=(
-            Fact(model_flags["tools"], "litellm", observed_at, "litellm /v1/model/info supports_function_calling")
+            Fact(
+                model_flags["tools"],
+                "litellm",
+                observed_at,
+                "litellm /v1/model/info supports_function_calling",
+            )
             if "tools" in model_flags
             else unknown()
         ),
@@ -134,12 +143,22 @@ def parse_model_info(
         api_base=api_base,
         model_id=alias,
         context_served=(
-            Fact(max_input, "server_report", observed_at, "litellm /v1/model/info max_input_tokens (min across deployments)")
+            Fact(
+                max_input,
+                "server_report",
+                observed_at,
+                "litellm /v1/model/info max_input_tokens (min across deployments)",
+            )
             if max_input is not None
             else unknown()
         ),
         output_max=(
-            Fact(max_output, "server_report", observed_at, "litellm /v1/model/info max_output_tokens (min across deployments)")
+            Fact(
+                max_output,
+                "server_report",
+                observed_at,
+                "litellm /v1/model/info max_output_tokens (min across deployments)",
+            )
             if max_output is not None
             else unknown()
         ),

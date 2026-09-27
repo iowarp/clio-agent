@@ -129,9 +129,7 @@ def test_concurrent_append_same_scope_no_lost_writes(tmp_path, n_threads, per_th
         barrier.wait()  # release all threads as simultaneously as possible
         lts: list[int] = []
         for i in range(per_thread):
-            seg = ss.append(
-                SID, scope, "thought", {"text": f"t{tid}-{i}"}, step=i, token_count=1
-            )
+            seg = ss.append(SID, scope, "thought", {"text": f"t{tid}-{i}"}, step=i, token_count=1)
             lts.append(seg.logical_time)
         return lts
 
@@ -311,9 +309,7 @@ def test_interleaved_ops_count_accounting(tmp_path):
     assert tombstoned_now == tombstoned_from_log
 
     # all originally-appended texts are accounted for (live OR tombstoned), never lost
-    appended_texts = {
-        s.content.get("text") for s in all_segs if s.kind == "thought"
-    }
+    appended_texts = {s.content.get("text") for s in all_segs if s.kind == "thought"}
     expected = {f"a{t}-{i}" for t in range(n_appenders) for i in range(per_appender)}
     assert expected <= appended_texts, "an appended segment vanished (lost write)"
 

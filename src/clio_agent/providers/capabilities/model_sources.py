@@ -274,9 +274,7 @@ def resolve_model_capabilities(
     return replace(merged, released_at=released)
 
 
-def model_parameter_count(
-    chosen: Fact, hf_facts: ModelCapabilities | None
-) -> Fact:
+def model_parameter_count(chosen: Fact, hf_facts: ModelCapabilities | None) -> Fact:
     """The model's own parameter count, keeping a converted file's count as evidence.
 
     A ``scope="file"`` count (weights stored in one GGUF) yields to the Hub

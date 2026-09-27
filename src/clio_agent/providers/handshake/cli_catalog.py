@@ -315,7 +315,12 @@ class CliCatalogHandshake(NoOpHandshake):
             ),
             thinking=_thinking_fact_for(ctx.provider_kind, raw),
             description=(
-                Fact(value=raw["description"], source="server_report", observed_at=observed_at, detail=detail)
+                Fact(
+                    value=raw["description"],
+                    source="server_report",
+                    observed_at=observed_at,
+                    detail=detail,
+                )
                 if isinstance(raw.get("description"), str) and raw["description"].strip()
                 else unknown()
             ),

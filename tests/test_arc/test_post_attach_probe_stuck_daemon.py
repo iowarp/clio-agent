@@ -91,7 +91,8 @@ def test_post_attach_probe_is_bounded_against_a_stuck_daemon(tmp_path: Path, mod
             )
     except subprocess.TimeoutExpired:
         pytest.fail(
-            f"the probe hung past {_CHILD_TIMEOUT_S:g}s:" + chr(10)
+            f"the probe hung past {_CHILD_TIMEOUT_S:g}s:"
+            + chr(10)
             + log_path.read_text(encoding="utf-8", errors="replace")[-4000:]
         )
     finally:

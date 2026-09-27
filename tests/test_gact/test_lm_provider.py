@@ -505,9 +505,7 @@ def test_get_lm_provider_reports_argonne_install_required_even_when_signed_in(
     monkeypatch.setattr(
         importlib.util,
         "find_spec",
-        lambda name, *a, **k: (
-            None if name == "globus_sdk" else real_find_spec(name, *a, **k)
-        ),
+        lambda name, *a, **k: (None if name == "globus_sdk" else real_find_spec(name, *a, **k)),
     )
 
     app = build_app(sessions_path=tmp_path / "s.json")

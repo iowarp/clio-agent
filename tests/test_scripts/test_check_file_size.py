@@ -85,9 +85,7 @@ def test_main_reports_ratchet_down_message(tmp_path: Path, capsys, monkeypatch) 
     _write(tmp_path, "known.py", 500)
     monkeypatch.setattr("scripts.check_file_size._repo_root", lambda: tmp_path)
     monkeypatch.setattr("scripts.check_file_size.SRC_ROOT", ".")
-    monkeypatch.setattr(
-        "scripts.check_file_size.RATCHET_BASELINE", {"known.py": 1200}
-    )
+    monkeypatch.setattr("scripts.check_file_size.RATCHET_BASELINE", {"known.py": 1200})
     assert main([]) == 0
     out = capsys.readouterr().out
     assert "ratchet down" in out

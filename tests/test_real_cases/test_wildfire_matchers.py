@@ -19,24 +19,32 @@ from tests.test_real_cases.test_wildfire_case import (
 
 
 def _render_call(layers):
-    return ToolCall(name="geo_render_feature_map", args={}, output={"status": "success", "layers": layers})
+    return ToolCall(
+        name="geo_render_feature_map", args={}, output={"status": "success", "layers": layers}
+    )
 
 
 def _impact_run() -> Run:
     return Run(
         output="brief",
         steps=[["data", "analysis", "visualization", "synthesis"]],
-        tool_calls=[_render_call([
-            {"name": "Smoke forecast", "features": 25},
-            {"name": "Fire perimeter", "features": 66},
-            {"name": "Air quality", "features": 6},
-        ])],
-        extra={"workflow_state": {
-            "region": [-106.3, 32.6, -104.3, 34.7],
-            "fire": {"selected": {"name": "SEVEN CABINS"}},
-            "impact": {"present": True, "selected_fire": {"name": "SEVEN CABINS"}},
-            "impact_overlap": {"monitors_total": 6, "monitors_under_smoke": 5},
-        }},
+        tool_calls=[
+            _render_call(
+                [
+                    {"name": "Smoke forecast", "features": 25},
+                    {"name": "Fire perimeter", "features": 66},
+                    {"name": "Air quality", "features": 6},
+                ]
+            )
+        ],
+        extra={
+            "workflow_state": {
+                "region": [-106.3, 32.6, -104.3, 34.7],
+                "fire": {"selected": {"name": "SEVEN CABINS"}},
+                "impact": {"present": True, "selected_fire": {"name": "SEVEN CABINS"}},
+                "impact_overlap": {"monitors_total": 6, "monitors_under_smoke": 5},
+            }
+        },
     )
 
 
@@ -45,13 +53,19 @@ def _null_run() -> Run:
     return Run(
         output="no impact",
         steps=[["data", "analysis", "visualization", "synthesis"]],
-        tool_calls=[_render_call([{"name": "Fire perimeter", "features": 39}, {"name": "Air quality", "features": 2}])],
-        extra={"workflow_state": {
-            "region": [-88.9, 44.4, -86.9, 46.4],
-            "fire": {"selected": {"name": "North Branch"}},
-            "impact": {"present": False, "affected_communities": []},
-            "impact_overlap": {"monitors_total": 2, "monitors_under_smoke": 0},
-        }},
+        tool_calls=[
+            _render_call(
+                [{"name": "Fire perimeter", "features": 39}, {"name": "Air quality", "features": 2}]
+            )
+        ],
+        extra={
+            "workflow_state": {
+                "region": [-88.9, 44.4, -86.9, 46.4],
+                "fire": {"selected": {"name": "North Branch"}},
+                "impact": {"present": False, "affected_communities": []},
+                "impact_overlap": {"monitors_total": 2, "monitors_under_smoke": 0},
+            }
+        },
     )
 
 

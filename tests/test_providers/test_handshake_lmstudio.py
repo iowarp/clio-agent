@@ -133,7 +133,11 @@ async def test_connectivity_falls_back_to_openai_models() -> None:
     assert result.connectivity is ConnectivityState.OK
     assert result.auth is AuthState.NOT_REQUIRED
     # v1, then v0, then the OpenAI-compatible fallback (brief Part 6: v1 first).
-    assert client.requested == [f"{ROOT}/api/v1/models", f"{ROOT}/api/v0/models", f"{API_BASE}/models"]
+    assert client.requested == [
+        f"{ROOT}/api/v1/models",
+        f"{ROOT}/api/v0/models",
+        f"{API_BASE}/models",
+    ]
 
 
 @pytest.mark.asyncio
@@ -152,7 +156,9 @@ async def test_connectivity_unreachable() -> None:
 async def test_discover_models_prefers_v1_over_v0() -> None:
     """P4b: when ``/api/v1/models`` answers, it wins over the v0 fallback (brief Part 6)."""
     capability_fixtures = Path(__file__).parent.parent / "fixtures" / "capabilities" / "lm_studio"
-    v1_payload = json.loads((capability_fixtures / "api_v1_models.json").read_text(encoding="utf-8"))
+    v1_payload = json.loads(
+        (capability_fixtures / "api_v1_models.json").read_text(encoding="utf-8")
+    )
     v0_payload = _load_fixture("lmstudio_v0_models.json")
     handshake = LMStudioHandshake(provider=None)
     client = _FakeAsyncClient(

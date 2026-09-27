@@ -131,9 +131,7 @@ def test_marketplace_preflight_fails_when_complex_count_is_too_low(tmp_path: Pat
     assert result["blueprint_count"] == 2
     assert result["complex_blueprints"] == ["complex"]
     assert result["complex_blueprint_count"] == 1
-    assert result["validation_errors"] == [
-        "complex blueprint count below requirement: 1/2"
-    ]
+    assert result["validation_errors"] == ["complex blueprint count below requirement: 1/2"]
 
 
 def test_marketplace_preflight_reports_pack_validation_errors(tmp_path: Path) -> None:
@@ -358,6 +356,6 @@ Calculator descriptor.
         == error
         for error in result["validation_errors"]
     )
-    assert "self-contained MCP descriptor count below requirement: 0/1" in result[
-        "validation_errors"
-    ]
+    assert (
+        "self-contained MCP descriptor count below requirement: 0/1" in result["validation_errors"]
+    )

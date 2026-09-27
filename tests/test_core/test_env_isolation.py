@@ -49,9 +49,7 @@ def test_isolated_environ_keeps_launcher_resolvable() -> None:
     This is the exact call ``clio_agent.tools.mcp_config.transport_for`` makes;
     under the old ``clear=True`` it returned ``None`` because PATH was gone.
     """
-    launcher = next(
-        (name for name in ("sh", "cmd", "python") if shutil.which(name)), None
-    )
+    launcher = next((name for name in ("sh", "cmd", "python") if shutil.which(name)), None)
     if launcher is None:
         pytest.skip("no probe launcher resolvable on PATH")
 

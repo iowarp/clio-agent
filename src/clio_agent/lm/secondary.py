@@ -40,9 +40,7 @@ class SecondaryLM:
 def read_secondary_settings(role: SecondaryRole) -> SecondarySettings:
     """Snapshot a role's file/env configuration exactly once."""
     values = (
-        conf.resolve(
-            "summarizer.model", env="CLIO_SUMMARIZER_MODEL", default="", cast=conf.as_str
-        ),
+        conf.resolve("summarizer.model", env="CLIO_SUMMARIZER_MODEL", default="", cast=conf.as_str),
         conf.resolve(
             "summarizer.provider", env="CLIO_SUMMARIZER_PROVIDER", default="", cast=conf.as_str
         ),

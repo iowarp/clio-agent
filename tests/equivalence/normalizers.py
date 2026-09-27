@@ -165,9 +165,7 @@ def _mask(value: Any, mask_keys: frozenset[str]) -> Any:
     sentinel, preserving all structure. Lists/dicts are rebuilt (pure)."""
 
     if isinstance(value, dict):
-        return {
-            k: (MASKED if k in mask_keys else _mask(v, mask_keys)) for k, v in value.items()
-        }
+        return {k: (MASKED if k in mask_keys else _mask(v, mask_keys)) for k, v in value.items()}
     if isinstance(value, list):
         return [_mask(v, mask_keys) for v in value]
     return value

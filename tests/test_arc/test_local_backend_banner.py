@@ -46,9 +46,7 @@ def test_cte_selection_does_not_banner(
     """Sabotage twin: the banner belongs to the local path only."""
 
     monkeypatch.setattr(arc_storage, "ClioCoreStore", lambda *a, **kw: object())
-    monkeypatch.setattr(
-        "clio_agent.arc.clio_core_config.boot_check_ram_cap", lambda cfg, env: None
-    )
+    monkeypatch.setattr("clio_agent.arc.clio_core_config.boot_check_ram_cap", lambda cfg, env: None)
     arc_storage.make_arc_store(backend="cte", config_path=str(tmp_path / "cte.yaml"))
     assert "DEGRADED TO LOCAL BACKEND" not in capsys.readouterr().out
 

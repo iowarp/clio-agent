@@ -183,9 +183,7 @@ def committed_corpus() -> list[tuple[str, list[dict[str, Any]]]]:
 
     if not COMMITTED_CORPUS_DIR.is_dir():
         return []
-    return [
-        (fp.stem, _load_ledger_file(fp)) for fp in sorted(COMMITTED_CORPUS_DIR.glob("*.json"))
-    ]
+    return [(fp.stem, _load_ledger_file(fp)) for fp in sorted(COMMITTED_CORPUS_DIR.glob("*.json"))]
 
 
 def local_corpus() -> Optional[list[tuple[str, list[dict[str, Any]]]]]:

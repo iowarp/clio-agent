@@ -37,7 +37,8 @@ def _clean_connect_mode_env(monkeypatch):
     conf.reload()
     yield
 
-ERA_STUB = '''
+
+ERA_STUB = """
 from fastmcp import Context, FastMCP
 
 mcp = FastMCP("era")
@@ -48,7 +49,7 @@ async def era(ctx: Context) -> dict:
     return {"backend_era": getattr(rc, "protocol_version", None)}
 
 mcp.run()
-'''
+"""
 
 
 def _reap(needle: str) -> None:

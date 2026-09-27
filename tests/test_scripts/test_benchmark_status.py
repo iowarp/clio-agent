@@ -25,9 +25,7 @@ def test_benchmark_directory_is_clean_contract_only() -> None:
 
 def test_benchmark_has_exactly_fourteen_case_contracts() -> None:
     case_dirs = sorted(
-        path
-        for path in BENCHMARK.iterdir()
-        if path.is_dir() and _CASE_DIR.match(path.name)
+        path for path in BENCHMARK.iterdir() if path.is_dir() and _CASE_DIR.match(path.name)
     )
 
     assert [path.name for path in case_dirs] == [

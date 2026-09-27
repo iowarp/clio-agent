@@ -113,7 +113,9 @@ def _register_plan_artifact(
     session = app.state.sessions.get(sid)
     metadata = getattr(session, "metadata", None)
     recorded = str(metadata.get("plan_file") or "") if isinstance(metadata, Mapping) else ""
-    if not recorded or Path(recorded).resolve(strict=False) != Path(plan_path).resolve(strict=False):
+    if not recorded or Path(recorded).resolve(strict=False) != Path(plan_path).resolve(
+        strict=False
+    ):
         return _rejected_outcome(
             "plan_file_unowned", "the requested plan is not the plan path recorded for the session"
         )
@@ -182,9 +184,7 @@ def save_approved_plan(
 
     plan_path = str(plan_file or "").strip()
     try:
-        outcome = _register_plan_artifact(
-            app, sid, plan_path, turn_id=turn_id, trace_id=trace_id
-        )
+        outcome = _register_plan_artifact(app, sid, plan_path, turn_id=turn_id, trace_id=trace_id)
     except Exception as exc:  # noqa: BLE001 — a degraded save must never block the plan-exit resume
         return _record_degrade(
             app, sid, plan_path, reason="save_failed_exception", detail=repr(exc)

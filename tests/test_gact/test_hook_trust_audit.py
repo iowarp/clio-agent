@@ -60,7 +60,11 @@ def _write_hooks_json(path: Path, script: Path, *, hook_id: str = "guard") -> No
                     {
                         "id": hook_id,
                         "on": [PRE_TOOL_USE],
-                        "run": {"type": "command", "command": sys.executable, "args": [str(script)]},
+                        "run": {
+                            "type": "command",
+                            "command": sys.executable,
+                            "args": [str(script)],
+                        },
                     }
                 ]
             }
@@ -150,7 +154,11 @@ def test_allow_managed_only_drops_project_and_user_keeps_managed(tmp_path: Path)
     for path, hid in ((user, "user-hook"), (project, "project-hook"), (managed, "admin-hook")):
         path.write_text(
             json.dumps(
-                {"hooks": [{"id": hid, "on": [PRE_TOOL_USE], "run": {"type": "prompt", "prompt": "x"}}]}
+                {
+                    "hooks": [
+                        {"id": hid, "on": [PRE_TOOL_USE], "run": {"type": "prompt", "prompt": "x"}}
+                    ]
+                }
             ),
             encoding="utf-8",
         )
@@ -174,14 +182,22 @@ def test_build_dispatcher_honors_allow_managed_only_env(tmp_path: Path) -> None:
     managed = tmp_path / "managed.json"
     managed.write_text(
         json.dumps(
-            {"hooks": [{"id": "admin", "on": [PRE_TOOL_USE], "run": {"type": "prompt", "prompt": "x"}}]}
+            {
+                "hooks": [
+                    {"id": "admin", "on": [PRE_TOOL_USE], "run": {"type": "prompt", "prompt": "x"}}
+                ]
+            }
         ),
         encoding="utf-8",
     )
     user = tmp_path / "user.json"
     user.write_text(
         json.dumps(
-            {"hooks": [{"id": "user", "on": [PRE_TOOL_USE], "run": {"type": "prompt", "prompt": "x"}}]}
+            {
+                "hooks": [
+                    {"id": "user", "on": [PRE_TOOL_USE], "run": {"type": "prompt", "prompt": "x"}}
+                ]
+            }
         ),
         encoding="utf-8",
     )
@@ -233,7 +249,12 @@ def test_get_v1_hooks_lists_loaded_hooks_with_source_trust_enabled(tmp_path: Pat
     ("body", "fail_closed", "want_decision", "want_status"),
     [
         ("import json\nprint(json.dumps({'decision':'allow'}))\n", False, "allow", "completed"),
-        ("import json\nprint(json.dumps({'decision':'deny','reason':'no'}))\n", False, "deny", "denied"),
+        (
+            "import json\nprint(json.dumps({'decision':'deny','reason':'no'}))\n",
+            False,
+            "deny",
+            "denied",
+        ),
         ("import sys\nsys.exit(1)\n", True, "deny", "error"),
     ],
 )
@@ -264,8 +285,12 @@ def test_audit_emits_one_event_per_hook_for_multiple_hooks(tmp_path: Path) -> No
     try:
         from tests.test_gact._hook_fixtures import command_run, dispatcher_from_rows
 
-        s1 = write_hook_script(tmp_path, "a.py", "import json\nprint(json.dumps({'decision':'allow'}))\n")
-        s2 = write_hook_script(tmp_path, "b.py", "import json\nprint(json.dumps({'decision':'allow'}))\n")
+        s1 = write_hook_script(
+            tmp_path, "a.py", "import json\nprint(json.dumps({'decision':'allow'}))\n"
+        )
+        s2 = write_hook_script(
+            tmp_path, "b.py", "import json\nprint(json.dumps({'decision':'allow'}))\n"
+        )
         disp = dispatcher_from_rows(
             [
                 {"id": "a", "on": [PRE_TOOL_USE], "run": command_run(s1)},

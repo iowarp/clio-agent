@@ -684,9 +684,7 @@ async def test_drive_to_terminal_fetches_the_result_exactly_once_for_a_terminal_
             "timed_out": False,
             "protocol_error": None,
             "protocol_result": {"isError": False, "content": []},
-            "structured_result": {
-                "result": {"package": {"name": "lammps", "version": "20260704"}}
-            },
+            "structured_result": {"result": {"package": {"name": "lammps", "version": "20260704"}}},
         },
     }
     terminal = ClientGetTaskResult(
@@ -1459,7 +1457,12 @@ def test_structured_payload_raises_typed_unwrap_failure_for_every_curated_tool(
     assert raised.value.reason == "jarvis_result_unwrap_failed"
     assert raised.value.details["tool"] == tool_name
     assert raised.value.details["task_id"] == "job_test"
-    assert set(raised.value.details["observed_keys"]) == {"content", "structuredContent", "isError", "resultType"}
+    assert set(raised.value.details["observed_keys"]) == {
+        "content",
+        "structuredContent",
+        "isError",
+        "resultType",
+    }
 
 
 def _failed_remote_call_envelope(

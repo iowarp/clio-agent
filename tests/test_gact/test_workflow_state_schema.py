@@ -126,7 +126,9 @@ class TestRankResourceCandidate:
 
 
 class TestRankProducedFamily:
-    @pytest.mark.parametrize("section", ["profile", "visualization", "artifact", "network_analysis"])
+    @pytest.mark.parametrize(
+        "section", ["profile", "visualization", "artifact", "network_analysis"]
+    )
     @pytest.mark.parametrize(
         "status,expected",
         [
@@ -238,9 +240,7 @@ class TestNormalizeNoReadiness:
 
 class TestNormalizeAcquisitionDemote:
     def test_demote_keep_status_blocked(self) -> None:
-        out = SCHEMA.normalize_section(
-            "acquisition", {"status": "blocked", "analysis_ready": True}
-        )
+        out = SCHEMA.normalize_section("acquisition", {"status": "blocked", "analysis_ready": True})
         assert out["analysis_ready"] is False
         assert out["status"] == "blocked"  # kept
         assert out["blocker"] == "analysis-ready acquisition requires a staged local CSV path"
@@ -271,9 +271,7 @@ class TestNormalizeAcquisitionDemote:
 
     def test_demote_default_candidate_found(self) -> None:
         # analysis_ready True but no local_path and status staged -> default demotion
-        out = SCHEMA.normalize_section(
-            "acquisition", {"status": "staged", "analysis_ready": True}
-        )
+        out = SCHEMA.normalize_section("acquisition", {"status": "staged", "analysis_ready": True})
         assert out["status"] == "candidate_found"
         assert out["analysis_ready"] is False
         assert out["blocker"] == "analysis-ready acquisition requires a staged local CSV path"
@@ -300,9 +298,7 @@ class TestNormalizeAcquisitionDemote:
         assert "blocker" not in out
 
     def test_not_ready_is_untouched(self) -> None:
-        out = SCHEMA.normalize_section(
-            "acquisition", {"status": "staged", "analysis_ready": False}
-        )
+        out = SCHEMA.normalize_section("acquisition", {"status": "staged", "analysis_ready": False})
         assert out == {"status": "staged", "analysis_ready": False}
 
 

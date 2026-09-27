@@ -128,7 +128,11 @@ def test_write_amplification_budget(arc: ARCMemory) -> None:
 
     reg = LiveEdgeRegistry()
     reg.open_slot(
-        "s", part_id="p1", agent_id="main", field="answer", kind="text",
+        "s",
+        part_id="p1",
+        agent_id="main",
+        field="answer",
+        kind="text",
         checkpoint_every=DEFAULT_CHECKPOINT_EVERY,
     )
     for _ in range(5000):

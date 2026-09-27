@@ -125,7 +125,12 @@ def parse_props(
         model_id=model_id,
         model_key=model_key_fact,
         context_served=(
-            Fact(n_ctx, "server_report", observed_at, "llama.cpp /props default_generation_settings.n_ctx")
+            Fact(
+                n_ctx,
+                "server_report",
+                observed_at,
+                "llama.cpp /props default_generation_settings.n_ctx",
+            )
             if n_ctx is not None
             else unknown()
         ),
@@ -135,7 +140,9 @@ def parse_props(
             else unknown()
         ),
         modalities_enabled=(
-            Fact(modalities_value, "server_report", observed_at, "llama.cpp /props modalities.vision")
+            Fact(
+                modalities_value, "server_report", observed_at, "llama.cpp /props modalities.vision"
+            )
             if modalities_known
             else unknown()
         ),
@@ -177,7 +184,9 @@ def parse_v1_models_context_max(payload: Any, model_id: str) -> Fact[int]:
         meta = row.get("meta")
         n_ctx_train = _positive_int(meta.get("n_ctx_train")) if isinstance(meta, Mapping) else None
         if n_ctx_train is not None:
-            return Fact(n_ctx_train, "server_report", observed_at, "llama.cpp /v1/models meta.n_ctx_train")
+            return Fact(
+                n_ctx_train, "server_report", observed_at, "llama.cpp /v1/models meta.n_ctx_train"
+            )
     return unknown("llama.cpp /v1/models: no matching row or no meta.n_ctx_train")
 
 
@@ -213,7 +222,9 @@ def parse_v1_models_parameters(v1_models_payload: Any, model_id: str) -> Fact[Pa
     return unknown()
 
 
-def build_model_capabilities(model_key: str, v1_models_payload: Any, model_id: str) -> ModelCapabilities:
+def build_model_capabilities(
+    model_key: str, v1_models_payload: Any, model_id: str
+) -> ModelCapabilities:
     """The model-record side of ``GET /v1/models`` (``meta.n_ctx_train``, ``meta.n_params``)."""
     return ModelCapabilities(
         model_key=model_key,
@@ -225,7 +236,9 @@ def build_model_capabilities(model_key: str, v1_models_payload: Any, model_id: s
 # --------------------------------------------------------------------------- fetch (plain HTTP)
 
 
-async def fetch_props(client: Any, root: str, *, model_id: str = "", loaded: bool = True) -> dict[str, Any] | None:
+async def fetch_props(
+    client: Any, root: str, *, model_id: str = "", loaded: bool = True
+) -> dict[str, Any] | None:
     """``GET /props`` (single mode, no query) or ``GET /props?model=<id>`` (router mode).
 
     The router-mode query form is only safe for an ALREADY LOADED model (brief:
@@ -430,12 +443,22 @@ def parse_router_model_row(
         model_id=model_id,
         model_key=model_key_fact,
         context_served=(
-            Fact(served_context, "server_report", observed_at, "llama.cpp router status.args --ctx-size/--parallel")
+            Fact(
+                served_context,
+                "server_report",
+                observed_at,
+                "llama.cpp router status.args --ctx-size/--parallel",
+            )
             if served_context is not None
             else unknown()
         ),
         modalities_enabled=(
-            Fact(modalities_value, "server_report", observed_at, "llama.cpp router architecture.input_modalities/--mmproj")
+            Fact(
+                modalities_value,
+                "server_report",
+                observed_at,
+                "llama.cpp router architecture.input_modalities/--mmproj",
+            )
             if modalities_known
             else unknown()
         ),
