@@ -365,12 +365,24 @@ def test_clear_over_many_blobs_each_prompt_succeeds(monkeypatch):
     exceeds it. With per-RPC guarding (not whole-method) the clear SUCCEEDS — a
     legitimately long, progressing op is never misclassified as a stalled peer.
 
+    Timing is margin, not a race: each RPC takes 0.1 s against a 1 s window (0.9 s of
+    headroom for a loaded runner), and 12 of them take 1.2 s in total, so only the total
+    exceeds the window -- and load only makes the total longer, never shorter. (It was
+    0.03 s per RPC against 0.05 s: 20 ms of headroom, which the first delete's one-time
+    setup could eat.)
+
     Sabotage: re-wrap ``clear`` as ``@guard_store_op`` (one whole-method window) and the
-    0.15s clear stalls attempt-1, retries from the top thrice, and raises here instead."""
-    monkeypatch.setattr("clio_agent.arc.rpc_liveness.resolve_liveness_policy", lambda: _FAST)
-    monkeypatch.setattr("clio_agent.arc.rpc_liveness.time.sleep", _NO_SLEEP)
+    1.2 s clear stalls attempt-1, retries from the top thrice, and raises here instead."""
+    window = LivenessPolicy(stall_after_s=1.0, retries=2, backoff_initial_s=0.0, backoff_max_s=0.0)
+    monkeypatch.setattr("clio_agent.arc.rpc_liveness.resolve_liveness_policy", lambda: window)
+    # No ``time.sleep`` patch here: ``rpc_liveness.time`` IS the ``time`` module, so patching
+    # its ``sleep`` also turned the per-RPC delay below into a no-op -- the test never had a
+    # total longer than the window, and its sabotage check could not fail. The ladder's
+    # backoff is already 0 in ``window``.
 
     from clio_agent.arc.storage import ARC_KINDS
+
+    _BLOBS = [f"b{i}" for i in range(1, 13)]
 
     class _Tag:
         def __init__(self, blobs):
@@ -384,15 +396,15 @@ def test_clear_over_many_blobs_each_prompt_succeeds(monkeypatch):
 
     class _Cte:
         def Tag(self, kind):  # noqa: N802 - native API shape
-            # Five blobs on the first kind, none elsewhere.
-            return _Tag(["b1", "b2", "b3", "b4", "b5"] if kind == ARC_KINDS[0] else [])
+            # Twelve blobs on the first kind, none elsewhere.
+            return _Tag(_BLOBS if kind == ARC_KINDS[0] else [])
 
     class _Client:
         def __init__(self):
             self.deleted: list[str] = []
 
         def AsyncDelBlob(self, tag_id, name):  # noqa: N802 - native API shape
-            time.sleep(0.03)  # each RPC responds in 0.03s (< 0.05 window); 5x total > 0.05
+            time.sleep(0.1)  # each RPC: 0.1 s (< the 1 s window); 12x in total: > the window
             self.deleted.append(name)
             return _ReadyFuture(0)
 
@@ -400,7 +412,7 @@ def test_clear_over_many_blobs_each_prompt_succeeds(monkeypatch):
     store = _stalling_store(_Cte(), reconnect=lambda: None)
     store._client = client
     store.clear()  # must NOT raise
-    assert client.deleted == ["b1", "b2", "b3", "b4", "b5"]
+    assert client.deleted == _BLOBS
     assert store._gate.quarantined is False  # no spurious stall/quarantine
 
 
