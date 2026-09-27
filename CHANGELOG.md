@@ -6,6 +6,8 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.4.19] — 2026-09-27
+
 ### Added
 
 - Provider catalog model rows carry `model_facts` next to `capability_tags`:
