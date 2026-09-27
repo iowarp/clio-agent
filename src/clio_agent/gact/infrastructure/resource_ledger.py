@@ -36,6 +36,7 @@ from clio_agent.gact.infrastructure.models import (
     CommandResult,
     CommandSpec,
     OwnedResource,
+    ResourceKind,
     RuntimeName,
 )
 from clio_agent.gact.infrastructure.transport_text import logical_lines
@@ -100,16 +101,17 @@ def directory_recorder(requested: str, os_name: str = "linux") -> StepRecorder:
     def record(result: CommandResult) -> list[OwnedResource]:
         rows: list[OwnedResource] = []
         lines = logical_lines(result.stdout or "", (CREATED_DIR_MARKER, CREATED_PARENT_MARKER))
+        markers: tuple[tuple[str, ResourceKind, set[str]], ...] = (
+            (CREATED_DIR_MARKER, "directory", {target}),
+            (CREATED_PARENT_MARKER, "parent_directory", ancestors),
+        )
         for line in lines:
-            for marker, kind, allowed in (
-                (CREATED_DIR_MARKER, "directory", {target}),
-                (CREATED_PARENT_MARKER, "parent_directory", ancestors),
-            ):
+            for marker, kind, allowed in markers:
                 if not line.startswith(f"{marker} "):
                     continue
                 path = module.normpath(line[len(marker) + 1 :].strip())
                 if path in allowed:
-                    rows.append(OwnedResource(kind=kind, ref=path))  # type: ignore[arg-type]
+                    rows.append(OwnedResource(kind=kind, ref=path))
                 else:
                     logger.warning(
                         "infrastructure ledger: reason=unexpected_created_path path=%r "

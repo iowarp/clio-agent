@@ -60,6 +60,27 @@ class RuntimeUnavailableError(ValueError):
         self.reason = reason
 
 
+def parse_runtime_name(value: str) -> RuntimeName:
+    """A stored or requested runtime name as the typed :data:`RuntimeName`.
+
+    Raises:
+        RuntimeUnavailableError: ``runtime_unknown`` for anything CLIO does not drive.
+    """
+
+    name = value.strip().casefold()
+    if name == "docker":
+        return "docker"
+    if name == "podman":
+        return "podman"
+    if name == "apptainer":
+        return "apptainer"
+    raise RuntimeUnavailableError(
+        "runtime_unknown",
+        f"{value!r} is not a container runtime CLIO can use "
+        f"(choose {', '.join(RUNTIME_PREFERENCE)}).",
+    )
+
+
 def negotiate_runtime(
     runtimes: list[ContainerRuntimeFact], requested: str = ""
 ) -> ContainerRuntimeFact:
@@ -78,20 +99,14 @@ def negotiate_runtime(
     """
 
     by_name = {fact.name: fact for fact in runtimes}
-    wanted = requested.strip().casefold()
-    if wanted:
-        if wanted not in RUNTIME_LABELS:
-            raise RuntimeUnavailableError(
-                "runtime_unknown",
-                f"{requested!r} is not a container runtime CLIO can use "
-                f"(choose {', '.join(RUNTIME_PREFERENCE)}).",
-            )
-        fact = by_name.get(wanted)  # type: ignore[call-overload]
+    if requested.strip():
+        wanted = parse_runtime_name(requested)
+        fact = by_name.get(wanted)
         if fact is None or not fact.usable:
             explanation = (
                 fact.explanation()
                 if fact
-                else f"{RUNTIME_LABELS[wanted]} was not inspected on this target."  # type: ignore[index]
+                else f"{RUNTIME_LABELS[wanted]} was not inspected on this target."
             )
             raise RuntimeUnavailableError("runtime_not_usable", explanation)
         return fact

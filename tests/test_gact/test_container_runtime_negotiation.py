@@ -120,3 +120,13 @@ def test_an_unknown_runtime_name_is_a_typed_refusal() -> None:
         negotiate_runtime(_facts(docker=True), "singularity")
 
     assert raised.value.reason == "runtime_unknown"
+
+
+def test_a_stored_runtime_name_is_parsed_once_into_the_typed_name() -> None:
+    from clio_agent.gact.infrastructure.container_runtime import parse_runtime_name
+
+    assert parse_runtime_name(" Podman ") == "podman"
+    with pytest.raises(RuntimeUnavailableError) as raised:
+        parse_runtime_name("singularity")
+    assert raised.value.reason == "runtime_unknown"
+

@@ -13,6 +13,7 @@ from collections.abc import Awaitable, Callable
 
 import httpx
 
+from clio_agent.gact.infrastructure.container_runtime import parse_runtime_name
 from clio_agent.gact.infrastructure.effective_parameters import observe_effective
 from clio_agent.gact.infrastructure.model_runtimes import ENGINES, RUNTIME_FIELD
 from clio_agent.gact.infrastructure.models import (
@@ -104,10 +105,12 @@ async def observe_service(
 
     # The native Windows llama.cpp is a process, not a container: there is no
     # runtime to inspect, so its launch values are reported as requested.
+    # Parsed once, here at the boundary: an unknown stored value is a typed
+    # RuntimeUnavailableError (runtime_unknown), never passed on as a string.
     runtime = (
-        "native"
+        None
         if record.variant_id == "native-windows-cpu"
-        else record.configuration.get(RUNTIME_FIELD, "docker")
+        else parse_runtime_name(record.configuration.get(RUNTIME_FIELD, "") or "docker")
     )
     requested = {
         key[len(PARAMETER_PREFIX) :]: value
@@ -118,7 +121,7 @@ async def observe_service(
     return await observe_effective(
         spec.engine,
         variant,
-        runtime=runtime,  # type: ignore[arg-type]
+        runtime=runtime,
         container_name=spec.container_name,
         requested=requested,
         http_get=http_get,

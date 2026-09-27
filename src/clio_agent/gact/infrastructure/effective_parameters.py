@@ -286,7 +286,7 @@ async def observe_effective(
     engine: EngineId,
     variant_id: str,
     *,
-    runtime: RuntimeName | str,
+    runtime: RuntimeName | None,
     container_name: str,
     requested: Mapping[str, str],
     http_get: HttpGet,
@@ -297,7 +297,8 @@ async def observe_effective(
     Args:
         engine: The engine.
         variant_id: The launched variant.
-        runtime: The container runtime the service runs in.
+        runtime: The container runtime the service runs in, or ``None`` for
+            a native process (nothing to inspect; launch values are as requested).
         container_name: The CLIO-owned container / instance name.
         requested: Parameter values CLIO launched with, by parameter id.
         http_get: GET a server path (``/props``) and return its body, or ``None``.
@@ -312,12 +313,13 @@ async def observe_effective(
         report.update(parse_vllm_models(await http_get("/v1/models")))
         report.update(parse_vllm_metrics(await http_get("/metrics")))
     else:
-        logs = await run(logs_command(runtime, container_name, lines=400))
-        report.update(parse_ollama_server_config(logs.stdout + logs.stderr))
+        if runtime is not None:
+            logs = await run(logs_command(runtime, container_name, lines=400))
+            report.update(parse_ollama_server_config(logs.stdout + logs.stderr))
         extra = parse_ollama_ps(await http_get("/api/ps"))
     args: list[str] | None = None
     env: dict[str, str] | None = None
-    inspect = None if runtime == "native" else inspect_config_command(runtime, container_name)
+    inspect = None if runtime is None else inspect_config_command(runtime, container_name)
     if inspect is not None:
         result = await run(inspect)
         if result.exit_code == 0:

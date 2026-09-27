@@ -36,6 +36,7 @@ from clio_agent.gact.infrastructure.container_runtime import (
     image_present_command,
     logs_command,
     negotiate_runtime,
+    parse_runtime_name,
     pull_command,
     remove_container_command,
     run_command,
@@ -464,11 +465,9 @@ def build_model_runtime_plan(
         # uninstall still works after that runtime stopped being usable.
         if owned:
             return DriverPlan(tuple(removal_commands(owned, facts.os)), configuration=configuration)
-        installed_runtime = configuration.get(RUNTIME_FIELD, "") or "docker"
-        if installed_runtime not in RUNTIME_LABELS:
-            raise ValueError(f"Unknown container runtime {installed_runtime!r}")
+        installed_runtime = parse_runtime_name(configuration.get(RUNTIME_FIELD, "") or "docker")
         return DriverPlan(
-            (remove_container(installed_runtime, spec.container_name, facts.os),),  # type: ignore[arg-type]
+            (remove_container(installed_runtime, spec.container_name, facts.os),),
             configuration=configuration,
         )
     runtime_fact = negotiate_runtime(_runtimes(facts), configuration.get(RUNTIME_FIELD, ""))

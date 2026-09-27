@@ -355,11 +355,11 @@ def compile_parameters(
         value = _validated(parameter, str(raw))
         values[pid] = value
     for parameter in ENGINE_PARAMETERS[engine]:
-        value = values.get(parameter.id)
-        if value is None:
+        chosen = values.get(parameter.id)
+        if chosen is None:
             continue
         if parameter.delivery == "flag":
-            flags.extend([*parameter.companion_flags, parameter.name, value])
+            flags.extend([*parameter.companion_flags, parameter.name, chosen])
         else:
-            env.append((parameter.name, value))
+            env.append((parameter.name, chosen))
     return CompiledParameters(flags=tuple(flags), env=tuple(env), values=values)

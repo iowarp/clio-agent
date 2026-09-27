@@ -19,6 +19,7 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
+from clio_agent.gact.infrastructure.container_runtime import parse_runtime_name
 from clio_agent.gact.infrastructure.models import (
     ContainerRuntimeFact,
     RuntimeName,
@@ -88,7 +89,7 @@ def parse_probe(stdout: str) -> tuple[list[ContainerRuntimeFact], TargetIdentity
     for line in logical_lines(stdout, ("rt|", "id|")):
         fields = line.split("|")
         if fields[0] == "rt" and len(fields) >= 6 and fields[1] in _HEALTH:
-            name: RuntimeName = fields[1]  # type: ignore[assignment]
+            name = parse_runtime_name(fields[1])
             installed, usable = fields[2] == "1", fields[3] == "1"
             runtimes.append(
                 ContainerRuntimeFact(
