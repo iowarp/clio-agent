@@ -18,9 +18,12 @@ Admission is checked in this order:
 
 * **Origin** (defense in depth): browsers apply no CORS to WebSockets, so any
   page the user visits could open this socket. A browser always sends
-  ``Origin`` on a WebSocket; only the Desktop's own WebView origins and the
-  configured ``gact.cors.origins`` are accepted. A request with no ``Origin``
-  comes from a non-browser client, which no web page can impersonate.
+  ``Origin`` on a WebSocket; it must pass the one Host/Origin policy HTTP uses
+  (:func:`clio_agent.gact.origin_guard.browser_origin_allowed`: the Desktop
+  WebView, ``gact.cors.origins``, or this server's own origin on an allowed
+  host). A request with no ``Origin`` comes from a non-browser client, which
+  no web page can impersonate. A token-less upgrade to a foreign ``Host`` is
+  refused earlier by :class:`~clio_agent.gact.origin_guard.OriginGuardMiddleware`.
 * **Target**: it must exist and be an SSH target.
 * **Bearer token**: always required when this CLIO enforces one, loopback or
   not. A loopback peer is not trusted here the way HTTP trusts it, because a
@@ -32,7 +35,6 @@ Admission is checked in this order:
 
 from __future__ import annotations
 
-import base64
 import hmac
 import logging
 from dataclasses import dataclass
@@ -41,9 +43,9 @@ from typing import Literal
 from fastapi import WebSocket
 from starlette.datastructures import State
 
-from clio_agent.gact.auth import _header_bearer_token
-from clio_agent.gact.cors import gact_cors_origins
+from clio_agent.gact.auth import supplied_bearer_token
 from clio_agent.gact.infrastructure.models import InfrastructureTarget
+from clio_agent.gact.origin_guard import browser_origin_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +58,6 @@ INFRASTRUCTURE_TRANSPORT_PROTOCOL_V2 = "clio.infrastructure.v2"
 RefusalReason = Literal[
     "origin_not_allowed", "authentication_required", "target_not_found", "target_not_ssh"
 ]
-
-DESKTOP_WEBVIEW_ORIGINS = frozenset(
-    {"tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"}
-)
-"""The Desktop WebView's own origins (macOS/Linux, Windows, Windows HTTPS scheme)."""
 
 
 @dataclass(frozen=True)
@@ -123,7 +120,9 @@ def transport_refusal(
     """
 
     origin = websocket.headers.get("origin")
-    if origin is not None and not _origin_allowed(origin):
+    if origin is not None and not browser_origin_allowed(
+        origin, websocket.scope, websocket.headers
+    ):
         return TransportRefusal(
             4403, "origin_not_allowed", f"Origin {origin!r} may not attach an SSH transport."
         )
@@ -140,7 +139,7 @@ def transport_refusal(
     expected = getattr(app_state, "bearer_token", None)
     if expected is None:
         return None
-    supplied = _header_bearer_token(websocket.scope) or _websocket_protocol_token(websocket)
+    supplied = supplied_bearer_token(websocket.scope)
     if hmac.compare_digest(supplied, expected):
         return None
     return TransportRefusal(
@@ -148,15 +147,6 @@ def transport_refusal(
         "authentication_required",
         "The client did not present this CLIO's bearer token.",
     )
-
-
-def _origin_allowed(origin: str) -> bool:
-    """Whether a browser origin may open the transport socket."""
-
-    if origin in DESKTOP_WEBVIEW_ORIGINS:
-        return True
-    configured = gact_cors_origins()
-    return configured == ["*"] or origin in configured
 
 
 async def refuse_transport(websocket: WebSocket, target_id: str, refusal: TransportRefusal) -> None:
@@ -184,19 +174,3 @@ async def refuse_transport(websocket: WebSocket, target_id: str, refusal: Transp
     # A v1 client treats a completed handshake as "attached"; refuse it before
     # the handshake so it still sees an error (the reason is in the log above).
     await websocket.close(code=refusal.code)
-
-
-def _websocket_protocol_token(websocket: WebSocket) -> str:
-    """Decode a browser-compatible bearer carried as a WebSocket subprotocol."""
-
-    raw = websocket.headers.get("sec-websocket-protocol", "")
-    for value in (part.strip() for part in raw.split(",")):
-        if not value.startswith("clio-bearer."):
-            continue
-        encoded = value.removeprefix("clio-bearer.")
-        padding = "=" * (-len(encoded) % 4)
-        try:
-            return base64.urlsafe_b64decode(encoded + padding).decode("utf-8")
-        except (ValueError, UnicodeDecodeError):
-            return ""
-    return ""

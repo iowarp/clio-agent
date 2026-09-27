@@ -154,6 +154,13 @@ def test_a_configured_cors_origin_attaches(
     assert _connect_from(client, ssh_target, "http://localhost:5173")[0] == 4403
 
 
+def test_the_socket_uses_the_shared_same_origin_rule(client: TestClient, ssh_target: str) -> None:
+    # One Host/Origin policy for HTTP and WS (gact/origin_guard.py): the
+    # server's own origin on an allowed host passes, a look-alike does not.
+    assert _connect_from(client, ssh_target, "http://testserver") == (1000, "attached")
+    assert _connect_from(client, ssh_target, "http://testserver:9999")[0] == 4403
+
+
 def test_v1_only_client_keeps_the_pre_handshake_refusal_and_the_reason_is_logged(
     client: TestClient, ssh_target: str, caplog: pytest.LogCaptureFixture
 ) -> None:
