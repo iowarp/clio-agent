@@ -237,6 +237,9 @@ class UpdateEnvironment:
             skip it (only for environments without CLIO installed).
         release_runtimes: Stops in-process runtimes holding the group's binaries.
         spec: Override of the provider's component group (tests).
+        record_support: Records a finished update's versions as the floor the
+            next runtime must keep (:func:`clio_agent.providers.support_record.
+            record_support`); ``None`` for an environment that is not CLIO's own.
     """
 
     python: str = field(default_factory=lambda: sys.executable)
@@ -246,6 +249,7 @@ class UpdateEnvironment:
     verify_provider: Callable[[str, str], VerifyOutcome] | None = None
     release_runtimes: Callable[[str], None] | None = None
     spec: ProviderComponents | None = None
+    record_support: Callable[[str, dict[str, str]], object] | None = None
 
 
 def verify_provider_in_child(python: str, provider_kind: str) -> VerifyOutcome:
@@ -350,6 +354,8 @@ class ComponentUpdater:
     def _execute(self, job: UpdateJob, env: UpdateEnvironment) -> None:
         try:
             _perform(job, env)
+            if job.changed and env.record_support is not None:
+                env.record_support(job.provider_kind, dict(job.to_versions))
             job.stage = "done"
         except UpdateFailed as exc:
             job.error_code, job.error = exc.code, str(exc)

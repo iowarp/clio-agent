@@ -685,7 +685,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # `_provider_to_wire` is deleted (brief 9.1): ratcheted to 1116.
     # P4b adds the 3-line surrogate refusal on the chat-model bind: 1116 -> 1119.
     # 1096 -> 1077 (#1506): duplicated LM-apply failure branches merged; selection persistence lives in gact/providers/selection_store.py.
-    "src/clio_agent/gact/routes/providers.py": 1077,
+    # 1077 -> 1076: the Claude Code missing-support status moved to providers/support_restore.py.
+    "src/clio_agent/gact/routes/providers.py": 1076,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (merged to develop with the size check red, baseline 1478 -> actual); ratchet
     # back below the pre-#947 count with the mcp_app_* owner-module split (see the
