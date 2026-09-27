@@ -40,6 +40,26 @@ def model_tool_result_chars() -> int:
     )
 
 
+def transcript_tool_result_chars() -> int:
+    """Character bound on the TRANSCRIPT/evidence preview of one tool result.
+
+    Config: ``limits.tool_result_chars`` / ``CLIO_TOOL_RESULT_CHARS`` (default
+    12000). Consumed by :func:`clio_agent.gact.evidence._bounded_tool_call_result`;
+    resolved here, beside its model-lane sibling, so a tool that must size its own
+    result to survive BOTH lanes unchanged (the shell tool, #887) reads the same
+    single source instead of re-declaring the key.
+    """
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    return conf.resolve(
+        "limits.tool_result_chars",
+        env="CLIO_TOOL_RESULT_CHARS",
+        default=12_000,
+        cast=conf.as_int,
+    )
+
+
 def _encode_bounded(text: str, head_chars: int, tail_chars: int) -> str:
     """Encode one truncation envelope, stamping the ACTUAL slice lengths.
 

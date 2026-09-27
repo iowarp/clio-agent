@@ -33,6 +33,7 @@ import logging
 import os
 import subprocess
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Literal
 
@@ -149,6 +150,58 @@ def kill_daemon_pidfile() -> None:
         pass
     with contextlib.suppress(OSError):
         pidfile.unlink()
+
+
+#: Typed reasons for the two failed-startup cleanups (#1401, no silent fallback).
+FAILED_SPAWN_KILLED = "clio_core_failed_spawn_killed"
+FAILED_ATTACH_RELEASED = "clio_core_failed_attach_released"
+
+
+@contextlib.contextmanager
+def kill_spawned_daemon_on_failure() -> Iterator[None]:
+    """Kill the daemon this process just spawned if it never became usable (#1401).
+
+    Wraps spawn-and-wait under the host-global spawn lock. A daemon that fails to
+    bind its port serves no client, and the port-based clean stop cannot see it (its
+    port is already free), so a failed start used to leave a live ``clio_run`` with
+    its pidfile later unlinked. This kills it by its pidfile (PID-reuse guarded)
+    and drops this process's registration so it holds no last-one-out vote.
+    """
+    try:
+        yield
+    except BaseException:
+        from clio_agent.arc import storage  # noqa: PLC0415 - avoid storage import cycle
+
+        logger.warning(
+            "clio-core daemon start failed; killing the spawned daemon (reason=%s)",
+            FAILED_SPAWN_KILLED,
+        )
+        storage._deregister_client()
+        with contextlib.suppress(OSError, ValueError, IndexError):
+            expect_daemon_exit(int(storage._daemon_pidfile().read_text("utf-8").split()[0]))
+        kill_daemon_pidfile()
+        raise
+
+
+def release_failed_attach(config_path: str, log_level: str) -> None:
+    """Give up a failed attach's vote; stop the daemon iff no live client remains (#1401).
+
+    Runs when the native attach, the CTE init, or the post-attach probe fails after
+    the daemon is up. Deregistering alone left a daemon this process may have just
+    spawned running with no client at all; this applies the same last-one-out rule
+    as a graceful release, under the same host-global lock.
+    """
+    from clio_agent.arc import storage  # noqa: PLC0415 - avoid storage import cycle
+
+    with storage._runtime_spawn_lock():
+        storage._deregister_client()
+        if storage._live_client_pids():
+            return
+        logger.warning(
+            "clio-core attach failed with no other live client; stopping the daemon (reason=%s)",
+            FAILED_ATTACH_RELEASED,
+        )
+        storage._stop_runtime_daemon(config_path, log_level)
 
 
 def cleanup_runtime_after_client_crash(

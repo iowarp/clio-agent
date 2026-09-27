@@ -404,9 +404,12 @@ def test_activated_blueprint_resolving_nothing_fails_no_resolvable_agent(
 
     error_info = assistant.get("error_info") or {}
     assert error_info.get("error") == "no_resolvable_agent"
-    recovery = (error_info.get("details") or {}).get("recovery_actions", [])
-    assert "install_default_registry" in recovery
-    assert "activate_agent_blueprint" in recovery
+    details = error_info.get("details") or {}
+    # #1455: the error names the blueprint and the observed cause.
+    assert details.get("reason") == "blueprint_not_found"
+    assert details.get("blueprint_id") == "ghost-blueprint"
+    assert "'ghost-blueprint' is not installed here" in error_info.get("message", "")
+    assert "activate_agent_blueprint" in details.get("recovery_actions", [])
     # The deleted legacy planner dispatch must never have been reached.
     assert spy.forward_calls == 0
 

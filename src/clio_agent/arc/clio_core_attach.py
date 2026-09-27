@@ -293,6 +293,29 @@ def attach_window_s() -> float:
     return resolve_liveness_policy().stall_after_s
 
 
+def attach_and_initialize(
+    cte: object,
+    *,
+    config_path: str,
+    port: int,
+    settle_s: float,
+    on_failure: Callable[[], None],
+) -> None:
+    """Attach the native client, let the handshake settle, then initialize CTE.
+
+    ``on_failure`` runs exactly once if either step fails, so a process that never
+    finished attaching releases its registration (and, as the last live client, the
+    daemon) instead of leaving it behind (#1401).
+    """
+    attach_native_client(cte, config_path=config_path, port=port, on_failure=on_failure)
+    time.sleep(settle_s)  # let the client handshake settle
+    try:
+        cte.initialize_cte(config_path, cte.PoolQuery.Dynamic())  # type: ignore[attr-defined]
+    except BaseException:
+        on_failure()
+        raise
+
+
 def verify_post_attach(store: "ClioCoreStore", *, on_failure: Callable[[], None]) -> None:
     """Prove a freshly attached store answers ONE real RPC, within a bound, before handing it out.
 

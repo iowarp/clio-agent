@@ -97,6 +97,13 @@ def _wire_ensure_runtime(monkeypatch, *, client_ok: bool) -> dict[str, Any]:
     monkeypatch.setattr(storage, "_ensure_runtime_daemon", ensure_daemon)
     deregistered: list[bool] = []
     monkeypatch.setattr(storage, "_deregister_client", lambda: deregistered.append(True))
+    # A failed attach releases through runtime_stop (deregister + last-one-out stop, #1401);
+    # keep the stop half out of this binding-free test, record the release itself.
+    monkeypatch.setattr(
+        storage.runtime_stop,
+        "release_failed_attach",
+        lambda _cfg, _level: storage._deregister_client(),
+    )
     seen["deregistered"] = deregistered
     return seen
 
