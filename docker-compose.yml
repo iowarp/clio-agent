@@ -23,6 +23,9 @@ services:
       - CLIO_LM_MODEL=${CLIO_LM_MODEL:-}
       - CLIO_LM_API_KEY=${CLIO_LM_API_KEY:-lm-studio}
       - CLIO_ENVIRONMENT=production
+      # Opening the UI by a name other than localhost (a LAN IP or host name)?
+      # List it (no port), or requests are refused with host_not_allowed.
+      - CLIO_GACT_ALLOWED_HOSTS=${CLIO_GACT_ALLOWED_HOSTS:-}
     volumes:
       - clio-data:/home/clio/.config/clio-agent
     restart: unless-stopped
@@ -39,6 +42,9 @@ services:
       - CLIO_LM_MODEL=${CLIO_LM_MODEL:-}
       - CLIO_LM_API_KEY=${CLIO_LM_API_KEY:-lm-studio}
       - CLIO_ENVIRONMENT=production
+      # Clients addressing this API by a name other than localhost (another
+      # container, a LAN name) without a bearer token must be listed here.
+      - CLIO_GACT_ALLOWED_HOSTS=${CLIO_GACT_ALLOWED_HOSTS:-}
     volumes:
       - clio-data:/home/clio/.config/clio-agent
     restart: unless-stopped

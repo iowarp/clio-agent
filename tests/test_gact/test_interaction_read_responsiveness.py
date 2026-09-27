@@ -37,7 +37,7 @@ async def test_interaction_hydration_does_not_block_other_requests(
         return {"responsive": True}
 
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
     ) as client:
         pending = asyncio.create_task(client.get("/v1/sessions/s/interactions"))
         try:
@@ -75,7 +75,7 @@ async def test_catalog_discovery_does_not_block_other_requests(
         return {"responsive": True}
 
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
     ) as client:
         pending = asyncio.create_task(client.get("/v1/agent-blueprints"))
         try:
@@ -115,7 +115,7 @@ async def test_command_discovery_does_not_block_other_requests(
         return {"responsive": True}
 
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
     ) as client:
         pending = asyncio.create_task(client.get("/v1/commands", params={"planner": planner}))
         try:
