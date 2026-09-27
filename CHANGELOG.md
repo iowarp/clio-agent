@@ -81,6 +81,26 @@ TUI/HTTP surface aren't tracked here.
   no usable key) lost every fact except limits, tools, modalities and task, so
   its models showed no reasoning, structured output, router, free or pricing
   tags. The full records are now kept and restored.
+- The Desktop SSH transport socket (`/v1/infrastructure/targets/{id}/transport`)
+  says why it refused an attachment (#1478). A client that offers
+  `clio.infrastructure.v2` gets the handshake, then a close frame with code
+  4401/4403/4404/4409 and reason `authentication_required`,
+  `origin_not_allowed`, `target_not_found` or `target_not_ssh`; an admitted v2
+  client first receives `{"type": "attached", "target_id": ...}`.
+  `clio.infrastructure.v1` clients keep the pre-handshake refusal, and every
+  refusal is logged. The socket accepts a browser `Origin` only from the
+  Desktop WebView (`tauri://localhost`, `http(s)://tauri.localhost`) or
+  `gact.cors.origins`, and requires the bearer token from every peer,
+  loopback included.
+- A foreground server publishes `<runtime state dir>/gact-servers/<port>.json`
+  (port, pid, the bearer token it enforces or `null`; owner-only) while it
+  serves, so a Desktop that attaches to an already-running CLIO presents the
+  real token instead of an empty one.
+- `GET /v1/desktop/attach` answers 204 when the request may open the
+  bearer-only surfaces (the SSH transport socket, desktop shutdown) and 401
+  `authentication_required` when it may not. A desktop attaching to a CLIO that
+  published no credential record asks here without a token to learn whether
+  one is enforced (#1478).
 
 ## [0.9.4.18] — 2026-09-26
 

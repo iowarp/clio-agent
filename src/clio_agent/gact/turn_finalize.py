@@ -448,7 +448,7 @@ def finalize_turn(
         updated_at=_iso_from_epoch(time.time()),
         parts=assistant_parts,
         tokens=Tokens(**state.turn_tokens),
-        cost_usd=state.turn_cost,
+        cost_usd=state.turn_cost if state.turn_cost_known else None,
         stop_reason="cancelled"
         if state.cancelled_turn
         else ("error" if state.error_info else "end_turn"),
@@ -661,7 +661,7 @@ def settle_failed_finalize(
     turn_id: str,
     trace_id: str,
     turn_tokens: Mapping[str, int],
-    turn_cost: float,
+    turn_cost: float | None,
     turn_cancel_event: threading.Event,
     update_retry_attempt: "Callable[..., None]",
     exc: BaseException,

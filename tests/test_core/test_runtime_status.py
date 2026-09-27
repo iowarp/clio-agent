@@ -211,6 +211,7 @@ def test_lm_provider_sdk_transport_requires_live_verification_when_cli_present(
     """
     import shutil
 
+    from clio_agent.providers.components import client_binary
     from clio_agent.runtime import lm_provider_probe
 
     monkeypatch.setattr(shutil, "which", lambda binary: f"/usr/bin/{binary}")
@@ -218,6 +219,16 @@ def test_lm_provider_sdk_transport_requires_live_verification_when_cli_present(
         lm_provider_probe.importlib.util,
         "find_spec",
         lambda name: object() if name == "claude_agent_sdk" else None,
+    )
+    # "CLI present": the ONE claude selection the transport and discovery share
+    # reports a runnable CLI (independent of what this host has installed).
+    monkeypatch.setattr(
+        client_binary,
+        "claude_client",
+        lambda: client_binary.ClientSelection(
+            client_binary.ClientBinary("/usr/bin/claude", "2.1.281", "installed"),
+            "claude_bundled_missing",
+        ),
     )
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     probe = RuntimeProbe(
@@ -257,9 +268,16 @@ def test_lm_provider_sdk_transport_unavailable_when_cli_absent(tmp_path, monkeyp
     """SDK transport -> typed UNAVAILABLE (not an HTTP error) when the CLI is absent (#899)."""
     import shutil
 
+    from clio_agent.providers.components import client_binary
     from clio_agent.runtime import lm_provider_probe
 
     monkeypatch.setattr(shutil, "which", lambda binary: None)
+    # "CLI absent": the shared claude selection finds none (independent of this host).
+    monkeypatch.setattr(
+        client_binary,
+        "claude_client",
+        lambda: client_binary.ClientSelection(None, "claude_no_cli"),
+    )
     monkeypatch.setattr(
         lm_provider_probe.importlib.util,
         "find_spec",

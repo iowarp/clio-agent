@@ -167,7 +167,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1439 (C1): 863 -> 843. The version gate + config adoption live in the owner
     # module arc/clio_core_daemon_version.py; the PID-identity helpers moved to
     # arc/pid_identity.py (re-exported here under their old names).
-    "src/clio_agent/arc/storage.py": 843,
+    "src/clio_agent/arc/storage.py": 836,
     # #737 S2 fold owner module. Crossed the 800 new-file cap restoring the FROZEN
     # arc.op reproducibility contract (§2 / GOAL.md DoD #4): the five working-set write
     # overrides now emit a per-op arc.op via _emit_op so arc.replay rebuilds the live
@@ -728,7 +728,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # gact/compaction.py::compact_session_context (one operation, two triggers); the
     # whole manual-compact body, gact/compact_memory.py's import, and the dead
     # session_archives snapshot are gone -- 1407 -> 1176.
-    "src/clio_agent/gact/routes/sessions.py": 1174,  # a2ui S3 (#1369): ratcheted down after a net-neutral edit
+    "src/clio_agent/gact/routes/sessions.py": 1173,  # #1487: -1 (import collapse pays for the spill-cleanup hook)
     # #1215 S5: crossed the 800 new-file cap (793 -> 809) for enrich_turn_context —
     # a thin timed combinator wrapping the TWO existing enrichment calls
     # (_enrich_with_context_files + _enrich_with_requested_memory_search) in ONE

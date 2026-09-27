@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import hmac
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, status
 
-from clio_agent.gact.auth import supplied_bearer_token
 from clio_agent.gact.infrastructure.models import (
     CreateTargetRequest,
     ExternalServiceConnectionRequest,
@@ -18,6 +16,10 @@ from clio_agent.gact.infrastructure.models import (
 from clio_agent.gact.infrastructure.runtime import InfrastructureRuntime
 from clio_agent.gact.infrastructure.store import InfrastructureStore
 from clio_agent.gact.infrastructure.transport import InfrastructureTransportRegistry
+from clio_agent.gact.infrastructure.transport_admission import (
+    refuse_transport,
+    transport_refusal,
+)
 
 
 def register_infrastructure_routes(app: FastAPI, state_root: Path) -> None:
@@ -87,17 +89,9 @@ def register_infrastructure_routes(app: FastAPI, state_root: Path) -> None:
 
     @app.websocket("/v1/infrastructure/targets/{target_id}/transport")
     async def attach_transport(websocket: WebSocket, target_id: str) -> None:
-        target = store().target(target_id)
-        if target is None:
-            await websocket.close(code=4404)
-            return
-        if target.kind != "ssh":
-            await websocket.close(code=4409)
-            return
-        expected = getattr(app.state, "bearer_token", None)
-        supplied = supplied_bearer_token(websocket.scope)
-        if expected is not None and not hmac.compare_digest(supplied, expected):
-            await websocket.close(code=4401)
+        refusal = transport_refusal(websocket, target_id, store().target(target_id), app.state)
+        if refusal is not None:
+            await refuse_transport(websocket, target_id, refusal)
             return
         await app.state.infrastructure_transports.serve(target_id, websocket)
 

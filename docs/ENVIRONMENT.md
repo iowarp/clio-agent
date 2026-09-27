@@ -212,6 +212,8 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_PROVENANCE_PROVIDERS` | `provenance.agentic.providers` | list | `jsonl` | `src/clio_agent/provenance_config.py` |
 | `CLIO_PROVENANCE_QUERY_DEFAULT` | `provenance.agentic.query_default` | str | `native` | `src/clio_agent/gact/routes/provenance.py` |
 | `CLIO_PROVENANCE_QUEUE_SIZE` | `provenance.agentic.queue_size` | int | `4096` | `src/clio_agent/gact/provenance/factory.py` |
+| `CLIO_PROVIDER_COMPONENT_INDEX_URL` | `providers.component_updates.index_url` | str | `https://pypi.org/pypi` | `src/clio_agent/providers/components/pypi.py` |
+| `CLIO_PROVIDER_COMPONENT_TTL_S` | `providers.component_updates.ttl_s` | float | `3600.0` | `src/clio_agent/providers/components/pypi.py` |
 | `CLIO_PROVIDER_NATIVE_IMAGE_URL_ALLOWLIST` | `providers.native_image_url_allowlist` | str | _(unset)_ | `src/clio_agent/providers/claude_code_multimodal.py` |
 | `CLIO_RELAY_CLI_PATH` | `relay.install_surface.cli_path` | str | _(unset)_ | `src/clio_agent/tools/relay_cli_runner.py` |
 | `CLIO_RELAY_CLUSTER` | `relay.cluster` | str | _(unset)_ | `src/clio_agent/tools/relay_factory.py` |
@@ -278,9 +280,9 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SEMANTIC_TRACE_PATH` | `trace.path` | str | _(unset)_ | `src/clio_agent/gact/provenance/factory.py` |
 | `CLIO_SERVER_CONF` | `arc.server_conf` | str | _(unset)_ | `src/clio_agent/arc/clio_core_liveness.py` |
 | `CLIO_SESSIONS_PATH` | `paths.sessions` | str | _(unset)_ | `src/clio_agent/gact/sessions.py` |
-| `CLIO_SHELL_DEFAULT_OUTPUT_BYTES` | `limits.shell_default_output_bytes` | int | `16384` | `src/clio_agent/tools/servers/shell_server.py` |
+| `CLIO_SHELL_DEFAULT_OUTPUT_BYTES` | `limits.shell_default_output_bytes` | int | `8192` | `src/clio_agent/tools/servers/shell_server.py` |
 | `CLIO_SHELL_DEFAULT_TIMEOUT_S` | `limits.shell_default_timeout_s` | float | `0.0` | `src/clio_agent/tools/servers/shell_server.py` |
-| `CLIO_SHELL_MAX_COMMAND_CHARS` | `limits.shell_max_command_chars` | int | `4000` | `src/clio_agent/tools/servers/shell_server.py` |
+| `CLIO_SHELL_MAX_COMMAND_CHARS` | `limits.shell_max_command_chars` | int | `16000` | `src/clio_agent/tools/servers/shell_server.py` |
 | `CLIO_SHELL_MAX_OUTPUT_BYTES` | `limits.shell_max_output_bytes` | int | `131072` | `src/clio_agent/tools/servers/shell_server.py` |
 | `CLIO_SHELL_MAX_TIMEOUT_S` | `limits.shell_max_timeout_s` | float | `0.0` | `src/clio_agent/tools/servers/shell_server.py` |
 | `CLIO_SPOTTER_BLUEPRINT_ID` | `spotter.watcher_blueprint_id` | str | `spotter-ai` | `src/clio_agent/gact/spotter_watcher.py` |
@@ -296,7 +298,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_SUMMARIZER_MODEL` | `summarizer.model` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
 | `CLIO_SUMMARIZER_PROVIDER` | `summarizer.provider` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
 | `CLIO_SUMMARIZER_TRANSPORT` | `summarizer.transport` | str | _(unset)_ | `src/clio_agent/lm/secondary.py` |
-| `CLIO_TOOL_RESULT_CHARS` | `limits.tool_result_chars` | int | `12000` | `src/clio_agent/gact/evidence.py` |
+| `CLIO_TOOL_RESULT_CHARS` | `limits.tool_result_chars` | int | `12000` | `src/clio_agent/tools/mcp_result_projection.py` |
 | `CLIO_TRANSIENT_PROVIDER_RETRY_DELAYS` | `limits.transient_provider_retry_delays` | list | _(unset)_ | `src/clio_agent/agent.py` |
 | `CLIO_VIEW_PDF_MAX_PAGES` | `limits.view_pdf_max_pages` | int | `100` | `src/clio_agent/gact/view_pdf_tool.py` |
 | `CLIO_VIEW_PDF_SOURCE_MAX_BYTES` | `limits.view_pdf_source_max_bytes` | int | `536870912` | `src/clio_agent/gact/view_pdf_tool.py` |
