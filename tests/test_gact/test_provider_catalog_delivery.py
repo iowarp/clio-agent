@@ -654,8 +654,8 @@ def test_documented_claude_vision_survives_the_static_catalog_boundary() -> None
                 id="sonnet",
                 raw={
                     "capability_evidence": {
-                        "source": "provider_documentation",
-                        "reason": "modality_documented",
+                        "source": "claude_code_catalog",
+                        "reason": "modality_cataloged",
                     }
                 },
             ),

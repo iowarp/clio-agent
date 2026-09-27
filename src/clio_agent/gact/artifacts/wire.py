@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote, urlencode
 
 from clio_agent.gact.artifacts.records import ArtifactKind, ArtifactVersion
 from clio_agent.gact.types import Part
@@ -124,6 +126,23 @@ def ui_payload_uri(workspace_id: str, name: str, version: int) -> str:
 def fetch_url_for(artifact_id: str) -> str:
     """The S2 bytes route a client GETs to retrieve the (hash-verified) content."""
     return f"/v1/artifacts/{artifact_id}/bytes"
+
+
+def workspace_file_fetch_url(workspace_id: str, source: Path, root: Path) -> str:
+    """The workspace file route that serves a workspace-referenced artifact's bytes.
+
+    Both the workspace id and the workspace-relative path are percent-encoded, so
+    a file name carrying ``&``, ``#``, ``+`` or ``%`` survives as ONE ``path``
+    query value instead of being split, truncated at a fragment, or decoded into
+    a different name. A source that is not under ``root`` yields an empty path
+    (the route then answers with its own typed refusal).
+    """
+    try:
+        rel = source.expanduser().resolve(strict=False).relative_to(root).as_posix()
+    except ValueError:
+        rel = ""
+    query = urlencode({"path": rel}, quote_via=quote)
+    return f"/v1/workspaces/{quote(workspace_id, safe='')}/files/read?{query}"
 
 
 def mime_for(version: ArtifactVersion, name: str) -> str:
@@ -380,4 +399,5 @@ __all__ = [
     "resource_link_metadata",
     "resource_link_part",
     "ui_payload_uri",
+    "workspace_file_fetch_url",
 ]

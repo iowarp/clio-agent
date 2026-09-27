@@ -12,7 +12,7 @@ These tests guard the invariants downstream code relies on:
 - Every entry has a non-empty ``api_base``, ``label``, and
   ``provider_kind`` (so the modal renders cleanly).
 - The derived legacy views (``as_provider_defaults_dict``,
-  ``as_cloud_api_key_env``, ``as_lm_presets``, ``as_provider_models_dict``)
+  ``as_cloud_api_key_env``, ``as_lm_presets``)
   match the shapes downstream code expects.
 """
 
@@ -26,7 +26,6 @@ from clio_agent.providers.catalog import (
     as_cloud_api_key_env,
     as_lm_presets,
     as_provider_defaults_dict,
-    as_provider_models_dict,
     get_provider,
     iter_providers,
     kind_default,
@@ -180,12 +179,6 @@ class TestDerivedViews:
         assert defaults["codex"]["parse_retry_capability"] == "single_attempt"
         assert defaults["anthropic"].get("parse_retry_capability", "bounded") == "bounded"
 
-    def test_argonne_catalog_has_no_static_model_list(self) -> None:
-        # model-capabilities brief 9.1: the static _ARGONNE_MODELS fallback is
-        # deleted. The live /jobs discovery (unchanged) is the only source of
-        # ALCF model rows now; the static catalog fallback is empty.
-        assert as_provider_models_dict()["argonne_sophia"] == []
-
     def test_cloud_api_key_env_only_cloud_kinds(self) -> None:
         env_map = as_cloud_api_key_env()
         assert env_map == {
@@ -202,30 +195,6 @@ class TestDerivedViews:
         ids = {p.id for p in presets}
         registry_ids = {p.id for p in PROVIDERS}
         assert ids == registry_ids
-
-    def test_provider_models_dict_keys_cover_ids_and_kind_argonne(self) -> None:
-        models = as_provider_models_dict()
-        # Every preset id should have an entry.
-        for p in PROVIDERS:
-            assert p.id in models, f"{p.id} missing from _PROVIDER_MODELS"
-        # Argonne preset ids don't match the kind, so a bare-kind key
-        # ("argonne") must also be present for legacy callers that look
-        # up by wire kind.
-        assert "argonne" in models
-
-    def test_codex_catalog_has_no_static_model_list(self) -> None:
-        # model-capabilities brief 9.1: codex's compiled-in candidate model ids
-        # are deleted -- the maintained catalog check is the only source of
-        # a codex model id now, never a stale compiled-in guess.
-        assert as_provider_models_dict()["codex"] == []
-
-    def test_claude_code_catalog_has_no_static_model_list(self) -> None:
-        # Follow-up to model-capabilities brief 9.1: claude_code's own former
-        # exception (fable/haiku/sonnet/opus rows with real vision evidence)
-        # is deleted too -- that evidence now comes from the maintained
-        # catalog document (catalogs/claude-code-models.json), read through
-        # ClaudeCodeCatalogHandshake, never a second static list here.
-        assert as_provider_models_dict()["claude_code"] == []
 
     def test_local_vllm_is_not_labeled_as_alcf_provider(self) -> None:
         provider = get_provider("argonne_local_vllm")
@@ -273,4 +242,5 @@ def test_provider_dataclass_round_trip() -> None:
     assert p.auth_method == "api_key"
     assert p.strip_openai_prefix is True
     assert p.is_kind_default is False
-    assert p.model_catalog == ()
+    # The static per-provider model list is gone (#1450 follow-up): no field, no reader.
+    assert not hasattr(p, "model_catalog")
