@@ -130,11 +130,11 @@ def _argonne_status(
     del preset, app, presets
     from clio_agent.providers import argonne_auth  # noqa: PLC0415
 
-    # ALCF's flow has no async background half: "pending" means only "still
-    # awaiting complete_authentication" -- the caller already learned the true
-    # outcome from complete's own (synchronous) response.
-    pending = argonne_auth.flow_is_pending(flow_id)
-    return {"state": "pending" if pending else "complete", "reason": ""}
+    # ALCF's flow has no async background half: "pending" means "still
+    # awaiting complete_authentication"; an unknown flow is "failed" with a
+    # plain reason, never a false "complete".
+    state, reason = argonne_auth.flow_status(flow_id)
+    return {"state": state, "reason": reason}
 
 
 async def _argonne_logout(

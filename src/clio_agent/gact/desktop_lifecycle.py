@@ -172,10 +172,14 @@ def serve_foreground(app: "FastAPI", *, host: str, port: int) -> None:
     )
     app.state.uvicorn_server = server
     from clio_agent.gact.server_credentials import (  # noqa: PLC0415
+        prune_stale_server_credentials,
         publish_server_credentials,
         remove_server_credentials,
     )
 
+    # Records of hard-killed servers never ran their cleanup; each removal is
+    # logged with its typed reason.
+    prune_stale_server_credentials()
     # The Desktop attaches to an already-running server with this record's
     # token (#1478); without it the Desktop reports it cannot authenticate.
     try:
