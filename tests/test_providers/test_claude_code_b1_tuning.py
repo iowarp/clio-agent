@@ -300,3 +300,43 @@ def test_dead_entry_is_replaced_with_a_fresh_mint(
     assert replacement is not dead_entry
     assert replacement.dead is False
     assert any("dead_client_replaced" in rec.getMessage() for rec in caplog.records)
+
+
+async def test_a_clean_stream_end_never_burns_the_entry_when_the_owner_loop_lags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CI-only flake of the two warm-reuse pins (4 xdist workers on 4 vCPUs).
+
+    ``_pump`` queues the END and only then returns, so the owner-loop future is marked
+    done a moment AFTER the caller already has the END. A caller that reached its
+    ``finally`` inside that gap saw ``not fut.done()``, took the stream for abandoned,
+    and burned a healthy entry (``_mark_dead_and_reset``): the next turn reconnected
+    (constructed == 2) or refused (``released during a queued connect``). Here the owner
+    loop is held right after the last message, exactly where a loaded runner stalls it.
+    """
+    import time  # noqa: PLC0415
+
+    state = _install_fake_sdk(monkeypatch)
+    import claude_agent_sdk as fake_sdk  # noqa: PLC0415
+
+    async def receive_response(self: Any) -> Any:
+        yield fake_sdk.ResultMessage()
+        # Queued ahead of the future's completion callback: the owner loop stalls with
+        # the END already delivered and `fut` not yet done.
+        asyncio.get_running_loop().call_soon(time.sleep, 0.5)
+
+    fake_sdk.ClaudeSDKClient.receive_response = receive_response
+    entry = _StreamClientEntry()
+    kwargs: dict[str, Any] = {
+        "native_blocks": [],
+        "timeout": 5.0,
+        "on_construct": lambda: None,
+        "model": "haiku",
+    }
+    await _consume(entry, payload="p1", session_id="sid-1", **kwargs)
+    await asyncio.sleep(0.8)  # let any (wrongly) scheduled reset land before looking
+
+    assert entry.dead is False, "a cleanly finished stream burned its entry"
+    await _consume(entry, payload="p2", session_id="sid-2", **kwargs)
+    assert state["constructed"] == 1  # the same warm client served both turns
+    assert state["disconnected"] == 0
