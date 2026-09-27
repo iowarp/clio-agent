@@ -30,6 +30,7 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from clio_agent.gact.a2ui_catalogs.media_sources import media_source_lines
 from clio_agent.gact.skills import SkillRef
 
 if TYPE_CHECKING:
@@ -182,6 +183,7 @@ def _render_catalog_skill_body(entry: "CatalogEntry", *, is_default: bool = Fals
     lines.extend(_component_lines(file))
     lines.extend(_function_lines(file))
     lines.extend(_event_lines(entry))
+    lines.extend(media_source_lines(file))
     lines.extend(
         [
             "",

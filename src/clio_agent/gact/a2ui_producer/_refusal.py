@@ -113,8 +113,10 @@ _DEFAULT_HINTS: dict[str, str] = {
         "with a components payload that matches it"
     ),
     "a2ui_url_unresolved": (
-        "reference an existing file inside this session's workspace by its path, "
-        "an artifact://<artifact-id> a tool result returned, or an https: URL"
+        "reference an existing file inside this session's workspace by its path "
+        "(save a web file there first with download_media) or an "
+        "artifact://<artifact-id> a tool result returned; an https: URL is shown "
+        "to viewers only as a link, never loaded"
     ),
     "a2ui_url_export_failed": (
         "the file could not be read to register it as an artifact; check that it "
