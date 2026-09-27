@@ -245,7 +245,7 @@ def test_overlay_models_wire_present_serves_verbatim(
 def test_overlay_models_wire_falls_back_to_bare_kind_key(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Dual-keying (mirrors ``as_provider_models_dict``): a lookup by preset id
+    """Dual-keying: a lookup by preset id
     that has no dedicated row falls back to the bare provider_kind row."""
     overlay_file = tmp_path / "overlay.json"
     overlay_file.write_text(

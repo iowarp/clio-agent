@@ -131,19 +131,6 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
     # because most upstreams either don't expose a /models endpoint or
     # return hundreds of irrelevant entries. The TUI's Settings → Model
     # picker calls this once per provider and lists the rows verbatim.
-    # Derived from clio_agent.providers.catalog. Static fallback used
-    # only when live model discovery against the upstream /v1/models
-    # endpoint fails (no key, network down, 5xx) -- see the GET
-    # /v1/providers/{id}/models handler below for the resolution order.
-    # ALCF / Argonne live model availability is dynamic (jobs spin up
-    # and tear down behind the gateway); the live set can be queried
-    # with `scripts/list_active_models.sh` in alcf-agentics-workflow.
-    from clio_agent.providers.catalog import (
-        as_provider_models_dict as _build_provider_models,
-    )
-
-    _PROVIDER_MODELS: dict[str, list[dict[str, str]]] = _build_provider_models()
-
     def _codex_readiness(*, ignore_startup: bool = False) -> tuple[str, str, bool, str]:
         """Return status, message, verified flag, and live default for Codex."""
 
@@ -297,9 +284,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
     # /v1/providers/lm route so the LM configuration endpoint keeps
     # winning FastAPI's order-based route match.
 
-    register_provider_catalog_routes(
-        app, _LM_PRESETS, _PROVIDER_MODELS, _codex_readiness, _claude_code_readiness
-    )
+    register_provider_catalog_routes(app, _LM_PRESETS, _codex_readiness, _claude_code_readiness)
 
     # ---- /v1/providers/lm ------------------------
 

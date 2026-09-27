@@ -13,11 +13,10 @@ whatever the last refresh wrote, falling back to :meth:`CliCatalogHandshake.
 _fallback_models` when no overlay entry exists yet (fresh install) -- this is
 what keeps the #740 guarantee (a CLI provider's models always resolve a
 context window) intact regardless of whether a refresh has ever run. The
-DEFAULT fallback is :class:`NoOpHandshake`'s static registry catalog
-(``provider.model_catalog``); :class:`ClaudeCodeCatalogHandshake` overrides it
-to read the maintained catalog's own disk cache instead (see that class), since
-per owner ruling Claude Code's model identity and capabilities have exactly
-ONE trusted source, never a second hand-typed candidate list.
+DEFAULT fallback is empty (no compiled-in candidate list exists, brief 9.1);
+:class:`ClaudeCodeCatalogHandshake` overrides it to read the maintained
+catalog's own disk cache (see that class), since per owner ruling Claude Code's
+model identity and capabilities have exactly ONE trusted source.
 
 **Context/output limits (#1211 review D4).** ``model_discovery`` resolves each
 discovered model's context/output limit ONCE, at explicit refresh time, and
@@ -203,9 +202,8 @@ class CliCatalogHandshake(NoOpHandshake):
     async def _fallback_models(self, client: Any, ctx: HandshakeContext) -> list[dict[str, Any]]:
         """The "no overlay yet" fallback (a fresh install, never refreshed).
 
-        Default: :class:`~clio_agent.providers.handshake.noop.NoOpHandshake`'s
-        generic registry-catalog read (``provider.model_catalog``) -- the right
-        answer for a CLI provider with no other data source. A subclass with a
+        Default: nothing (:class:`~clio_agent.providers.handshake.noop.NoOpHandshake`
+        lists no models; codex's ids come only from a verified refresh). A subclass with a
         richer offline data source (see :class:`ClaudeCodeCatalogHandshake`)
         overrides this instead of ``discover_models`` itself, so the overlay-
         first logic above is never duplicated.
@@ -437,9 +435,7 @@ class ClaudeCodeCatalogHandshake(CliCatalogHandshake):
     async def _fallback_models(self, client: Any, ctx: HandshakeContext) -> list[dict[str, Any]]:
         """Before any refresh has ever run: the maintained catalog's OWN disk cache.
 
-        NEVER the generic :class:`~clio_agent.providers.handshake.noop.NoOpHandshake`
-        registry-catalog read (``provider.catalog.Provider.model_catalog``) --
-        per owner ruling, Claude Code model existence and per-model modality
+        Per owner ruling, Claude Code model existence and per-model modality
         capabilities come from ONE trusted source, the maintained GitHub
         catalog document (:mod:`clio_agent.providers.model_discovery.
         claude_code_catalog`), never a second, hand-typed candidate list that
