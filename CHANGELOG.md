@@ -32,7 +32,8 @@ TUI/HTTP surface aren't tracked here.
   as `free`, and every turn failed with "No endpoints available".
 - A provider's HTTP error (404, 401, 429, ...) fails the turn with one line in
   the provider's own words, such as `OpenRouter: User not found. (HTTP 401)`,
-  instead of "live streaming failed before emitting output: ExceptionGroup[...]".
+  instead of "live streaming failed before emitting output: ExceptionGroup[...]"
+  or, on a non-streamed turn, "agent.forward raised: litellm.NotFoundError: ...".
   "Codex sign-in is required" and the Claude Code install message are only
   reported when Codex or Claude Code is the configured provider; any 401 used
   to be reported as a Codex sign-in.

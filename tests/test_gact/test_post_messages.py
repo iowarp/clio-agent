@@ -645,6 +645,39 @@ def test_post_message_agent_exception_populates_error_info(
         assert sess["status"] == "error"
 
 
+def test_non_streamed_provider_error_is_one_plain_line(tmp_path: Path) -> None:
+    """rel18 follow-up: a provider HTTP error on the non-streamed forward read
+    "agent.forward raised: litellm.NotFoundError: ...". It gets the same
+    one-line provider message as the streamed path."""
+    import dspy
+    import litellm
+
+    from .conftest import complete_turn
+
+    raw = litellm.NotFoundError(
+        message='OpenrouterException - {"error":{"message":"No endpoints available","code":404}}',
+        model="openrouter/free",
+        llm_provider="openrouter",
+    )
+    provider_error = dspy.LM("openrouter/openrouter/free", api_key="t")._wrap_litellm_exception(raw)
+
+    class ProviderFailingAgent(FakeClioAgent):
+        def forward(self, question: str, session_id: str) -> Any:
+            raise provider_error
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=ProviderFailingAgent())
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
+        assistant = complete_turn(c, sid, "hi")
+
+    err = assistant["error_info"]
+    assert err["error"] == "agent_error"
+    # No active LM is configured in this app, so the label comes from the
+    # provider the error itself names.
+    assert err["message"] == "OpenRouter: No endpoints available (HTTP 404)"
+    assert err["details"]["original_error"] == "LMUnsupportedModelError"
+
+
 def test_post_message_agent_exception_includes_error_info_on_completed_event(
     tmp_path: Path,
 ) -> None:

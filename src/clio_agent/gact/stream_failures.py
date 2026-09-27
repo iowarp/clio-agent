@@ -1,4 +1,4 @@
-"""Describe streamed-forward failures for traces and user-facing errors.
+"""Describe failed turns (streamed and non-streamed) for traces and users.
 
 A missing Codex sign-in or a missing Claude Code SDK is not a transport
 hiccup: the non-streaming retry would fail the same way, so streaming surfaces
@@ -135,25 +135,53 @@ def provider_failure_message(exc: BaseException, *, provider_label: str) -> str 
     return f"{provider_label}: {text} (HTTP {leaf.status})"
 
 
-def failed_before_output(exc: BaseException, detail: str, provider_id: str) -> str:
-    """The user-facing message for a stream that failed before any output.
+def turn_failure_message(exc: BaseException, provider_id: str, otherwise: str) -> str:
+    """The user-facing message for a failed turn, streamed or not.
 
-    A provider HTTP error is the provider's own words on one line
-    (:func:`provider_failure_message`); any other failure keeps the unwrapped
-    streaming detail.
+    The one formatter both failure paths share: a provider HTTP error is the
+    provider's own words on one line (:func:`provider_failure_message`),
+    labelled with the configured provider, or with the provider the error
+    names when none is configured; any other failure keeps ``otherwise``.
 
     Args:
-        exc: The exception raised by a streamed provider call.
-        detail: :func:`describe_stream_exc`'s description of ``exc``.
-        provider_id: The configured provider's catalog id.
+        exc: The exception the turn's provider call raised.
+        provider_id: The configured provider's catalog id ("" when unknown).
+        otherwise: The caller's message for a failure that is not a provider
+            HTTP error.
 
     Returns:
         The message the failed turn's error carries.
     """
-    message = provider_failure_message(exc, provider_label=provider_label(provider_id))
-    if message is not None:
-        return message
-    return f"live streaming failed before emitting output: {detail}"
+    leaf = _provider_error_leaf(exc)
+    named = provider_id or str(getattr(leaf, "provider", "") or "")
+    message = provider_failure_message(exc, provider_label=provider_label(named))
+    return message if message is not None else otherwise
+
+
+def agent_forward_error_info(state: Any, exc: BaseException) -> Any:
+    """The typed ``agent_error`` for a non-streamed forward that raised.
+
+    Args:
+        state: The turn's ``TurnState``; its accepted user message records
+            the provider the turn ran on (``effective_model``).
+        exc: The exception the forward raised.
+
+    Returns:
+        The :class:`~clio_agent.gact.types.ErrorInfo` for the failed turn.
+    """
+    from clio_agent.gact.types import ErrorInfo  # noqa: PLC0415
+
+    metadata = getattr(getattr(state, "user_msg", None), "metadata", None)
+    model = metadata.get("effective_model") if isinstance(metadata, dict) else None
+    provider_id = str(model.get("provider_id") or "") if isinstance(model, dict) else ""
+    return ErrorInfo(
+        error="agent_error",
+        message=turn_failure_message(
+            exc, provider_id=provider_id, otherwise=f"agent.forward raised: {exc}"
+        ),
+        details={"original_error": type(exc).__name__},
+        recoverable=True,
+    )
 
 
 def describe_stream_exc(exc: BaseException, *, provider_id: str) -> str:
@@ -192,7 +220,8 @@ __all__ = [
     "CLI_PROVIDER_FAILURE_MESSAGES",
     "cli_provider_stream_failure",
     "describe_stream_exc",
-    "failed_before_output",
+    "agent_forward_error_info",
     "provider_failure_message",
     "provider_label",
+    "turn_failure_message",
 ]

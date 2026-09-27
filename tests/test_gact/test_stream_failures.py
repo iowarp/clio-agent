@@ -8,8 +8,8 @@ import pytest
 
 from clio_agent.gact.stream_failures import (
     describe_stream_exc,
-    failed_before_output,
     provider_failure_message,
+    turn_failure_message,
 )
 
 _OPENROUTER_BODY = '{"error":{"message":"No endpoints available for openrouter/free","code":404}}'
@@ -78,7 +78,7 @@ def test_an_http_401_from_openrouter_is_not_a_codex_sign_in() -> None:
     detail = describe_stream_exc(exc, provider_id="openrouter")
 
     assert detail != CODEX_AUTHENTICATION_ERROR_MESSAGE
-    assert failed_before_output(exc, detail, "openrouter") == (
+    assert turn_failure_message(exc, provider_id="openrouter", otherwise=detail) == (
         "OpenRouter: User not found. (HTTP 401)"
     )
 
