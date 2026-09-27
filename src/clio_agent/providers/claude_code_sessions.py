@@ -592,6 +592,7 @@ class _StreamClientEntry:
                     await self._mark_dead_and_reset()
 
         fut = asyncio.run_coroutine_threadsafe(_pump(), self._loop)
+        kind: Any = None
         try:
             while True:
                 kind, val = await caller_loop.run_in_executor(None, chunks.get)
@@ -601,11 +602,10 @@ class _StreamClientEntry:
                     raise val
                 yield val
         finally:
-            if not fut.done():
-                # Never cancel `fut` outright — it could land inside `_pump`'s
-                # own in-progress teardown await, interrupting a disconnect
-                # mid-flight (slot released, CLI never actually gone). Only
-                # ask the queue wait to give up.
+            # Only a caller that ABANDONS the stream (leaves before `_pump` sent END or its
+            # error) asks for a reset: otherwise `_pump`'s own teardown decides, once. Never
+            # cancel `fut` outright (it could land inside a disconnect mid-flight).
+            if kind is not _STREAM_END and kind != "exc" and not fut.done():
                 abandon.set()
                 with contextlib.suppress(Exception):
                     asyncio.run_coroutine_threadsafe(self._mark_dead_and_reset(), self._loop)

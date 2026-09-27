@@ -68,18 +68,15 @@ from typing import Any
 import httpx
 import pytest
 
+from tests._marketplace import MARKETPLACE_ROOT
+
 BLUEPRINT = "earthscope-gnss-region"
 CASE_DIR = "benchmark/case02-earthscope-csv-seismic-geography"
 
 # --- S7 A2UI live gate: a different, single-expert pack (owns the catalog) ----
 
 A2UI_BLUEPRINT = "earthscope-single-agent"
-A2UI_PACK_ROOT = (
-    Path(__file__).resolve().parents[2]
-    / "external"
-    / "clio-agent-marketplace"
-    / "earthscope-single-agent"
-)
+A2UI_PACK_ROOT = MARKETPLACE_ROOT / "earthscope-single-agent"
 A2UI_CATALOG_ID = "https://iowarp.ai/a2ui/catalogs/earthscope-stations/v1"
 A2UI_HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
 # Advertised on EVERY posted message (first prompt and any follow-up): without

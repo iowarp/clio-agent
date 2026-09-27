@@ -53,6 +53,7 @@ from clio_agent.gact.events import Event
 from clio_agent.gact.lm_provider_types import preset_api_key_env
 from clio_agent.gact.local_server_store import with_saved_address
 from clio_agent.gact.model_selection import surrogate_selection_error
+from clio_agent.gact.providers import response_settings
 from clio_agent.gact.providers.auth import (
     _is_placeholder_api_key,
     _resolve_argonne_runtime_api_key,
@@ -455,6 +456,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             operation_id=str(status.get("operation_id") or ""),
             provider_options=dict(cfg.get("provider_options") or {}),
             presets=presets if presets is not None else _lm_presets_with_status(),
+            **response_settings.echo(cfg, pending),
         )
 
     @app.get("/v1/providers/lm", response_model=LMProviderInfo)
@@ -648,12 +650,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 model=req.model,
                 api_key=resolved_api_key or "x",
                 provider_options=req.provider_options,
-                temperature=req.temperature,
-                max_tokens=req.max_tokens,
-                top_p=req.top_p,
-                top_k=req.top_k,
-                min_p=req.min_p,
-                presence_penalty=req.presence_penalty,
+                **response_settings.config_kwargs(req),
                 thinking_budget=req.thinking_budget,
                 thinking_level=requested_thinking_level(app, req),  # #895: see its provenance rule
                 # Per-provider transport (v0.8.0): only the bound provider's field reads req.transport.
@@ -846,9 +843,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             "provider": req.provider,
             "api_base": req.api_base,
             "model": req.model,
-            "temperature": req.temperature,
-            "max_tokens": req.max_tokens,
-            "context_length": req.context_length,
+            **response_settings.stored(req),
             "thinking_budget": req.thinking_budget,
             "thinking_level": cfg.thinking_level,  # resolved level (shipped default) #895
             **thinking_level_record(app, req),  # the person's level + its provenance
@@ -993,6 +988,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         req = normalize_lm_provider_request(req, _LM_PRESETS, _default_model_for)
         if refused := surrogate_selection_error(app, req.provider_id or req.provider, req.model):
             raise HTTPException(status_code=422, detail=refused.model_dump(exclude_none=True))
+        response_settings.validate_request(req)
         running_task = getattr(app.state, "lm_config_task", None)
         if running_task is not None and not running_task.done():
             status = _lm_provider_status()
@@ -1028,9 +1024,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 "provider": req.provider,
                 "api_base": req.api_base,
                 "model": req.model,
-                "temperature": req.temperature,
-                "max_tokens": req.max_tokens,
-                "context_length": req.context_length,
+                **response_settings.stored(req),
                 "thinking_budget": req.thinking_budget,
                 "transport": req.transport,
                 "message": f"{provider_label} provider configuration is in progress.",

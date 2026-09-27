@@ -32,6 +32,7 @@ from clio_agent.gact.transcript import (
     TurnTranscript,
 )
 from clio_agent.gact.types import Part
+from tests.turn_signals import wait_for_terminal_status
 
 from .conftest import complete_turn
 
@@ -454,18 +455,13 @@ def test_failed_finalize_still_settles_the_ledger(
     app = _build(tmp_path, "envelope", _Pred)
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "s"}).json()["id"]
+        cursor = app.state.bus.latest_event_id(sid)
         ack = client.post(
             f"/v1/sessions/{sid}/messages",
             json={"parts": [{"type": "text", "text": "hi"}]},
         )
         assert ack.status_code == 200, ack.text
-        deadline = time.monotonic() + 5.0
-        status = "running"
-        while time.monotonic() < deadline:
-            status = client.get(f"/v1/sessions/{sid}").json()["status"]
-            if status != "running":
-                break
-            time.sleep(0.05)
+        status = wait_for_terminal_status(app.state.bus, sid, after_event_id=cursor)
 
         assert status == "error"
         # The ledger is settled: frozen (late ops rejected) and retired.

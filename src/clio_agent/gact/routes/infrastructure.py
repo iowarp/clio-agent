@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import base64
 import hmac
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, status
 
-from clio_agent.gact.auth import _header_bearer_token
+from clio_agent.gact.auth import supplied_bearer_token
 from clio_agent.gact.infrastructure.models import (
     CreateTargetRequest,
     ExternalServiceConnectionRequest,
@@ -96,7 +95,7 @@ def register_infrastructure_routes(app: FastAPI, state_root: Path) -> None:
             await websocket.close(code=4409)
             return
         expected = getattr(app.state, "bearer_token", None)
-        supplied = _header_bearer_token(websocket.scope) or _websocket_protocol_token(websocket)
+        supplied = supplied_bearer_token(websocket.scope)
         if expected is not None and not hmac.compare_digest(supplied, expected):
             await websocket.close(code=4401)
             return
@@ -180,19 +179,3 @@ def register_infrastructure_routes(app: FastAPI, state_root: Path) -> None:
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Service connection not found") from exc
         return row.model_dump(mode="json")
-
-
-def _websocket_protocol_token(websocket: WebSocket) -> str:
-    """Decode a browser-compatible bearer carried as a WebSocket subprotocol."""
-
-    raw = websocket.headers.get("sec-websocket-protocol", "")
-    for value in (part.strip() for part in raw.split(",")):
-        if not value.startswith("clio-bearer."):
-            continue
-        encoded = value.removeprefix("clio-bearer.")
-        padding = "=" * (-len(encoded) % 4)
-        try:
-            return base64.urlsafe_b64decode(encoded + padding).decode("utf-8")
-        except (ValueError, UnicodeDecodeError):
-            return ""
-    return ""

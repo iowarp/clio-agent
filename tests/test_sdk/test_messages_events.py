@@ -27,6 +27,7 @@ from clio_agent.sdk import (
     StreamEvent,
 )
 from tests.test_sdk.conftest import StreamingASGITransport, StubAgent
+from tests.turn_signals import TURN_SIGNAL_BACKSTOP_S, wait_for_terminal_status
 
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
 # test's ``build_app(agent=...)`` host/stub fake.
@@ -34,9 +35,16 @@ pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 
 def _wait_for_settled_turn(
-    client: ClioClient, session_id: str, user_message_id: str, timeout: float = 10.0
+    client: ClioClient,
+    session_id: str,
+    user_message_id: str,
+    timeout: float = TURN_SIGNAL_BACKSTOP_S,
 ) -> Message:
-    """Poll the ledger until the assistant reply for one turn lands."""
+    """Poll the ledger until the assistant reply for one turn lands.
+
+    ``timeout`` is a hang detector, not a timing budget: a cold first turn on a loaded
+    box takes well over the 10 s this used to allow.
+    """
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -49,24 +57,6 @@ def _wait_for_settled_turn(
                 return message
         time.sleep(0.05)
     raise TimeoutError(f"turn {user_message_id} did not settle within {timeout:g}s")
-
-
-def _wait_for_idle_session(client: ClioClient, session_id: str, timeout: float = 10.0) -> None:
-    """Poll until the session leaves ``running``.
-
-    The assistant message joins the ledger before the turn publishes
-    ``message.completed`` (#1469), so a ledger hit alone does not mean every
-    event of the turn is on the bus. The terminal status flips only after the
-    turn task releases its slot (#1466), i.e. after the last publish, so it is
-    the signal that the whole turn is replayable.
-    """
-
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if client.sessions.get(session_id).status != "running":
-            return
-        time.sleep(0.05)
-    raise TimeoutError(f"session {session_id} did not leave running within {timeout:g}s")
 
 
 def test_post_text_and_read_settled_ledger(client: ClioClient, stub_agent: StubAgent) -> None:
@@ -136,11 +126,16 @@ def test_live_sse_consume_of_a_stubbed_turn(client: ClioClient) -> None:
         assert not any(e.replay for e in seen)
 
 
-def test_replay_and_last_event_id_resume(client: ClioClient) -> None:
+def test_replay_and_last_event_id_resume(app: Any, client: ClioClient) -> None:
     sess = client.sessions.create(title="sse resume")
-    ack = client.messages.post(sess.id, text="replay me")
-    _wait_for_settled_turn(client, sess.id, ack.message_id)
-    _wait_for_idle_session(client, sess.id)
+    cursor = app.state.bus.latest_event_id(sess.id)
+    client.messages.post(sess.id, text="replay me")
+    # The whole turn is replayable only once its LAST event is on the bus. The ledger
+    # gets the assistant message before ``message.completed`` publishes (#1469), so a
+    # ledger hit let ``message.completed`` arrive live below. The terminal
+    # ``session.status_changed`` publishes after the turn released its slot (#1466),
+    # i.e. after every other event of the turn (replaces #1476's 10 s status poll).
+    assert wait_for_terminal_status(app.state.bus, sess.id, after_event_id=cursor) == "idle"
 
     # Full replay from 0: everything re-delivered with replay=True.
     replayed: list[StreamEvent] = []

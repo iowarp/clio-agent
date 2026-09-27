@@ -52,6 +52,8 @@ from typing import Any
 import httpx
 import pytest
 
+from tests._marketplace import MARKETPLACE_ROOT
+
 # The real-cases tier depends on Jaime's `~/agent-test` pytest plugin, an
 # unpublished local checkout not installed in every environment (see
 # conftest.py's module docstring). conftest.py handles its own absence via
@@ -76,7 +78,7 @@ BLUEPRINT_ID = "deep-researcher"
 # a `source` that resolves to an existing path is installed as `source_kind:
 # "path"`, never cloned).
 REPO_ROOT = Path(__file__).resolve().parents[2]
-MARKETPLACE_SOURCE = str(REPO_ROOT / "external" / "clio-agent-marketplace" / "deep-researcher")
+MARKETPLACE_SOURCE = str(MARKETPLACE_ROOT / "deep-researcher")
 
 # Guardrail cell (GOAL.md "Case-specific deviations"): subscription provider,
 # not the NDP-case default (argonne_metis) — per issue #1286's own leg (iii)

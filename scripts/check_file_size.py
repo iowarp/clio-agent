@@ -195,7 +195,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # P5 (request builder) deletes temperature/supports_vision/max_tokens_default
     # and the qwen-name profile heuristics (lm/request_builder.py and
     # lm/dialect_wire.py own the replacement): ratcheted to 827.
-    "src/clio_agent/config.py": 827,
+    "src/clio_agent/config.py": 826,
     # #1326: adapters.py was 780 lines (under the 800 cap). +56 for: a new
     # _ContextOverflowError typed exception, a _check_context_overflow pre-flight
     # helper (mirrors the guided path's _bound_guided_output_kwargs shape), pre-
@@ -684,9 +684,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # P5 (request builder): the static `supports_vision` wire-metadata key in
     # `_provider_to_wire` is deleted (brief 9.1): ratcheted to 1116.
     # P4b adds the 3-line surrogate refusal on the chat-model bind: 1116 -> 1119.
-    # 1119 -> 1117 (#1455): Claude Code readiness reads the owner module
-    # gact/claude_code_auth_reprobe.py.
-    "src/clio_agent/gact/routes/providers.py": 1117,
+    # 1113 -> 1111 (#1455): Claude Code readiness reads gact/claude_code_auth_reprobe.py.
+    "src/clio_agent/gact/routes/providers.py": 1111,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (merged to develop with the size check red, baseline 1478 -> actual); ratchet
     # back below the pre-#947 count with the mcp_app_* owner-module split (see the

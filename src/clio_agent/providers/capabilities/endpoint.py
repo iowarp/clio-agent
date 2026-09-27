@@ -30,6 +30,7 @@ from clio_agent.providers.capabilities.records import (
     FactSource,
     unknown,
 )
+from clio_agent.providers.custom_transports import CLIO_CUSTOM_LITELLM_PROVIDERS
 
 logger = logging.getLogger(__name__)
 
@@ -82,10 +83,31 @@ SUPPLEMENT_TABLE: tuple[SupplementRow, ...] = (
     ),
     SupplementRow(
         dialect="lm_studio",
+        adds=frozenset({"top_k", "repeat_penalty"}),
         removes=frozenset({"chat_template_kwargs"}),
         fills_litellm_gap=(
-            "LM Studio must never receive chat_template_kwargs even where a generic "
-            "OpenAI-shaped list would otherwise imply it is safe to send"
+            "LM Studio's OpenAI-compatible endpoint also takes top_k and repeat_penalty "
+            "(its documented payload parameters), and must never receive "
+            "chat_template_kwargs even where a generic OpenAI-shaped list would imply it"
+        ),
+    ),
+    SupplementRow(
+        dialect="ollama",
+        adds=frozenset({"top_k", "min_p", "repeat_penalty", "num_ctx"}),
+        removes=frozenset({"frequency_penalty"}),
+        fills_litellm_gap=(
+            "ollama_chat forwards Ollama's own options (top_k, min_p, repeat_penalty, "
+            "num_ctx) but lists none of them, and maps frequency_penalty onto "
+            "repeat_penalty, a different scale"
+        ),
+    ),
+    SupplementRow(
+        dialect="openrouter",
+        adds=frozenset({"top_k", "min_p", "repetition_penalty"}),
+        fills_litellm_gap=(
+            "litellm's openrouter list is the generic OpenAI one; OpenRouter's API also "
+            "takes top_k, min_p and repetition_penalty (each route's supported_parameters "
+            "then narrows the set per model)"
         ),
     ),
 )
@@ -132,7 +154,8 @@ STRUCTURED_OUTPUT_MODES_BY_DIALECT: dict[str, frozenset[str]] = {
 }
 
 
-def _supplement_for(dialect: str) -> SupplementRow | None:
+def supplement_for(dialect: str) -> SupplementRow | None:
+    """The dialect's :data:`SUPPLEMENT_TABLE` row, or ``None``."""
     return next((row for row in SUPPLEMENT_TABLE if row.dialect == dialect), None)
 
 
@@ -195,9 +218,17 @@ def resolve_accepted_params(
     try:
         import litellm  # noqa: PLC0415
 
-        params = litellm.get_supported_openai_params(
-            model=model_id, custom_llm_provider=custom_llm_provider
-        )
+        if custom_llm_provider in CLIO_CUSTOM_LITELLM_PROVIDERS:
+            # clio's OWN transport (codex_direct, codex_sdk, claude_code): once LiteLLM
+            # has set its custom handler up it answers the generic OpenAI list for the
+            # key, a default that says nothing about the transport. Decided from clio's
+            # own list, never LiteLLM's mutable registration state, so the answer does
+            # not depend on what ran (or was reset) earlier in the process.
+            params = None
+        else:
+            params = litellm.get_supported_openai_params(
+                model=model_id, custom_llm_provider=custom_llm_provider
+            )
     except Exception as exc:  # noqa: BLE001 - a broken litellm call degrades to unknown, logged
         logger.warning(
             "capabilities.endpoint: litellm.get_supported_openai_params failed "
@@ -218,7 +249,7 @@ def resolve_accepted_params(
             f"litellm has no mapping for custom_llm_provider={custom_llm_provider!r}"
         )
 
-    supplement = _supplement_for(dialect)
+    supplement = supplement_for(dialect)
     if supplement is not None:
         if supplement.adds:
             accepted |= supplement.adds
@@ -286,4 +317,5 @@ __all__ = [
     "build_endpoint_capabilities",
     "dialect_for_provider",
     "resolve_accepted_params",
+    "supplement_for",
 ]

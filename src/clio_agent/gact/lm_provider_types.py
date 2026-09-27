@@ -94,6 +94,16 @@ class LMProviderInfo(BaseModel):
     temperature: float | None = None
     max_tokens: int = 0
     context_length: int = 0
+    #: The rest of the saved response settings (``None``/``0`` = unset). A value
+    #: the bound model does not accept is still echoed -- saved, never sent.
+    top_p: float | None = None
+    top_k: int | None = None
+    min_p: float | None = None
+    presence_penalty: float | None = None
+    frequency_penalty: float | None = None
+    repetition_penalty: float | None = None
+    seed: int | None = None
+    parallel: int = 0
     chosen_context: int | None = None
     context_window: int | None = None
     is_reasoning: bool = False
@@ -161,6 +171,9 @@ class LMProviderRequest(BaseModel):
     top_k: int | None = None
     min_p: float | None = None
     presence_penalty: float | None = None
+    frequency_penalty: float | None = None
+    repetition_penalty: float | None = None
+    seed: int | None = None
     context_length: int = 0
     parallel: int = 0
     turn_timeout_s: float = 0.0

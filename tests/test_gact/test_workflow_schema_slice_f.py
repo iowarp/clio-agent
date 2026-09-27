@@ -20,7 +20,6 @@ the loop the Slice-B goldens opened:
 
 from __future__ import annotations
 
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -35,14 +34,12 @@ from clio_agent.gact.workflow_state.schema import (
     GENERIC_WORKFLOW_STATE_SCHEMA,
     WorkflowStateSchema,
 )
+from tests._marketplace import MARKETPLACE_ROOT
 from tests.test_gact.earthscope_schema import EARTHSCOPE_WORKFLOW_STATE_SCHEMA
 
-_EARTHSCOPE_ROOT = (
-    Path(__file__).resolve().parents[2]
-    / "external"
-    / "clio-agent-marketplace"
-    / "earthscope-gnss-region"
-)
+pytestmark = pytest.mark.marketplace
+
+_EARTHSCOPE_ROOT = MARKETPLACE_ROOT / "earthscope-gnss-region"
 
 
 def test_earthscope_pack_declares_workflow_state_schema() -> None:
