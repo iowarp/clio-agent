@@ -61,6 +61,7 @@ from clio_agent.gact.turn_spawn import (
 )
 from clio_agent.tools.mcp_task_records import TaskKey, TaskRecord, resolve_store
 from clio_agent.tools.relay_transport import RelayTaskIdentity
+from tests.turn_signals import TURN_SIGNAL_BACKSTOP_S
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
@@ -408,7 +409,7 @@ _TERMINAL_TASK_EVENTS = frozenset(
 )
 
 
-def _wait_task_events_settled(app, sid: str, timeout: float = 10.0) -> None:
+def _wait_task_events_settled(app, sid: str, timeout: float = TURN_SIGNAL_BACKSTOP_S) -> None:
     """Wait until a session's ``agent.task.*`` stream ENDS on a terminal event.
 
     ``_wait_terminal`` only waits for the registry RECORD to reach a terminal status;

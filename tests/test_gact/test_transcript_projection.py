@@ -58,30 +58,18 @@ from clio_agent.gact.transcript_projection import (
 )
 from clio_agent.gact.types import Message, Part, Tokens
 from tests.equivalence import normalizers as N
-from tests.test_gact.conftest import settle_turn_slot
 from tests.test_gact.test_post_messages import FakeClioAgent
+from tests.turn_signals import post_turn_and_wait
 
 
 def _run_turn(client: TestClient, sid: str, text: str = "how many stations?") -> None:
-    """Drive one turn to settle (the FakeClioAgent has no LM)."""
+    """Drive one turn to its terminal status event (the FakeClioAgent has no LM).
 
-    ack = client.post(
-        f"/v1/sessions/{sid}/messages", json={"parts": [{"type": "text", "text": text}]}
-    )
-    assert ack.status_code == 200, ack.text
-    # 30s + loud failure: the old 10s window silently BROKE out on timeout and
-    # let assertions run against a still-running turn (the CI flake signature:
-    # missing assistant / session_busy on the next post). Post-S4b turns build a
-    # real blueprint module, so slow runners need the headroom.
-    deadline = time.monotonic() + 30.0
-    while time.monotonic() < deadline:
-        if client.get(f"/v1/sessions/{sid}").json()["status"] != "running":
-            # #1334: finalize runs on the turn executor; the status flips a few ms
-            # before the turn slot clears, and the next POST needs the slot.
-            settle_turn_slot(client, sid, timeout=max(1.0, deadline - time.monotonic()))
-            return
-        time.sleep(0.05)
-    raise TimeoutError(f"turn on session {sid!r} did not settle within 30s")
+    The terminal status publishes after the turn slot is released, so the next POST
+    always starts a fresh turn.
+    """
+
+    post_turn_and_wait(client, sid, {"parts": [{"type": "text", "text": text}]})
 
 
 def _build(tmp_path: Path) -> tuple[Any, ARCMemory]:
