@@ -34,7 +34,6 @@ import os
 import subprocess
 import sys
 import threading
-import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Dict, Optional, Protocol, runtime_checkable
@@ -511,10 +510,11 @@ def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str
             return daemon_version.resolve_effective_config(
                 state, config_path, on_failure=_deregister_client
             )
-        _spawn_runtime_daemon(iowarp_core, config_path, log_level)
-        wait_for_spawned_daemon(
-            port, alive=_runtime_alive, state_dir=state, timeout_s=_RUNTIME_START_TIMEOUT_S
-        )
+        with runtime_stop.kill_spawned_daemon_on_failure():
+            _spawn_runtime_daemon(iowarp_core, config_path, log_level)
+            wait_for_spawned_daemon(
+                port, alive=_runtime_alive, state_dir=state, timeout_s=_RUNTIME_START_TIMEOUT_S
+            )
         return config_path
 
 
@@ -558,7 +558,9 @@ class ClioCoreStore:
         # binding, so a dead daemon raises ClioCoreRuntimeLostError instead of AV-ing the
         # host process (clio-core#722). See clio_agent.arc.clio_core_liveness.
         self._gate = LivenessGate(config_path=config_path, log_level=log_level)
-        clio_core_attach.verify_post_attach(self, on_failure=_deregister_client)
+        clio_core_attach.verify_post_attach(
+            self, on_failure=lambda: runtime_stop.release_failed_attach(config_path, log_level)
+        )
         logger.info(
             "ClioCoreStore active: clio-core is the ARC backend (shared daemon runtime). "
             "The DEFAULT config is a DRAM hot tier + file cold tier; durable + "
@@ -608,21 +610,16 @@ class ClioCoreStore:
             # 905: clio-core >=2.2.0 needs an indexer chimod for BM25 search; not
             # wired in (unsafe, see clio_core_config's docstring) -- warn loudly.
             warn_if_search_indexer_absent(config_path)
-            # Do NOT redirect fd 2 (no os.dup2 on stderr) here. Under pytest's fd-level capture that
-            # clobbers the captured fd and can SILENTLY ABORT the interpreter (exit 1, zero output)
-            # depending on capture mode + ambient CTE shared-memory state. CTP_LOG_LEVEL quiets the
-            # C++ logging; a one-time startup banner on stderr is an acceptable trade for never
-            # crashing the host process.
-            #
-            # CLIENT ONLY attach, result CHECKED: a failed handshake raises typed at once.
-            clio_core_attach.attach_native_client(
+            # Do NOT redirect fd 2 (no os.dup2 on stderr): under pytest's fd capture that can SILENTLY
+            # ABORT the interpreter; CTP_LOG_LEVEL quiets the C++ logging instead. CLIENT ONLY attach,
+            # CHECKED: a failed attach/CTE init raises typed and releases this client (#1401).
+            clio_core_attach.attach_and_initialize(
                 cte,
                 config_path=config_path,
                 port=_resolve_runtime_port(config_path),
-                on_failure=_deregister_client,
+                settle_s=settle_s,
+                on_failure=lambda: runtime_stop.release_failed_attach(config_path, log_level),
             )
-            time.sleep(settle_s)  # let the client handshake settle
-            cte.initialize_cte(config_path, cte.PoolQuery.Dynamic())  # "" => ~/.clio/clio.yaml
             cls._initialized = True
 
             # Stash the params and register the last-one-out release with atexit, the general
