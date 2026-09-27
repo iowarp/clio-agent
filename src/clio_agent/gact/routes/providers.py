@@ -70,6 +70,10 @@ from clio_agent.gact.providers.lmstudio import (
     _release_owned_lm_studio_instance,
 )
 from clio_agent.gact.providers.request_normalization import normalize_lm_provider_request
+from clio_agent.gact.providers.selection_store import (
+    persist_lm_selection,
+    selection_status_fields,
+)
 from clio_agent.gact.relay_wiring import construct_agent_with_relay
 from clio_agent.gact.routes.codex_variant import apply_codex_readiness_gate
 from clio_agent.gact.routes.provider_auth import supports_logout
@@ -837,6 +841,9 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             "provider_options": dict(req.provider_options),
         }
         deps.clear_session_model_refs(app)
+        app.state.lm_selection_persistence = persist_lm_selection(
+            cfg, requested_api_base=req.api_base
+        )
         # Invalidate the normalized provider catalog. It is a per-app snapshot of
         # ONE discovery pass, and delivery planning reads modalities straight out
         # of it (modality_evidence._catalog_modalities). Leaving it in place after
@@ -878,6 +885,26 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             presets=_lm_presets_with_status(),
         )
 
+    def _record_apply_failure(
+        req: LMProviderRequest, operation_id: str, error_code: str, message: str
+    ) -> None:
+        """Record a failed bind on ``lm_config_status`` and publish ``lm.provider.failed``."""
+        identity = {
+            "operation_id": operation_id,
+            "provider_id": req.provider_id or req.provider,
+            "provider": req.provider,
+            "model": req.model,
+            "error": error_code,
+            "message": message,
+        }
+        app.state.lm_config_status = {
+            "state": "error",
+            **identity,
+            "api_base": req.api_base,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        app.state.bus.publish(Event(type="lm.provider.failed", session_id="", payload=identity))
+
     async def _run_lm_provider_apply(req: LMProviderRequest, operation_id: str) -> None:
         try:
             loop = asyncio.get_running_loop()
@@ -887,67 +914,19 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         except HTTPException as exc:
             detail = exc.detail
-            if isinstance(detail, dict):
-                err = detail.get("error")
-                if isinstance(err, dict):
-                    error_code = str(err.get("error") or "config_error")
-                    message = str(err.get("message") or exc)
-                else:
-                    error_code = "config_error"
-                    message = str(detail)
+            err = detail.get("error") if isinstance(detail, dict) else None
+            if isinstance(err, dict):
+                _record_apply_failure(
+                    req,
+                    operation_id,
+                    str(err.get("error") or "config_error"),
+                    str(err.get("message") or exc),
+                )
             else:
-                error_code = "config_error"
-                message = str(detail or exc)
-            app.state.lm_config_status = {
-                "state": "error",
-                "operation_id": operation_id,
-                "provider_id": req.provider_id or req.provider,
-                "provider": req.provider,
-                "api_base": req.api_base,
-                "model": req.model,
-                "error": error_code,
-                "message": message,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }
-            app.state.bus.publish(
-                Event(
-                    type="lm.provider.failed",
-                    session_id="",
-                    payload={
-                        "operation_id": operation_id,
-                        "provider_id": req.provider_id or req.provider,
-                        "provider": req.provider,
-                        "model": req.model,
-                        "error": error_code,
-                        "message": message,
-                    },
-                )
-            )
+                _record_apply_failure(req, operation_id, "config_error", str(detail or exc))
         except Exception as exc:  # noqa: BLE001
-            app.state.lm_config_status = {
-                "state": "error",
-                "operation_id": operation_id,
-                "provider_id": req.provider_id or req.provider,
-                "provider": req.provider,
-                "api_base": req.api_base,
-                "model": req.model,
-                "error": "config_error",
-                "message": f"failed to configure LM: {exc}",
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }
-            app.state.bus.publish(
-                Event(
-                    type="lm.provider.failed",
-                    session_id="",
-                    payload={
-                        "operation_id": operation_id,
-                        "provider_id": req.provider_id or req.provider,
-                        "provider": req.provider,
-                        "model": req.model,
-                        "error": "config_error",
-                        "message": f"failed to configure LM: {exc}",
-                    },
-                )
+            _record_apply_failure(
+                req, operation_id, "config_error", f"failed to configure LM: {exc}"
             )
         else:
             app.state.lm_config_status = {
@@ -964,6 +943,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 "transport": info.transport,
                 "message": "LM provider ready",
                 "updated_at": datetime.now(timezone.utc).isoformat(),
+                **selection_status_fields(app),
             }
 
     @app.put("/v1/providers/lm", response_model=LMProviderInfo)
@@ -1050,6 +1030,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             "transport": info.transport,
             "message": "LM provider ready",
             "updated_at": datetime.now(timezone.utc).isoformat(),
+            **selection_status_fields(app),
         }
         return _lm_provider_info(presets=info.presets)
 
