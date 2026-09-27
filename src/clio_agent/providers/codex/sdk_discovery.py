@@ -118,6 +118,7 @@ async def _probe(timeout: float) -> ProviderDiscoveryResult:
         from clio_agent.providers.codex.sdk_client import (  # noqa: PLC0415
             BARE_LM_CONFIG_OVERRIDES,
         )
+        from clio_agent.providers.components.client_binary import codex_client  # noqa: PLC0415
     except ImportError as exc:
         return ProviderDiscoveryResult(
             provider="codex_sdk",
@@ -132,7 +133,10 @@ async def _probe(timeout: float) -> ProviderDiscoveryResult:
         # No ``env=`` override: this asks the SAME runtime/home the SDK
         # transport itself runs against (the user's own CODEX_HOME) --
         # never a CLIO-managed copy, and never a file read of auth.json.
-        async with sdk_client(CodexConfig(config_overrides=BARE_LM_CONFIG_OVERRIDES)) as client:
+        config = CodexConfig(
+            codex_bin=codex_client().path, config_overrides=BARE_LM_CONFIG_OVERRIDES
+        )
+        async with sdk_client(config) as client:
             account = await client.account()
             if getattr(account, "account", None) is None:
                 return False, None
@@ -197,9 +201,11 @@ async def _probe(timeout: float) -> ProviderDiscoveryResult:
 def discover_codex_sdk(*, timeout: float = _DEFAULT_PROBE_TIMEOUT_S) -> ProviderDiscoveryResult:
     """Refresh the account's live Codex model list through the SDK transport.
 
-    The Python SDK owns its pinned runtime and authentication; CLIO neither
-    resolves a ``codex`` executable nor opens an app-server protocol
-    connection itself, and never touches ``~/.codex/auth.json``.
+    The Python SDK owns the runtime protocol and authentication; CLIO only
+    chooses WHICH ``codex`` binary it launches (the user's installed Codex CLI
+    when present, else the bundled one -- the backend gates models by client
+    version), never opens an app-server connection itself, and never touches
+    ``~/.codex/auth.json``.
     """
 
     try:

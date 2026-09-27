@@ -723,7 +723,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ],
                 tokens=Tokens(input=0, output=0, cache_read=0, cache_write=0),
-                cost_usd=0.0,
+                cost_usd=None,
                 stop_reason="end_turn",
                 metadata={
                     "synthetic": "command_result",
@@ -861,7 +861,7 @@ def register_catalog_routes(app: FastAPI, deps: "GactDeps") -> None:
                 )
             ],
             tokens=Tokens(input=0, output=0, cache_read=0, cache_write=0),
-            cost_usd=0.0,
+            cost_usd=None,
             stop_reason="end_turn",
             metadata={"synthetic": "command_result", "command": cmd_id},
         )

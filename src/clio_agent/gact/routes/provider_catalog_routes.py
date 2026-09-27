@@ -72,6 +72,12 @@ def register_provider_catalog_routes(
 
     register_local_server_routes(app, presets)
 
+    from clio_agent.gact.routes.provider_components import (  # noqa: PLC0415
+        register_provider_component_routes,
+    )
+
+    register_provider_component_routes(app, presets)
+
     @app.post("/v1/providers/{provider_id}/auth")
     async def auth_provider(provider_id: str, request: Request) -> dict[str, Any]:
         """The generic provider sign-in API (start/complete/status/logout/save_api_key/clear_api_key).

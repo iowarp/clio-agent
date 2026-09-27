@@ -135,7 +135,7 @@ async def settle_finalize_crash(
             turn_id=state.turn_id,
             trace_id=state.trace_id,
             turn_tokens=state.turn_tokens,
-            turn_cost=state.turn_cost,
+            turn_cost=state.turn_cost if state.turn_cost_known else None,
             turn_cancel_event=state.turn_cancel_event,
             update_retry_attempt=update_retry_attempt,
             exc=exc,
