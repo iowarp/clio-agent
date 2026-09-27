@@ -88,6 +88,7 @@ from clio_agent.gact.types import (
     LMProviderRequest,
 )
 from clio_agent.providers.model_discovery import resolve_cloud_api_key
+from clio_agent.providers.support_restore import missing_support_status
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -176,12 +177,8 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
     def _claude_code_readiness(*, ignore_startup: bool = False) -> tuple[str, str, bool, str]:
         """Return status, message, verified flag, and live default for Claude Code."""
 
-        from clio_agent.providers.claude_code_errors import (  # noqa: PLC0415
-            CLAUDE_CODE_NOT_INSTALLED_MESSAGE,
-        )
-
         if importlib.util.find_spec("claude_agent_sdk") is None:
-            return "install_required", CLAUDE_CODE_NOT_INSTALLED_MESSAGE, False, ""
+            return (*missing_support_status("claude_code"), False, "")
         startup_check = getattr(app.state, "provider_catalog_startup_task", None)
         if not ignore_startup and startup_check is not None and not startup_check.done():
             return "auth_check_required", "Claude Code models are being checked", False, ""
@@ -659,12 +656,14 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                     status, message, verified, default_model = _claude_code_readiness()
                 if not verified:
                     raise HTTPException(
-                        status_code=503 if status in {"install_required", "unavailable"} else 401,
+                        status_code=401
+                        if status in {"auth_check_required", "auth_required"}
+                        else 503,
                         detail=ErrorEnvelope(
                             error=ErrorInfo(
                                 error=(
                                     "claude_code_install_required"
-                                    if status == "install_required"
+                                    if status in {"install_required", "support_restoring"}
                                     else "claude_code_auth_required"
                                 ),
                                 message=message,
