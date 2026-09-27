@@ -66,6 +66,7 @@ from clio_agent.gact.types import (
     UserQuestion,
     Workspace,
 )
+from clio_agent.gact.usage import reported_cost_total
 from clio_agent.gact.user_question_ledger import record_user_question
 from clio_agent.gact.user_question_resume import resume_answered_question
 
@@ -726,7 +727,6 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             context_files[path] = dict(row)
         if context_files:
             app.state.context_files[new_sess.id] = context_files
-        cost_total = sum(float(m.get("cost_usd", 0.0) or 0.0) for m in blob.get("messages", []))
         in_total = sum(
             int((m.get("tokens") or {}).get("input", 0) or 0) for m in blob.get("messages", [])
         )
@@ -738,7 +738,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             message_count=len(msg_rows),
             add_tokens_input=in_total,
             add_tokens_output=out_total,
-            add_cost_usd=cost_total,
+            add_cost_usd=reported_cost_total(blob.get("messages", [])),
         )
         refreshed = app.state.sessions.get(new_sess.id)
         return Session(**refreshed.to_wire())
