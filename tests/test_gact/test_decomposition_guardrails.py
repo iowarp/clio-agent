@@ -144,7 +144,9 @@ from clio_agent.gact.app import build_app
 # not), owned by gact/spotter_availability.py, registered from routes/session_defaults.py.
 # 278 -> 279: POST /v1/sessions/{sid}/side-sessions (open a read-only aside with the session's
 # context), owned by routes/side_sessions.py, registered from routes/sessions.py.
-EXPECTED_ROUTE_METHOD_PAIRS = 279
+# 279 -> 281: GET /v1/providers/support/restores + POST /v1/providers/support/restore (the
+# restore of provider support a runtime change removed), owned by routes/provider_support.py.
+EXPECTED_ROUTE_METHOD_PAIRS = 281
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

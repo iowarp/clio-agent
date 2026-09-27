@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import logging
 import re
-import threading
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -35,6 +34,7 @@ import yaml
 
 from clio_agent import conf, paths
 from clio_agent.platform_paths import atomic_write_text
+from clio_agent.user_config_document import USER_CONFIG_LOCK as _LOCK
 
 if TYPE_CHECKING:
     from clio_agent.gact.lm_provider_types import LMProviderPreset
@@ -60,7 +60,6 @@ __all__ = [
 #: The OpenAI-compatible preset every custom (non-catalog) server is reached through.
 CUSTOM_SERVER_PRESET_ID = "vllm"
 
-_LOCK = threading.RLock()
 _SECTION = ("providers", "servers")
 
 

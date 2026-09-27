@@ -66,13 +66,16 @@ async def process_arc_off_loop(app: "FastAPI") -> Any:
 
 
 def start(app: "FastAPI") -> None:
-    """Start the boot ARC construction and the first doctor collection (real server only).
+    """Start the boot ARC construction, first doctor pass and support restore (real server).
 
     A construction failure is logged with its reason here and is also visible on the
     ``clio_core_attach`` row; the next :func:`process_arc_off_loop` caller retries.
     """
     if not getattr(app.state, "server_boot", False):
         return
+    from clio_agent.gact import provider_support_boot  # noqa: PLC0415
+
+    provider_support_boot.start(app)  # recorded provider support a runtime change removed
     from clio_agent.gact.routes import health_boot  # noqa: PLC0415 - routes import this module
     from clio_agent.gact.routes.system import collect_health_report  # noqa: PLC0415
 
