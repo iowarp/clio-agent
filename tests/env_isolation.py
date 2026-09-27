@@ -47,6 +47,9 @@ _PRESERVED_KEYS: tuple[str, ...] = (
     "XDG_CACHE_HOME",
     "XDG_STATE_HOME",
     "CLIO_TEST_RUNTIME_DIR",
+    # The suite-wide TestClient host allowance (tests/conftest.py); not a
+    # provider-config variable any isolated test means to remove.
+    "CLIO_GACT_ALLOWED_HOSTS",
 )
 
 

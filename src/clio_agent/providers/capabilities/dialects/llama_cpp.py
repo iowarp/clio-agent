@@ -32,6 +32,7 @@ from hashlib import sha256
 from typing import Any
 
 from clio_agent.providers.capabilities.link import deployment_model_key_fact
+from clio_agent.providers.capabilities.model_facts import ParameterCount, positive_int
 from clio_agent.providers.capabilities.records import (
     DeploymentCapabilities,
     EndpointCapabilities,
@@ -124,7 +125,12 @@ def parse_props(
         model_id=model_id,
         model_key=model_key_fact,
         context_served=(
-            Fact(n_ctx, "server_report", observed_at, "llama.cpp /props default_generation_settings.n_ctx")
+            Fact(
+                n_ctx,
+                "server_report",
+                observed_at,
+                "llama.cpp /props default_generation_settings.n_ctx",
+            )
             if n_ctx is not None
             else unknown()
         ),
@@ -134,7 +140,9 @@ def parse_props(
             else unknown()
         ),
         modalities_enabled=(
-            Fact(modalities_value, "server_report", observed_at, "llama.cpp /props modalities.vision")
+            Fact(
+                modalities_value, "server_report", observed_at, "llama.cpp /props modalities.vision"
+            )
             if modalities_known
             else unknown()
         ),
@@ -176,19 +184,61 @@ def parse_v1_models_context_max(payload: Any, model_id: str) -> Fact[int]:
         meta = row.get("meta")
         n_ctx_train = _positive_int(meta.get("n_ctx_train")) if isinstance(meta, Mapping) else None
         if n_ctx_train is not None:
-            return Fact(n_ctx_train, "server_report", observed_at, "llama.cpp /v1/models meta.n_ctx_train")
+            return Fact(
+                n_ctx_train, "server_report", observed_at, "llama.cpp /v1/models meta.n_ctx_train"
+            )
     return unknown("llama.cpp /v1/models: no matching row or no meta.n_ctx_train")
 
 
-def build_model_capabilities(model_key: str, v1_models_payload: Any, model_id: str) -> ModelCapabilities:
-    """The model-record side of ``GET /v1/models`` (brief: ``meta.n_ctx_train``)."""
-    return ModelCapabilities(model_key=model_key, context_max=parse_v1_models_context_max(v1_models_payload, model_id))
+def parse_v1_models_parameters(v1_models_payload: Any, model_id: str) -> Fact[ParameterCount]:
+    """``meta.n_params`` from ``GET /v1/models``: every weight stored in the GGUF, or unknown.
+
+    That is llama.cpp's definition, and it is exact for the file. It is not
+    always the model's own count: a GGUF may store a tied embedding matrix a
+    second time as the output head (Qwen2.5-0.5B-Instruct's official GGUF:
+    630167424 stored, 494032768 in the model, the difference being exactly
+    ``n_vocab * n_embd``). The count is therefore recorded with ``scope="file"``
+    and the embedding size, so the model's own count wins where one is known
+    (:func:`clio_agent.providers.capabilities.model_sources.resolve_model_capabilities`).
+    """
+    rows = v1_models_payload.get("data") if isinstance(v1_models_payload, dict) else None
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict) or (model_id and row.get("id") != model_id):
+            continue
+        meta = row.get("meta")
+        total = positive_int(meta.get("n_params")) if isinstance(meta, dict) else None
+        if total is not None and isinstance(meta, dict):
+            vocab, embd = positive_int(meta.get("n_vocab")), positive_int(meta.get("n_embd"))
+            return Fact(
+                ParameterCount(
+                    total=total,
+                    scope="file",
+                    embedding_elements=vocab * embd if vocab and embd else None,
+                ),
+                "server_report",
+                _now_iso(),
+                f"llama.cpp /v1/models meta.n_params={total}, every weight stored in this GGUF",
+            )
+    return unknown()
+
+
+def build_model_capabilities(
+    model_key: str, v1_models_payload: Any, model_id: str
+) -> ModelCapabilities:
+    """The model-record side of ``GET /v1/models`` (``meta.n_ctx_train``, ``meta.n_params``)."""
+    return ModelCapabilities(
+        model_key=model_key,
+        context_max=parse_v1_models_context_max(v1_models_payload, model_id),
+        parameters=parse_v1_models_parameters(v1_models_payload, model_id),
+    )
 
 
 # --------------------------------------------------------------------------- fetch (plain HTTP)
 
 
-async def fetch_props(client: Any, root: str, *, model_id: str = "", loaded: bool = True) -> dict[str, Any] | None:
+async def fetch_props(
+    client: Any, root: str, *, model_id: str = "", loaded: bool = True
+) -> dict[str, Any] | None:
     """``GET /props`` (single mode, no query) or ``GET /props?model=<id>`` (router mode).
 
     The router-mode query form is only safe for an ALREADY LOADED model (brief:
@@ -393,12 +443,22 @@ def parse_router_model_row(
         model_id=model_id,
         model_key=model_key_fact,
         context_served=(
-            Fact(served_context, "server_report", observed_at, "llama.cpp router status.args --ctx-size/--parallel")
+            Fact(
+                served_context,
+                "server_report",
+                observed_at,
+                "llama.cpp router status.args --ctx-size/--parallel",
+            )
             if served_context is not None
             else unknown()
         ),
         modalities_enabled=(
-            Fact(modalities_value, "server_report", observed_at, "llama.cpp router architecture.input_modalities/--mmproj")
+            Fact(
+                modalities_value,
+                "server_report",
+                observed_at,
+                "llama.cpp router architecture.input_modalities/--mmproj",
+            )
             if modalities_known
             else unknown()
         ),

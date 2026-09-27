@@ -131,9 +131,7 @@ async def _fetch_latest_release(url: str) -> LatestReleaseResponse:
         return LatestReleaseResponse(
             source=url,
             checked_at=_iso_now(),
-            degradation=LatestReleaseDegradation(
-                reason="manifest_unparsable", message=str(exc)
-            ),
+            degradation=LatestReleaseDegradation(reason="manifest_unparsable", message=str(exc)),
         )
     version = manifest.get("version") if isinstance(manifest, dict) else None
     if not isinstance(version, str) or not version.strip():

@@ -505,9 +505,7 @@ def test_get_lm_provider_reports_argonne_install_required_even_when_signed_in(
     monkeypatch.setattr(
         importlib.util,
         "find_spec",
-        lambda name, *a, **k: (
-            None if name == "globus_sdk" else real_find_spec(name, *a, **k)
-        ),
+        lambda name, *a, **k: (None if name == "globus_sdk" else real_find_spec(name, *a, **k)),
     )
 
     app = build_app(sessions_path=tmp_path / "s.json")
@@ -2060,7 +2058,9 @@ def test_put_lm_provider_invalid_returns_400(tmp_path: Path, monkeypatch) -> Non
             "/v1/providers/lm",
             json={
                 "provider": "openai",
-                "api_base": "http://nonsense",
+                # Loopback discard port: nothing listens, so any probe of it fails
+                # locally (the network guard forbids resolving a made-up host).
+                "api_base": "http://127.0.0.1:9",
                 "model": "x",
                 "api_key": "x",
             },
@@ -2107,7 +2107,7 @@ def test_put_lm_provider_failed_first_connect_restores_env(tmp_path: Path, monke
             "/v1/providers/lm",
             json={
                 "provider": "openai",
-                "api_base": "http://rejected.example/v1",
+                "api_base": "http://127.0.0.1:9/v1",  # loopback discard port: refuses
                 "model": "rejected-model",
                 "api_key": "rejected-key",
             },
@@ -2487,9 +2487,10 @@ def test_effective_lm_config_surfaces_supported_thinking_effective() -> None:
     assert cfg["thinking_effective"] == "high (budget 24576)"
 
 
-def test_effective_lm_config_surfaces_unavailable_thinking_with_no_evidence_yet() -> None:
+def test_effective_lm_config_surfaces_unknown_thinking_with_no_evidence_yet() -> None:
     """No handshake has linked this model's thinking evidence yet -- a typed
-    'unavailable', never a silent drop and never a guessed value (#895)."""
+    ``reasoning_levels_unknown`` (unknown is not unsupported), never a silent
+    drop (#895). This transport has no effort field to pass the level through."""
     from clio_agent.providers.capabilities import invalidation
 
     invalidation.clear_all()
@@ -2508,7 +2509,8 @@ def test_effective_lm_config_surfaces_unavailable_thinking_with_no_evidence_yet(
     cfg = _effective_lm_config(app)  # type: ignore[arg-type]
 
     assert cfg["thinking_level"] == "high"
-    assert cfg["thinking_effective"].startswith("unavailable")
+    assert cfg["thinking_effective"].startswith("unknown")
+    assert "reasoning_levels_unknown" in cfg["thinking_effective"]
     assert "high" in cfg["thinking_effective"]
 
 

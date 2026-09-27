@@ -134,7 +134,17 @@ from clio_agent.gact.app import build_app
 # 267 -> 272 (feat/local-servers): +5 saved local/self-hosted server routes
 # (GET/POST /v1/providers/servers, PATCH/DELETE .../{id}, POST .../{id}/check),
 # owned by routes/local_servers.py and registered from provider_catalog_routes.
-EXPECTED_ROUTE_METHOD_PAIRS = 272
+# 272 -> 275: provider SDK components (GET ./components, POST+GET ./components/update),
+# owned by routes/provider_components.py, registered from provider_catalog_routes.
+# 275 -> 276: GET /v1/desktop/attach (token-enforcement check for an attaching desktop),
+# owned by routes/lifecycle.py.
+# 276 -> 277: GET /v1/sessions/{sid}/references/resolve (A2UI media/artifact reference
+# resolution for remote CLIO), owned by routes/artifacts.py.
+# 277 -> 278: GET /v1/spotter/availability (can SPOTTER review be armed here, and why
+# not), owned by gact/spotter_availability.py, registered from routes/session_defaults.py.
+# 278 -> 279: POST /v1/sessions/{sid}/side-sessions (open a read-only aside with the session's
+# context), owned by routes/side_sessions.py, registered from routes/sessions.py.
+EXPECTED_ROUTE_METHOD_PAIRS = 279
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

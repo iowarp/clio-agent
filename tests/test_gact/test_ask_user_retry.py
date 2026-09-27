@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
 from clio_agent.gact.types import Message, Part, Tokens
+from tests.turn_signals import TURN_SIGNAL_BACKSTOP_S
 
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
 # test's ``build_app(agent=...)`` host fake.
@@ -129,7 +130,7 @@ def _seed_turn(
     client.app.state.sessions.update(sid, message_count=2)
 
 
-def _wait_for_idle(client: TestClient, sid: str, timeout: float = 2.0) -> None:
+def _wait_for_idle(client: TestClient, sid: str, timeout: float = TURN_SIGNAL_BACKSTOP_S) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if client.get(f"/v1/sessions/{sid}").json()["status"] == "idle":
@@ -138,7 +139,9 @@ def _wait_for_idle(client: TestClient, sid: str, timeout: float = 2.0) -> None:
     raise AssertionError("session did not return to idle")
 
 
-def _wait_for_status(client: TestClient, sid: str, status: str, timeout: float = 2.0) -> None:
+def _wait_for_status(
+    client: TestClient, sid: str, status: str, timeout: float = TURN_SIGNAL_BACKSTOP_S
+) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if client.get(f"/v1/sessions/{sid}").json()["status"] == status:
@@ -221,7 +224,7 @@ def test_orchestrator_ask_user_action_pauses_and_answer_resumes(tmp_path: Path) 
         )
 
         assert accepted.status_code == 200, accepted.text
-        _wait_for_status(client, sid, "waiting_user", timeout=6.0)
+        _wait_for_status(client, sid, "waiting_user")
         listed = client.get(f"/v1/sessions/{sid}/questions?status=pending").json()
         assert len(listed["questions"]) == 1
         question = listed["questions"][0]
@@ -241,7 +244,7 @@ def test_orchestrator_ask_user_action_pauses_and_answer_resumes(tmp_path: Path) 
         )
 
         assert answered.status_code == 200, answered.text
-        _wait_for_idle(client, sid, timeout=6.0)
+        _wait_for_idle(client, sid)
         assert agent.questions == [
             "Inspect the dataset.",
             "[Answer to agent question]\n"

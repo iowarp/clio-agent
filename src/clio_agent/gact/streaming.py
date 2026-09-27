@@ -63,6 +63,7 @@ from clio_agent.gact.providers.config import _provider_runtime_kind
 from clio_agent.gact.stream_chunks import _chunk_reasoning_text, _chunk_text
 from clio_agent.gact.stream_failures import CLI_PROVIDER_FAILURE_MESSAGES
 from clio_agent.gact.stream_failures import describe_stream_exc as _describe_stream_exc
+from clio_agent.gact.stream_failures import turn_failure_message as _turn_failure_message
 from clio_agent.gact.stream_fallbacks import (
     peek_stream_fallback as _peek_stream_fallback,  # noqa: F401
 )
@@ -405,7 +406,7 @@ def _agent_streaming_unsupported_reason(agent: Any) -> str:
 
 def _config_is_reasoning_model(provider_config: Any) -> bool:
     """Whether a provider config is a reasoning model (handshake-derived
-    ``is_reasoning`` -- the effective capabilities' thinking mechanism is known,
+    ``is_reasoning`` -- the model has a thinking mechanism other than ``none``,
     model-capabilities brief 5.5). Used to keep reasoning models off streaming
     paths that lose the reasoning_content channel."""
 
@@ -721,7 +722,7 @@ async def _try_streamed_forward(
                     except Exception:  # noqa: BLE001,S110 - heartbeat is best-effort
                         pass
     except Exception as exc:
-        detail = _describe_stream_exc(exc)
+        detail = _describe_stream_exc(exc, provider_id=provider_id)
         if detail in CLI_PROVIDER_FAILURE_MESSAGES:
             if not emitted_any:
                 _record_stream_fallback(
@@ -741,9 +742,8 @@ async def _try_streamed_forward(
             "stream_failed_before_output",
             detail,
         )
-        raise _StreamingOutputError(
-            f"live streaming failed before emitting output: {detail}"
-        ) from exc
+        before = f"live streaming failed before emitting output: {detail}"
+        raise _StreamingOutputError(_turn_failure_message(exc, provider_id, before)) from exc
     if emitted_any and final_pred is None:
         raise _StreamingOutputError(
             "live streaming ended after emitting output without a final prediction"

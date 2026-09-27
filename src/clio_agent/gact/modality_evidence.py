@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from clio_agent.gact.types import ModelRef
+from clio_agent.providers.codex.constants import TRANSPORT_API_BASES, TRANSPORT_DIRECT
 from clio_agent.providers.handshake.model import resolve_model_id
 
 
@@ -86,13 +87,10 @@ _EVIDENCE_LABEL_BY_SOURCE: dict[str, str] = {
 #: capability_evidence reasons (providers/model_discovery/modality_evidence.py)
 #: that count as a real, non-guessed "documented_catalog" claim on a ``static``
 #: models_source row -- never a live probe, but never a guess either:
-#: ``modality_documented`` is NoOpHandshake's generic registry claim and
-#: ``modality_cataloged`` the Claude Code maintained-catalog fallback. The
+#: ``modality_cataloged`` is the Claude Code maintained-catalog fallback. The
 #: negative-evidence reasons (``modality_unreported``/``modality_uncataloged``)
 #: are not this arm.
-DOCUMENTED_MODALITY_REASONS: frozenset[str] = frozenset(
-    {"modality_documented", "modality_cataloged"}
-)
+DOCUMENTED_MODALITY_REASONS: frozenset[str] = frozenset({"modality_cataloged"})
 
 
 def _catalog_row_aliases(row: dict[str, Any]) -> tuple[str, ...]:
@@ -111,8 +109,11 @@ def catalog_model_rows(app: Any, model: ModelRef) -> list[dict[str, Any]]:
     A configured model id may be an alias (e.g. claude_code's "sonnet" for
     "claude-sonnet-5"); it is resolved against the provider's own catalog rows
     through the same resolution point ``HandshakeReport.model`` uses, so an
-    alias-bound selection is never treated as an unknown model. More than one
-    row can match (one per transport, e.g. codex sdk/direct).
+    alias-bound selection is never treated as an unknown model. When the rows
+    carry a ``transport`` (codex sdk/direct list the same model ids), only the
+    selection's own transport (``model.variant``; the Direct transport when
+    unset, matching ``LMProviderConfig``'s normalization) answers -- the two
+    transports carry different input (only Direct delivers PDFs).
     """
     catalog = getattr(app.state, "provider_catalog", None)
     if not isinstance(catalog, dict):
@@ -137,7 +138,11 @@ def catalog_model_rows(app: Any, model: ModelRef) -> list[dict[str, Any]]:
         ((str(row.get("model_id") or ""), _catalog_row_aliases(row)) for row in rows),
         model.model_id,
     )
-    return [row for row in rows if row.get("model_id") == canonical_id]
+    matches = [row for row in rows if row.get("model_id") == canonical_id]
+    if any(row.get("transport") for row in matches):
+        wanted = model.variant or TRANSPORT_DIRECT
+        matches = [row for row in matches if row.get("transport") == wanted]
+    return matches
 
 
 def _catalog_modalities(app: Any, model: ModelRef) -> ModalityEvidence:
@@ -181,10 +186,24 @@ def _catalog_modalities(app: Any, model: ModelRef) -> ModalityEvidence:
     return ModalityEvidence(modalities, label, generated_at)
 
 
+def _report_serves_transport(report: Any, model: ModelRef) -> bool:
+    """Whether the bound handshake report describes the selection's own transport.
+
+    The codex provider's handshake report is its Direct transport
+    (``codex://direct``); a selection naming the SDK transport must read the
+    SDK rows' evidence instead, never the Direct report's (which adds PDF).
+    """
+
+    wanted = TRANSPORT_API_BASES.get(model.variant)
+    return wanted is None or wanted == getattr(report, "api_base", None)
+
+
 def live_model_modalities(app: Any, model: ModelRef) -> ModalityEvidence:
     """Return the evidenced input modalities for one exact provider/model selection."""
 
     report = getattr(app.state, "lm_handshake_report", None)
+    if report is not None and not _report_serves_transport(report, model):
+        report = None
     if (
         report is not None
         and report.ok

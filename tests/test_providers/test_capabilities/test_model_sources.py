@@ -8,6 +8,7 @@ from clio_agent.providers.capabilities.model_sources import (
     resolve_model_capabilities,
 )
 from clio_agent.providers.capabilities.records import Fact, ModelCapabilities, unknown
+from tests._catalog_seed import seed_model_overlay
 
 _NOW = "2026-01-01T00:00:00+00:00"
 
@@ -116,6 +117,7 @@ def test_resolve_model_capabilities_default_overlay_is_a_noop_for_an_unmatched_m
 
 def test_resolve_model_capabilities_default_overlay_is_the_real_p6_catalog() -> None:
     """P6 wiring: the default overlay is real and beats server_report (brief 5.1 order)."""
+    seed_model_overlay()
     result = resolve_model_capabilities(
         "qwen3.6-27b",
         server_report=ModelCapabilities(model_key="qwen3.6-27b", context_max=_fact(1)),

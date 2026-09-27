@@ -33,7 +33,7 @@ from clio_agent.tools.gateway import (
 )
 from clio_agent.tools.mcp_config import MCPServerSpec
 
-STUB = '''
+STUB = """
 import os, sys, time
 from pathlib import Path
 from fastmcp import FastMCP
@@ -54,17 +54,17 @@ def slow(seconds: float) -> str:
     return "slow-done"
 
 mcp.run()
-'''
+"""
 
 # Writes a start marker, then exits non-zero BEFORE serving — a listing against
 # it connects a subprocess and then fails, exercising the failure/cleanup path.
-CRASH_STUB = '''
+CRASH_STUB = """
 import os, sys
 from pathlib import Path
 with open(Path(sys.argv[1]), "a", encoding="utf-8") as f:
     f.write(f"start {os.getpid()}\\n")
 sys.exit(1)
-'''
+"""
 
 
 def _write_spec(tmp_path: Path, body: str, name: str = "stub") -> tuple[MCPServerSpec, Path]:
@@ -180,9 +180,7 @@ def test_listing_owns_its_transport_never_interrupts_active_call(tmp_path: Path)
         _kill(marker)
 
 
-def test_cached_second_listing_spawns_nothing(
-    tmp_path: Path, _isolated_listing_cache
-) -> None:
+def test_cached_second_listing_spawns_nothing(tmp_path: Path, _isolated_listing_cache) -> None:
     """A namespace already listed (cached) spawns nothing on a second listing."""
 
     spec, marker = _write_spec(tmp_path, STUB)

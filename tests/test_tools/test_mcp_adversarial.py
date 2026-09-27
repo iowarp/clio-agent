@@ -83,7 +83,9 @@ async def test_header_mismatch_retry_is_bounded_against_a_hostile_always_broken_
         transport = adversarial_in_process_transport(app)
         async with Client(transport) as client:
             with pytest.raises(MCPError) as exc_info:
-                await call_tool_with_header_retry(client, BAD_HEADER_MISMATCH_TOOL, {"payload": "x"})
+                await call_tool_with_header_retry(
+                    client, BAD_HEADER_MISMATCH_TOOL, {"payload": "x"}
+                )
 
     assert exc_info.value.code == -32020
 

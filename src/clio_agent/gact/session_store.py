@@ -29,13 +29,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.conversation_projection import model_context_messages
+from clio_agent.platform_paths import atomic_write_text
 from clio_agent.runtime import trace
 
 if TYPE_CHECKING:
@@ -456,17 +456,10 @@ def _flush_context_files(app: "FastAPI") -> None:
     path = getattr(app.state, "context_files_path", None)
     if path is None:
         return
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # write+fsync to a temp file, then atomic rename: fsync forces the bytes to
-    # disk before the rename publishes them, so a crash can't leave a partial
-    # ledger behind.
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(json.dumps({"sessions": app.state.context_files}, indent=2, sort_keys=True))
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, path)
+    # Staged, fsynced, then replaced: a crash can't leave a partial ledger.
+    atomic_write_text(
+        Path(path), json.dumps({"sessions": app.state.context_files}, indent=2, sort_keys=True)
+    )
 
 
 def _inherit_session_context_files(

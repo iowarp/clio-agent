@@ -138,7 +138,9 @@ def _script_loop(use_v2: bool = True) -> DummyLM:
     )
 
 
-def _capture_arc_surfaces(config: WriterConfig, tmp_dir: Path) -> tuple[list[Any], list[Any], list[Any]]:
+def _capture_arc_surfaces(
+    config: WriterConfig, tmp_dir: Path
+) -> tuple[list[Any], list[Any], list[Any]]:
     """Drive the real ARC ReAct loop; return (context, trace_live, trace_replay_final)."""
 
     import clio_agent.gact.agents.runtime as runtime
@@ -202,7 +204,9 @@ def _capture_gact_surfaces(
     with TestClient(app) as c:
         sid = c.post("/v1/sessions", json={"title": "equiv"}).json()["id"]
         cursor = app.state.bus.latest_event_id(sid)
-        ack = c.post(f"/v1/sessions/{sid}/messages", json={"parts": [{"type": "text", "text": "hi"}]})
+        ack = c.post(
+            f"/v1/sessions/{sid}/messages", json={"parts": [{"type": "text", "text": "hi"}]}
+        )
         assert ack.status_code == 200, ack.text
         # Capture once the turn has SETTLED: its terminal status event publishes after
         # the busy gate releases (#1466), which is after the completion events are

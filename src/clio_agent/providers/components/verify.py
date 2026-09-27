@@ -1,0 +1,102 @@
+"""Fresh-interpreter provider check run after a component update.
+
+``python -m clio_agent.providers.components.verify <provider_kind>`` imports
+the just-installed SDK in a NEW process (the updating process still holds the
+old modules) and re-runs the provider's own check and model discovery there.
+It prints one JSON line ``{"ok", "code", "detail", "client"}`` and exits 0 only
+when the update left a working provider.
+
+What counts as working is "the SDK and its CLI start and answer": a signed-out
+account or an empty model list is the account's state, not a broken install,
+so those pass with their code recorded. A failure to import, to launch the
+runtime, or to complete the discovery exchange fails the update (which then
+rolls back).
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from typing import Any
+
+#: Codex discovery outcomes that prove the SDK + runtime answered.
+_CODEX_WORKING_CODES = frozenset({"", "codex_sdk_signed_out", "codex_sdk_zero_models"})
+
+
+def _code(failed_reason: str) -> str:
+    return failed_reason.split(":", 1)[0].strip() if failed_reason else ""
+
+
+def verify_codex() -> dict[str, Any]:
+    """Import the Codex SDK and ask its runtime for the account's models."""
+    from clio_agent.providers.codex.sdk_discovery import discover_codex_sdk  # noqa: PLC0415
+    from clio_agent.providers.components.client_binary import codex_client  # noqa: PLC0415
+
+    result = discover_codex_sdk()
+    code = _code(result.failed_reason or "")
+    return {
+        "ok": code in _CODEX_WORKING_CODES,
+        "code": code or "codex_sdk_models_listed",
+        "detail": result.failed_reason or f"{len(result.discovered)} models",
+        "client": codex_client().to_wire(),
+    }
+
+
+def verify_claude_code() -> dict[str, Any]:
+    """Import the Agent SDK, run its CLI, and re-run the Claude Code sign-in check."""
+    import claude_agent_sdk  # noqa: F401, PLC0415
+
+    from clio_agent.providers.components.client_binary import (  # noqa: PLC0415
+        bundled_claude_path,
+        claude_client,
+        probe_version,
+    )
+    from clio_agent.providers.model_discovery.claude_code import (
+        discover_claude_code,  # noqa: PLC0415
+    )
+
+    bundled = bundled_claude_path()
+    if bundled is not None and not probe_version(str(bundled)):
+        return {
+            "ok": False,
+            "code": "claude_bundled_cli_unrunnable",
+            "detail": f"{bundled} did not report a version",
+            "client": claude_client().to_wire(),
+        }
+    selection = claude_client()
+    if selection.client is None:
+        return {
+            "ok": False,
+            "code": selection.reason,
+            "detail": "no Claude Code CLI",
+            "client": selection.to_wire(),
+        }
+    result = discover_claude_code()
+    return {
+        "ok": True,
+        "code": _code(result.failed_reason or "") or "claude_code_checked",
+        "detail": result.failed_reason or f"{len(result.discovered)} models",
+        "client": selection.to_wire(),
+    }
+
+
+_VERIFIERS = {"codex": verify_codex, "claude_code": verify_claude_code}
+
+
+def main(argv: list[str]) -> int:
+    """Run the verifier for ``argv[0]`` and print its JSON line."""
+    kind = argv[0] if argv else ""
+    verifier = _VERIFIERS.get(kind)
+    if verifier is None:
+        print(json.dumps({"ok": False, "code": "provider_has_no_components", "detail": kind}))
+        return 2
+    try:
+        outcome = verifier()
+    except Exception as exc:  # noqa: BLE001 - any failure here is the verdict itself
+        outcome = {"ok": False, "code": "provider_check_crashed", "detail": repr(exc)}
+    print(json.dumps(outcome))
+    return 0 if outcome.get("ok") else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

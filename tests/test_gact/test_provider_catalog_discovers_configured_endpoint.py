@@ -12,15 +12,23 @@ answers ``/v1/models`` the way llama.cpp does, binds it as the active global
 LM by priming ``app.state.lm_config`` directly (the same shape ``PUT
 /v1/providers/lm`` writes), and asserts ``GET /v1/provider-catalog`` lists
 ``llama_cpp`` with the model that server actually reported.
+
+Hermetic: the catalog read also discovers every other provider. The
+``recorded_remotes`` fixture points each remote provider at a loopback server that
+replays a recorded model list; the online model catalogs (models.dev, LiteLLM's
+community map, CLIO's own) are replayed suite-wide by tests/_recorded_catalogs.py.
+The test never leaves this machine (the suite's network guard fails it if it does).
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 from fastapi.testclient import TestClient
@@ -65,9 +73,75 @@ def fake_llama_cpp_server():
             worker.join(timeout=5)
 
 
+# A recorded response, trimmed to the shape the discovery parses: an OpenAI-style model
+# list for every remote provider's ``/models``.
+_RECORDED_MODELS = {"object": "list", "data": [{"id": "recorded-model", "object": "model"}]}
+
+
+class _RecordedRemotesHandler(BaseHTTPRequestHandler):
+    """Replays the recorded remote responses; any other path is a plain 404."""
+
+    requests: list[str] = []  # noqa: RUF012 - reset per test by the fixture
+
+    def _reply(self) -> None:
+        self.requests.append(self.path)
+        path = self.path.split("?", 1)[0]
+        if path.endswith("/models"):
+            payload: Any = _RECORDED_MODELS
+        else:
+            self.send_response(404)
+            self.end_headers()
+            return
+        body = json.dumps(payload).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    do_GET = _reply  # noqa: N815 - stdlib handler method name
+    do_POST = _reply  # noqa: N815 - stdlib handler method name
+
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - stdlib signature
+        pass
+
+
+def _is_remote(api_base: str) -> bool:
+    parts = urlsplit(api_base)
+    return parts.scheme in ("http", "https") and parts.hostname not in ("127.0.0.1", "localhost")
+
+
+@pytest.fixture()
+def recorded_remotes(monkeypatch: pytest.MonkeyPatch):
+    """Point every remote endpoint the catalog read touches at a loopback replay server."""
+    from clio_agent.providers import catalog
+
+    _RecordedRemotesHandler.requests = []
+    with ThreadingHTTPServer(("127.0.0.1", 0), _RecordedRemotesHandler) as server:
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        base = f"http://127.0.0.1:{server.server_port}"
+        monkeypatch.setattr(
+            catalog,
+            "PROVIDERS",
+            tuple(
+                dataclasses.replace(p, api_base=f"{base}/{p.id}/v1")
+                if _is_remote(p.api_base)
+                else p
+                for p in catalog.PROVIDERS
+            ),
+        )
+        try:
+            yield _RecordedRemotesHandler
+        finally:
+            server.shutdown()
+            worker.join(timeout=5)
+
+
 def test_catalog_lists_llama_cpp_with_the_discovered_model_at_a_nondefault_port(
     tmp_path: Path,
     fake_llama_cpp_server: ThreadingHTTPServer,
+    recorded_remotes: type[_RecordedRemotesHandler],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     port = fake_llama_cpp_server.server_port
@@ -103,3 +177,5 @@ def test_catalog_lists_llama_cpp_with_the_discovered_model_at_a_nondefault_port(
     model_ids = {m["model_id"] for m in llama_cpp["models"]}
     assert DISCOVERED_MODEL_ID in model_ids
     assert "/v1/models" in _FakeLlamaCppHandler.requests
+    # The rest of the catalog was discovered too -- against the recorded remotes.
+    assert any(path.endswith("/models") for path in recorded_remotes.requests)

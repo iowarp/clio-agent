@@ -211,10 +211,19 @@ def probe_clio_core_attach(*, state: object | None = None) -> list[IntegrationSt
         ClioCoreAttachState,
         attach_state_snapshot,
     )
+    from clio_agent.arc.clio_core_native_preflight import (  # noqa: PLC0415
+        CLIO_CORE_EMBEDDED_RUNTIME_ENV_REMOVED,
+        removed_embedded_runtime_env,
+    )
 
     snap = state if isinstance(state, ClioCoreAttachState) else attach_state_snapshot()
     if snap.phase in (ClioCoreAttachPhase.IDLE, ClioCoreAttachPhase.NOT_SELECTED):
         return []
+    details = snap.to_details()
+    removed = removed_embedded_runtime_env()
+    if removed:  # an inherited CLIO_WITH_RUNTIME was dropped before the attach
+        details["removed_env"] = removed
+        details["removed_env_reason"] = CLIO_CORE_EMBEDDED_RUNTIME_ENV_REMOVED
     endpoint = None if snap.port is None else f"127.0.0.1:{snap.port}"
     where = f"port {snap.port}, config {snap.config_path or '<default>'}"
     if snap.phase is ClioCoreAttachPhase.STARTING:
@@ -238,8 +247,61 @@ def probe_clio_core_attach(*, state: object | None = None) -> list[IntegrationSt
             next_action=next_action,
             endpoint=endpoint,
             fallback="local" if snap.phase is ClioCoreAttachPhase.UNAVAILABLE else "none",
-            details=snap.to_details(),
+            details=details,
             required=required,
+        )
+    ]
+
+
+def probe_clio_core_config_adoption(*, record: object | None = None) -> list[IntegrationStatus]:
+    """Surface a first-config-wins adoption as the ``clio_core_config_adoption`` row.
+
+    One clio-core daemon runs per machine. When this process asked for a different
+    config than the running daemon's, it attached with the daemon's config
+    (:func:`clio_agent.arc.clio_core_daemon_version.resolve_effective_config`); this row
+    names the settings that differ so the substitution is never silent. DEGRADED (this
+    CLIO's own settings are not in effect) but not required, so it never trips a 503.
+
+    Args:
+        record: Optional injected ``ConfigAdoption`` for testing; defaults to the live
+            process record.
+
+    Returns:
+        One row when this process adopted the daemon's config, else empty.
+    """
+    from clio_agent.arc.clio_core_daemon_version import (  # noqa: PLC0415 - keep import light
+        CLIO_CORE_CONFIG_ADOPTED_FROM_DAEMON,
+        ConfigAdoption,
+        config_adoption_snapshot,
+    )
+
+    snap = record if isinstance(record, ConfigAdoption) else config_adoption_snapshot()
+    if snap is None:
+        return []
+    keys = ", ".join(sorted(snap.diffs)) or "unspecified keys"
+    return [
+        IntegrationStatus(
+            name="clio_core_config_adoption",
+            state=IntegrationState.DEGRADED,
+            summary=(
+                f"clio-core is running another CLIO's config ({snap.effective_config_path}); "
+                f"this CLIO asked for {snap.requested_config_path}, which differs in: {keys}. "
+                "The first config wins on the one daemon per machine."
+            ),
+            config_source="runtime:clio_core_config_adoption",
+            next_action=(
+                "No action needed to keep running. To apply this CLIO's settings, stop "
+                "every CLIO on this machine so the daemon exits, then start this one first."
+            ),
+            endpoint=snap.effective_config_path,
+            fallback="none",
+            details={
+                "reason": CLIO_CORE_CONFIG_ADOPTED_FROM_DAEMON,
+                "requested_config_path": snap.requested_config_path,
+                "effective_config_path": snap.effective_config_path,
+                "diffs": snap.diffs,
+            },
+            required=False,
         )
     ]
 
@@ -668,7 +730,7 @@ def probe_clio_core_write_health(
 
 
 def probe_clio_core_health(*, env: Mapping[str, str] | None = None) -> list[IntegrationStatus]:
-    """Aggregate the clio-core doctor rows: attach + init (#897) + ram cap (#890) + liveness (#892) + daemon mem (#891) + cold-tier disk (#1001).
+    """Aggregate the clio-core doctor rows: attach + config adoption + init (#897) + ram cap (#890) + liveness (#892) + daemon mem (#891) + cold-tier disk (#1001).
 
     A single collection seam so the doctor wires ONE call for all clio-core sub-checks.
 
@@ -681,6 +743,7 @@ def probe_clio_core_health(*, env: Mapping[str, str] | None = None) -> list[Inte
     """
     return [
         *probe_clio_core_attach(),
+        *probe_clio_core_config_adoption(),
         *probe_clio_core_init_degradation(),
         *probe_clio_core_ram_cap(env=env),
         *probe_clio_core_liveness(),

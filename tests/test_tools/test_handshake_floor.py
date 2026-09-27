@@ -35,7 +35,7 @@ from clio_agent.tools.mcp_runtime import make_mcp_client
 
 # A stdio backend that echoes the ``_meta`` its OWN session received, so the test
 # can read the exact wire envelope CLIO's factory-built client stamped upstream.
-META_STUB = '''
+META_STUB = """
 from fastmcp import Context, FastMCP
 
 mcp = FastMCP("meta-stub", instructions="meta stub instructions")
@@ -46,7 +46,7 @@ async def seen_meta(ctx: Context) -> dict:
     return {"meta": dict(meta) if meta else None}
 
 mcp.run()
-'''
+"""
 
 CLIENT_INFO_KEY = "io.modelcontextprotocol/clientInfo"
 CLIENT_CAPS_KEY = "io.modelcontextprotocol/clientCapabilities"

@@ -23,6 +23,21 @@ import os
 # imports litellm during collection or a test run.
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
+# Starlette's TestClient (and the suite's ASGI clients) address the app as
+# ``testserver``. A request without a bearer token must name an allowed host
+# (gact/origin_guard.py), so the whole session allows that one name. It is an ENV
+# baseline on purpose: a config file only overrides it when it sets
+# ``gact.allowed_hosts`` itself, so a test that writes its own config (a registry
+# helper, a workspace ``.clio/config.yaml``) cannot lose it.
+_TEST_CLIENT_HOST = "testserver"
+_ambient_hosts = [h for h in os.environ.get("CLIO_GACT_ALLOWED_HOSTS", "").split(",") if h.strip()]
+os.environ["CLIO_GACT_ALLOWED_HOSTS"] = ",".join(sorted({*_ambient_hosts, _TEST_CLIENT_HOST}))
+
+# The AWS credential chain (Bedrock readiness checks) otherwise falls through to the
+# EC2 instance metadata endpoint, 169.254.169.254: a network call, and a multi-second
+# timeout off EC2. Unit tests never reach the network (tests/_network_guard.py).
+os.environ.setdefault("AWS_EC2_METADATA_DISABLED", "true")
+
 # Even with the network GET removed, litellm's own MODULE BODY costs ~3.5-4s
 # to import cold (hundreds of provider submodules + pydantic model builds --
 # not fixable from clio's side, it is dependency weight). That cost is paid
@@ -59,13 +74,25 @@ import pytest  # noqa: E402
 import yaml  # noqa: E402
 
 import clio_agent  # noqa: E402, F401
+from tests import (
+    _cte_bounded,
+    _hang_guard,
+    _network_guard,
+    _recorded_catalogs,
+    _sharding,
+    _worker_leaks,
+)
 from tests._cte_isolation import (
     cte_isolation_available,
     eagerly_attach_private_daemon,
     isolate_cte_env,
+    private_daemon_failure_report,
+    private_daemon_identity,
     reap_private_daemon,
+    reap_stale_suite_runtimes,
     remove_private_cte_root,
 )
+from tests._marketplace import MARKETPLACE_MISSING_MESSAGE, marketplace_checked_out
 from tests._process_hygiene import (
     SKIP_ENV,
     ProcessHygieneAudit,
@@ -78,18 +105,20 @@ from tests._test_runtime_isolation import (
     cleanup_test_runtime,
     create_test_runtime,
     resolve_test_runtime_parent,
-    stale_test_runtimes,
 )
 
 _TEST_RUNTIME: TestRuntime | None = None
 
 
-def _reap_stale_test_runtimes(parent: Path) -> None:
-    """Reap dead prior suites before removing their authenticated scratch roots."""
-    for stale in stale_test_runtimes(parent):
-        for state_dir in stale.glob("cte/*/clio-state"):
-            reap_private_daemon(state_dir)
-        cleanup_test_runtime(stale, parent)
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Register the CI sharding options (see tests/_sharding.py)."""
+    _sharding.addoption(parser)
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Keep only this run's shard when ``--num-shards`` is above 1."""
+    _sharding.select(config, items)
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -101,11 +130,39 @@ def pytest_configure(config: pytest.Config) -> None:
         return
     checkout = Path(__file__).resolve().parents[1]
     parent = resolve_test_runtime_parent(checkout, os.environ)
-    _reap_stale_test_runtimes(parent)
+    reap_stale_suite_runtimes(parent)
     runtime = create_test_runtime(checkout, os.environ)
     tempfile.tempdir = str(runtime.temp_dir)
     config.option.basetemp = str(runtime.pytest_dir)
     _TEST_RUNTIME = runtime
+    # Per-test hard limit on a GIL-independent watchdog (see tests/_hang_guard.py).
+    _hang_guard.configure(config, runtime.root / "hang-dumps")
+    config.pluginmanager.register(_hang_guard, "clio-hang-guard")
+    # Every real clio-core store call gets a seconds-scale hard bound on that watchdog.
+    _cte_bounded.install()
+    # Background threads a test's objects start are stopped at its teardown.
+    _worker_leaks.install()
+    # Unit tests never reach a non-loopback host (see tests/_network_guard.py); the
+    # online model catalogs are replayed from recordings instead.
+    _network_guard.install()
+    _recorded_catalogs.install()
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    """Close the hang guard's dump stream."""
+    del config
+    _recorded_catalogs.uninstall()
+    _hang_guard.unconfigure()
+
+
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    """Fail a ``marketplace`` test loudly when the pinned submodule is not checked out.
+
+    A skip would let a CI checkout regression pass unnoticed; the failure names
+    the one command that fixes a fresh worktree (tests/_marketplace.py).
+    """
+    if item.get_closest_marker("marketplace") is not None and not marketplace_checked_out():
+        pytest.fail(MARKETPLACE_MISSING_MESSAGE, pytrace=False)
 
 
 @pytest.hookimpl(trylast=True)
@@ -118,6 +175,12 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     if runtime is None:
         return
     try:
+        if not hasattr(session.config, "workerinput"):
+            # An xdist worker the hang guard ended (tests/_hang_guard.py) never ran its
+            # own teardown: its private daemon and run root are left behind. Every worker
+            # is gone by the time the controller finishes, so reap them now instead of
+            # leaving the daemon running until the next suite starts.
+            reap_stale_suite_runtimes(runtime.parent)
         cleanup_test_runtime(runtime.root, runtime.parent)
     except (OSError, RuntimeError) as exc:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
@@ -256,15 +319,10 @@ def _clio_private_cte_daemon():
     try:
         # Eager spawn+attach: boot the private daemon deterministically at session
         # start (not mid-suite under load) and hold a client so it stays up all
-        # session. A failure is already recorded loudly by the init-degradation path.
+        # session. A daemon that does not come up FAILS the run with its own reason:
+        # the cte legs must never quietly run on local files.
         if not eagerly_attach_private_daemon():
-            import warnings  # noqa: PLC0415
-
-            warnings.warn(
-                "private clio-core daemon failed to come up at session start; "
-                "cte-leg tests will run degraded (see the ARC init-degradation log)",
-                stacklevel=1,
-            )
+            pytest.fail(private_daemon_failure_report(isolation), pytrace=False)
         yield isolation
     finally:
         reap_private_daemon(isolation.state_dir)
@@ -337,6 +395,64 @@ def _clio_process_hygiene_audit(request, _clio_private_cte_daemon):
     result = audit.finalize(own_pid=os.getpid())
     if not result.clean:
         raise AssertionError(result.format_failure())
+
+
+@pytest.fixture(autouse=True)
+def _check_private_daemon_survives(_clio_private_cte_daemon):
+    """Fail the test that stops or kills this worker's shared private clio-core daemon.
+
+    Every cte leg in this worker attaches to that one daemon, and the attach is once
+    per process, so a test that stops it (a real last-client release, a pidfile kill)
+    silently breaks every later cte leg: their first RPC blocks on a daemon that is
+    gone (seen on CI: ``test_live_edge`` [cte] stuck in the post-attach probe with the
+    pidfile missing). Checking the pidfile identity around each test names the culprit
+    instead of the victim.
+
+    Named to sort before every autouse fixture that requests ``monkeypatch`` (pytest
+    orders a conftest's autouse fixtures by name): set up first, it is torn down LAST,
+    after the test's patches (``Path.open``, psutil, storage helpers) are undone.
+    """
+    state_dir = _clio_private_cte_daemon.state_dir if _clio_private_cte_daemon else None
+    before = private_daemon_identity(state_dir) if state_dir is not None else None
+    yield
+    if before is not None and private_daemon_identity(state_dir) != before:
+        pytest.fail(
+            f"this test stopped or killed the worker's shared private clio-core daemon "
+            f"(pid {before[0]}); every later cte test in this worker would attach to a "
+            "dead daemon. Isolate its runtime state (see tests/_cte_isolation.py) instead.",
+            pytrace=False,
+        )
+
+
+@pytest.fixture(autouse=True)
+def _block_outbound_network(request):
+    """Fail a unit test that reaches a non-loopback host (tests/_network_guard.py)."""
+    if any(request.node.get_closest_marker(m) for m in _network_guard.EXEMPT_MARKERS):
+        yield
+        return
+    _network_guard.begin()
+    try:
+        yield
+    finally:
+        reached = _network_guard.end()
+    if reached:
+        pytest.fail(
+            "this unit test reached the network (serve a recorded response from a "
+            "loopback fake instead):" + chr(10) + chr(10).join(reached[:5]),
+            pytrace=False,
+        )
+
+
+@pytest.fixture(autouse=True)
+def _close_background_workers():
+    """Stop the LSM compaction / provenance worker threads this test's objects started.
+
+    See :mod:`tests._worker_leaks`: left running they accumulate to thousands per xdist
+    worker and push the stuck test's own stack out of the hang guard's 100-thread dump.
+    """
+    position = _worker_leaks.mark()
+    yield
+    _worker_leaks.close_created_since(position)
 
 
 @pytest.fixture(autouse=True)

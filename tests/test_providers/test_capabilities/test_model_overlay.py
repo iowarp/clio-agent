@@ -21,6 +21,7 @@ from clio_agent.providers.capabilities.model_overlay import (
     entry_to_model_capabilities,
     overlay_match_for_link,
 )
+from tests._catalog_seed import seed_model_overlay
 
 
 def _entry(family: str, patterns: list[str], root: str, **capabilities: object) -> OverlayEntry:
@@ -280,6 +281,7 @@ def test_a_linked_family_key_refinds_its_entry_without_containing_a_pattern(
 ) -> None:
     """Rule 3 keys a deployment by the family name; ``gemma-3`` contains none of
     its own patterns (``gemma-3-27b-it``, ...), yet its facts must still apply."""
+    seed_model_overlay()
     monkeypatch.setattr(model_overlay, "_fetched_entries", _REAL_FETCHED_ENTRIES)
     from clio_agent.providers.capabilities.model_overlay import (
         default_overlay_source,
@@ -296,6 +298,7 @@ def test_a_linked_family_key_refinds_its_entry_without_containing_a_pattern(
 
 
 def test_overlay_flags_decide_the_task(monkeypatch: pytest.MonkeyPatch) -> None:
+    seed_model_overlay()
     from clio_agent.providers.capabilities.model_overlay import default_overlay_source
 
     monkeypatch.setattr(model_overlay, "_fetched_entries", _REAL_FETCHED_ENTRIES)

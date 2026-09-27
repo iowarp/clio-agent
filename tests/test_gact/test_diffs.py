@@ -78,9 +78,7 @@ def test_apply_flips_status_and_returns_paths(tmp_path: Path) -> None:
         sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
         _turn(client, sid)
 
-        resp = client.post(
-            f"/v1/sessions/{sid}/diffs/apply", json={"paths": ["a.py"]}
-        ).json()
+        resp = client.post(f"/v1/sessions/{sid}/diffs/apply", json={"paths": ["a.py"]}).json()
         assert resp["applied"] == ["a.py"]
 
         # b.py still pending — apply-all picks it up.

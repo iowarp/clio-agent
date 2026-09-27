@@ -54,8 +54,10 @@ to point at your model provider.
 ## e) Desktop app
 Download the installer for your OS from the
 [latest release](https://github.com/iowarp/clio-agent/releases/latest):
-`.msi`/`.exe` (Windows), `.dmg` (macOS), `.deb`/`.AppImage`/`.rpm` (Linux). Bundles
-clio-agent — nothing else to install.
+the `-bundled` `.msi`/`.exe` (Windows), `.dmg` (Apple Silicon macOS), or `.deb`/`.rpm`
+(Linux). Bundled installers ship clio-agent, so there is nothing else to install. Installers
+without `-bundled` in the name, including every Linux `.AppImage` and the Intel macOS
+`.dmg`, are attach-only: they connect to a clio-agent you install and run separately.
 
 **Proving a release candidate's desktop lifecycle (Windows).** `scripts/
 live_verification/desktop_lifecycle_proof.py` drives the INSTALLED

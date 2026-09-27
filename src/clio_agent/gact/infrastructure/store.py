@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 from pathlib import Path
 from typing import Any
@@ -17,6 +16,7 @@ from clio_agent.gact.infrastructure.models import (
     UpdateTargetRequest,
     utc_now,
 )
+from clio_agent.platform_paths import atomic_write_text
 
 _SCHEMA_VERSION = 1
 
@@ -144,6 +144,33 @@ class InfrastructureStore:
         with self._lock:
             updated = record.model_copy(update={"updated_at": utc_now()})
             self._services[updated.id] = updated
+            self._flush()
+            return updated.model_copy(deep=True)
+
+    def services(self) -> list[ServiceRecord]:
+        """Every durable service record, on every target."""
+
+        with self._lock:
+            return [row.model_copy(deep=True) for row in self._services.values()]
+
+    def update_service(
+        self, target_id: str, service_id: str, **fields: object
+    ) -> ServiceRecord | None:
+        """Set only ``fields`` on the CURRENT record; ``None`` when it no longer exists.
+
+        Observers (a catalog refresh reconciling state, a connection or
+        effective-parameter update) must not write back a whole record they
+        read before running remote commands: an operation may have replaced
+        its ledger, or an uninstall deleted it, in the meantime.
+        """
+
+        with self._lock:
+            key = f"{target_id}:{service_id}"
+            current = self._services.get(key)
+            if current is None:
+                return None
+            updated = current.model_copy(update={**fields, "updated_at": utc_now()})
+            self._services[key] = updated
             self._flush()
             return updated.model_copy(deep=True)
 
@@ -303,9 +330,6 @@ class InfrastructureStore:
                 key: value.model_dump(mode="json") for key, value in self._operations.items()
             },
         }
-        temporary = self._path.with_suffix(self._path.suffix + ".tmp")
-        with temporary.open("w", encoding="utf-8") as stream:
-            json.dump(payload, stream, indent=2, sort_keys=True)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, self._path)
+        # Retries while another process (antivirus, an indexer, a monitoring
+        # script) holds the file open, then fails typed; never a partial file.
+        atomic_write_text(self._path, json.dumps(payload, indent=2, sort_keys=True))

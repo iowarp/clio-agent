@@ -37,6 +37,7 @@ from clio_agent.gact.app import build_app
 from clio_agent.gact.spotter_arming import (
     REFUSAL_WATCHER_ENTRYPOINT_MISSING,
     REFUSAL_WATCHER_PROJECT_MISSING,
+    REFUSAL_WATCHER_PROVENANCE_UNAVAILABLE,
     REFUSAL_WATCHER_UNMOUNTABLE,
     SPOTTER_ARMING_REASONS,
     _project_directories,
@@ -632,6 +633,7 @@ def test_every_refusal_reason_is_in_the_closed_set() -> None:
         REFUSAL_WATCHER_UNMOUNTABLE,
         REFUSAL_WATCHER_PROJECT_MISSING,
         REFUSAL_WATCHER_ENTRYPOINT_MISSING,
+        REFUSAL_WATCHER_PROVENANCE_UNAVAILABLE,
     }
     assert all(SPOTTER_ARMING_REASONS.values())
 

@@ -889,6 +889,15 @@ class _RecordingDispatcher(HookDispatcher):
     def count(self, event: str) -> int:
         return sum(1 for ev, _ in self.events if ev == event)
 
+    def count_for_task(self, event: str, task_id: str) -> int:
+        """Events of ``event`` for ONE task: immune to other tests' leftover children."""
+        with self.changed:
+            return sum(
+                1
+                for ev, env in self.events
+                if ev == event and env.payload.get("task_id") == task_id
+            )
+
     def envelopes(self, event: str) -> list[HookEnvelope]:
         return [env for ev, env in self.events if ev == event]
 
@@ -1064,12 +1073,9 @@ def test_subagent_start_and_stop_fire_exactly_once(tmp_path: Path, monkeypatch) 
         app = build_app(sessions_path=tmp_path / "s.json", agent=_Agent())
         with TestClient(app) as client:
             parent = client.post("/v1/sessions", json={"title": "p"}).json()["id"]
-            before_start = disp.count(SUBAGENT_START)
-            # SubagentStop fires from a turn-task done-callback, so a child
-            # spawned by an EARLIER test can settle inside this window and land
-            # on the process-global dispatcher. Both halves therefore assert a
-            # DELTA; the absolute count made this test fail under load only.
-            before_stop = disp.count(SUBAGENT_STOP)
+            # The dispatcher is process-global: a child turn an EARLIER test spawned
+            # can start or settle inside this window and land here too (a DELTA over
+            # all events still counted it under load). Count THIS child's events only.
             task = spawn_child_turn_threadsafe(
                 app,
                 TaskSpec(
@@ -1079,13 +1085,13 @@ def test_subagent_start_and_stop_fire_exactly_once(tmp_path: Path, monkeypatch) 
                     requesting_expert_id="main",
                 ),
             )
-            assert disp.count(SUBAGENT_START) - before_start == 1
+            assert disp.count_for_task(SUBAGENT_START, task.task_id) == 1
             # Terminal projection precedes terminal side effects. Synchronize
             # with THIS child's hook rather than racing that publication edge.
             assert disp.wait_for_task(SUBAGENT_STOP, task.task_id)
             rec = app.state.agent_task_registry.get(task.task_id)
             assert rec is not None and rec.is_terminal
-            assert disp.count(SUBAGENT_STOP) - before_stop == 1
+            assert disp.count_for_task(SUBAGENT_STOP, task.task_id) == 1
     finally:
         install_global_dispatcher(None)
 

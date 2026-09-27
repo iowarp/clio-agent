@@ -22,9 +22,7 @@ memory (see :mod:`clio_agent.gact.routes.local_servers`).
 from __future__ import annotations
 
 import logging
-import os
 import re
-import tempfile
 import threading
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
@@ -34,6 +32,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 import yaml
 
 from clio_agent import conf, paths
+from clio_agent.platform_paths import atomic_write_text
 
 if TYPE_CHECKING:
     from clio_agent.gact.lm_provider_types import LMProviderPreset
@@ -132,25 +131,9 @@ def _write_document(path: Path, document: Mapping[str, Any]) -> None:
     rendered = yaml.safe_dump(
         dict(document), allow_unicode=True, default_flow_style=False, sort_keys=False
     )
-    temporary: Path | None = None
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            newline="\n",
-            delete=False,
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-        ) as handle:
-            temporary = Path(handle.name)
-            handle.write(rendered)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        atomic_write_text(path, rendered)
     except OSError as exc:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
         raise LocalServerStoreError(f"could not write {path}: {exc}") from exc
     conf.reload()
 

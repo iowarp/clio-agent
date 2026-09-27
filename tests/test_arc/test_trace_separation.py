@@ -21,8 +21,18 @@ def _make_logger(events_out: list[dict]):
     each (with a stable event_id) so SegmentStore can stamp trace_ref."""
     counter = {"n": 0}
 
-    def op_logger(op, session_id, scope, *, logical_time, step=None, position=None,
-                  segments_written=None, segments_tombstoned=None, derived_from=None):
+    def op_logger(
+        op,
+        session_id,
+        scope,
+        *,
+        logical_time,
+        step=None,
+        position=None,
+        segments_written=None,
+        segments_tombstoned=None,
+        derived_from=None,
+    ):
         counter["n"] += 1
         ev = {
             "event_type": "arc.op",

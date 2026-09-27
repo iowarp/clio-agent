@@ -6,6 +6,102 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Added
+
+- Provider catalog model rows carry `model_facts` next to `capability_tags`:
+  the model's description (raw text, plain text with markdown links reduced to
+  labels, and the links), release date at the precision its source states,
+  `recent` (released within six months, judged when the catalog is served),
+  pricing per 1M tokens, and parameter count (total, plus mixture-of-experts
+  active and expert counts when a source states them). Each fact names the
+  sources that state it and is `null` when none does; a size is never read
+  from a model's name. A price is `usd` with a number, or `variable` (it
+  depends on the routed model) or `subscription` (Claude Code, Codex) with no
+  number. What the endpoint charges comes first; a LiteLLM list price is used
+  when the endpoint states none, and is otherwise listed as an alternative.
+- Every provider-catalog model row carries `accepted_parameters`
+  (`clio_schemas.AcceptedParameter`, clio-schemas 0.4.1): only the response
+  settings that model and its endpoint accept -- temperature, top_p, top_k,
+  min_p, presence/frequency/repetition penalty, seed, longest reply, and a
+  local server's context size and parallel slots -- each with its kind, range,
+  group, the default clio actually sends (the model's recommended value, or
+  `null` for the provider's own) and the evidence behind it. Claude Code and
+  both Codex transports accept none; an OpenRouter model lists exactly its
+  route's `supported_parameters`.
+- `PUT /v1/providers/lm` takes `frequency_penalty`, `repetition_penalty` and
+  `seed`, refuses a value outside an accepted setting's range with a typed 422
+  (`response_setting_out_of_range`), and `GET /v1/providers/lm` echoes every
+  saved setting (`top_p`, `top_k`, `min_p`, the penalties, `seed`, `parallel`).
+
+### Changed
+
+- The per-token `pricing` field on provider catalog model rows is removed;
+  `model_facts.pricing` replaces it.
+- A saved setting the bound model does not accept is kept and never sent, and
+  each drop is logged (`response_setting_not_sent`). Codex and Claude Code no
+  longer receive sampling fields their SDKs ignore. Ollama's `top_k`, `min_p`,
+  `repeat_penalty` and `num_ctx` now reach its `options`; LM Studio receives
+  `top_k` and `repeat_penalty`; OpenRouter receives `top_k`, `min_p` and
+  `repetition_penalty` where the route supports them.
+
+### Fixed
+
+- A model whose own id starts with its provider's name, such as OpenRouter's
+  free router `openrouter/free`, reaches the provider unchanged. It was sent
+  as `free`, and every turn failed with "No endpoints available".
+- A provider's HTTP error (404, 401, 429, ...) fails the turn with one line in
+  the provider's own words, such as `OpenRouter: User not found. (HTTP 401)`,
+  instead of "live streaming failed before emitting output: ExceptionGroup[...]"
+  or, on a non-streamed turn, "agent.forward raised: litellm.NotFoundError: ...".
+  "Codex sign-in is required" and the Claude Code install message are only
+  reported when Codex or Claude Code is the configured provider; any 401 used
+  to be reported as a Codex sign-in.
+- A message's model becomes the session's `model` when the message is
+  accepted, whatever the turn then does, and a `session.updated` event carries
+  it. The pick used to live only in the client, so a reload or a failed turn
+  showed "Choose model" again.
+- Security: a web page could make the user's browser change state on a local
+  CLIO without a token (cancel turns, install provider support, run sandbox
+  setup, reconnect MCP servers). A request without a valid bearer token that
+  uses POST, PUT, PATCH or DELETE and names an untrusted `Origin` (or is marked
+  `Sec-Fetch-Site: cross-site`) is now refused with `403 origin_not_allowed`
+  and logged. Trusted origins are the Desktop WebView, `gact.cors.origins`, and
+  the server's own loopback origin for the same-origin web UI. Clients that
+  send no `Origin` (the Desktop's native bridge, curl, SDKs) and requests with
+  a valid token are unaffected.
+- Security: a foreign domain re-pointed at 127.0.0.1 (DNS rebinding) could read
+  a local CLIO's sessions, messages and files without a token. Every request
+  and WebSocket upgrade without a valid bearer token must now address
+  `localhost`, `127.0.0.1` or `[::1]` (any port), or a host listed in the new
+  `gact.allowed_hosts` (`CLIO_GACT_ALLOWED_HOSTS`) for a LAN or container
+  deployment; others get `403 host_not_allowed`. The `clio-web` image's nginx
+  now forwards the browser's `Host` with its port and the request scheme, so
+  the same-origin web UI keeps matching its own origin.
+- A provider served from its last-good model list (for example OpenRouter with
+  no usable key) lost every fact except limits, tools, modalities and task, so
+  its models showed no reasoning, structured output, router, free or pricing
+  tags. The full records are now kept and restored.
+- The Desktop SSH transport socket (`/v1/infrastructure/targets/{id}/transport`)
+  says why it refused an attachment (#1478). A client that offers
+  `clio.infrastructure.v2` gets the handshake, then a close frame with code
+  4401/4403/4404/4409 and reason `authentication_required`,
+  `origin_not_allowed`, `target_not_found` or `target_not_ssh`; an admitted v2
+  client first receives `{"type": "attached", "target_id": ...}`.
+  `clio.infrastructure.v1` clients keep the pre-handshake refusal, and every
+  refusal is logged. The socket accepts a browser `Origin` only from the
+  Desktop WebView (`tauri://localhost`, `http(s)://tauri.localhost`) or
+  `gact.cors.origins`, and requires the bearer token from every peer,
+  loopback included.
+- A foreground server publishes `<runtime state dir>/gact-servers/<port>.json`
+  (port, pid, the bearer token it enforces or `null`; owner-only) while it
+  serves, so a Desktop that attaches to an already-running CLIO presents the
+  real token instead of an empty one.
+- `GET /v1/desktop/attach` answers 204 when the request may open the
+  bearer-only surfaces (the SSH transport socket, desktop shutdown) and 401
+  `authentication_required` when it may not. A desktop attaching to a CLIO that
+  published no credential record asks here without a token to learn whether
+  one is enforced (#1478).
+
 ## [0.9.4.18] — 2026-09-26
 
 ### Added

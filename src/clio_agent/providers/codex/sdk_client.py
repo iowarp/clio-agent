@@ -67,6 +67,7 @@ from clio_agent.providers.codex.sdk_audit import (
     emit_normalized,
     emit_raw_event,
 )
+from clio_agent.providers.components.client_binary import codex_client
 
 logger = logging.getLogger(__name__)
 
@@ -301,6 +302,8 @@ class CodexSDKClient:
         self._generation = 0
         self._client_users = 0
         self._reset_pending = False
+        # The binary the live client was started on (see ``_ensure_client``).
+        self._codex_bin: str | None = None
 
     def _ensure_loop(self) -> asyncio.AbstractEventLoop:
         with self._guard:
@@ -316,13 +319,28 @@ class CodexSDKClient:
         if self._client_lock is None:
             self._client_lock = asyncio.Lock()
         async with self._client_lock:
+            codex_bin = codex_client().path
+            if self._client is not None and codex_bin != self._codex_bin and not self._client_users:
+                # The selected binary changed (a newer Codex was installed, or a
+                # component update replaced the bundled one) and no turn holds the
+                # runtime: restart it on the new binary.
+                logger.info(
+                    "Codex SDK runtime restarting on a new binary reason=codex_sdk_binary_changed "
+                    "old=%s new=%s",
+                    self._codex_bin,
+                    codex_bin,
+                )
+                await self._close_locked()
             if self._client is None:
                 # No ``env=`` override: the runtime inherits THIS process's real
                 # environment, so it sees the user's own CODEX_HOME (or its
                 # ~/.codex default) and owns its own login/refresh. CLIO never
-                # constructs, reads, or writes an auth.json path.
+                # constructs, reads, or writes an auth.json path. ``codex_bin`` is
+                # the user's installed Codex CLI when present, else the bundled one.
+                self._codex_bin = codex_bin
                 client = AsyncCodex(
                     CodexConfig(
+                        codex_bin=codex_bin,
                         cwd=tempfile.gettempdir(),
                         config_overrides=BARE_LM_CONFIG_OVERRIDES,
                         client_name="clio_agent",
@@ -511,6 +529,19 @@ class CodexSDKClient:
             unregister_sdk_stream(handle)
             if not future.done():
                 future.cancel()
+
+    def release_idle_runtime(self) -> bool:
+        """Stop the SDK runtime if no turn holds it; ``False`` when a turn does.
+
+        A component update must replace the bundled ``codex`` binary, which
+        Windows refuses to overwrite while the runtime process runs it.
+        """
+        if self._client is None:
+            return True
+        if self._client_users:
+            return False
+        self.close_blocking()
+        return True
 
     def close_blocking(self) -> None:
         """Close the SDK-owned runtime and stop the owner loop."""

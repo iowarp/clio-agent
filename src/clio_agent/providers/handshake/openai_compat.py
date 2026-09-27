@@ -25,6 +25,7 @@ step then resolves ``context_max`` through the community-catalog cascade
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -40,6 +41,7 @@ from clio_agent.providers.capabilities.records import (
     DeploymentCapabilities,
     Fact,
     ModelCapabilities,
+    unknown,
 )
 from clio_agent.providers.handshake.base import (
     ConnectivityResult,
@@ -52,6 +54,8 @@ from clio_agent.providers.handshake.model import (
     DiscoveredModel,
     DiscoveredModelFacts,
 )
+from clio_agent.providers.handshake.unreachable import unreachable_reason
+from clio_agent.providers.handshake.vllm_tools import vllm_tools_fact
 
 #: ``provider_kind`` values that authenticate via Anthropic's header scheme
 #: (``x-api-key`` + a pinned API version) rather than a bearer token.
@@ -200,10 +204,12 @@ class OpenAICompatHandshake(ProviderHandshake):
         try:
             response = await client.get(self._models_url(ctx), headers=headers)
         except Exception as exc:  # transport-level failure -> unreachable  # noqa: BLE001 - surfaced as UNREACHABLE connectivity
+            code, reason = unreachable_reason(ctx.provider_id, ctx.api_base, exc)
             return ConnectivityResult(
                 connectivity=ConnectivityState.UNREACHABLE,
                 auth=AuthState.MISSING if self._requires_key(ctx) else AuthState.NOT_REQUIRED,
-                error=f"{type(exc).__name__}: {exc}",
+                error=reason,
+                error_code=code,
             )
         status = response.status_code
         if status in (401, 403):
@@ -298,6 +304,12 @@ class OpenAICompatHandshake(ProviderHandshake):
             model_key = deployment.model_key.value or model_id
             model = vllm_dialect.build_model_capabilities(model_key, raw)
             model = await self._compare_against_native_context(model, deployment, model_id)
+            # Tool calling depends on vLLM launch flags no endpoint reports:
+            # verify it on the server (once per server process).
+            deployment = replace(
+                deployment,
+                tools_enabled=await vllm_tools_fact(client, ctx.api_base, model_id, ctx.api_key),
+            )
         elif dialect == openrouter_dialect.DIALECT:
             model, deployment = openrouter_dialect.parse_model_row(
                 raw, provider_id=ctx.provider_id, api_base=ctx.api_base
@@ -315,9 +327,12 @@ class OpenAICompatHandshake(ProviderHandshake):
             deployment = cloud_dialect.build_deployment_capabilities(
                 ctx.provider_id, ctx.api_base, model_id
             )
+            row_facts = cloud_dialect.model_row_facts(dialect, raw, observed_at=_now_iso())
             model = ModelCapabilities(
                 model_key=self._bare_model_key(model_id),
                 thinking=self._thinking_fact(dialect, model_id),
+                released_at=row_facts.get("released_at", unknown()),
+                description=row_facts.get("description", unknown()),
             )
         else:
             # No adapter for this dialect (an unrecognized OpenAI-compatible

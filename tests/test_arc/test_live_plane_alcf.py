@@ -127,9 +127,7 @@ def test_live_summarize_propagates_on_real_data(arc):
 
     with live_plane_context(arc, session=SID, scope=SCOPE):
         with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
-            arc.summarize_segments(
-                SID, SCOPE, [s.id for s in live], {"text": "REAL_RUN_SUMMARY"}
-            )
+            arc.summarize_segments(SID, SCOPE, [s.id for s in live], {"text": "REAL_RUN_SUMMARY"})
             after = agent._format_trajectory({})
     # the whole real trajectory is now just the summary on the wire
     assert "REAL_RUN_SUMMARY" in after

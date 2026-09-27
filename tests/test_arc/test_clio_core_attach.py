@@ -9,7 +9,9 @@ re-ran the client init. Binding-free: the native modules are faked in ``sys.modu
 
 from __future__ import annotations
 
+import os
 import sys
+import time
 import types
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,6 +27,8 @@ from clio_agent.arc.clio_core_attach import (
 )
 from clio_agent.arc.init_degradation import (
     CLIO_CORE_CLIENT_ATTACH_FAILED,
+    CLIO_CORE_CLIENT_ATTACH_TIMEOUT,
+    CLIO_CORE_POST_ATTACH_PROBE_TIMEOUT,
     classify_init_failure,
     reset_arc_init_degradation,
 )
@@ -75,20 +79,31 @@ def _wire_ensure_runtime(monkeypatch, *, client_ok: bool) -> dict[str, Any]:
     monkeypatch.setitem(sys.modules, "iowarp_core", types.ModuleType("iowarp_core"))
     monkeypatch.setitem(sys.modules, "clio_cte_core_ext", _fake_cte(client_ok=client_ok, seen=seen))
     monkeypatch.setattr(storage.ClioCoreStore, "_initialized", False)
+    # Restore the stashed release params: a leaked fake config would point the
+    # session-end last-one-out release at a port no daemon serves (orphan clio_run).
+    monkeypatch.setattr(storage, "_active_config_path", storage._active_config_path)
+    monkeypatch.setattr(storage, "_active_log_level", storage._active_log_level)
     monkeypatch.setattr(storage.atexit, "register", lambda *a, **k: None)
     monkeypatch.setattr(storage, "warn_if_search_indexer_absent", lambda _cfg: None)
     monkeypatch.delenv("CLIO_SERVER_CONF", raising=False)
     monkeypatch.delenv("CLIO_CORE_PORT", raising=False)
 
-    def ensure_daemon(_core: object, cfg: str, _level: str) -> None:
-        # The daemon is spawned with CLIO_SERVER_CONF=cfg; record what THIS process
-        # exports at the moment the daemon is ensured.
+    def ensure_daemon(_core: object, cfg: str, _level: str) -> str:
+        # Returns the EFFECTIVE config: the request when this process spawns the
+        # daemon, the running daemon's own when it attaches (first config wins).
         seen["daemon_conf"] = cfg
-        seen["client_env_at_daemon_time"] = _env_subset()["CLIO_SERVER_CONF"]
+        return str(seen.get("daemon_effective_conf", cfg))
 
     monkeypatch.setattr(storage, "_ensure_runtime_daemon", ensure_daemon)
     deregistered: list[bool] = []
     monkeypatch.setattr(storage, "_deregister_client", lambda: deregistered.append(True))
+    # A failed attach releases through runtime_stop (deregister + last-one-out stop, #1401);
+    # keep the stop half out of this binding-free test, record the release itself.
+    monkeypatch.setattr(
+        storage.runtime_stop,
+        "release_failed_attach",
+        lambda _cfg, _level: storage._deregister_client(),
+    )
     seen["deregistered"] = deregistered
     return seen
 
@@ -101,11 +116,25 @@ def test_client_reads_the_same_config_the_daemon_composes(monkeypatch, tmp_path)
     storage.ClioCoreStore._ensure_runtime(cfg, "error", 0.0)
 
     assert seen["daemon_conf"] == cfg
-    assert seen["client_env_at_daemon_time"] == cfg  # exported BEFORE the daemon/attach
-    assert seen["client_init"][2]["CLIO_SERVER_CONF"] == cfg
+    assert seen["client_init"][2]["CLIO_SERVER_CONF"] == cfg  # exported BEFORE the attach
     assert seen["client_init"][:2] == ("kClient", False)  # pure client, never embedded
     assert seen["initialize_cte"] == cfg
     assert storage.ClioCoreStore._initialized is True
+
+
+def test_client_attaches_with_the_running_daemons_config(monkeypatch, tmp_path):
+    """First config wins: the client and CTE init use the daemon's config, not the request."""
+    requested = _cfg(tmp_path, 21045)
+    (tmp_path / "daemon").mkdir()
+    daemon_cfg = _cfg(tmp_path / "daemon", 21045)
+    seen = _wire_ensure_runtime(monkeypatch, client_ok=True)
+    seen["daemon_effective_conf"] = daemon_cfg
+
+    effective = storage.ClioCoreStore._ensure_runtime(requested, "error", 0.0)
+
+    assert effective == daemon_cfg
+    assert seen["client_init"][2]["CLIO_SERVER_CONF"] == daemon_cfg
+    assert seen["initialize_cte"] == daemon_cfg
 
 
 def test_failed_client_init_raises_typed_at_once_and_deregisters(monkeypatch, tmp_path):
@@ -134,6 +163,45 @@ def test_attach_native_client_noop_on_success():
         cte, config_path="c.yaml", port=1, on_failure=lambda: calls.append(True)
     )
     assert calls == []
+
+
+def test_attach_hands_the_native_client_clios_bound(monkeypatch):
+    """The native wait is CLIO's configured stall bound, exported before ``clio_init``."""
+    monkeypatch.delenv("CLIO_WAIT_SERVER", raising=False)
+    monkeypatch.setenv("CLIO_ARC_LIVENESS_STALL_AFTER_S", "7")
+    seen: list[str | None] = []
+
+    def _init(mode, flag):
+        seen.append(os.environ.get("CLIO_WAIT_SERVER"))
+        return True
+
+    cte = SimpleNamespace(clio_init=_init, RuntimeMode=SimpleNamespace(kClient="k"))
+    clio_core_attach.attach_native_client(
+        cte, config_path="c.yaml", port=1, on_failure=lambda: None
+    )
+    assert seen == ["7"]
+    assert clio_core_attach.attach_window_s() == 7.0
+
+
+def test_an_attach_that_runs_out_its_bound_is_typed_as_a_timeout(monkeypatch):
+    """A ``False`` after the whole bound: ``clio_core_client_attach_timeout``, deregistered."""
+    monkeypatch.delenv("CLIO_WAIT_SERVER", raising=False)
+    monkeypatch.setenv("CLIO_ARC_LIVENESS_STALL_AFTER_S", "0.05")
+    deregistered: list[bool] = []
+
+    def _init(mode, flag):
+        time.sleep(0.1)  # the native wait ran out
+        return False
+
+    cte = SimpleNamespace(clio_init=_init, RuntimeMode=SimpleNamespace(kClient="k"))
+    with pytest.raises(ClioCoreAttachError) as info:
+        clio_core_attach.attach_native_client(
+            cte, config_path="c.yaml", port=1, on_failure=lambda: deregistered.append(True)
+        )
+    assert classify_init_failure(info.value) == CLIO_CORE_CLIENT_ATTACH_TIMEOUT
+    assert "no answer within 0.05s" in str(info.value)
+    assert info.value.stage == "client_init"
+    assert deregistered == [True]
 
 
 def test_config_file_port_wins_over_core_port_override(monkeypatch, tmp_path):
@@ -192,3 +260,91 @@ def test_attach_state_unavailable_carries_the_typed_reason(monkeypatch, tmp_path
 def test_attach_state_not_selected_for_explicit_local(tmp_path):
     storage.make_arc_store(backend="local", data_dir=tmp_path / "arc")
     assert attach_state_snapshot().phase is ClioCoreAttachPhase.NOT_SELECTED
+
+
+class _Future:
+    """A stand-in binding ``Future``: answers with ``code`` or never answers at all."""
+
+    def __init__(self, *, code: int | None) -> None:
+        self.code = code
+        self.waits: list[float] = []
+
+    def done(self) -> bool:
+        return self.code is not None
+
+    def wait(self, max_sec: float = -1.0) -> int:
+        # The real binding: against a daemon that is gone, wait() on an unfinished Future
+        # ignores max_sec and blocks for good (holding the GIL). Never call it early.
+        assert self.code is not None, "wait() on an unfinished Future can block forever"
+        self.waits.append(max_sec)
+        return self.code
+
+
+def _probe_store(future: _Future, seen: dict[str, Any] | None = None) -> SimpleNamespace:
+    def async_tag_query(regex: str, max_tags: int, query: object) -> _Future:
+        if seen is not None:
+            seen["query"] = (regex, max_tags, query)
+        return future
+
+    return SimpleNamespace(
+        _HEALTH_PROBE_NAME="__probe__",
+        _client=SimpleNamespace(AsyncTagQuery=async_tag_query),
+        _cte=SimpleNamespace(PoolQuery=SimpleNamespace(Dynamic=lambda: "dynamic")),
+        _gate=SimpleNamespace(port=21045),
+        _config_path="cte.yaml",
+    )
+
+
+def _short_window(monkeypatch, seconds: float) -> None:
+    from clio_agent.arc import rpc_liveness  # noqa: PLC0415
+
+    monkeypatch.setattr(rpc_liveness, "health_probe_window_s", lambda policy=None: seconds)
+
+
+def test_post_attach_probe_against_a_stuck_daemon_expires_typed(monkeypatch):
+    """A daemon that never answers costs the bound, then a typed error; never a hang."""
+    _short_window(monkeypatch, 0.3)
+    future = _Future(code=None)
+    deregistered: list[bool] = []
+    started = time.monotonic()
+
+    with pytest.raises(ClioCoreAttachError) as info:
+        clio_core_attach.verify_post_attach(
+            _probe_store(future), on_failure=lambda: deregistered.append(True)
+        )
+
+    assert time.monotonic() - started < 5.0
+    assert info.value.stage == "post_attach_probe"
+    assert "did not answer within 0.3s" in str(info.value) and "21045" in str(info.value)
+    assert classify_init_failure(info.value) == CLIO_CORE_POST_ATTACH_PROBE_TIMEOUT
+    assert deregistered == [True]
+    assert future.waits == []  # never waited on the unfinished Future
+
+
+def test_post_attach_probe_nonzero_code_raises_typed(monkeypatch):
+    _short_window(monkeypatch, 5.0)
+    with pytest.raises(ClioCoreAttachError) as info:
+        clio_core_attach.verify_post_attach(_probe_store(_Future(code=7)), on_failure=lambda: None)
+    assert "return code 7" in str(info.value)
+
+
+def test_post_attach_probe_success_hands_the_store_out(monkeypatch):
+    _short_window(monkeypatch, 5.0)
+    seen: dict[str, Any] = {}
+    clio_core_attach.verify_post_attach(
+        _probe_store(_Future(code=0), seen), on_failure=lambda: pytest.fail("no")
+    )
+    assert seen["query"] == ("__probe__", 1, "dynamic")  # the sentinel, async, no Tag()
+
+
+def test_post_attach_window_derives_from_the_liveness_policy(monkeypatch):
+    from clio_agent.arc import rpc_liveness  # noqa: PLC0415
+
+    policy = rpc_liveness.LivenessPolicy(
+        stall_after_s=2.5, retries=1, backoff_initial_s=1.0, backoff_max_s=1.0
+    )
+    assert rpc_liveness.health_probe_window_s(policy) == 2.5
+    long = rpc_liveness.LivenessPolicy(
+        stall_after_s=300.0, retries=1, backoff_initial_s=1.0, backoff_max_s=1.0
+    )
+    assert rpc_liveness.health_probe_window_s(long) == rpc_liveness._HEALTH_PROBE_MAX_S

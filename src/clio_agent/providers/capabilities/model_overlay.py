@@ -4,8 +4,8 @@ Replaces :class:`~clio_agent.providers.capabilities.model_sources.EmptyOverlaySo
 (brief 5.1 layer 2). Three overlay ROOTS are consulted, in this fixed order
 (brief Part 8.6, "clio-coder's order"):
 
-1. **fetched** -- the compiled community catalog
    (:mod:`clio_agent.providers.model_discovery.model_overlay_catalog`), read
+   from its disk cache only (never a blocking network call from a per-model
    disk-cache/bundled-only (never a blocking network call from a per-model
    handshake lookup -- see :func:`_fetched_entries`).
 2. **user** -- ``<user config dir>/model-catalog.d/*.yaml``.
@@ -47,6 +47,10 @@ from typing import Any
 import yaml
 
 from clio_agent import paths
+from clio_agent.providers.capabilities.model_facts import (
+    parameters_from_overlay,
+    release_from_any,
+)
 from clio_agent.providers.capabilities.records import (
     DOMAINS,
     Fact,
@@ -172,14 +176,15 @@ def _entries_from_dir(directory: Path, *, root: str) -> list[OverlayEntry]:
 
 
 def _fetched_entries() -> list[OverlayEntry]:
-    """Root 1: the compiled community catalog, disk-cache/bundled only.
+    """Root 1: the compiled community catalog, disk cache only.
 
     Never performs a blocking network fetch (:func:`cached_model_overlay_entries`
     passes ``allow_fetch=False``) -- a per-model handshake lookup must not stall
-    on a synchronous HTTP call, and the packaged bundled copy already makes a
-    fresh install correct offline. A missing/corrupt catalog degrades to no
-    entries from this root (logged), never raises -- the overlay is one of
-    several model-record layers (brief 5.1), never load-bearing on its own.
+    on a synchronous HTTP call; the server fetches the catalog from raw GitHub
+    at startup. With no earlier successful fetch (the typed
+    ``catalog_unavailable_offline`` state) this root yields no entries (logged),
+    never raises -- the overlay is one of several model-record layers (brief
+    5.1), never load-bearing on its own. There is no packaged copy.
     """
 
     entries, error = cached_model_overlay_entries()
@@ -346,6 +351,37 @@ def _int_fact(capabilities: dict[str, Any], key: str, *, observed_at: str, detai
     return Fact(value=value, source="overlay", observed_at=observed_at, detail=detail)
 
 
+def _descriptive_facts(
+    capabilities: dict[str, Any], *, observed_at: str, detail: str
+) -> dict[str, Fact]:
+    """The curated ``description`` / ``released`` / ``parameters`` keys, when present.
+
+    ``parameters`` is an integer total or ``{total, active, experts,
+    expertsActive}`` (a mixture-of-experts entry); ``released`` an ISO date
+    (``2025-04-29`` or ``2025-04``). A malformed value is logged and left out.
+    """
+    facts: dict[str, Fact] = {}
+    description = capabilities.get("description")
+    if isinstance(description, str) and description.strip():
+        facts["description"] = Fact(description, "overlay", observed_at, detail)
+    for key, parse, field_name in (
+        ("released", release_from_any, "released_at"),
+        ("parameters", parameters_from_overlay, "parameters"),
+    ):
+        if key not in capabilities:
+            continue
+        value = parse(capabilities[key])
+        if value is None:
+            logger.warning(
+                "model_overlay: reason=malformed_%s value=%r %s", key, capabilities[key], detail
+            )
+            continue
+        facts[field_name] = Fact(
+            value, "overlay", observed_at, f"{detail} {key}={capabilities[key]!r}"
+        )
+    return facts
+
+
 def _first_template_kwarg(*sources: Any) -> str | None:
     for source in sources:
         if isinstance(source, dict) and source:
@@ -443,6 +479,7 @@ def entry_to_model_capabilities(
     observed_at = _observed_at(entry)
     detail = _detail_for(entry, pattern)
     capabilities = entry.capabilities
+    descriptive = _descriptive_facts(capabilities, observed_at=observed_at, detail=detail)
     return ModelCapabilities(
         model_key=model_key,
         task=_task_fact(capabilities, observed_at=observed_at, detail=detail),
@@ -461,6 +498,9 @@ def entry_to_model_capabilities(
         forbidden_params=unknown(),
         sampling_thinking=_sampling_fact(entry, "thinking", observed_at=observed_at, detail=detail),
         sampling_instruct=_sampling_fact(entry, "instruct", observed_at=observed_at, detail=detail),
+        description=descriptive.get("description", unknown()),
+        released_at=descriptive.get("released_at", unknown()),
+        parameters=descriptive.get("parameters", unknown()),
     )
 
 

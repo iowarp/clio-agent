@@ -32,13 +32,17 @@ def _load(directory: Path, name: str) -> Any:
 def test_parse_v1_row_reads_context_tools_vision_and_reasoning_options() -> None:
     row = _load(V1_FIXTURES, "api_v1_models.json")["data"][0]
 
-    model, deployment = lm_studio.parse_v1_row(row, provider_id="lm_studio", api_base="http://127.0.0.1:1234/v1")
+    model, deployment = lm_studio.parse_v1_row(
+        row, provider_id="lm_studio", api_base="http://127.0.0.1:1234/v1"
+    )
 
     assert model.context_max.value == 40960
     assert model.tools.value is True
     assert model.input_modalities.value == frozenset({"text"})
     assert deployment.context_served.value == 8192
-    assert deployment.template_caps.value == {"reasoning_allowed_options": ["low", "medium", "high"]}
+    assert deployment.template_caps.value == {
+        "reasoning_allowed_options": ["low", "medium", "high"]
+    }
     assert deployment.fingerprint == "lm_studio:model=qwen/qwen3-8b:loaded_context=8192"
 
 
@@ -51,14 +55,18 @@ def test_parse_v1_row_vision_true() -> None:
         "trained_for_tool_use": False,
     }
 
-    model, _deployment = lm_studio.parse_v1_row(row, provider_id="lm_studio", api_base="http://x/v1")
+    model, _deployment = lm_studio.parse_v1_row(
+        row, provider_id="lm_studio", api_base="http://x/v1"
+    )
 
     assert model.input_modalities.value == frozenset({"text", "image"})
     assert model.tools.value is False
 
 
 def test_parse_v1_row_missing_fields_are_unknown() -> None:
-    model, deployment = lm_studio.parse_v1_row({"id": "bare"}, provider_id="lm_studio", api_base="http://x/v1")
+    model, deployment = lm_studio.parse_v1_row(
+        {"id": "bare"}, provider_id="lm_studio", api_base="http://x/v1"
+    )
 
     assert not model.context_max.known
     assert not model.tools.known

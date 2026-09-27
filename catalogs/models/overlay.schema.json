@@ -61,6 +61,33 @@
           "uniqueItems": true,
           "items": { "enum": ["language", "vision", "speech", "biology", "chemistry", "materials", "climate", "physics", "astronomy", "geoscience", "medical"] },
           "description": "Subject domains the model is built for (clio_schemas.model_capabilities.Domain)."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What the model is, in the curator's words (served raw; markdown links become plain text plus link data at display time)."
+        },
+        "released": {
+          "type": "string",
+          "pattern": "^\\d{4}(-\\d{2}(-\\d{2})?)?$",
+          "description": "Release date at the precision it is known: YYYY-MM-DD, YYYY-MM or YYYY. Outranks every catalog; state it only with evidence."
+        },
+        "parameters": {
+          "description": "Parameter count from evidence (a model card, the safetensors index), never read off the model's name: an integer total, or an object for a mixture-of-experts model.",
+          "oneOf": [
+            { "type": "integer", "exclusiveMinimum": 0 },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "minProperties": 1,
+              "properties": {
+                "total": { "type": "integer", "exclusiveMinimum": 0 },
+                "active": { "type": "integer", "exclusiveMinimum": 0 },
+                "experts": { "type": "integer", "exclusiveMinimum": 0 },
+                "expertsActive": { "type": "integer", "exclusiveMinimum": 0 }
+              }
+            }
+          ]
         }
       }
     },

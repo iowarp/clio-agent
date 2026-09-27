@@ -42,6 +42,7 @@ from clio_agent.gact.message_wire import normalize_thought_ownership
 from clio_agent.gact.messaging import raise_on_reserved_metadata
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.protocol_v3 import project_for_request, transcript_entities
+from clio_agent.gact.question_answer_message import prepare_question_answer
 from clio_agent.gact.routes.session_a2ui_preservation import preserve_a2ui
 from clio_agent.gact.types import (
     ErrorEnvelope,
@@ -295,7 +296,9 @@ def register_messages_routes(app: FastAPI, deps: "GactDeps") -> None:
         # a worker thread BEFORE entering the synchronous acceptance path, so a
         # reference-carrying POST no longer hashes files and folds evidence
         # ledgers on the event loop.
-        ack, status_code = await accept_message_async(app, deps, sid, req)
+        # #1448: a message naming a pending question IS that question's answer.
+        answer = prepare_question_answer(app, sid, dict(req.metadata))
+        ack, status_code = await accept_message_async(app, deps, sid, req, answer=answer)
         del background_tasks
         response.status_code = status_code
         return ack

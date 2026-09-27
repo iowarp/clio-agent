@@ -28,6 +28,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from clio_agent.providers.capabilities.link import deployment_model_key_fact
+from clio_agent.providers.capabilities.model_facts import (
+    ParameterCount,
+    parameters_from_size_field,
+)
 from clio_agent.providers.capabilities.records import (
     DeploymentCapabilities,
     EndpointCapabilities,
@@ -67,6 +71,19 @@ def _v1_allowed_reasoning_options(row: Mapping[str, Any]) -> tuple[str, ...] | N
     return tuple(str(o) for o in options)
 
 
+def _v1_parameters(row: Mapping[str, Any], observed_at: str) -> Fact[ParameterCount]:
+    """``params_string`` (LM Studio's rounded display size, e.g. ``'8B'``), or unknown."""
+    total = parameters_from_size_field(row.get("params_string"))
+    if total is None:
+        return unknown()
+    return Fact(
+        ParameterCount(total=total, precision="rounded"),
+        "server_report",
+        observed_at,
+        f"lmstudio /api/v1/models params_string={row.get('params_string')!r}",
+    )
+
+
 def parse_v1_row(
     row: Mapping[str, Any],
     *,
@@ -90,7 +107,12 @@ def parse_v1_row(
     model = ModelCapabilities(
         model_key=model_key,
         context_max=(
-            Fact(max_context, "server_report", observed_at, "lmstudio /api/v1/models max_context_length")
+            Fact(
+                max_context,
+                "server_report",
+                observed_at,
+                "lmstudio /api/v1/models max_context_length",
+            )
             if max_context is not None
             else unknown()
         ),
@@ -114,6 +136,17 @@ def parse_v1_row(
             if vision is not None
             else unknown()
         ),
+        parameters=_v1_parameters(row, observed_at),
+        description=(
+            Fact(
+                row["description"],
+                "server_report",
+                observed_at,
+                "lmstudio /api/v1/models description",
+            )
+            if isinstance(row.get("description"), str) and row["description"].strip()
+            else unknown()
+        ),
     )
     deployment = DeploymentCapabilities(
         provider_id=provider_id,
@@ -121,12 +154,19 @@ def parse_v1_row(
         model_id=model_id,
         model_key=model_key_fact,
         context_served=(
-            Fact(loaded_context, "server_report", observed_at, "lmstudio /api/v1/models loaded_context_length")
+            Fact(
+                loaded_context,
+                "server_report",
+                observed_at,
+                "lmstudio /api/v1/models loaded_context_length",
+            )
             if loaded_context is not None
             else unknown()
         ),
         # brief 5.6: model key + loaded_context_length is the deployment fingerprint.
-        fingerprint=(f"lm_studio:model={model_id}:loaded_context={loaded_context}" if model_id else ""),
+        fingerprint=(
+            f"lm_studio:model={model_id}:loaded_context={loaded_context}" if model_id else ""
+        ),
     )
     if allowed_options is not None:
         deployment = _with_allowed_reasoning_options(deployment, allowed_options, observed_at)
@@ -187,12 +227,22 @@ def parse_v0_row(
     model = ModelCapabilities(
         model_key=model_key,
         context_max=(
-            Fact(context_max, "server_report", observed_at, "lmstudio /api/v0/models max_context_length")
+            Fact(
+                context_max,
+                "server_report",
+                observed_at,
+                "lmstudio /api/v0/models max_context_length",
+            )
             if context_max is not None
             else unknown()
         ),
         tools=(
-            Fact("tool_use" in caps, "server_report", observed_at, "lmstudio /api/v0/models capabilities")
+            Fact(
+                "tool_use" in caps,
+                "server_report",
+                observed_at,
+                "lmstudio /api/v0/models capabilities",
+            )
             if capabilities_known
             else unknown()
         ),
@@ -215,7 +265,10 @@ def parse_v0_row(
         model_key=model_key_fact,
         context_served=(
             Fact(
-                loaded_context, "server_report", observed_at, "lmstudio /api/v0/models loaded_context_length"
+                loaded_context,
+                "server_report",
+                observed_at,
+                "lmstudio /api/v0/models loaded_context_length",
             )
             if loaded_context is not None
             else unknown()
@@ -224,7 +277,9 @@ def parse_v0_row(
     return model, deployment
 
 
-def build_endpoint_capabilities(provider_id: str, api_base: str, model_id: str) -> EndpointCapabilities:
+def build_endpoint_capabilities(
+    provider_id: str, api_base: str, model_id: str
+) -> EndpointCapabilities:
     """Build this endpoint's :class:`EndpointCapabilities`.
 
     LM Studio reports no dedicated version string on either models endpoint at

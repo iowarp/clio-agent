@@ -1,0 +1,35 @@
+{
+  "id": "Qwen/Qwen3.6-27B",
+  "modelId": "Qwen/Qwen3.6-27B",
+  "sha": "6a9e13bd6fc8f0983b9b99948120bc37f49c13e9",
+  "createdAt": "2026-04-21T07:50:43.000Z",
+  "lastModified": "2026-04-24T02:39:16.000Z",
+  "pipeline_tag": "image-text-to-text",
+  "library_name": "transformers",
+  "tags": [
+    "transformers",
+    "safetensors",
+    "qwen3_5",
+    "image-text-to-text",
+    "conversational",
+    "license:apache-2.0",
+    "eval-results",
+    "endpoints_compatible",
+    "deploy:sagemaker",
+    "deploy:azure",
+    "region:us"
+  ],
+  "safetensors": {
+    "parameters": {
+      "BF16": 27781427952
+    },
+    "total": 27781427952
+  },
+  "config": {
+    "architectures": [
+      "Qwen3_5ForConditionalGeneration"
+    ],
+    "model_type": "qwen3_5"
+  },
+  "siblings": []
+}

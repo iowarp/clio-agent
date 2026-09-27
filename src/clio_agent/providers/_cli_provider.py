@@ -159,7 +159,21 @@ def register_custom_provider(
 
     Returns:
         ``(ensure_registered, reset_for_tests)`` closures.
+
+    Raises:
+        ValueError: ``provider`` is not listed in
+            :data:`~clio_agent.providers.custom_transports.CLIO_CUSTOM_LITELLM_PROVIDERS`,
+            the one place that says which LiteLLM keys are clio's own transports.
     """
+    from clio_agent.providers.custom_transports import (  # noqa: PLC0415
+        CLIO_CUSTOM_LITELLM_PROVIDERS,
+    )
+
+    if provider not in CLIO_CUSTOM_LITELLM_PROVIDERS:
+        raise ValueError(
+            f"custom LiteLLM provider {provider!r} is not listed in "
+            "providers/custom_transports.py CLIO_CUSTOM_LITELLM_PROVIDERS"
+        )
     state: dict[str, Any] = {"registered": False, "handler": None}
 
     def ensure_registered() -> None:

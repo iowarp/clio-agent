@@ -111,7 +111,7 @@ def test_this_ratchet_is_not_vacuous() -> None:
     assert not found, "if this ever becomes True the fixture below is stale"
 
     # Prove the detector fires on a synthetic match without touching real source.
-    fake_text = 'from mcp_types import PingRequest  # noqa\n'
+    fake_text = "from mcp_types import PingRequest  # noqa\n"
     assert any(signal in fake_text for signal in _FORBIDDEN_SIGNALS[next(iter(_FORBIDDEN_SIGNALS))])
 
 

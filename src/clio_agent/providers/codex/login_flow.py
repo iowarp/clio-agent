@@ -355,8 +355,7 @@ def start_login(*, method: str = "browser", force: bool = False) -> LoginMethods
                 return cached
         if stale is not None:
             logger.info(
-                "codex oauth: replacing the pending flow before starting a new one "
-                "reason=%s",
+                "codex oauth: replacing the pending flow before starting a new one reason=%s",
                 "forced" if force else "method_changed_or_resolved",
             )
             stale.cancel()

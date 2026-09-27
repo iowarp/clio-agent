@@ -25,7 +25,6 @@ Both fail before the keystone (app/session unbound on the rail) and pass after.
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +32,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
+from tests.turn_signals import wait_for_terminal_status
 
 from .test_post_messages import FakeClioAgent
 
@@ -82,20 +82,14 @@ def test_keystone_binds_app_and_session_on_orchestrator_rail(tmp_path: Path) -> 
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     with TestClient(app) as c:
         sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
+        cursor = app.state.bus.latest_event_id(sid)
         ack = c.post(
             f"/v1/sessions/{sid}/messages",
             json={"parts": [{"type": "text", "text": "hi"}]},
         )
         assert ack.status_code == 200, ack.text
 
-        deadline = time.monotonic() + 5.0
-        status = "running"
-        while time.monotonic() < deadline:
-            status = c.get(f"/v1/sessions/{sid}").json()["status"]
-            if status != "running":
-                break
-            time.sleep(0.05)
-        assert status != "running", "turn never settled"
+        assert wait_for_terminal_status(app.state.bus, sid, after_event_id=cursor) == "idle"
 
     # (a) the executor rail carried the live app + this turn's session.
     assert agent.captured_app is not None, (

@@ -80,10 +80,16 @@ def _rendered_after_edit(arc: ARCMemory, session: str, edit: Any) -> tuple[str, 
 
 
 def test_fold_append_propagates(fold_arc: ARCMemory, session: str) -> None:
-    _populate(fold_arc, session, ("thought", {"text": "T0"}), ("tool_call", {"name": "a", "args": {}}),
-              ("observation", {"text": "O0"}))
+    _populate(
+        fold_arc,
+        session,
+        ("thought", {"text": "T0"}),
+        ("tool_call", {"name": "a", "args": {}}),
+        ("observation", {"text": "O0"}),
+    )
     before, after = _rendered_after_edit(
-        fold_arc, session,
+        fold_arc,
+        session,
         lambda: fold_arc.append_segment(session, SCOPE, "thought", {"text": "APPENDED_X"}, step=1),
     )
     assert "APPENDED_X" not in before
@@ -93,8 +99,13 @@ def test_fold_append_propagates(fold_arc: ARCMemory, session: str) -> None:
 def test_fold_delete_propagates_absent(fold_arc: ARCMemory, session: str) -> None:
     """THE killer: a deleted segment vanishes from the next fold render (a shadow
     store would still show it)."""
-    _populate(fold_arc, session, ("thought", {"text": "KEEP_T"}), ("tool_call", {"name": "a", "args": {}}),
-              ("observation", {"text": "DELETE_ME"}))
+    _populate(
+        fold_arc,
+        session,
+        ("thought", {"text": "KEEP_T"}),
+        ("tool_call", {"name": "a", "args": {}}),
+        ("observation", {"text": "DELETE_ME"}),
+    )
     obs = [s for s in fold_arc.render_segments(session, SCOPE) if s.kind == "observation"][0]
     before, after = _rendered_after_edit(
         fold_arc, session, lambda: fold_arc.delete_segments(session, SCOPE, [obs.id])
@@ -105,12 +116,17 @@ def test_fold_delete_propagates_absent(fold_arc: ARCMemory, session: str) -> Non
 
 
 def test_fold_summarize_propagates(fold_arc: ARCMemory, session: str) -> None:
-    _populate(fold_arc, session, ("thought", {"text": "ORIGINAL_THOUGHT"}),
-              ("tool_call", {"name": "a", "args": {}}),
-              ("observation", {"text": "ORIGINAL_OBS"}))
+    _populate(
+        fold_arc,
+        session,
+        ("thought", {"text": "ORIGINAL_THOUGHT"}),
+        ("tool_call", {"name": "a", "args": {}}),
+        ("observation", {"text": "ORIGINAL_OBS"}),
+    )
     ids = [s.id for s in fold_arc.render_segments(session, SCOPE)]
     before, after = _rendered_after_edit(
-        fold_arc, session,
+        fold_arc,
+        session,
         lambda: fold_arc.summarize_segments(session, SCOPE, ids, {"text": "SUMMARY_REPLACES_ALL"}),
     )
     assert "ORIGINAL_THOUGHT" in before and "ORIGINAL_OBS" in before
@@ -133,8 +149,13 @@ def test_fold_insert_propagates_at_position(fold_arc: ARCMemory, session: str) -
 
 def test_fold_append_only_is_a_prefix(fold_arc: ARCMemory, session: str) -> None:
     """Appends extend the V2 message list; the prior messages are a byte-stable prefix."""
-    _populate(fold_arc, session, ("thought", {"text": "A0"}), ("tool_call", {"name": "t", "args": {}}),
-              ("observation", {"text": "B0"}))
+    _populate(
+        fold_arc,
+        session,
+        ("thought", {"text": "A0"}),
+        ("tool_call", {"name": "t", "args": {}}),
+        ("observation", {"text": "B0"}),
+    )
     with live_plane_context(fold_arc, session=session, scope=SCOPE):
         first = segments_to_messages(fold_arc.render_segments(session, SCOPE))
         fold_arc.append_segment(session, SCOPE, "thought", {"text": "A1"}, step=1)
@@ -148,7 +169,8 @@ def test_fold_replace_propagates(fold_arc: ARCMemory, session: str) -> None:
     _populate(fold_arc, session, ("thought", {"text": "BEFORE_REPLACE"}))
     seg = fold_arc.render_segments(session, SCOPE)[0]
     before, after = _rendered_after_edit(
-        fold_arc, session,
+        fold_arc,
+        session,
         lambda: fold_arc.replace_segment(session, SCOPE, seg.id, {"text": "AFTER_REPLACE"}),
     )
     assert "BEFORE_REPLACE" in before and "AFTER_REPLACE" not in before
@@ -159,10 +181,18 @@ def test_fold_replace_propagates(fold_arc: ARCMemory, session: str) -> None:
 
 
 _V2_STEPS = [
-    {"thought": "search first", "tool_name": "search",
-     "tool_args": {"q": "alpha"}, "observation": "SEARCH_RESULT"},
-    {"thought": "again", "tool_name": "search",
-     "tool_args": {"q": "beta"}, "observation": "SECOND_RESULT"},
+    {
+        "thought": "search first",
+        "tool_name": "search",
+        "tool_args": {"q": "alpha"},
+        "observation": "SEARCH_RESULT",
+    },
+    {
+        "thought": "again",
+        "tool_name": "search",
+        "tool_args": {"q": "beta"},
+        "observation": "SECOND_RESULT",
+    },
 ]
 
 

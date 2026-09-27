@@ -224,6 +224,17 @@ providers.claude_code.stateful_capacity: 128.0
 # next request reaps it; lower to free idle connections sooner.
 providers.claude_code.stream_idle_ttl_s: 15.0
 
+# CLIO_PROVIDER_COMPONENT_INDEX_URL  (str)  <- src/clio_agent/providers/components/pypi.py
+# PyPI JSON API base the provider SDK update check reads
+# (<index>/<distribution>/json); point at a mirror that serves the same API.
+providers.component_updates.index_url: "https://pypi.org/pypi"
+
+# CLIO_PROVIDER_COMPONENT_TTL_S  (float)  <- src/clio_agent/providers/components/pypi.py
+# Seconds one provider SDK update check (installed vs latest installable
+# release) is served before PyPI is asked again; an explicit check always
+# asks again.
+providers.component_updates.ttl_s: 3600.0
+
 # CLIO_MODEL_CATALOG_TTL_S  (float)  <- src/clio_agent/providers/model_discovery/overlay.py
 # Seconds a discovered provider model catalog is served as fresh before
 # every read marks it typed-stale (it is still served, never cleared); 0
@@ -347,9 +358,10 @@ limits.model_tool_result_chars: 12000
 limits.plan_review_chars: 256000
 
 # CLIO_SHELL_DEFAULT_OUTPUT_BYTES  (int)  <- src/clio_agent/tools/servers/shell_server.py
-# Default byte cap on shell-command stdout/stderr when the caller specifies
-# none; raise for commands with verbose output.
-limits.shell_default_output_bytes: 16384
+# Per-stream bytes of shell stdout/stderr returned inline when the caller
+# specifies none; larger output is spilled in full to .clio/tool-output/ and
+# excerpted. Sized so the result fits limits.tool_result_chars (#887).
+limits.shell_default_output_bytes: 8192
 
 # CLIO_SHELL_DEFAULT_TIMEOUT_S  (float)  <- src/clio_agent/tools/servers/shell_server.py
 # Seconds a shell command may run when the caller passes no timeout; 0
@@ -358,13 +370,14 @@ limits.shell_default_output_bytes: 16384
 limits.shell_default_timeout_s: 0.0
 
 # CLIO_SHELL_MAX_COMMAND_CHARS  (int)  <- src/clio_agent/tools/servers/shell_server.py
-# Max character length of a shell command string the tool accepts; raise for
-# scripts that assemble long commands.
-limits.shell_max_command_chars: 4000
+# Max character length of a shell command string the tool accepts; stays
+# under the Windows 32,767-char command line. Longer scripts: write a file,
+# then run it.
+limits.shell_max_command_chars: 16000
 
 # CLIO_SHELL_MAX_OUTPUT_BYTES  (int)  <- src/clio_agent/tools/servers/shell_server.py
-# Hard ceiling in bytes on shell-command output the tool will ever return,
-# regardless of a caller cap; raise for large output.
+# Ceiling on the per-stream inline bytes a caller may request; output past
+# the result budget is spilled in full to .clio/tool-output/, never dropped.
 limits.shell_max_output_bytes: 131072
 
 # CLIO_SHELL_MAX_TIMEOUT_S  (float)  <- src/clio_agent/tools/servers/shell_server.py
@@ -373,7 +386,7 @@ limits.shell_max_output_bytes: 131072
 # ceiling.
 limits.shell_max_timeout_s: 0.0
 
-# CLIO_TOOL_RESULT_CHARS  (int)  <- src/clio_agent/gact/evidence.py
+# CLIO_TOOL_RESULT_CHARS  (int)  <- src/clio_agent/tools/mcp_result_projection.py
 # Character bound on the transcript/evidence-metadata preview of a tool
 # result; raise to keep more result text visible in the transcript.
 limits.tool_result_chars: 12000
@@ -484,16 +497,11 @@ a2ui.max_string_chars: 16384
 # compaction; lower to compact earlier, raise to accumulate more.
 autocompact.pct: "0.85"
 
-# CLIO_ASK_USER_MAX_TTL_S  (int)  <- src/clio_agent/gact/ask_user_tool.py
-# Hard ceiling in seconds on an `ask_user` response window; a longer window
-# requested by the model is clamped to this. Lower it to bound how long a
-# question can hold a session.
-gact.ask_user.max_ttl_s: 86400
-
-# CLIO_ASK_USER_TTL_S  (int)  <- src/clio_agent/gact/ask_user_tool.py
-# Default `ask_user` response window in seconds, used when the model does
-# not request an explicit one; raise it for slow human reviewers.
-gact.ask_user.ttl_s: 600
+# CLIO_GACT_ALLOWED_HOSTS  (str)  <- src/clio_agent/gact/cors.py
+# Comma-separated host names (no ports) a request without a bearer token may
+# address, besides localhost/127.0.0.1/[::1]; set for a LAN or container
+# deployment reached by another name.
+# gact.allowed_hosts:  # default unset; resolved in code
 
 # CLIO_GACT_BEARER_TOKEN  (str)  <- src/clio_agent/gact/auth.py
 # Optional bearer token required on non-loopback GACT API requests; set to
@@ -1476,7 +1484,7 @@ provenance.agentic.flowcept.workflow_scope: "session"
 # add "flowcept" for external tooling, or clear to disable.
 provenance.agentic.providers: ["jsonl"]
 
-# CLIO_PROVENANCE_QUERY_DEFAULT  (str)  <- src/clio_agent/gact/routes/provenance.py
+# CLIO_PROVENANCE_QUERY_DEFAULT  (str)  <- src/clio_agent/gact/provenance/handoff.py
 # Which provenance provider name /v1/provenance queries answer from by
 # default ("native"); change to make Flowcept the default source.
 provenance.agentic.query_default: "native"

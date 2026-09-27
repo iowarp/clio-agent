@@ -26,6 +26,7 @@ tests default to ``CLIO_ARC_STORE=local`` anyway.
 
 from __future__ import annotations
 
+import os
 import random
 import re
 import shutil
@@ -51,11 +52,28 @@ _PRIVATE_ROOT_NAME = re.compile(r"clio-agent-cte-[0-9]+-[A-Za-z0-9_-]+\Z")
 # (reproduced with and without also binding the client via ``CLIO_CTE_POOL``), which
 # would break every cte-backed test, not just search. See
 # ``clio_agent.arc.clio_core_config``'s INDEXER CHIMOD note.
+
+# Shared-memory budget of ONE private daemon (#1478 follow-up). clio-core backs its
+# runtime segments and the ram bdev with pagefile-committed shared memory. At the
+# binary's defaults one daemon plus its client committed ~3.8 GB, so two suite workers
+# next to the owner's desktop daemon and another agent's suite ran this machine out of
+# commit (63.9 GB limit, ~49 GB in use at rest): the daemon died at start with
+# "shm_open failed" or the client with "MemoryError: bad allocation", and the cte legs
+# ran on local files. These sizes cut that to ~1.7 GB and are ample for the suite's
+# working sets (the file tier holds the data; the offload-spill leg runs its own daemon).
+PRIVATE_MAIN_SEGMENT = "256MB"
+PRIVATE_METADATA_SEGMENT = "32MB"
+PRIVATE_QUEUE_DEPTH = 256
+PRIVATE_RAM_BDEV = "64MB"
+
 _PRIVATE_CONFIG_TEMPLATE = """\
 networking:
   port: {port}
 runtime:
   num_threads: 2
+  queue_depth: {queue_depth}
+  main_segment_size: "{main_segment}"
+  metadata_segment_size: "{metadata_segment}"
   conf_dir: "{conf_dir}"
 compose:
   - mod_name: clio_bdev
@@ -63,7 +81,7 @@ compose:
     pool_query: local
     pool_id: "301.0"
     bdev_type: ram
-    capacity: "512MB"
+    capacity: "{ram_bdev}"
   - mod_name: clio_cte_core
     pool_name: cte_main
     pool_query: local
@@ -110,15 +128,46 @@ def cte_isolation_available() -> bool:
     return storage._runtime_launcher_path(iowarp_core) is not None
 
 
-def reserve_port_block(block: int = 5) -> int:
+# Private daemon ports: below every OS ephemeral range (Linux starts at 32768, Windows
+# at 49152). The old 20000-40000 window reached into Linux's, so an outgoing connection
+# could take a port of a reserved block before the daemon bound it.
+_PORT_FLOOR = 20000
+_PORT_CEILING = 32000
+# Each xdist worker draws from its own slice, so two workers' daemons can never be
+# handed overlapping blocks: the free-port check below is only a snapshot, and nothing
+# holds a block between the check and the daemon's bind (seen on CI: a worker's daemon
+# died with "Address already in use" and that worker's first test hung in the attach).
+_WORKER_SLICES = 16
+
+
+def _worker_slice(environ: MutableMapping[str, str]) -> tuple[int, int]:
+    """``[low, high)`` port range for this process (the whole window outside xdist)."""
+    worker = environ.get("PYTEST_XDIST_WORKER", "")
+    if not worker.startswith("gw") or not worker[2:].isdigit():
+        return _PORT_FLOOR, _PORT_CEILING
+    width = (_PORT_CEILING - _PORT_FLOOR) // _WORKER_SLICES
+    low = _PORT_FLOOR + (int(worker[2:]) % _WORKER_SLICES) * width
+    return low, low + width
+
+
+def reserve_port_block(block: int = 5, environ: MutableMapping[str, str] | None = None) -> int:
     """Return a base port with ``block`` consecutive free ports, below the ephemeral range.
 
-    clio-core binds a CONTIGUOUS cluster of ports around ``networking.port``; a base in
-    the ephemeral range risks base+N colliding with a transient connection, half-binding
-    the daemon. Same approach as the offload-spill test.
+    clio-core binds a CONTIGUOUS cluster of ports around ``networking.port``; a block
+    that another process takes part of half-binds the daemon, or kills it at startup.
+    The block comes from this xdist worker's own slice of a window below every OS
+    ephemeral range, and is verified free as a whole.
+
+    Args:
+        block: Number of consecutive ports that must be free.
+        environ: Where to read ``PYTEST_XDIST_WORKER`` (``os.environ`` by default).
+
+    Returns:
+        The base port of a verified-free contiguous block.
     """
+    low, high = _worker_slice(os.environ if environ is None else environ)
     for _ in range(400):
-        base = random.randint(20000, 40000)  # noqa: S311 - port pick, not crypto
+        base = random.randrange(low, high - block)  # noqa: S311 - port pick, not crypto
         socks: list[socket.socket] = []
         ok = True
         for off in range(block):
@@ -176,6 +225,10 @@ def isolate_cte_env(root: Path, environ: MutableMapping[str, str]) -> CteIsolati
             file_tier=(store_dir / "storage.bin").as_posix(),
             metadata_log=(store_dir / "metadata.log").as_posix(),
             file_tier_capacity=file_tier_capacity,
+            queue_depth=PRIVATE_QUEUE_DEPTH,
+            main_segment=PRIVATE_MAIN_SEGMENT,
+            metadata_segment=PRIVATE_METADATA_SEGMENT,
+            ram_bdev=PRIVATE_RAM_BDEV,
         ),
         encoding="utf-8",
     )
@@ -267,6 +320,75 @@ def eagerly_attach_private_daemon() -> bool:
     return isinstance(store, ClioCoreStore)
 
 
+def _commit_charge_line() -> str:
+    """This machine's commit charge (Windows), the resource a daemon start exhausts."""
+
+    if os.name != "nt":
+        return ""
+    import ctypes  # noqa: PLC0415
+    from ctypes import wintypes  # noqa: PLC0415
+
+    class _MemoryStatus(ctypes.Structure):
+        _fields_ = [  # noqa: RUF012 - ctypes layout
+            ("dwLength", wintypes.DWORD),
+            ("dwMemoryLoad", wintypes.DWORD),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
+
+    status = _MemoryStatus()
+    status.dwLength = ctypes.sizeof(_MemoryStatus)
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        return "commit charge: unavailable (GlobalMemoryStatusEx failed)"
+    limit = status.ullTotalPageFile / 2**30
+    used = (status.ullTotalPageFile - status.ullAvailPageFile) / 2**30
+    return f"commit charge: {used:.1f} of {limit:.1f} GB in use"
+
+
+def private_daemon_failure_report(isolation: CteIsolation) -> str:
+    """Everything needed to act on a private daemon that did not come up.
+
+    Args:
+        isolation: The session's private-daemon environment.
+
+    Returns:
+        The typed degrade record, the daemon's crash record and log tail, and (on
+        Windows) the commit charge, whose exhaustion is the failure seen on this box.
+    """
+    from clio_agent.arc.init_degradation import arc_init_degradation_snapshot  # noqa: PLC0415
+    from clio_agent.arc.runtime_crash import read_crash_record, summarize_crash  # noqa: PLC0415
+
+    lines = [
+        "the suite's private clio-core daemon did not come up; the cte legs would "
+        "otherwise run on local files, so this run fails instead.",
+        f"degrade record: {arc_init_degradation_snapshot()!r}",
+        f"port {isolation.port}, state dir {isolation.state_dir}",
+    ]
+    crash = read_crash_record(isolation.state_dir)
+    if crash is not None:
+        lines.append(f"crash: {summarize_crash(crash)}")
+    try:
+        log = (isolation.state_dir / "clio-runtime.log").read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except OSError:
+        log = ""
+    if log.strip():
+        lines.append("daemon log tail:\n" + "\n".join(log.splitlines()[-8:]))
+    commit = _commit_charge_line()
+    if commit:
+        lines.append(
+            commit + " (a daemon start that fails with 'shm_open failed' or "
+            "'bad allocation' has run out of commit)"
+        )
+    return "\n".join(lines)
+
+
 def reap_private_daemon(state_dir: Path) -> None:
     """Force-reap the private daemon via its pidfile (belt-and-suspenders, best-effort).
 
@@ -298,3 +420,45 @@ def reap_private_daemon(state_dir: Path) -> None:
             proc.kill()
     except Exception:  # noqa: BLE001,S110 - already gone / psutil missing: best-effort kill
         pass
+
+
+def reap_stale_suite_runtimes(parent: Path) -> None:
+    """Reap the private daemons of dead suite runs under ``parent``, then their run roots.
+
+    A run is stale when the pid recorded in its root is gone (a finished or killed
+    suite, or an xdist worker the hang guard ended before its teardown).
+    """
+    from tests._test_runtime_isolation import (  # noqa: PLC0415
+        cleanup_test_runtime,
+        stale_test_runtimes,
+    )
+
+    for stale in stale_test_runtimes(parent):
+        for state_dir in stale.glob("cte/*/clio-state"):
+            reap_private_daemon(state_dir)
+        cleanup_test_runtime(stale, parent)
+
+
+def private_daemon_identity(state_dir: Path) -> tuple[int, float] | None:
+    """``(pid, create_time)`` of the private daemon recorded in ``state_dir``, if running.
+
+    Reads the pidfile by its fixed path and asks psutil directly, never through
+    ``clio_agent.arc.storage`` helpers: tests monkeypatch those (``_daemon_pidfile``,
+    ``_pid_alive``) and their patches can still be active when this runs at teardown.
+    """
+    try:
+        fd = os.open(state_dir / "clio-runtime.pid", os.O_RDONLY)
+        try:
+            pid = int(os.read(fd, 256).split()[0])
+        finally:
+            os.close(fd)
+    except (OSError, IndexError, ValueError):
+        return None
+    try:
+        import psutil  # noqa: PLC0415
+
+        return pid, psutil.Process(pid).create_time()
+    except ImportError:
+        return None
+    except Exception:  # noqa: BLE001 - NoSuchProcess / AccessDenied / ZombieProcess
+        return None

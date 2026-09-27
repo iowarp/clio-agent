@@ -55,6 +55,7 @@ from clio_agent.gact.app import (
 )
 from clio_agent.gact.runtime.globals import _UnsupportedSessionAgent
 from clio_agent.gact.types import AgentDef
+from tests._marketplace import MARKETPLACE_ROOT
 from tests.test_gact.conftest import complete_turn
 from tests.test_gact.earthscope_schema import EARTHSCOPE_WORKFLOW_STATE_SCHEMA
 
@@ -1612,6 +1613,7 @@ def test_recording_blueprint_tool_classifies_oversized_structured_failure_before
     assert '"status": "failed"' not in rows[0]["result"]["preview"]
 
 
+@pytest.mark.marketplace
 @pytest.mark.parametrize(
     "blueprint_id",
     [
@@ -1621,14 +1623,7 @@ def test_recording_blueprint_tool_classifies_oversized_structured_failure_before
 def test_earthscope_station_catalog_prompt_keeps_resolver_acquisition_boundary(
     blueprint_id: str,
 ) -> None:
-    prompt_path = (
-        Path(__file__).resolve().parents[2]
-        / "external"
-        / "clio-agent-marketplace"
-        / blueprint_id
-        / "experts"
-        / "earthscope_station_catalog.md"
-    )
+    prompt_path = MARKETPLACE_ROOT / blueprint_id / "experts" / "earthscope_station_catalog.md"
     prompt = prompt_path.read_text(encoding="utf-8")
     tool_block = prompt.split("---", 2)[1]
 
@@ -1647,6 +1642,7 @@ def test_earthscope_station_catalog_prompt_keeps_resolver_acquisition_boundary(
     assert "resource_discovery.station_resource_queries" in prompt
 
 
+@pytest.mark.marketplace
 @pytest.mark.parametrize(
     "blueprint_id",
     [
@@ -1656,14 +1652,7 @@ def test_earthscope_station_catalog_prompt_keeps_resolver_acquisition_boundary(
 def test_earthscope_analysis_prompt_forbids_rows_scanned_cadence_inference(
     blueprint_id: str,
 ) -> None:
-    prompt_path = (
-        Path(__file__).resolve().parents[2]
-        / "external"
-        / "clio-agent-marketplace"
-        / blueprint_id
-        / "experts"
-        / "gnss_timeseries_analysis.md"
-    )
+    prompt_path = MARKETPLACE_ROOT / blueprint_id / "experts" / "gnss_timeseries_analysis.md"
     prompt = prompt_path.read_text(encoding="utf-8")
     normalized_prompt = " ".join(prompt.split())
 
@@ -1682,6 +1671,7 @@ def test_earthscope_analysis_prompt_forbids_rows_scanned_cadence_inference(
     assert "file-wide `Hz`, days-long duration, or sampling-rate claim" in normalized_prompt
 
 
+@pytest.mark.marketplace
 @pytest.mark.parametrize(
     "blueprint_id",
     [
@@ -1691,14 +1681,7 @@ def test_earthscope_analysis_prompt_forbids_rows_scanned_cadence_inference(
 def test_earthscope_station_network_prompt_preserves_uncertainty_units(
     blueprint_id: str,
 ) -> None:
-    prompt_path = (
-        Path(__file__).resolve().parents[2]
-        / "external"
-        / "clio-agent-marketplace"
-        / blueprint_id
-        / "experts"
-        / "station_network_analysis.md"
-    )
+    prompt_path = MARKETPLACE_ROOT / blueprint_id / "experts" / "station_network_analysis.md"
     prompt = prompt_path.read_text(encoding="utf-8")
 
     assert "Values such as `0.033 m` are centimeter-scale" in prompt
@@ -1707,6 +1690,7 @@ def test_earthscope_station_network_prompt_preserves_uncertainty_units(
     assert "If the evidence is scan-limited" in prompt
 
 
+@pytest.mark.marketplace
 @pytest.mark.parametrize(
     "blueprint_id",
     [
@@ -1716,14 +1700,7 @@ def test_earthscope_station_network_prompt_preserves_uncertainty_units(
 def test_earthscope_station_network_prompt_forbids_scan_limited_record_claims(
     blueprint_id: str,
 ) -> None:
-    prompt_path = (
-        Path(__file__).resolve().parents[2]
-        / "external"
-        / "clio-agent-marketplace"
-        / blueprint_id
-        / "experts"
-        / "station_network_analysis.md"
-    )
+    prompt_path = MARKETPLACE_ROOT / blueprint_id / "experts" / "station_network_analysis.md"
     prompt = prompt_path.read_text(encoding="utf-8")
     normalized_prompt = " ".join(prompt.split())
 
@@ -1739,6 +1716,7 @@ def test_earthscope_station_network_prompt_forbids_scan_limited_record_claims(
     assert "`missing_values_scope=profiled_rows`" in prompt
 
 
+@pytest.mark.marketplace
 @pytest.mark.parametrize(
     "blueprint_id",
     [
@@ -1748,14 +1726,7 @@ def test_earthscope_station_network_prompt_forbids_scan_limited_record_claims(
 def test_earthscope_analysis_prompt_filters_child_scan_limited_record_claims(
     blueprint_id: str,
 ) -> None:
-    prompt_path = (
-        Path(__file__).resolve().parents[2]
-        / "external"
-        / "clio-agent-marketplace"
-        / blueprint_id
-        / "experts"
-        / "analysis.md"
-    )
+    prompt_path = MARKETPLACE_ROOT / blueprint_id / "experts" / "analysis.md"
     prompt = prompt_path.read_text(encoding="utf-8")
     normalized_prompt = " ".join(prompt.split())
 
@@ -1774,6 +1745,7 @@ def test_earthscope_analysis_prompt_filters_child_scan_limited_record_claims(
     assert "Numeric uncertainty means alone are descriptive statistics" in prompt
 
 
+@pytest.mark.marketplace
 @pytest.mark.parametrize(
     "blueprint_id",
     [
@@ -1783,14 +1755,7 @@ def test_earthscope_analysis_prompt_filters_child_scan_limited_record_claims(
 def test_earthscope_analysis_keeps_event_context_optional(
     blueprint_id: str,
 ) -> None:
-    prompt_path = (
-        Path(__file__).resolve().parents[2]
-        / "external"
-        / "clio-agent-marketplace"
-        / blueprint_id
-        / "experts"
-        / "analysis.md"
-    )
+    prompt_path = MARKETPLACE_ROOT / blueprint_id / "experts" / "analysis.md"
     prompt = prompt_path.read_text(encoding="utf-8")
     normalized_prompt = " ".join(prompt.split())
 
@@ -1802,6 +1767,7 @@ def test_earthscope_analysis_keeps_event_context_optional(
     assert "do not report event-catalog limitations as a mandatory result" in normalized_prompt
 
 
+@pytest.mark.marketplace
 @pytest.mark.parametrize(
     "blueprint_id",
     [
@@ -1811,14 +1777,7 @@ def test_earthscope_analysis_keeps_event_context_optional(
 def test_earthscope_event_catalog_prompt_returns_typed_blocker_not_no_events(
     blueprint_id: str,
 ) -> None:
-    prompt_path = (
-        Path(__file__).resolve().parents[2]
-        / "external"
-        / "clio-agent-marketplace"
-        / blueprint_id
-        / "experts"
-        / "seismic_event_catalog.md"
-    )
+    prompt_path = MARKETPLACE_ROOT / blueprint_id / "experts" / "seismic_event_catalog.md"
     prompt = prompt_path.read_text(encoding="utf-8")
     normalized_prompt = " ".join(prompt.split())
 
@@ -1835,6 +1794,7 @@ def test_earthscope_event_catalog_prompt_returns_typed_blocker_not_no_events(
     assert '"no_live_event_catalog_tool"' in prompt
 
 
+@pytest.mark.marketplace
 @pytest.mark.parametrize(
     "blueprint_id",
     [
@@ -1844,14 +1804,7 @@ def test_earthscope_event_catalog_prompt_returns_typed_blocker_not_no_events(
 def test_earthscope_geospatial_prompt_does_not_invent_named_source_provenance(
     blueprint_id: str,
 ) -> None:
-    prompt_path = (
-        Path(__file__).resolve().parents[2]
-        / "external"
-        / "clio-agent-marketplace"
-        / blueprint_id
-        / "experts"
-        / "geospatial.md"
-    )
+    prompt_path = MARKETPLACE_ROOT / blueprint_id / "experts" / "geospatial.md"
     prompt = prompt_path.read_text(encoding="utf-8")
     normalized_prompt = " ".join(prompt.split())
 
@@ -1866,6 +1819,7 @@ def test_earthscope_geospatial_prompt_does_not_invent_named_source_provenance(
     assert "do NOT invent coordinates" in normalized_prompt
 
 
+@pytest.mark.marketplace
 @pytest.mark.parametrize(
     "blueprint_id",
     [
@@ -1875,14 +1829,7 @@ def test_earthscope_geospatial_prompt_does_not_invent_named_source_provenance(
 def test_earthscope_resolver_prompt_uses_typed_station_resource_frontier(
     blueprint_id: str,
 ) -> None:
-    prompt_path = (
-        Path(__file__).resolve().parents[2]
-        / "external"
-        / "clio-agent-marketplace"
-        / blueprint_id
-        / "experts"
-        / "ndp_resource_resolver.md"
-    )
+    prompt_path = MARKETPLACE_ROOT / blueprint_id / "experts" / "ndp_resource_resolver.md"
     prompt = prompt_path.read_text(encoding="utf-8")
     normalized_prompt = " ".join(prompt.split())
 
@@ -1898,6 +1845,7 @@ def test_earthscope_resolver_prompt_uses_typed_station_resource_frontier(
     assert "the region has no EarthScope GNSS coverage" in normalized_prompt
 
 
+@pytest.mark.marketplace
 @pytest.mark.parametrize(
     "blueprint_id",
     [
@@ -1907,7 +1855,7 @@ def test_earthscope_resolver_prompt_uses_typed_station_resource_frontier(
 def test_earthscope_data_prompt_requires_staged_metadata_before_station_filter(
     blueprint_id: str,
 ) -> None:
-    root = Path(__file__).resolve().parents[2] / "external" / "clio-agent-marketplace"
+    root = MARKETPLACE_ROOT
     data_prompt = (root / blueprint_id / "experts" / "data.md").read_text(encoding="utf-8")
     discovery_prompt = (root / blueprint_id / "experts" / "ndp_dataset_discovery.md").read_text(
         encoding="utf-8"
@@ -1943,6 +1891,7 @@ def test_earthscope_data_prompt_requires_staged_metadata_before_station_filter(
     )
 
 
+@pytest.mark.marketplace
 @pytest.mark.parametrize(
     "blueprint_id",
     [
@@ -1952,7 +1901,7 @@ def test_earthscope_data_prompt_requires_staged_metadata_before_station_filter(
 def test_earthscope_final_prompts_guard_scan_limited_profile_scope(
     blueprint_id: str,
 ) -> None:
-    root = Path(__file__).resolve().parents[2] / "external" / "clio-agent-marketplace"
+    root = MARKETPLACE_ROOT
     # #948 S4: the react main now writes the final answer itself (no synthesis child),
     # so the answer-quality scan-limited guardrails moved into main.md.
     main_prompt = (root / blueprint_id / "experts" / "main.md").read_text(encoding="utf-8")

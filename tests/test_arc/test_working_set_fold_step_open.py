@@ -63,7 +63,12 @@ def test_crash_leaves_step_open(monkeypatch: pytest.MonkeyPatch) -> None:
     react_cls = runtime._retaining_react_cls()
     agent = react_cls("question -> answer", tools=[dspy.Tool(lambda: "ok", name="probe")])
     lm = DummyLM(
-        [{"next_thought": "call probe", "tool_calls": {"tool_calls": [{"name": "probe", "args": {}}]}}]
+        [
+            {
+                "next_thought": "call probe",
+                "tool_calls": {"tool_calls": [{"name": "probe", "args": {}}]},
+            }
+        ]
     )
 
     # A HARD mid-step failure: tool execution raises uncaught (past the step_open write,

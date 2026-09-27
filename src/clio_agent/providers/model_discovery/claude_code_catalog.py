@@ -30,13 +30,12 @@ from typing import Any
 from clio_agent.providers.fetched_catalog import (
     FetchedCatalog,
     FetchedCatalogUnavailable,
+    clio_catalog_url,
 )
 from clio_agent.providers.model_discovery.modality_evidence import modality_evidence
 from clio_agent.providers.thinking_levels import THINKING_LEVELS
 
-CLAUDE_CODE_CATALOG_URL = (
-    "https://raw.githubusercontent.com/iowarp/clio-agent/develop/catalogs/claude-code-models.json"
-)
+CLAUDE_CODE_CATALOG_URL = clio_catalog_url("claude-code-models.json")
 _MODEL_ID = re.compile(r"^claude-[a-z0-9]+(?:-[a-z0-9]+)*$")
 #: The only input modalities the catalog document may declare.
 _KNOWN_CAPABILITIES = frozenset({"text", "image", "pdf"})

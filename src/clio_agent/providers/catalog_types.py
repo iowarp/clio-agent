@@ -29,20 +29,6 @@ class ProviderConfigurationField:
 
 
 @dataclass(frozen=True)
-class ModelEntry:
-    """One row in a provider's static model catalog.
-
-    Used as the fallback when live discovery against the upstream
-    ``/v1/models`` endpoint fails or isn't supported.
-    """
-
-    id: str
-    name: str
-    description: str = ""
-    documented_modalities: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
 class Provider:
     """One LM provider preset.
 
@@ -82,7 +68,6 @@ class Provider:
     supports_runtime_sizing: bool = False
     managed_service_id: str = ""
     is_kind_default: bool = False
-    model_catalog: tuple[ModelEntry, ...] = ()
     #: Who drives the tool/reasoning loop for this provider. ``"clio"`` (the
     #: default, and true for every direct provider): CLIO's own DSPy ReAct
     #: loop owns iteration end-to-end. A provider whose own SDK/CLI could run

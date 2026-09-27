@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 
+from clio_agent.platform_paths import atomic_write_text
 from clio_agent.runtime import trace
 
 __all__ = ["AtomicJsonFileStore"]
@@ -76,13 +77,8 @@ class AtomicJsonFileStore:
         never a silent failure.
         """
 
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._path.with_suffix(self._path.suffix + ".tmp")
         payload = json.dumps({"schema": self._schema, "entries": entries}, indent=1)
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(payload)
-        os.replace(tmp, self._path)
+        atomic_write_text(self._path, payload, file_mode=0o600)
         try:
             os.chmod(self._path, 0o600)
         except OSError as exc:

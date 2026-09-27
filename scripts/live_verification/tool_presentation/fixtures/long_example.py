@@ -41,4 +41,3 @@ SAMPLE_VALUES = [
 if __name__ == "__main__":
     for row in labeled_rows(SAMPLE_VALUES):
         print(f"{row['label']}: {row['value']:.3f}")
-

@@ -230,13 +230,13 @@ def _resolve_model_name(config: LMProviderConfig) -> str:
     - everything else (lm_studio, argonne, vllm, …): treated as
       OpenAI-compatible by litellm, so we prefix with ``openai/``.
 
-    Generic OpenAI-compatible endpoints receive one LiteLLM ``openai/``
-    provider prefix. Argonne's Sophia gateway is a special case: some
-    served model ids themselves start with ``openai/`` (for example
-    ``openai/gpt-oss-120b``), and LiteLLM strips the first segment as
-    the provider name. Sending ``openai/openai/gpt-oss-120b`` is how we
-    preserve the actual Sophia model id on the wire. Metis does not need
-    that double prefix.
+    ``config.model`` is always the provider's OWN model id (discovery takes
+    it verbatim from the endpoint's ``/models``), and LiteLLM strips exactly
+    one leading segment as its provider name. So the catalog prefix is
+    always prepended and the id is never trimmed: a provider id that itself
+    begins with the prefix (OpenRouter's ``openrouter/free`` router, a served
+    ``openai/gpt-oss-120b``) must reach the wire intact. Trimming it sent
+    ``"model": "free"`` to OpenRouter, which 404s every turn.
     """
     if not config.model.strip():
         raise ValueError(
@@ -260,9 +260,7 @@ def _resolve_model_name(config: LMProviderConfig) -> str:
     if config.provider == "claude_code":
         bare = config.model.removeprefix("claude_code/").removeprefix("cc-")
         return f"claude_code/cc-{bare}"
-    prefix = _resolved_litellm_prefix(config)
-    bare = config.model.removeprefix(f"{prefix}/")
-    return f"{prefix}/{bare}"
+    return f"{_resolved_litellm_prefix(config)}/{config.model}"
 
 
 def _is_argonne_sophia(config: LMProviderConfig) -> bool:

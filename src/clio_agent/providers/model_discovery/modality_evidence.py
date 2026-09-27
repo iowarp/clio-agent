@@ -20,7 +20,7 @@ wire rather than being lost at the discovery boundary.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 #: Where a modality claim came from. A source is not evidence on its own — it
@@ -28,9 +28,16 @@ from typing import Any
 MODALITY_SOURCES: dict[str, str] = {
     "codex_sdk_input_modalities": ("the Codex Python SDK's model row (``Model.input_modalities``)"),
     "claude_code_catalog": "CLIO's maintained Claude Code model catalog document",
-    "codex_catalog": "CLIO's maintained Codex model catalog document",
-    "provider_documentation": (
-        "the provider's published model capability documentation and CLIO's native transport"
+    "codex_direct_model_list": (
+        "the Codex backend's live account model list (``GET /backend-api/codex/models``, "
+        "``ModelInfo.input_modalities``)"
+    ),
+    "codex_direct_input_file": (
+        "the Codex Direct transport's Responses ``input_file`` delivery: the backend "
+        "accepts a base64 PDF ``input_file`` part and the model reads it (verified live "
+        "2026-09-26 against gpt-6-sol and gpt-5.5 with a canary PDF; a control turn "
+        "without the file could not answer). The live model list reports no PDF "
+        "modality, so this transport fact is added beside what the list reports"
     ),
 }
 
@@ -39,10 +46,6 @@ MODALITY_EVIDENCE_REASONS: dict[str, str] = {
     "modality_reported": (
         "the provider reported this model's input modalities explicitly; the recorded "
         "capabilities are exactly what it said"
-    ),
-    "modality_documented": (
-        "the provider documents this model family as accepting the recorded input modalities, "
-        "and CLIO's native provider transport supports those input blocks"
     ),
     "modality_unreported": (
         "the provider omitted input modalities for this model. The SDK's schema default "
@@ -70,6 +73,7 @@ def modality_evidence(
     reason: str,
     unevidenced: Sequence[str] = (),
     detail: str = "",
+    added: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build one typed ``capability_evidence`` record for a discovered model row.
 
@@ -79,6 +83,10 @@ def modality_evidence(
         unevidenced: Modalities this row could NOT evidence (recorded so a
             consumer can tell "the provider says no" from "nobody asked").
         detail: Optional free text (a probe reply excerpt, an error string).
+        added: Modalities recorded BESIDE what ``source`` reported, each mapped
+            to the :data:`MODALITY_SOURCES` key that evidences it (e.g. a
+            transport's verified PDF delivery on top of a model list that does
+            not report PDFs). Each one names its own provenance.
 
     Returns:
         The evidence record persisted onto the overlay row and surfaced on the
@@ -89,8 +97,9 @@ def modality_evidence(
             the same reject-unknowns discipline the stream_fallback catalog uses.
     """
 
-    if source not in MODALITY_SOURCES:
-        raise UnknownModalityReasonError(f"Unknown modality evidence source: {source}")
+    for key in (source, *(added or {}).values()):
+        if key not in MODALITY_SOURCES:
+            raise UnknownModalityReasonError(f"Unknown modality evidence source: {key}")
     if reason not in MODALITY_EVIDENCE_REASONS:
         raise UnknownModalityReasonError(f"Unknown modality evidence reason: {reason}")
     record: dict[str, Any] = {
@@ -105,6 +114,11 @@ def modality_evidence(
         )
     if detail:
         record["detail"] = detail
+    if added:
+        record["added"] = {
+            modality: {"source": key, "source_description": MODALITY_SOURCES[key]}
+            for modality, key in sorted(added.items())
+        }
     return record
 
 

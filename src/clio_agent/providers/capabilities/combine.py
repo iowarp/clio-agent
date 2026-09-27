@@ -19,6 +19,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
+from clio_agent.providers.capabilities.model_facts import (
+    ParameterCount,
+    ReleaseDate,
+    TokenPricing,
+)
 from clio_agent.providers.capabilities.records import (
     DeploymentCapabilities,
     EndpointCapabilities,
@@ -132,6 +137,12 @@ class ThinkingDecision:
     def known(self) -> bool:
         return self.spec is not None
 
+    @property
+    def reasoning(self) -> bool:
+        """Whether the model thinks at all: a known spec of mechanism ``none`` does not."""
+
+        return self.spec is not None and self.spec.mechanism != "none"
+
 
 @dataclass(frozen=True)
 class EffectiveCapabilities:
@@ -168,11 +179,24 @@ class EffectiveCapabilities:
     #: Endpoint pricing / cost / routing facts -- deployment-record facts only
     #: (what THIS endpoint charges and whether this id is a router), never a
     #: property of the weights.
-    pricing: Decision[dict[str, str]] = field(
-        default_factory=lambda: _unknown("no pricing reported")
-    )
+    pricing: Decision[TokenPricing] = field(default_factory=lambda: _unknown("no pricing reported"))
     free: Decision[bool] = field(default_factory=lambda: _unknown("no pricing reported"))
     router: Decision[bool] = field(default_factory=lambda: _unknown("no router evidence"))
+    #: Descriptive model-record facts (:mod:`.model_facts`), passed through.
+    description: Decision[str] = field(
+        default_factory=lambda: _unknown("no source states a description")
+    )
+    released_at: Decision[ReleaseDate] = field(
+        default_factory=lambda: _unknown("no source states a release date")
+    )
+    parameters: Decision[ParameterCount] = field(
+        default_factory=lambda: _unknown("no source states a parameter count")
+    )
+    #: A community catalog's list price for the weights (a model-record fact),
+    #: shown beside -- never instead of -- what this endpoint charges.
+    catalog_pricing: Decision[TokenPricing] = field(
+        default_factory=lambda: _unknown("no catalog list price")
+    )
 
 
 def _tri_and(*facts: tuple[Fact[bool] | None, str]) -> Decision[bool]:
@@ -273,8 +297,7 @@ def _task(model: ModelCapabilities | None) -> Decision[str]:
     """The model's task is a model-record fact alone: no endpoint or deployment narrows it."""
     if model is None or not model.task.known:
         return _unknown(
-            (model.task.detail if model is not None else "")
-            or "no source states the model task"
+            (model.task.detail if model is not None else "") or "no source states the model task"
         )
     source, observed_at = _provenance(model.task)
     return Decision(
@@ -448,9 +471,15 @@ def combine_capabilities(
             "endpoint",
         ),
     )
+    # What is served now bounds the context; before the model loads, what is
+    # configured to apply bounds it (decided_by "configured"); with neither,
+    # only the model's own ceiling is known (decided_by "model": native).
+    served = deployment.context_served if deployment else None
     context = _min_known(
         (model.context_max if model else None, "model"),
-        (deployment.context_served if deployment else None, "deployment"),
+        (served, "deployment")
+        if served is not None and served.known
+        else (deployment.context_configured if deployment else None, "configured"),
     )
     output_max = _min_known(
         (model.output_max if model else None, "model"),
@@ -489,14 +518,30 @@ def combine_capabilities(
         sampling_thinking=sampling_thinking,
         sampling_instruct=sampling_instruct,
         output_modalities=_single(
-            model.output_modalities if model else None, "model", "no source states output modalities"
+            model.output_modalities if model else None,
+            "model",
+            "no source states output modalities",
         ),
         domains=_single(model.domains if model else None, "model", "no source states domains"),
         pricing=_single(
             deployment.pricing if deployment else None, "deployment", "no pricing reported"
         ),
         free=_single(deployment.free if deployment else None, "deployment", "no pricing reported"),
-        router=_single(deployment.router if deployment else None, "deployment", "no router evidence"),
+        router=_single(
+            deployment.router if deployment else None, "deployment", "no router evidence"
+        ),
+        description=_single(
+            model.description if model else None, "model", "no source states a description"
+        ),
+        released_at=_single(
+            model.released_at if model else None, "model", "no source states a release date"
+        ),
+        parameters=_single(
+            model.parameters if model else None, "model", "no source states a parameter count"
+        ),
+        catalog_pricing=_single(
+            model.catalog_pricing if model else None, "model", "no catalog list price"
+        ),
     )
 
 

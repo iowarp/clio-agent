@@ -146,7 +146,7 @@ def model_type_for_task(task: str) -> str:
     return MODEL_TYPE_FOR_TASK.get(task, "other")
 
 
-def _evidence(
+def decision_evidence(
     decision: Decision[Any] | ThinkingDecision, *, detail: str = ""
 ) -> list[dict[str, str]]:
     """The :class:`~clio_schemas.TagEvidence` rows behind one effective value.
@@ -169,7 +169,7 @@ def _tag(
     value: Any, decision: Decision[Any] | ThinkingDecision, *, detail: str = ""
 ) -> dict[str, Any] | None:
     """One tag, or ``None`` when no source can be named for it (unknown shows nothing)."""
-    evidence = _evidence(decision, detail=detail)
+    evidence = decision_evidence(decision, detail=detail)
     return {"value": value, "evidence": evidence} if evidence else None
 
 
@@ -240,7 +240,7 @@ def capability_tags(effective: EffectiveCapabilities, *, model_key: str) -> Mode
     """
     record: dict[str, Any] = {"model_key": model_key}
     task = effective.task
-    if task.known and task.value and _evidence(task):
+    if task.known and task.value and decision_evidence(task):
         model_type = model_type_for_task(task.value)
         record["tasks"] = _tags([task.value], task)
         record["model_type"] = _tag(model_type, task)
@@ -265,5 +265,6 @@ __all__ = [
     "OUTPUT_MODALITY_ALIASES",
     "TASK_OUTPUT_MODALITY",
     "capability_tags",
+    "decision_evidence",
     "model_type_for_task",
 ]

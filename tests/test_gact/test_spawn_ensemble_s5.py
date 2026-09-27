@@ -189,10 +189,12 @@ class _RecordingAgent:
 
     def forward(self, question: str, session_id: str, **_kw: Any) -> Any:
         if self.barrier is not None:
-            # Rendezvous: all N forwards must be executing at once to pass. Generous
-            # timeout so a genuinely-concurrent pool never flakes; a serialized (cap-1)
-            # pool never fills the barrier and raises BrokenBarrierError here.
-            self.barrier.wait(timeout=15.0)
+            # Rendezvous: all N forwards must be executing at once to pass. The barrier
+            # carries its own timeout: generous in the overlap proof so a genuinely
+            # concurrent pool never flakes, short in the cap-1 sabotage lock, where a
+            # serialized pool can never fill it at ANY timeout (it raises
+            # BrokenBarrierError here) so waiting longer proves nothing more.
+            self.barrier.wait()
         start = time.monotonic()
         # The tool session id the live observer keys the ledger on — bound per child
         # turn by _tool_session_context(child_sid) and inherited here via the forward's
@@ -410,7 +412,7 @@ def test_ensemble_of_three_runs_concurrently_overlapping_windows(
     flake it."""
 
     _declare(monkeypatch, "main")
-    barrier = threading.Barrier(3)
+    barrier = threading.Barrier(3, timeout=15.0)
     agent = _RecordingAgent(sleep_s=0.5, barrier=barrier)
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     agent.app = app
@@ -727,9 +729,7 @@ def test_wait_merges_ensemble_workflow_state_in_request_order_with_conflict_rows
 
     with _active_turn(app):
         wait = _wait_tool(app, monkeypatch)
-        result = json.loads(
-            wait.func(task_ids=["task_run0", "task_run1", "task_run2"])
-        )
+        result = json.loads(wait.func(task_ids=["task_run0", "task_run1", "task_run2"]))
 
     # Deterministic request-order merge: highest run_index wins the colliding key.
     assert result["merged_workflow_state"]["target"] == {"status": "found", "src": "run2"}
@@ -766,9 +766,7 @@ def test_wait_merge_is_completion_order_independent_sabotage_lock(monkeypatch) -
     with _active_turn(app):
         wait = _wait_tool(app, monkeypatch)
         # Collect in REVERSED order — run 2 first, run 0 last.
-        result = json.loads(
-            wait.func(task_ids=["task_run2", "task_run1", "task_run0"])
-        )
+        result = json.loads(wait.func(task_ids=["task_run2", "task_run1", "task_run0"]))
 
     assert result["merged_workflow_state"]["k"] == {"v": 2}, "arrival order leaked into the merge"
     assert result["workflow_state_conflicts"][0]["winner"]["run_index"] == 2

@@ -5,14 +5,21 @@ on:
     branches: [main, develop, "v*"]
   pull_request:
     branches: [main, develop, "campaign/**", "codex/**"]
+  # provider-sdk-bump.yml dispatches CI on its bump branch: a PR opened with
+  # GITHUB_TOKEN does not trigger pull_request workflows.
+  workflow_dispatch: {}
 
 jobs:
-  check:
+  # Every job carries timeout-minutes just above its measured normal duration, so a
+  # hang fails the job in minutes instead of running to GitHub's 6-hour limit. The
+  # per-test limit (pytest-timeout, tests/_hang_guard.py) fails a hung TEST first,
+  # with every thread's stack in the log; the job limit is the outer backstop.
+  lint:
+    # Static checks, split from the test leg so they run in parallel with it
+    # (measured ~2 min; they used to add that to the serial check job).
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
-      # fail-fast off: a 3.13 discovery must not cancel the 3.12 leg the
-      # release gate reads (utah-cluster class: hosts we deploy to already
-      # run 3.13, so both interpreters are release-relevant).
       fail-fast: false
       matrix:
         python-version: ["3.12", "3.13"]
@@ -20,11 +27,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      # Tests marked `marketplace` read the pinned submodule and FAIL (never
+      # skip) without it (tests/_marketplace.py); say so here, before the suite.
+      - name: Assert the marketplace submodule is checked out
+        run: ls external/clio-agent-marketplace/*/AGENT.md > /dev/null
       - uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
       - run: uv sync --python ${{ matrix.python-version }} --extra dev --extra optimizers
       - run: uv run ruff check src/ tests/ scripts/create_demo_data.py scripts/validate_marketplace_blueprints.py scripts/mcp_mem_attribution.py
+      # Formatting is checked, never rewritten by CI: drift fails the job and the
+      # author runs `uv run ruff format src/ tests/ scripts/` locally.
+      - name: ruff format (check only)
+        run: uv run ruff format --check --diff src/ tests/ scripts/
       # Anti-re-accretion guardrails (iowarp/clio-agent#714, #774). BLOCKING:
       # now that the #767 gact decomposition has landed, these enforce per-file
       # ratchet baselines -- a new god-file or a baselined file that regrows
@@ -43,10 +58,9 @@ jobs:
       - name: "guard: no bare dspy.Tool outside the instrumentation factory/bridge (baseline 0)"
         run: uv run python scripts/check_tool_instrumentation.py
       # Model-capabilities brief Part 8 (P6). BLOCKING: fails if any
-      # catalogs/models/*.yaml is invalid, if catalogs/model-overlay.json (or
-      # its packaged bundled copy) is stale relative to the YAML sources, or
-      # if catalogs/claude-code-models.json (and catalogs/codex-models.json,
-      # once S1 lands it) no longer validates against its schema.
+      # catalogs/models/*.yaml is invalid, if catalogs/model-overlay.json is
+      # stale relative to the YAML sources, or
+      # if catalogs/claude-code-models.json no longer validates against its schema.
       - name: "guard: model overlay + catalog schemas are valid and up to date (brief Part 8)"
         run: uv run python scripts/compile_model_overlay.py --check
       - name: "warn: ruff complexity (C901, PLR0915) (#714)"
@@ -60,17 +74,87 @@ jobs:
         run: uv run python scripts/check_silent_fallbacks.py
       - run: bash -n scripts/homelab-env.sh
       - run: uv run mypy src/
-      # Coverage floor lowered to 70 as the v0.5 merge brought in
-      # large under-tested gact code; tracked in iowarp/clio-agent#31
-      # to ratchet back up to 80% as the new code gets tests.
-      # Coverage flags are explicit here on purpose: pyproject addopts is
-      # empty so local pytest runs stay lean (iowarp/clio-agent#773).
-      # --cov-branch measures branch coverage (not just line): the floor is
-      # anchored one point below the measured combined line+branch total
-      # (measured 79% on develop @ 2026-07-07; floor 78) so a genuine
-      # regression fails CI while normal noise does not. Ratchet intent:
-      # raise this toward the 80% target as gact code gains tests (#31/#773).
-      - run: uv run pytest tests/ -m "not integration" --cov=clio_agent --cov-branch --cov-report=term-missing --cov-fail-under=78
+
+  check:
+    # The suite runs as 3 deterministic shards (tests/_sharding.py) per interpreter,
+    # each on its own runner with one xdist worker per logical CPU. One 4-worker
+    # runner took 23-29 min; the tests are CPU-bound (every gact test builds an app),
+    # so more workers on the same 4 vCPUs only contend.
+    name: check (${{ matrix.python-version }}, shard ${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    # Measured on this change's first green run: 6.8-9.5 min on 3.13, 11.6-12.0 min
+    # on 3.12 (setup included).
+    timeout-minutes: 18
+    strategy:
+      # fail-fast off: a 3.13 discovery must not cancel the 3.12 leg the
+      # release gate reads (utah-cluster class: hosts we deploy to already
+      # run 3.13, so both interpreters are release-relevant).
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+        shard: [0, 1, 2]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+      - run: uv sync --python ${{ matrix.python-version }} --extra dev --extra optimizers
+      # Coverage flags are explicit here on purpose: pyproject addopts is empty so
+      # local pytest runs stay lean (iowarp/clio-agent#773). Each shard records
+      # branch coverage; the coverage job below combines the shards and checks the
+      # floor. -n logical: one xdist worker per logical CPU (``-n auto`` counts
+      # PHYSICAL cores and started only 2); each worker gets its own private
+      # clio-core daemon (tests/_cte_isolation.py). worksteal rebalances the long
+      # tail; --durations keeps the slowest tests visible in every log.
+      - run: >-
+          uv run pytest tests/ -m "not integration"
+          --num-shards 3 --shard-id ${{ matrix.shard }}
+          -n logical --dist worksteal --durations=30
+          --cov=clio_agent --cov-branch --cov-report=
+      # Uploaded even when a test failed, so the coverage job still reports the shard's
+      # numbers (the failed shard keeps the build red on its own).
+      - if: ${{ !cancelled() }}
+        run: mv .coverage coverage-${{ matrix.shard }}.dat
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.python-version }}-${{ matrix.shard }}
+          path: coverage-${{ matrix.shard }}.dat
+          retention-days: 3
+
+  coverage:
+    # Combines the shards' coverage per interpreter and enforces the floor.
+    # Coverage floor lowered to 70 as the v0.5 merge brought in large under-tested
+    # gact code; tracked in iowarp/clio-agent#31 to ratchet back up to 80% as the
+    # new code gets tests. The floor is anchored one point below the measured
+    # combined line+branch total (measured 79% on develop @ 2026-07-07; floor 78)
+    # so a genuine regression fails CI while normal noise does not.
+    name: coverage (${{ matrix.python-version }})
+    needs: check
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5  # measured locally: combine + report take seconds
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+      - run: uv sync --python ${{ matrix.python-version }} --extra dev
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-${{ matrix.python-version }}-*
+          merge-multiple: true
+      # All three shards must have reported: a missing shard is a failure, never a
+      # smaller denominator.
+      - run: test "$(ls coverage-*.dat | wc -l)" -eq 3
+      - run: uv run coverage combine coverage-*.dat
+      - run: uv run coverage report --show-missing --fail-under=78
 
   bundle-lock-resolve:
     # The bundled CLIO Desktop runtime installs clio-agent[BUNDLE_EXTRAS]
@@ -79,6 +163,7 @@ jobs:
     # every bundled target here, so a conflict (the hardcoded clio-kit pin vs
     # the locked click) fails the PR instead of the release.
     runs-on: ubuntu-latest
+    timeout-minutes: 5  # measured ~15 s
     steps:
       - uses: actions/checkout@v4
         with:
@@ -94,6 +179,7 @@ jobs:
     # marker) and would silently rot as skip-only — this job installs the
     # flowcept extra and actually exercises it (#1247).
     runs-on: ubuntu-latest
+    timeout-minutes: 5  # measured ~40 s
     steps:
       - uses: actions/checkout@v4
         with:
@@ -121,6 +207,7 @@ jobs:
     # from ``check`` so its parallel/repeat flags never touch the coverage-gated
     # main run.
     runs-on: ubuntu-latest
+    timeout-minutes: 10  # measured ~2.5 min
     steps:
       - uses: actions/checkout@v4
         with:

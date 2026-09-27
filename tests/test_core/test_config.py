@@ -318,7 +318,7 @@ def test_context_overflow_error_no_false_positive(
 
         def __call__(self, *, messages: list, **kwargs: object) -> list[str]:
             responses.append("ok")
-            return ['[[ ## answer ## ]]\nok']
+            return ["[[ ## answer ## ]]\nok"]
 
     # Should not raise; a tiny prompt fits comfortably.
     try:

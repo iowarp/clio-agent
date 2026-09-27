@@ -222,18 +222,17 @@ class LMProviderConfig:
     planner_temperature: float = 0.3
     planner_max_tokens: int | None = None
     router_temperature: float | None = None
-    # Sampling surface (None = omit -> the provider/model's own default applies).
-    # Greedy decoding (temperature 0) makes Qwen-family REASONING models (qwopus,
-    # nemotron) degenerate into endless verbatim repetition loops -- Qwen's own docs
-    # say DO NOT use greedy decoding and recommend temp 0.6 / top_p 0.95 / top_k 20
-    # for thinking mode. These expose that full sampling surface so a reasoning model
-    # can be driven at its recommended settings instead of the temp-0 default (which
-    # only suits short non-reasoning structured routing). top_p/presence_penalty are
-    # OpenAI-standard; top_k/min_p are forwarded via extra_body (llama.cpp/LM Studio).
+    # Sampling surface (None = omit -> the provider/model's own default; Qwen: never greedy),
+    # sent only when the model accepts it (providers.capabilities.accepted_parameters).
+    # context_length (0 = omit) is Ollama's num_ctx and a load setting on LM Studio.
     top_p: float | None = None
     top_k: int | None = None
     min_p: float | None = None
     presence_penalty: float | None = None
+    frequency_penalty: float | None = None
+    repetition_penalty: float | None = None
+    seed: int | None = None
+    context_length: int = 0
     environment: str = "dev"
     codex_transport: Literal["websocket", "sse"] = "websocket"
     codex_variant: Literal["", "sdk", "direct"] = ""  # S1b; "" normalizes to "direct" below
@@ -269,7 +268,7 @@ class LMProviderConfig:
     # ``chosen_context`` is the active context limit clio operates against
     # (queryable; for LM Studio it reflects the loaded/load-sized window).
     # ``native_context_window`` is the model's published max from the offline
-    # catalog (LiteLLM / bundled model_limits.json); None when unknown.
+    # catalogs (LiteLLM cost map / model-limits seed, disk caches); None when unknown.
     context_window: int | None = field(init=False, default=None)
     chosen_context: int | None = field(init=False, default=None)
     native_context_window: int | None = field(init=False, default=None)
@@ -383,7 +382,7 @@ class LMProviderConfig:
 
         provider_id, api_base = getattr(report, "provider_id", ""), getattr(report, "api_base", "")
         effective = get_effective_capabilities(provider_id, api_base, discovered.id)
-        self.is_reasoning = effective.thinking.known
+        self.is_reasoning = effective.thinking.reasoning
         self.reasoning_param = effective.thinking.control
         self.native_tool_calling = bool(effective.tools.value)
         self.tool_call_parser = None  # dialect-specific parser naming folds into Part 7
@@ -416,7 +415,7 @@ class LMProviderConfig:
             logger.warning(
                 "context_window_below_native model=%s "
                 "served_context=%d native_context=%d "
-                "reason=vllm_max_model_len_below_native "
+                "reason=served_context_below_native "
                 "hint=set CLIO_LM_CONTEXT_WINDOW or lm.context_window to override",
                 self.model,
                 window,

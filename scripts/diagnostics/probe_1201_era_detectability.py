@@ -173,7 +173,9 @@ async def scenario_b_gateway_mounted_front_leg() -> tuple[str, str, float, float
 
         namespace_era = executor.namespace_connection_era("stub")
         print(f"executor.namespace_connection_era('stub') after a real call = {namespace_era}")
-        print(f"REAL backend leg(s) actually observed (ProxyClient.__aenter__): {backend_leg_versions}")
+        print(
+            f"REAL backend leg(s) actually observed (ProxyClient.__aenter__): {backend_leg_versions}"
+        )
         return (
             front_era.protocol_version if front_era else "",
             namespace_era.protocol_version if namespace_era else "",
@@ -189,24 +191,36 @@ async def main() -> None:
     from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 
     direct_version = await scenario_a_direct_connect_reproduces_the_race()
-    front_version, namespace_version, route_elapsed, call_elapsed, backend_leg_versions = (
-        await scenario_b_gateway_mounted_front_leg()
-    )
+    (
+        front_version,
+        namespace_version,
+        route_elapsed,
+        call_elapsed,
+        backend_leg_versions,
+    ) = await scenario_b_gateway_mounted_front_leg()
 
     _banner("VERDICT")
     direct_is_modern = direct_version in MODERN_PROTOCOL_VERSIONS
-    print(f"A) direct connect to the SAME slow stub negotiated : {direct_version!r} "
-          f"({'modern' if direct_is_modern else 'LEGACY -- race reproduced'})")
+    print(
+        f"A) direct connect to the SAME slow stub negotiated : {direct_version!r} "
+        f"({'modern' if direct_is_modern else 'LEGACY -- race reproduced'})"
+    )
     print(f"B) gateway front leg (executor.connection_era)      : {front_version!r}")
     print(f"B) gateway namespace leg (namespace_connection_era) : {namespace_version!r}")
     print("B) REAL backend leg(s), read directly off the")
-    print(f"   proxy's OWN ProxyClient (the actual connection to the real subprocess): "
-          f"{backend_leg_versions}")
+    print(
+        f"   proxy's OWN ProxyClient (the actual connection to the real subprocess): "
+        f"{backend_leg_versions}"
+    )
     print(f"B) _route() (era capture) elapsed  : {route_elapsed:.2f}s")
-    print(f"B) real backend call elapsed        : {call_elapsed:.2f}s (the {STARTUP_DELAY_S}s "
-          f"cold-start actually happened here)")
+    print(
+        f"B) real backend call elapsed        : {call_elapsed:.2f}s (the {STARTUP_DELAY_S}s "
+        f"cold-start actually happened here)"
+    )
 
-    same_as_front = all(v == namespace_version for v in backend_leg_versions) if backend_leg_versions else None
+    same_as_front = (
+        all(v == namespace_version for v in backend_leg_versions) if backend_leg_versions else None
+    )
     if same_as_front:
         print(
             "\nCONFIRMED (direct backend-leg read): the REAL ProxyClient connection to the "

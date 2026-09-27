@@ -42,9 +42,7 @@ class _FakeResponse:
 class _FakeAsyncClient:
     """In-memory fake serving the recorded Ollama fixtures by URL/method."""
 
-    def __init__(
-        self, *, tags: Any, show_by_model: dict[str, Any], ps: Any = None
-    ) -> None:
+    def __init__(self, *, tags: Any, show_by_model: dict[str, Any], ps: Any = None) -> None:
         self._tags = tags
         self._show_by_model = show_by_model
         self._ps = ps if ps is not None else {"models": []}
@@ -170,11 +168,7 @@ async def test_discover_model_config_layers_on_ps_loaded_context() -> None:
     client = _FakeAsyncClient(
         tags=_load("ollama_api_tags.json"),
         show_by_model={"qwen3:8b": _load("ollama_api_show_qwen3.json")},
-        ps={
-            "models": [
-                {"model": "qwen3:8b", "digest": "sha256:abc123", "context_length": 8192}
-            ]
-        },
+        ps={"models": [{"model": "qwen3:8b", "digest": "sha256:abc123", "context_length": 8192}]},
     )
     ctx = _ctx()
     rows = await handshake.discover_models(client, ctx)

@@ -30,7 +30,11 @@ def model_role_and_task(app: Any, model: ModelRef) -> tuple[str | None, str | No
         if isinstance(task, str) and task:
             return role_for_task(task), task
     report = getattr(app.state, "lm_handshake_report", None)
-    if report is not None and getattr(report, "ok", False) and report.provider_id == model.provider_id:
+    if (
+        report is not None
+        and getattr(report, "ok", False)
+        and report.provider_id == model.provider_id
+    ):
         discovered = report.model(model.model_id)
         if discovered is not None:
             from clio_agent.providers.capabilities.accessor import (  # noqa: PLC0415

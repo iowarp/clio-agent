@@ -53,7 +53,9 @@ async def test_client_info_survives_a_simulated_restart(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_no_prior_entry_returns_none(tmp_path: Path) -> None:
-    storage = DurableFileTokenStorage("https://never-authed.example.com", path=tmp_path / "oauth.json")
+    storage = DurableFileTokenStorage(
+        "https://never-authed.example.com", path=tmp_path / "oauth.json"
+    )
     assert await storage.get_tokens() is None
     assert await storage.get_client_info() is None
 

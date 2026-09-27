@@ -89,7 +89,9 @@ def _make_app(tmp_path: Path):
     return app, sess, arc, ws_root
 
 
-def _ready_resource(app, *, name: str = "DesignSpaceGeometry.pdf", content: bytes = b"%PDF-1.4\nfake"):
+def _ready_resource(
+    app, *, name: str = "DesignSpaceGeometry.pdf", content: bytes = b"%PDF-1.4\nfake"
+):
     """Upload+finalize one resource against the fake app's real resource store."""
 
     record, _replay = app.state.resource_store.create_or_resume(
@@ -168,7 +170,11 @@ def test_copied_resource_gets_its_own_source_artifact_not_the_original(tmp_path:
         source_ws = _workspace(client, tmp_path / "source", "source")
         dest_ws = _workspace(client, tmp_path / "destination", "destination")
         source = _upload(
-            client, source_ws, name="paper.pdf", content=b"%PDF-1.4\nsource", media_type="application/pdf"
+            client,
+            source_ws,
+            name="paper.pdf",
+            content=b"%PDF-1.4\nsource",
+            media_type="application/pdf",
         )
         assert source["source_registration"]["state"] == "registered"
 
@@ -270,7 +276,9 @@ def test_create_artifact_used_resolves_source_by_declared_ref_form(
         "workspace_path": f".clio/inputs/{resource.id}/{resource.name}",
     }[ref_kind]
 
-    report, result = _mint_report_via_create_artifact(app, sess, ws_root, f"description-{ref_kind}.md")
+    report, result = _mint_report_via_create_artifact(
+        app, sess, ws_root, f"description-{ref_kind}.md"
+    )
     new_id = result["artifacts"][0]["artifact_id"]
     call_args = {
         "name": "",
@@ -281,7 +289,9 @@ def test_create_artifact_used_resolves_source_by_declared_ref_form(
         "artifacts": None,
         "used": [used_ref],
     }
-    observe_tool_transform(app, sess.id, "create_artifact", call_args, f"call_{ref_kind}", True, result)
+    observe_tool_transform(
+        app, sess.id, "create_artifact", call_args, f"call_{ref_kind}", True, result
+    )
 
     registry = get_registry(app)
     graph = build_lineage(registry, new_id, direction="upstream", depth=5)
@@ -330,9 +340,7 @@ def test_source_registration_failure_is_typed_and_never_blocks_materialization(
     def _boom(*_args, **_kwargs):
         raise RuntimeError("simulated mint failure")
 
-    monkeypatch.setattr(
-        "clio_agent.gact.artifacts.minting.mint_artifact_outcome", _boom
-    )
+    monkeypatch.setattr("clio_agent.gact.artifacts.minting.mint_artifact_outcome", _boom)
 
     updated = materialize_once(app, record)
     assert updated.materialization.state == "ready"
@@ -371,8 +379,12 @@ def test_preexisting_ready_resource_is_migrated_on_next_reference(tmp_path: Path
         row.pop("source_registration", None)
     index_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    reloaded_store = ResourceStore(root=app.state.resource_store.root, max_resource_bytes=10_000_000)
-    reloaded_app = SimpleNamespace(state=SimpleNamespace(**{**vars(app.state), "resource_store": reloaded_store}))
+    reloaded_store = ResourceStore(
+        root=app.state.resource_store.root, max_resource_bytes=10_000_000
+    )
+    reloaded_app = SimpleNamespace(
+        state=SimpleNamespace(**{**vars(app.state), "resource_store": reloaded_store})
+    )
     legacy_record = reloaded_store.get("ws1", record.id)
     assert legacy_record is not None
     assert legacy_record.source_registration.state == "pending"

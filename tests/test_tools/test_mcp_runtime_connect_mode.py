@@ -109,5 +109,7 @@ def test_explicit_call_timeout_wins_over_config(monkeypatch, tmp_path):
         encoding="utf-8",
     )
     conf.reload()
-    executor = create_sync_tool_executor(object(), timeout=7.0, client_factory=lambda _t: _FakeAsyncClient())
+    executor = create_sync_tool_executor(
+        object(), timeout=7.0, client_factory=lambda _t: _FakeAsyncClient()
+    )
     assert executor._timeout == 7.0

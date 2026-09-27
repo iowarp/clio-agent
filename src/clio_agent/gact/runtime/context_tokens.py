@@ -4,7 +4,7 @@ This module owns the pure, leaf-level helpers that measure prompt-token usage an
 resolve a model's context window -- the inputs the expert forward's
 auto-compaction reasons over. It is deliberately a *leaf*: it imports only
 ``dspy`` / ``litellm`` (lazily, inside functions), stdlib, the config resolver,
-and the bundled ``model_limits.json`` -- and has **zero** ``app.state`` coupling.
+and the fetched ``model-limits`` seed -- and has **zero** ``app.state`` coupling.
 Folding it out before the heavily-coupled expert runtime keeps that later move
 free of any ``app.py`` import.
 
@@ -286,9 +286,12 @@ def _resolve_expert_context_window(cfg: Any) -> int:
     """Resolve the expert model's context window (the auto-compaction denominator).
 
     Ladder: (1) handshake-discovered ``chosen_context``/``context_window`` on the
-    config; (2) ``litellm.get_model_info`` max input tokens; (3) the ``context``
-    field in ``model_limits.json``. Returns 0 when unknown (auto-compaction stays
-    off; dspy's reactive truncation remains the backstop).
+    config; (2) the offline catalog ladder
+    (:func:`clio_agent.providers.handshake.sources.lookup_native_context`: the
+    fetched LiteLLM cost map's disk cache, then the model-limits DB). Never a
+    copy bundled in a wheel, never a network call on this hot path. Returns 0
+    when unknown (auto-compaction stays off; dspy's reactive truncation remains
+    the backstop).
     """
     for attr in ("chosen_context", "context_window"):
         v = getattr(cfg, attr, None)
@@ -297,33 +300,6 @@ def _resolve_expert_context_window(cfg: Any) -> int:
     model = str(getattr(cfg, "model", "") or "")
     if not model:
         return 0
-    try:
-        import litellm  # noqa: PLC0415
+    from clio_agent.providers.handshake.sources import lookup_native_context  # noqa: PLC0415
 
-        info = litellm.get_model_info(model) or {}
-        v = info.get("max_input_tokens") or info.get("max_tokens")
-        if v:
-            return int(v)
-    except Exception:  # noqa: BLE001,S110 - litellm model-info optional; tries the next source
-        pass
-    try:
-        import json  # noqa: PLC0415
-        from pathlib import Path  # noqa: PLC0415
-
-        # ``__file__`` is ``clio_agent/gact/runtime/context_tokens.py``; the bundled
-        # limits live under ``clio_agent/providers/...`` -> parents[2] == clio_agent/.
-        limits_path = (
-            Path(__file__).resolve().parents[2]
-            / "providers"
-            / "handshake"
-            / "sources"
-            / "data"
-            / "model_limits.json"
-        )
-        entry = json.loads(limits_path.read_text()).get(model) or {}
-        v = entry.get("context")
-        if v:
-            return int(v)
-    except Exception:  # noqa: BLE001,S110 - bundled model_limits lookup best-effort; returns 0 (auto-compaction off)
-        pass
-    return 0
+    return lookup_native_context(model) or 0

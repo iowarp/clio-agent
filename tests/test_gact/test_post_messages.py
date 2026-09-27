@@ -128,6 +128,33 @@ class BlockingClioAgent(FakeClioAgent):
         return FakePrediction(answer=self.answer)
 
 
+class WedgedClioAgent(FakeClioAgent):
+    """A provider that never returns until the test releases it (#1377).
+
+    A fixed ``time.sleep`` is not a wedge: once it elapses, the watchdog's next
+    poll finds the work finished and correctly settles ``end_turn`` (a finished
+    turn is not stuck). Under a starved event loop that poll can land after the
+    sleep ends, which made the timeout assertion depend on scheduling. Blocking
+    until ``release`` is set means only the watchdog can settle the turn.
+    ``returned`` fires once ``forward`` has exited, so a test can prove that
+    work finishing late does not rewrite the turn that already settled.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(answer="too late")
+        self.release = threading.Event()
+        self.returned = threading.Event()
+
+    def forward(self, question: str, session_id: str) -> Any:
+        self.calls.append((question, session_id))
+        try:
+            if not self.release.wait(timeout=TURN_SIGNAL_BACKSTOP_S):
+                raise TimeoutError("test did not release the wedged turn")
+            return FakePrediction(answer=self.answer)
+        finally:
+            self.returned.set()
+
+
 class ProgressingSlowClioAgent(FakeClioAgent):
     """Runs longer than the no-progress window but keeps publishing progress.
 
@@ -643,6 +670,39 @@ def test_post_message_agent_exception_populates_error_info(
         # Session left in error state.
         sess = c.get(f"/v1/sessions/{sid}").json()
         assert sess["status"] == "error"
+
+
+def test_non_streamed_provider_error_is_one_plain_line(tmp_path: Path) -> None:
+    """rel18 follow-up: a provider HTTP error on the non-streamed forward read
+    "agent.forward raised: litellm.NotFoundError: ...". It gets the same
+    one-line provider message as the streamed path."""
+    import dspy
+    import litellm
+
+    from .conftest import complete_turn
+
+    raw = litellm.NotFoundError(
+        message='OpenrouterException - {"error":{"message":"No endpoints available","code":404}}',
+        model="openrouter/free",
+        llm_provider="openrouter",
+    )
+    provider_error = dspy.LM("openrouter/openrouter/free", api_key="t")._wrap_litellm_exception(raw)
+
+    class ProviderFailingAgent(FakeClioAgent):
+        def forward(self, question: str, session_id: str) -> Any:
+            raise provider_error
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=ProviderFailingAgent())
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
+        assistant = complete_turn(c, sid, "hi")
+
+    err = assistant["error_info"]
+    assert err["error"] == "agent_error"
+    # No active LM is configured in this app, so the label comes from the
+    # provider the error itself names.
+    assert err["message"] == "OpenRouter: No endpoints available (HTTP 404)"
+    assert err["details"]["original_error"] == "LMUnsupportedModelError"
 
 
 def test_post_message_agent_exception_includes_error_info_on_completed_event(
@@ -1580,6 +1640,63 @@ def test_post_message_live_discovered_model_override_executes_and_records_route(
     }
 
 
+@pytest.mark.parametrize("turn_fails", [True, False])
+def test_accepted_per_message_model_becomes_the_session_model(
+    client: TestClient,
+    fake_agent: FakeClioAgent,
+    turn_fails: bool,
+) -> None:
+    """rel18: the picked model is the session's model ref, whatever the turn does.
+
+    The pick lived only in the composer's local state; the session's own ref
+    stayed empty, so the composer's first remount (the new-conversation route
+    becoming the session route after a send, a failed turn's refresh) showed
+    "Choose model" again. Acceptance persists it before the turn runs.
+    """
+
+    from .conftest import complete_turn
+
+    client.app.state.provider_catalog = {
+        "providers": [
+            {
+                "id": "codex",
+                "health": "ready",
+                "models": [
+                    {
+                        "model_id": "gpt-5.3-cg-spark",
+                        "availability": "available",
+                        "modalities": ["text"],
+                        "evidence": {"live": True, "generated_at": "2026-09-01T12:00:00+00:00"},
+                    }
+                ],
+            }
+        ]
+    }
+    fake_agent.raise_on_forward = turn_fails
+    sid = _create_session(client)
+    assert client.get(f"/v1/sessions/{sid}").json()["model"]["model_id"] == ""
+
+    assistant = complete_turn(
+        client,
+        sid,
+        "route this turn",
+        json_override={"model": {"provider_id": "codex", "model_id": "gpt-5.3-cg-spark"}},
+    )
+
+    assert bool(assistant.get("error_info")) is turn_fails
+    session = client.get(f"/v1/sessions/{sid}").json()
+    assert session["model"]["provider_id"] == "codex"
+    assert session["model"]["model_id"] == "gpt-5.3-cg-spark"
+    listed = client.get("/v1/sessions", headers={"X-GACT-Version": "0.3"}).json()["sessions"]
+    projected = next(row for row in listed if row["id"] == sid)
+    assert (projected.get("provider_id"), projected.get("model_id")) == (
+        "codex",
+        "gpt-5.3-cg-spark",
+    )
+    updates = [e for e in client.app.state.bus._history.get(sid, []) if e.type == "session.updated"]
+    assert any(e.payload["model"]["model_id"] == "gpt-5.3-cg-spark" for e in updates)
+
+
 def test_post_message_session_model_mismatch_returns_structured_501(
     client: TestClient,
     fake_agent: FakeClioAgent,
@@ -1654,44 +1771,91 @@ def test_post_message_preserves_mismatched_session_model_when_global_lm_active(
     assert fake_agent.calls == []
 
 
-def test_post_message_turn_timeout_surfaces_error(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Provider/planner hangs must settle as visible errors, not permanent running state."""
+def _run_wedged_turn_to_timeout(tmp_path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Run one turn against a provider that never answers; return (assistant, session).
+
+    The provider is released only after the settled turn has been read, then the
+    test waits for ``forward`` to actually return and re-reads the transcript, so
+    work that finishes after the watchdog settled the turn is proven not to
+    rewrite it (#1377).
+    """
 
     from .conftest import complete_turn
 
     set_config("limits.turn_timeout_s", 0.2)  # file-layer (file > env); #985 config-first
-    agent = SlowClioAgent(delay_s=0.5)
+    agent = WedgedClioAgent()
     app = build_app(sessions_path=tmp_path / "sessions.json", agent=agent)
     with TestClient(app) as c:
         sid = _create_session(c)
-        # CI investigation (PR #1375): this test's own tighter override
-        # (previously timeout=2.0) raced a one-time cold-process cost that
-        # has nothing to do with the 0.2s turn_timeout_s under test --
-        # measured directly (--count 5 in one process, both on this branch
-        # and on the pre-A2UI-S4 develop merge-base, identical): the FIRST
-        # real turn dispatch in a process pays for litellm's own module
-        # import (partly mitigated by conftest.py's collection-time
-        # pre-warm) plus first-use dspy/tool-executor/CTE-daemon setup --
-        # up to ~10s cold, ~1.0-1.2s once warm; every OTHER test in this
-        # file passes in well under a second. The 0.2s timeout mechanism
-        # itself is not slow; this ONE test simply carved out a tighter
-        # budget than the rest of the suite's own documented default
-        # (complete_turn's own 30s, calibrated for exactly this class of
-        # cold-dispatch cost -- see its docstring). Deferring to that
-        # default instead of re-asserting a narrower one.
-        assistant = complete_turn(c, sid, "hi")
-        sess = c.get(f"/v1/sessions/{sid}").json()
+        try:
+            # complete_turn's documented 30s default absorbs the first dispatch's
+            # cold-process cost (PR #1375); the 0.2s window under test is unrelated.
+            assistant = complete_turn(c, sid, "hi")
+            sess = c.get(f"/v1/sessions/{sid}").json()
+        finally:
+            agent.release.set()
+        if agent.calls:
+            assert agent.returned.wait(timeout=TURN_SIGNAL_BACKSTOP_S)
+        after = c.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+        sess_after = c.get(f"/v1/sessions/{sid}").json()
 
+    assert len(agent.calls) <= 1
+    # The late provider return changed nothing: same settled assistant row.
+    settled = next(m for m in after if m["id"] == assistant["id"])
+    assert settled["stop_reason"] == "error"
+    assert settled["error_info"]["error"] == "provider_timeout"
+    assert sess_after["status"] == "error"
+    assert sess_after["message_count"] == 2
+    return assistant, sess
+
+
+def _assert_provider_timeout(assistant: dict[str, Any], sess: dict[str, Any]) -> None:
     assert assistant["stop_reason"] == "error"
     assert assistant["error_info"]["error"] == "provider_timeout"
     assert assistant["error_info"]["details"]["timeout_s"] == 0.2
     assert assistant["error_info"]["details"]["execution_cancellation"] == "best_effort"
     assert sess["status"] == "error"
     assert sess["message_count"] == 2
-    assert len(agent.calls) <= 1
+
+
+def test_post_message_turn_timeout_surfaces_error(tmp_path: Path) -> None:
+    """Provider/planner hangs must settle as visible errors, not permanent running state."""
+
+    assistant, sess = _run_wedged_turn_to_timeout(tmp_path)
+    _assert_provider_timeout(assistant, sess)
+
+
+def test_turn_timeout_holds_when_watchdog_polls_are_starved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A starved event loop delays the watchdog's polls; a hang still settles as a timeout.
+
+    #1377: under heavy in-process load the watchdog's first poll can wake well
+    after the silent window. A genuinely wedged turn must still settle as
+    ``provider_timeout``: lateness only delays the verdict, never flips it.
+    """
+
+    import asyncio
+    import types
+
+    from clio_agent.gact import turn_watchdog
+
+    real_wait = asyncio.wait
+
+    async def starved_wait(fs: Any, *, timeout: float | None = None, **kwargs: Any) -> Any:
+        # Every poll wakes 0.7s late, 3.5x the 0.2s window.
+        await asyncio.sleep(0.7)
+        return await real_wait(fs, timeout=0, **kwargs)
+
+    starved = types.SimpleNamespace(
+        **{name: getattr(asyncio, name) for name in dir(asyncio) if not name.startswith("__")}
+    )
+    starved.wait = starved_wait
+    monkeypatch.setattr(turn_watchdog, "asyncio", starved)
+
+    assistant, sess = _run_wedged_turn_to_timeout(tmp_path)
+    _assert_provider_timeout(assistant, sess)
 
 
 def test_post_message_progressing_turn_outlives_no_progress_window(
@@ -1948,14 +2112,57 @@ def test_tool_call_part_carries_thought_and_invoking_expert(tmp_path: Path) -> N
 # The restates_part_id echo TAG (mechanism 6's replacement labeling) ships in PR4.
 
 
+def test_post_message_reasoning_effort_with_unknown_levels_passes_through(
+    client: TestClient,
+    fake_agent: FakeClioAgent,
+) -> None:
+    """Unknown is not unsupported: an undiscovered model still gets the effort.
+
+    With no discovery evidence for the model's reasoning levels (no cached
+    catalog, no handshake), the requested effort rides through in the
+    dialect's own field with the typed ``reasoning_levels_unknown`` reason --
+    only a KNOWN level list that lacks the level is "unsupported".
+    """
+
+    from .conftest import complete_turn
+
+    client.app.state.lm_config = {
+        "provider_id": "openai",
+        "provider": "openai",
+        "model": "gpt-undiscovered-9",
+    }
+    sid = _create_session(client)
+    turn = complete_turn(
+        client,
+        sid,
+        "think hard",
+        json_override={
+            "client_message_id": "msg_unknown",
+            "behavior": {"reasoning_effort": "high"},
+        },
+    )
+
+    reasoning = turn["metadata"]["agent_runtime"]["reasoning"]
+    assert reasoning["requested_level"] == "high"
+    assert reasoning["effective_level"] == "high"
+    assert reasoning["lm_kwargs"] == {"reasoning_effort": "high"}
+    assert reasoning["reason"] == "reasoning_levels_unknown"
+
+
 def test_post_message_reasoning_effort_is_applied_and_recorded(
     client: TestClient,
     fake_agent: FakeClioAgent,
 ) -> None:
     """The message's reasoning effort reaches the turn and its provenance (I)."""
 
+    from tests._catalog_seed import seed_litellm_cost_map
+
     from .conftest import complete_turn
 
+    # gpt-5's reasoning levels come from the online LiteLLM cost map; seed its
+    # disk cache the way an earlier fetch leaves it (a recorded slice), so the
+    # KNOWN-levels path is what this test exercises.
+    seed_litellm_cost_map()
     # A real active provider, so the recorded level is the provider-mapped one.
     client.app.state.lm_config = {"provider_id": "openai", "provider": "openai", "model": "gpt-5"}
     sid = _create_session(client)
@@ -1981,6 +2188,7 @@ def test_post_message_reasoning_effort_is_applied_and_recorded(
     assert reasoning["effective_level"] == "high"
     assert reasoning["provider"] == "openai"
     assert reasoning["lm_kwargs"] == {"reasoning_effort": "high"}
+    assert "reason" not in reasoning  # known levels: no unknown-pass-through reason
     assert without["metadata"]["agent_runtime"]["reasoning"]["source"] != "per_message"
     assert messages["msg_effort"]["metadata"]["behavior"]["reasoning_effort"] == "high"
     # Unset is absent -- never a fabricated "medium" that would override the setting.

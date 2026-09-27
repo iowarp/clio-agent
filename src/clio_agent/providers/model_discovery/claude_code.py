@@ -16,18 +16,15 @@ status``. The Claude Code CLI prints JSON like ``{"loggedIn": true,
 "authMethod": "claude.ai", "apiProvider": "firstParty", ...}`` (verified on CLI
 2.1.276 and 2.1.280); ``loggedIn is True`` is the only signal this module
 trusts. The binary is resolved by :func:`_resolve_claude_binary`, the SAME
-binary the Claude Agent SDK itself uses -- the runtime always talks to Claude
-Code through the SDK, never a system-CLI preference, so this check must
-resolve identically or it would validate a different binary than the one that
-actually runs.
+selection the SDK transport pins as ``cli_path`` (installed vs bundled,
+:mod:`clio_agent.providers.components.client_binary`), so this check never
+validates a different binary than the one that actually runs.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
-import shutil
 import subprocess
 from typing import Any
 
@@ -68,23 +65,16 @@ class ClaudeCodeCLIUnavailableError(RuntimeError):
 
 
 def _resolve_claude_binary() -> str:
-    """Return an absolute path to the ``claude`` binary or raise, Windows-shim-aware.
+    """Return the ``claude`` binary the SDK transport runs, or raise.
 
-    Prefers the Windows ``.cmd`` shim because a bare ``shutil.which`` can return
-    an un-executable wrapper on Windows.
+    The SAME selection the transport pins as ``cli_path``
+    (:func:`~clio_agent.providers.components.client_binary.claude_client`), so
+    the sign-in check asks the very CLI a turn will run -- never a different
+    one found first on PATH.
     """
-    sdk_spec = importlib.util.find_spec("claude_agent_sdk")
-    sdk_origin = getattr(sdk_spec, "origin", None)
-    if sdk_origin:
-        bundled_name = "claude.exe" if os.name == "nt" else "claude"
-        bundled = os.path.join(os.path.dirname(sdk_origin), "_bundled", bundled_name)
-        if os.path.isfile(bundled):
-            return bundled
-    if os.name == "nt":
-        cmd_path = shutil.which("claude.cmd") or shutil.which("claude.exe")
-        if cmd_path:
-            return cmd_path
-    path = shutil.which("claude")
+    from clio_agent.providers.components.client_binary import claude_client  # noqa: PLC0415
+
+    path = claude_client().path
     if not path:
         raise ClaudeCodeCLIUnavailableError(
             "Claude Code runtime is unavailable. Install Claude Code support and sign in "
@@ -126,9 +116,10 @@ def _auth_status(binary: str, *, timeout: float) -> tuple[bool, str]:
         detail = (proc.stdout or proc.stderr or "")[:200]
         return False, f"Claude Code auth status returned non-JSON output: {detail!r}"
     if not isinstance(payload, dict) or payload.get("loggedIn") is not True:
+        # CLIO drives the CLI's own sign-in (Log in), so the sentence names that.
         return False, (
-            "Claude Code is installed but not signed in on the connected agent; sign in "
-            "with `claude auth login`, then check the provider again"
+            "Claude Code is not signed in on the connected agent. "
+            "Sign in to Claude Code from CLIO to use its models."
         )
     return True, ""
 

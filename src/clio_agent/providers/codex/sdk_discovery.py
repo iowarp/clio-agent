@@ -16,7 +16,7 @@ Codex installed and ready"):
 * ``codex_sdk_probe_failed`` -- the SDK started and (as far as we know) has an
   account, but the live probe itself failed (network, timeout, transport).
 
-A successful probe reuses the maintained catalog's discovery *result* shape
+A successful probe reuses the Direct model list's discovery *result* shape
 (:class:`~clio_agent.providers.model_discovery.overlay.ProviderDiscoveryResult`)
 so both codex transports' raw discovery output has one common contract.
 """
@@ -24,6 +24,11 @@ so both codex transports' raw discovery output has one common contract.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import json
+import os
+import subprocess
+import sys
 from typing import Any
 
 from clio_agent.providers.model_discovery.modality_evidence import (
@@ -31,7 +36,7 @@ from clio_agent.providers.model_discovery.modality_evidence import (
     reported_modalities,
 )
 from clio_agent.providers.model_discovery.overlay import (
-    CODEX_SOURCE,
+    CODEX_SDK_SOURCE,
     ProviderDiscoveryResult,
 )
 
@@ -56,6 +61,11 @@ SDK_UNAVAILABLE_REASONS: dict[str, str] = {
 AsyncCodex: Any | None = None
 
 _DEFAULT_PROBE_TIMEOUT_S = 20.0
+
+#: Headroom for the probe CHILD over the probe's own timeout: interpreter start and
+#: the SDK import happen in the child before the probe's clock starts.
+_CHILD_STARTUP_HEADROOM_S = 30.0
+_CHILD_RESULT_PREFIX = "CLIO_CODEX_SDK_PROBE_RESULT "
 
 
 def _typed_failure(code: str, *, detail: str = "") -> str:
@@ -118,11 +128,12 @@ async def _probe(timeout: float) -> ProviderDiscoveryResult:
         from clio_agent.providers.codex.sdk_client import (  # noqa: PLC0415
             BARE_LM_CONFIG_OVERRIDES,
         )
+        from clio_agent.providers.components.client_binary import codex_client  # noqa: PLC0415
     except ImportError as exc:
         return ProviderDiscoveryResult(
             provider="codex_sdk",
             discovered=[],
-            source=CODEX_SOURCE,
+            source=CODEX_SDK_SOURCE,
             failed_reason=_typed_failure("codex_sdk_not_installed", detail=str(exc)),
         )
 
@@ -132,7 +143,10 @@ async def _probe(timeout: float) -> ProviderDiscoveryResult:
         # No ``env=`` override: this asks the SAME runtime/home the SDK
         # transport itself runs against (the user's own CODEX_HOME) --
         # never a CLIO-managed copy, and never a file read of auth.json.
-        async with sdk_client(CodexConfig(config_overrides=BARE_LM_CONFIG_OVERRIDES)) as client:
+        config = CodexConfig(
+            codex_bin=codex_client().path, config_overrides=BARE_LM_CONFIG_OVERRIDES
+        )
+        async with sdk_client(config) as client:
             account = await client.account()
             if getattr(account, "account", None) is None:
                 return False, None
@@ -147,14 +161,14 @@ async def _probe(timeout: float) -> ProviderDiscoveryResult:
         return ProviderDiscoveryResult(
             provider="codex_sdk",
             discovered=[],
-            source=CODEX_SOURCE,
+            source=CODEX_SDK_SOURCE,
             failed_reason=_typed_failure("codex_sdk_not_installed", detail=str(exc)),
         )
     except (OSError, CodexError, RuntimeError, TimeoutError) as exc:
         return ProviderDiscoveryResult(
             provider="codex_sdk",
             discovered=[],
-            source=CODEX_SOURCE,
+            source=CODEX_SDK_SOURCE,
             failed_reason=_typed_failure("codex_sdk_probe_failed", detail=str(exc) or repr(exc)),
         )
 
@@ -162,7 +176,7 @@ async def _probe(timeout: float) -> ProviderDiscoveryResult:
         return ProviderDiscoveryResult(
             provider="codex_sdk",
             discovered=[],
-            source=CODEX_SOURCE,
+            source=CODEX_SDK_SOURCE,
             failed_reason=_typed_failure("codex_sdk_signed_out"),
         )
 
@@ -182,14 +196,14 @@ async def _probe(timeout: float) -> ProviderDiscoveryResult:
         return ProviderDiscoveryResult(
             provider="codex_sdk",
             discovered=[],
-            source=CODEX_SOURCE,
+            source=CODEX_SDK_SOURCE,
             failed_reason=_typed_failure("codex_sdk_zero_models"),
         )
     default_model = next((str(row.id) for row in rows if row.is_default), "")
     return ProviderDiscoveryResult(
         provider="codex_sdk",
         discovered=discovered,
-        source=CODEX_SOURCE,
+        source=CODEX_SDK_SOURCE,
         default_model=default_model,
     )
 
@@ -197,9 +211,11 @@ async def _probe(timeout: float) -> ProviderDiscoveryResult:
 def discover_codex_sdk(*, timeout: float = _DEFAULT_PROBE_TIMEOUT_S) -> ProviderDiscoveryResult:
     """Refresh the account's live Codex model list through the SDK transport.
 
-    The Python SDK owns its pinned runtime and authentication; CLIO neither
-    resolves a ``codex`` executable nor opens an app-server protocol
-    connection itself, and never touches ``~/.codex/auth.json``.
+    The Python SDK owns the runtime protocol and authentication; CLIO only
+    chooses WHICH ``codex`` binary it launches (the user's installed Codex CLI
+    when present, else the bundled one -- the backend gates models by client
+    version), never opens an app-server connection itself, and never touches
+    ``~/.codex/auth.json``.
     """
 
     try:
@@ -210,7 +226,7 @@ def discover_codex_sdk(*, timeout: float = _DEFAULT_PROBE_TIMEOUT_S) -> Provider
         return ProviderDiscoveryResult(
             provider="codex_sdk",
             discovered=[],
-            source=CODEX_SOURCE,
+            source=CODEX_SDK_SOURCE,
             failed_reason=_typed_failure("codex_sdk_probe_failed", detail=str(exc)),
         )
 
@@ -218,9 +234,67 @@ def discover_codex_sdk(*, timeout: float = _DEFAULT_PROBE_TIMEOUT_S) -> Provider
 async def discover_codex_sdk_async(
     *, timeout: float = _DEFAULT_PROBE_TIMEOUT_S
 ) -> ProviderDiscoveryResult:
-    """Async form of :func:`discover_codex_sdk` for callers already on an event loop."""
+    """Async form of :func:`discover_codex_sdk` for callers already on an event loop.
 
-    return await _probe(timeout)
+    The probe runs in a short-lived CHILD process unless this process already has
+    the SDK loaded (a Codex SDK turn ran) or a test injected :data:`AsyncCodex`.
+    Importing ``openai_codex`` costs the server ~35 MB of private memory that stays
+    resident for the process's life, and this probe runs at every startup for every
+    user (the Codex preset always exists), so probing in-process made every server
+    pay for Codex whether or not it is ever used. The child returns the same
+    :class:`ProviderDiscoveryResult`; its own failures are typed
+    ``codex_sdk_probe_failed``.
+    """
+
+    if AsyncCodex is not None or "openai_codex" in sys.modules:
+        return await _probe(timeout)
+    return await asyncio.to_thread(_probe_in_child, timeout)
+
+
+def _probe_in_child(timeout: float) -> ProviderDiscoveryResult:
+    """Run :func:`_probe` in a child interpreter and decode its result."""
+
+    code = (
+        "from clio_agent.providers.codex.sdk_discovery import _child_main; "
+        f"_child_main({float(timeout)!r})"
+    )
+    try:
+        proc = subprocess.run(  # noqa: S603 - fixed interpreter + in-package entry point
+            [sys.executable, "-c", code],
+            env=dict(os.environ),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=timeout + _CHILD_STARTUP_HEADROOM_S,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return _child_failure(f"the probe process did not finish: {exc!r}")
+    for line in reversed((proc.stdout or "").splitlines()):
+        if line.startswith(_CHILD_RESULT_PREFIX):
+            try:
+                data = json.loads(line[len(_CHILD_RESULT_PREFIX) :])
+                return ProviderDiscoveryResult(**data)
+            except (ValueError, TypeError) as exc:
+                return _child_failure(f"unreadable probe result: {exc}")
+    tail = ((proc.stderr or "") + (proc.stdout or "")).strip()[-500:]
+    return _child_failure(f"the probe process exited {proc.returncode} without a result: {tail}")
+
+
+def _child_failure(detail: str) -> ProviderDiscoveryResult:
+    return ProviderDiscoveryResult(
+        provider="codex_sdk",
+        discovered=[],
+        source=CODEX_SDK_SOURCE,
+        failed_reason=_typed_failure("codex_sdk_probe_failed", detail=detail),
+    )
+
+
+def _child_main(timeout: float) -> None:
+    """The probe child's entry point: run the probe, print its result as one JSON line."""
+
+    result = asyncio.run(_probe(timeout))
+    print(_CHILD_RESULT_PREFIX + json.dumps(dataclasses.asdict(result)), flush=True)
 
 
 __all__ = [

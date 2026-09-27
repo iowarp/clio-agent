@@ -47,6 +47,7 @@ from tests.test_gact._hook_fixtures import (
     make_command_dispatcher,
     write_hook_script,
 )
+from tests.turn_signals import TURN_SIGNAL_BACKSTOP_S
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
@@ -70,7 +71,7 @@ _DEFER_BODY = (
 )
 
 
-def _wait_for_pending(app, *, kind: str, timeout: float = 3.0) -> str:
+def _wait_for_pending(app, *, kind: str, timeout: float = TURN_SIGNAL_BACKSTOP_S) -> str:
     """Poll ``app.state.permissions`` until a pending row of ``kind`` appears; return pid."""
 
     deadline = time.time() + timeout
@@ -354,7 +355,9 @@ def test_pretool_defer_without_session_denies_fail_safe(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def _poll_status(c: TestClient, sid: str, wanted: set[str], timeout: float = 6.0) -> str:
+def _poll_status(
+    c: TestClient, sid: str, wanted: set[str], timeout: float = TURN_SIGNAL_BACKSTOP_S
+) -> str:
     deadline = time.time() + timeout
     last = ""
     while time.time() < deadline:

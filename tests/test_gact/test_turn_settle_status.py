@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-import time
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +31,7 @@ from clio_agent.gact.events import Event
 from clio_agent.gact.sessions import SessionStore
 from clio_agent.gact.turn_runner import TurnRunner
 from clio_agent.gact.turn_settle_status import publish_turn_settled_status
+from tests.turn_signals import TURN_SIGNAL_BACKSTOP_S, wait_for_terminal_status
 
 from .test_post_messages import FakeClioAgent
 
@@ -188,17 +188,6 @@ def test_settled_status_superseded_by_a_later_transition_is_dropped(tmp_path: Pa
 # --------------------------------------------------------------------------- #
 
 
-def _wait_status_not_running(c: TestClient, sid: str) -> str:
-    deadline = time.monotonic() + 10.0
-    status = "running"
-    while time.monotonic() < deadline:
-        status = c.get(f"/v1/sessions/{sid}").json()["status"]
-        if status != "running":
-            break
-        time.sleep(0.02)
-    return status
-
-
 def test_idle_is_not_observable_while_the_finalize_tail_holds_the_slot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -208,7 +197,7 @@ def test_idle_is_not_observable_while_the_finalize_tail_holds_the_slot(
     async def held_goal_step(*_args: Any, **_kwargs: Any) -> None:
         # The GOAL judge is the last awaited step of the turn's finalize tail.
         tail_entered.set()
-        await asyncio.to_thread(release_tail.wait, 10.0)
+        await asyncio.to_thread(release_tail.wait, TURN_SIGNAL_BACKSTOP_S)
         return None
 
     monkeypatch.setattr(
@@ -237,7 +226,7 @@ def test_idle_is_not_observable_while_the_finalize_tail_holds_the_slot(
             f"/v1/sessions/{sid}/messages", json={"parts": [{"type": "text", "text": "one"}]}
         )
         assert ack.status_code == 200, ack.text
-        assert tail_entered.wait(10.0), "finalize tail never reached"
+        assert tail_entered.wait(TURN_SIGNAL_BACKSTOP_S), "finalize tail never reached"
 
         # The assistant message is complete but the turn still holds its slot.
         # Sabotage: flip the status inside finalize again -> "idle" here -> red.
@@ -245,14 +234,16 @@ def test_idle_is_not_observable_while_the_finalize_tail_holds_the_slot(
         assert c.get(f"/v1/sessions/{sid}").json()["status"] == "running"
         assert idle_publishes == []
 
+        cursor = app.state.bus.latest_event_id(sid)
         release_tail.set()
-        assert _wait_status_not_running(c, sid) == "idle"
+        assert wait_for_terminal_status(app.state.bus, sid, after_event_id=cursor) == "idle"
         # The idle event went out only once the busy gate was open.
         assert idle_publishes == [False]
 
+        cursor = app.state.bus.latest_event_id(sid)
         second = c.post(
             f"/v1/sessions/{sid}/messages", json={"parts": [{"type": "text", "text": "two"}]}
         )
         assert second.status_code == 200, second.text
         assert second.json()["delivery"] == "start"
-        assert _wait_status_not_running(c, sid) == "idle"
+        assert wait_for_terminal_status(app.state.bus, sid, after_event_id=cursor) == "idle"

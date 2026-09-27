@@ -122,7 +122,9 @@ def parse_models_row(
     root = row.get("root")
     vllm_root = str(root) if isinstance(root, str) and root.strip() else None
 
-    model_key_fact = deployment_model_key_fact(model_id, observed_at=observed_at, vllm_root=vllm_root)
+    model_key_fact = deployment_model_key_fact(
+        model_id, observed_at=observed_at, vllm_root=vllm_root
+    )
 
     return DeploymentCapabilities(
         provider_id=provider_id,
@@ -166,7 +168,9 @@ def build_endpoint_capabilities(
         custom_llm_provider="hosted_vllm",
         multi_model=multi_model,
         server_version=(
-            Fact(version_text, "server_report", observed_at, "vllm /version") if version_text else None
+            Fact(version_text, "server_report", observed_at, "vllm /version")
+            if version_text
+            else None
         ),
         fingerprint=fingerprint_from_version(version),
     )

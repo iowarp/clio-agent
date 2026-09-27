@@ -13,11 +13,10 @@ whatever the last refresh wrote, falling back to :meth:`CliCatalogHandshake.
 _fallback_models` when no overlay entry exists yet (fresh install) -- this is
 what keeps the #740 guarantee (a CLI provider's models always resolve a
 context window) intact regardless of whether a refresh has ever run. The
-DEFAULT fallback is :class:`NoOpHandshake`'s static registry catalog
-(``provider.model_catalog``); :class:`ClaudeCodeCatalogHandshake` overrides it
-to read the maintained catalog's own disk cache instead (see that class), since
-per owner ruling Claude Code's model identity and capabilities have exactly
-ONE trusted source, never a second hand-typed candidate list.
+DEFAULT fallback is empty (no compiled-in candidate list exists, brief 9.1);
+:class:`ClaudeCodeCatalogHandshake` overrides it to read the maintained
+catalog's own disk cache (see that class), since per owner ruling Claude Code's
+model identity and capabilities have exactly ONE trusted source.
 
 **Context/output limits (#1211 review D4).** ``model_discovery`` resolves each
 discovered model's context/output limit ONCE, at explicit refresh time, and
@@ -56,10 +55,14 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
+from clio_agent.providers.capabilities.catalog_facts import descriptive_catalog_facts
 from clio_agent.providers.capabilities.link import deployment_model_key_fact
+from clio_agent.providers.capabilities.model_facts import SUBSCRIPTION
+from clio_agent.providers.capabilities.model_sources import merge_model_layers
 from clio_agent.providers.capabilities.records import (
     DeploymentCapabilities,
     Fact,
@@ -177,7 +180,7 @@ class CliCatalogHandshake(NoOpHandshake):
                     # of arriving as an anonymous empty list.
                     "capability_evidence": m.get("capability_evidence") or {},
                     # Per-model reasoning efforts the discovery run recorded
-                    # (the maintained Codex catalog); the provider catalog derives the
+                    # (the Codex live model lists); the provider catalog derives the
                     # selectable thinking levels from them.
                     "supported_reasoning_efforts": list(m.get("supported_reasoning_efforts") or []),
                     "default_reasoning_effort": str(m.get("default_reasoning_effort") or ""),
@@ -199,9 +202,8 @@ class CliCatalogHandshake(NoOpHandshake):
     async def _fallback_models(self, client: Any, ctx: HandshakeContext) -> list[dict[str, Any]]:
         """The "no overlay yet" fallback (a fresh install, never refreshed).
 
-        Default: :class:`~clio_agent.providers.handshake.noop.NoOpHandshake`'s
-        generic registry-catalog read (``provider.model_catalog``) -- the right
-        answer for a CLI provider with no other data source. A subclass with a
+        Default: nothing (:class:`~clio_agent.providers.handshake.noop.NoOpHandshake`
+        lists no models; codex's ids come only from a verified refresh). A subclass with a
         richer offline data source (see :class:`ClaudeCodeCatalogHandshake`)
         overrides this instead of ``discover_models`` itself, so the overlay-
         first logic above is never duplicated.
@@ -226,6 +228,32 @@ class CliCatalogHandshake(NoOpHandshake):
         return "overlay", generated_at
 
     async def discover_model_config(
+        self, client: Any, ctx: HandshakeContext, raw: dict[str, Any]
+    ) -> DiscoveredModelFacts:
+        """The row's facts (:meth:`_row_facts`) plus the plan pricing and cached catalog facts.
+
+        A CLI provider bills through the user's SUBSCRIPTION: its deployment
+        pricing is the typed ``subscription`` value (never $0, never "free").
+        The model's description, release date and list price come from the
+        models.dev / LiteLLM DISK caches only (``allow_fetch=False``) -- this
+        passive read path never touches the network (D4) -- and fill only
+        fields the row itself left unknown.
+        """
+        facts = await self._row_facts(client, ctx, raw)
+        deployment = replace(
+            facts.deployment,
+            pricing=Fact(
+                SUBSCRIPTION,
+                "dialect",
+                _now_iso(),
+                f"{ctx.provider_kind}: billed through the signed-in subscription plan",
+            ),
+        )
+        catalog = descriptive_catalog_facts(facts.discovered.id, allow_fetch=False)
+        model = merge_model_layers(facts.model.model_key, facts.model, catalog)
+        return replace(facts, model=model, deployment=deployment)
+
+    async def _row_facts(
         self, client: Any, ctx: HandshakeContext, raw: dict[str, Any]
     ) -> DiscoveredModelFacts:
         """Build :class:`DiscoveredModelFacts`, pre-filled from the overlay when available (D4).
@@ -286,6 +314,16 @@ class CliCatalogHandshake(NoOpHandshake):
                 else unknown()
             ),
             thinking=_thinking_fact_for(ctx.provider_kind, raw),
+            description=(
+                Fact(
+                    value=raw["description"],
+                    source="server_report",
+                    observed_at=observed_at,
+                    detail=detail,
+                )
+                if isinstance(raw.get("description"), str) and raw["description"].strip()
+                else unknown()
+            ),
         )
         deployment = DeploymentCapabilities(
             provider_id=ctx.provider_id,
@@ -402,9 +440,7 @@ class ClaudeCodeCatalogHandshake(CliCatalogHandshake):
     async def _fallback_models(self, client: Any, ctx: HandshakeContext) -> list[dict[str, Any]]:
         """Before any refresh has ever run: the maintained catalog's OWN disk cache.
 
-        NEVER the generic :class:`~clio_agent.providers.handshake.noop.NoOpHandshake`
-        registry-catalog read (``provider.catalog.Provider.model_catalog``) --
-        per owner ruling, Claude Code model existence and per-model modality
+        Per owner ruling, Claude Code model existence and per-model modality
         capabilities come from ONE trusted source, the maintained GitHub
         catalog document (:mod:`clio_agent.providers.model_discovery.
         claude_code_catalog`), never a second, hand-typed candidate list that

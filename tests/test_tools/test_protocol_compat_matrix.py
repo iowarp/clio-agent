@@ -29,7 +29,7 @@ from clio_agent.tools.mcp_config import MCPServerSpec
 # A stdio backend whose one tool reports the protocol era its OWN (backend)
 # session negotiated. Reachable through the real gateway proxy path, it lets the
 # test assert BOTH legs of the chain, proving the proxy mirrors the front era.
-ERA_STUB = '''
+ERA_STUB = """
 from fastmcp import Context, FastMCP
 
 mcp = FastMCP("era")
@@ -40,7 +40,7 @@ async def era(ctx: Context) -> dict:
     return {"backend_era": getattr(rc, "protocol_version", None)}
 
 mcp.run()
-'''
+"""
 
 
 def _reap(needle: str) -> None:

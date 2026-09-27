@@ -296,14 +296,6 @@ KEY_NOTES: dict[str, str] = {
         "Optional bearer token required on non-loopback GACT API requests; set to protect a server "
         "exposed beyond localhost."
     ),
-    "gact.ask_user.max_ttl_s": (
-        "Hard ceiling in seconds on an `ask_user` response window; a longer window requested by "
-        "the model is clamped to this. Lower it to bound how long a question can hold a session."
-    ),
-    "gact.ask_user.ttl_s": (
-        "Default `ask_user` response window in seconds, used when the model does not request an "
-        "explicit one; raise it for slow human reviewers."
-    ),
     "gact.blueprint_registry.url": (
         "Git URL of the default agent-blueprint marketplace registry; override to point at a "
         "private/mirrored marketplace."
@@ -347,6 +339,11 @@ KEY_NOTES: dict[str, str] = {
     "gact.cancellation_grace_s": (
         "Seconds a cooperative session cancel is given before the turn task is hard-cancelled; "
         "raise to let a mid-tool-call turn unwind cleanly."
+    ),
+    "gact.allowed_hosts": (
+        "Comma-separated host names (no ports) a request without a bearer token may address, "
+        "besides localhost/127.0.0.1/[::1]; set for a LAN or container deployment reached by "
+        "another name."
     ),
     "gact.cors.origins": (
         "Comma-separated browser origins allowed to call the GACT API cross-origin; set when "
@@ -541,20 +538,21 @@ KEY_NOTES: dict[str, str] = {
         "unusually large implementation plans, lower to bound review payloads."
     ),
     "limits.shell_default_output_bytes": (
-        "Default byte cap on shell-command stdout/stderr when the caller specifies none; raise for "
-        "commands with verbose output."
+        "Per-stream bytes of shell stdout/stderr returned inline when the caller specifies none; "
+        "larger output is spilled in full to .clio/tool-output/ and excerpted. Sized so the "
+        "result fits limits.tool_result_chars (#887)."
     ),
     "limits.shell_default_timeout_s": (
         "Seconds a shell command may run when the caller passes no timeout; 0 (default) means "
         "no timeout: the command runs until it exits or the turn is cancelled."
     ),
     "limits.shell_max_command_chars": (
-        "Max character length of a shell command string the tool accepts; raise for scripts that "
-        "assemble long commands."
+        "Max character length of a shell command string the tool accepts; stays under the "
+        "Windows 32,767-char command line. Longer scripts: write a file, then run it."
     ),
     "limits.shell_max_output_bytes": (
-        "Hard ceiling in bytes on shell-command output the tool will ever return, regardless of a "
-        "caller cap; raise for large output."
+        "Ceiling on the per-stream inline bytes a caller may request; output past the result "
+        "budget is spilled in full to .clio/tool-output/, never dropped."
     ),
     "limits.shell_max_timeout_s": (
         "Optional operator ceiling in seconds on any shell command; 0 (default) means no "
@@ -823,6 +821,14 @@ KEY_NOTES: dict[str, str] = {
         "Comma-separated hosts whose http(s) image URLs may be handed to a provider to fetch; "
         "empty (the default) accepts only inline data: URIs, so no attachment leaves CLIO "
         "unbounded and unattributed."
+    ),
+    "providers.component_updates.index_url": (
+        "PyPI JSON API base the provider SDK update check reads "
+        "(<index>/<distribution>/json); point at a mirror that serves the same API."
+    ),
+    "providers.component_updates.ttl_s": (
+        "Seconds one provider SDK update check (installed vs latest installable release) is "
+        "served before PyPI is asked again; an explicit check always asks again."
     ),
     "providers.model_catalog_ttl_s": (
         "Seconds a discovered provider model catalog is served as fresh before every read marks "

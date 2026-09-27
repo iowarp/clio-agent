@@ -5,41 +5,51 @@ from __future__ import annotations
 import importlib.metadata
 import ntpath
 import posixpath
-from collections.abc import Callable
-from dataclasses import dataclass
 
+from clio_agent.gact.infrastructure import powershell
 from clio_agent.gact.infrastructure.clio_agent_deploy import (
     LAUNCHER_PRELUDE,
-    ClaimResult,
     claim_command,
     install_command,
     status_command,
     teardown_command,
 )
+from clio_agent.gact.infrastructure.model_runtimes import (
+    MODEL_RUNTIME_SERVICES,
+    build_model_runtime_plan,
+    model_runtime_definition,
+    service_port,
+)
 from clio_agent.gact.infrastructure.models import (
     CommandSpec,
     InfrastructureTarget,
     ManagedServiceDefinition,
+    OwnedResource,
     ServiceConfigurationField,
     ServiceVariant,
     TargetFacts,
 )
+from clio_agent.gact.infrastructure.plan import DriverPlan
+
+__all__ = [
+    "CLIO_AGENT_PORT",
+    "WEB_SEARCH_IMAGE",
+    "LOOPBACK_ONLY_SERVICES",
+    "DriverPlan",
+    "build_driver_plan",
+    "clio_agent_version",
+    "service_connection_port",
+    "service_definitions",
+]
 
 WEB_SEARCH_IMAGE = "ghcr.io/iowarp/clio-web-search:0.3.1"
-VLLM_VERSION = "0.28.0"
-LLAMA_BUILD = "b10621"
-LLAMA_CPU_IMAGE = f"ghcr.io/ggml-org/llama.cpp:server-{LLAMA_BUILD}"
-LLAMA_VULKAN_IMAGE = f"ghcr.io/ggml-org/llama.cpp:server-vulkan-{LLAMA_BUILD}"
-LLAMA_WINDOWS_CPU_ARCHIVE = (
-    "https://github.com/ggml-org/llama.cpp/releases/download/"
-    f"{LLAMA_BUILD}/llama-{LLAMA_BUILD}-bin-win-cpu-x64.zip"
-)
 RELAY_VERSION = "1.6.8"
 CLIO_AGENT_PORT = 17_800
 # Services whose server listens on the target's loopback only: nothing can
 # reach them at the host's address, so they are always reached through an SSH
-# forward. CLIO's launcher binds 127.0.0.1.
-LOOPBACK_ONLY_SERVICES = frozenset({"clio_agent"})
+# forward. CLIO's launcher binds 127.0.0.1, and managed model servers bind the
+# loopback because they have no authentication (see model_runtimes).
+LOOPBACK_ONLY_SERVICES = frozenset({"clio_agent", *MODEL_RUNTIME_SERVICES})
 
 
 def clio_agent_version() -> str:
@@ -48,26 +58,18 @@ def clio_agent_version() -> str:
     return importlib.metadata.version("clio-agent")
 
 
-@dataclass(frozen=True)
-class DriverPlan:
-    """Commands and endpoint metadata for one validated lifecycle action."""
+def service_connection_port(
+    service_id: str, configuration: dict[str, str] | None = None, variant_id: str = ""
+) -> int | None:
+    """Return the listener port for a connectable managed service.
 
-    commands: tuple[CommandSpec, ...]
-    connection_port: int | None = None
-    # Undo what this plan started when it fails or is cancelled, given what
-    # its claim step found (see clio_agent_deploy); None when nothing to undo.
-    teardown: Callable[[ClaimResult], CommandSpec] | None = None
+    Containerized model runtimes listen on a configurable port
+    (``configuration["port"]``); the native Windows llama.cpp on its fixed one.
+    """
 
-
-def service_connection_port(service_id: str) -> int | None:
-    """Return the stable listener port for a connectable managed service."""
-
-    return {
-        "vllm": 8000,
-        "llama_cpp": 8088,
-        "web_search": 8089,
-        "clio_agent": CLIO_AGENT_PORT,
-    }.get(service_id)
+    if service_id in MODEL_RUNTIME_SERVICES:
+        return service_port(service_id, configuration or {}, variant_id)
+    return {"web_search": 8089, "clio_agent": CLIO_AGENT_PORT}.get(service_id)
 
 
 def _field(
@@ -91,89 +93,6 @@ def service_definitions(facts: TargetFacts) -> list[ManagedServiceDefinition]:
     """Build service compatibility from inspected host facts."""
 
     docker = facts.docker_available
-    linux = facts.os == "linux"
-    vllm = ManagedServiceDefinition(
-        id="vllm",
-        category="model_runtime",
-        label="vLLM",
-        description="OpenAI-compatible model serving.",
-        recommended_variant="cuda",
-        variants=[
-            ServiceVariant(
-                id="cuda",
-                label="NVIDIA CUDA",
-                version=VLLM_VERSION,
-                install_type="container",
-                artifact=f"vllm/vllm-openai:v{VLLM_VERSION}",
-                compatible=docker and linux and facts.accelerator == "nvidia",
-                reason="Requires Linux, Docker, and an NVIDIA GPU.",
-            ),
-            ServiceVariant(
-                id="rocm",
-                label="AMD ROCm",
-                version=VLLM_VERSION,
-                install_type="container",
-                artifact=f"vllm/vllm-openai-rocm:v{VLLM_VERSION}",
-                compatible=docker and linux and facts.accelerator == "amd",
-                reason="Requires Linux, Docker, and an AMD ROCm GPU.",
-            ),
-            ServiceVariant(
-                id="cpu",
-                label="CPU",
-                version=VLLM_VERSION,
-                install_type="container",
-                artifact=f"vllm/vllm-openai-cpu:v{VLLM_VERSION}",
-                compatible=docker and linux and facts.arch == "x86_64",
-                reason="Requires x86-64 Linux and Docker; CPU serving may be slow.",
-            ),
-        ],
-        configuration_fields=[_field("model", "Model", "Qwen/Qwen3-8B", required=True)],
-    )
-    llama = ManagedServiceDefinition(
-        id="llama_cpp",
-        category="model_runtime",
-        label="llama.cpp",
-        description="Lightweight GGUF model serving.",
-        recommended_variant=(
-            "native-windows-cpu"
-            if facts.target_id == "local" and facts.os == "windows" and facts.arch == "x86_64"
-            else "cpu"
-        ),
-        variants=[
-            ServiceVariant(
-                id="native-windows-cpu",
-                label="Windows CPU (native)",
-                version=LLAMA_BUILD,
-                install_type="native_archive",
-                artifact=LLAMA_WINDOWS_CPU_ARCHIVE,
-                compatible=(
-                    facts.target_id == "local" and facts.os == "windows" and facts.arch == "x86_64"
-                ),
-                reason="Requires the CLIO host to be 64-bit Windows.",
-            ),
-            ServiceVariant(
-                id="vulkan",
-                label="Vulkan",
-                version=LLAMA_BUILD,
-                install_type="container",
-                artifact=LLAMA_VULKAN_IMAGE,
-                compatible=docker and linux and facts.accelerator == "amd",
-                reason="Requires Linux, Docker, and a Vulkan-capable AMD GPU.",
-            ),
-            ServiceVariant(
-                id="cpu",
-                label="CPU",
-                version=LLAMA_BUILD,
-                install_type="container",
-                artifact=LLAMA_CPU_IMAGE,
-                compatible=docker,
-                reason="Requires Docker.",
-            ),
-        ],
-        configuration_fields=[
-            _field("model_path", "GGUF model path", "/models/model.gguf", required=True)
-        ],
-    )
     web_search = ManagedServiceDefinition(
         id="web_search",
         category="scientific_service",
@@ -247,7 +166,14 @@ def service_definitions(facts: TargetFacts) -> list[ManagedServiceDefinition]:
             )
         ],
     )
-    return [vllm, llama, web_search, relay, clio_agent]
+    return [
+        model_runtime_definition("vllm", facts),
+        model_runtime_definition("llama_cpp", facts),
+        model_runtime_definition("ollama", facts),
+        web_search,
+        relay,
+        clio_agent,
+    ]
 
 
 def _required(configuration: dict[str, str], key: str) -> str:
@@ -296,8 +222,13 @@ def build_driver_plan(
     configuration: dict[str, str],
     facts: TargetFacts,
     target: InfrastructureTarget | None = None,
+    owned: list[OwnedResource] | None = None,
 ) -> DriverPlan:
-    """Compile one allowlisted lifecycle action into commands."""
+    """Compile one allowlisted lifecycle action into commands.
+
+    ``owned`` is the service's ledger of what its deployment created; model
+    runtimes remove exactly those resources on uninstall and reinstall.
+    """
 
     definitions = {row.id: row for row in service_definitions(facts)}
     definition = definitions.get(service_id)
@@ -306,6 +237,18 @@ def build_driver_plan(
     variant = next((row for row in definition.variants if row.id == variant_id), None)
     if variant is None:
         raise ValueError(f"Unknown {service_id} variant {variant_id!r}")
+    if service_id in MODEL_RUNTIME_SERVICES:
+        # The model-runtime driver checks its own compatibility, so a missing
+        # container runtime surfaces as the typed RuntimeUnavailableError.
+        return build_model_runtime_plan(
+            service_id=service_id,
+            action=action,
+            variant_id=variant_id,
+            configuration=configuration,
+            facts=facts,
+            target=target,
+            owned=owned,
+        )
     if action in {"install", "reinstall"} and not variant.compatible:
         raise ValueError(variant.reason or "This service is unavailable on the selected target")
 
@@ -314,20 +257,13 @@ def build_driver_plan(
     if service_id == "clio_agent":
         return _clio_agent_plan(action, target)
 
-    if service_id == "llama_cpp" and variant_id == "native-windows-cpu":
-        return _native_windows_llama_plan(action, configuration, target)
-
-    container = {
-        "vllm": "clio-vllm",
-        "llama_cpp": "clio-llama-cpp",
-        "web_search": "clio-web-search",
-    }[service_id]
+    container = "clio-web-search"
     if action in {"status", "logs", "stop", "uninstall"}:
         return _docker_lifecycle(action, container)
     if action == "start":
         return DriverPlan(
             (CommandSpec(program="docker", args=["start", container]),),
-            connection_port={"vllm": 8000, "llama_cpp": 8088, "web_search": 8089}[service_id],
+            connection_port=8089,
         )
 
     commands: list[CommandSpec] = []
@@ -356,10 +292,7 @@ def build_driver_plan(
             storage,
         )
     )
-    return DriverPlan(
-        tuple(commands),
-        connection_port={"vllm": 8000, "llama_cpp": 8088, "web_search": 8089}[service_id],
-    )
+    return DriverPlan(tuple(commands), connection_port=8089)
 
 
 def _container_run(
@@ -398,43 +331,7 @@ def _container_run(
             args.extend(["--env", f"CLIO_WEB_SEARCH_CONTACT_EMAIL={email}"])
         args.append(artifact)
         return CommandSpec(program="docker", args=args)
-    if service_id == "llama_cpp":
-        model_path = _required(configuration, "model_path")
-        args = [
-            "run",
-            "--detach",
-            "--name",
-            "clio-llama-cpp",
-            "--restart",
-            "unless-stopped",
-            "--publish",
-            f"{bind}:8088:8080",
-            "--volume",
-            f"{model_path}:/models/model.gguf:ro",
-        ]
-        if variant_id == "vulkan":
-            args.extend(["--device", "/dev/dri"])
-        args.extend([artifact, "-m", "/models/model.gguf", "--host", "0.0.0.0", "--port", "8080"])
-        return CommandSpec(program="docker", args=args)
-    model = _required(configuration, "model")
-    args = [
-        "run",
-        "--detach",
-        "--name",
-        "clio-vllm",
-        "--restart",
-        "unless-stopped",
-        "--publish",
-        f"{bind}:8000:8000",
-    ]
-    if storage:
-        args.extend(["--volume", f"{storage}:/root/.cache/huggingface"])
-    if variant_id == "cuda":
-        args.extend(["--gpus", "all"])
-    elif variant_id == "rocm":
-        args.extend(["--device", "/dev/kfd", "--device", "/dev/dri", "--group-add", "video"])
-    args.extend(["--ipc", "host", artifact, "--model", model])
-    return CommandSpec(program="docker", args=args)
+    raise ValueError(f"Unsupported container service {service_id!r}")
 
 
 def _container_storage_path(
@@ -444,12 +341,10 @@ def _container_storage_path(
 ) -> str | None:
     """Return an optional service-owned bind directory under the configured root."""
 
-    if target is None or not target.install_root.strip() or service_id == "llama_cpp":
+    if target is None or not target.install_root.strip() or service_id != "web_search":
         return None
     root = target.install_root.strip().rstrip("/\\")
-    name = {"web_search": "web-search", "vllm": "vllm-cache"}.get(service_id)
-    if name is None:
-        return None
+    name = "web-search"
     path_module = ntpath if facts.os == "windows" else posixpath
     return path_module.join(root, "services", name)
 
@@ -458,15 +353,9 @@ def _create_directory(path: str, facts: TargetFacts) -> CommandSpec:
     """Create one validated driver-owned directory without invoking a shell on Linux."""
 
     if facts.os == "windows":
-        return CommandSpec(
-            program="powershell",
-            args=[
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "New-Item -ItemType Directory -Force -LiteralPath $args[0] | Out-Null",
-                path,
-            ],
+        # -Command never binds trailing arguments to $args: embed a literal.
+        return powershell.command(
+            f"New-Item -ItemType Directory -Force -Path {powershell.literal(path)} | Out-Null"
         )
     return CommandSpec(program="mkdir", args=["-p", "--", path])
 
@@ -557,94 +446,6 @@ def _relay_plan(
         ),
     ]
     return DriverPlan(tuple(commands))
-
-
-def _native_windows_llama_plan(
-    action: str,
-    configuration: dict[str, str],
-    target: InfrastructureTarget | None,
-) -> DriverPlan:
-    if target is None or target.kind != "local":
-        raise ValueError("Native Windows llama.cpp can run only beside the active CLIO")
-    root = target.install_root.strip()
-    prefix = (
-        "$root=$args[0]; if (!$root) { "
-        f"$root=Join-Path $env:LOCALAPPDATA 'CLIO\\services\\llama.cpp\\{LLAMA_BUILD}'"
-        " };"
-    )
-    invoke = ["-NoProfile", "-NonInteractive", "-Command"]
-    if action == "status":
-        script = (
-            prefix + "$pidFile=Join-Path $root 'server.pid'; "
-            "if (!(Test-Path -LiteralPath $pidFile)) { Write-Output 'stopped'; exit 0 }; "
-            "$process=Get-Process -Id (Get-Content -LiteralPath $pidFile) -ErrorAction SilentlyContinue; "
-            "if ($process) { Write-Output 'running' } else { Write-Output 'stopped' }"
-        )
-        return DriverPlan((CommandSpec(program="powershell", args=[*invoke, script, root]),))
-    if action == "logs":
-        script = (
-            prefix + "Get-Content -LiteralPath (Join-Path $root 'server.log') -Tail 80 "
-            "-ErrorAction SilentlyContinue; Get-Content -LiteralPath "
-            "(Join-Path $root 'server-error.log') -Tail 80 -ErrorAction SilentlyContinue"
-        )
-        return DriverPlan((CommandSpec(program="powershell", args=[*invoke, script, root]),))
-    if action == "stop":
-        script = (
-            prefix
-            + "$pidFile=Join-Path $root 'server.pid'; if (Test-Path -LiteralPath $pidFile) { "
-            "Stop-Process -Id (Get-Content -LiteralPath $pidFile) -ErrorAction SilentlyContinue; "
-            "Remove-Item -LiteralPath $pidFile -Force }"
-        )
-        return DriverPlan((CommandSpec(program="powershell", args=[*invoke, script, root]),))
-    if action == "uninstall":
-        stop = _native_windows_llama_plan("stop", configuration, target).commands[0]
-        remove = CommandSpec(
-            program="powershell",
-            args=[
-                *invoke,
-                prefix + "if (Test-Path -LiteralPath $root) { Remove-Item -Recurse -Force $root }",
-                root,
-            ],
-        )
-        return DriverPlan((stop, remove))
-    model_path = _required(configuration, "model_path")
-    commands: list[CommandSpec] = []
-    if action == "reinstall":
-        commands.extend(_native_windows_llama_plan("uninstall", configuration, target).commands)
-    if action in {"install", "reinstall"}:
-        install = (
-            "$ErrorActionPreference='Stop'; "
-            + prefix
-            + "New-Item -ItemType Directory -Force -Path $root | Out-Null; "
-            "$archive=Join-Path $env:TEMP 'clio-llama.zip'; "
-            "Invoke-WebRequest -UseBasicParsing -Uri $args[1] -OutFile $archive; "
-            "Expand-Archive -LiteralPath $archive -DestinationPath $root -Force; "
-            "Remove-Item -LiteralPath $archive -Force; "
-            "$exe=Get-ChildItem -LiteralPath $root -Filter 'llama-server.exe' -Recurse | "
-            "Select-Object -First 1; if (!$exe) { throw 'llama-server.exe was not installed' }; "
-            "& $exe.FullName --version | Out-Null; if ($LASTEXITCODE -ne 0) { "
-            "throw 'llama-server --version failed' }"
-        )
-        commands.append(
-            CommandSpec(
-                program="powershell",
-                args=[*invoke, install, root, LLAMA_WINDOWS_CPU_ARCHIVE],
-                timeout_seconds=900,
-            )
-        )
-    start = (
-        "$ErrorActionPreference='Stop'; "
-        + prefix
-        + "$exe=Get-ChildItem -LiteralPath $root -Filter 'llama-server.exe' -Recurse | "
-        "Select-Object -First 1; if (!$exe) { throw 'Install llama.cpp before starting it' }; "
-        "$stdout=Join-Path $root 'server.log'; $stderr=Join-Path $root 'server-error.log'; "
-        "$process=Start-Process -FilePath $exe.FullName -ArgumentList "
-        "@('-m',$args[1],'--host','127.0.0.1','--port','8088') "
-        "-RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden -PassThru; "
-        "Set-Content -LiteralPath (Join-Path $root 'server.pid') -Value $process.Id"
-    )
-    commands.append(CommandSpec(program="powershell", args=[*invoke, start, root, model_path]))
-    return DriverPlan(tuple(commands), connection_port=8088)
 
 
 def _ssh_destination(target: InfrastructureTarget | None) -> str:

@@ -15,6 +15,12 @@ import anyio
 import httpx
 
 from clio_agent.gact.infrastructure.clio_agent_deploy import ClaimResult, parse_claim
+from clio_agent.gact.infrastructure.deployment_ledger import (
+    forget_created,
+    hand_over_parents,
+    persist_created,
+    remove_created,
+)
 from clio_agent.gact.infrastructure.drivers import (
     LOOPBACK_ONLY_SERVICES,
     DriverPlan,
@@ -22,21 +28,22 @@ from clio_agent.gact.infrastructure.drivers import (
     service_connection_port,
     service_definitions,
 )
+from clio_agent.gact.infrastructure.external_connections import ExternalConnectionsMixin
 from clio_agent.gact.infrastructure.models import (
     CommandResult,
     CommandSpec,
     ConnectionStrategy,
-    ExternalServiceConnection,
-    ExternalServiceConnectionRequest,
     InfrastructureOperation,
     ManagedServiceCatalog,
+    OwnedResource,
     ServiceActionRequest,
     ServiceRecord,
     ServiceState,
     TargetFacts,
-    utc_now,
 )
 from clio_agent.gact.infrastructure.probe import probe_target
+from clio_agent.gact.infrastructure.resource_ledger import merge as merge_owned
+from clio_agent.gact.infrastructure.service_readiness import observe_service, wait_until_ready
 from clio_agent.gact.infrastructure.store import InfrastructureStore
 from clio_agent.gact.infrastructure.transport import (
     InfrastructureTransportRegistry,
@@ -61,6 +68,8 @@ def _run_local(spec: CommandSpec) -> CommandResult:
             [spec.program, *spec.args],
             input=spec.stdin or None,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             capture_output=True,
             check=False,
             timeout=spec.timeout_seconds,
@@ -93,7 +102,7 @@ def _tcp_reachable(url: str) -> bool:
         return False
 
 
-class InfrastructureRuntime:
+class InfrastructureRuntime(ExternalConnectionsMixin):
     """Own service operations and delegate only byte transport to Desktop."""
 
     def __init__(
@@ -154,7 +163,8 @@ class InfrastructureRuntime:
                 continue
             service.state = await self._reconcile_service(target_id, record, facts)
             refreshed = self.store.service(target_id, service.id) or record
-            if service.state == "running" and (port := service_connection_port(service.id)):
+            port = self._record_port(refreshed)
+            if service.state == "running" and port:
                 try:
                     url, strategy = await self._resolve_connection(
                         target_id,
@@ -167,16 +177,60 @@ class InfrastructureRuntime:
                         refreshed.connection_url,
                         refreshed.connection_strategy,
                     ):
-                        refreshed = self.store.put_service(
-                            refreshed.model_copy(
-                                update={"connection_url": url, "connection_strategy": strategy}
+                        refreshed = (
+                            self.store.update_service(
+                                target_id,
+                                service.id,
+                                connection_url=url,
+                                connection_strategy=strategy,
                             )
+                            or refreshed
                         )
                 except (OSError, RuntimeError, ValueError):
                     pass
+            if service.state == "running" and not refreshed.effective_parameters:
+                refreshed = await self._refresh_effective(target_id, refreshed)
             service.connection_url = refreshed.connection_url
             service.connection_strategy = refreshed.connection_strategy
+            service.configuration = dict(refreshed.configuration)
+            service.owned_resources = list(refreshed.owned_resources)
+            service.effective_parameters = (
+                list(refreshed.effective_parameters) if service.state == "running" else []
+            )
         return ManagedServiceCatalog(facts=facts, services=services)
+
+    @staticmethod
+    def _record_port(record: ServiceRecord) -> int | None:
+        try:
+            return service_connection_port(
+                record.service_id, record.configuration, record.variant_id
+            )
+        except ValueError:
+            return None
+
+    async def _refresh_effective(self, target_id: str, record: ServiceRecord) -> ServiceRecord:
+        """Read what a running model server has in force and keep it on its record."""
+
+        async def execute(spec: CommandSpec) -> CommandResult:
+            return await self._execute(target_id, spec)
+
+        try:
+            effective = await observe_service(record, execute, http_transport=self._http_transport)
+        except (OSError, RuntimeError, ValueError) as exc:
+            logger.warning(
+                "infrastructure effective parameters unavailable: reason=observe_failed "
+                "service=%s target=%s: %s",
+                record.service_id,
+                target_id,
+                exc,
+            )
+            return record
+        if not effective:
+            return record
+        return (
+            self.store.update_service(target_id, record.service_id, effective_parameters=effective)
+            or record
+        )
 
     async def _reconcile_service(
         self, target_id: str, record: ServiceRecord, facts: TargetFacts
@@ -191,6 +245,7 @@ class InfrastructureRuntime:
                 configuration=record.configuration,
                 facts=facts,
                 target=self.store.target(target_id),
+                owned=record.owned_resources,
             )
             output: list[str] = []
             for spec in plan.commands:
@@ -207,7 +262,7 @@ class InfrastructureRuntime:
                 else "unknown"
             )
             if state != record.state:
-                self.store.put_service(record.model_copy(update={"state": state}))
+                self.store.update_service(target_id, record.service_id, state=state)
             return state
         except (OSError, RuntimeError, ValueError):
             return "unknown"
@@ -276,8 +331,12 @@ class InfrastructureRuntime:
         )
         plan: DriverPlan | None = None
         claim: ClaimResult | None = None
+        created: list[OwnedResource] = []
+        installed: ServiceRecord | None = None
+        target_os = "linux"
         try:
             catalog = await self.catalog(request.target_id)
+            target_os = catalog.facts.os
             definition = next(
                 (item for item in catalog.services if item.id == row.service_id), None
             )
@@ -286,6 +345,23 @@ class InfrastructureRuntime:
             row = self.store.put_operation(
                 row.model_copy(update={"progress": f"Running {request.action}"})
             )
+            installed = self.store.service(request.target_id, row.service_id)
+            if installed is not None and request.action != "install":
+                # Lifecycle actions operate on what is installed: its variant,
+                # negotiated runtime and parameters, not the form's current
+                # state (empty after a reload). A reinstall keeps the installed
+                # variant and lets values the person typed override it.
+                typed = {k: v for k, v in request.configuration.items() if v.strip()}
+                request = request.model_copy(
+                    update={
+                        "variant_id": installed.variant_id,
+                        "configuration": (
+                            {**installed.configuration, **typed}
+                            if request.action == "reinstall"
+                            else {**request.configuration, **installed.configuration}
+                        ),
+                    }
+                )
             plan = build_driver_plan(
                 service_id=row.service_id,
                 action=request.action,
@@ -293,14 +369,28 @@ class InfrastructureRuntime:
                 configuration=request.configuration,
                 facts=catalog.facts,
                 target=self.store.target(request.target_id),
+                owned=installed.owned_resources if installed else [],
             )
             output: list[str] = []
-            for spec in plan.commands:
+            for index, spec in enumerate(plan.commands):
                 result = await self._execute(request.target_id, spec)
                 output.extend(part for part in (result.stdout, result.stderr) if part)
                 row = self.store.put_operation(
                     row.model_copy(update={"logs": _bounded("\n".join(output))})
                 )
+                if (recorder := plan.recorders.get(index)) is not None:
+                    # Before the exit check: a failed `run` can still leave a
+                    # created container. Durable at once, so a CLIO that stops
+                    # mid-deploy still names everything for uninstall.
+                    created = merge_owned(created, recorder(result))
+                    persist_created(
+                        self.store,
+                        row.service_id,
+                        request,
+                        plan.configuration or request.configuration,
+                        installed,
+                        created,
+                    )
                 if result.exit_code not in spec.allowed_exit_codes:
                     raise RuntimeError(
                         result.stderr.strip()
@@ -314,7 +404,39 @@ class InfrastructureRuntime:
                     break
                 if spec.settle_seconds:
                     await asyncio.sleep(spec.settle_seconds)
-            await self._settle_service(row.service_id, request, plan.connection_port, output)
+            if plan.readiness is not None:
+
+                def report(message: str, current: InfrastructureOperation = row) -> None:
+                    self.store.put_operation(current.model_copy(update={"progress": message}))
+
+                async def execute(spec: CommandSpec) -> CommandResult:
+                    return await self._execute(request.target_id, spec)
+
+                await wait_until_ready(plan.readiness, execute, report)
+            for spec in plan.after_ready:
+                row = self.store.put_operation(
+                    row.model_copy(update={"progress": "Preparing the model"})
+                )
+                result = await self._execute(request.target_id, spec)
+                output.extend(part for part in (result.stdout, result.stderr) if part)
+                if result.exit_code not in spec.allowed_exit_codes:
+                    raise RuntimeError(
+                        result.stderr.strip()
+                        or result.stdout.strip()[-2000:]
+                        or f"{spec.program} exited with code {result.exit_code}"
+                    )
+            # A reinstall replaces only the server; the image and caches stay
+            # on the ledger, so both install and reinstall merge.
+            owned = merge_owned(installed.owned_resources if installed else [], created)
+            await self._settle_service(
+                row.service_id,
+                request.model_copy(
+                    update={"configuration": plan.configuration or request.configuration}
+                ),
+                plan.connection_port,
+                output,
+                owned,
+            )
             self.store.put_operation(
                 row.model_copy(
                     update={
@@ -326,7 +448,9 @@ class InfrastructureRuntime:
                 )
             )
         except asyncio.CancelledError:
-            cleanup = await self._teardown(request.target_id, plan, claim)
+            cleanup = await self._teardown(request.target_id, plan, claim, created, target_os)
+            if created and cleanup.startswith("Removed the"):
+                forget_created(self.store, request.target_id, row.service_id, installed)
             self.store.put_operation(
                 row.model_copy(
                     update={
@@ -337,7 +461,9 @@ class InfrastructureRuntime:
             )
             raise
         except (KeyError, OSError, RuntimeError, ValueError) as exc:
-            cleanup = await self._teardown(request.target_id, plan, claim)
+            cleanup = await self._teardown(request.target_id, plan, claim, created, target_os)
+            if created and cleanup.startswith("Removed the"):
+                forget_created(self.store, request.target_id, row.service_id, installed)
             self.store.put_operation(
                 row.model_copy(
                     update={"state": "failed", "progress": f"Failed. {cleanup}", "error": str(exc)}
@@ -345,14 +471,27 @@ class InfrastructureRuntime:
             )
 
     async def _teardown(
-        self, target_id: str, plan: DriverPlan | None, claim: ClaimResult | None
+        self,
+        target_id: str,
+        plan: DriverPlan | None,
+        claim: ClaimResult | None,
+        created: list[OwnedResource] | None = None,
+        target_os: str = "linux",
     ) -> str:
         """Undo what a failed or cancelled plan started; report what happened.
 
-        Runs only after the claim step: before it, this plan started nothing,
-        and an adopted server was already running, so it is left alone.
+        Resources the plan recorded creating (its ledger entries for this
+        operation) are removed; a claim-based plan runs its own teardown, and
+        only after the claim step: before it, this plan started nothing, and an
+        adopted server was already running, so it is left alone.
         """
 
+        if created:
+
+            async def execute(spec: CommandSpec) -> CommandResult:
+                return await self._execute(target_id, spec)
+
+            return (await remove_created(execute, target_id, created, target_os))[1]
         if plan is None or plan.teardown is None or claim is None or claim.result == "adopted":
             return "Nothing this deploy started needed cleaning up."
         try:
@@ -372,9 +511,12 @@ class InfrastructureRuntime:
         request: ServiceActionRequest,
         connection_port: int | None,
         output: list[str],
+        owned: list[OwnedResource] | None = None,
     ) -> None:
         previous = self.store.service(request.target_id, service_id)
         if request.action == "uninstall":
+            if previous is not None:
+                hand_over_parents(self.store, request.target_id, previous)
             self.store.delete_service(request.target_id, service_id)
             return
         state: ServiceState = previous.state if previous else "unknown"
@@ -406,7 +548,7 @@ class InfrastructureRuntime:
             except (OSError, RuntimeError, ValueError):
                 connection_url = previous.connection_url if previous else None
                 strategy = previous.connection_strategy if previous else None
-        self.store.put_service(
+        record = self.store.put_service(
             ServiceRecord(
                 id=f"{request.target_id}:{service_id}",
                 service_id=service_id,
@@ -416,8 +558,13 @@ class InfrastructureRuntime:
                 state=state,
                 connection_url=connection_url,
                 connection_strategy=strategy,
+                owned_resources=owned
+                if owned is not None
+                else (previous.owned_resources if previous else []),
             )
         )
+        if state == "running" and request.action in {"install", "reinstall", "start", "status"}:
+            await self._refresh_effective(request.target_id, record)
 
     async def _resolve_connection(
         self,
@@ -465,74 +612,3 @@ class InfrastructureRuntime:
             if parsed.hostname in {"127.0.0.1", "localhost", "::1"}:
                 preferred_port = parsed.port
         return await self.transports.forward(target_id, port, preferred_port), "ssh_forward"
-
-    async def create_external_connection(
-        self,
-        request: ExternalServiceConnectionRequest,
-    ) -> ExternalServiceConnection:
-        """Persist and health-check a connection whose lifecycle is external."""
-
-        url = str(request.url).rstrip("/")
-        reachable = await self._external_reachable(url, request.credential_ref)
-        return self.store.put_connection(
-            ExternalServiceConnection(
-                service_id=request.service_id,
-                label=request.label,
-                url=url,
-                credential_ref=request.credential_ref,
-                reachable=reachable,
-                checked_at=utc_now(),
-            )
-        )
-
-    async def update_external_connection(
-        self,
-        connection_id: str,
-        request: ExternalServiceConnectionRequest,
-    ) -> ExternalServiceConnection:
-        """Edit and recheck a connection-only service without gaining lifecycle ownership."""
-
-        previous = self.store.connection(connection_id)
-        if previous is None:
-            raise KeyError(connection_id)
-        url = str(request.url).rstrip("/")
-        reachable = await self._external_reachable(url, request.credential_ref)
-        return self.store.put_connection(
-            previous.model_copy(
-                update={
-                    "service_id": request.service_id,
-                    "label": request.label,
-                    "url": url,
-                    "credential_ref": request.credential_ref,
-                    "reachable": reachable,
-                    "checked_at": utc_now(),
-                }
-            )
-        )
-
-    async def check_external_connection(self, connection_id: str) -> ExternalServiceConnection:
-        """Refresh health for an external endpoint without changing its definition."""
-
-        row = self.store.connection(connection_id)
-        if row is None:
-            raise KeyError(connection_id)
-        reachable = await self._external_reachable(row.url, row.credential_ref)
-        return self.store.put_connection(
-            row.model_copy(update={"reachable": reachable, "checked_at": utc_now()})
-        )
-
-    async def _external_reachable(self, url: str, credential_ref: str) -> bool:
-        token = (
-            self._credential_resolver("infrastructure", credential_ref) if credential_ref else ""
-        )
-        headers = {"Authorization": f"Bearer {token}"} if token else {}
-        try:
-            async with httpx.AsyncClient(
-                follow_redirects=True,
-                timeout=5.0,
-                transport=self._http_transport,
-            ) as client:
-                response = await client.get(url, headers=headers)
-            return response.status_code < 500 and response.status_code not in {401, 403}
-        except httpx.HTTPError:
-            return False

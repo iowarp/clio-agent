@@ -656,10 +656,14 @@ def test_finalize_budget_check_is_zero_fs_on_the_loop_and_schedules_offloop(
     fs_threads: list[int] = []
     real_scandir, real_stat = os.scandir, os.stat
     monkeypatch.setattr(
-        os, "scandir", lambda *a, **k: (fs_threads.append(threading.get_ident()), real_scandir(*a, **k))[1]
+        os,
+        "scandir",
+        lambda *a, **k: (fs_threads.append(threading.get_ident()), real_scandir(*a, **k))[1],
     )
     monkeypatch.setattr(
-        os, "stat", lambda *a, **k: (fs_threads.append(threading.get_ident()), real_stat(*a, **k))[1]
+        os,
+        "stat",
+        lambda *a, **k: (fs_threads.append(threading.get_ident()), real_stat(*a, **k))[1],
     )
 
     done = threading.Event()

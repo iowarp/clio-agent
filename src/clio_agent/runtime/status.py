@@ -6,7 +6,6 @@ booting a full agent or requiring live IOWarp/clio-core services.
 
 from __future__ import annotations
 
-import contextlib
 import importlib.util
 import os
 from dataclasses import dataclass, field
@@ -136,7 +135,7 @@ _DATA_BACKEND_MODULES = {
 # /experts API is not what production serves.
 _GACT_API_ENDPOINTS = ["/v1/health", "/v1/capabilities"]
 
-# How many trailing lines of ~/.clio/clio-runtime.log to surface when the clio-core daemon is down.
+# How many trailing lines of clio-runtime.log to surface when the clio-core daemon is down.
 _CLIO_CORE_LOG_TAIL_LINES = 20
 
 
@@ -152,6 +151,8 @@ class ClioCoreRuntimeHealth:
 
     installed: bool
     port: int
+    config_path: str
+    config_source: str
     daemon_alive: bool
     daemon_pid: int | None
     daemon_pid_alive: bool | None
@@ -169,6 +170,8 @@ class ClioCoreRuntimeHealth:
         details: dict[str, Any] = {
             "iowarp_core_installed": self.installed,
             "port": self.port,
+            "config_path": self.config_path,
+            "config_source": self.config_source,
             "daemon_alive": self.daemon_alive,
         }
         if self.daemon_pid is not None:
@@ -214,13 +217,9 @@ class RuntimeProbe:
         # Default resolved lazily to arc.storage._runtime_alive so unit tests
         # never open real sockets and module import stays light.
         self._port_checker = port_checker
-        # Where the shared clio-core daemon keeps its pidfile and log; matches
-        # arc.storage._daemon_pidfile() / _spawn_runtime_daemon() (~/.clio).
-        self.clio_runtime_dir = (
-            Path(clio_runtime_dir).expanduser()
-            if clio_runtime_dir is not None
-            else Path.home() / ".clio"
-        )
+        # Where the shared daemon keeps its pidfile, log and version record; None =
+        # the runtime's own per-host state dir (clio_core_effective_runtime).
+        self.clio_runtime_dir = Path(clio_runtime_dir).expanduser() if clio_runtime_dir else None
         self._clio_core_runtime: ClioCoreRuntimeHealth | None = None
 
     def collect(
@@ -533,47 +532,37 @@ class RuntimeProbe:
     def _arc_backend(self) -> tuple[str, str]:
         """Return the selected ARC backend and its config source.
 
-        Mirrors :func:`clio_agent.arc.storage.make_arc_store` (env
-        ``CLIO_ARC_STORE``, default ``cte``) so the doctor reports the backend
-        the runtime will actually construct, not a hardcoded assumption (#800).
+        Mirrors :func:`clio_agent.arc.storage.make_arc_store` (#800); see
+        :func:`clio_agent.arc.clio_core_effective_runtime.arc_backend`.
         """
-        backend = self.env.get("CLIO_ARC_STORE", "cte").strip().lower()
-        source = "env:CLIO_ARC_STORE" if "CLIO_ARC_STORE" in self.env else "default:cte"
-        return backend, source
+        from clio_agent.arc.clio_core_effective_runtime import arc_backend  # noqa: PLC0415
+
+        return arc_backend(self._conf, self.env)
 
     def _probe_clio_core_runtime(self) -> ClioCoreRuntimeHealth:
         """Probe the production clio-core runtime: pip package + shared daemon.
 
         Shared by :meth:`probe_arc` (clio-core backend) and :meth:`probe_clio_core` so both report
-        on one reality. Uses the same helpers the runtime lifecycle in :mod:`clio_agent.arc.storage`
-        uses: the resolved RPC port, a socket liveness check, the daemon pidfile, and — on failure
-        — the tail of ``~/.clio/clio-runtime.log``. Memoized per probe instance so one
-        ``collect()`` opens at most one socket.
+        on one reality. The daemon is located the way the store finds it — the effective config
+        (config file, env, workspace, default) overridden by the running daemon's record, in the
+        per-host state dir (:mod:`clio_agent.arc.clio_core_effective_runtime`) — then a socket
+        liveness check, the pidfile, and on failure the log tail. Memoized per probe instance so
+        one ``collect()`` opens at most one socket.
         """
         if self._clio_core_runtime is not None:
             return self._clio_core_runtime
         from clio_agent.arc import storage as arc_storage  # noqa: PLC0415 - keep import light
+        from clio_agent.arc.clio_core_effective_runtime import (  # noqa: PLC0415
+            read_daemon_pid,
+            resolve_effective_runtime,
+        )
 
         installed = self.module_checker("iowarp_core")
-        port = arc_storage._resolve_runtime_port(self.env.get("CLIO_ARC_STORE_CONFIG", ""))
+        where = resolve_effective_runtime(self._conf, env=self.env, state_dir=self.clio_runtime_dir)
         port_checker = self._port_checker or arc_storage._runtime_alive
-        daemon_alive = bool(port_checker(port))
+        daemon_alive = bool(port_checker(where.port))
 
-        daemon_pid: int | None = None
-        daemon_pid_alive: bool | None = None
-        try:
-            parts = (self.clio_runtime_dir / "clio-runtime.pid").read_text("utf-8").split()
-        except OSError:
-            parts = []
-        if parts:
-            with contextlib.suppress(ValueError):
-                daemon_pid = int(parts[0])
-        if daemon_pid is not None:
-            recorded: float | None = None
-            if len(parts) > 1:
-                with contextlib.suppress(ValueError):
-                    recorded = float(parts[1])
-            daemon_pid_alive = arc_storage._pid_alive(daemon_pid, recorded)
+        daemon_pid, daemon_pid_alive = read_daemon_pid(where.state_dir)
 
         if not installed:
             reason: str | None = "iowarp_core_not_installed"
@@ -582,7 +571,7 @@ class RuntimeProbe:
         else:
             reason = None
 
-        log_path = self.clio_runtime_dir / "clio-runtime.log"
+        log_path = where.state_dir / "clio-runtime.log"
         log_tail: list[str] = []
         if reason is not None and log_path.is_file():
             try:
@@ -593,7 +582,9 @@ class RuntimeProbe:
 
         self._clio_core_runtime = ClioCoreRuntimeHealth(
             installed=installed,
-            port=port,
+            port=where.port,
+            config_path=where.config_path,
+            config_source=where.config_source,
             daemon_alive=daemon_alive,
             daemon_pid=daemon_pid,
             daemon_pid_alive=daemon_pid_alive,
