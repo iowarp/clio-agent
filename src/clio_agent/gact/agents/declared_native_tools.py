@@ -12,6 +12,7 @@ from clio_agent.gact.a2ui_producer import (
 )
 from clio_agent.gact.agents import toolset_inventory
 from clio_agent.gact.ask_user_tool import build_ask_user_tool
+from clio_agent.gact.media_download_tool import MEDIA_DOWNLOAD_TOOL, build_download_media_tool
 from clio_agent.gact.memory_tools import (
     build_memory_context_frame_tool,
     build_memory_search_tool,
@@ -19,6 +20,26 @@ from clio_agent.gact.memory_tools import (
 )
 from clio_agent.gact.view_image_tool import build_view_image_tool
 from clio_agent.gact.view_pdf_tool import build_view_pdf_tool
+
+#: Every in-process tool an agent may name in its ``tools:`` list. Blueprint
+#: validation accepts these as built-ins (``agent_blueprints``); whether one is
+#: actually attached is decided per build below (``view_image``/``view_pdf``
+#: need an evidenced model capability).
+DECLARABLE_NATIVE_TOOLS: frozenset[str] = frozenset(
+    {
+        "ask_user",
+        "create_a2ui_surface",
+        "update_a2ui_components",
+        "update_a2ui_data_model",
+        "delete_a2ui_surface",
+        "memory_search_sessions",
+        "memory_read_session_summary",
+        "memory_read_context_frame",
+        "view_image",
+        "view_pdf",
+        MEDIA_DOWNLOAD_TOOL,
+    }
+)
 
 
 def declared_view_image_capability(config: Any) -> bool:
@@ -112,6 +133,7 @@ def resolve_declared_native_tools(
         "memory_search_sessions": lambda: build_memory_search_tool(agent_def),
         "memory_read_session_summary": lambda: build_memory_summary_tool(agent_def),
         "memory_read_context_frame": lambda: build_memory_context_frame_tool(agent_def),
+        MEDIA_DOWNLOAD_TOOL: build_download_media_tool,
     }
     if supports_vision:
         builders["view_image"] = build_view_image_tool
@@ -127,6 +149,7 @@ def resolve_declared_native_tools(
 
 
 __all__ = [
+    "DECLARABLE_NATIVE_TOOLS",
     "declared_native_capabilities",
     "declared_view_image_capability",
     "declared_view_pdf_capability",

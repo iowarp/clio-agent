@@ -1252,6 +1252,31 @@ tools.mcp_cache.temp_max_age_days: 3.0
 # trees, beyond the system temp dir.
 # tools.mcp_cache.temp_roots:  # default unset; resolved in code
 
+# CLIO_MEDIA_DOWNLOAD_ALLOW_PRIVATE_HOSTS  (bool)  <- src/clio_agent/tools/media_download.py
+# Whether download_media may fetch from loopback/private-network hosts; keep
+# false unless a trusted lab host serves the media.
+tools.media_download.allow_private_hosts: false
+
+# CLIO_MEDIA_DOWNLOAD_CONNECT_TIMEOUT_S  (float)  <- src/clio_agent/tools/media_download.py
+# Seconds download_media waits to connect to a media host before a typed
+# network refusal.
+tools.media_download.connect_timeout_s: 15.0
+
+# CLIO_MEDIA_DOWNLOAD_MAX_BYTES  (str)  <- src/clio_agent/tools/media_download.py
+# Byte-size cap (accepts K/M/G/T suffixes) on one download_media file; the
+# file-policy size cap still applies when smaller.
+tools.media_download.max_bytes: "52428800"
+
+# CLIO_MEDIA_DOWNLOAD_MEDIA_TYPES  (str)  <- src/clio_agent/tools/media_download.py
+# Comma-separated media types download_media may save (type/subtype or
+# type/*); widen to allow other file kinds.
+tools.media_download.media_types: "image/*,video/*,audio/*"
+
+# CLIO_MEDIA_DOWNLOAD_READ_TIMEOUT_S  (float)  <- src/clio_agent/tools/media_download.py
+# Seconds download_media tolerates a stalled read (no bytes arriving) before
+# a typed network refusal; not a cap on total download time.
+tools.media_download.read_timeout_s: 60.0
+
 # CLIO_WINDOWS_SHELL_BACKEND  (str)  <- src/clio_agent/tools/servers/shell_server.py
 # Which interpreter the Windows shell tool runs commands through
 # (powershell/bash/cmd); match it to your commands' shell.

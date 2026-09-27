@@ -199,6 +199,11 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_MCP_SPAWN_DIET_TTL_H` | `tools.mcp.spawn_diet_ttl_h` | float | `24.0` | `src/clio_agent/tools/spawn_diet.py` |
 | `CLIO_MCP_WORKSPACE_MAX_RESIDENT` | `tools.mcp.workspace_max_resident` | int | `2` | `src/clio_agent/tools/reaper.py` |
 | `CLIO_MCP_WORKSPACE_TTL_S` | `tools.mcp.workspace_ttl_s` | float | `120.0` | `src/clio_agent/tools/reaper.py` |
+| `CLIO_MEDIA_DOWNLOAD_ALLOW_PRIVATE_HOSTS` | `tools.media_download.allow_private_hosts` | bool | `false` | `src/clio_agent/tools/media_download.py` |
+| `CLIO_MEDIA_DOWNLOAD_CONNECT_TIMEOUT_S` | `tools.media_download.connect_timeout_s` | float | `15.0` | `src/clio_agent/tools/media_download.py` |
+| `CLIO_MEDIA_DOWNLOAD_MAX_BYTES` | `tools.media_download.max_bytes` | str | `52428800` | `src/clio_agent/tools/media_download.py` |
+| `CLIO_MEDIA_DOWNLOAD_MEDIA_TYPES` | `tools.media_download.media_types` | str | `image/*,video/*,audio/*` | `src/clio_agent/tools/media_download.py` |
+| `CLIO_MEDIA_DOWNLOAD_READ_TIMEOUT_S` | `tools.media_download.read_timeout_s` | float | `60.0` | `src/clio_agent/tools/media_download.py` |
 | `CLIO_MODEL_CATALOG` | `paths.model_catalog` | str | _(unset)_ | `src/clio_agent/providers/model_discovery/overlay.py` |
 | `CLIO_MODEL_CATALOG_TTL_S` | `providers.model_catalog_ttl_s` | float | `86400.0` | `src/clio_agent/providers/model_discovery/overlay.py` |
 | `CLIO_MODEL_DB` | `paths.model_db` | str | _(unset)_ | `src/clio_agent/providers/handshake/sources/db.py` |
