@@ -87,13 +87,10 @@ _EVIDENCE_LABEL_BY_SOURCE: dict[str, str] = {
 #: capability_evidence reasons (providers/model_discovery/modality_evidence.py)
 #: that count as a real, non-guessed "documented_catalog" claim on a ``static``
 #: models_source row -- never a live probe, but never a guess either:
-#: ``modality_documented`` is NoOpHandshake's generic registry claim and
-#: ``modality_cataloged`` the Claude Code maintained-catalog fallback. The
+#: ``modality_cataloged`` is the Claude Code maintained-catalog fallback. The
 #: negative-evidence reasons (``modality_unreported``/``modality_uncataloged``)
 #: are not this arm.
-DOCUMENTED_MODALITY_REASONS: frozenset[str] = frozenset(
-    {"modality_documented", "modality_cataloged"}
-)
+DOCUMENTED_MODALITY_REASONS: frozenset[str] = frozenset({"modality_cataloged"})
 
 
 def _catalog_row_aliases(row: dict[str, Any]) -> tuple[str, ...]:
