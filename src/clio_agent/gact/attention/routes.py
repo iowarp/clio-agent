@@ -1,8 +1,11 @@
 """HTTP surface of the attention view.
 
-``GET  /v1/sessions/{sid}/messages/{mid}/attention/availability``
-    Whether "Understand attention" can run for this message, with the typed
-    reason when not (the UI disables the action and shows the reason).
+``GET  /v1/sessions/{sid}/attention/availability``
+    Whether "Understand attention" can run in this session at all, and for
+    which answers: ``{enabled, reason?, message?, messages: {id: bool}}``. The
+    UI offers the action only on answers marked true, so a CLIO without
+    attention capture (or a non-vLLM answer) never shows it. Cheap: config,
+    the recorded lm.calls, and one Flowcept query; no attention files are read.
 ``POST /v1/sessions/{sid}/messages/{mid}/attention``
     Body ``{part_id?, field?, start?, end?, text?}`` -> the attention payload
     (:func:`.service.explain_selection`) or ``{available: false, reason, ...}``.
@@ -25,11 +28,11 @@ from clio_agent.gact.attention.lm_calls import (
     flowcept_lm_call_filter,
     lm_calls_from_flowcept_rows,
     lm_calls_from_jsonl,
-    turn_calls,
 )
 from clio_agent.gact.attention.reasons import AttentionUnavailable
 from clio_agent.gact.attention.service import SelectionRequest, explain_selection
 from clio_agent.gact.attention.store import AttentionStore
+from clio_agent.provenance_config import attention_capture_enabled
 
 
 class AttentionRequestBody(BaseModel):
@@ -97,39 +100,44 @@ def _renderer(identity: str) -> Any:
     return renderer_for(configured_tokenizer() or identity)
 
 
-def availability(app: FastAPI, sid: str, mid: str) -> dict[str, Any]:
-    """Cheap per-message check: generated, recorded, vLLM, and a summary exists."""
-    messages = app.state.messages.get(sid, [])
-    message = next((m for m in messages if m.id == mid), None)
-    if message is None:
-        raise AttentionUnavailable("message_not_found", mid)
-    if message.role != "assistant":
-        raise AttentionUnavailable("message_not_generated", message.role)
+def session_availability(app: FastAPI, sid: str) -> dict[str, Any]:
+    """Which assistant answers of ``sid`` can show attention (see module docstring)."""
+    if not attention_capture_enabled():
+        raise AttentionUnavailable(
+            "attention_disabled", "set provenance.attention and add 'flowcept' to the providers"
+        )
     store = attention_store(app)
-    calls = turn_calls(session_lm_calls(app, sid), message.turn_id)
-    if not calls:
-        raise AttentionUnavailable("lm_call_not_found", f"no lm.call for turn {message.turn_id}")
-    if not any(c.model.startswith("hosted_vllm/") for c in calls):
-        raise AttentionUnavailable("provider_not_vllm", calls[-1].model)
-    last = calls[-1]
-    summary = store.summary_for(last.response_id)
+    answers = [m for m in app.state.messages.get(sid, []) if m.role == "assistant"]
+    calls = session_lm_calls(app, sid) if answers else []
+    vllm_by_turn: dict[str, list[str]] = {}
+    for call in calls:
+        if call.model.startswith("hosted_vllm/") and call.response_id:
+            vllm_by_turn.setdefault(call.turn_id, []).append(call.response_id)
+    recorded = store.recorded_responses([rid for ids in vllm_by_turn.values() for rid in ids])
     return {
-        "available": True,
-        "response_id": last.response_id,
-        "top_pct": summary.top_pct,
-        "decode_steps": summary.decode_steps,
+        "enabled": True,
+        "messages": {
+            m.id: any(rid in recorded for rid in vllm_by_turn.get(m.turn_id, [])) for m in answers
+        },
     }
 
 
 def register_attention_routes(app: FastAPI) -> None:
     """Mount the attention endpoints on ``app``."""
 
-    @app.get("/v1/sessions/{sid}/messages/{mid}/attention/availability")
-    async def get_attention_availability(sid: str, mid: str) -> dict[str, Any]:
+    @app.get("/v1/sessions/{sid}/attention/availability")
+    async def get_attention_availability(sid: str) -> dict[str, Any]:
         try:
-            return await run_in_threadpool(availability, app, sid, mid)
+            return await run_in_threadpool(session_availability, app, sid)
         except AttentionUnavailable as exc:
-            return exc.to_wire()
+            wire = exc.to_wire()
+            return {
+                "enabled": False,
+                "reason": wire["reason"],
+                "message": wire["message"],
+                "detail": wire["detail"],
+                "messages": {},
+            }
 
     @app.post("/v1/sessions/{sid}/messages/{mid}/attention")
     async def post_attention(sid: str, mid: str, body: AttentionRequestBody) -> dict[str, Any]:

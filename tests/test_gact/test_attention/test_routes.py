@@ -1,4 +1,4 @@
-"""HTTP surface: availability + selection over the real-run fixture."""
+"""HTTP surface: session availability + selection over the real-run fixture."""
 
 from __future__ import annotations
 
@@ -62,11 +62,21 @@ def _client(readers: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> TestCli
     return TestClient(app)
 
 
-def test_availability_and_selection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def _availability(client: TestClient) -> dict[str, Any]:
+    return client.get(f"/v1/sessions/{SID}/attention/availability").json()
+
+
+def test_availability_marks_the_recorded_vllm_answer_and_selection_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     readers = {"jsonl": SimpleNamespace(path=_journal(tmp_path)), "flowcept": fixture_flowcept()}
     client = _client(readers, monkeypatch)
-    avail = client.get(f"/v1/sessions/{SID}/messages/msg_asst_1/attention/availability").json()
-    assert avail["available"] is True and avail["top_pct"] == 10.0
+    avail = _availability(client)
+    # the earlier-turn answer has no recorded vLLM call, the fixture call's answer does
+    assert avail == {
+        "enabled": True,
+        "messages": {"msg_asst_earlier": False, "msg_asst_1": True},
+    }
     body = {"part_id": "call_sel", "field": "thought", "start": 0, "end": 59}
     result = client.post(f"/v1/sessions/{SID}/messages/msg_asst_1/attention", json=body).json()
     assert result["available"] is True
@@ -74,49 +84,43 @@ def test_availability_and_selection(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert result["sources"]
 
 
-def test_user_message_availability_is_typed(
+def test_attention_off_disables_the_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("CLIO_PROVENANCE_ATTENTION", "0")
     readers = {"jsonl": SimpleNamespace(path=_journal(tmp_path)), "flowcept": fixture_flowcept()}
-    turn = fixture()["lm_call"]["turn_id"]
-    got = _client(readers, monkeypatch).get(
-        f"/v1/sessions/{SID}/messages/{turn}/attention/availability"
-    )
-    assert got.status_code == 200
-    assert got.json()["reason"] == "message_not_generated"
+    avail = _availability(_client(readers, monkeypatch))
+    assert avail["enabled"] is False and avail["reason"] == "attention_disabled"
+    assert avail["messages"] == {}
 
 
-def test_without_flowcept_the_reason_is_flowcept_not_configured(
+def test_without_flowcept_the_session_is_disabled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     readers = {"jsonl": SimpleNamespace(path=_journal(tmp_path))}
-    got = (
-        _client(readers, monkeypatch)
-        .get(f"/v1/sessions/{SID}/messages/msg_asst_1/attention/availability")
-        .json()
-    )
-    assert got == {
-        "available": False,
-        "reason": "flowcept_not_configured",
-        "message": "Flowcept provenance is not configured.",
-        "detail": "add 'flowcept' to provenance.agentic.providers",
-        "context": {},
-    }
+    avail = _availability(_client(readers, monkeypatch))
+    assert avail["enabled"] is False and avail["reason"] == "flowcept_not_configured"
 
 
-def test_non_vllm_session_is_provider_not_vllm(
+def test_non_vllm_answers_are_not_available(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     readers = {
         "jsonl": SimpleNamespace(path=_journal(tmp_path, model="claude_code/sonnet")),
         "flowcept": fixture_flowcept(),
     }
-    got = (
-        _client(readers, monkeypatch)
-        .get(f"/v1/sessions/{SID}/messages/msg_asst_1/attention/availability")
-        .json()
-    )
-    assert got["reason"] == "provider_not_vllm"
+    avail = _availability(_client(readers, monkeypatch))
+    assert avail["enabled"] is True
+    assert avail["messages"]["msg_asst_1"] is False
+
+
+def test_availability_reads_no_attention_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the Mongo record is needed: an unreachable file still reads as available."""
+    monkeypatch.setenv("CLIO_PROVENANCE_ATTENTION_FILES_DIR", str(tmp_path / "nowhere"))
+    readers = {"jsonl": SimpleNamespace(path=_journal(tmp_path)), "flowcept": fixture_flowcept()}
+    assert _availability(_client(readers, monkeypatch))["messages"]["msg_asst_1"] is True
 
 
 def test_lm_calls_fall_back_to_flowcept_records(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -146,7 +146,7 @@ from clio_agent.gact.app import build_app
 # context), owned by routes/side_sessions.py, registered from routes/sessions.py.
 # 279 -> 281: GET /v1/providers/support/restores + POST /v1/providers/support/restore (the
 # restore of provider support a runtime change removed), owned by routes/provider_support.py.
-# 281 -> 283 (feat/attention-view): +2 attention routes (GET .../messages/{mid}/
+# 281 -> 283 (feat/attention-view): +2 attention routes (GET .../sessions/{sid}/
 # attention/availability, POST .../messages/{mid}/attention), owned by
 # gact/attention/routes.py and registered from routes/provenance.py.
 EXPECTED_ROUTE_METHOD_PAIRS = 283

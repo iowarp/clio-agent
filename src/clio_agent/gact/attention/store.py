@@ -94,6 +94,22 @@ class AttentionStore:
         group0 = [row for row in rows if str(row.get("task_id") or "").endswith(":g0")]
         return parse_record((group0 or rows)[0])
 
+    def recorded_responses(self, response_ids: list[str]) -> set[str]:
+        """The response ids that have a ``decode_attention`` record (one query, no files)."""
+        wanted = sorted({rid for rid in response_ids if rid})
+        if not wanted:
+            return set()
+        pattern = "^(" + "|".join(re.escape(rid) for rid in wanted) + ")-"
+        rows = self._query(
+            {"activity_id": SUMMARY_ACTIVITY, "used.request_id": {"$regex": pattern}},
+            projection=["used.request_id"],
+        )
+        found: set[str] = set()
+        for row in rows:
+            request_id = str(((row.get("used") or {}).get("request_id")) or "")
+            found.update(rid for rid in wanted if request_id.startswith(rid + "-"))
+        return found
+
     def _file(self, record: AttentionRecord) -> SafeTensorsFile:
         cached = self._open.get(record.request_id)
         if cached is not None:
