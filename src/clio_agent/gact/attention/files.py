@@ -7,14 +7,12 @@ order, CLIO reads it:
 1. in place, when it runs where that path exists;
 2. from ``provenance.attention.files_dir``, a local directory holding the same
    ``<workflow_id>/<file>`` layout (a synced mirror, or an attention bundle's
-   ``files/`` directory), re-rooted under it;
-3. on the node, through ``provenance.attention.remote_shell`` (byte ranges
-   only, :mod:`.byte_source`).
+   ``files/`` directory), re-rooted under it.
 
-A file is checked against the descriptor before any read: size and sha256,
-once per file for the process lifetime (computed where the file is, so a
-remote file never crosses the wire whole). A missing or different file is a
-typed reason, never a silent partial answer.
+Fetching the file from a remote node is not CLIO's job (see
+:mod:`.byte_source`). A file is checked against the descriptor before any
+read: size and sha256, once per file for the process lifetime. A missing or
+different file is a typed reason, never a silent partial answer.
 """
 
 from __future__ import annotations
@@ -24,12 +22,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlparse
 
 from clio_agent import conf
-from clio_agent.gact.attention.byte_source import (
-    ByteSource,
-    LocalFile,
-    RemoteFile,
-    configured_remote_shell,
-)
+from clio_agent.gact.attention.byte_source import LocalFile
 from clio_agent.gact.attention.contract import AttentionRecord
 from clio_agent.gact.attention.reasons import AttentionUnavailable
 
@@ -59,12 +52,8 @@ def uri_path(uri: str) -> str:
     return unquote(parsed.path)
 
 
-def locate(
-    record: AttentionRecord,
-    files_dir: str | None = None,
-    remote_shell: list[str] | None = None,
-) -> ByteSource:
-    """Where ``record``'s bytes are: in place, the mirror, else the node's shell."""
+def locate(record: AttentionRecord, files_dir: str | None = None) -> LocalFile:
+    """Where ``record``'s file is: in place, else under the local copy."""
     node_path = uri_path(record.uri)
     original = Path(node_path)
     if original.is_file():
@@ -78,37 +67,31 @@ def locate(
         if mirrored.is_file():
             return LocalFile(mirrored)
         tried.append(str(mirrored))
-    shell = configured_remote_shell() if remote_shell is None else remote_shell
-    if shell:
-        return RemoteFile(shell, node_path)
     raise AttentionUnavailable(
         "attention_file_unavailable",
-        "the attention file is not reachable from this CLIO (set "
-        "provenance.attention.files_dir to a local copy, or "
-        "provenance.attention.remote_shell to a shell on the node)",
+        "the attention file is not reachable from this CLIO (run CLIO where the "
+        "connector writes, or set provenance.attention.files_dir to a local copy)",
         {"uri": record.uri, "tried": tried},
     )
 
 
-def verify(record: AttentionRecord, source: ByteSource) -> None:
+def verify(record: AttentionRecord, source: LocalFile) -> None:
     """The file is the one the descriptor describes (size + sha256, once per file)."""
     if not record.sha256 and record.size is None:
         return
-    key = (source.label, record.size or -1, record.sha256)
-    if isinstance(source, LocalFile):
-        try:
-            stat = source.path.stat()
-        except OSError as exc:
-            raise AttentionUnavailable(
-                "attention_file_unavailable", f"cannot stat {source.label}: {exc}"
-            ) from exc
-        if record.size is not None and stat.st_size != record.size:
-            raise AttentionUnavailable(
-                "attention_file_mismatch",
-                f"{source.label} is {stat.st_size} bytes, the record says {record.size}",
-                {"path": source.label},
-            )
-        key = (f"{source.label}@{stat.st_mtime_ns}", record.size or -1, record.sha256)
+    try:
+        stat = source.path.stat()
+    except OSError as exc:
+        raise AttentionUnavailable(
+            "attention_file_unavailable", f"cannot stat {source.label}: {exc}"
+        ) from exc
+    if record.size is not None and stat.st_size != record.size:
+        raise AttentionUnavailable(
+            "attention_file_mismatch",
+            f"{source.label} is {stat.st_size} bytes, the record says {record.size}",
+            {"path": source.label},
+        )
+    key = (f"{source.label}@{stat.st_mtime_ns}", record.size or -1, record.sha256)
     with _lock:
         if key in _verified:
             return

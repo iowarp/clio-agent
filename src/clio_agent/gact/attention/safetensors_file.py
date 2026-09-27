@@ -4,9 +4,7 @@ The format is fixed and tiny: an 8-byte little-endian header length, a JSON
 header ``{name: {dtype, shape, data_offsets: [begin, end]}, "__metadata__":
 {str: str}}``, then the raw little-endian tensor bytes. A response's step
 tensors are ``[G, k]`` (up to ~200 MB per file), and a selection needs only a
-handful of rows, so rows are read by byte range instead of loading the file --
-batched per call, because the bytes may come over a shell to the GPU node
-(:mod:`.byte_source`).
+handful of rows, so rows are read by byte range instead of loading the file.
 
 Every structural problem is ``attention_record_malformed``; an unreadable file
 is ``attention_file_unavailable``. Nothing is guessed.
@@ -21,7 +19,7 @@ from typing import Any
 
 import numpy as np
 
-from clio_agent.gact.attention.byte_source import ByteSource
+from clio_agent.gact.attention.byte_source import LocalFile
 from clio_agent.gact.attention.reasons import AttentionUnavailable
 
 _DTYPES = {
@@ -57,7 +55,7 @@ class TensorInfo:
 class SafeTensorsFile:
     """Header plus batched ranged reads over one SafeTensors file."""
 
-    def __init__(self, source: ByteSource) -> None:
+    def __init__(self, source: LocalFile) -> None:
         """Parse the header from ``source`` (raises a typed reason when unusable)."""
         self.source = source
         (raw_len,) = source.read_many([(0, 8)])

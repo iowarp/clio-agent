@@ -12,7 +12,7 @@ Every miss is a typed reason.
 from __future__ import annotations
 
 import re
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import numpy as np
 
@@ -146,7 +146,7 @@ class AttentionStore:
         if not workflow_id or not callable(query):
             return ""
         try:
-            rows: list[dict[str, Any]] = query({"workflow_id": workflow_id}) or []
+            rows = cast("list[dict[str, Any]]", query({"workflow_id": workflow_id}) or [])
         except Exception as exc:  # noqa: BLE001 - backend errors become one typed reason
             raise AttentionUnavailable(
                 "attention_query_failed", f"workflow query: {type(exc).__name__}: {exc}"
