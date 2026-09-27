@@ -279,10 +279,14 @@ def test_availability_resolves_the_session_workspace(tmp_path: Path) -> None:
         wid = _workspace(client, tmp_path / "ws")
         sid = client.post("/v1/sessions", json={"title": "t", "workspace_id": wid}).json()["id"]
         body = client.get("/v1/spotter/availability", params={"session_id": sid}).json()
-        # Without any workspace, native artifact lineage has no root: unavailable, typed.
+        # No scope at all is the deployment-level question (session defaults):
+        # every real arming names a workspace, so its absence is not a refusal.
         bare = client.get("/v1/spotter/availability").json()
+        # Arming itself always requires the workspace root native lineage reads.
+        unscoped = validate_watcher_arming(app, env={})
 
     assert body["available"] is True
-    assert bare["available"] is False
-    assert bare["reason"] == REFUSAL_WATCHER_PROVENANCE_UNAVAILABLE
-    assert "provenance_workspace_unresolved" in bare["details"]["detail"]
+    assert bare["available"] is True
+    assert unscoped is not None
+    assert unscoped.reason == REFUSAL_WATCHER_PROVENANCE_UNAVAILABLE
+    assert "provenance_workspace_unresolved" in unscoped.detail

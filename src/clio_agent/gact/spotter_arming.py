@@ -468,6 +468,7 @@ def validate_watcher_arming(
     workspace_id: str = "",
     blueprint_id: str = "",
     env: Optional[Mapping[str, str]] = None,
+    require_workspace: bool = True,
 ) -> Optional[WatcherArmingRefusal]:
     """Statically check that the spotter watcher could actually execute.
 
@@ -481,6 +482,10 @@ def validate_watcher_arming(
         env: Environment mapping for ``${VAR}`` expansion. ``None`` (the
             runtime default) reads the real process environment; tests inject a
             mapping so they never mutate ambient env.
+        require_workspace: ``False`` asks the deployment-level question (a
+            session-defaults picker, which serves every workspace): a missing
+            workspace root is then not a refusal, because every real arming
+            names one. Arming itself always passes ``True``.
 
     Returns:
         The FIRST :class:`WatcherArmingRefusal` in declaration order, or
@@ -502,7 +507,13 @@ def validate_watcher_arming(
         refusal = _refusal_for_declaration(resolved_id, str(name), declaration, env=env)
         if refusal is not None:
             return refusal
-    return _provenance_refusal(app, resolved_id, raw_declarations, workspace_root)
+    return _provenance_refusal(
+        app,
+        resolved_id,
+        raw_declarations,
+        workspace_root,
+        require_workspace=require_workspace,
+    )
 
 
 def _provenance_refusal(
@@ -510,6 +521,8 @@ def _provenance_refusal(
     blueprint_id: str,
     raw_declarations: Mapping[str, Any],
     workspace_root: Optional[Path],
+    *,
+    require_workspace: bool,
 ) -> Optional[WatcherArmingRefusal]:
     """Refuse when a server is handed clio's provenance config and it is unusable.
 
@@ -522,15 +535,23 @@ def _provenance_refusal(
         PROVENANCE_CONFIG_VAR,
         references_variable,
     )
-    from clio_agent.gact.provenance.handoff import build_provenance_handoff  # noqa: PLC0415
+    from clio_agent.gact.provenance.handoff import (  # noqa: PLC0415
+        PROBLEM_WORKSPACE_UNRESOLVED,
+        build_provenance_handoff,
+    )
 
     for name, declaration in raw_declarations.items():
         if not references_variable(declaration, PROVENANCE_CONFIG_VAR):
             continue
         handoff = build_provenance_handoff(app, workspace_root=workspace_root)
-        if handoff.usable:
+        problems = [
+            problem
+            for problem in handoff.problems
+            if require_workspace or problem.code != PROBLEM_WORKSPACE_UNRESOLVED
+        ]
+        if not problems:
             return None
-        problem = handoff.problems[0]
+        problem = problems[0]
         return WatcherArmingRefusal(
             reason=REFUSAL_WATCHER_PROVENANCE_UNAVAILABLE,
             detail=f"MCP server {str(name)!r}: {problem.detail} ({problem.code})",

@@ -102,7 +102,15 @@ def spotter_availability(
             blueprint_id=blueprint_id,
         )
     else:
-        refusal = validate_watcher_arming(app, session_id=session_id, workspace_id=workspace_id)
+        # No session and no workspace: the deployment-level question (the
+        # session-defaults picker), where a workspace is supplied later by
+        # every real arming.
+        refusal = validate_watcher_arming(
+            app,
+            session_id=session_id,
+            workspace_id=workspace_id,
+            require_workspace=bool(session_id or workspace_id),
+        )
         if refusal is None:
             return SpotterAvailability(available=True, blueprint_id=blueprint_id)
         result = SpotterAvailability(
