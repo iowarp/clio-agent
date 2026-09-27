@@ -473,6 +473,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
                 "IDs, revisions, server-detected media types, hashes, sizes, and readiness."
             ),
             args={},
+            read_only=True,
         ),
         native_tool(
             resource_inspect,
@@ -486,6 +487,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
                 "structured-processing, derivative, and provider-delivery provenance."
             ),
             args={"resource_id": {"type": "string", "description": "Immutable resource id."}},
+            read_only=True,
         ),
         native_tool(
             resource_wait,
@@ -510,6 +512,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
                     "description": "Positive caller-selected wait budget in seconds.",
                 },
             },
+            read_only=True,
         ),
         native_tool(
             resource_read,
@@ -530,6 +533,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
                     "description": "Optional named textual derivative; omit for original text.",
                 },
             },
+            read_only=True,
         ),
         native_tool(
             resource_search,
@@ -550,6 +554,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
                     "description": "Optional named textual derivative; omit for original text.",
                 },
             },
+            read_only=True,
         ),
         native_tool(
             resource_structure,
@@ -573,6 +578,7 @@ def build_resource_tools(agent_def: "AgentDef") -> list[Any]:
                     "description": "Zero-based node index; omit for the outline.",
                 },
             },
+            read_only=True,
         ),
     ]
 

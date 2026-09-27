@@ -73,6 +73,8 @@ logger = logging.getLogger(__name__)
 # survive ``functools.wraps``, which copies ``__dict__``).
 REPRESENTATION_ATTR = "_clio_tool_representation"
 TITLE_ATTR = "_clio_tool_title"
+#: Marker a native tool construction stamps when it DECLARES no side effects.
+READ_ONLY_ATTR = "_clio_tool_read_only"
 PRESENTER_ATTR = "_clio_tool_result_presenter"
 START_PRESENTER_ATTR = "_clio_tool_start_presenter"
 # #1350: the tool's server-declared functional domain (desktop Tools view
@@ -312,6 +314,7 @@ def native_tool(
     presentation_start: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None,
     title: str = "",
     representation: str = DEFAULT_REPRESENTATION,
+    read_only: bool = False,
 ) -> Any:
     """Construct a native ``dspy.Tool`` with its DECLARED presentation.
 
@@ -323,6 +326,12 @@ def native_tool(
     unknown value fails loudly (:func:`_validated_domain`) rather than being
     silently coerced. This is the ONE sanctioned native construction path (CI
     guard baseline 0).
+
+    ``read_only`` is the native counterpart of an MCP ``readOnlyHint``: the tool
+    DECLARES it has no side effects (it reads, and never writes, spawns,
+    schedules, or changes session state). A read-only posture (a side session)
+    keeps only natives that declare it; the default is ``False``, so a tool
+    that says nothing is treated as effectful, never guessed read-only.
     """
 
     from clio_agent.gact.agents.native_presenters import validate_declaration
@@ -333,6 +342,7 @@ def native_tool(
     setattr(func, REPRESENTATION_ATTR, _validated_representation(representation, tool_name=name))
     setattr(func, TITLE_ATTR, sanitize_tool_title(title))
     setattr(func, DOMAIN_ATTR, _validated_domain(domain, tool_name=name))
+    setattr(func, READ_ONLY_ATTR, bool(read_only))
     return _clio_native_tool_class()(func=func, name=name, desc=desc, args=args)
 
 
@@ -394,6 +404,7 @@ def rebuilt_tool(
         PRESENTER_ATTR,
         START_PRESENTER_ATTR,
         DOMAIN_ATTR,
+        READ_ONLY_ATTR,
     ):
         value = getattr(inner_func, attr, None)
         if value is not None:
@@ -552,9 +563,18 @@ def instrument_tools(tools: Iterable[Any]) -> list[Any]:
     notification unless the callable is already marked observed (a
     seam-wrapped native, or an MCP-bridged tool that notifies through the
     execution boundary). Idempotent via :data:`TOOL_OBSERVED_ATTR`.
+
+    The seam first applies the active session's tool posture
+    (:func:`~clio_agent.gact.agents.session_tool_posture.restrict_tools_to_session_posture`):
+    a read-only side session never sees a native tool that did not declare
+    itself read-only.
     """
 
-    return [_instrument_tool(tool) for tool in tools]
+    from clio_agent.gact.agents.session_tool_posture import (  # noqa: PLC0415
+        restrict_tools_to_session_posture,
+    )
+
+    return [_instrument_tool(tool) for tool in restrict_tools_to_session_posture(tools)]
 
 
 def _instrument_tool(tool: Any) -> Any:
