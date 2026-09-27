@@ -51,6 +51,9 @@ logger = logging.getLogger(__name__)
 # Keep session ids namespaced so log scraping (and humans) can tell
 # them apart from e.g. message ids at a glance.
 _SESSION_ID_PREFIX = "sess_"
+#: Server-owned approval profiles (never accepted from a public request): the SPOTTER
+#: watcher's containment profile and the read-only side session (gact/side_sessions.py).
+_SERVER_PROFILES = frozenset({"spotter-watcher", "read-only-side"})
 _TIME_LOCK = threading.Lock()
 _LAST_TIME: datetime | None = None
 
@@ -386,7 +389,7 @@ class SessionStore:
             edit_mode=edit_mode if edit_mode in {"diff", "whole", "patch"} else "diff",
             routing_mode=routing_mode if routing_mode in valid_routing_modes else "auto",
             approval_mode=approval_mode if approval_mode in valid_approval_modes else "ask",
-            approval_profile=(approval_profile if approval_profile in {"spotter-watcher"} else ""),
+            approval_profile=(approval_profile if approval_profile in _SERVER_PROFILES else ""),
         )
         with self._lock:
             self._sessions[sid] = sess

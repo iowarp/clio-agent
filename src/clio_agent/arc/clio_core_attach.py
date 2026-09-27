@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING
 from clio_agent.arc.init_degradation import (
     CLIO_CORE_CLIENT_ATTACH_FAILED,
     CLIO_CORE_CLIENT_ATTACH_TIMEOUT,
+    CLIO_CORE_NATIVE_CLIENT_EXIT,
     CLIO_CORE_POST_ATTACH_PROBE_TIMEOUT,
 )
 
@@ -258,12 +259,45 @@ def attach_native_client(
     typed ``clio_core_client_attach_timeout`` when the whole bound ran out and
     ``clio_core_client_attach_failed`` when the native client gave up sooner.
 
+    NEVER EXITS THE PROCESS. The native client ends the process (``exit(1)``) on some
+    startup failures instead of returning (:mod:`clio_agent.arc.clio_core_native_preflight`).
+    So an inherited ``CLIO_WITH_RUNTIME`` is removed first (recorded), and the native
+    startup runs once in a child process: a child the native client ended degrades
+    typed ``clio_core_native_client_exit`` here instead of taking the server down.
+
     Raises:
-        ClioCoreAttachError: If the native client init reports failure.
+        ClioCoreAttachError: If the native client init reports failure, or would exit.
     """
+    from clio_agent.arc import clio_core_native_preflight as preflight  # noqa: PLC0415
+
     client_init = getattr(cte, "clio_init", None) or cte.chimaera_init  # type: ignore[attr-defined]
     mode = (getattr(cte, "RuntimeMode", None) or cte.ChimaeraMode).kClient  # type: ignore[attr-defined]
     window = attach_window_s()
+    preflight.remove_embedded_runtime_env(os.environ)
+    check = preflight.preflight_native_client(
+        cte, config_path=config_path, timeout_s=preflight.preflight_window_s(window)
+    )
+    if not check.returned:
+        on_failure()
+        reason = (
+            CLIO_CORE_NATIVE_CLIENT_EXIT
+            if check.exit_code is not None
+            else (CLIO_CORE_CLIENT_ATTACH_TIMEOUT)
+        )
+        detail = (
+            f"the native client ended its process during startup (exit code {check.exit_code})"
+            if check.exit_code is not None
+            else "the native client startup did not finish in its child process"
+        ) + (f": {check.output}" if check.output else "")
+        error = ClioCoreAttachError(
+            port=port,
+            config_path=config_path,
+            stage="native_preflight",
+            detail=detail,
+            reason=reason,
+        )
+        logger.error("%s reason=%s", error, reason)
+        raise error
     os.environ[_NATIVE_WAIT_ENV] = f"{window:g}"  # one native client per process
     started = time.monotonic()
     if client_init(mode, False):

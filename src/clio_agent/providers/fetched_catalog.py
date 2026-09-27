@@ -288,6 +288,34 @@ class FetchedCatalog(Generic[T]):
         with self._lock:
             return self._get_locked(force_refresh=force_refresh, allow_fetch=allow_fetch)
 
+    def refresh_disk_cache(self) -> CatalogResult[T]:
+        """Bring the disk cache up to date without keeping the parsed data in memory.
+
+        For a startup refresh whose only job is making a fresh install learn the
+        catalog (so later offline reads find a disk copy): the same fetch, TTL, ETag,
+        validation and fallbacks as :meth:`get`, but the parsed document is not
+        memoised afterwards -- the first real lookup reads it back from disk (typed
+        ``disk_cache`` provenance) and memoises it then. A catalog nobody looks up
+        costs no resident memory.
+
+        Returns:
+            The refresh's :class:`CatalogResult` (provenance for the caller's log);
+            it is not retained here.
+
+        Raises:
+            FetchedCatalogUnavailable: As :meth:`get`.
+        """
+        with self._lock:
+            had_memo = self._fresh is not None
+            had_library = self._library_data is not None
+            try:
+                return self._get_locked(force_refresh=False, allow_fetch=True)
+            finally:
+                if not had_memo:
+                    self._fresh = None
+                if not had_library:
+                    self._library_data = None
+
     # -- internals -----------------------------------------------------------
 
     def _get_locked(self, *, force_refresh: bool, allow_fetch: bool) -> CatalogResult[T]:

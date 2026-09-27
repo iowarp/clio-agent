@@ -97,7 +97,9 @@ def refresh_online_catalogs() -> dict[str, str]:
     if limits_failure := model_limits_db.refresh_model_limits_seed():
         failures["model-limits"] = limits_failure
     try:
-        litellm_catalog._catalog().get()
+        # Disk only: hot paths read the disk cache; nothing at startup needs the parsed
+        # map (~10 MB resident), so the first real lookup loads and memoises it.
+        litellm_catalog._catalog().refresh_disk_cache()
     except FetchedCatalogUnavailable as exc:
         failures["litellm-model-cost-map"] = str(exc)
     for name, failure in failures.items():

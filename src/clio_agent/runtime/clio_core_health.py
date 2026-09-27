@@ -211,10 +211,19 @@ def probe_clio_core_attach(*, state: object | None = None) -> list[IntegrationSt
         ClioCoreAttachState,
         attach_state_snapshot,
     )
+    from clio_agent.arc.clio_core_native_preflight import (  # noqa: PLC0415
+        CLIO_CORE_EMBEDDED_RUNTIME_ENV_REMOVED,
+        removed_embedded_runtime_env,
+    )
 
     snap = state if isinstance(state, ClioCoreAttachState) else attach_state_snapshot()
     if snap.phase in (ClioCoreAttachPhase.IDLE, ClioCoreAttachPhase.NOT_SELECTED):
         return []
+    details = snap.to_details()
+    removed = removed_embedded_runtime_env()
+    if removed:  # an inherited CLIO_WITH_RUNTIME was dropped before the attach
+        details["removed_env"] = removed
+        details["removed_env_reason"] = CLIO_CORE_EMBEDDED_RUNTIME_ENV_REMOVED
     endpoint = None if snap.port is None else f"127.0.0.1:{snap.port}"
     where = f"port {snap.port}, config {snap.config_path or '<default>'}"
     if snap.phase is ClioCoreAttachPhase.STARTING:
@@ -238,7 +247,7 @@ def probe_clio_core_attach(*, state: object | None = None) -> list[IntegrationSt
             next_action=next_action,
             endpoint=endpoint,
             fallback="local" if snap.phase is ClioCoreAttachPhase.UNAVAILABLE else "none",
-            details=snap.to_details(),
+            details=details,
             required=required,
         )
     ]

@@ -53,10 +53,17 @@ PLAN_ACL_PLAN_TOOLS: tuple[str, ...] = ("plan_exit", "ask_user", "web_fetch")
 #: checks; this does not grant direct file/edit/shell tools. An explicit user deny still wins.
 PLAN_ACL_ARCHITECT_TOOLS: tuple[str, ...] = ("create_artifact",)
 
-#: The modes the built-in plan ACL constrains. The DENY-everything default applies in both; the
+#: The policy mode a read-only side session resolves under (``gact/side_sessions.py``): the
+#: deny-everything default with NO carve-out, so only tools that DECLARE no side effects (fast-allowed
+#: by :func:`grant_resolver.is_read_only` before any ACL) run. It is not a session ``mode`` a person
+#: selects; the gate derives it from the session's server-owned approval profile.
+READ_ONLY_POLICY_MODE = "read_only"
+
+#: The modes the built-in plan ACL constrains. The DENY-everything default applies in all; the
 #: plans-dir write carve-out and plan lifecycle tools are ``plan`` only. Architect can publish a
 #: registered artifact, but direct file/edit/shell tools remain blocked and it has no ``plan_exit``.
-PLAN_ACL_MODES = frozenset({"plan", "architect"})
+#: ``read_only`` has no allow band at all.
+PLAN_ACL_MODES = frozenset({"plan", "architect", READ_ONLY_POLICY_MODE})
 
 
 def plans_dir() -> Path:
@@ -131,7 +138,7 @@ def default_plan_acl_rows() -> list[dict[str, Any]]:
             "kind": "plan_acl",
             "action": "deny",
             "tool_name_pattern": "*",
-            "modes": ["plan", "architect"],
+            "modes": ["plan", "architect", READ_ONLY_POLICY_MODE],
             "priority": PLAN_ACL_DENY_PRIORITY,
             "band": "deny",
         },
@@ -254,6 +261,12 @@ def plan_mode_deny_message(mode: str, tool_name: str = "") -> str:
     """
 
     tool_ref = f" ({tool_name})" if tool_name else ""
+    if mode == READ_ONLY_POLICY_MODE:
+        return (
+            "This is a read-only side conversation: it may only use tools that declare no side "
+            f"effects. This tool{tool_ref} does not declare itself read-only, so it is blocked. "
+            "Answer from the conversation and read-only tools."
+        )
     if mode == "plan":
         plan_glob = f"{plans_dir()}{os.sep}*.md"
         return (
