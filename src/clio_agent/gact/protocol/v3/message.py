@@ -385,7 +385,8 @@ def message_to_v3(message: Any) -> dict[str, Any]:
         "cache_read": int(tokens.get("cache_read") or 0),
         "cache_write": int(tokens.get("cache_write") or 0),
     }
-    row["cost_usd"] = float(wire.get("cost_usd") or 0.0)
+    if wire.get("cost_usd") is not None:  # absent = not reported, never a fabricated $0
+        row["cost_usd"] = float(wire["cost_usd"])
     if wire.get("stop_reason"):
         row["stop_reason"] = str(wire["stop_reason"])
     if isinstance(wire.get("error_info"), Mapping):
@@ -657,7 +658,6 @@ def transcript_entities(
                         }
                     ],
                     "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0},
-                    "cost_usd": 0.0,
                 },
             )
         )

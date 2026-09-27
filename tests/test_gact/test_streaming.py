@@ -1068,6 +1068,65 @@ def test_claude_code_missing_sdk_surfaces_clean_error(
     assert "Traceback" not in assistant["error_info"]["message"]
 
 
+def test_claude_code_signed_out_surfaces_one_line_and_the_sign_in_provider(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
+) -> None:
+    """#1454: a signed-out Claude subscription reached the user as a raw
+    traceback ending "returned an error for model=claude-sonnet-5: success".
+    The failed turn now carries one plain line plus the provider to sign in to,
+    as a typed ``provider_error`` (``details.reason: provider_auth_required``)."""
+    from clio_agent.providers.claude_code_errors import (
+        CLAUDE_CODE_SIGNED_OUT_MESSAGE,
+        ClaudeCodeSignedOutError,
+    )
+
+    signed_out = ClaudeCodeSignedOutError(
+        detail="Not logged in · Please run /login", model="claude-sonnet-5"
+    )
+    # LiteLLM re-wraps a custom provider's exception as TEXT (the live trace:
+    # "LMTransportError: [cc-claude-sonnet-5] litellm.MidStreamFallbackError:
+    # litellm.APIConnectionError: <the provider's message>").
+    wrapped = RuntimeError(
+        "[cc-claude-sonnet-5] litellm.MidStreamFallbackError: "
+        f"litellm.APIConnectionError: {signed_out}\nTraceback (most recent call last): ..."
+    )
+
+    async def fail_before_chunk(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        raise ExceptionGroup("unhandled errors in a TaskGroup", [wrapped])
+        yield "unreachable"
+
+    def fake_streamify(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        return fail_before_chunk
+
+    streamify_module = importlib.import_module("dspy.streaming.streamify")
+    monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
+    agent = _DspyAgent("sync fallback should not run")
+    agent._provider_config = SimpleNamespace(provider_id="claude_code", provider="claude_code")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    client = enter_client(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+
+    client.post(
+        f"/v1/sessions/{sid}/messages",
+        json={"parts": [{"type": "text", "text": "Hello"}]},
+    )
+    _wait_for_turn_settlement(app, sid)
+
+    messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+    assistant = [message for message in messages if message["role"] == "assistant"][-1]
+    error = assistant["error_info"]
+    assert error["error"] == "provider_error"
+    assert error["message"] == CLAUDE_CODE_SIGNED_OUT_MESSAGE
+    assert error["details"]["reason"] == "provider_auth_required"
+    assert error["details"]["provider_id"] == "claude_code"
+    assert error["details"]["provider_label"] == "Claude Code"
+    history = app.state.bus._history.get(sid, [])
+    completed = [e for e in history if e.type == "message.completed"][-1]
+    _assert_structured_stream_fallback(completed.payload["metadata"], "stream_failed_before_output")
+
+
 def test_a_turn_that_outlives_the_post_still_settles_with_its_real_outcome(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
 ) -> None:

@@ -22,7 +22,6 @@ from typing import Any
 from clio_agent.providers import claude_code_bridge as _bridge
 from clio_agent.providers._cli_provider import (
     messages_to_prompt,
-    raise_model_rejected,
     register_custom_provider,
 )
 from clio_agent.providers.claude_code_audit import (
@@ -37,9 +36,11 @@ from clio_agent.providers.claude_code_multimodal import (
     native_input_summary,
     redact_message_attachments,
 )
-from clio_agent.providers.claude_code_plan_limit import (
-    plan_limit_from_rate_limit_event,
-    plan_limit_from_result,
+from clio_agent.providers.claude_code_plan_limit import plan_limit_from_rate_limit_event
+from clio_agent.providers.claude_code_result_errors import (
+    CLAUDE_CODE_REJECTION_STATUS,  # noqa: F401 - re-exported (tests + callers)
+    raise_classified_result_error,
+    result_error_detail,
 )
 from clio_agent.providers.claude_code_sessions import (
     _STREAM_CLIENT_POOL,
@@ -83,14 +84,6 @@ CLAUDE_BINARY_NAME = "claude"
 # The Claude Agent SDK transport (persistent pooled CLI session) is the only
 # transport since v0.8.0; "exec" (one `claude -p` per call) was deleted.
 DEFAULT_TRANSPORT = "sdk"
-
-#: A ``ResultMessage.api_error_status`` of 404 is the ONLY definitive
-#: model-rejection signal claude_code exposes (#1184, #1211 review A3/D3). Any
-#: other ``is_error`` status (429/5xx/None) stays on the existing generic
-#: error path -- transient noise must never be misclassified as a rejection.
-#: Model discovery no longer probes per-model status; it trusts the maintained
-#: catalog instead (see ``providers.model_discovery.claude_code_catalog``).
-CLAUDE_CODE_REJECTION_STATUS = 404
 
 
 class ClaudeCodeCLIUnavailableError(RuntimeError):
@@ -238,6 +231,7 @@ async def _astream_sdk(
         nonlocal emitted_partial, final_text, final_usage, final_reason
         provider_thinking_marker_tail = ""
         provider_thinking_contract_started = False
+        assistant_error: str | None = None  # the SDK's typed AssistantMessage.error
         redacted_thinking_total = 0
         promoted_contract_text = ""
         emitted_regular_text = ""
@@ -386,6 +380,7 @@ async def _astream_sdk(
                         provider_thinking_marker_tail, call_index=call_index, event_index=index
                     )
                     provider_thinking_marker_tail = ""
+                assistant_error = getattr(msg, "error", None) or assistant_error
                 parts = [b.text for b in msg.content if isinstance(b, TextBlock)]
                 if parts:
                     final_text = "".join(parts).strip()
@@ -432,31 +427,12 @@ async def _astream_sdk(
                 if not final_text and getattr(msg, "result", None):
                     final_text = str(msg.result or "").strip()
                 if getattr(msg, "is_error", False):
-                    status = getattr(msg, "api_error_status", None)
-                    if status == CLAUDE_CODE_REJECTION_STATUS:
-                        # #1184 / #1211 review A3: a definitive rejection (verified
-                        # live: api_error_status 404 + a "issue with the selected
-                        # model" result text) -- never retried as transient, and the
-                        # CLI's own explanatory text rides into the transcript
-                        # (see raise_model_rejected's docstring), not just the
-                        # bare status integer the old raise kept.
-                        raise_model_rejected(
-                            message=(
-                                f"claude_code rejected model {model!r} "
-                                f"(api_error_status={status}): "
-                                f"{getattr(msg, 'result', '') or 'model not available'}"
-                            ),
-                            model=f"claude_code/{model}",
-                            llm_provider="claude_code",
-                        )
-                    # B17: a structured 429 is a typed, terminal plan-limit error
-                    # (never the generic, retry-tempting ClaudeCodeExecError).
-                    plan_limit = plan_limit_from_result(msg)
-                    if plan_limit is not None:
-                        raise plan_limit
+                    # #1454: typed auth / 404 rejection / 429 plan limit first;
+                    # otherwise the CLI's own result text, never the bare subtype.
+                    raise_classified_result_error(msg, model=model, assistant_error=assistant_error)
                     raise ClaudeCodeExecError(
                         f"claude agent sdk returned an error for model={model}: "
-                        f"{status or getattr(msg, 'subtype', None)}"
+                        f"{result_error_detail(msg)}"
                     )
             elif RateLimitEvent is not None and isinstance(msg, RateLimitEvent):
                 # B17: a "rejected" status is the SAME typed plan-limit error as a

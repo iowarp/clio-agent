@@ -8,9 +8,6 @@ Every piece of provider metadata in clio-agent lives here:
 - Catalog rows that ``GET /v1/providers/lm`` returns to gact's provider
   modal (label, description, requires_api_key) - surfaced via
   :func:`as_lm_presets`.
-- Per-preset model catalogs used as the static fallback for
-  ``GET /v1/providers/{id}/models`` - surfaced via
-  :func:`as_provider_models_dict`.
 
 No other module owns provider data. Adding a new provider = one new
 :class:`Provider` entry in :data:`PROVIDERS`; the derived views update
@@ -546,23 +543,3 @@ def as_lm_presets() -> list[Any]:
         )
         for p in PROVIDERS
     ]
-
-
-def as_provider_models_dict() -> dict[str, list[dict[str, str]]]:
-    """Build the gact ``_PROVIDER_MODELS`` static fallback dict.
-
-    Keyed by both preset ``id`` (every entry) and ``provider_kind``
-    (the kind default's catalog covers callers that look up by bare
-    kind - e.g. ``GET /v1/providers/argonne/models``).
-    """
-    out: dict[str, list[dict[str, str]]] = {}
-    for p in PROVIDERS:
-        out[p.id] = [
-            {"id": m.id, "name": m.name, "description": m.description} for m in p.model_catalog
-        ]
-    # Add bare-kind keys for providers whose preset id != kind.
-    for p in PROVIDERS:
-        if p.is_kind_default and p.provider_kind not in out:
-            out[p.provider_kind] = out[p.id]
-    out["argonne_local_vllm"] = out["vllm"]
-    return out

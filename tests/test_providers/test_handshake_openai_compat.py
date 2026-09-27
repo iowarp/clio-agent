@@ -15,7 +15,6 @@ from typing import Any
 
 import pytest
 
-from clio_agent.providers.catalog_types import ModelEntry, Provider
 from clio_agent.providers.handshake.base import HandshakeContext
 from clio_agent.providers.handshake.model import (
     AuthState,
@@ -25,40 +24,6 @@ from clio_agent.providers.handshake.noop import NoOpHandshake
 from clio_agent.providers.handshake.openai_compat import OpenAICompatHandshake
 
 FIXTURES = Path(__file__).parent / "fixtures" / "handshake"
-
-#: model-capabilities brief 9.1: no REAL provider in the registry carries a
-#: populated ``model_catalog`` any more (claude_code's own former exception
-#: moved to the maintained catalog document, cli_catalog.py's
-#: ``ClaudeCodeCatalogHandshake._fallback_models``). ``NoOpHandshake``'s
-#: generic documented-modality-preservation behavior is still real, intended
-#: functionality for a FUTURE no-HTTP-surface CLI provider though (its own
-#: docstring says so), so these tests exercise it against a synthetic
-#: provider row instead of leaning on a real one that no longer has the data.
-_SYNTHETIC_CLI_PROVIDER = Provider(
-    id="a_future_cli_provider",
-    label="A Future CLI Provider",
-    description="test-only synthetic provider for NoOpHandshake's generic contract",
-    provider_kind="claude_code",
-    litellm_prefix="claude_code",
-    api_base="a-future-cli-provider://sdk",
-    suggested_model="",
-    requires_api_key=False,
-    model_catalog=(
-        ModelEntry("fable", "Fable", "", ("text", "image")),
-        ModelEntry("sonnet", "Sonnet", "", ("text", "image")),
-        ModelEntry("opus", "Opus", "", ("text", "image")),
-        ModelEntry("haiku", "Haiku", "", ("text", "image")),
-    ),
-)
-
-
-def _patch_synthetic_cli_provider(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "clio_agent.providers.catalog.get_provider",
-        lambda provider_id: _SYNTHETIC_CLI_PROVIDER
-        if provider_id == _SYNTHETIC_CLI_PROVIDER.id
-        else None,
-    )
 
 
 def _load(name: str) -> Any:
@@ -459,18 +424,16 @@ async def test_discover_model_config_routes_a_cloud_dialect_to_no_restriction_de
 
 
 @pytest.mark.asyncio
-async def test_noop_makes_zero_network_calls(monkeypatch: pytest.MonkeyPatch) -> None:
-    """NoOpHandshake never touches the client across every phase.
+async def test_noop_makes_zero_network_calls() -> None:
+    """NoOpHandshake never touches the client across every phase and lists no models.
 
-    Connectivity is now ``OK`` (a local CLI is always reachable) and discovery
-    returns the provider's registry-declared candidate models — but still with
-    zero network traffic on the probe client.
+    Connectivity is ``OK`` (a local CLI is always reachable); discovery lists
+    nothing, since no compiled-in candidate list exists (brief 9.1).
     """
-    _patch_synthetic_cli_provider(monkeypatch)
     ctx = HandshakeContext(
-        provider_id=_SYNTHETIC_CLI_PROVIDER.id,
-        provider_kind="claude_code",
-        api_base=_SYNTHETIC_CLI_PROVIDER.api_base,
+        provider_id="codex",
+        provider_kind="codex",
+        api_base="",
         allow_external_sources=False,
     )
     client = FakeAsyncClient()
@@ -480,8 +443,7 @@ async def test_noop_makes_zero_network_calls(monkeypatch: pytest.MonkeyPatch) ->
     assert conn.connectivity is ConnectivityState.OK
     assert conn.auth is AuthState.NOT_REQUIRED
 
-    models = await handshake.discover_models(client, ctx)
-    assert {m["id"] for m in models} == {"fable", "sonnet", "opus", "haiku"}
+    assert await handshake.discover_models(client, ctx) == []
 
     facts = await handshake.discover_model_config(client, ctx, {"id": "x"})
     assert facts.discovered.id == "x"
@@ -490,69 +452,23 @@ async def test_noop_makes_zero_network_calls(monkeypatch: pytest.MonkeyPatch) ->
 
 
 @pytest.mark.asyncio
-async def test_noop_discover_models_unknown_provider_is_empty() -> None:
-    """An unregistered provider id yields no models (no crash)."""
+async def test_noop_preserves_an_offline_catalog_rows_image_input() -> None:
+    """A cataloged row's image input survives discover_model_config unchanged."""
+
     ctx = HandshakeContext(
-        provider_id="not-a-real-provider",
-        provider_kind="codex",
-        api_base="",
-        allow_external_sources=False,
-    )
-    handshake = NoOpHandshake(provider=object())
-    assert await handshake.discover_models(FakeAsyncClient(), ctx) == []
-
-
-@pytest.mark.asyncio
-async def test_noop_preserves_documented_claude_image_input(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Static registry aliases retain documented image input without claiming availability."""
-
-    _patch_synthetic_cli_provider(monkeypatch)
-    ctx = HandshakeContext(
-        provider_id=_SYNTHETIC_CLI_PROVIDER.id,
+        provider_id="claude_code",
         provider_kind="claude_code",
-        api_base=_SYNTHETIC_CLI_PROVIDER.api_base,
+        api_base="claude-code://sdk",
         allow_external_sources=False,
     )
-    handshake = NoOpHandshake(provider=object())
-
-    models = await handshake.discover_models(FakeAsyncClient(), ctx)
-    sonnet = next(model for model in models if model["id"] == "sonnet")
-    facts = await handshake.discover_model_config(FakeAsyncClient(), ctx, sonnet)
+    evidence = {"source": "claude_code_catalog", "reason": "modality_cataloged"}
+    row = {"id": "sonnet", "capabilities": ["text", "image"], "capability_evidence": evidence}
+    facts = await NoOpHandshake(provider=object()).discover_model_config(
+        FakeAsyncClient(), ctx, row
+    )
 
     assert facts.model.input_modalities.value == frozenset({"image", "text"})
-    assert facts.discovered.raw["capability_evidence"]["source"] == "provider_documentation"
-    assert facts.discovered.raw["capability_evidence"]["reason"] == "modality_documented"
-
-
-@pytest.mark.asyncio
-async def test_noop_full_handshake_lists_static_candidates_without_network(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A generic no-auth CLI handshake lists candidates without claiming liveness."""
-
-    _patch_synthetic_cli_provider(monkeypatch)
-
-    class _NoNetClient(FakeAsyncClient):
-        async def get(self, url: str, headers: dict[str, str] | None = None) -> FakeResponse:
-            raise AssertionError("NoOpHandshake must not make HTTP calls")
-
-    handshake = NoOpHandshake(provider=object())
-    handshake._open_client = _const_client(_NoNetClient())  # type: ignore[method-assign]
-
-    ctx = HandshakeContext(
-        provider_id=_SYNTHETIC_CLI_PROVIDER.id,
-        provider_kind="claude_code",
-        api_base=_SYNTHETIC_CLI_PROVIDER.api_base,
-        allow_external_sources=True,
-    )
-    report = await handshake.handshake(ctx)
-    assert report.connectivity is ConnectivityState.OK
-    assert report.auth is AuthState.NOT_REQUIRED
-    by_id = {m.id: m for m in report.models}
-    assert {"fable", "sonnet", "opus", "haiku"} == set(by_id)
-    assert report.models_source == "static"
+    assert facts.discovered.raw["capability_evidence"] == evidence
 
 
 def _const_client(client: Any) -> Any:

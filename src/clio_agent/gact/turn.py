@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.errors import ClioError
 from clio_agent.gact.a2ui_actions.record import mark_a2ui_action_consumed
+from clio_agent.gact.agents.unresolved_blueprint import no_resolvable_error
 from clio_agent.gact.context_reference_delivery import record_context_reference_deliveries
 from clio_agent.gact.delegation import (
     _coerce_expert_handoff_rows,
@@ -77,7 +78,7 @@ from clio_agent.gact.runtime.globals import (
 )
 from clio_agent.gact.runtime.retention import enforce_dict_bound
 from clio_agent.gact.skills import SkillNotDelegatableError
-from clio_agent.gact.stream_failures import agent_forward_error_info
+from clio_agent.gact.stream_failures import agent_forward_error_info, streamed_turn_error_info
 from clio_agent.gact.streaming import (
     _extract_tools_called,
     _format_react_trajectory,
@@ -490,18 +491,8 @@ async def _run_turn_in_background(
     except asyncio.CancelledError:
         settle_asyncio_cancellation(state)
     except _StreamingOutputError as exc:
-        original = exc.__cause__ or exc
         partial_answer = state.transcript.raw_streamed_text()
-        state.error_info = ErrorInfo(
-            error="provider_error",
-            message=str(exc),
-            details={
-                "original_error": type(original).__name__,
-                "partial_output": bool(partial_answer),
-                "stream_source": ("live" if partial_answer else "batch"),
-            },
-            recoverable=True,
-        )
+        state.error_info = streamed_turn_error_info(state, exc, partial_answer)
         state.answer_text = partial_answer
         state.tools_called = []
     except _TurnTimedOut as exc:
@@ -562,20 +553,9 @@ async def _run_turn_in_background(
             "No Agent Blueprint resolved for this session, and the legacy planner "
             "is removed, so the turn has nothing to execute."
         )
-        state.error_info = ErrorInfo(
-            error="no_resolvable_agent",
-            message=(
-                "No resolvable Agent Blueprint for this session; install the "
-                "default registry or activate an Agent Blueprint to run turns."
-            ),
-            details={
-                "agent_id": exc.agent_id,
-                "recovery_actions": [
-                    "install_default_registry",
-                    "activate_agent_blueprint",
-                ],
-            },
-            recoverable=True,
+        # #1455: name the blueprint and the observed cause, never a generic blame.
+        state.error_info = await asyncio.to_thread(
+            no_resolvable_error, state.app, state.sid, exc.agent_id
         )
         state.answer_text = ""
         state.tools_called = []
