@@ -23,6 +23,7 @@ from clio_agent.gact.infrastructure.models import (
     ServiceRecord,
 )
 from clio_agent.gact.infrastructure.plan import Readiness
+from clio_agent.gact.infrastructure.server_access import request_headers
 from clio_agent.gact.infrastructure.server_parameters import PARAMETER_PREFIX
 
 Execute = Callable[[CommandSpec], Awaitable[CommandResult]]
@@ -94,11 +95,13 @@ async def observe_service(
     if spec is None or not record.connection_url or record.state != "running":
         return []
     base = record.connection_url.rstrip("/")
+    # A keyed server answers CLIO's reads only with its deployment key.
+    headers = request_headers(record)
 
     async def http_get(path: str) -> str | None:
         try:
             async with httpx.AsyncClient(timeout=5.0, transport=http_transport) as client:
-                response = await client.get(f"{base}{path}")
+                response = await client.get(f"{base}{path}", headers=headers)
         except httpx.HTTPError:
             return None
         return response.text if response.status_code == 200 else None
