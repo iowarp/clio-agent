@@ -177,3 +177,62 @@ def test_a_created_directory_line_that_is_not_the_requested_path_is_never_record
     assert [(row.kind, row.ref) for row in rows] == [
         ("parent_directory", "/home/alice/.local/share/clio")
     ]
+
+
+def test_vllm_reports_the_dtype_auto_resolved_to_and_its_parallel_layout() -> None:
+    from clio_agent.gact.infrastructure.effective_parameters import parse_vllm_engine_config
+
+    line = (
+        "(EngineCore pid=255) INFO 09-27 10:08:31 [core.py:95] Initializing a V1 LLM engine "
+        "(v0.28.0) with config: model='Qwen/Qwen2.5-0.5B-Instruct', speculative_config=None, "
+        "tokenizer='Qwen/Qwen2.5-0.5B-Instruct', skip_tokenizer_init=False, tokenizer_mode=auto, "
+        "revision=None, trust_remote_code=False, dtype=torch.bfloat16, max_seq_len=4096, "
+        "download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, "
+        "data_parallel_size=1, disable_custom_all_reduce=True, quantization=None"
+    )
+
+    report = parse_vllm_engine_config(_wrap(line))
+
+    assert report["dtype"][0] == "bfloat16"
+    assert "dtype=torch.bfloat16" in report["dtype"][1]
+    assert report["tensor_parallel_size"][0] == "1"
+    assert report["pipeline_parallel_size"][0] == "1"
+    assert parse_vllm_engine_config("") == {}
+    rows = {
+        row.id: row
+        for row in assemble(
+            "vllm",
+            "cpu",
+            report=report,
+            container_args=["--model", "m"],
+            container_env={},
+            requested={"dtype": "auto"},
+        )
+    }
+    assert (rows["dtype"].value, rows["dtype"].source) == ("bfloat16", "server_report")
+
+
+def test_an_unset_ollama_context_length_reports_the_vram_based_default() -> None:
+    logs = (
+        'time=2026-09-27T07:22:47Z level=INFO source=routes.go:1606 msg="server config" '
+        'env="map[OLLAMA_CONTEXT_LENGTH:0 OLLAMA_NUM_PARALLEL:1]"\n'
+        'time=2026-09-27T07:22:47Z level=INFO source=routes.go:1700 msg="vram-based default '
+        'context" total_vram="0 B" default_num_ctx=4096\n'
+    )
+
+    report = parse_ollama_server_config(logs)
+
+    assert report["context_length"][0] == "4096"
+    assert "VRAM-based" in report["context_length"][1]
+
+
+def test_the_real_vllm_startup_line_from_ares_resolves_auto_to_bfloat16() -> None:
+    from clio_agent.gact.infrastructure.effective_parameters import parse_vllm_engine_config
+
+    line = (FIXTURES / "vllm_0.28.0_engine_config.log").read_text()
+
+    report = parse_vllm_engine_config(line)
+
+    assert report["dtype"][0] == "bfloat16"
+    assert report["tensor_parallel_size"][0] == "1"
+
