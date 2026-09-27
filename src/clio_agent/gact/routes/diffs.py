@@ -56,6 +56,7 @@ from clio_agent.gact.diff_ledger import pending_diff_rows
 from clio_agent.gact.events import Event
 from clio_agent.gact.routes._body import json_body
 from clio_agent.gact.runtime.retention import enforce_list_bound, ledger_guard
+from clio_agent.gact.side_sessions import refuse_side_session_write
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 if TYPE_CHECKING:
@@ -176,6 +177,7 @@ def register_diffs_routes(app: FastAPI, deps: "GactDeps") -> None:
                     )
                 ).model_dump(exclude_none=True),
             )
+        refuse_side_session_write(sess, "apply proposed edits")
         body = await json_body(request, route="POST /v1/sessions/{sid}/diffs/apply")
         paths = [p for p in (body.get("paths") or []) if isinstance(p, str)]
 
