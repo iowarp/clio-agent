@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from clio_agent.gact.a2ui_capability_selection import select_catalog
-from clio_agent.gact.a2ui_producer import _common
+from clio_agent.gact.a2ui_producer import _common, _export
 from clio_agent.gact.a2ui_producer._presentation import surface_presentation
 from clio_agent.gact.a2ui_producer._refusal import catalog_selection_refusal, refusal
 from clio_agent.gact.agents.tool_instrumentation import native_tool
@@ -43,6 +43,11 @@ def build_create_a2ui_surface_tool() -> Any:
                 "a2ui_validation_failed",
                 detail='A2UI surface components must contain exactly one id="root" component',
             )
+
+        exported = _export.export_workspace_paths(app, session_id, components)
+        if isinstance(exported, dict):
+            return exported
+        components, exported_artifacts = exported
 
         existing = _common.existing_surface(app, session_id, surface_id)
         is_new = existing is None or existing.state == "deleted"
@@ -108,6 +113,8 @@ def build_create_a2ui_surface_tool() -> Any:
             "revision": surface.revision,
             "state": surface.state,
         }
+        if exported_artifacts:
+            result["exported_artifacts"] = exported_artifacts
         result.update(_common.surface_registry_fields(outcome))
         return result
 
