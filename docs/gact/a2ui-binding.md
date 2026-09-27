@@ -439,10 +439,8 @@ each has exactly one path:
   opens in the system browser. The producer tools report each admitted
   external URL in `external_urls` with an `external_url_notice` saying so,
   and an `http:` URL is refused as `a2ui_url_unresolved` with the same
-  recovery: save the file into the workspace with the `download_media`
-  native tool (auto-attached with the producer tools; public hosts only,
-  media types and size from `tools.media_download.*`, through the permission
-  gate and the file policy) and reference the returned workspace path. The
+  recovery: download the file into the workspace with the agent's shell
+  (`curl`) or fetch tool and reference that workspace path. The
   wording lives in `gact/a2ui_catalogs/media_sources.py`, which also renders
   a *Media and file sources* section into every generated catalog skill
   whose catalog declares a URL-valued property.

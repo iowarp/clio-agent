@@ -12,7 +12,6 @@ from clio_agent.gact.a2ui_producer import (
 )
 from clio_agent.gact.agents import toolset_inventory
 from clio_agent.gact.ask_user_tool import build_ask_user_tool
-from clio_agent.gact.media_download_tool import MEDIA_DOWNLOAD_TOOL, build_download_media_tool
 from clio_agent.gact.memory_tools import (
     build_memory_context_frame_tool,
     build_memory_search_tool,
@@ -37,7 +36,6 @@ DECLARABLE_NATIVE_TOOLS: frozenset[str] = frozenset(
         "memory_read_context_frame",
         "view_image",
         "view_pdf",
-        MEDIA_DOWNLOAD_TOOL,
     }
 )
 
@@ -133,7 +131,6 @@ def resolve_declared_native_tools(
         "memory_search_sessions": lambda: build_memory_search_tool(agent_def),
         "memory_read_session_summary": lambda: build_memory_summary_tool(agent_def),
         "memory_read_context_frame": lambda: build_memory_context_frame_tool(agent_def),
-        MEDIA_DOWNLOAD_TOOL: build_download_media_tool,
     }
     if supports_vision:
         builders["view_image"] = build_view_image_tool

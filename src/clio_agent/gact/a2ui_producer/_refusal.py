@@ -114,7 +114,7 @@ _DEFAULT_HINTS: dict[str, str] = {
     ),
     "a2ui_url_unresolved": (
         "reference an existing file inside this session's workspace by its path "
-        "(save a web file there first with download_media) or an "
+        "(download a web file there first with your shell or fetch tool) or an "
         "artifact://<artifact-id> a tool result returned; an https: URL is shown "
         "to viewers only as a link, never loaded"
     ),

@@ -28,10 +28,12 @@ from typing import Any
 
 from clio_agent.gact.a2ui_catalogs.validation import A2UI_URL_KEYS
 
-#: The native tool that saves an external media file into the workspace
-#: (:mod:`clio_agent.gact.media_download_tool`); named here, not imported, so
-#: this leaf module stays import-light.
-MEDIA_DOWNLOAD_TOOL_NAME = "download_media"
+#: The recovery step, worded once: the agent saves the file with the tools
+#: it already has (a shell or a fetch tool); CLIO adds no download tool.
+DOWNLOAD_RECOVERY = (
+    "download the file into the workspace with your shell (for example "
+    "`curl -L -o <path> <url>`) or fetch tool, then reference that workspace path"
+)
 
 
 def _collect(schema: Any, found: set[str]) -> None:
@@ -88,9 +90,8 @@ def media_source_lines(file: Mapping[str, Any]) -> list[str]:
         ),
         "- An `artifact://` reference a tool returned renders the same way.",
         (
-            "To show media that lives on the web, first save it into the workspace "
-            f"(`{MEDIA_DOWNLOAD_TOOL_NAME}` does this and returns the workspace "
-            "path), then reference that path."
+            f"To show media that lives on the web, {DOWNLOAD_RECOVERY}; CLIO exports "
+            "it as an artifact."
         ),
     ]
 
@@ -104,8 +105,7 @@ def external_url_notice(entries: Iterable[Mapping[str, Any]]) -> str:
     return (
         f"Viewers never load external URLs: {', '.join(components)} will show a link to "
         f"{', '.join(hosts) or 'the host'} instead of the media. To show the file itself, "
-        f"save it into the workspace with {MEDIA_DOWNLOAD_TOOL_NAME} and reference the "
-        "returned workspace path; CLIO exports a workspace path as an artifact that "
+        f"{DOWNLOAD_RECOVERY}; CLIO exports a workspace path as an artifact that "
         "renders for every viewer, local or remote."
     )
 
@@ -115,14 +115,13 @@ def insecure_url_detail(raw: str) -> str:
 
     return (
         f"{raw!r} is an insecure http: URL, which a surface never admits and no viewer "
-        f"loads. Save the file into this session's workspace with "
-        f"{MEDIA_DOWNLOAD_TOOL_NAME} and reference the returned workspace path; CLIO "
-        "exports it as an artifact that renders for every viewer."
+        f"loads. To show it, {DOWNLOAD_RECOVERY}; CLIO exports it as an artifact "
+        "that renders for every viewer."
     )
 
 
 __all__ = [
-    "MEDIA_DOWNLOAD_TOOL_NAME",
+    "DOWNLOAD_RECOVERY",
     "external_url_notice",
     "insecure_url_detail",
     "media_source_lines",

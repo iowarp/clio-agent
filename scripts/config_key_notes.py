@@ -1111,25 +1111,6 @@ KEY_NOTES: dict[str, str] = {
         "Byte-size cap (accepts K/M/G/T suffixes) on a file a read/write tool call may touch; "
         "raise to allow larger files."
     ),
-    "tools.media_download.allow_private_hosts": (
-        "Whether download_media may fetch from loopback/private-network hosts; keep false unless "
-        "a trusted lab host serves the media."
-    ),
-    "tools.media_download.connect_timeout_s": (
-        "Seconds download_media waits to connect to a media host before a typed network refusal."
-    ),
-    "tools.media_download.max_bytes": (
-        "Byte-size cap (accepts K/M/G/T suffixes) on one download_media file; the file-policy "
-        "size cap still applies when smaller."
-    ),
-    "tools.media_download.media_types": (
-        "Comma-separated media types download_media may save (type/subtype or type/*); widen to "
-        "allow other file kinds."
-    ),
-    "tools.media_download.read_timeout_s": (
-        "Seconds download_media tolerates a stalled read (no bytes arriving) before a typed "
-        "network refusal; not a cap on total download time."
-    ),
     "tools.mcp.call_timeout_s": (
         "Runaway backstop seconds for one synchronous MCP tool call before it's abandoned; not the "
         "real per-tool clock -- raise only if tools hit it."

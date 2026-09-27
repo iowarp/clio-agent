@@ -54,7 +54,6 @@ from clio_agent.gact.artifacts.proposals import build_create_artifact_tool
 from clio_agent.gact.autonomous_loop import build_loop_wakeup_tool
 from clio_agent.gact.cron_tools import build_cron_tools
 from clio_agent.gact.goal import build_goal_status_tool
-from clio_agent.gact.media_download_tool import MEDIA_DOWNLOAD_TOOL, build_download_media_tool
 from clio_agent.gact.memory_tools import build_memory_tools
 from clio_agent.gact.plan_mode import build_plan_exit_tool
 from clio_agent.gact.resource_tools import build_resource_tools
@@ -115,10 +114,7 @@ def build_auto_react_tools(agent_def: Any, *, a2ui_producers: bool | None = None
         # with no catalogs has nothing to produce against). Children get them
         # only through an explicit blueprint tools declaration. All four
         # producer tools (S4) travel together -- a root agent that can create a
-        # surface can also revise/delete it without a separate declaration --
-        # and so does ``download_media``: viewers never load an external URL,
-        # so showing web media means saving it into the workspace first, and
-        # the catalog guidance names this tool for that step.
+        # surface can also revise/delete it without a separate declaration.
         if a2ui_producers is None:
             a2ui_producers = session_a2ui_producers_enabled(
                 _ctx.active_app(), _ctx.active_session_id()
@@ -128,7 +124,6 @@ def build_auto_react_tools(agent_def: Any, *, a2ui_producers: bool | None = None
             ("update_a2ui_components", build_update_a2ui_components_tool),
             ("update_a2ui_data_model", build_update_a2ui_data_model_tool),
             ("delete_a2ui_surface", build_delete_a2ui_surface_tool),
-            (MEDIA_DOWNLOAD_TOOL, build_download_media_tool),
         ):
             if a2ui_producers and name not in declared:
                 tools.append(build())

@@ -29,7 +29,6 @@ from clio_agent.gact.a2ui_producer import (
     build_update_a2ui_components_tool,
 )
 from clio_agent.gact.app import build_app
-from clio_agent.gact.media_download_tool import MEDIA_DOWNLOAD_TOOL
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
 
@@ -87,7 +86,7 @@ def test_the_catalog_skill_states_how_viewers_load_media(index: int) -> None:
     assert "never loaded" in section
     assert "link" in section
     assert "exported as an artifact" in section
-    assert f"`{MEDIA_DOWNLOAD_TOOL}`" in section
+    assert "shell" in section and "fetch tool" in section
     assert "`Image` (`url`)" in section
 
 
@@ -100,7 +99,7 @@ def test_the_notice_names_hosts_components_and_the_recovery() -> None:
     )
     assert "upload.wikimedia.org" in notice and "cdn.example.org" in notice
     assert "img" in notice and "vid" in notice
-    assert MEDIA_DOWNLOAD_TOOL in notice
+    assert "shell" in notice
     assert "workspace path" in notice
     assert "artifact" in notice
 
@@ -118,7 +117,7 @@ def test_create_surface_reports_external_urls_with_the_recovery(
     assert result["external_urls"] == [
         {"component_id": "img", "property": "url", "url": url, "host": "upload.wikimedia.org"}
     ]
-    assert MEDIA_DOWNLOAD_TOOL in result["external_url_notice"]
+    assert "shell" in result["external_url_notice"]
     assert "upload.wikimedia.org" in result["external_url_notice"]
 
 
@@ -152,7 +151,7 @@ def test_an_insecure_http_url_is_refused_with_the_same_recovery(
     )
     assert result["ok"] is False
     assert result["reason"] == "a2ui_url_unresolved"
-    assert MEDIA_DOWNLOAD_TOOL in result["detail"]
+    assert "shell" in result["detail"]
     assert "workspace" in result["detail"]
 
 
@@ -160,5 +159,14 @@ def test_the_unresolved_path_hint_names_the_download_recovery() -> None:
     from clio_agent.gact.a2ui_producer._refusal import _DEFAULT_HINTS
 
     hint = _DEFAULT_HINTS["a2ui_url_unresolved"]
-    assert MEDIA_DOWNLOAD_TOOL in hint
+    assert "shell" in hint
     assert "link" in hint
+
+
+def test_blueprint_validation_accepts_declared_native_tools() -> None:
+    from clio_agent.gact.agent_blueprints import _validate_agent_tool_references
+    from clio_agent.gact.types import AgentDef
+
+    row = AgentDef(id="leaf", title="Leaf", tools=["view_image", "view_pdf", "ask_user"])
+    [validated] = _validate_agent_tool_references([row], mcp_descriptors=[])
+    assert validated.validation_errors == []
