@@ -51,15 +51,13 @@ from clio_agent.gact.agents.skill_runtime import build_load_skill_tool, skill_ru
 from clio_agent.gact.app import build_app
 from clio_agent.gact.interaction_types import UserQuestion
 from clio_agent.gact.types import AgentDef
+from tests._marketplace import MARKETPLACE_ROOT
 
 HEADERS = {"X-GACT-Version": "0.3", "X-A2UI-Version": "0.9.1"}
 
-PACK_ROOT = (
-    Path(__file__).resolve().parents[2]
-    / "external"
-    / "clio-agent-marketplace"
-    / "earthscope-single-agent"
-)
+pytestmark = pytest.mark.marketplace
+
+PACK_ROOT = MARKETPLACE_ROOT / "earthscope-single-agent"
 PACK_BLUEPRINT_ID = "earthscope-single-agent"
 PACK_CATALOG_ID = "https://iowarp.ai/a2ui/catalogs/earthscope-stations/v1"
 BASIC_CATALOG_ID = basic_catalog_id()

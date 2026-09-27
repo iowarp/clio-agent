@@ -220,17 +220,27 @@ def build(default_root, config):
 def test_semantic_event_hook_fires(tmp_path: Path, monkeypatch) -> None:
     from .conftest import complete_turn
 
-    marker = tmp_path / "semantic_events.jsonl"
+    marker_dir = tmp_path / "semantic_events"
+    marker_dir.mkdir()
     # A real SemanticEvent subprocess hook (the ported ``semantic_event`` consumer):
-    # reads the wire envelope from stdin and appends the projected event's type/trace.
+    # reads the wire envelope from stdin and records the projected event's type,
+    # trace and timestamp in ITS OWN file. Hook subprocesses for events emitted
+    # from different threads can run at the same time, and appending to one
+    # shared file is not atomic across processes on Windows (the CRT emulates
+    # O_APPEND with a seek before each write), so a shared log could lose a row.
     body = f"""
-import json, sys
+import json, pathlib, sys
 
 envelope = json.load(sys.stdin)
 payload = envelope["payload"]
-with open({str(marker)!r}, "a", encoding="utf-8") as f:
-    f.write(json.dumps({{"event_type": payload["event_type"], "trace_id": payload["trace_id"]}}))
-    f.write("\\n")
+record = {{
+    "event_type": payload["event_type"],
+    "trace_id": payload["trace_id"],
+    "occurred_at": payload["occurred_at"],
+}}
+pathlib.Path({str(marker_dir)!r}, payload["event_id"] + ".json").write_text(
+    json.dumps(record), encoding="utf-8"
+)
 """
     set_config("trace.backend", "none")  # file-layer (file > env); #985 config-first
     install_global_dispatcher(make_command_dispatcher(tmp_path, event="SemanticEvent", body=body))
@@ -247,13 +257,18 @@ with open({str(marker)!r}, "a", encoding="utf-8") as f:
     finally:
         install_global_dispatcher(None)
 
-    rows = [json.loads(line) for line in marker.read_text().splitlines()]
+    rows = sorted(
+        (json.loads(path.read_text(encoding="utf-8")) for path in marker_dir.glob("*.json")),
+        key=lambda row: row["occurred_at"],
+    )
     # The GLOBAL dispatcher captures every semantic event in the process, so scope
     # the ordering assertion to THIS turn's trace: a stray event from another
     # session (e.g. a background LM failure elsewhere in the suite) must not be
     # able to claim rows[0]. The hook records trace_id for exactly this purpose.
     assert rows, "the SemanticEvent hook never fired"
-    turn_trace = next(row["trace_id"] for row in rows if row["event_type"] == "turn.started")
+    started = [row for row in rows if row["event_type"] == "turn.started"]
+    assert started, f"no turn.started reached the hook; rows: {rows}"
+    turn_trace = started[0]["trace_id"]
     trace_rows = [row for row in rows if row["trace_id"] == turn_trace]
     assert trace_rows[0]["event_type"] == "turn.started"
     assert "turn.completed" in {row["event_type"] for row in trace_rows}
