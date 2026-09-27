@@ -26,6 +26,7 @@ from clio_agent.arc.clio_core_attach import (
 )
 from clio_agent.arc.init_degradation import (
     CLIO_CORE_CLIENT_ATTACH_FAILED,
+    CLIO_CORE_POST_ATTACH_PROBE_TIMEOUT,
     classify_init_failure,
     reset_arc_init_degradation,
 )
@@ -224,11 +225,10 @@ class _Future:
         return self.code is not None
 
     def wait(self, max_sec: float = -1.0) -> int:
-        assert max_sec >= 0, "an unbounded wait can hang the interpreter"
+        # The real binding: against a daemon that is gone, wait() on an unfinished Future
+        # ignores max_sec and blocks for good (holding the GIL). Never call it early.
+        assert self.code is not None, "wait() on an unfinished Future can block forever"
         self.waits.append(max_sec)
-        if self.code is None:
-            time.sleep(min(max_sec, 0.05))  # a stuck daemon: the bounded wait just expires
-            return -1
         return self.code
 
 
@@ -268,9 +268,9 @@ def test_post_attach_probe_against_a_stuck_daemon_expires_typed(monkeypatch):
     assert time.monotonic() - started < 5.0
     assert info.value.stage == "post_attach_probe"
     assert "did not answer within 0.3s" in str(info.value) and "21045" in str(info.value)
-    assert classify_init_failure(info.value) == CLIO_CORE_CLIENT_ATTACH_FAILED
+    assert classify_init_failure(info.value) == CLIO_CORE_POST_ATTACH_PROBE_TIMEOUT
     assert deregistered == [True]
-    assert future.waits and all(0 <= w <= 0.3 for w in future.waits)
+    assert future.waits == []  # never waited on the unfinished Future
 
 
 def test_post_attach_probe_nonzero_code_raises_typed(monkeypatch):
