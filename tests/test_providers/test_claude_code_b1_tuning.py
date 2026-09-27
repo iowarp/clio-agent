@@ -150,7 +150,13 @@ async def test_cancel_interrupts_the_client_and_it_stays_warm_for_the_next_turn(
                 model="haiku",
             )
         )
-        await asyncio.sleep(0.05)  # let the query start and the first chunk arrive
+        # Wait for the client to CONNECT (the first connect also resolves which
+        # CLI to pin, a one-time probe), then let the first chunk arrive.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 10.0
+        while state["connected"] < 1 and loop.time() < deadline:
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
         killed = abort_session_streams("sess-cancel")
         assert killed == 1
         await asyncio.wait_for(task, timeout=2.0)

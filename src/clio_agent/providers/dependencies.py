@@ -20,12 +20,6 @@ from packaging.requirements import Requirement
 #: a provider's install spec is ever resolved from (never request input).
 _DISTRIBUTION_NAME = "clio-agent"
 
-# Exactly the locked SDK (uv.lock), NOT resolved from the ``claude-code``
-# extra's metadata marker: an open floor there (``>=0.2.156``) would resolve
-# the newest release, and claude-agent-sdk 0.2.157 ships no Windows wheel --
-# its sdist installs without the bundled Claude Code CLI the SDK transport
-# runs. This one dependency stays a fixed, audited literal on purpose.
-_CLAUDE_CODE_REQUIREMENT = "claude-agent-sdk==0.2.156"
 _INSTALL_TIMEOUT_SECONDS = 180
 _INSTALL_LOCK = threading.Lock()
 
@@ -201,19 +195,45 @@ def ensure_argonne_support(*, python_executable: str | None = None) -> bool:
     )
 
 
+def claude_code_requirement() -> str:
+    """The exact Claude Agent SDK release to install: the newest one installable HERE.
+
+    Not the ``claude-code`` extra's open floor: "newest on PyPI" can be a
+    release with no wheel for this platform (0.2.157 and 0.2.160 shipped none
+    for Windows), whose sdist installs WITHOUT the bundled ``claude`` CLI the
+    transport runs. The user-updatable component lookup
+    (:mod:`clio_agent.providers.components.pypi`) only counts releases with a
+    compatible wheel, so the first install tracks the latest usable release,
+    exactly like a later in-place update does.
+    """
+    from clio_agent.providers.components.pypi import RELEASES, PyPILookupError  # noqa: PLC0415
+
+    try:
+        latest = RELEASES.releases("claude-agent-sdk").latest
+    except PyPILookupError as exc:
+        raise ProviderDependencyInstallError(
+            f"could not look up an installable Claude Agent SDK release: {exc}"
+        ) from exc
+    if not latest:
+        raise ProviderDependencyInstallError(
+            "no Claude Agent SDK release ships a wheel for this computer"
+        )
+    return f"claude-agent-sdk=={latest}"
+
+
 def ensure_claude_code_support(*, python_executable: str | None = None) -> bool:
     """Ensure the active backend contains the Claude Agent SDK.
 
     Returns ``True`` when this call installed the SDK and ``False`` when it was
-    already available. This ONE dependency stays a fixed, audited literal
-    (``_CLAUDE_CODE_REQUIREMENT``) rather than resolving from the
-    ``claude-code`` extra's own (looser) metadata marker -- see the constant's
-    docstring for why an open floor is unsafe here.
+    already available. The release is the newest one with a wheel for this
+    platform (:func:`claude_code_requirement`), never an open floor.
     """
 
+    if _module_available("claude_agent_sdk"):
+        return False
     return _ensure_dependency(
         module_name="claude_agent_sdk",
-        requirements=[_CLAUDE_CODE_REQUIREMENT],
+        requirements=[claude_code_requirement()],
         display_name="Claude Code support",
         python_executable=python_executable,
     )
