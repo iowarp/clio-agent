@@ -91,6 +91,12 @@ def usage_chunk_fields(usage_payload: dict[str, Any]) -> dict[str, Any]:
     cost_usd = usage_payload.get("cost_usd")
     if cost_usd is not None:
         fields["cost_usd"] = float(cost_usd)
+        # ``cost`` is the usage key litellm itself honors as a provider-reported
+        # cost. On the streaming path ``stream_chunk_builder`` rebuilds usage
+        # and drops ``cost_usd``, then prices the turn from its own model map
+        # (0.0 for a model it does not know) unless ``usage.cost`` is set -- so
+        # without this key the SDK's real cost was replaced by litellm's $0.
+        fields["cost"] = float(cost_usd)
     return fields
 
 

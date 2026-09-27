@@ -20,6 +20,25 @@ from clio_agent.gact.memory_tools import (
 from clio_agent.gact.view_image_tool import build_view_image_tool
 from clio_agent.gact.view_pdf_tool import build_view_pdf_tool
 
+#: Every in-process tool an agent may name in its ``tools:`` list. Blueprint
+#: validation accepts these as built-ins (``agent_blueprints``); whether one is
+#: actually attached is decided per build below (``view_image``/``view_pdf``
+#: need an evidenced model capability).
+DECLARABLE_NATIVE_TOOLS: frozenset[str] = frozenset(
+    {
+        "ask_user",
+        "create_a2ui_surface",
+        "update_a2ui_components",
+        "update_a2ui_data_model",
+        "delete_a2ui_surface",
+        "memory_search_sessions",
+        "memory_read_session_summary",
+        "memory_read_context_frame",
+        "view_image",
+        "view_pdf",
+    }
+)
+
 
 def declared_view_image_capability(config: Any) -> bool:
     """Return the evidenced image capability for one compiled agent profile."""
@@ -127,6 +146,7 @@ def resolve_declared_native_tools(
 
 
 __all__ = [
+    "DECLARABLE_NATIVE_TOOLS",
     "declared_native_capabilities",
     "declared_view_image_capability",
     "declared_view_pdf_capability",

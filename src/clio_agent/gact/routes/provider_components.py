@@ -34,6 +34,7 @@ from clio_agent.providers.components.updater import (
     UpdateJob,
     verify_provider_in_child,
 )
+from clio_agent.providers.support_record import record_support
 
 
 def _error(status: int, code: str, message: str) -> HTTPException:
@@ -59,6 +60,7 @@ def live_update_environment() -> UpdateEnvironment:
         python=sys.executable,
         verify_provider=verify_provider_in_child,
         release_runtimes=release_provider_runtimes,
+        record_support=record_support,
     )
 
 

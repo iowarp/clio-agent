@@ -29,7 +29,6 @@ persist is returned as a typed reason, never swallowed.
 from __future__ import annotations
 
 import logging
-import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,12 +36,12 @@ from typing import Any
 
 import yaml
 
-from clio_agent import paths
-from clio_agent.platform_paths import atomic_write_text
+from clio_agent import user_config_document
+from clio_agent.user_config_document import USER_CONFIG_LOCK as _LOCK
+from clio_agent.user_config_document import read_document as _read_document
+from clio_agent.user_config_document import write_document as _write_document
 
 logger = logging.getLogger(__name__)
-
-_LOCK = threading.RLock()
 
 #: The ``lm`` keys this module owns; every other ``lm`` key is left untouched.
 OWNED_LM_KEYS = (
@@ -71,7 +70,7 @@ class SelectionPersistence:
 def user_config_path() -> Path:
     """The user config file boot reads (``<user config dir>/config.yaml``)."""
 
-    return paths.user_config_dir() / "config.yaml"
+    return user_config_document.user_config_path()
 
 
 def selection_entries(cfg: Any, *, requested_api_base: str) -> dict[str, Any]:
@@ -97,23 +96,6 @@ def selection_entries(cfg: Any, *, requested_api_base: str) -> dict[str, Any]:
         if getattr(cfg, "codex_variant", ""):
             entries["codex_variant"] = str(cfg.codex_variant)
     return entries
-
-
-def _read_document(path: Path) -> dict[str, Any]:
-    if not path.is_file():
-        return {}
-    loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    if not isinstance(loaded, Mapping):
-        raise ValueError(f"{path} must contain a YAML mapping")
-    return dict(loaded)
-
-
-def _write_document(path: Path, document: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    rendered = yaml.safe_dump(
-        dict(document), allow_unicode=True, default_flow_style=False, sort_keys=False
-    )
-    atomic_write_text(path, rendered)
 
 
 def persist_lm_selection(cfg: Any, *, requested_api_base: str) -> SelectionPersistence:

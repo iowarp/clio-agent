@@ -120,6 +120,22 @@ def register_local_server_routes(app: FastAPI, presets: "list[LMProviderPreset]"
     def listed(entry: store.LocalServerEntry) -> dict[str, Any]:
         return {**entry.to_wire(), "check": _checks(app).get(entry.id)}
 
+    def managed_key(preset_id: str | None, address: str) -> str:
+        """The key ref of the CLIO-managed deployment at ``address``, if it is one.
+
+        "Use in Models" saves a managed server's address; its requests must
+        then carry that deployment's key. Matched server-side on engine and
+        address, so no client ever handles the key or its id.
+        """
+        from clio_agent.gact.infrastructure.server_access import (  # noqa: PLC0415
+            managed_credential_ref,
+        )
+
+        infrastructure = getattr(app.state, "infrastructure_store", None)
+        if infrastructure is None or not preset_id:
+            return ""
+        return managed_credential_ref(infrastructure, preset_id, address)
+
     def entries() -> list[store.LocalServerEntry]:
         try:
             return store.list_servers()
@@ -144,6 +160,7 @@ def register_local_server_routes(app: FastAPI, presets: "list[LMProviderPreset]"
                 address=req.address,
                 label=req.label or (preset_for(req.preset_id).label if req.preset_id else ""),
                 preset_id=req.preset_id,
+                credential_ref=managed_key(req.preset_id, req.address),
             )
         except store.LocalServerStoreError as exc:
             raise _error(422, "invalid_server", str(exc)) from exc
@@ -154,7 +171,17 @@ def register_local_server_routes(app: FastAPI, presets: "list[LMProviderPreset]"
     async def update_local_server(server_id: str, req: UpdateServerRequest) -> dict[str, Any]:
         """Change a saved server's address or label, then check it."""
         try:
-            entry = store.update_server(server_id, address=req.address, label=req.label)
+            current = store.get_server(server_id)
+            entry = store.update_server(
+                server_id,
+                address=req.address,
+                label=req.label,
+                credential_ref=(
+                    managed_key(current.preset_id if current else None, req.address)
+                    if req.address is not None
+                    else None
+                ),
+            )
         except KeyError as exc:
             raise _error(404, "not_found", f"no saved server: {server_id}") from exc
         except store.LocalServerStoreError as exc:

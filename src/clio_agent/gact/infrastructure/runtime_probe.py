@@ -25,6 +25,7 @@ from clio_agent.gact.infrastructure.models import (
     RuntimeName,
     TargetIdentity,
 )
+from clio_agent.gact.infrastructure.runtime_failure import classify_runtime_failure
 from clio_agent.gact.infrastructure.transport_text import logical_lines
 
 #: POSIX shell fragment appended to the remote capability probe.
@@ -91,6 +92,7 @@ def parse_probe(stdout: str) -> tuple[list[ContainerRuntimeFact], TargetIdentity
         if fields[0] == "rt" and len(fields) >= 6 and fields[1] in _HEALTH:
             name = parse_runtime_name(fields[1])
             installed, usable = fields[2] == "1", fields[3] == "1"
+            detail = "" if usable else "|".join(fields[5:]).strip()
             runtimes.append(
                 ContainerRuntimeFact(
                     name=name,
@@ -99,7 +101,10 @@ def parse_probe(stdout: str) -> tuple[list[ContainerRuntimeFact], TargetIdentity
                     version=_version(name, fields[4]) if usable else "",
                     rootless=usable and _rootless(name, fields[4]),
                     reason=None if usable else ("unusable" if installed else "not_installed"),
-                    detail="" if usable else "|".join(fields[5:]).strip(),
+                    failure=(
+                        classify_runtime_failure(name, detail) if installed and not usable else None
+                    ),
+                    detail=detail,
                 )
             )
         elif fields[0] == "id" and len(fields) >= 4:
@@ -145,7 +150,15 @@ def local_runtime_facts(resolve: Resolver) -> list[ContainerRuntimeFact]:
             )
         except (OSError, subprocess.SubprocessError) as exc:
             facts.append(
-                ContainerRuntimeFact(name=name, installed=True, reason="unusable", detail=str(exc))
+                ContainerRuntimeFact(
+                    name=name,
+                    installed=True,
+                    reason="unusable",
+                    failure=classify_runtime_failure(
+                        name, str(exc), timed_out=isinstance(exc, subprocess.TimeoutExpired)
+                    ),
+                    detail=str(exc),
+                )
             )
             continue
         output = [row for row in (completed.stdout + completed.stderr).splitlines() if row.strip()]
@@ -161,14 +174,14 @@ def local_runtime_facts(resolve: Resolver) -> list[ContainerRuntimeFact]:
                 )
             )
         else:
+            last = output[-1].strip() if output else f"exit status {completed.returncode}"
             facts.append(
                 ContainerRuntimeFact(
                     name=name,
                     installed=True,
                     reason="unusable",
-                    detail=(
-                        output[-1].strip() if output else f"exit status {completed.returncode}"
-                    )[:240],
+                    failure=classify_runtime_failure(name, last),
+                    detail=last[:240],
                 )
             )
     return facts
