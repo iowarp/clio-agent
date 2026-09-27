@@ -348,6 +348,11 @@ KEY_NOTES: dict[str, str] = {
         "Seconds a cooperative session cancel is given before the turn task is hard-cancelled; "
         "raise to let a mid-tool-call turn unwind cleanly."
     ),
+    "gact.allowed_hosts": (
+        "Comma-separated host names (no ports) a request without a bearer token may address, "
+        "besides localhost/127.0.0.1/[::1]; set for a LAN or container deployment reached by "
+        "another name."
+    ),
     "gact.cors.origins": (
         "Comma-separated browser origins allowed to call the GACT API cross-origin; set when "
         "serving a web UI from a different origin."

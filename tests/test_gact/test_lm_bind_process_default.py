@@ -265,7 +265,7 @@ def test_concurrent_cloud_binds_serialized_and_consistent(
 
     async def _run() -> list[Any]:
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://t") as client:
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
 
             async def _put(provider_model: tuple[str, str, str]) -> int:
                 api_base, model, _ = provider_model
