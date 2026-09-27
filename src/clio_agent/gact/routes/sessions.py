@@ -44,6 +44,7 @@ from clio_agent.gact.routes.session_question_helpers import (
     question_not_found,
 )
 from clio_agent.gact.routes.session_rows import filter_session_rows, rows_to_wire
+from clio_agent.gact.routes.side_sessions import register_side_session_routes
 from clio_agent.gact.runtime import bringup_timing
 from clio_agent.gact.runtime.globals import _new_attempt_id, _new_question_id
 from clio_agent.gact.runtime.retention import enforce_dict_bound
@@ -317,6 +318,23 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         app.state.a2ui_catalogs.forget_session(sid)
         app.state.a2ui_store.forget_session(sid)
         return Response(status_code=204)
+
+    async def copy_session_context(src: str, dst: str, at: str = "") -> int:
+        """Deep-copy ``src``'s messages (to + including ``at``) and context files into ``dst``."""
+        src_msgs = list(app.state.messages.get(src, []))
+        if at and any(m.id == at for m in src_msgs):
+            src_msgs = src_msgs[: next(i for i, m in enumerate(src_msgs) if m.id == at) + 1]
+        # Deep-copy parts so the copy's log doesn't alias the source's (model_copy snapshot).
+        await run_off_loop(
+            deps.replace_session_messages, app, dst, [m.model_copy(deep=True) for m in src_msgs]
+        )
+        if source_context_files := app.state.context_files.get(src, {}):
+            app.state.context_files[dst] = {k: dict(row) for k, row in source_context_files.items()}
+        return len(src_msgs)
+
+    register_side_session_routes(
+        app, copy_context=copy_session_context, delete_session=delete_session
+    )
 
     # ---- Rollback (undo / rewind) -----------------------------------
 
@@ -608,36 +626,14 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
 
         body = await json_body(request, route="POST /v1/sessions/{sid}/fork")
-        at = body.get("at_message_id") or ""
         title = body.get("title") or f"{sess.title} (fork)"
-
-        src_msgs = list(app.state.messages.get(sid, []))
-        if at:
-            kept: list[Message] = []
-            for m in src_msgs:
-                kept.append(m)
-                if m.id == at:
-                    break
-            src_msgs = kept
-
         new_sess = app.state.sessions.create(
             workspace_id=sess.workspace_id,
             title=title,
             parent_session_id=sid,
         )
-        # Deep-copy parts so the fork's log doesn't alias the source's (model_copy snapshot).
-        await run_off_loop(
-            deps.replace_session_messages,
-            app,
-            new_sess.id,
-            [m.model_copy(deep=True) for m in src_msgs],
-        )
-        source_context_files = app.state.context_files.get(sid, {})
-        if source_context_files:
-            app.state.context_files[new_sess.id] = {
-                key: dict(row) for key, row in source_context_files.items()
-            }
-        app.state.sessions.update(new_sess.id, message_count=len(src_msgs))
+        copied = await copy_session_context(sid, new_sess.id, body.get("at_message_id") or "")
+        app.state.sessions.update(new_sess.id, message_count=copied)
         return JSONResponse(
             status_code=201,
             content=Session(**new_sess.to_wire()).model_dump(exclude_none=True),

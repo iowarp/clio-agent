@@ -495,6 +495,7 @@ def build_view_pdf_tool() -> Any:
                 ),
             },
         },
+        read_only=True,
     )
 
 

@@ -271,6 +271,7 @@ def build_view_image_tool() -> Any:
                 "description": "Workspace-relative or absolute path to a PNG, JPEG, GIF, or WebP image.",
             }
         },
+        read_only=True,
     )
 
 

@@ -84,6 +84,7 @@ from clio_agent.gact.runtime.permission_policies import (
     _permission_path_from_args,
 )
 from clio_agent.gact.runtime.retention import enforce_dict_bound
+from clio_agent.gact.side_sessions import policy_deny_reason, policy_mode
 from clio_agent.gact.spotter_permission import enforce_spotter_clearance as _spotter_clearance
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 from clio_agent.tools.catalog import get_tool_entry
@@ -631,7 +632,7 @@ def _make_permission_gate(app: "FastAPI"):
         # otherwise the call parks on the existing gate primitive with the timeout
         # lifted and resolves from any out-of-band channel (see gact/hooks/defer.py).
         if hook_outcome.is_defer:
-            mode = getattr(current, "mode", "") if current is not None else ""
+            mode = policy_mode(current)
             defer_policy_action, defer_plan_msg = _policy_detail_for_tool(
                 app, session_id=sid, session=current, tool_name=name, args=args, mode=mode
             )
@@ -645,7 +646,7 @@ def _make_permission_gate(app: "FastAPI"):
                     status="auto_denied",
                     action="deny",
                     summary=f"{subject} {name!r} blocked by permission policy",
-                    reason="policy_deny",
+                    reason=policy_deny_reason(mode),
                 )
                 return DenyDecision(defer_plan_msg) if defer_plan_msg else "deny"
             from clio_agent.gact.hooks.defer import park_pretool_defer  # noqa: PLC0415
@@ -658,12 +659,11 @@ def _make_permission_gate(app: "FastAPI"):
         # var (single-fire: PreToolUse dispatched exactly once, here) — the interceptor
         # is a pure consumer that reads it after this gate returns "allow".
         stash_pre_tool_intercept(hook_outcome)
-        # P1.1 #1063: the plan/architect read-only lock is no longer a predicate here (it was
-        # copy-pasted into three modules). It is now a set of built-in plan_acl rows the ONE
-        # resolver evaluates — passing the session mode makes ``resolve`` deny every non-read tool
-        # in plan/architect (@40) and allow the sole ``<plans>/*.md`` write carve-out in plan (@70).
-        # Read-only calls never reach here (``is_read_only`` fast-allowed above), in every mode.
-        mode = getattr(current, "mode", "") if current is not None else ""
+        # P1.1 #1063: the plan/architect/read-only-side lock is a set of built-in plan_acl rows the
+        # ONE resolver evaluates — the policy mode (plan, architect, or read_only for a side session)
+        # makes ``resolve`` deny every non-read tool (@40); plan keeps its ``<plans>/*.md`` carve-out
+        # (@70). Read-only calls never reach here (``is_read_only`` fast-allowed above).
+        mode = policy_mode(current)
         policy_action, plan_deny_message = _policy_detail_for_tool(
             app,
             session_id=sid,
@@ -681,7 +681,7 @@ def _make_permission_gate(app: "FastAPI"):
                 status="auto_denied",
                 action="deny",
                 summary=f"{subject} {name!r} blocked by permission policy",
-                reason="policy_deny",
+                reason=policy_deny_reason(mode),
             )
             # P1.2 #1064: a plan_acl-authored deny carries a mode-aware message so the model
             # sees WHY the call is blocked (Plan Mode, read-only except the plan file) instead
