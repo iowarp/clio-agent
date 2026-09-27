@@ -212,6 +212,8 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_PROVENANCE_PROVIDERS` | `provenance.agentic.providers` | list | `jsonl` | `src/clio_agent/provenance_config.py` |
 | `CLIO_PROVENANCE_QUERY_DEFAULT` | `provenance.agentic.query_default` | str | `native` | `src/clio_agent/gact/routes/provenance.py` |
 | `CLIO_PROVENANCE_QUEUE_SIZE` | `provenance.agentic.queue_size` | int | `4096` | `src/clio_agent/gact/provenance/factory.py` |
+| `CLIO_PROVIDER_COMPONENT_INDEX_URL` | `providers.component_updates.index_url` | str | `https://pypi.org/pypi` | `src/clio_agent/providers/components/pypi.py` |
+| `CLIO_PROVIDER_COMPONENT_TTL_S` | `providers.component_updates.ttl_s` | float | `3600.0` | `src/clio_agent/providers/components/pypi.py` |
 | `CLIO_PROVIDER_NATIVE_IMAGE_URL_ALLOWLIST` | `providers.native_image_url_allowlist` | str | _(unset)_ | `src/clio_agent/providers/claude_code_multimodal.py` |
 | `CLIO_RELAY_CLI_PATH` | `relay.install_surface.cli_path` | str | _(unset)_ | `src/clio_agent/tools/relay_cli_runner.py` |
 | `CLIO_RELAY_CLUSTER` | `relay.cluster` | str | _(unset)_ | `src/clio_agent/tools/relay_factory.py` |
