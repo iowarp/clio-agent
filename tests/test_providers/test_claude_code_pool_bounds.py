@@ -34,6 +34,12 @@ import pytest
 
 from clio_agent.providers import claude_code_sessions as ccs
 
+# Every ``wait_for`` bound below guards against a hang (the regressions these tests
+# pin never complete); none is a latency budget. The acquire path hops through
+# executor threads, which a loaded CI runner delays: a 0.8 s budget timed out on a
+# busy shard, and a 0.3 s delay per hop reproduces that locally.
+_HANG_GUARD_S = 30.0
+
 
 def _install_fake_sdk(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """A minimal fake ``claude_agent_sdk`` -- connect/disconnect only (no
@@ -124,7 +130,7 @@ async def test_connect_gate_queues_a_connect_beyond_the_cap(
 
         # Releasing entry_a's slot unblocks entry_b.
         await entry_a._areset_client()
-        await asyncio.wait_for(task_b, timeout=1.0)
+        await asyncio.wait_for(task_b, timeout=_HANG_GUARD_S)
     finally:
         if not task_b.done():
             task_b.cancel()
@@ -166,7 +172,7 @@ async def test_connect_gate_releases_the_slot_on_a_failed_connect(
     # The slot must be free again -- prove it with a real connect on entry_b.
     state = _install_fake_sdk(monkeypatch)
     entry_b = ccs._StreamClientEntry(connect_slots=slots)
-    await asyncio.wait_for(entry_b._ensure_client(lambda: None, model="m"), timeout=0.3)
+    await asyncio.wait_for(entry_b._ensure_client(lambda: None, model="m"), timeout=_HANG_GUARD_S)
     assert state["connected"] == 1
 
 
@@ -175,7 +181,7 @@ async def test_connect_gate_is_a_noop_when_unconfigured(monkeypatch: pytest.Monk
     existing single-entry test relies on this uncapped behaviour."""
     state = _install_fake_sdk(monkeypatch)
     entry = ccs._StreamClientEntry()  # no connect_slots passed
-    await asyncio.wait_for(entry._ensure_client(lambda: None, model="m"), timeout=0.3)
+    await asyncio.wait_for(entry._ensure_client(lambda: None, model="m"), timeout=_HANG_GUARD_S)
     assert state["connected"] == 1
 
 
@@ -196,7 +202,8 @@ async def test_connect_gate_reclaims_an_idle_sibling_while_queued() -> None:
             slots.release()
 
     entry = ccs._StreamClientEntry(connect_slots=slots, reclaim_idle_slot=reclaim)
-    await asyncio.wait_for(entry._acquire_connect_slot(), timeout=0.8)
+    # Without the waiter callback the acquire never completes (see _HANG_GUARD_S).
+    await asyncio.wait_for(entry._acquire_connect_slot(), timeout=_HANG_GUARD_S)
     assert reclaimed.is_set()
 
 

@@ -577,7 +577,7 @@ class Message(BaseModel):
     updated_at: str
     parts: list[Part] = Field(default_factory=list)
     tokens: Tokens = Field(default_factory=Tokens)
-    cost_usd: float = 0.0
+    cost_usd: Optional[float] = None  # None = not reported, never a fabricated 0.0
     stop_reason: str = ""
     error_info: Optional[ErrorInfo] = None
     metadata: dict[str, Any] = Field(default_factory=dict)

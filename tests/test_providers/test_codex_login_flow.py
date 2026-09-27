@@ -150,9 +150,17 @@ class TestForceCancelsTheOldFlowBeforeStartingAFreshOne:
         assert status == "failed"
         assert "state" in reason
 
-    def test_new_states_own_redirect_is_accepted(self) -> None:
+    def test_new_states_own_redirect_is_accepted(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The NEW flow's own (correct) state completes it normally -- this
         is the successful-retry path the fix must not break."""
+
+        # An accepted redirect makes the flow exchange the code at the token endpoint
+        # on its own thread. Replay the real endpoint's answer for the made-up code
+        # ``abc`` (invalid_grant) instead of calling auth.openai.com from a unit test.
+        def _recorded_exchange(**_kwargs: object) -> object:
+            raise login_flow.OAuthError("token exchange failed (400): invalid_grant")
+
+        monkeypatch.setattr(login_flow, "exchange_code", _recorded_exchange)
         login_flow.start_login(method="browser", force=False)
         second = login_flow.start_login(method="browser", force=True)
         new_flow = login_flow.get_login_flow(second.flow_id)
@@ -167,6 +175,11 @@ class TestForceCancelsTheOldFlowBeforeStartingAFreshOne:
         assert accepted.status_code == 200
         code, state = new_flow._loopback.wait_for_code(5.0)  # noqa: SLF001
         assert (code, state) == ("abc", new_state)
+        # The accepted code went on to the (replayed) exchange: settled inside this test.
+        assert new_flow.wait_settled(5.0) == (
+            "failed",
+            "token exchange failed (400): invalid_grant",
+        )
 
     def test_a_method_change_is_treated_like_force(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from clio_agent.providers.codex import oauth as codex_oauth
@@ -175,8 +188,18 @@ class TestForceCancelsTheOldFlowBeforeStartingAFreshOne:
         old_flow = login_flow.get_login_flow(first.flow_id)
         assert old_flow is not None
 
+        # login_flow binds both device calls at import: patch them where it looks them
+        # up (patching codex_oauth's names left the REAL device endpoint in use, a live
+        # call to auth.openai.com that the network guard caught). The poll stays pending
+        # until the test is done, like a user who has not entered the code yet.
+        user_done = threading.Event()
+
+        def _pending_poll(_login: object) -> object:
+            user_done.wait(30.0)
+            raise codex_oauth.OAuthError("device sign-in was not completed")
+
         monkeypatch.setattr(
-            codex_oauth,
+            login_flow,
             "start_device_login",
             lambda: codex_oauth.DeviceLogin(
                 device_auth_id="d",
@@ -185,10 +208,14 @@ class TestForceCancelsTheOldFlowBeforeStartingAFreshOne:
                 interval_s=1.0,
             ),
         )
-        second = login_flow.start_login(method="device", force=False)
+        monkeypatch.setattr(login_flow, "poll_device_login", _pending_poll)
+        try:
+            second = login_flow.start_login(method="device", force=False)
 
-        assert second.flow_id != first.flow_id
-        assert old_flow.status() == ("failed", "cancelled")
+            assert second.flow_id != first.flow_id
+            assert old_flow.status() == ("failed", "cancelled")
+        finally:
+            user_done.set()
 
 
 class TestResolvedOrExpiredFlowsAreNeverReused:

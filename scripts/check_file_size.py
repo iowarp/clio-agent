@@ -167,7 +167,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1439 (C1): 863 -> 843. The version gate + config adoption live in the owner
     # module arc/clio_core_daemon_version.py; the PID-identity helpers moved to
     # arc/pid_identity.py (re-exported here under their old names).
-    "src/clio_agent/arc/storage.py": 843,
+    "src/clio_agent/arc/storage.py": 826,
     # #737 S2 fold owner module. Crossed the 800 new-file cap restoring the FROZEN
     # arc.op reproducibility contract (§2 / GOAL.md DoD #4): the five working-set write
     # overrides now emit a per-op arc.op via _emit_op so arc.replay rebuilds the live
@@ -224,7 +224,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # default_registry_metadata landed here, offset by two comment trims.
     # The release's path-helper extraction and develop's A2UI/floor validation
     # changes combine at 1049 lines; both owner modules remain in place.
-    "src/clio_agent/gact/agent_blueprints.py": 1049,
+    "src/clio_agent/gact/agent_blueprints.py": 1035,
     # #948 S4: +14 for the children-must-be-react hierarchy rule (a predict/CoT
     # parent would silently strand its children now that the settle loop routing
     # for it is deleted; typed validation error instead).
@@ -571,7 +571,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # merge DECISION itself is a one-line call into the owner module
     # ``artifacts/dedup_enrichment.py`` (``merged_annotation``) — only the
     # threading landed here. Ratchets back with the #714 decomposition.
-    "src/clio_agent/gact/routes/artifacts.py": 928,  # provider-owned serve rung (logic in artifacts/storage.py) (#1247)
+    "src/clio_agent/gact/routes/artifacts.py": 926,  # provider-owned serve rung (logic in artifacts/storage.py) (#1247)
     # #948 S4: +10 for round-tripping the module: declaration in the overlay
     # export (an exported react parent re-loaded as predict and failed the new
     # hierarchy validation).
@@ -684,7 +684,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # P5 (request builder): the static `supports_vision` wire-metadata key in
     # `_provider_to_wire` is deleted (brief 9.1): ratcheted to 1116.
     # P4b adds the 3-line surrogate refusal on the chat-model bind: 1116 -> 1119.
-    "src/clio_agent/gact/routes/providers.py": 1113,
+    # 1096 -> 1077 (#1506): duplicated LM-apply failure branches merged; selection persistence lives in gact/providers/selection_store.py.
+    "src/clio_agent/gact/routes/providers.py": 1077,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (merged to develop with the size check red, baseline 1478 -> actual); ratchet
     # back below the pre-#947 count with the mcp_app_* owner-module split (see the
@@ -728,7 +729,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # gact/compaction.py::compact_session_context (one operation, two triggers); the
     # whole manual-compact body, gact/compact_memory.py's import, and the dead
     # session_archives snapshot are gone -- 1407 -> 1176.
-    "src/clio_agent/gact/routes/sessions.py": 1174,  # a2ui S3 (#1369): ratcheted down after a net-neutral edit
+    "src/clio_agent/gact/routes/sessions.py": 1173,  # #1487: -1 (import collapse pays for the spill-cleanup hook)
     # #1215 S5: crossed the 800 new-file cap (793 -> 809) for enrich_turn_context —
     # a thin timed combinator wrapping the TWO existing enrichment calls
     # (_enrich_with_context_files + _enrich_with_requested_memory_search) in ONE
@@ -971,7 +972,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # +2 comment, +1 to_thread call); the bridge itself stays in claude_code_sdk_pool.py.
     # 866 -> 864 (S2 B2 rework): entry_for()'s call site drops the now-dead
     # thinking=/system_prompt= peek kwargs (the warm pool they fed is deleted).
-    "src/clio_agent/providers/claude_code_litellm.py": 862,
+    # 862 -> 838 (#1454): failed-result classification moved to the owner module
+    # providers/claude_code_result_errors.py.
+    "src/clio_agent/providers/claude_code_litellm.py": 838,
     # (process_census.py's entry retired: 711 lines, back under the flat 800 cap.)
     # NEW entry (#1305 review round): crossed the flat 800 cap (800 -> 825)
     # for the F2/F4/F6b fixes an adversarial review demanded on
@@ -1045,7 +1048,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1201 (adversarial review, PR #1202): +4 to register the mcp_yaml doctor
     # sub-check (import + the probe_mcp_yaml_declarations() call); the probe
     # logic lives in the owner module runtime/mcp_launcher.py.
-    "src/clio_agent/runtime/status.py": 1244,
+    "src/clio_agent/runtime/status.py": 1235,
     # #932: +62 for preloaded tool definitions (start() without the list_tools
     # fan-out) and namespace-direct call routing with lazy per-namespace
     # clients — the executor IS the owner module for this.
