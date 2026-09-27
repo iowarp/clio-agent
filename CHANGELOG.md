@@ -27,6 +27,19 @@ TUI/HTTP surface aren't tracked here.
 
 ### Fixed
 
+- A model whose own id starts with its provider's name, such as OpenRouter's
+  free router `openrouter/free`, reaches the provider unchanged. It was sent
+  as `free`, and every turn failed with "No endpoints available".
+- A provider's HTTP error (404, 401, 429, ...) fails the turn with one line in
+  the provider's own words, such as `OpenRouter: User not found. (HTTP 401)`,
+  instead of "live streaming failed before emitting output: ExceptionGroup[...]".
+  "Codex sign-in is required" and the Claude Code install message are only
+  reported when Codex or Claude Code is the configured provider; any 401 used
+  to be reported as a Codex sign-in.
+- A message's model becomes the session's `model` when the message is
+  accepted, whatever the turn then does, and a `session.updated` event carries
+  it. The pick used to live only in the client, so a reload or a failed turn
+  showed "Choose model" again.
 - A provider served from its last-good model list (for example OpenRouter with
   no usable key) lost every fact except limits, tools, modalities and task, so
   its models showed no reasoning, structured output, router, free or pricing

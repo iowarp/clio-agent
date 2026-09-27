@@ -53,6 +53,7 @@ from clio_agent.gact.runtime.globals import (
     _new_message_id,
 )
 from clio_agent.gact.session_host_agent import ensure_host_agent
+from clio_agent.gact.session_model_ref import remember_session_model
 from clio_agent.gact.transcript_projection import on_message_appended
 from clio_agent.gact.turn_runner import session_busy_error_payload
 from clio_agent.gact.types import (
@@ -614,6 +615,8 @@ def accept_message(
         if not _model_ref_is_empty(sess.model)
         else "global_active"
     )
+    if model_selection_source == "per_message":
+        remember_session_model(app, sid, sess.model, effective_model)
     metadata.update(
         {
             "delivery": "steer" if busy else "start",
