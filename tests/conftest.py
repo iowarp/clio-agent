@@ -86,6 +86,7 @@ from tests._cte_isolation import (
     cte_isolation_available,
     eagerly_attach_private_daemon,
     isolate_cte_env,
+    private_daemon_failure_report,
     private_daemon_identity,
     reap_private_daemon,
     reap_stale_suite_runtimes,
@@ -318,15 +319,10 @@ def _clio_private_cte_daemon():
     try:
         # Eager spawn+attach: boot the private daemon deterministically at session
         # start (not mid-suite under load) and hold a client so it stays up all
-        # session. A failure is already recorded loudly by the init-degradation path.
+        # session. A daemon that does not come up FAILS the run with its own reason:
+        # the cte legs must never quietly run on local files.
         if not eagerly_attach_private_daemon():
-            import warnings  # noqa: PLC0415
-
-            warnings.warn(
-                "private clio-core daemon failed to come up at session start; "
-                "cte-leg tests will run degraded (see the ARC init-degradation log)",
-                stacklevel=1,
-            )
+            pytest.fail(private_daemon_failure_report(isolation), pytrace=False)
         yield isolation
     finally:
         reap_private_daemon(isolation.state_dir)
