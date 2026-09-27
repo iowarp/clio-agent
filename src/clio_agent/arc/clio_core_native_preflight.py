@@ -46,14 +46,18 @@ _removed_lock = threading.Lock()
 _removed: dict[str, str] = {}
 _OUTPUT_TAIL_CHARS = 2000
 
+#: Suffixes of a native extension module (the code that can call ``exit``).
+_NATIVE_SUFFIXES = (".pyd", ".so", ".dylib")
+
 # The child: initialise Winsock before the binding loads (#914), then run the native
 # client's startup with no wait for the daemon. Reaching the marker means clio_init
-# returned (False is expected: it was told not to wait) instead of exiting.
+# returned (False is expected: it was told not to wait) instead of exiting. The module
+# is the one the attach itself calls, imported by name (``{{module}}``).
 _CHILD_SOURCE = f"""
-import socket
+import importlib, socket
 socket.socket().close()
 import iowarp_core  # noqa: F401 - library preload; must precede the extension
-import clio_cte_core_ext as cte
+cte = importlib.import_module({{module!r}})
 init = getattr(cte, "clio_init", None) or cte.chimaera_init
 mode = (getattr(cte, "RuntimeMode", None) or cte.ChimaeraMode).kClient
 init(mode, False)
@@ -76,6 +80,7 @@ class NativePreflightResult:
     returned: bool
     exit_code: int | None
     output: str
+    skipped_reason: str = ""
 
 
 Runner = Callable[[list[str], Mapping[str, str], float], tuple[int | None, str]]
@@ -148,15 +153,29 @@ def preflight_window_s(attach_window_s: float) -> float:
     return max(attach_window_s, _DEFAULT_STALL_AFTER_S)
 
 
+def native_origin(cte: object) -> str:
+    """The file of the native extension ``cte`` is, or ``""`` when it has no native code."""
+    spec = getattr(cte, "__spec__", None)
+    origin = str(getattr(spec, "origin", "") or getattr(cte, "__file__", "") or "")
+    return origin if origin.lower().endswith(_NATIVE_SUFFIXES) else ""
+
+
 def preflight_native_client(
+    cte: object,
     *,
     config_path: str,
     timeout_s: float,
     runner: Runner | None = None,
 ) -> NativePreflightResult:
-    """Run the native client's startup in a child process; report whether it returned.
+    """Run ``cte``'s native client startup in a child process; report whether it returned.
+
+    ``cte`` is the module the attach will call -- the same object, so the preflight
+    checks exactly what the attach runs. A module with no native extension behind it
+    has no code that can exit the process, so there is nothing to run in a child: the
+    result says ``returned`` with ``skipped_reason="no_native_library"``.
 
     Args:
+        cte: The native client module the attach is about to call.
         config_path: The config the real attach will use (``$CLIO_SERVER_CONF``).
         timeout_s: Bound on the child (it does not wait for the daemon, so this only
             covers interpreter start, the library load and the config parse).
@@ -165,11 +184,17 @@ def preflight_native_client(
     Returns:
         The child's outcome; ``returned`` is ``False`` when the native client ended it.
     """
+    if not native_origin(cte):
+        return NativePreflightResult(
+            returned=True, exit_code=None, output="", skipped_reason="no_native_library"
+        )
+    module = str(getattr(cte, "__name__", "") or "clio_cte_core_ext")
     env = dict(os.environ)
     env["CLIO_SERVER_CONF"] = config_path
     env["CLIO_WAIT_SERVER"] = "0"  # stop before contacting the daemon
     env.setdefault("CTP_LOG_LEVEL", "error")
-    code, output = (runner or _run_child)([sys.executable, "-c", _CHILD_SOURCE], env, timeout_s)
+    source = _CHILD_SOURCE.format(module=module)
+    code, output = (runner or _run_child)([sys.executable, "-c", source], env, timeout_s)
     returned = code == 0 and _DONE_MARKER in output
     tail = output.replace(_DONE_MARKER, "").strip()[-_OUTPUT_TAIL_CHARS:]
     return NativePreflightResult(returned=returned, exit_code=code, output=tail)

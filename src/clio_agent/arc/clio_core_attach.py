@@ -275,7 +275,7 @@ def attach_native_client(
     window = attach_window_s()
     preflight.remove_embedded_runtime_env(os.environ)
     check = preflight.preflight_native_client(
-        config_path=config_path, timeout_s=preflight.preflight_window_s(window)
+        cte, config_path=config_path, timeout_s=preflight.preflight_window_s(window)
     )
     if not check.returned:
         on_failure()

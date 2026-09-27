@@ -17,6 +17,12 @@ from clio_agent.arc.init_degradation import (
     classify_init_failure,
 )
 
+#: A stand-in for the real extension module: it has a native origin, like the one the
+#: attach calls in production (``clio_cte_core_ext.cp312-win_amd64.pyd``).
+_NATIVE = SimpleNamespace(
+    __name__="clio_cte_core_ext", __spec__=SimpleNamespace(origin="clio_cte_core_ext.pyd")
+)
+
 
 @pytest.fixture(autouse=True)
 def _fresh_removed_record():
@@ -37,7 +43,9 @@ def _runner(code: int | None, output: str):
 
 def test_a_child_that_reached_the_marker_returned() -> None:
     run, seen = _runner(0, "noise\nCLIO_NATIVE_PREFLIGHT_RETURNED\n")
-    result = preflight.preflight_native_client(config_path="d.yaml", timeout_s=9, runner=run)
+    result = preflight.preflight_native_client(
+        _NATIVE, config_path="d.yaml", timeout_s=9, runner=run
+    )
     assert result.returned is True
     assert seen["env"]["CLIO_SERVER_CONF"] == "d.yaml"
     assert seen["env"]["CLIO_WAIT_SERVER"] == "0"  # the child never contacts the daemon
@@ -49,7 +57,9 @@ def test_a_child_that_died_or_never_reached_the_marker_did_not_return(
     code: int, output: str
 ) -> None:
     run, _ = _runner(code, output)
-    result = preflight.preflight_native_client(config_path="d.yaml", timeout_s=9, runner=run)
+    result = preflight.preflight_native_client(
+        _NATIVE, config_path="d.yaml", timeout_s=9, runner=run
+    )
     assert result.returned is False
     assert result.exit_code == code
     assert result.output == output
@@ -89,7 +99,7 @@ def test_a_preflight_that_did_not_return_degrades_typed_and_never_attaches(
     monkeypatch.setattr(
         preflight,
         "preflight_native_client",
-        lambda **_kw: preflight.NativePreflightResult(
+        lambda *_a, **_kw: preflight.NativePreflightResult(
             returned=False, exit_code=code, output="FATAL x"
         ),
     )
@@ -113,7 +123,7 @@ def test_the_attach_removes_an_inherited_embedded_runtime_variable(
     monkeypatch.setenv("CLIO_WITH_RUNTIME", "1")
     seen: list[str | None] = []
 
-    def _preflight(**_kw: object) -> preflight.NativePreflightResult:
+    def _preflight(*_a: object, **_kw: object) -> preflight.NativePreflightResult:
         seen.append(os.environ.get("CLIO_WITH_RUNTIME"))
         return preflight.NativePreflightResult(returned=True, exit_code=0, output="")
 
@@ -125,3 +135,30 @@ def test_the_attach_removes_an_inherited_embedded_runtime_variable(
     assert seen == [None]  # removed before the child (and the real attach) ran
     assert calls == ["clio_init"]
     assert preflight.removed_embedded_runtime_env() == {"CLIO_WITH_RUNTIME": "1"}
+
+
+def test_a_module_without_native_code_needs_no_child() -> None:
+    """The preflight follows the attach's own seam: the module it is handed. One with no
+    native extension behind it (an in-process fake, a pure-Python shim) has no code that
+    can exit the process, so no child runs."""
+
+    def _never(*_a: object, **_kw: object) -> tuple[int | None, str]:
+        raise AssertionError("no native library: nothing to preflight")
+
+    fake = SimpleNamespace(clio_init=lambda *_a: True, RuntimeMode=SimpleNamespace(kClient="k"))
+    result = preflight.preflight_native_client(
+        fake, config_path="c.yaml", timeout_s=9, runner=_never
+    )
+    assert (result.returned, result.skipped_reason) == (True, "no_native_library")
+
+
+def test_the_child_imports_the_module_the_attach_calls() -> None:
+    run, seen = _runner(0, "CLIO_NATIVE_PREFLIGHT_RETURNED")
+    preflight.preflight_native_client(_NATIVE, config_path="c.yaml", timeout_s=9, runner=run)
+    source = seen["argv"][-1]
+    assert "import_module('clio_cte_core_ext')" in source
+
+
+def test_the_real_extension_has_a_native_origin() -> None:
+    cte = pytest.importorskip("clio_cte_core_ext")
+    assert preflight.native_origin(cte)
