@@ -764,8 +764,13 @@ def test_discover_claude_code_not_logged_in_is_typed_failure(
     result = model_discovery.discover_claude_code(timeout=5.0)
 
     assert result.discovered == []
-    assert "not signed in" in (result.failed_reason or "")
-    assert "claude auth login" in (result.failed_reason or "")
+    reason = result.failed_reason or ""
+    assert "not signed in" in reason
+    # #1454: CLIO drives the CLI's own sign-in (the provider's "Log in" / the
+    # error card's "Sign in again"), so the reason points there, never at a
+    # terminal command the person would have to run on the connected agent.
+    assert "Sign in to Claude Code from CLIO" in reason
+    assert "claude auth login" not in reason
 
 
 def test_discover_claude_code_auth_status_missing_logged_in_key_is_typed_failure(

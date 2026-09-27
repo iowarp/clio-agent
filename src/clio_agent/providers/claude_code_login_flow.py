@@ -143,9 +143,7 @@ def start_login(binary: str, *, wait_s: float) -> ClaudeLoginFlow:
         for old in _FLOWS.values():
             old.cancel()
         _FLOWS.clear()
-    kwargs: dict[str, object] = {}
-    if os.name == "nt":
-        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     env = {**os.environ, "BROWSER": "none"}  # the person's browser opens the URL, not the host
     try:
         process = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
@@ -157,7 +155,7 @@ def start_login(binary: str, *, wait_s: float) -> ClaudeLoginFlow:
             encoding="utf-8",
             errors="replace",
             env=env,
-            **kwargs,  # type: ignore[arg-type]
+            creationflags=no_window,
         )
     except OSError as exc:
         raise ClaudeLoginError(f"Claude Code could not start its sign-in: {exc}") from exc
