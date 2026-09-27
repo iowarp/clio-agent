@@ -42,12 +42,21 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from clio_agent.arc.init_degradation import CLIO_CORE_CLIENT_ATTACH_FAILED
+from clio_agent.arc.init_degradation import (
+    CLIO_CORE_CLIENT_ATTACH_FAILED,
+    CLIO_CORE_POST_ATTACH_PROBE_TIMEOUT,
+)
 
 if TYPE_CHECKING:
     from clio_agent.arc.storage import ARCStore, ClioCoreStore
 
 logger = logging.getLogger(__name__)
+
+# How often the post-attach probe checks its Future. ``Future.done()`` returns at once
+# whatever the daemon's state, and the sleep between checks releases the GIL.
+# ``Future.wait(max_sec)`` is NOT a bound: against a daemon that is gone it blocks
+# indefinitely (holding the GIL), which is how a daemon that died at startup hung CI.
+_PROBE_POLL_S = 0.02
 
 
 class ClioCoreAttachPhase(str, Enum):
@@ -148,8 +157,15 @@ class ClioCoreAttachError(RuntimeError):
     degradation_reason = CLIO_CORE_CLIENT_ATTACH_FAILED
 
     def __init__(
-        self, *, port: int, config_path: str, stage: str = "client_init", detail: str = ""
+        self,
+        *,
+        port: int,
+        config_path: str,
+        stage: str = "client_init",
+        detail: str = "",
+        reason: str = CLIO_CORE_CLIENT_ATTACH_FAILED,
     ) -> None:
+        self.degradation_reason = reason
         self.port = port
         self.config_path = config_path
         self.stage = stage
@@ -241,6 +257,29 @@ def attach_native_client(
     raise error
 
 
+def attach_and_initialize(
+    cte: object,
+    *,
+    config_path: str,
+    port: int,
+    settle_s: float,
+    on_failure: Callable[[], None],
+) -> None:
+    """Attach the native client, let the handshake settle, then initialize CTE.
+
+    ``on_failure`` runs exactly once if either step fails, so a process that never
+    finished attaching releases its registration (and, as the last live client, the
+    daemon) instead of leaving it behind (#1401).
+    """
+    attach_native_client(cte, config_path=config_path, port=port, on_failure=on_failure)
+    time.sleep(settle_s)  # let the client handshake settle
+    try:
+        cte.initialize_cte(config_path, cte.PoolQuery.Dynamic())  # type: ignore[attr-defined]
+    except BaseException:
+        on_failure()
+        raise
+
+
 def verify_post_attach(store: "ClioCoreStore", *, on_failure: Callable[[], None]) -> None:
     """Prove a freshly attached store answers ONE real RPC, within a bound, before handing it out.
 
@@ -249,12 +288,14 @@ def verify_post_attach(store: "ClioCoreStore", *, on_failure: Callable[[], None]
     (``Tag(...)``, ``GetBlobSize``, ``GetBlob``, ...) hold the GIL for the whole RPC, so a
     daemon that never answers freezes the entire interpreter, stall watchers included.
     So the probe uses the ASYNC API -- ``AsyncTagQuery`` on the store's liveness
-    sentinel (a pure RPC: no tag is created, no ``Tag`` constructor runs) -- and waits on
-    its ``Future`` with ``wait(max_sec)``, which returns when the bound expires. The bound
-    is the configured health-probe window
-    (:func:`~clio_agent.arc.rpc_liveness.health_probe_window_s`). A timeout or a
-    non-zero return code runs ``on_failure`` (client deregistration) and raises typed,
-    so ARC degrades loudly at init instead of hanging.
+    sentinel (a pure RPC: no tag is created, no ``Tag`` constructor runs) -- and polls
+    its ``Future.done()`` until the bound expires, sleeping (GIL released) in between.
+    ``Future.wait(max_sec)`` is only called once the Future is done: against a daemon
+    that is GONE it ignores ``max_sec`` and blocks for good. The bound is the configured
+    health-probe window (:func:`~clio_agent.arc.rpc_liveness.health_probe_window_s`). An
+    expired bound (typed ``clio_core_post_attach_probe_timeout``) or a non-zero return
+    code (``clio_core_client_attach_failed``) runs ``on_failure`` (client
+    deregistration) and raises typed, so ARC degrades loudly at init instead of hanging.
 
     Raises:
         ClioCoreAttachError: ``stage="post_attach_probe"`` when the probe fails.
@@ -266,14 +307,15 @@ def verify_post_attach(store: "ClioCoreStore", *, on_failure: Callable[[], None]
         store._HEALTH_PROBE_NAME, 1, store._cte.PoolQuery.Dynamic()
     )
     deadline = time.monotonic() + window
+    reason = CLIO_CORE_CLIENT_ATTACH_FAILED
     while not future.done():
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
+        if time.monotonic() >= deadline:
             detail = f"the first RPC after the attach did not answer within {window:g}s"
+            reason = CLIO_CORE_POST_ATTACH_PROBE_TIMEOUT
             break
-        future.wait(remaining)
+        time.sleep(_PROBE_POLL_S)
     else:
-        code = future.wait(0)
+        code = future.wait(0)  # finished: returns its code at once
         if code == 0:
             return
         detail = f"the first RPC after the attach answered with return code {code}"
@@ -283,6 +325,7 @@ def verify_post_attach(store: "ClioCoreStore", *, on_failure: Callable[[], None]
         config_path=store._config_path,
         stage="post_attach_probe",
         detail=detail,
+        reason=reason,
     )
-    logger.error("%s reason=%s", error, CLIO_CORE_CLIENT_ATTACH_FAILED)
+    logger.error("%s reason=%s", error, reason)
     raise error

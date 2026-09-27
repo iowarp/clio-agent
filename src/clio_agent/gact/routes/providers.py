@@ -45,6 +45,10 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, HTTPException
 
 from clio_agent.gact.agent_initialization import mark_agent_ready
+from clio_agent.gact.claude_code_auth_reprobe import (
+    claude_code_overlay_verified,
+    reprobe_for_provider_list,
+)
 from clio_agent.gact.events import Event
 from clio_agent.gact.lm_provider_types import preset_api_key_env
 from clio_agent.gact.local_server_store import with_saved_address
@@ -127,19 +131,6 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
     # because most upstreams either don't expose a /models endpoint or
     # return hundreds of irrelevant entries. The TUI's Settings → Model
     # picker calls this once per provider and lists the rows verbatim.
-    # Derived from clio_agent.providers.catalog. Static fallback used
-    # only when live model discovery against the upstream /v1/models
-    # endpoint fails (no key, network down, 5xx) -- see the GET
-    # /v1/providers/{id}/models handler below for the resolution order.
-    # ALCF / Argonne live model availability is dynamic (jobs spin up
-    # and tear down behind the gateway); the live set can be queried
-    # with `scripts/list_active_models.sh` in alcf-agentics-workflow.
-    from clio_agent.providers.catalog import (
-        as_provider_models_dict as _build_provider_models,
-    )
-
-    _PROVIDER_MODELS: dict[str, list[dict[str, str]]] = _build_provider_models()
-
     def _codex_readiness(*, ignore_startup: bool = False) -> tuple[str, str, bool, str]:
         """Return status, message, verified flag, and live default for Codex."""
 
@@ -190,19 +181,11 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
         startup_check = getattr(app.state, "provider_catalog_startup_task", None)
         if not ignore_startup and startup_check is not None and not startup_check.done():
             return "auth_check_required", "Claude Code models are being checked", False, ""
-        from clio_agent.providers import model_discovery  # noqa: PLC0415
-
-        try:
-            overlay = model_discovery.overlay_models_wire("claude_code", "claude_code")
-        except model_discovery.OverlayMalformedError as exc:
-            return "unavailable", f"Claude Code model catalog is invalid: {exc}", False, ""
-        if overlay and overlay.get("models") and not overlay.get("staleness"):
-            return (
-                "ready",
-                "Claude Code sign-in and models verified",
-                True,
-                str(overlay.get("default_model") or ""),
-            )
+        verified, default_model, malformed = claude_code_overlay_verified()
+        if malformed:
+            return "unavailable", f"Claude Code model catalog is invalid: {malformed}", False, ""
+        if verified:
+            return "ready", "Claude Code sign-in and models verified", True, default_model
         return (
             "auth_check_required",
             "Claude Code is installed but has not been verified. Check the provider to sign in.",
@@ -301,9 +284,7 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
     # /v1/providers/lm route so the LM configuration endpoint keeps
     # winning FastAPI's order-based route match.
 
-    register_provider_catalog_routes(
-        app, _LM_PRESETS, _PROVIDER_MODELS, _codex_readiness, _claude_code_readiness
-    )
+    register_provider_catalog_routes(app, _LM_PRESETS, _codex_readiness, _claude_code_readiness)
 
     # ---- /v1/providers/lm ------------------------
 
@@ -471,9 +452,11 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         ``configured`` is true when an agent is wired and ready to
         run; the TUI uses this to decide whether to show the config
-        modal on connect.
+        modal on connect. A Claude Code default CLIO last saw signed out is
+        re-asked first, so a sign-in made in a terminal shows (#1455).
         """
 
+        await reprobe_for_provider_list(app)
         return _lm_provider_info()
 
     async def _apply_lm_provider(req: LMProviderRequest) -> LMProviderInfo:

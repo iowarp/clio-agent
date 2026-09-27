@@ -19,13 +19,6 @@ PENDING_ASK_USER_META = "pending_ask_user"
 _KINDS = frozenset({"freeform", "choice", "confirmation"})
 _INTERNAL_FIELD_MARKER = re.compile(r"\[\[\s*##\s*[A-Za-z_][\w-]*\s*##")
 
-#: In-code fallbacks for the response window. Both are config-resolved
-#: (``gact.ask_user.ttl_s`` / ``gact.ask_user.max_ttl_s``) so an operator can widen
-#: or tighten the window without a redeploy, mirroring
-#: ``agents.child_forward_deadline_s`` in :mod:`clio_agent.gact.child_forward`.
-_DEFAULT_ASK_USER_TTL_S = 600
-_DEFAULT_ASK_USER_MAX_TTL_S = 86_400
-
 #: Guards lazy creation of the per-app deadline registry (armed from tool threads,
 #: cancelled from the answer/cancel routes on the event loop).
 _DEADLINE_LOCK = threading.Lock()
@@ -64,25 +57,17 @@ def _task_id_for_session(app: Any, session_id: str) -> str:
     return str(getattr(matches[0], "task_id", "") or "") if matches else ""
 
 
-def ask_user_ttl_bounds() -> tuple[int, int]:
-    """Return the configured ``(default, maximum)`` response window in seconds."""
+def ask_user_expires_at(requested_s: int) -> str:
+    """The deadline for a question, or ``""`` when it has none.
 
-    from clio_agent import conf  # noqa: PLC0415 - avoid an import cycle at module load
+    A question has NO default lifetime (#1448, owner rule: no deterministic
+    caps): it stays pending until the user answers or cancels it, or until the
+    lifetime the agent explicitly asked for (``expiresInSeconds > 0``) ends.
+    """
 
-    default = conf.resolve(
-        "gact.ask_user.ttl_s",
-        env="CLIO_ASK_USER_TTL_S",
-        default=_DEFAULT_ASK_USER_TTL_S,
-        cast=conf.as_int,
-    )
-    maximum = conf.resolve(
-        "gact.ask_user.max_ttl_s",
-        env="CLIO_ASK_USER_MAX_TTL_S",
-        default=_DEFAULT_ASK_USER_MAX_TTL_S,
-        cast=conf.as_int,
-    )
-    maximum = max(1, maximum)
-    return max(1, min(default, maximum)), maximum
+    if requested_s <= 0:
+        return ""
+    return (datetime.now(timezone.utc) + timedelta(seconds=requested_s)).isoformat()
 
 
 def _deadline_registry(app: Any) -> dict[str, threading.Timer]:
@@ -182,10 +167,7 @@ def build_ask_user_tool(agent_def: Any) -> Any:
                 {"label": "Yes", "value": "yes", "description": ""},
                 {"label": "No", "value": "no", "description": ""},
             ]
-        default_ttl, max_ttl = ask_user_ttl_bounds()
-        requested_ttl = int(expiresInSeconds)
-        ttl = default_ttl if requested_ttl <= 0 else max(1, min(requested_ttl, max_ttl))
-        expires_at = (datetime.now(timezone.utc) + timedelta(seconds=ttl)).isoformat()
+        expires_at = ask_user_expires_at(int(expiresInSeconds))
         owner = session_id
         attended = attended_session_id(app, owner)
         task_id = _task_id_for_session(app, owner)
@@ -241,9 +223,8 @@ def build_ask_user_tool(agent_def: Any) -> Any:
             "expiresInSeconds": {
                 "type": "integer",
                 "description": (
-                    "Response window in seconds; 0 uses the server default "
-                    "(gact.ask_user.ttl_s) and any value is clamped to "
-                    "gact.ask_user.max_ttl_s."
+                    "Optional response window in seconds. Omit or 0: the question "
+                    "stays open until the user answers or dismisses it."
                 ),
             },
             "surface_id": {
@@ -352,8 +333,8 @@ def arm_ask_user_deadline(app: Any, question: Any) -> None:
 
     The timer is RETAINED in the app-scoped ``ask_user_deadlines`` registry and
     cancelled by :func:`cancel_ask_user_deadline` the moment the question settles.
-    An unreferenced daemon timer would otherwise stay alive for its whole TTL (up
-    to ``gact.ask_user.max_ttl_s``) holding a closure over ``app``, and a restart
+    An unreferenced daemon timer would otherwise stay alive for its whole TTL
+    holding a closure over ``app``, and a restart
     that rehydrates surfaced questions would arm one more per question.
     """
 
@@ -450,7 +431,7 @@ __all__ = [
     "AskUserError",
     "PENDING_ASK_USER_META",
     "arm_ask_user_deadline",
-    "ask_user_ttl_bounds",
+    "ask_user_expires_at",
     "build_ask_user_tool",
     "cancel_ask_user_deadline",
     "restore_pending_ask_user_questions",
