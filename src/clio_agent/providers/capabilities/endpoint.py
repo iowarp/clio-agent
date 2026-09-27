@@ -23,7 +23,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
 
 from clio_agent.providers.capabilities.records import (
     EndpointCapabilities,
@@ -31,6 +30,7 @@ from clio_agent.providers.capabilities.records import (
     FactSource,
     unknown,
 )
+from clio_agent.providers.custom_transports import CLIO_CUSTOM_LITELLM_PROVIDERS
 
 logger = logging.getLogger(__name__)
 
@@ -197,14 +197,6 @@ def dialect_for_provider(provider_kind: str, litellm_prefix: str, provider_id: s
     return litellm_prefix or provider_kind or "openai"
 
 
-def _is_clio_custom_provider(litellm: Any, custom_llm_provider: str) -> bool:
-    """True when ``custom_llm_provider`` is a handler clio registered with LiteLLM."""
-    return any(
-        entry.get("provider") == custom_llm_provider
-        for entry in getattr(litellm, "custom_provider_map", None) or []
-    )
-
-
 def resolve_accepted_params(
     dialect: str, model_id: str, *, custom_llm_provider: str
 ) -> Fact[frozenset[str]]:
@@ -226,11 +218,12 @@ def resolve_accepted_params(
     try:
         import litellm  # noqa: PLC0415
 
-        if _is_clio_custom_provider(litellm, custom_llm_provider):
-            # clio's OWN handler (codex_direct, claude_code, ...): once LiteLLM has set
-            # up custom handlers it answers the generic OpenAI list for any of them, a
-            # default that says nothing about the transport. Treat it as no mapping, or
-            # the answer would depend on whether a turn already ran in this process.
+        if custom_llm_provider in CLIO_CUSTOM_LITELLM_PROVIDERS:
+            # clio's OWN transport (codex_direct, codex_sdk, claude_code): once LiteLLM
+            # has set its custom handler up it answers the generic OpenAI list for the
+            # key, a default that says nothing about the transport. Decided from clio's
+            # own list, never LiteLLM's mutable registration state, so the answer does
+            # not depend on what ran (or was reset) earlier in the process.
             params = None
         else:
             params = litellm.get_supported_openai_params(
