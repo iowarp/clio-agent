@@ -602,10 +602,10 @@ class _StreamClientEntry:
                     raise val
                 yield val
         finally:
-            # Only a caller that left BEFORE the END abandons the stream: after END, `_pump`
-            # is just finishing and its own teardown decides. Never cancel `fut` outright (it
-            # could land inside a disconnect mid-flight); only ask the queue wait to give up.
-            if kind is not _STREAM_END and not fut.done():
+            # Only a caller that ABANDONS the stream (leaves before `_pump` sent END or its
+            # error) asks for a reset: otherwise `_pump`'s own teardown decides, once. Never
+            # cancel `fut` outright (it could land inside a disconnect mid-flight).
+            if kind is not _STREAM_END and kind != "exc" and not fut.done():
                 abandon.set()
                 with contextlib.suppress(Exception):
                     asyncio.run_coroutine_threadsafe(self._mark_dead_and_reset(), self._loop)

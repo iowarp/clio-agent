@@ -340,3 +340,47 @@ async def test_a_clean_stream_end_never_burns_the_entry_when_the_owner_loop_lags
     await _consume(entry, payload="p2", session_id="sid-2", **kwargs)
     assert state["constructed"] == 1  # the same warm client served both turns
     assert state["disconnected"] == 0
+
+
+async def test_a_failed_stream_is_reset_once_when_the_owner_loop_lags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The error-path twin (CI: test_pump_queues_stream_end_before_the_abnormal_end_reset
+    recorded ``['end', 'reset', 'reset']``). ``_pump`` resets an abnormally ended stream
+    itself; a caller that got the error while the owner loop was still finishing saw
+    ``not fut.done()`` and scheduled a SECOND reset of the same entry."""
+    import time  # noqa: PLC0415
+
+    state = _install_fake_sdk(monkeypatch)
+    import claude_agent_sdk as fake_sdk  # noqa: PLC0415
+
+    async def query(self: Any, prompt: str, session_id: str = "default") -> None:
+        # Stall the owner loop after `_pump` finishes, before its future is marked done.
+        asyncio.get_running_loop().call_soon(time.sleep, 0.5)
+        raise RuntimeError("boom")
+
+    fake_sdk.ClaudeSDKClient.query = query
+    entry = _StreamClientEntry()
+    resets: list[int] = []
+    real_areset = entry._areset_client
+
+    async def counting_areset() -> None:
+        resets.append(1)
+        await real_areset()
+
+    monkeypatch.setattr(entry, "_areset_client", counting_areset)
+    with pytest.raises(RuntimeError, match="boom"):
+        await _consume(
+            entry,
+            payload="p1",
+            native_blocks=[],
+            session_id="sid-1",
+            timeout=5.0,
+            on_construct=lambda: None,
+            model="haiku",
+        )
+    await asyncio.sleep(0.8)  # let any (wrongly) scheduled second reset land
+
+    assert entry.dead is True  # the failed stream burned its entry, as designed
+    assert len(resets) == 1, "the failed stream was reset more than once"
+    assert state["disconnected"] == 1
