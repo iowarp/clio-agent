@@ -442,3 +442,36 @@ async def test_reinstall_after_a_reload_uses_the_installed_configuration(tmp_pat
         ServiceActionRequest(target_id=target_id, action="uninstall", variant_id="cpu"),
     )
     assert IMAGE not in target.images
+
+
+def test_discovery_learns_the_default_context_of_a_running_managed_ollama(tmp_path: Path) -> None:
+    from clio_agent.gact.infrastructure.models import EffectiveParameter, ServiceRecord
+    from clio_agent.gact.infrastructure.served_defaults import ollama_context_default_lookup
+
+    store = InfrastructureStore(tmp_path / "infrastructure.json")
+    lookup = ollama_context_default_lookup(store)
+    record = ServiceRecord(
+        id="ares:ollama",
+        service_id="ollama",
+        target_id="ares",
+        variant_id="cpu",
+        state="running",
+        connection_url="http://127.0.0.1:58473",
+        effective_parameters=[
+            EffectiveParameter(
+                id="context_length",
+                label="Context length",
+                value="4096",
+                source="server_report",
+                detail="Ollama server config (startup log)",
+            )
+        ],
+    )
+    store.put_service(record)
+
+    fact = lookup("http://127.0.0.1:58473")
+    assert fact is not None and fact.value == 4096
+    assert "CLIO-managed Ollama on ares" in fact.detail
+    assert lookup("http://127.0.0.1:9") is None
+    store.put_service(record.model_copy(update={"state": "stopped"}))
+    assert lookup("http://127.0.0.1:58473") is None

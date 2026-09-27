@@ -147,6 +147,12 @@ class InfrastructureStore:
             self._flush()
             return updated.model_copy(deep=True)
 
+    def services(self) -> list[ServiceRecord]:
+        """Every durable service record, on every target."""
+
+        with self._lock:
+            return [row.model_copy(deep=True) for row in self._services.values()]
+
     def update_service(
         self, target_id: str, service_id: str, **fields: object
     ) -> ServiceRecord | None:

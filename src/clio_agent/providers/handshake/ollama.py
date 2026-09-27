@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from clio_agent.providers.api_base import native_root
+from clio_agent.providers.capabilities import server_defaults
 from clio_agent.providers.capabilities.dialects import ollama as ollama_dialect
 from clio_agent.providers.capabilities.link import deployment_model_key_fact
 from clio_agent.providers.handshake.base import HandshakeContext
@@ -58,6 +59,7 @@ class OllamaHandshake(OpenAICompatHandshake):
             model_id=model_id,
             show_parameters=show_parameters,
             ps_payload=ps_data,
+            server_default=server_defaults.context_default(ctx.api_base),
         )
 
         arch, caps = ollama_dialect.show_identity(show_data)

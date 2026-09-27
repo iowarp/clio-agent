@@ -325,6 +325,10 @@ class DeploymentCapabilities:
     #: own facts and probes, but model-level facts stay unknown.
     model_key: Fact[str] = field(default_factory=_unknown_field)
     context_served: Fact[int] = field(default_factory=_unknown_field)
+    #: The context that WILL be in force once the model loads, when the server
+    #: is not serving it yet (Ollama before load: the Modelfile ``num_ctx``, or
+    #: the server's default). Never a claim about what is served now.
+    context_configured: Fact[int] = field(default_factory=_unknown_field)
     output_max: Fact[int] = field(default_factory=_unknown_field)
     slots: Fact[int] = field(default_factory=_unknown_field)
     modalities_enabled: Fact[frozenset[str]] = field(default_factory=_unknown_field)
