@@ -14,6 +14,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from clio_agent import conf
+from clio_agent.gact.origin_guard import OriginGuardMiddleware
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 PeerAddressGetter = Callable[[Scope], str | None]
@@ -136,10 +137,14 @@ class BearerAuthMiddleware:
 
 
 def configure_bearer_auth(app: FastAPI) -> None:
-    """Configure bearer admission and the overridable direct-peer address seam."""
+    """Configure bearer admission, the cross-site origin guard, and the peer-address seam."""
 
     token = configured_bearer_token()
     app.state.bearer_token = token
     app.state.peer_address_getter = peer_address_from_scope
+    # Inner to the bearer check: a request admitted without a valid token
+    # (loopback, or no token configured) still may not change state from an
+    # untrusted web page.
+    app.add_middleware(OriginGuardMiddleware, state=app.state)
     if token is not None:
         app.add_middleware(BearerAuthMiddleware, token=token, state=app.state)

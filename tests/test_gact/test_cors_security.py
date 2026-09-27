@@ -46,9 +46,10 @@ def test_default_cors_does_not_authorize_browser_origin_on_trust_socket_path(
         json={"title": "browser attempt"},
     )
 
-    # Non-browser/local clients are still allowed to use trust_socket, but a
-    # browser cannot read this response or use it as an authorized CORS path.
-    assert resp.status_code == 200
+    # A token-less state change from an untrusted page is refused outright
+    # (origin guard); CORS alone only hid the response after the route ran.
+    assert resp.status_code == 403
+    assert resp.json()["error"]["error"] == "origin_not_allowed"
     assert "access-control-allow-origin" not in resp.headers
 
 

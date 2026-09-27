@@ -46,6 +46,15 @@ TUI/HTTP surface aren't tracked here.
 
 ### Fixed
 
+- Security: a web page could make the user's browser change state on a local
+  CLIO without a token (cancel turns, install provider support, run sandbox
+  setup, reconnect MCP servers). A request without a valid bearer token that
+  uses POST, PUT, PATCH or DELETE and names an untrusted `Origin` (or is marked
+  `Sec-Fetch-Site: cross-site`) is now refused with `403 origin_not_allowed`
+  and logged. Trusted origins are the Desktop WebView, `gact.cors.origins`, and
+  the server's own loopback origin for the same-origin web UI. Clients that
+  send no `Origin` (the Desktop's native bridge, curl, SDKs) and requests with
+  a valid token are unaffected.
 - A provider served from its last-good model list (for example OpenRouter with
   no usable key) lost every fact except limits, tools, modalities and task, so
   its models showed no reasoning, structured output, router, free or pricing
