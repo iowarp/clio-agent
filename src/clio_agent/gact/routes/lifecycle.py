@@ -22,10 +22,10 @@ import hmac
 import os
 
 from fastapi import FastAPI, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from clio_agent.gact import desktop_lifecycle
-from clio_agent.gact.auth import _authentication_refusal, _header_bearer_token
+from clio_agent.gact.auth import _authentication_refusal, _header_bearer_token, has_valid_bearer
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 DESKTOP_MANAGED_ENV = "CLIO_DESKTOP_MANAGED"
@@ -52,6 +52,24 @@ def _unconfigured_refusal() -> JSONResponse:
 
 def register_lifecycle_routes(app: FastAPI) -> None:
     """Register the private lifecycle control used by the owning desktop shell."""
+
+    @app.get("/v1/desktop/attach")
+    async def desktop_attach_check(request: Request) -> Response:
+        """Tell an attaching desktop whether what it presents opens the bearer-only surfaces.
+
+        HTTP from loopback needs no token, so an ordinary request cannot reveal
+        whether this server enforces one. The Desktop SSH transport socket and
+        desktop shutdown do require it (loopback included). A desktop that
+        attaches to a server it did not spawn, and finds no credential record
+        (``gact/server_credentials.py``), asks here without a token: 204 means no
+        token is enforced and it may proceed; 401 means it cannot authenticate,
+        which it reports up front (#1478). Same rule as the transport socket.
+        """
+
+        expected = getattr(app.state, "bearer_token", None)
+        if expected is None or has_valid_bearer(request.scope, expected):
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
+        return _authentication_refusal()
 
     @app.post("/v1/desktop/shutdown", status_code=status.HTTP_202_ACCEPTED)
     async def desktop_shutdown(request: Request) -> JSONResponse:
