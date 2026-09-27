@@ -13,6 +13,7 @@ record, restorer and routes are real.
 from __future__ import annotations
 
 import asyncio
+import importlib.machinery
 import importlib.util
 import threading
 import time
@@ -38,13 +39,17 @@ def _clean_restorer() -> None:
 
 @pytest.fixture
 def claude_sdk_missing(monkeypatch: pytest.MonkeyPatch) -> dict[str, bool]:
-    """``claude_agent_sdk`` is not importable until ``state['installed']`` flips."""
+    """``claude_agent_sdk`` is absent until ``state['installed']`` flips, then present.
+
+    Never defers to the suite venv's real install state (CI syncs without the
+    ``claude-code`` extra): after the fake install the spec is synthesized.
+    """
     state = {"installed": False}
     original = importlib.util.find_spec
 
     def _find_spec(name: str, *args: Any, **kwargs: Any) -> Any:
-        if name == "claude_agent_sdk" and not state["installed"]:
-            return None
+        if name == "claude_agent_sdk":
+            return importlib.machinery.ModuleSpec(name, None) if state["installed"] else None
         return original(name, *args, **kwargs)
 
     monkeypatch.setattr(importlib.util, "find_spec", _find_spec)
