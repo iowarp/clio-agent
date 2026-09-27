@@ -14,6 +14,7 @@ Two layers:
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -262,6 +263,7 @@ class _InFlightUntilAgent:
     def __init__(self, until: str) -> None:
         self.until = until  # "cooperative_cancel" | "task_hard_cancelled"
         self.app: Any = None
+        self.started = threading.Event()  # the forward runs: the turn is past its prologue
 
     def _released(self, session_id: str) -> bool:
         if self.until == "cooperative_cancel":
@@ -271,6 +273,7 @@ class _InFlightUntilAgent:
         return not self.app.state.turn_runner.busy(session_id)
 
     def forward(self, question: str, session_id: str):
+        self.started.set()
         deadline = time.monotonic() + TURN_SIGNAL_BACKSTOP_S
         while not self._released(session_id):
             assert time.monotonic() < deadline, f"never released ({self.until})"
@@ -554,8 +557,9 @@ def test_shutdown_drains_in_flight_turn(tmp_path: Path) -> None:
     with TestClient(app) as client:
         sid = _new_session(client)
         assert _post_message(client, sid, "hi").status_code == 200
-        # Ensure the turn is actually in flight before we tear down.
-        _wait_busy(app, sid)
+        # Tear down only once the forward runs: a drain that lands in the prologue
+        # settles the turn cooperatively there, and the hard-cancel path goes untested.
+        assert agent.started.wait(TURN_SIGNAL_BACKSTOP_S), "the forward never started"
     # TestClient context exit ran the lifespan shutdown → drain.
     outcome = app.state.turn_drain_outcome
     assert outcome.total >= 1

@@ -100,8 +100,12 @@ jobs:
           --num-shards 3 --shard-id ${{ matrix.shard }}
           -n logical --dist worksteal --durations=30
           --cov=clio_agent --cov-branch --cov-report=
-      - run: mv .coverage coverage-${{ matrix.shard }}.dat
-      - uses: actions/upload-artifact@v4
+      # Uploaded even when a test failed, so the coverage job still reports the shard's
+      # numbers (the failed shard keeps the build red on its own).
+      - if: ${{ !cancelled() }}
+        run: mv .coverage coverage-${{ matrix.shard }}.dat
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
         with:
           name: coverage-${{ matrix.python-version }}-${{ matrix.shard }}
           path: coverage-${{ matrix.shard }}.dat
