@@ -63,6 +63,7 @@ from clio_agent.gact.providers.config import _provider_runtime_kind
 from clio_agent.gact.stream_chunks import _chunk_reasoning_text, _chunk_text
 from clio_agent.gact.stream_failures import CLI_PROVIDER_FAILURE_MESSAGES
 from clio_agent.gact.stream_failures import describe_stream_exc as _describe_stream_exc
+from clio_agent.gact.stream_failures import failed_before_output as _failed_before_output
 from clio_agent.gact.stream_fallbacks import (
     peek_stream_fallback as _peek_stream_fallback,  # noqa: F401
 )
@@ -721,7 +722,7 @@ async def _try_streamed_forward(
                     except Exception:  # noqa: BLE001,S110 - heartbeat is best-effort
                         pass
     except Exception as exc:
-        detail = _describe_stream_exc(exc)
+        detail = _describe_stream_exc(exc, provider_id=provider_id)
         if detail in CLI_PROVIDER_FAILURE_MESSAGES:
             if not emitted_any:
                 _record_stream_fallback(
@@ -741,9 +742,7 @@ async def _try_streamed_forward(
             "stream_failed_before_output",
             detail,
         )
-        raise _StreamingOutputError(
-            f"live streaming failed before emitting output: {detail}"
-        ) from exc
+        raise _StreamingOutputError(_failed_before_output(exc, detail, provider_id)) from exc
     if emitted_any and final_pred is None:
         raise _StreamingOutputError(
             "live streaming ended after emitting output without a final prediction"

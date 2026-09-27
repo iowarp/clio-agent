@@ -772,7 +772,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # P5 (model-capabilities request builder): 880 -> 876. _config_is_reasoning_model
     # now reads config.is_reasoning directly instead of the deleted
     # clio_agent.config._reasoning_model_capability qwen-name heuristic.
-    "src/clio_agent/gact/streaming.py": 876,
+    "src/clio_agent/gact/streaming.py": 875,
     # #948 S5: +2 to read the RUN-KEYED tap-dedup bucket under an in-process module
     # variant (context.run_keyed_scope; bare invoking_expert still owns attribution).
     # merge(main->develop): +10 (932 -> 942) integrating main's #964 structured
