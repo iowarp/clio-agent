@@ -54,6 +54,8 @@ class FakeLinuxTarget:
         self.exit_on_start = False
         self.daemon_can_remove_images = True
         self.commands: list[CommandSpec] = []
+        #: Per container, the secret environment a keyed launch handed it.
+        self.environments: dict[str, dict[str, str]] = {}
 
     def snapshot(self) -> tuple[set[str], set[str], set[str]]:
         return set(self.images), set(self.containers), set(self.dirs)
@@ -62,6 +64,14 @@ class FakeLinuxTarget:
         del target_id
         self.commands.append(spec)
         program, args = spec.program, spec.args
+        if program == "sh" and args[:1] == ["-c"] and "read -r clio_secret" in args[1]:
+            # Like sh: read the secret from stdin into the environment, then
+            # exec the wrapped command (``sh -c SCRIPT sh docker run ...``).
+            variable = args[1].split("export ", 1)[1].split("=", 1)[0]
+            inner = args[3:]
+            name = inner[inner.index("--name") + 1]
+            self.environments[name] = {variable: spec.stdin.splitlines()[0]}
+            return self._docker(inner[1:])
         if program == "sh" and args[0] == "-lc":
             return CommandResult(exit_code=0, stdout=PROBE)
         if program == "sh" and "CLIO_CREATED_DIR" in args[1]:

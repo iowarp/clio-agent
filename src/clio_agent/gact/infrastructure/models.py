@@ -267,6 +267,25 @@ class EffectiveParameter(BaseModel):
     detail: str = ""
 
 
+class ServiceAccess(BaseModel):
+    """Who can use a running model server, in one plain sentence.
+
+    Attributes:
+        mode: ``api_key`` -- the server refuses requests without the key CLIO
+            generated for this deployment (CLIO sends it; nobody copies it);
+            ``shared`` -- the person chose to run it with no key;
+            ``unprotected`` -- it runs with no key though nobody chose that
+            (Ollama has no key support, or the server did not refuse a
+            request without its key).
+        detail: The plain sentence the UI shows.
+        verified: CLIO checked the server refuses a request without the key.
+    """
+
+    mode: Literal["api_key", "shared", "unprotected"]
+    detail: str
+    verified: bool = False
+
+
 class ManagedServiceDefinition(BaseModel):
     """Catalog projection for one CLIO-managed service."""
 
@@ -289,6 +308,10 @@ class ManagedServiceDefinition(BaseModel):
     configuration: dict[str, str] = Field(default_factory=dict)
     #: Everything this deployment created on its target (removed on uninstall).
     owned_resources: list[OwnedResource] = Field(default_factory=list)
+    #: Whether this engine can be protected by an API key (Ollama cannot).
+    supports_api_key: bool = False
+    #: Who can use the installed deployment (absent when nothing is installed).
+    access: ServiceAccess | None = None
 
 
 class ManagedServiceCatalog(BaseModel):
@@ -311,6 +334,8 @@ class ServiceRecord(BaseModel):
     connection_strategy: ConnectionStrategy | None = None
     owned_resources: list[OwnedResource] = Field(default_factory=list)
     effective_parameters: list[EffectiveParameter] = Field(default_factory=list)
+    #: Who can use it; the key itself lives only in the secret store.
+    access: ServiceAccess | None = None
     updated_at: str = Field(default_factory=utc_now)
 
 

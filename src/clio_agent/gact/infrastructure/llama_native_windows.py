@@ -10,6 +10,7 @@ from __future__ import annotations
 from clio_agent.gact.infrastructure import powershell
 from clio_agent.gact.infrastructure.models import CommandSpec, InfrastructureTarget
 from clio_agent.gact.infrastructure.plan import DriverPlan
+from clio_agent.gact.infrastructure.secret_env import with_secret_env
 
 # One llama.cpp build for the Windows archive and the ghcr server images.
 # ghcr keeps server images only for recent builds (b10621 was pruned and its
@@ -35,6 +36,7 @@ def native_windows_llama_plan(
     model_path: str,
     target: InfrastructureTarget | None,
     extra_flags: tuple[str, ...] = (),
+    api_key: str | None = None,
 ) -> DriverPlan:
     """Compile one lifecycle action for the native Windows llama.cpp server.
 
@@ -43,6 +45,8 @@ def native_windows_llama_plan(
         model_path: The GGUF file on this computer (required to start).
         target: The local target (the only one this variant runs on).
         extra_flags: Compiled server parameters (``--parallel 2`` ...).
+        api_key: The deployment's API key, handed to the server process as
+            ``LLAMA_API_KEY`` through the environment (never an argument).
     """
 
     if target is None or target.kind != "local":
@@ -110,17 +114,19 @@ def native_windows_llama_plan(
     # Start-Process joins -ArgumentList with spaces and does not quote: a path
     # with a space must carry its own quotes.
     server_args = [f'"{arg}"' if " " in arg else arg for arg in server_args]
+    launch = powershell.command(
+        "$ErrorActionPreference='Stop'; "
+        + prefix
+        + "$exe=Get-ChildItem -LiteralPath $root -Filter 'llama-server.exe' -Recurse | "
+        "Select-Object -First 1; if (!$exe) { throw 'Install llama.cpp before starting it' }; "
+        "$stdout=Join-Path $root 'server.log'; $stderr=Join-Path $root 'server-error.log'; "
+        f"$process=Start-Process -FilePath $exe.FullName -ArgumentList {powershell.array(server_args)} "
+        "-RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden "
+        "-PassThru; Set-Content -LiteralPath (Join-Path $root 'server.pid') -Value $process.Id"
+    )
+    # The server process inherits the key from this PowerShell's environment.
     commands.append(
-        powershell.command(
-            "$ErrorActionPreference='Stop'; "
-            + prefix
-            + "$exe=Get-ChildItem -LiteralPath $root -Filter 'llama-server.exe' -Recurse | "
-            "Select-Object -First 1; if (!$exe) { throw 'Install llama.cpp before starting it' }; "
-            "$stdout=Join-Path $root 'server.log'; $stderr=Join-Path $root 'server-error.log'; "
-            f"$process=Start-Process -FilePath $exe.FullName -ArgumentList {powershell.array(server_args)} "
-            "-RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden "
-            "-PassThru; Set-Content -LiteralPath (Join-Path $root 'server.pid') -Value $process.Id"
-        )
+        with_secret_env(launch, "LLAMA_API_KEY", api_key, windows=True) if api_key else launch
     )
     return DriverPlan(tuple(commands), connection_port=NATIVE_PORT)
 

@@ -223,11 +223,14 @@ def build_driver_plan(
     facts: TargetFacts,
     target: InfrastructureTarget | None = None,
     owned: list[OwnedResource] | None = None,
+    api_key: str | None = None,
 ) -> DriverPlan:
     """Compile one allowlisted lifecycle action into commands.
 
     ``owned`` is the service's ledger of what its deployment created; model
     runtimes remove exactly those resources on uninstall and reinstall.
+    ``api_key`` is a keyed model server's deployment key (see
+    :mod:`clio_agent.gact.infrastructure.server_access`).
     """
 
     definitions = {row.id: row for row in service_definitions(facts)}
@@ -248,6 +251,7 @@ def build_driver_plan(
             facts=facts,
             target=target,
             owned=owned,
+            api_key=api_key,
         )
     if action in {"install", "reinstall"} and not variant.compatible:
         raise ValueError(variant.reason or "This service is unavailable on the selected target")
