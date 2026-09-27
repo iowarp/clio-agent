@@ -23,6 +23,16 @@ import os
 # imports litellm during collection or a test run.
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
+# Starlette's TestClient (and the suite's ASGI clients) address the app as
+# ``testserver``. A request without a bearer token must name an allowed host
+# (gact/origin_guard.py), so the whole session allows that one name. It is an ENV
+# baseline on purpose: a config file only overrides it when it sets
+# ``gact.allowed_hosts`` itself, so a test that writes its own config (a registry
+# helper, a workspace ``.clio/config.yaml``) cannot lose it.
+_TEST_CLIENT_HOST = "testserver"
+_ambient_hosts = [h for h in os.environ.get("CLIO_GACT_ALLOWED_HOSTS", "").split(",") if h.strip()]
+os.environ["CLIO_GACT_ALLOWED_HOSTS"] = ",".join(sorted({*_ambient_hosts, _TEST_CLIENT_HOST}))
+
 # Even with the network GET removed, litellm's own MODULE BODY costs ~3.5-4s
 # to import cold (hundreds of provider submodules + pydantic model builds --
 # not fixable from clio's side, it is dependency weight). That cost is paid
@@ -589,9 +599,6 @@ def allow_pytest_tmp_path(request, tmp_path, monkeypatch):
                 "tools": {"file_policy": {"allowed_roots": allowed_roots}},
                 "lm": {"model": "ibm/granite-4-h-tiny"},
                 "arc": {"store": "local"},
-                # Starlette's TestClient addresses the app as ``testserver``;
-                # token-less requests must name an allowed host (origin guard).
-                "gact": {"allowed_hosts": ["testserver"]},
             },
             sort_keys=False,
         ),

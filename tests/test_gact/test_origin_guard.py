@@ -14,7 +14,6 @@ from starlette.testclient import WebSocketDenialResponse
 from clio_agent import conf
 from clio_agent.gact.app import build_app
 from clio_agent.gact.routes import sandbox_setup as sandbox_setup_routes
-from tests._config_layer import set_config
 
 EVIL = "https://evil.example"
 
@@ -184,8 +183,11 @@ def test_loopback_host_names_read_without_a_token(client: TestClient, host: str)
     assert client.get("/v1/sessions", headers={"Host": host}).status_code == 200
 
 
-def test_a_configured_lan_host_reads_without_a_token(client: TestClient) -> None:
-    set_config("gact.allowed_hosts", ["testserver", "clio.lab.example"])
+def test_a_configured_lan_host_reads_without_a_token(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CLIO_GACT_ALLOWED_HOSTS", "testserver,clio.lab.example")
+    conf.reload()
 
     assert client.get("/v1/sessions", headers={"Host": "clio.lab.example:8080"}).status_code == 200
     assert _refused(
@@ -193,8 +195,11 @@ def test_a_configured_lan_host_reads_without_a_token(client: TestClient) -> None
     )
 
 
-def test_the_same_origin_web_ui_on_a_configured_host_can_change_state(client: TestClient) -> None:
-    set_config("gact.allowed_hosts", ["testserver", "clio.lab.example"])
+def test_the_same_origin_web_ui_on_a_configured_host_can_change_state(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CLIO_GACT_ALLOWED_HOSTS", "testserver,clio.lab.example")
+    conf.reload()
 
     response = _post_plain(
         client,
