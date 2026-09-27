@@ -146,7 +146,10 @@ from clio_agent.gact.app import build_app
 # context), owned by routes/side_sessions.py, registered from routes/sessions.py.
 # 279 -> 281: GET /v1/providers/support/restores + POST /v1/providers/support/restore (the
 # restore of provider support a runtime change removed), owned by routes/provider_support.py.
-EXPECTED_ROUTE_METHOD_PAIRS = 281
+# 281 -> 282: POST /v1/artifacts/{id}/table-query (bounded filter/aggregate/downsample
+# over CSV/Parquet artifacts for charts), owned by routes/artifact_table_query.py,
+# registered from routes/artifact_extensions.py.
+EXPECTED_ROUTE_METHOD_PAIRS = 282
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

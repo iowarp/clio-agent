@@ -78,6 +78,9 @@ dependencies = [
     "requests>=2.31.0",
     "h5py>=3.10.0",
     "pyarrow>=14.0.0",
+    # Artifact table-query LTTB downsampling (gact/artifacts/lttb.py). Already present
+    # transitively (matplotlib/pyarrow); declared now that first-party code imports it.
+    "numpy>=1.24.0",
     "rich>=14.2.0",
     "prompt-toolkit>=3.0.0",
     "sortedcontainers>=2.4.0",
