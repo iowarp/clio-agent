@@ -126,10 +126,8 @@ def _auth_status(binary: str, *, timeout: float) -> tuple[bool, str]:
         detail = (proc.stdout or proc.stderr or "")[:200]
         return False, f"Claude Code auth status returned non-JSON output: {detail!r}"
     if not isinstance(payload, dict) or payload.get("loggedIn") is not True:
-        return False, (
-            "Claude Code is installed but not signed in on the connected agent; sign in "
-            "with `claude auth login`, then check the provider again"
-        )
+        # CLIO drives the CLI's own sign-in (Log in), so the sentence names that.
+        return False, "Claude Code is not signed in on the connected agent. Log in to use it."
     return True, ""
 
 
