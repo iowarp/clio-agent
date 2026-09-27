@@ -223,8 +223,7 @@ def read_overlay() -> dict[str, dict[str, Any]]:
 def overlay_models_wire(provider_id: str, provider_kind: str) -> dict[str, Any] | None:
     """Return the overlay-first ``{"models", "source", ...}`` wire dict, or ``None``.
 
-    Looks up by preset id first, then bare provider_kind (mirrors
-    :func:`clio_agent.providers.catalog.as_provider_models_dict`'s dual-keying).
+    Looks up by preset id first, then bare provider_kind.
     ``None`` means "no usable overlay entry" (absent, or present with an empty
     ``models`` list because this provider has never successfully discovered) —
     callers fall back to the static catalog. Propagates

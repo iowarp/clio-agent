@@ -23,18 +23,20 @@ def client(tmp_path: Path) -> TestClient:
     return TestClient(build_app(sessions_path=tmp_path / "s.json"))
 
 
-def test_models_route_no_longer_aliases_a_bare_kind_to_a_preset(client: TestClient) -> None:
-    """``argonne`` (a kind, not a preset id) never live-resolves to argonne_sophia.
+def test_models_route_rejects_a_bare_kind_as_unknown_provider(client: TestClient) -> None:
+    """``argonne`` (a kind, not a preset id) 404s -- never an empty static list.
 
-    It still answers from the static catalog fallback (a real path for any
-    provider id ``_PROVIDER_MODELS`` recognizes) rather than 404ing outright,
-    but it must not take the live per-model handshake path meant for a real,
-    specific preset id.
+    The static-catalog fallback is gone (no provider carries a compiled-in
+    model list), so a bare kind names no provider, exactly like the handshake
+    route below.
     """
     resp = client.get("/v1/providers/argonne/models")
-    assert resp.status_code == 200
+    assert resp.status_code == 404
     body = resp.json()
-    assert body["source"] == "static_catalog"
+    assert body["error"]["error"] == "not_found"
+    assert "argonne" in body["error"]["message"]
+    assert "argonne" not in body["error"]["details"]["available"]
+    assert "argonne_sophia" in body["error"]["details"]["available"]
 
 
 def test_handshake_route_rejects_a_bare_kind_as_unknown_provider(client: TestClient) -> None:
