@@ -51,12 +51,16 @@ from clio_agent.providers.thinking_levels import LEVEL_BUDGET
 #: spells the same concept ``repeat_penalty``.
 PARAM_SPELLING_BY_DIALECT: dict[str, dict[str, str]] = {
     "llama_cpp": {"repetition_penalty": "repeat_penalty"},
+    "lm_studio": {"repetition_penalty": "repeat_penalty"},
+    "ollama": {"repetition_penalty": "repeat_penalty", "context_length": "num_ctx"},
     "vllm": {},  # "repetition_penalty" is already vLLM's own spelling.
 }
 
 #: The OpenAI-standard optional fields every dialect sends top-level -- LiteLLM's
 #: own translator already knows their shape for any dialect.
-_TOP_LEVEL_STANDARD_FIELDS: frozenset[str] = frozenset({"top_p", "presence_penalty", "stop"})
+_TOP_LEVEL_STANDARD_FIELDS: frozenset[str] = frozenset(
+    {"top_p", "presence_penalty", "frequency_penalty", "seed", "stop"}
+)
 
 #: Fields a SPECIFIC dialect's own LiteLLM translator recognizes top-level
 #: beyond the OpenAI-standard set -- e.g. LM Studio's real ``lm_studio``
@@ -71,6 +75,11 @@ _TOP_LEVEL_STANDARD_FIELDS: frozenset[str] = frozenset({"top_p", "presence_penal
 #: (never a JSON request body, so "extra_body" has no meaning for them at all).
 _DIALECT_NATIVE_TOP_LEVEL_FIELDS: dict[str, frozenset[str]] = {
     "lm_studio": frozenset({"reasoning_effort"}),
+    # ollama_chat puts every top-level kwarg it does not map itself into the
+    # native /api/chat ``options`` object -- where Ollama reads these -- while
+    # ``extra_body`` lands beside ``options`` and is ignored for sampling
+    # (verified by capturing the request body LiteLLM sends).
+    "ollama": frozenset({"top_k", "min_p", "repetition_penalty", "context_length"}),
     "openai": frozenset({"reasoning_effort"}),
     "anthropic": frozenset({"reasoning_effort", "thinking"}),
     "codex": frozenset({"codex_reasoning_effort"}),

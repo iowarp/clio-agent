@@ -265,6 +265,10 @@ def _build_key_less_skeleton(spec: "LMSpec") -> tuple["LMProviderConfig", str]:
         "top_k": spec.top_k,
         "min_p": spec.min_p,
         "presence_penalty": spec.presence_penalty,
+        "frequency_penalty": spec.frequency_penalty,
+        "repetition_penalty": spec.repetition_penalty,
+        "seed": spec.seed,
+        "context_length": spec.context_length,
     }
     if provider == "codex" and spec.transport:
         kwargs["codex_transport"] = spec.transport

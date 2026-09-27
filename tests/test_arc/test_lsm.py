@@ -140,8 +140,11 @@ class TestLSMTree:
                 metric = {"index": i, "value": i}
                 lsm.write(ts, metric)
 
-            # Wait a bit for background compaction
-            time.sleep(6)
+            # Wait for the background compaction (it wakes every 5 s): poll for the
+            # count instead of sleeping a fixed 6 s past it; the deadline is a backstop.
+            deadline = time.monotonic() + 30.0
+            while lsm.get_stats()["compaction_count"] < 1 and time.monotonic() < deadline:
+                time.sleep(0.05)
 
             stats = lsm.get_stats()
 

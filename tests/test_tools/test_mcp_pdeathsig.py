@@ -21,6 +21,15 @@ import pytest
 from clio_agent.tools.mcp_config import pdeathsig_wrapped_command
 
 
+def _comm(pid: int) -> str:
+    """The Linux process name (``/proc/<pid>/comm``), or ``""`` once it is gone."""
+    try:
+        with open(f"/proc/{pid}/comm", encoding="utf-8") as handle:
+            return handle.read().strip()
+    except OSError:
+        return ""
+
+
 def _alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -28,7 +37,13 @@ def _alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True
-    return True
+    # A killed child whose adoptive parent has not reaped it yet is a zombie: dead, but
+    # still signalable. On a loaded runner that reap can lag the kill.
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
+            return handle.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except OSError:
+        return False  # gone between the two checks
 
 
 def test_wrap_is_passthrough_off_linux(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -81,6 +96,14 @@ def test_pdeathsig_reaps_child_on_hard_parent_kill(tmp_path) -> None:
         assert pidfile.exists(), "parent never spawned the child"
         child_pid = int(pidfile.read_text())
         assert _alive(child_pid), "child should run while the parent is alive"
+        # The pid is written as soon as ``setpriv`` starts, but setpriv arms the death
+        # signal (prctl) only just before it execs ``sleep``: a kill inside that window
+        # would orphan the child whatever the wrapper does. Waiting for the exec proves
+        # the signal is armed (this failed once on a loaded 4-worker CI runner).
+        deadline = time.time() + 10
+        while _comm(child_pid) != "sleep" and time.time() < deadline:
+            time.sleep(0.02)
+        assert _comm(child_pid) == "sleep", "setpriv never exec'd the wrapped child"
 
         parent.kill()  # SIGKILL the parent: no graceful cleanup can run
         parent.wait(timeout=5)

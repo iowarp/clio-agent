@@ -46,7 +46,6 @@ from __future__ import annotations
 import base64
 import json
 import os
-import socket
 import subprocess
 import sys
 import time
@@ -58,6 +57,7 @@ import pytest
 pytest.importorskip("clio_cte_core_ext")
 
 from clio_agent.arc import storage  # noqa: E402 - after importorskip
+from tests._cte_isolation import reserve_port_block  # noqa: E402 - after importorskip
 
 # ---- private-daemon tunables ------------------------------------------------
 _TOTAL_MB = 30  # working-set size written through the store
@@ -117,41 +117,14 @@ def _require_launcher() -> None:
 
 
 def _reserve_port_block(block: int = 5) -> int:
-    """Return a base port with ``block`` consecutive free ports, below the ephemeral
-    range.
+    """A verified-free contiguous port block (the suite's one implementation).
 
     clio-core binds a CONTIGUOUS cluster of ports around ``networking.port`` (base,
-    base+1, base+3). Picking a base in the ephemeral range risks base+N colliding
-    with a transient connection -- which half-binds the daemon (the base port comes
-    up, so a naive liveness probe passes) yet leaves it unhealthy, so client ops then
-    access-violate. Choosing a base below the ephemeral floor and verifying the whole
-    block binds at once avoids that failure mode.
-
-    Args:
-        block: Number of consecutive ports that must be free.
-
-    Returns:
-        The base port of a verified-free contiguous block.
+    base+1, base+3); a block partly taken by another process half-binds the daemon.
+    See :func:`tests._cte_isolation.reserve_port_block` for the window and the
+    per-xdist-worker slicing that keeps concurrent daemons apart.
     """
-    import random  # noqa: PLC0415
-
-    for _ in range(400):
-        base = random.randint(20000, 40000)
-        socks: list[socket.socket] = []
-        ok = True
-        for off in range(block):
-            sock = socket.socket()
-            try:
-                sock.bind(("0.0.0.0", base + off))
-                socks.append(sock)
-            except OSError:
-                ok = False
-                break
-        for sock in socks:
-            sock.close()
-        if ok:
-            return base
-    raise RuntimeError("could not reserve a free contiguous port block")
+    return reserve_port_block(block)
 
 
 def _expected_needle(run_id: str) -> bytes:

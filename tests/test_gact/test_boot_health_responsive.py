@@ -67,11 +67,18 @@ def slow_clio_core(monkeypatch, tmp_path):
     cfg = tmp_path / "cte.yaml"
     cfg.write_text("networking:\n  port: 21045\n", encoding="utf-8")
     monkeypatch.setattr(storage, "ClioCoreStore", _SlowClioCoreStore)
+    # The server's lifespan teardown releases the runtime client of an app whose ARC is a
+    # ClioCoreStore -- which the fake above now is. The REAL release would deregister this
+    # test process's actual client and, as the last one out, stop the private daemon that
+    # every later cte test in this worker attaches to (the CI hang in test_live_edge
+    # [cte]). The fake store holds no runtime client, so record the release instead.
+    releases: list[tuple[object, ...]] = []
+    monkeypatch.setattr(storage, "release_runtime_client", lambda *a: releases.append(a))
     monkeypatch.setattr(clio_core_file_capacity, "preflight_clio_core_config", lambda *a, **k: None)
     set_config("arc.store", "cte")
     set_config("arc.store_config", str(cfg))
     clio_core_attach.reset_attach_state()
-    yield entered, released
+    yield entered, released, releases
     released.set()
     clio_core_attach.reset_attach_state()
 
@@ -79,7 +86,7 @@ def slow_clio_core(monkeypatch, tmp_path):
 def test_health_answers_within_a_second_while_clio_core_attach_stalls(
     slow_clio_core, monkeypatch, tmp_path: Path
 ) -> None:
-    entered, released = slow_clio_core
+    entered, released, releases = slow_clio_core
     monkeypatch.chdir(tmp_path)  # _process_arc's cwd-relative data dir
     # An LM Studio that is not there: a user-selected lm_studio with nothing listening.
     monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")
@@ -141,6 +148,8 @@ def test_health_answers_within_a_second_while_clio_core_attach_stalls(
         server.should_exit = True
         thread.join(timeout=60.0)
     assert not thread.is_alive(), "server did not shut down"
+    # Shutdown released the (fake) runtime client exactly once, through the lifespan.
+    assert releases == [()]
 
 
 def test_committed_lm_studio_default_is_not_a_provider_selection(monkeypatch) -> None:
