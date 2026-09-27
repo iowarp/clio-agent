@@ -66,5 +66,26 @@ class ProviderApiKeyStore:
 
 
 def stored_api_key(provider_id: str) -> str:
-    """The key a client saved for ``provider_id`` (``""`` when none)."""
-    return ProviderApiKeyStore().load(provider_id)
+    """The key for ``provider_id``: one a client saved, else its managed deployment's.
+
+    A CLIO-managed model server saved as this provider's server ("Use in
+    Models") carries the secret-store id of its deployment key
+    (``credential_ref``); that key is resolved here, so discovery, probes and
+    chat all send it without anyone copying it. ``""`` when there is none.
+    """
+    store = ProviderApiKeyStore()
+    own = store.load(provider_id)
+    if own:
+        return own
+    from clio_agent.gact.local_server_store import (  # noqa: PLC0415
+        LocalServerStoreError,
+        get_server,
+    )
+
+    try:
+        entry = get_server(provider_id)
+    except LocalServerStoreError:
+        # The config file is reported by the routes that edit it; with no
+        # readable entry there is no linked deployment key to send.
+        return ""
+    return store.load(entry.credential_ref) if entry is not None and entry.credential_ref else ""
