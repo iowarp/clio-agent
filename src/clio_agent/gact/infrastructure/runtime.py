@@ -43,6 +43,14 @@ from clio_agent.gact.infrastructure.models import (
 )
 from clio_agent.gact.infrastructure.probe import probe_target
 from clio_agent.gact.infrastructure.resource_ledger import merge as merge_owned
+from clio_agent.gact.infrastructure.server_access import (
+    ServerAccessMixin,
+    forget_key,
+    launch_key,
+    load_key,
+    settle_failed_launch,
+    store_key,
+)
 from clio_agent.gact.infrastructure.service_readiness import observe_service, wait_until_ready
 from clio_agent.gact.infrastructure.store import InfrastructureStore
 from clio_agent.gact.infrastructure.transport import (
@@ -102,7 +110,7 @@ def _tcp_reachable(url: str) -> bool:
         return False
 
 
-class InfrastructureRuntime(ExternalConnectionsMixin):
+class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
     """Own service operations and delegate only byte transport to Desktop."""
 
     def __init__(
@@ -194,6 +202,7 @@ class InfrastructureRuntime(ExternalConnectionsMixin):
             service.connection_strategy = refreshed.connection_strategy
             service.configuration = dict(refreshed.configuration)
             service.owned_resources = list(refreshed.owned_resources)
+            service.access = refreshed.access
             service.effective_parameters = (
                 list(refreshed.effective_parameters) if service.state == "running" else []
             )
@@ -334,6 +343,10 @@ class InfrastructureRuntime(ExternalConnectionsMixin):
         created: list[OwnedResource] = []
         installed: ServiceRecord | None = None
         target_os = "linux"
+        # The deployment key this operation made (install / reinstall), and the
+        # one it replaces: a failure puts the right one back.
+        previous_key = ""
+        made_key = False
         try:
             catalog = await self.catalog(request.target_id)
             target_os = catalog.facts.os
@@ -362,6 +375,9 @@ class InfrastructureRuntime(ExternalConnectionsMixin):
                         ),
                     }
                 )
+            api_key = launch_key(
+                request.target_id, row.service_id, request.action, request.configuration
+            )
             plan = build_driver_plan(
                 service_id=row.service_id,
                 action=request.action,
@@ -370,7 +386,12 @@ class InfrastructureRuntime(ExternalConnectionsMixin):
                 facts=catalog.facts,
                 target=self.store.target(request.target_id),
                 owned=installed.owned_resources if installed else [],
+                api_key=api_key,
             )
+            if api_key and request.action in {"install", "reinstall"}:
+                previous_key = load_key(request.target_id, row.service_id)
+                store_key(request.target_id, row.service_id, api_key)
+                made_key = True
             output: list[str] = []
             for index, spec in enumerate(plan.commands):
                 result = await self._execute(request.target_id, spec)
@@ -437,6 +458,12 @@ class InfrastructureRuntime(ExternalConnectionsMixin):
                 output,
                 owned,
             )
+            if request.action == "uninstall" or (
+                request.action in {"install", "reinstall"} and not api_key
+            ):
+                # Uninstall removes the key; a keyless (shareable) install drops an old one.
+                forget_key(request.target_id, row.service_id)
+            await self._record_access(request.target_id, row.service_id, plan.connection_port)
             self.store.put_operation(
                 row.model_copy(
                     update={
@@ -451,6 +478,14 @@ class InfrastructureRuntime(ExternalConnectionsMixin):
             cleanup = await self._teardown(request.target_id, plan, claim, created, target_os)
             if created and cleanup.startswith("Removed the"):
                 forget_created(self.store, request.target_id, row.service_id, installed)
+            if made_key:
+                settle_failed_launch(
+                    request.target_id,
+                    row.service_id,
+                    previous=previous_key,
+                    launched=any(item.kind == "container" for item in created),
+                    cleaned_up=cleanup.startswith("Removed the"),
+                )
             self.store.put_operation(
                 row.model_copy(
                     update={
@@ -464,6 +499,14 @@ class InfrastructureRuntime(ExternalConnectionsMixin):
             cleanup = await self._teardown(request.target_id, plan, claim, created, target_os)
             if created and cleanup.startswith("Removed the"):
                 forget_created(self.store, request.target_id, row.service_id, installed)
+            if made_key:
+                settle_failed_launch(
+                    request.target_id,
+                    row.service_id,
+                    previous=previous_key,
+                    launched=any(item.kind == "container" for item in created),
+                    cleaned_up=cleanup.startswith("Removed the"),
+                )
             self.store.put_operation(
                 row.model_copy(
                     update={"state": "failed", "progress": f"Failed. {cleanup}", "error": str(exc)}
@@ -561,6 +604,7 @@ class InfrastructureRuntime(ExternalConnectionsMixin):
                 owned_resources=owned
                 if owned is not None
                 else (previous.owned_resources if previous else []),
+                access=previous.access if previous else None,
             )
         )
         if state == "running" and request.action in {"install", "reinstall", "start", "status"}:

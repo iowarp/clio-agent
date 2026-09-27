@@ -17,9 +17,11 @@ A deployment:
    the Ollama model when the engine is Ollama.
 
 Model servers listen on the target's loopback only and are reached through the
-SSH forward (or loopback locally): they have no authentication, and on a
-shared cluster login or compute node a ``0.0.0.0`` listener would serve any
-user on the cluster network.
+SSH forward (or loopback locally): on a shared cluster login or compute node a
+``0.0.0.0`` listener would serve any user on the cluster network. The loopback
+is still shared by every user of that node, so vLLM and llama.cpp also get a
+per-deployment API key (:mod:`clio_agent.gact.infrastructure.server_access`),
+handed over through the environment (:mod:`~clio_agent.gact.infrastructure.secret_env`).
 """
 
 from __future__ import annotations
@@ -73,6 +75,8 @@ from clio_agent.gact.infrastructure.resource_ledger import (
     removal_commands,
     remove_container,
 )
+from clio_agent.gact.infrastructure.secret_env import with_secret_env
+from clio_agent.gact.infrastructure.server_access import KEY_VARIABLES, supports_api_key
 from clio_agent.gact.infrastructure.server_parameters import (
     EngineId,
     compile_parameters,
@@ -293,6 +297,7 @@ def model_runtime_definition(service_id: str, facts: TargetFacts) -> ManagedServ
         variants=variants,
         configuration_fields=fields,
         parameters=engine_parameters(spec.engine),
+        supports_api_key=supports_api_key(service_id),
     )
 
 
@@ -364,8 +369,11 @@ def _launch(
     port: int,
     cache_dir: str,
     windows: bool,
+    keyed: bool = False,
 ) -> ContainerLaunch:
     compiled = compile_parameters(spec.engine, variant.id, configuration)
+    if keyed and spec.engine not in KEY_VARIABLES:
+        raise ValueError(f"{spec.label} has no API key support")
     host = "127.0.0.1" if runtime == "apptainer" else "0.0.0.0"
     env: list[tuple[str, str]] = [("HOME", "/cache")]
     if runtime == "docker" and not windows:
@@ -405,6 +413,8 @@ def _launch(
         cache_dir=cache_dir,
         accelerator=variant.accelerator,
         mounts=tuple(mounts),
+        # Docker/Podman take the key by name; Apptainer reads APPTAINERENV_*.
+        secret_env=(KEY_VARIABLES[spec.engine],) if keyed and runtime != "apptainer" else (),
     )
 
 
@@ -434,6 +444,7 @@ def build_model_runtime_plan(
     facts: TargetFacts,
     target: InfrastructureTarget | None,
     owned: list[OwnedResource] | None = None,
+    api_key: str | None = None,
 ) -> DriverPlan:
     """Compile one lifecycle action for a managed model runtime.
 
@@ -445,6 +456,9 @@ def build_model_runtime_plan(
         facts: The inspected target.
         target: The target record (install location, kind).
         owned: The service's ledger (for uninstall and reinstall).
+        api_key: The deployment's API key (vLLM, llama.cpp), or ``None`` to run
+            with no key. It reaches the server through the launch command's
+            environment, read from stdin -- never an argument.
 
     Raises:
         ValueError: For an invalid configuration or parameter, or (as
@@ -452,10 +466,12 @@ def build_model_runtime_plan(
     """
 
     spec = ENGINES[service_id]
+    if api_key and service_id not in KEY_VARIABLES:
+        raise ValueError(f"{spec.label} has no API key support")
     if service_id == "llama_cpp" and variant_id == "native-windows-cpu":
         compiled = compile_parameters("llama_cpp", "cpu", configuration)
         return native_windows_llama_plan(
-            action, configuration.get("model_path", "").strip(), target, compiled.flags
+            action, configuration.get("model_path", "").strip(), target, compiled.flags, api_key
         )
     variant = next((row for row in spec.variants if row.id == variant_id), None)
     if variant is None:
@@ -492,7 +508,18 @@ def build_model_runtime_plan(
     module = ntpath if windows else posixpath
     cache_dir = module.join(service_dir, "cache")
     images_dir = module.join(service_dir, "images")
-    launch = _launch(spec, variant, runtime, resolved, port, cache_dir, windows)
+    launch = _launch(
+        spec, variant, runtime, resolved, port, cache_dir, windows, keyed=bool(api_key)
+    )
+
+    def keyed(command: CommandSpec) -> CommandSpec:
+        if not api_key:
+            return command
+        variable = KEY_VARIABLES[spec.engine]
+        if runtime == "apptainer":
+            variable = f"APPTAINERENV_{variable}"
+        return with_secret_env(command, variable, api_key, windows=windows)
+
     readiness = Readiness(
         health=_health_command(f"http://127.0.0.1:{port}{spec.health_path}", windows),
         alive=status_command(runtime, name),
@@ -511,7 +538,7 @@ def build_model_runtime_plan(
         command = (
             start_command(runtime, name)
             if runtime != "apptainer"
-            else run_command(runtime, launch, facts.identity, images_dir)
+            else keyed(run_command(runtime, launch, facts.identity, images_dir))
         )
         recorders: dict[int, StepRecorder] = (
             {0: container_recorder(runtime, name, facts.hostname)} if runtime == "apptainer" else {}
@@ -555,7 +582,9 @@ def build_model_runtime_plan(
     )
     recorders[len(commands)] = container_recorder(runtime, name, facts.hostname)
     commands.append(
-        run_command(runtime, launch, facts.identity, images_dir, rootless=runtime_fact.rootless)
+        keyed(
+            run_command(runtime, launch, facts.identity, images_dir, rootless=runtime_fact.rootless)
+        )
     )
     return DriverPlan(
         tuple(commands),

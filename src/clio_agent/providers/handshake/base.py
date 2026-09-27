@@ -472,6 +472,18 @@ class ProviderHandshake(abc.ABC):
         del ctx
         return "live", ""
 
+    def _client_headers(self, ctx: HandshakeContext) -> dict[str, str]:
+        """Headers every request of this handshake carries (none by default).
+
+        A handshake whose server takes a key sends it on EVERY request -- the
+        dialect reads (``/v1/models``, ``/props``) as much as the connectivity
+        probe -- or a server protected by a key answers the probe and then
+        refuses discovery.
+        """
+
+        del ctx
+        return {}
+
     async def _open_client(self, ctx: HandshakeContext) -> Any:
         import httpx  # noqa: PLC0415
 
@@ -481,7 +493,7 @@ class ProviderHandshake(abc.ABC):
             write=self.timeout_connect,
             pool=self.timeout_connect,
         )
-        return httpx.AsyncClient(timeout=timeout)
+        return httpx.AsyncClient(timeout=timeout, headers=self._client_headers(ctx))
 
     async def _close_client(self, client: Any) -> None:
         try:
