@@ -406,7 +406,7 @@ def _agent_streaming_unsupported_reason(agent: Any) -> str:
 
 def _config_is_reasoning_model(provider_config: Any) -> bool:
     """Whether a provider config is a reasoning model (handshake-derived
-    ``is_reasoning`` -- the effective capabilities' thinking mechanism is known,
+    ``is_reasoning`` -- the model has a thinking mechanism other than ``none``,
     model-capabilities brief 5.5). Used to keep reasoning models off streaming
     paths that lose the reasoning_content channel."""
 

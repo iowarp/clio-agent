@@ -137,6 +137,12 @@ class ThinkingDecision:
     def known(self) -> bool:
         return self.spec is not None
 
+    @property
+    def reasoning(self) -> bool:
+        """Whether the model thinks at all: a known spec of mechanism ``none`` does not."""
+
+        return self.spec is not None and self.spec.mechanism != "none"
+
 
 @dataclass(frozen=True)
 class EffectiveCapabilities:

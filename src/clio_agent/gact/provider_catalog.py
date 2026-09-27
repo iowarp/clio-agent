@@ -189,7 +189,9 @@ def _reasoning_wire_block(
             default, default_source = mapped, "provider"
 
     block: dict[str, Any] = {
-        "supported": bool(levels) or effective_thinking.known,
+        # A known spec is not a reasoning model: mechanism "none" (a template
+        # scan that found no thinking) must read as unsupported.
+        "supported": bool(levels) or spec.mechanism == "always_on",
         "parameter": effective_thinking.control or "",
         "levels": levels,
         "default": default,

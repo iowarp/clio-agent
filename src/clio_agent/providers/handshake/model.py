@@ -269,7 +269,7 @@ class HandshakeReport:
                 row["context_window"] = effective.context.value
             if effective.tools.value:
                 row["native_tool_calling"] = True
-            if effective.thinking.known:
+            if effective.thinking.reasoning:
                 row["is_reasoning"] = True
             quantization = m.raw.get("quantization")
             if quantization:
@@ -328,7 +328,7 @@ class HandshakeReport:
                     {
                         "id": m.id,
                         "context_window": effective.context.value,
-                        "is_reasoning": effective.thinking.known,
+                        "is_reasoning": effective.thinking.reasoning,
                         "native_tool_calling": bool(effective.tools.value),
                         "context_source": effective.context.decided_by,
                     }
