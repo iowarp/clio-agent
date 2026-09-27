@@ -208,7 +208,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_PROVENANCE_JSONL_PATH` | `provenance.agentic.jsonl.path` | str | _(unset)_ | `src/clio_agent/gact/provenance/factory.py` |
 | `CLIO_PROVENANCE_KVNORM` | `provenance.kvnorm` | bool | `false` | `src/clio_agent/provenance_config.py` |
 | `CLIO_PROVENANCE_PROVIDERS` | `provenance.agentic.providers` | list | `jsonl` | `src/clio_agent/provenance_config.py` |
-| `CLIO_PROVENANCE_QUERY_DEFAULT` | `provenance.agentic.query_default` | str | `native` | `src/clio_agent/gact/routes/provenance.py` |
+| `CLIO_PROVENANCE_QUERY_DEFAULT` | `provenance.agentic.query_default` | str | `native` | `src/clio_agent/gact/provenance/handoff.py` |
 | `CLIO_PROVENANCE_QUEUE_SIZE` | `provenance.agentic.queue_size` | int | `4096` | `src/clio_agent/gact/provenance/factory.py` |
 | `CLIO_PROVIDER_COMPONENT_INDEX_URL` | `providers.component_updates.index_url` | str | `https://pypi.org/pypi` | `src/clio_agent/providers/components/pypi.py` |
 | `CLIO_PROVIDER_COMPONENT_TTL_S` | `providers.component_updates.ttl_s` | float | `3600.0` | `src/clio_agent/providers/components/pypi.py` |

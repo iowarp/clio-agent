@@ -937,3 +937,30 @@ def test_v3_normalizes_question_permission_and_child_agent_events() -> None:
         "task_path": ["task_1"],
         "child_session_id": "sess_child",
     }
+
+
+def test_standing_watcher_between_checks_projects_as_running_not_interrupted() -> None:
+    """A SPOTTER watcher is RUNNING in the registry with live state ``waiting``.
+
+    It is armed and alive between checks; projecting the unknown live state to
+    ``interrupted`` told every child-agent surface the watcher had died.
+    """
+
+    child = event_to_v3(
+        Event(
+            type="agent.task.updated",
+            session_id="sess_parent",
+            payload={
+                "task_id": "task_watch",
+                "parent_session_id": "sess_parent",
+                "child_session_id": "sess_watch",
+                "agent_ref": {"expert_id": "spotter_watcher"},
+                "run_label": "SPOTTER watcher",
+                "status": "running",
+                "live_state": "waiting",
+            },
+        )
+    )
+
+    assert child["type"] == "subagent.upserted"
+    assert child["payload"]["state"] == "running"
