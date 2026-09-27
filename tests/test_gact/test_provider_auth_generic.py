@@ -285,7 +285,11 @@ class TestArgonne:
         from clio_agent.providers import argonne_auth
 
         monkeypatch.setattr(
-            argonne_auth, "flow_is_pending", lambda flow_id: flow_id == "still_pending"
+            argonne_auth,
+            "flow_status",
+            lambda flow_id: ("pending", "")
+            if flow_id == "still_pending"
+            else ("failed", argonne_auth.FLOW_NOT_FOUND_REASON),
         )
         preset = _preset(provider="argonne")
         pending = await handle_auth_action(
@@ -303,7 +307,9 @@ class TestArgonne:
             app=_FakeApp(),
             presets=[preset],
         )
-        assert done["state"] == "complete"
+        # An unknown flow is never reported as a finished sign-in.
+        assert done["state"] == "failed"
+        assert done["reason"] == argonne_auth.FLOW_NOT_FOUND_REASON
 
     async def test_logout_revokes_and_reports_signed_out(
         self, monkeypatch: pytest.MonkeyPatch
