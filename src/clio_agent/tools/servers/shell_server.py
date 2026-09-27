@@ -26,12 +26,15 @@ from clio_agent import conf
 from clio_agent.runtime import trace
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
 from clio_agent.tools.servers.shell_output import (
-    SPILL_DIRNAME,
     StreamCapture,
     compose_output_fields,
-    new_call_id,
     read_process_stream,
     shell_result_char_budget,
+)
+from clio_agent.tools.servers.shell_spill_store import (
+    SPILL_DIRNAME,
+    active_session_id,
+    new_call_id,
     spill_directory,
 )
 
@@ -338,8 +341,9 @@ def _limits_text(limits: ShellLimits) -> str:
         f"max_output_bytes (default {limits.default_output_bytes}, at most "
         f"{limits.max_output_bytes}) and the whole result stays under "
         f"{limits.result_chars} characters. Output beyond that is not lost: the complete "
-        f"stream is saved to .clio/{SPILL_DIRNAME}/<id>.stdout.txt (or .stderr.txt) in the "
-        "workspace; `stdout` then holds a head excerpt cut on line boundaries and "
+        f"stream is saved under .clio/{SPILL_DIRNAME}/ in the workspace (one "
+        "<id>.stdout.txt / .stderr.txt file per stream, kept until the session is "
+        "deleted); `stdout` then holds a head excerpt cut on line boundaries and "
         "`stdout_spill` gives the file path, total_bytes, total_lines, and a tail excerpt. "
         "Read or grep that file instead of re-running the command."
     )
@@ -523,12 +527,13 @@ async def bash(
     assert process.stdout is not None
     assert process.stderr is not None
     spill_root = _spill_root(safe_cwd)
+    spill_dir = spill_directory(spill_root, session_id=active_session_id())
     call_id = new_call_id()
     captures = [
         StreamCapture(
             name,
             inline_limit=max_output_bytes,
-            spill_path=spill_directory(spill_root) / f"{call_id}.{name}.txt",
+            spill_path=spill_dir / f"{call_id}.{name}.txt",
         )
         for name in ("stdout", "stderr")
     ]

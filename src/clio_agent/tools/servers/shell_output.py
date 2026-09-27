@@ -14,7 +14,8 @@ This module owns the replacement:
 * :class:`StreamCapture` reads one process stream with bounded memory (a head
   buffer and a tail ring, each ``inline_limit`` bytes) and, the moment the stream
   outgrows ``inline_limit``, writes the COMPLETE stream (raw bytes) to
-  ``<workspace>/.clio/tool-output/<call-id>.<stream>.txt``.
+  ``<workspace>/.clio/tool-output/<session>/<call-id>.<stream>.txt``
+  (location + retention: :mod:`clio_agent.tools.servers.shell_spill_store`).
 * :func:`compose_output_fields` sizes the result so its encoded JSON fits
   :func:`shell_result_char_budget` (the tighter of the two downstream bounds):
   neither bounder then rewraps it and ``stdout`` stays a real string. A stream
@@ -35,15 +36,12 @@ import codecs
 import io
 import json
 import logging
-import time
-import uuid
 from collections.abc import Mapping
 from pathlib import Path
 from typing import IO, Any
 
 from fastmcp import Context
 
-from clio_agent import paths
 from clio_agent.platform_paths import win_extended_path
 from clio_agent.runtime import trace
 from clio_agent.tools.mcp_result_projection import (
@@ -53,28 +51,13 @@ from clio_agent.tools.mcp_result_projection import (
 
 logger = logging.getLogger(__name__)
 
-#: Directory under the workspace ``.clio`` root that holds spilled tool output.
-SPILL_DIRNAME = "tool-output"
 #: Typed reason stamped on (and logged for) every stream written to a spill file.
 SPILLED_REASON = "shell_output_spilled"
 #: Typed reason when the spill file could not be created or written.
 SPILL_FAILED_REASON = "shell_output_spill_failed"
 #: Typed reason when the command echo is dropped so the output can fit.
 COMMAND_ECHO_OMITTED_REASON = "shell_command_echo_oversize"
-
 _READ_CHUNK_BYTES = 4096
-
-
-def spill_directory(root: str | Path) -> Path:
-    """Return ``<root>/.clio/tool-output`` — where oversize shell output is spilled."""
-
-    return paths.workspace_clio(root) / SPILL_DIRNAME
-
-
-def new_call_id() -> str:
-    """Return a sortable, collision-safe id for one shell call's spill files."""
-
-    return f"sh_{time.strftime('%Y%m%dT%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
 
 def shell_result_char_budget() -> int:
@@ -517,12 +500,9 @@ def compose_output_fields(
 __all__ = [
     "COMMAND_ECHO_OMITTED_REASON",
     "SPILLED_REASON",
-    "SPILL_DIRNAME",
     "SPILL_FAILED_REASON",
     "StreamCapture",
     "compose_output_fields",
-    "new_call_id",
     "read_process_stream",
     "shell_result_char_budget",
-    "spill_directory",
 ]

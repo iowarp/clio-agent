@@ -32,7 +32,6 @@ from clio_agent.tools.servers.shell_output import (
     SPILLED_REASON,
     StreamCapture,
     shell_result_char_budget,
-    spill_directory,
 )
 from clio_agent.tools.servers.shell_server import (
     ShellEnvFacts,
@@ -41,6 +40,7 @@ from clio_agent.tools.servers.shell_server import (
     resolve_shell_limits,
     shell_server,
 )
+from clio_agent.tools.servers.shell_spill_store import spill_directory
 from tests._config_layer import set_config
 
 
@@ -117,6 +117,26 @@ async def test_big_output_spills_in_full_with_head_tail_and_totals(workspace: Pa
     # The result fits both downstream bounds, so nothing rewraps it.
     assert len(json.dumps(data)) <= shell_result_char_budget()
     assert "stderr_spill" not in data
+
+
+@pytest.mark.asyncio
+async def test_spill_is_filed_under_the_active_session(workspace: Path) -> None:
+    """Retention: a session's spills live in its own folder so deleting the
+    session can delete them (no TTL)."""
+
+    from clio_agent.gact import context as _ctx
+
+    script = workspace / "big.py"
+    script.write_text("for i in range(5000):\n    print(f'r{i:05d}')\n", encoding="utf-8")
+    token = _ctx.set_tool_session_id("sess_owner1")
+    try:
+        data = await _run(workspace, {"command": _python(script), "timeout_s": 60})
+    finally:
+        _ctx.reset(token)
+
+    path = Path(data["stdout_spill"]["path"])
+    assert path.parent == spill_directory(workspace, session_id="sess_owner1").resolve()
+    assert data["stdout_spill"]["relative_path"].startswith(".clio/tool-output/sess_owner1/")
 
 
 @pytest.mark.asyncio
