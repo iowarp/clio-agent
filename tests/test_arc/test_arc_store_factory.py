@@ -455,6 +455,13 @@ def test_ensure_runtime_registers_atexit_release(monkeypatch, tmp_path):
     monkeypatch.setattr(storage, "_ensure_runtime_daemon", lambda _core, cfg, _lvl: cfg)
     monkeypatch.setattr(storage.time, "sleep", lambda *_a, **_k: None)
     monkeypatch.setattr(storage.ClioCoreStore, "_initialized", False)
+    from clio_agent.arc import clio_core_native_preflight as preflight  # noqa: PLC0415
+
+    monkeypatch.setattr(  # the child would load the real native module
+        preflight,
+        "preflight_native_client",
+        lambda **_kw: preflight.NativePreflightResult(returned=True, exit_code=0, output=""),
+    )
 
     registered: list[tuple] = []
     monkeypatch.setattr(storage.atexit, "register", lambda fn, *a: registered.append((fn, a)))

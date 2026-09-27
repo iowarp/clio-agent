@@ -1,0 +1,127 @@
+"""Unit tests for the native-startup preflight (the child that may exit instead of us)."""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Mapping
+from types import SimpleNamespace
+
+import pytest
+
+from clio_agent.arc import clio_core_attach
+from clio_agent.arc import clio_core_native_preflight as preflight
+from clio_agent.arc.clio_core_attach import ClioCoreAttachError
+from clio_agent.arc.init_degradation import (
+    CLIO_CORE_CLIENT_ATTACH_TIMEOUT,
+    CLIO_CORE_NATIVE_CLIENT_EXIT,
+    classify_init_failure,
+)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_removed_record():
+    preflight.reset_removed_embedded_runtime_env()
+    yield
+    preflight.reset_removed_embedded_runtime_env()
+
+
+def _runner(code: int | None, output: str):
+    seen: dict[str, object] = {}
+
+    def run(argv: list[str], env: Mapping[str, str], timeout_s: float) -> tuple[int | None, str]:
+        seen.update(argv=argv, env=dict(env), timeout_s=timeout_s)
+        return code, output
+
+    return run, seen
+
+
+def test_a_child_that_reached_the_marker_returned() -> None:
+    run, seen = _runner(0, "noise\nCLIO_NATIVE_PREFLIGHT_RETURNED\n")
+    result = preflight.preflight_native_client(config_path="d.yaml", timeout_s=9, runner=run)
+    assert result.returned is True
+    assert seen["env"]["CLIO_SERVER_CONF"] == "d.yaml"
+    assert seen["env"]["CLIO_WAIT_SERVER"] == "0"  # the child never contacts the daemon
+    assert seen["timeout_s"] == 9
+
+
+@pytest.mark.parametrize(("code", "output"), [(1, "FATAL LoadFromFile bad conversion"), (0, "")])
+def test_a_child_that_died_or_never_reached_the_marker_did_not_return(
+    code: int, output: str
+) -> None:
+    run, _ = _runner(code, output)
+    result = preflight.preflight_native_client(config_path="d.yaml", timeout_s=9, runner=run)
+    assert result.returned is False
+    assert result.exit_code == code
+    assert result.output == output
+
+
+def test_the_preflight_bound_never_drops_below_the_default_stall() -> None:
+    assert preflight.preflight_window_s(3.0) == 30.0
+    assert preflight.preflight_window_s(45.0) == 45.0
+
+
+def test_an_embedded_runtime_variable_is_removed_and_recorded() -> None:
+    environ = {"CLIO_WITH_RUNTIME": "1", "OTHER": "x"}
+    assert preflight.remove_embedded_runtime_env(environ) == {"CLIO_WITH_RUNTIME": "1"}
+    assert environ == {"OTHER": "x"}
+    assert preflight.removed_embedded_runtime_env() == {"CLIO_WITH_RUNTIME": "1"}
+    assert preflight.remove_embedded_runtime_env(environ) == {}
+
+
+def _cte(calls: list[str]) -> SimpleNamespace:
+    def init(mode: object, flag: bool) -> bool:
+        calls.append("clio_init")
+        return True
+
+    return SimpleNamespace(clio_init=init, RuntimeMode=SimpleNamespace(kClient="k"))
+
+
+@pytest.mark.parametrize(
+    ("code", "reason", "phrase"),
+    [
+        (1, CLIO_CORE_NATIVE_CLIENT_EXIT, "ended its process during startup (exit code 1)"),
+        (None, CLIO_CORE_CLIENT_ATTACH_TIMEOUT, "did not finish in its child process"),
+    ],
+)
+def test_a_preflight_that_did_not_return_degrades_typed_and_never_attaches(
+    monkeypatch: pytest.MonkeyPatch, code: int | None, reason: str, phrase: str
+) -> None:
+    monkeypatch.setattr(
+        preflight,
+        "preflight_native_client",
+        lambda **_kw: preflight.NativePreflightResult(
+            returned=False, exit_code=code, output="FATAL x"
+        ),
+    )
+    calls: list[str] = []
+    deregistered: list[bool] = []
+    with pytest.raises(ClioCoreAttachError) as info:
+        clio_core_attach.attach_native_client(
+            _cte(calls), config_path="c.yaml", port=1, on_failure=lambda: deregistered.append(True)
+        )
+    assert classify_init_failure(info.value) == reason
+    assert info.value.stage == "native_preflight"
+    assert phrase in str(info.value)
+    assert "FATAL x" in str(info.value)
+    assert calls == []  # the in-process native client never ran
+    assert deregistered == [True]
+
+
+def test_the_attach_removes_an_inherited_embedded_runtime_variable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CLIO_WITH_RUNTIME", "1")
+    seen: list[str | None] = []
+
+    def _preflight(**_kw: object) -> preflight.NativePreflightResult:
+        seen.append(os.environ.get("CLIO_WITH_RUNTIME"))
+        return preflight.NativePreflightResult(returned=True, exit_code=0, output="")
+
+    monkeypatch.setattr(preflight, "preflight_native_client", _preflight)
+    calls: list[str] = []
+    clio_core_attach.attach_native_client(
+        _cte(calls), config_path="c.yaml", port=1, on_failure=lambda: None
+    )
+    assert seen == [None]  # removed before the child (and the real attach) ran
+    assert calls == ["clio_init"]
+    assert preflight.removed_embedded_runtime_env() == {"CLIO_WITH_RUNTIME": "1"}

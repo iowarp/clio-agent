@@ -43,6 +43,19 @@ def _fresh_attach_state():
     reset_arc_init_degradation()
 
 
+@pytest.fixture(autouse=True)
+def _native_preflight_returns(monkeypatch):
+    """These tests fake the native module in-process; the preflight child would load the
+    real one, so it is stubbed as a startup that returned (its own tests are separate)."""
+    from clio_agent.arc import clio_core_native_preflight as preflight  # noqa: PLC0415
+
+    monkeypatch.setattr(
+        preflight,
+        "preflight_native_client",
+        lambda **_kw: preflight.NativePreflightResult(returned=True, exit_code=0, output=""),
+    )
+
+
 def _cfg(tmp_path: Path, port: int) -> str:
     path = tmp_path / "cte.yaml"
     path.write_text(f"networking:\n  port: {port}\nruntime:\n  num_threads: 4\n", encoding="utf-8")
