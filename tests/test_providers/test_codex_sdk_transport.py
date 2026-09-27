@@ -574,7 +574,6 @@ def test_release_idle_runtime_refuses_while_a_turn_holds_it() -> None:
 def test_catalog_row_reports_the_client_the_sdk_half_runs(monkeypatch: pytest.MonkeyPatch) -> None:
     """The provider row carries the typed ``client`` fact (installed vs bundled + version),
     and an explicit check re-selects so a newly installed CLI shows up."""
-    from clio_agent.gact import provider_catalog
     from clio_agent.providers.components import client_binary
 
     resets: list[bool] = []
@@ -590,7 +589,7 @@ def test_catalog_row_reports_the_client_the_sdk_half_runs(monkeypatch: pytest.Mo
         if kind == "codex"
         else None,
     )
-    fact = provider_catalog._client_fact("codex", refresh=True)
+    fact = client_binary.provider_client_fact("codex", refresh=True)
     assert fact is not None
     assert (fact["source"], fact["version"], fact["bundled_version"]) == (
         "installed",
@@ -598,6 +597,6 @@ def test_catalog_row_reports_the_client_the_sdk_half_runs(monkeypatch: pytest.Mo
         "0.147.0",
     )
     assert resets == [True]
-    provider_catalog._client_fact("codex", refresh=False)
+    client_binary.provider_client_fact("codex", refresh=False)
     assert resets == [True]
-    assert provider_catalog._client_fact("openai", refresh=False) is None
+    assert client_binary.provider_client_fact("openai", refresh=False) is None

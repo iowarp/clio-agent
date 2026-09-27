@@ -699,20 +699,6 @@ def _combine_transport_health(transports: list[dict[str, Any]]) -> tuple[str, st
     return "unavailable", "no codex transport reported a health state"
 
 
-def _client_fact(provider_kind: str, *, refresh: bool) -> dict[str, Any] | None:
-    """The CLI binary a provider's SDK transport runs (installed vs bundled + version).
-
-    An explicit check (``refresh``) re-selects, so a CLI the user installed or
-    upgraded since the last check is picked up without a restart.
-    """
-    from clio_agent.providers.components import client_binary  # noqa: PLC0415
-
-    if refresh:
-        client_binary.reset_client_cache()
-    selection = client_binary.provider_client(provider_kind)
-    return selection.to_wire() if selection is not None else None
-
-
 async def discover_provider(preset: LMProviderPreset, *, refresh: bool = False) -> dict[str, Any]:
     """Run one passive handshake and return a normalized provider record."""
 
@@ -770,7 +756,13 @@ async def discover_provider(preset: LMProviderPreset, *, refresh: bool = False) 
     if preset.provider in _CLI_CATALOG_KINDS:
         # Which CLI the SDK transport runs, as a typed fact on the row (for
         # Codex: the SDK half's binary; the Direct half runs none).
-        payload["client"] = await asyncio.to_thread(_client_fact, preset.provider, refresh=refresh)
+        from clio_agent.providers.components.client_binary import (  # noqa: PLC0415
+            provider_client_fact,
+        )
+
+        payload["client"] = await asyncio.to_thread(
+            provider_client_fact, preset.provider, refresh=refresh
+        )
     if preset.provider == "codex":
         # Two transports of the SAME catalog entry (S1b): the direct/OAuth
         # transport this pipeline already evidenced above, and the restored

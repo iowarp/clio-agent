@@ -414,6 +414,18 @@ def provider_client(provider_kind: str) -> ClientSelection | None:
     return None
 
 
+def provider_client_fact(provider_kind: str, *, refresh: bool) -> dict[str, Any] | None:
+    """The provider row's ``client`` fact; an explicit check (``refresh``) re-selects first.
+
+    Re-selecting on an explicit check picks up a CLI the user installed or
+    upgraded since the last check, without a restart.
+    """
+    if refresh:
+        reset_client_cache()
+    selection = provider_client(provider_kind)
+    return selection.to_wire() if selection is not None else None
+
+
 __all__ = [
     "ClientBinary",
     "ClientSelection",
@@ -426,6 +438,7 @@ __all__ = [
     "parse_version",
     "probe_version",
     "provider_client",
+    "provider_client_fact",
     "reset_client_cache",
     "version_key",
 ]
