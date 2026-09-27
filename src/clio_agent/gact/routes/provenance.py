@@ -99,6 +99,11 @@ def _native_events(
 def register_provenance_routes(app: FastAPI, deps: "GactDeps") -> None:
     """Register provider discovery and normalized execution queries."""
     del deps
+    # The attention view reads provenance (lm.call + Flowcept attention records);
+    # its routes are owned by gact/attention and mounted alongside these.
+    from clio_agent.gact.attention.routes import register_attention_routes  # noqa: PLC0415
+
+    register_attention_routes(app)
 
     @app.get("/v1/provenance/providers")
     async def list_provenance_providers() -> dict[str, Any]:
