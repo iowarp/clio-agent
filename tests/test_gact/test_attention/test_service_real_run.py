@@ -226,3 +226,21 @@ def test_declared_ranges_not_in_a_fixed_capture_are_range_alignment_mismatch() -
     with pytest.raises(AttentionUnavailable) as exc:
         _explain(calls=[_call(declaration=_declared_setup())])
     assert exc.value.reason == "range_alignment_mismatch"
+
+
+def test_rendered_selection_text_is_located_in_the_source() -> None:
+    """The UI sends only the rendered text; the server finds its part and span."""
+    result = _explain(
+        request=SelectionRequest(
+            message_id="msg_asst_1", text="the confirmed column names (time, east, north, up)"
+        )
+    )
+    assert result["selection"]["part_id"] == "call_sel"
+    assert result["selection"]["field"] == "thought"
+    assert result["selection"]["text"] == "the confirmed column names (time, east, north, up)"
+
+
+def test_rendered_selection_not_in_the_message_is_typed() -> None:
+    with pytest.raises(AttentionUnavailable) as exc:
+        _explain(request=SelectionRequest(message_id="msg_asst_1", text="never generated"))
+    assert exc.value.reason == "selection_not_located"

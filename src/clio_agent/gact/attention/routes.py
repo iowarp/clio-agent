@@ -4,7 +4,7 @@
     Whether "Understand attention" can run for this message, with the typed
     reason when not (the UI disables the action and shows the reason).
 ``POST /v1/sessions/{sid}/messages/{mid}/attention``
-    Body ``{part_id?, field?, start?, end?}`` -> the attention payload
+    Body ``{part_id?, field?, start?, end?, text?}`` -> the attention payload
     (:func:`.service.explain_selection`) or ``{available: false, reason, ...}``.
 
 Both answer 200 with a typed body; an unavailable view is a result, not an
@@ -39,6 +39,8 @@ class AttentionRequestBody(BaseModel):
     field: str = "text"
     start: int | None = None
     end: int | None = None
+    #: Rendered text the person selected (located server-side when no span is given).
+    text: str = ""
 
 
 def _backend(app: FastAPI) -> Any:
@@ -143,6 +145,7 @@ def register_attention_routes(app: FastAPI) -> None:
                     field=body.field,
                     start=body.start,
                     end=body.end,
+                    text=body.text,
                 ),
             )
 

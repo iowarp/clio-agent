@@ -19,7 +19,7 @@ Pipeline -- every step either succeeds or raises a typed reason:
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
@@ -29,6 +29,7 @@ from clio_agent.gact.attention.chat_render import ChatRenderer, Encoded
 from clio_agent.gact.attention.lm_calls import LmCall, turn_calls
 from clio_agent.gact.attention.ranges import DeclaredRange, declare_ranges
 from clio_agent.gact.attention.reasons import AttentionUnavailable
+from clio_agent.gact.attention.rendered import find_rendered
 from clio_agent.gact.attention.selection import locate_output, output_steps
 from clio_agent.gact.attention.store import AttentionStore
 from clio_agent.gact.attention.transcript_map import (
@@ -63,6 +64,9 @@ class SelectionRequest:
     field: str = "text"
     start: int | None = None
     end: int | None = None
+    #: The rendered text the person selected; located in the message's parts when
+    #: no explicit span is given (:mod:`.rendered`).
+    text: str = ""
 
 
 def _selected_text(messages: list[Any], request: SelectionRequest) -> tuple[Any, int, Any, str]:
@@ -81,6 +85,28 @@ def _selected_text(messages: list[Any], request: SelectionRequest) -> tuple[Any,
         if text:
             return message, index, part, text
     raise AttentionUnavailable("message_not_generated", "no generated text in that part")
+
+
+def _resolve_rendered(messages: list[Any], request: SelectionRequest) -> SelectionRequest:
+    """Turn a rendered-text selection into a part/field/span over the source text."""
+    if not request.text or request.start is not None or request.end is not None:
+        return request
+    message = next((m for m in messages if m.id == request.message_id), None)
+    if message is None:
+        raise AttentionUnavailable("message_not_found", request.message_id)
+    # Answer text before tool-call thoughts, latest part first: the transcript
+    # selection surface is the answer, and a later part repeating earlier words
+    # is the one on screen.
+    parts = [p for p in reversed(message.parts) if not request.part_id or p.id == request.part_id]
+    for field in ("text", "thought"):
+        for part in parts:
+            source = part.text if field == "text" else part.thought
+            span = find_rendered(source or "", request.text)
+            if span is not None:
+                return replace(request, part_id=part.id, field=field, start=span[0], end=span[1])
+    raise AttentionUnavailable(
+        "selection_not_located", "the selected text is not in this message's generated text"
+    )
 
 
 def _ranges_from_declaration(declaration: dict[str, Any]) -> list[DeclaredRange]:
@@ -120,6 +146,7 @@ def explain_selection(
     request: SelectionRequest,
 ) -> dict[str, Any]:
     """The full attention payload for one selection (see module docstring)."""
+    request = _resolve_rendered(messages, request)
     message, index, part, part_text = _selected_text(messages, request)
     start = 0 if request.start is None else max(0, request.start)
     end = len(part_text) if request.end is None else min(len(part_text), request.end)
