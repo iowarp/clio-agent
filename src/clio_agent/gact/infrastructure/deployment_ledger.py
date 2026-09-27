@@ -51,6 +51,33 @@ def persist_created(
     store.put_service(record.model_copy(update={"owned_resources": merge_owned(base, created)}))
 
 
+def hand_over_parents(
+    store: InfrastructureStore, target_id: str, uninstalled: ServiceRecord
+) -> None:
+    """Give the parent directories an uninstalled deployment created to the ones left.
+
+    Deployments on one host share parents (``.../clio/services/<host>``): the
+    first deploy creates and records them, later ones find them existing and
+    rightly do not. Removal of a parent is only-if-empty, so the first to
+    uninstall cannot remove a parent another deployment still uses -- and
+    without a hand-over its ledger row vanished with its record, and the
+    parents outlived every deployment (seen live on ares). The remaining
+    deployments on the target now own them, so the last one out removes them.
+    """
+
+    parents = [row for row in uninstalled.owned_resources if row.kind == "parent_directory"]
+    if not parents:
+        return
+    for record in store.services():
+        if record.target_id != target_id or record.service_id == uninstalled.service_id:
+            continue
+        store.update_service(
+            target_id,
+            record.service_id,
+            owned_resources=merge_owned(record.owned_resources, parents),
+        )
+
+
 def forget_created(
     store: InfrastructureStore,
     target_id: str,
