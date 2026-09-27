@@ -18,6 +18,7 @@ from clio_agent.gact.modality_evidence import DOCUMENTED_MODALITY_REASONS
 from clio_agent.gact.types import LMProviderPreset
 from clio_agent.providers import model_discovery
 from clio_agent.providers.capabilities import invalidation
+from clio_agent.providers.capabilities.accepted_parameters import accepted_parameters_for
 from clio_agent.providers.capabilities.accessor import get_effective_capabilities
 from clio_agent.providers.capabilities.facts_wire import model_facts
 from clio_agent.providers.capabilities.records import (
@@ -316,6 +317,11 @@ def model_catalog_row(
         # never a second, provider-name-keyed mapping table.
         "reasoning": _reasoning_wire_block(
             effective.thinking, profile, listed_off_only=preset.provider == "codex"
+        ),
+        # ONLY the request settings this model accepts, each with its evidence
+        # (clio_schemas.AcceptedParameter) -- the same set the request builder sends.
+        "accepted_parameters": accepted_parameters_for(
+            preset.id, preset.provider, report.provider_id, report.api_base, profile.id, effective
         ),
         "native_tool_calling": bool(effective.tools.value),
         "context_window": effective.context.value,

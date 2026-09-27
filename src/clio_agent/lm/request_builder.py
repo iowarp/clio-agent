@@ -11,8 +11,9 @@ inputs are:
   -- the P4a/P4b model+endpoint+deployment combination), and
 * the endpoint's dialect (:mod:`clio_agent.providers.capabilities.endpoint`),
   and
-* the user's own settings (``config.temperature``/``top_p``/``top_k``/
-  ``min_p``/``presence_penalty``/``thinking_level``/``thinking_budget``/
+* the user's own settings (``config.temperature`` and the rest of the
+  sampling surface named by :data:`~clio_agent.providers.capabilities.
+  accepted_parameters.TUNABLES`, ``thinking_level``/``thinking_budget``/
   ``provider_options``).
 
 No per-model knowledge lives here -- only the generic "gate on the effective
@@ -32,17 +33,25 @@ sending a stray ``0.0`` (verified: ``dspy.LM.__init__``'s own
 :func:`clio_agent.providers.capabilities.endpoint.resolve_accepted_params` is
 a pure, network-free lookup (LiteLLM's own ``get_supported_openai_params`` +
 the dialect supplement table) -- it needs no prior handshake to answer
-correctly for the dialects it knows. This module always computes that base
-answer FIRST, then prefers the richer, handshake-derived
+correctly for the dialects it knows. The richer, handshake-derived
 ``EffectiveCapabilities.accepted_params`` (which additionally intersects
-per-route ``route_params`` and subtracts a model's ``forbidden_params``) when
-a handshake has actually run and populated one. This is deliberate: the CLI
-boot path (``setup_dspy`` -> ``load_config_from_env`` -> ``create_lm``, RULE 2's
-smoke test) and any bare ``LMProviderConfig()`` + ``create_lm()`` construction
-(most unit tests) never run a handshake at all, and "fail closed" must never
-mean "an operator's own locally-configured backend goes silently mute before
-its first handshake" -- see the design note under :data:`_SDK_ONLY_DIALECTS`
-for the one place this still needs a further, deliberate exemption.
+per-route ``route_params`` and subtracts a model's ``forbidden_params``) wins
+when a handshake has actually run and populated one. This is deliberate: the
+CLI boot path (``setup_dspy`` -> ``load_config_from_env`` -> ``create_lm``,
+RULE 2's smoke test) and any bare ``LMProviderConfig()`` + ``create_lm()``
+construction (most unit tests) never run a handshake at all, and "fail closed"
+must never mean "an operator's own locally-configured backend goes silently
+mute before its first handshake". The rule lives in ONE place,
+:func:`~clio_agent.providers.capabilities.accepted_parameters.accepted_param_set`,
+which also feeds the catalog's ``accepted_parameters`` -- so the settings a
+person is offered are exactly the settings this module sends.
+
+**A saved setting the model does not accept is never sent**, and each such
+drop is logged with a typed reason (``response_setting_not_sent``). The CLI/SDK
+transports (codex, claude_code) accept none: their SDK options carry no
+sampling field at all (claude-agent-sdk ``ClaudeAgentOptions``; openai-codex
+``TurnStartParams``/the Responses body clio builds), so nothing is sent there
+rather than being handed to a transport that silently ignores it.
 
 **Thinking is ONE mapping, covering every dialect** (item 5, dialect table).
 :func:`clio_agent.lm.dialect_wire.thinking_wire` builds the on/off/level
@@ -72,6 +81,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from clio_agent.lm import dialect_wire
+from clio_agent.providers.capabilities import accepted_parameters
 from clio_agent.providers.capabilities import endpoint as capability_endpoint
 from clio_agent.providers.capabilities.accessor import get_effective_capabilities
 from clio_agent.providers.capabilities.combine import EffectiveCapabilities
@@ -81,32 +91,25 @@ if TYPE_CHECKING:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 
-#: The two CLI/SDK transports LiteLLM has no real provider translator for at
-#: all (``providers.codex_litellm``/``providers.claude_code_litellm`` own
-#: ``CustomLLM`` classes that read a small, fixed set of ``optional_params``
-#: directly -- see ``lm/factory.py``'s ``_CUSTOM_TRANSPORT_PREFIXES``). Their
-#: sampling surface is exempted from the generic accepted-parameter gate:
-#: :func:`clio_agent.providers.capabilities.endpoint.resolve_accepted_params`
-#: has neither a LiteLLM mapping nor a supplement row for ``"codex"``/
-#: ``"claude_code"`` (there is no HTTP wire to describe), so gating them the
-#: same way every other dialect is gated would silently mute an operator's
-#: own configured sampling on every codex/claude_code turn -- the opposite of
-#: "fail closed" (that phrase means "don't invent support we have no
-#: evidence for", not "break a transport this slice has no evidence ABOUT").
-#: Matches this pair's existing, unconditional treatment everywhere else in
-#: the codebase (``_CUSTOM_TRANSPORT_PREFIXES``, ``parse_retry_capability``).
-_SDK_ONLY_DIALECTS: frozenset[str] = frozenset({"codex", "claude_code"})
-
-#: User-settable optional sampling fields (beyond temperature, handled
+#: User-settable optional request fields (beyond temperature, handled
 #: separately since its default/recommended-value rule differs slightly --
-#: item 1 vs. item 2). Keyed by clio's own internal field name; each is
-#: gated on the effective parameter set and placed via
-#: :func:`clio_agent.lm.dialect_wire.place_optional_param`.
-_OPTIONAL_SAMPLING_FIELDS: tuple[str, ...] = (
+#: item 1 vs. item 2). Keyed by clio's own internal field name (the
+#: ``LMProviderConfig`` attribute); each is gated on the effective parameter
+#: set via its :class:`~clio_agent.providers.capabilities.accepted_parameters.
+#: Tunable` and placed via :func:`clio_agent.lm.dialect_wire.place_optional_param`.
+#: ``max_tokens`` is carried by ``dspy.LM`` itself (``lm/factory.py``) and
+#: ``parallel`` is a load setting, so neither is a request field here;
+#: ``context_length`` is one only where its wire name (Ollama ``num_ctx``) is
+#: accepted -- LM Studio takes it at load time instead.
+_OPTIONAL_REQUEST_FIELDS: tuple[str, ...] = (
     "top_p",
     "top_k",
     "min_p",
     "presence_penalty",
+    "frequency_penalty",
+    "repetition_penalty",
+    "seed",
+    "context_length",
 )
 
 
@@ -175,24 +178,38 @@ def _resolve(
     """
 
     dialect, litellm_prefix = _dialect_and_litellm_prefix(config)
-    base_fact = capability_endpoint.resolve_accepted_params(
-        dialect, config.model, custom_llm_provider=litellm_prefix
-    )
-    base_accepted: frozenset[str] = (
-        base_fact.value if base_fact.known and base_fact.value else frozenset()
-    )
-
     provider_id = getattr(config, "provider_id", "") or str(config.provider)
     api_base = getattr(config, "api_base", "") or ""
     effective = local_first_effective(
         provider_id, api_base, config.model, dialect=dialect, litellm_prefix=litellm_prefix
     )
-    accepted: frozenset[str] = (
-        effective.accepted_params.value
-        if effective.accepted_params.known and effective.accepted_params.value is not None
-        else base_accepted
+    accepted, _facts = accepted_parameters.accepted_param_set(
+        provider_id,
+        api_base,
+        config.model,
+        dialect=dialect,
+        litellm_prefix=litellm_prefix,
+        effective=effective,
     )
     return dialect, accepted, effective
+
+
+def _accepts(field: str, accepted: frozenset[str]) -> bool:
+    spec = accepted_parameters.tunable(field)
+    return spec is not None and accepted_parameters.is_accepted(spec, accepted)
+
+
+def _log_not_sent(config: "LMProviderConfig", dialect: str, field: str) -> None:
+    """A person's saved setting the model does not accept: kept, never sent, logged."""
+
+    logger.warning(
+        "response_setting_not_sent provider=%s dialect=%s model=%s field=%s "
+        "reason=not_accepted_by_model",
+        getattr(config, "provider_id", "") or config.provider,
+        dialect,
+        config.model,
+        field,
+    )
 
 
 def _thinking_requested_on(config: "LMProviderConfig", effective: EffectiveCapabilities) -> bool:
@@ -282,7 +299,6 @@ def build_request_kwargs(
     """
 
     dialect, accepted, effective = _resolve(config)
-    sdk_only = dialect in _SDK_ONLY_DIALECTS
     extras: dict[str, Any] = dict(getattr(config, "provider_options", {}) or {})
     sent_optional = False
 
@@ -297,17 +313,23 @@ def build_request_kwargs(
         temperature_candidate = (
             config.temperature if config.temperature is not None else recommended.get("temperature")
         )
-    if temperature_candidate is not None and (sdk_only or "temperature" in accepted):
+    if temperature_candidate is not None and _accepts("temperature", accepted):
         extras["temperature"] = temperature_candidate
         sent_optional = True
+    elif role == "main" and config.temperature is not None:
+        _log_not_sent(config, dialect, "temperature")
 
-    # -- the rest of the sampling surface (items 1-3) -------------------
-    for field in _OPTIONAL_SAMPLING_FIELDS:
+    # -- the rest of the request surface (items 1-3) ---------------------
+    for field in _OPTIONAL_REQUEST_FIELDS:
         user_value = getattr(config, field, None)
+        if field == "context_length" and not user_value:
+            user_value = None  # 0 means "leave the server's own context alone"
         candidate = user_value if user_value is not None else recommended.get(field)
         if candidate is None:
             continue
-        if not sdk_only and field not in accepted:
+        if not _accepts(field, accepted):
+            if user_value is not None and role == "main":
+                _log_not_sent(config, dialect, field)
             continue
         dialect_wire.place_optional_param(extras, dialect, field, candidate)
         sent_optional = True
@@ -351,10 +373,7 @@ def build_request_kwargs(
         )
 
     # -- stop sequences (item 3) -------------------------------------------
-    # No `sdk_only` exemption here (unlike sampling above): nobody explicitly
-    # configures a `stop` override on `LMProviderConfig`, so there is no
-    # operator intent to preserve for codex/claude_code -- an unknown
-    # accepted-set answer stays "don't send it".
+    # An unknown accepted-set answer (codex/claude_code) stays "don't send it".
     if "stop" not in extras and "stop" in accepted:
         extras["stop"] = _stop_sequences()
         sent_optional = True
