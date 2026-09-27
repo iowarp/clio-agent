@@ -186,18 +186,18 @@ def test_codex_picker_offers_off_only_when_the_model_lists_it() -> None:
     from clio_agent.gact.provider_catalog import _reasoning_wire_block
     from clio_agent.providers.capabilities.records import ThinkingSpec
 
-    def _block(levels: tuple[str, ...], *, codex: bool) -> list[str]:
+    def _block(levels: tuple[str, ...], *, dialect: str) -> list[str]:
         spec = ThinkingSpec(mechanism="effort_levels", levels=levels, effort_by_level={})
         thinking = SimpleNamespace(
             spec=spec, control="reasoning_effort", known=True, decided_by="model"
         )
-        block = _reasoning_wire_block(thinking, DiscoveredModel(id=_MODEL), listed_off_only=codex)
+        block = _reasoning_wire_block(thinking, DiscoveredModel(id=_MODEL), dialect=dialect)
         return list(block["levels"])
 
-    assert _block(("low", "high"), codex=True) == ["low", "high"]
-    assert _block(("off", "low"), codex=True) == ["off", "low"]
-    # Other providers keep their generic "off" (omitting the directive is off there).
-    assert _block(("low", "high"), codex=False) == ["off", "low", "high"]
+    assert _block(("low", "high"), dialect="codex") == ["low", "high"]
+    assert _block(("off", "low"), dialect="codex") == ["off", "low"]
+    # A transport whose "off" holds for every model keeps it (claude_code's disabled option).
+    assert _block(("low", "high"), dialect="claude_code") == ["off", "low", "high"]
 
 
 def test_a_model_whose_template_has_no_thinking_is_not_offered_reasoning() -> None:

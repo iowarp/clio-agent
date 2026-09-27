@@ -17,10 +17,12 @@ from typing import Any
 from clio_agent.gact.catalog_context import context_wire
 from clio_agent.gact.modality_evidence import DOCUMENTED_MODALITY_REASONS
 from clio_agent.gact.types import LMProviderPreset
+from clio_agent.lm import dialect_wire
 from clio_agent.providers import model_discovery
 from clio_agent.providers.capabilities import invalidation
 from clio_agent.providers.capabilities.accepted_parameters import accepted_parameters_for
 from clio_agent.providers.capabilities.accessor import get_effective_capabilities
+from clio_agent.providers.capabilities.endpoint import dialect_for_provider
 from clio_agent.providers.capabilities.facts_wire import model_facts
 from clio_agent.providers.capabilities.records import (
     DeploymentCapabilities,
@@ -143,7 +145,7 @@ def _codex_to_level() -> dict[str, str]:
 
 
 def _reasoning_wire_block(
-    effective_thinking: Any, profile: DiscoveredModel, *, listed_off_only: bool = False
+    effective_thinking: Any, profile: DiscoveredModel, *, dialect: str = ""
 ) -> dict[str, Any]:
     """Build the catalog's ``reasoning`` wire block straight off the effective
     ``ThinkingDecision`` (model-capabilities brief 5.5) -- the levels a person
@@ -170,15 +172,11 @@ def _reasoning_wire_block(
         }
     if spec.mechanism in ("none", "always_on"):
         levels: list[str] = []
-    elif spec.levels:
-        # Codex (``listed_off_only``) refuses an effort the model does not list
-        # (live 2026-09-26: 'none' is rejected for gpt-6-astra), so there "off"
-        # is offered only when the model itself lists it.
-        levels = [*([] if listed_off_only or "off" in spec.levels else ["off"]), *spec.levels]
     else:
-        # budget_tokens with no explicit per-model levels: CLIO's own generic
-        # ladder is what the request builder actually offers (dialect_wire.py).
-        levels = ["off", "low", "medium", "high"]
+        # "off" only where the request builder sends it (dialect_wire.off_sendable);
+        # no per-model levels (on_off/budget_tokens): CLIO's generic ladder.
+        ladder = [x for x in spec.levels if x != "off"] or ["low", "medium", "high"]
+        levels = [*(["off"] if dialect_wire.off_sendable(dialect, spec) else []), *ladder]
 
     default = ""
     default_source = ""
@@ -318,7 +316,9 @@ def model_catalog_row(
         # directly from the effective capabilities' own ThinkingDecision --
         # never a second, provider-name-keyed mapping table.
         "reasoning": _reasoning_wire_block(
-            effective.thinking, profile, listed_off_only=preset.provider == "codex"
+            effective.thinking,
+            profile,
+            dialect=dialect_for_provider(preset.provider, preset.litellm_prefix, preset.id),
         ),
         # ONLY the request settings this model accepts, each with its evidence
         # (clio_schemas.AcceptedParameter) -- the same set the request builder sends.
