@@ -303,7 +303,7 @@ def blueprint_mcp_servers(
     for blueprint in blueprints:
         if blueprint.id != blueprint_id:
             continue
-        servers = blueprint_server_map(blueprint)
+        servers = blueprint_server_map(blueprint, workspace_root=cwd)
         if servers:
             return {blueprint.id: servers}
         # Blueprint found but declares no MCP servers — degrade loudly, not silently.
@@ -373,12 +373,50 @@ def resolve_active_blueprint_servers(
     return {}
 
 
-def blueprint_server_map(blueprint: Any) -> dict[str, Any]:
-    """Return one blueprint's MCP declarations with install-aware cache identity."""
+def _placeholder_context(app: Any, workspace_root: Path | None) -> tuple[Any, Path | None]:
+    """Fill the app / workspace root from the ambient turn when the caller has none."""
+
+    from clio_agent.gact import context as gact_context  # noqa: PLC0415
+
+    app = app if app is not None else gact_context.active_app()
+    if workspace_root is None and app is not None:
+        session_id = gact_context.active_session_id()
+        if session_id:
+            from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
+                _runtime_workspace_catalog_cwd,
+            )
+
+            workspace_root = _runtime_workspace_catalog_cwd(app, session_id=session_id)
+    return app, workspace_root
+
+
+def blueprint_server_map(
+    blueprint: Any, *, app: Any = None, workspace_root: Path | None = None
+) -> dict[str, Any]:
+    """Return one blueprint's MCP declarations with install-aware cache identity.
+
+    clio-supplied placeholders (``${CLIO_BLUEPRINT_DIR}``,
+    ``${CLIO_PROVENANCE_CONFIG}``; see :mod:`clio_agent.gact.blueprint_placeholders`)
+    are substituted here, the one projection every consumer (runtime mount,
+    arm-time validation) reads declarations through.
+    """
+
+    from clio_agent.gact.blueprint_placeholders import (  # noqa: PLC0415
+        apply_blueprint_placeholders,
+        supplied_values,
+    )
 
     raw_servers = blueprint.metadata.get("mcp_servers")
     if not isinstance(raw_servers, Mapping):
         return {}
+    app, workspace_root = _placeholder_context(app, workspace_root)
+    supplied = supplied_values(
+        Path(blueprint.root), raw_servers, app=app, workspace_root=workspace_root
+    )
+    raw_servers = {
+        name: apply_blueprint_placeholders(raw_spec, supplied)
+        for name, raw_spec in raw_servers.items()
+    }
     install = blueprint.metadata.get("install")
     checksum = str(install.get("checksum") or "") if isinstance(install, Mapping) else ""
     servers: dict[str, Any] = {}
