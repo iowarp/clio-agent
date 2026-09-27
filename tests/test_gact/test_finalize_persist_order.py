@@ -19,7 +19,6 @@ inside finalize would be absorbed by the turn's own error envelope).
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +26,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
+from tests.turn_signals import post_turn_and_wait
 
 from .test_post_messages import FakeClioAgent
 
@@ -57,18 +57,9 @@ def _spy_completion_publishes(app: Any) -> list[tuple[str, dict[str, Any], set[s
 
 
 def _run_turn_until_settled(client: TestClient, sid: str) -> str:
-    """POST one turn and wait for the session to leave ``running``; return its status."""
+    """POST one turn and wait for its terminal status event; return that status."""
 
-    ack = client.post(f"/v1/sessions/{sid}/messages", json={"text": "hi"})
-    assert ack.status_code == 200, ack.text
-    deadline = time.monotonic() + 30.0
-    status = "running"
-    while time.monotonic() < deadline:
-        status = client.get(f"/v1/sessions/{sid}").json()["status"]
-        if status != "running":
-            return status
-        time.sleep(0.02)
-    raise AssertionError(f"turn never settled; session stayed {status!r}")
+    return post_turn_and_wait(client, sid, {"text": "hi"})
 
 
 def _assert_completion_after_persist(

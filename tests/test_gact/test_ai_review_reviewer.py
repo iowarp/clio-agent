@@ -40,6 +40,7 @@ from clio_agent.gact.runtime.ai_review import (
     _run_reviewer,
     ai_review_verdict,
 )
+from tests.turn_signals import TURN_SIGNAL_BACKSTOP_S
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
@@ -47,7 +48,7 @@ _FS_WRITE = "fs_apply_edit_write"
 _UNCLASSIFIED = "shell.exec"
 
 
-def _wait_for_row(app, *, timeout: float = 2.5) -> dict:
+def _wait_for_row(app, *, timeout: float = TURN_SIGNAL_BACKSTOP_S) -> dict:
     deadline = time.time() + timeout
     while time.time() < deadline:
         rows = list(app.state.permissions.values())

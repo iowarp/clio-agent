@@ -12,7 +12,6 @@ asserting on a settled turn's ``error_info``.
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +20,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent.errors import MCPMissingRequiredClientCapabilityError
 from clio_agent.gact.app import build_app
+from tests.turn_signals import wait_for_terminal_status
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
@@ -61,19 +61,14 @@ def test_clio_error_settles_the_turn_with_its_typed_reason_in_details(
     app = build_app(sessions_path=tmp_path / "s.json", agent=_RefusingAgent())
     with TestClient(app) as c:
         sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
+        cursor = app.state.bus.latest_event_id(sid)
         ack = c.post(
             f"/v1/sessions/{sid}/messages",
             json={"parts": [{"type": "text", "text": "hi"}]},
         )
         assert ack.status_code == 200, ack.text
 
-        deadline = time.monotonic() + 5.0
-        status = "running"
-        while time.monotonic() < deadline:
-            status = c.get(f"/v1/sessions/{sid}").json()["status"]
-            if status != "running":
-                break
-            time.sleep(0.05)
+        status = wait_for_terminal_status(app.state.bus, sid, after_event_id=cursor)
         assert status == "error", f"expected a terminal error status, got {status!r}"
 
         history = app.state.bus._history.get(sid, [])

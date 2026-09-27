@@ -2,18 +2,20 @@
 
 Samples a running gact server's WHOLE process tree per-process (role-
 classified), drives the standard acceptance load (N concurrent sessions on
-the active blueprint), and reports IDLE / PEAK / FINAL attribution. With
-``--assert-budget`` the run FAILS if peak/final exceed the recorded budget in
-``scripts/mcp_mem_budget.json`` — the budget only ratchets DOWN (record new,
-lower numbers after an optimization lands; never raise them to make a
-regression pass).
+the active blueprint), and reports IDLE / PEAK / FINAL attribution. The whole
+run repeats ``--runs`` times (default 3, each on a freshly booted server) and
+the verdict uses the MEDIAN peak and MEDIAN final, printing every run and the
+spread. With ``--assert-budget`` the gate FAILS if the medians exceed the
+recorded budget in ``scripts/mcp_mem_budget.json`` -- the budget only ratchets
+DOWN (record new, lower numbers after an optimization lands; never raise them
+to make a regression pass).
 
 Usage (the #921/#929 acceptance shape — 3 concurrent claude-haiku sessions):
 
     uv run python scripts/mcp_mem_attribution.py \
         --pack external/clio-agent-marketplace/data-semantics \
         --workspace <dir with sensor_readings.csv> \
-        --sessions 3 --settle-s 180 --assert-budget
+        --sessions 3 --settle-s 180 --runs 3 --assert-budget
 
 The server is booted as a child of THIS process (claude_code/haiku + the real
 CTE substrate per the accepted gate config — never CLIO_ARC_STORE=local) and
@@ -47,11 +49,13 @@ import argparse
 import json
 import os
 import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import psutil
@@ -66,6 +70,10 @@ BUDGET_PATH = Path(__file__).resolve().parent / "mcp_mem_budget.json"
 # misclassified row can never change the gate outcome. The budget INCLUDES
 # provider-CLI processes (claude SDK CLI) — they are fleet-resident memory.
 BUDGET_TOLERANCE = 1.05
+# The verdict compares the MEDIAN of N complete runs, never one run: run-to-run
+# noise on one commit (final 0.97 vs 0.95 GB) spans the whole tolerance band.
+DEFAULT_RUNS = 3
+MIN_ASSERT_RUNS = 3
 
 PROMPT_SHAPES = [
     (
@@ -298,6 +306,68 @@ def _port_listener_pid(port: int) -> int | None:
     return None
 
 
+@dataclass(frozen=True)
+class RunMeasurement:
+    """One complete gate run: boot -> load -> settle -> teardown."""
+
+    peak_gb: float
+    final_gb: float
+
+
+@dataclass(frozen=True)
+class RunSummary:
+    """The median the budget is judged on, plus the spread it hides."""
+
+    runs: tuple[RunMeasurement, ...]
+    peak_median_gb: float
+    final_median_gb: float
+    peak_spread_gb: tuple[float, float]
+    final_spread_gb: tuple[float, float]
+
+    def describe(self) -> str:
+        """Per-run values, medians and spreads, for the gate log."""
+
+        per_run = "  ".join(
+            f"run{i + 1}: peak {r.peak_gb:.2f} final {r.final_gb:.2f}"
+            for i, r in enumerate(self.runs)
+        )
+        return (
+            f"{per_run}\n"
+            f"median of {len(self.runs)}: peak {self.peak_median_gb:.2f} GB "
+            f"(spread {self.peak_spread_gb[0]:.2f}-{self.peak_spread_gb[1]:.2f}, "
+            f"{self.peak_spread_gb[1] - self.peak_spread_gb[0]:.2f})   "
+            f"final {self.final_median_gb:.2f} GB "
+            f"(spread {self.final_spread_gb[0]:.2f}-{self.final_spread_gb[1]:.2f}, "
+            f"{self.final_spread_gb[1] - self.final_spread_gb[0]:.2f})"
+        )
+
+
+def summarize_runs(runs: list[RunMeasurement]) -> RunSummary:
+    """Median + spread of N complete runs (pure; unit-tested).
+
+    The budget is compared against the MEDIAN, never a single run: two clean runs of
+    one commit measured final 0.97 and 0.95 GB, a spread larger than the 5% tolerance
+    band itself, so one run can land either side of the cap by noise alone. The median
+    of an odd N is an actual measured run; the spread is reported so noise stays
+    visible instead of being averaged away.
+
+    Raises:
+        ValueError: With no runs (an empty gate proves nothing).
+    """
+
+    if not runs:
+        raise ValueError("no runs to summarize")
+    peaks = [r.peak_gb for r in runs]
+    finals = [r.final_gb for r in runs]
+    return RunSummary(
+        runs=tuple(runs),
+        peak_median_gb=statistics.median(peaks),
+        final_median_gb=statistics.median(finals),
+        peak_spread_gb=(min(peaks), max(peaks)),
+        final_spread_gb=(min(finals), max(finals)),
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pack", required=True, type=Path)
@@ -322,17 +392,29 @@ def main() -> int:
         type=Path,
         default=None,
         help=(
-            "XDG_CONFIG_HOME for the server. Defaults to a FRESH stamped temp dir: "
+            "XDG_CONFIG_HOME for the server. Defaults to a FRESH stamped temp dir per run: "
             "the config-FILE layer outranks env pins (conf precedence file>env), so "
             "an inherited real config could silently swap substrate/provider."
         ),
     )
     parser.add_argument("--settle-s", type=int, default=60, help="post-load settle before FINAL")
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=DEFAULT_RUNS,
+        help=(
+            "Complete runs (fresh server boot each) whose MEDIAN peak/final is compared "
+            f"to the budget (default {DEFAULT_RUNS}; --assert-budget needs >= {MIN_ASSERT_RUNS})."
+        ),
+    )
     parser.add_argument("--assert-budget", action="store_true")
     args = parser.parse_args()
 
     if args.sessions < 1:
         print("FAIL: --sessions must be >= 1 (a zero-session run proves nothing)")
+        return 2
+    if args.runs < 1:
+        print("FAIL: --runs must be >= 1")
         return 2
     if args.assert_budget and args.sessions != 3:
         print("FAIL: --assert-budget is defined for the recorded load (--sessions 3)")
@@ -343,6 +425,70 @@ def main() -> int:
         # resident and an honest run fails spuriously (#935).
         print("FAIL: --assert-budget requires --settle-s >= 180 (the recorded load's settle)")
         return 2
+    if args.assert_budget and args.runs < MIN_ASSERT_RUNS:
+        # One run's noise spans the tolerance band (final 0.97 vs 0.95 on one commit).
+        print(f"FAIL: --assert-budget compares a median; it needs --runs >= {MIN_ASSERT_RUNS}")
+        return 2
+
+    measurements: list[RunMeasurement] = []
+    for run_index in range(args.runs):
+        print(f"\n########## run {run_index + 1}/{args.runs} ##########")
+        outcome = _run_once(args)
+        if isinstance(outcome, int):
+            print(f"GATE: FAIL (run {run_index + 1}/{args.runs} did not produce a measurement)")
+            return outcome
+        print(
+            f"run {run_index + 1}: peak {outcome.peak_gb:.2f} GB   final {outcome.final_gb:.2f} GB"
+        )
+        measurements.append(outcome)
+
+    summary = summarize_runs(measurements)
+    print(f"\n{summary.describe()}")
+
+    if args.assert_budget:
+        budget_root = json.loads(BUDGET_PATH.read_text(encoding="utf-8"))
+        if args.children_pack is not None:
+            budget = budget_root.get("children")
+            budget_label = "children"
+            if not isinstance(budget, dict):
+                print(
+                    "FAIL: --children-pack asserted but no 'children' budget block "
+                    f"is recorded in {BUDGET_PATH.name}"
+                )
+                return 2
+        else:
+            budget = budget_root
+            budget_label = "baseline"
+        ok, detail = check_budget(summary.peak_median_gb, summary.final_median_gb, budget)
+        print(f"BUDGET ({BUDGET_PATH.name}:{budget_label}, median of {args.runs}): {detail}")
+        if not ok:
+            print(
+                "GATE: FAIL — fleet memory regressed past the recorded budget. "
+                "Fix the regression; never raise the budget."
+            )
+            return 1
+        if (
+            summary.peak_median_gb < budget["peak_gb"] * 0.9
+            or summary.final_median_gb < budget["final_gb"] * 0.9
+        ):
+            print(
+                "NOTE (ratchet down): the median is well under budget — record the "
+                f"median of >=3 runs in {BUDGET_PATH.name} (never a single noise "
+                "trough: the 5% tolerance must still cover honest run-to-run "
+                "variance under the new number)."
+            )
+    print("GATE: PASS")
+    return 0
+
+
+def _run_once(args: argparse.Namespace) -> RunMeasurement | int:
+    """One complete gate run: boot, verify substrate, drive the load, settle, measure.
+
+    Returns:
+        The measurement, or a non-zero exit code when this run cannot produce an
+        honest one (boot failure, degraded substrate, dead server, sessions not idle,
+        or a children run that never spawned its children).
+    """
 
     xdg = args.xdg or Path(tempfile.mkdtemp(prefix="clio-mem-gate-xdg-"))
     # Pack mcp_servers mount at AGENT CONSTRUCTION from INSTALLED blueprints
@@ -510,7 +656,6 @@ def main() -> int:
         report(f"FINAL (after {args.settle_s}s settle)", final[1], final[2])
         peak_gb = sampler.total_gb(peak[1])
         final_gb = sampler.total_gb(final[1])
-        print(f"\npeak: {peak_gb:.2f} GB   final: {final_gb:.2f} GB")
 
         failed_sessions = [k for k, v in out.items() if v != "idle"]
         if failed_sessions or len(out) != args.sessions:
@@ -529,38 +674,10 @@ def main() -> int:
                     "record this measurement."
                 )
                 return 1
-
-        if args.assert_budget:
-            budget_root = json.loads(BUDGET_PATH.read_text(encoding="utf-8"))
-            if args.children_pack is not None:
-                budget = budget_root.get("children")
-                budget_label = "children"
-                if not isinstance(budget, dict):
-                    print(
-                        "FAIL: --children-pack asserted but no 'children' budget block "
-                        f"is recorded in {BUDGET_PATH.name}"
-                    )
-                    return 2
-            else:
-                budget = budget_root
-                budget_label = "baseline"
-            ok, detail = check_budget(peak_gb, final_gb, budget)
-            print(f"BUDGET ({BUDGET_PATH.name}:{budget_label}): {detail}")
-            if not ok:
-                print(
-                    "GATE: FAIL — fleet memory regressed past the recorded budget. "
-                    "Fix the regression; never raise the budget."
-                )
-                return 1
-            if peak_gb < budget["peak_gb"] * 0.9 or final_gb < budget["final_gb"] * 0.9:
-                print(
-                    "NOTE (ratchet down): measured well under budget — record the "
-                    f"MEDIAN of >=3 runs in {BUDGET_PATH.name} (never a single noise "
-                    "trough: the 5% tolerance must still cover honest run-to-run "
-                    "variance under the new number)."
-                )
-        print("GATE: PASS")
-        return 0
+        if peak_gb <= 0 or final_gb <= 0:
+            print(f"FAIL: non-positive measurement (peak={peak_gb}, final={final_gb})")
+            return 2
+        return RunMeasurement(peak_gb=peak_gb, final_gb=final_gb)
     finally:
         if sampler is not None:
             sampler.stop()

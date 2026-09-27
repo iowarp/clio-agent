@@ -146,10 +146,28 @@ def _complete_turn(client: TestClient, sid: str, text: str, *, timeout: float = 
                     # captured mid-turn and the golden becomes racy).
                     and not msgs[i - 1].get("metadata", {}).get("live")
                 ):
+                    _wait_until_not_running(client, sid, deadline)
                     return
                 break
         time.sleep(0.05)
     raise TimeoutError(f"turn for {user_id!r} did not settle")
+
+
+def _wait_until_not_running(client: TestClient, sid: str, deadline: float) -> None:
+    """Wait for the session to leave ``running`` (the whole turn is on the bus).
+
+    The assistant message is persisted BEFORE ``message.completed`` publishes (#1469),
+    so a ledger hit alone let the trace be captured without ``message.completed`` (the
+    divergence this test hit under ``-n 2`` load). The status leaves ``running`` only
+    once the turn released its slot (#1466), after every event the trace compares.
+    A status read, not a bus API, so the module still runs on the reference tree.
+    """
+
+    while time.monotonic() < deadline:
+        if client.get(f"/v1/sessions/{sid}").json()["status"] != "running":
+            return
+        time.sleep(0.05)
+    raise TimeoutError(f"session {sid!r} never left running")
 
 
 # ---------------------------------------------------------------------------

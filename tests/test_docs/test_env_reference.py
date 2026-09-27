@@ -12,7 +12,10 @@ and commit the updated artifacts.
 
 from __future__ import annotations
 
+import copy
+import functools
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -27,15 +30,42 @@ from scripts.gen_env_reference import (
     _classify_tier,
     collect,
     generate,
-    generate_defaults,
+    render_defaults_yaml,
+    render_dotenv,
+    render_markdown,
     section_for,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
+@functools.cache
+def _collected_once() -> tuple[list[Any], list[Any]]:
+    # One AST walk of the source tree per test process, not one per test: the walk
+    # takes seconds, and 20+ tests here only read its result. The determinism test
+    # still runs ``generate`` twice for real.
+    return collect(ROOT)
+
+
+def _collect_root() -> tuple[list[Any], list[Any]]:
+    """``collect(ROOT)``, shared; a deep copy so no test can alter another's view."""
+    return copy.deepcopy(_collected_once())
+
+
+def _generate_root() -> tuple[str, str]:
+    """``generate(ROOT)`` rendered from the shared walk."""
+    resolved, env_only = _collect_root()
+    return (render_markdown(resolved, env_only), render_dotenv(resolved, env_only))
+
+
+def _generate_defaults_root() -> str:
+    """``generate_defaults(ROOT)`` rendered from the shared walk."""
+    resolved, _ = _collect_root()
+    return render_defaults_yaml(resolved)
+
+
 def test_environment_md_matches_source_tree() -> None:
-    markdown, _ = generate(ROOT)
+    markdown, _ = _generate_root()
     committed = (ROOT / DOC_RELPATH).read_text(encoding="utf-8")
     assert committed == markdown, (
         "docs/ENVIRONMENT.md is stale; run `python scripts/gen_env_reference.py`."
@@ -43,7 +73,7 @@ def test_environment_md_matches_source_tree() -> None:
 
 
 def test_env_example_matches_source_tree() -> None:
-    _, dotenv = generate(ROOT)
+    _, dotenv = _generate_root()
     committed = (ROOT / DOTENV_RELPATH).read_text(encoding="utf-8")
     assert committed == dotenv, ".env.example is stale; run `python scripts/gen_env_reference.py`."
 
@@ -57,7 +87,7 @@ def test_config_defaults_yaml_matches_source_tree() -> None:
     Regenerate with ``uv run python scripts/gen_env_reference.py``.
     """
     committed = (ROOT / DEFAULTS_RELPATH).read_text(encoding="utf-8")
-    assert committed == generate_defaults(ROOT), (
+    assert committed == _generate_defaults_root(), (
         "src/clio_agent/config.defaults.yaml is stale; run `python scripts/gen_env_reference.py`."
     )
 
@@ -81,7 +111,7 @@ def test_config_defaults_yaml_is_flat_and_parses() -> None:
 
 def test_config_defaults_omits_dynamic_and_unset_knobs() -> None:
     """Computed/unset defaults are comments only, so resolution uses the in-code default."""
-    resolved, _ = collect(ROOT)
+    resolved, _ = _collect_root()
     committed = yaml.safe_load((ROOT / DEFAULTS_RELPATH).read_text(encoding="utf-8")) or {}
     for r in resolved:
         if r.key and (r.dynamic_expr or r.default == ""):
@@ -94,7 +124,7 @@ def test_config_defaults_omits_dynamic_and_unset_knobs() -> None:
 
 
 def test_generated_files_carry_the_do_not_edit_banner() -> None:
-    markdown, dotenv = generate(ROOT)
+    markdown, dotenv = _generate_root()
     assert markdown.startswith("<!-- GENERATED")
     assert "DO NOT EDIT" in markdown.splitlines()[0]
     assert dotenv.startswith("# GENERATED")
@@ -108,7 +138,7 @@ def test_generator_is_deterministic() -> None:
 
 
 def test_resolved_and_env_only_sets_are_disjoint() -> None:
-    resolved, env_only = collect(ROOT)
+    resolved, env_only = _collect_root()
     resolved_vars = {r.env for r in resolved}
     env_vars = {e.env for e in env_only}
     # A conf.resolve knob may keep a bare-env legacy fallback; the resolved
@@ -117,7 +147,7 @@ def test_resolved_and_env_only_sets_are_disjoint() -> None:
 
 
 def test_every_resolved_knob_has_a_config_key_and_tracked_env() -> None:
-    resolved, _ = collect(ROOT)
+    resolved, _ = _collect_root()
     assert resolved, "expected at least one conf.resolve knob"
     for r in resolved:
         assert r.env.startswith(("CLIO_", "ALCF_"))
@@ -125,7 +155,7 @@ def test_every_resolved_knob_has_a_config_key_and_tracked_env() -> None:
 
 
 def test_secret_tokens_are_classified_secret_not_leaked_with_defaults() -> None:
-    resolved, env_only = collect(ROOT)
+    resolved, env_only = _collect_root()
     secret_names = {
         "CLIO_LM_API_KEY",
         "CLIO_ARGONNE_TOKEN",
@@ -150,7 +180,7 @@ def test_tier_classification_rules() -> None:
 
 
 def test_env_example_leaves_secrets_blank_and_comments_knobs() -> None:
-    _, dotenv = generate(ROOT)
+    _, dotenv = _generate_root()
     lines = dotenv.splitlines()
     # Secrets render as an uncommented, blank assignment (never a real value).
     assert "CLIO_LM_API_KEY=" in lines
@@ -170,7 +200,7 @@ def test_bare_resolve_imports_are_discovered_as_resolved_knobs() -> None:
     the three config.py knobs resolved via a bare imported ``resolve(...)``
     were silently absent from both artifacts.
     """
-    resolved, _ = collect(ROOT)
+    resolved, _ = _collect_root()
     by_env = {r.env: r for r in resolved}
     for name in (
         "CLIO_LM_TOKEN_LIVENESS",
@@ -195,7 +225,7 @@ def test_conf_resolve_wrapper_knobs_are_discovered() -> None:
     ``os.environ`` wrappers before, so the resident-ledger trio was DROPPED entirely
     and the ledger-retention knobs were misclassified as env-only.
     """
-    resolved, env_only = collect(ROOT)
+    resolved, env_only = _collect_root()
     by_env = {r.env: r for r in resolved}
     env_names = {e.env for e in env_only}
     expected = {
@@ -229,7 +259,7 @@ def test_status_data_dir_and_api_base_are_config_first() -> None:
     (env-only). They now resolve file → env → default through ``conf`` and must be
     discovered as configured knobs, not env-only.
     """
-    resolved, env_only = collect(ROOT)
+    resolved, env_only = _collect_root()
     by_env = {r.env: r for r in resolved}
     env_names = {e.env for e in env_only}
     for name, key in (("CLIO_DATA_DIR", "paths.data_dir"), ("CLIO_API_BASE", "runtime.api_base")):
@@ -316,7 +346,7 @@ def test_retired_env_switches_have_no_readers() -> None:
     it. If any of these reappears, a deleted legacy pathway has silently come back to
     life under configuration (#985 / #775), and this guard fails.
     """
-    resolved, env_only = collect(ROOT)
+    resolved, env_only = _collect_root()
     discovered = {r.env for r in resolved} | {e.env for e in env_only}
     live = [name for name in _RETIRED_ENV_SWITCHES if name in discovered]
     assert not live, f"retired env switches re-acquired a src reader: {live}"
@@ -325,12 +355,12 @@ def test_retired_env_switches_have_no_readers() -> None:
 def test_dynamic_cred_prefix_is_documented_as_secret_pattern() -> None:
     """The runtime-named ``CLIO_CRED_*`` family surfaces via the curated entry."""
     assert "CLIO_CRED_<PROVIDER>_<ACCOUNT>" in DYNAMIC_SECRET_VARS
-    _, env_only = collect(ROOT)
+    _, env_only = _collect_root()
     by_env = {e.env: e for e in env_only}
     entry = by_env["CLIO_CRED_<PROVIDER>_<ACCOUNT>"]
     assert entry.tier == "secret"
     assert entry.sources == ["src/clio_agent/providers/credentials.py"]
-    _, dotenv = generate(ROOT)
+    _, dotenv = _generate_root()
     # A placeholder is not a valid assignment; it must render commented out.
     assert "# CLIO_CRED_<PROVIDER>_<ACCOUNT>=" in dotenv.splitlines()
 
@@ -342,7 +372,7 @@ def test_write_only_env_file_loaded_marker_is_not_a_knob() -> None:
     agent never reads it, so it must not be classified or documented as a knob.
     """
     assert "CLIO_ENV_FILE_LOADED" not in BOOTSTRAP_VARS
-    resolved, env_only = collect(ROOT)
+    resolved, env_only = _collect_root()
     discovered = {r.env for r in resolved} | {e.env for e in env_only}
     assert "CLIO_ENV_FILE_LOADED" not in discovered
 
@@ -360,7 +390,7 @@ def test_every_configured_knob_carries_an_operator_note() -> None:
     describing something that no longer exists. Both fail here rather than
     rotting silently in a generated file nobody re-reads.
     """
-    resolved, _ = collect(ROOT)
+    resolved, _ = _collect_root()
     keys = {r.key for r in resolved if r.key}
     documented = set(KEY_NOTES)
 
@@ -374,10 +404,10 @@ def test_every_configured_knob_carries_an_operator_note() -> None:
 
 def test_every_configured_knob_lands_in_a_named_section() -> None:
     """No knob may fall through to the ``Unassigned`` heading."""
-    resolved, _ = collect(ROOT)
+    resolved, _ = _collect_root()
     unassigned = sorted(r.key for r in resolved if r.key and not section_for(r.key))
     assert not unassigned, f"knobs under an unfiled namespace: {unassigned}"
-    assert "Unassigned" not in generate_defaults(ROOT)
+    assert "Unassigned" not in _generate_defaults_root()
 
 
 def test_defaults_sections_are_rendered_in_order_with_headers() -> None:
@@ -402,7 +432,7 @@ def test_defaults_notes_do_not_disturb_the_parsed_mapping() -> None:
     parses to still carries every knob with a concrete default.
     """
     committed = yaml.safe_load((ROOT / DEFAULTS_RELPATH).read_text(encoding="utf-8")) or {}
-    resolved, _ = collect(ROOT)
+    resolved, _ = _collect_root()
     expected = {r.key for r in resolved if r.key and not r.dynamic_expr and r.default != ""}
     assert set(committed) == expected
 
@@ -455,7 +485,7 @@ def test_shared_autocompact_default_survives_into_the_base_layer() -> None:
 
 
 def test_owned_elsewhere_vars_are_not_read_in_source() -> None:
-    resolved, env_only = collect(ROOT)
+    resolved, env_only = _collect_root()
     discovered = {r.env for r in resolved} | {e.env for e in env_only}
     # Owned-elsewhere vars are consumed outside src/clio_agent; they must not be
     # AST-discovered, otherwise the curated note is wrong.

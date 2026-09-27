@@ -211,9 +211,39 @@ def settle_turn_slot(client: TestClient, sid: str, *, timeout: float = 30.0) -> 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if not runner.busy(sid):
+            _await_release_callbacks(runner, sid, max(deadline - time.monotonic(), 1.0))
             return
         time.sleep(0.02)
     raise TimeoutError(f"turn slot for {sid} still busy after {timeout}s")
+
+
+def _await_release_callbacks(runner: Any, sid: str, backstop_s: float) -> None:
+    """Block until the finished turn's done-callback (its terminal status publish) ran.
+
+    ``busy()`` turns False the instant the turn task finishes, but the task's
+    done-callback -- which clears the slot and runs ``run_when_released`` (the terminal
+    ``session.status_changed``) -- is only QUEUED on the loop at that moment. A test that
+    reads the bus right after ``busy()`` flips can beat it; on a loaded CI runner it did
+    (``test_cancel_during_turn_marks_turn_as_cancelled`` read the cancel route's
+    ``cooperative_pending`` as the last word). The loop runs its ready queue in order, so
+    a callback queued now runs after that done-callback: when it fires, the publish ran.
+    """
+
+    import threading  # noqa: PLC0415
+
+    # The finished task's own loop while its slot is still held; the app loop otherwise
+    # (a done-callback running right now finishes before anything queued behind it).
+    task = runner._in_flight.get(sid)
+    loop = task.get_loop() if task is not None else runner._loop
+    if loop is None:
+        return  # no loop was ever bound: no turn ran through the runner
+    drained = threading.Event()
+    try:
+        loop.call_soon_threadsafe(drained.set)
+    except RuntimeError:
+        return  # that loop is closed: it ran everything it will ever run
+    if not drained.wait(backstop_s):
+        raise TimeoutError(f"the app loop did not drain within {backstop_s:g}s")
 
 
 def complete_turn(
