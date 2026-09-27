@@ -14,7 +14,9 @@ read/modify/write is one atomic transaction that preserves every other key,
 and :func:`clio_agent.conf.reload` runs after each write so the resolver
 sees the new document.
 
-Only configuration is persisted (id, preset, label, address). A reachability
+Only configuration is persisted (id, preset, label, address, and -- for a
+CLIO-managed deployment protected by a key -- ``credential_ref``, the
+secret-store id of that deployment's key; never the key). A reachability
 check's result is runtime evidence, not configuration: callers keep it in
 memory (see :mod:`clio_agent.gact.routes.local_servers`).
 """
@@ -22,10 +24,7 @@ memory (see :mod:`clio_agent.gact.routes.local_servers`).
 from __future__ import annotations
 
 import logging
-import os
 import re
-import tempfile
-import threading
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -34,6 +33,8 @@ from typing import TYPE_CHECKING, Any, TypeVar
 import yaml
 
 from clio_agent import conf, paths
+from clio_agent.platform_paths import atomic_write_text
+from clio_agent.user_config_document import USER_CONFIG_LOCK as _LOCK
 
 if TYPE_CHECKING:
     from clio_agent.gact.lm_provider_types import LMProviderPreset
@@ -59,7 +60,6 @@ __all__ = [
 #: The OpenAI-compatible preset every custom (non-catalog) server is reached through.
 CUSTOM_SERVER_PRESET_ID = "vllm"
 
-_LOCK = threading.RLock()
 _SECTION = ("providers", "servers")
 
 
@@ -79,6 +79,9 @@ class LocalServerEntry:
     preset_id: str
     label: str
     address: str
+    #: The secret-store id of a managed deployment's key (``""`` for none):
+    #: requests to this server resolve that key (see ``providers.api_key_store``).
+    credential_ref: str = ""
 
     @property
     def custom(self) -> bool:
@@ -132,25 +135,9 @@ def _write_document(path: Path, document: Mapping[str, Any]) -> None:
     rendered = yaml.safe_dump(
         dict(document), allow_unicode=True, default_flow_style=False, sort_keys=False
     )
-    temporary: Path | None = None
     try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            newline="\n",
-            delete=False,
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-        ) as handle:
-            temporary = Path(handle.name)
-            handle.write(rendered)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        atomic_write_text(path, rendered)
     except OSError as exc:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
         raise LocalServerStoreError(f"could not write {path}: {exc}") from exc
     conf.reload()
 
@@ -173,6 +160,7 @@ def _entries(document: Mapping[str, Any]) -> list[LocalServerEntry]:
                     preset_id=str(item["preset_id"]),
                     label=str(item.get("label") or item["id"]),
                     address=str(item["address"]),
+                    credential_ref=str(item.get("credential_ref") or ""),
                 )
             )
         except KeyError as exc:
@@ -184,7 +172,13 @@ def _store(document: dict[str, Any], entries: list[LocalServerEntry]) -> None:
     providers = document.get(_SECTION[0])
     section = dict(providers) if isinstance(providers, Mapping) else {}
     section[_SECTION[1]] = [
-        {"id": e.id, "preset_id": e.preset_id, "label": e.label, "address": e.address}
+        {
+            "id": e.id,
+            "preset_id": e.preset_id,
+            "label": e.label,
+            "address": e.address,
+            **({"credential_ref": e.credential_ref} if e.credential_ref else {}),
+        }
         for e in entries
     ]
     document[_SECTION[0]] = section
@@ -233,12 +227,19 @@ def _slug(label: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-") or "server"
 
 
-def add_server(*, address: str, label: str = "", preset_id: str | None = None) -> LocalServerEntry:
+def add_server(
+    *,
+    address: str,
+    label: str = "",
+    preset_id: str | None = None,
+    credential_ref: str = "",
+) -> LocalServerEntry:
     """Save a server and return it.
 
     With ``preset_id`` naming a catalog runtime, the entry IS that runtime's
     saved address (id == preset id; replaces any earlier one). Without it, a
     custom OpenAI-compatible server is added under a fresh ``server-<slug>`` id.
+    ``credential_ref`` links a CLIO-managed deployment's key (see the module doc).
     """
     normalized = normalize_server_address(address)
     with _LOCK:
@@ -247,7 +248,11 @@ def add_server(*, address: str, label: str = "", preset_id: str | None = None) -
         entries = _entries(document)
         if preset_id:
             entry = LocalServerEntry(
-                id=preset_id, preset_id=preset_id, label=label or preset_id, address=normalized
+                id=preset_id,
+                preset_id=preset_id,
+                label=label or preset_id,
+                address=normalized,
+                credential_ref=credential_ref,
             )
             entries = [e for e in entries if e.id != preset_id] + [entry]
         else:
@@ -258,7 +263,11 @@ def add_server(*, address: str, label: str = "", preset_id: str | None = None) -
             while server_id in taken:
                 server_id, n = f"{base}-{n}", n + 1
             entry = LocalServerEntry(
-                id=server_id, preset_id=CUSTOM_SERVER_PRESET_ID, label=name, address=normalized
+                id=server_id,
+                preset_id=CUSTOM_SERVER_PRESET_ID,
+                label=name,
+                address=normalized,
+                credential_ref=credential_ref,
             )
             entries.append(entry)
         _store(document, entries)
@@ -267,9 +276,16 @@ def add_server(*, address: str, label: str = "", preset_id: str | None = None) -
 
 
 def update_server(
-    server_id: str, *, address: str | None = None, label: str | None = None
+    server_id: str,
+    *,
+    address: str | None = None,
+    label: str | None = None,
+    credential_ref: str | None = None,
 ) -> LocalServerEntry:
     """Change a saved server's address and/or label.
+
+    A new ``address`` must come with the ``credential_ref`` that fits it (``""``
+    for none): a managed deployment's key is never sent to another server.
 
     Raises:
         KeyError: When no server has ``server_id``.
@@ -286,6 +302,11 @@ def update_server(
             preset_id=current.preset_id,
             label=label.strip() if label and label.strip() else current.label,
             address=normalize_server_address(address) if address is not None else current.address,
+            credential_ref=(
+                credential_ref
+                if credential_ref is not None
+                else ("" if address is not None else current.credential_ref)
+            ),
         )
         _store(document, [updated if e.id == server_id else e for e in entries])
         _write_document(path, document)

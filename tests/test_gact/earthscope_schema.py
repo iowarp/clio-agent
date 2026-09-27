@@ -131,9 +131,7 @@ EARTHSCOPE_WORKFLOW_STATE_SCHEMA = WorkflowStateSchema(
             set_status="child_failed",
             set_fields={
                 "blocker": "child expert {child!r} failed before completing resource discovery",
-                "next_action": (
-                    "retry the child expert after provider availability is restored"
-                ),
+                "next_action": ("retry the child expert after provider availability is restored"),
             },
         ),
     ),

@@ -6,6 +6,10 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.4.20] — 2026-09-27
+
+## [0.9.4.19] — 2026-09-27
+
 ### Added
 
 - Provider catalog model rows carry `model_facts` next to `capability_tags`:
@@ -60,10 +64,47 @@ TUI/HTTP surface aren't tracked here.
   accepted, whatever the turn then does, and a `session.updated` event carries
   it. The pick used to live only in the client, so a reload or a failed turn
   showed "Choose model" again.
+- Security: a web page could make the user's browser change state on a local
+  CLIO without a token (cancel turns, install provider support, run sandbox
+  setup, reconnect MCP servers). A request without a valid bearer token that
+  uses POST, PUT, PATCH or DELETE and names an untrusted `Origin` (or is marked
+  `Sec-Fetch-Site: cross-site`) is now refused with `403 origin_not_allowed`
+  and logged. Trusted origins are the Desktop WebView, `gact.cors.origins`, and
+  the server's own loopback origin for the same-origin web UI. Clients that
+  send no `Origin` (the Desktop's native bridge, curl, SDKs) and requests with
+  a valid token are unaffected.
+- Security: a foreign domain re-pointed at 127.0.0.1 (DNS rebinding) could read
+  a local CLIO's sessions, messages and files without a token. Every request
+  and WebSocket upgrade without a valid bearer token must now address
+  `localhost`, `127.0.0.1` or `[::1]` (any port), or a host listed in the new
+  `gact.allowed_hosts` (`CLIO_GACT_ALLOWED_HOSTS`) for a LAN or container
+  deployment; others get `403 host_not_allowed`. The `clio-web` image's nginx
+  now forwards the browser's `Host` with its port and the request scheme, so
+  the same-origin web UI keeps matching its own origin.
 - A provider served from its last-good model list (for example OpenRouter with
   no usable key) lost every fact except limits, tools, modalities and task, so
   its models showed no reasoning, structured output, router, free or pricing
   tags. The full records are now kept and restored.
+- The Desktop SSH transport socket (`/v1/infrastructure/targets/{id}/transport`)
+  says why it refused an attachment (#1478). A client that offers
+  `clio.infrastructure.v2` gets the handshake, then a close frame with code
+  4401/4403/4404/4409 and reason `authentication_required`,
+  `origin_not_allowed`, `target_not_found` or `target_not_ssh`; an admitted v2
+  client first receives `{"type": "attached", "target_id": ...}`.
+  `clio.infrastructure.v1` clients keep the pre-handshake refusal, and every
+  refusal is logged. The socket accepts a browser `Origin` only from the
+  Desktop WebView (`tauri://localhost`, `http(s)://tauri.localhost`) or
+  `gact.cors.origins`, and requires the bearer token from every peer,
+  loopback included.
+- A foreground server publishes `<runtime state dir>/gact-servers/<port>.json`
+  (port, pid, the bearer token it enforces or `null`; owner-only) while it
+  serves, so a Desktop that attaches to an already-running CLIO presents the
+  real token instead of an empty one.
+- `GET /v1/desktop/attach` answers 204 when the request may open the
+  bearer-only surfaces (the SSH transport socket, desktop shutdown) and 401
+  `authentication_required` when it may not. A desktop attaching to a CLIO that
+  published no credential record asks here without a token to learn whether
+  one is enforced (#1478).
 
 ## [0.9.4.18] — 2026-09-26
 

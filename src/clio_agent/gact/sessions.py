@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import threading
 import uuid
 from collections.abc import Callable
@@ -45,12 +44,16 @@ from pathlib import Path
 from typing import Any, Optional, get_args
 
 from clio_agent.gact.types import Session as _WireSession
+from clio_agent.platform_paths import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
 # Keep session ids namespaced so log scraping (and humans) can tell
 # them apart from e.g. message ids at a glance.
 _SESSION_ID_PREFIX = "sess_"
+#: Server-owned approval profiles (never accepted from a public request): the SPOTTER
+#: watcher's containment profile and the read-only side session (gact/side_sessions.py).
+_SERVER_PROFILES = frozenset({"spotter-watcher", "read-only-side"})
 _TIME_LOCK = threading.Lock()
 _LAST_TIME: datetime | None = None
 
@@ -337,17 +340,10 @@ class SessionStore:
 
         if self._path is None:
             return
-        self._path.parent.mkdir(parents=True, exist_ok=True)
         payload = {sid: asdict(s) for sid, s in self._sessions.items()}
-        # write+fsync to a temp file, then atomic rename: the fsync forces the
-        # bytes to disk before the rename publishes them, so a mid-write crash
-        # can't leave a partial JSON blob on disk (temp-file + rename is atomic).
-        tmp = self._path.with_suffix(self._path.suffix + ".tmp")
-        with open(tmp, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps(payload, indent=2, sort_keys=True))
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, self._path)
+        # Staged, fsynced, then replaced: a crash never leaves a partial blob,
+        # and a reader holding the file open is waited out, not a failure.
+        atomic_write_text(self._path, json.dumps(payload, indent=2, sort_keys=True))
 
     # ---- CRUD ---------------------------------------------------------
 
@@ -393,7 +389,7 @@ class SessionStore:
             edit_mode=edit_mode if edit_mode in {"diff", "whole", "patch"} else "diff",
             routing_mode=routing_mode if routing_mode in valid_routing_modes else "auto",
             approval_mode=approval_mode if approval_mode in valid_approval_modes else "ask",
-            approval_profile=(approval_profile if approval_profile in {"spotter-watcher"} else ""),
+            approval_profile=(approval_profile if approval_profile in _SERVER_PROFILES else ""),
         )
         with self._lock:
             self._sessions[sid] = sess

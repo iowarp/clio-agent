@@ -51,9 +51,7 @@ def test_workspace_owned_session_writes_nothing_under_storage_root(tmp_path: Pat
         # The wire field still resolves — only the on-disk mirror was removed.
         assert ws["storage_root"] == str(ws_root)
 
-        sid = client.post(
-            "/v1/sessions", json={"title": "t", "workspace_id": wid}
-        ).json()["id"]
+        sid = client.post("/v1/sessions", json={"title": "t", "workspace_id": wid}).json()["id"]
 
         # Drive every message-ledger write seam (append/replace/delete) directly.
         message = _text_message(sid, "hello")

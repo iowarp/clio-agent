@@ -71,9 +71,7 @@ _DISCLOSURES: dict[str, list[dict[str, Any]]] = {}
 _DISCLOSURES_LOCK = threading.Lock()
 
 
-def record_narrowing_disclosure(
-    session_id: str, tool_name: str, answer: Mapping[str, Any]
-) -> None:
+def record_narrowing_disclosure(session_id: str, tool_name: str, answer: Mapping[str, Any]) -> None:
     """Record that ``session_id``'s in-flight ``tool_name`` call was narrowed by an
     agent-answered elicitation (the fields the agent supplied).
 
@@ -107,9 +105,7 @@ def drain_narrowing_disclosures(session_id: str, tool_name: str) -> list[dict[st
         return matched
 
 
-def stamp_observation_with_disclosures(
-    observation: Any, disclosures: list[dict[str, Any]]
-) -> Any:
+def stamp_observation_with_disclosures(observation: Any, disclosures: list[dict[str, Any]]) -> Any:
     """Stamp narrowing disclosures into a model-facing observation, author-independent.
 
     A JSON-object string result -> merge a ``_clio.elicitation`` key (mirroring the

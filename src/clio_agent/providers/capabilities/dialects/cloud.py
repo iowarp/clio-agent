@@ -55,7 +55,9 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def build_deployment_capabilities(provider_id: str, api_base: str, model_id: str) -> DeploymentCapabilities:
+def build_deployment_capabilities(
+    provider_id: str, api_base: str, model_id: str
+) -> DeploymentCapabilities:
     """A cloud deployment: "no restriction" on every layer this dialect could narrow.
 
     ``context_served``/``output_max``/``slots``/``tools_enabled``/
@@ -74,7 +76,9 @@ def build_deployment_capabilities(provider_id: str, api_base: str, model_id: str
         model_id=model_id,
         model_key=model_key_fact,
         modalities_enabled=no_restriction(
-            _ALL_MODALITIES, observed_at=observed_at, detail="cloud endpoint: no modality projector to forget"
+            _ALL_MODALITIES,
+            observed_at=observed_at,
+            detail="cloud endpoint: no modality projector to forget",
         ),
         tools_enabled=no_restriction(
             True, observed_at=observed_at, detail="cloud endpoint: no local tool-parser to disable"

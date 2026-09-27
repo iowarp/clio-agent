@@ -25,7 +25,7 @@ from clio_agent.tools.execution import create_sync_tool_executor
 from clio_agent.tools.gateway import build_gateway, build_tool_catalog
 from clio_agent.tools.mcp_config import MCPServerSpec
 
-STUB = '''
+STUB = """
 import os, sys
 from pathlib import Path
 from fastmcp import FastMCP
@@ -41,7 +41,7 @@ def echo(text: str) -> str:
     return text
 
 mcp.run()
-'''
+"""
 
 
 @pytest.fixture

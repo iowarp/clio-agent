@@ -112,6 +112,16 @@ _DEFAULT_HINTS: dict[str, str] = {
         "call load_skill for the failing component's schema, then retry "
         "with a components payload that matches it"
     ),
+    "a2ui_url_unresolved": (
+        "reference an existing file inside this session's workspace by its path "
+        "(download a web file there first with your shell or fetch tool) or an "
+        "artifact://<artifact-id> a tool result returned; an https: URL is shown "
+        "to viewers only as a link, never loaded"
+    ),
+    "a2ui_url_export_failed": (
+        "the file could not be read to register it as an artifact; check that it "
+        "still exists and is readable, then retry"
+    ),
 }
 
 #: Every refusal reason the producer package can emit through :func:`refusal`
@@ -134,6 +144,8 @@ KNOWN_REFUSAL_REASONS: frozenset[str] = frozenset(
         "a2ui_client_capabilities_unknown",
         "a2ui_catalog_no_client_match",
         "a2ui_preferred_catalog_not_selectable",
+        "a2ui_url_unresolved",
+        "a2ui_url_export_failed",
     }
 )
 

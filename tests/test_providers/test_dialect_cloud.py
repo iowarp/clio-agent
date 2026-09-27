@@ -18,7 +18,9 @@ from clio_agent.providers.capabilities.records import Fact, ModelCapabilities
 def test_build_deployment_capabilities_reports_no_restriction_not_unknown() -> None:
     deployment = cloud.build_deployment_capabilities("openai", "https://api.openai.com/v1", "gpt-5")
 
-    assert deployment.modalities_enabled.value == frozenset({"text", "image", "pdf", "audio", "video"})
+    assert deployment.modalities_enabled.value == frozenset(
+        {"text", "image", "pdf", "audio", "video"}
+    )
     assert deployment.modalities_enabled.source == "dialect"
     assert deployment.tools_enabled.value is True
     assert deployment.tools_enabled.source == "dialect"

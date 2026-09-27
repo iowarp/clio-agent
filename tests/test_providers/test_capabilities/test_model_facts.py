@@ -464,7 +464,9 @@ def test_llama_cpp_and_lm_studio_state_their_own_size_fields() -> None:
         "data": [{"id": "m.gguf", "meta": {"n_ctx_train": 40960, "n_params": 8_190_735_360}}]
     }
     model = llama_cpp.build_model_capabilities("m", payload, "m.gguf")
-    assert model.parameters.value == ParameterCount(total=8_190_735_360)
+    # llama.cpp's n_params counts every weight stored in the GGUF file.
+    assert model.parameters.value == ParameterCount(total=8_190_735_360, scope="file")
+    assert "every weight stored in this GGUF" in model.parameters.detail
     no_meta = llama_cpp.build_model_capabilities(
         "m", {"data": [{"id": "qwen3-8b.gguf"}]}, "qwen3-8b.gguf"
     )

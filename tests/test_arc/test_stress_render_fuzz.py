@@ -86,7 +86,10 @@ def _needles(seg: Segment) -> list[str]:
     ``tool_args_{i}`` (== args dict). For text-bearing kinds it's the ``text``.
     """
     if seg.kind == "tool_call":
-        return [str(seg.content.get("name", "")), str(seg.content.get("args", {}).get("needle", ""))]
+        return [
+            str(seg.content.get("name", "")),
+            str(seg.content.get("args", {}).get("needle", "")),
+        ]
     return [str(seg.content.get("text", ""))]
 
 
@@ -338,9 +341,9 @@ def test_empty_and_missing_content_keeps_its_slot(tmp_path):
     ``tool_name_1`` — NOT a new iteration. The decisive invariant is that all three
     empty segments keep three distinct value slots (no collapse)."""
     ss, _ = _store(tmp_path)
-    ss.append(SID, SCOPE, "observation", {}, step=0)            # missing "text"
+    ss.append(SID, SCOPE, "observation", {}, step=0)  # missing "text"
     ss.append(SID, SCOPE, "observation", {"text": ""}, step=1)  # empty "text"
-    ss.append(SID, SCOPE, "tool_call", {}, step=2)              # missing name/args
+    ss.append(SID, SCOPE, "tool_call", {}, step=2)  # missing name/args
     keys = ss.render_keys(SID, SCOPE)
     assert keys["observation_0"] == ""
     assert keys["observation_1"] == ""
@@ -376,7 +379,10 @@ def test_framing_kinds_never_in_trajectory(tmp_path):
     blob = _rendered_blob(keys)
     assert "SYS" not in blob and "USR" not in blob
     assert keys == {
-        "thought_0": "TH", "tool_name_0": "tl", "tool_args_0": {}, "observation_0": "OB"
+        "thought_0": "TH",
+        "tool_name_0": "tl",
+        "tool_args_0": {},
+        "observation_0": "OB",
     }
     _assert_gapless(keys)
 
@@ -435,7 +441,9 @@ def test_fuzz_as_of_monotonic_visibility(tmp_path, seed):
             ss.delete(SID, SCOPE, rng.sample(live_ids, rng.randint(1, len(live_ids))))
         else:
             ss.summarize(
-                SID, SCOPE, rng.sample(live_ids, rng.randint(1, len(live_ids))),
+                SID,
+                SCOPE,
+                rng.sample(live_ids, rng.randint(1, len(live_ids))),
                 {"text": f"S{seed}_{i}"},
             )
 

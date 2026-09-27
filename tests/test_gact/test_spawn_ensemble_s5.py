@@ -729,9 +729,7 @@ def test_wait_merges_ensemble_workflow_state_in_request_order_with_conflict_rows
 
     with _active_turn(app):
         wait = _wait_tool(app, monkeypatch)
-        result = json.loads(
-            wait.func(task_ids=["task_run0", "task_run1", "task_run2"])
-        )
+        result = json.loads(wait.func(task_ids=["task_run0", "task_run1", "task_run2"]))
 
     # Deterministic request-order merge: highest run_index wins the colliding key.
     assert result["merged_workflow_state"]["target"] == {"status": "found", "src": "run2"}
@@ -768,9 +766,7 @@ def test_wait_merge_is_completion_order_independent_sabotage_lock(monkeypatch) -
     with _active_turn(app):
         wait = _wait_tool(app, monkeypatch)
         # Collect in REVERSED order — run 2 first, run 0 last.
-        result = json.loads(
-            wait.func(task_ids=["task_run2", "task_run1", "task_run0"])
-        )
+        result = json.loads(wait.func(task_ids=["task_run2", "task_run1", "task_run0"]))
 
     assert result["merged_workflow_state"]["k"] == {"v": 2}, "arrival order leaked into the merge"
     assert result["workflow_state_conflicts"][0]["winner"]["run_index"] == 2

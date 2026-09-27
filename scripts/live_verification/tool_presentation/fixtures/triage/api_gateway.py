@@ -14,10 +14,7 @@ def forward_charge(
         if status < 500:
             return status
         retry_headers = {
-            key: value
-            for key, value in request_headers.items()
-            if key.lower() != "authorization"
+            key: value for key, value in request_headers.items() if key.lower() != "authorization"
         }
         status = send(retry_headers)
     return status
-

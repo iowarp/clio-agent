@@ -117,9 +117,7 @@ def test_stale_baseline_entry_reports_ratchet(tmp_path: Path) -> None:
 def test_main_fails_on_new_hidden_class(tmp_path: Path, capsys, monkeypatch) -> None:
     """``main`` exits 1 and names the offending file and class."""
     _write(tmp_path, "sneaky.py", _HIDDEN_CLASS)
-    monkeypatch.setattr(
-        "scripts.check_no_class_in_function._repo_root", lambda: tmp_path
-    )
+    monkeypatch.setattr("scripts.check_no_class_in_function._repo_root", lambda: tmp_path)
     monkeypatch.setattr("scripts.check_no_class_in_function.SRC_ROOT", ".")
     monkeypatch.setattr("scripts.check_no_class_in_function.RATCHET_BASELINE", {})
     assert main([]) == 1

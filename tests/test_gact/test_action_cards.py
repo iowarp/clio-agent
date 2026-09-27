@@ -234,9 +234,9 @@ def test_raise_alert_card_from_child_emits_into_parent_with_discuss_handle(
         }
 
         # Nothing was emitted into the CHILD's own transcript.
-        child_messages = client.get(
-            f"/v1/sessions/{task.child_session_id}/messages"
-        ).json()["messages"]
+        child_messages = client.get(f"/v1/sessions/{task.child_session_id}/messages").json()[
+            "messages"
+        ]
         assert not any(p["type"] == "action_card" for m in child_messages for p in m["parts"])
 
 

@@ -54,8 +54,10 @@ to point at your model provider.
 ## e) Desktop app
 Download the installer for your OS from the
 [latest release](https://github.com/iowarp/clio-agent/releases/latest):
-`.msi`/`.exe` (Windows), `.dmg` (macOS), `.deb`/`.AppImage`/`.rpm` (Linux). Bundles
-clio-agent — nothing else to install.
+the `-bundled` `.msi`/`.exe` (Windows), `.dmg` (Apple Silicon macOS), or `.deb`/`.rpm`
+(Linux). Bundled installers ship clio-agent, so there is nothing else to install. Installers
+without `-bundled` in the name, including every Linux `.AppImage` and the Intel macOS
+`.dmg`, are attach-only: they connect to a clio-agent you install and run separately.
 
 **Proving a release candidate's desktop lifecycle (Windows).** `scripts/
 live_verification/desktop_lifecycle_proof.py` drives the INSTALLED
@@ -83,7 +85,7 @@ For a persistent backend-only installation, use `uv tool` (not the
 ephemeral `uvx` / `uv tool run` path):
 
 ```sh
-uv tool install --with dspy==3.3.0b1 --with fastmcp==4.0.0b5 --with fastmcp-slim==4.0.0b5 --with fastmcp-tasks==4.0.0b5 clio-agent==0.9.4.18
+uv tool install --with dspy==3.3.0b1 --with fastmcp==4.0.0b5 --with fastmcp-slim==4.0.0b5 --with fastmcp-tasks==4.0.0b5 clio-agent==0.9.4.20
 clio-agent serve
 ```
 

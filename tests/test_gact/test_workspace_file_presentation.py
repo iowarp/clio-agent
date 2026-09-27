@@ -112,7 +112,9 @@ def test_view_pdf_descriptor_renders_a_workspace_file_block_with_resolved_pages(
         descriptor = tool(path="doc.pdf", pages="2-3")
 
     assert descriptor["type"] == VIEW_PDF_DESCRIPTOR_TYPE
-    presentation = workspace_file_presentation({"path": "doc.pdf", "pages": "2-3"}, descriptor, None)
+    presentation = workspace_file_presentation(
+        {"path": "doc.pdf", "pages": "2-3"}, descriptor, None
+    )
 
     assert presentation == {
         "summary": "",

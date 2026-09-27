@@ -2,14 +2,12 @@
 
 Some providers (the ``codex`` and ``claude_code`` LiteLLM bridges) drive a local
 CLI rather than an HTTP endpoint, so there is nothing to *probe*: no ``/models``
-route, no auth header, no network at all. But they DO have a known model set —
-declared in the provider catalog (:mod:`clio_agent.providers.catalog`) — and
-those models still need their **context windows** resolved so budgeting and the
-model picker work. So this handshake makes *zero* network calls yet still emits
-the registry's candidate models as profiles; the base
-:meth:`ProviderHandshake.enrich_capabilities` step then fills each model's
-context window from the shared source cascade (provider-self-reported ->
-models.dev -> litellm catalog -> local DB).
+route, no auth header, no network at all. This base makes *zero* network calls
+and lists no models itself; its subclasses
+(:mod:`clio_agent.providers.handshake.cli_catalog`) supply rows from their own
+offline data sources, and the base :meth:`ProviderHandshake.enrich_capabilities`
+step then fills each model's context window from the shared source cascade
+(provider-self-reported -> models.dev -> litellm catalog -> local DB).
 
 This is what makes a CLI provider's context discoverable on default config
 (iowarp/clio-agent#740). Previously discovery returned ``[]`` so codex /
@@ -39,7 +37,6 @@ from clio_agent.providers.handshake.model import (
     DiscoveredModel,
     DiscoveredModelFacts,
 )
-from clio_agent.providers.model_discovery.modality_evidence import modality_evidence
 
 
 def _now_iso() -> str:
@@ -50,14 +47,14 @@ class NoOpHandshake(ProviderHandshake):
     """A handshake that probes nothing — for CLI providers (codex, claude_code).
 
     No network is touched: connectivity is reported ``OK``/``NOT_REQUIRED`` (the
-    CLI is local and manages its own auth), and ``discover_models`` returns the
-    provider's registry-declared candidate model set instead of hitting an
-    endpoint. The base enrichment step then resolves each model's context window
-    from the shared cascade, so CLI providers carry context like any HTTP one.
+    CLI is local and manages its own auth), and ``discover_models`` lists nothing;
+    subclasses supply rows from their own offline sources. The base enrichment
+    step then resolves each model's context window from the shared cascade, so
+    CLI providers carry context like any HTTP one.
     """
 
     def models_provenance(self, ctx: HandshakeContext) -> tuple[str, str]:
-        """Report ``static``: these rows are the compiled-in registry catalog.
+        """Report ``static``: these rows come from an offline source, not a probe.
 
         This handshake makes zero network calls, so calling its output ``live``
         (the pre-fix behaviour, which stamped ``live`` whenever ANY model
@@ -82,41 +79,23 @@ class NoOpHandshake(ProviderHandshake):
         )
 
     async def discover_models(self, client: Any, ctx: HandshakeContext) -> list[dict[str, Any]]:
-        """Return the provider's registry-declared candidate models (no network).
+        """Return no models: a CLI provider has no listing and no compiled-in candidates.
 
-        CLI providers expose no ``/models`` listing, but the registry declares the
-        candidate model ids; surfacing them here lets the base enrichment resolve
-        each one's context window from the cascade.
+        Model rows come from a subclass's own data source (the #1211 refresh
+        overlay, the maintained Claude Code catalog), never from a static
+        registry list (model-capabilities brief 9.1).
         """
-        from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
-
-        provider = get_provider(ctx.provider_id)
-        if provider is None:
-            return []
-        return [
-            {
-                "id": entry.id,
-                "name": entry.name,
-                "description": entry.description,
-                "capabilities": list(entry.documented_modalities),
-                "capability_evidence": (
-                    modality_evidence(source="provider_documentation", reason="modality_documented")
-                    if entry.documented_modalities
-                    else {}
-                ),
-            }
-            for entry in provider.model_catalog
-            if getattr(entry, "id", "")
-        ]
+        del client, ctx
+        return []
 
     async def discover_model_config(
         self, client: Any, ctx: HandshakeContext, raw: dict[str, Any]
     ) -> DiscoveredModelFacts:
-        """Wrap a registry row as :class:`DiscoveredModelFacts` (no network access).
+        """Wrap an offline catalog row as :class:`DiscoveredModelFacts` (no network access).
 
-        The registry's ``documented_modalities`` become
+        The row's ``capabilities`` become
         ``ModelCapabilities.input_modalities`` with ``source="catalog"`` — a
-        compiled-in candidate, never live evidence (this handshake makes zero
+        cataloged candidate, never live evidence (this handshake makes zero
         network calls, matching :meth:`models_provenance`'s ``"static"``).
         Context/output limits are left unknown here; the base
         :meth:`~clio_agent.providers.handshake.base.ProviderHandshake.enrich_capabilities`
@@ -142,7 +121,7 @@ class NoOpHandshake(ProviderHandshake):
                 value=modalities_from_capabilities(caps),
                 source="catalog",
                 observed_at=observed_at,
-                detail="registry-documented model_catalog capabilities",
+                detail="offline catalog row capabilities",
             )
             if caps
             else Fact(value=frozenset({"text"}), source="catalog", observed_at=observed_at),

@@ -12,4 +12,3 @@ def deliver_next(
     message = dequeue()
     acknowledge(message["id"])
     persist_delivery(message)
-

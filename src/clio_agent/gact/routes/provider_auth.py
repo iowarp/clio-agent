@@ -23,6 +23,11 @@ from typing import Any
 from fastapi import HTTPException
 
 from clio_agent.gact.provider_catalog_snapshot import invalidate_provider
+from clio_agent.gact.routes.provider_auth_claude import (
+    claude_complete,
+    claude_start,
+    claude_status,
+)
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, LMProviderPreset
 from clio_agent.providers.api_key_store import ProviderApiKeyStore
 from clio_agent.providers.dependencies import ProviderDependencyInstallError, ensure_argonne_support
@@ -125,11 +130,11 @@ def _argonne_status(
     del preset, app, presets
     from clio_agent.providers import argonne_auth  # noqa: PLC0415
 
-    # ALCF's flow has no async background half: "pending" means only "still
-    # awaiting complete_authentication" -- the caller already learned the true
-    # outcome from complete's own (synchronous) response.
-    pending = argonne_auth.flow_is_pending(flow_id)
-    return {"state": "pending" if pending else "complete", "reason": ""}
+    # ALCF's flow has no async background half: "pending" means "still
+    # awaiting complete_authentication"; an unknown flow is "failed" with a
+    # plain reason, never a false "complete".
+    state, reason = argonne_auth.flow_status(flow_id)
+    return {"state": state, "reason": reason}
 
 
 async def _argonne_logout(
@@ -296,9 +301,23 @@ def _clear_api_key(preset: LMProviderPreset, app: Any) -> dict[str, Any]:
     }
 
 
-_START: dict[str, StartHandler] = {"argonne": _argonne_start, "codex": _codex_start}
-_COMPLETE: dict[str, CompleteHandler] = {"argonne": _argonne_complete, "codex": _codex_complete}
-_STATUS: dict[str, StatusHandler] = {"argonne": _argonne_status, "codex": _codex_status}
+# Claude Code drives its own CLI sign-in (#1454); CLIO never touches its credentials,
+# so there is still no Claude Code logout here (see ``supports_logout``).
+_START: dict[str, StartHandler] = {
+    "argonne": _argonne_start,
+    "codex": _codex_start,
+    "claude_code": claude_start,
+}
+_COMPLETE: dict[str, CompleteHandler] = {
+    "argonne": _argonne_complete,
+    "codex": _codex_complete,
+    "claude_code": claude_complete,
+}
+_STATUS: dict[str, StatusHandler] = {
+    "argonne": _argonne_status,
+    "codex": _codex_status,
+    "claude_code": claude_status,
+}
 _LOGOUT: dict[str, LogoutHandler] = {"argonne": _argonne_logout, "codex": _codex_logout}
 
 _NO_AUTH_FLOW_MESSAGE = (

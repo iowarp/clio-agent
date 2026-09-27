@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from packaging.requirements import Requirement
@@ -20,12 +21,6 @@ from packaging.requirements import Requirement
 #: a provider's install spec is ever resolved from (never request input).
 _DISTRIBUTION_NAME = "clio-agent"
 
-# Exactly the locked SDK (uv.lock), NOT resolved from the ``claude-code``
-# extra's metadata marker: an open floor there (``>=0.2.156``) would resolve
-# the newest release, and claude-agent-sdk 0.2.157 ships no Windows wheel --
-# its sdist installs without the bundled Claude Code CLI the SDK transport
-# runs. This one dependency stays a fixed, audited literal on purpose.
-_CLAUDE_CODE_REQUIREMENT = "claude-agent-sdk==0.2.156"
 _INSTALL_TIMEOUT_SECONDS = 180
 _INSTALL_LOCK = threading.Lock()
 
@@ -185,6 +180,54 @@ def ensure_provider_extra(
     )
 
 
+@dataclass(frozen=True)
+class ProviderSupport:
+    """What one installable provider support consists of.
+
+    Attributes:
+        provider_kind: The provider kind (``argonne``, ``claude_code``).
+        module: The import name whose presence means the support is installed.
+        distributions: The PyPI distributions that provide ``module``.
+        display_name: How the support is named to a person.
+    """
+
+    provider_kind: str
+    module: str
+    distributions: tuple[str, ...]
+    display_name: str
+
+
+#: Every provider support CLIO can install into its backend environment. The
+#: restore at startup (:mod:`clio_agent.providers.support_restore`) covers
+#: exactly these kinds plus the user-updatable components.
+PROVIDER_SUPPORT: Mapping[str, ProviderSupport] = {
+    "argonne": ProviderSupport("argonne", "globus_sdk", ("globus-sdk",), "ALCF sign-in"),
+    "claude_code": ProviderSupport(
+        "claude_code", "claude_agent_sdk", ("claude-agent-sdk",), "Claude Code"
+    ),
+}
+
+
+def support_installed(provider_kind: str) -> bool:
+    """Whether ``provider_kind``'s support module is importable in this environment."""
+    return _module_available(PROVIDER_SUPPORT[provider_kind].module)
+
+
+def _recorded(provider_kind: str, installed: bool) -> bool:
+    """Record a support this call installed, so a runtime change cannot lose it.
+
+    Only an install CLIO just performed is recorded -- support the runtime
+    already carried (the desktop bundles ALCF sign-in) is not the person's
+    install. A failed record is logged and reported by
+    :mod:`clio_agent.providers.support_record`; the install itself stands.
+    """
+    if installed:
+        from clio_agent.providers.support_record import record_support  # noqa: PLC0415
+
+        record_support(provider_kind)
+    return installed
+
+
 def ensure_argonne_support(*, python_executable: str | None = None) -> bool:
     """Ensure the active backend can run ALCF's Globus authentication.
 
@@ -193,30 +236,58 @@ def ensure_argonne_support(*, python_executable: str | None = None) -> bool:
     ``argonne`` extra (see :func:`ensure_provider_extra`), never hardcoded here.
     """
 
-    return ensure_provider_extra(
+    installed = ensure_provider_extra(
         extra_name="argonne",
-        module_name="globus_sdk",
+        module_name=PROVIDER_SUPPORT["argonne"].module,
         display_name="ALCF support",
         python_executable=python_executable,
     )
+    return _recorded("argonne", installed)
+
+
+def claude_code_requirement() -> str:
+    """The exact Claude Agent SDK release to install: the newest one installable HERE.
+
+    Not the ``claude-code`` extra's open floor: "newest on PyPI" can be a
+    release with no wheel for this platform (0.2.157 and 0.2.160 shipped none
+    for Windows), whose sdist installs WITHOUT the bundled ``claude`` CLI the
+    transport runs. The user-updatable component lookup
+    (:mod:`clio_agent.providers.components.pypi`) only counts releases with a
+    compatible wheel, so the first install tracks the latest usable release,
+    exactly like a later in-place update does.
+    """
+    from clio_agent.providers.components.pypi import RELEASES, PyPILookupError  # noqa: PLC0415
+
+    try:
+        latest = RELEASES.releases("claude-agent-sdk").latest
+    except PyPILookupError as exc:
+        raise ProviderDependencyInstallError(
+            f"could not look up an installable Claude Agent SDK release: {exc}"
+        ) from exc
+    if not latest:
+        raise ProviderDependencyInstallError(
+            "no Claude Agent SDK release ships a wheel for this computer"
+        )
+    return f"claude-agent-sdk=={latest}"
 
 
 def ensure_claude_code_support(*, python_executable: str | None = None) -> bool:
     """Ensure the active backend contains the Claude Agent SDK.
 
     Returns ``True`` when this call installed the SDK and ``False`` when it was
-    already available. This ONE dependency stays a fixed, audited literal
-    (``_CLAUDE_CODE_REQUIREMENT``) rather than resolving from the
-    ``claude-code`` extra's own (looser) metadata marker -- see the constant's
-    docstring for why an open floor is unsafe here.
+    already available. The release is the newest one with a wheel for this
+    platform (:func:`claude_code_requirement`), never an open floor.
     """
 
-    return _ensure_dependency(
-        module_name="claude_agent_sdk",
-        requirements=[_CLAUDE_CODE_REQUIREMENT],
+    if _module_available(PROVIDER_SUPPORT["claude_code"].module):
+        return False
+    installed = _ensure_dependency(
+        module_name=PROVIDER_SUPPORT["claude_code"].module,
+        requirements=[claude_code_requirement()],
         display_name="Claude Code support",
         python_executable=python_executable,
     )
+    return _recorded("claude_code", installed)
 
 
 #: Provider kind -> its installer. The single generic seam the route dispatches

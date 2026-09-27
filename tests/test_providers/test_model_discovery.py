@@ -245,7 +245,7 @@ def test_overlay_models_wire_present_serves_verbatim(
 def test_overlay_models_wire_falls_back_to_bare_kind_key(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Dual-keying (mirrors ``as_provider_models_dict``): a lookup by preset id
+    """Dual-keying: a lookup by preset id
     that has no dedicated row falls back to the bare provider_kind row."""
     overlay_file = tmp_path / "overlay.json"
     overlay_file.write_text(
@@ -764,8 +764,13 @@ def test_discover_claude_code_not_logged_in_is_typed_failure(
     result = model_discovery.discover_claude_code(timeout=5.0)
 
     assert result.discovered == []
-    assert "not signed in" in (result.failed_reason or "")
-    assert "claude auth login" in (result.failed_reason or "")
+    reason = result.failed_reason or ""
+    assert "not signed in" in reason
+    # #1454: CLIO drives the CLI's own sign-in (the provider's "Log in" / the
+    # error card's "Sign in again"), so the reason points there, never at a
+    # terminal command the person would have to run on the connected agent.
+    assert "Sign in to Claude Code from CLIO" in reason
+    assert "claude auth login" not in reason
 
 
 def test_discover_claude_code_auth_status_missing_logged_in_key_is_typed_failure(

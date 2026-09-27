@@ -55,14 +55,12 @@ Readiness = Callable[..., tuple[str, str, bool, str]]
 def register_provider_catalog_routes(
     app: FastAPI,
     presets: list[LMProviderPreset],
-    provider_models: dict[str, list[dict[str, str]]],
     codex_readiness: Readiness,
     claude_code_readiness: Readiness,
 ) -> None:
     """Register provider auth, model listing, support install and checks."""
 
     _LM_PRESETS = presets
-    _PROVIDER_MODELS = provider_models
     _codex_readiness = codex_readiness
     _claude_code_readiness = claude_code_readiness
 
@@ -71,6 +69,18 @@ def register_provider_catalog_routes(
     from clio_agent.gact.routes.local_servers import register_local_server_routes  # noqa: PLC0415
 
     register_local_server_routes(app, presets)
+
+    from clio_agent.gact.routes.provider_components import (  # noqa: PLC0415
+        register_provider_component_routes,
+    )
+
+    register_provider_component_routes(app, presets)
+
+    from clio_agent.gact.routes.provider_support import (  # noqa: PLC0415
+        register_provider_support_routes,
+    )
+
+    register_provider_support_routes(app)
 
     @app.post("/v1/providers/{provider_id}/auth")
     async def auth_provider(provider_id: str, request: Request) -> dict[str, Any]:
@@ -119,21 +129,17 @@ def register_provider_catalog_routes(
         # than the one actually configured.
         preset = next((p for p in _LM_PRESETS if p.id == provider_id), None)
         if preset is None:
-            # Last-ditch static for known provider ids only.
-            models = _PROVIDER_MODELS.get(provider_id)
-            if models is None:
-                raise HTTPException(
-                    status_code=404,
-                    detail=ErrorEnvelope(
-                        error=ErrorInfo(
-                            error="not_found",
-                            message=f"unknown provider: {provider_id}",
-                            details={"available": sorted(_PROVIDER_MODELS)},
-                            recoverable=False,
-                        )
-                    ).model_dump(exclude_none=True),
-                )
-            return {"models": models, "source": "static_catalog"}
+            raise HTTPException(
+                status_code=404,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="not_found",
+                        message=f"unknown provider: {provider_id}",
+                        details={"available": sorted(p.id for p in _LM_PRESETS)},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
 
         if preset.provider in {"codex", "claude_code"}:
             _, message, verified, _ = (

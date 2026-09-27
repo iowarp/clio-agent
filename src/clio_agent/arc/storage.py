@@ -34,7 +34,6 @@ import os
 import subprocess
 import sys
 import threading
-import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Dict, Optional, Protocol, runtime_checkable
@@ -44,6 +43,10 @@ from typing import Dict, Optional, Protocol, runtime_checkable
 # ``_ensure_runtime_daemon`` reads the latch flag live, not a stale copy frozen at import time.
 from clio_agent.arc import clio_core_attach, runtime_stop
 from clio_agent.arc import clio_core_daemon_version as daemon_version
+
+# Daemon port-resolution + socket-liveness helpers live in the liveness owner
+# module (#892); blob writes ride the bounded rc=13-class retry module (#893).
+from clio_agent.arc.clio_core_async_ops import TagIds, store_delete, store_put
 
 # CTE config generation + capacity policy (the bounded ram hot-tier cap) live in their own
 # owner module (iowarp/clio-agent#774/#890); re-exported here so callers/tests reaching
@@ -68,10 +71,6 @@ from clio_agent.arc.clio_core_liveness import (  # noqa: F401 - re-exported for 
     _resolve_runtime_port,
     _runtime_alive,
 )
-
-# Daemon port-resolution + socket-liveness helpers live in the liveness owner
-# module (#892); blob writes ride the bounded rc=13-class retry module (#893).
-from clio_agent.arc.clio_core_retry import put_blob_with_retry
 from clio_agent.arc.companion_policy import may_carry_companion
 from clio_agent.arc.pid_identity import pid_alive as _pid_alive
 from clio_agent.arc.pid_identity import proc_create_time as _proc_create_time
@@ -86,6 +85,7 @@ from clio_agent.arc.rpc_liveness import (
 )
 from clio_agent.arc.runtime_crash import (
     clear_crash_record,
+    wait_for_spawned_daemon,
     watch_daemon_process,
 )
 
@@ -510,16 +510,12 @@ def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str
             return daemon_version.resolve_effective_config(
                 state, config_path, on_failure=_deregister_client
             )
-        _spawn_runtime_daemon(iowarp_core, config_path, log_level)
-        deadline = time.monotonic() + _RUNTIME_START_TIMEOUT_S
-        while time.monotonic() < deadline:
-            if _runtime_alive(port):
-                return config_path
-            time.sleep(0.25)
-        raise RuntimeError(
-            f"spawned the clio-core runtime daemon but it never bound port {port} within "
-            f"{_RUNTIME_START_TIMEOUT_S:.0f}s; see {runtime_state_dir() / 'clio-runtime.log'}."
-        )
+        with runtime_stop.kill_spawned_daemon_on_failure():
+            _spawn_runtime_daemon(iowarp_core, config_path, log_level)
+            wait_for_spawned_daemon(
+                port, alive=_runtime_alive, state_dir=state, timeout_s=_RUNTIME_START_TIMEOUT_S
+            )
+        return config_path
 
 
 class ClioCoreStore:
@@ -554,6 +550,7 @@ class ClioCoreStore:
 
         self._cte = cte
         self._client = cte.get_cte_client()
+        self._tag_ids = TagIds(cte)  # Tag(name) blocks with the GIL: once per kind
         self._config_path = config_path
         self._log_level = log_level
         # 905: cached once, not re-read per call -- see supports_search() below.
@@ -562,7 +559,9 @@ class ClioCoreStore:
         # binding, so a dead daemon raises ClioCoreRuntimeLostError instead of AV-ing the
         # host process (clio-core#722). See clio_agent.arc.clio_core_liveness.
         self._gate = LivenessGate(config_path=config_path, log_level=log_level)
-        clio_core_attach.verify_post_attach(self, on_failure=_deregister_client)
+        clio_core_attach.verify_post_attach(
+            self, on_failure=lambda: runtime_stop.release_failed_attach(config_path, log_level)
+        )
         logger.info(
             "ClioCoreStore active: clio-core is the ARC backend (shared daemon runtime). "
             "The DEFAULT config is a DRAM hot tier + file cold tier; durable + "
@@ -612,21 +611,16 @@ class ClioCoreStore:
             # 905: clio-core >=2.2.0 needs an indexer chimod for BM25 search; not
             # wired in (unsafe, see clio_core_config's docstring) -- warn loudly.
             warn_if_search_indexer_absent(config_path)
-            # Do NOT redirect fd 2 (no os.dup2 on stderr) here. Under pytest's fd-level capture that
-            # clobbers the captured fd and can SILENTLY ABORT the interpreter (exit 1, zero output)
-            # depending on capture mode + ambient CTE shared-memory state. CTP_LOG_LEVEL quiets the
-            # C++ logging; a one-time startup banner on stderr is an acceptable trade for never
-            # crashing the host process.
-            #
-            # CLIENT ONLY attach, result CHECKED: a failed handshake raises typed at once.
-            clio_core_attach.attach_native_client(
+            # Do NOT redirect fd 2 (no os.dup2 on stderr): under pytest's fd capture that can SILENTLY
+            # ABORT the interpreter; CTP_LOG_LEVEL quiets the C++ logging instead. CLIENT ONLY attach,
+            # CHECKED: a failed attach/CTE init raises typed and releases this client (#1401).
+            clio_core_attach.attach_and_initialize(
                 cte,
                 config_path=config_path,
                 port=_resolve_runtime_port(config_path),
-                on_failure=_deregister_client,
+                settle_s=settle_s,
+                on_failure=lambda: runtime_stop.release_failed_attach(config_path, log_level),
             )
-            time.sleep(settle_s)  # let the client handshake settle
-            cte.initialize_cte(config_path, cte.PoolQuery.Dynamic())  # "" => ~/.clio/clio.yaml
             cls._initialized = True
 
             # Stash the params and register the last-one-out release with atexit, the general
@@ -676,6 +670,7 @@ class ClioCoreStore:
 
         _ensure_runtime_daemon(iowarp_core, self._config_path, self._log_level)
         self._client = self._cte.get_cte_client()
+        self._tag_ids.clear()  # tag ids are daemon state; re-resolve after a reconnect
 
     # ---- ARCStore Protocol ----
 
@@ -688,27 +683,20 @@ class ClioCoreStore:
         tier: str = "warm",
         search_text: Optional[str] = None,
     ) -> None:
-        # Multi-RPC: each native call is guarded individually so stall_after_s bounds ONE RPC.
+        # Multi-RPC: each native call is guarded individually so stall_after_s bounds ONE RPC,
+        # on the async API (clio_core_async_ops) so a stalled daemon cannot hold the GIL.
         # base64-wrap: CTE GetBlob UTF-8-decodes, so store ascii-safe bytes.
         payload = base64.b64encode(data)
         if kind == "segments":  # #1339: live-lane audit evidence (one row per put)
             stream_audit("store.put", kind=kind, name=name, size=len(payload))
-        guarded_store_rpc(
-            self, "put", lambda: put_blob_with_retry(self._cte.Tag(kind), name, payload)
-        )
+        guarded_store_rpc(self, "put", store_put, self, kind, name, payload)
         # Optional BM25 companion (Thread D) at <name>.text; scan()/get() skip it.
         companion = name + _SEARCH_SUFFIX
         if search_text is not None:
             text = search_text.encode("utf-8")
-            guarded_store_rpc(
-                self, "put", lambda: put_blob_with_retry(self._cte.Tag(kind), companion, text)
-            )
-        elif not may_carry_companion(kind, name):
-            return  # #1334: the reserved ``_events`` family never has a companion; 1 RPC
-        elif guarded_store_rpc(self, "put", lambda: self._cte.Tag(kind).GetBlobSize(companion)) > 0:
-            guarded_store_rpc(  # drop a now-stale companion
-                self, "put", lambda: self._client.DelBlob(self._cte.Tag(kind).GetTagId(), companion)
-            )
+            guarded_store_rpc(self, "put", store_put, self, kind, companion, text)
+        elif may_carry_companion(kind, name):  # #1334: never for the ``_events`` family
+            guarded_store_rpc(self, "put", store_delete, self, kind, companion)  # a stale one
         # ``tier`` is advisory: the default single DRAM tier makes ReorganizeBlob a no-op.
 
     @guard_store_op("get")
@@ -744,26 +732,21 @@ class ClioCoreStore:
 
     @guard_store_op("delete")
     def delete(self, kind: str, name: str) -> None:
-        # Tag has no per-blob delete; go through the Client + TagId. DelBlob on a
-        # missing blob returns False (no raise), satisfying the no-op contract.
-        tag = self._cte.Tag(kind)
-        tag_id = tag.GetTagId()
-        self._client.DelBlob(tag_id, name)
-        self._client.DelBlob(tag_id, name + _SEARCH_SUFFIX)  # companion (no-op if absent)
+        # Tag has no per-blob delete; go through the Client + TagId (async: GIL-free). A
+        # missing blob answers a non-zero code (no raise), satisfying the no-op contract.
+        store_delete(self, kind, name)
+        store_delete(self, kind, name + _SEARCH_SUFFIX)  # companion (no-op if absent)
 
     def clear(self) -> None:
         # Multi-RPC: each DelBlob (and the per-kind listing) is guarded INDIVIDUALLY so a
         # long, PROGRESSING clear over many blobs (total > stall_after_s) is never
         # misclassified as a stalled peer; only a single hanging RPC trips the ladder.
         for kind in ARC_KINDS:
-            tag_id = guarded_store_rpc(self, "clear", lambda k: self._cte.Tag(k).GetTagId(), kind)
             blob_names = guarded_store_rpc(
                 self, "clear", lambda k: list(self._cte.Tag(k).GetContainedBlobs()), kind
             )
             for blob_name in blob_names:
-                guarded_store_rpc(
-                    self, "clear", lambda tid, bn: self._client.DelBlob(tid, bn), tag_id, blob_name
-                )
+                guarded_store_rpc(self, "clear", store_delete, self, kind, blob_name)
 
     # ---- semantic discovery (Thread D) ----
 

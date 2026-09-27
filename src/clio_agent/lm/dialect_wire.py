@@ -42,6 +42,7 @@ from typing import Any
 
 from clio_agent.providers.capabilities.combine import ThinkingDecision
 from clio_agent.providers.capabilities.dialects.openrouter import REQUIRE_PARAMETERS_FLAG
+from clio_agent.providers.capabilities.records import ThinkingSpec
 from clio_agent.providers.thinking_levels import LEVEL_BUDGET
 
 #: Optional fields the brief names (Part 7 item 2) whose WIRE NAME differs by
@@ -175,6 +176,41 @@ def _budget_for_level(decision: ThinkingDecision, level: str, explicit_budget: i
 REASONING_LEVELS_UNKNOWN = "reasoning_levels_unknown"
 
 
+#: Typed reason: an explicit "off" was not sent because nothing states this
+#: model's reasoning can be disabled (:attr:`ThinkingSpec.off_evidenced`). The
+#: model's own default applies instead of a disable it may refuse.
+REASONING_OFF_NOT_EVIDENCED = "reasoning_off_not_evidenced"
+
+#: Transports where "off" holds for every model they serve: anthropic's off is
+#: an omitted field (the API default), claude_code's is the Agent SDK's own
+#: ``thinking={"type": "disabled"}`` option.
+_TRANSPORT_OFF_DIALECTS: frozenset[str] = frozenset({"anthropic", "claude_code"})
+
+
+def off_sendable(
+    dialect: str,
+    spec: ThinkingSpec | None,
+    *,
+    lm_studio_allowed_options: tuple[str, ...] | None = None,
+) -> bool:
+    """Whether an explicit "off" may reach the wire for this model on ``dialect``.
+
+    Only on positive evidence: the model's own spec
+    (:attr:`ThinkingSpec.off_evidenced`), LM Studio's reported
+    ``allowed_options``, or a transport whose "off" holds for every model.
+    The catalog offers "off" on exactly this answer, so what a person can pick
+    is what gets sent.
+    """
+
+    if spec is None:
+        return False
+    if dialect in _TRANSPORT_OFF_DIALECTS:
+        return True
+    if dialect == "lm_studio" and lm_studio_allowed_options is not None:
+        return bool({"off", "none"} & set(lm_studio_allowed_options))
+    return spec.off_evidenced
+
+
 def _unknown_levels_wire(dialect: str, level: str) -> dict[str, Any]:
     """Pass a requested effort through for a model with unknown reasoning levels.
 
@@ -219,7 +255,11 @@ def thinking_wire(
     :data:`REASONING_LEVELS_UNKNOWN`) and the upstream decides; off/unset
     sends nothing.
 
-    ``level`` is the user's/shipped CLIO level (``None``/``"off"`` means off).
+    ``level`` is the user's/shipped CLIO level. ``None`` means unset: nothing
+    is sent on ANY dialect and the model's own default applies (a router such
+    as ``openrouter/free`` picks its backing model per request, so no disable
+    can be known to be valid). ``"off"`` is sent only where
+    :func:`off_sendable` holds (:data:`REASONING_OFF_NOT_EVIDENCED`).
     ``budget_tokens`` is an explicit ``config.thinking_budget`` override, used
     only by the ``budget_tokens``-mechanism dialects (anthropic, claude_code,
     vLLM).
@@ -231,14 +271,18 @@ def thinking_wire(
     now, never a second, provider-name-keyed mapping table).
     """
 
+    if level is None:
+        return {}
     if decision.spec is None:
-        if level is None or level == "off":
-            return {}
-        return _unknown_levels_wire(dialect, str(level))
+        return {} if level == "off" else _unknown_levels_wire(dialect, str(level))
     if decision.control is None:
         return {}
     control = decision.control
-    off = level is None or level == "off"
+    off = level == "off"
+    if off and not off_sendable(
+        dialect, decision.spec, lm_studio_allowed_options=lm_studio_allowed_options
+    ):
+        return {}
     # Guarded by `off` above: every branch below that reaches an
     # `_effort_value` call has a real, non-"off" level string in hand.
     wire_level = "" if off else str(level)
@@ -299,13 +343,10 @@ def thinking_wire(
         return {"reasoning": {"effort": value}} if value is not None else {}
 
     if dialect == "openai":
-        # OpenAI reasoning models: reasoning_effort=<level>, or "none" only
-        # when the model itself reports a "none"/off effort (some do not
-        # accept an explicit off at all -- omitting the field is then correct).
+        # OpenAI reasoning models: reasoning_effort=<level>, or "none" for an
+        # off the model itself lists (off_sendable gated it above).
         if off:
-            if decision.spec.levels and "off" in decision.spec.levels:
-                return {"reasoning_effort": "none"}
-            return {}
+            return {"reasoning_effort": "none"}
         value = _effort_value(decision, wire_level)
         return {"reasoning_effort": value} if value is not None else {}
 
@@ -322,12 +363,11 @@ def thinking_wire(
 
     if dialect == "codex":
         # Off sends an explicit "none" (an omitted value inherits the ambient
-        # config.toml effort rather than disabling it) -- but ONLY for a model
-        # that lists "none": the backend refuses an unlisted effort outright
-        # (live 2026-09-26: gpt-6-astra rejects 'none'). For such a model "off"
-        # is not offered, and no level means the model's own default effort.
+        # config.toml effort rather than disabling it) -- only for a model that
+        # lists "none" (off_sendable, above): the backend refuses an unlisted
+        # effort outright (live 2026-09-26: gpt-6-astra rejects 'none').
         if off:
-            return {"codex_reasoning_effort": "none"} if "off" in decision.spec.levels else {}
+            return {"codex_reasoning_effort": "none"}
         value = _effort_value(decision, wire_level)
         return {"codex_reasoning_effort": value} if value is not None else {}
 
@@ -410,7 +450,9 @@ __all__ = [
     "HTTP_DIALECTS",
     "PARAM_SPELLING_BY_DIALECT",
     "REASONING_LEVELS_UNKNOWN",
+    "REASONING_OFF_NOT_EVIDENCED",
     "apply_thinking_wire",
+    "off_sendable",
     "openrouter_require_parameters",
     "place_optional_param",
     "thinking_wire",

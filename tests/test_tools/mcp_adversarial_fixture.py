@@ -135,7 +135,11 @@ def _paginated_list_result(request_id: Any, *, cursor: Any) -> dict[str, Any]:
         # no nextCursor: only null/missing ends pagination
         **_NO_CACHE_HINT_FIELDS,
     }
-    return {"jsonrpc": "2.0", "id": request_id, "result": second_page if cursor == "" else first_page}
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "result": second_page if cursor == "" else first_page,
+    }
 
 
 class _MutatingASGIMiddleware:
@@ -199,7 +203,9 @@ class _MutatingASGIMiddleware:
         if method == "tools/call":
             tool_name = (req.get("params") or {}).get("name")
             if tool_name == BAD_RESULT_TYPE_TOOL:
-                return _ok_result(request_id, "bad-result-type", result_type="totally-bogus-result-type")
+                return _ok_result(
+                    request_id, "bad-result-type", result_type="totally-bogus-result-type"
+                )
             if tool_name == BAD_MISSING_CAPS_TOOL:
                 return _missing_caps_error(request_id)
             if tool_name == BAD_HEADER_MISMATCH_TOOL:

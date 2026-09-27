@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from clio_agent import conf
+from clio_agent.arc.clio_core_async_ops import TagIds
 from clio_agent.arc.clio_core_liveness import LivenessGate
 from clio_agent.arc.companion_policy import (
     NEVER_INDEXED_SCOPE_PREFIX,
@@ -50,19 +51,37 @@ class _RecordingCte:
         return _Tag()
 
 
+class _Ready:
+    def __init__(self, code: int = 0) -> None:
+        self._code = code
+
+    def done(self) -> bool:
+        return True
+
+    def wait(self, _max_sec: float = -1.0) -> int:
+        return self._code
+
+
 class _Client:
+    """Writes and deletes go through the GIL-free async API (``clio_core_async_ops``)."""
+
     def __init__(self, calls: list[tuple[str, str]]) -> None:
         self._calls = calls
 
-    def DelBlob(self, _tag_id: int, name: str) -> bool:  # noqa: N802
+    def AsyncPutBlob(self, _tag_id: int, name: str, _data: Any, _off: int = 0) -> _Ready:  # noqa: N802
+        self._calls.append(("PutBlob", name))
+        return _Ready(0)
+
+    def AsyncDelBlob(self, _tag_id: int, name: str) -> _Ready:  # noqa: N802
         self._calls.append(("DelBlob", name))
-        return True
+        return _Ready(0)
 
 
 def _store(cte: _RecordingCte) -> ClioCoreStore:
     store = ClioCoreStore.__new__(ClioCoreStore)
     store._cte = cte
     store._client = _Client(cte.calls)
+    store._tag_ids = TagIds(cte)
     store._config_path = ""
     store._log_level = "error"
     store._gate = LivenessGate(config_path="", probe=lambda _p: True, ttl_s=100.0)
@@ -91,13 +110,13 @@ def test_events_family_put_is_one_native_call() -> None:
     assert [op for op, _n in cte.calls] == ["PutBlob"]
 
 
-def test_indexed_scope_without_text_keeps_the_stale_companion_probe() -> None:
-    cte = _RecordingCte(companion_size=0)
+def test_indexed_scope_without_text_drops_any_stale_companion() -> None:
+    """One async delete of the companion, whether or not it exists (a missing one is a
+    no-op): the blocking ``GetBlobSize`` existence probe (GIL-held) is gone, so a stale
+    companion costs 2 RPCs instead of 3 and an absent one still 2."""
+    cte = _RecordingCte()
     _store(cte).put("segments", _events_name("agentA"), b"x")
-    assert [op for op, _n in cte.calls] == ["PutBlob", "GetBlobSize"]
-    cte = _RecordingCte(companion_size=12)
-    _store(cte).put("segments", _events_name("agentA"), b"x")
-    assert [op for op, _n in cte.calls] == ["PutBlob", "GetBlobSize", "DelBlob"]
+    assert cte.calls == [("PutBlob", "sess__agentA"), ("DelBlob", "sess__agentA.text")]
 
 
 def test_indexed_scope_with_text_writes_the_companion() -> None:
@@ -112,7 +131,7 @@ def test_indexed_scope_with_text_writes_the_companion() -> None:
 def test_non_segment_kinds_are_untouched_by_the_policy() -> None:
     cte = _RecordingCte()
     _store(cte).put("variants", "v1", b"x")
-    assert [op for op, _n in cte.calls] == ["PutBlob", "GetBlobSize"]
+    assert [op for op, _n in cte.calls] == ["PutBlob", "DelBlob"]
 
 
 # --------------------------------------------------------------------------- #

@@ -5,6 +5,9 @@ on:
     branches: [main, develop, "v*"]
   pull_request:
     branches: [main, develop, "campaign/**", "codex/**"]
+  # provider-sdk-bump.yml dispatches CI on its bump branch: a PR opened with
+  # GITHUB_TOKEN does not trigger pull_request workflows.
+  workflow_dispatch: {}
 
 jobs:
   # Every job carries timeout-minutes just above its measured normal duration, so a
@@ -24,11 +27,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+      # Tests marked `marketplace` read the pinned submodule and FAIL (never
+      # skip) without it (tests/_marketplace.py); say so here, before the suite.
+      - name: Assert the marketplace submodule is checked out
+        run: ls external/clio-agent-marketplace/*/AGENT.md > /dev/null
       - uses: astral-sh/setup-uv@v5
         with:
           version: "latest"
       - run: uv sync --python ${{ matrix.python-version }} --extra dev --extra optimizers
       - run: uv run ruff check src/ tests/ scripts/create_demo_data.py scripts/validate_marketplace_blueprints.py scripts/mcp_mem_attribution.py
+      # Formatting is checked, never rewritten by CI: drift fails the job and the
+      # author runs `uv run ruff format src/ tests/ scripts/` locally.
+      - name: ruff format (check only)
+        run: uv run ruff format --check --diff src/ tests/ scripts/
       # Anti-re-accretion guardrails (iowarp/clio-agent#714, #774). BLOCKING:
       # now that the #767 gact decomposition has landed, these enforce per-file
       # ratchet baselines -- a new god-file or a baselined file that regrows

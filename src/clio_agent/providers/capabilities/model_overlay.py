@@ -372,9 +372,13 @@ def _descriptive_facts(
             continue
         value = parse(capabilities[key])
         if value is None:
-            logger.warning("model_overlay: reason=malformed_%s value=%r %s", key, capabilities[key], detail)
+            logger.warning(
+                "model_overlay: reason=malformed_%s value=%r %s", key, capabilities[key], detail
+            )
             continue
-        facts[field_name] = Fact(value, "overlay", observed_at, f"{detail} {key}={capabilities[key]!r}")
+        facts[field_name] = Fact(
+            value, "overlay", observed_at, f"{detail} {key}={capabilities[key]!r}"
+        )
     return facts
 
 

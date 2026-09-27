@@ -109,7 +109,9 @@ _LLAMA_CPP_ACCEPTED = frozenset(
 )
 
 
-def _seed_llama_cpp(model_id: str = "qwen3-8b-gguf") -> None:
+def _seed_llama_cpp(
+    model_id: str = "qwen3-8b-gguf", levels: tuple[str, ...] = ("low", "medium", "high")
+) -> None:
     _seed(
         provider_id="llama_cpp",
         api_base=_LLAMA_CPP_BASE,
@@ -117,13 +119,14 @@ def _seed_llama_cpp(model_id: str = "qwen3-8b-gguf") -> None:
         dialect="llama_cpp",
         accepted_params=_LLAMA_CPP_ACCEPTED,
         thinking_controls=frozenset({"reasoning_effort", "chat_template_kwargs"}),
-        thinking_spec=ThinkingSpec(mechanism="effort_levels", levels=("low", "medium", "high")),
+        thinking_spec=ThinkingSpec(mechanism="effort_levels", levels=levels),
         template_caps={"supports_reasoning_effort": True, "supports_tools": True},
     )
 
 
 def test_llama_cpp_thinking_off() -> None:
-    _seed_llama_cpp()
+    """Off is sent only for a model that lists it (test_request_builder_reasoning_default)."""
+    _seed_llama_cpp(levels=("off", "low", "medium", "high"))
     extras = build_request_kwargs(_cfg("llama_cpp", "qwen3-8b-gguf", thinking_level="off"))
     assert extras["extra_body"]["reasoning_effort"] == "none"
 
@@ -143,7 +146,7 @@ def test_llama_cpp_falls_back_to_chat_template_kwargs_without_reasoning_effort_c
         dialect="llama_cpp",
         accepted_params=_LLAMA_CPP_ACCEPTED,
         thinking_controls=frozenset({"chat_template_kwargs"}),
-        thinking_spec=ThinkingSpec(mechanism="effort_levels", levels=("low", "medium", "high")),
+        thinking_spec=ThinkingSpec(mechanism="on_off", template_kwarg="enable_thinking"),
     )
     extras = build_request_kwargs(_cfg("llama_cpp", "qwen3-8b-gguf", thinking_level="medium"))
     assert extras["extra_body"]["chat_template_kwargs"] == {"enable_thinking": True}
@@ -387,6 +390,7 @@ def test_lm_studio_off() -> None:
         accepted_params=_LM_STUDIO_ACCEPTED,
         thinking_controls=frozenset({"reasoning_effort"}),
         thinking_spec=ThinkingSpec(mechanism="effort_levels", levels=("low", "medium", "high")),
+        template_caps={"reasoning_allowed_options": ["off", "on"]},
     )
     extras = build_request_kwargs(_cfg("lm_studio", "qwen3-8b", thinking_level="off"))
     assert extras["reasoning_effort"] == "none"
@@ -436,7 +440,8 @@ def test_openrouter_reasoning_effort_and_require_parameters_flag() -> None:
     assert extras["extra_body"]["provider"] == {"require_parameters": True}
 
 
-def test_openrouter_off_is_reasoning_disabled() -> None:
+def test_openrouter_off_is_not_sent_to_a_mandatory_reasoning_model() -> None:
+    """gpt-oss-120b's reasoning is mandatory: OpenRouter refuses a disable (HTTP 400)."""
     _seed(
         provider_id="openrouter",
         api_base=_OPENROUTER_BASE,
@@ -447,7 +452,7 @@ def test_openrouter_off_is_reasoning_disabled() -> None:
         thinking_spec=ThinkingSpec(mechanism="effort_levels", levels=("low", "medium", "high")),
     )
     extras = build_request_kwargs(_cfg("openrouter", "openai/gpt-oss-120b", thinking_level="off"))
-    assert extras["extra_body"]["reasoning"] == {"enabled": False}
+    assert "reasoning" not in extras["extra_body"]
 
 
 def test_openrouter_top_k_gated_by_route_params() -> None:

@@ -26,6 +26,7 @@ import httpx
 import pytest
 
 from scripts.create_benchmark_data import create_benchmark_data
+from tests._marketplace import MARKETPLACE_MISSING_MESSAGE, MARKETPLACE_ROOT
 
 from .conftest import _backend, _backend_alive, post_user, turn, wait_for_assistant
 
@@ -228,11 +229,11 @@ def test_real_provider_marketplace_blueprint_delegates_with_provenance(
     marketplace = Path(
         os.environ.get(
             "CLIO_REAL_MARKETPLACE_SOURCE",
-            Path.cwd() / "external" / "clio-agent-marketplace",
+            MARKETPLACE_ROOT,
         )
     ).resolve()
     if not marketplace.exists():
-        pytest.skip(f"marketplace source not found: {marketplace}")
+        pytest.fail(f"marketplace source not found: {marketplace}. {MARKETPLACE_MISSING_MESSAGE}")
 
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
@@ -304,8 +305,7 @@ def test_real_provider_marketplace_blueprint_delegates_with_provenance(
         for row in handoffs
     ), handoffs
     assert any(
-        row.get("agent_id") == "reference" and row.get("return_to") == "main"
-        for row in handoffs
+        row.get("agent_id") == "reference" and row.get("return_to") == "main" for row in handoffs
     ), handoffs
     names = _tool_names(assistant)
     assert "genomics_inspect_fasta" in names, names

@@ -60,7 +60,11 @@ def test_is_strict_prefix_matrix() -> None:
     # Shorter target is not an extension.
     assert st.is_strict_prefix(c, b) is False
     # Divergent content at an interior index fails on DICT compare, not length.
-    diverge = [{"role": "user", "content": "a"}, {"role": "user", "content": "X"}, {"role": "user", "content": "c"}]
+    diverge = [
+        {"role": "user", "content": "a"},
+        {"role": "user", "content": "X"},
+        {"role": "user", "content": "c"},
+    ]
     assert st.is_strict_prefix(b, diverge) is False
     # SABOTAGE (a): `return len(new) > len(prior)` (length-only) makes the divergent
     # case return True -> this pin goes red.
@@ -90,7 +94,11 @@ def test_classify_extension_is_delta_of_the_tail() -> None:
 
 def test_classify_divergent_prefix_is_full_mismatch() -> None:
     prior = _m("a", "b")
-    new = [{"role": "user", "content": "a"}, {"role": "user", "content": "ZZ"}, {"role": "user", "content": "c"}]
+    new = [
+        {"role": "user", "content": "a"},
+        {"role": "user", "content": "ZZ"},
+        {"role": "user", "content": "c"},
+    ]
     plan = st.classify_delta(prior, new)
     assert plan.mode == "full"
     assert plan.reason == "prefix_mismatch"
@@ -361,12 +369,20 @@ def test_resolve_stamps_a_call_id_for_the_ttft_join(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(st, "stateful_delta_enabled", lambda: True)
     with st.stateful_scope("s"):
         engaged = st.resolve_stateful_send(
-            messages=_m("a", "b"), full_prompt="FULL", model="haiku", cwd="/w",
-            thinking=None, serialize=_serialize,
+            messages=_m("a", "b"),
+            full_prompt="FULL",
+            model="haiku",
+            cwd="/w",
+            thinking=None,
+            serialize=_serialize,
         )
     inert = st.resolve_stateful_send(
-        messages=_m("a", "b"), full_prompt="FULL", model="haiku", cwd="/w",
-        thinking=None, serialize=_serialize,
+        messages=_m("a", "b"),
+        full_prompt="FULL",
+        model="haiku",
+        cwd="/w",
+        thinking=None,
+        serialize=_serialize,
     )
     assert engaged.call_id and inert.call_id
     assert engaged.call_id != inert.call_id  # one fresh id per LM call
@@ -404,7 +420,9 @@ def test_resolve_is_inert_without_a_scope(monkeypatch: pytest.MonkeyPatch) -> No
     assert send.payload == "FULL"
 
 
-def test_resolve_engages_delta_when_flag_on_and_scope_active(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_engages_delta_when_flag_on_and_scope_active(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(st, "stateful_delta_enabled", lambda: True)
     with st.stateful_scope("s"):
         first = st.resolve_stateful_send(
@@ -514,13 +532,21 @@ async def test_astream_sdk_sends_delta_over_a_stable_session_when_engaged(
     m1, m2 = _m("a", "b"), _m("a", "b", "c")
     with st.stateful_scope("s"):
         s1 = st.resolve_stateful_send(
-            messages=m1, full_prompt=_serialize(m1), model="haiku", cwd="/w",
-            thinking=None, serialize=_serialize,
+            messages=m1,
+            full_prompt=_serialize(m1),
+            model="haiku",
+            cwd="/w",
+            thinking=None,
+            serialize=_serialize,
         )
         await _drain(_serialize(m1), s1)
         s2 = st.resolve_stateful_send(
-            messages=m2, full_prompt=_serialize(m2), model="haiku", cwd="/w",
-            thinking=None, serialize=_serialize,
+            messages=m2,
+            full_prompt=_serialize(m2),
+            model="haiku",
+            cwd="/w",
+            thinking=None,
+            serialize=_serialize,
         )
         await _drain(_serialize(m2), s2)
     queries = _all_queries(state)
@@ -540,13 +566,21 @@ async def test_astream_sdk_classic_path_sends_full_prompt_fresh_session(
     m1, m2 = _m("a", "b"), _m("a", "b", "c")
     with st.stateful_scope("s"):
         s1 = st.resolve_stateful_send(
-            messages=m1, full_prompt=_serialize(m1), model="haiku", cwd="/w",
-            thinking=None, serialize=_serialize,
+            messages=m1,
+            full_prompt=_serialize(m1),
+            model="haiku",
+            cwd="/w",
+            thinking=None,
+            serialize=_serialize,
         )
         await _drain(_serialize(m1), s1)
         s2 = st.resolve_stateful_send(
-            messages=m2, full_prompt=_serialize(m2), model="haiku", cwd="/w",
-            thinking=None, serialize=_serialize,
+            messages=m2,
+            full_prompt=_serialize(m2),
+            model="haiku",
+            cwd="/w",
+            thinking=None,
+            serialize=_serialize,
         )
         await _drain(_serialize(m2), s2)
     queries = _all_queries(state)
@@ -566,14 +600,22 @@ async def test_astream_sdk_provider_error_drops_the_stateful_session(
     monkeypatch.setattr(st, "stateful_delta_enabled", lambda: True)
     with st.stateful_scope("s"):
         s1 = st.resolve_stateful_send(
-            messages=_m("a", "b"), full_prompt=_serialize(_m("a", "b")), model="haiku",
-            cwd="/w", thinking=None, serialize=_serialize,
+            messages=_m("a", "b"),
+            full_prompt=_serialize(_m("a", "b")),
+            model="haiku",
+            cwd="/w",
+            thinking=None,
+            serialize=_serialize,
         )
         assert s1.mode == "full" and s1.reason == "first_call"
         s1.note_error()  # simulate the transport's mid-flight failure hook
         s2 = st.resolve_stateful_send(
-            messages=_m("a", "b", "c"), full_prompt=_serialize(_m("a", "b", "c")),
-            model="haiku", cwd="/w", thinking=None, serialize=_serialize,
+            messages=_m("a", "b", "c"),
+            full_prompt=_serialize(_m("a", "b", "c")),
+            model="haiku",
+            cwd="/w",
+            thinking=None,
+            serialize=_serialize,
         )
     assert s2.mode == "full"
     assert s2.reason == "provider_error"
@@ -659,7 +701,9 @@ async def test_live_mid_loop_delta_send_does_not_400(
         if line.strip()
     ]
     stateful_rows = [r for r in rows if r.get("stage") == "provider.stateful"]
-    assert len(stateful_rows) == 2, f"expected exactly 2 provider.stateful rows, got {stateful_rows}"
+    assert len(stateful_rows) == 2, (
+        f"expected exactly 2 provider.stateful rows, got {stateful_rows}"
+    )
     row1, row2 = stateful_rows
 
     assert row1["stateful_mode"] == "full"

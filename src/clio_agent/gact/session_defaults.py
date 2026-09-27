@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import threading
 from collections.abc import Mapping
 from pathlib import Path
@@ -12,6 +11,8 @@ from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from clio_agent.platform_paths import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -200,13 +201,7 @@ class SessionDefaultsStore:
     def _flush(self) -> None:
         if self._path is None:
             return
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self._path.with_suffix(self._path.suffix + ".tmp")
-        with temporary.open("w", encoding="utf-8") as stream:
-            stream.write(self._value.model_dump_json(indent=2))
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, self._path)
+        atomic_write_text(self._path, self._value.model_dump_json(indent=2))
 
 
 def apply_default_effort(metadata: dict[str, object], defaults: SessionDefaults) -> None:

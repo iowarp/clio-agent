@@ -65,7 +65,7 @@ def build_compact_summary_message(
             )
         ],
         tokens=Tokens(input=0, output=0, cache_read=0, cache_write=0),
-        cost_usd=0.0,
+        cost_usd=None,
         stop_reason="end_turn",
         metadata=dict(synthetic_meta),
     )

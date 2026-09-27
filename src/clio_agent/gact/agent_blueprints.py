@@ -7,11 +7,9 @@ adapted at the API boundary rather than duplicated here.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import re
-import shutil
 import subprocess
 import tempfile
 from collections.abc import Collection, Iterable, Mapping
@@ -24,6 +22,10 @@ from clio_agent import conf
 from clio_agent.gact import skills as _skills
 from clio_agent.gact.a2ui_catalogs.blueprint import blueprint_and_expert_a2ui_catalog_errors
 from clio_agent.gact.agent_blueprint_requires import floor_declaration_errors
+from clio_agent.gact.blueprint_install_files import tree_checksum as _tree_checksum
+from clio_agent.gact.blueprint_install_files import (
+    write_install_metadata as _write_install_metadata,
+)
 from clio_agent.gact.blueprint_paths import install_root, relative_to_blueprint_root
 from clio_agent.gact.expert_packs import (
     ExpertPackDefinition,
@@ -35,6 +37,7 @@ from clio_agent.gact.expert_packs import (
 )
 from clio_agent.gact.git_source import normalize_git_clone_source
 from clio_agent.gact.types import AgentDef
+from clio_agent.platform_paths import copytree_extended, rmtree_extended
 from clio_agent.tools.catalog import TOOL_CATALOG
 
 # Historical private names kept importable here: agent_blueprint_refresh.py /
@@ -549,18 +552,11 @@ def _validate_agent_tool_references(
     declared_server_names: Iterable[str] = (),
     runtime_tool_names: Collection[str] = (),
 ) -> list[AgentDef]:
-    # Built-in tools = in-process defaults (fs/shell, memory, ask_user, A2UI); else a
-    # declared MCP tool, valid iff declared via ``mcp_servers`` (``tools/*.md`` gated).
-    builtin_tools = set(TOOL_CATALOG) | {
-        "ask_user",
-        "create_a2ui_surface",
-        "update_a2ui_components",
-        "update_a2ui_data_model",
-        "delete_a2ui_surface",
-        "memory_search_sessions",
-        "memory_read_session_summary",
-        "memory_read_context_frame",
-    }
+    # Built-in tools = gateway defaults (fs/shell) + every declarable native tool; else
+    # a declared MCP tool, valid iff declared via ``mcp_servers`` (``tools/*.md`` gated).
+    from clio_agent.gact.agents.declared_native_tools import DECLARABLE_NATIVE_TOOLS
+
+    builtin_tools = set(TOOL_CATALOG) | DECLARABLE_NATIVE_TOOLS
     declared_namespaces = {str(n).strip() for n in declared_server_names if str(n).strip()}
     descriptor_tools: dict[str, dict[str, Any]] = {}
     for descriptor in mcp_descriptors:
@@ -879,8 +875,8 @@ def install_agent_blueprint(
             dest = install_root / parsed.id
             previous_checksum = str(read_install_metadata(dest).get("checksum") or "").strip()
             if dest.exists():
-                shutil.rmtree(dest)
-            shutil.copytree(candidate, dest)
+                rmtree_extended(dest)
+            copytree_extended(candidate, dest)
             metadata = {
                 "source": source,
                 "source_kind": source_kind,
@@ -926,23 +922,6 @@ def _install_candidates(source: Path, *, blueprint_id: str = "") -> list[Path]:
             if parse_agent_blueprint_root(path, scope="install").id == blueprint_id
         ]
     return candidates
-
-
-def _write_install_metadata(root: Path, metadata: dict[str, Any]) -> None:
-    lines = ["# CLIO Agent Blueprint install metadata", ""]
-    for key, value in metadata.items():
-        lines.append(f"{key}: {value}")
-    (root / ".clio-install.md").write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
-
-
-def _tree_checksum(root: Path) -> str:
-    digest = hashlib.sha256()
-    for path in sorted(p for p in root.rglob("*") if p.is_file()):
-        if path.name == ".clio-install.md":
-            continue
-        digest.update(str(path.relative_to(root)).encode())
-        digest.update(path.read_bytes())
-    return digest.hexdigest()
 
 
 def _load_blueprint_agents(

@@ -89,3 +89,48 @@ def test_codex_sign_in_is_still_named_for_the_codex_provider() -> None:
     exc = ExceptionGroup("g", [RuntimeError("unexpected status 401 Unauthorized")])
 
     assert describe_stream_exc(exc, provider_id="codex") == CODEX_AUTHENTICATION_ERROR_MESSAGE
+
+
+def _signed_out_group() -> ExceptionGroup:
+    from clio_agent.providers.claude_code_errors import ClaudeCodeSignedOutError
+
+    signed_out = ClaudeCodeSignedOutError(detail="Not logged in", model="claude-sonnet-5")
+    return ExceptionGroup(
+        "unhandled errors in a TaskGroup",
+        [RuntimeError(f"litellm.APIConnectionError: {signed_out}")],
+    )
+
+
+def test_claude_sign_out_is_one_plain_line_for_the_claude_code_provider() -> None:
+    from clio_agent.providers.claude_code_errors import CLAUDE_CODE_SIGNED_OUT_MESSAGE
+
+    assert describe_stream_exc(_signed_out_group(), provider_id="claude_code") == (
+        CLAUDE_CODE_SIGNED_OUT_MESSAGE
+    )
+
+
+def test_claude_sign_out_line_is_scoped_to_the_configured_provider() -> None:
+    from clio_agent.gact.stream_failures import provider_auth_failure
+
+    assert provider_auth_failure(_signed_out_group(), provider_id="openrouter") is None
+    assert provider_auth_failure(_signed_out_group(), provider_id="") is None
+
+
+def test_non_streamed_sign_out_is_the_same_typed_provider_error() -> None:
+    from types import SimpleNamespace
+
+    from clio_agent.gact.stream_failures import agent_forward_error_info
+    from clio_agent.providers.claude_code_errors import CLAUDE_CODE_SIGNED_OUT_MESSAGE
+
+    state = SimpleNamespace(
+        user_msg=SimpleNamespace(
+            metadata={"effective_model": {"provider_id": "claude_code", "model_id": "sonnet"}}
+        )
+    )
+
+    info = agent_forward_error_info(state, _signed_out_group())
+
+    assert info.error == "provider_error"
+    assert info.message == CLAUDE_CODE_SIGNED_OUT_MESSAGE
+    assert info.details["reason"] == "provider_auth_required"
+    assert info.details["provider_id"] == "claude_code"

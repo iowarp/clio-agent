@@ -105,7 +105,9 @@ def parse_gateway_model_row(
     (``False``), never left unknown.
     """
     observed_at = observed_at or _now_iso()
-    base = vllm.parse_models_row(row, provider_id=provider_id, api_base=api_base, observed_at=observed_at)
+    base = vllm.parse_models_row(
+        row, provider_id=provider_id, api_base=api_base, observed_at=observed_at
+    )
 
     reasoning_parser, tool_call_parser = gateway_row_identity(row)
     auto_tool = bool(row.get("enable_auto_tool_choice"))

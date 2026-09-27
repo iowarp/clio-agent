@@ -34,6 +34,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Protocol, cast
 
+from clio_agent.providers.capabilities.model_facts import ParameterCount
 from clio_agent.providers.capabilities.records import (
     Fact,
     FactSource,
@@ -266,10 +267,39 @@ def resolve_model_capabilities(
     else:
         top = (user_override, overlay_facts, server_report)
     merged = merge_model_layers(model_key, *top, hf_facts, catalog_facts)
+    merged = replace(merged, parameters=model_parameter_count(merged.parameters, hf_facts))
     # A release date: a curated catalog's release_date outranks the Hub repo's
     # createdAt (a repo can be created, or re-uploaded, apart from the release).
     released = merge_model_layers(model_key, *top, catalog_facts, hf_facts).released_at
     return replace(merged, released_at=released)
+
+
+def model_parameter_count(chosen: Fact, hf_facts: ModelCapabilities | None) -> Fact:
+    """The model's own parameter count, keeping a converted file's count as evidence.
+
+    A ``scope="file"`` count (weights stored in one GGUF) yields to the Hub
+    checkpoint's count of the model itself. The file's number is not
+    overridden, it is reported beside the model's in the detail, with the
+    exact reason for the difference when the file states it (a tied embedding
+    matrix stored a second time is ``n_vocab * n_embd`` weights).
+    """
+
+    count = chosen.value if chosen.known else None
+    hub = hf_facts.parameters if hf_facts is not None else None
+    if not isinstance(count, ParameterCount) or count.scope != "file":
+        return chosen
+    if hub is None or not hub.known or not isinstance(hub.value, ParameterCount):
+        return chosen
+    if hub.value.total is None or count.total is None:
+        return chosen
+    extra = count.total - hub.value.total
+    why = ""
+    if extra and count.embedding_elements == extra:
+        why = ": the file stores the tied embedding matrix a second time as the output head"
+    elif extra:
+        why = f": {extra:+d} weights"
+    detail = f"{hub.detail}; the served file stores {count.total} weights, per {chosen.detail}{why}"
+    return replace(hub, detail=detail)
 
 
 def _linked_hf_source(*layers: ModelCapabilities | None) -> HfRepoSource | None:
@@ -293,5 +323,6 @@ __all__ = [
     "OverlaySource",
     "community_catalog_facts",
     "merge_model_layers",
+    "model_parameter_count",
     "resolve_model_capabilities",
 ]

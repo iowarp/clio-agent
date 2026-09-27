@@ -355,7 +355,9 @@ def test_pretool_defer_without_session_denies_fail_safe(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def _poll_status(c: TestClient, sid: str, wanted: set[str], timeout: float = TURN_SIGNAL_BACKSTOP_S) -> str:
+def _poll_status(
+    c: TestClient, sid: str, wanted: set[str], timeout: float = TURN_SIGNAL_BACKSTOP_S
+) -> str:
     deadline = time.time() + timeout
     last = ""
     while time.time() < deadline:

@@ -256,7 +256,9 @@ def create_genomics(output_dir: Path) -> dict[str, Any]:
         handle.write("##fileformat=VCFv4.2\n")
         handle.write("##source=clio-benchmark\n")
         handle.write('##INFO=<ID=GENE,Number=1,Type=String,Description="Synthetic gene label">\n')
-        handle.write('##INFO=<ID=EFFECT,Number=1,Type=String,Description="Synthetic effect label">\n')
+        handle.write(
+            '##INFO=<ID=EFFECT,Number=1,Type=String,Description="Synthetic effect label">\n'
+        )
         handle.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tsample_A\n")
         for row in variants:
             chrom, pos, var_id, ref, alt, qual, filter_value, info = row
@@ -326,12 +328,20 @@ def create_geospatial(output_dir: Path) -> dict[str, Any]:
             },
             {
                 "type": "Feature",
-                "properties": {"site_id": "south_valley", "kind": "sensor", "status": "maintenance"},
+                "properties": {
+                    "site_id": "south_valley",
+                    "kind": "sensor",
+                    "status": "maintenance",
+                },
                 "geometry": {"type": "Point", "coordinates": [-105.251, 39.991]},
             },
             {
                 "type": "Feature",
-                "properties": {"site_id": "access_transect", "kind": "transect", "status": "active"},
+                "properties": {
+                    "site_id": "access_transect",
+                    "kind": "transect",
+                    "status": "active",
+                },
                 "geometry": {
                     "type": "LineString",
                     "coordinates": [[-105.281, 40.004], [-105.268, 40.012], [-105.252, 40.019]],
@@ -416,14 +426,18 @@ def create_mass_spec(output_dir: Path) -> dict[str, Any]:
                 f'        <cvParam name="ms level" value="{ms_level}"/>',
                 f'        <cvParam name="total ion current" value="{tic:.1f}"/>',
                 f'        <scanList count="1"><scan><cvParam name="scan start time" value="{scan_time:.2f}" unitName="minute"/></scan></scanList>',
-                "        <binaryDataArrayList count=\"2\">",
+                '        <binaryDataArrayList count="2">',
                 "          <binaryDataArray>",
                 '            <cvParam name="m/z array"/>',
-                "            <binary>" + " ".join(f"{value:.4f}" for value in mz_values) + "</binary>",
+                "            <binary>"
+                + " ".join(f"{value:.4f}" for value in mz_values)
+                + "</binary>",
                 "          </binaryDataArray>",
                 "          <binaryDataArray>",
                 '            <cvParam name="intensity array"/>',
-                "            <binary>" + " ".join(f"{value:.1f}" for value in intensities) + "</binary>",
+                "            <binary>"
+                + " ".join(f"{value:.1f}" for value in intensities)
+                + "</binary>",
                 "          </binaryDataArray>",
                 "        </binaryDataArrayList>",
                 "      </spectrum>",
@@ -534,7 +548,9 @@ def create_format_bridge(output_dir: Path) -> dict[str, Any]:
         values = np.linspace(0.0, 1.0, 32, dtype=np.float64)
         values[7] = np.nan
         handle.create_dataset("safe_float", data=values, compression="gzip")
-        handle.create_dataset("labels", data=np.array(["alpha", "beta"] * 16, dtype=h5py.string_dtype()))
+        handle.create_dataset(
+            "labels", data=np.array(["alpha", "beta"] * 16, dtype=h5py.string_dtype())
+        )
         handle.create_dataset("float16_policy", data=np.linspace(0.0, 1.0, 32, dtype=np.float16))
         handle.create_dataset("complex_signal", data=np.arange(32, dtype=np.float64) + 1j)
         datetime = handle.create_dataset("time_ns", data=np.arange(32, dtype=np.int64))

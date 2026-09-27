@@ -171,9 +171,7 @@ class TestCompact:
         raw = {
             # 100 turns, each long enough to survive per-message truncation, so
             # the joined section overflows the 80% conversation budget.
-            "conversation": [
-                {"role": "user", "content": "alpha " * 60} for _ in range(100)
-            ],
+            "conversation": [{"role": "user", "content": "alpha " * 60} for _ in range(100)],
             # 300 routing lines overflow the 20% routing budget.
             "routing": [{"query": "q", "selected": "data"} for _ in range(300)],
         }

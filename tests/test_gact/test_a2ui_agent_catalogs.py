@@ -42,6 +42,7 @@ from clio_agent.gact.agents.auto_tools import build_auto_react_tools
 from clio_agent.gact.agents.skill_runtime import skill_runtime_for_agent
 from clio_agent.gact.app import build_app
 from clio_agent.gact.types import AgentDef
+from tests._marketplace import MARKETPLACE_ROOT
 
 from .a2ui_catalog_binding import (
     BUILTINS_PACK,
@@ -55,7 +56,7 @@ WORKSPACE_ID = workspace_catalog_id()
 BASIC_ID = basic_catalog_id()
 MINIMAL_ID = "https://example.test/a2ui/catalogs/minimal"
 OWN_ID = "https://example.test/a2ui/catalogs/own"
-MARKETPLACE = Path(__file__).resolve().parents[2] / "external" / "clio-agent-marketplace"
+MARKETPLACE = MARKETPLACE_ROOT
 UNDECLARED_PACK = FIXTURE_PACKS / "undeclared"
 # In-repo stand-ins for the shipped declaration shapes, so the allowlist behavior
 # tests run on any checkout: ``base-agent`` declares ``[clio-workspace]`` and
@@ -339,6 +340,7 @@ def test_agent_gets_clio_workspace_then_its_own_catalog(tmp_path: Path) -> None:
     ]
 
 
+@pytest.mark.marketplace
 def test_shipped_marketplace_packs_validate_with_their_declarations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -350,10 +352,7 @@ def test_shipped_marketplace_packs_validate_with_their_declarations(
     """
 
     missing = [p for p in SHIPPED_PACKS_WITH_DECLARATIONS if not (MARKETPLACE / p).is_dir()]
-    assert not missing, (
-        f"the marketplace submodule is not checked out (missing {missing} under "
-        f"{MARKETPLACE}); run: git submodule update --init external/clio-agent-marketplace"
-    )
+    assert not missing, f"the pinned marketplace no longer ships {missing}"
     _at_pack_floor(monkeypatch)
     for agent_md in sorted(MARKETPLACE.glob("*/AGENT.md")):
         pack = agent_md.parent.name

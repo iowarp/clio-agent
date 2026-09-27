@@ -14,12 +14,15 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
+from clio_agent.gact.catalog_context import context_wire
 from clio_agent.gact.modality_evidence import DOCUMENTED_MODALITY_REASONS
 from clio_agent.gact.types import LMProviderPreset
+from clio_agent.lm import dialect_wire
 from clio_agent.providers import model_discovery
 from clio_agent.providers.capabilities import invalidation
 from clio_agent.providers.capabilities.accepted_parameters import accepted_parameters_for
 from clio_agent.providers.capabilities.accessor import get_effective_capabilities
+from clio_agent.providers.capabilities.endpoint import dialect_for_provider
 from clio_agent.providers.capabilities.facts_wire import model_facts
 from clio_agent.providers.capabilities.records import (
     DeploymentCapabilities,
@@ -59,10 +62,12 @@ KEYLESS_PROBE_API_KEY = "EMPTY"
 def probe_api_key(preset: LMProviderPreset) -> str:
     """The API key a probe of ``preset`` sends: its stored one, else the keyless placeholder.
 
-    Keyed by provider_id, never provider_kind (Part 3): nine presets share the
-    kind "openai", and a kind-keyed lookup previously resolved
-    openrouter/nvidia_nim to the literal OpenAI provider's env var.
+    Keyed by provider_id, never provider_kind (Part 3). A sign-in provider
+    (oauth/subscription) gets none: its handshake reads the credential its own
+    sign-in stored -- the placeholder made ALCF send ``Bearer EMPTY``.
     """
+    if preset.auth_method in {"oauth", "subscription"}:
+        return ""
     stored = model_discovery.resolve_cloud_api_key(preset.id)
     if stored or preset.requires_api_key:
         return stored
@@ -140,7 +145,7 @@ def _codex_to_level() -> dict[str, str]:
 
 
 def _reasoning_wire_block(
-    effective_thinking: Any, profile: DiscoveredModel, *, listed_off_only: bool = False
+    effective_thinking: Any, profile: DiscoveredModel, *, dialect: str = ""
 ) -> dict[str, Any]:
     """Build the catalog's ``reasoning`` wire block straight off the effective
     ``ThinkingDecision`` (model-capabilities brief 5.5) -- the levels a person
@@ -167,15 +172,11 @@ def _reasoning_wire_block(
         }
     if spec.mechanism in ("none", "always_on"):
         levels: list[str] = []
-    elif spec.levels:
-        # Codex (``listed_off_only``) refuses an effort the model does not list
-        # (live 2026-09-26: 'none' is rejected for gpt-6-astra), so there "off"
-        # is offered only when the model itself lists it.
-        levels = [*([] if listed_off_only or "off" in spec.levels else ["off"]), *spec.levels]
     else:
-        # budget_tokens with no explicit per-model levels: CLIO's own generic
-        # ladder is what the request builder actually offers (dialect_wire.py).
-        levels = ["off", "low", "medium", "high"]
+        # "off" only where the request builder sends it (dialect_wire.off_sendable);
+        # no per-model levels (on_off/budget_tokens): CLIO's generic ladder.
+        ladder = [x for x in spec.levels if x != "off"] or ["low", "medium", "high"]
+        levels = [*(["off"] if dialect_wire.off_sendable(dialect, spec) else []), *ladder]
 
     default = ""
     default_source = ""
@@ -189,7 +190,9 @@ def _reasoning_wire_block(
             default, default_source = mapped, "provider"
 
     block: dict[str, Any] = {
-        "supported": bool(levels) or effective_thinking.known,
+        # A known spec is not a reasoning model: mechanism "none" (a template
+        # scan that found no thinking) must read as unsupported.
+        "supported": bool(levels) or spec.mechanism == "always_on",
         "parameter": effective_thinking.control or "",
         "levels": levels,
         "default": default,
@@ -258,9 +261,6 @@ def model_catalog_row(
     deployment = invalidation.get_deployment_capabilities(
         deployment_key(report.provider_id, report.api_base, profile.id)
     )
-    loaded_context_window = (
-        deployment.context_served.value if deployment and deployment.context_served.known else None
-    )
     # Three-valued: a row whose discovery never established its modalities says
     # so (``modalities: []`` + ``modality_evidenced: false`` + the provenance
     # reason) instead of presenting "text" -- a gateway /models listing that
@@ -316,7 +316,9 @@ def model_catalog_row(
         # directly from the effective capabilities' own ThinkingDecision --
         # never a second, provider-name-keyed mapping table.
         "reasoning": _reasoning_wire_block(
-            effective.thinking, profile, listed_off_only=preset.provider == "codex"
+            effective.thinking,
+            profile,
+            dialect=dialect_for_provider(preset.provider, preset.litellm_prefix, preset.id),
         ),
         # ONLY the request settings this model accepts, each with its evidence
         # (clio_schemas.AcceptedParameter) -- the same set the request builder sends.
@@ -324,8 +326,8 @@ def model_catalog_row(
             preset.id, preset.provider, report.provider_id, report.api_base, profile.id, effective
         ),
         "native_tool_calling": bool(effective.tools.value),
-        "context_window": effective.context.value,
-        "loaded_context_window": loaded_context_window,
+        # context_window + loaded/native + the basis it rests on (catalog_context).
+        **context_wire(effective, deployment),
         "output_limit": effective.output_max.value,
         "availability": availability,
         "evidence": {
@@ -759,6 +761,16 @@ async def discover_provider(preset: LMProviderPreset, *, refresh: bool = False) 
         "failure": failure,
         "models": [model_catalog_row(preset, report, model) for model in models],
     }
+    if preset.provider in _CLI_CATALOG_KINDS:
+        # Which CLI the SDK transport runs, as a typed fact on the row (for
+        # Codex: the SDK half's binary; the Direct half runs none).
+        from clio_agent.providers.components.client_binary import (  # noqa: PLC0415
+            provider_client_fact,
+        )
+
+        payload["client"] = await asyncio.to_thread(
+            provider_client_fact, preset.provider, refresh=refresh
+        )
     if preset.provider == "codex":
         # Two transports of the SAME catalog entry (S1b): the direct/OAuth
         # transport this pipeline already evidenced above, and the restored

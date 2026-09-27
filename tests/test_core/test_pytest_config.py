@@ -14,9 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 def test_pytest_addopts_is_empty() -> None:
     """pyproject must not force verbose/coverage on every local run (#773)."""
-    pyproject = tomllib.loads(
-        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    )
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert pyproject["tool"]["pytest"]["ini_options"]["addopts"] == []
 
 

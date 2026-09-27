@@ -101,7 +101,10 @@ async def _fetch_latest_release(url: str) -> LatestReleaseResponse:
     """Fetch + parse the manifest, never raising -- every path is a typed 200."""
 
     try:
-        async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT_S) as client:
+        # ``releases/latest/download/<asset>`` is a 302 to the tagged asset;
+        # httpx does not follow redirects unless asked, which made every
+        # check report "HTTP 302" and the panel never learn the version.
+        async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT_S, follow_redirects=True) as client:
             response = await client.get(url)
     except httpx.HTTPError as exc:
         logger.info(
@@ -114,6 +117,24 @@ async def _fetch_latest_release(url: str) -> LatestReleaseResponse:
             checked_at=_iso_now(),
             degradation=LatestReleaseDegradation(
                 reason="manifest_unreachable", message=str(exc) or type(exc).__name__
+            ),
+        )
+    if response.status_code == 404:
+        # The latest release exists (the redirect resolved to its tag) but its
+        # manifest asset is not there: release workflows publish the release
+        # before the bundle jobs upload the manifest. Transient, and the
+        # person should be told exactly that -- not a generic failure.
+        logger.info(
+            "latest-release manifest absent reason=manifest_not_published url=%s final_url=%s",
+            url,
+            response.url,
+        )
+        return LatestReleaseResponse(
+            source=url,
+            checked_at=_iso_now(),
+            degradation=LatestReleaseDegradation(
+                reason="manifest_not_published",
+                message="The latest release is still being published.",
             ),
         )
     if response.status_code != 200:
@@ -131,9 +152,7 @@ async def _fetch_latest_release(url: str) -> LatestReleaseResponse:
         return LatestReleaseResponse(
             source=url,
             checked_at=_iso_now(),
-            degradation=LatestReleaseDegradation(
-                reason="manifest_unparsable", message=str(exc)
-            ),
+            degradation=LatestReleaseDegradation(reason="manifest_unparsable", message=str(exc)),
         )
     version = manifest.get("version") if isinstance(manifest, dict) else None
     if not isinstance(version, str) or not version.strip():

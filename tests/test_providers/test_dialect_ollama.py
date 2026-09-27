@@ -28,6 +28,7 @@ from typing import Any
 import pytest
 
 from clio_agent.providers.capabilities.dialects import ollama as ollama_dialect
+from clio_agent.providers.capabilities.records import Fact
 
 HANDSHAKE_FIXTURES = Path(__file__).parent / "fixtures" / "handshake"
 CAPABILITY_FIXTURES = Path(__file__).parent.parent / "fixtures" / "capabilities" / "ollama"
@@ -50,7 +51,9 @@ class _FakeResponse:
 class _FakeAsyncClient:
     """In-memory fake serving the recorded Ollama fixtures by URL/method."""
 
-    def __init__(self, *, show: Any = None, ps: Any = None, version: Any = None, fail: bool = False) -> None:
+    def __init__(
+        self, *, show: Any = None, ps: Any = None, version: Any = None, fail: bool = False
+    ) -> None:
         self._show = show
         self._ps = ps
         self._version = version
@@ -64,7 +67,11 @@ class _FakeAsyncClient:
         if url.endswith("/api/ps"):
             return _FakeResponse(200, self._ps) if self._ps is not None else _FakeResponse(404)
         if url.endswith("/api/version"):
-            return _FakeResponse(200, self._version) if self._version is not None else _FakeResponse(404)
+            return (
+                _FakeResponse(200, self._version)
+                if self._version is not None
+                else _FakeResponse(404)
+            )
         if url.endswith("/api/tags"):
             return _FakeResponse(200, self._tags) if hasattr(self, "_tags") else _FakeResponse(404)
         return _FakeResponse(404)
@@ -90,7 +97,9 @@ def test_parse_modelfile_parameters_reads_num_ctx_and_sampling() -> None:
 
 
 def test_parse_modelfile_parameters_collects_repeated_keys() -> None:
-    params = ollama_dialect.parse_modelfile_parameters('stop "<|im_end|>"\nstop "<|end|>"\nnum_ctx 8192')
+    params = ollama_dialect.parse_modelfile_parameters(
+        'stop "<|im_end|>"\nstop "<|end|>"\nnum_ctx 8192'
+    )
 
     assert params["stop"] == ["<|im_end|>", "<|end|>"]
     assert params["num_ctx"] == 8192
@@ -169,7 +178,7 @@ def test_build_deployment_extra_uses_smaller_of_num_ctx_and_loaded_context() -> 
     assert deployment.fingerprint == "ollama:digest=sha256:abc123def456:loaded_context=8192"
 
 
-def test_build_deployment_extra_uses_whichever_side_is_known() -> None:
+def test_before_load_the_modelfile_num_ctx_is_configured_not_served() -> None:
     only_modelfile = ollama_dialect.build_deployment_extra(
         provider_id="ollama",
         api_base="http://127.0.0.1:11434",
@@ -177,7 +186,9 @@ def test_build_deployment_extra_uses_whichever_side_is_known() -> None:
         show_parameters="num_ctx 40960",
         ps_payload=None,
     )
-    assert only_modelfile.context_served.value == 40960
+    assert not only_modelfile.context_served.known
+    assert only_modelfile.context_configured.value == 40960
+    assert "applies when loaded" in only_modelfile.context_configured.detail
 
     only_ps = ollama_dialect.build_deployment_extra(
         provider_id="ollama",
@@ -187,6 +198,32 @@ def test_build_deployment_extra_uses_whichever_side_is_known() -> None:
         ps_payload=_load(CAPABILITY_FIXTURES, "api_ps.json"),
     )
     assert only_ps.context_served.value == 8192
+    assert not only_ps.context_configured.known
+
+
+def test_before_load_without_num_ctx_the_servers_default_is_configured() -> None:
+    default = Fact(4096, "server_report", "", "Ollama server config OLLAMA_CONTEXT_LENGTH=4096")
+    deployment = ollama_dialect.build_deployment_extra(
+        provider_id="ollama",
+        api_base="http://127.0.0.1:11434",
+        model_id="qwen2.5:0.5b",
+        show_parameters=None,
+        ps_payload={"models": []},
+        server_default=default,
+    )
+
+    assert not deployment.context_served.known
+    assert deployment.context_configured == default
+    # A Modelfile num_ctx outranks the server default (Ollama's own precedence).
+    with_modelfile = ollama_dialect.build_deployment_extra(
+        provider_id="ollama",
+        api_base="http://127.0.0.1:11434",
+        model_id="qwen2.5:0.5b",
+        show_parameters="num_ctx 2048",
+        ps_payload={"models": []},
+        server_default=default,
+    )
+    assert with_modelfile.context_configured.value == 2048
 
 
 def test_fingerprint_from_version() -> None:
@@ -289,6 +326,8 @@ def test_parse_show_capabilities_name_the_task() -> None:
     is a surrogate (feature-extraction), a completion model generates text."""
     embed = ollama_dialect.parse_show({"capabilities": ["embedding"]}, model_key="nomic-embed-text")
     assert embed.task.value == "feature-extraction"
-    chat = ollama_dialect.parse_show({"capabilities": ["completion", "tools"]}, model_key="qwen3:8b")
+    chat = ollama_dialect.parse_show(
+        {"capabilities": ["completion", "tools"]}, model_key="qwen3:8b"
+    )
     assert chat.task.value == "text-generation"
     assert not ollama_dialect.parse_show({}, model_key="x").task.known

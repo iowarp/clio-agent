@@ -833,7 +833,9 @@ def test_default_plan_acl_rows_shape() -> None:
     allow = rows[-1]
     assert deny["action"] == "deny"
     assert deny["priority"] == PLAN_ACL_DENY_PRIORITY == 40
-    assert set(deny["modes"]) == {"plan", "architect"}
+    # read_only (a side session) shares the deny-all row and has no allow band at all.
+    assert set(deny["modes"]) == {"plan", "architect", "read_only"}
+    assert not [r for r in rows if r["action"] == "allow" and "read_only" in r["modes"]]
     assert allow["action"] == "allow"
     assert allow["priority"] == PLAN_ACL_PLAN_FILE_PRIORITY == 70
     assert allow["modes"] == ["plan"]

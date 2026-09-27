@@ -127,9 +127,13 @@ def _seed_haystack(arc, scope: str, *, n: int, label: str) -> None:
     arc.append_segment(SID, scope, "thought", {"text": f"Beginning the {label} review."}, step=0)
     for i in range(n):
         arc.append_segment(
-            SID, scope, "observation",
-            {"text": f"Audit line {i}: routine telemetry within nominal bounds; "
-                     f"no anomalies, no reference codes present."},
+            SID,
+            scope,
+            "observation",
+            {
+                "text": f"Audit line {i}: routine telemetry within nominal bounds; "
+                f"no anomalies, no reference codes present."
+            },
             step=0,
         )
 
@@ -137,6 +141,7 @@ def _seed_haystack(arc, scope: str, *, n: int, label: str) -> None:
 # ---------------------------------------------------------------------------
 # 1. NEEDLE POSITION: start / middle / end of a haystack, on real inference.
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.parametrize("seed", [11, 23, 47, 89])
 @pytest.mark.parametrize("position", ["start", "middle", "end"])
@@ -154,22 +159,31 @@ def test_needle_position_in_haystack(arc, seed, position):
         # Build: filler before, needle at the chosen slot, filler after.
         if position == "start":
             needle_seg = arc.append_segment(
-                SID, SCOPE, "observation",
-                {"text": f"For the record, the experiment reference code is {code}."}, step=0,
+                SID,
+                SCOPE,
+                "observation",
+                {"text": f"For the record, the experiment reference code is {code}."},
+                step=0,
             )
             _seed_haystack(arc, SCOPE, n=n, label="post-needle")
         elif position == "end":
             _seed_haystack(arc, SCOPE, n=n, label="pre-needle")
             needle_seg = arc.append_segment(
-                SID, SCOPE, "observation",
-                {"text": f"For the record, the experiment reference code is {code}."}, step=0,
+                SID,
+                SCOPE,
+                "observation",
+                {"text": f"For the record, the experiment reference code is {code}."},
+                step=0,
             )
         else:  # middle — insert at render position n//2 + 1 (past the opening thought)
             _seed_haystack(arc, SCOPE, n=n, label="surrounding")
             live = arc.render_segments(SID, SCOPE)
             mid = len(live) // 2
             needle_seg = arc.insert_segment(
-                SID, SCOPE, mid, "observation",
+                SID,
+                SCOPE,
+                mid,
+                "observation",
                 {"text": f"For the record, the experiment reference code is {code}."},
             )
 
@@ -197,6 +211,7 @@ def test_needle_position_in_haystack(arc, seed, position):
 # 2. PARTIAL DELETE: two needles, delete one — deleted gone, other recalled.
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize("seed", [13, 29, 53, 97])
 def test_partial_delete_surgical(arc, seed):
     """Inject TWO distinct random needles; delete exactly one. The deleted code is
@@ -209,14 +224,22 @@ def test_partial_delete_surgical(arc, seed):
     agent = make_react_agent()
 
     with live_plane_context(arc, session=SID, scope=SCOPE):
-        arc.append_segment(SID, SCOPE, "thought", {"text": "Two vault entries to reconcile."}, step=0)
+        arc.append_segment(
+            SID, SCOPE, "thought", {"text": "Two vault entries to reconcile."}, step=0
+        )
         keep_seg = arc.append_segment(
-            SID, SCOPE, "observation",
-            {"text": f"PRIMARY experiment reference code: {keep}."}, step=0,
+            SID,
+            SCOPE,
+            "observation",
+            {"text": f"PRIMARY experiment reference code: {keep}."},
+            step=0,
         )
         drop_seg = arc.append_segment(
-            SID, SCOPE, "observation",
-            {"text": f"BACKUP experiment reference code: {drop}."}, step=0,
+            SID,
+            SCOPE,
+            "observation",
+            {"text": f"BACKUP experiment reference code: {drop}."},
+            step=0,
         )
 
     q_keep = (
@@ -251,6 +274,7 @@ def test_partial_delete_surgical(arc, seed):
 # 3. AS-OF-T: delete a needle, but recall it by rendering a pre-deletion time.
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize("seed", [17, 31, 59, 71])
 def test_as_of_t_time_travel(arc, seed):
     """Delete a needle, then render the scope AS IT WAS at a pre-deletion
@@ -271,12 +295,18 @@ def test_as_of_t_time_travel(arc, seed):
     with live_plane_context(arc, session=SID, scope=SCOPE):
         arc.append_segment(SID, SCOPE, "thought", {"text": "Opening the vault record."}, step=0)
         needle_seg = arc.append_segment(
-            SID, SCOPE, "observation",
-            {"text": f"For the record, the experiment reference code is {code}."}, step=0,
+            SID,
+            SCOPE,
+            "observation",
+            {"text": f"For the record, the experiment reference code is {code}."},
+            step=0,
         )
         arc.append_segment(
-            SID, SCOPE, "observation",
-            {"text": "Record closed; nothing further."}, step=0,
+            SID,
+            SCOPE,
+            "observation",
+            {"text": "Record closed; nothing further."},
+            step=0,
         )
 
     # Capture a pre-deletion logical_time (the needle's own creation time is a valid
@@ -314,14 +344,14 @@ def test_as_of_t_time_travel(arc, seed):
 
     asof_answer = _probe(agent, lm, arc, _VAULT_Q, scope=asof_scope)
     assert _recalled(code, asof_answer), (
-        f"model failed to recall the needle from the as-of-T (pre-deletion) view: "
-        f"{asof_answer!r}"
+        f"model failed to recall the needle from the as-of-T (pre-deletion) view: {asof_answer!r}"
     )
 
 
 # ---------------------------------------------------------------------------
 # 4. SURVIVES COMPACTION: real provider summarize, fact still recalled.
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.parametrize("seed", [19, 37, 61, 83])
 def test_needle_survives_real_compaction(arc, seed):
@@ -335,20 +365,30 @@ def test_needle_survives_real_compaction(arc, seed):
     agent = make_react_agent()
 
     with live_plane_context(arc, session=SID, scope=SCOPE):
-        arc.append_segment(SID, SCOPE, "thought", {"text": "Investigating the lockbox incident."}, step=0)
         arc.append_segment(
-            SID, SCOPE, "observation",
+            SID, SCOPE, "thought", {"text": "Investigating the lockbox incident."}, step=0
+        )
+        arc.append_segment(
+            SID,
+            SCOPE,
+            "observation",
             {"text": "At 02:14 UTC the lockbox controller rebooted after a firmware push."},
             step=0,
         )
         arc.append_segment(
-            SID, SCOPE, "observation",
-            {"text": f"Run note: the experiment reference code for this dataset is {code} — "
-                     f"this must be retained for the writeup."},
+            SID,
+            SCOPE,
+            "observation",
+            {
+                "text": f"Run note: the experiment reference code for this dataset is {code} — "
+                f"this must be retained for the writeup."
+            },
             step=0,
         )
         arc.append_segment(
-            SID, SCOPE, "observation",
+            SID,
+            SCOPE,
+            "observation",
             {"text": "Controller rejoined at 02:31 UTC; no data loss; ticket closed."},
             step=0,
         )
@@ -369,11 +409,11 @@ def test_needle_survives_real_compaction(arc, seed):
     arc.summarize_segments(SID, SCOPE, [s.id for s in live], {"text": summary})
     after = arc.render_segments(SID, SCOPE)
     assert len(after) == 1 and after[0].kind == "summary", (
-        f"scope did not collapse to a single summary segment: "
-        f"{[(s.kind, s.status) for s in after]}"
+        f"scope did not collapse to a single summary segment: {[(s.kind, s.status) for s in after]}"
     )
     tombstoned = [
-        s for s in arc._segments.list_segments(SID, SCOPE, include_tombstoned=True)
+        s
+        for s in arc._segments.list_segments(SID, SCOPE, include_tombstoned=True)
         if s.status == "tombstoned"
     ]
     assert len(tombstoned) == len(live), "originals were not all tombstoned by summarize"

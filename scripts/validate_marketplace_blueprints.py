@@ -37,20 +37,14 @@ def _candidate_blueprint_roots(source: Path) -> list[Path]:
     if (source / "AGENT.md").exists():
         return [source]
     return [
-        path
-        for path in sorted(source.iterdir())
-        if path.is_dir() and (path / "AGENT.md").exists()
+        path for path in sorted(source.iterdir()) if path.is_dir() and (path / "AGENT.md").exists()
     ]
 
 
 def _hierarchy_metrics(agents: list[dict[str, Any]]) -> dict[str, Any]:
     """Return static hierarchy metrics for validated Agent Blueprint agents."""
 
-    real_agents = [
-        row
-        for row in agents
-        if not str(row.get("id") or "").endswith(".manifest")
-    ]
+    real_agents = [row for row in agents if not str(row.get("id") or "").endswith(".manifest")]
     ids = {str(row.get("id") or "") for row in real_agents if row.get("id")}
     children_by_parent: dict[str, list[str]] = {agent_id: [] for agent_id in ids}
     roots: list[str] = []
@@ -81,12 +75,7 @@ def _hierarchy_metrics(agents: list[dict[str, Any]]) -> dict[str, Any]:
         1 for children in children_by_parent.values() if len(children) >= 2
     )
     tool_names = sorted(
-        {
-            str(tool)
-            for row in real_agents
-            for tool in (row.get("tools") or [])
-            if str(tool).strip()
-        }
+        {str(tool) for row in real_agents for tool in (row.get("tools") or []) if str(tool).strip()}
     )
     skill_names = sorted(
         {
@@ -144,11 +133,21 @@ def _is_self_contained_mcp_descriptor(descriptor: dict[str, Any]) -> bool:
     if descriptor.get("validation_errors"):
         return False
     install = descriptor.get("install") if isinstance(descriptor.get("install"), dict) else {}
-    method = str(install.get("method") or install.get("type") or install.get("manager") or "").strip()
+    method = str(
+        install.get("method") or install.get("type") or install.get("manager") or ""
+    ).strip()
     if method in {"uvx", "npx"}:
-        return bool(str(install.get("package") or install.get("name") or install.get("binary") or "").strip())
+        return bool(
+            str(
+                install.get("package") or install.get("name") or install.get("binary") or ""
+            ).strip()
+        )
     if method in {"binary", "command"}:
-        return bool(str(install.get("package") or install.get("name") or install.get("binary") or "").strip())
+        return bool(
+            str(
+                install.get("package") or install.get("name") or install.get("binary") or ""
+            ).strip()
+        )
     if method in {"local", "pack-local", "python"}:
         return bool(str(install.get("path") or install.get("script") or "").strip())
     return False
@@ -199,9 +198,7 @@ def validate_marketplace_source(
         validation = validate_agent_blueprint_path(root, scope="marketplace")
         blueprint = validation.get("agent_blueprint") or {}
         blueprint_id = str(blueprint.get("id") or root.name)
-        validation_errors = [
-            str(error) for error in validation.get("validation_errors", []) or []
-        ]
+        validation_errors = [str(error) for error in validation.get("validation_errors", []) or []]
         validation_warnings = [
             str(warning) for warning in validation.get("validation_warnings", []) or []
         ]
@@ -238,7 +235,10 @@ def validate_marketplace_source(
     self_contained_mcp_count = sum(row["self_contained_mcp_descriptor_count"] for row in blueprints)
     included_expert_count = sum(row["included_expert_count"] for row in blueprints)
     included_subtree_count = sum(row["included_subtree_count"] for row in blueprints)
-    if options.require_mcp_descriptor_count and mcp_descriptor_count < options.require_mcp_descriptor_count:
+    if (
+        options.require_mcp_descriptor_count
+        and mcp_descriptor_count < options.require_mcp_descriptor_count
+    ):
         errors.append(
             "MCP descriptor count below requirement: "
             f"{mcp_descriptor_count}/{options.require_mcp_descriptor_count}"
@@ -251,12 +251,18 @@ def validate_marketplace_source(
             "self-contained MCP descriptor count below requirement: "
             f"{self_contained_mcp_count}/{options.require_self_contained_mcp_count}"
         )
-    if options.require_included_expert_count and included_expert_count < options.require_included_expert_count:
+    if (
+        options.require_included_expert_count
+        and included_expert_count < options.require_included_expert_count
+    ):
         errors.append(
             "included expert count below requirement: "
             f"{included_expert_count}/{options.require_included_expert_count}"
         )
-    if options.require_included_subtree_count and included_subtree_count < options.require_included_subtree_count:
+    if (
+        options.require_included_subtree_count
+        and included_subtree_count < options.require_included_subtree_count
+    ):
         errors.append(
             "included subtree count below requirement: "
             f"{included_subtree_count}/{options.require_included_subtree_count}"
@@ -411,9 +417,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     result = validate_marketplace_source(args.source, options=options)
     rendered = (
-        json.dumps(result, indent=2, sort_keys=True)
-        if args.json
-        else _render_text_report(result)
+        json.dumps(result, indent=2, sort_keys=True) if args.json else _render_text_report(result)
     )
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

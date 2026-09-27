@@ -12,7 +12,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_VERSION = "0.9.4.18"
+EXPECTED_VERSION = "0.9.4.20"
 EXPECTED_DSPY = "dspy==3.3.0b1"
 EXPECTED_FASTMCP = "fastmcp==4.0.0b5"
 EXPECTED_FASTMCP_SLIM = "fastmcp-slim==4.0.0b5"
@@ -314,7 +314,7 @@ def test_release_workflow_signs_and_publishes_the_update_manifest() -> None:
 
     # (c) staging also produces + renames .sig / .app.tar.gz, and excludes
     # .sig from the bundled payload floor.
-    stage_end_idx = bundles.index("uses: softprops/action-gh-release@v2", stage_idx)
+    stage_end_idx = bundles.index("name: Upload to draft release", stage_idx)
     stage_step = bundles[stage_idx:stage_end_idx]
     assert "-iname '*.sig'" in stage_step
     assert "-name '*.app.tar.gz'" in stage_step
@@ -338,6 +338,80 @@ def test_release_workflow_signs_and_publishes_the_update_manifest() -> None:
     assert 'gh release upload "$TAG" latest.json latest-lite.json --clobber' in manifest_step
     assert 'gh release view "$TAG" --json assets' in bundles
     assert 'gh release view "$GITHUB_REF_NAME"' not in bundles
+
+
+def test_release_is_a_draft_until_release_check_publishes_it() -> None:
+    """Draft-first lifecycle: a release is never "latest" before it is complete.
+
+    v0.9.4.19's release was created by the first asset upload, became latest
+    at once, and ``releases/latest/download/latest-lite.json`` 404'd for over
+    an hour while the desktop legs built. Now ONE job creates the draft, every
+    uploader waits for it, and only release-check publishes -- after the
+    manifest + completeness steps.
+    """
+
+    import yaml
+
+    bundles = _text(".github/workflows/clio-bundles.yml")
+    workflow = yaml.safe_load(bundles)
+    jobs = workflow["jobs"]
+
+    # No uploader may create the release as a side effect any more.
+    assert "softprops/action-gh-release" not in bundles
+    assert "gh release create" not in bundles
+
+    # One creator, and it creates a draft via github_release.py ensure.
+    creators = [
+        name
+        for name, job in jobs.items()
+        if any("github_release.py ensure" in str(step.get("run", "")) for step in job["steps"])
+    ]
+    assert creators == ["release"]
+    assert jobs["release"]["if"] == "github.event_name == 'push'"
+
+    # Every job that uploads waits for the creator (no concurrent create race).
+    uploaders = [
+        name
+        for name, job in jobs.items()
+        if any("upload_release_assets.sh" in str(step.get("run", "")) for step in job["steps"])
+    ]
+    assert sorted(uploaders) == ["desktop", "installers", "tui", "web"]
+    for name in uploaders:
+        assert jobs[name]["needs"] == "release", name
+
+    # Runs for one tag are serialized, never cancelled mid-upload.
+    assert workflow["concurrency"] == {
+        "group": "clio-bundles-${{ inputs.tag || github.ref_name }}",
+        "cancel-in-progress": False,
+    }
+
+    # release-check: manifest -> completeness -> notes backstop -> publish -> verify feed.
+    check = jobs["release-check"]
+    assert "release" in check["needs"]
+    names = [step.get("name", "") for step in check["steps"]]
+    order = [
+        "Generate signed Tauri update manifest",
+        "Assert release asset completeness",
+        "Backstop release notes from CHANGELOG",
+        "Publish release (draft -> public, latest)",
+        "Verify the public updater feed resolves to this release",
+    ]
+    assert [names.index(n) for n in order] == sorted(names.index(n) for n in order)
+    publish_step = check["steps"][names.index(order[3])]
+    assert publish_step["run"].strip() == 'python3 scripts/github_release.py publish --tag "$TAG"'
+    assert "failure" in publish_step["if"] and "cancelled" in publish_step["if"]
+    verify_step = check["steps"][names.index(order[4])]
+    assert verify_step["if"] == "steps.publish.outputs.made_latest == 'true'"
+    assert "releases/latest/download/latest-lite.json" in verify_step["run"]
+    # Publishing happens nowhere else.
+    publishers = [
+        (job_name, step.get("name"))
+        for job_name, job in jobs.items()
+        for step in job["steps"]
+        if "github_release.py publish" in str(step.get("run", ""))
+        or "--draft=false" in str(step.get("run", ""))
+    ]
+    assert publishers == [("release-check", order[3])]
 
 
 def test_release_completeness_expects_signed_updater_assets() -> None:

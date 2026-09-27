@@ -37,9 +37,7 @@ def test_percent_encoded_path_is_decoded() -> None:
 
 def test_unc_file_uri_becomes_double_slash_path() -> None:
     """``file://server/share`` maps to a git-acceptable ``//server/share`` UNC."""
-    assert (
-        normalize_git_clone_source("file://server/share/repo") == "//server/share/repo"
-    )
+    assert normalize_git_clone_source("file://server/share/repo") == "//server/share/repo"
 
 
 @pytest.mark.parametrize(

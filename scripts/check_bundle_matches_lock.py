@@ -23,6 +23,13 @@ extras. This script has two modes built on that set:
     lock export for :data:`BUNDLE_EXTRAS` does not cover at all (an unlocked
     package is drift too, not an out-of-scope pass).
 
+    The ONE exception is :data:`USER_UPDATABLE_COMPONENTS`, the provider
+    SDKs a runtime may update in place from the provider panel (providers
+    gate new models by client version). Each may be installed at a version
+    at or ABOVE its locked one, and outside the bundle-extras export (the
+    Claude Agent SDK is installed on demand); a version BELOW the lock, an
+    unparsable one, or one the lock does not know at all is still drift.
+
 ``--resolve`` (every PR, no runtime needed)
     Export the constraints and resolve the bundle's exact install set against
     them for every bundle target platform (``uv pip compile``), so a conflict
@@ -42,6 +49,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -82,6 +90,14 @@ LOCAL_PROJECTS = frozenset({"clio-agent", "web-mcp"})
 #: runtime copies (its seeded ``pip``), present before any resolve runs. They
 #: are listed by name in the check's output, never silently skipped.
 INTERPRETER_SEEDED = frozenset({"pip"})
+
+#: The ONLY user-updatable components: provider SDKs a runtime updates in place,
+#: past the lock, from the provider panel. MUST equal
+#: ``clio_agent.providers.components.registry.USER_UPDATABLE_COMPONENTS`` (a
+#: test enforces this; this script is stdlib-only and cannot import it).
+USER_UPDATABLE_COMPONENTS = frozenset({"openai-codex", "openai-codex-cli-bin", "claude-agent-sdk"})
+
+_RELEASE = re.compile(r"^\d+(?:\.\d+)*$")
 
 #: Always reported by name, even on a green run, so the log shows the check ran
 #: against the packages whose drift caused real incidents.
@@ -183,6 +199,24 @@ def load_installed_versions(python: Path) -> dict[str, str]:
     return {normalize(row["name"]): row["version"] for row in rows}
 
 
+def _release_tuple(version: str) -> tuple[int, ...] | None:
+    """``"0.157.1"`` -> ``(0, 157, 1)``; ``None`` for anything but a plain final release."""
+    return tuple(int(part) for part in version.split(".")) if _RELEASE.match(version) else None
+
+
+def user_updated(name: str, locked_version: str | None, installed_version: str) -> bool:
+    """Whether ``name`` is a user-updatable component installed at or above its locked version.
+
+    The exception is exact: the package must be one of
+    :data:`USER_UPDATABLE_COMPONENTS`, the lock must know it, and both versions
+    must be plain final releases with the installed one not older.
+    """
+    if name not in USER_UPDATABLE_COMPONENTS or locked_version is None:
+        return False
+    installed_key, locked_key = _release_tuple(installed_version), _release_tuple(locked_version)
+    return installed_key is not None and locked_key is not None and installed_key >= locked_key
+
+
 def find_drift(
     locked: dict[str, str], installed: dict[str, str], scope: set[str]
 ) -> list[tuple[str, str | None, str]]:
@@ -190,11 +224,14 @@ def find_drift(
 
     A row with ``locked_version`` set is a version mismatch against ``uv.lock``;
     a row with ``None`` is a package the lock export for the bundle's extras
-    does not cover (installed from an unlocked resolution).
+    does not cover (installed from an unlocked resolution). A user-updatable
+    component at or above its locked version is not drift (:func:`user_updated`).
     """
     drift: list[tuple[str, str | None, str]] = []
     for name, installed_version in sorted(installed.items()):
         if name in LOCAL_PROJECTS or name in INTERPRETER_SEEDED:
+            continue
+        if user_updated(name, locked.get(name), installed_version):
             continue
         if name not in scope or name not in locked:
             drift.append((name, None, installed_version))
@@ -213,6 +250,11 @@ def verify_runtime(python: Path, lock: Path, project: Path) -> int:
         print(f"{name}: locked={locked.get(name)!r} installed={installed.get(name)!r}")
     for name in sorted((LOCAL_PROJECTS | INTERPRETER_SEEDED) & installed.keys()):
         print(f"not lock-resolved (local project / interpreter-seeded): {name}=={installed[name]}")
+    for name in sorted(USER_UPDATABLE_COMPONENTS & installed.keys()):
+        print(
+            f"user-updatable component: {name} locked={locked.get(name)!r} "
+            f"installed={installed[name]!r}"
+        )
 
     drift = find_drift(locked, installed, scope)
     if drift:

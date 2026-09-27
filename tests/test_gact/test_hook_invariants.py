@@ -72,7 +72,9 @@ def test_invariant_stable_id_survives_config_reorder(tmp_path: Path) -> None:
     deny = write_hook_script(
         tmp_path, "d.py", "import json\nprint(json.dumps({'decision':'deny','reason':'x'}))\n"
     )
-    allow = write_hook_script(tmp_path, "a.py", "import json\nprint(json.dumps({'decision':'allow'}))\n")
+    allow = write_hook_script(
+        tmp_path, "a.py", "import json\nprint(json.dumps({'decision':'allow'}))\n"
+    )
     rows = [
         {"id": "alpha", "on": [PRE_TOOL_USE], "run": command_run(allow)},
         {"id": "omega", "on": [PRE_TOOL_USE], "run": command_run(deny)},
@@ -193,7 +195,9 @@ def test_invariant_additional_context_concatenated_and_most_restrictive_wins() -
     outcome = HookOutcome.merge(
         [
             HookDecision(decision="allow", additional_context="ctx-a", hook_id="a"),
-            HookDecision(decision="deny", reason="blocked", additional_context="ctx-b", hook_id="b"),
+            HookDecision(
+                decision="deny", reason="blocked", additional_context="ctx-b", hook_id="b"
+            ),
         ],
         records=[],
     )
@@ -397,9 +401,7 @@ def test_stop_loop_always_blocks_redrives_to_cap_then_settles(
         redrives = 0
         capped_at = None
         for turn in range(10):
-            result = run_stop_hooks(
-                app, session_id=sess.id, turn_id=f"t{turn}", cwd="", payload={}
-            )
+            result = run_stop_hooks(app, session_id=sess.id, turn_id=f"t{turn}", cwd="", payload={})
             if result.redrive:
                 redrives += 1
             if result.capped:
@@ -476,9 +478,7 @@ def test_stop_loop_per_hook_loop_limit_bounds_a_single_hook(tmp_path: Path) -> N
         # sequence stops the moment a firing does not re-drive (no turn 4 occurs).
         results = []
         for i in range(6):
-            result = run_stop_hooks(
-                app, session_id=sess.id, turn_id=f"t{i}", cwd="", payload={}
-            )
+            result = run_stop_hooks(app, session_id=sess.id, turn_id=f"t{i}", cwd="", payload={})
             results.append(result)
             if not result.redrive:
                 break

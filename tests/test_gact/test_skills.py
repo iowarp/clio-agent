@@ -26,6 +26,7 @@ from clio_agent.gact.skills import (
     SkillCatalog,
     read_skill_body,
 )
+from tests._marketplace import MARKETPLACE_ROOT
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -200,9 +201,7 @@ def test_resolve_declared_mixed_outcomes(scopes: dict[str, Path]) -> None:
 
 def test_resolved_metadata_carries_provenance(scopes: dict[str, Path]) -> None:
     _write_skill(scopes["pack"] / "skills", "prov", body="P")
-    meta = (
-        _catalog(scopes).resolve("prov", pack_root=scopes["pack"]).to_metadata()
-    )
+    meta = _catalog(scopes).resolve("prov", pack_root=scopes["pack"]).to_metadata()
     assert meta["status"] == "resolved"
     assert meta["scope"] == "pack"
     assert Path(meta["path"]).name == "SKILL.md"
@@ -435,15 +434,12 @@ def test_pack_skill_md_is_not_an_expert(tmp_path: Path) -> None:
 # ---- marketplace fixtures ------------------------------------------------------
 
 
-@pytest.mark.skipif(
-    not (_REPO_ROOT / "external" / "clio-agent-marketplace" / "data-semantics").is_dir(),
-    reason="marketplace submodule not checked out",
-)
+@pytest.mark.marketplace
 def test_marketplace_data_semantics_skills_resolve(tmp_path: Path) -> None:
     """The shipped fixtures resolve end-to-end: every skill the data-semantics
     experts declare exists pack-locally and resolves with pack scope."""
 
-    pack_root = _REPO_ROOT / "external" / "clio-agent-marketplace" / "data-semantics"
+    pack_root = MARKETPLACE_ROOT / "data-semantics"
     catalog = SkillCatalog(home=tmp_path / "no-home", cwd=tmp_path / "no-cwd")
     declared = [
         "route_dataset_questions",

@@ -48,11 +48,13 @@ def make_arc(request, tmp_path):
 
 
 def _populate(arc: ARCMemory, session: str) -> None:
-    arc.append_segment(session, "agentA", "observation",
-                       {"text": "alpha beta gamma the ocean tides rise"}, step=0)
+    arc.append_segment(
+        session, "agentA", "observation", {"text": "alpha beta gamma the ocean tides rise"}, step=0
+    )
     arc.append_segment(session, "agentA", "thought", {"text": "the tide is coming in"}, step=0)
-    arc.append_segment(session, "agentB", "observation",
-                       {"text": "quantum physics electrons spin state"}, step=0)
+    arc.append_segment(
+        session, "agentB", "observation", {"text": "quantum physics electrons spin state"}, step=0
+    )
 
 
 def test_search_ranking_identical_off_vs_on(make_arc) -> None:
@@ -75,12 +77,17 @@ def test_search_companion_refreshes_after_delete(make_arc) -> None:
     off = make_arc(False)
     on = make_arc(True)
     for arc in (off, on):
-        arc.append_segment(session, "agentA", "observation",
-                           {"text": "unicorn rainbow sparkle"}, step=0)
-        arc.append_segment(session, "agentA", "observation",
-                           {"text": "ordinary grey pavement"}, step=0)
-        target = [s for s in arc.render_segments(session, "agentA")
-                  if "unicorn" in s.content.get("text", "")][0]
+        arc.append_segment(
+            session, "agentA", "observation", {"text": "unicorn rainbow sparkle"}, step=0
+        )
+        arc.append_segment(
+            session, "agentA", "observation", {"text": "ordinary grey pavement"}, step=0
+        )
+        target = [
+            s
+            for s in arc.render_segments(session, "agentA")
+            if "unicorn" in s.content.get("text", "")
+        ][0]
         arc.delete_segments(session, "agentA", [target.id])
     r_off = off.search_segment_scopes(session, "unicorn rainbow", k=5)
     r_on = on.search_segment_scopes(session, "unicorn rainbow", k=5)

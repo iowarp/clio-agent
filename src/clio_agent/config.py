@@ -382,7 +382,7 @@ class LMProviderConfig:
 
         provider_id, api_base = getattr(report, "provider_id", ""), getattr(report, "api_base", "")
         effective = get_effective_capabilities(provider_id, api_base, discovered.id)
-        self.is_reasoning = effective.thinking.known
+        self.is_reasoning = effective.thinking.reasoning
         self.reasoning_param = effective.thinking.control
         self.native_tool_calling = bool(effective.tools.value)
         self.tool_call_parser = None  # dialect-specific parser naming folds into Part 7
@@ -415,7 +415,7 @@ class LMProviderConfig:
             logger.warning(
                 "context_window_below_native model=%s "
                 "served_context=%d native_context=%d "
-                "reason=vllm_max_model_len_below_native "
+                "reason=served_context_below_native "
                 "hint=set CLIO_LM_CONTEXT_WINDOW or lm.context_window to override",
                 self.model,
                 window,

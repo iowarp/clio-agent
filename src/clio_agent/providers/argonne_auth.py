@@ -55,6 +55,11 @@ AUTH_CLIENT_ID = "58fdd3bc-e1c3-4ce5-80ea-8d6b87cfb944"
 GATEWAY_CLIENT_ID = "681c10cc-f684-4540-bcd7-0b4df3bc26ef"
 GATEWAY_SCOPE = f"https://auth.globus.org/scopes/{GATEWAY_CLIENT_ID}/action_all"
 ALLOWED_DOMAINS = ["anl.gov", "alcf.anl.gov"]
+#: ALCF's Globus session policy, as the official helper requests it
+#: (argonne-lcf/inference-endpoints ``inference_auth_token.py``, "adding
+#: policy", 2025-11): a token from a session that does not satisfy it is
+#: refused by the gateway ("Permission denied from internal policies").
+ALCF_SESSION_POLICIES = ["83732ff2-9c42-4548-b5ce-17e498c84f6a"]
 
 TOKENS_PATH = os.path.join(
     os.path.expanduser("~"),
@@ -110,7 +115,13 @@ class _PendingAuthenticationState:
 
 _AUTH_FLOW_TTL_SECONDS = 15 * 60
 _pending_authentications: dict[str, _PendingAuthenticationState] = {}
+#: Flows whose code exchange succeeded, kept (flow id -> expiry) so ``status``
+#: can say ``complete`` for exactly those -- never for an unknown flow.
+_finished_authentications: dict[str, float] = {}
 _pending_authentications_lock = threading.Lock()
+
+#: The plain reason ``status`` gives for a flow it is not running and never finished.
+FLOW_NOT_FOUND_REASON = "This ALCF sign-in is no longer open. Start sign-in again."
 
 
 # ---------------------------------------------------------------------------
@@ -275,7 +286,9 @@ def readiness() -> tuple[str, str, bool]:
     if env_token:
         return "ready", "ALCF token present in environment", True
     if not sdk_available():
-        return "install_required", ARGONNE_NOT_INSTALLED_MESSAGE, False
+        from clio_agent.providers.support_restore import missing_support_status  # noqa: PLC0415
+
+        return (*missing_support_status("argonne"), False)
     if not tokens_exist():
         return "auth_required", "no Globus token stored; authenticate ALCF before connecting", False
     if check_auth_status():
@@ -407,7 +420,10 @@ def begin_authentication(*, force_login: bool = False) -> PendingAuthentication:
         refresh_tokens=True,
         prefill_named_grant=APP_NAME,
     )
-    authorize_kwargs: dict[str, Any] = {"session_required_single_domain": ALLOWED_DOMAINS}
+    authorize_kwargs: dict[str, Any] = {
+        "session_required_single_domain": ALLOWED_DOMAINS,
+        "session_required_policies": ALCF_SESSION_POLICIES,
+    }
     if force_login:
         authorize_kwargs["prompt"] = "login"
     authorization_url = client.oauth2_get_authorize_url(**authorize_kwargs)
@@ -425,19 +441,35 @@ def begin_authentication(*, force_login: bool = False) -> PendingAuthentication:
             client=client,
             expires_at=now + _AUTH_FLOW_TTL_SECONDS,
         )
+    logger.info(
+        "alcf sign-in: reason=argonne_auth_flow_started flow=%s force_login=%s",
+        flow_id[:6],
+        force_login,
+    )
     return PendingAuthentication(flow_id=flow_id, authorization_url=authorization_url)
 
 
-def flow_is_pending(flow_id: str) -> bool:
-    """Whether ``flow_id`` is a live, unexpired :func:`begin_authentication` flow.
+def flow_status(flow_id: str) -> tuple[str, str]:
+    """``(state, reason)`` of one :func:`begin_authentication` flow.
 
-    Used by the generic provider sign-in API's ``status`` action -- ALCF's
-    flow has no async background half, so "pending" means only "still
-    awaiting `complete_authentication`", never a live progress signal.
+    Used by the generic provider sign-in API's ``status`` action. ALCF's flow
+    has no async background half: ``pending`` means "still awaiting
+    :func:`complete_authentication`" (including after a rejected code, which
+    may be pasted again), ``complete`` means that flow's code exchange stored
+    its tokens, and anything else -- an unknown, expired or empty flow id --
+    is ``failed`` with :data:`FLOW_NOT_FOUND_REASON`, never a false
+    ``complete``.
     """
+    key = flow_id.strip()
+    now = time.monotonic()
     with _pending_authentications_lock:
-        state = _pending_authentications.get(flow_id.strip())
-    return state is not None and state.expires_at > time.monotonic()
+        state = _pending_authentications.get(key)
+        finished_until = _finished_authentications.get(key, 0.0)
+    if state is not None and state.expires_at > now:
+        return "pending", ""
+    if finished_until > now:
+        return "complete", ""
+    return "failed", FLOW_NOT_FOUND_REASON
 
 
 def complete_authentication(flow_id: str, authorization_code: str) -> None:
@@ -463,12 +495,34 @@ def complete_authentication(flow_id: str, authorization_code: str) -> None:
 
     try:
         response = state.client.oauth2_exchange_code_for_tokens(normalized_code)
+        # The SAME token store every reader uses (discovery's passive lookup and
+        # the runtime refresh both go through ``_build_user_app``), so the token
+        # this flow stores is exactly the one the next catalog probe sends.
         app = _build_user_app(force=False, allow_interactive=False)
         app.token_storage.store_token_response(response)
         authorizer = app.get_authorizer(GATEWAY_CLIENT_ID)
         authorizer.ensure_valid_token()
     except Exception as exc:
+        # A mistyped or already-used code leaves the flow open: its PKCE
+        # verifier is still valid, so the person can paste again.
+        with _pending_authentications_lock:
+            _pending_authentications[normalized_flow_id] = state
+        logger.warning(
+            "alcf sign-in: reason=argonne_auth_exchange_failed flow=%s error=%s",
+            normalized_flow_id[:6],
+            type(exc).__name__,
+        )
         raise GlobusAuthError(f"Could not complete ALCF sign-in: {exc}") from exc
+    with _pending_authentications_lock:
+        _finished_authentications[normalized_flow_id] = time.monotonic() + _AUTH_FLOW_TTL_SECONDS
+    # Presence and scopes only -- never a token value.
+    by_server = getattr(response, "by_resource_server", None) or {}
+    logger.info(
+        "alcf sign-in: reason=argonne_auth_flow_completed flow=%s resource_servers=%s scopes=%s",
+        normalized_flow_id[:6],
+        sorted(by_server),
+        sorted(str(data.get("scope", "")) for data in by_server.values()),
+    )
 
 
 def authenticate(force: bool = False) -> None:

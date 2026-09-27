@@ -45,7 +45,7 @@ def declared_mcp_specs(
 
                 blueprint = parse_agent_blueprint_root(blueprint_path, scope="session")
                 if blueprint.enabled and blueprint.id == blueprint_id:
-                    servers = blueprint_server_map(blueprint)
+                    servers = blueprint_server_map(blueprint, app=app, workspace_root=cwd)
                     if servers:
                         pack_servers[blueprint_id] = servers
             except Exception:  # noqa: BLE001,S110 - mcp.yaml remains available

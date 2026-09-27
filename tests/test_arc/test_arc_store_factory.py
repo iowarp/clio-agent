@@ -16,8 +16,8 @@ import time
 import msgspec
 import pytest
 
+from clio_agent.arc import clio_core_attach, runtime_stop, storage
 from clio_agent.arc import clio_core_daemon_version as daemon_version
-from clio_agent.arc import runtime_stop, storage
 from clio_agent.arc.clio_core_config import host_key
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.storage import LocalFSStore, make_arc_store
@@ -419,7 +419,7 @@ def test_crash_cleanup_waits_for_crashed_client_to_disappear(monkeypatch, tmp_pa
     (reg / "123").write_text("1", encoding="utf-8")
     alive_checks = iter((True, False))
     monkeypatch.setattr(storage, "_pid_alive", lambda _pid, _ctime: next(alive_checks))
-    monkeypatch.setattr(storage.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(runtime_stop.time, "sleep", lambda _seconds: None)
     stops: list[tuple[str, str]] = []
     monkeypatch.setattr(
         storage,
@@ -453,7 +453,7 @@ def test_ensure_runtime_registers_atexit_release(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "iowarp_core", fake_iowarp)
     monkeypatch.setitem(sys.modules, "clio_cte_core_ext", fake_clio_core)
     monkeypatch.setattr(storage, "_ensure_runtime_daemon", lambda _core, cfg, _lvl: cfg)
-    monkeypatch.setattr(storage.time, "sleep", lambda *_a, **_k: None)
+    monkeypatch.setattr(clio_core_attach.time, "sleep", lambda *_a, **_k: None)
     monkeypatch.setattr(storage.ClioCoreStore, "_initialized", False)
 
     registered: list[tuple] = []
