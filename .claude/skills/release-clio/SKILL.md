@@ -11,8 +11,10 @@ clio-agent ships across **PyPI** (the `clio-agent` package), **GitHub Release as
 `v*` git tag** to `iowarp/clio-agent` — three workflows fire on the tag:
 
 - `release.yml` → builds sdist+wheel, publishes to **PyPI** (OIDC trusted publishing).
-- `clio-bundles.yml` → builds + uploads **GH release assets** (installers, `clio-tui-*`,
-  desktop `.msi/.dmg/.deb/.AppImage/.rpm`, `clio-web-*.zip`).
+- `clio-bundles.yml` → creates the GH release as a **DRAFT**, builds + uploads the
+  **release assets** to it (installers, `clio-tui-*`, desktop `.msi/.dmg/.deb/.AppImage/.rpm`,
+  `clio-web-*.zip`, then the `latest*.json` updater manifests), and **publishes** it as
+  latest only in `release-check`, after `check_release_completeness.py` passes.
 - `docker.yml` → builds + pushes **ghcr.io/iowarp/clio-{api,web,tui}** images.
 
 Two git submodules ship pinned: `external/gact-tui` (the TUI/web/desktop frontend) and
@@ -121,15 +123,22 @@ git tag -a vX.Y.Z HEAD -m "release: vX.Y.Z — <summary>"
 git push origin main && git push origin develop && git push origin vX.Y.Z
 ```
 
-### 6b. Author the GitHub release notes (NEVER skip — the workflow leaves a bare page)
-`clio-bundles.yml` creates the GitHub release as a side effect of asset upload, so
-without this step the release page shows only the merge-commit subject ("Merge pull
-request #NNNN from iowarp/develop") — the v0.8.0/v0.8.1/v0.9.0 pages all shipped
-that way and had to be healed after the fact. Right after the tag push:
+### 6b. Author the GitHub release notes on the DRAFT (NEVER skip)
+The tag push's first `clio-bundles.yml` job (`release`, via
+`scripts/github_release.py ensure`) creates the release as a **draft** titled with
+the bare tag and an empty body. It stays a draft, invisible to users and to
+`releases/latest`, until `release-check` publishes it (step 7). The v0.9.4.19 page
+was instead created by the first asset upload and became latest at once: for over an
+hour `releases/latest/download/latest-lite.json` 404'd and every installed desktop
+showed "Needs attention". Earlier pages (v0.8.0/v0.8.1/v0.9.0) shipped with only the
+merge-commit subject as notes. Write the notes onto the draft while the bundles build:
 
 ```sh
-gh release edit vX.Y.Z --title "vX.Y.Z" --notes-file notes.md
+gh release edit vX.Y.Z --title "vX.Y.Z" --notes-file notes.md   # edits the draft; gh finds it by tag
 ```
+
+Do NOT publish by hand (`--draft=false`, the web UI's Publish button): that
+reintroduces the incomplete-latest window. Publishing belongs to `release-check`.
 
 The title is the bare version — nothing appended, no campaign or theme name.
 `notes.md` is written for an external user or engineer who has never read this
@@ -156,9 +165,10 @@ repo's design docs; it is NOT a condensed CHANGELOG. Owner-locked style rules
   the sentence claims (`gh issue view N` / `gh pr view N`).
 
 The `release-check` job auto-fills the body from the CHANGELOG section as a
-BACKSTOP when the page is still bare, but the curated edit above is the standard —
-run it even when the backstop fired (your edit wins; the backstop never overwrites
-a non-bare body).
+BACKSTOP when the draft is still bare (just before it publishes), but the curated
+edit above is the standard. Edit the draft before `release-check` runs; if the
+backstop already fired, edit the published page afterwards (your edit wins; the
+backstop never overwrites a non-bare body).
 
 ### 7. Verify CI green + artifacts
 ```sh
@@ -167,11 +177,27 @@ curl -s https://pypi.org/pypi/clio-agent/json | python3 -c "import sys,json;d=js
 gh release view vX.Y.Z --json assets -q '.assets[].name' | grep clio-tui   # installer needs clio-tui-{os}-{arch}
 gh run list --workflow=docker.yml --limit 1                                 # ghcr images
 ```
-The `clio-bundles.yml` **`release-check`** job must be green — it asserts every
-expected bundle uploaded (bundled msi/nsis/dmg/deb/rpm, lite set, tui set, web
-zip; #841 F-15). A red `release-check` names the missing artifact — a silently
-incomplete release (like v0.5.17's dropped `aarch64` bundled `.dmg`) fails here
-instead of shipping. To re-check by hand:
+The `clio-bundles.yml` **`release-check`** job must be green. In order it: generates
+and uploads the `latest.json` / `latest-lite.json` updater manifests to the draft,
+asserts every expected asset is present (bundled msi/nsis/dmg/deb/rpm, lite set,
+updater payloads + sigs + manifests, tui set, web zip, installer scripts + launchers;
+#841 F-15), backstops the notes, then **publishes** the draft
+(`scripts/github_release.py publish`: draft → public, marked latest) and verifies
+`releases/latest/download/latest-lite.json` now serves this version. Publish is also
+refused when any build leg failed or was cancelled.
+
+A red `release-check` leaves the release a **draft**: users and installed desktops
+keep seeing the previous release, so nothing is broken in the meantime. Fix the
+cause, then either re-run the failed jobs (`gh run rerun <run-id> --failed`; that
+re-runs `release-check` too) or, when the assets are fixed by hand, run the
+frozen-at-tag escape hatch, which re-generates the manifests, re-checks, and
+publishes the draft:
+```sh
+gh workflow run clio-bundles.yml -f tag=vX.Y.Z
+```
+On an already-published tag that escape hatch leaves the draft/latest state alone.
+`publish` never marks an older version or a pre-release (`-rc1`) as latest. To
+re-check by hand (works on the draft):
 ```sh
 gh release view vX.Y.Z --json assets -q '.assets[].name' | python3 scripts/check_release_completeness.py
 ```
@@ -185,6 +211,10 @@ gh release view vX.Y.Z --json assets -q '.assets[].name' | python3 scripts/check
 - **`git fetch` before integrating.** `develop`/`main` advance via others' PRs; a stale local branch → non-fast-forward push rejection. Reconcile (`git merge origin/<branch>`) — content is usually identical, it's just merge-commit topology.
 - **Submodule gitlink must be committed.** `git submodule status` showing a leading `+` means the checked-out commit isn't recorded in the parent — commit the gitlink before tagging or the release ships the old submodule.
 - **ghcr `403 Forbidden` on push** — check WHO OWNS the package first: `gh api "orgs/iowarp/packages?package_type=container"` (needs `read:packages`; use `MSYS_NO_PATHCONV=1` and no leading slash on Git Bash). The v0.6.1–v0.7.4 saga: the packages EXISTED but were linked to **gact-tui** (created by its pre-move docker pipeline), so clio-agent's GITHUB_TOKEN had no role — org creation settings were irrelevant and every tag push 403'd on a blob HEAD. Fix: link this repo with Write (package Settings → Manage Actions access), or delete the stale packages (restorable 30 days) and let the next tag push recreate them fresh (auto-linked, and public under current org defaults — verify with an anonymous `https://ghcr.io/v2/iowarp/clio-tui/tags/list` pull). For true first creation the old advice stands: org Settings→Packages allow creation, or a one-time `write:packages` PAT bootstrap.
+- **Never create the release yourself before the tag push** (`gh release create`,
+  web UI). The `release` job reuses an existing release for the tag, but a second
+  draft on the same tag makes `github_release.py ensure` fail loud (uploads would
+  split across drafts). Delete the stray draft and re-run.
 - **Desktop sub-version** (`external/gact-tui/apps/desktop/package.json`/`tauri.conf.json`) is versioned independently by the gact-tui team — don't edit inside the submodule; just pin the gact-tui release tag.
 - **Cross-platform CI gotchas (the 0.5.5–0.5.8 install-pathway saga — verify bundles actually upload, don't assume):**
   - `build_clio_tui.sh`: absolutize `$OUT` BEFORE the `cd` into gact-tui, and treat Windows drive-letters (`C:/…`) + backslashes as absolute — a relative `-o` lands the binary in the wrong dir → no `clio-tui-*` assets.

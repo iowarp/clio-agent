@@ -14,8 +14,14 @@ names (one per line on stdin, or from ``--assets-file``) and checks each
 independent version, so exact names are not stable release-to-release). Any
 expected asset with no matching name is reported and the check exits non-zero.
 
-Extra assets (checksums, installer scripts, launchers) are ignored: the check
-asserts completeness, not an exact set.
+Extra assets (checksums, the lite Windows-on-ARM sidecar) are ignored: the
+check asserts completeness, not an exact set.
+
+This check is also the PUBLISH GATE: the release stays a draft (never
+"latest") until it passes, and only then does ``github_release.py publish``
+flip it public. Anything a user or an installed client fetches through
+``releases/latest`` -- the updater manifests, the installer scripts and
+launchers, the TUI binaries -- therefore belongs in :data:`EXPECTED_ASSETS`.
 
 Run in CI (``release-check`` job) and locally::
 
@@ -85,6 +91,16 @@ EXPECTED_ASSETS: list[tuple[str, str]] = [
     ("tui windows-arm64", r"^clio-tui-windows-arm64\.exe$"),
     # Web SPA bundle (version-stamped zip).
     ("web bundle zip", r"^clio-web-.*\.zip$"),
+    # Installer scripts + the `clio` launcher (installers job). install.sh /
+    # install.ps1 resolve `releases/latest`, so a published release without
+    # them breaks the scripted install pathway.
+    ("installer script (POSIX)", r"^install\.sh$"),
+    ("installer script (PowerShell)", r"^install\.ps1$"),
+    ("uninstaller script (POSIX)", r"^uninstall\.sh$"),
+    ("uninstaller script (PowerShell)", r"^uninstall\.ps1$"),
+    ("clio launcher (POSIX)", r"^clio$"),
+    ("clio launcher (cmd)", r"^clio\.cmd$"),
+    ("clio launcher (PowerShell)", r"^clio\.ps1$"),
 ]
 
 

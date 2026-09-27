@@ -11,14 +11,17 @@ iowarp/clio-agent's release-plumbing slice A7.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+import scripts.gen_tauri_update_manifest as manifest_module
 from scripts.gen_tauri_update_manifest import (
     PLATFORM_PATTERNS,
     build_manifest,
+    download_url,
     encode_version,
     main,
 )
@@ -283,3 +286,102 @@ def test_main_writes_manifest_and_reports_platforms(tmp_path: Path, capsys: Any)
     assert "CHANGELOG" in written["notes"]
     captured = capsys.readouterr()
     assert "OK: wrote" in captured.out
+
+
+def test_manifest_urls_are_tag_addressed_not_copied_from_a_draft_listing(tmp_path: Path) -> None:
+    """While the release is a DRAFT, the listing's download url is a temporary
+    ``untagged-...`` path that dies at publish time; the manifest must carry the
+    tag-addressed URL that resolves once the release is published."""
+
+    draft_assets = [
+        {
+            "name": asset["name"],
+            "url": "https://github.com/iowarp/clio-agent/releases/download/untagged-0f1e2d/"
+            + asset["name"],
+        }
+        for asset in _assets_for(_LITE_INSTALLERS)
+    ]
+    sig_dir = _sig_dir_for(tmp_path, _LITE_INSTALLERS)
+
+    manifest, missing = build_manifest(
+        tag=TAG,
+        variant="lite",
+        assets=draft_assets,
+        sig_dir=str(sig_dir),
+        allow_missing=set(),
+    )
+
+    assert missing == []
+    assert manifest is not None
+    for platform, installer_name in _LITE_INSTALLERS.items():
+        url = manifest["platforms"][platform]["url"]
+        expected = f"https://github.com/iowarp/clio-agent/releases/download/{TAG}/{installer_name}"
+        assert url == expected
+        assert "untagged-" not in url
+
+
+def test_download_url_percent_encodes_the_asset_name() -> None:
+    """A name with URL-significant characters is encoded, never emitted raw."""
+
+    assert download_url("v1.2.3", "CLIO Desktop+x.exe") == (
+        "https://github.com/iowarp/clio-agent/releases/download/v1.2.3/CLIO%20Desktop%2Bx.exe"
+    )
+
+
+def test_signature_is_read_through_the_authenticated_asset_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without --sig-dir the .sig is read via ``gh api`` on the asset's apiUrl (works on a
+    draft), not an unauthenticated GET of its browser download url (404s on a draft)."""
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="untrusted comment: s\nSIG\n", stderr="")
+
+    monkeypatch.setattr(manifest_module.subprocess, "run", fake_run)
+    asset = {
+        "name": "x.exe.sig",
+        "url": "https://github.com/o/r/releases/download/untagged-1/x.exe.sig",
+        "apiUrl": "https://api.github.com/repos/o/r/releases/assets/42",
+    }
+
+    assert manifest_module._read_signature(asset, None) == "untrusted comment: s\nSIG"
+    assert calls == [
+        [
+            "gh",
+            "api",
+            "-H",
+            "Accept: application/octet-stream",
+            "https://api.github.com/repos/o/r/releases/assets/42",
+        ]
+    ]
+
+
+def test_unreadable_signature_is_reported_and_counts_as_missing(
+    monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    """A failed ``gh api`` read (or a listing without apiUrl) yields None plus a stderr reason,
+    which build_manifest turns into a named missing platform -- never a silent pass."""
+
+    def failing_run(cmd: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="gh: Not Found (HTTP 404)")
+
+    monkeypatch.setattr(manifest_module.subprocess, "run", failing_run)
+    read = manifest_module._read_signature
+    assert read({"name": "a.sig", "apiUrl": "https://x/1"}, None) is None
+    assert read({"name": "b.sig"}, None) is None
+    err = capsys.readouterr().err
+    assert "a.sig: gh: Not Found (HTTP 404)" in err
+    assert "b.sig: asset listing has no apiUrl" in err
+
+    assets = [
+        {**asset, "apiUrl": f"https://x/{i}"}
+        for i, asset in enumerate(_assets_for(_LITE_INSTALLERS))
+    ]
+    manifest, missing = build_manifest(
+        tag=TAG, variant="lite", assets=assets, sig_dir=None, allow_missing=set()
+    )
+    assert manifest is None
+    assert missing == sorted(_LITE_INSTALLERS)
