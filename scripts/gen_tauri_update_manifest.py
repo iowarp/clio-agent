@@ -14,8 +14,16 @@ updater's platform keys using the SAME staged-name conventions
 ``clio-bundles.yml``'s "Stage artifacts" step produces (the ``+N -> .N``
 version rename, the ``-bundled`` token, and the target-triple suffix added to
 the otherwise-unversioned macOS ``.app.tar.gz``), fetches each matched
-``.sig`` file's contents (its asset download URL, or ``--sig-dir <dir>`` for
-tests), and writes the manifest.
+``.sig`` file's contents (an authenticated ``gh api`` read of the asset, or
+``--sig-dir <dir>`` for tests), and writes the manifest.
+
+The release is still a DRAFT when this runs (``github_release.py`` publishes
+it only after ``check_release_completeness.py`` passes), so two draft-safety
+rules hold: a ``.sig`` is read through the authenticated asset API (a draft's
+browser download URL is not publicly reachable), and each platform's ``url``
+is built from the TAG (``releases/download/<tag>/<name>``), never copied from
+the listing -- a draft's listed download URL points at a temporary
+``untagged-...`` path that stops resolving once the release is published.
 
 Only the platforms the ``clio-bundles.yml`` desktop matrix actually produces
 an UPDATE-CAPABLE artifact for, per variant, are required (see
@@ -50,8 +58,7 @@ import json
 import re
 import subprocess
 import sys
-import urllib.error
-import urllib.request
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -150,13 +157,25 @@ def _load_assets(tag: str, assets_json: str | None) -> list[dict[str, Any]]:
     return assets
 
 
+def download_url(tag: str, name: str) -> str:
+    """Return the public, tag-addressed download URL for release asset ``name``.
+
+    Built from the tag rather than taken from the asset listing: while the
+    release is a draft, the listing's ``url`` is an ``untagged-...`` path that
+    stops resolving at publish time, and the manifest must be valid after it.
+    """
+
+    return f"{REPO_URL}/releases/download/{tag}/{urllib.parse.quote(name)}"
+
+
 def _read_signature(sig_asset: dict[str, Any], sig_dir: str | None) -> str | None:
     """Return a ``.sig`` asset's contents, or ``None`` on any failure to read it.
 
-    From ``--sig-dir/<name>`` in tests; from the asset's own download ``url``
-    (an ordinary HTTPS GET, no auth required for a public release asset) in
-    CI. Never raises -- a failure here is reported as a missing platform by
-    the caller, never a stack trace.
+    From ``--sig-dir/<name>`` in tests; in CI, an authenticated
+    ``gh api -H "Accept: application/octet-stream" <apiUrl>`` read, the only
+    read that works on a DRAFT release's assets. Never raises: a failure here
+    is reported as a missing platform by the caller (with the reason on
+    stderr), never a stack trace.
     """
 
     name = str(sig_asset.get("name", ""))
@@ -165,14 +184,20 @@ def _read_signature(sig_asset: dict[str, Any], sig_dir: str | None) -> str | Non
         if not path.is_file():
             return None
         return path.read_text(encoding="utf-8").strip()
-    url = str(sig_asset.get("url", ""))
-    if not url:
+    api_url = str(sig_asset.get("apiUrl", ""))
+    if not api_url:
+        print(f"signature {name}: asset listing has no apiUrl", file=sys.stderr)
         return None
-    try:
-        with urllib.request.urlopen(url, timeout=30) as response:  # noqa: S310
-            return response.read().decode("utf-8").strip()
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+    result = subprocess.run(
+        ["gh", "api", "-H", "Accept: application/octet-stream", api_url],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        print(f"signature {name}: {result.stderr.strip()}", file=sys.stderr)
         return None
+    return result.stdout.strip() or None
 
 
 def _rfc3339_now() -> str:
@@ -231,7 +256,10 @@ def build_manifest(
             if platform not in allow_missing:
                 missing.append(platform)
             continue
-        platforms[platform] = {"signature": signature, "url": str(installer.get("url", ""))}
+        platforms[platform] = {
+            "signature": signature,
+            "url": download_url(tag, str(installer["name"])),
+        }
 
     if missing:
         return None, missing

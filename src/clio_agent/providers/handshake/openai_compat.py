@@ -113,6 +113,11 @@ class OpenAICompatHandshake(ProviderHandshake):
             headers["Authorization"] = f"Bearer {ctx.api_key}"
         return headers
 
+    def _client_headers(self, ctx: HandshakeContext) -> dict[str, str]:
+        """The provider's auth headers, on every request (see the base class)."""
+
+        return self._auth_header(ctx)
+
     def _key_check_url(self, ctx: HandshakeContext) -> str | None:
         """The provider's own key-check endpoint, when its model listing is public.
 

@@ -235,6 +235,23 @@ class ThinkingSpec:
     budget_range: tuple[int, int] | None = None
     template_kwarg: str | None = None
 
+    @property
+    def off_evidenced(self) -> bool:
+        """Whether this spec positively states thinking can be switched OFF.
+
+        A toggle (``on_off``) or a token budget turns off by construction; an
+        effort ladder turns off only when the model itself lists ``"off"``.
+        An effort ladder without it (OpenRouter's unified ``low``/``medium``/
+        ``high``, gpt-oss) leaves disabling unknown -- and unknown is never a
+        "yes": a disable sent there is refused by models whose reasoning is
+        mandatory ("Reasoning is mandatory for this endpoint").
+        """
+        if self.mechanism in ("on_off", "budget_tokens"):
+            return True
+        return self.mechanism == "effort_levels" and (
+            "off" in self.levels or "off" in self.effort_by_level
+        )
+
 
 def _unknown_field() -> Any:
     """``default_factory`` for a ``Fact`` field defaulting to unknown."""

@@ -356,6 +356,16 @@ def build_request_kwargs(
                 config.thinking_level,
                 dialect_wire.REASONING_LEVELS_UNKNOWN,
             )
+    elif getattr(config, "thinking_level", None) == "off" and effective.thinking.control:
+        # An explicit "off" with no evidence the model can disable reasoning
+        # (mandatory-reasoning models refuse the disable): its default applies.
+        logger.warning(
+            "thinking_off_not_sent provider=%s dialect=%s model=%s reason=%s",
+            config.provider,
+            dialect,
+            config.model,
+            dialect_wire.REASONING_OFF_NOT_EVIDENCED,
+        )
     elif getattr(config, "thinking_level", None) not in (None, "off"):
         # No silent no-op (ground rule): a thinking level was explicitly
         # requested but nothing was sent -- either this dialect has no

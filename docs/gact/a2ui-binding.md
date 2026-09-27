@@ -436,7 +436,14 @@ each has exactly one path:
   would let it make the viewer's machine contact that host (tracking, data
   carried in the query string). The desktop CSP blocks it anyway. The
   component shows a notice naming the host, with an explicit link that
-  opens in the system browser.
+  opens in the system browser. The producer tools report each admitted
+  external URL in `external_urls` with an `external_url_notice` saying so,
+  and an `http:` URL is refused as `a2ui_url_unresolved` with the same
+  recovery: download the file into the workspace with the agent's shell
+  (`curl`) or fetch tool and reference that workspace path. The
+  wording lives in `gact/a2ui_catalogs/media_sources.py`, which also renders
+  a *Media and file sources* section into every generated catalog skill
+  whose catalog declares a URL-valued property.
 - **A workspace file path** (relative, absolute, a Windows drive path or a
   `file:` URL) -- meaningless to a remote viewer. The producer tools
   (`create_a2ui_surface` / `update_a2ui_components`) treat rendering it as
