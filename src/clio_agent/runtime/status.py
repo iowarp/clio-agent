@@ -532,13 +532,12 @@ class RuntimeProbe:
     def _arc_backend(self) -> tuple[str, str]:
         """Return the selected ARC backend and its config source.
 
-        Mirrors :func:`clio_agent.arc.storage.make_arc_store` (env
-        ``CLIO_ARC_STORE``, default ``cte``) so the doctor reports the backend
-        the runtime will actually construct, not a hardcoded assumption (#800).
+        Mirrors :func:`clio_agent.arc.storage.make_arc_store` (#800); see
+        :func:`clio_agent.arc.clio_core_effective_runtime.arc_backend`.
         """
-        backend = self.env.get("CLIO_ARC_STORE", "cte").strip().lower()
-        source = "env:CLIO_ARC_STORE" if "CLIO_ARC_STORE" in self.env else "default:cte"
-        return backend, source
+        from clio_agent.arc.clio_core_effective_runtime import arc_backend  # noqa: PLC0415
+
+        return arc_backend(self._conf, self.env)
 
     def _probe_clio_core_runtime(self) -> ClioCoreRuntimeHealth:
         """Probe the production clio-core runtime: pip package + shared daemon.

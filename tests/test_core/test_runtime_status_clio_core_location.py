@@ -173,3 +173,26 @@ def test_read_daemon_pid_tolerates_missing_and_malformed_pidfiles(
     if content:
         (tmp_path / "clio-runtime.pid").write_text(content, encoding="utf-8")
     assert effective.read_daemon_pid(tmp_path) == expected
+
+
+def test_the_backend_follows_the_config_file_before_the_env(tmp_path: Path) -> None:
+    """``arc.store: local`` in the config file is what the store builds, env notwithstanding."""
+    store = _store(tmp_path, "arc:\n  store: local\n", env={"CLIO_ARC_STORE": "cte"})
+    probe = _probe(
+        tmp_path, store, set(), env={"CLIO_ARC_STORE": "cte"}, clio_runtime_dir=tmp_path / "s"
+    )
+
+    status = probe.probe_clio_core()
+
+    assert status.details["arc_backend"] == "local"
+    assert status.required is False
+    assert "config:arc.store" in (status.config_source or "")
+
+
+def test_an_empty_backend_env_means_the_default_like_the_store(tmp_path: Path) -> None:
+    store = _store(tmp_path, env={"CLIO_ARC_STORE": " "})
+    probe = _probe(
+        tmp_path, store, set(), env={"CLIO_ARC_STORE": " "}, clio_runtime_dir=tmp_path / "s"
+    )
+
+    assert probe._arc_backend() == ("cte", "default:cte")

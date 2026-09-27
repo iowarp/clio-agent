@@ -137,3 +137,18 @@ def read_daemon_pid(state_dir: Path) -> tuple[int | None, bool | None]:
         with contextlib.suppress(ValueError):
             recorded = float(parts[1])
     return pid, pid_alive(pid, recorded)
+
+
+def arc_backend(store: conf.ConfigStore, env: Mapping[str, str]) -> tuple[str, str]:
+    """Return ``(backend, source)``: the ARC backend the store would build, and why.
+
+    Same order as :func:`clio_agent.arc.storage.make_arc_store`: ``arc.store`` in the
+    config file, then ``$CLIO_ARC_STORE``, else ``cte``.
+    """
+    file_value = store.file_value("arc.store")
+    if isinstance(file_value, str) and file_value.strip():
+        return file_value.strip().lower(), "config:arc.store"
+    env_value = (env.get("CLIO_ARC_STORE") or "").strip()
+    if env_value:
+        return env_value.lower(), "env:CLIO_ARC_STORE"
+    return "cte", "default:cte"
