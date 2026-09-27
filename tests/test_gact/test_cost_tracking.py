@@ -8,7 +8,7 @@ the POST-message path threads those onto:
   - Session's cumulative tokens_input / tokens_output / cost_usd
   - /v1/metrics tokens + cost rollups
 
-Turns with no cost data keep the envelope shape but report zeros.
+Turns with no cost source report cost as not reported (null / absent), never $0.
 """
 
 from __future__ import annotations
@@ -189,3 +189,55 @@ def test_v2_session_endpoint_reports_a_known_cost_as_a_real_number(tmp_path: Pat
 
         row = client.get(f"/v1/sessions/{sid}").json()
         assert row["cost_usd"] == pytest.approx(0.0032)
+
+
+def _v3_assistant_row(client: TestClient, sid: str) -> dict:
+    transcript = client.get(f"/v1/sessions/{sid}/messages", headers=V3_HEADERS).json()
+    return next(row for row in transcript["messages"] if row["role"] == "assistant")
+
+
+def test_message_without_a_cost_source_is_not_reported_end_to_end(tmp_path: Path) -> None:
+    """A per-message cost the provider never reported is "not reported", never $0.
+
+    The stored message carries ``None``; the legacy wire omits ``cost_usd``; the
+    v3 row omits it (its client schema accepts a number or no key, never null);
+    the completion event carries null. None of them may fabricate ``0.0``.
+    """
+
+    pred = _PredNoCostSource(tokens={"input": 300, "output": 90, "cache_read": 0, "cache_write": 0})
+    with _client(tmp_path, pred) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        a = _turn(client, sid)
+        # The legacy wire is the stored message dumped with exclude_none: an
+        # absent key IS the stored None (a stored 0.0 would appear here).
+        assert "cost_usd" not in a
+
+        row = _v3_assistant_row(client, sid)
+        assert row["usage"]["input"] == 300
+        assert "cost_usd" not in row
+
+
+def test_message_with_a_reported_cost_keeps_its_number_end_to_end(tmp_path: Path) -> None:
+    pred = _Pred(
+        tokens={"input": 100, "output": 50, "cache_read": 0, "cache_write": 0},
+        cost_usd=0.0032,
+    )
+    with _client(tmp_path, pred) as client:
+        sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+        assert _turn(client, sid)["cost_usd"] == pytest.approx(0.0032)
+        assert _v3_assistant_row(client, sid)["cost_usd"] == pytest.approx(0.0032)
+
+
+def test_message_model_defaults_cost_to_not_reported() -> None:
+    from clio_agent.gact.types import Message
+
+    msg = Message(id="m", session_id="s", role="system", created_at="t", updated_at="t")
+    assert msg.cost_usd is None
+    assert "cost_usd" not in msg.to_wire()
+
+
+def test_reported_cost_total_keeps_an_all_unreported_rollup_unknown() -> None:
+    from clio_agent.gact.usage import reported_cost_total
+
+    assert reported_cost_total([{"cost_usd": None}, {}]) is None
+    assert reported_cost_total([{"cost_usd": 0.5}, {}, {"cost_usd": 0.0}]) == pytest.approx(0.5)

@@ -22,6 +22,7 @@ imports :mod:`clio_agent.gact.app`.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any, Optional
 
 # Single source of truth for the reasoning-channel extractor: it already lives in
@@ -53,6 +54,7 @@ __all__ = [
     "_PRICE_TABLE_PER_M",
     "_capture_reasoning_enabled",
     "capture_reasoning_log",
+    "reported_cost_total",
 ]
 
 
@@ -547,3 +549,14 @@ def _estimate_cost_usd(model_id: str, input_tokens: int, output_tokens: int) -> 
         return 0.0
     input_price, output_price = match
     return (input_tokens * input_price + output_tokens * output_price) / 1_000_000
+
+
+def reported_cost_total(messages: Iterable[Mapping[str, Any]]) -> Optional[float]:
+    """Sum the costs the provider actually reported across message rows.
+
+    Returns ``None`` when no message carries a reported cost, so a session rollup
+    built from these rows stays "not reported" instead of a fabricated ``0.0``.
+    """
+
+    reported = [float(m["cost_usd"]) for m in messages if m.get("cost_usd") is not None]
+    return sum(reported) if reported else None
