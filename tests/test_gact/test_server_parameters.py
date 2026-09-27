@@ -134,3 +134,11 @@ def test_numbers_are_normalized_and_non_finite_values_refused() -> None:
         compile_parameters("vllm", "cuda", {"param.gpu_memory_utilization": "nan"})
     compiled = compile_parameters("llama_cpp", "cpu", {"param.parallel": "007"})
     assert compiled.flags == ("--parallel", "7")
+
+
+def test_vllm_tool_calling_is_a_parser_choice_that_brings_its_enabling_flag() -> None:
+    compiled = compile_parameters("vllm", "cpu", {"param.tool_call_parser": "hermes"})
+
+    assert compiled.flags == ("--enable-auto-tool-choice", "--tool-call-parser", "hermes")
+    with pytest.raises(ValueError, match="must be one of"):
+        compile_parameters("vllm", "cpu", {"param.tool_call_parser": "--evil"})

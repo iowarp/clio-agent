@@ -50,6 +50,9 @@ class ServerParameter(BaseModel):
     default_behavior: str = ""
     #: The effective-value key the running server reports this parameter as.
     effective_key: str = ""
+    #: Flags the engine needs alongside this one (vLLM's tool-call parser only
+    #: takes effect with ``--enable-auto-tool-choice``).
+    companion_flags: list[str] = Field(default_factory=list)
 
     def applies_to(self, variant_id: str) -> bool:
         """Whether this parameter is meaningful for ``variant_id``."""
@@ -159,6 +162,36 @@ ENGINE_PARAMETERS: dict[EngineId, tuple[ServerParameter, ...]] = {
             variants=["cpu"],
             default_behavior="auto",
             effective_key="cpu_omp_threads_bind",
+        ),
+        ServerParameter(
+            id="tool_call_parser",
+            label="Tool-call parser",
+            description=(
+                "Turns on tool calling with the parser for this model family (Qwen2.5 and "
+                "Hermes-style templates use hermes). Without it vLLM refuses tool calls."
+            ),
+            kind="choice",
+            delivery="flag",
+            name="--tool-call-parser",
+            options=[
+                "hermes",
+                "mistral",
+                "llama3_json",
+                "llama4_pythonic",
+                "pythonic",
+                "granite",
+                "internlm",
+                "xlam",
+                "qwen3_coder",
+                "qwen3_xml",
+                "deepseek_v3",
+                "kimi_k2",
+                "glm45",
+                "openai",
+            ],
+            default_behavior="Tool calling off",
+            effective_key="tool_call_parser",
+            companion_flags=["--enable-auto-tool-choice"],
         ),
         ServerParameter(
             id="dtype",
@@ -326,7 +359,7 @@ def compile_parameters(
         if value is None:
             continue
         if parameter.delivery == "flag":
-            flags.extend([parameter.name, value])
+            flags.extend([*parameter.companion_flags, parameter.name, value])
         else:
             env.append((parameter.name, value))
     return CompiledParameters(flags=tuple(flags), env=tuple(env), values=values)
