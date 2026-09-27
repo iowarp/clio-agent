@@ -236,13 +236,13 @@ def uninstall_agent_blueprint(
     delete that silently undoes itself on the next discovery call).
     """
 
-    import shutil as _shutil  # noqa: PLC0415
+    from clio_agent.platform_paths import rmtree_extended  # noqa: PLC0415
 
     home = home or Path.home()
     root = _install_root(home=home, cwd=cwd, scope=scope) / blueprint_id
     if not root.exists():
         raise FileNotFoundError(f"installed agent blueprint not found: {blueprint_id}")
-    _shutil.rmtree(root)
+    rmtree_extended(root)
     if scope == "global":
         tombstones = read_uninstalled_tombstones(home=home, cwd=cwd)
         tombstones.add(blueprint_id)

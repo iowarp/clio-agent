@@ -84,6 +84,13 @@ _HOOK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
         "severity": "error",
         "detail": "hook command binary was missing or not executable",
     },
+    "hook_spawn_failed": {
+        "severity": "error",
+        "detail": (
+            "the OS refused to start the hook process (e.g. out of memory or handles); "
+            "the hook did not run for this event"
+        ),
+    },
     "hook_crashed": {
         "severity": "warning",
         "detail": "hook exited with a non-blocking (neither 0 nor 2) status",

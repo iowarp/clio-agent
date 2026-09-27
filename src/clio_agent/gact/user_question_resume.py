@@ -1,4 +1,10 @@
-"""Resume ordinary ask-user turns after an authoritative answer."""
+"""Resume ordinary ask-user turns after an authoritative answer.
+
+Every answer reaches the agent (#1448): an answer resumes the agent with that
+answer, even while other questions are still pending. When a turn is already
+running (for example the resume of an earlier answer), the answer is delivered
+into it as a steer instead, so no answer is ever left unconsumed.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +18,38 @@ from clio_agent.gact.loop_inbox import enqueue_user_steer
 logger = logging.getLogger(__name__)
 
 
+def settled_question_metadata(app: Any, sid: str, question: Any) -> dict[str, Any]:
+    """The session metadata once ``question`` is answered.
+
+    ``pending_user_question_id`` moves to the next question still pending in the
+    session (oldest first), or clears when none is left.
+    """
+
+    session = app.state.sessions.get(sid)
+    still_pending = sorted(
+        (
+            row
+            for row in app.state.user_questions.values()
+            if row.session_id == sid and row.status == "pending" and row.id != question.id
+        ),
+        key=lambda row: str(row.created_at or ""),
+    )
+    patch: dict[str, Any] = {
+        "pending_user_question_id": still_pending[0].id if still_pending else ""
+    }
+    pending_ask = (session.metadata or {}).get("pending_ask_user") if session is not None else None
+    if (
+        isinstance(pending_ask, Mapping)
+        and str(pending_ask.get("question_id") or "") == question.id
+    ):
+        patch["pending_ask_user"] = {
+            **pending_ask,
+            "resolved_status": "answered",
+            "resolved_at": question.updated_at,
+        }
+    return patch
+
+
 def resume_answered_question(
     app: Any,
     deps: Any,
@@ -21,23 +59,17 @@ def resume_answered_question(
     has_pending: bool,
     set_session_status: Callable[..., None],
 ) -> None:
-    """Resume or durably defer one answered native ``ask_user`` turn."""
+    """Resume (or durably defer into the running turn) one answered ``ask_user`` question.
 
-    if has_pending:
-        return
+    ``has_pending`` no longer holds an answer back: waiting for the LAST
+    pending question used to drop every earlier answer, since the resume
+    carried only the last one. It now only decides whether the session goes
+    back to ``idle`` when there is nothing to resume.
+    """
+
     session = app.state.sessions.get(sid)
     should_resume = bool(question.metadata.get("resume_on_answer")) and session is not None
-    metadata_patch: dict[str, Any] = {"pending_user_question_id": ""}
-    pending_ask = (session.metadata or {}).get("pending_ask_user") if session is not None else None
-    if (
-        isinstance(pending_ask, Mapping)
-        and str(pending_ask.get("question_id") or "") == question.id
-    ):
-        metadata_patch["pending_ask_user"] = {
-            **pending_ask,
-            "resolved_status": "answered",
-            "resolved_at": question.updated_at,
-        }
+    metadata_patch = settled_question_metadata(app, sid, question)
     resume_metadata = {
         "ask_user_question_id": question.id,
         "ask_user_prompt": question.prompt,
@@ -106,10 +138,10 @@ def resume_answered_question(
         return
     set_session_status(
         sid,
-        "idle",
+        "waiting_user" if has_pending else "idle",
         prev_status=session.status if session is not None else "waiting_user",
         metadata_patch=metadata_patch,
     )
 
 
-__all__ = ["resume_answered_question"]
+__all__ = ["resume_answered_question", "settled_question_metadata"]
