@@ -145,6 +145,9 @@ class ContainerLaunch:
         accelerator: ``"none"``, ``"nvidia"``, ``"amd"`` (ROCm) or ``"dri"`` (Vulkan).
         bind: Host address the published port binds to (Docker/Podman only).
         mounts: Extra read-only ``(host path, container path)`` binds.
+        secret_env: Names of variables whose values the launch command's own
+            environment carries (see :mod:`~clio_agent.gact.infrastructure.secret_env`):
+            Docker/Podman take them by name, never with a value in the arguments.
     """
 
     name: str
@@ -157,6 +160,7 @@ class ContainerLaunch:
     accelerator: str = "none"
     bind: str = "127.0.0.1"
     mounts: tuple[tuple[str, str], ...] = ()
+    secret_env: tuple[str, ...] = ()
 
 
 def sif_path(images_dir: str, name: str) -> str:
@@ -260,6 +264,9 @@ def run_command(
         args.extend(["--volume", f"{source}:{destination}:ro"])
     for key, value in launch.env:
         args.extend(["--env", f"{key}={value}"])
+    for key in launch.secret_env:
+        # By name only: the value comes from this command's environment.
+        args.extend(["--env", key])
     if launch.accelerator == "nvidia":
         args.extend(["--gpus", "all"])
     elif launch.accelerator == "amd":
