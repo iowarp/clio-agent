@@ -10,9 +10,6 @@ normal user approval path.
 from __future__ import annotations
 
 import asyncio
-import codecs
-import io
-import json
 import logging
 import os
 import platform
@@ -28,6 +25,18 @@ from fastmcp import Context, FastMCP
 from clio_agent import conf
 from clio_agent.runtime import trace
 from clio_agent.tools.file_policy import FileAccessPolicy, FilePolicyError
+from clio_agent.tools.servers.shell_output import (
+    StreamCapture,
+    compose_output_fields,
+    read_process_stream,
+    shell_result_char_budget,
+)
+from clio_agent.tools.servers.shell_spill_store import (
+    SPILL_DIRNAME,
+    active_session_id,
+    new_call_id,
+    spill_directory,
+)
 
 shell_server = FastMCP("shell")
 logger = logging.getLogger(__name__)
@@ -69,24 +78,67 @@ _DEFAULT_TIMEOUT_S = conf.resolve(
 _MAX_TIMEOUT_S = conf.resolve(
     "limits.shell_max_timeout_s", env="CLIO_SHELL_MAX_TIMEOUT_S", default=0.0, cast=conf.as_float
 )
-_DEFAULT_MAX_OUTPUT_BYTES = conf.resolve(
-    "limits.shell_default_output_bytes",
-    env="CLIO_SHELL_DEFAULT_OUTPUT_BYTES",
-    default=16 * 1024,
-    cast=conf.as_int,
-)
-_MAX_OUTPUT_BYTES = conf.resolve(
-    "limits.shell_max_output_bytes",
-    env="CLIO_SHELL_MAX_OUTPUT_BYTES",
-    default=128 * 1024,
-    cast=conf.as_int,
-)
-_MAX_COMMAND_CHARS = conf.resolve(
-    "limits.shell_max_command_chars",
-    env="CLIO_SHELL_MAX_COMMAND_CHARS",
-    default=4000,
-    cast=conf.as_int,
-)
+
+
+@dataclass(frozen=True)
+class ShellLimits:
+    """The effective shell limits, resolved from config (#1487).
+
+    One object feeds BOTH the enforcement in :func:`bash` and the model-facing
+    tool description, so the description can never drift from what is enforced.
+    """
+
+    max_command_chars: int
+    default_output_bytes: int  # per stream, inline, when the caller passes none
+    max_output_bytes: int  # per stream, the most a caller may request inline
+    result_chars: int  # encoded-result budget (the tighter downstream bound)
+
+
+def resolve_shell_limits() -> ShellLimits:
+    """Resolve the shell limits from ``limits.shell_*`` (file -> env -> default).
+
+    Defaults, and why:
+
+    * ``shell_max_command_chars`` 16,000 (was 4,000, which rejected ordinary
+      heredoc profiling scripts). On Windows the command rides the PowerShell /
+      cmd command line, which CreateProcess caps at 32,767 characters; 16,000
+      stays under that even if quoting doubled every character, and covers a
+      ~200-line inline script. Past it, the rejection tells the model to write
+      the script to a file and run the file.
+    * ``shell_default_output_bytes`` 8,192 per stream (was 16,384). The result
+      must fit the downstream 12,000-character tool-result bounds or it gets
+      rewrapped into a truncated JSON-in-JSON preview (#887); 16 KiB made that
+      the norm for default-sized output. Larger output spills to a file.
+    * ``shell_max_output_bytes`` 131,072: the per-call ceiling. The encoded
+      result is still held under ``result_chars``; the rest is in the spill file.
+    """
+
+    return ShellLimits(
+        max_command_chars=conf.resolve(
+            "limits.shell_max_command_chars",
+            env="CLIO_SHELL_MAX_COMMAND_CHARS",
+            default=16_000,
+            cast=conf.as_int,
+        ),
+        default_output_bytes=conf.resolve(
+            "limits.shell_default_output_bytes",
+            env="CLIO_SHELL_DEFAULT_OUTPUT_BYTES",
+            default=8 * 1024,
+            cast=conf.as_int,
+        ),
+        max_output_bytes=conf.resolve(
+            "limits.shell_max_output_bytes",
+            env="CLIO_SHELL_MAX_OUTPUT_BYTES",
+            default=128 * 1024,
+            cast=conf.as_int,
+        ),
+        result_chars=shell_result_char_budget(),
+    )
+
+
+#: Resolved once at server build: the tool description below is registered from
+#: it, and :func:`bash` enforces the same values.
+_SHELL_LIMITS = resolve_shell_limits()
 _WINDOWS_BASH_PATH = re.compile(
     r"(?P<drive>[A-Za-z]):[\\/](?P<rest>[^\"'`\s|&;<>()]+(?:[\\/][^\"'`\s|&;<>()]+)*)"
 )
@@ -279,13 +331,34 @@ def _detect_shell_env() -> ShellEnvFacts:
     )
 
 
-def build_shell_tool_description(facts: ShellEnvFacts) -> str:
-    """Compose the shell ``bash`` tool description from host facts (#898).
+def _limits_text(limits: ShellLimits) -> str:
+    """Model-facing statement of the effective limits and the spill behaviour."""
 
-    Pure function of ``facts`` so the per-platform content is unit-pinnable: the
-    Windows text carries an explicit 'do NOT assume WSL exists' and the POSIX text
-    does not. Both steer tabular/CSV work to the pandas MCP tool.
+    return (
+        f"Limits: the command may be up to {limits.max_command_chars} characters; for a "
+        "longer script, write it to a file in the workspace first and run that file (for "
+        "example `uv run python analysis.py`). stdout and stderr each return inline up to "
+        f"max_output_bytes (default {limits.default_output_bytes}, at most "
+        f"{limits.max_output_bytes}) and the whole result stays under "
+        f"{limits.result_chars} characters. Output beyond that is not lost: the complete "
+        f"stream is saved under .clio/{SPILL_DIRNAME}/ in the workspace (one "
+        "<id>.stdout.txt / .stderr.txt file per stream, kept until the session is "
+        "deleted); `stdout` then holds a head excerpt cut on line boundaries and "
+        "`stdout_spill` gives the file path, total_bytes, total_lines, and a tail excerpt. "
+        "Read or grep that file instead of re-running the command."
+    )
+
+
+def build_shell_tool_description(facts: ShellEnvFacts, limits: ShellLimits | None = None) -> str:
+    """Compose the shell ``bash`` tool description from host facts and limits.
+
+    Pure function of its inputs so the per-platform content is unit-pinnable
+    (#898): the Windows text carries an explicit 'do NOT assume WSL exists' and
+    the POSIX text does not; both steer tabular/CSV work to the pandas MCP tool.
+    The limits sentence is generated from ``limits`` (default: the effective
+    :data:`_SHELL_LIMITS`), never hand-written numbers (#1487).
     """
+    limits_text = _limits_text(limits or _SHELL_LIMITS)
     tools = ", ".join(_POSIX_TEXT_TOOLS)
     tools_line = (
         f"POSIX text tools ({tools}) ARE available on this host's PATH."
@@ -305,7 +378,7 @@ def build_shell_tool_description(facts: ShellEnvFacts) -> str:
             "CSV, or columnar work (column selection, filtering, joins) use the pandas "
             "MCP tool when available instead of shell text pipelines — it is portable and "
             "spawns no VM. The working directory must be inside CLIO_ALLOWED_ROOTS; the "
-            "command runs until it exits unless you pass timeout_s, and its output is capped."
+            f"command runs until it exits unless you pass timeout_s. {limits_text}"
         )
     return (
         f"Run ONE local shell command on a {facts.system_label} host and return stdout, "
@@ -314,8 +387,8 @@ def build_shell_tool_description(facts: ShellEnvFacts) -> str:
         "Paths use POSIX conventions (forward slashes). For large tabular, CSV, or "
         "columnar work (column selection, filtering, joins) prefer the pandas MCP tool "
         "when available over ad-hoc text pipelines. The working directory must be inside "
-        "CLIO_ALLOWED_ROOTS; the command runs until it exits unless you pass timeout_s, and "
-        "its output is capped."
+        "CLIO_ALLOWED_ROOTS; the command runs until it exits unless you pass timeout_s. "
+        f"{limits_text}"
     )
 
 
@@ -323,64 +396,6 @@ def build_shell_tool_description(facts: ShellEnvFacts) -> str:
 #: this as the ``bash`` tool description, so it is grounded in the real platform,
 #: shell, and tool availability rather than a static "bash"-flavoured string.
 _SHELL_TOOL_DESCRIPTION = build_shell_tool_description(_detect_shell_env())
-
-
-async def _read_process_stream(
-    reader: asyncio.StreamReader,
-    *,
-    stream: str,
-    ctx: Context,
-    max_output_bytes: int,
-) -> tuple[str, bool]:
-    """Drain one process stream while forwarding typed terminal chunks."""
-
-    raw = bytearray()
-    truncated = False
-    decoder = io.IncrementalNewlineDecoder(
-        codecs.getincrementaldecoder("utf-8")(errors="replace"),
-        translate=True,
-    )
-    text_chunks: list[str] = []
-    while chunk := await reader.read(4096):
-        remaining = max_output_bytes - len(raw)
-        accepted = chunk[: max(0, remaining)]
-        if len(accepted) < len(chunk):
-            truncated = True
-        if not accepted:
-            continue
-        raw.extend(accepted)
-        text = decoder.decode(accepted, final=False)
-        if not text:
-            continue
-        text_chunks.append(text)
-        message = json.dumps(
-            {"type": "clio.terminal.chunk", "stream": stream, "text": text},
-            ensure_ascii=False,
-        )
-        try:
-            await ctx.report_progress(progress=len(raw), total=None, message=message)
-        except Exception as exc:  # noqa: BLE001 - display progress cannot fail the command
-            logger.warning(
-                "shell progress delivery failed stream=%s reason=progress_delivery_failed error=%r",
-                stream,
-                exc,
-            )
-    tail = decoder.decode(b"", final=True)
-    if tail:
-        text_chunks.append(tail)
-        message = json.dumps(
-            {"type": "clio.terminal.chunk", "stream": stream, "text": tail},
-            ensure_ascii=False,
-        )
-        try:
-            await ctx.report_progress(progress=len(raw), total=None, message=message)
-        except Exception as exc:  # noqa: BLE001 - display progress cannot fail the command
-            logger.warning(
-                "shell progress delivery failed stream=%s reason=progress_delivery_failed error=%r",
-                stream,
-                exc,
-            )
-    return "".join(text_chunks), truncated
 
 
 def _kill_process_tree(pid: int) -> None:
@@ -407,16 +422,17 @@ async def bash(
     command: str,
     cwd: str | None = None,
     timeout_s: float = _DEFAULT_TIMEOUT_S,
-    max_output_bytes: int = _DEFAULT_MAX_OUTPUT_BYTES,
+    max_output_bytes: int = _SHELL_LIMITS.default_output_bytes,
 ) -> dict[str, Any]:
     """Run one local shell command and return stdout, stderr, and exit code.
 
-    The model-facing description is computed at server build from the host
-    (:data:`_SHELL_TOOL_DESCRIPTION`) so it names the real platform, effective
-    shell, and POSIX-tool availability (#898); this docstring is the developer
-    reference. The command runs until it exits unless ``timeout_s`` is positive
-    (or an operator ceiling applies); its output is capped and the working
-    directory must be inside ``CLIO_ALLOWED_ROOTS``. A cancelled turn or a
+    The model-facing description is computed at server build from the host and
+    the effective limits (:data:`_SHELL_TOOL_DESCRIPTION`, #898/#1487); this
+    docstring is the developer reference. The command runs until it exits unless
+    ``timeout_s`` is positive (or an operator ceiling applies) and the working
+    directory must be inside ``CLIO_ALLOWED_ROOTS``. Output that does not fit the
+    result budget is spilled in full under ``.clio/tool-output/`` and excerpted
+    (:mod:`clio_agent.tools.servers.shell_output`). A cancelled turn or a
     timeout kills the command's whole process tree.
     """
 
@@ -427,11 +443,20 @@ async def bash(
             details={"field": "command"},
         )
     command = command.strip()
-    if len(command) > _MAX_COMMAND_CHARS:
+    max_chars = _SHELL_LIMITS.max_command_chars
+    if len(command) > max_chars:
+        next_action = (
+            "Write the script to a file in the workspace with your file-writing tool, then "
+            "run that file with a short command (for example `uv run python analysis.py`)."
+        )
         return _error(
             "command_too_long",
-            f"command must be <= {_MAX_COMMAND_CHARS} characters.",
-            details={"received_chars": len(command), "max_chars": _MAX_COMMAND_CHARS},
+            f"command is {len(command)} characters; the limit is {max_chars}. {next_action}",
+            details={
+                "received_chars": len(command),
+                "max_chars": max_chars,
+                "next_action": next_action,
+            },
         )
     try:
         timeout = float(timeout_s)
@@ -448,11 +473,12 @@ async def bash(
         timeout = _MAX_TIMEOUT_S
     if not isinstance(max_output_bytes, int) or isinstance(max_output_bytes, bool):
         return _error("invalid_max_output", "max_output_bytes must be an integer.")
-    if max_output_bytes <= 0 or max_output_bytes > _MAX_OUTPUT_BYTES:
+    ceiling_bytes = _SHELL_LIMITS.max_output_bytes
+    if max_output_bytes <= 0 or max_output_bytes > ceiling_bytes:
         return _error(
             "invalid_max_output",
-            f"max_output_bytes must be > 0 and <= {_MAX_OUTPUT_BYTES}.",
-            details={"received": max_output_bytes, "max_output_bytes": _MAX_OUTPUT_BYTES},
+            f"max_output_bytes must be > 0 and <= {ceiling_bytes}.",
+            details={"received": max_output_bytes, "max_output_bytes": ceiling_bytes},
         )
     try:
         safe_cwd = _resolve_cwd(cwd)
@@ -500,22 +526,21 @@ async def bash(
 
     assert process.stdout is not None
     assert process.stderr is not None
-    stdout_task = asyncio.create_task(
-        _read_process_stream(
-            process.stdout,
-            stream="stdout",
-            ctx=ctx,
-            max_output_bytes=max_output_bytes,
+    spill_root = _spill_root(safe_cwd)
+    spill_dir = spill_directory(spill_root, session_id=active_session_id())
+    call_id = new_call_id()
+    captures = [
+        StreamCapture(
+            name,
+            inline_limit=max_output_bytes,
+            spill_path=spill_dir / f"{call_id}.{name}.txt",
         )
-    )
-    stderr_task = asyncio.create_task(
-        _read_process_stream(
-            process.stderr,
-            stream="stderr",
-            ctx=ctx,
-            max_output_bytes=max_output_bytes,
-        )
-    )
+        for name in ("stdout", "stderr")
+    ]
+    readers = [
+        asyncio.create_task(read_process_stream(pipe, capture=capture, ctx=ctx))
+        for pipe, capture in zip((process.stdout, process.stderr), captures, strict=True)
+    ]
     timed_out = False
     try:
         await asyncio.wait_for(process.wait(), timeout=timeout or None)
@@ -527,25 +552,40 @@ async def bash(
         # The turn was cancelled (the human stopped it): never orphan the command.
         _kill_process_tree(process.pid)
         raise
-    stdout_result, stderr_result = await asyncio.gather(stdout_task, stderr_task)
-    stdout, stdout_truncated = stdout_result
-    stderr, stderr_truncated = stderr_result
-    return {
+    await asyncio.gather(*readers)
+    base = {
         "command": command,
         "cwd": str(safe_cwd),
         "exit_code": None if timed_out else process.returncode,
-        "stdout": stdout,
-        "stderr": stderr,
         "timed_out": timed_out,
         "timeout_s": timeout,
-        "stdout_truncated": stdout_truncated,
-        "stderr_truncated": stderr_truncated,
     }
+    return compose_output_fields(base, captures, root=spill_root, budget=shell_result_char_budget())
+
+
+def _spill_root(safe_cwd: Path) -> Path:
+    """Where this call's spill files go: the session workspace root.
+
+    The model reads spilled output with its workspace file tools, so the files
+    belong under the bound workspace's ``.clio`` root even when the command ran
+    in an explicit sub-``cwd``. With no workspace bound (the app-less CLI path,
+    whose fallback :func:`_resolve_cwd` already traces) the policy-validated cwd
+    is used.
+    """
+
+    from clio_agent.tools.execution import (  # noqa: PLC0415 - avoid import cycle
+        get_active_tool_workspace_root,
+    )
+
+    active_root = get_active_tool_workspace_root()
+    return Path(active_root).resolve() if active_root else safe_cwd
 
 
 __all__ = [
     "SHELL_TOOL_ANNOTATIONS",
     "ShellEnvFacts",
+    "ShellLimits",
     "build_shell_tool_description",
+    "resolve_shell_limits",
     "shell_server",
 ]
