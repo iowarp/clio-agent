@@ -174,6 +174,7 @@ def test_codex_resolves_the_native_binary_behind_an_npm_launcher(
         root = prefix / "lib" / "node_modules" / "@openai" / "codex"
         (root / "bin").mkdir(parents=True)
         (root / "bin" / "codex.js").write_text("#!/usr/bin/env node\n", encoding="utf-8")
+        (root / "bin" / "codex.js").chmod(0o755)  # npm marks the launcher executable
         (tmp_path / "bin" / "codex").symlink_to(root / "bin" / "codex.js")
     vendored = _native(
         root / "node_modules" / "@openai" / package / "vendor" / triple / "bin" / f"codex{EXE}"
