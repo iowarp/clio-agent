@@ -60,9 +60,30 @@ def test_init_degradation_row_names_cause_and_external_operator(tmp_path):
     assert row.fallback == "local"
 
 
-def test_init_degradation_no_record_yields_no_row():
-    """No degrade recorded this process -> no row (a healthy/local boot is silent)."""
+def test_init_degradation_no_record_yields_no_row(monkeypatch):
+    """No degrade recorded this process -> no row (a healthy/local boot is silent).
+
+    ``record=None`` reads the LIVE process slot, which is process-global: the suite's
+    eager clio-core attach at session start (``tests/_cte_isolation.py``), or any earlier
+    ``make_arc_store`` in the same xdist worker, records a degrade there when its daemon
+    does not come up, and this test then saw that row. Establish the precondition this
+    test is about -- nothing recorded -- for this test only (restored afterwards, so the
+    worker's real record is untouched).
+    """
+    from clio_agent.arc import init_degradation  # noqa: PLC0415
+
+    monkeypatch.setattr(init_degradation, "_last_degradation", None)
     assert probe_clio_core_init_degradation(record=None) == []
+
+
+def test_init_degradation_reads_the_live_process_record(monkeypatch):
+    """``record=None`` means the live slot: a degrade recorded there IS surfaced."""
+    from clio_agent.arc import init_degradation  # noqa: PLC0415
+
+    live = _degrade_record("clio_core_daemon_spawn_failed")
+    monkeypatch.setattr(init_degradation, "_last_degradation", live)
+    [row] = probe_clio_core_init_degradation(record=None)
+    assert row.details["reason"] == "clio_core_daemon_spawn_failed"
 
 
 def test_init_degradation_sabotage_ready_would_go_red():

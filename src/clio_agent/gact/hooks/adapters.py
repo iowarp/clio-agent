@@ -104,6 +104,22 @@ class SubprocessAdapter(HookAdapter):
                 f"hook {entry.id!r} binary not found: {entry.run.command!r}",
                 hook_id=entry.id,
             ) from exc
+        except OSError as exc:
+            # Any other refusal to start the process (a transient Windows ERROR_NOT_ENOUGH_
+            # MEMORY / paging-file / handle exhaustion under load): typed and recorded, so
+            # the hook visibly did not run instead of the error escaping the dispatch.
+            record_hook_reason(
+                "hook_spawn_failed",
+                hook_id=entry.id,
+                event=envelope.hook_event_name,
+                command=entry.run.command,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            raise HookInfraError(
+                "hook_spawn_failed",
+                f"hook {entry.id!r} could not be started: {exc}",
+                hook_id=entry.id,
+            ) from exc
 
         timeout_s = entry.timeout_s if entry.timeout_s > 0 else None
         try:
