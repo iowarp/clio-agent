@@ -149,11 +149,10 @@ def test_claude_code_handshake_ready_only_after_live_probe(
 def test_discover_models_absent_overlay_falls_back_to_static_catalog(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """codex's ``Provider.model_catalog`` is empty (model-capabilities brief
-    9.1: no compiled-in candidate ids -- only a verified SDK catalog check
-    supplies one), so the generic :class:`NoOpHandshake` fallback this
-    exercises (via the base :meth:`CliCatalogHandshake._fallback_models`)
-    correctly returns nothing until an explicit refresh has run."""
+    """No compiled-in candidate ids exist (model-capabilities brief 9.1: only a
+    verified SDK catalog check supplies one), so the base
+    :meth:`CliCatalogHandshake._fallback_models` returns nothing until an
+    explicit refresh has run."""
     monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
     handshake = CliCatalogHandshake(provider=None)
     rows = asyncio.run(handshake.discover_models(client=None, ctx=_ctx()))
