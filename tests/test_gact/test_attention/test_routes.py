@@ -67,10 +67,10 @@ def test_availability_and_selection(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     client = _client(readers, monkeypatch)
     avail = client.get(f"/v1/sessions/{SID}/messages/msg_asst_1/attention/availability").json()
     assert avail["available"] is True and avail["top_pct"] == 10.0
-    body = {"part_id": "call_sel", "field": "thought", "start": 0, "end": 44}
+    body = {"part_id": "call_sel", "field": "thought", "start": 0, "end": 59}
     result = client.post(f"/v1/sessions/{SID}/messages/msg_asst_1/attention", json=body).json()
     assert result["available"] is True
-    assert result["selection"]["steps"] == [262, 270]
+    assert result["selection"]["steps"] == [133, 146]
     assert result["sources"]
 
 
@@ -143,6 +143,6 @@ def test_lm_calls_fall_back_to_flowcept_records(monkeypatch: pytest.MonkeyPatch)
     flowcept = fixture_flowcept()
     flowcept.tasks.append(row)
     client = _client({"flowcept": flowcept}, monkeypatch)
-    body = {"part_id": "call_sel", "field": "thought", "start": 0, "end": 44}
+    body = {"part_id": "call_sel", "field": "thought", "start": 0, "end": 59}
     result = client.post(f"/v1/sessions/{SID}/messages/msg_asst_1/attention", json=body).json()
     assert result["available"] is True

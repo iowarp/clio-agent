@@ -4,25 +4,26 @@ Only generated text has attention rows. A selection is a char span over one
 text part of an assistant message (or a tool call's ``thought``). The producing
 call is the turn's call whose output contains that text (verbatim, or
 JSON-escaped inside ``submit``'s arguments); the span converts to output chars,
-then to output tokens via the model's own tokenizer offsets, then to decode
-steps by aligning those tokens with the per-step ``token_id`` the connector
-recorded -- so a re-tokenization that differs from what was generated (BPE is
-not always canonical) is corrected, and a real mismatch is a typed reason.
+then to output tokens via the model's own tokenizer offsets, and output token
+``t`` is decode-step row ``t`` (the step that produced it).
+
+The connector stores no generated token ids, so that last step holds only when
+re-tokenizing the recorded output gives back the captured step count: ``G`` =
+tokens + 1 for a stopped request (the final row is the stop token, which has no
+text), ``G`` = tokens when it hit the length limit. Checked on job 3237185:
+29/29 calls. Any other count, or a capture whose health counters say rows were
+skipped, is a typed reason -- never a shifted guess.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from difflib import SequenceMatcher
 
 from clio_agent.gact.attention.chat_render import ChatRenderer
+from clio_agent.gact.attention.contract import AttentionRecord
 from clio_agent.gact.attention.lm_calls import LmCall
 from clio_agent.gact.attention.reasons import AttentionUnavailable
 from clio_agent.gact.attention.textmap import Located, locate
-
-#: Below this fraction of the selected tokens matching the recorded token ids,
-#: the selection is refused as ``output_alignment_mismatch`` rather than shown.
-MIN_ALIGNED_FRACTION = 0.9
 
 
 @dataclass(frozen=True)
@@ -66,13 +67,12 @@ def locate_output(calls: list[LmCall], part_text: str, sel_lo: int, sel_hi: int)
 
 @dataclass(frozen=True)
 class StepSpan:
-    """The decode steps whose token rows cover a selection."""
+    """The decode steps whose rows cover a selection."""
 
     steps: list[int]
     token_lo: int
     token_hi: int
-    aligned_fraction: float
-    retokenization_exact: bool
+    output_tokens: int
 
 
 def output_steps(
@@ -80,40 +80,28 @@ def output_steps(
     content: str,
     out_lo: int,
     out_hi: int,
-    step_tokens: list[tuple[int, int, int]],
+    record: AttentionRecord,
 ) -> StepSpan:
-    """Map an output char span to decode steps.
-
-    ``step_tokens`` is ``(step, token_index, token_id)`` for every recorded
-    step. The re-tokenized output is aligned to the recorded token sequence
-    (ordered by ``token_index``) and each selected token maps to the step that
-    carries its ``token_index``.
-    """
+    """Map an output char span to decode-step rows (see the module docstring)."""
+    if not record.clean:
+        raise AttentionUnavailable(
+            "attention_capture_partial",
+            "the capture skipped or restarted decode steps, so rows no longer line up "
+            "with the generated tokens",
+            {"request_id": record.request_id, **record.health},
+        )
     encoded = renderer.encode(content)
+    n = len(encoded.ids)
+    if record.decode_steps not in (n, n + 1):
+        raise AttentionUnavailable(
+            "output_alignment_mismatch",
+            f"the recorded output re-tokenizes to {n} tokens, the capture has "
+            f"{record.decode_steps} decode steps",
+            {"request_id": record.request_id, "output_tokens": n},
+        )
     tok_lo, tok_hi = encoded.token_span(out_lo, out_hi)
     if tok_hi <= tok_lo:
         raise AttentionUnavailable("selection_not_located", "the selection covers no tokens")
-    by_index = sorted((tidx, tid, step) for step, tidx, tid in step_tokens)
-    recorded_ids = [tid for _, tid, _ in by_index]
-    matcher = SequenceMatcher(None, encoded.ids, recorded_ids, autojunk=False)
-    ours_to_recorded: dict[int, int] = {}
-    for block in matcher.get_matching_blocks():
-        for k in range(block.size):
-            ours_to_recorded[block.a + k] = block.b + k
-    wanted = range(tok_lo, tok_hi)
-    mapped = [ours_to_recorded[i] for i in wanted if i in ours_to_recorded]
-    fraction = len(mapped) / len(wanted)
-    if fraction < MIN_ALIGNED_FRACTION:
-        raise AttentionUnavailable(
-            "output_alignment_mismatch",
-            f"only {len(mapped)}/{len(wanted)} selected tokens match the recorded tokens",
-            {"token_lo": tok_lo, "token_hi": tok_hi},
-        )
-    steps = sorted({by_index[j][2] for j in mapped})
     return StepSpan(
-        steps=steps,
-        token_lo=tok_lo,
-        token_hi=tok_hi,
-        aligned_fraction=fraction,
-        retokenization_exact=encoded.ids == recorded_ids,
+        steps=list(range(tok_lo, tok_hi)), token_lo=tok_lo, token_hi=tok_hi, output_tokens=n
     )

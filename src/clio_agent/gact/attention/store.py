@@ -1,29 +1,34 @@
-"""Query layer over Flowcept for the connector's attention records.
+"""Query layer: the descriptor through Flowcept, the arrays from the SafeTensors file.
 
-Thin and typed: two queries, both through Flowcept's own ``task_query`` (no
-raw collection access, no file reads) --
+* the response's descriptor task, joined by response id through Flowcept's own
+  ``task_query`` (``used.request_id`` = ``<response id>-<hex>``, an exact
+  prefix match);
+* the file it names (:mod:`.files` locates and verifies it), read a tensor or a
+  row range at a time (:mod:`.safetensors_file`).
 
-* the response's summary task, joined by response id
-  (``used.request_id`` = ``<response id>-<hex>``, an exact prefix match);
-* the step tasks for a step range, one indexed range query.
-
-Records are parsed by :mod:`.contract`; every miss is a typed reason.
+Every miss is a typed reason.
 """
 
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any, Protocol
 
+import numpy as np
+
+from clio_agent.gact.attention import files
 from clio_agent.gact.attention.contract import (
-    STEP_ACTIVITY,
+    STEP_TENSORS,
     SUMMARY_ACTIVITY,
+    AttentionRecord,
     AttentionStep,
     AttentionSummary,
-    parse_step,
-    parse_summary,
+    check_partition,
+    parse_record,
 )
 from clio_agent.gact.attention.reasons import AttentionUnavailable
+from clio_agent.gact.attention.safetensors_file import SafeTensorsFile
 
 
 class TaskQuery(Protocol):
@@ -41,12 +46,20 @@ class TaskQuery(Protocol):
         ...
 
 
-class AttentionStore:
-    """Read attention summaries and step rows for one response at a time."""
+def _malformed(detail: str, record: AttentionRecord) -> AttentionUnavailable:
+    return AttentionUnavailable(
+        "attention_record_malformed", detail, {"request_id": record.request_id}
+    )
 
-    def __init__(self, source: TaskQuery) -> None:
-        """Wrap a Flowcept task-query source (the configured Flowcept provider)."""
+
+class AttentionStore:
+    """Read one response's attention: descriptor, whole-prompt tensors, step rows."""
+
+    def __init__(self, source: TaskQuery, files_dir: str | None = None) -> None:
+        """Wrap a Flowcept task-query source; ``files_dir`` overrides the configured mirror."""
         self._source = source
+        self._files_dir = files_dir
+        self._open: dict[str, SafeTensorsFile] = {}
 
     def _query(self, filter: dict[str, Any], **kwargs: Any) -> list[dict[str, Any]]:
         try:
@@ -61,8 +74,8 @@ class AttentionStore:
             )
         return rows
 
-    def summary_for(self, response_id: str) -> AttentionSummary:
-        """The summary record for a provider response id (KV-cache group 0)."""
+    def record_for(self, response_id: str) -> AttentionRecord:
+        """The descriptor for a provider response id (KV-cache group 0)."""
         if not response_id:
             raise AttentionUnavailable("response_id_missing", "the model call has no response id")
         rows = self._query(
@@ -80,7 +93,52 @@ class AttentionStore:
             )
         rows.sort(key=lambda row: str(row.get("task_id") or ""))
         group0 = [row for row in rows if str(row.get("task_id") or "").endswith(":g0")]
-        return parse_summary((group0 or rows)[0])
+        return parse_record((group0 or rows)[0])
+
+    def _file(self, record: AttentionRecord) -> SafeTensorsFile:
+        cached = self._open.get(record.request_id)
+        if cached is not None:
+            return cached
+        path: Path = files.locate(record, self._files_dir)
+        files.verify(record, path)
+        st = SafeTensorsFile(path)
+        header_rid = st.metadata.get("request_id")
+        if header_rid and header_rid != record.request_id:
+            raise _malformed(f"file header names request {header_rid}", record)
+        for name in STEP_TENSORS:
+            if st.info(name).shape[0] != record.decode_steps:
+                raise _malformed(
+                    f"{name} has {st.info(name).shape[0]} rows, record says "
+                    f"{record.decode_steps} decode steps",
+                    record,
+                )
+        self._open[record.request_id] = st
+        return st
+
+    def summary_for(self, response_id: str) -> AttentionSummary:
+        """Descriptor plus the file's whole-prompt tensors, cross-checked."""
+        record = self.record_for(response_id)
+        st = self._file(record)
+        ids = st.read("prompt_token_ids").astype(np.int64)
+        if len(ids) != record.prompt_tokens:
+            raise _malformed(
+                f"prompt_token_ids has {len(ids)} entries, record says {record.prompt_tokens}",
+                record,
+            )
+        raw = st.read("segments")
+        if raw.ndim != 2 or raw.shape[1] < 2:
+            raise _malformed(f"segments shape {raw.shape} is not [n, 3]", record)
+        segments = [(int(lo), int(hi)) for lo, hi in raw[:, :2]]
+        check_partition(segments, record.prompt_tokens)
+        top_pct = st.metadata.get("top_pct")
+        return AttentionSummary(
+            record=record,
+            prompt_token_ids=ids,
+            segments=segments,
+            attn_sum=st.read("attn_sum").astype(np.float64),
+            attn_peak=st.read("attn_peak").astype(np.float64),
+            top_pct=float(top_pct) if top_pct else None,
+        )
 
     def workflow_tokenizer(self, workflow_id: str) -> str:
         """``conf.tokenizer`` of the connector's workflow (the model's HF id), or ``""``."""
@@ -96,52 +154,23 @@ class AttentionStore:
         conf = (rows[0].get("conf") or {}) if rows else {}
         return str(conf.get("tokenizer") or conf.get("model") or "")
 
-    def step_tokens(self, request_id: str) -> list[tuple[int, int, int]]:
-        """``(step, token_index, token_id)`` for every step (projected, no arrays)."""
-        rows = self._query(
-            {"activity_id": STEP_ACTIVITY, "used.request_id": request_id},
-            projection=["used.step", "generated.token_index", "generated.token_id"],
-            sort=[("used.step", 1)],
-        )
-        out: list[tuple[int, int, int]] = []
-        for row in rows:
-            try:
-                gen = row["generated"]
-                out.append(
-                    (int(row["used"]["step"]), int(gen["token_index"]), int(gen["token_id"]))
-                )
-            except (KeyError, TypeError, ValueError) as exc:
-                raise AttentionUnavailable(
-                    "attention_record_malformed", f"step token projection unreadable: {exc}"
-                ) from exc
-        if not out:
-            raise AttentionUnavailable(
-                "attention_steps_missing", f"no {STEP_ACTIVITY} tasks for {request_id}"
-            )
-        return out
-
-    def steps(self, request_id: str, first: int, last: int) -> list[AttentionStep]:
-        """Step rows ``first..last`` inclusive, in order; missing steps are typed."""
+    def steps(self, summary: AttentionSummary, first: int, last: int) -> list[AttentionStep]:
+        """Step rows ``first..last`` inclusive; row ``t`` produced output token ``t``."""
         if last < first:
             return []
-        rows = self._query(
-            {
-                "activity_id": STEP_ACTIVITY,
-                "used.request_id": request_id,
-                "used.step": {"$gte": int(first), "$lte": int(last)},
-            },
-            sort=[("used.step", 1)],
-        )
-        steps = [parse_step(row) for row in rows]
-        got = {s.step for s in steps}
-        missing = [i for i in range(first, last + 1) if i not in got]
-        if missing:
-            raise AttentionUnavailable(
-                "attention_steps_missing",
-                f"{len(missing)} of {last - first + 1} steps absent for {request_id}",
-                {"request_id": request_id, "first_missing": missing[0]},
+        st = self._file(summary.record)
+        pos = st.rows("topk_pos", first, last)
+        vmax = st.rows("val_all_max", first, last)
+        mean = st.rows("val_all_avg", first, last)
+        residual = st.rows("topk_residual", first, last).reshape(-1)
+        return [
+            AttentionStep(
+                step=first + i,
+                token_index=first + i,
+                pos=pos[i],
+                max=vmax[i],
+                mean=mean[i],
+                residual=float(residual[i]),
             )
-        dedup: dict[int, AttentionStep] = {}
-        for step in steps:
-            dedup.setdefault(step.step, step)
-        return [dedup[i] for i in range(first, last + 1)]
+            for i in range(last - first + 1)
+        ]

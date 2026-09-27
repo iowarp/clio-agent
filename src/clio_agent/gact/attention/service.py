@@ -4,7 +4,8 @@ Pipeline -- every step either succeeds or raises a typed reason:
 
 1. the selected text belongs to a generated part of an assistant message;
 2. the turn's ``lm.call`` that produced it (:mod:`.selection`);
-3. the connector's summary for that call, by response id (:mod:`.store`);
+3. the connector's record for that call, by response id, and its SafeTensors
+   file (:mod:`.store`);
 4. the prompt re-rendered with the model's tokenizer and checked against the
    captured prompt length / token ids;
 5. sections = the ranges CLIO declared on the request (checked verbatim against
@@ -104,8 +105,7 @@ def _check_prompt(encoded: Encoded, summary: Any) -> None:
             f"re-rendered prompt has {len(encoded.ids)} tokens, capture scored "
             f"{summary.prompt_tokens}",
         )
-    ids = summary.prompt_token_ids
-    if ids is not None and not np.array_equal(np.asarray(encoded.ids, dtype=np.int64), ids):
+    if not np.array_equal(np.asarray(encoded.ids, dtype=np.int64), summary.prompt_token_ids):
         raise AttentionUnavailable(
             "range_alignment_mismatch", "re-rendered prompt token ids differ from the capture"
         )
@@ -142,7 +142,7 @@ def explain_selection(
 
     summary = store.summary_for(call.response_id)
     identity = str(declaration.get("tokenizer") or "") or store.workflow_tokenizer(
-        summary.workflow_id
+        summary.record.workflow_id
     )
     if not identity:
         raise AttentionUnavailable(
@@ -169,11 +169,9 @@ def explain_selection(
         call.content or "",
         span.out_lo,
         span.out_hi,
-        store.step_tokens(summary.request_id),
+        summary.record,
     )
-    steps = store.steps(summary.request_id, step_span.steps[0], step_span.steps[-1])
-    wanted = set(step_span.steps)
-    steps = [s for s in steps if s.step in wanted]
+    steps = store.steps(summary, step_span.steps[0], step_span.steps[-1])
     mass = agg.mass_from_steps(steps, summary.prompt_tokens)
 
     shares = agg.section_shares(sections, mass)
@@ -206,15 +204,11 @@ def explain_selection(
             "token_range": [step_span.token_lo, step_span.token_hi],
             "steps": [step_span.steps[0], step_span.steps[-1]],
             "step_count": len(steps),
-            "aligned_fraction": step_span.aligned_fraction,
-            "retokenization_exact": step_span.retokenization_exact,
-            "token_index_base": summary.token_index_base,
+            "output_tokens": step_span.output_tokens,
+            "token_index_base": "produced",
         },
         "top_pct": summary.top_pct,
         "residual": mass.residual,
-        "partial": bool(
-            summary.health.get("restarts") or summary.health.get("decode_steps_dropped")
-        ),
         "health": summary.health,
         "sections_source": sections_source,
         "sections": [
@@ -268,7 +262,9 @@ def _drilldown(
     starts = [s.lo for s in sections]
     rows: list[dict[str, Any]] = []
     for step in steps[:DRILLDOWN_TOKENS]:
-        order = np.argsort(-step.max)[:DRILLDOWN_TOP]
+        # Ranked by the mean over (layer, head): the max saturates at ~1.0 on many
+        # positions (some head always spikes), so it cannot order them.
+        order = np.argsort(-step.mean, kind="stable")[:DRILLDOWN_TOP]
         top = []
         for k in order:
             pos = int(step.pos[k])

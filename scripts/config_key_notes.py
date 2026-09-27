@@ -802,6 +802,10 @@ KEY_NOTES: dict[str, str] = {
         "kv_transfer_params.ranges for vllm-attn-connector and record the labelled ranges on "
         "the lm.call; powers the attention view. Only effective with Flowcept configured."
     ),
+    "provenance.attention.files_dir": (
+        "Local copy of the attention connector's out_dir (same <workflow_id>/<file> layout) "
+        "for when CLIO does not run on the GPU node; the attention view reads files there."
+    ),
     "provenance.attention.tokenizer": (
         "Local directory or Hugging Face id of the served model's tokenizer + chat template "
         "(files only) for attention ranges; set for air-gapped nodes or custom templates."

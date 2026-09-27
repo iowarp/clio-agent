@@ -1,100 +1,135 @@
-"""Rebuild ``earthscope_a00d067a.json.gz`` from the recorded SPOTTER-AI run.
+"""Rebuild the attention fixture from a vllm-attn-connector bundle.
 
-Provenance: Flowcept dump of job 3188205 (earthscope offline, granite-4.2-30b,
-vllm-attn-connector cb39257, clio-agent 0d69f02a). Response
-``chatcmpl-a00d067a9ecb0bf5`` is a turn-1 ReAct step (prompt 13,296 tokens,
-435 decode steps, all 4 connector parts present). Not run by the test suite;
-kept so the fixture is reproducible and its derivation reviewable.
+Provenance: attention bundle of job 3237185 (EarthScope offline, 5 turns,
+ibm-granite/granite-4.2-30b, vllm-attn-connector ``fix/on-safetensors-e857fd0``
+@ 95ab2ac, Flowcept e638b4e2). Response ``chatcmpl-9478ecf2002ea26e`` is a
+turn-3 ReAct step (9 messages: three earlier tool calls and results, earlier
+turns inline in the question; prompt 15,514 tokens, 329 decode steps). Not run
+by the test suite; kept so the fixture is reproducible and its derivation
+reviewable.
 
-Inputs (produced by streaming the dump, see the attention PR):
-  ``lm_calls.ndjson``     the run's CLIO lm.call records
-  ``parts_*.bson``        the response's decode_attention part documents
-  ``granite/``            ibm-granite/granite-4.2-30b tokenizer files (no weights)
+Outputs:
 
-Conversion to the proposed storage contract (``gact/attention/contract.py``):
+* ``earthscope_9478ecf2.json.gz``: the real CLIO ``lm.call`` (messages and
+  output), the real connector workflow and ``decode_attention`` descriptor, and
+  the granite tokenization (ids + offsets) of prompt and output, so tests need
+  no 7 MB tokenizer;
+* ``<workflow id>/<request id>_g0.safetensors``: the real file with every row kept but each
+  ``[G, k]`` row cut to its 64 highest ``val_all_max`` entries (still ascending
+  by position). ``prompt_token_ids``, ``attn_sum``, ``attn_peak``, ``segments``,
+  ``topk_residual`` and the header metadata are verbatim. The descriptor's
+  ``bytes`` / ``sha256`` are rewritten to the cut file's; its ``tensors`` shapes
+  say ``k = 64``.
 
-* summary: ``segments`` and ``prompt_token_ids`` verbatim; ``attn_sum`` verbatim;
-  ``segment_mean_mass`` = per-segment sum of ``attn_sum`` / G (``attn_sum`` is the
-  full mean row summed over steps, so this is exact); ``residual_mean`` = mean of
-  the recorded ``topk_residual``;
-* steps: ``pos`` / ``max`` / ``mean`` / ``head`` / ``residual`` verbatim from the
-  recorded ``[G, k]`` rows (``-1`` padding dropped). cb39257 does not record the
-  generated token ids, so ``token_index = step`` and ``token_id`` comes from the
-  model tokenizer (the trailing extra step is the EOS query). The contract asks
-  the connector to record both; the run's induction pattern (top prompt tokens at
-  step t match output token t 18% and t+1 15%, but t-1 only 6%) supports this
-  "query" reading.
-
-Usage: python build_fixture.py <scratch dir with ds/ and tok/granite> <out.json.gz>
+Usage: python build_fixture.py <bundle dir> <tokenizer dir> <out dir>
 """
 
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
+import struct
 import sys
 from pathlib import Path
 
-import bson
-from bson import json_util
+import numpy as np
 
 from clio_agent.gact.attention.chat_render import ChatRenderer
+from clio_agent.gact.attention.safetensors_file import SafeTensorsFile
 
-RESPONSE_ID = "chatcmpl-a00d067a9ecb0bf5"
-STEP_WINDOW = (262, 272)  # the thought's first sentence, tokens 262..271
-EOS_ID = 100257
+RESPONSE_ID = "chatcmpl-9478ecf2002ea26e"
+KEEP = 64
+_NAMES = {np.dtype("<f4"): "F32", np.dtype("<i4"): "I32"}
 
 
-def main(scratch: Path, out: Path) -> None:
-    """Write the fixture JSON (gzip)."""
-    renderer = ChatRenderer.from_dir(
-        scratch / "tok" / "granite", identity="ibm-granite/granite-4.2-30b"
-    )
-    docs = []
-    for path in sorted((scratch / "ds").glob("parts_*.bson")):
-        docs.extend(bson.decode_all(path.read_bytes()))
-    parts = {
-        d["custom_metadata"]["part_index"]: d
-        for d in docs
-        if d["custom_metadata"]["parent_request_id"].startswith(RESPONSE_ID + "-")
-    }
-    calls = [
-        json_util.loads(line)
-        for line in (scratch / "ds" / "lm_calls.ndjson").open(encoding="utf-8")
+def _write_safetensors(path: Path, tensors: dict[str, np.ndarray], meta: dict[str, str]) -> None:
+    header: dict[str, object] = {"__metadata__": meta}
+    offset = 0
+    blobs = []
+    for name, arr in tensors.items():
+        raw = np.ascontiguousarray(arr).tobytes()
+        header[name] = {
+            "dtype": _NAMES[arr.dtype],
+            "shape": list(arr.shape),
+            "data_offsets": [offset, offset + len(raw)],
+        }
+        blobs.append(raw)
+        offset += len(raw)
+    head = json.dumps(header, separators=(",", ":")).encode()
+    head += b" " * (-len(head) % 8)
+    path.write_bytes(struct.pack("<Q", len(head)) + head + b"".join(blobs))
+
+
+def main(bundle: Path, tok_dir: Path, out: Path) -> None:
+    """Write the fixture JSON (gzip) and the cut SafeTensors file."""
+    tasks = [
+        json.loads(line)
+        for line in (bundle / "full" / "tasks_3237185.json").open(encoding="utf-8")
+        if line.strip()
     ]
-    call = next(c for c in calls if c["custom_metadata"]["clio"]["response_id"] == RESPONSE_ID)
+    workflows = [
+        json.loads(line)
+        for line in (bundle / "full" / "workflows_3237185.json").open(encoding="utf-8")
+        if line.strip()
+    ]
+    call = next(
+        t
+        for t in tasks
+        if t.get("subtype") == "ai_model_invocation"
+        and t["custom_metadata"]["clio"]["response_id"] == RESPONSE_ID
+    )
+    record = next(
+        t
+        for t in tasks
+        if t.get("subtype") == "decode_attention"
+        and t["used"]["request_id"].startswith(RESPONSE_ID + "-")
+    )
+    workflow = next(w for w in workflows if w["workflow_id"] == record["workflow_id"])
     clio = call["custom_metadata"]["clio"]
     payload = clio["payload"]
-    p0 = parts[0]
-    cm = p0["custom_metadata"]
-    total_steps = int(cm["decode_steps_total"])
-    rows: dict[int, dict] = {}
-    residuals: list[float] = []
-    for index in sorted(parts):
-        part = parts[index]
-        offset = int(part["custom_metadata"]["step_offset"])
-        gen = part["generated"]
-        for i, pos in enumerate(gen["topk_pos"]):
-            residuals.append(float(gen["topk_residual"][i][0]))
-            step = offset + i
-            if STEP_WINDOW[0] <= step < STEP_WINDOW[1]:
-                keep = [j for j, p in enumerate(pos) if p >= 0]
-                rows[step] = {
-                    "pos": [int(pos[j]) for j in keep],
-                    "max": [gen["val_all_max"][i][j] for j in keep],
-                    "mean": [gen["val_all_avg"][i][j] for j in keep],
-                    "head": [int(gen["topk_head"][i][j]) for j in keep],
-                    "residual": float(gen["topk_residual"][i][0]),
-                }
-    assert len(residuals) == total_steps, (len(residuals), total_steps)
-    attn_sum = p0["generated"]["attn_sum"]
-    segments = [[int(lo), int(hi)] for lo, hi, _k in p0["generated"]["segments"]]
+    request_id = record["used"]["request_id"]
+    source = SafeTensorsFile(
+        bundle / "full" / "files" / record["workflow_id"] / f"{request_id}_g0.safetensors"
+    )
+    vmax = source.read("val_all_max")
+    order = np.sort(np.argsort(-vmax, axis=1)[:, :KEEP], axis=1)
+    rows = np.arange(vmax.shape[0])[:, None]
+    cut = {
+        "prompt_token_ids": source.read("prompt_token_ids"),
+        "attn_sum": source.read("attn_sum"),
+        "attn_peak": source.read("attn_peak"),
+        "segments": source.read("segments"),
+        "topk_pos": source.read("topk_pos")[rows, order],
+        "topk_head": source.read("topk_head")[rows, order],
+        "val_all_max": vmax[rows, order],
+        "val_all_avg": source.read("val_all_avg")[rows, order],
+        "topk_residual": source.read("topk_residual"),
+    }
+    file_path = out / record["workflow_id"] / f"{request_id}_g0.safetensors"
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_safetensors(file_path, cut, source.metadata)
+    raw = file_path.read_bytes()
+    stats = dict(record["attention_stats"])
+    stats["bytes"] = len(raw)
+    stats["sha256"] = hashlib.sha256(raw).hexdigest()
+    stats["tensors"] = {
+        name: {"shape": list(arr.shape), "dtype": "int32" if arr.dtype.kind == "i" else "float32"}
+        for name, arr in cut.items()
+    }
+    descriptor = {
+        key: record[key] for key in ("task_id", "activity_id", "subtype", "workflow_id", "used")
+    }
+    descriptor["type"] = "task"
+    descriptor["attention_stats"] = stats
+
+    renderer = ChatRenderer.from_dir(tok_dir, identity="ibm-granite/granite-4.2-30b")
     prompt = renderer.render_encoded(payload["messages"])
     output = renderer.encode(payload["content"])
-    out_ids = output.ids + [EOS_ID]
-    assert prompt.ids == list(p0["used"]["prompt_token_ids"]), "render must match the capture"
+    assert prompt.ids == cut["prompt_token_ids"].tolist(), "render must match the capture"
+    assert len(output.ids) + 1 == record["used"]["num_decode_tokens"], "G = output + stop"
     fixture = {
-        "provenance": "flowcept job 3188205, vllm-attn-connector cb39257, see build_fixture.py",
+        "provenance": "attention bundle job 3237185, connector 95ab2ac; see build_fixture.py",
         "lm_call": {
             "event_id": clio["event_id"],
             "session_id": clio["session_id"],
@@ -105,33 +140,17 @@ def main(scratch: Path, out: Path) -> None:
             "content": payload["content"],
         },
         "workflow": {
-            "workflow_id": p0["workflow_id"],
-            "conf": {"tokenizer": "ibm-granite/granite-4.2-30b"},
+            "workflow_id": workflow["workflow_id"],
+            "conf": {"tokenizer": workflow["conf"]["tokenizer"]},
+            "attention_config": workflow["attention_config"],
         },
-        "request_id": cm["parent_request_id"].split(":")[0],
+        "descriptor": descriptor,
         "prompt": {"ids": prompt.ids, "offsets": [list(o) for o in prompt.offsets]},
         "output": {"ids": output.ids, "offsets": [list(o) for o in output.offsets]},
-        "summary": {
-            "num_prompt_tokens": len(prompt.ids),
-            "num_decode_tokens": total_steps,
-            "segments": segments,
-            "segment_mean_mass": [sum(attn_sum[lo:hi]) / total_steps for lo, hi in segments],
-            "residual_mean": sum(residuals) / len(residuals),
-            "top_pct": float(cm["top_pct"]),
-            "attn_sum": attn_sum,
-            "health": {
-                k: int(cm.get(k) or 0)
-                for k in ("decode_steps_dropped", "decode_steps_nonfinite", "restarts")
-            },
-        },
-        "step_tokens": [
-            [s, s, out_ids[s] if s < len(out_ids) else EOS_ID] for s in range(total_steps)
-        ],
-        "steps": {str(k): v for k, v in sorted(rows.items())},
     }
-    with gzip.open(out, "wt", encoding="utf-8") as fh:
+    with gzip.open(out / "earthscope_9478ecf2.json.gz", "wt", encoding="utf-8") as fh:
         json.dump(fixture, fh, separators=(",", ":"))
 
 
 if __name__ == "__main__":
-    main(Path(sys.argv[1]), Path(sys.argv[2]))
+    main(Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]))

@@ -21,3 +21,6 @@ tests/fixtures/a2ui_transcripts/**   text eol=lf
 # S8 review round (issue #1374 item 9): vendored gact-tui transport header
 # sets / capability bodies, same byte-stability guarantee.
 tests/fixtures/a2ui_client_metadata/**   text eol=lf
+
+# Attention fixtures are real SafeTensors files checked against a recorded sha256.
+*.safetensors  binary

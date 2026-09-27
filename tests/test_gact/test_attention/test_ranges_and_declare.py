@@ -31,7 +31,7 @@ def test_real_prompt_sections_are_ordered_disjoint_and_labelled() -> None:
     declaration, encoded = _real_declaration()
     ranges = declaration.ranges
     assert declaration.unlocated_messages == []
-    assert declaration.prompt_token_count == 13296
+    assert declaration.prompt_token_count == 15514
     assert all(a.hi <= b.lo for a, b in zip(ranges, ranges[1:], strict=False))
     by_label = {(r.domain, r.label) for r in ranges}
     assert {
@@ -42,7 +42,7 @@ def test_real_prompt_sections_are_ordered_disjoint_and_labelled() -> None:
         ("thinking", "next_thought"),
         ("tool_call", "tool_calls"),
         ("tool_result", "load_skill"),
-        ("tool_result", "ndp_search_datasets"),
+        ("tool_result", "create_artifact"),
     } <= by_label
 
 

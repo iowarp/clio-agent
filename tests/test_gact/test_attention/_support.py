@@ -1,11 +1,12 @@
 """Test support for the attention view: the real-run fixture and a query fake.
 
-The fixture (``tests/fixtures/attention/earthscope_a00d067a.json.gz``, built by
-``build_fixture.py`` from Flowcept job 3188205) carries one real CLIO lm.call,
-its granite tokenization (ids + offsets), and the connector's real attention
-rows reshaped to the proposed storage contract. The chat template is granite's
-real ``chat_template.jinja``; only the 7 MB tokenizer is replaced by the
-fixture's recorded encodings.
+The fixture (``tests/fixtures/attention/earthscope_9478ecf2.json.gz`` plus the
+SafeTensors file under ``vllm-attn-9e11e1571c5f/``, built by
+``build_fixture.py`` from the job 3237185 attention bundle) carries one real
+CLIO lm.call, its granite tokenization (ids + offsets), the connector's real
+descriptor task and its real file (rows cut to their top 64 entries). The chat
+template is granite's real ``chat_template.jinja``; only the 7 MB tokenizer is
+replaced by the fixture's recorded encodings.
 """
 
 from __future__ import annotations
@@ -18,7 +19,6 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 from tokenizers import Tokenizer, models, pre_tokenizers, trainers
 
 from clio_agent.gact.attention.chat_render import ChatRenderer, Encoded
@@ -36,7 +36,7 @@ SID = "sess_fixture"
 @cache
 def fixture() -> dict[str, Any]:
     """The decoded real-run fixture."""
-    with gzip.open(FIXTURES / "earthscope_a00d067a.json.gz", "rt", encoding="utf-8") as fh:
+    with gzip.open(FIXTURES / "earthscope_9478ecf2.json.gz", "rt", encoding="utf-8") as fh:
         return json.load(fh)
 
 
@@ -101,70 +101,19 @@ class FixtureRenderer:
         )
 
 
-def _pack(values: list[float] | list[int], dtype: str) -> bytes:
-    return np.asarray(values, dtype=np.dtype(dtype).newbyteorder("<")).tobytes()
-
-
-def summary_doc(**over: Any) -> dict[str, Any]:
-    """The fixture summary as a contract ``decode_attention`` task."""
-    data = copy.deepcopy(fixture())
-    s = data["summary"]
-    summary = {
-        "schema": "vllm_attn_connector.attention.v1",
-        "segments": s["segments"],
-        "segment_mean_mass": s["segment_mean_mass"],
-        "residual_mean": s["residual_mean"],
-        "token_index_base": "query",
-        "top_pct": s["top_pct"],
-        "attn_sum": _pack(s["attn_sum"], "f4"),
-        "prompt_token_ids": _pack(data["prompt"]["ids"], "i4"),
-        **s["health"],
-    }
-    summary.update(over.pop("summary", {}))
-    doc = {
-        "type": "task",
-        "task_id": f"{data['request_id']}:g0",
-        "activity_id": "decode_attention",
-        "workflow_id": data["workflow"]["workflow_id"],
-        "used": {
-            "request_id": data["request_id"],
-            "num_prompt_tokens": s["num_prompt_tokens"],
-            "num_decode_tokens": s["num_decode_tokens"],
-        },
-        "generated": {"attention_summary": summary},
-    }
+def descriptor_doc(**over: Any) -> dict[str, Any]:
+    """The fixture's real ``decode_attention`` descriptor task (``over`` merges shallowly)."""
+    doc = copy.deepcopy(fixture()["descriptor"])
+    stats = over.pop("attention_stats", None)
+    if stats is not None:
+        doc["attention_stats"] = {**doc["attention_stats"], **stats}
     doc.update(over)
     return doc
 
 
-def step_docs() -> list[dict[str, Any]]:
-    """Contract ``decode_attention_step`` tasks: real rows for the window, tokens for all."""
-    data = fixture()
-    rows = data["steps"]
-    docs = []
-    for step, token_index, token_id in data["step_tokens"]:
-        gen: dict[str, Any] = {"token_index": token_index, "token_id": token_id}
-        row = rows.get(str(step))
-        if row is None:
-            gen.update(pos=b"", max=b"", mean=b"", residual=1.0)
-        else:
-            gen.update(
-                pos=_pack(row["pos"], "i4"),
-                max=_pack(row["max"], "f4"),
-                mean=_pack(row["mean"], "f4"),
-                head=_pack(row["head"], "i2"),
-                residual=row["residual"],
-            )
-        docs.append(
-            {
-                "type": "task",
-                "task_id": f"{data['request_id']}:g0:s{step}",
-                "activity_id": "decode_attention_step",
-                "used": {"request_id": data["request_id"], "kv_cache_group_id": 0, "step": step},
-                "generated": gen,
-            }
-        )
-    return docs
+def request_id() -> str:
+    """The fixture's vLLM request id."""
+    return str(fixture()["descriptor"]["used"]["request_id"])
 
 
 def _get(doc: dict[str, Any], dotted: str) -> Any:
@@ -228,9 +177,9 @@ class FakeFlowcept:
 
 
 def fixture_flowcept() -> FakeFlowcept:
-    """The fixture's summary + steps + connector workflow in the fake store."""
+    """The fixture's descriptor + connector workflow in the fake store."""
     data = fixture()
-    return FakeFlowcept([summary_doc(), *step_docs()], [data["workflow"]])
+    return FakeFlowcept([descriptor_doc()], [data["workflow"]])
 
 
 def _tool_results(messages: list[dict[str, Any]]) -> list[tuple[str, str, dict[str, Any]]]:
@@ -255,17 +204,36 @@ def fixture_thought() -> str:
     return body.split("[[ ## tool_calls ## ]]", 1)[0].strip()
 
 
+def _history(messages: list[dict[str, Any]]) -> tuple[str, str, str]:
+    """(earlier user words, earlier answer, current request) from the question field."""
+    question = messages[1]["content"].split("[[ ## question ## ]]", 1)[1]
+    question = question.split("[[ ## images ## ]]", 1)[0]
+    history, current = question.split("=== Current request ===", 1)
+    first_user = history.split("\nUser: ", 1)[1].split("\nAssistant: ", 1)[0]
+    last_answer = history.rsplit("\nAssistant: ", 1)[1].rstrip()
+    return first_user.strip(), last_answer.strip(), current.strip()
+
+
+def _message(mid: str, tid: str, role: str, parts: list[Part]) -> Message:
+    now = "2026-09-27T05:30:00Z"
+    return Message(
+        id=mid,
+        session_id=SID,
+        turn_id=tid,
+        role=role,
+        created_at=now,
+        updated_at=now,
+        parts=parts,
+    )
+
+
 def fixture_transcript(model_message_role: str = "assistant") -> list[Message]:
-    """The turn as CLIO's transcript shows it, from the fixture's own records."""
+    """The session as CLIO's transcript shows it, from the fixture's own records."""
     data = fixture()
     call = data["lm_call"]
     turn = call["turn_id"]
     messages = call["messages"]
-    question = messages[1]["content"].split("[[ ## question ## ]]", 1)[1]
-    question = question.split("[[ ## images ## ]]", 1)[0].strip()
-    # The question field wraps the user's words in session state; the transcript
-    # shows only the words the user typed.
-    question = question[question.index("I want recent ground-motion") :]
+    earlier_user, earlier_answer, question = _history(messages)
     parts = []
     for n, (name, value, args) in enumerate(_tool_results(messages)):
         thought = messages[2 + 2 * n]["content"].split("[[ ## next_thought ## ]]", 1)[1]
@@ -273,40 +241,32 @@ def fixture_transcript(model_message_role: str = "assistant") -> list[Message]:
         parts.append(
             Part(id=f"call_{n}", type="tool_call", tool_name=name, thought=thought, input=args)
         )
+        text = value if isinstance(value, str) else json.dumps(value)
         parts.append(
             Part(
                 id=f"result_{n}",
                 type="tool_result",
                 tool_name=name,
-                content=[Part(type="text", text=value)],
+                content=[Part(type="text", text=text)],
             )
         )
     parts.append(
         Part(
             id="call_sel",
             type="tool_call",
-            tool_name="ndp_stage_resource",
+            tool_name="create_a2ui_surface",
             thought=fixture_thought(),
         )
     )
-    now = "2026-09-21T18:40:00Z"
+    early = "msg_user_earlier"
     return [
-        Message(
-            id=turn,
-            session_id=SID,
-            turn_id=turn,
-            role="user",
-            created_at=now,
-            updated_at=now,
-            parts=[Part(id="u0", type="text", text=question)],
+        _message(early, early, "user", [Part(id="u_e", type="text", text=earlier_user)]),
+        _message(
+            "msg_asst_earlier",
+            early,
+            "assistant",
+            [Part(id="a_e", type="text", text=earlier_answer)],
         ),
-        Message(
-            id="msg_asst_1",
-            session_id=SID,
-            turn_id=turn,
-            role=model_message_role,
-            created_at=now,
-            updated_at=now,
-            parts=parts,
-        ),
+        _message(turn, turn, "user", [Part(id="u0", type="text", text=question)]),
+        _message("msg_asst_1", turn, model_message_role, parts),
     ]

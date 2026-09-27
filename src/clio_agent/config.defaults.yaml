@@ -1563,6 +1563,12 @@ provenance.artifacts.queue_size: 4096
 # Flowcept configured.
 provenance.attention: false
 
+# CLIO_PROVENANCE_ATTENTION_FILES_DIR  (str)  <- src/clio_agent/gact/attention/files.py
+# Local copy of the attention connector's out_dir (same <workflow_id>/<file>
+# layout) for when CLIO does not run on the GPU node; the attention view
+# reads files there.
+# provenance.attention.files_dir:  # default unset; resolved in code
+
 # CLIO_PROVENANCE_ATTENTION_TOKENIZER  (str)  <- src/clio_agent/gact/attention/tokenizer_source.py
 # Local directory or Hugging Face id of the served model's tokenizer + chat
 # template (files only) for attention ranges; set for air-gapped nodes or

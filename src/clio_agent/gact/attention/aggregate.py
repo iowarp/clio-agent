@@ -90,13 +90,12 @@ def mass_from_steps(steps: list[AttentionStep], total: int) -> Mass:
 
 
 def mass_from_summary(summary: AttentionSummary) -> Mass | None:
-    """Whole-response totals from ``attn_sum`` (every position, nothing dropped)."""
-    if summary.attn_sum is None or summary.decode_steps <= 0:
+    """Whole-response totals from ``attn_sum`` / ``attn_peak`` (every position, nothing dropped)."""
+    if summary.decode_steps <= 0:
         return None
-    mean = summary.attn_sum.astype(np.float64) / summary.decode_steps
     return Mass(
-        mean=mean,
-        peak=np.zeros_like(mean),
+        mean=summary.attn_sum / summary.decode_steps,
+        peak=summary.attn_peak,
         residual=0.0,
         steps=summary.decode_steps,
         exact_totals=True,
