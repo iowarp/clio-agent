@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from clio_agent.gact.a2ui_producer import _common
+from clio_agent.gact.a2ui_producer import _common, _export
 from clio_agent.gact.a2ui_producer._presentation import surface_presentation
 from clio_agent.gact.a2ui_producer._refusal import refusal
 from clio_agent.gact.agents.tool_instrumentation import native_tool
@@ -33,6 +33,10 @@ def build_update_a2ui_components_tool() -> Any:
         existing = _common.existing_surface(app, session_id, surface_id)
         if existing is None or existing.state == "deleted":
             return refusal("a2ui_surface_not_found", detail=f"A2UI surface not found: {surface_id}")
+        exported = _export.export_workspace_paths(app, session_id, components)
+        if isinstance(exported, dict):
+            return exported
+        components, exported_artifacts = exported
 
         message = {
             "version": A2UI_V091_WIRE,
@@ -52,6 +56,8 @@ def build_update_a2ui_components_tool() -> Any:
             "revision": surface.revision,
             "state": surface.state,
         }
+        if exported_artifacts:
+            result["exported_artifacts"] = exported_artifacts
         result.update(_common.surface_registry_fields(outcome))
         return result
 
