@@ -6,6 +6,8 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.4.20] — 2026-09-27
+
 ## [0.9.4.19] — 2026-09-27
 
 ### Added
