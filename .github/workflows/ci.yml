@@ -71,7 +71,9 @@ jobs:
     # so more workers on the same 4 vCPUs only contend.
     name: check (${{ matrix.python-version }}, shard ${{ matrix.shard }})
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Measured on this change's first green run: 6.8-9.5 min on 3.13, 11.6-12.0 min
+    # on 3.12 (setup included).
+    timeout-minutes: 18
     strategy:
       # fail-fast off: a 3.13 discovery must not cancel the 3.12 leg the
       # release gate reads (utah-cluster class: hosts we deploy to already
