@@ -78,3 +78,26 @@ def wait_for_terminal_status(
     watcher.join(backstop_s)
     assert found, f"session {sid} published no terminal status within the {backstop_s:g}s backstop"
     return found[0]
+
+
+def post_turn_and_wait(client: Any, sid: str, body: dict[str, Any]) -> str:
+    """POST one user turn and block until it publishes its terminal status.
+
+    The cursor is taken BEFORE the POST, so the terminal ``session.status_changed``
+    found is this turn's own, never an earlier one, and a turn that settles before the
+    wait starts is still seen.
+
+    Args:
+        client: A ``TestClient`` over the gact app (its ``app.state.bus`` is read).
+        sid: The session to post to.
+        body: The ``POST /v1/sessions/{sid}/messages`` JSON body.
+
+    Returns:
+        The terminal status (``idle``, ``error`` or ``cancelled``).
+    """
+
+    bus = client.app.state.bus
+    cursor = bus.latest_event_id(sid)
+    ack = client.post(f"/v1/sessions/{sid}/messages", json=body)
+    assert ack.status_code == 200, ack.text
+    return wait_for_terminal_status(bus, sid, after_event_id=cursor)

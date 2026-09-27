@@ -12,6 +12,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[2]
 _spec = importlib.util.spec_from_file_location(
     "mcp_mem_attribution", REPO / "scripts" / "mcp_mem_attribution.py"
@@ -105,3 +107,103 @@ def test_children_scenario_budget_is_wellformed_and_under_targets() -> None:
     assert children["final_gb"] <= targets["final_gb"], (
         "recorded children final budget regressed above the campaign target"
     )
+
+
+summarize_runs = _mod.summarize_runs
+RunMeasurement = _mod.RunMeasurement
+
+
+def _argv(tmp_path: Path, *extra: str) -> list[str]:
+    return ["mcp_mem_attribution.py", "--pack", str(tmp_path), "--workspace", str(tmp_path), *extra]
+
+
+def test_median_absorbs_one_noisy_run_that_a_single_run_gate_would_fail() -> None:
+    """The observed noise: two clean runs of ONE commit measured final 0.97 and 0.95
+    against a 0.966 cap (0.92 x 1.05). A one-run gate passed or failed by luck; the
+    median of three honest runs is judged instead, and the spread is reported."""
+
+    budget = {"peak_gb": 3.2, "final_gb": 0.92}
+    noisy = RunMeasurement(peak_gb=2.3, final_gb=0.97)
+    assert not check_budget(noisy.peak_gb, noisy.final_gb, budget)[0]
+
+    summary = summarize_runs([noisy, RunMeasurement(2.25, 0.93), RunMeasurement(2.40, 0.92)])
+    assert summary.final_median_gb == 0.93
+    assert summary.peak_median_gb == 2.3
+    assert summary.final_spread_gb == (0.92, 0.97)
+    assert summary.peak_spread_gb == (2.25, 2.40)
+    assert check_budget(summary.peak_median_gb, summary.final_median_gb, budget)[0]
+    described = summary.describe()
+    assert "median of 3" in described
+    assert "0.92-0.97" in described  # the spread stays visible
+
+
+def test_median_over_the_cap_still_fails() -> None:
+    """A real regression moves the median: two of three runs over the cap fail."""
+
+    budget = {"peak_gb": 3.2, "final_gb": 0.92}
+    summary = summarize_runs(
+        [RunMeasurement(2.3, 0.97), RunMeasurement(2.3, 0.98), RunMeasurement(2.3, 0.90)]
+    )
+    assert summary.final_median_gb == 0.97
+    assert not check_budget(summary.peak_median_gb, summary.final_median_gb, budget)[0]
+
+
+def test_peak_and_final_medians_are_independent() -> None:
+    """Peak and final are separate medians over all runs, not one run's pair."""
+
+    summary = summarize_runs(
+        [RunMeasurement(3.0, 0.80), RunMeasurement(2.0, 0.95), RunMeasurement(2.5, 0.90)]
+    )
+    assert (summary.peak_median_gb, summary.final_median_gb) == (2.5, 0.90)
+
+
+def test_no_runs_is_an_error_not_a_pass() -> None:
+    with pytest.raises(ValueError, match="no runs"):
+        summarize_runs([])
+
+
+def test_assert_budget_refuses_fewer_than_three_runs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The gate cannot be judged on one noisy sample: refused before any server boots."""
+
+    argv = _argv(tmp_path, "--settle-s", "180", "--runs", "1", "--assert-budget")
+    monkeypatch.setattr(sys, "argv", argv)
+    booted: list[object] = []
+    monkeypatch.setattr(_mod, "_run_once", lambda args: booted.append(args) or 2)
+    assert _mod.main() == 2
+    assert booted == []
+    assert f"--runs >= {_mod.MIN_ASSERT_RUNS}" in capsys.readouterr().out
+
+
+def test_each_run_is_measured_and_the_median_is_judged(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Over main(): N complete runs, the verdict on the median, the spread printed."""
+
+    runs = iter([RunMeasurement(2.3, 0.97), RunMeasurement(2.25, 0.93), RunMeasurement(2.4, 0.92)])
+    calls: list[object] = []
+
+    def fake_run_once(args: object) -> object:
+        calls.append(args)
+        return next(runs)
+
+    monkeypatch.setattr(_mod, "_run_once", fake_run_once)
+    monkeypatch.setattr(sys, "argv", _argv(tmp_path, "--settle-s", "180", "--assert-budget"))
+    assert _mod.main() == 0
+    out = capsys.readouterr().out
+    assert len(calls) == _mod.DEFAULT_RUNS == 3
+    assert "median of 3" in out
+    assert "0.92-0.97" in out
+    assert "GATE: PASS" in out
+
+
+def test_a_run_that_cannot_measure_fails_the_gate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A dead or degraded run FAILS the gate; it is never dropped from the median."""
+
+    results = iter([RunMeasurement(2.3, 0.9), 2])
+    monkeypatch.setattr(_mod, "_run_once", lambda args: next(results))
+    monkeypatch.setattr(sys, "argv", _argv(tmp_path, "--runs", "3"))
+    assert _mod.main() == 2

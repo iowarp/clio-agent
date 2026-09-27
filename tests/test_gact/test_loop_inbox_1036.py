@@ -37,6 +37,7 @@ from clio_agent.gact.loop_inbox import (
     inbox_for,
 )
 from clio_agent.gact.runtime.globals import _gact_app_context
+from tests.turn_signals import TURN_SIGNAL_BACKSTOP_S
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
@@ -66,14 +67,14 @@ def _post(client: TestClient, sid: str, text: str):
     )
 
 
-def _wait_busy(app: Any, sid: str, timeout: float = 3.0) -> None:
+def _wait_busy(app: Any, sid: str, timeout: float = TURN_SIGNAL_BACKSTOP_S) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline and not app.state.turn_runner.busy(sid):
         time.sleep(0.02)
     assert app.state.turn_runner.busy(sid), "turn never went in flight"
 
 
-def _wait_idle(app: Any, sid: str, timeout: float = 8.0) -> None:
+def _wait_idle(app: Any, sid: str, timeout: float = TURN_SIGNAL_BACKSTOP_S) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline and app.state.turn_runner.busy(sid):
         time.sleep(0.03)

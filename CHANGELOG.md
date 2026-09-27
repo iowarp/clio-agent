@@ -19,14 +19,47 @@ TUI/HTTP surface aren't tracked here.
   depends on the routed model) or `subscription` (Claude Code, Codex) with no
   number. What the endpoint charges comes first; a LiteLLM list price is used
   when the endpoint states none, and is otherwise listed as an alternative.
+- Every provider-catalog model row carries `accepted_parameters`
+  (`clio_schemas.AcceptedParameter`, clio-schemas 0.4.1): only the response
+  settings that model and its endpoint accept -- temperature, top_p, top_k,
+  min_p, presence/frequency/repetition penalty, seed, longest reply, and a
+  local server's context size and parallel slots -- each with its kind, range,
+  group, the default clio actually sends (the model's recommended value, or
+  `null` for the provider's own) and the evidence behind it. Claude Code and
+  both Codex transports accept none; an OpenRouter model lists exactly its
+  route's `supported_parameters`.
+- `PUT /v1/providers/lm` takes `frequency_penalty`, `repetition_penalty` and
+  `seed`, refuses a value outside an accepted setting's range with a typed 422
+  (`response_setting_out_of_range`), and `GET /v1/providers/lm` echoes every
+  saved setting (`top_p`, `top_k`, `min_p`, the penalties, `seed`, `parallel`).
 
 ### Changed
 
 - The per-token `pricing` field on provider catalog model rows is removed;
   `model_facts.pricing` replaces it.
+- A saved setting the bound model does not accept is kept and never sent, and
+  each drop is logged (`response_setting_not_sent`). Codex and Claude Code no
+  longer receive sampling fields their SDKs ignore. Ollama's `top_k`, `min_p`,
+  `repeat_penalty` and `num_ctx` now reach its `options`; LM Studio receives
+  `top_k` and `repeat_penalty`; OpenRouter receives `top_k`, `min_p` and
+  `repetition_penalty` where the route supports them.
 
 ### Fixed
 
+- A model whose own id starts with its provider's name, such as OpenRouter's
+  free router `openrouter/free`, reaches the provider unchanged. It was sent
+  as `free`, and every turn failed with "No endpoints available".
+- A provider's HTTP error (404, 401, 429, ...) fails the turn with one line in
+  the provider's own words, such as `OpenRouter: User not found. (HTTP 401)`,
+  instead of "live streaming failed before emitting output: ExceptionGroup[...]"
+  or, on a non-streamed turn, "agent.forward raised: litellm.NotFoundError: ...".
+  "Codex sign-in is required" and the Claude Code install message are only
+  reported when Codex or Claude Code is the configured provider; any 401 used
+  to be reported as a Codex sign-in.
+- A message's model becomes the session's `model` when the message is
+  accepted, whatever the turn then does, and a `session.updated` event carries
+  it. The pick used to live only in the client, so a reload or a failed turn
+  showed "Choose model" again.
 - A provider served from its last-good model list (for example OpenRouter with
   no usable key) lost every fact except limits, tools, modalities and task, so
   its models showed no reasoning, structured output, router, free or pricing

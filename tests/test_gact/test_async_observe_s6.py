@@ -46,6 +46,7 @@ from clio_agent.gact.turn_spawn import (
     _on_child_done,
     spawn_child_turn_threadsafe,
 )
+from tests.turn_signals import TURN_SIGNAL_BACKSTOP_S
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
@@ -712,7 +713,7 @@ def test_child_survives_parent_turn_end_and_injects_next_turn(tmp_path: Path, mo
 
         # Turn 1: spawns the slow child, returns fast.
         client.post(f"/v1/sessions/{parent}/messages", json={"text": "start the job"})
-        _wait_status(app, parent, "idle", timeout=10.0)
+        _wait_status(app, parent, "idle")
         # The parent turn ENDED but the child is still running (not cancelled).
         mid = app.state.agent_task_registry.get(agent.child_task_id)
         assert mid is not None and not mid.is_terminal, "child was cancelled at parent-turn end"
@@ -724,14 +725,14 @@ def test_child_survives_parent_turn_end_and_injects_next_turn(tmp_path: Path, mo
 
         # Turn 2: the observe-later block is injected into the model's input.
         client.post(f"/v1/sessions/{parent}/messages", json={"text": "what happened?"})
-        _wait_status(app, parent, "idle", timeout=10.0)
+        _wait_status(app, parent, "idle")
         assert any(PENDING_TASK_NOTIFICATION_MARKER in q for q in agent.questions[1:]), (
             "completed child's result was not injected into the parent's next turn"
         )
         assert app.state.agent_task_registry.get(agent.child_task_id).notify_pending is False
 
 
-def _wait_status(app, sid: str, status: str, timeout: float = 10.0) -> None:
+def _wait_status(app, sid: str, status: str, timeout: float = TURN_SIGNAL_BACKSTOP_S) -> None:
     end = time.monotonic() + timeout
     while time.monotonic() < end:
         sess = app.state.sessions.get(sid)
@@ -815,7 +816,7 @@ def test_thread_topology_no_self_starvation_under_load(tmp_path: Path, monkeypat
         # waiter could starve its own grandchild on a shared pool (the whole chain
         # would deadlock and the parent turn would never settle).
         for sid in parents:
-            _wait_status(app, sid, "idle", timeout=45.0)
+            _wait_status(app, sid, "idle")
             assert app.state.sessions.get(sid).status == "idle", (
                 "a parent turn stalled → starvation"
             )
@@ -952,7 +953,7 @@ def test_vetoed_turn_leaves_notification_pending_for_next_turn(tmp_path: Path, m
 
         monkeypatch.setattr(hooks, "dispatch_user_prompt_submit", _veto)
         client.post(f"/v1/sessions/{parent}/messages", json={"text": "hello"})
-        _wait_status(app, parent, "error", timeout=10.0)
+        _wait_status(app, parent, "error")
         # Vetoed after enrichment → the staged task is UNCONSUMED, still pending.
         assert app.state.agent_task_registry.get(task.task_id).notify_pending is True
         assert _bus(app, parent, "agent.task.consumed") == [], "veto must not consume"
@@ -961,7 +962,7 @@ def test_vetoed_turn_leaves_notification_pending_for_next_turn(tmp_path: Path, m
         # the commit seam.
         monkeypatch.setattr(hooks, "dispatch_user_prompt_submit", lambda *a, **k: HookOutcome())
         client.post(f"/v1/sessions/{parent}/messages", json={"text": "again"})
-        _wait_status(app, parent, "idle", timeout=10.0)
+        _wait_status(app, parent, "idle")
         assert app.state.agent_task_registry.get(task.task_id).notify_pending is False
         assert len(_bus(app, parent, "agent.task.consumed")) == 1
 
