@@ -10,6 +10,7 @@ live SSE, durable trace logging, and user hooks.
 from __future__ import annotations
 
 import json
+import logging
 import queue
 import threading
 import uuid
@@ -755,8 +756,14 @@ class SemanticEventSink:
                     project_hook(event, full=self.hooks_full),
                     session_id=event.session_id,
                 )
-            except Exception:  # noqa: BLE001,S110 - semantic hooks are observability side-effects; never crash the turn
-                # SemanticEvent hooks are observability side-effects. They should
-                # never mutate or crash the turn being observed.
-                pass
+            except Exception as exc:  # noqa: BLE001 - hooks never crash the observed turn, never silent
+                # SemanticEvent hooks are observability side-effects: they must never
+                # mutate or crash the turn being observed -- but a dispatch that failed
+                # outside the dispatcher's own typed handling is recorded, not dropped.
+                logging.getLogger(__name__).warning(
+                    "semantic_hook_dispatch_failed event=%s session=%s error=%r",
+                    event.event_type,
+                    event.session_id,
+                    exc,
+                )
         return full
