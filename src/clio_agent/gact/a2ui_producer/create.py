@@ -47,7 +47,7 @@ def build_create_a2ui_surface_tool() -> Any:
         exported = _export.export_workspace_paths(app, session_id, components)
         if isinstance(exported, dict):
             return exported
-        components, exported_artifacts = exported
+        components, export_report = exported
 
         existing = _common.existing_surface(app, session_id, surface_id)
         is_new = existing is None or existing.state == "deleted"
@@ -113,8 +113,7 @@ def build_create_a2ui_surface_tool() -> Any:
             "revision": surface.revision,
             "state": surface.state,
         }
-        if exported_artifacts:
-            result["exported_artifacts"] = exported_artifacts
+        result.update(export_report)
         result.update(_common.surface_registry_fields(outcome))
         return result
 
