@@ -82,10 +82,31 @@ SUPPLEMENT_TABLE: tuple[SupplementRow, ...] = (
     ),
     SupplementRow(
         dialect="lm_studio",
+        adds=frozenset({"top_k", "repeat_penalty"}),
         removes=frozenset({"chat_template_kwargs"}),
         fills_litellm_gap=(
-            "LM Studio must never receive chat_template_kwargs even where a generic "
-            "OpenAI-shaped list would otherwise imply it is safe to send"
+            "LM Studio's OpenAI-compatible endpoint also takes top_k and repeat_penalty "
+            "(its documented payload parameters), and must never receive "
+            "chat_template_kwargs even where a generic OpenAI-shaped list would imply it"
+        ),
+    ),
+    SupplementRow(
+        dialect="ollama",
+        adds=frozenset({"top_k", "min_p", "repeat_penalty", "num_ctx"}),
+        removes=frozenset({"frequency_penalty"}),
+        fills_litellm_gap=(
+            "ollama_chat forwards Ollama's own options (top_k, min_p, repeat_penalty, "
+            "num_ctx) but lists none of them, and maps frequency_penalty onto "
+            "repeat_penalty, a different scale"
+        ),
+    ),
+    SupplementRow(
+        dialect="openrouter",
+        adds=frozenset({"top_k", "min_p", "repetition_penalty"}),
+        fills_litellm_gap=(
+            "litellm's openrouter list is the generic OpenAI one; OpenRouter's API also "
+            "takes top_k, min_p and repetition_penalty (each route's supported_parameters "
+            "then narrows the set per model)"
         ),
     ),
 )
@@ -132,7 +153,8 @@ STRUCTURED_OUTPUT_MODES_BY_DIALECT: dict[str, frozenset[str]] = {
 }
 
 
-def _supplement_for(dialect: str) -> SupplementRow | None:
+def supplement_for(dialect: str) -> SupplementRow | None:
+    """The dialect's :data:`SUPPLEMENT_TABLE` row, or ``None``."""
     return next((row for row in SUPPLEMENT_TABLE if row.dialect == dialect), None)
 
 
@@ -218,7 +240,7 @@ def resolve_accepted_params(
             f"litellm has no mapping for custom_llm_provider={custom_llm_provider!r}"
         )
 
-    supplement = _supplement_for(dialect)
+    supplement = supplement_for(dialect)
     if supplement is not None:
         if supplement.adds:
             accepted |= supplement.adds
@@ -286,4 +308,5 @@ __all__ = [
     "build_endpoint_capabilities",
     "dialect_for_provider",
     "resolve_accepted_params",
+    "supplement_for",
 ]

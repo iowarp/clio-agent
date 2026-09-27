@@ -222,18 +222,17 @@ class LMProviderConfig:
     planner_temperature: float = 0.3
     planner_max_tokens: int | None = None
     router_temperature: float | None = None
-    # Sampling surface (None = omit -> the provider/model's own default applies).
-    # Greedy decoding (temperature 0) makes Qwen-family REASONING models (qwopus,
-    # nemotron) degenerate into endless verbatim repetition loops -- Qwen's own docs
-    # say DO NOT use greedy decoding and recommend temp 0.6 / top_p 0.95 / top_k 20
-    # for thinking mode. These expose that full sampling surface so a reasoning model
-    # can be driven at its recommended settings instead of the temp-0 default (which
-    # only suits short non-reasoning structured routing). top_p/presence_penalty are
-    # OpenAI-standard; top_k/min_p are forwarded via extra_body (llama.cpp/LM Studio).
+    # Sampling surface (None = omit -> the provider/model's own default; Qwen: never greedy),
+    # sent only when the model accepts it (providers.capabilities.accepted_parameters).
+    # context_length (0 = omit) is Ollama's num_ctx and a load setting on LM Studio.
     top_p: float | None = None
     top_k: int | None = None
     min_p: float | None = None
     presence_penalty: float | None = None
+    frequency_penalty: float | None = None
+    repetition_penalty: float | None = None
+    seed: int | None = None
+    context_length: int = 0
     environment: str = "dev"
     codex_transport: Literal["websocket", "sse"] = "websocket"
     codex_variant: Literal["", "sdk", "direct"] = ""  # S1b; "" normalizes to "direct" below
