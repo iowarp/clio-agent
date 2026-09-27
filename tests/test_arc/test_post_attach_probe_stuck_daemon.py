@@ -38,7 +38,10 @@ _WINDOW_S = 3.0  # arc.liveness.stall_after_s for the child: the probe's bound
 _CHILD_TIMEOUT_S = 150.0  # attach + spawn headroom; a GIL hang blows through it
 
 
-def test_post_attach_probe_is_bounded_against_a_suspended_daemon(tmp_path: Path) -> None:
+@pytest.mark.parametrize("mode", ["suspend", "kill"])
+def test_post_attach_probe_is_bounded_against_a_stuck_daemon(tmp_path: Path, mode: str) -> None:
+    """``suspend``: alive but unresponsive; ``kill``: gone (CI: a daemon that died at startup
+    left the probe's ``Future.wait(max_sec)`` blocking past its bound)."""
     _require_launcher()
     private_home = tmp_path / "home"
     (private_home / ".clio").mkdir(parents=True)
@@ -70,28 +73,40 @@ def test_post_attach_probe_is_bounded_against_a_suspended_daemon(tmp_path: Path)
         CLIO_CORE_PORT=str(port),
         CLIO_ARC_LIVENESS_STALL_AFTER_S=str(_WINDOW_S),
         CLIO_STUCK_OUT=str(out_path),
+        CLIO_STUCK_MODE=mode,
         CTP_LOG_LEVEL="error",
     )
     client = Path(__file__).with_name("_clio_core_stuck_daemon_client.py")
+    # Output to FILES, not pipes: a daemon the child spawns inherits its handles, and a
+    # pipe it holds open would keep ``subprocess.run`` waiting after the child exited.
+    log_path = tmp_path / "client.log"
     try:
-        proc = subprocess.run(  # noqa: S603 - fixed interpreter + in-repo script
-            [sys.executable, str(client)],
-            env=env,
-            timeout=_CHILD_TIMEOUT_S,
-            capture_output=True,
-            text=True,
+        with log_path.open("w", encoding="utf-8") as log:
+            proc = subprocess.run(  # noqa: S603 - fixed interpreter + in-repo script
+                [sys.executable, str(client)],
+                env=env,
+                timeout=_CHILD_TIMEOUT_S,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+            )
+    except subprocess.TimeoutExpired:
+        pytest.fail(
+            f"the probe hung past {_CHILD_TIMEOUT_S:g}s:" + chr(10)
+            + log_path.read_text(encoding="utf-8", errors="replace")[-4000:]
         )
     finally:
         time.sleep(0.5)
         _reap_private_daemon(private_home)
+    output = log_path.read_text(encoding="utf-8", errors="replace")
 
-    assert out_path.is_file(), f"no result; rc={proc.returncode}\n{proc.stderr[-2000:]}"
+    assert out_path.is_file(), f"no result; rc={proc.returncode}\n{output[-3000:]}"
     result = json.loads(out_path.read_text(encoding="utf-8"))
-    assert proc.returncode == 0, f"client failed: {result}\n{proc.stderr[-2000:]}"
+    assert proc.returncode == 0, f"client failed: {result}\n{output[-3000:]}"
     assert result["store_type"] == "ClioCoreStore", result
     assert result["window_s"] == _WINDOW_S
     assert result["outcome"] == "typed_error", result
     assert result["stage_name"] == "post_attach_probe"
+    assert result["reason"] == "clio_core_post_attach_probe_timeout"
     assert f"did not answer within {_WINDOW_S:g}s" in result["message"]
     assert result["elapsed_s"] < _WINDOW_S + 2.0, result  # the bound, not a hang
     assert result["deregistered"] == [True]
