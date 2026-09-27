@@ -1,0 +1,337 @@
+{
+ "_recorded": "2026-09-26 from https://pypi.org/pypi/openai-codex-cli-bin/json, trimmed to these releases",
+ "info": {
+  "name": "openai-codex-cli-bin",
+  "version": "0.157.1"
+ },
+ "releases": {
+  "0.147.0": [
+   {
+    "filename": "openai_codex_cli_bin-0.147.0-py3-none-macosx_10_9_x86_64.whl",
+    "url": "https://files.pythonhosted.org/packages/46/85/3302e5265f35941a24f614573e1a27e6f218d7fa71e4dd3b1353d1726c5a/openai_codex_cli_bin-0.147.0-py3-none-macosx_10_9_x86_64.whl",
+    "digests": {
+     "sha256": "19c3a72a0eac6706bb5023088ab7eb31d8cfc06bf7860250b5c5b90f4505489b"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "openai_codex_cli_bin-0.147.0-py3-none-macosx_11_0_arm64.whl",
+    "url": "https://files.pythonhosted.org/packages/b8/0c/6474ef2f854ecf217550d06667a8ac988b5656c448b680e5b5ece5ae5152/openai_codex_cli_bin-0.147.0-py3-none-macosx_11_0_arm64.whl",
+    "digests": {
+     "sha256": "b851943fffc48aa7c5c130b6a34be09964833d2785546eda96d749427c6e24f2"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "openai_codex_cli_bin-0.147.0-py3-none-manylinux_2_17_aarch64.whl",
+    "url": "https://files.pythonhosted.org/packages/59/4b/0efce457a301271301b9229b36b3f53ca94d5f4db1d605c86e0da9833565/openai_codex_cli_bin-0.147.0-py3-none-manylinux_2_17_aarch64.whl",
+    "digests": {
+     "sha256": "aab3e27ce07cd7bc7a78708efa40375b28e89f586851c495ef55aa6cb6806d11"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "openai_codex_cli_bin-0.147.0-py3-none-manylinux_2_17_x86_64.whl",
+    "url": "https://files.pythonhosted.org/packages/f2/e4/5e4fb0f61ca90c2bb42a8823e08fe05957c54591d1e161c56a93d27d565d/openai_codex_cli_bin-0.147.0-py3-none-manylinux_2_17_x86_64.whl",
+    "digests": {
+     "sha256": "cb3907d633cda87c4b68b47ff4979e6054c02a08c41b15aa2e9a689558a61074"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "openai_codex_cli_bin-0.147.0-py3-none-musllinux_1_1_aarch64.whl",
+    "url": "https://files.pythonhosted.org/packages/f9/83/a52e32fc63bde10996e38cb4e1175c402c578ee7c7ca79b96abee5219127/openai_codex_cli_bin-0.147.0-py3-none-musllinux_1_1_aarch64.whl",
+    "digests": {
+     "sha256": "ea0bfdee98164fc7d589eea5623aff06c8f8f2ba3f9bc550297429db45ea68f7"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "openai_codex_cli_bin-0.147.0-py3-none-musllinux_1_1_x86_64.whl",
+    "url": "https://files.pythonhosted.org/packages/e9/b6/c159da0a1ec136fde6d2742ec05347e311f000dfe19024ed7d708cf60aa5/openai_codex_cli_bin-0.147.0-py3-none-musllinux_1_1_x86_64.whl",
+    "digests": {
+     "sha256": "a9be23f46326494b7ebf4bd98cbe985542f5ad076355f3b0fb636a984df56816"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "openai_codex_cli_bin-0.147.0-py3-none-win_amd64.whl",
+    "url": "https://files.pythonhosted.org/packages/54/38/1bb47e08b9c523b673358e4f5597fc99699e855ec63bd02fdc157f1679c9/openai_codex_cli_bin-0.147.0-py3-none-win_amd64.whl",
+    "digests": {
+     "sha256": "1a403ff803ae27e078189a0fd24687f32d43c46f152e50cdbe3eddc9e302f697"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "openai_codex_cli_bin-0.147.0-py3-none-win_arm64.whl",
+    "url": "https://files.pythonhosted.org/packages/d2/1e/a44a8da140ef080aebac6da6517e8fe6ac1aad49436c8b1f9b87e735b813/openai_codex_cli_bin-0.147.0-py3-none-win_arm64.whl",
+    "digests": {
+     "sha256": "be0c8b9e34b067151d0964a24e9f4b8b48ea516448a08ef2636f357ebdc877b7"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   }
+  ],
+  "0.156.0": [
+   {
+    "filename": "openai_codex_cli_bin-0.156.0-py3-none-macosx_10_9_x86_64.whl",
+    "url": "https://files.pythonhosted.org/packages/c6/5a/6ab804125153352a6d7d39518d893c6252cf1682013b0b3e78abc08ac1bc/openai_codex_cli_bin-0.156.0-py3-none-macosx_10_9_x86_64.whl",
+    "digests": {
+     "sha256": "af36bbb750a808351020c29519d16e421625ed29c800a087d182cba4b87ee616"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "openai_codex_cli_bin-0.156.0-py3-none-macosx_11_0_arm64.whl",
+    "url": "https://files.pythonhosted.org/packages/ea/42/734e6fd84cb149a33b8982da52b3e6a820c4e3e7694ba6b176ce3993759f/openai_codex_cli_bin-0.156.0-py3-none-macosx_11_0_arm64.whl",
+    "digests": {
+     "sha256": "b0fe3f27224ea22454f78d92d3022560f3126c25e8b063c53a85cba9ca5fd2f8"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "openai_codex_cli_bin-0.156.0-py3-none-manylinux_2_17_aarch64.whl",
+    "url": "https://files.pythonhosted.org/packages/30/49/e93dbdf994988b0defd5f4124d9aba3895ecc31fc4597adbdc4819b22a48/openai_codex_cli_bin-0.156.0-py3-none-manylinux_2_17_aarch64.whl",
+    "digests": {
+     "sha256": "7b7b0c436e8af55aad9a619849ab5d78e92e8b6d2649109a1255350e0869c429"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "openai_codex_cli_bin-0.156.0-py3-none-manylinux_2_17_x86_64.whl",
+    "url": "https://files.pythonhosted.org/packages/73/a9/da942602042b9942727ce22691e2bc6237888adf938fddc246a35ed30f8d/openai_codex_cli_bin-0.156.0-py3-none-manylinux_2_17_x86_64.whl",
+    "digests": {
+     "sha256": "f299e5b5ef595108333f86ea9f1b9fa03beeaf25266d50e29ef21c7b6f50ded0"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "openai_codex_cli_bin-0.156.0-py3-none-musllinux_1_1_aarch64.whl",
+    "url": "https://files.pythonhosted.org/packages/04/59/afb7a7114b70a827985c5fa13f917ec8dcce5eb56550b207a5970226002a/openai_codex_cli_bin-0.156.0-py3-none-musllinux_1_1_aarch64.whl",
+    "digests": {
+     "sha256": "1363e1972a80e1b51a89ef37d1a36edce21492dcd569d4427b34b73a96ae2489"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "openai_codex_cli_bin-0.156.0-py3-none-musllinux_1_1_x86_64.whl",
+    "url": "https://files.pythonhosted.org/packages/6e/42/4a63ef1c381614f99540c2ac6f25c373f2fdbacd7e77ff4d4cb7bdee77e9/openai_codex_cli_bin-0.156.0-py3-none-musllinux_1_1_x86_64.whl",
+    "digests": {
+     "sha256": "331910a4d991d1e8819705cf9deb4504bd8aa8bd38e1dcd777289742c090af80"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "openai_codex_cli_bin-0.156.0-py3-none-win_amd64.whl",
+    "url": "https://files.pythonhosted.org/packages/38/d9/6fae394b013049f475bbb34a87579ec6c950b7646adac007691c6695aa9b/openai_codex_cli_bin-0.156.0-py3-none-win_amd64.whl",
+    "digests": {
+     "sha256": "f2e0dad06bbb212b8a8a02c09a402d1e4074d6e082a43c43ba45941e55056a84"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "openai_codex_cli_bin-0.156.0-py3-none-win_arm64.whl",
+    "url": "https://files.pythonhosted.org/packages/37/92/7c04977dd1a45a446c70f88d26a1c64cca6c433056a6989c04f25a9aa015/openai_codex_cli_bin-0.156.0-py3-none-win_arm64.whl",
+    "digests": {
+     "sha256": "81a70445465572e7bd5fd0b7743f50fe2b2e0768b090c265c23fd869978eae7e"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   }
+  ],
+  "0.157.0": [
+   {
+    "filename": "openai_codex_cli_bin-0.157.0-py3-none-macosx_10_9_x86_64.whl",
+    "url": "https://files.pythonhosted.org/packages/9b/0f/49efe3d748d230255c1eca831cba2983bf9d67a8de3a521b89d339104ac8/openai_codex_cli_bin-0.157.0-py3-none-macosx_10_9_x86_64.whl",
+    "digests": {
+     "sha256": "2f849c118c5365794b3181dd3bbb3bc6782b437e65c5cc5694eb1e2666855006"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "openai_codex_cli_bin-0.157.0-py3-none-macosx_11_0_arm64.whl",
+    "url": "https://files.pythonhosted.org/packages/56/00/09d952b83a722e684ea4975aa9c0dda9e43a321e31b0a35d9a10d8920437/openai_codex_cli_bin-0.157.0-py3-none-macosx_11_0_arm64.whl",
+    "digests": {
+     "sha256": "838a9cbb56f01d920833ff35db1e8c76bb3cade25f9fb873e27d3a1003f23b6d"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "openai_codex_cli_bin-0.157.0-py3-none-manylinux_2_17_aarch64.whl",
+    "url": "https://files.pythonhosted.org/packages/e3/07/5c8539ba9e3eeb990f55b5d3dd9c97f64cb71999e0812e85e9d25f2c54c9/openai_codex_cli_bin-0.157.0-py3-none-manylinux_2_17_aarch64.whl",
+    "digests": {
+     "sha256": "8e6f4e101a4f982dd7223c6aa2dd4cefe4354bff5caf7c0f7dd6d8b187633285"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "openai_codex_cli_bin-0.157.0-py3-none-manylinux_2_17_x86_64.whl",
+    "url": "https://files.pythonhosted.org/packages/68/59/da115cc83ad694113f85977af1cc5176694a2a9656ba01e3275453031126/openai_codex_cli_bin-0.157.0-py3-none-manylinux_2_17_x86_64.whl",
+    "digests": {
+     "sha256": "a1c28e121e6dccc5f576a81c07514e911d2e9de73884ceeb8b9607f16838393f"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "openai_codex_cli_bin-0.157.0-py3-none-musllinux_1_1_aarch64.whl",
+    "url": "https://files.pythonhosted.org/packages/e3/4d/f8f0b19f27c75bf92ce1504321df0b6a2f08bdd36a0958d95ee3da684a7d/openai_codex_cli_bin-0.157.0-py3-none-musllinux_1_1_aarch64.whl",
+    "digests": {
+     "sha256": "1c129de983da71cfccd1cd978116a4860376c9f56da2eadfa0458a96cc232d9f"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "openai_codex_cli_bin-0.157.0-py3-none-musllinux_1_1_x86_64.whl",
+    "url": "https://files.pythonhosted.org/packages/e0/52/6f553cffc25fdbca8b96c98f6271ae85540b24440ab5e8cb8a13c4d0760d/openai_codex_cli_bin-0.157.0-py3-none-musllinux_1_1_x86_64.whl",
+    "digests": {
+     "sha256": "b727a148b01eb82a1beefe4a4e907b5520b0a95b24db4103c826550ac61bad34"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "openai_codex_cli_bin-0.157.0-py3-none-win_amd64.whl",
+    "url": "https://files.pythonhosted.org/packages/e4/9f/90148471b896b8a7edeb91d7c619274fd81b644d0f33a657b561b934fb60/openai_codex_cli_bin-0.157.0-py3-none-win_amd64.whl",
+    "digests": {
+     "sha256": "d0498844c92944c57d073e1a2bfb71d120bc64c059f6a4b5920cb471c68fee7f"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "openai_codex_cli_bin-0.157.0-py3-none-win_arm64.whl",
+    "url": "https://files.pythonhosted.org/packages/c1/15/f9f6028481a46aa04e8904b09708fab37a14c2e54461de6615f07df690e3/openai_codex_cli_bin-0.157.0-py3-none-win_arm64.whl",
+    "digests": {
+     "sha256": "65bad9cd5b0da3b645ff910ea6826cce8c6ba3913cd280ef1772f7e6532a8707"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   }
+  ],
+  "0.157.1": [
+   {
+    "filename": "openai_codex_cli_bin-0.157.1-py3-none-macosx_10_9_x86_64.whl",
+    "url": "https://files.pythonhosted.org/packages/c6/29/bb2884a56b938d7dbb9b81a42dbc527522e9540db09ed65200c512de2405/openai_codex_cli_bin-0.157.1-py3-none-macosx_10_9_x86_64.whl",
+    "digests": {
+     "sha256": "a140e29b3c88a559067c9ec5bf300477e7ecb0f8cb5f49ffbcc0f68608637476"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "openai_codex_cli_bin-0.157.1-py3-none-macosx_11_0_arm64.whl",
+    "url": "https://files.pythonhosted.org/packages/8a/d5/f706f04b14664414fa7051f340426eb0f74b1bf17006795c2d4d7776a2cb/openai_codex_cli_bin-0.157.1-py3-none-macosx_11_0_arm64.whl",
+    "digests": {
+     "sha256": "55b5b7cdb257440e97de69ad780a3ebff5a0adf8eb89564a7d7fc400c548b2de"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "openai_codex_cli_bin-0.157.1-py3-none-manylinux_2_17_aarch64.whl",
+    "url": "https://files.pythonhosted.org/packages/b5/58/aacc67a9556ccebdfd36c0c3c3ee9dc1bd878fb8b82eab14c846662b37d3/openai_codex_cli_bin-0.157.1-py3-none-manylinux_2_17_aarch64.whl",
+    "digests": {
+     "sha256": "f26f1cdec2869f9a53155f3909d5ef5d85d6f80d49b59758d00cdcc4941edf82"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "openai_codex_cli_bin-0.157.1-py3-none-manylinux_2_17_x86_64.whl",
+    "url": "https://files.pythonhosted.org/packages/8a/d6/64d2eab534be58817262edf5949755aa665a22fea1220ce7273d751525c3/openai_codex_cli_bin-0.157.1-py3-none-manylinux_2_17_x86_64.whl",
+    "digests": {
+     "sha256": "277a13acf88c2cde0d1a4f39373db4b267286b862ef8cf19bc9e8cc688b3786d"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "openai_codex_cli_bin-0.157.1-py3-none-musllinux_1_1_aarch64.whl",
+    "url": "https://files.pythonhosted.org/packages/ca/a0/f76fe6b91724175ce49b4c4bf4ec82cf1c33ee4a63f3972a26ca70c4fc2f/openai_codex_cli_bin-0.157.1-py3-none-musllinux_1_1_aarch64.whl",
+    "digests": {
+     "sha256": "dc76cb00530a409b28233878f5961e85fc6e46ad9dd45ef958ef2594b1585baf"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "openai_codex_cli_bin-0.157.1-py3-none-musllinux_1_1_x86_64.whl",
+    "url": "https://files.pythonhosted.org/packages/60/24/53e9e1059d43dfd3ef89818adc189ed8cc56d2f2d9da1191e3ba23505fd0/openai_codex_cli_bin-0.157.1-py3-none-musllinux_1_1_x86_64.whl",
+    "digests": {
+     "sha256": "477b6282b9b69131789b35c9ac198c8f499c374ba47dd82b2f34bf6472a585f4"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "openai_codex_cli_bin-0.157.1-py3-none-win_amd64.whl",
+    "url": "https://files.pythonhosted.org/packages/87/ab/2f06bb9bc77844deabeb9ace248b2033fd6e5fb5f79d8107ee10b849f2db/openai_codex_cli_bin-0.157.1-py3-none-win_amd64.whl",
+    "digests": {
+     "sha256": "a6d589dd74645d448581f984f3d2427100fe53fd4eb4ca47db6a9d09190ab276"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "openai_codex_cli_bin-0.157.1-py3-none-win_arm64.whl",
+    "url": "https://files.pythonhosted.org/packages/f2/4c/ee1395f212a71ad25891fda1d2e93e4a07b17ac5a7b1bf4ccefd7ab709f8/openai_codex_cli_bin-0.157.1-py3-none-win_arm64.whl",
+    "digests": {
+     "sha256": "14c40374b516edc27dface20b0e0817d8d60ccd398204771efa68abd6a650ca3"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   }
+  ]
+ }
+}
