@@ -971,7 +971,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # +2 comment, +1 to_thread call); the bridge itself stays in claude_code_sdk_pool.py.
     # 866 -> 864 (S2 B2 rework): entry_for()'s call site drops the now-dead
     # thinking=/system_prompt= peek kwargs (the warm pool they fed is deleted).
-    "src/clio_agent/providers/claude_code_litellm.py": 862,
+    # 862 -> 838 (#1454): failed-result classification moved to the owner module
+    # providers/claude_code_result_errors.py.
+    "src/clio_agent/providers/claude_code_litellm.py": 838,
     # (process_census.py's entry retired: 711 lines, back under the flat 800 cap.)
     # NEW entry (#1305 review round): crossed the flat 800 cap (800 -> 825)
     # for the F2/F4/F6b fixes an adversarial review demanded on
