@@ -286,7 +286,9 @@ def readiness() -> tuple[str, str, bool]:
     if env_token:
         return "ready", "ALCF token present in environment", True
     if not sdk_available():
-        return "install_required", ARGONNE_NOT_INSTALLED_MESSAGE, False
+        from clio_agent.providers.support_restore import missing_support_status  # noqa: PLC0415
+
+        return (*missing_support_status("argonne"), False)
     if not tokens_exist():
         return "auth_required", "no Globus token stored; authenticate ALCF before connecting", False
     if check_auth_status():
