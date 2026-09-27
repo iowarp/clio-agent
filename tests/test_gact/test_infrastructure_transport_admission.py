@@ -95,25 +95,63 @@ def test_v2_admitted_transport_announces_attachment(
         assert app.state.infrastructure_store.target(ssh_target).transport_state == "connected"
 
 
-def test_loopback_peer_without_token_is_admitted_like_http(
+def test_loopback_peer_without_token_is_refused_unlike_http(
     app: FastAPI, client: TestClient, ssh_target: str
 ) -> None:
-    # The Desktop attaches to an already-running local CLIO with an empty
-    # bearer token (supervisor_attach.rs) and relies on loopback trust, which
-    # the HTTP middleware grants. The transport must grant it too.
+    # HTTP admits loopback without a token, but a cross-origin page cannot read
+    # those responses. On this socket it could act as the SSH bridge, so the
+    # token is required from loopback too.
     app.state.peer_address_getter = lambda _scope: "127.0.0.1"
     assert client.get("/v1/infrastructure/targets").status_code == 200
 
-    with client.websocket_connect(_path(ssh_target), subprotocols=[V2, V1]) as websocket:
-        assert websocket.receive_json() == {"type": "attached", "target_id": ssh_target}
-
-
-def test_non_loopback_peer_without_token_is_still_refused(
-    client: TestClient, ssh_target: str
-) -> None:
     code, reason = _refusal_after_handshake(client, ssh_target, [V2, V1])
 
     assert (code, reason) == (4401, "authentication_required")
+
+
+def test_non_loopback_peer_without_token_is_refused(client: TestClient, ssh_target: str) -> None:
+    code, reason = _refusal_after_handshake(client, ssh_target, [V2, V1])
+
+    assert (code, reason) == (4401, "authentication_required")
+
+
+def _connect_from(client: TestClient, target_id: str, origin: str) -> tuple[int, str]:
+    with client.websocket_connect(
+        _path(target_id), subprotocols=[V2, V1, TOKEN_PROTOCOL], headers={"Origin": origin}
+    ) as websocket:
+        try:
+            frame = websocket.receive_json()
+        except WebSocketDisconnect as closed:
+            return closed.code, closed.reason
+    return 1000, str(frame.get("type"))
+
+
+def test_a_foreign_web_page_cannot_attach_even_with_the_token(
+    client: TestClient, ssh_target: str
+) -> None:
+    # Browsers apply no CORS to WebSockets: any page can open this socket.
+    assert _connect_from(client, ssh_target, "https://evil.example") == (
+        4403,
+        "origin_not_allowed",
+    )
+
+
+@pytest.mark.parametrize(
+    "origin", ["http://tauri.localhost", "tauri://localhost", "https://tauri.localhost"]
+)
+def test_the_desktop_webview_origins_attach(
+    client: TestClient, ssh_target: str, origin: str
+) -> None:
+    assert _connect_from(client, ssh_target, origin) == (1000, "attached")
+
+
+def test_a_configured_cors_origin_attaches(
+    client: TestClient, ssh_target: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CLIO_GACT_CORS_ORIGINS", "https://ops.example.edu")
+
+    assert _connect_from(client, ssh_target, "https://ops.example.edu") == (1000, "attached")
+    assert _connect_from(client, ssh_target, "http://localhost:5173")[0] == 4403
 
 
 def test_v1_only_client_keeps_the_pre_handshake_refusal_and_the_reason_is_logged(

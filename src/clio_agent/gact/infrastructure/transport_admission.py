@@ -14,13 +14,20 @@ only offers ``clio.infrastructure.v1`` keeps the old pre-handshake refusal it
 knows how to read (an error event), because accepting it first would look like
 success to that client.
 
-Admission follows the same trust rule as the HTTP surface
-(:class:`clio_agent.gact.auth.BearerAuthMiddleware`): a loopback peer is
-admitted without a bearer token, any other peer must present the configured
-token. The Desktop attaches to an already-running local CLIO with an empty
-token by design (``supervisor_attach.rs``), so requiring the token from
-loopback here made every remote deploy through such a CLIO fail while all of
-its HTTP calls succeeded.
+Admission is checked in this order:
+
+* **Origin** (defense in depth): browsers apply no CORS to WebSockets, so any
+  page the user visits could open this socket. A browser always sends
+  ``Origin`` on a WebSocket; only the Desktop's own WebView origins and the
+  configured ``gact.cors.origins`` are accepted. A request with no ``Origin``
+  comes from a non-browser client, which no web page can impersonate.
+* **Target**: it must exist and be an SSH target.
+* **Bearer token**: always required when this CLIO enforces one, loopback or
+  not. A loopback peer is not trusted here the way HTTP trusts it, because a
+  cross-origin page cannot read HTTP responses but could act as the SSH bridge
+  (receive CLIO's exec requests and forge their results). The Desktop gets the
+  token of a server it did not spawn from that server's credential record
+  (:mod:`clio_agent.gact.server_credentials`).
 """
 
 from __future__ import annotations
@@ -34,12 +41,8 @@ from typing import Literal
 from fastapi import WebSocket
 from starlette.datastructures import State
 
-from clio_agent.gact.auth import (
-    PeerAddressGetter,
-    _header_bearer_token,
-    is_loopback_address,
-    peer_address_from_scope,
-)
+from clio_agent.gact.auth import _header_bearer_token
+from clio_agent.gact.cors import gact_cors_origins
 from clio_agent.gact.infrastructure.models import InfrastructureTarget
 
 logger = logging.getLogger(__name__)
@@ -50,7 +53,14 @@ INFRASTRUCTURE_TRANSPORT_PROTOCOL = "clio.infrastructure.v1"
 INFRASTRUCTURE_TRANSPORT_PROTOCOL_V2 = "clio.infrastructure.v2"
 """Bridge protocol with an ``attached`` frame and typed refusal close frames."""
 
-RefusalReason = Literal["authentication_required", "target_not_found", "target_not_ssh"]
+RefusalReason = Literal[
+    "origin_not_allowed", "authentication_required", "target_not_found", "target_not_ssh"
+]
+
+DESKTOP_WEBVIEW_ORIGINS = frozenset(
+    {"tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"}
+)
+"""The Desktop WebView's own origins (macOS/Linux, Windows, Windows HTTPS scheme)."""
 
 
 @dataclass(frozen=True)
@@ -58,7 +68,7 @@ class TransportRefusal:
     """Why CLIO will not attach a Desktop SSH transport to a target.
 
     Attributes:
-        code: WebSocket close code (4401, 4404 or 4409), stable across versions.
+        code: WebSocket close code (4401, 4403, 4404 or 4409), stable across versions.
         reason: Machine-readable reason sent as the close-frame reason.
         detail: Human-readable explanation for CLIO's own log.
     """
@@ -106,13 +116,17 @@ def transport_refusal(
         websocket: The incoming WebSocket (headers and peer address).
         target_id: The target id from the request path.
         target: The stored target, or ``None`` when no such target exists.
-        app_state: The application state carrying ``bearer_token`` and the
-            ``peer_address_getter`` seam shared with the HTTP middleware.
+        app_state: The application state carrying ``bearer_token``.
 
     Returns:
         ``None`` when the attachment is admitted, otherwise the typed refusal.
     """
 
+    origin = websocket.headers.get("origin")
+    if origin is not None and not _origin_allowed(origin):
+        return TransportRefusal(
+            4403, "origin_not_allowed", f"Origin {origin!r} may not attach an SSH transport."
+        )
     if target is None:
         return TransportRefusal(
             4404, "target_not_found", f"No infrastructure target has the id {target_id!r}."
@@ -126,17 +140,23 @@ def transport_refusal(
     expected = getattr(app_state, "bearer_token", None)
     if expected is None:
         return None
-    getter: PeerAddressGetter = getattr(app_state, "peer_address_getter", peer_address_from_scope)
-    if is_loopback_address(getter(websocket.scope)):
-        return None
     supplied = _header_bearer_token(websocket.scope) or _websocket_protocol_token(websocket)
     if hmac.compare_digest(supplied, expected):
         return None
     return TransportRefusal(
         4401,
         "authentication_required",
-        "A non-loopback peer did not present this CLIO's bearer token.",
+        "The client did not present this CLIO's bearer token.",
     )
+
+
+def _origin_allowed(origin: str) -> bool:
+    """Whether a browser origin may open the transport socket."""
+
+    if origin in DESKTOP_WEBVIEW_ORIGINS:
+        return True
+    configured = gact_cors_origins()
+    return configured == ["*"] or origin in configured
 
 
 async def refuse_transport(websocket: WebSocket, target_id: str, refusal: TransportRefusal) -> None:

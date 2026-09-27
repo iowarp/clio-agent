@@ -70,12 +70,18 @@ TUI/HTTP surface aren't tracked here.
 - The Desktop SSH transport socket (`/v1/infrastructure/targets/{id}/transport`)
   says why it refused an attachment (#1478). A client that offers
   `clio.infrastructure.v2` gets the handshake, then a close frame with code
-  4401/4404/4409 and reason `authentication_required`, `target_not_found` or
-  `target_not_ssh`; an admitted v2 client first receives
-  `{"type": "attached", "target_id": ...}`. `clio.infrastructure.v1` clients keep
-  the pre-handshake refusal, and every refusal is logged. Admission now follows
-  the HTTP surface's trust rule: a loopback peer needs no bearer token, so a
-  Desktop attached to an already-running local CLIO (empty token) can deploy.
+  4401/4403/4404/4409 and reason `authentication_required`,
+  `origin_not_allowed`, `target_not_found` or `target_not_ssh`; an admitted v2
+  client first receives `{"type": "attached", "target_id": ...}`.
+  `clio.infrastructure.v1` clients keep the pre-handshake refusal, and every
+  refusal is logged. The socket accepts a browser `Origin` only from the
+  Desktop WebView (`tauri://localhost`, `http(s)://tauri.localhost`) or
+  `gact.cors.origins`, and requires the bearer token from every peer,
+  loopback included.
+- A foreground server publishes `<runtime state dir>/gact-servers/<port>.json`
+  (port, pid, the bearer token it enforces or `null`; owner-only) while it
+  serves, so a Desktop that attaches to an already-running CLIO presents the
+  real token instead of an empty one.
 
 ## [0.9.4.18] — 2026-09-26
 
