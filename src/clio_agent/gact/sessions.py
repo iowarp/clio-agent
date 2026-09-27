@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import threading
 import uuid
 from collections.abc import Callable
@@ -45,6 +44,7 @@ from pathlib import Path
 from typing import Any, Optional, get_args
 
 from clio_agent.gact.types import Session as _WireSession
+from clio_agent.platform_paths import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -337,17 +337,10 @@ class SessionStore:
 
         if self._path is None:
             return
-        self._path.parent.mkdir(parents=True, exist_ok=True)
         payload = {sid: asdict(s) for sid, s in self._sessions.items()}
-        # write+fsync to a temp file, then atomic rename: the fsync forces the
-        # bytes to disk before the rename publishes them, so a mid-write crash
-        # can't leave a partial JSON blob on disk (temp-file + rename is atomic).
-        tmp = self._path.with_suffix(self._path.suffix + ".tmp")
-        with open(tmp, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps(payload, indent=2, sort_keys=True))
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, self._path)
+        # Staged, fsynced, then replaced: a crash never leaves a partial blob,
+        # and a reader holding the file open is waited out, not a failure.
+        atomic_write_text(self._path, json.dumps(payload, indent=2, sort_keys=True))
 
     # ---- CRUD ---------------------------------------------------------
 

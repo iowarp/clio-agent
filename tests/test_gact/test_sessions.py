@@ -226,7 +226,8 @@ def test_count_tracks_create_delete(mem_store: SessionStore) -> None:
 def test_flush_fsyncs_before_rename(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """#771 truth pass: the docstring's durability claim is now real.
 
-    ``_flush`` must ``os.fsync`` the temp file's descriptor before the atomic
+    ``_flush`` (through ``platform_paths.atomic_write_text``) must ``os.fsync``
+    the staged file's descriptor before the atomic
     rename publishes it, so a crash can't leave a half-written blob on disk.
     """
 
@@ -239,7 +240,7 @@ def test_flush_fsyncs_before_rename(tmp_path: Path, monkeypatch: pytest.MonkeyPa
         fsynced.append(fd)
         real_fsync(fd)
 
-    monkeypatch.setattr("clio_agent.gact.sessions.os.fsync", _spy_fsync)
+    monkeypatch.setattr("clio_agent.platform_paths.os.fsync", _spy_fsync)
 
     store = SessionStore(path=tmp_path / "sessions.json")
     store.create(workspace_id="ws", title="durable")
