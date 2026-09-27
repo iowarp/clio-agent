@@ -97,12 +97,18 @@ required — so it runs here):
 uv run python scripts/mcp_mem_attribution.py \
     --pack external/clio-agent-marketplace/data-semantics \
     --workspace <dir with sensor_readings.csv> \
-    --sessions 3 --settle-s 180 --assert-budget    # must print GATE: PASS
+    --sessions 3 --settle-s 180 --runs 3 --assert-budget    # must print GATE: PASS
 ```
 `--pack` is a SOURCE directory (the script copies it into a fresh stamped gate
 XDG itself); the settle must stay ≥ 180s so the fleet reaper's TTL elapses
-before FINAL (the script enforces this under `--assert-budget`). `GATE: FAIL`
-(over budget, sessions not idle, or degraded substrate) blocks the tag. The
+before FINAL (the script enforces this under `--assert-budget`). The gate is
+judged on the MEDIAN peak and median final of `--runs` complete runs (default
+3, each a fresh server boot; `--assert-budget` refuses fewer than 3): one run's
+noise spans the whole 5% tolerance band (two clean runs of one commit measured
+final 0.97 and 0.95 GB against a 0.966 cap). The log prints every run and the
+spread; a wide spread is worth a look even on a PASS. Budget three runs of
+wall time (about 3 x 10 min). `GATE: FAIL` (median over budget, any run with
+sessions not idle, or degraded substrate) blocks the tag. The
 budget only ratchets DOWN — peak is recorded at the honest COLD maximum
 (spawn-diet plans expire after 24h, so release runs boot undieted); the unit
 test `tests/test_scripts/test_mcp_mem_budget.py` pins the recorded values at

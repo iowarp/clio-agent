@@ -77,6 +77,7 @@ from clio_agent.gact.runtime.globals import (
 )
 from clio_agent.gact.runtime.retention import enforce_dict_bound
 from clio_agent.gact.skills import SkillNotDelegatableError
+from clio_agent.gact.stream_failures import agent_forward_error_info
 from clio_agent.gact.streaming import (
     _extract_tools_called,
     _format_react_trajectory,
@@ -666,12 +667,7 @@ async def _run_turn_in_background(
         state.answer_text = ""
         state.tools_called = []
     except Exception as exc:  # noqa: BLE001
-        state.error_info = ErrorInfo(
-            error="agent_error",
-            message=f"agent.forward raised: {exc}",
-            details={"original_error": type(exc).__name__},
-            recoverable=True,
-        )
+        state.error_info = agent_forward_error_info(state, exc)
 
     # #756 / #1339 / L1: everything finalize does (answer grounding, part assembly,
     # diff indexing, nanoagent spawn, publishes, persistence) reads prologue-derived

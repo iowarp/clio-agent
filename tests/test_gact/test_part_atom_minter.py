@@ -67,6 +67,7 @@ from clio_agent.gact.turn_state import TurnState
 from clio_agent.gact.types import Message, Part, Tokens
 from clio_agent.gact.user_question_pause import maybe_pause_for_user
 from tests.equivalence import normalizers as N
+from tests.turn_signals import wait_for_terminal_status
 
 from .test_post_messages import FakeClioAgent
 
@@ -727,19 +728,14 @@ def test_failed_finalize_keeps_the_streamed_parts_and_reload_equals_live(
     )
     with TestClient(app) as c:
         sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
+        cursor = app.state.bus.latest_event_id(sid)
         ack = c.post(
             f"/v1/sessions/{sid}/messages", json={"parts": [{"type": "text", "text": "hi"}]}
         )
         assert ack.status_code == 200, ack.text
         user_id = ack.json()["message_id"]
 
-        deadline = time.monotonic() + 20.0
-        status = "running"
-        while time.monotonic() < deadline:
-            status = c.get(f"/v1/sessions/{sid}").json()["status"]
-            if status != "running":
-                break
-            time.sleep(0.05)
+        status = wait_for_terminal_status(app.state.bus, sid, after_event_id=cursor)
         assert status == "error", f"finalize crash must settle the turn; stayed {status!r}"
 
         live = [m.model_dump(exclude_none=True) for m in app.state.messages.get(sid, [])]

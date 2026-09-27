@@ -645,6 +645,39 @@ def test_post_message_agent_exception_populates_error_info(
         assert sess["status"] == "error"
 
 
+def test_non_streamed_provider_error_is_one_plain_line(tmp_path: Path) -> None:
+    """rel18 follow-up: a provider HTTP error on the non-streamed forward read
+    "agent.forward raised: litellm.NotFoundError: ...". It gets the same
+    one-line provider message as the streamed path."""
+    import dspy
+    import litellm
+
+    from .conftest import complete_turn
+
+    raw = litellm.NotFoundError(
+        message='OpenrouterException - {"error":{"message":"No endpoints available","code":404}}',
+        model="openrouter/free",
+        llm_provider="openrouter",
+    )
+    provider_error = dspy.LM("openrouter/openrouter/free", api_key="t")._wrap_litellm_exception(raw)
+
+    class ProviderFailingAgent(FakeClioAgent):
+        def forward(self, question: str, session_id: str) -> Any:
+            raise provider_error
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=ProviderFailingAgent())
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
+        assistant = complete_turn(c, sid, "hi")
+
+    err = assistant["error_info"]
+    assert err["error"] == "agent_error"
+    # No active LM is configured in this app, so the label comes from the
+    # provider the error itself names.
+    assert err["message"] == "OpenRouter: No endpoints available (HTTP 404)"
+    assert err["details"]["original_error"] == "LMUnsupportedModelError"
+
+
 def test_post_message_agent_exception_includes_error_info_on_completed_event(
     tmp_path: Path,
 ) -> None:
@@ -1578,6 +1611,63 @@ def test_post_message_live_discovered_model_override_executes_and_records_route(
         "model_source": "per_message",
         "fallback_to_global": False,
     }
+
+
+@pytest.mark.parametrize("turn_fails", [True, False])
+def test_accepted_per_message_model_becomes_the_session_model(
+    client: TestClient,
+    fake_agent: FakeClioAgent,
+    turn_fails: bool,
+) -> None:
+    """rel18: the picked model is the session's model ref, whatever the turn does.
+
+    The pick lived only in the composer's local state; the session's own ref
+    stayed empty, so the composer's first remount (the new-conversation route
+    becoming the session route after a send, a failed turn's refresh) showed
+    "Choose model" again. Acceptance persists it before the turn runs.
+    """
+
+    from .conftest import complete_turn
+
+    client.app.state.provider_catalog = {
+        "providers": [
+            {
+                "id": "codex",
+                "health": "ready",
+                "models": [
+                    {
+                        "model_id": "gpt-5.3-cg-spark",
+                        "availability": "available",
+                        "modalities": ["text"],
+                        "evidence": {"live": True, "generated_at": "2026-09-01T12:00:00+00:00"},
+                    }
+                ],
+            }
+        ]
+    }
+    fake_agent.raise_on_forward = turn_fails
+    sid = _create_session(client)
+    assert client.get(f"/v1/sessions/{sid}").json()["model"]["model_id"] == ""
+
+    assistant = complete_turn(
+        client,
+        sid,
+        "route this turn",
+        json_override={"model": {"provider_id": "codex", "model_id": "gpt-5.3-cg-spark"}},
+    )
+
+    assert bool(assistant.get("error_info")) is turn_fails
+    session = client.get(f"/v1/sessions/{sid}").json()
+    assert session["model"]["provider_id"] == "codex"
+    assert session["model"]["model_id"] == "gpt-5.3-cg-spark"
+    listed = client.get("/v1/sessions", headers={"X-GACT-Version": "0.3"}).json()["sessions"]
+    projected = next(row for row in listed if row["id"] == sid)
+    assert (projected.get("provider_id"), projected.get("model_id")) == (
+        "codex",
+        "gpt-5.3-cg-spark",
+    )
+    updates = [e for e in client.app.state.bus._history.get(sid, []) if e.type == "session.updated"]
+    assert any(e.payload["model"]["model_id"] == "gpt-5.3-cg-spark" for e in updates)
 
 
 def test_post_message_session_model_mismatch_returns_structured_501(

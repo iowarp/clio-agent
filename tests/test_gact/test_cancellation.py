@@ -16,8 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
-
-from .conftest import settle_turn_slot
+from tests.turn_signals import TURN_SIGNAL_BACKSTOP_S, wait_for_terminal_status
 
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
 # test's ``build_app(agent=...)`` host fake.
@@ -88,47 +87,26 @@ def test_cancel_unknown_session_404s_with_v0_2_envelope(tmp_path: Path) -> None:
     assert "session not found" in body["error"]["message"]
 
 
-class _SlowAgent:
-    """Agent that sleeps long enough for /cancel to race in."""
-
-    def __init__(self, sleep_s: float = 5.0) -> None:
-        import threading
-
-        self.sleep_s = sleep_s
-        self.completed = False
-        # #1334: the turn prologue runs on the executor and the POST acks before it,
-        # so "the forward is running" is observed, never assumed from a fixed sleep.
-        self.started = threading.Event()
-
-    def forward(self, question: str, session_id: str):
-        import time
-
-        self.started.set()
-        time.sleep(self.sleep_s)
-        self.completed = True
-        return type(
-            "Pred", (), {"answer": "late", "selected_expert": "", "routing_rationale": ""}
-        )()
-
-
 class _LateToolObserverAgent:
-    """Agent that reports a successful tool completion after cancellation."""
+    """Agent that reports a successful tool completion after cancellation.
 
-    def __init__(self, sleep_s: float = 0.4) -> None:
+    The tool "runs" until the test releases it, so its late completion provably lands
+    after the cancelled envelope settled (no sleep racing the cancel route).
+    """
+
+    def __init__(self) -> None:
         import threading
 
-        self.sleep_s = sleep_s
         self.started = threading.Event()
+        self.release = threading.Event()
         self.completed = threading.Event()
 
     def forward(self, question: str, session_id: str):
-        import time
-
         from clio_agent.tools.execution import notify_global_tool_observer
 
         notify_global_tool_observer("late_tool", {"question": question}, "started", None)
         self.started.set()
-        time.sleep(self.sleep_s)
+        assert self.release.wait(timeout=TURN_SIGNAL_BACKSTOP_S), "the test never released"
         notify_global_tool_observer("late_tool", {"question": question}, "completed", None)
         self.completed.set()
         return type(
@@ -136,12 +114,36 @@ class _LateToolObserverAgent:
         )()
 
 
+class _BlocksUntilReleasedAgent:
+    """Agent whose executor-thread forward runs until the test releases it."""
+
+    def __init__(self) -> None:
+        import threading
+
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.completed = threading.Event()
+
+    def forward(self, question: str, session_id: str):
+        self.started.set()
+        assert self.release.wait(timeout=TURN_SIGNAL_BACKSTOP_S), "the test never released"
+        self.completed.set()
+        return type(
+            "Pred", (), {"answer": "late", "selected_expert": "", "routing_rationale": ""}
+        )()
+
+
 def test_cancel_during_turn_marks_turn_as_cancelled(tmp_path: Path) -> None:
-    """Cancelling the asyncio task does not kill executor-thread work."""
+    """Cancelling the asyncio task does not kill executor-thread work.
 
-    import time as _time
+    The forward blocks until released, so the cancel always lands mid-forward and the
+    envelope provably settles while the executor thread is still running (no wall-clock
+    window: the old 0.6 s forward + 3 s poll raced a loaded CI runner). The settle is
+    observed through the turn's own terminal ``session.status_changed``, published
+    after the cancel route's ``cooperative_pending`` one.
+    """
 
-    agent = _SlowAgent(sleep_s=0.6)
+    agent = _BlocksUntilReleasedAgent()
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     with TestClient(app) as c:
         sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
@@ -152,29 +154,22 @@ def test_cancel_during_turn_marks_turn_as_cancelled(tmp_path: Path) -> None:
         )
         # Wait until the forward is actually running in the executor (the prologue
         # now runs off the loop after the ack, so a fixed slice is not enough).
-        assert agent.started.wait(timeout=10.0), "forward never started"
-        c.post(f"/v1/sessions/{sid}/cancel")
-        # Poll for the assistant turn to settle as cancelled.
-        # complete_turn polls list_messages — the assistant
-        # appears once the cancellation path finalises.
-        # We just want the GACT envelope to settle promptly.
-        deadline = _time.monotonic() + 3.0
-        assistant = None
-        while _time.monotonic() < deadline:
-            msgs = c.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-            assistants = [
-                m
-                for m in msgs
-                if m["role"] == "assistant" and not m.get("metadata", {}).get("live")
-            ]
-            if assistants:
-                assistant = assistants[0]
-                break
-            _time.sleep(0.1)
-        assert assistant is not None, "cancel didn't settle the turn within 3s"
-        # #1334: finalize runs on the executor; the persisted message is visible a few
-        # ms before the terminal status publish, so wait for the turn slot to clear.
-        settle_turn_slot(c, sid)
+        assert agent.started.wait(timeout=TURN_SIGNAL_BACKSTOP_S), "forward never started"
+        assert c.post(f"/v1/sessions/{sid}/cancel").status_code == 204
+        # The route published ``cooperative_pending`` synchronously; the next terminal
+        # status is the turn settling itself (after its assistant message persisted).
+        after_route = app.state.bus.latest_event_id(sid)
+        assert wait_for_terminal_status(app.state.bus, sid, after_event_id=after_route) == (
+            "cancelled"
+        )
+        assert not agent.completed.is_set(), "the envelope must settle while forward runs"
+        assistants = [
+            m
+            for m in c.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+            if m["role"] == "assistant" and not m.get("metadata", {}).get("live")
+        ]
+        assert len(assistants) == 1, assistants
+        assistant = assistants[0]
         assert assistant["error_info"]["error"] == "cancelled"
         assert assistant["error_info"]["details"]["execution_cancellation"] == "best_effort"
         # L1: the deleted, always-constant triad must not reappear anywhere on the
@@ -195,17 +190,17 @@ def test_cancel_during_turn_marks_turn_as_cancelled(tmp_path: Path) -> None:
             for e in app.state.bus._history.get(sid, [])
             if e.type == "session.status_changed" and e.payload.get("status") == "cancelled"
         ]
-        assert status_events
-        assert status_events[-1].payload["execution_cancellation"] == "best_effort"
+        assert [e.payload["execution_cancellation"] for e in status_events] == [
+            "cooperative_pending",
+            "best_effort",
+        ]
         assert "executor_work_may_continue" not in status_events[-1].payload
         assert status_events[-1].payload["cancellation_attempt"]["id"] == attempt["id"]
 
-        # The executor thread can still finish after the GACT envelope
-        # has truthfully settled as cancelled.
-        deadline = _time.monotonic() + 2.0
-        while _time.monotonic() < deadline and not agent.completed:
-            _time.sleep(0.05)
-        assert agent.completed is True
+        # The executor thread still finishes after the GACT envelope has truthfully
+        # settled as cancelled.
+        agent.release.set()
+        assert agent.completed.wait(timeout=TURN_SIGNAL_BACKSTOP_S)
 
 
 def test_cancel_before_turn_skips_agent_forward(
@@ -270,11 +265,9 @@ def test_late_tool_completion_after_cancel_is_not_reported_as_success(
 ) -> None:
     """Late observer completions must not become success telemetry or stale metadata."""
 
-    import time as _time
-
     from .conftest import complete_turn
 
-    agent = _LateToolObserverAgent(sleep_s=0.35)
+    agent = _LateToolObserverAgent()
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     with TestClient(app) as c:
         sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
@@ -282,26 +275,21 @@ def test_late_tool_completion_after_cancel_is_not_reported_as_success(
             f"/v1/sessions/{sid}/messages",
             json={"parts": [{"type": "text", "text": "hi"}]},
         )
-        assert agent.started.wait(timeout=2.0)
-        c.post(f"/v1/sessions/{sid}/cancel")
-
-        deadline = _time.monotonic() + 3.0
-        assistant = None
-        while _time.monotonic() < deadline:
-            msgs = c.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-            assistants = [
-                m
-                for m in msgs
-                if m["role"] == "assistant" and m.get("error_info", {}).get("error") == "cancelled"
-            ]
-            if assistants:
-                assistant = assistants[0]
-                break
-            _time.sleep(0.05)
-        assert assistant is not None, "cancel didn't settle the turn within 3s"
-        settle_turn_slot(c, sid)  # #1334: the terminal publishes follow the persist
-        assert assistant["error_info"]["error"] == "cancelled"
-        assert agent.completed.wait(timeout=2.0)
+        assert agent.started.wait(timeout=TURN_SIGNAL_BACKSTOP_S), "forward never started"
+        assert c.post(f"/v1/sessions/{sid}/cancel").status_code == 204
+        after_route = app.state.bus.latest_event_id(sid)
+        assert wait_for_terminal_status(app.state.bus, sid, after_event_id=after_route) == (
+            "cancelled"
+        )
+        assistants = [
+            m
+            for m in c.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+            if m["role"] == "assistant" and m.get("error_info", {}).get("error") == "cancelled"
+        ]
+        assert len(assistants) == 1, assistants
+        # Only now does the tool report success: strictly after the settle.
+        agent.release.set()
+        assert agent.completed.wait(timeout=TURN_SIGNAL_BACKSTOP_S)
 
         completed_events = [
             e

@@ -17,7 +17,6 @@ full reasoning). #1215 stays open; this is not a cold/warm live capture
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +24,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact.app import build_app
+from tests.turn_signals import wait_for_terminal_status
 
 from .test_post_messages import FakeClioAgent
 
@@ -46,20 +46,14 @@ def _drive_one_turn(app: Any, tmp_path: Path) -> str:
 
     with TestClient(app) as c:
         sid = c.post("/v1/sessions", json={"title": "bringup"}).json()["id"]
+        cursor = app.state.bus.latest_event_id(sid)
         ack = c.post(
             f"/v1/sessions/{sid}/messages",
             json={"parts": [{"type": "text", "text": "hi"}]},
         )
         assert ack.status_code == 200, ack.text
 
-        deadline = time.monotonic() + 10.0
-        status = "running"
-        while time.monotonic() < deadline:
-            status = c.get(f"/v1/sessions/{sid}").json()["status"]
-            if status != "running":
-                break
-            time.sleep(0.05)
-        assert status != "running", "turn never settled"
+        assert wait_for_terminal_status(app.state.bus, sid, after_event_id=cursor) == "idle"
     return sid
 
 
@@ -129,19 +123,13 @@ def test_second_turn_does_not_reopen_bringup(
         sid = c.post("/v1/sessions", json={"title": "bringup2"}).json()["id"]
 
         def _send_and_wait(text: str) -> None:
+            cursor = app.state.bus.latest_event_id(sid)
             ack = c.post(
                 f"/v1/sessions/{sid}/messages",
                 json={"parts": [{"type": "text", "text": text}]},
             )
             assert ack.status_code == 200, ack.text
-            deadline = time.monotonic() + 10.0
-            status = "running"
-            while time.monotonic() < deadline:
-                status = c.get(f"/v1/sessions/{sid}").json()["status"]
-                if status != "running":
-                    break
-                time.sleep(0.05)
-            assert status != "running", "turn never settled"
+            assert wait_for_terminal_status(app.state.bus, sid, after_event_id=cursor) == "idle"
 
         _send_and_wait("first turn")
         first_turn_count = len(

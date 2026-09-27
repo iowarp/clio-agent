@@ -32,6 +32,7 @@ from clio_agent.gact.a2ui_capabilities import (
 from clio_agent.gact.a2ui_catalogs.builtin import basic_catalog_id, workspace_catalog_id
 from clio_agent.gact.agent_message_transport import message_in_process
 from clio_agent.gact.app import build_app
+from tests.turn_signals import TURN_SIGNAL_BACKSTOP_S
 
 from .a2ui_catalog_binding import bind_builtin_catalogs
 
@@ -78,7 +79,7 @@ def _create_session(client: TestClient, title: str = "t") -> str:
     return client.post("/v1/sessions", json={"title": title}).json()["id"]
 
 
-def _wait_idle(client: TestClient, sid: str, timeout: float = 10.0) -> None:
+def _wait_idle(client: TestClient, sid: str, timeout: float = TURN_SIGNAL_BACKSTOP_S) -> None:
     runner = client.app.state.turn_runner
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:

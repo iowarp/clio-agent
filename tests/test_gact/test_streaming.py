@@ -959,10 +959,10 @@ def test_codex_missing_auth_surfaces_clean_error(
 
     streamify_module = importlib.import_module("dspy.streaming.streamify")
     monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
-    app = build_app(
-        sessions_path=tmp_path / "s.json",
-        agent=_DspyAgent("sync fallback should not run"),
-    )
+    # The message names a CLI provider, so that provider must be the one configured.
+    agent = _DspyAgent("sync fallback should not run")
+    agent._provider_config = SimpleNamespace(provider_id="codex", provider="codex")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     client = enter_client(app)
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
 
@@ -977,6 +977,58 @@ def test_codex_missing_auth_surfaces_clean_error(
     assert assistant["error_info"]["message"] == CODEX_AUTHENTICATION_ERROR_MESSAGE
     assert "live streaming failed" not in assistant["error_info"]["message"]
     assert "chatgpt.com" not in assistant["error_info"]["message"]
+
+
+def test_provider_http_error_surfaces_one_plain_line(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, enter_client: Callable[[Any], TestClient]
+) -> None:
+    """rel18: OpenRouter's 404 reached the user as a truncated
+    "live streaming failed before emitting output: ExceptionGroup[...]". The
+    user gets the provider's own words on one line; the trace keeps the rest."""
+    import litellm
+
+    raw = litellm.NotFoundError(
+        message=(
+            "OpenrouterException - "
+            '{"error":{"message":"No endpoints available for openrouter/free","code":404}}'
+        ),
+        model="openrouter/free",
+        llm_provider="openrouter",
+    )
+    provider_error = dspy.LM("openrouter/openrouter/free", api_key="t")._wrap_litellm_exception(raw)
+
+    async def fail_before_chunk(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        raise ExceptionGroup("unhandled errors in a TaskGroup", [provider_error])
+        yield "unreachable"
+
+    def fake_streamify(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        return fail_before_chunk
+
+    streamify_module = importlib.import_module("dspy.streaming.streamify")
+    monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
+    agent = _DspyAgent("sync fallback should not run")
+    agent._provider_config = SimpleNamespace(provider_id="openrouter", provider="openai")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    client = enter_client(app)
+    sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
+
+    client.post(
+        f"/v1/sessions/{sid}/messages",
+        json={"parts": [{"type": "text", "text": "stream me"}]},
+    )
+    _wait_for_turn_settlement(app, sid)
+
+    messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+    assistant = [message for message in messages if message["role"] == "assistant"][-1]
+    assert assistant["error_info"]["message"] == (
+        "OpenRouter: No endpoints available for openrouter/free (HTTP 404)"
+    )
+    history = app.state.bus._history.get(sid, [])
+    completed = [e for e in history if e.type == "message.completed"][-1]
+    _assert_structured_stream_fallback(completed.payload["metadata"], "stream_failed_before_output")
+    assert "LMUnsupportedModelError" in completed.payload["metadata"]["stream_fallback"]["message"]
 
 
 def test_claude_code_missing_sdk_surfaces_clean_error(
@@ -996,10 +1048,10 @@ def test_claude_code_missing_sdk_surfaces_clean_error(
 
     streamify_module = importlib.import_module("dspy.streaming.streamify")
     monkeypatch.setattr(streamify_module, "streamify", fake_streamify)
-    app = build_app(
-        sessions_path=tmp_path / "s.json",
-        agent=_DspyAgent("sync fallback should not run"),
-    )
+    # The message names a CLI provider, so that provider must be the one configured.
+    agent = _DspyAgent("sync fallback should not run")
+    agent._provider_config = SimpleNamespace(provider_id="claude_code", provider="claude_code")
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     client = enter_client(app)
     sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
 
