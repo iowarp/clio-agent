@@ -163,6 +163,39 @@ def test_legacy_catalog_id_recovers_identity_before_runtime_kind() -> None:
 
 
 @pytest.mark.parametrize(
+    ("provider_id", "model"),
+    [
+        # OpenRouter's own router ids start with the LiteLLM prefix itself.
+        ("openrouter", "openrouter/free"),
+        ("openrouter", "openrouter/auto"),
+        # A served id that begins with the generic OpenAI-compatible prefix.
+        ("openai", "openai/gpt-oss-120b"),
+        ("openrouter", "openai/gpt-oss-120b"),
+    ],
+)
+def test_provider_model_id_reaches_the_wire_verbatim(provider_id: str, model: str) -> None:
+    """The provider's own model id is what LiteLLM sends as ``model``.
+
+    Regression (rel18 live finding): ``_resolve_model_name`` stripped a leading
+    ``openrouter/`` from ``openrouter/free``, so LiteLLM (which strips its own
+    provider segment) sent ``"model": "free"`` and OpenRouter answered 404 "No
+    endpoints available for openrouter/free" on every turn. Asserted through
+    LiteLLM's own ``get_llm_provider`` split, i.e. the wire value.
+    """
+    from litellm import get_llm_provider
+
+    config = LMProviderConfig(
+        provider=provider_id,  # type: ignore[arg-type]
+        provider_id=provider_id,
+        model=model,
+        api_key="test",
+    )
+    wire_model, litellm_provider, _key, _base = get_llm_provider(_resolve_model_name(config))
+    assert litellm_provider == get_provider(provider_id).litellm_prefix
+    assert wire_model == model
+
+
+@pytest.mark.parametrize(
     ("provider_id", "env_name"),
     [
         ("openai", "OPENAI_API_KEY"),

@@ -31,6 +31,7 @@ on:
 jobs:
   clio-schemas-export-check:
     runs-on: ubuntu-latest
+    timeout-minutes: 5  # measured ~35 s
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5

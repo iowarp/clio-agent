@@ -30,6 +30,7 @@ from clio_agent.providers.capabilities.records import (
     FactSource,
     unknown,
 )
+from clio_agent.providers.custom_transports import CLIO_CUSTOM_LITELLM_PROVIDERS
 
 logger = logging.getLogger(__name__)
 
@@ -217,9 +218,17 @@ def resolve_accepted_params(
     try:
         import litellm  # noqa: PLC0415
 
-        params = litellm.get_supported_openai_params(
-            model=model_id, custom_llm_provider=custom_llm_provider
-        )
+        if custom_llm_provider in CLIO_CUSTOM_LITELLM_PROVIDERS:
+            # clio's OWN transport (codex_direct, codex_sdk, claude_code): once LiteLLM
+            # has set its custom handler up it answers the generic OpenAI list for the
+            # key, a default that says nothing about the transport. Decided from clio's
+            # own list, never LiteLLM's mutable registration state, so the answer does
+            # not depend on what ran (or was reset) earlier in the process.
+            params = None
+        else:
+            params = litellm.get_supported_openai_params(
+                model=model_id, custom_llm_provider=custom_llm_provider
+            )
     except Exception as exc:  # noqa: BLE001 - a broken litellm call degrades to unknown, logged
         logger.warning(
             "capabilities.endpoint: litellm.get_supported_openai_params failed "

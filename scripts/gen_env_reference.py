@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import re
 import sys
 import textwrap
 from dataclasses import dataclass, field
@@ -209,6 +210,9 @@ def _repo_root() -> Path:
 
 _UNRESOLVED: object = object()
 
+# Any spelling of ``clio_agent.conf.resolve`` names the ``conf`` module as a word.
+_CONF_WORD = re.compile(r"\bconf\b")
+
 # The subset of binary/unary operators used in in-code default expressions
 # (``1 << 30``, ``32 * 1024``, ``-1``). Constant-folded so the reference shows a
 # concrete value rather than the source text.
@@ -304,7 +308,9 @@ def _module_path_for(module: str, src: Path) -> Path | None:
     return package_init if package_init.is_file() else None
 
 
-def _imported_constants(tree: ast.Module, src: Path) -> dict[str, object]:
+def _imported_constants(
+    tree: ast.Module, src: Path, owner_cache: dict[Path, dict[str, object]] | None = None
+) -> dict[str, object]:
     """Resolve constants this module binds via a MODULE-LEVEL ``from ... import NAME``.
 
     A shared in-code default is frequently owned by one module and imported by the
@@ -318,20 +324,25 @@ def _imported_constants(tree: ast.Module, src: Path) -> dict[str, object]:
     binding is then exactly what the importing module holds at import time, with no
     transitive chain to follow and no lazy, function-local import — which may exist to
     break a cycle or to defer a heavy dependency — silently promoted to a static fact.
-    Names from outside ``src/clio_agent`` are never resolved.
+    Names from outside ``src/clio_agent`` are never resolved. ``owner_cache`` memoizes
+    each owner module's constants for one :func:`collect` walk (a popular module is
+    imported by hundreds of files; re-parsing it per importer dominated the walk).
     """
     out: dict[str, object] = {}
+    cache = owner_cache if owner_cache is not None else {}
     for node in tree.body:
         if not isinstance(node, ast.ImportFrom) or node.level:
             continue
         path = _module_path_for(node.module or "", src)
         if path is None:
             continue
-        try:
-            owner = ast.parse(path.read_text(encoding="utf-8"))
-        except (OSError, SyntaxError):
-            continue
-        owner_consts = _module_constants(owner)
+        owner_consts = cache.get(path)
+        if owner_consts is None:
+            try:
+                owner = ast.parse(path.read_text(encoding="utf-8"))
+            except (OSError, SyntaxError):
+                continue
+            owner_consts = cache[path] = _module_constants(owner)
         for alias in node.names:
             value = owner_consts.get(alias.name, _UNRESOLVED)
             if value is not _UNRESOLVED:
@@ -695,18 +706,33 @@ def collect(root: Path | None = None) -> tuple[list[ResolvedVar], list[EnvOnlyVa
     resolved: dict[str, ResolvedVar] = {}
     env_only: dict[str, EnvOnlyVar] = {}
 
+    owner_cache: dict[Path, dict[str, object]] = {}
     for path in sorted(src.rglob("*.py")):
         if path.name in _SKIP_FILES:
             continue
+        text = path.read_text(encoding="utf-8")
+        # Every record below needs one of these spellings in the file itself: a direct
+        # env read (``os.environ`` / ``os.getenv``, or an alias assigned from
+        # ``os.environ``), a ``conf.resolve`` call (any spelling names both ``resolve``
+        # and the ``conf`` module), or a same-module wrapper around one of those.
+        # A file with none of them cannot contribute; skipping its parse and six AST
+        # walks is most of this function's cost.
+        reads_env = "environ" in text or "getenv" in text
+        resolves = "resolve" in text and _CONF_WORD.search(text) is not None
+        if not (reads_env or resolves):
+            continue
         rel = path.relative_to(repo_root).as_posix()
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        tree = ast.parse(text)
         # Own module-level constants win over an imported binding of the same name.
-        consts = {**_imported_constants(tree, src), **_module_constants(tree)}
+        consts = {**_imported_constants(tree, src, owner_cache), **_module_constants(tree)}
         class_attr_consts = {**consts, **_class_attr_defaults(tree, consts)}
-        resolve_names, conf_aliases = _conf_import_aliases(tree)
-        wrappers = _env_wrapper_functions(tree)
-        conf_wrappers = _conf_resolve_wrappers(tree, resolve_names, conf_aliases)
-        environ_aliases = _environ_mapping_aliases(tree)
+        if resolves:
+            resolve_names, conf_aliases = _conf_import_aliases(tree)
+            conf_wrappers = _conf_resolve_wrappers(tree, resolve_names, conf_aliases)
+        else:
+            resolve_names, conf_aliases, conf_wrappers = set(), set(), {}
+        wrappers = _env_wrapper_functions(tree) if reads_env else {}
+        environ_aliases = _environ_mapping_aliases(tree) if reads_env else set()
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
