@@ -86,6 +86,7 @@ from clio_agent.arc.rpc_liveness import (
 )
 from clio_agent.arc.runtime_crash import (
     clear_crash_record,
+    wait_for_spawned_daemon,
     watch_daemon_process,
 )
 
@@ -511,15 +512,10 @@ def _ensure_runtime_daemon(iowarp_core: object, config_path: str, log_level: str
                 state, config_path, on_failure=_deregister_client
             )
         _spawn_runtime_daemon(iowarp_core, config_path, log_level)
-        deadline = time.monotonic() + _RUNTIME_START_TIMEOUT_S
-        while time.monotonic() < deadline:
-            if _runtime_alive(port):
-                return config_path
-            time.sleep(0.25)
-        raise RuntimeError(
-            f"spawned the clio-core runtime daemon but it never bound port {port} within "
-            f"{_RUNTIME_START_TIMEOUT_S:.0f}s; see {runtime_state_dir() / 'clio-runtime.log'}."
+        wait_for_spawned_daemon(
+            port, alive=_runtime_alive, state_dir=state, timeout_s=_RUNTIME_START_TIMEOUT_S
         )
+        return config_path
 
 
 class ClioCoreStore:

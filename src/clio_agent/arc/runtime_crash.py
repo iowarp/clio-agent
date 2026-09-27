@@ -21,6 +21,8 @@ import datetime as _dt
 import json
 import logging
 import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -173,3 +175,52 @@ def watch_daemon_process(
     thread = threading.Thread(target=_watch, name="clio-runtime-crash-watcher", daemon=True)
     thread.start()
     return thread
+
+
+class DaemonSpawnFailed(RuntimeError):
+    """A spawned daemon crashed or never bound its RPC port (typed for the degrade row)."""
+
+    degradation_reason = "clio_core_daemon_spawn_failed"
+
+
+def wait_for_spawned_daemon(
+    port: int,
+    *,
+    alive: Callable[[int], bool],
+    state_dir: Path,
+    timeout_s: float,
+    poll_s: float = 0.25,
+) -> None:
+    """Wait until a just-spawned daemon binds ``port``; fail at once if it crashes first.
+
+    The watcher (:func:`watch_daemon_process`) writes the crash record the moment the
+    daemon exits. Before this check the spawner kept polling the port for the full
+    timeout after the daemon was already gone (a start that died on a failed
+    shared-memory allocation cost 30 s and then reported only "never bound port").
+    Now the daemon's own exit status and last log line are the error.
+
+    Args:
+        port: The RPC port the daemon must bind.
+        alive: Liveness probe for ``port``.
+        state_dir: The runtime state dir holding the crash record and log.
+        timeout_s: How long a healthy but slow start may take.
+        poll_s: Poll interval.
+
+    Raises:
+        DaemonSpawnFailed: The daemon crashed before binding, or never bound in time.
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if alive(port):
+            return
+        record = read_crash_record(state_dir)
+        if record is not None:
+            raise DaemonSpawnFailed(
+                "spawned the clio-core runtime daemon but it exited before binding port "
+                f"{port}: {summarize_crash(record)}"
+            )
+        time.sleep(poll_s)
+    raise DaemonSpawnFailed(
+        f"spawned the clio-core runtime daemon but it never bound port {port} within "
+        f"{timeout_s:.0f}s; see {state_dir / 'clio-runtime.log'}."
+    )
