@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 from clio_agent.providers.capabilities.records import (
     EndpointCapabilities,
@@ -196,6 +197,14 @@ def dialect_for_provider(provider_kind: str, litellm_prefix: str, provider_id: s
     return litellm_prefix or provider_kind or "openai"
 
 
+def _is_clio_custom_provider(litellm: Any, custom_llm_provider: str) -> bool:
+    """True when ``custom_llm_provider`` is a handler clio registered with LiteLLM."""
+    return any(
+        entry.get("provider") == custom_llm_provider
+        for entry in getattr(litellm, "custom_provider_map", None) or []
+    )
+
+
 def resolve_accepted_params(
     dialect: str, model_id: str, *, custom_llm_provider: str
 ) -> Fact[frozenset[str]]:
@@ -217,9 +226,16 @@ def resolve_accepted_params(
     try:
         import litellm  # noqa: PLC0415
 
-        params = litellm.get_supported_openai_params(
-            model=model_id, custom_llm_provider=custom_llm_provider
-        )
+        if _is_clio_custom_provider(litellm, custom_llm_provider):
+            # clio's OWN handler (codex_direct, claude_code, ...): once LiteLLM has set
+            # up custom handlers it answers the generic OpenAI list for any of them, a
+            # default that says nothing about the transport. Treat it as no mapping, or
+            # the answer would depend on whether a turn already ran in this process.
+            params = None
+        else:
+            params = litellm.get_supported_openai_params(
+                model=model_id, custom_llm_provider=custom_llm_provider
+            )
     except Exception as exc:  # noqa: BLE001 - a broken litellm call degrades to unknown, logged
         logger.warning(
             "capabilities.endpoint: litellm.get_supported_openai_params failed "

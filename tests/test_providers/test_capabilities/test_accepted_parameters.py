@@ -86,6 +86,39 @@ def test_sdk_transports_accept_no_response_settings(
     assert _rows(provider_id, api_base, "m", dialect=dialect, prefix=prefix) == {}
 
 
+@pytest.mark.parametrize(
+    ("provider_id", "api_base", "dialect", "prefix"),
+    [
+        ("claude_code", "claude-code://sdk", "claude_code", "claude_code"),
+        ("codex", "codex://direct", "codex", "codex_direct"),
+        ("codex", "codex://sdk", "codex", "codex_sdk"),
+    ],
+)
+def test_sdk_transports_stay_empty_after_their_handler_ran_in_this_process(
+    provider_id: str, api_base: str, dialect: str, prefix: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The CI-only failure of the test above (4 xdist workers).
+
+    clio registers these transports as LiteLLM CUSTOM handlers. Once LiteLLM has set
+    custom handlers up (any completion in the process does it),
+    ``get_supported_openai_params`` answers the generic OpenAI list for each of them,
+    so a worker that had already run a codex/claude turn offered frequency_penalty,
+    max_tokens, ... for a transport that takes none of them. A handler clio itself
+    registered is not LiteLLM evidence about the transport.
+    """
+    import litellm  # noqa: PLC0415
+    from litellm.utils import custom_llm_setup  # noqa: PLC0415
+
+    monkeypatch.setattr(
+        litellm, "custom_provider_map", [{"provider": prefix, "custom_handler": object()}]
+    )
+    monkeypatch.setattr(litellm, "provider_list", list(litellm.provider_list))
+    monkeypatch.setattr(litellm, "_custom_providers", list(litellm._custom_providers))
+    custom_llm_setup()  # what the first completion after registration does
+    assert litellm.get_supported_openai_params(model="m", custom_llm_provider=prefix)
+    assert _rows(provider_id, api_base, "m", dialect=dialect, prefix=prefix) == {}
+
+
 def test_openrouter_offers_exactly_the_routes_supported_parameters() -> None:
     _seed_openrouter(
         "qwen/qwen3-235b",
