@@ -729,4 +729,5 @@ def build_goal_status_tool() -> Any:
         desc=goal_status.__doc__,
         title="Goal Status",
         args={},
+        read_only=True,
     )

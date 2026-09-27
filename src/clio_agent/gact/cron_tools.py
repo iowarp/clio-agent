@@ -375,6 +375,7 @@ def build_cron_list_tool() -> Any:
         desc=cron_list.__doc__,
         title="List schedules",
         args={},
+        read_only=True,
     )
 
 
