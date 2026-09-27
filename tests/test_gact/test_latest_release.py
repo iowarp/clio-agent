@@ -89,19 +89,70 @@ def test_settles_to_a_typed_degradation_instead_of_hanging_when_unreachable(
     assert body["degradation"]["reason"] == "manifest_unreachable"
 
 
-def test_settles_to_a_typed_degradation_on_a_non_200(
+def test_settles_to_a_typed_degradation_on_a_server_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(
         latest_release.httpx,
         "AsyncClient",
-        lambda **_kw: _FakeAsyncClient(_FakeResponse(404, {})),
+        lambda **_kw: _FakeAsyncClient(_FakeResponse(503, {})),
     )
 
     body = _client(tmp_path).get("/v1/system/latest-release").json()
 
     assert body["version"] is None
     assert body["degradation"]["reason"] == "manifest_unreachable"
+
+
+_LATEST = "https://github.com/iowarp/clio-agent/releases/latest/download/latest-lite.json"
+_ASSET = "https://github.com/iowarp/clio-agent/releases/download/v0.9.4.19/latest-lite.json"
+_REAL_ASYNC_CLIENT = httpx.AsyncClient
+
+
+def _github(asset_status: int, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Serve GitHub's real shape: ``latest/download`` 302s to the tagged asset."""
+
+    seen: list[str] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if str(request.url) == _LATEST:
+            return httpx.Response(302, headers={"Location": _ASSET})
+        if asset_status == 200:
+            return httpx.Response(200, json={"version": "0.9.4.19"})
+        return httpx.Response(asset_status, text="Not Found")
+
+    monkeypatch.setattr(
+        latest_release.httpx,
+        "AsyncClient",
+        lambda **kw: _REAL_ASYNC_CLIENT(transport=httpx.MockTransport(_handler), **kw),
+    )
+    monkeypatch.setenv("CLIO_RELEASE_MANIFEST_URL", _LATEST)
+    return seen
+
+
+def test_follows_githubs_latest_download_redirect_to_the_manifest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    seen = _github(200, monkeypatch)
+
+    body = _client(tmp_path).get("/v1/system/latest-release").json()
+
+    assert seen == [_LATEST, _ASSET]
+    assert body["version"] == "0.9.4.19"
+    assert body["degradation"] is None
+
+
+def test_a_release_whose_manifest_is_not_uploaded_yet_is_typed_as_still_publishing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _github(404, monkeypatch)
+
+    body = _client(tmp_path).get("/v1/system/latest-release").json()
+
+    assert body["version"] is None
+    assert body["degradation"]["reason"] == "manifest_not_published"
+    assert body["degradation"]["message"] == "The latest release is still being published."
 
 
 def test_settles_to_a_typed_degradation_when_the_manifest_has_no_version(
