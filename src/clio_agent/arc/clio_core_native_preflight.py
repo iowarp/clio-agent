@@ -93,9 +93,15 @@ def _run_child(argv: list[str], env: Mapping[str, str], timeout_s: float) -> tup
             timeout=timeout_s,
         )
     except subprocess.TimeoutExpired as exc:
-        out = (exc.stdout or "") + (exc.stderr or "")
-        return None, out if isinstance(out, str) else out.decode("utf-8", "replace")
+        return None, _text(exc.stdout) + _text(exc.stderr)
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+
+def _text(value: str | bytes | None) -> str:
+    # TimeoutExpired carries whatever was captured, as bytes even with text=True.
+    if value is None:
+        return ""
+    return value if isinstance(value, str) else value.decode("utf-8", "replace")
 
 
 def remove_embedded_runtime_env(environ: "os._Environ[str] | dict[str, str]") -> dict[str, str]:
