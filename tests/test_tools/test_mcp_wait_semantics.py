@@ -236,7 +236,9 @@ async def test_staller_live_cancel_interrupts_promptly() -> None:
         assert final.status == "cancelled"
 
 
-async def test_task_mode_staller_survives_a_short_backstop_via_status_polls() -> None:
+async def test_task_mode_staller_survives_a_short_backstop_via_status_polls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """#1282 B1 (re-verify round, BLOCKING): the task-mode activity-reset path
     (``default_task_wait_observer`` -> ``touch_active_activity_clock``) is
     the ONLY signal keeping a task-mode drive alive past
@@ -244,24 +246,42 @@ async def test_task_mode_staller_survives_a_short_backstop_via_status_polls() ->
     task-mode tool's ``report_progress`` calls ride a channel the executor's
     ``progress_handler`` never sees (proven by C1-S0). If the activity
     contextvar is set AFTER the drive's ``asyncio.Task`` is created (the B1
-    bug), every poll's ``touch`` is a silent no-op and this staller -- whose
-    total runtime (3s) far exceeds the configured backstop (1.0s), but whose
-    50ms poll cadence keeps it comfortably alive if the reset actually
-    works -- must die at the backstop instead of completing.
+    bug), every poll's ``touch`` is a silent no-op.
 
-    RED before the ordering fix (verified via ``git stash`` on
-    ``mcp_wait_ladder.py``): the call raised ``UncertainMutatingToolOutcomeError``
-    (``staller`` is not annotated retry-safe, so the backstop's TimeoutError
-    was converted rather than propagated raw) well before the 3s tool
-    finished. GREEN after: the call completes normally.
+    The proof is the reset itself, counted on THIS call's ``ActivityClock``:
+    the drive's status polls must touch it, many times. It used to be proved by
+    wall clock instead (a 3 s staller outliving a 1.0 s backstop), which also
+    required that no single pause in the whole worker exceed 1 s. A
+    stop-the-world ``gc.collect()`` on a late-shard xdist heap breaks that
+    (reproduced: a 2.4 s pause mid-call fires the backstop with exactly the CI
+    error, ``UncertainMutatingToolOutcomeError(... timeout_seconds=1 ...)``).
+    The backstop here is a hang guard only.
+
+    RED with the B1 ordering bug (touch is a no-op, so the count stays 0); GREEN
+    after: the call completes and every non-terminal poll touched the clock.
     """
 
+    from clio_agent.tools import mcp_wait_ladder as ladder
+
+    touches: list[float] = []
+    real_touch = ladder.ActivityClock.touch
+
+    def counting_touch(self: Any) -> None:
+        touches.append(self.last_touch_monotonic)
+        real_touch(self)
+
+    monkeypatch.setattr(ladder.ActivityClock, "touch", counting_touch)
     executor = AsyncMCPToolExecutor(
-        build_exerciser_server(), timeout=1.0, client_factory=lambda target: make_mcp_client(target)
+        build_exerciser_server(),
+        timeout=30.0,
+        client_factory=lambda target: make_mcp_client(target),
     )
     async with executor:
-        outcome = await executor.call_tool_result("staller", {"seconds": 3.0, "steps": 30})
+        outcome = await executor.call_tool_result("staller", {"seconds": 1.5, "steps": 15})
     assert outcome.model_text == "stalled-through"
+    # A 1.5 s task polled at <= 50 ms is observed "working" dozens of times; even a
+    # starved worker polls it more than a handful of times.
+    assert len(touches) >= 5, touches
 
 
 # --------------------------------------------------------------------------
