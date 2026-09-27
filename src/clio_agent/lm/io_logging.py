@@ -144,6 +144,13 @@ def _kvnorm_response_id(response: Any) -> str:
 def _is_transient_provider_error(exc: BaseException) -> bool:
     """True for transient provider/infrastructure failures that a re-issue can heal
     (vs. typed-output/parse errors, which are the repair loop's job, not retried)."""
+    from clio_agent.providers.claude_code_errors import (  # noqa: PLC0415
+        contains_claude_code_signed_out,
+    )
+
+    if contains_claude_code_signed_out(exc):
+        return False  # #1454: terminal until the user signs in; LiteLLM wraps it as a
+        # connection error, which the markers below would otherwise re-issue.
     names = " ".join(base.__name__.lower() for base in type(exc).__mro__)
     text = f"{names} {exc}".lower()
     return any(marker in text for marker in _TRANSIENT_PROVIDER_MARKERS)
