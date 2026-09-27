@@ -1364,9 +1364,15 @@ def test_reference_discovery_degradations_are_scoped_and_reset_per_workspace(
         assert recovered_body["degradations"] == []
 
 
-def test_ask_user_ttl_default_and_clamp_are_config_resolved() -> None:
+def test_ask_user_has_no_default_lifetime() -> None:
+    """#1448: a question stays pending until answered or dismissed, unless the
+    agent explicitly gives it a lifetime (owner rule: no deterministic caps)."""
+    from datetime import datetime, timezone
+
     from clio_agent.gact import ask_user_tool
 
-    set_config("gact.ask_user.ttl_s", 42)
-    set_config("gact.ask_user.max_ttl_s", 120)
-    assert ask_user_tool.ask_user_ttl_bounds() == (42, 120)
+    assert ask_user_tool.ask_user_expires_at(0) == ""
+    assert ask_user_tool.ask_user_expires_at(-5) == ""
+    deadline = datetime.fromisoformat(ask_user_tool.ask_user_expires_at(90_000))
+    remaining = (deadline - datetime.now(timezone.utc)).total_seconds()
+    assert 89_990 < remaining <= 90_000  # honoured as asked, never clamped

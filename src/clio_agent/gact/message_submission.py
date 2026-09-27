@@ -18,6 +18,7 @@ from clio_agent.gact.a2ui_capabilities import (
     A2UICapabilitiesError,
     apply_client_metadata_guards,
 )
+from clio_agent.gact.claude_code_auth_reprobe import reprobe_for_message
 from clio_agent.gact.context_reference_delivery import (
     context_reference_deliveries,
     enrich_with_context_references,
@@ -42,6 +43,10 @@ from clio_agent.gact.providers.config import (
     _model_ref_dict,
     _model_ref_is_empty,
     _model_ref_matches_active,
+)
+from clio_agent.gact.question_answer_message import (
+    QuestionAnswerMessage,
+    settle_question_answer,
 )
 from clio_agent.gact.resource_delivery import (
     ResourceDeliveryRecord,
@@ -509,20 +514,29 @@ async def accept_message_async(
     req: PostMessageRequest,
     *,
     internal_model_text: str | None = None,
+    answer: QuestionAnswerMessage | None = None,
 ) -> tuple[PostMessageResponse, int]:
-    """Accept an async-produced message, optionally with private model-only context."""
+    """Accept an async-produced message, optionally with private model-only context.
+
+    ``answer`` makes the message the answer to a pending agent question (#1448).
+    """
 
     # A session's selected model is enough to run its first turn (no global provider).
     await ensure_host_agent(app, sid, req)
+    await reprobe_for_message(app, sid, req)  # #1455: see a terminal sign-in at turn start
     prepared = await prepare_references(app, sid, req)
-    return accept_message(
+    ack = accept_message(
         app,
         deps,
         sid,
         req,
         prepared=prepared,
         internal_model_text=internal_model_text,
+        answer=answer,
     )
+    if answer is not None:
+        settle_question_answer(app, sid, answer, ack[0].message_id)
+    return ack
 
 
 def accept_message(
@@ -533,6 +547,7 @@ def accept_message(
     *,
     prepared: PreparedReferences | None = None,
     internal_model_text: str | None = None,
+    answer: QuestionAnswerMessage | None = None,
 ) -> tuple[PostMessageResponse, int]:
     """Accept one message using explicit start-or-steer semantics.
 
@@ -630,6 +645,11 @@ def accept_message(
         metadata["context_reference_deliveries"] = reference_deliveries
     if model_selection_source != "global_active":
         metadata["model_selection_source"] = model_selection_source
+    if answer is not None:  # server-owned: set after the reserved-key check, never client
+        metadata.update(answer.metadata)
+        internal_model_text = answer.model_text_prefix + (
+            internal_model_text or (prepared.model_text if prepared is not None else user_text)
+        )
     if busy:
         if any(row.id == message_id for row in app.state.messages.get(sid, [])):
             raise _identity_conflict(sid, message_id)
