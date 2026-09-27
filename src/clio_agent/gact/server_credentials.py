@@ -23,7 +23,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import socket
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
+
+import psutil
 
 from clio_agent.arc.clio_core_config import runtime_state_dir
 from clio_agent.platform_paths import atomic_replace
@@ -88,6 +94,95 @@ def publish_server_credentials(
     os.chmod(staging, 0o600)
     atomic_replace(staging, path)
     return path
+
+
+PruneReason = Literal["dead_pid", "unreadable"]
+
+
+@dataclass(frozen=True)
+class PrunedRecord:
+    """One stale credential record a starting server removed, and why."""
+
+    path: Path
+    port: int | None
+    pid: int | None
+    reason: PruneReason
+
+
+def _port_listening(port: int) -> bool:
+    """Whether something accepts TCP connections on loopback ``port``."""
+
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+            return True
+    except OSError:
+        return False
+
+
+def _pid_running(pid: int) -> bool:
+    return psutil.pid_exists(pid)
+
+
+def prune_stale_server_credentials(
+    *,
+    state_dir: Path | None = None,
+    port_listening: Callable[[int], bool] = _port_listening,
+) -> list[PrunedRecord]:
+    """Remove records left by servers that died without cleaning up.
+
+    A hard-killed server (a scratch stack, a crashed process) never runs the
+    ``finally`` that removes its record, so records accumulate. A record is
+    stale only when BOTH its pid is gone and nothing listens on its port -- a
+    live pid or an answering port may still be the server the record
+    describes, and a wrong delete breaks the Desktop's attach. Each removal
+    is logged with its typed reason.
+
+    Args:
+        state_dir: Override for the runtime state dir (tests).
+        port_listening: Loopback port probe (tests inject a fake).
+
+    Returns:
+        The records removed.
+    """
+
+    root = (state_dir if state_dir is not None else runtime_state_dir()) / RECORD_DIR_NAME
+    try:
+        candidates = sorted(root.glob("*.json"))
+    except OSError as exc:
+        logger.warning("gact_credential_records_unlistable dir=%s error=%r", root, exc)
+        return []
+    pruned: list[PrunedRecord] = []
+    for path in candidates:
+        port = int(path.stem) if path.stem.isdigit() else None
+        try:
+            recorded = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            recorded = None
+        pid = recorded.get("pid") if isinstance(recorded, dict) else None
+        if not isinstance(pid, int) or port is None:
+            reason: PruneReason = "unreadable"
+        elif _pid_running(pid) or port_listening(port):
+            continue
+        else:
+            reason = "dead_pid"
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            logger.warning("gact_credential_record_unprunable path=%s error=%r", path, exc)
+            continue
+        logger.info(
+            "gact_credential_record_pruned reason=%s port=%s pid=%s path=%s",
+            reason,
+            port,
+            pid,
+            path,
+        )
+        pruned.append(PrunedRecord(path=path, port=port, pid=pid, reason=reason))
+    return pruned
 
 
 def remove_server_credentials(

@@ -20,32 +20,64 @@ env:
   PNPM_VERSION: "9.15.9"
   NODE_VERSION: "22.x"
 
+# One run per tag at a time (queued, never cancelled): a tag re-push or a
+# workflow_dispatch escape-hatch run waits for the in-flight run instead of
+# interleaving uploads into, or publishing, the same release.
+concurrency:
+  group: clio-bundles-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
-  installers:
-    name: installer scripts
-    # Full-build jobs run only for a real tag push; workflow_dispatch is the
-    # frozen-at-tag escape hatch for release-check's manifest/completeness
-    # work on an ALREADY-released tag, not a rebuild trigger.
+  # Draft-first release lifecycle. A release must not be "latest" until it is
+  # complete: v0.9.4.19's release was created as a side effect of the first
+  # asset upload, became latest immediately, and for over an hour
+  # releases/latest/download/latest-lite.json 404'd for every installed
+  # desktop. This job is the ONE creator: it makes the release as a DRAFT
+  # (never latest) before any build uploads, and every uploading job `needs`
+  # it, so no two jobs race to create it. release-check publishes it, marking
+  # it latest, only after check_release_completeness.py passes.
+  release:
+    name: create draft release
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            install/install.sh
-            install/install.ps1
-            install/clio
-            install/clio.cmd
-            install/clio.ps1
-            install/uninstall.sh
+      - name: Ensure exactly one draft release for the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/github_release.py ensure --tag "$GITHUB_REF_NAME"
+
+  installers:
+    name: installer scripts
+    # Full-build jobs run only for a real tag push; workflow_dispatch is the
+    # frozen-at-tag escape hatch for release-check's manifest/completeness
+    # work on an ALREADY-released tag, not a rebuild trigger.
+    if: github.event_name == 'push'
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Upload to draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash scripts/upload_release_assets.sh "$GITHUB_REF_NAME" \
+            install/install.sh \
+            install/install.ps1 \
+            install/clio \
+            install/clio.cmd \
+            install/clio.ps1 \
+            install/uninstall.sh \
             install/uninstall.ps1
 
   tui:
     name: tui · ${{ matrix.goos }}-${{ matrix.goarch }}
     if: github.event_name == 'push'
+    needs: release
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -76,15 +108,17 @@ jobs:
           out="clio-tui-${GOOS}-${GOARCH}${{ matrix.ext }}"
           ./scripts/build_clio_tui.sh "$out"
           sha256sum "$out" > "$out.sha256"
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            clio-tui-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
-            clio-tui-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}.sha256
+      - name: Upload to draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          out="clio-tui-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
+          bash scripts/upload_release_assets.sh "$GITHUB_REF_NAME" "$out" "$out.sha256"
 
   web:
     name: web bundle
     if: github.event_name == 'push'
+    needs: release
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -121,15 +155,18 @@ jobs:
           cp -r external/gact-tui/web/dist "$stage/clio-web-$version"
           (cd "$stage" && zip -r "clio-web-$version.zip" "clio-web-$version")
           sha256sum "$stage/clio-web-$version.zip" > "$stage/SHA256SUMS.web.txt"
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            ${{ runner.temp }}/clio-web-stage/clio-web-*.zip
-            ${{ runner.temp }}/clio-web-stage/SHA256SUMS.web.txt
+      - name: Upload to draft release
+        working-directory: ${{ runner.temp }}/clio-web-stage
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash "$GITHUB_WORKSPACE/scripts/upload_release_assets.sh" "$GITHUB_REF_NAME" \
+            clio-web-*.zip SHA256SUMS.web.txt
 
   desktop:
     name: desktop · ${{ matrix.variant }} · ${{ matrix.os }} / ${{ matrix.target }}
     if: github.event_name == 'push'
+    needs: release
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     permissions:
@@ -594,13 +631,23 @@ jobs:
           # Windows git-bash has only `sha256sum`. Prefer sha256sum, else shasum.
           if command -v sha256sum >/dev/null 2>&1; then SUM="sha256sum"; else SUM="shasum -a 256"; fi
           (cd "$stage" && $SUM * > "SHA256SUMS.${{ matrix.target }}.${{ matrix.variant }}.txt")
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: ${{ runner.temp }}/clio-desktop-stage/*
+      # Relative glob from inside the stage dir: on Windows runners
+      # $RUNNER_TEMP is a backslash path, which bash would treat as glob
+      # escapes if it were part of the pattern. Same quoted-cd pattern the
+      # checksum line above relies on; $PWD is the POSIX-form workspace.
+      - name: Upload to draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          uploader="$PWD/scripts/upload_release_assets.sh"
+          cd "$RUNNER_TEMP/clio-desktop-stage"
+          bash "$uploader" "$GITHUB_REF_NAME" ./*
 
   release-check:
     name: release completeness
-    needs: [desktop, web, tui, installers]
+    needs: [release, desktop, web, tui, installers]
     # Run even when a matrix leg failed: a silently-dropped bundle (the v0.5.17
     # aarch64 bundled .dmg, #841 F-15) is exactly the case this must catch. Also
     # runs standalone on workflow_dispatch (needs: jobs above are then skipped,
@@ -640,11 +687,12 @@ jobs:
           gh release view "$TAG" --json assets -q '.assets[].name' \
             | python3 scripts/check_release_completeness.py
       - name: Backstop release notes from CHANGELOG
-        # action-gh-release creates the release page with only the tag/commit
-        # subject as its body. The release-clio skill's curated notes (step 6b)
+        # The `release` job creates the draft with an empty body. The
+        # release-clio skill's curated notes (step 6b, edited onto the DRAFT)
         # are the standard; this backstop fills a still-bare body with the
-        # CHANGELOG's section for the tag so a release page is never just
-        # "Merge pull request #NNNN". It NEVER overwrites a non-bare body.
+        # CHANGELOG's section for the tag so the page is never published
+        # bare. It NEVER overwrites a non-bare body. Runs BEFORE publish so
+        # the page goes public with notes.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -658,3 +706,39 @@ jobs:
           else
             echo "body already curated (${BODY_LEN} bytes); not touching it"
           fi
+      - name: Publish release (draft -> public, latest)
+        # Reached only when the manifest and completeness steps above passed
+        # (a failed step stops the job, leaving the release a DRAFT that no
+        # client sees). Also refused when any build leg failed or was
+        # cancelled on a tag push, even if its assets happen to be present;
+        # re-running the failed legs re-runs this job. On workflow_dispatch
+        # the build legs are skipped, so this is the rescue path for a draft
+        # whose missing asset was fixed by hand. github_release.py leaves an
+        # already-published release untouched (the escape hatch never steals
+        # latest) and never marks an older version or a pre-release latest.
+        id: publish
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (!contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled'))
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/github_release.py publish --tag "$TAG"
+      - name: Verify the public updater feed resolves to this release
+        # The whole point of draft-first: the moment this release is latest,
+        # releases/latest/download/latest-lite.json must serve ITS manifest.
+        if: steps.publish.outputs.made_latest == 'true'
+        run: |
+          set -euo pipefail
+          url="https://github.com/${{ github.repository }}/releases/latest/download/latest-lite.json"
+          want="$(python3 -c 'import sys; sys.path.insert(0, "scripts"); from gen_tauri_update_manifest import encode_version; print(encode_version(sys.argv[1]))' "$TAG")"
+          for attempt in 1 2 3 4 5 6; do
+            got="$(curl -fsSL "$url" | python3 -c 'import json, sys; print(json.load(sys.stdin)["version"])' || true)"
+            if [ "$got" = "$want" ]; then
+              echo "OK: $url serves version $got"
+              exit 0
+            fi
+            echo "::warning::$url served version '${got}' (want $want), attempt $attempt/6"
+            sleep 10
+          done
+          echo "::error::$url does not serve $TAG's manifest after publish"
+          exit 1
