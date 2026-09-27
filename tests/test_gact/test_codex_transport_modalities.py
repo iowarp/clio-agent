@@ -198,3 +198,26 @@ def test_codex_picker_offers_off_only_when_the_model_lists_it() -> None:
     assert _block(("off", "low"), codex=True) == ["off", "low"]
     # Other providers keep their generic "off" (omitting the directive is off there).
     assert _block(("low", "high"), codex=False) == ["off", "low", "high"]
+
+
+def test_a_model_whose_template_has_no_thinking_is_not_offered_reasoning() -> None:
+    """Live on ares: Qwen2.5-0.5B-Instruct on llama.cpp read ``supported: true``.
+
+    Its template scan says mechanism "none" -- a known spec -- and ``known`` was
+    taken to mean "supports reasoning".
+    """
+
+    from clio_agent.gact.provider_catalog import _reasoning_wire_block
+    from clio_agent.providers.capabilities.records import ThinkingSpec
+
+    def _supported(mechanism: str) -> bool:
+        thinking = SimpleNamespace(
+            spec=ThinkingSpec(mechanism=mechanism),  # type: ignore[arg-type]
+            control=None,
+            known=True,
+            decided_by="model",
+        )
+        return bool(_reasoning_wire_block(thinking, DiscoveredModel(id=_MODEL))["supported"])
+
+    assert _supported("none") is False
+    assert _supported("always_on") is True

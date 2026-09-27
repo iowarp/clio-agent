@@ -85,6 +85,7 @@ PROVIDERS: tuple[Provider, ...] = (
         auth_method="none",
         supports_runtime_sizing=True,
         is_kind_default=True,
+        managed_service_id="ollama",
     ),
     Provider(
         id="llama_cpp",
