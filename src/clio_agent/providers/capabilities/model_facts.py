@@ -46,6 +46,11 @@ PriceKind = Literal["usd", "variable", "subscription"]
 #: rounds for display (Ollama ``details.parameter_size='7.6B'``).
 CountPrecision = Literal["exact", "rounded"]
 
+#: What a count covers: the MODEL's own parameters (its config and
+#: checkpoint), or every weight stored in one converted FILE (a GGUF can
+#: store a tied embedding matrix a second time as the output head).
+CountScope = Literal["model", "file"]
+
 _PER_MILLION = Decimal(1_000_000)
 
 #: OpenRouter's price for "depends on the routed model".
@@ -114,6 +119,10 @@ class ParameterCount:
         experts_total: Routed experts per MoE layer, when stated.
         experts_active: Experts chosen per token, when stated.
         precision: ``exact`` tensor total, or ``rounded`` display size.
+        scope: ``model`` (the model's own count) or ``file`` (weights stored in
+            one converted file -- see :data:`CountScope`).
+        embedding_elements: For a ``file`` count, ``n_vocab * n_embd`` as the
+            file states them (the size of one embedding matrix), when known.
     """
 
     total: int | None
@@ -121,6 +130,8 @@ class ParameterCount:
     experts_total: int | None = None
     experts_active: int | None = None
     precision: CountPrecision = "exact"
+    scope: CountScope = "model"
+    embedding_elements: int | None = None
 
     @property
     def known(self) -> bool:
