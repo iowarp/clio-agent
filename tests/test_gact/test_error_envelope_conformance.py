@@ -28,7 +28,9 @@ def _assert_envelope(payload: Any, *, tag: str) -> dict[str, Any]:
     """
 
     assert isinstance(payload, dict), f"envelope must be an object, got {type(payload)}"
-    assert set(payload.keys()) == {"error"}, f"envelope must have exactly one 'error' key: {payload}"
+    assert set(payload.keys()) == {"error"}, (
+        f"envelope must have exactly one 'error' key: {payload}"
+    )
     info = payload["error"]
     assert isinstance(info, dict), f"error must wrap an ErrorInfo object: {info!r}"
     assert info.get("error") == tag, f"expected taxonomy tag {tag!r}, got {info.get('error')!r}"

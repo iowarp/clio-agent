@@ -71,7 +71,10 @@ def test_parse_props_links_model_key_via_gguf_filename() -> None:
     payload = _load("props_single.json")
 
     deployment = llama_cpp.parse_props(
-        payload, provider_id="llama_cpp", api_base="http://127.0.0.1:9088/v1", model_id="local-model"
+        payload,
+        provider_id="llama_cpp",
+        api_base="http://127.0.0.1:9088/v1",
+        model_id="local-model",
     )
 
     # the wire id ("local-model") matches no link rule on its own, but the
@@ -137,11 +140,15 @@ def test_build_model_capabilities_wires_context_max() -> None:
 
 def test_parse_status_args_extracts_llama_cpp_flags() -> None:
     args = [
-        "--ctx-size", "16384",
-        "--parallel", "2",
+        "--ctx-size",
+        "16384",
+        "--parallel",
+        "2",
         "--jinja",
-        "--reasoning", "on",
-        "--chat-template-kwargs", '{"enable_thinking": true}',
+        "--reasoning",
+        "on",
+        "--chat-template-kwargs",
+        '{"enable_thinking": true}',
     ]
 
     flags = llama_cpp.parse_status_args(args)
@@ -289,7 +296,9 @@ async def test_fetch_props_router_mode_queries_only_when_loaded() -> None:
     # NOT loaded -> must stay on the safe, unqualified form (never query an
     # unloaded router model, which would load it as a side effect).
     client2 = _FakeClient(routes={"http://127.0.0.1:9090/props": {"safe": True}})
-    data2 = await llama_cpp.fetch_props(client2, "http://127.0.0.1:9090", model_id="m", loaded=False)
+    data2 = await llama_cpp.fetch_props(
+        client2, "http://127.0.0.1:9090", model_id="m", loaded=False
+    )
     assert data2 == {"safe": True}
     assert client2.requested == ["http://127.0.0.1:9090/props"]
 

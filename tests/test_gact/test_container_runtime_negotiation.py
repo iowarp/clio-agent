@@ -129,4 +129,3 @@ def test_a_stored_runtime_name_is_parsed_once_into_the_typed_name() -> None:
     with pytest.raises(RuntimeUnavailableError) as raised:
         parse_runtime_name("singularity")
     assert raised.value.reason == "runtime_unknown"
-

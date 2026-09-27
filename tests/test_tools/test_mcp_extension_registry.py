@@ -122,9 +122,7 @@ def test_extensions_declaration_agent_elicitation_entry_is_ad_only() -> None:
     own, so it stays ad-only like ``ui``."""
 
     declaration = extensions_declaration(Client, object())
-    entry = next(
-        e for e in declaration.entries if e.identifier == AGENT_ELICITATION_EXTENSION_ID
-    )
+    entry = next(e for e in declaration.entries if e.identifier == AGENT_ELICITATION_EXTENSION_ID)
 
     assert entry.extension is not None
     assert entry.extension.settings() == {}

@@ -335,7 +335,9 @@ def test_effective_view_exposes_the_deployment_facts() -> None:
     effective = get_effective_capabilities("openrouter", API_BASE, "openrouter/free")
     assert effective.free.value is True
     assert effective.router.value is True
-    assert effective.pricing.value == TokenPricing(Price("usd", Decimal(0)), Price("usd", Decimal(0)))
+    assert effective.pricing.value == TokenPricing(
+        Price("usd", Decimal(0)), Price("usd", Decimal(0))
+    )
 
 
 # --------------------------------------------------------------------------- capability tags

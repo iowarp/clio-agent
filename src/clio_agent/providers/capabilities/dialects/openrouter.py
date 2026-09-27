@@ -98,7 +98,6 @@ _EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high")
 _ROUTER_AUTHOR = "openrouter"
 
 
-
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -142,7 +141,9 @@ def _descriptive_facts(row: Mapping[str, Any], observed_at: str) -> dict[str, Fa
     facts: dict[str, Fact] = {}
     description = row.get("description")
     if isinstance(description, str) and description.strip():
-        facts["description"] = Fact(description, "openrouter", observed_at, "openrouter description")
+        facts["description"] = Fact(
+            description, "openrouter", observed_at, "openrouter description"
+        )
     created = row.get("created")
     released = release_from_unix(created)
     if released is not None:

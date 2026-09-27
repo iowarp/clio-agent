@@ -48,7 +48,9 @@ def _values(tags: list) -> list[str]:
 
 def test_nothing_known_yields_no_tags() -> None:
     record = _tags(ModelCapabilities(model_key="allenai/Llama-3.1-Tulu-3-405B"))
-    assert record.model_dump(exclude_defaults=True) == {"model_key": "allenai/Llama-3.1-Tulu-3-405B"}
+    assert record.model_dump(exclude_defaults=True) == {
+        "model_key": "allenai/Llama-3.1-Tulu-3-405B"
+    }
 
 
 def test_a_classifier_is_a_surrogate_with_its_hub_task_and_evidence() -> None:
@@ -70,7 +72,9 @@ def test_a_classifier_is_a_surrogate_with_its_hub_task_and_evidence() -> None:
 
 def test_a_chat_model_is_general() -> None:
     record = _tags(
-        ModelCapabilities(model_key="m", task=Fact("image-text-to-text", "hf_repo", AT, "pipeline_tag"))
+        ModelCapabilities(
+            model_key="m", task=Fact("image-text-to-text", "hf_repo", AT, "pipeline_tag")
+        )
     )
     assert record.model_type is not None and record.model_type.value == "chat"
     assert record.role is not None and record.role.value == "general"
@@ -90,7 +94,9 @@ def test_a_chat_model_is_general() -> None:
         ({"holograms"}, []),
     ],
 )
-def test_output_modalities_fold_onto_the_shared_vocabulary(raw: set[str], expected: list[str]) -> None:
+def test_output_modalities_fold_onto_the_shared_vocabulary(
+    raw: set[str], expected: list[str]
+) -> None:
     record = _tags(
         ModelCapabilities(
             model_key="m", output_modalities=Fact(frozenset(raw), "openrouter", AT, "outputs")
@@ -107,7 +113,11 @@ def test_outputs_come_from_the_task_only_when_no_source_states_them() -> None:
         )
     )
     assert _values(sam3.output_modalities) == ["masks"]
-    assert sam3.output_modalities[0].evidence[0].detail.startswith("task mask-generation produces masks")
+    assert (
+        sam3.output_modalities[0]
+        .evidence[0]
+        .detail.startswith("task mask-generation produces masks")
+    )
     stated = _tags(
         ModelCapabilities(
             model_key="m",
@@ -125,12 +135,16 @@ def test_capabilities_need_a_true_fact_and_reasoning_a_real_mechanism() -> None:
             tools=Fact(True, "openrouter", AT, "tools"),
             parallel_tool_calls=Fact(False, "litellm", AT, "no"),
             structured_output=Fact(True, "openrouter", AT, "response_format"),
-            thinking=Fact(ThinkingSpec(mechanism="effort_levels", levels=("low",)), "openrouter", AT, "r"),
+            thinking=Fact(
+                ThinkingSpec(mechanism="effort_levels", levels=("low",)), "openrouter", AT, "r"
+            ),
         )
     )
     assert _values(record.capabilities) == ["tool_calling", "structured_output", "reasoning"]
     no_thinking = _tags(
-        ModelCapabilities(model_key="m", thinking=Fact(ThinkingSpec(mechanism="none"), "openrouter", AT, "r"))
+        ModelCapabilities(
+            model_key="m", thinking=Fact(ThinkingSpec(mechanism="none"), "openrouter", AT, "r")
+        )
     )
     assert no_thinking.capabilities == []
 
@@ -228,7 +242,9 @@ def test_overlay_explicit_task_and_domains() -> None:
 
 
 def test_overlay_explicit_task_outranks_its_flags() -> None:
-    facts = entry_to_model_capabilities("fam", _entry(task="mask-generation", embeddings=True), "fam")
+    facts = entry_to_model_capabilities(
+        "fam", _entry(task="mask-generation", embeddings=True), "fam"
+    )
     assert facts.task.value == "mask-generation"
 
 

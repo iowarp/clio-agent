@@ -129,9 +129,7 @@ def test_context_frame_records_turn_error(tmp_path: Path) -> None:
     )
     from .conftest import complete_turn
 
-    with TestClient(
-        build_app(sessions_path=tmp_path / "sessions.json", agent=agent)
-    ) as client:
+    with TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=agent)) as client:
         sid = _create_session(client)
         complete_turn(client, sid, "fail with metadata")
 

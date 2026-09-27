@@ -45,7 +45,9 @@ _routes: dict[str, Callable[[], bytes]] = {}
 def _litellm_cost_map() -> bytes:
     import litellm  # noqa: PLC0415
 
-    return (Path(litellm.__file__).parent / "model_prices_and_context_window_backup.json").read_bytes()
+    return (
+        Path(litellm.__file__).parent / "model_prices_and_context_window_backup.json"
+    ).read_bytes()
 
 
 def _recordings() -> dict[str, Callable[[], bytes]]:

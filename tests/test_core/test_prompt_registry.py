@@ -118,7 +118,9 @@ profile: bad/profile
 
     assert row.enabled is False
     assert "missing required frontmatter field: id" in row.validation_errors
-    assert "invalid profile; use letters, numbers, underscores, and hyphens" in row.validation_errors
+    assert (
+        "invalid profile; use letters, numbers, underscores, and hyphens" in row.validation_errors
+    )
     assert "prompt body is empty" in row.validation_errors
 
 

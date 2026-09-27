@@ -173,8 +173,14 @@ def test_segment_index_unit_irange():
     idx = SegmentIndex()
     for lt in (5, 1, 3, 2, 4):
         seg = Segment(
-            scope="s", kind="thought", content={}, session_id="u", step=0,
-            order=float(lt), logical_time=lt, id=f"id{lt}",
+            scope="s",
+            kind="thought",
+            content={},
+            session_id="u",
+            step=0,
+            order=float(lt),
+            logical_time=lt,
+            id=f"id{lt}",
         )
         idx.add("u", "s", seg)
     # full scope, in clock order

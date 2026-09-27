@@ -63,15 +63,32 @@ class FakeClioAgent:
     # smoke response looks plausible to the TUI's v0.2 rendering.
     _KEYWORDS: dict[str, list[str]] = {
         "data_expert": [
-            "hdf5", "parquet", "dataset", "csv", "analyze",
-            "schema", "rows", "columns", "shape",
+            "hdf5",
+            "parquet",
+            "dataset",
+            "csv",
+            "analyze",
+            "schema",
+            "rows",
+            "columns",
+            "shape",
         ],
         "analysis_expert": [
-            "statistics", "correlation", "distribution", "mean",
-            "median", "p95", "p99", "histogram",
+            "statistics",
+            "correlation",
+            "distribution",
+            "mean",
+            "median",
+            "p95",
+            "p99",
+            "histogram",
         ],
         "visualization_expert": [
-            "plot", "chart", "graph", "visualize", "render",
+            "plot",
+            "chart",
+            "graph",
+            "visualize",
+            "render",
         ],
     }
 
@@ -86,34 +103,40 @@ class FakeClioAgent:
         extra_perms: list[dict] = []
         extra_spawns: list[dict] = []
         if "propose" in q or "edit" in q:
-            extra_diffs = [{
-                "path": "example.py",
-                "unified_diff": (
-                    "--- a/example.py\n"
-                    "+++ b/example.py\n"
-                    "@@ -1,3 +1,3 @@\n"
-                    " def greet(name):\n"
-                    "-    return f'hello, {name}'\n"
-                    "+    return f'hello, {name}!'\n"
-                ),
-            }]
+            extra_diffs = [
+                {
+                    "path": "example.py",
+                    "unified_diff": (
+                        "--- a/example.py\n"
+                        "+++ b/example.py\n"
+                        "@@ -1,3 +1,3 @@\n"
+                        " def greet(name):\n"
+                        "-    return f'hello, {name}'\n"
+                        "+    return f'hello, {name}!'\n"
+                    ),
+                }
+            ]
         if "delete" in q or "destroy" in q or "remove" in q:
-            extra_perms = [{
-                "tool_call": {
-                    "call_id": "c1",
-                    "tool_name": "shell.exec",
-                    "input": {"cmd": "rm -rf /tmp/scratch"},
-                },
-                "summary": "destructive filesystem operation",
-            }]
+            extra_perms = [
+                {
+                    "tool_call": {
+                        "call_id": "c1",
+                        "tool_name": "shell.exec",
+                        "input": {"cmd": "rm -rf /tmp/scratch"},
+                    },
+                    "summary": "destructive filesystem operation",
+                }
+            ]
         if "split" in q or "review" in q:
-            extra_spawns = [{
-                "agent_id": "code_reviewer",
-                "input": {"files": ["example.py"]},
-                "answer": "looks good; one nit on line 3",
-                "duration_ms": 145.0,
-                "cost_usd": 0.0009,
-            }]
+            extra_spawns = [
+                {
+                    "agent_id": "code_reviewer",
+                    "input": {"files": ["example.py"]},
+                    "answer": "looks good; one nit on line 3",
+                    "duration_ms": 145.0,
+                    "cost_usd": 0.0009,
+                }
+            ]
 
         for expert, keywords in self._KEYWORDS.items():
             for kw in keywords:
@@ -125,9 +148,7 @@ class FakeClioAgent:
                             f"to prove the GACT wire path ({session_id})."
                         ),
                         selected_expert=expert,
-                        routing_rationale=(
-                            f"matched keyword {kw!r} -> {expert}"
-                        ),
+                        routing_rationale=(f"matched keyword {kw!r} -> {expert}"),
                         # A plausible tool-call trace for the post-
                         # hoc gutter render in the TUI.
                         tools_called=[
@@ -158,10 +179,7 @@ class FakeClioAgent:
                         nanoagents_spawned=extra_spawns,
                     )
         return _Prediction(
-            answer=(
-                "[smoke] No tier-2 expert matched. The tier-1 "
-                "orchestrator answered directly."
-            ),
+            answer=("[smoke] No tier-2 expert matched. The tier-1 orchestrator answered directly."),
             selected_expert="main",
             routing_rationale="no keyword match; fell through to tier-1",
             file_diffs=extra_diffs,

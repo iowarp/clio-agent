@@ -179,9 +179,7 @@ class EffectiveCapabilities:
     #: Endpoint pricing / cost / routing facts -- deployment-record facts only
     #: (what THIS endpoint charges and whether this id is a router), never a
     #: property of the weights.
-    pricing: Decision[TokenPricing] = field(
-        default_factory=lambda: _unknown("no pricing reported")
-    )
+    pricing: Decision[TokenPricing] = field(default_factory=lambda: _unknown("no pricing reported"))
     free: Decision[bool] = field(default_factory=lambda: _unknown("no pricing reported"))
     router: Decision[bool] = field(default_factory=lambda: _unknown("no router evidence"))
     #: Descriptive model-record facts (:mod:`.model_facts`), passed through.
@@ -299,8 +297,7 @@ def _task(model: ModelCapabilities | None) -> Decision[str]:
     """The model's task is a model-record fact alone: no endpoint or deployment narrows it."""
     if model is None or not model.task.known:
         return _unknown(
-            (model.task.detail if model is not None else "")
-            or "no source states the model task"
+            (model.task.detail if model is not None else "") or "no source states the model task"
         )
     source, observed_at = _provenance(model.task)
     return Decision(
@@ -521,14 +518,18 @@ def combine_capabilities(
         sampling_thinking=sampling_thinking,
         sampling_instruct=sampling_instruct,
         output_modalities=_single(
-            model.output_modalities if model else None, "model", "no source states output modalities"
+            model.output_modalities if model else None,
+            "model",
+            "no source states output modalities",
         ),
         domains=_single(model.domains if model else None, "model", "no source states domains"),
         pricing=_single(
             deployment.pricing if deployment else None, "deployment", "no pricing reported"
         ),
         free=_single(deployment.free if deployment else None, "deployment", "no pricing reported"),
-        router=_single(deployment.router if deployment else None, "deployment", "no router evidence"),
+        router=_single(
+            deployment.router if deployment else None, "deployment", "no router evidence"
+        ),
         description=_single(
             model.description if model else None, "model", "no source states a description"
         ),

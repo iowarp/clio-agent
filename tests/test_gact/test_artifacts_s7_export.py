@@ -96,8 +96,18 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _mint(app, sid, *, name, path, kind, mechanism=Mechanism.TOOL_SCHEMA,
-          custody=Custody.WORKSPACE_REFERENCED, gap=False, producer_call_id=""):
+def _mint(
+    app,
+    sid,
+    *,
+    name,
+    path,
+    kind,
+    mechanism=Mechanism.TOOL_SCHEMA,
+    custody=Custody.WORKSPACE_REFERENCED,
+    gap=False,
+    producer_call_id="",
+):
     data = Path(path).read_bytes() if Path(path).is_file() else b""
     evidence = IdentityEvidence.hashed_at_use(sha256=_sha(data), size_bytes=len(data))
     if gap:
@@ -131,7 +141,9 @@ def _lockfile_env() -> EnvironmentRecord:
     )
 
 
-def _transform(*, call_id, sid, tool, args, used, generated, env=None, status=TransformStatus.SUCCESS):
+def _transform(
+    *, call_id, sid, tool, args, used, generated, env=None, status=TransformStatus.SUCCESS
+):
     return TransformRecord(
         call_id=call_id,
         session_id=sid,
@@ -182,43 +194,104 @@ def _build_ndp_scenario(app, sid, tmp_path: Path):
     gapf = tmp_path / "gap.csv"
     gapf.write_text("x\n1\n")
 
-    v_stations = _mint(app, sid, name="stations.csv", path=str(stations),
-                       kind=ArtifactKind.DATASET, producer_call_id="t_stage")
-    v_clean = _mint(app, sid, name="clean.csv", path=str(clean),
-                    kind=ArtifactKind.DATASET, producer_call_id="t_filter")
-    v_plot = _mint(app, sid, name="plot.png", path=str(plot),
-                   kind=ArtifactKind.IMAGE, producer_call_id="t_plot")
-    v_weird = _mint(app, sid, name="weird.bin", path=str(weird),
-                    kind=ArtifactKind.OTHER, producer_call_id="t_weird")
-    v_gap = _mint(app, sid, name="gap.csv", path=str(gapf), kind=ArtifactKind.DATASET,
-                  gap=True, producer_call_id="t_gap")
+    v_stations = _mint(
+        app,
+        sid,
+        name="stations.csv",
+        path=str(stations),
+        kind=ArtifactKind.DATASET,
+        producer_call_id="t_stage",
+    )
+    v_clean = _mint(
+        app,
+        sid,
+        name="clean.csv",
+        path=str(clean),
+        kind=ArtifactKind.DATASET,
+        producer_call_id="t_filter",
+    )
+    v_plot = _mint(
+        app,
+        sid,
+        name="plot.png",
+        path=str(plot),
+        kind=ArtifactKind.IMAGE,
+        producer_call_id="t_plot",
+    )
+    v_weird = _mint(
+        app,
+        sid,
+        name="weird.bin",
+        path=str(weird),
+        kind=ArtifactKind.OTHER,
+        producer_call_id="t_weird",
+    )
+    v_gap = _mint(
+        app,
+        sid,
+        name="gap.csv",
+        path=str(gapf),
+        kind=ArtifactKind.DATASET,
+        gap=True,
+        producer_call_id="t_gap",
+    )
 
-    reg.record_transform(_transform(
-        call_id="t_stage", sid=sid, tool="ndp_stage_resource",
-        args={"source_url": "https://ds.example.org/stations.csv"},
-        used=[], generated=[_gen_edge(v_stations)],
-    ))
-    reg.record_transform(_transform(
-        call_id="t_filter", sid=sid, tool="pandas_filter_data",
-        args={"expression": "east < 2", "columns": ["time", "east"]},
-        used=[_use_edge(v_stations)], generated=[_gen_edge(v_clean)],
-    ))
-    reg.record_transform(_transform(
-        call_id="t_plot", sid=sid, tool="plot_plot_timeseries",
-        args={"x": "time", "y": "east"},
-        used=[_use_edge(v_clean)], generated=[_gen_edge(v_plot)],
-    ))
-    reg.record_transform(_transform(
-        call_id="t_weird", sid=sid, tool="quantum_frobnicator",
-        args={"knob": 7}, used=[], generated=[_gen_edge(v_weird)],
-    ))
-    reg.record_transform(_transform(
-        call_id="t_gap", sid=sid, tool="mystery_writer",
-        args={}, used=[], generated=[_gen_edge(v_gap)],
-    ))
+    reg.record_transform(
+        _transform(
+            call_id="t_stage",
+            sid=sid,
+            tool="ndp_stage_resource",
+            args={"source_url": "https://ds.example.org/stations.csv"},
+            used=[],
+            generated=[_gen_edge(v_stations)],
+        )
+    )
+    reg.record_transform(
+        _transform(
+            call_id="t_filter",
+            sid=sid,
+            tool="pandas_filter_data",
+            args={"expression": "east < 2", "columns": ["time", "east"]},
+            used=[_use_edge(v_stations)],
+            generated=[_gen_edge(v_clean)],
+        )
+    )
+    reg.record_transform(
+        _transform(
+            call_id="t_plot",
+            sid=sid,
+            tool="plot_plot_timeseries",
+            args={"x": "time", "y": "east"},
+            used=[_use_edge(v_clean)],
+            generated=[_gen_edge(v_plot)],
+        )
+    )
+    reg.record_transform(
+        _transform(
+            call_id="t_weird",
+            sid=sid,
+            tool="quantum_frobnicator",
+            args={"knob": 7},
+            used=[],
+            generated=[_gen_edge(v_weird)],
+        )
+    )
+    reg.record_transform(
+        _transform(
+            call_id="t_gap",
+            sid=sid,
+            tool="mystery_writer",
+            args={},
+            used=[],
+            generated=[_gen_edge(v_gap)],
+        )
+    )
     return {
-        "stations": v_stations, "clean": v_clean, "plot": v_plot,
-        "weird": v_weird, "gap": v_gap,
+        "stations": v_stations,
+        "clean": v_clean,
+        "plot": v_plot,
+        "weird": v_weird,
+        "gap": v_gap,
     }
 
 
@@ -317,9 +390,14 @@ def test_reproduce_compilation_matrix(tmp_path: Path) -> None:
     for record in reg.list_for_workspace("ws1"):
         for v in record.versions:
             nodes[v.artifact_id] = ArtifactNode(
-                artifact_id=v.artifact_id, name=record.name, version=v.version,
-                sha256=v.sha256, kind=v.kind.value, custody=v.custody.value,
-                mechanism=v.mechanism.value, path=v.path,
+                artifact_id=v.artifact_id,
+                name=record.name,
+                version=v.version,
+                sha256=v.sha256,
+                kind=v.kind.value,
+                custody=v.custody.value,
+                mechanism=v.mechanism.value,
+                path=v.path,
                 bundle_path=f"data/{record.name}",
             )
     script = compile_reproduce(transforms, nodes, environment=_lockfile_env())
@@ -361,33 +439,55 @@ def test_per_stage_env_tier_gates_determinism_independently(tmp_path: Path) -> N
     a.write_text("time,east\n0,1\n")
     b = tmp_path / "b.csv"
     b.write_text("time,east\n1,2\n")
-    v_src = _mint(app, sid, name="src.csv", path=str(src), kind=ArtifactKind.DATASET,
-                  producer_call_id="t_src")
-    v_a = _mint(app, sid, name="a.csv", path=str(a), kind=ArtifactKind.DATASET,
-                producer_call_id="t_weak")
-    v_b = _mint(app, sid, name="b.csv", path=str(b), kind=ArtifactKind.DATASET,
-                producer_call_id="t_strong")
+    v_src = _mint(
+        app, sid, name="src.csv", path=str(src), kind=ArtifactKind.DATASET, producer_call_id="t_src"
+    )
+    v_a = _mint(
+        app, sid, name="a.csv", path=str(a), kind=ArtifactKind.DATASET, producer_call_id="t_weak"
+    )
+    v_b = _mint(
+        app, sid, name="b.csv", path=str(b), kind=ArtifactKind.DATASET, producer_call_id="t_strong"
+    )
     reg = app.state.artifact_registry
     declared_env = EnvironmentRecord(tier=EnvironmentTier.DECLARED, clio_version="0.7.12")
     # Stage under a WEAK (declared) env → its OWN tier downgrades it.
-    reg.record_transform(_transform(
-        call_id="t_weak", sid=sid, tool="pandas_filter_data",
-        args={"expression": "east < 2"}, used=[_use_edge(v_src)], generated=[_gen_edge(v_a)],
-        env=declared_env,
-    ))
+    reg.record_transform(
+        _transform(
+            call_id="t_weak",
+            sid=sid,
+            tool="pandas_filter_data",
+            args={"expression": "east < 2"},
+            used=[_use_edge(v_src)],
+            generated=[_gen_edge(v_a)],
+            env=declared_env,
+        )
+    )
     # Stage under a STRONG (lockfile-hash) env, SAME compile → stays deterministic.
-    reg.record_transform(_transform(
-        call_id="t_strong", sid=sid, tool="pandas_filter_data",
-        args={"expression": "east < 2"}, used=[_use_edge(v_src)], generated=[_gen_edge(v_b)],
-        env=_lockfile_env(),
-    ))
+    reg.record_transform(
+        _transform(
+            call_id="t_strong",
+            sid=sid,
+            tool="pandas_filter_data",
+            args={"expression": "east < 2"},
+            used=[_use_edge(v_src)],
+            generated=[_gen_edge(v_b)],
+            env=_lockfile_env(),
+        )
+    )
     nodes = {
         v.artifact_id: ArtifactNode(
-            artifact_id=v.artifact_id, name=r.name, version=v.version, sha256=v.sha256,
-            kind=v.kind.value, custody=v.custody.value, mechanism=v.mechanism.value,
-            path=v.path, bundle_path=f"data/{r.name}",
+            artifact_id=v.artifact_id,
+            name=r.name,
+            version=v.version,
+            sha256=v.sha256,
+            kind=v.kind.value,
+            custody=v.custody.value,
+            mechanism=v.mechanism.value,
+            path=v.path,
+            bundle_path=f"data/{r.name}",
         )
-        for r in reg.list_for_workspace("ws1") for v in r.versions
+        for r in reg.list_for_workspace("ws1")
+        for v in r.versions
     }
     # NO global environment override — each stage decides from its own record.
     script = compile_reproduce(reg.transforms_for_session(sid), nodes)
@@ -411,8 +511,14 @@ def test_compiled_write_bytes_stage_executes_and_sha_asserts_pass(tmp_path: Path
     report = tmp_path / "report.md"
     report.write_text("# Findings\n\nThe station moved 3mm/yr.\n")
     # A model-designated inline artifact (no producing transform) → WRITE_BYTES stage.
-    _mint(app, sid, name="report.md", path=str(report), kind=ArtifactKind.REPORT,
-          mechanism=Mechanism.MODEL)
+    _mint(
+        app,
+        sid,
+        name="report.md",
+        path=str(report),
+        kind=ArtifactKind.REPORT,
+        mechanism=Mechanism.MODEL,
+    )
 
     bundle = build_session_bundle(app, sid)
     assert bundle is not None
@@ -446,8 +552,14 @@ def test_compiled_script_detects_a_tampered_pin(tmp_path: Path) -> None:
     sid = store.create(workspace_id="ws1", title="t").id
     report = tmp_path / "report.md"
     report.write_text("# Findings\n")
-    _mint(app, sid, name="report.md", path=str(report), kind=ArtifactKind.REPORT,
-          mechanism=Mechanism.MODEL)
+    _mint(
+        app,
+        sid,
+        name="report.md",
+        path=str(report),
+        kind=ArtifactKind.REPORT,
+        mechanism=Mechanism.MODEL,
+    )
     bundle = build_session_bundle(app, sid)
     crate = tmp_path / "crate"
     crate.mkdir()
@@ -512,28 +624,61 @@ def test_translated_download_pandas_plot_chain_runs_and_pins_pass(tmp_path: Path
         _ax.plot(_df2["time"], _df2["east"])
         _fig.savefig(plot)
 
-        v_stations = _mint(app, sid, name="stations.csv", path=str(ws_stations),
-                           kind=ArtifactKind.DATASET, producer_call_id="t_dl")
-        v_clean = _mint(app, sid, name="clean.csv", path=str(clean),
-                        kind=ArtifactKind.DATASET, producer_call_id="t_pd")
-        v_plot = _mint(app, sid, name="plot.png", path=str(plot),
-                       kind=ArtifactKind.IMAGE, producer_call_id="t_plot")
+        v_stations = _mint(
+            app,
+            sid,
+            name="stations.csv",
+            path=str(ws_stations),
+            kind=ArtifactKind.DATASET,
+            producer_call_id="t_dl",
+        )
+        v_clean = _mint(
+            app,
+            sid,
+            name="clean.csv",
+            path=str(clean),
+            kind=ArtifactKind.DATASET,
+            producer_call_id="t_pd",
+        )
+        v_plot = _mint(
+            app,
+            sid,
+            name="plot.png",
+            path=str(plot),
+            kind=ArtifactKind.IMAGE,
+            producer_call_id="t_plot",
+        )
         reg = app.state.artifact_registry
-        reg.record_transform(_transform(
-            call_id="t_dl", sid=sid, tool="ndp_stage_resource",
-            args={"source_url": f"http://127.0.0.1:{port}/stations.csv"},
-            used=[], generated=[_gen_edge(v_stations)],
-        ))
-        reg.record_transform(_transform(
-            call_id="t_pd", sid=sid, tool="pandas_filter_data",
-            args={"expression": "east < 2", "columns": ["time", "east"]},
-            used=[_use_edge(v_stations)], generated=[_gen_edge(v_clean)],
-        ))
-        reg.record_transform(_transform(
-            call_id="t_plot", sid=sid, tool="plot_plot_timeseries",
-            args={"x": "time", "y": "east"},
-            used=[_use_edge(v_clean)], generated=[_gen_edge(v_plot)],
-        ))
+        reg.record_transform(
+            _transform(
+                call_id="t_dl",
+                sid=sid,
+                tool="ndp_stage_resource",
+                args={"source_url": f"http://127.0.0.1:{port}/stations.csv"},
+                used=[],
+                generated=[_gen_edge(v_stations)],
+            )
+        )
+        reg.record_transform(
+            _transform(
+                call_id="t_pd",
+                sid=sid,
+                tool="pandas_filter_data",
+                args={"expression": "east < 2", "columns": ["time", "east"]},
+                used=[_use_edge(v_stations)],
+                generated=[_gen_edge(v_clean)],
+            )
+        )
+        reg.record_transform(
+            _transform(
+                call_id="t_plot",
+                sid=sid,
+                tool="plot_plot_timeseries",
+                args={"x": "time", "y": "east"},
+                used=[_use_edge(v_clean)],
+                generated=[_gen_edge(v_plot)],
+            )
+        )
 
         bundle = build_session_bundle(app, sid)
         assert bundle is not None
@@ -542,8 +687,11 @@ def test_translated_download_pandas_plot_chain_runs_and_pins_pass(tmp_path: Path
         with zipfile.ZipFile(BytesIO(bundle.to_zip())) as zf:
             zf.extractall(crate)
         proc = subprocess.run(
-            [sys.executable, "reproduce.py"], cwd=crate,
-            capture_output=True, text=True, timeout=180,
+            [sys.executable, "reproduce.py"],
+            cwd=crate,
+            capture_output=True,
+            text=True,
+            timeout=180,
         )
     finally:
         httpd.shutdown()
@@ -650,18 +798,34 @@ def test_same_name_across_unioned_workspaces_do_not_collide(tmp_path: Path) -> N
     parent_png.write_bytes(b"\x89PNG-PARENT-BYTES")
     child_png = child_root / "plot.png"
     child_png.write_bytes(b"\x89PNG-CHILD-DIFFERENT")
-    mint_artifact(app, parent_sid, name="plot.png", path=str(parent_png),
-                  workspace_id="ws_parent", kind=ArtifactKind.IMAGE,
-                  evidence=IdentityEvidence.hashed_at_use(
-                      sha256=_sha(parent_png.read_bytes()), size_bytes=parent_png.stat().st_size),
-                  mechanism=Mechanism.TOOL_SCHEMA, custody=Custody.WORKSPACE_REFERENCED,
-                  producer={"tool": "plot_plot_timeseries", "call_id": "p1"})
-    mint_artifact(app, child_sid, name="plot.png", path=str(child_png),
-                  workspace_id="ws_child", kind=ArtifactKind.IMAGE,
-                  evidence=IdentityEvidence.hashed_at_use(
-                      sha256=_sha(child_png.read_bytes()), size_bytes=child_png.stat().st_size),
-                  mechanism=Mechanism.TOOL_SCHEMA, custody=Custody.WORKSPACE_REFERENCED,
-                  producer={"tool": "plot_plot_timeseries", "call_id": "c1"})
+    mint_artifact(
+        app,
+        parent_sid,
+        name="plot.png",
+        path=str(parent_png),
+        workspace_id="ws_parent",
+        kind=ArtifactKind.IMAGE,
+        evidence=IdentityEvidence.hashed_at_use(
+            sha256=_sha(parent_png.read_bytes()), size_bytes=parent_png.stat().st_size
+        ),
+        mechanism=Mechanism.TOOL_SCHEMA,
+        custody=Custody.WORKSPACE_REFERENCED,
+        producer={"tool": "plot_plot_timeseries", "call_id": "p1"},
+    )
+    mint_artifact(
+        app,
+        child_sid,
+        name="plot.png",
+        path=str(child_png),
+        workspace_id="ws_child",
+        kind=ArtifactKind.IMAGE,
+        evidence=IdentityEvidence.hashed_at_use(
+            sha256=_sha(child_png.read_bytes()), size_bytes=child_png.stat().st_size
+        ),
+        mechanism=Mechanism.TOOL_SCHEMA,
+        custody=Custody.WORKSPACE_REFERENCED,
+        producer={"tool": "plot_plot_timeseries", "call_id": "c1"},
+    )
 
     bundle = build_session_bundle(app, parent_sid)
     assert bundle is not None
@@ -673,8 +837,9 @@ def test_same_name_across_unioned_workspaces_do_not_collide(tmp_path: Path) -> N
     assert child_png.read_bytes() in shipped  # sabotage: name-only path → child clobbers parent
     # The two File entities carry DISTINCT @ids (a duplicate @id is a malformed crate).
     meta = json.loads(bundle.files["ro-crate-metadata.json"])
-    png_ids = [e["@id"] for e in meta["@graph"]
-               if "File" in _types(e) and e.get("name") == "plot.png"]
+    png_ids = [
+        e["@id"] for e in meta["@graph"] if "File" in _types(e) and e.get("name") == "plot.png"
+    ]
     assert len(png_ids) == 2 and len(set(png_ids)) == 2, png_ids
 
 
@@ -696,23 +861,43 @@ def test_query_arg_cannot_escape_its_string_literal(tmp_path: Path) -> None:
     src.write_text("time,east\n0,1\n")
     out = tmp_path / "out.csv"
     out.write_text("time,east\n0,1\n")
-    v_src = _mint(app, sid, name="src.csv", path=str(src), kind=ArtifactKind.DATASET,
-                  producer_call_id="t_src")
-    v_out = _mint(app, sid, name="out.csv", path=str(out), kind=ArtifactKind.DATASET,
-                  producer_call_id="t_evil")
+    v_src = _mint(
+        app, sid, name="src.csv", path=str(src), kind=ArtifactKind.DATASET, producer_call_id="t_src"
+    )
+    v_out = _mint(
+        app,
+        sid,
+        name="out.csv",
+        path=str(out),
+        kind=ArtifactKind.DATASET,
+        producer_call_id="t_evil",
+    )
     payload = "east < 2') ; import os ; os.system('touch /tmp/pwned')\n#"
     reg = app.state.artifact_registry
-    reg.record_transform(_transform(
-        call_id="t_evil", sid=sid, tool="pandas_filter_data",
-        args={"expression": payload}, used=[_use_edge(v_src)], generated=[_gen_edge(v_out)],
-    ))
+    reg.record_transform(
+        _transform(
+            call_id="t_evil",
+            sid=sid,
+            tool="pandas_filter_data",
+            args={"expression": payload},
+            used=[_use_edge(v_src)],
+            generated=[_gen_edge(v_out)],
+        )
+    )
     nodes = {
         v.artifact_id: ArtifactNode(
-            artifact_id=v.artifact_id, name=r.name, version=v.version, sha256=v.sha256,
-            kind=v.kind.value, custody=v.custody.value, mechanism=v.mechanism.value,
-            path=v.path, bundle_path=f"data/{r.name}",
+            artifact_id=v.artifact_id,
+            name=r.name,
+            version=v.version,
+            sha256=v.sha256,
+            kind=v.kind.value,
+            custody=v.custody.value,
+            mechanism=v.mechanism.value,
+            path=v.path,
+            bundle_path=f"data/{r.name}",
         )
-        for r in reg.list_for_workspace("ws1") for v in r.versions
+        for r in reg.list_for_workspace("ws1")
+        for v in r.versions
     }
     script = compile_reproduce(reg.transforms_for_session(sid), nodes)
     # (1) The whole script is still valid Python — the payload did not break syntax.
@@ -753,24 +938,46 @@ def test_pandas_unrecognized_filter_shape_is_rerunnable_without_sha_assert(tmp_p
     src.write_text("time,east\n0,1\n")
     out = tmp_path / "filtered.csv"
     out.write_text("time,east\n0,1\n")
-    v_src = _mint(app, sid, name="in.csv", path=str(src), kind=ArtifactKind.DATASET,
-                  producer_call_id="t_src")
-    v_out = _mint(app, sid, name="filtered.csv", path=str(out), kind=ArtifactKind.DATASET,
-                  producer_call_id="t_f")
+    v_src = _mint(
+        app, sid, name="in.csv", path=str(src), kind=ArtifactKind.DATASET, producer_call_id="t_src"
+    )
+    v_out = _mint(
+        app,
+        sid,
+        name="filtered.csv",
+        path=str(out),
+        kind=ArtifactKind.DATASET,
+        producer_call_id="t_f",
+    )
     reg = app.state.artifact_registry
-    reg.record_transform(_transform(
-        call_id="t_f", sid=sid, tool="pandas_filter_data",
-        args={"file_path": str(src), "filter_conditions": {"east": {"lt": 2}},
-              "output_file": str(out)},
-        used=[_use_edge(v_src)], generated=[_gen_edge(v_out)],
-    ))
+    reg.record_transform(
+        _transform(
+            call_id="t_f",
+            sid=sid,
+            tool="pandas_filter_data",
+            args={
+                "file_path": str(src),
+                "filter_conditions": {"east": {"lt": 2}},
+                "output_file": str(out),
+            },
+            used=[_use_edge(v_src)],
+            generated=[_gen_edge(v_out)],
+        )
+    )
     nodes = {
         v.artifact_id: ArtifactNode(
-            artifact_id=v.artifact_id, name=r.name, version=v.version, sha256=v.sha256,
-            kind=v.kind.value, custody=v.custody.value, mechanism=v.mechanism.value,
-            path=v.path, bundle_path=f"data/{r.name}",
+            artifact_id=v.artifact_id,
+            name=r.name,
+            version=v.version,
+            sha256=v.sha256,
+            kind=v.kind.value,
+            custody=v.custody.value,
+            mechanism=v.mechanism.value,
+            path=v.path,
+            bundle_path=f"data/{r.name}",
         )
-        for r in reg.list_for_workspace("ws1") for v in r.versions
+        for r in reg.list_for_workspace("ws1")
+        for v in r.versions
     }
     script = compile_reproduce(reg.transforms_for_session(sid), nodes)
     stage = next(s for s in script.stages if s.call_id == "t_f")
@@ -790,20 +997,34 @@ def test_configure_tool_is_not_mistranslated_as_a_plot(tmp_path: Path) -> None:
     sid = store.create(workspace_id="ws1", title="t").id
     out = tmp_path / "cfg.json"
     out.write_text("{}\n")
-    v_out = _mint(app, sid, name="cfg.json", path=str(out), kind=ArtifactKind.CONFIG,
-                  producer_call_id="t_cfg")
+    v_out = _mint(
+        app, sid, name="cfg.json", path=str(out), kind=ArtifactKind.CONFIG, producer_call_id="t_cfg"
+    )
     reg = app.state.artifact_registry
-    reg.record_transform(_transform(
-        call_id="t_cfg", sid=sid, tool="reconfigure_workspace", args={"knob": 1},
-        used=[], generated=[_gen_edge(v_out)],
-    ))
+    reg.record_transform(
+        _transform(
+            call_id="t_cfg",
+            sid=sid,
+            tool="reconfigure_workspace",
+            args={"knob": 1},
+            used=[],
+            generated=[_gen_edge(v_out)],
+        )
+    )
     nodes = {
         v.artifact_id: ArtifactNode(
-            artifact_id=v.artifact_id, name=r.name, version=v.version, sha256=v.sha256,
-            kind=v.kind.value, custody=v.custody.value, mechanism=v.mechanism.value,
-            path=v.path, bundle_path=f"data/{r.name}",
+            artifact_id=v.artifact_id,
+            name=r.name,
+            version=v.version,
+            sha256=v.sha256,
+            kind=v.kind.value,
+            custody=v.custody.value,
+            mechanism=v.mechanism.value,
+            path=v.path,
+            bundle_path=f"data/{r.name}",
         )
-        for r in reg.list_for_workspace("ws1") for v in r.versions
+        for r in reg.list_for_workspace("ws1")
+        for v in r.versions
     }
     script = compile_reproduce(reg.transforms_for_session(sid), nodes)
     stage = next(s for s in script.stages if s.call_id == "t_cfg")
@@ -829,25 +1050,50 @@ def test_multi_output_stage_asserts_only_the_written_output(tmp_path: Path) -> N
     primary.write_text("time,east\n0,1\n")
     sidecar = tmp_path / "rejects.csv"
     sidecar.write_text("time,east\n1,3\n")
-    v_src = _mint(app, sid, name="src.csv", path=str(src), kind=ArtifactKind.DATASET,
-                  producer_call_id="t_src")
-    v_primary = _mint(app, sid, name="kept.csv", path=str(primary), kind=ArtifactKind.DATASET,
-                      producer_call_id="t_multi")
-    v_sidecar = _mint(app, sid, name="rejects.csv", path=str(sidecar), kind=ArtifactKind.DATASET,
-                      producer_call_id="t_multi")
+    v_src = _mint(
+        app, sid, name="src.csv", path=str(src), kind=ArtifactKind.DATASET, producer_call_id="t_src"
+    )
+    v_primary = _mint(
+        app,
+        sid,
+        name="kept.csv",
+        path=str(primary),
+        kind=ArtifactKind.DATASET,
+        producer_call_id="t_multi",
+    )
+    v_sidecar = _mint(
+        app,
+        sid,
+        name="rejects.csv",
+        path=str(sidecar),
+        kind=ArtifactKind.DATASET,
+        producer_call_id="t_multi",
+    )
     reg = app.state.artifact_registry
-    reg.record_transform(_transform(
-        call_id="t_multi", sid=sid, tool="pandas_filter_data",
-        args={"expression": "east < 2"}, used=[_use_edge(v_src)],
-        generated=[_gen_edge(v_primary), _gen_edge(v_sidecar)],
-    ))
+    reg.record_transform(
+        _transform(
+            call_id="t_multi",
+            sid=sid,
+            tool="pandas_filter_data",
+            args={"expression": "east < 2"},
+            used=[_use_edge(v_src)],
+            generated=[_gen_edge(v_primary), _gen_edge(v_sidecar)],
+        )
+    )
     nodes = {
         v.artifact_id: ArtifactNode(
-            artifact_id=v.artifact_id, name=r.name, version=v.version, sha256=v.sha256,
-            kind=v.kind.value, custody=v.custody.value, mechanism=v.mechanism.value,
-            path=v.path, bundle_path=f"data/{r.name}",
+            artifact_id=v.artifact_id,
+            name=r.name,
+            version=v.version,
+            sha256=v.sha256,
+            kind=v.kind.value,
+            custody=v.custody.value,
+            mechanism=v.mechanism.value,
+            path=v.path,
+            bundle_path=f"data/{r.name}",
         )
-        for r in reg.list_for_workspace("ws1") for v in r.versions
+        for r in reg.list_for_workspace("ws1")
+        for v in r.versions
     }
     script = compile_reproduce(reg.transforms_for_session(sid), nodes)
     stage = next(s for s in script.stages if s.call_id == "t_multi")
@@ -900,7 +1146,9 @@ def test_root_dataset_has_datepublished_and_license(tmp_path: Path, monkeypatch)
     monkeypatch.setenv("CLIO_ARTIFACTS_EXPORT_LICENSE", "CC-BY-4.0")
     g2 = {
         e["@id"]: e
-        for e in json.loads(build_session_bundle(app, sid).files["ro-crate-metadata.json"])["@graph"]
+        for e in json.loads(build_session_bundle(app, sid).files["ro-crate-metadata.json"])[
+            "@graph"
+        ]
     }
     assert g2["./"]["license"] == "CC-BY-4.0"
 
@@ -941,9 +1189,9 @@ def test_export_routes_serve_zip_and_pin_gc_roots(tmp_path: Path) -> None:
         wid = c.post("/v1/workspaces", json={"name": "w", "root_path": str(tmp_path)}).json()["id"]
         sid = c.post("/v1/sessions", json={"workspace_id": wid}).json()["id"]
         (tmp_path / "fig.png").write_bytes(b"\x89PNG route")
-        pinned = c.post(
-            f"/v1/sessions/{sid}/artifacts/pin", json={"path": "fig.png"}
-        ).json()["pinned"]
+        pinned = c.post(f"/v1/sessions/{sid}/artifacts/pin", json={"path": "fig.png"}).json()[
+            "pinned"
+        ]
         aid = pinned["artifact_id"]
 
         # Per-artifact export route → a parseable RO-Crate zip.

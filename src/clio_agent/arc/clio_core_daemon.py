@@ -54,6 +54,7 @@ class _DaemonProcess(Protocol):
 
     def num_threads(self) -> int: ...
 
+
 # Typed reason code for a policy-driven daemon recycle. Named in the #897 vocabulary
 # style so operators read one consistent language across clio-core degradations.
 CLIO_CORE_DAEMON_RECYCLED = "clio_core_daemon_recycled"
@@ -198,8 +199,7 @@ def _resolve_recycle_enabled() -> bool:
         )
     except ValueError as exc:
         logger.warning(
-            "ignoring unparseable CLIO_ARC_CLIO_CORE_DAEMON_RECYCLE (reason=%s); "
-            "recycle stays OFF",
+            "ignoring unparseable CLIO_ARC_CLIO_CORE_DAEMON_RECYCLE (reason=%s); recycle stays OFF",
             exc,
         )
         return False
@@ -237,7 +237,9 @@ def classify_daemon_rss(
 # --------------------------------------------------------------------------- #
 
 
-def _resolve_daemon_pid(config_path: str, env: Mapping[str, str] | None) -> tuple[Optional[int], str]:
+def _resolve_daemon_pid(
+    config_path: str, env: Mapping[str, str] | None
+) -> tuple[Optional[int], str]:
     """Find the shared daemon PID: pidfile first, then the port-listener fallback.
 
     Returns ``(pid, source)`` where source is ``"pidfile"`` or ``"port_scan"``, or

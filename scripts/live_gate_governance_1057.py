@@ -315,9 +315,7 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0915 - a live gate is an inherentl
     # .clio/plans, which is OUTSIDE the gate workspace root, so the plan-mode plan-file write
     # would trip create_artifact's escapes_root containment instead of exercising plan_exit.
     if not (ws_root / ".git").exists():
-        subprocess.run(
-            ["git", "init", "-q"], cwd=str(ws_root), check=True, capture_output=True
-        )
+        subprocess.run(["git", "init", "-q"], cwd=str(ws_root), check=True, capture_output=True)
 
     # Fresh CTE recipe for THIS run (private port, repo-local paths, bounded caps).
     cte_yaml = _write_cte_yaml(core_dir, args.core_port)
@@ -443,9 +441,7 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0915 - a live gate is an inherentl
             "cte_listener_is_clio_process",
             bool(names_lower)
             and "wslrelay.exe" not in names_lower
-            and all(
-                n.startswith("python") or n.startswith("clio_run") for n in names_lower
-            ),
+            and all(n.startswith("python") or n.startswith("clio_run") for n in names_lower),
         )
 
         # ---- provider bind + pre-allow policies BEFORE any turn --------------------
@@ -517,7 +513,9 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0915 - a live gate is an inherentl
 
         # ---- P1 PLAN-EXIT (blocker B1 repro): approve -> no phantom re-approval ----
         pxsess = call(
-            "POST", "/v1/sessions", {"title": "plan-exit-gate", "workspace_id": wsid, "mode": "plan"}
+            "POST",
+            "/v1/sessions",
+            {"title": "plan-exit-gate", "workspace_id": wsid, "mode": "plan"},
         )
         pxid = pxsess["id"]
         call(
@@ -643,7 +641,9 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0915 - a live gate is an inherentl
             scheds = call("GET", f"/v1/sessions/{csid}/schedules", ok=(200,)).get("schedules", [])
             sched_id = scheds[0]["id"] if scheds else ""
             verdict["cron_schedule_id"] = sched_id
-            _record("cron_registered", bool(sched_id) and bool(scheds and scheds[0].get("next_fire_at")))
+            _record(
+                "cron_registered", bool(sched_id) and bool(scheds and scheds[0].get("next_fire_at"))
+            )
             # The tick loop is minute-aligned; a delay_s=90 one-shot fires within ~2 ticks,
             # then stages a real turn (a new user message carrying schedule_id + an assistant
             # reply). Poll for the fired turn.
@@ -652,10 +652,14 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0915 - a live gate is an inherentl
             while time.monotonic() < cron_deadline:
                 cmsgs = _messages(call, csid)
                 blob = json.dumps(cmsgs, default=str)
-                if sched_id and sched_id in blob and any(
-                    m.get("role") == "assistant"
-                    and m.get("metadata", {}).get("synthetic") != "command_result"
-                    for m in cmsgs
+                if (
+                    sched_id
+                    and sched_id in blob
+                    and any(
+                        m.get("role") == "assistant"
+                        and m.get("metadata", {}).get("synthetic") != "command_result"
+                        for m in cmsgs
+                    )
                 ):
                     cron_fired = True
                     break
@@ -760,9 +764,7 @@ def main() -> int:  # noqa: C901, PLR0912, PLR0915 - a live gate is an inherentl
                 f"/v1/sessions/{gsid}/messages",
                 {"text": "Reply with exactly the single word DONE and nothing else."},
             )
-            goal_deadline = min(
-                time.monotonic() + args.turn_timeout_s + 180, overall_deadline
-            )
+            goal_deadline = min(time.monotonic() + args.turn_timeout_s + 180, overall_deadline)
             goal_met_meta: dict[str, Any] = {}
             while time.monotonic() < goal_deadline:
                 gm = _session_meta(call, wsid, gsid).get("goal", {}) or {}

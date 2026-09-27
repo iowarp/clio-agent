@@ -235,4 +235,3 @@ def test_the_real_vllm_startup_line_from_ares_resolves_auto_to_bfloat16() -> Non
 
     assert report["dtype"][0] == "bfloat16"
     assert report["tensor_parallel_size"][0] == "1"
-

@@ -91,7 +91,9 @@ _ALLOWED_RENDER_PLACEHOLDERS = {
 }
 
 
-def default_prompt_sources(*, cwd: Optional[Path] = None, config_dir: Optional[Path] = None) -> list[PromptSource]:
+def default_prompt_sources(
+    *, cwd: Optional[Path] = None, config_dir: Optional[Path] = None
+) -> list[PromptSource]:
     """Return prompt roots in increasing precedence order."""
 
     cwd = cwd or Path(os.getcwd())
@@ -180,11 +182,7 @@ def builtin_prompt_definitions() -> dict[str, PromptDefinition]:
 
     try:
         root = resources.files("clio_agent.prompt_packs.builtin")
-        prompt_files = [
-            (path, path.name)
-            for path in root.iterdir()
-            if path.name.endswith(".md")
-        ]
+        prompt_files = [(path, path.name) for path in root.iterdir() if path.name.endswith(".md")]
         runtime_root = root / "runtime"
         if runtime_root.is_dir():
             prompt_files.extend(
@@ -386,7 +384,9 @@ class PromptRegistry:
         return {
             "prompt_count": len(definitions),
             "prompt_ids": sorted(definitions),
-            "sources": [{"scope": source.scope, "root": str(source.root)} for source in self.sources],
+            "sources": [
+                {"scope": source.scope, "root": str(source.root)} for source in self.sources
+            ],
         }
 
     def _load_all(self) -> dict[str, PromptDefinition]:
@@ -420,7 +420,9 @@ def parse_prompt_file(path: Path, *, scope: str) -> PromptDefinition:
             enabled=False,
             validation_errors=[f"unable to read prompt file: {exc}"],
         )
-    return parse_prompt_text(text, scope=scope, source_path=str(path), fallback_id=_fallback_prompt_id(path))
+    return parse_prompt_text(
+        text, scope=scope, source_path=str(path), fallback_id=_fallback_prompt_id(path)
+    )
 
 
 def parse_prompt_text(
@@ -542,7 +544,9 @@ def _merge_definition(base: PromptDefinition, override: PromptDefinition) -> Pro
     merged.scope = override.scope or merged.scope
     merged.source_path = override.source_path or merged.source_path
     merged.enabled = merged.enabled and override.enabled
-    merged.validation_errors = list(dict.fromkeys(merged.validation_errors + override.validation_errors))
+    merged.validation_errors = list(
+        dict.fromkeys(merged.validation_errors + override.validation_errors)
+    )
     merged.metadata.update(override.metadata)
     merged.profiles.update(override.profiles)
     return merged

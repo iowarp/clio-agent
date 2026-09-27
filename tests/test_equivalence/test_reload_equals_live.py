@@ -79,9 +79,7 @@ def test_reload_equals_live_over_corpus(arc: ARCMemory) -> None:
         messages = [Message(**payload) for payload in rows]
         mint_atoms_from_ledger(arc, session_id, messages)
         assembled = assemble_session_messages(arc, session_id)
-        report = N.diff_persistence(
-            rows, [m.model_dump(exclude_none=True) for m in assembled]
-        )
+        report = N.diff_persistence(rows, [m.model_dump(exclude_none=True) for m in assembled])
         if report.empty:
             passed += 1
         else:

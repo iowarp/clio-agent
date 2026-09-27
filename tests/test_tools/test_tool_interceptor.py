@@ -216,8 +216,7 @@ def test_end_to_end_real_gate_stash_interceptor_skips_real_tool(tmp_path: Path) 
     gate->stash->interceptor chain composes end to end, not just in isolated halves."""
 
     body = (
-        "import json\n"
-        'print(json.dumps({"decision": "synthesize", "result": "CACHED:real-gate"}))\n'
+        'import json\nprint(json.dumps({"decision": "synthesize", "result": "CACHED:real-gate"}))\n'
     )
     install_global_dispatcher(
         make_command_dispatcher(tmp_path, event=PRE_TOOL_USE, body=body, hook_id="cache")

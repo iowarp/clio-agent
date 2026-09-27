@@ -449,9 +449,7 @@ def test_boot_fold_from_jsonl_provider_behind_dispatcher(tmp_path, monkeypatch):
             kind="dataset",
         ),
     }
-    (trace_dir / "sess_x.semantic.jsonl").write_text(
-        json.dumps(line) + "\n", encoding="utf-8"
-    )
+    (trace_dir / "sess_x.semantic.jsonl").write_text(json.dumps(line) + "\n", encoding="utf-8")
     monkeypatch.setattr("clio_agent.gact.runtime.globals._PROCESS_ARC", None)
     dispatcher = ProvenanceDispatcher([JsonlProvenanceProvider(trace_dir)])
     try:

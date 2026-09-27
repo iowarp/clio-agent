@@ -338,9 +338,7 @@ class TestCorruptSSTableSkip:
         corrupt.write_bytes(b"\xff\xff not valid msgpack \x00\x01\x02")
 
         with caplog.at_level(logging.WARNING, logger="clio_agent.arc.lsm"):
-            reloaded = LSMTree(
-                data_dir=str(data_dir), memtable_size=2, compaction_threshold=99
-            )
+            reloaded = LSMTree(data_dir=str(data_dir), memtable_size=2, compaction_threshold=99)
 
         try:
             # The healthy SSTable still loaded despite the corrupt neighbour.

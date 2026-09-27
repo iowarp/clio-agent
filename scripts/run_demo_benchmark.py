@@ -4899,9 +4899,7 @@ def _stress_audit(results: list[DemoResult]) -> list[dict[str, Any]]:
         if result.child_sessions
         or {"ndp_catalog", "sac_format"}.intersection(result.handoff_agent_ids)
     ]
-    visualization_artifact_runs = [
-        result for result in results if result.visualization_artifacts
-    ]
+    visualization_artifact_runs = [result for result in results if result.visualization_artifacts]
     expected_errors = [result for result in results if result.outcome == "expected_error"]
     compaction_runs = [
         result

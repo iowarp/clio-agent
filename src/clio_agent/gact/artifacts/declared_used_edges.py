@@ -95,9 +95,7 @@ def detect_declared_used_edges(
         if url_edge is not None:
             edges.append(url_edge)
             continue
-        resolved = _resolve_declared_used_ref(
-            app, registry, root, workspace_id, ref, _contained
-        )
+        resolved = _resolve_declared_used_ref(app, registry, root, workspace_id, ref, _contained)
         if resolved is None:
             notes.append({"reason": "used_ref_unresolved", "arg": "used", "ref": ref})
             continue
