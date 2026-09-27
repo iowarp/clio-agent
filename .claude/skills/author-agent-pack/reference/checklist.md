@@ -15,6 +15,12 @@
 - [ ] No format-specific MCP. Deterministic helpers are bundled skill scripts (PEP 723, `uv run --no-project`).
 - [ ] Existing packs' skills were checked for overlap first (e.g. `data-semantics`) and reused or referenced.
 
+## Capabilities and limits
+- [ ] The expert has the general-purpose toolset (at least base-agent's: shell, fs read/propose/apply, view_image, view_pdf, web_fetch, ask_user); auto-attached tools aren't listed.
+- [ ] No pack-imposed prohibitions ("read-only", "never write", refusing scripts). Locations are stated as defaults; clio's approval modes, deny rules, allowed roots and sandbox decide what's permitted.
+- [ ] The prompt says how the agent writes: scripts via shell, deliverables via `create_artifact`, edits via fs tools.
+- [ ] Per-dataset artefacts default to the workspace (keyed by content hash), matching clio's system prompt.
+
 ## Behaviour
 - [ ] The first session writes the card, the loader and the validated views. The second session reuses the card.
 - [ ] If a child agent audits, the parent re-runs the loader and compares hashes.

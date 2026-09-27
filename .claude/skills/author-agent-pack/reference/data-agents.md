@@ -28,10 +28,10 @@ If an agent needs code changes whenever the data changes, it isn't adaptive. It'
    - **design:** balance, how factors are encoded (dose vs category), and what's **absent** (treatment meaning, units). Absent semantics become questions for the owners, never guesses.
 4. **Joins:** coverage differs by source, so use outer joins, compare row counts before and after, and watch for column collisions.
 5. **Write it down:**
-   - **Experiment card:** `<data_root>/.clio/experiment-card.md`, keyed by the manifest hash + format version. It holds facts, traps found, open questions, and *proposed* lessons phrased as checks.
+   - **Experiment card:** by default in the **workspace**, `<workspace>/.clio/datasets/<manifest-sha16>/experiment-card.md`, keyed by the manifest hash (so any session, or the same data at another path, finds it) + format version. Not in the data folder: clio's system prompt tells agents to write artifacts in the workspace, and a pack that says otherwise creates a conflict the model resolves by stopping. It holds facts, traps found, open questions, and *proposed* lessons phrased as checks.
    - **Loader:** `<data_root>/.clio/loader.py`, a PEP 723 `uv` script with pinned dependencies, idempotent, with output hashes recorded in the card.
    - **Validated views:** `<data_root>/.clio/views/`.
-   - **If the data root isn't writable** (a shared facility mount), key the card by hash under the workspace instead.
+   - **The workspace location is a default, not a rule.** Don't declare the data read-only or make scripts refuse locations: if the user wants output elsewhere, follow them, and let clio's permission system decide what's allowed.
 6. **Next session:** find and reuse the card; don't re-profile. If the manifest hash changed, regenerate.
 
 **Context isolation:** profiling floods the context. Running onboarding in a child agent (`spawn_subagent_with_skill`) and getting back only the card and loader path is a real win. **The parent re-runs the loader and compares hashes before trusting the card.**

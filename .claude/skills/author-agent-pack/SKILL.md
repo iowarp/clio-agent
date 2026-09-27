@@ -66,6 +66,9 @@ Reference files, loaded as needed:
 
 ## Non-negotiables
 
+- **The pack doesn't decide the agent's limits; clio does.** Approval modes (ask always / auto / bypass), deny rules, allowed roots, the sandbox, and the user (who can hand the agent a copy of the data) decide what's permitted. The pack gives the agent its normal general-purpose toolset (at least `base-agent`'s: `shell_bash`, `fs_read_file`, `fs_propose_edit`, `fs_apply_edit_write`, `view_image`, `view_pdf`, `web_fetch`, `ask_user`; `create_artifact`, `load_skill`, `spawn_skill_task`, `wait_agent_tasks` are auto-attached and must not be listed), and states **defaults and conventions** ("derived artefacts go in the workspace so the raw data stays pristine"), never prohibitions ("the data is read-only; never write there"), refusing scripts, or trimmed tool lists. If clio denies something at runtime, the agent reports it; it doesn't pre-empt it.
+  - *Why:* in a live run, pack-imposed "read-only input" wording, a location-refusing script, and a tool list with no file-edit tool made the agent conclude "this session is read-only" and refuse to work, even though clio permitted the writes. Kneecapping the agent and then blaming its productivity is the failure mode.
+- **Tell the agent how it writes.** Scripts write via `shell_bash`; deliverables via `create_artifact` (`kind`, full `content`, `used` = the inputs it derives from); edits via the fs tools. A missing hint reads as missing permission.
 - **No instance literals** in `AGENT.md`, experts or skills: IDs, dates, counts, measured magnitudes ("~40× too small"), concrete dataset file names. Examples must be generic placeholders.
 - **Lessons are checks, not facts.**
   - Allowed: "check whether flags agree with the data".
