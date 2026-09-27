@@ -1,0 +1,299 @@
+{
+ "_recorded": "2026-09-26 from https://pypi.org/pypi/claude-agent-sdk/json, trimmed to these releases",
+ "info": {
+  "name": "claude-agent-sdk",
+  "version": "0.2.160"
+ },
+ "releases": {
+  "0.2.156": [
+   {
+    "filename": "claude_agent_sdk-0.2.156-py3-none-macosx_11_0_arm64.whl",
+    "url": "https://files.pythonhosted.org/packages/2f/72/d1519f4e06c21092d029ea6c5d997b779f97c1a91fb8e1e2015392fa557b/claude_agent_sdk-0.2.156-py3-none-macosx_11_0_arm64.whl",
+    "digests": {
+     "sha256": "37dc1a5b4f7aace0b4622a6707517840dbbd60fb175443d385a1f2ec49f25668"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "claude_agent_sdk-0.2.156-py3-none-macosx_11_0_x86_64.whl",
+    "url": "https://files.pythonhosted.org/packages/ac/b6/af22b631b052bc57caa5038eaed4e9aca40ccc18f5676758957dd1289144/claude_agent_sdk-0.2.156-py3-none-macosx_11_0_x86_64.whl",
+    "digests": {
+     "sha256": "1b09c623d1f7559648d799b939f1c417ce5c84cfe3020c523919adb5f88415b9"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "claude_agent_sdk-0.2.156-py3-none-manylinux_2_17_aarch64.whl",
+    "url": "https://files.pythonhosted.org/packages/f9/a9/c0cf5a139e43b55527fbc3e1eb7b0bd9fdfa71c6b8defb01a7fe26a16dfc/claude_agent_sdk-0.2.156-py3-none-manylinux_2_17_aarch64.whl",
+    "digests": {
+     "sha256": "2da24c3cffbe52997ee1693e598f92c339a87ffcad1f278feec3b52878e2003f"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "claude_agent_sdk-0.2.156-py3-none-manylinux_2_17_x86_64.whl",
+    "url": "https://files.pythonhosted.org/packages/d0/cd/5e979631de4b8112d0e319ca0af2a059c774b92168c51fc1851bfc1552b1/claude_agent_sdk-0.2.156-py3-none-manylinux_2_17_x86_64.whl",
+    "digests": {
+     "sha256": "256fafa0fa893bde52caceb21f7b1ac65e5c58ddfa07eb72cc54d1f90cf84960"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "claude_agent_sdk-0.2.156-py3-none-win_amd64.whl",
+    "url": "https://files.pythonhosted.org/packages/69/50/9fca087f43f7f6382d0fe9a5b8a4e634a5e9fd17bf387221c3402b65a9ea/claude_agent_sdk-0.2.156-py3-none-win_amd64.whl",
+    "digests": {
+     "sha256": "db01f5fa0b916a58b10791c8cb037a312429d0d943f6471a36159726535771ee"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "claude_agent_sdk-0.2.156.tar.gz",
+    "url": "https://files.pythonhosted.org/packages/21/a4/f33a3878c5c67b7f7a72db581b2122334b5156ec0853120d86f43f5a7dbf/claude_agent_sdk-0.2.156.tar.gz",
+    "digests": {
+     "sha256": "4caddd158af0c30572586a3e7837dd5d0e5257a9f45ef31a0b3bf5a1064197ce"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "sdist"
+   }
+  ],
+  "0.2.157": [
+   {
+    "filename": "claude_agent_sdk-0.2.157-py3-none-macosx_11_0_arm64.whl",
+    "url": "https://files.pythonhosted.org/packages/ec/e8/3e9cc23eb5a5a01a0e2ee931a17db2785f95407525d50366af06a4a5469c/claude_agent_sdk-0.2.157-py3-none-macosx_11_0_arm64.whl",
+    "digests": {
+     "sha256": "dd6a2c7aa1901e43b827411d62f2327aed82f53ed8ca6b076eaa5be4a1fc681f"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "claude_agent_sdk-0.2.157-py3-none-macosx_11_0_x86_64.whl",
+    "url": "https://files.pythonhosted.org/packages/49/eb/e5095703a8efbe504ec468cab039543caabfc0ea3327c735a3d1b60e57ac/claude_agent_sdk-0.2.157-py3-none-macosx_11_0_x86_64.whl",
+    "digests": {
+     "sha256": "ebf3f514c61db9be01bbf6d1acb0d993247340583b3559d2df75e3822f618bbb"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "claude_agent_sdk-0.2.157-py3-none-manylinux_2_17_aarch64.whl",
+    "url": "https://files.pythonhosted.org/packages/d6/f4/64505beb3c757b863753d6556539554704ec9168cb96454dc6463b14df85/claude_agent_sdk-0.2.157-py3-none-manylinux_2_17_aarch64.whl",
+    "digests": {
+     "sha256": "a58089e0c11364db2ec7a139e09b36a4fb9c95817a758bee7b28e0434f55c0b6"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "claude_agent_sdk-0.2.157-py3-none-manylinux_2_17_x86_64.whl",
+    "url": "https://files.pythonhosted.org/packages/03/8f/2a7c121469fd16d1d6465bec180726c54f6e151b12e50835283b4285d1ce/claude_agent_sdk-0.2.157-py3-none-manylinux_2_17_x86_64.whl",
+    "digests": {
+     "sha256": "bd126b2edee3a247b2c7c4cee1f5a3ea68ef748288ec0650db88dd3918e5471a"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "claude_agent_sdk-0.2.157.tar.gz",
+    "url": "https://files.pythonhosted.org/packages/b4/e3/444df1691c864a8349067686719b43e714fc43d3853fb1b2ebc2097e2a6e/claude_agent_sdk-0.2.157.tar.gz",
+    "digests": {
+     "sha256": "4ce6f41bc965fcb4a9d11bd7a3cac266975c75b632f3d74a26f55f0fffb3160a"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "sdist"
+   }
+  ],
+  "0.2.158": [
+   {
+    "filename": "claude_agent_sdk-0.2.158-py3-none-macosx_11_0_arm64.whl",
+    "url": "https://files.pythonhosted.org/packages/89/ad/37559b5a12170699eb6d4c5e1c66f491c4a3d7366f8f300a8dba0fc40aec/claude_agent_sdk-0.2.158-py3-none-macosx_11_0_arm64.whl",
+    "digests": {
+     "sha256": "d124bd374dfbbcbdb4326e922f30d436251ae469df9cae545ef8ff6839d76e47"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "claude_agent_sdk-0.2.158-py3-none-macosx_11_0_x86_64.whl",
+    "url": "https://files.pythonhosted.org/packages/c1/52/21968fc645ee206bb260f18b26ae8ae035fc5af820a7820b01e308496510/claude_agent_sdk-0.2.158-py3-none-macosx_11_0_x86_64.whl",
+    "digests": {
+     "sha256": "beb963aa66eac715ff005e44ff02065fd5d855a10a47bc802097a31a522e6be3"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "claude_agent_sdk-0.2.158-py3-none-manylinux_2_17_aarch64.whl",
+    "url": "https://files.pythonhosted.org/packages/a1/4b/b42ab1a7ba32cea66184dedf8da158d49d00d6af753bd48998dab6e7a1d6/claude_agent_sdk-0.2.158-py3-none-manylinux_2_17_aarch64.whl",
+    "digests": {
+     "sha256": "12f432273c3f0da103ea8dc921c3ce96e802c044e1f3f2535cf98b7d59777aa7"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "claude_agent_sdk-0.2.158-py3-none-manylinux_2_17_x86_64.whl",
+    "url": "https://files.pythonhosted.org/packages/e3/eb/1b34083c59a09a1a380c211eacd1cb185de4adc4bdb1170997e37f53f6ca/claude_agent_sdk-0.2.158-py3-none-manylinux_2_17_x86_64.whl",
+    "digests": {
+     "sha256": "1f46ddac2cb51f16b2ca064a0dbeeab7db712f34e72454cc7776713e0f0f663c"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "claude_agent_sdk-0.2.158-py3-none-win_amd64.whl",
+    "url": "https://files.pythonhosted.org/packages/15/0d/11ab53934b04176180099a79bb186036e304e1fe1310bdecf21df599f1d3/claude_agent_sdk-0.2.158-py3-none-win_amd64.whl",
+    "digests": {
+     "sha256": "b1e7f6b9d048c2c44e5228d6a0eeb19ae3aafb643c1115c456ea9937e0439aef"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "claude_agent_sdk-0.2.158.tar.gz",
+    "url": "https://files.pythonhosted.org/packages/0e/5c/1d348e677fb199978d2b559fb5822fc58d77927f0988d1eb2acc18d5a0bb/claude_agent_sdk-0.2.158.tar.gz",
+    "digests": {
+     "sha256": "672ddb19df334e9cb80bb264a6ddf00870c8d4e170b3fd0a3cf0ce354f634e7f"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "sdist"
+   }
+  ],
+  "0.2.159": [
+   {
+    "filename": "claude_agent_sdk-0.2.159-py3-none-macosx_11_0_arm64.whl",
+    "url": "https://files.pythonhosted.org/packages/ec/06/87d76aced98f7b71cede2ebf4ae7808e52df9d3819c7f4c7b8c3d2a225b6/claude_agent_sdk-0.2.159-py3-none-macosx_11_0_arm64.whl",
+    "digests": {
+     "sha256": "ba7f152560dca5001a0bc46ed13b7da14eb14b419faed25bb1af821bfa95d3de"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "claude_agent_sdk-0.2.159-py3-none-macosx_11_0_x86_64.whl",
+    "url": "https://files.pythonhosted.org/packages/f4/cf/c65a1f2419fa4b2085a53e91cef41569fde4910057c3709b8ab4303be1fd/claude_agent_sdk-0.2.159-py3-none-macosx_11_0_x86_64.whl",
+    "digests": {
+     "sha256": "87f553fda74e2f57e00f2bcb1705ab9311a937f97571f4f9eceea2bd411b6e32"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "claude_agent_sdk-0.2.159-py3-none-manylinux_2_17_aarch64.whl",
+    "url": "https://files.pythonhosted.org/packages/f1/20/f01e211524f3d8edfe7c2ea26ac595d21afab443810cbedeca5c76f7ead0/claude_agent_sdk-0.2.159-py3-none-manylinux_2_17_aarch64.whl",
+    "digests": {
+     "sha256": "b03683d12d217b0b6c189c88a3d260a045171e7fdc9f23e2d0dfb05ff3276834"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "claude_agent_sdk-0.2.159-py3-none-manylinux_2_17_x86_64.whl",
+    "url": "https://files.pythonhosted.org/packages/bf/d5/de876f9b05c2a94c1d03222b6a5908b1d27f695cf862b237f04d92008d62/claude_agent_sdk-0.2.159-py3-none-manylinux_2_17_x86_64.whl",
+    "digests": {
+     "sha256": "d3ba57c187b07c87702b94e2b62dd7c61ed874899defcbb35bb5cef4cb94ace1"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "claude_agent_sdk-0.2.159-py3-none-win_amd64.whl",
+    "url": "https://files.pythonhosted.org/packages/5f/f2/b315c307a4199cb698a6b6f9e0e90cb8da4b0c8b3d00c68e9007c4a778d1/claude_agent_sdk-0.2.159-py3-none-win_amd64.whl",
+    "digests": {
+     "sha256": "cc1b92ae56f42ade2d083ef2d2e5edb4aa8c7a6d856818a9b8f60cf6ae746f3a"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "claude_agent_sdk-0.2.159.tar.gz",
+    "url": "https://files.pythonhosted.org/packages/db/b2/81eb389ace55434f0119b99b62c10a7ac206def6c92ee0768eb389b0c900/claude_agent_sdk-0.2.159.tar.gz",
+    "digests": {
+     "sha256": "e1905e2637b27971bb561bb6ad317aeb3d50619be5261bfa7ff2e9c2be0f0fd1"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "sdist"
+   }
+  ],
+  "0.2.160": [
+   {
+    "filename": "claude_agent_sdk-0.2.160-py3-none-macosx_11_0_arm64.whl",
+    "url": "https://files.pythonhosted.org/packages/b4/c0/3ef94041ac8daf218e04d2047fa780643abeabbe9ca0495391f25078e169/claude_agent_sdk-0.2.160-py3-none-macosx_11_0_arm64.whl",
+    "digests": {
+     "sha256": "547cb16c94c67b57873c1ac9b5ce83076941d5189d52601b9791032d13a21456"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "claude_agent_sdk-0.2.160-py3-none-macosx_11_0_x86_64.whl",
+    "url": "https://files.pythonhosted.org/packages/f2/6f/74ba55f294cc132ced13de24d8011e30f0073075fa829aa4aa09d66c1493/claude_agent_sdk-0.2.160-py3-none-macosx_11_0_x86_64.whl",
+    "digests": {
+     "sha256": "cc77386858bd5e716914544a35a0620fe1586d130299d1c7b2e207bebd02ace4"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "claude_agent_sdk-0.2.160-py3-none-manylinux_2_17_aarch64.whl",
+    "url": "https://files.pythonhosted.org/packages/17/bf/560d9c04d574484d6659ba325693e14f03d8aa2ca38781736ed08635b22d/claude_agent_sdk-0.2.160-py3-none-manylinux_2_17_aarch64.whl",
+    "digests": {
+     "sha256": "59638c6acd0159da200eb9d8fbb282d6c8d2191e6fcdd02fa751857c014b7e40"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "claude_agent_sdk-0.2.160-py3-none-manylinux_2_17_x86_64.whl",
+    "url": "https://files.pythonhosted.org/packages/9d/04/fcb6c6a77d5ee04cd6dc7c1e43e824e73ce57d2c59f1cdb80c0255bfc4ac/claude_agent_sdk-0.2.160-py3-none-manylinux_2_17_x86_64.whl",
+    "digests": {
+     "sha256": "70d1dd4286b69ecdc334d66e7b9dae8532790803f7cd7e0bf269bd5e407f2259"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "bdist_wheel"
+   },
+   {
+    "filename": "claude_agent_sdk-0.2.160.tar.gz",
+    "url": "https://files.pythonhosted.org/packages/bd/46/ff902a63d79b278fd8631ef420b9d6a6e85959f0c75e87c3ecc7a0397608/claude_agent_sdk-0.2.160.tar.gz",
+    "digests": {
+     "sha256": "1107f7804c656e194cbf80d9e20b4b861803bc16c4067a04839a347c9d140f48"
+    },
+    "yanked": false,
+    "requires_python": ">=3.10",
+    "packagetype": "sdist"
+   }
+  ]
+ }
+}

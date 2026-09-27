@@ -224,6 +224,17 @@ providers.claude_code.stateful_capacity: 128.0
 # next request reaps it; lower to free idle connections sooner.
 providers.claude_code.stream_idle_ttl_s: 15.0
 
+# CLIO_PROVIDER_COMPONENT_INDEX_URL  (str)  <- src/clio_agent/providers/components/pypi.py
+# PyPI JSON API base the provider SDK update check reads
+# (<index>/<distribution>/json); point at a mirror that serves the same API.
+providers.component_updates.index_url: "https://pypi.org/pypi"
+
+# CLIO_PROVIDER_COMPONENT_TTL_S  (float)  <- src/clio_agent/providers/components/pypi.py
+# Seconds one provider SDK update check (installed vs latest installable
+# release) is served before PyPI is asked again; an explicit check always
+# asks again.
+providers.component_updates.ttl_s: 3600.0
+
 # CLIO_MODEL_CATALOG_TTL_S  (float)  <- src/clio_agent/providers/model_discovery/overlay.py
 # Seconds a discovered provider model catalog is served as fresh before
 # every read marks it typed-stale (it is still served, never cleared); 0
