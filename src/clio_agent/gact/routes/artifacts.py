@@ -748,10 +748,8 @@ def _serve_bytes(app: FastAPI, record: ArtifactRecord, version: ArtifactVersion)
                     "actual_sha256": actual,
                 },
             )
-    try:
-        rel = str(source.expanduser().resolve(strict=False).relative_to(root))
-    except ValueError:
-        rel = ""
+    from clio_agent.gact.artifacts.wire import workspace_file_fetch_url  # noqa: PLC0415
+
     raise _artifact_error(
         status_code=409,
         error="custody_not_cas",
@@ -763,7 +761,7 @@ def _serve_bytes(app: FastAPI, record: ArtifactRecord, version: ArtifactVersion)
             "artifact_id": version.artifact_id,
             "custody": version.custody.value,
             "workspace_id": record.workspace_id,
-            "fetch_via": f"/v1/workspaces/{record.workspace_id}/files/read?path={rel}",
+            "fetch_via": workspace_file_fetch_url(record.workspace_id, source, root),
         },
     )
 

@@ -15,6 +15,7 @@ import yaml
 from clio_agent.tools.file_diff import unified_file_diff
 from clio_agent.tools.file_policy import validate_read_path, validate_write_path
 from clio_agent.tools.result_errors import structured_tool_result_error
+from clio_agent.tools.shell_spill_presentation import saved_output_blocks
 
 logger = logging.getLogger(__name__)
 Adapter = Callable[[Mapping[str, Any], Any, Any], dict[str, Any]]
@@ -394,7 +395,8 @@ def _terminal(args: Mapping[str, Any], result: Any, snapshot: Any) -> dict[str, 
                 "text": str(row.get("stdout") or "") + str(row.get("stderr") or ""),
                 "exit_code": exit_code,
                 "timed_out": timed_out,
-            }
+            },
+            *saved_output_blocks(row),
         ],
     }
 
