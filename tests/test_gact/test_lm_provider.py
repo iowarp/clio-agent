@@ -2060,7 +2060,9 @@ def test_put_lm_provider_invalid_returns_400(tmp_path: Path, monkeypatch) -> Non
             "/v1/providers/lm",
             json={
                 "provider": "openai",
-                "api_base": "http://nonsense",
+                # Loopback discard port: nothing listens, so any probe of it fails
+                # locally (the network guard forbids resolving a made-up host).
+                "api_base": "http://127.0.0.1:9",
                 "model": "x",
                 "api_key": "x",
             },
@@ -2107,7 +2109,7 @@ def test_put_lm_provider_failed_first_connect_restores_env(tmp_path: Path, monke
             "/v1/providers/lm",
             json={
                 "provider": "openai",
-                "api_base": "http://rejected.example/v1",
+                "api_base": "http://127.0.0.1:9/v1",  # loopback discard port: refuses
                 "model": "rejected-model",
                 "api_key": "rejected-key",
             },

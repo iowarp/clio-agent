@@ -33,6 +33,11 @@ _TEST_CLIENT_HOST = "testserver"
 _ambient_hosts = [h for h in os.environ.get("CLIO_GACT_ALLOWED_HOSTS", "").split(",") if h.strip()]
 os.environ["CLIO_GACT_ALLOWED_HOSTS"] = ",".join(sorted({*_ambient_hosts, _TEST_CLIENT_HOST}))
 
+# The AWS credential chain (Bedrock readiness checks) otherwise falls through to the
+# EC2 instance metadata endpoint, 169.254.169.254: a network call, and a multi-second
+# timeout off EC2. Unit tests never reach the network (tests/_network_guard.py).
+os.environ.setdefault("AWS_EC2_METADATA_DISABLED", "true")
+
 # Even with the network GET removed, litellm's own MODULE BODY costs ~3.5-4s
 # to import cold (hundreds of provider submodules + pydantic model builds --
 # not fixable from clio's side, it is dependency weight). That cost is paid
@@ -69,7 +74,14 @@ import pytest  # noqa: E402
 import yaml  # noqa: E402
 
 import clio_agent  # noqa: E402, F401
-from tests import _cte_bounded, _hang_guard, _network_guard, _sharding, _worker_leaks
+from tests import (
+    _cte_bounded,
+    _hang_guard,
+    _network_guard,
+    _recorded_catalogs,
+    _sharding,
+    _worker_leaks,
+)
 from tests._cte_isolation import (
     cte_isolation_available,
     eagerly_attach_private_daemon,
@@ -128,13 +140,16 @@ def pytest_configure(config: pytest.Config) -> None:
     _cte_bounded.install()
     # Background threads a test's objects start are stopped at its teardown.
     _worker_leaks.install()
-    # Unit tests never reach a non-loopback host (see tests/_network_guard.py).
+    # Unit tests never reach a non-loopback host (see tests/_network_guard.py); the
+    # online model catalogs are replayed from recordings instead.
     _network_guard.install()
+    _recorded_catalogs.install()
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
     """Close the hang guard's dump stream."""
     del config
+    _recorded_catalogs.uninstall()
     _hang_guard.unconfigure()
 
 

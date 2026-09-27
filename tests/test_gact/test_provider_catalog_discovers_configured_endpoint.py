@@ -13,11 +13,11 @@ LM by priming ``app.state.lm_config`` directly (the same shape ``PUT
 /v1/providers/lm`` writes), and asserts ``GET /v1/provider-catalog`` lists
 ``llama_cpp`` with the model that server actually reported.
 
-Hermetic: the catalog read also discovers every other provider and consults the
-external model catalogs (models.dev, LiteLLM's community map). The
-``recorded_remotes`` fixture points all of them at a loopback server that replays
-recorded responses, so the test never leaves this machine (the suite's network
-guard, tests/_network_guard.py, fails it if it does).
+Hermetic: the catalog read also discovers every other provider. The
+``recorded_remotes`` fixture points each remote provider at a loopback server that
+replays a recorded model list; the online model catalogs (models.dev, LiteLLM's
+community map, CLIO's own) are replayed suite-wide by tests/_recorded_catalogs.py.
+The test never leaves this machine (the suite's network guard fails it if it does).
 """
 
 from __future__ import annotations
@@ -73,11 +73,9 @@ def fake_llama_cpp_server():
             worker.join(timeout=5)
 
 
-# Recorded responses, trimmed to the shape each consumer parses: an OpenAI-style model
-# list for every remote provider's ``/models``, and the two external catalogs (an empty
-# document is a valid, fact-free catalog for both).
+# A recorded response, trimmed to the shape the discovery parses: an OpenAI-style model
+# list for every remote provider's ``/models``.
 _RECORDED_MODELS = {"object": "list", "data": [{"id": "recorded-model", "object": "model"}]}
-_RECORDED_CATALOG: dict[str, Any] = {}
 
 
 class _RecordedRemotesHandler(BaseHTTPRequestHandler):
@@ -90,8 +88,6 @@ class _RecordedRemotesHandler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path.endswith("/models"):
             payload: Any = _RECORDED_MODELS
-        elif path.endswith(("/models.json", "/cost-map.json")):
-            payload = _RECORDED_CATALOG
         else:
             self.send_response(404)
             self.end_headers()
@@ -118,10 +114,7 @@ def _is_remote(api_base: str) -> bool:
 @pytest.fixture()
 def recorded_remotes(monkeypatch: pytest.MonkeyPatch):
     """Point every remote endpoint the catalog read touches at a loopback replay server."""
-    import litellm
-
     from clio_agent.providers import catalog
-    from clio_agent.providers.handshake.sources import litellm_catalog, models_dev
 
     _RecordedRemotesHandler.requests = []
     with ThreadingHTTPServer(("127.0.0.1", 0), _RecordedRemotesHandler) as server:
@@ -138,18 +131,9 @@ def recorded_remotes(monkeypatch: pytest.MonkeyPatch):
                 for p in catalog.PROVIDERS
             ),
         )
-        monkeypatch.setattr(models_dev, "MODELS_DEV_URL", f"{base}/models-dev/models.json")
-        monkeypatch.setattr(litellm, "model_cost_map_url", f"{base}/litellm/cost-map.json")
-        # The AWS credential chain (Bedrock readiness) otherwise asks the EC2 instance
-        # metadata endpoint, 169.254.169.254.
-        monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
-        models_dev._catalog.cache_clear()
-        litellm_catalog._catalog.cache_clear()
         try:
             yield _RecordedRemotesHandler
         finally:
-            models_dev._catalog.cache_clear()
-            litellm_catalog._catalog.cache_clear()
             server.shutdown()
             worker.join(timeout=5)
 

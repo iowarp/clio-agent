@@ -61,12 +61,12 @@ def _host_is_local(host: object) -> bool:
 def _check(host: object, what: str) -> None:
     if not _active or _host_is_local(host):
         return
-    where = "".join(
-        frame
-        for frame in traceback.format_stack()[:-2]
-        if "clio_agent" in frame or "tests" in frame
-    )
-    record = f"{what} {host!r}\n{where}"
+    stack = traceback.format_stack()[:-2]
+    # clio's and the tests' own frames when this thread has any; a lookup made on a
+    # worker thread (asyncio's resolver, anyio) has none, so show its innermost frames.
+    ours = [frame for frame in stack if "clio_agent" in frame or "tests" in frame]
+    where = "".join(ours or stack[-12:])
+    record = f"{what} {host!r} (thread {threading.current_thread().name})\n{where}"
     with _lock:
         _violations.append(record)
     raise OutboundNetworkBlocked(
