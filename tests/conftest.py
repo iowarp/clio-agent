@@ -64,6 +64,7 @@ from tests._cte_isolation import (
     cte_isolation_available,
     eagerly_attach_private_daemon,
     isolate_cte_env,
+    private_daemon_identity,
     reap_private_daemon,
     reap_stale_suite_runtimes,
     remove_private_cte_root,
@@ -349,6 +350,29 @@ def _clio_process_hygiene_audit(request, _clio_private_cte_daemon):
     result = audit.finalize(own_pid=os.getpid())
     if not result.clean:
         raise AssertionError(result.format_failure())
+
+
+@pytest.fixture(autouse=True)
+def _private_daemon_survives_the_test(_clio_private_cte_daemon):
+    """Fail the test that stops or kills this worker's shared private clio-core daemon.
+
+    Every cte leg in this worker attaches to that one daemon, and the attach is once
+    per process, so a test that stops it (a real last-client release, a pidfile kill)
+    silently breaks every later cte leg: their first RPC blocks on a daemon that is
+    gone (seen on CI: ``test_live_edge`` [cte] stuck in the post-attach probe with the
+    pidfile missing). Checking the pidfile identity around each test names the culprit
+    instead of the victim.
+    """
+    state_dir = _clio_private_cte_daemon.state_dir if _clio_private_cte_daemon else None
+    before = private_daemon_identity(state_dir) if state_dir is not None else None
+    yield
+    if before is not None and private_daemon_identity(state_dir) != before:
+        pytest.fail(
+            f"this test stopped or killed the worker's shared private clio-core daemon "
+            f"(pid {before[0]}); every later cte test in this worker would attach to a "
+            "dead daemon. Isolate its runtime state (see tests/_cte_isolation.py) instead.",
+            pytrace=False,
+        )
 
 
 @pytest.fixture(autouse=True)

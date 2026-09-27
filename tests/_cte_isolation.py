@@ -315,3 +315,24 @@ def reap_stale_suite_runtimes(parent: Path) -> None:
         for state_dir in stale.glob("cte/*/clio-state"):
             reap_private_daemon(state_dir)
         cleanup_test_runtime(stale, parent)
+
+
+def private_daemon_identity(state_dir: Path) -> tuple[int, float] | None:
+    """``(pid, create_time)`` of the private daemon recorded in ``state_dir``, if running.
+
+    Reads the pidfile by its fixed path and asks psutil directly, never through
+    ``clio_agent.arc.storage`` helpers: tests monkeypatch those (``_daemon_pidfile``,
+    ``_pid_alive``) and their patches can still be active when this runs at teardown.
+    """
+    try:
+        pid = int((state_dir / "clio-runtime.pid").read_text(encoding="utf-8").split()[0])
+    except (OSError, IndexError, ValueError):
+        return None
+    try:
+        import psutil  # noqa: PLC0415
+
+        return pid, psutil.Process(pid).create_time()
+    except ImportError:
+        return None
+    except Exception:  # noqa: BLE001 - NoSuchProcess / AccessDenied / ZombieProcess
+        return None

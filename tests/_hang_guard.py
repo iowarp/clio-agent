@@ -57,6 +57,8 @@ _HEADER_LEAD_SECONDS = 1.0
 _TIMEOUT_BANNER = f"{'+' * 20} Timeout {'+' * 20}"
 
 _dump_stream: IO[str] | None = None
+# Controller side: dump files already attached to a crash report.
+_reported: set[Path] = set()
 
 # The C watchdog is ONE process-global timer (``faulthandler`` keeps a single pending
 # dump). Every armed deadline -- the running test's limit plus any open bounded native
@@ -212,14 +214,16 @@ def pytest_handlecrashitem(crashitem: str, report: pytest.TestReport, sched: Any
     # One dump file per worker process (``<worker>-<pid>.log``), created empty at its
     # start; the newest is the process that just died.
     candidates = sorted(
-        Path(dump_dir).glob(f"{worker_id}-*.log"), key=lambda path: path.stat().st_mtime
+        (path for path in Path(dump_dir).glob(f"{worker_id}-*.log") if path not in _reported),
+        key=lambda path: path.stat().st_mtime,
     )
     if not candidates:
         return
     latest = candidates[-1]
+    # Remembered, never renamed: on Windows the dying worker can still hold the file.
+    _reported.add(latest)
     worker_pid = int(latest.stem.rsplit("-", 1)[1])
     text = latest.read_text(encoding="utf-8", errors="replace")
-    latest.rename(latest.with_suffix(".reported"))
     if not text:
         text = (
             f"(no hang dump from {worker_id}: the worker died without reaching a time "
