@@ -25,6 +25,7 @@ step then resolves ``context_max`` through the community-catalog cascade
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -53,6 +54,7 @@ from clio_agent.providers.handshake.model import (
     DiscoveredModel,
     DiscoveredModelFacts,
 )
+from clio_agent.providers.handshake.vllm_tools import vllm_tools_fact
 
 #: ``provider_kind`` values that authenticate via Anthropic's header scheme
 #: (``x-api-key`` + a pinned API version) rather than a bearer token.
@@ -299,6 +301,12 @@ class OpenAICompatHandshake(ProviderHandshake):
             model_key = deployment.model_key.value or model_id
             model = vllm_dialect.build_model_capabilities(model_key, raw)
             model = await self._compare_against_native_context(model, deployment, model_id)
+            # Tool calling depends on vLLM launch flags no endpoint reports:
+            # verify it on the server (once per server process).
+            deployment = replace(
+                deployment,
+                tools_enabled=await vllm_tools_fact(client, ctx.api_base, model_id, ctx.api_key),
+            )
         elif dialect == openrouter_dialect.DIALECT:
             model, deployment = openrouter_dialect.parse_model_row(
                 raw, provider_id=ctx.provider_id, api_base=ctx.api_base
