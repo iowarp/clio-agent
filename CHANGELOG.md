@@ -67,6 +67,15 @@ TUI/HTTP surface aren't tracked here.
   no usable key) lost every fact except limits, tools, modalities and task, so
   its models showed no reasoning, structured output, router, free or pricing
   tags. The full records are now kept and restored.
+- The Desktop SSH transport socket (`/v1/infrastructure/targets/{id}/transport`)
+  says why it refused an attachment (#1478). A client that offers
+  `clio.infrastructure.v2` gets the handshake, then a close frame with code
+  4401/4404/4409 and reason `authentication_required`, `target_not_found` or
+  `target_not_ssh`; an admitted v2 client first receives
+  `{"type": "attached", "target_id": ...}`. `clio.infrastructure.v1` clients keep
+  the pre-handshake refusal, and every refusal is logged. Admission now follows
+  the HTTP surface's trust rule: a loopback peer needs no bearer token, so a
+  Desktop attached to an already-running local CLIO (empty token) can deploy.
 
 ## [0.9.4.18] — 2026-09-26
 
