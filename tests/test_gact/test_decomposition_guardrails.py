@@ -136,7 +136,9 @@ from clio_agent.gact.app import build_app
 # owned by routes/local_servers.py and registered from provider_catalog_routes.
 # 272 -> 275: provider SDK components (GET ./components, POST+GET ./components/update),
 # owned by routes/provider_components.py, registered from provider_catalog_routes.
-EXPECTED_ROUTE_METHOD_PAIRS = 275
+# 275 -> 276: GET /v1/desktop/attach (token-enforcement check for an attaching desktop),
+# owned by routes/lifecycle.py.
+EXPECTED_ROUTE_METHOD_PAIRS = 276
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
