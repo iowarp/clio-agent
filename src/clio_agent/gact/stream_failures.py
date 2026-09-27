@@ -13,7 +13,9 @@ from typing import Any
 
 from clio_agent.providers.claude_code_errors import (
     CLAUDE_CODE_INSTALL_FAILED_MESSAGE,
+    CLAUDE_CODE_SIGNED_OUT_MESSAGE,
     contains_claude_code_dependency_error,
+    contains_claude_code_signed_out,
 )
 from clio_agent.providers.codex.errors import (
     CODEX_AUTHENTICATION_ERROR_MESSAGE,
@@ -26,8 +28,13 @@ from clio_agent.providers.codex.errors import (
 # kinds of leaf reports the Claude Code message.
 CLI_PROVIDER_FAILURE_MESSAGES: tuple[str, ...] = (
     CODEX_AUTHENTICATION_ERROR_MESSAGE,
+    CLAUDE_CODE_SIGNED_OUT_MESSAGE,
     CLAUDE_CODE_INSTALL_FAILED_MESSAGE,
 )
+
+#: ``details.reason`` of a ``provider_error`` whose provider refused the
+#: sign-in (#1454): the client offers that provider's sign-in action.
+PROVIDER_AUTH_REQUIRED_REASON = "provider_auth_required"
 
 
 def cli_provider_stream_failure(exc: BaseException, *, provider_id: str) -> str | None:
@@ -49,12 +56,90 @@ def cli_provider_stream_failure(exc: BaseException, *, provider_id: str) -> str 
     """
     from clio_agent.gact.providers.config import _provider_runtime_kind  # noqa: PLC0415
 
+    auth = provider_auth_failure(exc, provider_id=provider_id)
+    if auth is not None:
+        return auth
     kind = _provider_runtime_kind(provider_id)
-    if kind == "codex" and contains_codex_authentication_error(exc):
-        return CODEX_AUTHENTICATION_ERROR_MESSAGE
     if kind == "claude_code" and contains_claude_code_dependency_error(exc):
         return CLAUDE_CODE_INSTALL_FAILED_MESSAGE
     return None
+
+
+def provider_auth_failure(exc: BaseException, *, provider_id: str) -> str | None:
+    """The one-line message when the configured provider refused the sign-in.
+
+    Scoped to the configured provider's kind, like
+    :func:`cli_provider_stream_failure`: the Codex detector matches any "401"
+    text, so it only applies when Codex is the provider that ran.
+
+    Args:
+        exc: The exception the turn's provider call raised.
+        provider_id: The configured provider's catalog id ("" when unknown).
+
+    Returns:
+        The provider's sign-in message, or ``None`` when ``exc`` is not a
+        refused sign-in of that provider.
+    """
+    from clio_agent.gact.providers.config import _provider_runtime_kind  # noqa: PLC0415
+
+    kind = _provider_runtime_kind(provider_id) if provider_id else ""
+    if kind == "codex" and contains_codex_authentication_error(exc):
+        return CODEX_AUTHENTICATION_ERROR_MESSAGE
+    if kind == "claude_code" and contains_claude_code_signed_out(exc):
+        return CLAUDE_CODE_SIGNED_OUT_MESSAGE
+    return None
+
+
+def _turn_provider_id(state: Any) -> str:
+    """The provider the turn ran on, as its accepted user message recorded it."""
+    metadata = getattr(getattr(state, "user_msg", None), "metadata", None)
+    model = metadata.get("effective_model") if isinstance(metadata, dict) else None
+    return str(model.get("provider_id") or "") if isinstance(model, dict) else ""
+
+
+def _auth_error_info(provider_id: str, message: str, details: dict[str, Any]) -> Any:
+    """The typed ``provider_error`` for a refused sign-in: one line + the provider."""
+    from clio_agent.gact.types import ErrorInfo  # noqa: PLC0415
+
+    return ErrorInfo(
+        error="provider_error",
+        message=message,
+        details={
+            **details,
+            "reason": PROVIDER_AUTH_REQUIRED_REASON,
+            "provider_id": provider_id,
+            "provider_label": provider_label(provider_id),
+            "recovery_actions": ["provider_sign_in", "retry"],
+        },
+        recoverable=True,
+    )
+
+
+def streamed_turn_error_info(state: Any, exc: BaseException, partial_answer: str) -> Any:
+    """The typed error for a turn whose streamed provider call failed.
+
+    Args:
+        state: The turn's ``TurnState`` (its user message names the provider).
+        exc: The ``_StreamingOutputError`` the streaming pump raised; its
+            ``__cause__`` is the provider's own exception.
+        partial_answer: Text the stream already showed ("" when none).
+
+    Returns:
+        The :class:`~clio_agent.gact.types.ErrorInfo` for the failed turn.
+    """
+    from clio_agent.gact.types import ErrorInfo  # noqa: PLC0415
+
+    original = exc.__cause__ or exc
+    details = {
+        "original_error": type(original).__name__,
+        "partial_output": bool(partial_answer),
+        "stream_source": ("live" if partial_answer else "batch"),
+    }
+    provider_id = _turn_provider_id(state)
+    auth = provider_auth_failure(original, provider_id=provider_id)
+    if auth is not None:
+        return _auth_error_info(provider_id, auth, details)
+    return ErrorInfo(error="provider_error", message=str(exc), details=details, recoverable=True)
 
 
 def _provider_error_leaf(exc: BaseException) -> Any | None:
@@ -171,9 +256,10 @@ def agent_forward_error_info(state: Any, exc: BaseException) -> Any:
     """
     from clio_agent.gact.types import ErrorInfo  # noqa: PLC0415
 
-    metadata = getattr(getattr(state, "user_msg", None), "metadata", None)
-    model = metadata.get("effective_model") if isinstance(metadata, dict) else None
-    provider_id = str(model.get("provider_id") or "") if isinstance(model, dict) else ""
+    provider_id = _turn_provider_id(state)
+    auth = provider_auth_failure(exc, provider_id=provider_id)
+    if auth is not None:
+        return _auth_error_info(provider_id, auth, {"original_error": type(exc).__name__})
     return ErrorInfo(
         error="agent_error",
         message=turn_failure_message(
@@ -218,6 +304,9 @@ def describe_stream_exc(exc: BaseException, *, provider_id: str) -> str:
 
 __all__ = [
     "CLI_PROVIDER_FAILURE_MESSAGES",
+    "PROVIDER_AUTH_REQUIRED_REASON",
+    "provider_auth_failure",
+    "streamed_turn_error_info",
     "cli_provider_stream_failure",
     "describe_stream_exc",
     "agent_forward_error_info",

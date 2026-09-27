@@ -96,7 +96,8 @@ _FORBIDDEN_KEYS = frozenset(
         "onChange",
     }
 )
-_URL_KEYS = frozenset({"url", "uri", "datauri"})
+#: Property names whose string literals are URLs (checked case-insensitively).
+A2UI_URL_KEYS = frozenset({"url", "uri", "datauri"})
 _MERMAID_EXECUTABLE_PATTERN = re.compile(
     r"<|%%\{|\bclick\b|\bhref\b|javascript:|data:text/html|url\s*\(",
     re.IGNORECASE,
@@ -210,10 +211,25 @@ def validate_event_context(
         raise A2UIEventContextInvalidError(pointer, failure.message)
 
 
+#: Schemes a URL-keyed A2UI literal may carry. ``artifact:``/``resource:`` are
+#: CLIO references the viewer resolves through the service (A2 remote media).
+A2UI_URL_SCHEMES = frozenset({"https", "artifact", "resource"})
+
+
+def is_allowed_a2ui_url(value: str) -> bool:
+    """Whether ``value`` is an allowed A2UI URL: an allowed scheme or a bare CLIO id."""
+
+    from clio_agent.gact.artifacts.references import is_bare_reference_id  # noqa: PLC0415
+
+    return is_bare_reference_id(value) or urlsplit(value).scheme.lower() in A2UI_URL_SCHEMES
+
+
 def _validate_url(value: str) -> None:
-    parsed = urlsplit(value)
-    if parsed.scheme.lower() not in {"https", "artifact", "resource"}:
-        raise A2UIValidationError("A2UI URLs must use an allowed non-executable scheme")
+    if not is_allowed_a2ui_url(value):
+        raise A2UIValidationError(
+            "A2UI URLs must use an allowed non-executable scheme (https:, artifact:, "
+            f"resource:, or a bare artifact_/res_ id); got {value[:120]!r}"
+        )
 
 
 def _validate_function_call(value: Mapping[str, Any], *, entry: "CatalogEntry | None") -> None:
@@ -264,7 +280,7 @@ def validate_value(
     if isinstance(value, str):
         if len(value) > max_string:
             raise A2UIValidationError("A2UI string exceeds the size limit")
-        if key.lower() in _URL_KEYS:
+        if key.lower() in A2UI_URL_KEYS:
             _validate_url(value)
         return
     if isinstance(value, list):
@@ -319,8 +335,11 @@ def validate_value(
 
 
 __all__ = [
+    "A2UI_URL_KEYS",
+    "A2UI_URL_SCHEMES",
     "A2UIFunctionNotInCatalogError",
     "A2UIValidationError",
+    "is_allowed_a2ui_url",
     "validate_components",
     "validate_value",
 ]

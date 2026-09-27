@@ -571,7 +571,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # merge DECISION itself is a one-line call into the owner module
     # ``artifacts/dedup_enrichment.py`` (``merged_annotation``) — only the
     # threading landed here. Ratchets back with the #714 decomposition.
-    "src/clio_agent/gact/routes/artifacts.py": 928,  # provider-owned serve rung (logic in artifacts/storage.py) (#1247)
+    "src/clio_agent/gact/routes/artifacts.py": 926,  # provider-owned serve rung (logic in artifacts/storage.py) (#1247)
     # #948 S4: +10 for round-tripping the module: declaration in the overlay
     # export (an exported react parent re-loaded as predict and failed the new
     # hierarchy validation).
@@ -684,7 +684,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # P5 (request builder): the static `supports_vision` wire-metadata key in
     # `_provider_to_wire` is deleted (brief 9.1): ratcheted to 1116.
     # P4b adds the 3-line surrogate refusal on the chat-model bind: 1116 -> 1119.
-    "src/clio_agent/gact/routes/providers.py": 1098,
+    # 1098 -> 1096 (#1455): Claude Code readiness reads gact/claude_code_auth_reprobe.py.
+    "src/clio_agent/gact/routes/providers.py": 1096,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (merged to develop with the size check red, baseline 1478 -> actual); ratchet
     # back below the pre-#947 count with the mcp_app_* owner-module split (see the
@@ -971,7 +972,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # +2 comment, +1 to_thread call); the bridge itself stays in claude_code_sdk_pool.py.
     # 866 -> 864 (S2 B2 rework): entry_for()'s call site drops the now-dead
     # thinking=/system_prompt= peek kwargs (the warm pool they fed is deleted).
-    "src/clio_agent/providers/claude_code_litellm.py": 862,
+    # 862 -> 838 (#1454): failed-result classification moved to the owner module
+    # providers/claude_code_result_errors.py.
+    "src/clio_agent/providers/claude_code_litellm.py": 838,
     # (process_census.py's entry retired: 711 lines, back under the flat 800 cap.)
     # NEW entry (#1305 review round): crossed the flat 800 cap (800 -> 825)
     # for the F2/F4/F6b fixes an adversarial review demanded on
