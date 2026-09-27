@@ -353,7 +353,7 @@ def _clio_process_hygiene_audit(request, _clio_private_cte_daemon):
 
 
 @pytest.fixture(autouse=True)
-def _private_daemon_survives_the_test(_clio_private_cte_daemon):
+def _check_private_daemon_survives(_clio_private_cte_daemon):
     """Fail the test that stops or kills this worker's shared private clio-core daemon.
 
     Every cte leg in this worker attaches to that one daemon, and the attach is once
@@ -362,6 +362,10 @@ def _private_daemon_survives_the_test(_clio_private_cte_daemon):
     gone (seen on CI: ``test_live_edge`` [cte] stuck in the post-attach probe with the
     pidfile missing). Checking the pidfile identity around each test names the culprit
     instead of the victim.
+
+    Named to sort before every autouse fixture that requests ``monkeypatch`` (pytest
+    orders a conftest's autouse fixtures by name): set up first, it is torn down LAST,
+    after the test's patches (``Path.open``, psutil, storage helpers) are undone.
     """
     state_dir = _clio_private_cte_daemon.state_dir if _clio_private_cte_daemon else None
     before = private_daemon_identity(state_dir) if state_dir is not None else None

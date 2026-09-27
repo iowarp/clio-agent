@@ -26,6 +26,7 @@ tests default to ``CLIO_ARC_STORE=local`` anyway.
 
 from __future__ import annotations
 
+import os
 import random
 import re
 import shutil
@@ -325,7 +326,11 @@ def private_daemon_identity(state_dir: Path) -> tuple[int, float] | None:
     ``_pid_alive``) and their patches can still be active when this runs at teardown.
     """
     try:
-        pid = int((state_dir / "clio-runtime.pid").read_text(encoding="utf-8").split()[0])
+        fd = os.open(state_dir / "clio-runtime.pid", os.O_RDONLY)
+        try:
+            pid = int(os.read(fd, 256).split()[0])
+        finally:
+            os.close(fd)
     except (OSError, IndexError, ValueError):
         return None
     try:
