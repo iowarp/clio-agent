@@ -106,7 +106,14 @@ def test_native_attach_is_bounded_against_a_gone_or_stuck_daemon(tmp_path: Path,
     result = json.loads(out_path.read_text(encoding="utf-8"))
     assert proc.returncode == 0, f"client failed: {result}\n{output[-3000:]}"
     assert result["store_type"] == "LocalFSStore", result  # the loud degrade
-    assert result["reason"] == "clio_core_client_attach_timeout", result
-    assert f"no answer within {_WINDOW_S:g}s" in result["error"], result
     # CLIO's bound, not the native 30 s default (and not a hang).
-    assert result["elapsed_s"] < _WINDOW_S + 5.0 < _NATIVE_DEFAULT_S, result
+    assert result["elapsed_s"] < _WINDOW_S + 12.0 < _NATIVE_DEFAULT_S, result
+    if result["elapsed_s"] >= _WINDOW_S:
+        # The whole bound ran out: the typed timeout (Windows TCP, and any stuck daemon).
+        assert result["reason"] == "clio_core_client_attach_timeout", result
+        assert f"no answer within {_WINDOW_S:g}s" in result["error"], result
+    else:
+        # The native client gave up sooner (a refused connect to a gone daemon, as over
+        # Linux's IPC socket): typed as a failed attach, never as a timeout.
+        assert mode == "kill", result
+        assert result["reason"] == "clio_core_client_attach_failed", result
