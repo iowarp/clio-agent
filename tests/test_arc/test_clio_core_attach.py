@@ -9,6 +9,7 @@ re-ran the client init. Binding-free: the native modules are faked in ``sys.modu
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 import types
@@ -26,6 +27,7 @@ from clio_agent.arc.clio_core_attach import (
 )
 from clio_agent.arc.init_degradation import (
     CLIO_CORE_CLIENT_ATTACH_FAILED,
+    CLIO_CORE_CLIENT_ATTACH_TIMEOUT,
     CLIO_CORE_POST_ATTACH_PROBE_TIMEOUT,
     classify_init_failure,
     reset_arc_init_degradation,
@@ -161,6 +163,45 @@ def test_attach_native_client_noop_on_success():
         cte, config_path="c.yaml", port=1, on_failure=lambda: calls.append(True)
     )
     assert calls == []
+
+
+def test_attach_hands_the_native_client_clios_bound(monkeypatch):
+    """The native wait is CLIO's configured stall bound, exported before ``clio_init``."""
+    monkeypatch.delenv("CLIO_WAIT_SERVER", raising=False)
+    monkeypatch.setenv("CLIO_ARC_LIVENESS_STALL_AFTER_S", "7")
+    seen: list[str | None] = []
+
+    def _init(mode, flag):
+        seen.append(os.environ.get("CLIO_WAIT_SERVER"))
+        return True
+
+    cte = SimpleNamespace(clio_init=_init, RuntimeMode=SimpleNamespace(kClient="k"))
+    clio_core_attach.attach_native_client(
+        cte, config_path="c.yaml", port=1, on_failure=lambda: None
+    )
+    assert seen == ["7"]
+    assert clio_core_attach.attach_window_s() == 7.0
+
+
+def test_an_attach_that_runs_out_its_bound_is_typed_as_a_timeout(monkeypatch):
+    """A ``False`` after the whole bound: ``clio_core_client_attach_timeout``, deregistered."""
+    monkeypatch.delenv("CLIO_WAIT_SERVER", raising=False)
+    monkeypatch.setenv("CLIO_ARC_LIVENESS_STALL_AFTER_S", "0.05")
+    deregistered: list[bool] = []
+
+    def _init(mode, flag):
+        time.sleep(0.1)  # the native wait ran out
+        return False
+
+    cte = SimpleNamespace(clio_init=_init, RuntimeMode=SimpleNamespace(kClient="k"))
+    with pytest.raises(ClioCoreAttachError) as info:
+        clio_core_attach.attach_native_client(
+            cte, config_path="c.yaml", port=1, on_failure=lambda: deregistered.append(True)
+        )
+    assert classify_init_failure(info.value) == CLIO_CORE_CLIENT_ATTACH_TIMEOUT
+    assert "no answer within 0.05s" in str(info.value)
+    assert info.value.stage == "client_init"
+    assert deregistered == [True]
 
 
 def test_config_file_port_wins_over_core_port_override(monkeypatch, tmp_path):
