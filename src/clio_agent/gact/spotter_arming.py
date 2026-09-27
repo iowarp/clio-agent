@@ -120,6 +120,12 @@ REFUSAL_WATCHER_PROJECT_MISSING = "spotter_watcher_project_missing"
 #: the three distinct operator fixes applies.
 REFUSAL_WATCHER_ENTRYPOINT_MISSING = "spotter_watcher_entrypoint_missing"
 
+#: The declaration hands the server clio's provenance config
+#: (``${CLIO_PROVENANCE_CONFIG}``), but that config cannot describe a query
+#: store the server could open (provenance disabled, Flowcept selected without
+#: its settings file, ...), so the server would exit on its config at start.
+REFUSAL_WATCHER_PROVENANCE_UNAVAILABLE = "spotter_watcher_provenance_unavailable"
+
 #: Closed set of typed arm-time refusals -> the operator-facing explanation.
 #: Every refusal :func:`validate_watcher_arming` returns is a key here, so a
 #: caller can neither invent a reason nor lose the distinction between them.
@@ -137,6 +143,10 @@ SPOTTER_ARMING_REASONS: dict[str, str] = {
         "SPOTTER surveillance was not armed: the watcher's declared MCP launcher names "
         "an entry point its project environment does not provide, so the server exits "
         "before it can offer a single tool and every protected tool call would be denied."
+    ),
+    REFUSAL_WATCHER_PROVENANCE_UNAVAILABLE: (
+        "SPOTTER surveillance was not armed: the watcher reads clio's provenance records, "
+        "and the current provenance configuration gives it no store to read."
     ),
 }
 
@@ -212,6 +222,7 @@ class WatcherArmingRefusal:
     path: str = ""
     entrypoint: str = ""
     venv_state: str = ""
+    remedy: str = ""
 
     @property
     def message(self) -> str:
@@ -239,6 +250,8 @@ class WatcherArmingRefusal:
         if self.venv_state:
             payload["venv_state"] = self.venv_state
             payload["project_dir"] = self.path
+        if self.remedy:
+            payload["remedy"] = self.remedy
         return payload
 
 
@@ -264,7 +277,7 @@ def _record_skip(reason: str, blueprint_id: str, *, server: str = "", error: str
 
 def _declared_watcher_servers(
     app: "FastAPI", blueprint_id: str, *, session_id: str = "", workspace_id: str = ""
-) -> Mapping[str, Any]:
+) -> tuple[Mapping[str, Any], Mapping[str, Any], Optional[Path]]:
     """Return the watcher blueprint's declared ``mcp_servers`` map (raw declarations).
 
     Resolved by INSTALLED id, deterministically: the watcher child is bound to
@@ -275,8 +288,11 @@ def _declared_watcher_servers(
     (``<workspace>/.clio/agent-blueprints`` alongside the global root), so a
     workspace-local watcher pack is seen here exactly as it will be mounted.
 
-    Returns an empty mapping — typed-logged, never silent — when the blueprint
-    is not installed, declares no servers, or discovery itself fails.
+    Returns ``(servers, raw_declarations, workspace_root)``: the declarations
+    with clio-supplied placeholders substituted, the declarations as written,
+    and the scan root. Both mappings are empty — typed-logged, never silent —
+    when the blueprint is not installed, declares no servers, or discovery
+    itself fails.
     """
 
     from clio_agent.gact.agent_blueprints import discover_agent_blueprints  # noqa: PLC0415
@@ -288,15 +304,16 @@ def _declared_watcher_servers(
         blueprints = discover_agent_blueprints(cwd=cwd)
     except Exception as exc:  # noqa: BLE001 - discovery failure must not fail the route
         _record_skip(_SKIP_DISCOVERY_FAILED, blueprint_id, error=repr(exc))
-        return {}
+        return {}, {}, cwd
     blueprint = next((row for row in blueprints if row.id == blueprint_id), None)
     if blueprint is None:
         _record_skip(_SKIP_BLUEPRINT_NOT_INSTALLED, blueprint_id)
-        return {}
-    servers = blueprint_server_map(blueprint)
+        return {}, {}, cwd
+    servers = blueprint_server_map(blueprint, app=app, workspace_root=cwd)
     if not servers:
         _record_skip(_SKIP_NO_DECLARED_SERVERS, blueprint_id)
-    return servers
+    raw = blueprint.metadata.get("mcp_servers")
+    return servers, (raw if isinstance(raw, Mapping) else {}), cwd
 
 
 def _unset_variable(errors: Sequence[str]) -> str:
@@ -392,6 +409,7 @@ def _entrypoint_refusal(
         path=launcher.project_dir,
         entrypoint=launcher.entrypoint,
         venv_state=state,
+        remedy=f"run 'uv sync --project {launcher.project_dir}'",
     )
 
 
@@ -410,12 +428,20 @@ def _refusal_for_declaration(
         name, declaration, source=f"agent-blueprint:{blueprint_id}", env=env
     )
     if spec.validation_errors:
+        variable = _unset_variable(spec.validation_errors)
         return WatcherArmingRefusal(
             reason=REFUSAL_WATCHER_UNMOUNTABLE,
             detail="; ".join(spec.validation_errors),
             blueprint_id=blueprint_id,
             server=name,
-            variable=_unset_variable(spec.validation_errors),
+            variable=variable,
+            remedy=(
+                f"set the {variable} environment variable for the clio service, or update "
+                f"the {blueprint_id} Agent Blueprint"
+                if variable
+                else f"fix the {name!r} MCP server declaration in the {blueprint_id} "
+                "Agent Blueprint"
+            ),
         )
     if spec.transport != "stdio":
         return None
@@ -430,6 +456,7 @@ def _refusal_for_declaration(
                 blueprint_id=blueprint_id,
                 server=name,
                 path=candidate,
+                remedy=f"reinstall the {blueprint_id} Agent Blueprint",
             )
     return _entrypoint_refusal(blueprint_id, name, spec, env=env)
 
@@ -468,13 +495,49 @@ def validate_watcher_arming(
     resolved_id = blueprint_id or _watcher_blueprint_id()
     if not resolved_id:
         return None
-    servers = _declared_watcher_servers(
+    servers, raw_declarations, workspace_root = _declared_watcher_servers(
         app, resolved_id, session_id=session_id, workspace_id=workspace_id
     )
     for name, declaration in servers.items():
         refusal = _refusal_for_declaration(resolved_id, str(name), declaration, env=env)
         if refusal is not None:
             return refusal
+    return _provenance_refusal(app, resolved_id, raw_declarations, workspace_root)
+
+
+def _provenance_refusal(
+    app: "FastAPI",
+    blueprint_id: str,
+    raw_declarations: Mapping[str, Any],
+    workspace_root: Optional[Path],
+) -> Optional[WatcherArmingRefusal]:
+    """Refuse when a server is handed clio's provenance config and it is unusable.
+
+    Binding only for a declaration that references ``${CLIO_PROVENANCE_CONFIG}``:
+    that server's config IS the handoff, so an unmet handoff requirement is a
+    certain start-up failure, not a guess.
+    """
+
+    from clio_agent.gact.blueprint_placeholders import (  # noqa: PLC0415
+        PROVENANCE_CONFIG_VAR,
+        references_variable,
+    )
+    from clio_agent.gact.provenance.handoff import build_provenance_handoff  # noqa: PLC0415
+
+    for name, declaration in raw_declarations.items():
+        if not references_variable(declaration, PROVENANCE_CONFIG_VAR):
+            continue
+        handoff = build_provenance_handoff(app, workspace_root=workspace_root)
+        if handoff.usable:
+            return None
+        problem = handoff.problems[0]
+        return WatcherArmingRefusal(
+            reason=REFUSAL_WATCHER_PROVENANCE_UNAVAILABLE,
+            detail=f"MCP server {str(name)!r}: {problem.detail} ({problem.code})",
+            blueprint_id=blueprint_id,
+            server=str(name),
+            remedy=problem.remedy,
+        )
     return None
 
 
