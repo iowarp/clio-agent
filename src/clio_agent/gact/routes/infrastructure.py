@@ -14,11 +14,15 @@ from clio_agent.gact.infrastructure.models import (
     UpdateTargetRequest,
 )
 from clio_agent.gact.infrastructure.runtime import InfrastructureRuntime
+from clio_agent.gact.infrastructure.served_defaults import ollama_context_default_lookup
 from clio_agent.gact.infrastructure.store import InfrastructureStore
 from clio_agent.gact.infrastructure.transport import InfrastructureTransportRegistry
 from clio_agent.gact.infrastructure.transport_admission import (
     refuse_transport,
     transport_refusal,
+)
+from clio_agent.providers.capabilities.server_defaults import (
+    register_context_default_lookup,
 )
 
 
@@ -38,6 +42,9 @@ def register_infrastructure_routes(app: FastAPI, state_root: Path) -> None:
     app.state.infrastructure_store = durable_store
     app.state.infrastructure_transports = transports
     app.state.infrastructure_runtime = InfrastructureRuntime(durable_store, transports)
+    # Discovery learns the default context a CLIO-deployed Ollama applies before
+    # a model loads (no Ollama endpoint reports it).
+    register_context_default_lookup("infrastructure", ollama_context_default_lookup(durable_store))
 
     def store() -> InfrastructureStore:
         return app.state.infrastructure_store

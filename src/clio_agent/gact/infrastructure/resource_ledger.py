@@ -279,7 +279,16 @@ def removal_commands(owned: list[OwnedResource], os_name: str) -> list[CommandSp
     with a typed warning so the rest of the ledger can still be removed.
     """
 
-    ordered = sorted(enumerate(owned), key=lambda item: (_REMOVAL_ORDER[item[1].kind], -item[0]))
+    # Running things first; within a kind newest first -- except parents,
+    # deepest first, so an only-if-empty rmdir of a child always precedes its
+    # parent however the rows were merged.
+    ordered = sorted(
+        enumerate(owned),
+        key=lambda item: (
+            _REMOVAL_ORDER[item[1].kind],
+            -len(item[1].ref) if item[1].kind == "parent_directory" else -item[0],
+        ),
+    )
     commands: list[CommandSpec] = []
     for _, row in ordered:
         if row.kind == "container" and row.runtime:

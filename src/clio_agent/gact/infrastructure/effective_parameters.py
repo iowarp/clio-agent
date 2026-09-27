@@ -30,6 +30,7 @@ from typing import Any
 from clio_agent.gact.infrastructure.container_runtime import (
     INSPECT_SEPARATOR,
     inspect_config_command,
+    log_line_command,
     logs_command,
 )
 from clio_agent.gact.infrastructure.models import (
@@ -152,8 +153,38 @@ def parse_vllm_metrics(text: str | None) -> ServerReport:
     return report
 
 
+#: vLLM logs its RESOLVED engine config once at startup ("Initializing a V1 LLM
+#: engine (v0.28.0) with config: model='...', ..., dtype=torch.bfloat16, ...").
+VLLM_ENGINE_CONFIG_MARKER = "with config:"
+_VLLM_CONFIG_KEYS = {
+    "dtype": "dtype",
+    "tensor_parallel_size": "tensor_parallel_size",
+    "pipeline_parallel_size": "pipeline_parallel_size",
+}
+
+
+def parse_vllm_engine_config(line: str) -> ServerReport:
+    """vLLM's startup engine config: the dtype ``auto`` resolved to, and the parallel layout."""
+
+    text = unwrap(line)
+    if VLLM_ENGINE_CONFIG_MARKER not in text:
+        return {}
+    report: ServerReport = {}
+    for key, pid in _VLLM_CONFIG_KEYS.items():
+        found = re.search(rf"[,\s]{key}=([^,\s]+)", text)
+        if found:
+            value = found.group(1).removeprefix("torch.")
+            report[pid] = (value, f"vLLM engine config (startup log): {key}={found.group(1)}")
+    return report
+
+
 _OLLAMA_CONFIG = re.compile(r'msg="server config".*?env="map\[(?P<env>.*?)\]"')
 _OLLAMA_KEYS = {"OLLAMA_NUM_PARALLEL": "num_parallel", "OLLAMA_CONTEXT_LENGTH": "context_length"}
+#: Logged at startup when OLLAMA_CONTEXT_LENGTH is unset (0): the context Ollama
+#: then applies to every model it loads without a Modelfile num_ctx.
+_OLLAMA_VRAM_DEFAULT = re.compile(
+    r'msg="vram-based default context".*?default_num_ctx=(?P<ctx>\d+)'
+)
 
 
 def parse_ollama_server_config(logs: str) -> ServerReport:
@@ -166,6 +197,13 @@ def parse_ollama_server_config(logs: str) -> ServerReport:
             found = re.search(rf"(?:^|\s){key}:(\S*)", match.group("env"))
             if found:
                 report[pid] = (found.group(1), "Ollama server config (startup log)")
+    if report.get("context_length", ("",))[0] in {"", "0"}:
+        automatic = _OLLAMA_VRAM_DEFAULT.search(unwrap(logs))
+        if automatic:
+            report["context_length"] = (
+                automatic.group("ctx"),
+                "Ollama automatic default (VRAM-based, startup log; OLLAMA_CONTEXT_LENGTH unset)",
+            )
     return report
 
 
@@ -312,6 +350,11 @@ async def observe_effective(
     elif engine == "vllm":
         report.update(parse_vllm_models(await http_get("/v1/models")))
         report.update(parse_vllm_metrics(await http_get("/metrics")))
+        if runtime is not None:
+            startup = await run(
+                log_line_command(runtime, container_name, VLLM_ENGINE_CONFIG_MARKER)
+            )
+            report.update(parse_vllm_engine_config(startup.stdout))
     else:
         if runtime is not None:
             logs = await run(logs_command(runtime, container_name, lines=400))

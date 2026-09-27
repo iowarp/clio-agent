@@ -14,6 +14,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
+from clio_agent.gact.catalog_context import context_wire
 from clio_agent.gact.modality_evidence import DOCUMENTED_MODALITY_REASONS
 from clio_agent.gact.types import LMProviderPreset
 from clio_agent.providers import model_discovery
@@ -260,9 +261,6 @@ def model_catalog_row(
     deployment = invalidation.get_deployment_capabilities(
         deployment_key(report.provider_id, report.api_base, profile.id)
     )
-    loaded_context_window = (
-        deployment.context_served.value if deployment and deployment.context_served.known else None
-    )
     # Three-valued: a row whose discovery never established its modalities says
     # so (``modalities: []`` + ``modality_evidenced: false`` + the provenance
     # reason) instead of presenting "text" -- a gateway /models listing that
@@ -326,8 +324,8 @@ def model_catalog_row(
             preset.id, preset.provider, report.provider_id, report.api_base, profile.id, effective
         ),
         "native_tool_calling": bool(effective.tools.value),
-        "context_window": effective.context.value,
-        "loaded_context_window": loaded_context_window,
+        # context_window + loaded/native + the basis it rests on (catalog_context).
+        **context_wire(effective, deployment),
         "output_limit": effective.output_max.value,
         "availability": availability,
         "evidence": {

@@ -474,9 +474,15 @@ def combine_capabilities(
             "endpoint",
         ),
     )
+    # What is served now bounds the context; before the model loads, what is
+    # configured to apply bounds it (decided_by "configured"); with neither,
+    # only the model's own ceiling is known (decided_by "model": native).
+    served = deployment.context_served if deployment else None
     context = _min_known(
         (model.context_max if model else None, "model"),
-        (deployment.context_served if deployment else None, "deployment"),
+        (served, "deployment")
+        if served is not None and served.known
+        else (deployment.context_configured if deployment else None, "configured"),
     )
     output_max = _min_known(
         (model.output_max if model else None, "model"),

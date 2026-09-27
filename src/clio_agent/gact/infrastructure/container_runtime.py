@@ -322,6 +322,31 @@ def logs_command(runtime: RuntimeName, name: str, lines: int = 80) -> CommandSpe
     return CommandSpec(program=runtime, args=["logs", "--tail", str(lines), name])
 
 
+def log_line_command(runtime: RuntimeName, name: str, marker: str) -> CommandSpec:
+    """The first line of the server's whole log containing ``marker`` (a startup line).
+
+    Startup facts (vLLM's resolved engine config) are logged once, before any
+    request, so a ``--tail`` window loses them on a busy server.
+    """
+
+    if runtime == "apptainer":
+        return CommandSpec(
+            program="sh",
+            args=[
+                "-c",
+                'cat "$HOME"/.apptainer/instances/logs/*/"$USER"/"$0".out '
+                '"$HOME"/.apptainer/instances/logs/*/"$USER"/"$0".err 2>/dev/null '
+                '| grep -m1 -F -- "$1"; true',
+                name,
+                marker,
+            ],
+        )
+    return CommandSpec(
+        program="sh",
+        args=["-c", '"$0" logs "$1" 2>&1 | grep -m1 -F -- "$2"; true', runtime, name, marker],
+    )
+
+
 def exec_command(
     runtime: RuntimeName, name: str, argv: list[str], timeout: float = 1800
 ) -> CommandSpec:

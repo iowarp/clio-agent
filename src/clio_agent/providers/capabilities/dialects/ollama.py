@@ -353,21 +353,30 @@ def build_deployment_extra(
     model_id: str,
     show_parameters: str | None,
     ps_payload: Any,
+    server_default: Fact[int] | None = None,
 ) -> DeploymentCapabilities:
     """The DEPLOYMENT half of ``/api/show`` + ``/api/ps`` (brief Part 6 Ollama section).
 
-    ``context_served`` is the smaller of the Modelfile's ``num_ctx`` and the
-    context actually loaded per ``/api/ps`` (clio-coder ``local-native/ollama.ts``);
-    when only one is known, that one stands (never treated as a hard ceiling
-    from the other side).
+    ``context_served`` is the context of the model as loaded right now
+    (``/api/ps``) -- what Ollama actually serves. Before it loads nothing is
+    served; ``context_configured`` is then what will apply when it does: the
+    Modelfile's ``num_ctx``, else ``server_default`` (the server's own default,
+    which no Ollama endpoint reports -- see
+    :mod:`clio_agent.providers.capabilities.server_defaults`).
     """
     observed_at = _now_iso()
     params = parse_modelfile_parameters(show_parameters)
     num_ctx = _positive_int(params.get("num_ctx"))
-    loaded_ctx = loaded_context_from_ps(ps_payload, model_id)
-    candidates = [c for c in (num_ctx, loaded_ctx) if c is not None]
-    context_served = min(candidates) if candidates else None
+    context_served = loaded_context_from_ps(ps_payload, model_id)
+    loaded_ctx = context_served
     digest = digest_from_ps(ps_payload, model_id)
+    configured: Fact[int] = unknown()
+    if context_served is None and num_ctx is not None:
+        configured = Fact(
+            num_ctx, "server_report", observed_at, "ollama /api/show Modelfile num_ctx (applies when loaded)"
+        )
+    elif context_served is None and server_default is not None and server_default.known:
+        configured = server_default
 
     model_key_fact = deployment_model_key_fact(model_id, observed_at=observed_at)
 
@@ -381,11 +390,12 @@ def build_deployment_extra(
                 context_served,
                 "server_report",
                 observed_at,
-                "ollama min(/api/show parameters.num_ctx, /api/ps context_length)",
+                "ollama /api/ps context_length (loaded)",
             )
             if context_served is not None
             else unknown()
         ),
+        context_configured=configured,
         fingerprint=deployment_fingerprint(digest, loaded_ctx),
     )
 

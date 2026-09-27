@@ -136,7 +136,7 @@ class FakeLinuxTarget:
             assert volume in self.dirs, "the cache directory must exist before the run"
             self.containers[name] = {
                 "running": not self.exit_on_start,
-                "args": args[args.index(IMAGE) + 1 :],
+                "args": args[next(i for i, a in enumerate(args) if a in self.images) + 1 :],
                 "env": env,
             }
             return CommandResult(exit_code=0, stdout="0123abcd\n")
@@ -442,3 +442,76 @@ async def test_reinstall_after_a_reload_uses_the_installed_configuration(tmp_pat
         ServiceActionRequest(target_id=target_id, action="uninstall", variant_id="cpu"),
     )
     assert IMAGE not in target.images
+
+
+def test_discovery_learns_the_default_context_of_a_running_managed_ollama(tmp_path: Path) -> None:
+    from clio_agent.gact.infrastructure.models import EffectiveParameter, ServiceRecord
+    from clio_agent.gact.infrastructure.served_defaults import ollama_context_default_lookup
+
+    store = InfrastructureStore(tmp_path / "infrastructure.json")
+    lookup = ollama_context_default_lookup(store)
+    record = ServiceRecord(
+        id="ares:ollama",
+        service_id="ollama",
+        target_id="ares",
+        variant_id="cpu",
+        state="running",
+        connection_url="http://127.0.0.1:58473",
+        effective_parameters=[
+            EffectiveParameter(
+                id="context_length",
+                label="Context length",
+                value="4096",
+                source="server_report",
+                detail="Ollama server config (startup log)",
+            )
+        ],
+    )
+    store.put_service(record)
+
+    fact = lookup("http://127.0.0.1:58473")
+    assert fact is not None and fact.value == 4096
+    assert "CLIO-managed Ollama on ares" in fact.detail
+    assert lookup("http://127.0.0.1:9") is None
+    store.put_service(record.model_copy(update={"state": "stopped"}))
+    assert lookup("http://127.0.0.1:58473") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("order", [("ollama", "llama_cpp"), ("llama_cpp", "ollama")])
+async def test_parents_shared_by_two_deployments_go_with_the_last_uninstall(
+    tmp_path: Path, order: tuple[str, str]
+) -> None:
+    """Live on ares: vLLM created ~/.local/share/clio/services/<host>, Ollama found it
+    there; vLLM's uninstall could not remove it (not empty), Ollama had not recorded
+    it, so it outlived both."""
+
+    target = FakeLinuxTarget()
+    before = target.snapshot()
+    runtime, store, target_id = _runtime(tmp_path, target)
+    first = await _finish(runtime, store, "ollama", _install(target_id))
+    assert first.state == "succeeded", first.error
+    second = await _finish(
+        runtime,
+        store,
+        "llama_cpp",
+        ServiceActionRequest(
+            target_id=target_id,
+            action="install",
+            variant_id="cpu",
+            configuration={"hf_model": "Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M"},
+        ),
+    )
+    assert second.state == "succeeded", second.error
+
+    for service in order:
+        removed = await _finish(
+            runtime,
+            store,
+            service,
+            ServiceActionRequest(target_id=target_id, action="uninstall", variant_id="cpu"),
+        )
+        assert removed.state == "succeeded", removed.error
+
+    assert target.snapshot() == before
+

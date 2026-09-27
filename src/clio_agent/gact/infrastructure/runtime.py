@@ -17,6 +17,7 @@ import httpx
 from clio_agent.gact.infrastructure.clio_agent_deploy import ClaimResult, parse_claim
 from clio_agent.gact.infrastructure.deployment_ledger import (
     forget_created,
+    hand_over_parents,
     persist_created,
     remove_created,
 )
@@ -514,6 +515,8 @@ class InfrastructureRuntime(ExternalConnectionsMixin):
     ) -> None:
         previous = self.store.service(request.target_id, service_id)
         if request.action == "uninstall":
+            if previous is not None:
+                hand_over_parents(self.store, request.target_id, previous)
             self.store.delete_service(request.target_id, service_id)
             return
         state: ServiceState = previous.state if previous else "unknown"

@@ -182,19 +182,33 @@ def parse_v1_models_context_max(payload: Any, model_id: str) -> Fact[int]:
 
 
 def parse_v1_models_parameters(v1_models_payload: Any, model_id: str) -> Fact[ParameterCount]:
-    """``meta.n_params`` (the GGUF's exact parameter count) from ``GET /v1/models``, or unknown."""
+    """``meta.n_params`` from ``GET /v1/models``: every weight stored in the GGUF, or unknown.
+
+    That is llama.cpp's definition, and it is exact for the file. It is not
+    always the model's own count: a GGUF may store a tied embedding matrix a
+    second time as the output head (Qwen2.5-0.5B-Instruct's official GGUF:
+    630167424 stored, 494032768 in the model, the difference being exactly
+    ``n_vocab * n_embd``). The count is therefore recorded with ``scope="file"``
+    and the embedding size, so the model's own count wins where one is known
+    (:func:`clio_agent.providers.capabilities.model_sources.resolve_model_capabilities`).
+    """
     rows = v1_models_payload.get("data") if isinstance(v1_models_payload, dict) else None
     for row in rows if isinstance(rows, list) else []:
         if not isinstance(row, dict) or (model_id and row.get("id") != model_id):
             continue
         meta = row.get("meta")
         total = positive_int(meta.get("n_params")) if isinstance(meta, dict) else None
-        if total is not None:
+        if total is not None and isinstance(meta, dict):
+            vocab, embd = positive_int(meta.get("n_vocab")), positive_int(meta.get("n_embd"))
             return Fact(
-                ParameterCount(total=total),
+                ParameterCount(
+                    total=total,
+                    scope="file",
+                    embedding_elements=vocab * embd if vocab and embd else None,
+                ),
                 "server_report",
                 _now_iso(),
-                f"llama.cpp /v1/models meta.n_params={total}",
+                f"llama.cpp /v1/models meta.n_params={total}, every weight stored in this GGUF",
             )
     return unknown()
 
