@@ -225,6 +225,37 @@ def test_table_preview_source_byte_ceiling_is_configurable(
 
 
 # --------------------------------------------------------------------------- #
+# Artifact table query (gact/routes/artifact_table_query.py)
+# --------------------------------------------------------------------------- #
+
+
+def test_table_query_knobs_are_configurable() -> None:
+    """``artifacts.table_query_*`` resolve through the config file layer."""
+
+    from clio_agent.gact.routes import artifact_table_query as module
+
+    assert module.table_query_max_rows() == 50_000
+    assert module.table_query_max_source_bytes() == 256 * 1024 * 1024
+    assert module.table_query_timeout_s() == 10.0
+    assert module.table_query_cache_entries() == 16
+
+    set_config(
+        "artifacts",
+        {
+            "table_query_max_rows": 40,
+            "table_query_max_source_bytes": 1024,
+            "table_query_timeout_s": 2.5,
+            "table_query_cache_entries": 0,
+        },
+    )
+    assert module.table_query_max_rows() == 40
+    assert module.table_query_max_source_bytes() == 1024
+    assert module.table_query_timeout_s() == 2.5
+    assert module.table_query_cache_entries() == 0
+    assert module._effective_limit(None) == 40
+
+
+# --------------------------------------------------------------------------- #
 # NOTE (codex migration): the deleted Codex SDK provider spawned per-session
 # CODEX_HOME dirs (isolated credential homes) with a configurable capacity
 # (``providers.codex.credential_home_capacity``,
