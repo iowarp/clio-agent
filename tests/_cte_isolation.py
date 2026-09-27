@@ -111,15 +111,46 @@ def cte_isolation_available() -> bool:
     return storage._runtime_launcher_path(iowarp_core) is not None
 
 
-def reserve_port_block(block: int = 5) -> int:
+# Private daemon ports: below every OS ephemeral range (Linux starts at 32768, Windows
+# at 49152). The old 20000-40000 window reached into Linux's, so an outgoing connection
+# could take a port of a reserved block before the daemon bound it.
+_PORT_FLOOR = 20000
+_PORT_CEILING = 32000
+# Each xdist worker draws from its own slice, so two workers' daemons can never be
+# handed overlapping blocks: the free-port check below is only a snapshot, and nothing
+# holds a block between the check and the daemon's bind (seen on CI: a worker's daemon
+# died with "Address already in use" and that worker's first test hung in the attach).
+_WORKER_SLICES = 16
+
+
+def _worker_slice(environ: MutableMapping[str, str]) -> tuple[int, int]:
+    """``[low, high)`` port range for this process (the whole window outside xdist)."""
+    worker = environ.get("PYTEST_XDIST_WORKER", "")
+    if not worker.startswith("gw") or not worker[2:].isdigit():
+        return _PORT_FLOOR, _PORT_CEILING
+    width = (_PORT_CEILING - _PORT_FLOOR) // _WORKER_SLICES
+    low = _PORT_FLOOR + (int(worker[2:]) % _WORKER_SLICES) * width
+    return low, low + width
+
+
+def reserve_port_block(block: int = 5, environ: MutableMapping[str, str] | None = None) -> int:
     """Return a base port with ``block`` consecutive free ports, below the ephemeral range.
 
-    clio-core binds a CONTIGUOUS cluster of ports around ``networking.port``; a base in
-    the ephemeral range risks base+N colliding with a transient connection, half-binding
-    the daemon. Same approach as the offload-spill test.
+    clio-core binds a CONTIGUOUS cluster of ports around ``networking.port``; a block
+    that another process takes part of half-binds the daemon, or kills it at startup.
+    The block comes from this xdist worker's own slice of a window below every OS
+    ephemeral range, and is verified free as a whole.
+
+    Args:
+        block: Number of consecutive ports that must be free.
+        environ: Where to read ``PYTEST_XDIST_WORKER`` (``os.environ`` by default).
+
+    Returns:
+        The base port of a verified-free contiguous block.
     """
+    low, high = _worker_slice(os.environ if environ is None else environ)
     for _ in range(400):
-        base = random.randint(20000, 40000)  # noqa: S311 - port pick, not crypto
+        base = random.randrange(low, high - block)  # noqa: S311 - port pick, not crypto
         socks: list[socket.socket] = []
         ok = True
         for off in range(block):
