@@ -795,13 +795,13 @@ def test_csv_timestamps_serialize_as_iso(env: _Env) -> None:
 def test_identical_query_is_served_from_cache(env: _Env, monkeypatch: pytest.MonkeyPatch) -> None:
     artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
     calls: list[int] = []
-    real_run = route.run_table_query
+    real_run = engine.run_table_query
 
     def counting(*args: Any, **kwargs: Any) -> dict[str, Any]:
         calls.append(1)
         return real_run(*args, **kwargs)
 
-    monkeypatch.setattr(route, "run_table_query", counting)
+    monkeypatch.setattr(engine, "run_table_query", counting)
     query = {"columns": ["sensor"], "filter": [{"column": "t", "op": "eq", "value": 0}]}
 
     first = _ok(env.query(artifact_id, query))
@@ -848,7 +848,7 @@ def test_wall_clock_timeout_is_504(env: _Env, monkeypatch: pytest.MonkeyPatch) -
         time.sleep(1.0)
         return {}
 
-    monkeypatch.setattr(route, "run_table_query", slow)
+    monkeypatch.setattr(engine, "run_table_query", slow)
 
     error = _error(env.query(artifact_id, {"columns": ["t"]}), 504)
 

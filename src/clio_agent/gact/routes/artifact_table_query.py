@@ -27,12 +27,11 @@ from fastapi import FastAPI, HTTPException
 from clio_agent.gact.artifacts.cas import sha256_file
 from clio_agent.gact.artifacts.records import ArtifactRecord, ArtifactVersion
 from clio_agent.gact.artifacts.registry import get_registry
-from clio_agent.gact.artifacts.table_query import (
+from clio_agent.gact.artifacts.table_query_models import (
     DEFAULT_LIMIT,
     TableQueryError,
     TableQueryRequest,
     TableQueryTimeout,
-    run_table_query,
     table_format_for,
 )
 from clio_agent.gact.routes.artifact_table_preview import (
@@ -250,6 +249,9 @@ def _table_query(
             return {**cached, "cached": True}
 
     try:
+        # numpy/pyarrow load only when a query runs, not when the app registers routes.
+        from clio_agent.gact.artifacts.table_query import run_table_query  # noqa: PLC0415
+
         result = run_table_query(
             source, fmt, request, limit=limit, deadline=deadline, timeout_s=timeout_s
         )
