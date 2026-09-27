@@ -82,11 +82,14 @@ def test_argonne_support_reports_the_installer_failure(monkeypatch: Any) -> None
 def test_claude_code_support_installs_the_sdk_into_the_active_runtime(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
-    """Claude repair uses the fixed SDK requirement and the active interpreter."""
+    """Claude repair installs the newest release with a wheel HERE, into the active interpreter."""
 
     python = tmp_path / "python.exe"
     python.touch()
-    availability = iter((False, False, True))
+    monkeypatch.setattr(
+        dependencies, "claude_code_requirement", lambda: "claude-agent-sdk==0.2.159"
+    )
+    availability = iter((False, False, False, True))
     monkeypatch.setattr(dependencies, "_module_available", lambda _name: next(availability))
     monkeypatch.setattr(dependencies, "_uv_executable", lambda _python: "uv")
     calls: list[list[str]] = []
@@ -105,7 +108,7 @@ def test_claude_code_support_installs_the_sdk_into_the_active_runtime(
             "install",
             "--python",
             str(python),
-            "claude-agent-sdk==0.2.156",
+            "claude-agent-sdk==0.2.159",
         ]
     ]
 
@@ -127,9 +130,7 @@ class TestEnsureProviderExtra:
     """``ensure_provider_extra`` resolves the spec from metadata and only then
     hands it to a fake installer runner -- nothing real ever executes."""
 
-    def test_installs_the_metadata_resolved_spec_with_a_fake_runner(
-        self, monkeypatch: Any
-    ) -> None:
+    def test_installs_the_metadata_resolved_spec_with_a_fake_runner(self, monkeypatch: Any) -> None:
         availability = iter((False, False, True))
         monkeypatch.setattr(dependencies, "_module_available", lambda _name: next(availability))
         monkeypatch.setattr(dependencies, "_uv_executable", lambda _python: None)
@@ -158,9 +159,7 @@ class TestEnsureProviderExtra:
         run = Mock()
         monkeypatch.setattr(dependencies, "_run_install_command", run)
 
-        with pytest.raises(
-            dependencies.ProviderExtraNotInstallableError, match="not-a-real-extra"
-        ):
+        with pytest.raises(dependencies.ProviderExtraNotInstallableError, match="not-a-real-extra"):
             dependencies.ensure_provider_extra(
                 extra_name="not-a-real-extra",
                 module_name="whatever",

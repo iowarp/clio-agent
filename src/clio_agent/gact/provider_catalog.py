@@ -759,6 +759,16 @@ async def discover_provider(preset: LMProviderPreset, *, refresh: bool = False) 
         "failure": failure,
         "models": [model_catalog_row(preset, report, model) for model in models],
     }
+    if preset.provider in _CLI_CATALOG_KINDS:
+        # Which CLI the SDK transport runs, as a typed fact on the row (for
+        # Codex: the SDK half's binary; the Direct half runs none).
+        from clio_agent.providers.components.client_binary import (  # noqa: PLC0415
+            provider_client_fact,
+        )
+
+        payload["client"] = await asyncio.to_thread(
+            provider_client_fact, preset.provider, refresh=refresh
+        )
     if preset.provider == "codex":
         # Two transports of the SAME catalog entry (S1b): the direct/OAuth
         # transport this pipeline already evidenced above, and the restored
