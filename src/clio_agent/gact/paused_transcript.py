@@ -38,7 +38,7 @@ def persist_paused_transcript(state: "TurnState") -> str:
         updated_at=now,
         parts=state.transcript.finalize(),
         tokens=Tokens(**state.turn_tokens),
-        cost_usd=state.turn_cost,
+        cost_usd=state.turn_cost if state.turn_cost_known else None,
         stop_reason="waiting_user",
         metadata=state.assistant_metadata,
     )
