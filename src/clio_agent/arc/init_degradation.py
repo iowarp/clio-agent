@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 CLIO_CORE_FILE_CAPACITY_UNAVAILABLE = "clio_core_file_capacity_unavailable"
 CLIO_CORE_CLIENT_ATTACH_FAILED = "clio_core_client_attach_failed"
+CLIO_CORE_POST_ATTACH_PROBE_TIMEOUT = "clio_core_post_attach_probe_timeout"
 
 # Typed reason codes for an init-time degrade to LocalFS. The vocabulary mirrors
 # the #892 liveness/quarantine reasons so operators read one consistent language.
@@ -46,6 +47,7 @@ ARC_INIT_DEGRADE_REASONS = (
     "clio_core_daemon_spawn_failed",  # launcher missing or the daemon never bound its port
     CLIO_CORE_FILE_CAPACITY_UNAVAILABLE,  # configured file bdev cannot fit safely
     CLIO_CORE_CLIENT_ATTACH_FAILED,  # daemon listening, native client handshake failed
+    CLIO_CORE_POST_ATTACH_PROBE_TIMEOUT,  # attached, but the first RPC got no answer in time
     CLIO_CORE_VERSION_MISMATCH,  # daemon runs a different iowarp-core version: refused
     CLIO_CORE_DAEMON_VERSION_UNKNOWN,  # daemon has no version record: refused
     CLIO_CORE_DAEMON_CONFIG_UNKNOWN,  # daemon's recorded config is unreadable: refused

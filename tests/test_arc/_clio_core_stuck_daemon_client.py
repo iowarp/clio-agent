@@ -45,8 +45,16 @@ def main() -> int:
         daemon = psutil.Process(int(_daemon_pidfile().read_text(encoding="utf-8").split()[0]))
         result["window_s"] = health_probe_window_s()
 
-        daemon.suspend()
-        result["stage"] = "suspended"
+        # ``kill``: the daemon is GONE (crashed, or never really came up); the default
+        # ``suspend`` keeps it alive but unresponsive.
+        mode = os.environ.get("CLIO_STUCK_MODE", "suspend")
+        if mode == "kill":
+            daemon.kill()
+            daemon.wait(10)
+            daemon = None
+        else:
+            daemon.suspend()
+        result["stage"] = mode
         deregistered: list[bool] = []
         started = time.monotonic()
         try:
@@ -55,6 +63,7 @@ def main() -> int:
         except clio_core_attach.ClioCoreAttachError as exc:
             result["outcome"] = "typed_error"
             result["stage_name"] = exc.stage
+            result["reason"] = exc.degradation_reason
             result["message"] = str(exc)
         result["elapsed_s"] = time.monotonic() - started
         result["deregistered"] = deregistered
