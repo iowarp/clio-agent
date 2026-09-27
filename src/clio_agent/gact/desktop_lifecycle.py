@@ -171,7 +171,21 @@ def serve_foreground(app: "FastAPI", *, host: str, port: int) -> None:
         )
     )
     app.state.uvicorn_server = server
-    server.run()
+    from clio_agent.gact.server_credentials import (  # noqa: PLC0415
+        publish_server_credentials,
+        remove_server_credentials,
+    )
+
+    # The Desktop attaches to an already-running server with this record's
+    # token (#1478); without it the Desktop reports it cannot authenticate.
+    try:
+        publish_server_credentials(port, getattr(app.state, "bearer_token", None))
+    except OSError as exc:
+        logger.warning("gact_credential_record_unpublished port=%s error=%r", port, exc)
+    try:
+        server.run()
+    finally:
+        remove_server_credentials(port)
 
 
 def _app_owns_runtime_client(app: "FastAPI") -> bool:
