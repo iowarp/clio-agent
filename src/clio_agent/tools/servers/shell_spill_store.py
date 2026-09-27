@@ -112,6 +112,16 @@ def delete_session_spills(root: str | Path, session_id: str) -> int:
         files,
         folder,
     )
+    # Also a trace event: the INFO logger is below the server's default console
+    # level, and the cleanup must be visible in the same place the spill was.
+    trace.event(
+        "TOOLS",
+        "shell output spills deleted reason=%s session=%s files=%d path=%s",
+        SPILLS_DELETED_REASON,
+        sid,
+        files,
+        folder,
+    )
     return files
 
 
