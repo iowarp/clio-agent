@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from packaging.requirements import Requirement
@@ -179,6 +180,54 @@ def ensure_provider_extra(
     )
 
 
+@dataclass(frozen=True)
+class ProviderSupport:
+    """What one installable provider support consists of.
+
+    Attributes:
+        provider_kind: The provider kind (``argonne``, ``claude_code``).
+        module: The import name whose presence means the support is installed.
+        distributions: The PyPI distributions that provide ``module``.
+        display_name: How the support is named to a person.
+    """
+
+    provider_kind: str
+    module: str
+    distributions: tuple[str, ...]
+    display_name: str
+
+
+#: Every provider support CLIO can install into its backend environment. The
+#: restore at startup (:mod:`clio_agent.providers.support_restore`) covers
+#: exactly these kinds plus the user-updatable components.
+PROVIDER_SUPPORT: Mapping[str, ProviderSupport] = {
+    "argonne": ProviderSupport("argonne", "globus_sdk", ("globus-sdk",), "ALCF sign-in"),
+    "claude_code": ProviderSupport(
+        "claude_code", "claude_agent_sdk", ("claude-agent-sdk",), "Claude Code"
+    ),
+}
+
+
+def support_installed(provider_kind: str) -> bool:
+    """Whether ``provider_kind``'s support module is importable in this environment."""
+    return _module_available(PROVIDER_SUPPORT[provider_kind].module)
+
+
+def _recorded(provider_kind: str, installed: bool) -> bool:
+    """Record a support this call installed, so a runtime change cannot lose it.
+
+    Only an install CLIO just performed is recorded -- support the runtime
+    already carried (the desktop bundles ALCF sign-in) is not the person's
+    install. A failed record is logged and reported by
+    :mod:`clio_agent.providers.support_record`; the install itself stands.
+    """
+    if installed:
+        from clio_agent.providers.support_record import record_support  # noqa: PLC0415
+
+        record_support(provider_kind)
+    return installed
+
+
 def ensure_argonne_support(*, python_executable: str | None = None) -> bool:
     """Ensure the active backend can run ALCF's Globus authentication.
 
@@ -187,12 +236,13 @@ def ensure_argonne_support(*, python_executable: str | None = None) -> bool:
     ``argonne`` extra (see :func:`ensure_provider_extra`), never hardcoded here.
     """
 
-    return ensure_provider_extra(
+    installed = ensure_provider_extra(
         extra_name="argonne",
-        module_name="globus_sdk",
+        module_name=PROVIDER_SUPPORT["argonne"].module,
         display_name="ALCF support",
         python_executable=python_executable,
     )
+    return _recorded("argonne", installed)
 
 
 def claude_code_requirement() -> str:
@@ -229,14 +279,15 @@ def ensure_claude_code_support(*, python_executable: str | None = None) -> bool:
     platform (:func:`claude_code_requirement`), never an open floor.
     """
 
-    if _module_available("claude_agent_sdk"):
+    if _module_available(PROVIDER_SUPPORT["claude_code"].module):
         return False
-    return _ensure_dependency(
-        module_name="claude_agent_sdk",
+    installed = _ensure_dependency(
+        module_name=PROVIDER_SUPPORT["claude_code"].module,
         requirements=[claude_code_requirement()],
         display_name="Claude Code support",
         python_executable=python_executable,
     )
+    return _recorded("claude_code", installed)
 
 
 #: Provider kind -> its installer. The single generic seam the route dispatches
