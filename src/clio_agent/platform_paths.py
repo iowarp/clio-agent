@@ -34,6 +34,7 @@ resolves to an absolute path (``Path.resolve()``) before reaching this helper.
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import sys
@@ -51,6 +52,34 @@ _UNC_PREFIX = "\\\\?\\UNC\\"
 #: momentarily open for read" vs. a real, durable permission problem. Retried;
 #: see :func:`atomic_replace`.
 _RETRYABLE_WINERRORS = (5, 32)
+
+#: Longest single wait between replace attempts. With the default 14 attempts
+#: the whole wait is about 4.6 s: long enough for an antivirus scan or an
+#: indexer that opened the file for read, short enough that a real problem is
+#: reported instead of hanging the write.
+_MAX_RETRY_DELAY_S = 0.5
+
+logger = logging.getLogger(__name__)
+
+
+class ReplaceBlockedError(PermissionError):
+    """A tmp-file replace kept failing because another process held the target open.
+
+    Attributes:
+        reason: ``replace_blocked_by_open_handle`` -- the typed reason logged
+            and carried to the caller (the operation, the API error).
+        target: The file that could not be replaced; it still holds its
+            previous, complete contents.
+    """
+
+    reason = "replace_blocked_by_open_handle"
+
+    def __init__(self, target: str, attempts: int, cause: OSError) -> None:
+        super().__init__(
+            f"{self.reason}: {target} stayed open in another process for {attempts} attempts "
+            f"({cause}); it still holds its previous contents"
+        )
+        self.target = target
 
 
 def win_extended_path(path: str | Path) -> str:
@@ -92,7 +121,7 @@ def atomic_replace(
     source: str | Path,
     target: str | Path,
     *,
-    retries: int = 6,
+    retries: int = 14,
     initial_delay_s: float = 0.02,
 ) -> None:
     """``os.replace(source, target)`` with retry on a transient Windows sharing race.
@@ -108,11 +137,13 @@ def atomic_replace(
     difference, not a bug to paper over uniformly -- the retry loop is a no-op
     everywhere except win32.
 
-    Retries with exponential backoff (``initial_delay_s * 2**attempt``, six
-    attempts by default spanning roughly 0.02s-0.64s) before giving up and
-    re-raising the last error -- a durable permission problem (a real ACL denial,
-    a read-only fence) is never silently swallowed, only a transient one is
-    waited out.
+    Retries with exponential backoff capped at ``_MAX_RETRY_DELAY_S`` (14
+    attempts by default, about 4.6 s in all -- an antivirus scan or a
+    monitoring script reading the file can hold it longer than a blink; seen
+    live 2026-09-27 failing a deploy on ``infrastructure.json``) before giving
+    up with :class:`ReplaceBlockedError` (a typed, logged reason) -- a durable
+    permission problem (a real ACL denial, a read-only fence) is never
+    silently swallowed, and is re-raised at once, unretried.
 
     Args:
         source: The staged temp file (already fully written).
@@ -121,8 +152,8 @@ def atomic_replace(
         initial_delay_s: Delay before the second attempt; doubles each retry.
 
     Raises:
-        OSError: The final attempt's error, when every retry was exhausted (or
-            immediately, unmodified, for a non-retryable error).
+        ReplaceBlockedError: Every attempt hit the transient sharing race.
+        OSError: Immediately, unmodified, for a non-retryable error.
     """
     source_text = win_extended_path(source)
     target_text = win_extended_path(target)
@@ -134,12 +165,62 @@ def atomic_replace(
             return
         except OSError as exc:
             last_exc = exc
-            if not _is_retryable_replace_error(exc) or attempt == retries - 1:
+            if not _is_retryable_replace_error(exc):
                 raise
+            if attempt == retries - 1:
+                logger.warning(
+                    "atomic replace: reason=%s target=%s attempts=%d: %s",
+                    ReplaceBlockedError.reason,
+                    target,
+                    retries,
+                    exc,
+                )
+                raise ReplaceBlockedError(str(target), retries, exc) from exc
             time.sleep(delay)
-            delay *= 2
+            delay = min(delay * 2, _MAX_RETRY_DELAY_S)
     if last_exc is not None:  # pragma: no cover - unreachable (loop always returns/raises)
         raise last_exc
+
+
+def atomic_write_text(
+    path: str | Path,
+    text: str,
+    *,
+    encoding: str = "utf-8",
+    file_mode: int | None = None,
+) -> None:
+    """Write ``text`` to ``path`` crash-safely: stage, fsync, then :func:`atomic_replace`.
+
+    The one tmp+replace write for small state files (the infrastructure
+    store, saved servers, session defaults, ...). ``path`` always holds either
+    its previous contents or the new ones, never a partial write; the staged
+    file is removed whenever the write does not complete, so a failure leaves
+    nothing behind. ``file_mode`` creates the staged file with that mode from
+    the start (a credential file is never readable more widely, even briefly).
+
+    Raises:
+        ReplaceBlockedError: Another process kept ``path`` open (typed reason).
+        OSError: Any other failure to stage or replace.
+    """
+
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staged = target.parent / short_stage_name(prefix=target.name)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    try:
+        # Like open(): 0o666 filtered by the umask unless a mode is required.
+        fd = os.open(win_extended_path(staged), flags, 0o666 if file_mode is None else file_mode)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(text.encode(encoding))
+            stream.flush()
+            os.fsync(stream.fileno())
+        atomic_replace(staged, target)
+    except BaseException:
+        try:
+            os.unlink(win_extended_path(staged))
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def short_stage_name(*, prefix: str = "part", suffix: str = ".tmp") -> str:

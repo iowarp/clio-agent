@@ -29,8 +29,6 @@ persist is returned as a typed reason, never swallowed.
 from __future__ import annotations
 
 import logging
-import os
-import tempfile
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -40,6 +38,7 @@ from typing import Any
 import yaml
 
 from clio_agent import paths
+from clio_agent.platform_paths import atomic_write_text
 
 logger = logging.getLogger(__name__)
 
@@ -114,26 +113,7 @@ def _write_document(path: Path, document: Mapping[str, Any]) -> None:
     rendered = yaml.safe_dump(
         dict(document), allow_unicode=True, default_flow_style=False, sort_keys=False
     )
-    temporary: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            newline="\n",
-            delete=False,
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-        ) as handle:
-            temporary = Path(handle.name)
-            handle.write(rendered)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    except OSError:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-        raise
+    atomic_write_text(path, rendered)
 
 
 def persist_lm_selection(cfg: Any, *, requested_api_base: str) -> SelectionPersistence:

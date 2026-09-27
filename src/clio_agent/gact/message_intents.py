@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -20,6 +19,7 @@ from typing import Any, Literal, Optional, TypeVar
 from pydantic import BaseModel, Field
 
 from clio_agent.gact.types import Message, MessageBehavior, ModelRef, Part, PostMessageResponse
+from clio_agent.platform_paths import atomic_write_text
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -682,13 +682,11 @@ class MessageIntentStore:
         self._acceptances = acceptances
 
     def _flush_locked(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "pending": [row.model_dump() for row in self._pending.values()],
             "queued": [row.model_dump() for row in self._queued.values()],
             "acceptances": self._acceptances,
         }
-        tmp = self._path.with_suffix(self._path.suffix + ".tmp")
         # Compact, not pretty: this rewrites the WHOLE store on every mutation
         # (one file, no per-session shard), so indent=2 + sort_keys multiplied the
         # bytes written on the acceptance hot path for no operator benefit. The
@@ -696,8 +694,7 @@ class MessageIntentStore:
         # steer before it returns its 202, so a write-behind queue would turn that
         # contract into a lie on any crash. The retention bounds above are what
         # keep the write cheap.
-        tmp.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
-        os.replace(tmp, self._path)
+        atomic_write_text(self._path, json.dumps(payload, separators=(",", ":")))
 
 
 __all__ = [

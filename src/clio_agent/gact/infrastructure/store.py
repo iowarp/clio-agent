@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 from pathlib import Path
 from typing import Any
@@ -17,6 +16,7 @@ from clio_agent.gact.infrastructure.models import (
     UpdateTargetRequest,
     utc_now,
 )
+from clio_agent.platform_paths import atomic_write_text
 
 _SCHEMA_VERSION = 1
 
@@ -330,9 +330,6 @@ class InfrastructureStore:
                 key: value.model_dump(mode="json") for key, value in self._operations.items()
             },
         }
-        temporary = self._path.with_suffix(self._path.suffix + ".tmp")
-        with temporary.open("w", encoding="utf-8") as stream:
-            json.dump(payload, stream, indent=2, sort_keys=True)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, self._path)
+        # Retries while another process (antivirus, an indexer, a monitoring
+        # script) holds the file open, then fails typed; never a partial file.
+        atomic_write_text(self._path, json.dumps(payload, indent=2, sort_keys=True))
