@@ -1484,7 +1484,7 @@ provenance.agentic.flowcept.workflow_scope: "session"
 # add "flowcept" for external tooling, or clear to disable.
 provenance.agentic.providers: ["jsonl"]
 
-# CLIO_PROVENANCE_QUERY_DEFAULT  (str)  <- src/clio_agent/gact/routes/provenance.py
+# CLIO_PROVENANCE_QUERY_DEFAULT  (str)  <- src/clio_agent/gact/provenance/handoff.py
 # Which provenance provider name /v1/provenance queries answer from by
 # default ("native"); change to make Flowcept the default source.
 provenance.agentic.query_default: "native"

@@ -24,6 +24,9 @@ _LIVE_WORK_STATE = {
     "queued": "queued",
     "running": "running",
     "working": "running",
+    # A standing watcher (spotter-ai) between checks: RUNNING in the registry,
+    # live state "waiting". Armed and alive, so running -- never interrupted.
+    "waiting": "running",
     "input_required": "waiting_user",
     "waiting_permission": "waiting_permission",
     "waiting_user": "waiting_user",

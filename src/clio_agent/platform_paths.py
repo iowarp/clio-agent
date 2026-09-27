@@ -35,6 +35,7 @@ resolves to an absolute path (``Path.resolve()``) before reaching this helper.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import time
 import uuid
@@ -156,4 +157,54 @@ def short_stage_name(*, prefix: str = "part", suffix: str = ".tmp") -> str:
     return f".{prefix}-{uuid.uuid4().hex[:8]}{suffix}"
 
 
-__all__ = ["atomic_replace", "short_stage_name", "win_extended_path"]
+def _extended_absolute(path: str | Path) -> str:
+    return win_extended_path(Path(path).absolute())
+
+
+def copytree_extended(source: str | Path, destination: str | Path) -> None:
+    """``shutil.copytree`` with both trees addressed in extended-length form.
+
+    A pack or skill tree copied under a long user dir (a long user name, a packaged
+    app's ``LocalCache`` redirection, a staging name) crosses 260 characters deep in
+    the tree, where a legacy path raises ``WinError 206``. The extended form lifts the
+    limit for every ``scandir`` / ``makedirs`` / ``copy2`` the copy makes.
+    """
+    shutil.copytree(_extended_absolute(source), _extended_absolute(destination))
+
+
+def rmtree_extended(path: str | Path, *, ignore_errors: bool = False) -> None:
+    """``shutil.rmtree`` on the extended-length form (a tree deeper than MAX_PATH)."""
+    shutil.rmtree(_extended_absolute(path), ignore_errors=ignore_errors)
+
+
+def rename_extended(source: str | Path, destination: str | Path) -> None:
+    """``os.rename`` with both paths in extended-length form."""
+    os.rename(_extended_absolute(source), _extended_absolute(destination))
+
+
+def tree_files(root: str | Path) -> list[tuple[Path, str]]:
+    """Every file under ``root`` as ``(path relative to root, OS path to open)``.
+
+    Sorted by the relative :class:`~pathlib.Path` (the order ``sorted(root.rglob(...))``
+    gives), and walked in extended-length form so a file deeper than MAX_PATH is
+    listed and openable. Directory symlinks are not followed.
+    """
+    base = _extended_absolute(root)
+    rows: list[tuple[Path, str]] = []
+    for directory, _subdirs, names in os.walk(base):
+        for name in names:
+            full = os.path.join(directory, name)
+            if os.path.isfile(full):
+                rows.append((Path(os.path.relpath(full, base)), full))
+    return sorted(rows, key=lambda row: row[0])
+
+
+__all__ = [
+    "atomic_replace",
+    "copytree_extended",
+    "rename_extended",
+    "rmtree_extended",
+    "short_stage_name",
+    "tree_files",
+    "win_extended_path",
+]
