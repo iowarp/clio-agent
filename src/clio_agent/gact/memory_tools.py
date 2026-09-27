@@ -324,6 +324,7 @@ def build_memory_search_tool(agent_def: Any) -> Any:
                 "description": "The user's reason for any cross-session search.",
             },
         },
+        read_only=True,
     )
 
 
@@ -355,6 +356,7 @@ def build_memory_summary_tool(agent_def: Any) -> Any:
                 "description": "The user's reason for a cross-session read.",
             },
         },
+        read_only=True,
     )
 
 
@@ -391,6 +393,7 @@ def build_memory_context_frame_tool(agent_def: Any) -> Any:
                 "description": "The user's reason for a cross-session read.",
             },
         },
+        read_only=True,
     )
 
 
