@@ -96,6 +96,11 @@ TUI/HTTP surface aren't tracked here.
   (port, pid, the bearer token it enforces or `null`; owner-only) while it
   serves, so a Desktop that attaches to an already-running CLIO presents the
   real token instead of an empty one.
+- `GET /v1/desktop/attach` answers 204 when the request may open the
+  bearer-only surfaces (the SSH transport socket, desktop shutdown) and 401
+  `authentication_required` when it may not. A desktop attaching to a CLIO that
+  published no credential record asks here without a token to learn whether
+  one is enforced (#1478).
 
 ## [0.9.4.18] — 2026-09-26
 
