@@ -26,6 +26,10 @@ OperationState = Literal["queued", "running", "succeeded", "failed", "cancelled"
 ConnectionStrategy = Literal["loopback", "direct", "ssh_forward", "external"]
 RuntimeName = Literal["docker", "podman", "apptainer"]
 RuntimeReason = Literal["not_installed", "unusable", "not_probed"]
+#: Why an installed runtime is ``unusable`` (see ``runtime_failure.py``). A
+#: separate field, not new ``RuntimeReason`` values, so a client that predates
+#: it still decodes the facts.
+RuntimeFailure = Literal["not_running", "permission_denied", "timed_out", "unknown"]
 ResourceKind = Literal["container", "image", "directory", "parent_directory", "instance_logs"]
 EffectiveSource = Literal["server_report", "container_config", "launch_request", "engine_default"]
 
@@ -175,6 +179,8 @@ class ContainerRuntimeFact(BaseModel):
     usable: bool = False
     version: str = ""
     reason: RuntimeReason | None = None
+    #: Set only when ``reason`` is ``unusable``.
+    failure: RuntimeFailure | None = None
     detail: str = ""
     #: Rootless Docker maps ``--user`` onto a sub-uid the user cannot delete.
     rootless: bool = False
@@ -189,6 +195,12 @@ class ContainerRuntimeFact(BaseModel):
             return f"{label} is not installed."
         if self.reason == "not_probed":
             return f"{label} was not inspected on this target."
+        if self.failure == "not_running":
+            return f"{label} is installed but not running."
+        if self.failure == "permission_denied":
+            return f"{label} is installed but this account may not use it."
+        if self.failure == "timed_out":
+            return f"{label} is installed but did not respond."
         suffix = f": {self.detail}" if self.detail else "."
         return f"{label} is installed but cannot run containers{suffix}"
 
