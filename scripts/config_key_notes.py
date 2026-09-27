@@ -546,20 +546,21 @@ KEY_NOTES: dict[str, str] = {
         "unusually large implementation plans, lower to bound review payloads."
     ),
     "limits.shell_default_output_bytes": (
-        "Default byte cap on shell-command stdout/stderr when the caller specifies none; raise for "
-        "commands with verbose output."
+        "Per-stream bytes of shell stdout/stderr returned inline when the caller specifies none; "
+        "larger output is spilled in full to .clio/tool-output/ and excerpted. Sized so the "
+        "result fits limits.tool_result_chars (#887)."
     ),
     "limits.shell_default_timeout_s": (
         "Seconds a shell command may run when the caller passes no timeout; 0 (default) means "
         "no timeout: the command runs until it exits or the turn is cancelled."
     ),
     "limits.shell_max_command_chars": (
-        "Max character length of a shell command string the tool accepts; raise for scripts that "
-        "assemble long commands."
+        "Max character length of a shell command string the tool accepts; stays under the "
+        "Windows 32,767-char command line. Longer scripts: write a file, then run it."
     ),
     "limits.shell_max_output_bytes": (
-        "Hard ceiling in bytes on shell-command output the tool will ever return, regardless of a "
-        "caller cap; raise for large output."
+        "Ceiling on the per-stream inline bytes a caller may request; output past the result "
+        "budget is spilled in full to .clio/tool-output/, never dropped."
     ),
     "limits.shell_max_timeout_s": (
         "Optional operator ceiling in seconds on any shell command; 0 (default) means no "
