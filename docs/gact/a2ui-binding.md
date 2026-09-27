@@ -403,9 +403,51 @@ always resolve it from the addressed surface's own record.
   not only installed ones); an unresolved `agent_blueprint_id` records the
   typed `a2ui_blueprint_unresolved` reason and reports no catalogs. A row
   with no blueprint declares nothing and reports none.
+- `GET /v1/sessions/{sid}/references/resolve?uri=` (A2) -- resolves one
+  content reference to its metadata and byte route (see *Content
+  references* below).
 - `GET /v1/agent-blueprints/{id}` — the detail response gains top-level
   `a2ui_capabilities`: that ONE blueprint's resolved catalog ids, in
   declared order.
+
+## Content references: media and artifacts on a remote viewer (A2)
+
+A surface is drawn by a viewer that may run on another machine than the
+service -- a desktop or web client connected to a remote CLIO. So a URL-keyed
+component property (`url` / `uri` / `dataUri`) is one of three things, and
+each has exactly one path:
+
+- **A CLIO reference** -- `artifact://artifact_<id>`, `artifact:artifact_<id>`,
+  `artifact://<wid>/<name>@<ref>`, `resource://<wid>/res_<id>`,
+  `resource://res_<id>`, `resource:res_<id>`, or a bare `artifact_<id>` /
+  `res_<id>`. A browser cannot dereference these, and the bytes sit behind
+  the service's bearer. The client asks
+  `GET /v1/sessions/{sid}/references/resolve?uri=` (grammar owner:
+  `gact/artifacts/references.py`) for `{kind, workspace_id, name,
+  media_type, size_bytes, fetch_path, ...}`, reads `fetch_path` -- an
+  existing byte route, so the artifact serve ladder stays the only one --
+  through its authenticated transport, and renders a `blob:` URL it revokes
+  on unmount. One resolver serves every kernel `Image` / `Video` /
+  `AudioPlayer` and the `clio.artifact.v1` card
+  (`web/src/lib/a2ui/use-a2ui-reference.ts`). Every failure is a typed,
+  plain reason in place of the element, never a broken image.
+- **An external `https:` URL** -- still admitted by the validator, but never
+  auto-loaded: the payload is model-authored, and loading an arbitrary host
+  would let it make the viewer's machine contact that host (tracking, data
+  carried in the query string). The desktop CSP blocks it anyway. The
+  component shows a notice naming the host, with an explicit link that
+  opens in the system browser.
+- **A workspace file path** (relative, absolute, a Windows drive path or a
+  `file:` URL) -- meaningless to a remote viewer. The producer tools
+  (`create_a2ui_surface` / `update_a2ui_components`) treat rendering it as
+  the export boundary: a path naming an existing file inside the session's
+  workspace is minted through the harness mint funnel (designation
+  `a2ui-export`; unchanged bytes dedup onto the existing version) and
+  replaced by `artifact://<artifact-id>`. The tool result reports each one
+  in `exported_artifacts`, so nothing is rewritten silently. A path naming
+  no workspace file is the typed refusal `a2ui_url_unresolved`, which says
+  what a viewer can fetch. The HTTP producer door does not export: an
+  external producer has no workspace-path semantics.
 
 ## Sub-agent stripping
 
