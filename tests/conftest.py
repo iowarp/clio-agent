@@ -69,7 +69,7 @@ import pytest  # noqa: E402
 import yaml  # noqa: E402
 
 import clio_agent  # noqa: E402, F401
-from tests import _cte_bounded, _hang_guard, _sharding, _worker_leaks
+from tests import _cte_bounded, _hang_guard, _network_guard, _sharding, _worker_leaks
 from tests._cte_isolation import (
     cte_isolation_available,
     eagerly_attach_private_daemon,
@@ -128,6 +128,8 @@ def pytest_configure(config: pytest.Config) -> None:
     _cte_bounded.install()
     # Background threads a test's objects start are stopped at its teardown.
     _worker_leaks.install()
+    # Unit tests never reach a non-loopback host (see tests/_network_guard.py).
+    _network_guard.install()
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
@@ -396,6 +398,25 @@ def _check_private_daemon_survives(_clio_private_cte_daemon):
             f"this test stopped or killed the worker's shared private clio-core daemon "
             f"(pid {before[0]}); every later cte test in this worker would attach to a "
             "dead daemon. Isolate its runtime state (see tests/_cte_isolation.py) instead.",
+            pytrace=False,
+        )
+
+
+@pytest.fixture(autouse=True)
+def _block_outbound_network(request):
+    """Fail a unit test that reaches a non-loopback host (tests/_network_guard.py)."""
+    if any(request.node.get_closest_marker(m) for m in _network_guard.EXEMPT_MARKERS):
+        yield
+        return
+    _network_guard.begin()
+    try:
+        yield
+    finally:
+        reached = _network_guard.end()
+    if reached:
+        pytest.fail(
+            "this unit test reached the network (serve a recorded response from a "
+            "loopback fake instead):" + chr(10) + chr(10).join(reached[:5]),
             pytrace=False,
         )
 
