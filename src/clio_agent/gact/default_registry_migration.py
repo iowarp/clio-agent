@@ -51,7 +51,6 @@ import contextlib
 import json
 import logging
 import os
-import shutil
 import subprocess
 import tempfile
 import threading
@@ -61,6 +60,8 @@ from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from clio_agent.platform_paths import copytree_extended, rename_extended, rmtree_extended
 
 logger = logging.getLogger(__name__)
 
@@ -316,26 +317,26 @@ def replace_pack_atomically(
 
     staging_root = install_root.parent / STAGING_DIR_NAME
     staging_root.mkdir(parents=True, exist_ok=True)
-    token = uuid.uuid4().hex
+    token = uuid.uuid4().hex[:8]  # short: the staged tree is the deepest path written
     staged = staging_root / f"{pack_id}.new-{token}"
     backup = staging_root / f"{pack_id}.old-{token}"
     final = install_root / pack_id
     try:
-        shutil.copytree(candidate, staged)
+        copytree_extended(candidate, staged)
         _write_install_metadata(staged, {**metadata, "checksum": _tree_checksum(staged)})
         if final.exists():
-            final.rename(backup)
+            rename_extended(final, backup)
         try:
-            staged.rename(final)
+            rename_extended(staged, final)
         except BaseException:
             if backup.exists() and not final.exists():
-                backup.rename(final)
+                rename_extended(backup, final)
             raise
     finally:
-        shutil.rmtree(staged, ignore_errors=True)
+        rmtree_extended(staged, ignore_errors=True)
     if backup.exists():
         try:
-            shutil.rmtree(backup)
+            rmtree_extended(backup)
         except OSError as exc:
             logger.warning("default_registry_backup_not_removed path=%s error=%r", backup, exc)
 
