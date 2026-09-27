@@ -501,13 +501,20 @@ def guarded_store_rpc(store: Any, op_name: str, make_call: Callable[..., Any], *
 def store_rpc_health_probe(store: Any, *, kind: str, name: str) -> bool:
     """RPC-level health probe for a store's ``rpc_stalled`` quarantine recovery.
 
-    A single cheap real RPC (``GetBlobSize`` on a sentinel key that never exists — 0 on a
-    healthy daemon, HANGS on a zombie) through :func:`probe_rpc_health`. Returns True iff
-    it answers cleanly within the health-probe window; reconnects first so a zombie's
-    stale handle is never reused; never raises.
+    A single cheap real RPC through :func:`probe_rpc_health`: ``AsyncTagQuery`` on a
+    sentinel name, polled GIL-free (``clio_core_async_ops``; the blocking ``GetBlobSize``
+    it replaces held the GIL, so a zombie froze the probe's own stall watch). Returns
+    True iff it answers cleanly within the health-probe window; reconnects first so a
+    zombie's stale handle is never reused; never raises.
     """
+    from clio_agent.arc.clio_core_async_ops import rpc_answers  # noqa: PLC0415
+
+    del kind  # a tag query needs only the sentinel name
+
+    def _probe() -> None:
+        if not rpc_answers(store._client, store._cte, name):
+            raise RuntimeError("clio-core health probe answered with a non-zero code")
+
     return probe_rpc_health(
-        reconnect=store._reconnect,
-        make_probe_call=lambda: store._cte.Tag(kind).GetBlobSize(name),
-        port=store._gate.port,
+        reconnect=store._reconnect, make_probe_call=_probe, port=store._gate.port
     )

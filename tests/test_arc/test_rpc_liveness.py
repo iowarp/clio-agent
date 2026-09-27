@@ -18,10 +18,12 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from typing import Any
 
 import pytest
 
 import clio_agent.arc.rpc_liveness as rpc_liveness
+from clio_agent.arc.clio_core_async_ops import TagIds
 from clio_agent.arc.clio_core_liveness import ClioCoreRuntimeLostError, LivenessGate
 from clio_agent.arc.rpc_liveness import (
     RPC_STALLED_REASON,
@@ -36,6 +38,19 @@ from clio_agent.errors import format_error_response
 # A fast policy so the stall window is a fraction of a second under test.
 _FAST = LivenessPolicy(stall_after_s=0.05, retries=2, backoff_initial_s=0.0, backoff_max_s=0.0)
 _NO_SLEEP = lambda _s: None  # noqa: E731 - trivial test seam
+
+
+class _ReadyFuture:
+    """A completed ``clio_cte_core_ext.Future`` stand-in."""
+
+    def __init__(self, code: int = 0) -> None:
+        self._code = code
+
+    def done(self) -> bool:
+        return True
+
+    def wait(self, _max_sec: float = -1.0) -> int:
+        return self._code
 
 
 class _StallingCall:
@@ -215,6 +230,7 @@ def _stalling_store(cte, *, reconnect) -> ClioCoreStore:
     store = ClioCoreStore.__new__(ClioCoreStore)
     store._cte = cte
     store._client = object()
+    store._tag_ids = TagIds(cte)
     store._config_path = ""
     store._log_level = "error"
     store._gate = LivenessGate(config_path="", probe=lambda _p: True, ttl_s=100.0)
@@ -375,10 +391,10 @@ def test_clear_over_many_blobs_each_prompt_succeeds(monkeypatch):
         def __init__(self):
             self.deleted: list[str] = []
 
-        def DelBlob(self, tag_id, name):  # noqa: N802 - native API shape
+        def AsyncDelBlob(self, tag_id, name):  # noqa: N802 - native API shape
             time.sleep(0.03)  # each RPC responds in 0.03s (< 0.05 window); 5x total > 0.05
             self.deleted.append(name)
-            return True
+            return _ReadyFuture(0)
 
     client = _Client()
     store = _stalling_store(_Cte(), reconnect=lambda: None)
@@ -446,6 +462,25 @@ class _ZombieCte:
 
         return _Tag()
 
+    PoolQuery = type("PoolQuery", (), {"Dynamic": staticmethod(lambda: "dynamic")})
+
+    def client(self) -> Any:
+        """The client side: the RPC-level health probe is a GIL-free ``AsyncTagQuery``."""
+        outer = self
+
+        class _Future:
+            def done(self) -> bool:  # a zombie never answers until released or healed
+                return outer._healthy.is_set() or outer._release.is_set()
+
+            def wait(self, _max_sec: float = -1.0) -> int:
+                return 0 if outer._healthy.is_set() else 1
+
+        class _Client:
+            def AsyncTagQuery(self, _regex, _max, _query):  # noqa: N802 - native API shape
+                return _Future()
+
+        return _Client()
+
 
 def test_zombie_store_second_op_fails_fast_then_probe_recovers(monkeypatch):
     """The blocker end-to-end on a real ``ClioCoreStore``: op A pays ONE ladder and
@@ -462,6 +497,7 @@ def test_zombie_store_second_op_fails_fast_then_probe_recovers(monkeypatch):
 
     cte = _ZombieCte()
     store = _stalling_store(cte, reconnect=lambda: None)
+    store._client = cte.client()
     try:
         # Op A: the zombie hangs -> ladder exhausts -> typed degrade + quarantine.
         with pytest.raises(ClioCoreRuntimeLostError) as exc_a:
