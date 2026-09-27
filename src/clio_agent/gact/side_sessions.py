@@ -37,7 +37,7 @@ from clio_agent.runtime import trace
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
-    from clio_agent.gact.types import Session
+    from clio_agent.gact.sessions import Session
 
 #: Server-owned approval profile of a read-only side session.
 READ_ONLY_SIDE_PROFILE = "read-only-side"
