@@ -34,8 +34,10 @@ def current_declaration() -> dict[str, Any] | None:
     return _current.get()
 
 
-def _template_kwargs(merged: dict[str, Any]) -> dict[str, Any]:
-    body = merged.get("extra_body") or {}
+def _template_kwargs(
+    merged: dict[str, Any], lm_kwargs: dict[str, Any], call_kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    body = {**(lm_kwargs.get("extra_body") or {}), **(call_kwargs.get("extra_body") or {})}
     kwargs = dict(body.get("chat_template_kwargs") or {}) if isinstance(body, dict) else {}
     if merged.get("tools"):
         kwargs["tools"] = merged["tools"]
@@ -69,7 +71,7 @@ def build_declaration(
         return call_kwargs, _not_declared("provider_not_vllm")
     merged = {**lm_kwargs, **call_kwargs}
     served_model = model[len(VLLM_PREFIX) :]
-    template_kwargs = _template_kwargs(merged)
+    template_kwargs = _template_kwargs(merged, lm_kwargs, call_kwargs)
     try:
         from clio_agent.gact.attention.tokenizer_source import (  # noqa: PLC0415
             resolve_renderer,
@@ -84,7 +86,9 @@ def build_declaration(
             "attention_tokenizer_unavailable", f"render failed: {type(exc).__name__}: {exc}"
         )
     declaration = declare_ranges(messages, encoded)
-    body = dict(merged.get("extra_body") or {})
+    # DSPy merges the LM's kwargs under the call's, so a call-level extra_body would
+    # replace the LM-level one wholesale: carry both forward explicitly.
+    body = {**(lm_kwargs.get("extra_body") or {}), **(call_kwargs.get("extra_body") or {})}
     kv_params = dict(body.get("kv_transfer_params") or {})
     kv_params["ranges"] = declaration.wire_ranges()
     body["kv_transfer_params"] = kv_params

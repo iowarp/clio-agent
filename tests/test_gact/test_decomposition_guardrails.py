@@ -134,7 +134,10 @@ from clio_agent.gact.app import build_app
 # 267 -> 272 (feat/local-servers): +5 saved local/self-hosted server routes
 # (GET/POST /v1/providers/servers, PATCH/DELETE .../{id}, POST .../{id}/check),
 # owned by routes/local_servers.py and registered from provider_catalog_routes.
-EXPECTED_ROUTE_METHOD_PAIRS = 272
+# 272 -> 274 (feat/attention-view): +2 attention routes (GET .../messages/{mid}/
+# attention/availability, POST .../messages/{mid}/attention), owned by
+# gact/attention/routes.py and registered from routes/provenance.py.
+EXPECTED_ROUTE_METHOD_PAIRS = 274
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
