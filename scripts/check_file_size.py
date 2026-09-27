@@ -167,7 +167,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1439 (C1): 863 -> 843. The version gate + config adoption live in the owner
     # module arc/clio_core_daemon_version.py; the PID-identity helpers moved to
     # arc/pid_identity.py (re-exported here under their old names).
-    "src/clio_agent/arc/storage.py": 836,
+    "src/clio_agent/arc/storage.py": 826,
     # #737 S2 fold owner module. Crossed the 800 new-file cap restoring the FROZEN
     # arc.op reproducibility contract (§2 / GOAL.md DoD #4): the five working-set write
     # overrides now emit a per-op arc.op via _emit_op so arc.replay rebuilds the live
@@ -224,7 +224,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # default_registry_metadata landed here, offset by two comment trims.
     # The release's path-helper extraction and develop's A2UI/floor validation
     # changes combine at 1049 lines; both owner modules remain in place.
-    "src/clio_agent/gact/agent_blueprints.py": 1049,
+    "src/clio_agent/gact/agent_blueprints.py": 1035,
     # #948 S4: +14 for the children-must-be-react hierarchy rule (a predict/CoT
     # parent would silently strand its children now that the settle loop routing
     # for it is deleted; typed validation error instead).
@@ -684,8 +684,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # P5 (request builder): the static `supports_vision` wire-metadata key in
     # `_provider_to_wire` is deleted (brief 9.1): ratcheted to 1116.
     # P4b adds the 3-line surrogate refusal on the chat-model bind: 1116 -> 1119.
-    # 1098 -> 1096 (#1455): Claude Code readiness reads gact/claude_code_auth_reprobe.py.
-    "src/clio_agent/gact/routes/providers.py": 1096,
+    # 1096 -> 1077 (#1506): duplicated LM-apply failure branches merged; selection persistence lives in gact/providers/selection_store.py.
+    "src/clio_agent/gact/routes/providers.py": 1077,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (merged to develop with the size check red, baseline 1478 -> actual); ratchet
     # back below the pre-#947 count with the mcp_app_* owner-module split (see the
@@ -1048,7 +1048,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1201 (adversarial review, PR #1202): +4 to register the mcp_yaml doctor
     # sub-check (import + the probe_mcp_yaml_declarations() call); the probe
     # logic lives in the owner module runtime/mcp_launcher.py.
-    "src/clio_agent/runtime/status.py": 1244,
+    "src/clio_agent/runtime/status.py": 1235,
     # #932: +62 for preloaded tool definitions (start() without the list_tools
     # fan-out) and namespace-direct call routing with lazy per-namespace
     # clients — the executor IS the owner module for this.

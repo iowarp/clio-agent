@@ -140,9 +140,11 @@ from clio_agent.gact.app import build_app
 # owned by routes/lifecycle.py.
 # 276 -> 277: GET /v1/sessions/{sid}/references/resolve (A2UI media/artifact reference
 # resolution for remote CLIO), owned by routes/artifacts.py.
-# 277 -> 278: POST /v1/sessions/{sid}/side-sessions (open a read-only aside with the session's
+# 277 -> 278: GET /v1/spotter/availability (can SPOTTER review be armed here, and why
+# not), owned by gact/spotter_availability.py, registered from routes/session_defaults.py.
+# 278 -> 279: POST /v1/sessions/{sid}/side-sessions (open a read-only aside with the session's
 # context), owned by routes/side_sessions.py, registered from routes/sessions.py.
-EXPECTED_ROUTE_METHOD_PAIRS = 278
+EXPECTED_ROUTE_METHOD_PAIRS = 279
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary

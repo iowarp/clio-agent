@@ -249,16 +249,16 @@ def test_a_failed_swap_restores_the_previous_pack(
 ) -> None:
     source, home, cwd, install_root = registry
     _bump(source, "pack-a", "2.0.0")
-    real_rename = Path.rename
+    real_rename = migration.rename_extended
 
-    def failing_rename(self: Path, target: Path) -> Path:
-        if self.name.startswith("pack-a.new-"):
+    def failing_rename(source_path: str | Path, target: str | Path) -> None:
+        if Path(source_path).name.startswith("pack-a.new-"):
             raise OSError("simulated failure moving the new pack into place")
-        return real_rename(self, target)
+        real_rename(source_path, target)
 
-    monkeypatch.setattr(Path, "rename", failing_rename)
+    monkeypatch.setattr(migration, "rename_extended", failing_rename)
     diagnostic = _migrate(source, home, cwd)
-    monkeypatch.setattr(Path, "rename", real_rename)
+    monkeypatch.setattr(migration, "rename_extended", real_rename)
 
     assert "failed" in diagnostic
     assert _installed_version(install_root, "pack-a") == "1.0.0"

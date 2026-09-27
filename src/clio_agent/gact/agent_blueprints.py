@@ -7,11 +7,9 @@ adapted at the API boundary rather than duplicated here.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import re
-import shutil
 import subprocess
 import tempfile
 from collections.abc import Collection, Iterable, Mapping
@@ -24,6 +22,10 @@ from clio_agent import conf
 from clio_agent.gact import skills as _skills
 from clio_agent.gact.a2ui_catalogs.blueprint import blueprint_and_expert_a2ui_catalog_errors
 from clio_agent.gact.agent_blueprint_requires import floor_declaration_errors
+from clio_agent.gact.blueprint_install_files import tree_checksum as _tree_checksum
+from clio_agent.gact.blueprint_install_files import (
+    write_install_metadata as _write_install_metadata,
+)
 from clio_agent.gact.blueprint_paths import install_root, relative_to_blueprint_root
 from clio_agent.gact.expert_packs import (
     ExpertPackDefinition,
@@ -35,6 +37,7 @@ from clio_agent.gact.expert_packs import (
 )
 from clio_agent.gact.git_source import normalize_git_clone_source
 from clio_agent.gact.types import AgentDef
+from clio_agent.platform_paths import copytree_extended, rmtree_extended
 from clio_agent.tools.catalog import TOOL_CATALOG
 
 # Historical private names kept importable here: agent_blueprint_refresh.py /
@@ -879,8 +882,8 @@ def install_agent_blueprint(
             dest = install_root / parsed.id
             previous_checksum = str(read_install_metadata(dest).get("checksum") or "").strip()
             if dest.exists():
-                shutil.rmtree(dest)
-            shutil.copytree(candidate, dest)
+                rmtree_extended(dest)
+            copytree_extended(candidate, dest)
             metadata = {
                 "source": source,
                 "source_kind": source_kind,
@@ -926,23 +929,6 @@ def _install_candidates(source: Path, *, blueprint_id: str = "") -> list[Path]:
             if parse_agent_blueprint_root(path, scope="install").id == blueprint_id
         ]
     return candidates
-
-
-def _write_install_metadata(root: Path, metadata: dict[str, Any]) -> None:
-    lines = ["# CLIO Agent Blueprint install metadata", ""]
-    for key, value in metadata.items():
-        lines.append(f"{key}: {value}")
-    (root / ".clio-install.md").write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
-
-
-def _tree_checksum(root: Path) -> str:
-    digest = hashlib.sha256()
-    for path in sorted(p for p in root.rglob("*") if p.is_file()):
-        if path.name == ".clio-install.md":
-            continue
-        digest.update(str(path.relative_to(root)).encode())
-        digest.update(path.read_bytes())
-    return digest.hexdigest()
 
 
 def _load_blueprint_agents(

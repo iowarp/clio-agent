@@ -390,6 +390,15 @@ async def test_full_handshake_monkeypatched_discovery(
 
     monkeypatch.setattr(ArgonneHandshake, "discover_models", _fake_discover)
 
+    # The endpoint fingerprint's best-effort ``GET /version``: the recorded answer for
+    # this fake token is a 401, which fetch_version reports as ``None``.
+    async def _recorded_version(client: Any, api_base: str) -> str | None:
+        return None
+
+    from clio_agent.providers.capabilities.dialects import vllm as vllm_dialect
+
+    monkeypatch.setattr(vllm_dialect, "fetch_version", _recorded_version)
+
     hs = ArgonneHandshake(provider=None)
     ctx = HandshakeContext(
         provider_id="argonne",
