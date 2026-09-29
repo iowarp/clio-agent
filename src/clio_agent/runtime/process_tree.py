@@ -347,21 +347,11 @@ def teardown_pooled_sdk_transports() -> dict[str, str]:
         results["stream_client_pool"] = f"error:{exc!r}"
 
     try:
-        import asyncio as _asyncio  # noqa: PLC0415
+        from clio_agent.providers.codex.direct_engine import close_all  # noqa: PLC0415
 
-        from clio_agent.providers.codex.sessions import pop_all_ws_connections  # noqa: PLC0415
-        from clio_agent.providers.codex.transport_ws import close_connections  # noqa: PLC0415
-
-        # The direct Codex provider owns no persistent background thread/loop
-        # the way the deleted Codex SDK client did -- its per-session pooled
-        # WebSocket connections live in the gact server's own async context, so
-        # closing them here just means detaching + awaiting each one closed
-        # (a fresh, short-lived loop in this thread; there is no other loop to
-        # reuse from a synchronous shutdown step).
-        connections = pop_all_ws_connections()
-        if connections:
-            _asyncio.run(close_connections(connections))
-        results["codex_ws_sessions"] = f"closed:{len(connections)}"
+        # The direct Codex engine keeps one WebSocket per conversation on its own
+        # owner loop; closing them is a bounded hand-off to that loop.
+        results["codex_ws_sessions"] = f"closed:{close_all()}"
     except Exception as exc:  # noqa: BLE001 - teardown must not raise; reason logged + recorded
         logger.warning("sdk transport teardown failed reason=codex_ws_close_failed error=%r", exc)
         results["codex_ws_sessions"] = f"error:{exc!r}"

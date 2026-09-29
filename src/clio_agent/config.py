@@ -657,7 +657,6 @@ from clio_agent.lm.adapters import (
 )
 from clio_agent.lm.factory import (
     _construct_lm,  # noqa: E402, F401
-    _ensure_provider_registered,  # noqa: E402, F401
     _is_argonne_sophia,  # noqa: E402, F401
     _resolve_lm_studio_model_if_needed,  # noqa: E402, F401
     _resolve_model_name,  # noqa: E402, F401

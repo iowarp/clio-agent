@@ -95,8 +95,9 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     Returns:
         Configured dspy.LM instance
     """
-    if config.provider == "codex" and config.codex_variant == "sdk":
-        return _record_identity(_codex_sdk_lm(config), config)
+    if config.provider == "codex":
+        engine_lm = _codex_sdk_lm if config.codex_variant == "sdk" else _codex_direct_lm
+        return _record_identity(engine_lm(config), config)
     if config.provider == "claude_code":
         return _record_identity(_claude_code_lm(config), config)
     # Defer litellm's eager ~40 MB cl100k_base tiktoken load until first real
@@ -113,7 +114,6 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
         from clio_agent.lm.tiktoken_vendored import repair_vendored_rank_files  # noqa: PLC0415
 
         repair_vendored_rank_files()
-    _ensure_provider_registered(config)
     if _defer_tiktoken_enabled():
         # After litellm is imported (by the provider registration above): stop its
         # response-cost recount from re-materialising the ~40 MB cl100k vocab on the
@@ -212,6 +212,51 @@ def _claude_code_lm(config: LMProviderConfig) -> Any:
     return lm
 
 
+def _codex_direct_lm(config: LMProviderConfig) -> Any:
+    """Codex direct: a ``dspy.LM`` on the Codex direct engine pair (lm15 wire, kept WS).
+
+    The reasoning effort rides the request config (``reasoning_effort``); the
+    per-conversation ``prompt_cache_key`` is declared so the loop sends it.
+    """
+    import dspy  # noqa: PLC0415
+
+    from clio_agent.lm.call_trace import LM_CALL_TRACE  # noqa: PLC0415
+    from clio_agent.lm.io_logging import _lm_transient_retries  # noqa: PLC0415
+    from clio_agent.providers.codex.direct_engine import (  # noqa: PLC0415
+        AsyncCodexDirectEngine,
+        CodexDirectEngine,
+        default_wire,
+    )
+
+    if not config.model.strip():
+        raise ValueError("No model configured for LM provider 'codex'")
+    bare = _codex_bare_model(config)
+    extras = build_request_kwargs(config)
+    effort = extras.pop("codex_reasoning_effort", None)
+    generation = {
+        k: v for k, v in extras.items() if not k.startswith("codex_") and k != "drop_params"
+    }
+    if effort is not None:
+        generation["reasoning_effort"] = effort
+    if config.max_tokens:
+        generation["max_tokens"] = config.max_tokens
+    wire = default_wire()
+    http = config.codex_transport == "sse"  # the operator's explicit no-WebSocket choice
+    lm = dspy.LM(
+        f"{_CODEX_LITELLM_PREFIX}/{bare}",
+        engine=CodexDirectEngine(bare, wire=wire, http=http),
+        async_engine=AsyncCodexDirectEngine(bare, wire=wire, http=http),
+        cache=False,
+        num_retries=_lm_transient_retries(),
+        model_type="chat",
+        callbacks=[LM_CALL_TRACE],
+        **generation,
+    )
+    lm._clio_prompt_cache_key = True
+    lm._clio_tool_result_media = "native"  # Responses tool outputs carry images and files
+    return lm
+
+
 def _codex_sdk_lm(config: LMProviderConfig) -> Any:
     """The Codex SDK variant: a ``dspy.LM`` on the Codex SDK engine pair.
 
@@ -252,22 +297,6 @@ def _codex_sdk_lm(config: LMProviderConfig) -> Any:
     )
     lm._clio_tool_result_media = "native"  # the engine sends tool-result images natively
     return lm
-
-
-def _ensure_provider_registered(config: LMProviderConfig) -> None:
-    """Register provider-specific LiteLLM hooks before constructing dspy.LM.
-
-    Only CLI-backed providers need this today (they are LiteLLM CustomLLMs).
-    The import is gated on the provider so installs without the relevant
-    binary do not pay the import cost.
-    """
-    if config.provider == "codex":
-        # Direct only: the SDK variant is an engine LM (create_lm returns before this).
-        from clio_agent.providers.codex.litellm_adapter import (  # noqa: PLC0415
-            ensure_registered,
-        )
-
-        ensure_registered()
 
 
 def _codex_bare_model(config: LMProviderConfig) -> str:
@@ -347,9 +376,10 @@ def _resolve_model_name(config: LMProviderConfig) -> str:
         # transport's prefix) before re-applying the CURRENT litellm-facing
         # prefix for the BOUND transport (S1b: sdk vs direct).
         bare = _codex_bare_model(config)
-        if config.codex_variant == "sdk":
-            return f"{_CODEX_LITELLM_PREFIX_SDK}/{bare}"  # the engine LM's model string
-        return f"{_CODEX_LITELLM_PREFIX}/cg-{bare}"
+        prefix = (
+            _CODEX_LITELLM_PREFIX_SDK if config.codex_variant == "sdk" else _CODEX_LITELLM_PREFIX
+        )
+        return f"{prefix}/{bare}"  # the engine LM's model string
     if config.provider == "claude_code":
         return f"claude_code/{_claude_code_bare_model(config)}"  # the engine LM's model
     return f"{_resolved_litellm_prefix(config)}/{config.model}"
@@ -399,14 +429,6 @@ _CHECKED_PARAM_NAMES: tuple[str, ...] = (
     "seed",
 )
 
-#: LiteLLM ``CustomLLM`` transports clio owns end-to-end
-#: (`providers.codex.litellm_adapter`). LiteLLM's provider registry does not know
-#: these as dialects -- `get_llm_provider`/`get_supported_openai_params` raise
-#: or return nonsense for them -- and their own `completion()` reads a small,
-#: fixed set of `optional_params` keys directly, ignoring everything else. The
-#: drop_params proactive check below does not apply to them.
-_CUSTOM_TRANSPORT_PREFIXES: tuple[str, ...] = (f"{_CODEX_LITELLM_PREFIX}/",)
-
 
 def _warn_dropped_params(*, model: str, kwargs: dict[str, Any]) -> None:
     """Log, at WARNING, every optional kwarg LiteLLM's ``drop_params=True`` would drop.
@@ -426,8 +448,6 @@ def _warn_dropped_params(*, model: str, kwargs: dict[str, Any]) -> None:
     litellm quirk) is logged at DEBUG and never raises -- this must never break
     LM construction.
     """
-    if model.startswith(_CUSTOM_TRANSPORT_PREFIXES):
-        return
     present = [name for name in _CHECKED_PARAM_NAMES if name in kwargs]
     if not present:
         return

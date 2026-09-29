@@ -386,7 +386,7 @@ def test_model_selection_routes_to_direct_by_default() -> None:
 
     config = LMProviderConfig(provider="codex", model="gpt-5.5", api_base="codex://direct")
     assert config.codex_variant == "direct"
-    assert _resolve_model_name(config) == f"{LITELLM_PROVIDER}/cg-gpt-5.5"
+    assert _resolve_model_name(config) == f"{LITELLM_PROVIDER}/gpt-5.5"
 
 
 def test_model_selection_routes_to_sdk_when_variant_selected() -> None:
@@ -399,22 +399,32 @@ def test_model_selection_routes_to_sdk_when_variant_selected() -> None:
     assert _resolve_model_name(config) == f"{LITELLM_PROVIDER_SDK}/gpt-5.5"
 
 
-def test_only_the_direct_transport_registers_a_litellm_provider(
+def test_both_variants_are_engine_lms_and_register_nothing_with_litellm(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The SDK variant is an engine LM: nothing is registered with LiteLLM for it."""
-    from clio_agent.config import LMProviderConfig
-    from clio_agent.lm import factory
+    """Each variant builds its own engine; LiteLLM's provider map is never touched."""
+    import litellm
+    from dspy.lm15 import OpenAICodexLM
 
-    registered: list[str] = []
+    from clio_agent.config import LMProviderConfig
+    from clio_agent.lm.factory import create_lm
+    from clio_agent.providers.codex import direct_engine
+
     monkeypatch.setattr(
-        "clio_agent.providers.codex.litellm_adapter.ensure_registered",
-        lambda: registered.append("direct"),
+        direct_engine, "default_wire", lambda: OpenAICodexLM(api_key="t", account_id="a")
     )
-    factory._ensure_provider_registered(
+    before = list(litellm.custom_provider_map)
+    direct = create_lm(
         LMProviderConfig(provider="codex", model="gpt-5.5", api_base="codex://direct")
     )
-    assert registered == ["direct"]
+    sdk = create_lm(
+        LMProviderConfig(
+            provider="codex", model="gpt-5.5", api_base="codex://direct", codex_variant="sdk"
+        )
+    )
+    assert isinstance(direct._engine_spec, direct_engine.CodexDirectEngine)
+    assert isinstance(sdk._engine_spec, sdk_engine.CodexSDKEngine)
+    assert list(litellm.custom_provider_map) == before
 
 
 def test_invalid_codex_variant_is_rejected() -> None:

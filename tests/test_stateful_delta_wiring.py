@@ -3,15 +3,11 @@
 These lock the three fixes whose *wiring* (not the shared detector, proved in
 ``test_claude_code_stateful``) is the deliverable:
 
-* **T1 — V2+codex routing.** A codex model id that collides with a litellm-registered
-  OpenAI model name (``gpt-5.6-sol``) must reach clio's own ``CodexLLM`` custom handler,
-  NOT litellm's OpenAI handler. The litellm-facing prefix is ``codex_direct`` -- never
-  bare ``codex``, which collides with litellm's OWN native ``codex`` provider
-  (:data:`clio_agent.providers.codex.constants.LITELLM_PROVIDER`) -- and the clio-side
-  collision guard is the ``cg-`` namespace marker in
-  :func:`clio_agent.lm.factory._resolve_model_name`. **Sabotage:** drop the marker →
-  ``create_lm`` yields the bare ``codex_direct/gpt-5.6-sol`` → litellm routes it to
-  OpenAI → this test goes red.
+* **T1 — codex routing.** A codex model id that collides with a litellm-registered
+  OpenAI model name (``gpt-5.6-sol``) runs on clio's own Codex direct engine (an engine
+  LM LiteLLM never routes), the backend receives the bare id, and the model-string
+  prefix is ``codex_direct`` -- never bare ``codex``, which collides with litellm's OWN
+  native ``codex`` provider (:data:`clio_agent.providers.codex.constants.LITELLM_PROVIDER`).
 
 * **T2 — ops_reset.** When ARC autocompaction rewrites the History prefix
   (``ClioReAct``'s per-step ``maybe_autocompact`` → ``arc.summarize_segments``), the active
@@ -66,69 +62,73 @@ def _prime(scope: str) -> None:
 # --------------------------------------------------------------------------- #
 # T1 — V2+codex routing: the collision-avoidance marker reaches the transport. #
 # --------------------------------------------------------------------------- #
-def test_codex_colliding_model_reaches_custom_handler(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A codex model whose id collides with an OpenAI model name still routes to clio's
-    own custom handler, never litellm's OpenAI dialect NOR litellm's own native
-    "codex" provider.
+def test_codex_colliding_model_reaches_clios_own_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A codex model whose id collides with an OpenAI model name still runs on clio's own
+    Codex direct engine, never LiteLLM's OpenAI dialect NOR LiteLLM's native "codex".
 
-    The regression pin for the V2+codex routing bug: ``gpt-5.6-sol`` is a litellm-
-    registered OpenAI chat model, so a bare ``codex_direct/gpt-5.6-sol`` risks being
-    hijacked to litellm's OpenAI handler. ``create_lm``'s ``cg-`` marker
-    (``_resolve_model_name``) is the guard: the resolved ``codex_direct/cg-gpt-5.6-sol``
-    reaches clio's ``CodexLLM`` custom handler instead. Removing the marker turns both
-    assertions red. Separately (not this test's sabotage target, but load-bearing): the
-    litellm-facing prefix itself must never be bare ``codex`` -- litellm ships its own
-    native ``codex`` provider (a real device-code OAuth flow against
-    auth.openai.com), so that name would silently route every turn there instead of
-    ever reaching this handler at all.
+    ``gpt-5.6-sol`` is (made) a LiteLLM-registered OpenAI chat model. The LM is an
+    engine LM, so LiteLLM never routes it; the backend receives the bare model id, and
+    the model-string prefix is "codex_direct" (never bare "codex").
     """
+    import json
+
     import litellm
+    from dspy.lm15 import Message, OpenAICodexLM, Request
 
     from clio_agent.config import LMProviderConfig, create_lm
-    from clio_agent.providers.codex import litellm_adapter as codex_litellm
+    from clio_agent.providers.codex import direct_engine
 
-    codex_litellm.ensure_registered()
-    litellm.utils.custom_llm_setup()
-    # The bare model id WOULD collide with a registered OpenAI model — that is the trap.
-    # Make the collision deterministic instead of trusting litellm's model catalog:
-    # the test session pins LITELLM_LOCAL_MODEL_COST_MAP=True (bundled map, no
-    # import-time network fetch), and the bundled map of the pinned litellm does not
-    # list gpt-5.6-sol while the remote one does. The routing defect this pins does
-    # not depend on which catalog knows the id, only on the id being in litellm's
-    # OpenAI collision set when create_lm resolves it.
     monkeypatch.setattr(
         litellm,
         "open_ai_chat_completion_models",
         set(litellm.open_ai_chat_completion_models) | {"gpt-5.6-sol"},
     )
-    assert "gpt-5.6-sol" in litellm.open_ai_chat_completion_models
+    monkeypatch.setattr(
+        direct_engine, "default_wire", lambda: OpenAICodexLM(api_key="t", account_id="a")
+    )
+    frames: list[dict[str, Any]] = []
 
-    cfg = LMProviderConfig(provider="codex", model="gpt-5.6-sol")
-    resolved = create_lm(cfg).model
-    # The marker namespaces the id out of the OpenAI collision set, and the
-    # litellm-facing prefix is "codex_direct" (never litellm's native "codex").
-    assert resolved == "codex_direct/cg-gpt-5.6-sol"
+    class _Socket:
+        def __init__(self) -> None:
+            self._events: list[str] = []
 
-    reached: dict[str, Any] = {}
+        async def send(self, raw: str) -> None:
+            frames.append(json.loads(raw))
+            done = {"type": "response.completed", "response": {"id": "r1", "output": []}}
+            self._events = [
+                json.dumps({"type": "response.created", "response": {"id": "r1"}}),
+                json.dumps(
+                    {
+                        "type": "response.output_text.delta",
+                        "delta": "ok",
+                        "item_id": "m",
+                        "output_index": 0,
+                        "content_index": 0,
+                    }
+                ),
+                json.dumps(done),
+            ]
 
-    def _stub_completion(self: Any, *args: Any, **kwargs: Any) -> Any:
-        reached["model"] = kwargs.get("model") or (args[0] if args else None)
-        raise RuntimeError("REACHED-CODEX-TRANSPORT")
+        def __aiter__(self) -> Any:
+            return self
 
-    monkeypatch.setattr(codex_litellm.CodexLLM, "completion", _stub_completion)
+        async def __anext__(self) -> str:
+            if not self._events:
+                raise StopAsyncIteration
+            return self._events.pop(0)
 
-    with pytest.raises(Exception) as excinfo:  # noqa: PT011 - message is asserted below
-        litellm.completion(
-            model=resolved,
-            messages=[{"role": "user", "content": "hi"}],
-            stream=False,
-        )
-    # NOT the OpenAI-hijack routing error; clio's CodexLLM handler WAS reached
-    # (litellm hands the custom handler the provider-prefix-stripped id — the ``cg-``
-    # marker survives so the handler's own ``removeprefix('cg-')`` recovers the real
-    # ``gpt-5.6-sol``).
-    assert "is not a valid LlmProviders" not in str(excinfo.value)
-    assert reached.get("model") == "cg-gpt-5.6-sol"
+        async def close(self) -> None:
+            return None
+
+    async def _connect(*_a: Any) -> _Socket:
+        return _Socket()
+
+    monkeypatch.setattr(direct_engine, "_connect", _connect)
+
+    lm = create_lm(LMProviderConfig(provider="codex", model="gpt-5.6-sol"))
+    assert lm.model == "codex_direct/gpt-5.6-sol"
+    lm(Request(model=lm.model, messages=(Message.user("hi"),)))
+    assert [f["model"] for f in frames] == ["gpt-5.6-sol"]
 
 
 # --------------------------------------------------------------------------- #

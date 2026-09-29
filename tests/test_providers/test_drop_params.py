@@ -74,19 +74,6 @@ def test_no_warning_when_no_checked_params_are_present(caplog: pytest.LogCapture
     assert not caplog.records
 
 
-@pytest.mark.parametrize("model", ["codex_direct/cg-gpt-5.5", "claude_code/cc-opus"])
-def test_custom_cli_transports_are_never_checked(
-    model: str, caplog: pytest.LogCaptureFixture
-) -> None:
-    """codex/claude_code are not LiteLLM dialects -- get_supported_openai_params
-    does not apply, and their own optional_params contract is separate."""
-    with caplog.at_level(logging.WARNING):
-        _warn_dropped_params(
-            model=model, kwargs={"presence_penalty": 0.5, "codex_reasoning_effort": "low"}
-        )
-    assert not caplog.records
-
-
 def test_never_raises_for_an_unmapped_model(caplog: pytest.LogCaptureFixture) -> None:
     """A model litellm cannot classify must degrade to a debug log, never raise."""
     with caplog.at_level(logging.DEBUG):

@@ -94,14 +94,14 @@ async def test_a_401_result_status_is_a_sign_out_too(monkeypatch: pytest.MonkeyP
 async def test_a_404_result_is_a_typed_model_rejection_not_transient(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import litellm
+    from clio_agent.providers.claude_code_result_errors import ClaudeCodeModelRejectedError
 
     rejection = _error_result(
         "There's an issue with the selected model (claude-nope).", api_error_status=404
     )
     fake.install(monkeypatch, script=[[rejection]])
 
-    with pytest.raises(litellm.BadRequestError) as excinfo:
+    with pytest.raises(ClaudeCodeModelRejectedError) as excinfo:
         await fake.drive(fake.request(model="claude-nope"))
 
     assert "rejected model 'claude-nope'" in str(excinfo.value)

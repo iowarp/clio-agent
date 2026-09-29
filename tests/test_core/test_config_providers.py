@@ -19,6 +19,18 @@ from clio_agent.config import (
 from tests.env_isolation import isolated_environ
 
 
+@pytest.fixture
+def _codex_test_wire(monkeypatch):
+    """The Codex direct engine on a static test credential (no sign-in, no network)."""
+    from dspy.lm15 import OpenAICodexLM
+
+    from clio_agent.providers.codex import direct_engine
+
+    monkeypatch.setattr(
+        direct_engine, "default_wire", lambda: OpenAICodexLM(api_key="test", account_id="acct")
+    )
+
+
 @pytest.fixture(autouse=True)
 def _clean_model_file_layer(allow_pytest_tmp_path):
     """Resolve this module's LM config from a clean file layer w.r.t. ``lm.model``.
@@ -510,46 +522,54 @@ class TestCreateLM:
             lm = create_lm(config)
             assert lm.model.startswith("anthropic/")
 
-    def test_codex_uses_custom_provider_prefix_with_internal_marker(self):
-        """Codex should keep user-facing model ids clean and mark internally.
+    @pytest.mark.usefixtures("_codex_test_wire")
+    def test_codex_direct_runs_on_the_websocket_engine(self):
+        """Codex direct is an engine LM (kept WebSocket) with a clean model id.
 
-        The litellm-facing prefix is "codex_direct" (never bare "codex" --
-        litellm ships its own native "codex" provider; see
+        The model-string prefix is "codex_direct" (never bare "codex" -- see
         providers.codex.constants.LITELLM_PROVIDER).
         """
+        from clio_agent.providers.codex.direct_engine import CodexDirectEngine
+
         config = LMProviderConfig(provider="codex", model="gpt-5.5")
         lm = create_lm(config)
-        assert lm.model == "codex_direct/cg-gpt-5.5"
-        assert lm.kwargs["codex_transport"] == "websocket"
+        assert lm.model == "codex_direct/gpt-5.5"
+        assert isinstance(lm._engine_spec, CodexDirectEngine)
+        assert lm._engine_spec.http is False
 
+    @pytest.mark.usefixtures("_codex_test_wire")
     def test_codex_model_marker_is_not_doubled(self):
         """Codex should accept already-prefixed config values idempotently."""
-        config = LMProviderConfig(provider="codex", model="codex_direct/cg-gpt-5.5")
-        lm = create_lm(config)
-        assert lm.model == "codex_direct/cg-gpt-5.5"
+        for persisted in ("codex_direct/gpt-5.5", "codex_direct/cg-gpt-5.5"):
+            lm = create_lm(LMProviderConfig(provider="codex", model=persisted))
+            assert lm.model == "codex_direct/gpt-5.5"
 
+    @pytest.mark.usefixtures("_codex_test_wire")
     def test_codex_legacy_prefix_is_stripped_defensively(self):
-        """A config persisted before the litellm-prefix rename (bare 'codex/')
-        still resolves to the current 'codex_direct/' wire prefix, never doubled."""
+        """A config persisted before the prefix rename (bare 'codex/', the old 'cg-'
+        marker) still resolves to the current 'codex_direct/' prefix, never doubled."""
         config = LMProviderConfig(provider="codex", model="codex/cg-gpt-5.5")
         lm = create_lm(config)
-        assert lm.model == "codex_direct/cg-gpt-5.5"
+        assert lm.model == "codex_direct/gpt-5.5"
 
-    def test_codex_transport_passes_litellm_kwarg(self):
-        """The codex transport should flow into dspy.LM kwargs."""
+    @pytest.mark.usefixtures("_codex_test_wire")
+    def test_codex_sse_transport_selects_the_engines_http_mode(self):
+        """codex_transport="sse" (a proxy that blocks WebSocket upgrades) is the
+        engine's explicit stateless HTTP mode, never an LM kwarg."""
         config = LMProviderConfig(
             provider="codex",
             model="gpt-5.5",
             codex_transport="sse",
         )
         lm = create_lm(config)
-        assert lm.kwargs["codex_transport"] == "sse"
+        assert lm._engine_spec.http is True
+        assert "codex_transport" not in lm.kwargs
 
-    def test_codex_thinking_level_passes_codex_reasoning_effort_kwarg(self):
+    @pytest.mark.usefixtures("_codex_test_wire")
+    def test_codex_thinking_level_passes_the_reasoning_effort(self):
         """SEAM (#896): the #895 thinking level survives the factory into the LM
-        kwargs as codex_reasoning_effort — the same optional_params lane
-        codex_transport already proves reaches the CustomLLM. off → codex's
-        explicit 'none' (never omit-and-inherit-ambient)."""
+        kwargs as reasoning_effort, which the loop's request config carries as
+        Config.reasoning (lm15 sends it as the Responses reasoning effort)."""
         from clio_agent.providers.capabilities import invalidation
         from clio_agent.providers.capabilities.records import (
             DeploymentCapabilities,
@@ -590,13 +610,13 @@ class TestCreateLM:
 
         config = LMProviderConfig(provider="codex", model="gpt-5.5", thinking_level="high")
         lm = create_lm(config)
-        assert lm.kwargs["codex_reasoning_effort"] == "high"
+        assert lm.kwargs["reasoning_effort"] == "high"
 
         # This model does not list "none": the backend refuses an unlisted
         # effort, so off sends nothing (the model's own default effort).
         config_off = LMProviderConfig(provider="codex", model="gpt-5.5", thinking_level="off")
         lm_off = create_lm(config_off)
-        assert "codex_reasoning_effort" not in lm_off.kwargs
+        assert "reasoning_effort" not in lm_off.kwargs
 
         # Unset level on a model with NO linked evidence yet (no handshake has
         # run for this identity) → no effort kwarg at all, never a guess
@@ -604,7 +624,7 @@ class TestCreateLM:
         # is known yet" case, covered with its own, unseeded model id.
         config_default = LMProviderConfig(provider="codex", model="gpt-5.5-unseeded")
         lm_default = create_lm(config_default)
-        assert "codex_reasoning_effort" not in lm_default.kwargs
+        assert "reasoning_effort" not in lm_default.kwargs
 
     def test_claude_code_runs_on_the_engine(self):
         """Claude Code is an engine LM (no LiteLLM route) with a clean model id."""

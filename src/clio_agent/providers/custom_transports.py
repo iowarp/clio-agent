@@ -1,14 +1,9 @@
-"""The LiteLLM custom-provider keys clio registers for its own SDK/CLI transports.
+"""The provider keys of clio's own engine transports (Claude Code, Codex direct/SDK).
 
-clio drives Claude Code and Codex through its own ``CustomLLM`` handlers, registered
-with LiteLLM under these keys (``providers/_cli_provider.register_custom_provider``).
-They are clio's transports, not LiteLLM providers: once LiteLLM has set a custom
-handler up, ``get_supported_openai_params`` answers its generic OpenAI list for the
-key, which says nothing about what the transport accepts. Consumers that ask LiteLLM
-about a provider (``capabilities/endpoint.py``) consult this set instead of LiteLLM's
-mutable registration state, so the answer never depends on what ran earlier in the
-process. :func:`~clio_agent.providers._cli_provider.register_custom_provider` refuses a
-key missing from this set, so a new transport cannot bypass it.
+They are clio's transports (DSPy 3.4 engines), not LiteLLM providers: LiteLLM knows
+nothing true about what they accept. Consumers that would ask LiteLLM about a provider
+(``capabilities/endpoint.py``) consult this set instead, so the answer never depends
+on LiteLLM's registration state.
 """
 
 from __future__ import annotations

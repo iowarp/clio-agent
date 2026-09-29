@@ -28,7 +28,7 @@ from dspy.lm15 import Message, Request
 
 from clio_agent.providers.stateful_common import active_stateful_scope, register_scope_registry
 
-__all__ = ["ConversationRegistry", "Send", "conversation_key"]
+__all__ = ["ConversationRegistry", "Send", "conversation_key", "new_messages"]
 
 Key = tuple[str, ...]
 
@@ -75,7 +75,7 @@ class ConversationRegistry:
             live = self._live.get(key)
             if live is None:
                 return Send(key, request.messages, None, pending or "first_call")
-            new = _new_messages(live, request, system)
+            new = new_messages(live.held, live.system, request, system)
             if pending is not None or new is None:
                 self._drop(key)
                 return Send(key, request.messages, None, pending or "prefix_mismatch")
@@ -143,16 +143,17 @@ class ConversationRegistry:
             self._released.append(conversation.handle)
 
 
-def _new_messages(live: _Conversation, request: Request, system: str) -> tuple[Message, ...] | None:
+def new_messages(
+    held: tuple[Message, ...], held_system: str, request: Request, system: str
+) -> tuple[Message, ...] | None:
     """The messages after what the provider holds and its own reply, else ``None``.
 
     The provider holds what it was sent (``live.held``) plus the reply it produced; the
     next call must repeat both, then add only tool results / user / developer
     messages. Anything else (an edit, a different system prompt) is not a delta.
     """
-    held = live.held
     messages = request.messages
-    if system != live.system or len(messages) <= len(held) or messages[: len(held)] != held:
+    if system != held_system or len(messages) <= len(held) or messages[: len(held)] != held:
         return None
     if messages[len(held)].role != "assistant":
         return None

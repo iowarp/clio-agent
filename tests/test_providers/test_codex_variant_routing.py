@@ -62,7 +62,7 @@ def test_build_spec_inherits_and_overrides_the_variant() -> None:
 
 @pytest.mark.parametrize(
     ("variant", "model_name"),
-    [("sdk", f"{LITELLM_PROVIDER_SDK}/gpt-5.5"), ("direct", f"{LITELLM_PROVIDER}/cg-gpt-5.5")],
+    [("sdk", f"{LITELLM_PROVIDER_SDK}/gpt-5.5"), ("direct", f"{LITELLM_PROVIDER}/gpt-5.5")],
 )
 def test_resolver_binds_the_named_codex_transport(variant: str, model_name: str) -> None:
     from clio_agent.lm.factory import _resolve_model_name
@@ -107,7 +107,7 @@ def test_sdk_turn_runs_on_the_sdk_engine_without_direct_credentials(
     from clio_agent.gact.agents.builders import _dynamic_agent_lm_config
     from clio_agent.gact.turn_forward import _apply_turn_model_selection
     from clio_agent.lm.factory import create_lm
-    from clio_agent.providers.codex import litellm_adapter, sdk_engine
+    from clio_agent.providers.codex import direct_engine, sdk_engine
     from clio_agent.providers.codex.credentials import CodexCredentialStore
 
     # Direct is not signed in on this machine.
@@ -128,8 +128,8 @@ def test_sdk_turn_runs_on_the_sdk_engine_without_direct_credentials(
         raise AssertionError("the SDK selection reached the Direct transport")
 
     monkeypatch.setattr(sdk_engine, "_SDK_CLIENT", _FakeClient())
-    for name in ("completion", "acompletion", "streaming", "astreaming"):
-        monkeypatch.setattr(litellm_adapter.CodexLLM, name, _direct_must_not_run)
+    monkeypatch.setattr(direct_engine.AsyncCodexDirectEngine, "stream", _direct_must_not_run)
+    monkeypatch.setattr(direct_engine.CodexDirectEngine, "stream", _direct_must_not_run)
 
     # The active (boot) model is a different provider entirely.
     base_agent = SimpleNamespace(

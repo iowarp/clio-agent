@@ -92,15 +92,8 @@ def test_claude_refuses_individually_legal_attachments_that_sum_past_the_request
         native_blocks([image, image])
 
 
-# NOTE (codex migration): the deleted Codex SDK provider's
-# ``_messages_to_codex_input`` re-checked these same bounds as a defense-in-depth
-# layer before expansion (mirroring the Claude Code adapter above). The new
-# direct Codex provider's message conversion
-# (``clio_agent.providers.codex.responses.chat_messages_to_responses_input``)
-# does not call into ``native_attachment_bounds`` at all -- there is no
-# provider-adapter-level bounds re-check for codex to port a test onto. The
-# generic ingestion-level check in ``gact/messaging.py`` (``check_block_bytes``
-# against the recorded attachment size, before any provider is invoked) still
-# applies regardless of provider, so this is not a silent hole in coverage of
-# the bound itself -- only of this one provider's redundant second check. Flagged
-# for the src owners rather than fixed here (out of scope for a test-only slice).
+# NOTE (engine port): the Codex SDK engine re-checks these bounds on its image inputs
+# (``providers.codex.sdk_engine._image_inputs``, pinned in test_codex_sdk_engine). The
+# Codex direct engine hands images/files to lm15's Responses payload builder with no
+# provider-level re-check; the ingestion-level check in ``gact/messaging.py`` still
+# applies before any provider is invoked.

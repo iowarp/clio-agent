@@ -6,13 +6,12 @@ EITHER is available:
 
 - **`sdk`** -- the official `openai_codex` Python SDK, run against the
   user's OWN `CODEX_HOME` (default `~/.codex`). The Codex runtime itself
-  owns login/refresh; CLIO never reads or writes `auth.json`. Available when
-  the SDK/runtime is installed and its own `account()` call reports a
-  signed-in account.
-- **`direct`** -- CLIO talks OAuth, HTTP/SSE, and WebSocket directly to the
-  Codex backend (`chatgpt.com/backend-api`) from its own process, with a
-  CLIO-held OAuth credential -- no Codex CLI, no Codex SDK for this
-  transport. Available when a CLIO-held credential exists.
+  owns login/refresh. Available when the SDK/runtime is installed and its own
+  `account()` call reports a signed-in account.
+- **`direct`** -- CLIO sends the Responses API request to the Codex backend
+  (`chatgpt.com/backend-api`) from its own process over a kept WebSocket, with
+  CLIO's own OAuth credential or, without one, the local Codex CLI login
+  (`~/.codex/auth.json`) -- no Codex SDK for this transport.
 
 Duplicate model ids across the two transports are expected -- picking a
 model also picks which transport serves it (`variant: "sdk" | "direct"` on
@@ -55,28 +54,29 @@ environment (the user's real `CODEX_HOME`) verbatim.
 
 ### direct transport
 
-CLIO talks OAuth, HTTP/SSE, and WebSocket directly to the Codex backend
-(`chatgpt.com/backend-api`) from `src/clio_agent/providers/codex/`. There is
-no subprocess, no vendored CLI binary, and no second SDK layer between CLIO
-and the wire for this transport.
+`src/clio_agent/providers/codex/direct_engine.py` is a DSPy 3.4 engine: lm15's
+`OpenAICodexLM` builds the Responses payload (native function tools, reasoning,
+images and PDFs, `prompt_cache_key`) and parses the event stream; the engine owns
+only the transport.
 
 - **Auth** (`oauth.py`, `login_flow.py`, `credentials.py`): PKCE OAuth with
   three login methods racing to the same code exchange -- a loopback browser
   callback, a paste-only fallback (for a browser CLIO cannot open, or a
   headless/`clio-relay` host), and a device code for headless hosts. Rotating
-  refresh tokens are persisted atomically at `0600`, refreshed proactively
-  (under 5 minutes remaining) and on a 401.
-- **Transport** (`transport_ws.py`, `transport_sse.py`): WebSocket is the
-  default, with delta continuation -- a follow-up turn reuses the open
-  connection and sends only the new input suffix plus `previous_response_id`
-  when eligible, rather than replaying the whole conversation. SSE is the
-  automatic fallback for any pre-stream WebSocket failure.
-- **LiteLLM adapter** (`litellm_adapter.py`): a `CustomLLM` registered under
-  the internal name `codex_direct` -- deliberately NOT the catalog id
-  `codex`, because litellm ships its own native `chatgpt` provider (a
-  device-code OAuth client against `auth.openai.com`) that this provider
-  historically collided with when it was registered under a matching name.
-  See `constants.py::LITELLM_PROVIDER` for the full story.
+  refresh tokens are persisted atomically at `0600` and refreshed proactively
+  (under 5 minutes remaining); every call reads a fresh token. Without a CLIO
+  sign-in the engine uses the local Codex CLI login (`~/.codex/auth.json`).
+- **Transport:** one WebSocket per conversation (GACT session + agent scope)
+  inside an agent loop, with delta continuation: a call whose messages repeat
+  everything already sent plus the model's own reply sends only the new
+  messages' input items with `previous_response_id` (the state lives on the
+  connection, so it works with `store: false`). An edit, a different system
+  prompt or tool list, an idle (5 min) or aged (55 min) socket, or a backend
+  that lost the previous response sends the full input on a new socket, typed
+  on the `provider.stateful` audit row. The conversation's `prompt_cache_key`
+  routes every call to one prompt cache. Measured (B3, 2026-09-29): median
+  TTFT 1.18 s vs 1.49 s for stateless HTTP on a 4-turn conversation, same
+  ~70% cache hit rate.
 - **Model lists** (live, per transport): the `direct` transport asks the
   Codex backend's account model list (`codex/model_list.py`:
   `GET https://chatgpt.com/backend-api/codex/models?client_version=<v>`, the
@@ -128,9 +128,10 @@ export CLIO_CODEX_TRANSPORT=websocket  # direct transport's OWN delivery choice
 binds (`sdk` | `direct`, default `direct`); it may also be omitted and set
 per bind request instead (`variant` on `PUT /v1/providers/lm`). It is
 unrelated to `CLIO_CODEX_TRANSPORT`, which is the DIRECT transport's own
-delivery mechanism and may be omitted -- `websocket` is its default; `sse`
-forces the automatic-fallback transport for the whole session (useful behind
-a proxy that blocks WebSocket upgrades).
+delivery mechanism: `websocket` (default, delta continuation) or `sse`, an
+explicit stateless-HTTP mode for a network whose proxy blocks WebSocket
+upgrades (every call sends the full input). There is no automatic fallback
+between them.
 
 ## Streaming and reasoning truth
 
@@ -141,19 +142,17 @@ bridge -- a provider-reported reasoning delta is never invented text.
 
 ## Failure behavior
 
-Every failure is one of the typed errors in `errors.py`, never a bare
-exception: a 429 whose body names the account's plan window is terminal
-(`CodexPlanLimitError`, never retried); other retryable statuses back off
-honoring `retry-after-ms`/`retry-after`; a 401 refreshes the credential once
-and retries the whole turn; a pre-stream WebSocket failure falls back to SSE
-for the rest of that turn; a mid-stream failure is a hard error, not silently
-downgraded.
+Every failure is typed, never a bare exception: an exhausted plan window is
+`CodexPlanLimitError` (terminal, never retried, a plain-language message for
+the user); a refused sign-in is a typed auth error; a lost continuation resends
+in full once; other backend and transport failures are lm15's typed errors,
+which DSPy retries when they are retryable (never after anything streamed).
 
 ## Related source
 
 - `src/clio_agent/providers/codex/` -- OAuth, credentials, both transports,
-  (`sdk_client.py`/`sdk_engine.py`/`sdk_discovery.py` for `sdk`; `oauth.py`/`transport_ws.py`/
-  `transport_sse.py`/`litellm_adapter.py` for `direct`)
+  (`sdk_client.py`/`sdk_engine.py`/`sdk_discovery.py` for `sdk`;
+  `oauth.py`/`login_flow.py`/`credentials.py`/`direct_engine.py` for `direct`)
 - `src/clio_agent/providers/model_discovery/codex.py` /
   `providers/codex/model_list.py` -- the direct transport's live model list
 - `src/clio_agent/gact/routes/codex_variant.py` -- the sdk-transport

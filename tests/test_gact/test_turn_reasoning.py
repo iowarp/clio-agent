@@ -146,10 +146,10 @@ def test_codex_message_effort_overrides_the_global_level() -> None:
         ),
     )
     base = LMProviderConfig(provider="codex", model="gpt-5.5", thinking_level="low")
-    assert _lm_kwargs(base, "high")["codex_reasoning_effort"] == "high"
-    assert _lm_kwargs(base, "xhigh")["codex_reasoning_effort"] == "xhigh"
+    assert _lm_kwargs(base, "high")["reasoning_effort"] == "high"
+    assert _lm_kwargs(base, "xhigh")["reasoning_effort"] == "xhigh"
     # No per-message level: the configured level still governs.
-    assert _lm_kwargs(base, None)["codex_reasoning_effort"] == "low"
+    assert _lm_kwargs(base, None)["reasoning_effort"] == "low"
 
 
 def test_openai_kind_message_effort_sets_reasoning_effort(
@@ -299,7 +299,7 @@ def test_codex_message_minimal_effort_is_sent() -> None:
         ),
     )
     base = LMProviderConfig(provider="codex", model="gpt-5.5")
-    assert _lm_kwargs(base, "minimal")["codex_reasoning_effort"] == "minimal"
+    assert _lm_kwargs(base, "minimal")["reasoning_effort"] == "minimal"
 
 
 def _record(

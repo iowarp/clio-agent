@@ -46,6 +46,8 @@ import anyio
 import dspy
 import pydantic
 from dspy.lm15 import (
+    CacheConfig,
+    Config,
     ContextLengthError,
     DocumentPart,
     FunctionTool,
@@ -189,6 +191,27 @@ def _media_part(item: Any) -> ImagePart | DocumentPart:
     return DocumentPart(data=data, media_type=media_type or "application/pdf")
 
 
+def _with_cache_key(config: Config, lm: Any) -> Config:
+    """Route this conversation's calls to one prompt cache, where the LM takes a key.
+
+    ``prompt_cache_key`` (OpenAI Responses, Codex direct) is a routing hint: calls
+    with the same key and prefix land on the same cache. The key is the
+    conversation (GACT session + agent scope), so parallel agents never share one.
+    Only an LM that declares ``_clio_prompt_cache_key`` gets it -- lm15 raises for a
+    provider without the field.
+    """
+    from clio_agent.gact import context as _ctx  # noqa: PLC0415
+
+    session = _ctx.active_session_id()
+    scope = _ctx.run_keyed_scope(_ctx.active_react_scope())
+    if not getattr(lm, "_clio_prompt_cache_key", False) or not session or not scope:
+        return config
+    cache = config.cache or CacheConfig()
+    return dataclasses.replace(
+        config, cache=dataclasses.replace(cache, key=f"clio:{session}:{scope}")
+    )
+
+
 def _place_tool_media(messages: list[Message], placement: str) -> list[Message]:
     """Put tool-result images/documents where the LM's API takes them.
 
@@ -242,7 +265,9 @@ class _Loop:
         self.system = _system(agent.signature, self.inputs)
         self.head = _head(agent.signature, self.inputs)
         self.tools = tuple(_function_tool(t) for t in agent.tools.values())
-        self.config = config_from_lm_kwargs(getattr(self.lm, "kwargs", {}) or {})
+        self.config = _with_cache_key(
+            config_from_lm_kwargs(getattr(self.lm, "kwargs", {}) or {}), self.lm
+        )
         self.tool_media = str(getattr(self.lm, "_clio_tool_result_media", "native"))
         self.steps: list[Message] = []
         self.arc, self.session, self.scope = record.arc_scope()

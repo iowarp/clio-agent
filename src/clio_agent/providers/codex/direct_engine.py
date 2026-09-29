@@ -1,0 +1,425 @@
+"""Codex direct as a DSPy 3.4 engine: lm15's Responses wire over a kept WebSocket.
+
+The Codex backend (``chatgpt.com/backend-api/codex``) speaks the OpenAI Responses API.
+lm15's :class:`OpenAICodexLM` builds the request payload (native function tools,
+reasoning pass-back, images, ``prompt_cache_key``) and parses the event stream; this
+engine changes only the transport:
+
+* **One WebSocket per conversation.** Inside an agent loop the socket for ``(session,
+  scope, model)`` is kept open. A call whose messages repeat everything the
+  conversation was sent plus the model's own reply, then add only non-assistant
+  messages, sends only the input items for those new messages with
+  ``previous_response_id`` -- the continuation lives on the open connection, so it
+  works with ``store: false``. Anything else (an edit, a different system prompt or
+  tool list, an idle or aged socket) sends the full input, typed on the
+  ``provider.stateful`` audit row. Outside a loop every call is a full send on a
+  short-lived socket.
+* **An owner loop.** The loop runs each step under its own ``asyncio.run``; a socket
+  is bound to the event loop that opened it, so every socket lives on this module's
+  own daemon loop and events are bridged to the caller.
+* **HTTP mode.** ``CLIO_CODEX_TRANSPORT=sse`` (a proxy that blocks WebSocket
+  upgrades) runs lm15's own stateless HTTP transport instead -- an explicit choice,
+  never a silent fallback.
+* **Errors.** An exhausted plan window is clio's terminal ``CodexPlanLimitError``
+  (never retried); a refused sign-in is a typed ``AuthError``; everything else is
+  lm15's typed error.
+* **Auth** is clio's own Codex sign-in when there is one (refreshed per call), else
+  the local Codex CLI login (``~/.codex/auth.json``, read by lm15).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import dataclasses
+import json
+import queue
+import threading
+import time
+import uuid
+from collections.abc import AsyncGenerator, Iterator
+from dataclasses import dataclass, field
+from typing import Any
+
+import websockets
+from dspy.lm15 import (
+    AuthError,
+    Message,
+    Request,
+    Response,
+    ServerError,
+    materialize_response,
+)
+
+from clio_agent.lm.engines.conversations import conversation_key, new_messages
+from clio_agent.providers.codex import constants as c
+from clio_agent.providers.codex.errors import CodexPlanLimitError, is_usage_limit_text
+from clio_agent.providers.stateful_common import stateful_reset_payload
+
+__all__ = ["AsyncCodexDirectEngine", "CodexDirectEngine", "close_all", "default_wire"]
+
+_END = object()
+_TERMINAL = frozenset({"response.completed", "response.failed", "response.incomplete", "error"})
+
+
+@dataclass(frozen=True)
+class _WireEvent:
+    """One WebSocket message in the shape lm15's Responses parser reads (SSE-like)."""
+
+    event: str
+    data: str
+
+
+@dataclass
+class _Conversation:
+    socket: Any
+    system: str
+    tools: str
+    held: tuple[Message, ...]
+    response_id: str
+    opened_at: float = field(default_factory=time.monotonic)
+    used_at: float = field(default_factory=time.monotonic)
+
+    def expired(self, now: float) -> bool:
+        return (now - self.opened_at) >= c.WS_MAX_AGE_S or (now - self.used_at) >= c.WS_IDLE_CLOSE_S
+
+
+class _Owner:
+    """The daemon event loop every socket lives on."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def loop(self) -> asyncio.AbstractEventLoop:
+        with self._lock:
+            if self._loop is None or not self._loop.is_running():
+                loop = asyncio.new_event_loop()
+                threading.Thread(target=loop.run_forever, name="codex-direct", daemon=True).start()
+                self._loop = loop
+            return self._loop
+
+
+_OWNER = _Owner()
+_CONVERSATIONS: dict[tuple[str, ...], _Conversation] = {}
+_CONVERSATIONS_LOCK = threading.Lock()
+
+
+class AsyncCodexDirectEngine:
+    """Async Codex direct engine (see the module docstring)."""
+
+    supports_function_calling = True
+    supports_reasoning = True
+
+    def __init__(self, model: str, *, wire: Any | None = None, http: bool = False) -> None:
+        self.model = model
+        self.wire = wire or default_wire()
+        # ``http``: the operator chose stateless HTTP (``CLIO_CODEX_TRANSPORT=sse``,
+        # e.g. behind a proxy that blocks WebSocket upgrades) -- no kept socket.
+        self.http = http
+
+    async def complete(self, request: Request) -> Response:
+        """Run one call and return the assembled response."""
+        return materialize_response(iter([e async for e in self.stream(request)]), request)
+
+    async def stream(self, request: Request) -> AsyncGenerator[Any, None]:
+        """Run one call on the owner loop, yielding lm15 stream events."""
+        events: queue.SimpleQueue[Any] = queue.SimpleQueue()
+        key = conversation_key(self.model)
+        future = asyncio.run_coroutine_threadsafe(self._call(request, key, events), _OWNER.loop())
+        loop = asyncio.get_running_loop()
+        try:
+            while True:
+                item = await loop.run_in_executor(None, events.get)
+                if item is _END:
+                    break
+                if isinstance(item, BaseException):
+                    raise item
+                yield item
+        finally:
+            if not future.done():
+                future.cancel()
+
+    async def aclose(self) -> None:
+        """Nothing to release per engine: sockets belong to their conversations."""
+
+    async def _call(
+        self, request: Request, key: tuple[str, ...] | None, out: queue.SimpleQueue[Any]
+    ) -> None:
+        try:
+            _check_media(request)  # typed refusal of oversized attachments before any send
+            if self.http:
+                await asyncio.to_thread(self._http, request, out)
+                return
+            await self._run(request, key, out)
+        except BaseException as exc:  # noqa: BLE001 - surfaced on the caller's loop
+            if key is not None:
+                await _drop(key)
+            out.put(exc)
+        finally:
+            out.put(_END)
+
+    async def _run(
+        self, request: Request, key: tuple[str, ...] | None, out: queue.SimpleQueue[Any]
+    ) -> None:
+        # The backend takes the bare model id, whatever the dspy.LM model string is.
+        request = dataclasses.replace(request, model=self.model)
+        wire_request = self.wire.build_request(request, stream=True)
+        body = json.loads(wire_request.body)
+        headers = dict(wire_request.headers)
+        system, tools = str(body.get("instructions") or ""), json.dumps(body.get("tools") or [])
+        live, reason = _plan(key, request, system, tools)
+        frame = body
+        if live is not None:
+            new = new_messages(live.held, live.system, request, system)
+            assert new is not None  # _plan checked it
+            frame = {**body, "input": self._items(request, len(request.messages) - len(new))}
+            frame["previous_response_id"] = live.response_id
+        socket = live.socket if live is not None else await _connect(headers, key)
+        _audit(key, self.model, request, live is not None, reason, len(frame.get("input") or []))
+        try:
+            response_id = await _exchange(self.wire, request, socket, frame, out)
+        except _ContinuationLost:
+            # The backend no longer holds the previous response (nothing was streamed):
+            # resend in full on a fresh socket, typed.
+            _close_soon(socket)
+            socket = await _connect(headers, key)
+            _audit(key, self.model, request, False, "session_evicted", len(body["input"]))
+            response_id = await _exchange(self.wire, request, socket, body, out)
+        if key is None:
+            await socket.close()
+            return
+        with _CONVERSATIONS_LOCK:
+            _CONVERSATIONS[key] = _Conversation(
+                socket=socket,
+                system=system,
+                tools=tools,
+                held=request.messages,
+                response_id=response_id,
+                opened_at=live.opened_at if live is not None else time.monotonic(),
+            )
+
+    def _http(self, request: Request, out: queue.SimpleQueue[Any]) -> None:
+        """One stateless HTTP call (lm15's own transport), events forwarded as they come."""
+        from dspy.lm15 import RateLimitError  # noqa: PLC0415
+
+        try:
+            for event in self.wire.stream(dataclasses.replace(request, model=self.model)):
+                out.put(event)
+        except RateLimitError as exc:
+            if is_usage_limit_text(str(exc)):
+                raise CodexPlanLimitError(str(exc)) from exc
+            raise
+
+    def _items(self, request: Request, first_new: int) -> list[Any]:
+        """The input items of ``request.messages[first_new:]`` (lm15's own rendering)."""
+        whole = json.loads(self.wire.build_request(request, stream=True).body)["input"]
+        prefix = Request(
+            model=request.model,
+            system=request.system,
+            messages=request.messages[:first_new],
+            tools=request.tools,
+            config=request.config,
+        )
+        head = json.loads(self.wire.build_request(prefix, stream=True).body)["input"]
+        if whole[: len(head)] != head:
+            raise ServerError("codex direct: the rendered input is not append-only")
+        return list(whole[len(head) :])
+
+
+class CodexDirectEngine(AsyncCodexDirectEngine):
+    """Sync twin: the same owner-loop call, consumed on the calling thread."""
+
+    def complete(self, request: Request) -> Response:  # type: ignore[override]
+        return materialize_response(self.stream(request), request)
+
+    def stream(self, request: Request) -> Iterator[Any]:  # type: ignore[override]
+        events: queue.SimpleQueue[Any] = queue.SimpleQueue()
+        asyncio.run_coroutine_threadsafe(
+            self._call(request, conversation_key(self.model), events), _OWNER.loop()
+        )
+        while True:
+            item = events.get()
+            if item is _END:
+                return
+            if isinstance(item, BaseException):
+                raise item
+            yield item
+
+    def close(self) -> None:
+        """Nothing to release per engine."""
+
+
+def _check_media(request: Request) -> None:
+    """Every inline image / document of the request within the native ceilings.
+
+    Raises:
+        NativeAttachmentTooLargeError: One attachment, or all of them together, too large.
+    """
+    from dspy.lm15 import DocumentPart, ImagePart  # noqa: PLC0415
+
+    from clio_agent.providers.native_attachment_bounds import (  # noqa: PLC0415
+        base64_byte_length,
+        check_block_bytes,
+        check_total_bytes,
+    )
+
+    total = 0
+    for message in request.messages:
+        for part in message.parts:
+            for media in (part, *getattr(part, "content", ())):
+                data = getattr(media, "data", None)
+                if isinstance(media, ImagePart | DocumentPart) and data:
+                    size = base64_byte_length(data)
+                    if isinstance(media, ImagePart):
+                        check_block_bytes("image", size, label=media.media_type)
+                    else:
+                        check_block_bytes("document", size, label=media.media_type)
+                    total += size
+    check_total_bytes(total)
+
+
+def default_wire() -> Any:
+    """lm15's Codex LM on clio's sign-in (a fresh token per call), else the CLI login."""
+    from dspy.lm15 import OpenAICodexLM  # noqa: PLC0415
+
+    from clio_agent.providers.codex.credentials import CodexCredentialStore  # noqa: PLC0415
+
+    store = CodexCredentialStore()
+    credential = store.load()
+    if credential is None:
+        return OpenAICodexLM.from_codex_cli(originator=c.ORIGINATOR)
+    return OpenAICodexLM(
+        api_key=lambda: store.get_valid_credential().access_token,
+        account_id=credential.account_id,
+        originator=c.ORIGINATOR,
+    )
+
+
+def close_all() -> int:
+    """Close every kept socket (server shutdown); returns how many were open."""
+    with _CONVERSATIONS_LOCK:
+        conversations = list(_CONVERSATIONS.values())
+        _CONVERSATIONS.clear()
+    if conversations:
+        loop = _OWNER.loop()
+        for conversation in conversations:
+            asyncio.run_coroutine_threadsafe(conversation.socket.close(), loop).result(timeout=5)
+    return len(conversations)
+
+
+def _plan(
+    key: tuple[str, ...] | None, request: Request, system: str, tools: str
+) -> tuple[_Conversation | None, str | None]:
+    """The kept conversation to continue (and ``None`` reason), or ``None`` + why not."""
+    if key is None:
+        return None, None
+    with _CONVERSATIONS_LOCK:
+        live = _CONVERSATIONS.pop(key, None)
+    if live is None:
+        return None, "first_call"
+    if live.expired(time.monotonic()):
+        _close_soon(live.socket)
+        return None, "session_evicted"
+    if tools != live.tools or new_messages(live.held, live.system, request, system) is None:
+        _close_soon(live.socket)
+        return None, "prefix_mismatch"
+    live.used_at = time.monotonic()
+    return live, None
+
+
+async def _connect(headers: dict[str, str], key: tuple[str, ...] | None) -> Any:
+    session = "::".join(key[:2]) if key is not None else uuid.uuid4().hex
+    ws_headers = {
+        k: v for k, v in headers.items() if k.lower() not in {"content-type", "openai-beta"}
+    }
+    ws_headers["OpenAI-Beta"] = c.OPENAI_BETA_WEBSOCKETS
+    ws_headers["session-id"] = session
+    try:
+        return await websockets.connect(
+            c.CODEX_WS_URL, additional_headers=ws_headers, open_timeout=c.WS_CONNECT_TIMEOUT_S
+        )
+    except websockets.InvalidStatus as exc:
+        status = exc.response.status_code
+        body = bytes(exc.response.body or b"").decode("utf-8", "replace")
+        if status == 401:
+            raise AuthError(f"Codex rejected the sign-in (HTTP 401): {body[:300]}") from exc
+        if is_usage_limit_text(body):
+            raise CodexPlanLimitError(body[:500], status_code=status) from exc
+        raise ServerError(f"Codex WebSocket handshake failed (HTTP {status})") from exc
+
+
+async def _exchange(
+    wire: Any, request: Request, socket: Any, frame: dict[str, Any], out: queue.SimpleQueue[Any]
+) -> str:
+    """Send one ``response.create`` frame; forward parsed events; return the response id."""
+    await socket.send(json.dumps({"type": "response.create", **frame}))
+    async for raw in socket:
+        payload = json.loads(raw)
+        kind = str(payload.get("type") or "")
+        if kind in {"error", "response.failed"} and _error_code(payload) == (
+            c.PREVIOUS_RESPONSE_NOT_FOUND_CODE
+        ):
+            raise _ContinuationLost
+        if kind in {"error", "response.failed"}:
+            message = _error_message(payload)
+            if is_usage_limit_text(message):
+                # The account's plan window is exhausted: terminal, never retried.
+                raise CodexPlanLimitError(message, code=_error_code(payload))
+        for event in wire.parse_stream_events(request, _WireEvent(event=kind, data=raw)):
+            out.put(event)
+        if kind in _TERMINAL:
+            response = payload.get("response") or {}
+            return str(response.get("id") or "")
+    raise ServerError("codex direct: the WebSocket closed before the response completed")
+
+
+class _ContinuationLost(Exception):
+    """The backend no longer holds ``previous_response_id`` (before any event)."""
+
+
+def _error_message(payload: dict[str, Any]) -> str:
+    error = payload.get("error") or (payload.get("response") or {}).get("error") or {}
+    return str(error.get("message") or "") if isinstance(error, dict) else ""
+
+
+def _error_code(payload: dict[str, Any]) -> str:
+    error = payload.get("error") or (payload.get("response") or {}).get("error") or {}
+    return str(error.get("code") or "") if isinstance(error, dict) else ""
+
+
+async def _drop(key: tuple[str, ...]) -> None:
+    with _CONVERSATIONS_LOCK:
+        live = _CONVERSATIONS.pop(key, None)
+    if live is not None:
+        await live.socket.close()
+
+
+def _close_soon(socket: Any) -> None:
+    asyncio.get_running_loop().create_task(socket.close())
+
+
+def _audit(
+    key: tuple[str, ...] | None,
+    model: str,
+    request: Request,
+    delta: bool,
+    reason: str | None,
+    sent_items: int,
+) -> None:
+    """One ``provider.stateful`` audit row per call inside an agent loop."""
+    from clio_agent.runtime.stream_audit import stream_audit, stream_audit_enabled  # noqa: PLC0415
+
+    if key is None or not stream_audit_enabled():
+        return
+    row: dict[str, Any] = {
+        "provider": "codex_direct",
+        "transport": "websocket",
+        "model": f"codex_direct/{model}",
+        "stateful_mode": "delta" if delta else "full",
+        "total_messages": len(request.messages),
+        "sent_items": sent_items,
+        "conversation": "::".join(key[:2]),
+    }
+    if reason is not None:
+        row.update(stateful_reset_payload(reason))
+    stream_audit("provider.stateful", **row)
