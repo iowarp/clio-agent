@@ -337,6 +337,107 @@ Codex CLI login (`~/.codex/auth.json`) when there is no CLIO sign-in; `CLIO_CODE
 is an explicit stateless-HTTP mode, never a fallback. SDK vs direct is re-measured in the
 live legs before any removal.
 
+## Phase 3 sub-plan (`feat/context-projection`, cut from `feat/dspy34-engines`)
+
+### What the code does today (read 2026-09-29 at `9b0c3281`)
+
+- **Each turn starts from a blank working set.** `ClioReAct` calls `record.reset_working_set`
+  on every forward. That tombstones every live segment of `(session, scope)`, compaction
+  summaries included.
+- **Earlier turns reach the model only as prose.**
+  `session_store._compile_session_conversation_history` wraps the enriched question as
+  `Earlier turns … === Current request ===`. It keeps only text, thinking, error and
+  compaction parts, so earlier tool calls and results never cross a turn boundary. Hook
+  defer/resume then enriches that blob again, which nests the prose inside itself.
+- **Injections are concatenated into the question.** `turn_start_offloop` joins files,
+  resources, context refs, memory hits, task notifications, plan reminder, todos, replan and
+  the prose history. None of them is a recorded event, and the UI only sees a length difference.
+- **Steers and child results are glued onto the next MCP observation string** in
+  `tools/execution.py`. They are never drained on native tools, on steps with no tool call,
+  on failing calls or on `return_raw` calls.
+- **Mid-turn auto-compaction loses the turn's own work.** `compact_session_context`
+  summarizes the session *ledger*, which does not hold the in-flight assistant message yet.
+  It then tombstones every live segment, including this turn's steps. The model loses its own
+  tool results and sees earlier turns twice: once in the prose head, once as the
+  `[earlier context]` summary.
+- **Provider conversations cannot continue across turns.** The head message differs every
+  turn, so every turn opens with `prefix_mismatch` and a full resend.
+- **Smaller defects.** `user` and `system` segments written by `/context/ops` never reach the
+  model. `ContextCompiler` and `ContextRetriever` have no caller. The `/context/compact`
+  docstring is stale.
+- **ARC is present in every app turn.** When clio-core cannot start, `make_arc_store`
+  already degrades loudly and typed to `LocalFSStore`, running the same code paths. `arc is
+  None` only for a bare call with no app or react scope (the CLI, unit tests); then the
+  loop's own step list is its context.
+
+### What changes (in order; each step lands with its failing-first test, then a commit and push)
+
+1. **Failing-first tests** in `tests/test_gact/test_context_projection.py`:
+   - (a) A second turn on the same scope sees turn 1's real steps: messages, tool calls and
+     results.
+   - (b) The question carries no prose history.
+   - (c) A mid-turn auto-compaction keeps this turn's observations available to the model.
+   - (d) A steer at a native-tool step reaches the model as a user message at the next step
+     boundary, and the observation is left untouched.
+   - (e) Prefix stability: across steps and turns, render(n) is a prefix of render(n+1)
+     unless an op landed.
+   - (f) UI vs agent: every agent-visible event appears in the UI projection, and the UI
+     marks injections, compactions, steers and fixes by kind.
+2. **One working set across turns.** Delete `reset_working_set` and its call. The forward
+   records its user message as a `user` segment (actor `user`): the question text plus the
+   user's own attachments (files, resources, context refs) as typed parts. `fold_steps`
+   folds `user` segments, and `system` ops, in order. `_head` goes away because the head is
+   the first projected message. `arc is None` (the bare call) keeps the in-memory step list.
+3. **Delete the prose blob.** Remove `_compile_session_conversation_history` and its caller.
+   Defer/resume stores the user's text only.
+4. **Injections as recorded events.** A new kind `injection` holds
+   `{source, text, actor: "algorithm"}` for memory hits, task notifications, the plan
+   reminder, todos and replan. Each is recorded once, at the prefix edge before the turn's
+   user message, and again only when its content changes (todos are re-recited only after
+   they change). The fold renders an injection as a user-role message headed
+   `[clio: <source>]`. `turn_start_offloop` stops concatenating.
+5. **Steers and child results at the step boundary.** At the start of every step,
+   `ClioReAct` drains the loop inbox and records a `steer` (user role, actor `user`) or a
+   `child_result` (actor = the child agent) before projecting. Delete the drain from
+   `tools/execution.py`. An item still undrained when the loop goes idle becomes a new turn,
+   as today.
+6. **Compaction over what clio-core holds.** `compact_session_context` summarizes the
+   scope's own projection, meaning every live segment it will replace (this turn's steps
+   included), not the ledger. It replaces them with one `summary` through
+   `summarize_segments`, which is already a recorded op with `derived_from`. It still
+   writes the ledger checkpoint row for the UI, and the one-per-turn limit stays. Manual
+   compaction targets the session's primary agent scope explicitly, so it no longer ends in
+   `no_active_scope`. Fix the route docstring.
+7. **Provider conversations across turns.** The conversation key becomes
+   `(session, scope, model)` and a forward no longer releases it. It is released on session
+   release, on compaction and on undo/rewind/delete (all typed `ops_reset`), or on a provider
+   error. Turn 2 is then a delta send on Codex SDK, Codex direct and Claude Code; a test
+   covers this.
+8. **UI projection.** Injections, steers, child results and compaction become message parts
+   on `_events/m`, each carrying its actor and kind (per the gact-tui SPEC part types; add
+   `context_injection` if missing), and gact-tui web renders each as what it is.
+   Undo/rewind/delete in the ledger also record ops on the working set, so the two
+   projections agree.
+9. **Deletions.** Remove each of the following and prove it with a zero-reference grep:
+   - `reset_working_set`
+   - the prose blob and its helpers
+   - the observation-glued drains
+   - the dead `ContextCompiler` and `ContextRetriever`, with their tests
+   - `segments_to_keys` (the context route reads the projection instead)
+   - the stale docstrings
+   - the double enrichment of `enriched_text` on resume
+10. **Verify.**
+    - Full suite, lint and guards.
+    - Live multi-turn on Codex direct and SDK: turn 2 is a delta, and the cache share across
+      turns is reported.
+    - The web UI browser check comes with Phase 4's fix events (DoD 4).
+
+**Platform fallback (recorded decision, to confirm with the owner):** the sanctioned loud
+fallback is the existing typed `LocalFSStore` degrade in `make_arc_store`. It runs the same
+projection code with clio-core search off, and is visible in the UI and in doctor. No
+separate DSPy `History` path is built, since that would be a second context system. Losing
+ARC mid-turn is a typed turn failure (`ContextReadError`).
+
 ## Definition of done
 
 1. Full suite green on every phase branch (`pytest tests -m "not integration"`): zero failures,
