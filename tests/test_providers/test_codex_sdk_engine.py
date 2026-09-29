@@ -425,3 +425,41 @@ def test_an_oversized_image_is_refused_typed_before_any_send(
             _request(Message(role="user", parts=(TextPart(text="see"), image))),
         )
     assert client.sends == []
+
+
+def test_a_later_turn_of_the_agent_continues_the_thread_with_only_the_new_message(
+    client: FakeClient, tmp_path: Any
+) -> None:
+    """End to end over the agent loop: the conversation is clio-core's cross-turn
+    projection, so turn 2 repeats turn 1 exactly and the Codex thread is continued
+    with the new user message alone -- no full resend at a turn boundary."""
+    from clio_agent.arc.memory import ARCMemory
+    from clio_agent.gact.agents.clio_react import ClioReAct
+
+    client.turns = [[_text("Station P595 moved most.")], [_text("About 20 cm.")]]
+    arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+    lm = dspy.LM(
+        f"codex_sdk/{MODEL}",
+        engine=CodexSDKEngine(MODEL),
+        async_engine=AsyncCodexSDKEngine(MODEL),
+        cache=False,
+        num_retries=0,
+    )
+    agent = ClioReAct("question -> answer", tools=[])
+    tokens = [
+        gact_context.set_app(SimpleNamespace(state=SimpleNamespace(arc=arc))),
+        gact_context.set_session_id("sess-a"),
+        gact_context.set_react_session("sess-a"),
+        gact_context.set_react_scope("main", "react"),
+    ]
+    try:
+        with dspy.context(lm=lm):
+            agent(question="which station moved most?")
+            agent(question="by how much?")
+    finally:
+        for token in reversed(tokens):
+            gact_context.reset(token)
+    assert [s["thread_id"] for s in client.sends] == [None, "thread-1"]
+    delta = client.sends[1]["prompt"]
+    assert "by how much?" in delta
+    assert "which station" not in delta and "P595" not in delta

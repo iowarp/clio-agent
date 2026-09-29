@@ -98,11 +98,22 @@ class ClioReAct(dspy.Module):
         super().__init__()
         self.signature = dspy.ensure_signature(signature)
         self.max_iters = max_iters
+        # The module's own LM, as on a DSPy predictor: ``dspy.BestOfN`` / ``dspy.Refine``
+        # read it and set a per-rollout copy; unset, the context's LM is used.
+        self.lm: Any = None
         user_tools = [t if isinstance(t, dspy.Tool) else dspy.Tool(t) for t in tools]
         self.tools: dict[str, dspy.Tool] = {t.name: t for t in user_tools}
         if "submit" in self.tools:
             raise ValueError("`submit` is reserved as the final-output tool.")
         self.tools["submit"] = _submit_tool(self.signature)
+
+    def get_lm(self) -> Any:
+        """The module's own LM (``None``: the context's LM is used)."""
+        return self.lm
+
+    def set_lm(self, lm: Any) -> None:
+        """Bind this module to ``lm`` (a DSPy variant's per-rollout copy)."""
+        self.lm = lm
 
     def forward(self, **input_args: Any) -> dspy.Prediction:
         """Run the loop for one expert turn (see the module docstring)."""
@@ -261,7 +272,7 @@ class _Loop:
         self.max_iters = int(input_args.pop("max_iters", agent.max_iters))
         input_args.pop("history", None)
         self.inputs = {n: input_args[n] for n in agent.signature.input_fields if n in input_args}
-        self.lm = dspy.settings.lm
+        self.lm = agent.lm or dspy.settings.lm
         if self.lm is None:
             raise NoLanguageModelError()
         self.system = _system(agent.signature, self.inputs)
@@ -271,7 +282,7 @@ class _Loop:
             config_from_lm_kwargs(getattr(self.lm, "kwargs", {}) or {}), self.lm
         )
         self.tool_media = str(getattr(self.lm, "_clio_tool_result_media", "native"))
-        self.steps: list[Message] = []
+        self.steps: list[Message] = [self.head]
         self.arc, self.session, self.scope = record.arc_scope()
         self.recorder = record.StepRecorder(
             self.arc,
@@ -285,9 +296,10 @@ class _Loop:
     def run(self) -> dspy.Prediction:
         from clio_agent.gact import context as _ctx  # noqa: PLC0415
 
-        record.reset_working_set(self.arc, self.session, self.scope)
         expert_span = uuid.uuid4().hex[:16]
         self.recorder.started(expert_span, self.inputs)
+        self.recorder.injections(_ctx.turn_injections())
+        self.recorder.user_message(self.head)
         parent_token = _ctx.set_parent_span(expert_span)
         try:
             steps = range(self.max_iters) if self.max_iters > 0 else itertools.count()
@@ -313,11 +325,12 @@ class _Loop:
         from clio_agent.gact.compaction import maybe_autocompact  # noqa: PLC0415
 
         _raise_if_cancelled()
+        self._arrivals()
         maybe_autocompact()
         request = Request(
             model=self.lm.model,
             system=self.system,
-            messages=(self.head, *_place_tool_media(self._context(), self.tool_media)),
+            messages=tuple(_place_tool_media(self._context(), self.tool_media)),
             tools=self.tools,
             config=self.config,
         )
@@ -363,6 +376,18 @@ class _Loop:
             return self._prediction(final, "submit")
         _raise_if_cancelled()
         return None
+
+    def _arrivals(self) -> None:
+        """Take in what arrived since the last step (user steers, finished children)."""
+        from clio_agent.gact import context as _ctx  # noqa: PLC0415
+
+        state = getattr(_ctx.active_app(), "state", None)
+        drain = getattr(state, "pending_loop_inbox_drain", None)
+        if drain is None:
+            return
+        arrived = drain()
+        if arrived:
+            self.steps.extend(self.recorder.arrivals(arrived, max(self.step, 0)))
 
     def _context(self) -> list[Message]:
         if self.arc is not None:
@@ -462,9 +487,7 @@ class _Loop:
         return self._prediction({}, reason)
 
     def _prediction(self, outputs: dict[str, Any], reason: str) -> dspy.Prediction:
-        return dspy.Prediction(
-            **outputs, messages=[self.head, *self.steps], termination_reason=reason
-        )
+        return dspy.Prediction(**outputs, messages=list(self.steps), termination_reason=reason)
 
 
 # --------------------------------------------------------------------------- #

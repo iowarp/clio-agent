@@ -322,7 +322,8 @@ def test_queue_head_starts_automatically_when_active_turn_becomes_idle(tmp_path:
             time.sleep(0.02)
 
         assert agent.calls[0][0] == "first turn"
-        assert agent.calls[1][0].endswith("\nnext turn")
+        # Earlier turns reach the model through its projection, never the question.
+        assert agent.calls[1][0] == "next turn"
         assert client.get(f"/v1/sessions/{sid}/queued-messages").json()["queued_messages"] == []
         messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
         assert any(row["id"] == "msg_auto_queue_next" for row in messages)

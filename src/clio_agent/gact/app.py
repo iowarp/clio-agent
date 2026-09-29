@@ -168,18 +168,17 @@ from clio_agent.gact.enrichment import (  # noqa: E402,F401
     _context_file_access_error,
     _context_file_turn_provenance,
     _enrich_with_context_files,
-    _enrich_with_requested_memory_search,
     _estimate_context_tokens,
     _finalize_context_frame,
     _memory_search_request_from_message,
     _message_text_for_frame,
     _record_context_frame,
+    _requested_memory_search,
 )
 from clio_agent.gact.metrics_counters import MetricsCounters  # noqa: E402
 from clio_agent.gact.runtime.retention import init_retention_state  # noqa: E402
 from clio_agent.gact.session_store import (  # noqa: E402,F401
     _append_session_message,
-    _compile_session_conversation_history,
     _delete_session_context_files,
     _delete_session_messages,
     _extend_session_messages,
@@ -519,7 +518,7 @@ from clio_agent.gact.runtime.context_tokens import (  # noqa: E402,F401
 # Transcript-memory search primitives (query normalization, excerpting, the
 # scope-controlled ranked search) + the shared message-excerpt projection moved
 # to gact/runtime/memory_search.py (#714 decomposition) so the agent-run path
-# (_enrich_with_requested_memory_search / _compile_session_conversation_history)
+# (_requested_memory_search)
 # and the memory routes (routes/memory.py) share one implementation. Re-exported
 # here so existing ``from clio_agent.gact.app import <name>`` callers stay green.
 from clio_agent.gact.runtime.memory_search import (  # noqa: E402,F401

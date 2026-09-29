@@ -87,6 +87,10 @@ class RuntimeContext:
     blueprint_tool_rows: list[dict[str, Any]] | None = None  # _ACTIVE_BLUEPRINT_TOOL_ROWS
     visible_answer_stream: bool = True
     parent_span_id: str = ""  # _ACTIVE_PARENT_SPAN_ID
+    # CLIO's own additions for this turn, ``(source, text)`` in order (memory hits,
+    # task results, plan reminder, todos, replan). The agent loop records each on its
+    # scope's plane as a message of its own, ahead of the turn's user message.
+    turn_injections: tuple[tuple[str, str], ...] = ()
 
 
 # The single live channel. The default is an immutable FROZEN singleton; safe to
@@ -407,6 +411,19 @@ def set_react_session(session: str) -> contextvars.Token[RuntimeContext]:
     """Set ``react_session`` (``_ACTIVE_REACT_SESSION.set``)."""
     cur = _RUNTIME.get()
     return _RUNTIME.set(replace(cur, react_session=session))
+
+
+def set_turn_injections(
+    injections: "list[tuple[str, str]] | tuple[tuple[str, str], ...]",
+) -> contextvars.Token[RuntimeContext]:
+    """Set this turn's CLIO additions (``(source, text)``, in order)."""
+    cur = _RUNTIME.get()
+    return _RUNTIME.set(replace(cur, turn_injections=tuple(injections)))
+
+
+def turn_injections() -> tuple[tuple[str, str], ...]:
+    """This turn's CLIO additions, recorded by the agent loop before the user message."""
+    return _RUNTIME.get().turn_injections
 
 
 def set_react_window(window: int) -> contextvars.Token[RuntimeContext]:

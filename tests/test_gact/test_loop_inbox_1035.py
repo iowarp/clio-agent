@@ -1,4 +1,4 @@
-"""#1035 (epic #1031 Pillar 2): loop-inbox core — structure, drain carrier, Producer A.
+"""#1035 (epic #1031 Pillar 2): loop-inbox core — structure, drain, Producer A.
 
 Covers the four invariants of the mid-turn wake slice:
 
@@ -7,8 +7,8 @@ Covers the four invariants of the mid-turn wake slice:
 * :func:`drain_active_session_inbox` composes a ``_notify_block`` and marks the
   completion consumed through the EXISTING once-gate, so a mid-turn drain and the
   next-turn injection never double-surface the same task (BOTH orders).
-* The tool-executor carrier appends the drained block to the model-observation
-  string return but NOT the raw path, and cancellation precedes injection.
+* The tool executor never carries inbox arrivals: a queued arrival never reaches
+  the tool result (the agent loop takes it in at the step boundary instead).
 * Producer A enqueues only when the parent is busy and never raises.
 """
 
@@ -36,7 +36,7 @@ from clio_agent.gact.agent_tasks import (
 from clio_agent.gact.app import build_app
 from clio_agent.gact.enrichment import (
     PENDING_TASK_NOTIFICATION_MARKER,
-    inject_pending_agent_task_notifications,
+    pending_task_notifications,
 )
 from clio_agent.gact.loop_inbox import (
     InboxEvent,
@@ -46,11 +46,7 @@ from clio_agent.gact.loop_inbox import (
     inbox_for,
 )
 from clio_agent.gact.runtime.globals import _gact_app_context
-from clio_agent.tools.execution import (
-    SyncMCPToolExecutor,
-    ToolRuntimeHooks,
-    set_tool_runtime_fallback,
-)
+from clio_agent.tools.execution import SyncMCPToolExecutor
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
@@ -184,18 +180,20 @@ def test_drain_composes_block_marks_consumed_then_inject_empty(tmp_path: Path) -
         inbox_for(app, parent).put(InboxEvent(kind="child_completed", task_id=task.task_id))
 
         with _active_turn(app, parent):
-            block = drain_active_session_inbox(app)
+            arrivals = drain_active_session_inbox(app)
 
-        assert PENDING_TASK_NOTIFICATION_MARKER in block
+        assert [source for source, _ in arrivals] == ["task_results"]
+        block = arrivals[0][1]
+        assert block.startswith(PENDING_TASK_NOTIFICATION_MARKER)
         assert "task_seed" in block
         assert "the staged CSV is ready" in block
         # Watchdog liveness: a progress event was published on the PARENT session.
         assert _bus(app, parent, "loop_inbox.drained"), "drain must publish parent liveness"
         # Once-gate: the task is now consumed, so the next-turn injection is empty.
         assert pending_notifications(app, parent) == []
-        text, ids = inject_pending_agent_task_notifications(app, parent, "BASE")
+        text, ids = pending_task_notifications(app, parent)
         assert ids == []
-        assert text == "BASE"
+        assert text == ""
 
 
 def test_drain_emits_delegation_terminal_no_dangle(tmp_path: Path) -> None:
@@ -245,38 +243,32 @@ def test_inject_consumes_first_then_drain_is_empty(tmp_path: Path) -> None:
         assert claimed is not None and claimed.notify_pending is False
 
         with _active_turn(app, parent):
-            block = drain_active_session_inbox(app)
-        assert block == "", "an already-consumed completion must not be re-surfaced"
+            arrivals = drain_active_session_inbox(app)
+        assert arrivals == [], "an already-consumed completion must not be re-surfaced"
 
 
 def test_drain_no_active_session_returns_empty(tmp_path: Path) -> None:
-    """A drain with no active session (app-less boundary) returns "" and never raises."""
+    """A drain with no active session (app-less boundary) returns [] and never raises."""
 
     app = build_app(sessions_path=tmp_path / "s.json", agent=None)
     with TestClient(app):
         with _gact_app_context(app):
-            assert drain_active_session_inbox(app) == ""
+            assert drain_active_session_inbox(app) == []
 
 
 # --------------------------------------------------------------------------- #
-# 3. Carrier — string return appends, raw path bypasses, cancel wins           #
+# 3. The tool executor never carries inbox arrivals                            #
 # --------------------------------------------------------------------------- #
 
 
 class _FakeClient:
     """Minimal async client shape used by the sync executor."""
 
-    def __init__(self) -> None:
-        self.entered = False
-        self.exited = False
-        self.started_call = False
-
     async def __aenter__(self) -> "_FakeClient":
-        self.entered = True
         return self
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        self.exited = True
+        return None
 
     async def list_tools(self) -> list[Any]:
         return [
@@ -290,95 +282,41 @@ class _FakeClient:
     async def call_tool(
         self, name: str, args: dict[str, Any], *, progress_handler: Any = None
     ) -> Any:
-        self.started_call = True
         return SimpleNamespace(data={"name": name, "args": args})
 
     async def read_resource(self, uri: str) -> Any:
         return [SimpleNamespace(uri=uri, mimeType="text/plain", text="resource")]
 
 
-def test_carrier_appends_drain_block_to_model_string() -> None:
-    """The string (model-observation) return has the drained block appended."""
+def test_a_queued_arrival_never_reaches_the_tool_result(tmp_path: Path) -> None:
+    """A finished child queued on the running session's inbox is NOT glued onto the
+    tool observation: the executor result is exactly the tool's own output, and the
+    inbox is left for the agent loop to drain at its next step boundary."""
 
-    executor = SyncMCPToolExecutor(object(), timeout=1.0, client_factory=lambda _: _FakeClient())
-    drain_calls = {"n": 0}
-
-    def _drain() -> str:
-        drain_calls["n"] += 1
-        return "MID_TURN_WAKE_BLOCK"
-
-    try:
-        set_tool_runtime_fallback(ToolRuntimeHooks(loop_inbox_drain=_drain))
-        result = executor.call_tool("fake_echo", {"value": "hi"})
-        assert '"name": "fake_echo"' in result
-        assert result.endswith("\n\nMID_TURN_WAKE_BLOCK")
-        assert drain_calls["n"] == 1
-    finally:
-        set_tool_runtime_fallback(ToolRuntimeHooks())
-        executor.close()
-
-
-def test_carrier_no_drain_appended_when_empty() -> None:
-    """A drain that returns "" leaves the observation string untouched (no
-    trailing separator)."""
-
-    executor = SyncMCPToolExecutor(object(), timeout=1.0, client_factory=lambda _: _FakeClient())
-    try:
-        set_tool_runtime_fallback(ToolRuntimeHooks(loop_inbox_drain=lambda: ""))
-        result = executor.call_tool("fake_echo", {"value": "hi"})
-        assert not result.endswith("\n\n")
-        assert "MID_TURN" not in result
-    finally:
-        set_tool_runtime_fallback(ToolRuntimeHooks())
-        executor.close()
-
-
-def test_carrier_raw_path_does_not_append_or_drain() -> None:
-    """The return_raw path (MCP Apps bridge) is NOT the model lane: no drain
-    append, and the drain is not even invoked."""
-
-    executor = SyncMCPToolExecutor(object(), timeout=1.0, client_factory=lambda _: _FakeClient())
-    drain_calls = {"n": 0}
-
-    def _drain() -> str:
-        drain_calls["n"] += 1
-        return "MID_TURN_WAKE_BLOCK"
-
-    try:
-        set_tool_runtime_fallback(ToolRuntimeHooks(loop_inbox_drain=_drain))
-        raw = executor.call_tool_result("fake_echo", {"value": "hi"})
-        # Raw object, not the appended model string.
-        assert not isinstance(raw, str)
-        assert drain_calls["n"] == 0
-    finally:
-        set_tool_runtime_fallback(ToolRuntimeHooks())
-        executor.close()
-
-
-def test_cancel_after_completion_does_not_preempt_injection() -> None:
-    """A cancellation that loses to tool completion leaves the result path intact."""
-
-    executor = SyncMCPToolExecutor(object(), timeout=1.0, client_factory=lambda _: _FakeClient())
-    checks = iter([False, True])  # before-stage passes, after-stage cancels
-    drain_calls = {"n": 0}
-
-    def _drain() -> str:
-        drain_calls["n"] += 1
-        return "MID_TURN_WAKE_BLOCK"
-
-    try:
-        set_tool_runtime_fallback(
-            ToolRuntimeHooks(
-                cancellation_checker=lambda: next(checks, True),
-                loop_inbox_drain=_drain,
-            )
-        )
-        result = executor.call_tool("fake_echo", {"value": "late-cancel"})
-        assert result.endswith("MID_TURN_WAKE_BLOCK")
-        assert drain_calls["n"] == 1
-    finally:
-        set_tool_runtime_fallback(ToolRuntimeHooks())
-        executor.close()
+    app = build_app(sessions_path=tmp_path / "s.json", agent=None)
+    # Allow-all gate: this test is about the result carrier, not the approval flow.
+    executor = SyncMCPToolExecutor(
+        object(),
+        timeout=1.0,
+        client_factory=lambda _: _FakeClient(),
+        permission_gate=lambda *_args, **_kw: "allow",
+    )
+    with TestClient(app):
+        parent = app.state.sessions.create(workspace_id="ws_default", title="p").id
+        task = _seed_terminal_task(app, parent, task_id="task_seed")
+        inbox_for(app, parent).put(InboxEvent(kind="child_completed", task_id=task.task_id))
+        try:
+            with _active_turn(app, parent):
+                result = executor.call_tool("fake_echo", {"value": "hi"})
+            assert '"name": "fake_echo"' in result
+            assert PENDING_TASK_NOTIFICATION_MARKER not in result
+            assert "task_seed" not in result
+            assert not result.endswith("\n\n")
+            # The executor did not drain: the arrival is still queued and unconsumed.
+            assert inbox_for(app, parent).peek_nonempty() is True
+            assert [t.task_id for t in pending_notifications(app, parent)] == ["task_seed"]
+        finally:
+            executor.close()
 
 
 # --------------------------------------------------------------------------- #

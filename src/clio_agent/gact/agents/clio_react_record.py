@@ -11,10 +11,16 @@ One step of the loop is recorded three ways, all span-correlated:
   / ``expert.lifecycle.failed``);
 * the step's context for the tool observer (step thought + parent span).
 
+Each forward first records its user message (a ``user`` segment: the question and the
+user's own attachments). Nothing is wiped between forwards: the scope's plane holds the
+whole conversation, and only a recorded op (compaction, delete) removes content.
+
 The loop's context is read back from the same plane as typed ``dspy.lm15`` messages
-(:func:`fold_steps`): per step one assistant message (thinking, text, tool calls) and
-one tool message (the results), so a step with concurrent calls renders as the one step
-it was. A read failure is a typed :class:`ContextReadError` -- there is no fallback.
+(:func:`fold_steps`): each user message as itself, per step one assistant message
+(thinking, text, tool calls) and one tool message (the results), so a step with
+concurrent calls renders as the one step it was, and a later turn sees the earlier
+turns as the messages they were. A read failure is a typed :class:`ContextReadError`
+-- there is no fallback.
 """
 
 from __future__ import annotations
@@ -48,7 +54,7 @@ TURN_YIELD_METADATA: dict[str, str] = {
     "plan_exit": "pending_plan_exit",
 }
 
-_FOLDED_KINDS = frozenset({"thought", "tool_call", "observation", "summary"})
+_FOLDED_KINDS = frozenset({"user", "thought", "tool_call", "observation", "summary"})
 
 
 class ContextReadError(ClioError):
@@ -61,6 +67,23 @@ class ContextReadError(ClioError):
             f"could not read the agent context for scope {scope!r}: {cause}",
             error_type=self.reason,
             details={"scope": scope, "cause": type(cause).__name__},
+        )
+
+
+class ContextWriteError(ClioError):
+    """The loop could not record a message on the ARC live plane (typed turn failure).
+
+    The plane is the conversation: a lost write would leave the model a context that
+    silently lacks what just happened, so it fails the turn instead.
+    """
+
+    reason = "arc_context_write_failed"
+
+    def __init__(self, scope: str, kind: str, cause: BaseException) -> None:
+        super().__init__(
+            f"could not record the agent's {kind} for scope {scope!r}: {cause}",
+            error_type=self.reason,
+            details={"scope": scope, "kind": kind, "cause": type(cause).__name__},
         )
 
 
@@ -80,18 +103,6 @@ def arc_scope() -> tuple[Any, str, str]:
     if arc is None:
         return None, "", ""
     return arc, session, scope
-
-
-def reset_working_set(arc: Any, session: str, scope: str) -> None:
-    """Tombstone the scope's prior live working set (a new forward is a new turn)."""
-    if arc is None:
-        return
-    try:
-        prior = [s.id for s in arc.render_working_set(session, scope)]
-        if prior:
-            arc.delete_segments(session, scope, prior)
-    except Exception:  # noqa: BLE001 - the wipe is best-effort; the read below is typed
-        logger.warning("arc live-plane reset failed scope=%s", scope, exc_info=True)
 
 
 def read_steps(arc: Any, session: str, scope: str) -> list[Message]:
@@ -128,13 +139,47 @@ def thinking_from_record(record: Mapping[str, Any]) -> ThinkingPart:
     )
 
 
+def user_to_record(message: Message) -> dict[str, Any]:
+    """A user message as plane content: its text and its media, byte-exact."""
+    text = "".join(p.text for p in message.parts if isinstance(p, TextPart))
+    media = [
+        {
+            "type": "image" if isinstance(p, ImagePart) else "document",
+            "media_type": p.media_type,
+            "data": p.data,
+        }
+        for p in message.parts
+        if isinstance(p, ImagePart | DocumentPart)
+    ]
+    return {"text": text, "media": media} if media else {"text": text}
+
+
+def user_from_record(record: Mapping[str, Any]) -> Message:
+    """Rebuild a user message from :func:`user_to_record`'s content.
+
+    A CLIO addition (``actor: algorithm``) is headed with its source, so the model
+    can tell it from what the user wrote.
+    """
+    text = _text(record.get("text"))
+    if record.get("actor") == "algorithm":  # CLIO's addition; a steer is the user's own
+        text = f"[clio: {_text(record.get('source'))}]\n{text}"
+    parts: list[Any] = [TextPart(text=text)]
+    for item in record.get("media") or []:
+        if not isinstance(item, Mapping):
+            continue
+        cls = ImagePart if item.get("type") == "image" else DocumentPart
+        parts.append(cls(data=str(item.get("data") or ""), media_type=str(item["media_type"])))
+    return Message(role="user", parts=tuple(parts))
+
+
 def fold_steps(segments: Sequence[Any]) -> list[Message]:
     """Group ordered live segments into typed messages, one assistant + tool pair per step.
 
-    A ``thought`` opens a step; its ``tool_call`` / ``observation`` segments attach to
-    it (results matched by call id, by order for a segment written without one). A
-    ``summary`` -- or an observation with no open step -- becomes a user message
-    carrying the text, so compacted content still reaches the model.
+    A ``user`` segment is the user message it recorded. A ``thought`` opens a step; its
+    ``tool_call`` / ``observation`` segments attach to it (results matched by call id, by
+    order for a segment written without one). A ``summary`` -- or an observation with no
+    open step -- becomes a user message carrying the text, so compacted content still
+    reaches the model.
     """
     messages: list[Message] = []
     step: _StepFold | None = None
@@ -151,6 +196,11 @@ def fold_steps(segments: Sequence[Any]) -> list[Message]:
             step.add_call(content)
         elif kind == "observation" and step is not None and step.expects_result():
             step.add_result(content)
+        elif kind == "user":
+            if step is not None:
+                messages.extend(step.messages())
+                step = None
+            messages.append(user_from_record(content))
         else:
             if step is not None:
                 messages.extend(step.messages())
@@ -287,6 +337,44 @@ class StepRecorder:
             payload={"input": wire_value(dict(inputs), mode="gact_runtime")},
         )
 
+    def user_message(self, message: Message) -> None:
+        """Record the forward's user message; the projection starts every turn with it."""
+        self._write("user", user_to_record(message), 0, "")
+
+    def injections(self, injections: Sequence[tuple[str, str]]) -> None:
+        """Record CLIO's additions for this turn, each once.
+
+        An addition whose text equals the latest recorded one from the same source is
+        still in the model's context, so it is not repeated (prefix reuse); a changed
+        one is recorded again, as a new message.
+        """
+        if self.arc is None or not injections:
+            return
+        latest: dict[str, str] = {}
+        for seg in self.arc.render_working_set(self.session, self.scope):
+            content = getattr(seg, "content", None) or {}
+            if getattr(seg, "kind", "") == "user" and content.get("actor") == "algorithm":
+                latest[str(content.get("source"))] = str(content.get("text"))
+        for source, text in injections:
+            if text and latest.get(source) != text:
+                record = {"text": text, "source": source, "actor": "algorithm"}
+                self._write("user", record, 0, "")
+                latest[source] = text
+
+    def arrivals(self, arrivals: Sequence[tuple[str, str]], step: int) -> list[Message]:
+        """Record what arrived mid-turn, in order; returns the messages it adds.
+
+        A ``steer`` is the user's own message; anything else (a finished child's
+        result) is a CLIO addition, headed with its source.
+        """
+        messages: list[Message] = []
+        for source, text in arrivals:
+            actor = "user" if source == "steer" else "algorithm"
+            record = {"text": text, "source": source, "actor": actor}
+            self._write("user", record, step, "")
+            messages.append(user_from_record(record))
+        return messages
+
     def step_open(self, step: int, span: str, text: str, calls: Sequence[ToolCallPart]) -> None:
         """The pre-execution breadcrumb: a crash mid-step still leaves the step's opening."""
         from clio_agent.arc.working_set_fold import emit_step_open  # noqa: PLC0415
@@ -411,15 +499,23 @@ class StepRecorder:
                 kind,
                 content,
                 step=step,
-                token_count=max(1, len(json.dumps(content, default=str)) // 4),
+                token_count=_token_estimate(content),
                 turn_id=self.turn_id,
                 expert_span_id=self.expert_span_id,
                 run_span_id=span,
             )
-        except Exception:  # noqa: BLE001 - a lost write surfaces as a typed read failure
-            logger.warning(
-                "arc live-plane append failed kind=%s scope=%s", kind, self.scope, exc_info=True
-            )
+        except Exception as exc:  # noqa: BLE001 - re-raised typed, never swallowed
+            raise ContextWriteError(self.scope, kind, exc) from exc
+
+
+_MEDIA_TOKENS = 1_500  # a rough per-attachment share of the context window
+
+
+def _token_estimate(content: Mapping[str, Any]) -> int:
+    """A segment's rough token count: its text by length, each attachment a flat share."""
+    media = content.get("media") or []
+    text = {k: v for k, v in content.items() if k != "media"}
+    return max(1, len(json.dumps(text, default=str)) // 4 + _MEDIA_TOKENS * len(media))
 
 
 def pending_turn_yield(calls: Sequence[ToolCallPart]) -> str:

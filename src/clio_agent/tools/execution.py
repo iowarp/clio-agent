@@ -148,7 +148,6 @@ class ToolRuntimeHooks:
         None
     )
     cancellation_checker: Optional[Callable[[], bool]] = None
-    loop_inbox_drain: Optional[Callable[[], "str | None"]] = None  # #1035 injected gact drain
     # The ordinary observer gets only the sanitized public MCP projection; MCP Apps
     # need the full CallToolResult (private ``_meta``) held in a session-local store.
     mcp_app_observer: Optional[MCPAppObserver] = None
@@ -841,7 +840,6 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
 
         if return_raw:
             return outcome.raw_result  # MCP Apps bridge is not model-facing: no PostToolUse
-        drained = hooks.loop_inbox_drain() if hooks.loop_inbox_drain is not None else None
         result = _prepend_repair_notes(repair_records, result) if repair_records else result
         # The model-visible observation (minted artifact identity, then P2.3 PostToolUse),
         # assembled AFTER the observer recorded the real effect (the trace keeps the result).
@@ -853,7 +851,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             is_error=structured_error is not None,
             synthetic=False,
         )
-        return f"{result}\n\n{drained}" if drained else result
+        return result
 
     def read_resource(self, namespace: str | None, uri: str) -> Any:
         """Read one resource from the exact originating MCP namespace."""

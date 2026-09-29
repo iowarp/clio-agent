@@ -22,8 +22,8 @@ span, else the step thought), and the check-and-set is serialized under a
 module lock so truly-concurrent calls in one step cannot both pass.
 
 **Recitation (Manus).** During execution the current checklist is re-injected compactly into
-the model's turn input each turn (:func:`inject_todo_recitation`), reusing the reminder pattern
-(``plan_mode.inject_plan_mode_reminder`` / ``enrichment.inject_pending_agent_task_notifications``)
+the model's turn input each turn (:func:`todo_recitation`), reusing the reminder pattern
+(``plan_mode.plan_mode_reminder`` / ``enrichment.pending_task_notifications``)
 so it survives compaction and fights lost-in-the-middle. It is NEVER recited in plan mode.
 """
 
@@ -296,20 +296,17 @@ def _render_checklist(todos: list[dict[str, str]]) -> str:
     )
 
 
-def inject_todo_recitation(app: "FastAPI", sid: str, session: Any, enriched_text: str) -> str:
-    """Prepend the current todo checklist to this turn's input during EXECUTION (Manus recitation).
+def todo_recitation(app: "FastAPI", sid: str, session: Any) -> str:
+    """The current todo checklist as this turn's CLIO addition during EXECUTION (recitation).
 
-    Returns ``enriched_text`` unchanged in PLAN mode (the checklist is never recited while
-    planning) and when no todos are recorded. Otherwise it prepends a compact, marked block so
-    the list stays in the model's recent context and survives compaction — reusing the same
-    per-turn-input reminder mechanism as the plan-mode reminder (never the system prompt).
+    Empty in PLAN mode (the checklist is never recited while planning) and when no todos
+    are recorded. Otherwise a compact, marked block; the agent loop records it as its own
+    message, again only when the list changed (never the system prompt).
     """
 
     if str(getattr(session, "mode", "") or "") == "plan":
-        return enriched_text
+        return ""
     todos = recorded_todos(session)
     if not todos:
-        return enriched_text
-    return (
-        TODO_RECITATION_MARKER + "\n\n" + _render_checklist(todos) + "\n\n---\n\n" + enriched_text
-    )
+        return ""
+    return TODO_RECITATION_MARKER + "\n\n" + _render_checklist(todos)

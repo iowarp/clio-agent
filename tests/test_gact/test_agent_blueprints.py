@@ -1335,7 +1335,10 @@ def test_blueprint_module_passes_through_empty_answer(
         def __call__(self, **kwargs: Any) -> Any:
             return FakeProgram()(**kwargs)
 
-    monkeypatch.setattr(dspy, "Predict", FakePredict)
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.clio_react.ClioReAct.forward",
+        lambda self, **kwargs: FakePredict(self.signature)(**kwargs),
+    )
     monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
     monkeypatch.setattr(
@@ -1372,7 +1375,10 @@ def test_blueprint_module_passes_through_empty_answer_with_handoffs(
         def __call__(self, **kwargs: Any) -> Any:
             return FakeProgram()(**kwargs)
 
-    monkeypatch.setattr(dspy, "Predict", FakePredict)
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.clio_react.ClioReAct.forward",
+        lambda self, **kwargs: FakePredict(self.signature)(**kwargs),
+    )
     monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
     monkeypatch.setattr(

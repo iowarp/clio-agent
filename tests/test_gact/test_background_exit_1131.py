@@ -21,7 +21,7 @@ from clio_agent.gact.app import build_app
 from clio_agent.gact.background_exit import background_exit_part
 from clio_agent.gact.enrichment import (
     consume_pending_agent_task_notifications,
-    inject_pending_agent_task_notifications,
+    pending_task_notifications,
 )
 from clio_agent.gact.loop_inbox import InboxEvent, drain_active_session_inbox, inbox_for
 from clio_agent.gact.runtime.globals import _gact_app_context
@@ -136,7 +136,7 @@ def test_aborted_staging_leaves_exit_for_next_successful_turn(tmp_path: Path) ->
         parent = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
         task = _complete_pending(app, parent, "task_aborted_stage")
 
-        _text, staged = inject_pending_agent_task_notifications(app, parent, "aborted turn")
+        _text, staged = pending_task_notifications(app, parent)
         assert staged == [task.task_id]
         assert app.state.agent_task_registry.get(task.task_id).notify_pending is True
 
@@ -153,7 +153,7 @@ def test_midturn_drain_races_next_turn_injection_to_one_exit_part(tmp_path: Path
     with TestClient(app) as client:
         parent = client.post("/v1/sessions", json={"title": "parent"}).json()["id"]
         task = _complete_pending(app, parent, "task_racing_consumers")
-        _text, staged = inject_pending_agent_task_notifications(app, parent, "next")
+        _text, staged = pending_task_notifications(app, parent)
         inbox_for(app, parent).put(InboxEvent(kind="child_completed", task_id=task.task_id))
 
         registry = app.state.agent_task_registry

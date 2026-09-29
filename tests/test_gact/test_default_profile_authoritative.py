@@ -318,7 +318,6 @@ def test_two_experts_two_providers_resolve_off_store_default(monkeypatch, tmp_pa
     provider + named credential resolves to a DISTINCT ``dspy.LM``. Both run their
     ``forward()`` concurrently with no cross-talk (the #818 requirement).
     """
-    import dspy  # noqa: PLC0415
 
     for key in _BOOT_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
@@ -369,7 +368,10 @@ def test_two_experts_two_providers_resolve_off_store_default(monkeypatch, tmp_pa
         def __call__(self, *_a: Any, **_k: Any) -> Any:
             return SimpleNamespace(answer="ok", expert_handoffs=[])
 
-    monkeypatch.setattr(dspy, "Predict", _FakePredict)
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.clio_react.ClioReAct.forward",
+        lambda self, **kwargs: _FakePredict()(**kwargs),
+    )
 
     # Build the two expert modules under the ACTIVE app so _dynamic_agent_lm_config
     # reads the per-app store at __init__ time.

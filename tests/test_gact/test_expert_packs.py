@@ -871,7 +871,10 @@ def test_prompt_agent_passes_through_empty_answer(
         def __call__(self, *args: Any, **kwargs: Any) -> Any:
             return SimpleNamespace(answer="", expert_handoffs=[])
 
-    monkeypatch.setattr(dspy, "Predict", FakePredict)
+    monkeypatch.setattr(
+        "clio_agent.gact.agents.clio_react.ClioReAct.forward",
+        lambda self, **kwargs: FakePredict(self.signature)(**kwargs),
+    )
     monkeypatch.setattr(dspy, "context", lambda **kwargs: nullcontext())
     monkeypatch.setattr("clio_agent.config.create_lm", lambda config: object())
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: object())
