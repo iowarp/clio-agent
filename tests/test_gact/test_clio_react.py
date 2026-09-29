@@ -378,3 +378,37 @@ def test_the_loop_places_media_by_the_lms_tag(monkeypatch: pytest.MonkeyPatch) -
     roles = [m.role for m in engine.requests[1].messages]
     assert roles == ["user", "assistant", "tool", "user"]
     assert engine.requests[1].messages[-1].parts[-1] == image
+
+
+# --------------------------------------------------------------------------- #
+# the persistent LM loop                                                      #
+# --------------------------------------------------------------------------- #
+def test_every_step_runs_on_one_persistent_loop_in_the_callers_context() -> None:
+    from clio_agent.gact import context as gact_context
+
+    seen: list[tuple[int, str]] = []
+
+    class Recording(ScriptedEngine):
+        def _next(self, request: Request) -> Any:
+            seen.append((id(asyncio.get_running_loop()), gact_context.active_session_id()))
+            return super()._next(request)
+
+    from tests._scripted_engine import AsyncScriptedEngine
+
+    engine = Recording([calls(("search", {"query": "x"})), Reply(text="ok")])
+    lm = dspy.LM(
+        "scripted/model",
+        engine=engine,
+        async_engine=AsyncScriptedEngine(engine),
+        cache=False,
+        num_retries=0,
+    )
+    token = gact_context.set_session_id("sess-loop")
+    try:
+        with dspy.context(lm=lm):
+            ClioReAct("question -> answer", tools=[search])(question="q")
+    finally:
+        gact_context.reset(token)
+    loops = {loop for loop, _ in seen}
+    assert len(seen) == 2 and len(loops) == 1
+    assert {session for _, session in seen} == {"sess-loop"}

@@ -16,8 +16,9 @@ Per step:
 2. **context** -- the head plus the ARC live plane folded into typed messages
    (:func:`~clio_agent.gact.agents.clio_react_record.fold_steps`), or the loop's own
    step list when there is no ARC scope; a plane read failure is a typed turn failure;
-3. **call** -- streamed: text deltas to the transcript lane, thinking to the thinking
-   lane, as they arrive;
+3. **call** -- streamed on the one persistent LM loop (connections are reused across
+   steps): text deltas to the transcript lane, thinking to the thinking lane, as they
+   arrive;
 4. **tools** -- a step's calls run concurrently, one worker each in a copy of the
    step's context; results keep call order. A terminal MCP protocol refusal or a
    cancellation raised by a tool escalates after the step is recorded;
@@ -65,6 +66,7 @@ from dspy.utils.exceptions import ContextWindowExceededError, LMUnexpectedError
 from clio_agent.errors import ClioError, MCPProtocolError
 from clio_agent.gact.agents import clio_react_record as record
 from clio_agent.gact.agents.clio_react_submit import active_react_scope_safe, record_submit_audit
+from clio_agent.lm.engines.lm_loop import run_on_lm_loop
 from clio_agent.lm.engines.text_tools import INVALID_TOOL_CALL
 from clio_agent.lm.request_config import config_from_lm_kwargs
 
@@ -498,13 +500,8 @@ def _call_lm(lm: Any, request: Request) -> Response:
         return response
 
     try:
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(run())
-        # A caller already inside a running loop: run the call on a helper thread.
-        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="clio-lm") as pool:
-            return pool.submit(contextvars.copy_context().run, asyncio.run, run()).result()
+        # One persistent LM loop: connections survive across steps, turns and agents.
+        return run_on_lm_loop(run)
     except LMUnexpectedError as exc:
         # DSPy wraps an engine's own typed error (a refused sign-in, an exhausted plan,
         # a Codex SDK failure) as unexpected; the turn classifies the original.
