@@ -169,6 +169,89 @@ the existing loop tests ported to `ClioReAct` (not kept against the deleted clas
 Phase 3 then replaces the step 2 source with the cross-turn clio-core projection and moves
 steers/child results off tool observations.
 
+## Re-review of phases 1–2 against DSPy 3.4 (2026-09-29)
+
+**Why.** Phases 1–2 were built on DSPy 3.3.0b1's adapter path (`dspy.Predict` + `ChatAdapter`
+text protocol + `LenientChatAdapter` repairs + LiteLLM `CustomLLM` transports + an `IOLoggingLM`
+subclass). DSPy 3.4 — the version this campaign moves to — offers a better-fitting public surface.
+Facts below are cited against the 3.4.0 wheel (`dspy/…`, `lm15/` = `dspy/_vendor/lm15/…`).
+
+**3.4 facts that decide the design**
+
+- The adapter path still fights the owner principles: with native tools the model's free text
+  is dropped unless it parses into a text field (`adapters/base.py:157-175`); the adapter
+  silently falls back to text tool calls when the LM does not declare function calling
+  (`adapters/base.py:117-119`); tool inputs are detected only as exact `list[Tool]`
+  (`:497-505`); `dspy.Reasoning` still forces `reasoning_effort="low"` and deletes the field
+  (`adapters/types/reasoning.py:53-77`) and thinking signatures are lost (`lm15/providers/
+  openai_chat.py:383,522-531`); the "Respond with…" reminder moves, so the wire is not
+  append-only (`base.py:545` vs `chat_adapter.py:162`); hidden extra calls are on by default
+  (JSON fallback `chat_adapter.py:48,86-112`, `num_retries=3` `base_lm.py:94`, cache
+  `lm.py:209`).
+- The direct path fits: `lm(dspy.lm15.Request)` → `dspy.lm15.Response` with typed parts —
+  `TextPart`, `ToolCallPart`, `ToolResultPart` (content may be `ImagePart`/`DocumentPart`),
+  `ThinkingPart` with provider `ContinuationState` (Anthropic signatures, OpenAI encrypted
+  reasoning items) that round-trips (`lm15/types.py:227-252,570-760`,
+  `lm15/providers/anthropic.py:480-485,897-902`, `lm15/providers/openai.py:777-782,1135-1148`).
+- Custom transports are engines: `complete(Request)->Response`, `stream(Request)->events`,
+  `close()`, async twins, passed as `dspy.LM(model, engine=, async_engine=)`
+  (`clients/engines/base.py:23-36`, `clients/lm.py:65-114,217-218`); engines raise lm15
+  errors and DSPy owns retries (tutorial "custom_lm_engines"). `BaseLM.forward`/`aforward` and
+  `messages=` dicts are deprecated, removed in 3.5 (`clients/_deprecation.py:33-71`).
+- OpenAI-compatible endpoints (vLLM, ALCF, LM Studio, llama.cpp) are declared providers:
+  `dspy.lm15.register_provider(ProviderDefinition.chat(AccessPolicy(...), compat=
+  OpenAIChatCompat(...)))` (`lm15.py:108-185`); `dspy.LM` routes resolvable models to the
+  native lm15 engine, else LiteLLM (`clients/backend_selection.py:29-77`).
+- Streaming: engine events become chunks with `delta.content` / `reasoning_content` /
+  `tool_calls` on `settings.send_stream` (`clients/engines/streaming.py:15-62`,
+  `clients/execution.py:593-606`); `on_lm_start`/`on_lm_end` callbacks observe every call
+  (`utils/callback.py:104-133`).
+- lm15 ships `OpenAICodexLM` (Responses on the ChatGPT Codex backend; accepts a CLIO-held
+  callable credential + `account_id`, `lm15/providers/openai_codex.py:37-67`,
+  `lm15/providers/base.py:72-79`) — but it is stateless: no WebSocket, no
+  `previous_response_id` (`lm15/providers/openai.py:1045-1056,1345`). Its model-string route
+  reads `~/.codex/auth.json` (`lm15/router.py:919-920`, `lm15/auth.py:107`), so CLIO must pass a
+  constructed engine, never the model string. lm15's `claude_code` is HTTP with the CLI's
+  credential file — not usable under the owner's credential rule.
+
+**Verdicts on phases 1–2**
+
+| Piece | Verdict |
+|---|---|
+| Loop semantics (termination, concurrent calls in call order, cancel at every boundary, refusal escalation, yields, no post-loop call), `StepRecorder`/highway events, ARC recording, one-run turn engine, `forward_error_info` | **KEEP** |
+| Every Phase 2 deletion (ReActV2 subclass + pins, streamify path, trajectory cell, planner LM, MCP call lock, workflow leftovers, dead optimizer decorator, duplicate lm.call) | **KEEP** (DSPy-independent) |
+| `ClioReAct` step = `Predict` + react signature + `ChatAdapter` text protocol; `fold_steps` → `dspy.History` events; `submit` args via text | **PORT**: one `lm(Request)` per step with native `tools`; context folded into typed `Message`s; text shown as written, thinking stored with its continuation and sent back as-is; `submit` stays a native tool for structured outputs |
+| `LenientChatAdapter` repairs + re-samples, `StrictGuidedJSONAdapter`'s JSON fallback, `runtime/lm_stream.AnswerFieldExtractor`, `claude_code_thinking_split` (all exist to parse the `[[ ## field ## ]]` protocol) | **DELETE** |
+| `HistoryAttachmentsMixin` promote step | **DELETE**; descriptor→bytes hydration moves to context building as `ImagePart`/`DocumentPart` |
+| `IOLoggingLM(dspy.LM)` | **PORT**: lm.call logging → `on_lm_end` callback reading the lm15 `Response`; token liveness + live lanes → a streaming helper over `send_stream`; its transient retry **DELETED** (DSPy owns retries; engines raise lm15 error types); `_process_completion`/truncation overrides do not run on the native path — replaced by typed engine results |
+| `HookedLM` (BeforeModel/AfterModel deny/synthesize/patch) | **PORT** to a wrapping engine (callbacks cannot deny or rewrite) |
+| Phase 1 Codex SDK transport (`sdk_transport` CustomLLM, `sdk_stream` LiteLLM chunks, `sdk_stateful` + `stateful_common` delta over rendered message dicts incl. the moving-reminder tolerance) | **PORT** to an engine pair: typed `Request` in, structural prefix compare on messages (the moving-tail tolerance is deleted — no adapter reminder exists), lm15 stream events out; thread-per-conversation, runtime/thread lifecycle, cached-token accounting, auto-compaction off, typed resets **KEEP** |
+| Claude Code SDK transport (`claude_code_litellm`/`_bridge`/`_blocking`, CustomLLM) | **PORT** to an engine pair; pool/reaper/bounds/cancel/audit **KEEP** |
+| Codex direct (`litellm_adapter`, `responses`, `stream_events`, `transport_sse`, `sessions`, retry half of `errors`) | **DELETE** in favour of a constructed `OpenAICodexLM(api_key=<CLIO credential>, account_id=…)` engine — **owner decision**: that drops WebSocket delta/`previous_response_id` (full resend each call, `prompt_cache_key` only) unless a custom WebSocket engine is kept |
+| `_cli_provider` registry, `custom_transports`, factory prefix/CustomLLM wiring, `lazy_tiktoken`/`tiktoken_vendored` (once no route uses LiteLLM) | **DELETE** |
+| `lm/factory`, `request_builder`, `dialect_wire`, catalog `litellm_prefix`, capabilities `endpoint.py` | **PORT** to engines / declared providers / `clients/capabilities.py` |
+| Everything else in `providers/` (OAuth/login UX, catalogs, handshakes, discovery, SDK process management) | **KEEP** (DSPy-independent) |
+
+Phase 2's tests that pin the adapter wire (`test_clio_react_wire_byte_equality`,
+`test_clio_react_fold`, the text-protocol parts of `test_clio_react*`) are re-derived on the typed
+`Request`; the ReActV2 differential becomes a semantic differential against 3.4 `ReActV2` with
+native function calling (same tool sequence and outputs for a scripted engine).
+
+**Revised phase order (owner to approve)**
+
+- **2b (new, next): DSPy 3.4 + engines + the direct-Request loop.** Pin `dspy==3.4.0`; Codex SDK
+  and Claude Code SDK engines (stateful, structural deltas, a minimal text tool-call block because
+  those transports take one prompt string — declared by the engine, a malformed block is a visible
+  observation); declared providers for OpenAI-compatible endpoints; Codex direct per the owner's
+  decision; `ClioReAct` on `lm(Request)` with native tools; streaming and lm.call via the
+  send-stream bridge + callbacks; `HookedLM` as a wrapping engine; delete the rows marked DELETE.
+- **3** unchanged in goal, built on typed messages: the projection maps clio-core events to
+  `dspy.lm15` `Message`s; thinking continuation stored byte-exact.
+- **4** shrinks: the adapter repairs are deleted in 2b, not turned into switches; remaining fixes
+  (arg repair, path grounding, circuit breaker, observation composition) as recorded switches.
+- **5** shrinks to: Codex direct stateful chain if kept custom, per-provider thinking checks.
+- **6** unchanged.
+
 ## Definition of done
 
 1. Full suite green on every phase branch (`pytest tests -m "not integration"`): zero failures,
