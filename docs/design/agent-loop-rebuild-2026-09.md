@@ -266,6 +266,41 @@ runs against a local `clio-web-search` container.
 - **5** shrinks to: Codex direct stateful chain if kept custom, per-provider thinking checks.
 - **6** unchanged.
 
+## Phase 2b sub-plan (`feat/dspy34-engines`, cut from `feat/clio-react`)
+
+- **A. Pin `dspy==3.4.0`** (the version-pin test follows); suite green.
+- **B. Engines** (`src/clio_agent/lm/engines/`), each an `Engine`/`AsyncEngine` pair
+  (`complete(Request)->Response`, `stream(Request)->events`, `close`), raising `dspy.lm15` errors
+  so DSPy owns retries:
+  - **B1 Codex SDK** — from `sdk_transport`/`sdk_stream`/`sdk_stateful`: one prompt rendered from
+    the typed `Request` (system + messages + tools); tools described in the prompt and called
+    through ONE fenced tool-call block the engine parses into `ToolCallPart`s (declared by the
+    engine; a malformed block becomes a visible error observation); SDK reasoning → thinking
+    deltas; usage with cached input; one thread per conversation, only the new messages sent
+    (structural prefix compare on `Request.messages`), typed resets.
+  - **B2 Claude Code SDK** — same shape from `claude_code_litellm`/`_bridge`/`_blocking`; pool,
+    reaper, bounds, cancel, audit kept.
+  - **B3 Codex direct** — an engine over the existing WebSocket transport (stateful); the stock
+    `OpenAICodexLM` (stateless) wired as a second engine for the owner's benchmark.
+  - **B4 LM construction** — `create_lm` builds `dspy.LM(model, engine=…, async_engine=…,
+    num_retries=<CLIO's transient-retry setting>, cache=False)`; OpenAI-compatible endpoints
+    (LM Studio, vLLM, llama.cpp, Ollama, ALCF) as declared providers; hooks
+    (BeforeModel/AfterModel) as a wrapping engine; lm.call logging as an `on_lm_end` callback.
+- **C. `ClioReAct` on `lm(Request)`** — native `FunctionTool`s from the step's `dspy.Tool`s
+  (`submit` is one of them); each step's `Response.message` recorded in CLIO's own codec (text,
+  tool calls, thinking with continuation); the context rebuilt as typed `Message`s from the ARC
+  plane (tool results as `ToolResultPart`, images/PDFs as `ImagePart`/`DocumentPart` hydrated
+  from descriptors); text and thinking streamed live through `send_stream` into the UI lanes.
+- **D. Delete** the rows marked DELETE in the re-review (lenient repairs/re-samples,
+  `IOLoggingLM`, the field-parsing stream extractor, the thinking-split parser, the promote step,
+  CustomLLM shims and registries, LiteLLM prefix wiring, nested retry layers; `lazy_tiktoken`/
+  `tiktoken_vendored` once no route uses LiteLLM). Guided output stays as a configurable
+  switch, default off.
+- **E. Tests** — engine contract tests per engine; the ClioReAct contract re-derived on the
+  typed request (append-only messages across steps); the differential against 3.4 `ReActV2`
+  with native function calling (same tool sequence and outputs for a scripted engine).
+- **F. Live** — Codex SDK only (owner), against the develop baseline.
+
 ## Definition of done
 
 1. Full suite green on every phase branch (`pytest tests -m "not integration"`): zero failures,
