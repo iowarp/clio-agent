@@ -250,7 +250,12 @@ def bind_provider(
     only`` leg run stops before calling this.
     """
 
-    call("PUT", "/v1/providers/lm", {"provider": provider, "api_base": "", "model": model})
+    body = {"provider": provider, "api_base": "", "model": model}
+    # A multi-transport provider (Codex: sdk | direct) binds the transport the
+    # operator selected, exactly as the UI's model picker sends it.
+    if variant := os.environ.get("CLIO_CODEX_VARIANT", "").strip():
+        body["variant"] = variant
+    call("PUT", "/v1/providers/lm", body)
 
     def _check() -> dict[str, Any] | None:
         info = call("GET", "/v1/providers/lm/wait", params={"timeout": 20}, ok=(200, 503))
