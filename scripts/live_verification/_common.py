@@ -255,6 +255,10 @@ def bind_provider(
     # operator selected, exactly as the UI's model picker sends it.
     if variant := os.environ.get("CLIO_CODEX_VARIANT", "").strip():
         body["variant"] = variant
+    if provider == "codex":
+        # As the UI's "Check the provider": validate the sign-in and load the model
+        # list, so the bind does not race the startup check (401 "being checked").
+        call("POST", "/v1/providers/models/refresh", {"provider_id": "codex"})
     call("PUT", "/v1/providers/lm", body)
 
     def _check() -> dict[str, Any] | None:
