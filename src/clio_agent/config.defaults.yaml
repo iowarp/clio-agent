@@ -209,7 +209,7 @@ providers.claude_code.stateful_capacity: 128.0
 # next request reaps it; lower to free idle connections sooner.
 providers.claude_code.stream_idle_ttl_s: 15.0
 
-# CLIO_CODEX_STATEFUL_CAPACITY  (float)  <- src/clio_agent/providers/codex/sdk_stateful.py
+# CLIO_CODEX_STATEFUL_CAPACITY  (float)  <- src/clio_agent/providers/codex/sdk_engine.py
 # Max live Codex SDK conversations (one kept thread each) before LRU
 # eviction; raise on a host running many concurrent agent conversations.
 providers.codex.stateful_capacity: 128.0

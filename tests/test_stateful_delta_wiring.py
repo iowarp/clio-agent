@@ -39,6 +39,7 @@ from clio_agent.providers.stateful_common import (
     note_prefix_reset_for_active_scope,
     stateful_scope,
 )
+from tests._scripted_engine import AsyncScriptedEngine, Reply, ScriptedEngine, calls
 
 
 def _m(*texts: str) -> list[dict[str, Any]]:
@@ -282,21 +283,26 @@ def test_clio_react_forward_binds_stateful_scope() -> None:
 
     captured: list[Any] = []
 
-    def _react(**_kwargs: Any) -> dspy.Prediction:
-        # Runs where the real model call runs: inside the loop, under the forward's
-        # ``with stateful_scope():``. Record what the rail carries.
-        captured.append(active_stateful_scope())
-        if len(captured) % 2:
-            return dspy.Prediction(
-                next_thought="call",
-                tool_calls={"tool_calls": [{"name": "_tool", "args": {"x": "1"}}]},
-            )
-        return dspy.Prediction(next_thought="ok", tool_calls={"tool_calls": []})
+    class _Capturing(ScriptedEngine):
+        def _next(self, request: Any) -> Any:
+            # Runs where the real model call runs: inside the loop, under the
+            # forward's ``with stateful_scope():``. Record what the rail carries.
+            captured.append(active_stateful_scope())
+            return super()._next(request)
 
+    step = [calls(("_tool", {"x": "1"}), text="call"), Reply(text="ok")]
+    engine = _Capturing(step * 2)
+    lm = dspy.LM(
+        "scripted/model",
+        engine=engine,
+        async_engine=AsyncScriptedEngine(engine),
+        cache=False,
+        num_retries=0,
+    )
     agent = ClioReAct(_Sig, tools=[_tool], max_iters=4)
-    agent.react = _react  # type: ignore[method-assign]
-    first = agent(question="hi")
-    second = agent(question="again")
+    with dspy.context(lm=lm):
+        first = agent(question="hi")
+        second = agent(question="again")
 
     assert (first.answer, second.answer) == ("ok", "ok")
     assert len(captured) == 4

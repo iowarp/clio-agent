@@ -605,12 +605,21 @@ def _variant_scope_ctx(arc_memory: ARCMemory) -> Iterator[None]:
             ctx.reset(tok)
 
 
-def _fold_active() -> list[dict[str, Any]]:
+def _fold_active() -> list[Any]:
     """The loop's context read for the active try: the plane ``arc_scope`` resolves
     (run-keyed) folded by ``read_steps`` -- exactly what ``ClioReAct`` sends."""
     arc_memory, session, scope = arc_scope()
     assert arc_memory is not None, "no live plane resolved for the active react scope"
     return read_steps(arc_memory, session, scope)
+
+
+def _thoughts() -> list[str]:
+    """The step texts of the active try's folded context (one per assistant message)."""
+    return [
+        "".join(getattr(p, "text", "") for p in m.parts if type(p).__name__ == "TextPart")
+        for m in _fold_active()
+        if m.role == "assistant"
+    ]
 
 
 def _write_thought(arc_memory: ARCMemory, text: str) -> None:
@@ -629,7 +638,7 @@ def _write_thought(arc_memory: ARCMemory, text: str) -> None:
 
 def test_sequential_tries_read_distinct_arc_partitions(arc: ARCMemory) -> None:
     """Two in-process tries of one module in one session fold DISTINCT ARC partitions —
-    try 1's History fold never contains try 0's trajectory."""
+    try 1's context fold never contains try 0's trajectory."""
     gen = _variant_scope_ctx(arc)
     next(gen)
     try:
@@ -637,14 +646,12 @@ def test_sequential_tries_read_distinct_arc_partitions(arc: ARCMemory) -> None:
         t0 = ctx.set_react_run(0)
         _write_thought(arc, "TRY0-THOUGHT")
         # its OWN fold sees it (partition is real, not always-empty)
-        assert [m.get("next_thought") for m in _fold_active()] == ["TRY0-THOUGHT"]
+        assert _thoughts() == ["TRY0-THOUGHT"]
         ctx.reset(t0)
 
         # try 1 folds its own (empty) partition — clean, no try-0 bleed
         t1 = ctx.set_react_run(1)
-        try1_fold = _fold_active()
-        assert try1_fold == []
-        assert all("TRY0-THOUGHT" != m.get("next_thought") for m in try1_fold)
+        assert _fold_active() == []
         ctx.reset(t1)
     finally:
         next(gen, None)
@@ -665,7 +672,7 @@ def test_sabotage_dropping_run_fold_leaks_prior_try(
         ctx.reset(t0)
 
         t1 = ctx.set_react_run(1)
-        leaked = [m.get("next_thought") for m in _fold_active()]
+        leaked = _thoughts()
         ctx.reset(t1)
     finally:
         next(gen, None)
@@ -708,7 +715,7 @@ class _ArcWritingInner(dspy.Module):
 
     def forward(self, **kwargs: Any) -> Any:
         run = ctx.active_react_run()
-        _ARC_OBS.append((run, [m.get("next_thought") for m in _fold_active()]))
+        _ARC_OBS.append((run, _thoughts()))
         arc_memory = ctx.active_app().state.arc
         scope = ctx.run_keyed_scope(ctx.active_react_scope())
         arc_memory.append_segment(
@@ -725,7 +732,7 @@ class _ArcWritingInner(dspy.Module):
 def test_variant_forward_run_keys_arc_partitions_through_real_bestofn(arc: ARCMemory) -> None:
     """Drive the BUILT variant program through the REAL dspy.BestOfN loop over an ARC-writing
     inner: each try's ``react_run`` is set by the production ``_RunKeyedModule.forward`` (not
-    hand-set), so try 1's History fold EXCLUDES try 0's trajectory and the two writes land in
+    hand-set), so try 1's context fold EXCLUDES try 0's trajectory and the two writes land in
     DISTINCT ARC partitions. This is the integration seam the piecewise tests above do not
     exercise (they set ``set_react_run`` manually). A full react inner is too heavy to drive
     deterministically under a stub LM, so this drives the minimal real path — the real BestOfN
@@ -745,10 +752,10 @@ def test_variant_forward_run_keys_arc_partitions_through_real_bestofn(arc: ARCMe
         assert _ARC_OBS == [(0, []), (1, [])]
         # ...and the two writes are in DISTINCT run-keyed partitions.
         t0 = ctx.set_react_run(0)
-        fold0 = [m.get("next_thought") for m in _fold_active()]
+        fold0 = _thoughts()
         ctx.reset(t0)
         t1 = ctx.set_react_run(1)
-        fold1 = [m.get("next_thought") for m in _fold_active()]
+        fold1 = _thoughts()
         ctx.reset(t1)
         assert fold0 == ["TRY0-THOUGHT"]
         assert fold1 == ["TRY1-THOUGHT"]

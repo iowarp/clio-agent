@@ -10,6 +10,7 @@ from typing import Any, cast
 import dspy
 import pytest
 from dspy.adapters.types.tool import ToolCallResults, ToolCalls
+from dspy.lm15 import ImagePart, ToolResultPart
 
 from clio_agent.gact.agents.clio_react import ClioReAct
 from clio_agent.gact.agents.declared_native_tools import resolve_declared_native_tools
@@ -20,8 +21,8 @@ from clio_agent.gact.view_image_tool import (
     build_view_image_tool,
     hydrate_view_image_results,
 )
-from clio_agent.lm.adapters import _lenient_chat_adapter_cls, _strict_guided_json_adapter_cls
 from clio_agent.tools.execution import tool_workspace_context
+from tests._scripted_engine import Reply, calls, scripted_lm
 
 _ONE_PIXEL_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6ZQAAAABJRU5ErkJggg=="
@@ -109,31 +110,24 @@ def test_view_image_revalidates_hash_before_provider_delivery(tmp_path: Path) ->
     assert exc_info.value.reason == "view_image_file_changed"
 
 
-@pytest.mark.parametrize(
-    "adapter_class",
-    [_lenient_chat_adapter_cls, _strict_guided_json_adapter_cls],
-    ids=["lenient-chat", "strict-guided-json"],
-)
-def test_every_adapter_emits_a_real_image_content_block(tmp_path: Path, adapter_class: Any) -> None:
-    tool, result = _descriptor(tmp_path)
-    react = ClioReAct(cast(Any, "question -> answer"), tools=[tool])
-    adapter = adapter_class()()
-    inputs = {
-        "question": "What is visible?",
-        "history": _history(result),
-        "tools": [tool],
-    }
+def test_the_loop_sends_a_real_image_part_for_the_tool_result(tmp_path: Path) -> None:
+    tool, _result = _descriptor(tmp_path)
+    lm, engine = scripted_lm([calls(("view_image", {"path": "page-1.png"})), Reply(text="ok")])
 
-    with tool_workspace_context(tmp_path), dspy.context(adapter=adapter):
-        messages = adapter.format(react.react.signature, [], inputs)
+    with tool_workspace_context(tmp_path), dspy.context(lm=lm):
+        ClioReAct(cast(Any, "question -> answer"), tools=[tool])(question="What is visible?")
 
-    blocks = [
-        block
-        for message in messages
-        for block in (message.get("content") if isinstance(message.get("content"), list) else [])
-        if isinstance(block, dict)
+    results = [
+        part
+        for message in engine.requests[1].messages
+        for part in message.parts
+        if isinstance(part, ToolResultPart)
     ]
-    assert any(block.get("type") == "image_url" for block in blocks)
+    [result] = results
+    [media] = result.content
+    assert isinstance(media, ImagePart)
+    assert (media.media_type, base64.b64decode(media.data)) == ("image/png", _ONE_PIXEL_PNG)
+    assert not result.is_error
 
 
 def test_view_image_is_exposed_only_to_image_capable_agents() -> None:

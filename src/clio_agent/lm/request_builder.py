@@ -247,31 +247,19 @@ def _lm_studio_allowed_options(config: "LMProviderConfig") -> tuple[str, ...] | 
 
 
 def _stop_sequences() -> list[str]:
-    """The DSPy trajectory-regurgitation stop list, or ``lm.stop_sequences``' override.
+    """The operator's ``lm.stop_sequences`` override; none by default.
 
-    Unchanged literal list / override mechanism from the pre-P5 code; the
-    difference (Part 7 item 3) is purely in WHEN the caller sends this --
-    only when ``"stop"`` is in the effective accepted-parameter set, never on
-    a per-model reasoning-capability guess.
+    The loop reads typed replies (no field-format markers), so there is nothing to
+    stop on unless an operator sets a list -- sent only when the effective
+    accepted-parameter set includes ``stop``.
     """
 
     from clio_agent import conf  # noqa: PLC0415 - keep this module import-light
 
     raw_stop = conf.resolve("lm.stop_sequences", env="CLIO_LM_STOP_SEQUENCES", default=None)
     if isinstance(raw_stop, (list, tuple)):
-        override = [str(s) for s in raw_stop if str(s)]
-        if override:
-            return override
-    elif raw_stop:
-        override = [s for s in str(raw_stop).split("||") if s]
-        if override:
-            return override
-    return [
-        "[[ ## observation",
-        "[[ ## thought_",
-        "[[ ## tool_name_",
-        "[[ ## tool_args_",
-    ]
+        return [str(s) for s in raw_stop if str(s)]
+    return [s for s in str(raw_stop or "").split("||") if s]
 
 
 def build_request_kwargs(config: "LMProviderConfig") -> dict[str, Any]:
@@ -375,8 +363,9 @@ def build_request_kwargs(config: "LMProviderConfig") -> dict[str, Any]:
 
     # -- stop sequences (item 3) -------------------------------------------
     # An unknown accepted-set answer (codex/claude_code) stays "don't send it".
-    if "stop" not in extras and "stop" in accepted:
-        extras["stop"] = _stop_sequences()
+    stop = _stop_sequences() if "stop" not in extras and "stop" in accepted else []
+    if stop:
+        extras["stop"] = stop
         sent_optional = True
 
     # OpenRouter: refuse to silently route around an optional param this

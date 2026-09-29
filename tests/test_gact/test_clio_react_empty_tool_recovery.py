@@ -2,120 +2,76 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import dspy
-import pytest
+from dspy.lm15 import TextPart
 
 from clio_agent.gact.agents.clio_react import ClioReAct
+from tests._scripted_engine import Reply, calls, scripted_lm
 
 
-def _agent(*, max_iters: int = 0) -> ClioReAct:
+def _agent(*, max_iters: int = 0, tool: dspy.Tool | None = None) -> ClioReAct:
     return ClioReAct(
         "question -> answer",
-        tools=[dspy.Tool(lambda q: f"result:{q}", name="search")],
+        tools=[tool or dspy.Tool(lambda q: f"result:{q}", name="search")],
         max_iters=max_iters,
     )
 
 
-def test_tool_free_prose_is_the_direct_answer_after_one_model_call(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_tool_free_prose_is_the_direct_answer_after_one_model_call() -> None:
     """Not choosing a tool is ordinary completion, not a repair condition."""
-    agent = _agent()
-    calls: list[dict[str, Any]] = []
+    lm, engine = scripted_lm([Reply(text="Ready.")])
+    with dspy.context(lm=lm):
+        prediction = _agent()(question="Reply ready. Do not call tools.")
 
-    def react(**kwargs: Any) -> dspy.Prediction:
-        calls.append(kwargs)
-        return dspy.Prediction(next_thought="Ready.", tool_calls={"tool_calls": []})
-
-    monkeypatch.setattr(agent, "react", react)
-    prediction = agent(question="Reply ready. Do not call tools.")
-
-    assert len(calls) == 1
+    assert len(engine.requests) == 1
     assert prediction.answer == "Ready."
     assert prediction.termination_reason == "direct_response"
-    # the History is the task inputs then one event per step
-    assert prediction.history.messages[0] == {"question": "Reply ready. Do not call tools."}
-    assert prediction.history.messages[1]["next_thought"] == "Ready."
+    # the messages are the task head, then one assistant message per step
+    head, step = prediction.messages
+    assert (head.role, head.parts) == ("user", (TextPart(text="Reply ready. Do not call tools."),))
+    assert (step.role, step.parts) == ("assistant", (TextPart(text="Ready."),))
 
 
-def test_blank_tool_free_response_completes_without_resampling(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The ReAct path does not semantically classify even blank model prose."""
-    agent = _agent()
-    calls = 0
+def test_blank_tool_free_response_completes_without_resampling() -> None:
+    """The loop does not semantically classify even blank model prose."""
+    lm, engine = scripted_lm([Reply(text="")])
+    with dspy.context(lm=lm):
+        prediction = _agent()(question="hello")
 
-    def react(**_kwargs: Any) -> dspy.Prediction:
-        nonlocal calls
-        calls += 1
-        return dspy.Prediction(next_thought="", tool_calls={"tool_calls": []})
-
-    monkeypatch.setattr(agent, "react", react)
-    prediction = agent(question="hello")
-
-    assert calls == 1
+    assert len(engine.requests) == 1
     assert prediction.answer == ""
     assert prediction.termination_reason == "direct_response"
 
 
-def test_model_can_use_a_tool_then_finish_with_plain_prose(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_model_can_use_a_tool_then_finish_with_plain_prose() -> None:
     """A later tool-free response ends the same loop without a hidden submit."""
-    observed: list[dict[str, Any]] = []
     tool_calls: list[str] = []
 
     def search(q: str) -> str:
         tool_calls.append(q)
         return "SEARCH_RESULT"
 
-    agent = ClioReAct(
-        "question -> answer",
-        tools=[dspy.Tool(search)],
-        max_iters=0,
+    lm, engine = scripted_lm(
+        [
+            calls(("search", {"q": "grounded"}), text="I will check."),
+            Reply(text="The grounded answer is complete."),
+        ]
     )
+    with dspy.context(lm=lm):
+        prediction = _agent(tool=dspy.Tool(search))(question="find it")
 
-    def react(**kwargs: Any) -> dspy.Prediction:
-        observed.append(kwargs)
-        if len(observed) == 1:
-            return dspy.Prediction(
-                next_thought="I will check.",
-                tool_calls={"tool_calls": [{"name": "search", "args": {"q": "grounded"}}]},
-            )
-        return dspy.Prediction(
-            next_thought="The grounded answer is complete.",
-            tool_calls={"tool_calls": []},
-        )
-
-    monkeypatch.setattr(agent, "react", react)
-    prediction = agent(question="find it")
-
-    assert len(observed) == 2
+    assert len(engine.requests) == 2
     assert tool_calls == ["grounded"]
     assert prediction.answer == "The grounded answer is complete."
     assert prediction.termination_reason == "direct_response"
 
 
-def test_iteration_cap_does_not_trigger_an_out_of_loop_model_call(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_iteration_cap_does_not_trigger_an_out_of_loop_model_call() -> None:
     """An explicit runaway cap stops rather than invoking a forced-submit tail."""
-    agent = _agent(max_iters=1)
-    calls = 0
+    lm, engine = scripted_lm([calls(("search", {"q": "x"}), text="still working")] * 3)
+    with dspy.context(lm=lm):
+        prediction = _agent(max_iters=1)(question="find it")
 
-    def react(**_kwargs: Any) -> dspy.Prediction:
-        nonlocal calls
-        calls += 1
-        return dspy.Prediction(
-            next_thought="still working",
-            tool_calls={"tool_calls": [{"name": "search", "args": {"q": "x"}}]},
-        )
-
-    monkeypatch.setattr(agent, "react", react)
-    prediction = agent(question="find it")
-
-    assert calls == 1
+    assert len(engine.requests) == 1
     assert "answer" not in prediction
     assert prediction.termination_reason == "max_iters"

@@ -93,6 +93,8 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     Returns:
         Configured dspy.LM instance
     """
+    if config.provider == "codex" and config.codex_variant == "sdk":
+        return _record_identity(_codex_sdk_lm(config), config)
     # Defer litellm's eager ~40 MB cl100k_base tiktoken load until first real
     # encode (see lm.lazy_tiktoken). MUST run before the provider import below,
     # which is the first ``import litellm`` in the server. Config-gated so an
@@ -122,7 +124,8 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     connection = _connection_kwargs(config)
     lm = _construct_lm(
         model=model_name,
-        api_key=config.api_key,
+        # A keyless local server has no credential: an empty key is omitted, never sent.
+        **({"api_key": config.api_key} if config.api_key else {}),
         max_tokens=config.max_tokens or None,
         model_type="chat",
         # iowarp/clio-agent#8: disable DSPy LM cache so token usage
@@ -134,24 +137,69 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
         **connection,
         **extras,
     )
+    # Only the Anthropic Messages API takes images/documents inside a tool result;
+    # every chat-completions server takes text-only tool rows (lm15 refuses media there).
+    lm._clio_tool_result_media = (
+        "native" if _resolved_litellm_prefix(config) == "anthropic" else "user_message"
+    )
+    return _record_identity(lm, config)
+
+
+def _record_identity(lm: Any, config: LMProviderConfig) -> Any:
+    """Tag the LM with its catalog identity and join the running turn's usage ledger."""
     # Keep the catalog identity on the LM so the generic stream tap can label
     # provider-native reasoning without inferring identity from a LiteLLM prefix.
     # Codex and Claude Code own their established stream semantics and are
     # explicitly excluded from the generic provider bridge.
     provider_id = config.provider_id or str(config.provider)
     try:
-        lm._clio_provider_id = provider_id  # type: ignore[attr-defined]
-        lm._clio_provider_config = replace(  # type: ignore[attr-defined]
-            config, provider_options=dict(config.provider_options)
-        )
-        lm._clio_reasoning_fallback = provider_id not in {  # type: ignore[attr-defined]
-            "codex",
-            "claude_code",
-        }
+        lm._clio_provider_id = provider_id
+        lm._clio_provider_config = replace(config, provider_options=dict(config.provider_options))
+        lm._clio_reasoning_fallback = provider_id not in {"codex", "claude_code"}
     except Exception:  # noqa: BLE001,S110 - never let tagging break LM construction
         pass
     # A per-forward LM reaches the running turn's usage rollup only via this.
     turn_lm_ledger.record(lm)
+    return lm
+
+
+def _codex_sdk_lm(config: LMProviderConfig) -> Any:
+    """The Codex SDK variant: a ``dspy.LM`` on the Codex SDK engine pair.
+
+    The reasoning effort is the engine's (fixed per LM, like every other setting of
+    the thread); the remaining generation kwargs stay on the LM for callers that
+    build their own ``Request.config`` from them.
+    """
+    import dspy  # noqa: PLC0415
+
+    from clio_agent.lm.io_logging import _lm_transient_retries  # noqa: PLC0415
+    from clio_agent.providers.codex.sdk_engine import (  # noqa: PLC0415
+        AsyncCodexSDKEngine,
+        CodexSDKEngine,
+    )
+
+    if not config.model.strip():
+        raise ValueError("No model configured for LM provider 'codex'")
+    bare = config.model.removeprefix("codex_sdk/").removeprefix("codex/").removeprefix("cg-")
+    extras = build_request_kwargs(config)
+    effort = extras.pop("codex_reasoning_effort", None)
+    engine_args: dict[str, Any] = {"effort": effort}
+    # The codex_* switches belong to the old transports; drop_params to LiteLLM.
+    generation = {
+        k: v for k, v in extras.items() if not k.startswith("codex_") and k != "drop_params"
+    }
+    if config.max_tokens:
+        generation["max_tokens"] = config.max_tokens
+    lm = dspy.LM(
+        f"codex_sdk/{bare}",
+        engine=CodexSDKEngine(bare, **engine_args),
+        async_engine=AsyncCodexSDKEngine(bare, **engine_args),
+        cache=False,
+        num_retries=_lm_transient_retries(),
+        model_type="chat",
+        **generation,
+    )
+    lm._clio_tool_result_media = "native"  # the engine sends tool-result images natively
     return lm
 
 

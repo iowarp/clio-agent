@@ -97,38 +97,37 @@ def test_turn_route_copies_the_variant_onto_the_turn_agent() -> None:
     )
 
 
-def test_sdk_turn_runs_on_the_sdk_transport_without_direct_credentials(
+def test_sdk_turn_runs_on_the_sdk_engine_without_direct_credentials(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The full chain: message ref -> turn agent -> spec -> config -> LiteLLM -> SDK."""
+    """The full chain: message ref -> turn agent -> spec -> config -> engine LM -> SDK."""
+
+    from dspy.lm15 import Message, Request, TextPart
 
     from clio_agent.gact.agents.builders import _dynamic_agent_lm_config
     from clio_agent.gact.turn_forward import _apply_turn_model_selection
     from clio_agent.lm.factory import create_lm
-    from clio_agent.providers.codex import litellm_adapter, sdk_transport
+    from clio_agent.providers.codex import litellm_adapter, sdk_engine
     from clio_agent.providers.codex.credentials import CodexCredentialStore
-    from clio_agent.providers.codex.sdk_stream import _stream_chunk, usage_chunk
 
     # Direct is not signed in on this machine.
     assert CodexCredentialStore().load() is None
     sdk_calls: list[str] = []
 
-    def _fake_run_sdk(**kwargs: Any) -> tuple[str, dict[str, int]]:
-        sdk_calls.append(kwargs["model"])
-        return "from the sdk", {"input_tokens": 11, "output_tokens": 3}
+    class _FakeClient:
+        async def stream(self, **kwargs: Any) -> Any:
+            sdk_calls.append(kwargs["model"])
+            yield SimpleNamespace(
+                method="item/agentMessage/delta", payload=SimpleNamespace(delta="from the sdk")
+            )
 
-    async def _fake_astream_sdk(**kwargs: Any) -> Any:
-        sdk_calls.append(kwargs["model"])
-        yield _stream_chunk(text="from the sdk", is_finished=False)
-        yield _stream_chunk(
-            text="", is_finished=True, usage=usage_chunk({"input_tokens": 11, "output_tokens": 3})
-        )
+        def archive_threads(self, ids: list[str]) -> None:
+            return None
 
     def _direct_must_not_run(*_a: Any, **_k: Any) -> Any:
         raise AssertionError("the SDK selection reached the Direct transport")
 
-    monkeypatch.setattr(sdk_transport, "run_sdk", _fake_run_sdk)
-    monkeypatch.setattr(sdk_transport, "astream_sdk", _fake_astream_sdk)
+    monkeypatch.setattr(sdk_engine, "_SDK_CLIENT", _FakeClient())
     for name in ("completion", "acompletion", "streaming", "astreaming"):
         monkeypatch.setattr(litellm_adapter.CodexLLM, name, _direct_must_not_run)
 
@@ -143,7 +142,8 @@ def test_sdk_turn_runs_on_the_sdk_transport_without_direct_credentials(
     config = _dynamic_agent_lm_config(base_agent, agent_def).materialize()
     assert config.codex_variant == "sdk"
 
-    out = create_lm(config)("hello")
+    lm = create_lm(config)
+    out = lm(Request(model=lm.model, messages=(Message.user("hello"),)))
 
     assert sdk_calls == ["gpt-5.5"]
-    assert out == ["from the sdk"]
+    assert out.message.parts == (TextPart(text="from the sdk"),)

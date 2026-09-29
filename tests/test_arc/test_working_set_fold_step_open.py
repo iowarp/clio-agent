@@ -16,12 +16,12 @@ import uuid
 
 import dspy
 import pytest
-from dspy.utils.dummies import DummyLM
 
 from clio_agent.arc.live import _MemoryStore
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.working_set_fold import STEP_OPEN_KIND, FoldingSegmentStore
 from clio_agent.gact.agents import clio_react
+from tests._scripted_engine import calls, scripted_lm
 
 from .conftest import live_plane_context
 
@@ -63,14 +63,7 @@ def test_crash_leaves_step_open(monkeypatch: pytest.MonkeyPatch) -> None:
     agent = clio_react.ClioReAct(
         "question -> answer", tools=[dspy.Tool(lambda: "ok", name="probe")]
     )
-    lm = DummyLM(
-        [
-            {
-                "next_thought": "call probe",
-                "tool_calls": {"tool_calls": [{"name": "probe", "args": {}}]},
-            }
-        ]
-    )
+    lm, _ = scripted_lm([calls(("probe", {}), text="call probe")])
 
     # A HARD mid-step failure: tool execution raises uncaught (past the step_open write,
     # before the post-execution step record). The loop turns *tool* errors into
@@ -81,7 +74,7 @@ def test_crash_leaves_step_open(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(clio_react._Loop, "_execute", _boom)
 
     with live_plane_context(arc, session=session, scope=SCOPE):
-        with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+        with dspy.context(lm=lm):
             with pytest.raises(RuntimeError, match="exploded mid-step"):
                 agent(question="find alpha")
 

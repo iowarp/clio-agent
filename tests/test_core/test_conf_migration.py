@@ -318,17 +318,11 @@ class TestStopSequencesOverride:
         monkeypatch.setenv("CLIO_LM_STOP_SEQUENCES", "</s>||STOP")
         assert build_request_kwargs(self._cfg())["stop"] == ["</s>", "STOP"]
 
-    def test_default_when_unset(self, monkeypatch):
+    def test_no_stop_sent_when_unset(self, monkeypatch):
         from clio_agent.lm.request_builder import build_request_kwargs
 
         monkeypatch.delenv("CLIO_LM_STOP_SEQUENCES", raising=False)
-        stop = build_request_kwargs(self._cfg())["stop"]
-        assert stop == [
-            "[[ ## observation",
-            "[[ ## thought_",
-            "[[ ## tool_name_",
-            "[[ ## tool_args_",
-        ]
+        assert "stop" not in build_request_kwargs(self._cfg())
 
     def test_file_list_wins(self, monkeypatch, tmp_path):
         from clio_agent.lm.request_builder import build_request_kwargs

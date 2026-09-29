@@ -366,7 +366,7 @@ def test_collabora_wopi_locks_guard_editor_saves(tmp_path: Path) -> None:
     assert conflicting.status_code == 409
     assert conflicting.headers["X-WOPI-Lock"] == "lock-a"
     assert blocked_save.status_code == 409
-    assert saved.status_code == 200
+    assert saved.status_code == 200, saved.text
     assert saved.headers["X-WOPI-ItemVersion"]
     assert released.status_code == 200
 

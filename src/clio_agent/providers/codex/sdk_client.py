@@ -113,6 +113,7 @@ BARE_LM_FEATURES: dict[str, bool] = {
 BARE_LM_CONFIG_OVERRIDES = (
     "mcp_servers={}",
     "plugins={}",
+    'web_search="disabled"',
     *(f"features.{name}=false" for name in BARE_LM_FEATURES),
 )
 #: Codex auto-compaction threshold for clio's threads. clio-core is the context
@@ -124,6 +125,8 @@ NO_AUTO_COMPACT_TOKEN_LIMIT = 2**62
 BARE_LM_THREAD_CONFIG: dict[str, Any] = {
     "mcp_servers": {},
     "plugins": {},
+    # Codex's own web search is a hidden action: clio owns tools (web search too).
+    "web_search": "disabled",
     "features": BARE_LM_FEATURES,
     "model_auto_compact_token_limit": NO_AUTO_COMPACT_TOKEN_LIMIT,
 }
