@@ -135,6 +135,13 @@ own live-verification legs and marketplace agents, with the gact-tui UI verified
    promptly; reload == live; a multi-turn follow-up reuses prior context without re-sending.
 5. Docs describe what IS: this doc updated per phase; stale docs fixed
    (`docs/providers/claude_code.md`, `docs/tui/08-semantics-and-lifecycle.md`).
+6. **The old loop is gone.** A deletion inventory per phase (what was removed, with the grep
+   proving zero remaining references: `instrumented_forward`, `_RetainingReActV2`,
+   `reactv2_upstream`, the adapter name spoof, the prose history blob, the per-turn working-set
+   wipe, observation-glued steers/child results, the DSPy-history read fallback, the per-executor
+   call lock, workflow-era leftovers). No flag, env var or config key selects an old path.
+   `git diff --stat develop...` over the final branch shows deletions matching or exceeding
+   additions (tests included); if not, the report explains line by line why.
 
 ## Rules
 
@@ -155,5 +162,5 @@ own live-verification legs and marketplace agents, with the gact-tui UI verified
 ## `/goal`
 
 ```
-/goal Complete the clio agent-loop rebuild campaign exactly as specified in docs/design/agent-loop-rebuild-2026-09.md on branch docs/agent-loop-rebuild of iowarp/clio-agent (read it in full first, plus the docs it cites). Done means every item of its Definition of done holds with evidence: suite, lint and guards green on every phase branch; the ClioReAct differential, projection-stability, UI-vs-agent-projection and fix-recorded tests passing; live verification legs and marketplace agents (earthscope-single-agent, factorio-flat evals, deep-researcher, data-semantics) clearly faster than the develop baseline with no quality regression; the gact-tui web UI verified in a real browser for thinking streaming, concurrent tool calls, injections, compaction, fixes, steer, cancel and reload==live; docs updated. Commit and push every branch after each step, never merge, no Claude attribution. Pause and ask the owner for Codex direct login, fix defaults, the next_thought decision and merge/PR timing.
+/goal Complete the clio agent-loop rebuild campaign exactly as specified in docs/design/agent-loop-rebuild-2026-09.md on branch docs/agent-loop-rebuild of iowarp/clio-agent (read it in full first, plus the docs it cites). Done means every item of its Definition of done holds with evidence: suite, lint and guards green on every phase branch; the ClioReAct differential, projection-stability, UI-vs-agent-projection and fix-recorded tests passing; live verification legs and marketplace agents (earthscope-single-agent, factorio-flat evals, deep-researcher, data-semantics) clearly faster than the develop baseline with no quality regression; the gact-tui web UI verified in a real browser for thinking streaming, concurrent tool calls, injections, compaction, fixes, steer, cancel and reload==live; docs updated; the old loop fully deleted (no flags, shims or dual paths; deletions >= additions; one stacked branch chain, one merge when the owner says). Commit and push every branch after each step, never merge, no Claude attribution. Pause and ask the owner for Codex direct login, fix defaults, the next_thought decision and merge/PR timing.
 ```
