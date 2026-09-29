@@ -205,6 +205,9 @@ steers/child results off tool observations.
   deletes, in the same branch, the code it replaces; expect deletions to match or exceed additions
   across the campaign. Phases STACK (each phase branch is cut from the previous phase's branch);
   there is ONE merge, when the owner says, after which the old loop never exists again.
+- **The design is the source of truth.** Where existing code, docs or a client expect the
+  old behavior, the client/docs change to the design — never the reverse. Client priority:
+  the gact-tui web/desktop app first (verified in the browser), the terminal TUI last.
 - Stacked phase branches in worktrees; **commit and push after every coherent step**; never
   merge to develop/main or open PRs until the owner says (one merge at the end). Conventional commits; no
   Claude/Co-Authored-By attribution line.
