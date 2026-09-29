@@ -1067,8 +1067,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     tools=tools,
                     max_iters=_tool_user_agent_max_iters(agent_def, declared_children=_n_children),
                 )
-                # Tag the program so its ReAct loop attributes each step to this
-                # expert on the highway (see _emit_react_step_event).
+                # The loop attributes each step to this expert on the highway.
                 self.program._clio_expert_id = agent_def.id
             # #948 S5: wrap the inner program (any kind) in the declared dspy.BestOfN /
             # Refine variant (no-op when unset; typed ValueError on an invalid decl).
@@ -1335,7 +1334,6 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                 )
                 if part
             )
-            # clio's loop, so this path also runs the ARC live-context plane.
             from clio_agent.gact.agents.clio_react import ClioReAct  # noqa: PLC0415
 
             self.react_agent = ClioReAct(
