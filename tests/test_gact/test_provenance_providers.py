@@ -442,13 +442,19 @@ def test_normalization_pairs_cross_family_lifecycles_and_ignores_running_samples
 def test_normalization_keeps_bounded_research_tool_coordinates_and_failure() -> None:
     event = _event("react.step.completed", status="completed").to_dict()
     event["payload"] = {
-        "tool_name": "web_fetch",
-        "tool_args": {
-            "target": "https://docs.example.test/research.pdf",
-            "to_file": True,
-            "authorization": "must-not-appear",
-        },
-        "observation": "Execution error in web_fetch: upstream refused the request",
+        "tool_calls": [
+            {
+                "id": "call_0_0",
+                "name": "web_fetch",
+                "args": {
+                    "target": "https://docs.example.test/research.pdf",
+                    "to_file": True,
+                    "authorization": "must-not-appear",
+                },
+                "observation": "Execution error in web_fetch: upstream refused the request",
+                "is_error": True,
+            }
+        ],
     }
 
     result = normalize_semantic_events([event], provider="native", session_id="sess_root")

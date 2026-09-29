@@ -774,7 +774,7 @@ class ClaudeCodeLLM(CustomLLM):
         chunk_count = 0
         text_chars = 0
         # Full-vs-stateful-delta send plan (#901). Inert (fresh id, full prompt)
-        # unless a ReActV2 scope token is active.
+        # unless a ClioReAct scope token is active.
         send = resolve_stateful_send(
             messages=list(messages or []),
             full_prompt=prompt,

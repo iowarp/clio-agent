@@ -733,30 +733,6 @@ def test_temperature_omitted_by_default_even_when_accepted() -> None:
     assert "temperature" not in extras
 
 
-def test_planner_role_sends_planner_temperature_when_effective() -> None:
-    _seed(
-        provider_id="lm_studio",
-        api_base=_LM_STUDIO_BASE,
-        model_id="m",
-        dialect="lm_studio",
-        accepted_params=frozenset({"temperature"}),
-    )
-    extras = build_request_kwargs(_cfg("lm_studio", "m"), role="planner")
-    assert extras["temperature"] == 0.3  # LMProviderConfig.planner_temperature default
-
-
-def test_planner_role_omits_temperature_when_not_effective() -> None:
-    _seed(
-        provider_id="lm_studio",
-        api_base=_LM_STUDIO_BASE,
-        model_id="m",
-        dialect="lm_studio",
-        accepted_params=frozenset(),  # temperature NOT accepted
-    )
-    extras = build_request_kwargs(_cfg("lm_studio", "m"), role="planner")
-    assert "temperature" not in extras
-
-
 # --------------------------------------------------------------------------- #
 # Grep-to-zero: every deleted symbol the brief names (9.1 / PR body item 11).
 #

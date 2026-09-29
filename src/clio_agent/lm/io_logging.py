@@ -34,13 +34,6 @@ def _dspy():
     return _dspy_cache
 
 
-class _StreamingPlumbingError(Exception):
-    """Internal: token-liveness streaming could not be set up (anyio/dspy
-    unavailable, or an event-loop plumbing fault). Signals ``IOLoggingLM.__call__``
-    to fall back to the blocking call WITHOUT a second LM round-trip. Never
-    raised for a real LM/provider error -- those propagate to the repair loop."""
-
-
 def _token_liveness_enabled() -> bool:
     """Whether expert LM calls stream so each token refreshes the no-progress
     watchdog (token-liveness). Default ON; kill switch CLIO_LM_TOKEN_LIVENESS=0.
@@ -347,19 +340,13 @@ def _io_logging_lm_cls() -> Any:
 
         def _clio_invoke_once(self, prompt=None, messages=None, **kwargs):  # type: ignore[no-untyped-def]
             # Token-streaming liveness: when enabled AND this call is synchronous
-            # (outside a running event loop -- i.e. an executor-run expert call),
-            # drive it streamed so each chunk refreshes the no-progress watchdog.
-            # In a running loop (e.g. the Tier-1 streamify path) we defer to the
-            # blocking call below so we never nest loops / double-stream. Either
-            # path emits the canonical lm.call once via the shared finally.
-            try:
-                if _token_liveness_enabled() and self._clio_can_stream():
-                    try:
-                        return self._clio_streamed_call(prompt, messages, **kwargs)
-                    finally:
-                        self._clio_log_last_call()
-            except _StreamingPlumbingError:
-                pass  # streaming setup unavailable -> fall through to blocking
+            # (outside a running event loop -- the loop's executor-run calls), drive it
+            # streamed so each chunk refreshes the no-progress watchdog and reaches the
+            # live text/thinking lanes. The streamed call goes through ``_clio_ainvoke_once``,
+            # whose ``finally`` emits the canonical lm.call -- exactly once per call. A
+            # streaming failure is the call's failure: nothing re-issues it blocking.
+            if _token_liveness_enabled() and self._clio_can_stream():
+                return self._clio_streamed_call(prompt, messages, **kwargs)
             try:
                 return super().__call__(prompt=prompt, messages=messages, **kwargs)
             finally:
@@ -438,10 +425,10 @@ def _io_logging_lm_cls() -> Any:
         def _clio_streamed_call(self, prompt=None, messages=None, **kwargs):  # noqa: ANN001
             """Run the call STREAMED so each chunk refreshes the watchdog.
 
-            Producer awaits ``self.acall`` with ``dspy.settings.send_stream``
+            Producer awaits ``_clio_ainvoke_once`` with ``dspy.settings.send_stream``
             set; a consumer drains-and-discards each chunk, calling
-            ``note_lm_activity`` per token. ``acall`` (NOT ``aforward``) is the
-            ``@with_callbacks``-wrapped entry: it fires ``on_lm_start``/``on_lm_end``
+            ``note_lm_activity`` per token. ``BaseLM.acall`` (NOT ``aforward``) is the
+            ``@with_callbacks``-wrapped entry ``_clio_ainvoke_once`` reaches: it fires ``on_lm_start``/``on_lm_end``
             -> ``note_lm_start``/``note_lm_end`` (so the call registers as in-flight
             for the watchdog) + the ``lm.call.started`` marker, and it returns the
             SAME processed outputs as the blocking ``__call__`` (``aforward`` +
@@ -450,35 +437,28 @@ def _io_logging_lm_cls() -> Any:
             ``self.history`` -- so the shared ``_clio_log_last_call`` finally still
             emits ``lm.call``.
 
-            Real LM errors (raised inside ``aforward``) propagate so the repair loop
-            handles them exactly as on the blocking path. Streaming-PLUMBING failures
-            (anyio/dspy unavailable) raise ``_StreamingPlumbingError`` so ``__call__``
-            falls back to the blocking call -- without a double LM round-trip.
+            Every error propagates as itself; nothing re-issues the call.
 
             Version-fragile (public surfaces): dspy.BaseLM.acall (@with_callbacks)
             + dspy.settings send_stream + litellm streaming; anyio memory object
             streams. Gated default-on with the CLIO_LM_TOKEN_LIVENESS kill switch.
             """
             import asyncio as _asyncio  # noqa: PLC0415
+            import time as _time  # noqa: PLC0415
 
-            try:
-                import time as _time  # noqa: PLC0415
+            import anyio as _anyio  # noqa: PLC0415
 
-                import anyio as _anyio  # noqa: PLC0415
-
-                from clio_agent.runtime import trace  # noqa: PLC0415
-                from clio_agent.runtime.lm_activity import (  # noqa: PLC0415
-                    note_lm_activity,
-                    note_lm_answer_delta,
-                    note_lm_provider_thinking_delta,
-                    note_lm_token_event,
-                )
-                from clio_agent.runtime.lm_stream import (  # noqa: PLC0415
-                    AnswerFieldExtractor,
-                    extract_delta,
-                )
-            except Exception as exc:  # noqa: BLE001 - plumbing missing -> blocking
-                raise _StreamingPlumbingError from exc
+            from clio_agent.runtime import trace  # noqa: PLC0415
+            from clio_agent.runtime.lm_activity import (  # noqa: PLC0415
+                note_lm_activity,
+                note_lm_answer_delta,
+                note_lm_provider_thinking_delta,
+                note_lm_token_event,
+            )
+            from clio_agent.runtime.lm_stream import (  # noqa: PLC0415
+                AnswerFieldExtractor,
+                extract_delta,
+            )
 
             dspy = _dspy()
 
@@ -495,8 +475,10 @@ def _io_logging_lm_cls() -> Any:
                         # without it an OpenAI-compatible server (vLLM, ALCF)
                         # sends none and litellm only estimates the tokens.
                         with dspy.settings.context(send_stream=send, track_usage=True):
-                            holder["result"] = await self.acall(
-                                prompt=prompt, messages=messages, **kwargs
+                            # One attempt: the transient retry is the caller's
+                            # (``__call__``) -- ``acall`` would nest a second loop.
+                            holder["result"] = await self._clio_ainvoke_once(
+                                prompt, messages, **kwargs
                             )
                     except BaseException as exc:  # noqa: BLE001 - re-raised post-drain
                         holder["exc"] = exc
@@ -586,18 +568,7 @@ def _io_logging_lm_cls() -> Any:
                     raise holder["exc"]
                 return holder.get("result")
 
-            try:
-                return _asyncio.run(_drive())
-            except _StreamingPlumbingError:
-                raise
-            except BaseException as exc:
-                # aforward's own error -> propagate (repair loop owns it). A bare
-                # asyncio/anyio plumbing failure also lands here; treat anything
-                # that is clearly a loop/runtime plumbing fault as fall-back-able,
-                # else propagate so a genuine LM failure is not swallowed.
-                if isinstance(exc, RuntimeError) and "loop" in str(exc).lower():
-                    raise _StreamingPlumbingError from exc
-                raise
+            return _asyncio.run(_drive())
 
         @staticmethod
         def _clio_trace_target() -> Any:

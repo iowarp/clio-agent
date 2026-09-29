@@ -70,7 +70,6 @@ class _RebindLMStub:
     def rebind_lms(self, cfg: Any) -> None:
         self._provider_config = cfg
         self._main_lm = _fake_lm(cfg)
-        self._planner_lm = _fake_lm(cfg)
         self._dspy_adapter = _fake_adapter(cfg)
 
 
@@ -83,7 +82,6 @@ def _install_stub_factories(monkeypatch: pytest.MonkeyPatch, *, create_lm: Any =
 
     monkeypatch.setattr("clio_agent.config.create_lm", create_lm or _fake_lm)
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", _fake_adapter)
-    monkeypatch.setattr("clio_agent.config.create_planner_lm", _fake_lm)
 
     async def _no_handshake(ctx: Any, **kwargs: Any) -> Any:
         raise RuntimeError("handshake disabled in test")
@@ -188,7 +186,6 @@ def test_rebind_refreshes_ambient_process_default(
         arc=ARCMemory(data_dir=str(tmp_path / "arc")),
         _provider_config=SimpleNamespace(provider="openai", model="boot-model"),
         _main_lm=SimpleNamespace(model="boot-model", provider="openai"),
-        _planner_lm=SimpleNamespace(model="boot-model", provider="openai"),
         _dspy_adapter=SimpleNamespace(provider="openai"),
     )
     _install_stub_factories(monkeypatch)
@@ -247,7 +244,6 @@ def test_concurrent_cloud_binds_serialized_and_consistent(
         arc=ARCMemory(data_dir=str(tmp_path / "arc")),
         _provider_config=SimpleNamespace(provider="boot", model="boot-model"),
         _main_lm=SimpleNamespace(model="boot-model", provider="boot"),
-        _planner_lm=SimpleNamespace(model="boot-model", provider="boot"),
         _dspy_adapter=SimpleNamespace(provider="boot"),
     )
 

@@ -194,8 +194,6 @@ class LMProviderConfig:
         api_key: API key
         temperature: Sampling temperature
         max_tokens: Maximum tokens per response
-        planner_temperature: Lower temperature for deterministic action planning
-        planner_max_tokens: Maximum tokens for planner JSON generation
         environment: Deployment environment (dev/staging/production)
         codex_transport: Codex transport: "websocket" (default, A.6) or "sse"
         codex_variant: Which codex transport this config binds: "sdk" or "direct" (default, S1b)
@@ -219,9 +217,6 @@ class LMProviderConfig:
     temperature: float | None = None
     # 0 omits the client output cap; positive values set an explicit cap.
     max_tokens: int = 0
-    planner_temperature: float = 0.3
-    planner_max_tokens: int | None = None
-    router_temperature: float | None = None
     # Sampling surface (None = omit -> the provider/model's own default; Qwen: never greedy),
     # sent only when the model accepts it (providers.capabilities.accepted_parameters).
     # context_length (0 = omit) is Ollama's num_ctx and a load setting on LM Studio.
@@ -296,9 +291,6 @@ class LMProviderConfig:
                 )
         else:
             raise ValueError(f"Unknown LM provider {identity!r}; configure a supported provider")
-        if self.router_temperature is not None:
-            self.planner_temperature = self.router_temperature
-        self.router_temperature = self.planner_temperature
         from clio_agent.providers.capabilities.dialects import claude_code  # noqa: PLC0415
 
         self.thinking_level = claude_code.shipped_default_thinking_level(
@@ -320,12 +312,8 @@ class LMProviderConfig:
                 _credentials.resolve(self.provider_id or self.provider, "") or defaults["api_key"]
             )
         # Zero means no client output cap (#1323).
-        if self.max_tokens < 0 or (
-            self.planner_max_tokens is not None and self.planner_max_tokens < 0
-        ):
-            raise ValueError("max_tokens and planner_max_tokens must be non-negative")
-        if self.planner_max_tokens is None:
-            self.planner_max_tokens = self.max_tokens
+        if self.max_tokens < 0:
+            raise ValueError("max_tokens must be non-negative")
         # Capability flags. defaults dict wins — these aren't user-set
         # via env vars (they're wire-protocol facts about the provider),
         # so re-reading on every config load is safe.
@@ -479,8 +467,6 @@ def load_config_from_env() -> LMProviderConfig:
         ``lm.api_base`` / CLIO_LM_API_BASE: Override API base URL
         ``lm.model`` / CLIO_LM_MODEL: Override model identifier
         ``lm.temperature`` / CLIO_LM_TEMPERATURE: Override reasoner/chat temperature
-        ``lm.planner_temperature`` / CLIO_LM_PLANNER_TEMPERATURE: planner temperature
-        ``lm.planner_max_tokens`` / CLIO_LM_PLANNER_MAX_TOKENS: planner token cap
         ``lm.max_tokens`` / CLIO_LM_MAX_TOKENS: Override max tokens
         ``lm.top_p`` / ``lm.top_k`` / ``lm.min_p`` / ``lm.presence_penalty``: sampling
         ``lm.codex_transport`` / CLIO_CODEX_TRANSPORT: direct codex transport (websocket/sse)
@@ -553,15 +539,6 @@ def load_config_from_env() -> LMProviderConfig:
     temperature = conf.resolve(
         "lm.temperature", env="CLIO_LM_TEMPERATURE", default=None, cast=conf.as_float
     )
-    planner_temperature = conf.resolve(
-        "lm.planner_temperature",
-        env="CLIO_LM_PLANNER_TEMPERATURE",
-        default=None,
-        cast=conf.as_float,
-    )
-    planner_max_tokens = conf.resolve(
-        "lm.planner_max_tokens", env="CLIO_LM_PLANNER_MAX_TOKENS", default=None, cast=conf.as_int
-    )
     max_tokens = conf.resolve(
         "lm.max_tokens", env="CLIO_LM_MAX_TOKENS", default=None, cast=conf.as_int
     )
@@ -585,10 +562,6 @@ def load_config_from_env() -> LMProviderConfig:
         kwargs["api_key"] = api_key
     if temperature is not None:
         kwargs["temperature"] = temperature
-    if planner_temperature is not None:
-        kwargs["planner_temperature"] = planner_temperature
-    if planner_max_tokens is not None:
-        kwargs["planner_max_tokens"] = planner_max_tokens
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
     if top_p is not None:
@@ -675,7 +648,6 @@ from clio_agent.lm.adapters import (
     _fix_guided_schema,  # noqa: E402, F401
     _guided_output_enabled,  # noqa: E402, F401
     _lenient_chat_adapter_cls,  # noqa: E402, F401
-    _live_streaming_enabled,  # noqa: E402, F401
     _parse_retry_attempts,  # noqa: E402, F401
     _recover_malformed_structured_value,  # noqa: E402, F401
     _signature_strict_response_format,  # noqa: E402, F401
@@ -690,7 +662,6 @@ from clio_agent.lm.factory import (
     _resolve_lm_studio_model_if_needed,  # noqa: E402, F401
     _resolve_model_name,  # noqa: E402, F401
     create_lm,  # noqa: E402, F401
-    create_planner_lm,  # noqa: E402, F401
 )
 from clio_agent.lm.io_logging import (
     _TRANSIENT_PROVIDER_MARKERS,  # noqa: E402, F401
@@ -698,7 +669,6 @@ from clio_agent.lm.io_logging import (
     _is_transient_provider_error,  # noqa: E402, F401
     _lm_transient_backoff_s,  # noqa: E402, F401
     _lm_transient_retries,  # noqa: E402, F401
-    _StreamingPlumbingError,  # noqa: E402, F401
     _token_liveness_enabled,  # noqa: E402, F401
 )
 from clio_agent.lm.request_builder import build_request_kwargs  # noqa: E402, F401

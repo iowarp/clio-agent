@@ -787,9 +787,9 @@ def test_permanent_protocol_refusal_terminates_the_react_loop_fast() -> None:
     proxy-routed declared server produces) refuses -32021 on EVERY call:
     never healable, never worth retrying.
 
-    Before the D1 fix, ``dspy.ReActV2._execute_tool_calls`` (upstream,
-    vendored) caught the typed refusal exactly like any transient tool error,
-    turned it into a text observation, and let the loop continue -- an LM
+    Before the D1 fix the loop caught the typed refusal exactly like any
+    transient tool error, turned it into a text observation, and let the loop
+    continue -- an LM
     that does not recognize the refusal as permanent can keep re-invoking the
     SAME doomed tool turn after turn (the #1275 hang: 15+ minutes of exactly
     that, reproduced here with a ``DummyLM`` scripted to keep calling
@@ -803,7 +803,7 @@ def test_permanent_protocol_refusal_terminates_the_react_loop_fast() -> None:
     once, and ``MCPMissingRequiredClientCapabilityError`` -- never a generic
     string the model could keep retrying -- propagates out of ``forward()``.
     """
-    from clio_agent.gact.agents.reactv2 import retaining_reactv2_cls
+    from clio_agent.gact.agents.clio_react import ClioReAct
     from clio_agent.tools.execution import _make_dspy_tool
 
     call_count = 0
@@ -847,8 +847,7 @@ def test_permanent_protocol_refusal_terminates_the_react_loop_fast() -> None:
         ]
     )
 
-    cls = retaining_reactv2_cls()
-    agent = cls("question -> answer", tools=[tool], max_iters=5)
+    agent = ClioReAct("question -> answer", tools=[tool], max_iters=5)
     with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
         with pytest.raises(MCPMissingRequiredClientCapabilityError) as excinfo:
             agent(question="ping")

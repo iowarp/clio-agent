@@ -14,7 +14,7 @@ These lock the three fixes whose *wiring* (not the shared detector, proved in
   OpenAI → this test goes red.
 
 * **T2 — ops_reset.** When ARC autocompaction rewrites the History prefix
-  (``_RetainingReActV2._maybe_autocompact`` → ``arc.summarize_segments``), the active
+  (``ClioReAct``'s per-step ``maybe_autocompact`` → ``arc.summarize_segments``), the active
   stateful scope must be flagged for a typed ``ops_reset`` so the
   next send classifies precisely instead of the generic ``prefix_mismatch``.
   **Sabotage:** unwire the ``note_prefix_reset_for_active_scope`` call → the next plan
@@ -143,19 +143,18 @@ def test_note_prefix_reset_flags_claude_sdk_registry() -> None:
 
 
 def test_note_prefix_reset_is_noop_off_scope() -> None:
-    """Off the V2 loop (no active scope) the hook is a safe no-op returning False."""
+    """Off the loop (no active scope) the hook is a safe no-op returning False."""
     assert active_stateful_scope() is None
     assert note_prefix_reset_for_active_scope("ops_reset") is False
 
 
-def test_maybe_autocompact_wires_ops_reset_through_the_v2_loop(
+def test_maybe_autocompact_wires_ops_reset_through_the_loop(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A forced V2 auto-compaction flags ``ops_reset`` on the active scope's registries.
+    """A forced auto-compaction flags ``ops_reset`` on the active scope's registries.
 
-    Drives the real :func:`clio_agent.gact.compaction.maybe_autocompact` (the #1339
-    unification target -- ``_RetainingReActV2._maybe_autocompact`` is now a 3-line
-    delegation to it) with its ARC/runtime dependencies stubbed to trigger a real
+    Drives the real :func:`clio_agent.gact.compaction.maybe_autocompact` (the trigger
+    ``ClioReAct`` fires at every step boundary) with its ARC/runtime dependencies stubbed to trigger a real
     ``arc.summarize_segments`` (the History-prefix rewrite), then asserts the next
     Claude SDK send is a typed ``ops_reset``. Sabotage: delete the
     ``note_prefix_reset_for_active_scope`` call in ``compaction.py`` -> the next plan
@@ -177,7 +176,7 @@ def test_maybe_autocompact_wires_ops_reset_through_the_v2_loop(
     from clio_agent.arc.live import _MemoryStore
     from clio_agent.arc.memory import ARCMemory
     from clio_agent.gact import context as _ctx
-    from clio_agent.gact.agents import reactv2_events as _events
+    from clio_agent.gact.agents import clio_react_record
     from clio_agent.gact.app import build_app
     from clio_agent.gact.compaction import maybe_autocompact
     from clio_agent.gact.runtime import context_tokens as _ctok
@@ -217,7 +216,7 @@ def test_maybe_autocompact_wires_ops_reset_through_the_v2_loop(
     arc.append_segment(sid, scope, "observation", {"text": "first live segment"})
     arc.append_segment(sid, scope, "observation", {"text": "second live segment"})
 
-    monkeypatch.setattr(_events, "_arc_scope", lambda: (arc, sid, scope))
+    monkeypatch.setattr(clio_react_record, "arc_scope", lambda: (arc, sid, scope))
     monkeypatch.setattr(_ctx, "active_react_context_window", lambda: 1000)
     monkeypatch.setattr(_ctok, "_last_prompt_tokens", lambda: 950)
     monkeypatch.setattr(_ctok, "_autocompact_threshold", lambda: 0.5)
@@ -251,33 +250,27 @@ def test_maybe_autocompact_wires_ops_reset_through_the_v2_loop(
 # --------------------------------------------------------------------------- #
 # T3 — Tier-1-shaped stateful scope: append-only sends delta on call 2+.
 #
-# The legacy ``ClioAgent.forward`` planner-loop scope-binding test was deleted
-# with the planner (#948 S4b). Post-S4b the top-level orchestrator IS the reactv2
-# retention forward, whose ``with stateful_scope():`` (reactv2.py:193) is the
-# surviving equivalent binding. Two locks below:
-#   * ``test_reactv2_forward_binds_stateful_scope`` drives a REAL V2 forward and
-#     asserts the scope is active INSIDE the loop body — the sabotage guard on the
-#     orchestrator-level binding (remove the ``with`` and it goes red), restored
-#     in the new world to replace the deleted planner-loop guard.
+# The top-level orchestrator is ``ClioReAct``, whose ``forward`` binds
+# ``with stateful_scope():`` around its loop. Two locks below:
+#   * ``test_clio_react_forward_binds_stateful_scope`` drives a REAL forward and
+#     asserts the scope is active INSIDE the loop body (at the model call) and
+#     released after -- remove the ``with`` and it goes red.
 #   * ``test_tier1_shaped_forward_deltas_on_call_two`` pins the delta MECHANISM
 #     the binding unlocks, directly on the Claude SDK registry (append-only
 #     growing message list under an active scope).
 # --------------------------------------------------------------------------- #
-def test_reactv2_forward_binds_stateful_scope(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The V2 orchestrator forward binds a per-forward stateful scope for its LM sends.
+def test_clio_react_forward_binds_stateful_scope() -> None:
+    """``ClioReAct.forward`` binds a fresh per-forward stateful scope for its LM sends.
 
-    Post-#948-S4b the top-level orchestrator is the reactv2 retention forward, not the
-    deleted ``ClioAgent.forward`` planner. Its ``with stateful_scope():`` binding
-    (reactv2.py:193) is what makes consecutive append-only orchestrator LM sends
-    classify as prefix deltas. This drives a real V2 forward and asserts
-    ``active_stateful_scope()`` is non-None from INSIDE the loop body — the
-    orchestrator-level invariant the deleted planner test used to guard.
+    Its ``with stateful_scope():`` binding is what makes consecutive append-only
+    orchestrator LM sends classify as prefix deltas. This drives a real forward and
+    asserts ``active_stateful_scope()`` is non-None at every model call, stable
+    within one forward, distinct across forwards, and released afterwards.
 
-    Sabotage: remove ``with stateful_scope():`` in the reactv2 forward → the captured
-    scope is ``None`` → this test goes red.
+    Sabotage: remove ``with stateful_scope():`` in ``ClioReAct.forward`` → the
+    captured scope is ``None`` → this test goes red.
     """
-    from clio_agent.gact.agents import reactv2_events as _events
-    from clio_agent.gact.agents.reactv2 import retaining_reactv2_cls
+    from clio_agent.gact.agents.clio_react import ClioReAct
 
     class _Sig(dspy.Signature):
         question: str = dspy.InputField()
@@ -287,22 +280,31 @@ def test_reactv2_forward_binds_stateful_scope(monkeypatch: pytest.MonkeyPatch) -
         """A tool."""
         return x
 
-    captured: dict[str, Any] = {}
+    captured: list[Any] = []
 
-    def _fake_instrumented_forward(agent: Any, **input_args: Any) -> Any:
-        # Runs where the real append-only V2 loop runs: under the forward's
+    def _react(**_kwargs: Any) -> dspy.Prediction:
+        # Runs where the real model call runs: inside the loop, under the forward's
         # ``with stateful_scope():``. Record what the rail carries.
-        captured["scope"] = active_stateful_scope()
-        return dspy.Prediction(answer="ok")
+        captured.append(active_stateful_scope())
+        if len(captured) % 2:
+            return dspy.Prediction(
+                next_thought="call",
+                tool_calls={"tool_calls": [{"name": "_tool", "args": {"x": "1"}}]},
+            )
+        return dspy.Prediction(next_thought="ok", tool_calls={"tool_calls": []})
 
-    monkeypatch.setattr(_events, "instrumented_forward", _fake_instrumented_forward)
+    agent = ClioReAct(_Sig, tools=[_tool], max_iters=4)
+    agent.react = _react  # type: ignore[method-assign]
+    first = agent(question="hi")
+    second = agent(question="again")
 
-    agent = retaining_reactv2_cls()(_Sig, tools=[_tool], max_iters=1)
-    pred = agent.forward(question="hi")
-
-    assert pred.answer == "ok"
-    # The forward bound a live stateful scope around the loop (unbinding → None).
-    assert captured["scope"] is not None
+    assert (first.answer, second.answer) == ("ok", "ok")
+    assert len(captured) == 4
+    assert all(scope is not None for scope in captured)
+    assert captured[0] == captured[1], "one forward = one scope across its calls"
+    assert captured[2] == captured[3]
+    assert captured[0] != captured[2], "each forward binds a fresh scope"
+    assert active_stateful_scope() is None, "the scope is released after the forward"
 
 
 # --------------------------------------------------------------------------- #

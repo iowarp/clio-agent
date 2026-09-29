@@ -1,22 +1,16 @@
 """Forward-orchestration seam for the GACT turn engine (#767 Phase B).
 
 Slice 5 of the ``turn.py`` decomposition: the block that resolves the turn's
-active agent, builds its DSPy module, runs the streamed-or-synchronous
-``forward``, and (for expert packs) settles dynamic-agent delegations moves here
-as :func:`forward_turn`, a free function taking
+active agent, builds its DSPy module and runs its ``forward`` lives here as
+:func:`forward_turn`, a free function taking
 :class:`~clio_agent.gact.turn_state.TurnState` first (the gact seam convention).
 
-The orchestration is byte-for-byte behavior-preserving. :func:`forward_turn`:
+:func:`forward_turn`:
 
-* resolves ``state.active_agent_id`` / ``state.invocation_agent_id`` and MUTATES
-  them IN PLACE (TRICKY #1): the live chunk emitter was already bound over
-  ``state`` (``partial(emit_chunk, state)``) before this seam runs and reads those
-  fields *late* whenever a chunk arrives mid-forward, so rebinding a fresh local
-  would strand it. The reconstructed ``live_emit`` here is the SAME
-  ``partial(emit_chunk, state)`` the highway was bound with, so both the executor
-  rail and the streamed forward sites resolve the generating agent identically.
-* runs the dynamic-agent (blueprint/prompt/tool) OR the CLIO-orchestrator forward,
-  streamed-first with the synchronous executor path as the fallback, setting
+* resolves ``state.active_agent_id`` / ``state.invocation_agent_id`` IN PLACE (the
+  live token emitter bound over ``state`` before this seam reads them late);
+* runs the dynamic-agent (blueprint/prompt/tool) module's forward ONCE in the
+  turn's forward executor (live text streams through the LM token hooks), setting
   ``state.prompt_resolution`` / ``state.dynamic_agent_used`` / ``state.agent_runtime``
   / ``state.pred`` as the original body did, and returns ``state.pred``. A react
   main routes to its declared children by CALLING the spawn-runtime tools
@@ -51,7 +45,8 @@ from clio_agent.gact.agents.resolution import (
 from clio_agent.gact.catalog import _builtin_main_agent
 from clio_agent.gact.evidence import _dynamic_agent_runtime_provenance
 from clio_agent.gact.messaging import _prediction_summary
-from clio_agent.gact.off_loop import emit_semantic_event_async
+from clio_agent.gact.native_model_inputs import native_input_kwargs
+from clio_agent.gact.off_loop import emit_semantic_event_async, run_off_loop
 from clio_agent.gact.providers.auth import _refresh_argonne_lm_token
 from clio_agent.gact.runtime import bringup_timing
 from clio_agent.gact.runtime.globals import (
@@ -63,13 +58,7 @@ from clio_agent.gact.runtime.globals import (
     _UnsupportedSessionAgent,
 )
 from clio_agent.gact.runtime.type_parsing import _blueprint_module_kind
-from clio_agent.gact.streaming import (
-    _peek_stream_fallback,
-    _run_dynamic_agent_compat,
-    _try_streamed_forward_compat,
-)
 from clio_agent.gact.turn_reasoning import apply_turn_reasoning, record_turn_reasoning
-from clio_agent.gact.turn_stream import emit_chunk
 from clio_agent.gact.turn_watchdog import await_turn_work, cancel_requested
 
 if TYPE_CHECKING:
@@ -110,6 +99,33 @@ async def _run_turn_setup_off_loop(state: "TurnState", operation: Callable[[], A
     loop = asyncio.get_running_loop()
     turn_context = contextvars.copy_context()
     return await loop.run_in_executor(_forward_executor(state), lambda: turn_context.run(operation))
+
+
+async def _run_module(state: "TurnState", module: Any, cancel_cb: Callable[[], bool]) -> Any:
+    """Run the built module's forward ONCE in the turn's forward executor.
+
+    The executor gets a copy of the turn context (identity, cancellation checker,
+    tool session), so the loop's live text and thinking stream through the LM
+    token hooks while it runs. A failure propagates to the turn as itself.
+    """
+    native = await run_off_loop(
+        lambda: native_input_kwargs(
+            state.app, state.sid, module, images=state.native_images, files=state.native_files
+        )
+    )
+    kwargs: dict[str, Any] = {
+        "question": state.enriched_text,
+        "session_id": state.sid,
+        "session_mode": getattr(state.sess, "mode", "edit"),
+        "session_edit_mode": getattr(state.sess, "edit_mode", "diff"),
+        "cancel_requested": cancel_cb,
+        **native,
+    }
+    loop = asyncio.get_running_loop()
+    turn_context = contextvars.copy_context()
+    return await loop.run_in_executor(
+        _forward_executor(state), lambda: turn_context.run(module, **kwargs)
+    )
 
 
 def _apply_turn_model_selection(state: "TurnState", agent_def: "AgentDef") -> "AgentDef":
@@ -179,18 +195,12 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
     # constant read here too.
     from clio_agent.gact.app import (  # noqa: PLC0415
         _EXECUTABLE_SESSION_AGENT_IDS,
-        _blueprint_runner_for_agent,
         _build_blueprint_dspy_module,
         _build_prompt_user_agent_module,
         _build_tool_user_agent_module,
     )
 
-    # TRICKY #1: reconstruct the SAME callable the LM token highway was bound with
-    # (``partial(emit_chunk, state)``) — it reads state.active_agent_id /
-    # state.invocation_agent_id LATE, so the in-place mutations below are visible.
-    live_emit = partial(emit_chunk, state)
-    # Cooperative-cancel probe as a zero-arg predicate for the compat shims +
-    # _cancellation_checker, exactly like the former closure.
+    # Cooperative-cancel probe as a zero-arg predicate for the module + checker.
     cancel_cb = partial(cancel_requested, state)
 
     # #1215 S5: NESTED under workspace.lease (see forward_turn) -- resolves the
@@ -321,7 +331,6 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
         )
         state.prompt_resolution = dict(dynamic_agent.metadata.get("prompt_resolution") or {})
         state.dynamic_agent_used = dynamic_agent
-        runner = _blueprint_runner_for_agent(dynamic_agent)
         dynamic_kind = (
             _blueprint_module_kind(dynamic_agent)
             if _agent_definition_uses_blueprint_runtime(dynamic_agent)
@@ -422,7 +431,6 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
             blueprint=dict(state.agent_runtime.get("agent_blueprint") or {}),
             provider=_llm_provider_payload(state.app, dynamic_agent.id),
             payload={
-                "request_mode": "streamed",
                 "input": state.enriched_text,
                 "prompt_resolution": state.prompt_resolution,
                 "agent_runtime": state.agent_runtime,
@@ -431,112 +439,20 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
             },
         )
         with _cancellation_checker(cancel_cb), _tool_session_context(state.sid):
-            state.pred = await await_turn_work(
-                state,
-                _try_streamed_forward_compat(
-                    state.app,
-                    state.enriched_text,
-                    state.sid,
-                    live_emit,
-                    session_mode=getattr(state.sess, "mode", "edit"),
-                    session_edit_mode=getattr(state.sess, "edit_mode", "diff"),
-                    agent_override=module,
-                    images=state.native_images,
-                    files=state.native_files,
-                    cancel_requested=cancel_cb,
-                ),
-            )
-        if state.pred is not None:
-            await emit_semantic_event_async(
-                state.app,
-                state.sid,
-                "llm.response.completed",
-                turn_id=state.turn_id,
-                trace_id=state.trace_id,
-                summary=f"LLM response completed for {dynamic_agent.id}.",
-                actor=llm_actor,
-                subject=llm_subject,
-                blueprint=dict(state.agent_runtime.get("agent_blueprint") or {}),
-                provider=_llm_provider_payload(state.app, dynamic_agent.id),
-                payload=_prediction_summary(state.pred),
-            )
-        if state.pred is None:
-            degradation = _peek_stream_fallback(state.app, state.sid)
-            await emit_semantic_event_async(
-                state.app,
-                state.sid,
-                "llm.request.degraded",
-                turn_id=state.turn_id,
-                trace_id=state.trace_id,
-                status="degraded",
-                summary=(
-                    f"Live delivery degraded for {dynamic_agent.id}: "
-                    f"{degradation.get('reason', 'sync_execution_path')}."
-                ),
-                actor=llm_actor,
-                subject=llm_subject,
-                blueprint=dict(state.agent_runtime.get("agent_blueprint") or {}),
-                provider=_llm_provider_payload(state.app, dynamic_agent.id),
-                payload={
-                    "request_mode": "sync",
-                    "degradation": degradation,
-                },
-            )
-            await emit_semantic_event_async(
-                state.app,
-                state.sid,
-                "llm.request.started",
-                turn_id=state.turn_id,
-                trace_id=state.trace_id,
-                status="running",
-                summary=f"Synchronous LLM request started for {dynamic_agent.id}.",
-                actor=llm_actor,
-                subject=llm_subject,
-                blueprint=dict(state.agent_runtime.get("agent_blueprint") or {}),
-                provider=_llm_provider_payload(state.app, dynamic_agent.id),
-                payload={
-                    "request_mode": "sync",
-                    "degradation": degradation,
-                    "input": state.enriched_text,
-                    "prompt_resolution": state.prompt_resolution,
-                    "agent_runtime": state.agent_runtime,
-                    "native_image_count": len(state.native_images),
-                    "native_file_count": len(state.native_files),
-                },
-            )
-            with _cancellation_checker(cancel_cb), _tool_session_context(state.sid):
-                loop = asyncio.get_running_loop()
-                turn_context = contextvars.copy_context()
-                state.pred = await await_turn_work(
-                    state,
-                    loop.run_in_executor(
-                        _forward_executor(state),
-                        lambda: turn_context.run(
-                            _run_dynamic_agent_compat,
-                            runner,
-                            state.app.state.agent,
-                            dynamic_agent,
-                            state.enriched_text,
-                            state.sid,
-                            cancel_cb,
-                            state.native_images,
-                            state.native_files,
-                        ),
-                    ),
-                )
-            await emit_semantic_event_async(
-                state.app,
-                state.sid,
-                "llm.response.completed",
-                turn_id=state.turn_id,
-                trace_id=state.trace_id,
-                summary=f"Synchronous LLM response completed for {dynamic_agent.id}.",
-                actor=llm_actor,
-                subject=llm_subject,
-                blueprint=dict(state.agent_runtime.get("agent_blueprint") or {}),
-                provider=_llm_provider_payload(state.app, dynamic_agent.id),
-                payload=_prediction_summary(state.pred),
-            )
+            state.pred = await await_turn_work(state, _run_module(state, module, cancel_cb))
+        await emit_semantic_event_async(
+            state.app,
+            state.sid,
+            "llm.response.completed",
+            turn_id=state.turn_id,
+            trace_id=state.trace_id,
+            summary=f"LLM response completed for {dynamic_agent.id}.",
+            actor=llm_actor,
+            subject=llm_subject,
+            blueprint=dict(state.agent_runtime.get("agent_blueprint") or {}),
+            provider=_llm_provider_payload(state.app, dynamic_agent.id),
+            payload=_prediction_summary(state.pred),
+        )
     else:
         # #948 S4b: the agent id is in {"", "main", "default"} but the session
         # EXPLICITLY activated a blueprint (id/path set) that resolves no such

@@ -726,7 +726,6 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
             # swaps cover the LM-dependent surface:
             #   * _provider_config   -> health/config surfaces the new provider
             #   * _main_lm           -> chat + answer synthesis use the new lm
-            #   * _planner_lm        -> planner runs with the new lm
             #   * _dspy_adapter      -> local backends keep text ChatAdapter mode
             # The main agent binds these via ``dspy.context`` on every call; the
             # process-global dspy default is left untouched (design §5/§6).

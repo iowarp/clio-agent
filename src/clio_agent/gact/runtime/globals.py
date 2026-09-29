@@ -511,22 +511,21 @@ def _emit_react_step_event(
     step_index: int,
     thought: Any,
     reasoning: Any,
-    tool_name: Any,
-    tool_args: Any,
-    observation: Any,
+    tool_calls: list[dict[str, Any]],
     is_finish: bool,
 ) -> None:
-    """Put ONE ReAct Step (LLM response + tool act/observe) on the core highway.
+    """Put ONE ReAct Step (LLM response + its tool calls and results) on the highway.
 
     A ReAct Step is the atom of an expert trajectory: the LLM's response (its
-    ``thought`` + the tool it chose) plus the resulting tool calling that ``act``s
-    on or ``observe``s the environment. Stock dspy discards every step but the
+    ``thought`` + the tool calls it chose, which run concurrently) plus each call's
+    result (``tool_calls``: ``id`` / ``name`` / ``args`` / ``observation`` /
+    ``is_error``, in call order). Stock dspy discards every step but the
     final ``extract``; this surfaces each one so the full per-turn trajectory rides
     the highway.
 
     Capture-only and UNCAPPED (per the trajectory ontology): the highway carries
     everything; per-consumer filtering happens downstream (the trace/TUI apply no
-    filter, the parent filters to the extract). ``thought``/``tool_*``/``observation``
+    filter, the parent filters to the extract). ``thought``/``tool_calls``
     are not in ``SENSITIVE_KEYS``; ``reasoning`` IS, but is allowed through the SSE
     projection for THIS event type via ``SSE_KEEP_KEYS_BY_EVENT`` (so the model's
     chain-of-thought reaches the live UI here while staying redacted on lm.call /
@@ -548,7 +547,8 @@ def _emit_react_step_event(
             parent_span_id=expert_span_id,
             status="completed",
             summary=(
-                f"{expert_id or 'expert'} model action {step_index}: {str(tool_name) or 'finish'}"
+                f"{expert_id or 'expert'} model action {step_index}: "
+                f"{', '.join(str(c.get('name') or '') for c in tool_calls) or 'finish'}"
             ),
             actor={"agent_id": expert_id, "role": "expert"},
             payload={
@@ -565,9 +565,7 @@ def _emit_react_step_event(
                 # Allowed through the SSE projection only for this event type.
                 "thought": wire_value(thought, mode="gact_runtime"),
                 "reasoning": wire_value(reasoning, mode="gact_runtime"),
-                "tool_name": str(tool_name or ""),
-                "tool_args": wire_value(tool_args, mode="gact_runtime"),
-                "observation": wire_value(observation, mode="gact_runtime"),
+                "tool_calls": wire_value(tool_calls, mode="gact_runtime"),
                 "is_finish": bool(is_finish),
             },
         )
@@ -932,19 +930,6 @@ class _TurnTimedOut(RuntimeError):
     def __init__(self, timeout_s: float) -> None:
         super().__init__(f"agent turn made no progress for {timeout_s:g}s")
         self.timeout_s = timeout_s
-
-
-class _BlueprintTerminalWorkflowState(BaseException):
-    """Raised internally when a blueprint tool observation settles a workflow.
-
-    DSPy ReAct treats normal tool exceptions as recoverable observations, so a
-    terminal typed workflow state needs to bypass that catch path and settle at
-    the blueprint module boundary.
-    """
-
-    def __init__(self, result: Mapping[str, Any]) -> None:
-        super().__init__("blueprint tool returned terminal workflow state")
-        self.result = dict(result)
 
 
 def _not_implemented(capability: str) -> ErrorEnvelope:

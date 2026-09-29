@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from litellm import ModelResponse
 
-from clio_agent.config import LMProviderConfig, create_lm, create_planner_lm
+from clio_agent.config import LMProviderConfig, create_lm
 from clio_agent.providers.capabilities import invalidation
 from clio_agent.providers.capabilities.records import (
     DeploymentCapabilities,
@@ -55,35 +55,19 @@ def test_zero_survives_config_copy_and_handshake(provider: str) -> None:
             models=(DiscoveredModel(id=config.model),),
         )
     )
-    assert config.max_tokens == config.planner_max_tokens == 0
+    assert config.max_tokens == 0
     assert replace(config, temperature=0.5).max_tokens == 0
 
 
-@pytest.mark.parametrize("planner", [False, True])
 @pytest.mark.parametrize("cap", [0, 1234])
-def test_output_cap_reaches_provider_only_when_explicit(planner: bool, cap: int) -> None:
-    config = LMProviderConfig(
-        provider="vllm", model="granite-4.2-30b", max_tokens=cap, planner_max_tokens=cap
-    )
-    lm = (create_planner_lm if planner else create_lm)(config)
+def test_output_cap_reaches_provider_only_when_explicit(cap: int) -> None:
+    config = LMProviderConfig(provider="vllm", model="granite-4.2-30b", max_tokens=cap)
+    lm = create_lm(config)
     if cap:
         assert lm.kwargs["max_tokens"] == cap
     else:
         assert "max_tokens" not in lm.kwargs
         assert "max_completion_tokens" not in lm.kwargs
-
-
-def test_explicit_zero_planner_cap_differs_from_absent_planner_cap() -> None:
-    omitted = LMProviderConfig(
-        provider="vllm", model="granite", max_tokens=1234, planner_max_tokens=0
-    )
-    inherited = LMProviderConfig(provider="vllm", model="granite", max_tokens=1234)
-    omitted_lm = create_planner_lm(omitted)
-    inherited_lm = create_planner_lm(inherited)
-    assert "max_tokens" not in omitted_lm.kwargs
-    assert inherited_lm.kwargs["max_tokens"] == 1234
-    assert omitted_lm._clio_provider_config.max_tokens == 0
-    assert inherited_lm._clio_provider_config.max_tokens == 1234
 
 
 def test_length_finish_is_an_explicit_failure() -> None:
@@ -111,10 +95,9 @@ def test_unresolved_vllm_model_fails_before_transport() -> None:
         create_lm(LMProviderConfig(provider="vllm", model=""))
 
 
-@pytest.mark.parametrize("field", ["max_tokens", "planner_max_tokens"])
-def test_negative_output_caps_are_invalid(field: str) -> None:
+def test_negative_output_cap_is_invalid() -> None:
     with pytest.raises(ValueError, match="must be non-negative"):
-        LMProviderConfig(provider="vllm", model="granite", **{field: -1})
+        LMProviderConfig(provider="vllm", model="granite", max_tokens=-1)
 
 
 @pytest.mark.parametrize("cap", [0, 1234])

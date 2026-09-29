@@ -172,14 +172,9 @@ def _prediction_summary(pred: Any) -> dict[str, Any]:
         "file_diffs": wire_value(getattr(pred, "file_diffs", None) or [], mode="gact_runtime"),
         "error_info": wire_value(getattr(pred, "error_info", None), mode="gact_runtime"),
     }
-    # Full capture (durable trace): the dspy ReAct trajectory and the extract's
-    # chain-of-thought reasoning. These are in SENSITIVE_KEYS, so the SSE
-    # projection strips them while the canonical trace keeps them for debugging
-    # and (later) re-extract repair. Only attach when present to keep the
-    # routing/predict payloads lean.
-    trajectory = getattr(pred, "trajectory", None)
-    if trajectory:
-        summary["trajectory"] = wire_value(trajectory, mode="gact_runtime")
+    # Full capture (durable trace): a ChainOfThought prediction's reasoning. It is
+    # in SENSITIVE_KEYS, so the SSE projection strips it while the canonical trace
+    # keeps it. Only attached when present to keep the payloads lean.
     reasoning = getattr(pred, "reasoning", None)
     if reasoning:
         summary["reasoning"] = str(reasoning)

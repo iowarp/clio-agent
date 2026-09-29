@@ -16,6 +16,7 @@ from clio_agent.gact.expert_packs import (
     validate_expert_hierarchy,
 )
 from clio_agent.gact.types import AgentDef
+from tests._harness import runner_module_builder
 
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
 # test's ``build_app(agent=...)`` host fake.
@@ -789,9 +790,8 @@ def test_expert_pack_agent_can_be_selected_and_executed(
     from .conftest import complete_turn
 
     calls: list[tuple[str, str, str]] = []
-    module = object()
 
-    def fake_module(base_agent: Any, agent_def: Any) -> object:
+    def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
         del base_agent
         assert agent_def.id == "csv_quality"
         assert agent_def.source == "expert_pack"
@@ -800,24 +800,6 @@ def test_expert_pack_agent_can_be_selected_and_executed(
         # loads the installed default-registry snapshot's "analysis" row).
         assert agent_def.parent_id == "main"
         assert agent_def.prompt_profile == "light"
-        return module
-
-    async def fake_stream_unavailable(
-        app: Any,
-        enriched_text: str,
-        sid: str,
-        emit_chunk: Any,
-        **kwargs: Any,
-    ) -> None:
-        del enriched_text, emit_chunk
-        assert kwargs["agent_override"] is module
-        from clio_agent.gact.app import _record_stream_fallback
-
-        _record_stream_fallback(app, sid, "dynamic_prompt_stream_unavailable")
-        return None
-
-    def fake_prompt_agent(base_agent: Any, agent_def: Any, question: str, session_id: str) -> Any:
-        del base_agent
         calls.append((agent_def.id, question, session_id))
         return type(
             "Pred",
@@ -829,9 +811,10 @@ def test_expert_pack_agent_can_be_selected_and_executed(
             },
         )()
 
-    monkeypatch.setattr("clio_agent.gact.app._build_prompt_user_agent_module", fake_module)
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_stream_unavailable)
-    monkeypatch.setattr("clio_agent.gact.app._run_prompt_user_agent", fake_prompt_agent)
+    monkeypatch.setattr(
+        "clio_agent.gact.app._build_prompt_user_agent_module",
+        runner_module_builder(fake_prompt_agent),
+    )
 
     root = isolated_env / ".clio" / "experts"
     root.mkdir(parents=True)
@@ -869,7 +852,7 @@ Check CSV schemas and quality.
     ]
     assert len(routing_events) == 1
     assert routing_events[0].payload["payload"]["selected_agent"] == "csv_quality"
-    assert assistant["metadata"]["stream_fallback"]["reason"] == "dynamic_prompt_stream_unavailable"
+    assert assistant["metadata"]["stream_fallback"]["reason"] == "sync_execution_path"
 
 
 def test_prompt_agent_passes_through_empty_answer(

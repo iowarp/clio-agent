@@ -8,13 +8,15 @@ Two units:
   window -- not the 1800s ceiling.
 - ``IOLoggingLM._clio_streamed_call`` drives a call streamed (drain-and-discard each
   chunk -> ``note_lm_activity``) while ``aforward`` assembles the authoritative
-  result. Real LM errors propagate; the result shape is unchanged.
+  result. Real LM errors propagate as themselves; the call is one provider call
+  with one ``lm.call`` log, never re-issued blocking.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+import dspy
 import pytest
 
 from clio_agent import config as cfg
@@ -261,7 +263,7 @@ def test_streamed_call_drains_chunks_and_returns_result(monkeypatch):
     activity: list[int] = []
     monkeypatch.setattr(lm_activity, "note_lm_activity", lambda: activity.append(1))
 
-    # Patch acall (the @with_callbacks-wrapped streaming entry the driver calls):
+    # Patch dspy.LM.acall (the @with_callbacks-wrapped entry the streamed call awaits):
     # stream N chunks via send_stream, return the assembled outputs.
     async def fake_acall(self, prompt=None, messages=None, **kwargs):  # noqa: ANN001
         send = dspy.settings.send_stream
@@ -269,7 +271,7 @@ def test_streamed_call_drains_chunks_and_returns_result(monkeypatch):
             await send.send(f"chunk{i}")
         return ["ASSEMBLED-RESULT"]
 
-    monkeypatch.setattr(type(lm), "acall", fake_acall, raising=False)
+    monkeypatch.setattr(dspy.LM, "acall", fake_acall)
 
     out = lm._clio_streamed_call(messages=[{"role": "user", "content": "hi"}])
     assert out == ["ASSEMBLED-RESULT"]
@@ -312,7 +314,7 @@ def test_streamed_call_surfaces_provider_reasoning_before_contract_fields(
         )
         return ["ASSEMBLED-RESULT"]
 
-    monkeypatch.setattr(type(lm), "acall", fake_acall, raising=False)
+    monkeypatch.setattr(dspy.LM, "acall", fake_acall)
 
     assert lm._clio_streamed_call(messages=[{"role": "user", "content": "hi"}]) == [
         "ASSEMBLED-RESULT"
@@ -350,7 +352,7 @@ def test_generic_stream_bridge_leaves_sdk_provider_reasoning_unchanged(
         )
         return ["ASSEMBLED-RESULT"]
 
-    monkeypatch.setattr(type(lm), "acall", fake_acall, raising=False)
+    monkeypatch.setattr(dspy.LM, "acall", fake_acall)
     lm._clio_streamed_call(messages=[{"role": "user", "content": "hi"}])
     assert provider_thinking == []
 
@@ -361,7 +363,7 @@ def test_streamed_call_propagates_lm_error(monkeypatch):
     async def boom_acall(self, prompt=None, messages=None, **kwargs):  # noqa: ANN001
         raise ValueError("provider exploded")
 
-    monkeypatch.setattr(type(lm), "acall", boom_acall, raising=False)
+    monkeypatch.setattr(dspy.LM, "acall", boom_acall)
 
     # A real LM error must propagate (the repair loop owns it), NOT be swallowed
     # into a silent fallback that would double-call the provider.
@@ -714,21 +716,77 @@ def test_process_completion_no_fallback_without_reasoning(monkeypatch):
     assert out[1]["text"] == ""
 
 
-def test_streamed_call_falls_back_when_plumbing_missing(monkeypatch):
+def _count_provider_calls(
+    monkeypatch: pytest.MonkeyPatch, lm: Any, error: Exception | None
+) -> dict[str, int]:
+    """Count provider calls (``dspy.LM.acall``), blocking calls and ``lm.call`` logs.
+
+    ``dspy.LM.acall`` is the provider call the streamed path awaits (through the
+    IOLoggingLM ``_clio_ainvoke_once`` whose ``finally`` logs it); ``dspy.LM.__call__`` is
+    the blocking path, which a streamed call must never re-issue.
+    """
+    import dspy
+
+    counts = {"provider": 0, "blocking": 0, "lm_call": 0}
+
+    async def fake_acall(self: Any, prompt: Any = None, messages: Any = None, **kwargs: Any) -> Any:
+        del self, prompt, messages, kwargs
+        counts["provider"] += 1
+        await dspy.settings.send_stream.send("chunk")
+        if error is not None:
+            raise error
+        return ["STREAMED"]
+
+    def fake_blocking(self: Any, *args: Any, **kwargs: Any) -> Any:
+        del self, args, kwargs
+        counts["blocking"] += 1
+        return ["BLOCKING"]
+
+    monkeypatch.setattr(dspy.LM, "acall", fake_acall)
+    monkeypatch.setattr(dspy.LM, "__call__", fake_blocking)
+    monkeypatch.setattr(
+        type(lm),
+        "_clio_log_last_call",
+        lambda self: counts.__setitem__("lm_call", counts["lm_call"] + 1),
+    )
+    monkeypatch.setattr(lm_activity, "note_lm_activity", lambda: None)
+    return counts
+
+
+def test_a_streamed_call_is_one_provider_call_and_one_lm_call(monkeypatch):
+    monkeypatch.delenv("CLIO_LM_TOKEN_LIVENESS", raising=False)
     lm = cfg._io_logging_lm_cls()(model="openai/dummy")
+    counts = _count_provider_calls(monkeypatch, lm, None)
 
-    # Simulate anyio unavailable -> _StreamingPlumbingError so __call__ can fall
-    # back to the blocking path.
-    import builtins
+    assert lm(messages=[{"role": "user", "content": "hi"}]) == ["STREAMED"]
+    assert counts == {"provider": 1, "blocking": 0, "lm_call": 1}
 
-    real_import = builtins.__import__
 
-    def fake_import(name, *args, **kwargs):
-        if name == "anyio":
-            raise ImportError("no anyio")
-        return real_import(name, *args, **kwargs)
+def test_a_failed_streamed_call_is_never_reissued_blocking(monkeypatch):
+    """A streaming failure is the call's failure: no blocking second call."""
+    monkeypatch.delenv("CLIO_LM_TOKEN_LIVENESS", raising=False)
+    lm = cfg._io_logging_lm_cls()(model="openai/dummy")
+    counts = _count_provider_calls(monkeypatch, lm, ValueError("typed output unparseable"))
 
-    monkeypatch.setattr(builtins, "__import__", fake_import)
+    with pytest.raises(ValueError, match="typed output unparseable"):
+        lm(messages=[{"role": "user", "content": "hi"}])
+    assert counts == {"provider": 1, "blocking": 0, "lm_call": 1}
 
-    with pytest.raises(cfg._StreamingPlumbingError):
-        lm._clio_streamed_call(messages=[{"role": "user", "content": "hi"}])
+
+def test_a_transient_streamed_failure_retries_exactly_the_configured_attempts(monkeypatch):
+    """One retry loop: ``retries=2`` is three provider calls and three ``lm.call`` logs.
+
+    The streamed call must not enter the ``acall`` retry loop inside ``__call__``'s own
+    (that nesting made one flaky call nine provider calls).
+    """
+    from clio_agent.lm import io_logging
+
+    monkeypatch.delenv("CLIO_LM_TOKEN_LIVENESS", raising=False)
+    monkeypatch.setattr(io_logging, "_lm_transient_retries", lambda: 2)
+    monkeypatch.setattr(io_logging, "_lm_transient_backoff_s", lambda: 0.0)
+    lm = cfg._io_logging_lm_cls()(model="openai/dummy")
+    counts = _count_provider_calls(monkeypatch, lm, ConnectionError("Connection reset by peer"))
+
+    with pytest.raises(ConnectionError):
+        lm(messages=[{"role": "user", "content": "hi"}])
+    assert counts == {"provider": 3, "blocking": 0, "lm_call": 3}

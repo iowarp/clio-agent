@@ -1,4 +1,4 @@
-"""Direct-response contract for tool-free ReActV2 model output."""
+"""Direct-response contract for tool-free ``ClioReAct`` model output."""
 
 from __future__ import annotations
 
@@ -7,11 +7,11 @@ from typing import Any
 import dspy
 import pytest
 
-from clio_agent.gact.agents.reactv2 import retaining_reactv2_cls
+from clio_agent.gact.agents.clio_react import ClioReAct
 
 
-def _agent(*, max_iters: int = 0) -> Any:
-    return retaining_reactv2_cls()(
+def _agent(*, max_iters: int = 0) -> ClioReAct:
+    return ClioReAct(
         "question -> answer",
         tools=[dspy.Tool(lambda q: f"result:{q}", name="search")],
         max_iters=max_iters,
@@ -35,7 +35,9 @@ def test_tool_free_prose_is_the_direct_answer_after_one_model_call(
     assert len(calls) == 1
     assert prediction.answer == "Ready."
     assert prediction.termination_reason == "direct_response"
-    assert prediction.history.messages[0]["next_thought"] == "Ready."
+    # the History is the task inputs then one event per step
+    assert prediction.history.messages[0] == {"question": "Reply ready. Do not call tools."}
+    assert prediction.history.messages[1]["next_thought"] == "Ready."
 
 
 def test_blank_tool_free_response_completes_without_resampling(
@@ -69,7 +71,7 @@ def test_model_can_use_a_tool_then_finish_with_plain_prose(
         tool_calls.append(q)
         return "SEARCH_RESULT"
 
-    agent = retaining_reactv2_cls()(
+    agent = ClioReAct(
         "question -> answer",
         tools=[dspy.Tool(search)],
         max_iters=0,

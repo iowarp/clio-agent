@@ -45,86 +45,6 @@ from clio_agent.optimizer.stub import (
 )
 
 _STREAM_FALLBACK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
-    "stream_disabled_guided_output": {
-        "category": "runtime_configuration",
-        "synthetic_posthoc": True,
-        "live_streaming": False,
-        "recovery_actions": ["continue_without_live_streaming"],
-        "description": (
-            "Guided/structured output is enabled; live streaming is disabled "
-            "because the constrained response streams as reasoning_content-only "
-            "deltas. The blocking path recovers it via the completion fallback."
-        ),
-    },
-    "stream_disabled_live_streaming": {
-        "category": "runtime_configuration",
-        "synthetic_posthoc": True,
-        "live_streaming": False,
-        "recovery_actions": ["continue_without_live_streaming"],
-        "description": (
-            "Live streaming is disabled by configuration "
-            "(runtime.live_streaming / CLIO_LIVE_STREAMING=0); the blocking path "
-            "runs instead so reasoning_content-channel answers are recovered and "
-            "no streamify task group can fail. Opt-out for reasoning models whose "
-            "provider streams the answer on the reasoning channel."
-        ),
-    },
-    "streaming_dependency_unavailable": {
-        "category": "runtime_configuration",
-        "synthetic_posthoc": True,
-        "live_streaming": False,
-        "recovery_actions": ["reconfigure", "retry", "continue_without_live_streaming"],
-        "description": "DSPy/LiteLLM streaming dependencies were unavailable.",
-    },
-    "agent_not_available": {
-        "category": "runtime_configuration",
-        "synthetic_posthoc": True,
-        "live_streaming": False,
-        "recovery_actions": ["reconfigure", "retry", "exit"],
-        "description": "No executable agent was configured for the session.",
-    },
-    "agent_not_streamable": {
-        "category": "capability_gap",
-        "synthetic_posthoc": True,
-        "live_streaming": False,
-        "recovery_actions": ["continue_without_live_streaming", "reconfigure"],
-        "description": "The selected agent is not a DSPy module and cannot emit provider-token deltas.",
-    },
-    "stream_setup_failed": {
-        "category": "streaming_incompatibility",
-        "synthetic_posthoc": True,
-        "live_streaming": False,
-        "recovery_actions": ["retry", "reconfigure", "continue_without_live_streaming"],
-        "description": "DSPy stream listener setup failed before user-visible output.",
-    },
-    "stream_failed_before_output": {
-        "category": "provider_streaming_error",
-        "synthetic_posthoc": True,
-        "live_streaming": False,
-        "recovery_actions": ["retry", "reconfigure", "continue_without_live_streaming"],
-        "description": "The live provider stream failed before emitting user-visible output.",
-    },
-    "stream_no_prediction": {
-        "category": "streaming_contract_violation",
-        "synthetic_posthoc": True,
-        "live_streaming": False,
-        "recovery_actions": ["retry", "reconfigure", "exit"],
-        "description": "DSPy streaming ended without a final prediction.",
-    },
-    "stream_completed_without_chunks": {
-        "category": "provider_streaming_limitation",
-        "synthetic_posthoc": True,
-        "live_streaming": False,
-        "recovery_actions": ["continue_without_live_streaming", "reconfigure", "retry"],
-        "description": "DSPy streaming returned a final prediction but no visible token chunks.",
-    },
-    "provider_streaming_unsupported": {
-        "category": "provider_streaming_limitation",
-        "synthetic_posthoc": True,
-        "live_streaming": False,
-        "recovery_actions": ["continue_without_live_streaming", "reconfigure"],
-        "description": "The configured provider does not expose a live streaming contract.",
-    },
     "native_model_inputs_dropped": {
         "category": "capability_gap",
         # The turn still streamed live; what degraded is the INPUT, not the
@@ -147,21 +67,7 @@ _STREAM_FALLBACK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
         "synthetic_posthoc": True,
         "live_streaming": False,
         "recovery_actions": ["continue_without_live_streaming", "reconfigure"],
-        "description": "The turn completed through the synchronous execution path.",
-    },
-    "dynamic_prompt_stream_unavailable": {
-        "category": "capability_gap",
-        "synthetic_posthoc": True,
-        "live_streaming": False,
-        "recovery_actions": ["continue_without_live_streaming", "reconfigure"],
-        "description": "A registered prompt-only agent could not use live streaming.",
-    },
-    "dynamic_tool_stream_unavailable": {
-        "category": "capability_gap",
-        "synthetic_posthoc": True,
-        "live_streaming": False,
-        "recovery_actions": ["continue_without_live_streaming", "reconfigure"],
-        "description": "A registered tool agent could not use live streaming.",
+        "description": "The answer arrived as one batch part: no live answer deltas this turn.",
     },
     MCP_RESULT_DOWNGRADED_TO_COMPLETE: {
         "category": "mcp_result_tolerance",

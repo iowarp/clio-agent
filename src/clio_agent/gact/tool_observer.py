@@ -924,12 +924,7 @@ def _make_tool_observer(app: "FastAPI"):
     return observe
 
 
-_INTERNAL_METADATA_TOOL_NAMES = frozenset(
-    {
-        "clio_prior_workflow_state",
-        "finish",
-    }
-)
+_INTERNAL_METADATA_TOOL_NAMES = frozenset({"finish"})
 
 
 def _tool_metadata_name(row: Mapping[str, Any]) -> str:

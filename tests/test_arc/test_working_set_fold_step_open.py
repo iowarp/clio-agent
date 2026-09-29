@@ -1,6 +1,6 @@
 """The pre-execution ``step_open`` breadcrumb on the crash path (caveat b, §2.8b).
 
-Under the fold, the V2 loop writes its working-set atoms AFTER a step's tools run, so a
+Under the fold, ``ClioReAct`` writes its working-set atoms AFTER a step's tools run, so a
 crash mid-step would leave nothing on the log for that step. The fold emits a
 ``step_open`` breadcrumb BEFORE execution so the step's opening atoms survive a crash.
 The breadcrumb is EXCLUDED from every render (it must not perturb the working set), so
@@ -18,10 +18,10 @@ import dspy
 import pytest
 from dspy.utils.dummies import DummyLM
 
-import clio_agent.gact.agents.runtime as runtime
 from clio_agent.arc.live import _MemoryStore
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.working_set_fold import STEP_OPEN_KIND, FoldingSegmentStore
+from clio_agent.gact.agents import clio_react
 
 from .conftest import live_plane_context
 
@@ -55,13 +55,14 @@ def test_step_open_excluded_from_render_but_on_the_log() -> None:
 
 def test_crash_leaves_step_open(monkeypatch: pytest.MonkeyPatch) -> None:
     """A hard crash mid-step (tool execution raising uncaught) still leaves the step's
-    ``step_open`` breadcrumb on the canonical log, even though the V2 loop's
+    ``step_open`` breadcrumb on the canonical log, even though the loop's
     post-execution working-set atoms never land — the fold's crash-recovery guarantee."""
     session = "so_" + uuid.uuid4().hex[:12]
     arc = ARCMemory(store=_MemoryStore(), working_set_fold=True)
 
-    react_cls = runtime._retaining_react_cls()
-    agent = react_cls("question -> answer", tools=[dspy.Tool(lambda: "ok", name="probe")])
+    agent = clio_react.ClioReAct(
+        "question -> answer", tools=[dspy.Tool(lambda: "ok", name="probe")]
+    )
     lm = DummyLM(
         [
             {
@@ -72,12 +73,12 @@ def test_crash_leaves_step_open(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     # A HARD mid-step failure: tool execution raises uncaught (past the step_open write,
-    # before the post-execution _emit_turn). dspy wraps *tool* errors into observations,
-    # so we fail the execution stage itself to model an un-recovered crash.
-    def _boom(_tool_calls):
+    # before the post-execution step record). The loop turns *tool* errors into
+    # observations, so we fail the execution stage itself to model an un-recovered crash.
+    def _boom(_self: object, _tool_calls: object) -> None:
         raise RuntimeError("execution stage exploded mid-step")
 
-    monkeypatch.setattr(agent, "_execute_tool_calls", _boom)
+    monkeypatch.setattr(clio_react._Loop, "_execute", _boom)
 
     with live_plane_context(arc, session=session, scope=SCOPE):
         with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):

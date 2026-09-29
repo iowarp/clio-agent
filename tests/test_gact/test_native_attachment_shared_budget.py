@@ -6,8 +6,10 @@ running total and check it independently, so an image-heavy step and a PDF
 in the SAME step could each stay under ``resources.native_attachment_total_max_bytes``
 on their own while their SUM exceeded it -- no refusal fired at hydration;
 only the claude_code transport's own later, separate check caught it, and no
-other transport necessarily does. ``reactv2.prepare_history_inputs`` now
-threads one shared mutable running-total box through both hydration calls.
+other transport necessarily does.
+``clio_agent.lm.history_attachments.hydrate_history_attachments`` (what every
+clio adapter runs before formatting history) threads one shared mutable
+running-total box through both hydration calls.
 """
 
 from __future__ import annotations
@@ -22,9 +24,9 @@ import pytest
 from dspy.adapters.types.tool import ToolCallResults, ToolCalls
 from pypdf import PdfWriter
 
-from clio_agent.gact.agents.reactv2 import prepare_history_inputs
 from clio_agent.gact.view_image_tool import build_view_image_tool
 from clio_agent.gact.view_pdf_tool import build_view_pdf_tool
+from clio_agent.lm.history_attachments import hydrate_history_attachments
 from clio_agent.providers.native_attachment_bounds import NativeAttachmentTooLargeError
 from clio_agent.tools.execution import tool_workspace_context
 from tests._config_layer import set_config
@@ -89,7 +91,7 @@ def test_hydration_refuses_when_the_combined_total_exceeds_the_ceiling(tmp_path:
         tool_workspace_context(tmp_path),
         pytest.raises(NativeAttachmentTooLargeError) as exc_info,
     ):
-        prepare_history_inputs(inputs, "history")
+        hydrate_history_attachments(inputs, "history")
 
     assert exc_info.value.reason == "native_attachment_total_too_large"
 
@@ -100,7 +102,7 @@ def test_hydration_permits_the_same_pair_under_a_wide_enough_budget(tmp_path: Pa
     inputs: dict[str, Any] = {"history": history}
 
     with tool_workspace_context(tmp_path):
-        prepare_history_inputs(inputs, "history")
+        hydrate_history_attachments(inputs, "history")
 
     hydrated = inputs["history"].messages[0]["tool_calls"].tool_call_results.tool_call_results
     assert isinstance(hydrated[0].value, dspy.Image)

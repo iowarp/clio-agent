@@ -2,9 +2,8 @@
 
 The acceptance contract is observed at the LM boundary: a ``PromptRecorder``
 captures the exact ``messages`` dspy sends, and the live plane is exercised
-through the REAL retaining react loop (``_RetainingReActV2`` — the only loop
-since v0.8.0; not a stub) driven by a scripted ``DummyLM`` so the loop is
-deterministic.
+through the REAL expert loop (``ClioReAct`` -- not a stub) driven by a scripted
+``DummyLM`` so the loop is deterministic.
 """
 
 from __future__ import annotations
@@ -16,9 +15,9 @@ from typing import Any, Iterator
 import dspy
 import pytest
 
-import clio_agent.gact.app as app
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact import context as ctx
+from clio_agent.gact.agents.clio_react import ClioReAct
 
 
 @pytest.fixture(params=["local", "cte"])
@@ -79,16 +78,10 @@ def live_plane_context(
 
 
 def make_react_agent(tools: list[Any] | None = None) -> Any:
-    """Build a real retaining-react (V2) instance over a trivial signature."""
+    """Build a real ``ClioReAct`` instance over a trivial signature."""
 
     def search(q: str) -> str:
         """A search tool."""
         return "SEARCH_RESULT"
 
-    react_cls = app._retaining_react_cls()
-    return react_cls("question -> answer", tools=tools or [dspy.Tool(search)])
-
-
-# (v0.8.0) The classic byte-equality helpers ``stock_format_trajectory`` /
-# ``expected_trajectory_dict`` died with the classic loop; the V2 references live
-# in tests/test_arc/test_reactv2_wire_byte_equality.py (expected_history_messages).
+    return ClioReAct("question -> answer", tools=tools or [dspy.Tool(search)])

@@ -125,7 +125,6 @@ OK_REFLECTED | artifacts.table_preview_max_rows | src/clio_agent/gact/routes/art
 OK_REFLECTED | artifacts.table_preview_max_source_bytes | src/clio_agent/gact/routes/artifact_table_preview.py:66 | CLIO_ARTIFACTS_TABLE_PREVIEW_MAX_SOURCE_BYTES | Largest CSV artifact the table-preview route will read
 OK_REFLECTED | runtime.capture_reasoning | src/clio_agent/gact/usage.py:34 | CLIO_CAPTURE_REASONING | Whether per-call reasoning/chain-of-thought traces are persisted
 OK_REFLECTED | runtime.environment | src/clio_agent/config.py:536 | CLIO_ENVIRONMENT | Deployment environment label (dev/staging/prod)
-OK_REFLECTED | runtime.live_streaming | src/clio_agent/lm/adapters.py:50 | CLIO_LIVE_STREAMING | Stream top-level GACT turn answer live via dspy.streamify
 OK_REFLECTED | runtime.lm_token_liveness | src/clio_agent/lm/io_logging.py:86 | CLIO_LM_TOKEN_LIVENESS | Stream expert LM calls token-by-token for no-progress watchdog
 OK_REFLECTED | sandbox.enabled | src/clio_agent/runtime/sandbox.py:61 | CLIO_SANDBOX_ENABLED | Whether tool-execution sandboxing/confinement is applied
 OK_REFLECTED | paths.data_dir | src/clio_agent/runtime/status.py:206 | CLIO_DATA_DIR | Base directory for agent's on-disk data (ARC, sessions, etc.)
@@ -157,8 +156,6 @@ OK_UNREFLECTED | lm.api_base | src/clio_agent/config.py:532 | CLIO_LM_API_BASE |
 OK_UNREFLECTED | lm.model | src/clio_agent/config.py:533 | CLIO_LM_MODEL | Pins exact model identifier to use
 OK_UNREFLECTED | lm.max_tokens | src/clio_agent/config.py:582 | CLIO_LM_MAX_TOKENS | Overrides per-reply output token cap
 OK_UNREFLECTED | lm.temperature | src/clio_agent/config.py:570 | CLIO_LM_TEMPERATURE | Sampling temperature for main agentic LM calls
-OK_UNREFLECTED | lm.planner_temperature | src/clio_agent/config.py:573 | CLIO_LM_PLANNER_TEMPERATURE | Sampling temperature for deterministic action-planning calls
-OK_UNREFLECTED | lm.planner_max_tokens | src/clio_agent/config.py:579 | CLIO_LM_PLANNER_MAX_TOKENS | Token cap for lower-temperature planner/routing generations
 OK_UNREFLECTED | lm.top_p | src/clio_agent/config.py:585 | CLIO_LM_TOP_P | OpenAI-standard top-p sampling parameter
 OK_UNREFLECTED | lm.top_k | src/clio_agent/config.py:586 | CLIO_LM_TOP_K | Top-k sampling param via extra_body on llama.cpp/LM Studio
 OK_UNREFLECTED | lm.min_p | src/clio_agent/config.py:587 | CLIO_LM_MIN_P | Min-p sampling param via extra_body on llama.cpp/LM Studio
@@ -263,9 +260,9 @@ HARDCODED | _VERSION_PROBE_TIMEOUT_S | src/clio_agent/runtime/sandbox_codex.py:3
 ## TOTALS
 
 ### Configuration via conf.resolve()
-- OK_REFLECTED (uses conf.resolve + in defaults.yaml): 103 keys
-- OK_UNREFLECTED (uses conf.resolve, NOT in defaults.yaml by design): 50 keys
-- **Subtotal: 153 conf.resolve() calls**
+- OK_REFLECTED (uses conf.resolve + in defaults.yaml): 102 keys
+- OK_UNREFLECTED (uses conf.resolve, NOT in defaults.yaml by design): 48 keys
+- **Subtotal: 150 conf.resolve() calls**
 
 ### Bare os.environ/os.getenv reads
 - ENV_SANCTIONED (deliberately exempted per conf.py lines 40–53): 11 reads

@@ -69,9 +69,7 @@ class _KeystoneProbeAgent(FakeClioAgent):
             step_index=0,
             thought="probe thought",
             reasoning="probe reasoning",
-            tool_name="",
-            tool_args={},
-            observation="",
+            tool_calls=[],
             is_finish=True,
         )
         return super().forward(question, session_id)

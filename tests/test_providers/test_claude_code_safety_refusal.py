@@ -191,10 +191,10 @@ def test_litellm_wrapped_safety_refusal_is_never_classified_transient() -> None:
     assert _is_transient_provider_error(group.exceptions[0]) is False
 
 
-def test_agent_forward_error_info_is_typed_with_request_id_in_details() -> None:
+def test_forward_error_info_is_typed_with_request_id_in_details() -> None:
     from clio_agent.gact.stream_failures import (
         PROVIDER_SAFETY_REFUSAL_REASON,
-        agent_forward_error_info,
+        forward_error_info,
     )
 
     state = SimpleNamespace(
@@ -204,7 +204,7 @@ def test_agent_forward_error_info_is_typed_with_request_id_in_details() -> None:
     )
     group, clean = _litellm_wrapped_safety_refusal()
 
-    info = agent_forward_error_info(state, group)
+    info = forward_error_info(state, group, "")
 
     assert info.error == "provider_error"
     assert info.message == (

@@ -28,9 +28,8 @@ import dspy
 import clio_agent.gact.app as app
 import clio_agent.gact.runtime.context_tokens as context_tokens
 from clio_agent.gact import context as ctx
+from clio_agent.gact.compaction import maybe_autocompact
 from clio_agent.gact.types import Message, Part, Tokens
-
-from .conftest import make_react_agent
 
 SID, SCOPE = "s1", "agentA"
 
@@ -142,9 +141,8 @@ def _patch_prompt_tokens(monkeypatch, prompt_tokens: int) -> None:
 def test_fires_over_threshold(arc, monkeypatch):
     _patch_prompt_tokens(monkeypatch, prompt_tokens=900)  # 900/1000 = 0.90 >= 0.85 default
     _populate(arc)
-    agent = make_react_agent()
     with _full_plane_context(arc, session=SID, scope=SCOPE, window=1000):
-        agent._maybe_autocompact()
+        maybe_autocompact()
     # collapsed to a single summary observation
     assert arc.render_segments_keys(SID, SCOPE) == {"observation_0": "COMPACT_SUMMARY"}
 
@@ -152,17 +150,15 @@ def test_fires_over_threshold(arc, monkeypatch):
 def test_does_not_fire_under_threshold(arc, monkeypatch):
     _patch_prompt_tokens(monkeypatch, prompt_tokens=500)  # 0.50 < 0.85
     _populate(arc)
-    agent = make_react_agent()
     before = arc.render_segments_keys(SID, SCOPE)
     with _full_plane_context(arc, session=SID, scope=SCOPE, window=1000):
-        agent._maybe_autocompact()
+        maybe_autocompact()
     assert arc.render_segments_keys(SID, SCOPE) == before  # untouched
 
 
 def test_session_can_disable_automatic_compaction(arc, monkeypatch):
     _patch_prompt_tokens(monkeypatch, prompt_tokens=900)
     _populate(arc)
-    agent = make_react_agent()
     before = arc.render_segments_keys(SID, SCOPE)
     metadata = {
         "context_preferences": {
@@ -178,7 +174,7 @@ def test_session_can_disable_automatic_compaction(arc, monkeypatch):
         window=1000,
         session_metadata=metadata,
     ):
-        agent._maybe_autocompact()
+        maybe_autocompact()
 
     assert arc.render_segments_keys(SID, SCOPE) == before
 
@@ -187,7 +183,6 @@ def test_session_threshold_overrides_deployment_default(arc, monkeypatch):
     monkeypatch.setenv("CLIO_AUTOCOMPACT_PCT", "0.95")
     _patch_prompt_tokens(monkeypatch, prompt_tokens=600)
     _populate(arc)
-    agent = make_react_agent()
     metadata = {
         "context_preferences": {
             "automatic_compaction": True,
@@ -202,7 +197,7 @@ def test_session_threshold_overrides_deployment_default(arc, monkeypatch):
         window=1000,
         session_metadata=metadata,
     ):
-        agent._maybe_autocompact()
+        maybe_autocompact()
 
     assert arc.render_segments_keys(SID, SCOPE) == {"observation_0": "COMPACT_SUMMARY"}
 
@@ -211,19 +206,17 @@ def test_threshold_is_env_configurable(arc, monkeypatch):
     monkeypatch.setenv("CLIO_AUTOCOMPACT_PCT", "0.50")
     _patch_prompt_tokens(monkeypatch, prompt_tokens=600)  # 0.60 >= 0.50 (would NOT fire at 0.85)
     _populate(arc)
-    agent = make_react_agent()
     with _full_plane_context(arc, session=SID, scope=SCOPE, window=1000):
-        agent._maybe_autocompact()
+        maybe_autocompact()
     assert arc.render_segments_keys(SID, SCOPE) == {"observation_0": "COMPACT_SUMMARY"}
 
 
 def test_disabled_when_window_unknown(arc, monkeypatch):
     _patch_prompt_tokens(monkeypatch, prompt_tokens=9999)  # huge, but window=0 => no denominator
     _populate(arc)
-    agent = make_react_agent()
     before = arc.render_segments_keys(SID, SCOPE)
     with _full_plane_context(arc, session=SID, scope=SCOPE, window=0):
-        agent._maybe_autocompact()
+        maybe_autocompact()
     assert arc.render_segments_keys(SID, SCOPE) == before  # auto-compaction off
 
 
@@ -236,9 +229,8 @@ def test_skips_when_summary_llm_returns_empty(arc, monkeypatch):
 
     _patch_prompt_tokens(monkeypatch, prompt_tokens=900)
     _populate(arc)
-    agent = make_react_agent()
     with _full_plane_context(arc, session=SID, scope=SCOPE, window=1000, summary=""):
-        agent._maybe_autocompact()
+        maybe_autocompact()
     assert arc.render_segments_keys(SID, SCOPE) == {"observation_0": ""}
 
 
@@ -286,12 +278,11 @@ def test_per_expert_independent(arc, monkeypatch):
     _patch_prompt_tokens(monkeypatch, prompt_tokens=900)
     _populate(arc, scope="agentA/hot")
     _populate(arc, scope="agentA/cold")
-    agent = make_react_agent()
     # hot: window 1000 -> 0.90 fires
     with _full_plane_context(arc, session=SID, scope="agentA/hot", window=1000):
-        agent._maybe_autocompact()
+        maybe_autocompact()
     # cold: window 100000 -> 0.009 does not fire
     with _full_plane_context(arc, session=SID, scope="agentA/cold", window=100000):
-        agent._maybe_autocompact()
+        maybe_autocompact()
     assert arc.render_segments_keys(SID, "agentA/hot") == {"observation_0": "COMPACT_SUMMARY"}
     assert "O0" in str(arc.render_segments_keys(SID, "agentA/cold"))  # untouched

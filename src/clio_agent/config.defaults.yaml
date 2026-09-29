@@ -56,11 +56,6 @@ runtime.capture_reasoning: true
 # change to reflect staging/prod for environment-aware logging.
 runtime.environment: "dev"
 
-# CLIO_LIVE_STREAMING  (bool)  <- src/clio_agent/lm/adapters.py
-# Streams the top-level GACT turn's answer live via dspy.streamify instead
-# of blocking; disable per-model if streaming responses break.
-runtime.live_streaming: true
-
 # CLIO_LM_TOKEN_LIVENESS  (bool)  <- src/clio_agent/lm/io_logging.py
 # Streams expert LM calls token-by-token so each token refreshes the no-
 # progress watchdog; disable only if streaming plumbing misbehaves.
@@ -144,16 +139,6 @@ lm.lmstudio_flash_attention: true
 # Pins the exact model identifier to use; set when the provider default
 # model isn't the one you want.
 # lm.model:  # default unset; resolved in code
-
-# CLIO_LM_PLANNER_MAX_TOKENS  (int)  <- src/clio_agent/config.py
-# Token cap for the lower-temperature planner/routing generations; raise if
-# planner JSON output gets truncated.
-# lm.planner_max_tokens:  # default unset; resolved in code
-
-# CLIO_LM_PLANNER_TEMPERATURE  (float)  <- src/clio_agent/config.py
-# Sampling temperature for deterministic action-planning calls (default 0.3,
-# forced 0.0 for local reasoning profiles); lower for determinism.
-# lm.planner_temperature:  # default unset; resolved in code
 
 # CLIO_LM_PRESENCE_PENALTY  (float)  <- src/clio_agent/config.py
 # Sets the OpenAI-standard presence-penalty sampling parameter; tune for

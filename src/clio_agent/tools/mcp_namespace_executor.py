@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from contextlib import suppress
 from typing import Any
@@ -12,7 +13,6 @@ from clio_agent.tools.mcp_task_routing import record_route_healed, resolve_names
 class AsyncNamespacePreparationMixin:
     """Add live namespace merging and persistent connection preparation."""
 
-    _call_lock: Any
     _client: Any
     _closed: bool
     _mcp_tools: dict[str, Any]
@@ -20,6 +20,7 @@ class AsyncNamespacePreparationMixin:
     _namespace_ctxs: dict[str, Any]
     _namespace_direct_routes: dict[str, bool]
     _namespace_heal_attempted: set[str]
+    _namespace_locks: dict[str, Any]
     _namespace_servers: Mapping[str, Any]
 
     async def _connect_namespace(self, namespace: str, proxy: Any) -> Any:
@@ -42,13 +43,12 @@ class AsyncNamespacePreparationMixin:
 
         if self._closed:
             raise RuntimeError("AsyncMCPToolExecutor is closed")
-        if self._client is None or self._call_lock is None:
+        if self._client is None:
             raise RuntimeError("AsyncMCPToolExecutor is not started")
         proxy = self._namespace_servers.get(namespace)
         if proxy is None:
             raise ValueError(f"unknown MCP namespace {namespace!r}")
-        async with self._call_lock:
-            await self._namespace_client(namespace, proxy)
+        await self._namespace_client(namespace, proxy)
 
     def is_namespace_prepared(self, namespace: str) -> bool:
         """Return whether this executor owns a persistent namespace client."""
@@ -56,6 +56,16 @@ class AsyncNamespacePreparationMixin:
         return namespace in self._namespace_clients
 
     async def _namespace_client(self, namespace: str, proxy: Any) -> Any:
+        """Return this namespace's client, connecting / healing it under its own lock.
+
+        Concurrent calls to one namespace share one connect; calls to different
+        namespaces never wait on each other, and no lock is held across a call.
+        """
+        lock = self._namespace_locks.setdefault(namespace, asyncio.Lock())
+        async with lock:
+            return await self._namespace_client_locked(namespace, proxy)
+
+    async def _namespace_client_locked(self, namespace: str, proxy: Any) -> Any:
         """Return this namespace's persistent client, healing a stale proxy route.
 
         #1281 F2 (adversarial review): a namespace connected while capability

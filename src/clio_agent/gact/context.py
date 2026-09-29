@@ -14,8 +14,7 @@ The migration is behavior-preserving. Every transition that used to be a
 single-var ``.set()`` / ``.reset(token)`` -- so nested sets compose and a
 ``reset`` restores the precise prior layer, identical to independent vars whose
 ``.reset`` restores their prior value. The two intentionally-leaking turn vars
-(turn_id / trace_id) and the reassigned-without-reset react trajectory are
-reproduced via tokenless bare sets and a mutable :class:`TrajectoryCell`.
+(turn_id / trace_id) are reproduced via tokenless bare sets.
 """
 
 from __future__ import annotations
@@ -23,21 +22,6 @@ from __future__ import annotations
 import contextvars
 from dataclasses import dataclass, field, replace
 from typing import Any
-
-
-@dataclass
-class TrajectoryCell:
-    """Mutable holder for the in-flight react trajectory.
-
-    the retaining react ``forward`` reassigns the retained trajectory twice within
-    one call (clear -> publish-before-extract) WITHOUT a token reset. A mutable
-    cell reproduces that exactly: ``forward`` mutates ``.value``; readers read
-    ``.value``. Each ``forward`` MUST get a FRESH cell (see
-    :func:`install_trajectory_cell`) so a delegated child never publishes into
-    its parent's cell.
-    """
-
-    value: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -103,7 +87,6 @@ class RuntimeContext:
     blueprint_tool_rows: list[dict[str, Any]] | None = None  # _ACTIVE_BLUEPRINT_TOOL_ROWS
     visible_answer_stream: bool = True
     parent_span_id: str = ""  # _ACTIVE_PARENT_SPAN_ID
-    trajectory_cell: TrajectoryCell | None = None  # _ACTIVE_REACT_TRAJECTORY (via cell)
 
 
 # The single live channel. The default is an immutable FROZEN singleton; safe to
@@ -181,10 +164,8 @@ def react_extract_field_suppressed(kind: str, field: str, *, answer_is_deliverab
     """Whether a ``kind: react`` expert's contract ``field`` is a redundant EXTRACT
     field that must NOT become a visible transcript part (#878).
 
-    Shared by BOTH visible-emit seams (the io_logging live tap
-    ``lm_activity.note_lm_answer_delta`` for nested/synchronous experts, and the
-    ``streamify`` pump ``streaming._emit_visible_chunk`` for a top-level program) so
-    the kind-gate logic lives in exactly one place.
+    Read by the one visible-emit seam (the io_logging live tap
+    ``lm_activity.note_lm_answer_delta``) so the kind-gate logic lives in one place.
 
     A ``kind: react`` expert's visible conversation is its per-step ``next_thought``
     (plus its tool calls). Its final ``ChainOfThought`` EXTRACT emits ``reasoning``
@@ -225,8 +206,8 @@ def run_keyed_scope(scope: str) -> str:
 
     Returns ``f"{scope}#run{n}"`` when a variant try is active (``react_run >= 0``)
     and ``scope`` is non-empty, else ``scope`` unchanged. This is the SINGLE place the
-    per-try discriminator enters a keying plane, so the ARC scope (reactv2_events
-    ``_arc_scope`` / reactv2 ``arc_history_messages``) and the transcript-tap dedup key
+    per-try discriminator enters a keying plane, so the ARC scope
+    (``clio_react_record.arc_scope``) and the transcript-tap dedup key
     (lm_activity ``record_dedup`` write / tool_observer tap read) partition per try in
     lockstep — while ``active_react_scope`` itself stays the bare agent id for every
     attribution reader (#953)."""
@@ -270,12 +251,6 @@ def active_visible_answer_stream() -> bool:
 def active_parent_span_id() -> str:
     """``_ACTIVE_PARENT_SPAN_ID.get()``."""
     return _RUNTIME.get().parent_span_id
-
-
-def active_trajectory() -> dict[str, Any] | None:
-    """``_ACTIVE_REACT_TRAJECTORY.get()`` (via the active cell)."""
-    cell = _RUNTIME.get().trajectory_cell
-    return cell.value if cell is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -455,42 +430,3 @@ def set_parent_span(span_id: str) -> contextvars.Token[RuntimeContext]:
     """Set ``parent_span_id`` (``_ACTIVE_PARENT_SPAN_ID.set``)."""
     cur = _RUNTIME.get()
     return _RUNTIME.set(replace(cur, parent_span_id=span_id))
-
-
-def install_trajectory_cell() -> TrajectoryCell:
-    """Install a FRESH ``TrajectoryCell`` (value=None) as a BARE set, NO token.
-
-    Reproduces ``_ACTIVE_REACT_TRAJECTORY.set(None)`` at the top of
-    the retaining react ``forward`` (a clear with no reset). Each ``forward`` calls
-    this first so a delegated child -- running in its own copied context -- gets
-    its OWN cell and cannot publish into the parent's retained trajectory.
-    Returns the new cell so the caller may keep a direct handle if it wants.
-    """
-    cell = TrajectoryCell(value=None)
-    cur = _RUNTIME.get()
-    _RUNTIME.set(replace(cur, trajectory_cell=cell))
-    return cell
-
-
-def publish_trajectory(value: dict[str, Any] | None) -> None:
-    """Mutate the active cell IN PLACE.
-
-    Reproduces ``_ACTIVE_REACT_TRAJECTORY.set({...})`` (reassignment without a
-    token reset) at the publish-before-extract point. No-op when no cell is
-    installed (mirrors a forward that never installed one).
-    """
-    cell = _RUNTIME.get().trajectory_cell
-    if cell is not None:
-        cell.value = value
-
-
-def install_trajectory(value: dict[str, Any] | None) -> TrajectoryCell:
-    """Install a fresh cell pre-seeded with ``value`` (bare set, NO token).
-
-    Convenience for callers (notably tests of the re-extract path) that need a
-    populated retained trajectory in scope without driving a full ``forward``.
-    """
-    cell = TrajectoryCell(value=value)
-    cur = _RUNTIME.get()
-    _RUNTIME.set(replace(cur, trajectory_cell=cell))
-    return cell

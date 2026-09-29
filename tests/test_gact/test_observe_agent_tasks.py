@@ -199,14 +199,14 @@ def test_cursor_resume_no_repeat_no_gap(tmp_path: Path, monkeypatch) -> None:
             task.child_session_id,
             "react.step.completed",
             summary="step 0",
-            payload={"thought": "look up station", "tool_name": "search"},
+            payload={"thought": "look up station", "tool_calls": [{"name": "search"}]},
         )
         _emit(
             app,
             task.child_session_id,
             "react.step.completed",
             summary="step 1",
-            payload={"thought": "stage csv", "tool_name": "stage"},
+            payload={"thought": "stage csv", "tool_calls": [{"name": "stage"}]},
         )
 
         first = _observe(app, parent, tools, task_ids=[task.task_id], cursor=1)
@@ -222,7 +222,7 @@ def test_cursor_resume_no_repeat_no_gap(tmp_path: Path, monkeypatch) -> None:
             task.child_session_id,
             "react.step.completed",
             summary="step 2",
-            payload={"thought": "download", "tool_name": "get"},
+            payload={"thought": "download", "tool_calls": [{"name": "get"}]},
         )
 
         second = _observe(app, parent, tools, task_ids=[task.task_id], cursor=next_cursor)
@@ -504,7 +504,7 @@ def test_huge_event_text_is_bounded_with_truncation_note(tmp_path: Path, monkeyp
             task.child_session_id,
             "react.step.completed",
             summary="big",
-            payload={"thought": huge, "tool_name": "noop"},
+            payload={"thought": huge, "tool_calls": [{"name": "noop"}]},
         )
         out = _observe(app, parent, tools, task_ids=[task.task_id], cursor=1)
     row = _from_parent(out["tasks"], task.task_id)

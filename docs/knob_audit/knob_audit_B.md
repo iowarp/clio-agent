@@ -139,8 +139,6 @@ OK_REFLECTED | lm.lmstudio_flash_attention | src/clio_agent/gact/routes/provider
 OK_REFLECTED | lm.max_tokens | src/clio_agent/config.py:582 | CLIO_LM_MAX_TOKENS | conf.resolve; documented unset in defaults
 OK_REFLECTED | lm.min_p | src/clio_agent/config.py:587 | CLIO_LM_MIN_P | conf.resolve; documented unset in defaults
 OK_REFLECTED | lm.model | src/clio_agent/config.py:533 | CLIO_LM_MODEL | conf.resolve; documented unset in defaults
-OK_REFLECTED | lm.planner_max_tokens | src/clio_agent/config.py:579 | CLIO_LM_PLANNER_MAX_TOKENS | conf.resolve; documented unset in defaults
-OK_REFLECTED | lm.planner_temperature | src/clio_agent/config.py:573 | CLIO_LM_PLANNER_TEMPERATURE | conf.resolve; documented unset in defaults
 OK_REFLECTED | lm.presence_penalty | src/clio_agent/config.py:588 | CLIO_LM_PRESENCE_PENALTY | conf.resolve; documented unset in defaults
 OK_REFLECTED | lm.provider | src/clio_agent/config.py:529 | CLIO_LM_PROVIDER | conf.resolve; set in defaults ("lm_studio")
 OK_REFLECTED | lm.reasoning_model | src/clio_agent/lm/adapters.py:490 | CLIO_LM_REASONING_MODEL | conf.resolve; documented unset in defaults
@@ -412,12 +410,12 @@ HARDCODED | _MCP_REGISTRY_TTL_S=3600 | src/clio_agent/gact/mcp_apps.py:60 | | TT
 
 | Status | Count |
 |---|---|
-| OK_REFLECTED | 225 |
+| OK_REFLECTED | 223 |
 | OK_UNREFLECTED | 4 |
 | ENV_SANCTIONED | 43 |
 | ENV_BARE | 12 |
 | HARDCODED | 32 |
-| **TOTAL** | **316** |
+| **TOTAL** | **314** |
 
 ---
 

@@ -150,7 +150,6 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_LEDGER_USER_QUESTIONS_HARD` | `gact.ledger_retention.user_questions.hard` | int | `4000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LEDGER_USER_QUESTIONS_MAX` | `gact.ledger_retention.user_questions.max` | int | `2000` | `src/clio_agent/gact/runtime/retention.py` |
 | `CLIO_LIVE_EDGE_STREAMING` | `gact.live_edge_streaming` | bool | `false` | `src/clio_agent/gact/live_edge.py` |
-| `CLIO_LIVE_STREAMING` | `runtime.live_streaming` | bool | `true` | `src/clio_agent/lm/adapters.py` |
 | `CLIO_LMSTUDIO_FLASH_ATTENTION` | `lm.lmstudio_flash_attention` | bool | `true` | `src/clio_agent/gact/routes/providers.py` |
 | `CLIO_LM_API_BASE` | `lm.api_base` | str | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_LM_CONTEXT_WINDOW` | `lm.context_window` | int | `0` | `src/clio_agent/config.py` |
@@ -161,8 +160,6 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_LM_MIN_P` | `lm.min_p` | float | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_LM_MODEL` | `lm.model` | str | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_LM_PARSE_RETRY_ATTEMPTS` | `limits.lm_parse_retry_attempts` | str | _(unset)_ | `src/clio_agent/lm/adapters.py` |
-| `CLIO_LM_PLANNER_MAX_TOKENS` | `lm.planner_max_tokens` | int | _(unset)_ | `src/clio_agent/config.py` |
-| `CLIO_LM_PLANNER_TEMPERATURE` | `lm.planner_temperature` | float | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_LM_PRESENCE_PENALTY` | `lm.presence_penalty` | float | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_LM_PROVIDER` | `lm.provider` | str | `lm_studio` | `src/clio_agent/config.py` |
 | `CLIO_LM_STOP_SEQUENCES` | `lm.stop_sequences` | str | _(unset)_ | `src/clio_agent/lm/request_builder.py` |

@@ -69,7 +69,7 @@ def test_live_plane_on_real_alcf_inference(arc):
 
     # 3. (v0.8.0) The classic single-string byte-equality died with the classic
     # loop; the V2 wire byte-equality is proven in
-    # tests/test_arc/test_reactv2_wire_byte_equality.py.
+    # tests/test_arc/test_clio_react_wire_byte_equality.py.
 
     # 4. The prompt was built FROM ARC — every captured react call's trajectory span
     #    is a prefix-consistent subset of the final ARC render (the loop fed itself

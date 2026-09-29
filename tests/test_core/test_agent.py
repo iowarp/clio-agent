@@ -125,33 +125,24 @@ class TestClioAgent:
         assert agent is not None
         agent.shutdown()
 
-    def test_planner_lm_configured(self):
-        """Test that planner LM is configured separately."""
-        agent = ClioAgent()
-        assert agent._planner_lm is not None
-        agent.shutdown()
-
     def test_rebind_lms_swaps_entire_lm_surface(self):
         """rebind_lms rebuilds the whole LM surface from a new provider config.
 
-        Guards the partial-write regression class: all four LM-surface fields
-        (_provider_config / _main_lm / _planner_lm / _dspy_adapter) must be
+        Guards the partial-write regression class: all three LM-surface fields
+        (_provider_config / _main_lm / _dspy_adapter) must be
         rebuilt together, never a torn subset.
         """
         import dataclasses
 
         agent = ClioAgent()
         before_main = agent._main_lm
-        before_planner = agent._planner_lm
         before_adapter = agent._dspy_adapter
         cfg2 = dataclasses.replace(agent._provider_config, model="rebind-depth-model")
         agent.rebind_lms(cfg2)
         assert agent._provider_config is cfg2
         assert agent._main_lm is not before_main
-        assert agent._planner_lm is not before_planner
         assert agent._dspy_adapter is not before_adapter
         assert "rebind-depth-model" in agent._main_lm.model
-        assert "rebind-depth-model" in agent._planner_lm.model
         agent.shutdown()
 
     def test_lm_studio_explicit_model_skips_model_discovery(self, tmp_path, monkeypatch):
@@ -172,7 +163,7 @@ class TestClioAgent:
 
         try:
             assert agent._provider_config.model == "nemotron-cascade-2-30b-a3b-i1"
-            assert agent._planner_lm.model == "openai/nemotron-cascade-2-30b-a3b-i1"
+            assert agent._main_lm.model == "openai/nemotron-cascade-2-30b-a3b-i1"
         finally:
             agent.shutdown()
 
@@ -186,7 +177,6 @@ class TestClioAgent:
 
         try:
             assert agent._main_lm.model == "openai/ibm/granite-4-h-tiny"
-            assert agent._planner_lm.model == "openai/ibm/granite-4-h-tiny"
             assert agent._dspy_adapter.use_json_adapter_fallback is False
         finally:
             agent.shutdown()

@@ -147,7 +147,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # comment lines explaining why the stamp is deliberately absent here.
     # MERGE (PR #1298 x #1310): 1030 -> 1032. Both campaigns' call-site lines
     # coexist; neither side's additions were dropped.
-    "src/clio_agent/agent.py": 990,  # MCP refresh moved to gact/mcp_gateway_refresh.py; L1: -4 (executor_work_may_continue deleted)
+    "src/clio_agent/agent.py": 988,  # MCP refresh moved to gact/mcp_gateway_refresh.py; L1: -4 (executor_work_may_continue deleted)
     "src/clio_agent/arc/memory.py": 1340,  # #1339: the _events chunk writer cursor moved to arc/lane_chunking.py
     "src/clio_agent/arc/segments.py": 1116,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
@@ -175,27 +175,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # minimized to concise docstrings; the per-op payload passing is irreducible. Ratchet
     # down with the #714/#767 decomposition.
     "src/clio_agent/arc/working_set_fold.py": 919,
-    # #1326: config.py was already 807 lines (7 over the 800 cap) before this
-    # change — unbaselined pre-existing debt. +48 for the four-part fix: (1) a
-    # native_context_window field on LMProviderConfig, (2) the lm.context_window /
-    # CLIO_LM_CONTEXT_WINDOW override resolved in apply_handshake, (3) the
-    # context_window_below_native warning, and (4) the updated load_config_from_env
-    # docstring. The override resolution lives inline in apply_handshake (the one
-    # bind-time site), not a new module, because it is a single conf.resolve call
-    # tightly coupled to the existing window-vs-override decision.
-    # S1b (Codex SDK transport restore): +15 for codex_variant -- a SECOND
-    # transport selector for the codex provider (sdk vs direct), the same shape
-    # as the existing codex_transport field: the Literal field itself, its
-    # __post_init__ validation + default-normalization, and its
-    # lm.codex_variant/CLIO_CODEX_VARIANT env-resolution block in
-    # load_config_from_env. A dataclass field's own validation/env-plumbing has
-    # no owner module to move to; this IS its owner. Ratchet down as config.py's
-    # modular decomposition continues.
-    # P4a (capability records) nets config.py -2 on top of S1b: ratcheted to 855.
-    # P5 (request builder) deletes temperature/supports_vision/max_tokens_default
-    # and the qwen-name profile heuristics (lm/request_builder.py and
-    # lm/dialect_wire.py own the replacement): ratcheted to 827.
-    "src/clio_agent/config.py": 826,
     # #1326: adapters.py was 780 lines (under the 800 cap). +56 for: a new
     # _ContextOverflowError typed exception, a _check_context_overflow pre-flight
     # helper (mirrors the guided path's _bound_guided_output_kwargs shape), pre-
@@ -299,7 +278,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # CLIO_LM_DISABLE_THINKING qwen-output-discipline prompt injection (its
     # forward() block) is deleted -- thinking is now driven per-dialect off
     # the model's own ThinkingSpec, never a global on/off knob.
-    "src/clio_agent/gact/agents/builders.py": 1507,  # L1: -24, the 6 identical cancelled_error_info(..., executor_work_may_continue=False) calls collapsed to one line each
+    "src/clio_agent/gact/agents/builders.py": 1429,  # L1: -24, the 6 identical cancelled_error_info(..., executor_work_may_continue=False) calls collapsed to one line each
     # NEW entry (#1282, C1-S2 D1): crossed the flat 800 cap (797 -> 884) for
     # the #1275 fix's ONE chokepoint. Two pieces: (1) __init__ wraps every
     # tool callable this loop will ever run (MCP-bridged, instrumented
@@ -500,7 +479,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # with develop's activation extraction and provider startup refresh.
     # Ratchet down 2469 -> 2467 (naming reversal): removed the now-unneeded
     # codex->chatgpt boot migration call (the provider id never changed).
-    "src/clio_agent/gact/app.py": 2467,  # L1: -1, the deleted hard_abort_supported/upstream_abort/executor_work_may_continue triad
+    "src/clio_agent/gact/app.py": 2441,  # L1: -1, the deleted hard_abort_supported/upstream_abort/executor_work_may_continue triad
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -686,7 +665,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # P4b adds the 3-line surrogate refusal on the chat-model bind: 1116 -> 1119.
     # 1096 -> 1077 (#1506): duplicated LM-apply failure branches merged; selection persistence lives in gact/providers/selection_store.py.
     # 1077 -> 1076: the Claude Code missing-support status moved to providers/support_restore.py.
-    "src/clio_agent/gact/routes/providers.py": 1076,
+    "src/clio_agent/gact/routes/providers.py": 1075,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (merged to develop with the size check red, baseline 1478 -> actual); ratchet
     # back below the pre-#947 count with the mcp_app_* owner-module split (see the
@@ -755,26 +734,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # mount_failures map (namespace -> typed reason) so the exception itself
     # can name a declared tool's server + reason -- turn.py's except handler
     # is the only reader; the mount decision lives in gact/agents/builders.py.
-    "src/clio_agent/gact/runtime/globals.py": 981,  # blueprint-path arg threading (#1247); L1: -5, executor_work_may_continue param deleted from _cancelled_error_info
-    # PR #1278 re-land: -36. _run_dynamic_agent_compat + its arity probe moved
-    # to the owner module gact/agent_invocation.py (which adds the optional
-    # images slot); kwargs selection extraction lowered this owner further.
-    # AF-IMG (PR #1298): +17 -- the native-model-input gate seam. Injecting
-    # images=[]/files=[] into every streamed forward broke every module whose
-    # forward predates those parameters, on imageless turns too. The predicate,
-    # the kwarg selection and the typed drop record all live in the owner module
-    # gact/native_model_inputs.py; what lands here is its import, one call in the
-    # stream_input literal, one call in the compat shim, and the pop/record
-    # re-export lines the historical `from gact.streaming import ...` seam needs.
-    # #1334: 925 -> 885, the pooled-provider off-loop hop (run_off_loop) replaced
-    # an inline blocking predicate check on the server loop thread.
-    # Ratchet down 885 -> 880: streamed-failure description (ExceptionGroup
-    # unwrap + CLI-provider auth/install classification) moved to the owner
-    # module gact/stream_failures.py.
-    # P5 (model-capabilities request builder): 880 -> 876. _config_is_reasoning_model
-    # now reads config.is_reasoning directly instead of the deleted
-    # clio_agent.config._reasoning_model_capability qwen-name heuristic.
-    "src/clio_agent/gact/streaming.py": 875,
+    "src/clio_agent/gact/runtime/globals.py": 966,  # blueprint-path arg threading (#1247); L1: -5, executor_work_may_continue param deleted from _cancelled_error_info
     # #948 S5: +2 to read the RUN-KEYED tap-dedup bucket under an in-process module
     # variant (context.run_keyed_scope; bare invoking_expert still owns attribution).
     # merge(main->develop): +10 (932 -> 942) integrating main's #964 structured
@@ -805,7 +765,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # wake_on_parent_activity call site right after the tool.call.completed
     # publish (a lazy import + one call). All gating/coalesce/wake logic lives
     # in the owner module gact/spotter_watcher.py.
-    "src/clio_agent/gact/tool_observer.py": 1053,  # L1: -3, executor_work_may_continue deleted from cancellation_metadata
+    "src/clio_agent/gact/tool_observer.py": 1048,  # L1: -3, executor_work_may_continue deleted from cancellation_metadata
     # Collector-collapse work already on this branch grew the file to 1303 (>the
     # recorded 986 baseline) before this entry was updated — pre-existing, not
     # introduced here. P5 (wire semantics): +34 for the waited_tasks union-merge

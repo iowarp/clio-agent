@@ -1,7 +1,7 @@
 """Stateful-delta SDK transport for ``claude_code`` (#901 / #891, the TTFT closer).
 
 Owner module for the *stateful session-delta* half of the ``claude_code`` SDK
-transport — the consumer that dspy ``ReActV2``'s append-only ``dspy.History`` was
+transport — the consumer that the loop's append-only ``dspy.History`` was
 adopted to enable. Kept out of the ``claude_code_litellm`` god-file (#775
 no-accretion): that file only *calls* :func:`resolve_stateful_send` and hands the
 resolved payload / session id to the pooled streaming client
@@ -26,9 +26,9 @@ new content. The delta = the tail of newly-appended messages.
 
 **Scope.** This whole path is inert unless
 a per-forward stateful
-scope token is active (:func:`active_stateful_scope`, set ONLY by the ReActV2 loop's
-``forward``). The classic ReAct path never sets that token, so it is byte-for-byte
-unchanged: it resolves to a full send under a fresh ``session_id`` exactly as before
+scope token is active (:func:`active_stateful_scope`, set ONLY by ``ClioReAct``'s
+``forward``). Outside a loop forward nothing sets that token, so a call is
+a full send under a fresh ``session_id``
 (the byte-equality suites prove it).
 """
 
@@ -117,7 +117,7 @@ def _registry_capacity() -> int:
 
 
 # The process-wide ``claude_code`` registry singleton, registered for scope-end
-# teardown so the ReActV2 loop's one scope releases this leg too.
+# teardown so the loop forward's one scope releases this leg too.
 _REGISTRY = StatefulSessionRegistry(capacity_resolver=_registry_capacity)
 register_scope_registry(_REGISTRY)
 

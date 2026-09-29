@@ -185,28 +185,23 @@ def _lenient_chat_adapter_cls() -> Any:
     from dspy.adapters.utils import parse_value  # noqa: PLC0415
     from dspy.utils.exceptions import AdapterParseError  # noqa: PLC0415
 
-    from clio_agent.gact.agents.reactv2 import HistoryPreparationMixin  # noqa: PLC0415
+    from clio_agent.lm.history_attachments import HistoryAttachmentsMixin  # noqa: PLC0415
 
-    class LenientChatAdapter(HistoryPreparationMixin, dspy.ChatAdapter):  # type: ignore[name-defined]
+    class LenientChatAdapter(HistoryAttachmentsMixin, dspy.ChatAdapter):  # type: ignore[name-defined]
         """ChatAdapter that recovers a structured output field a model emitted as a
         Python constructor-repr (``Model(field=...)``) instead of JSON. The happy
         path is unchanged; recovery only runs when the strict parse fails."""
 
         def format_assistant_message_content(self, signature, message, missing_field_message=None):  # type: ignore[no-untyped-def]
-            """Render NO assistant turn for an output-less history event (#901 S2).
+            """Render NO assistant turn for an output-less history event.
 
-            The #901 append-only wire folds the static task inputs into a HEAD history
-            event; on the loop's first call that head is SYNTHETIC — it carries the inputs
-            but no output fields yet. Stock ``format_conversation_history`` would render a
-            placeholder assistant turn ("Not supplied for this conversation history
-            message.") for it, which is a MOVING message that breaks the append-only
-            prefix (call 1's placeholder ≠ call 2's real assistant turn). Suppressing the
-            assistant turn for a message that carries none of the signature's OUTPUT fields
-            keeps call 1 = ``[system, {head}, {closing}]`` a clean prefix of call 2 — so
-            every non-first call is a stateful delta, not a boundary reset. Only fires for
-            a genuinely output-less message (the synthetic head); every real turn event has
-            ``next_thought`` / ``tool_calls`` and renders verbatim through the stock path,
-            so no visible-lane content is ever dropped.
+            ClioReAct's head event carries the task inputs and tools but no output
+            fields. Stock ``format_conversation_history`` would render a placeholder
+            assistant turn for it ("Not supplied for this conversation history
+            message."); suppressing it keeps every call a strict prefix of the next
+            (``[system, head, closing]`` then ``[system, head, step, ..., closing]``).
+            Every real step event has ``next_thought`` / ``tool_calls`` and renders
+            through the stock path unchanged.
             """
             if not any(name in message for name in signature.output_fields):
                 return ""
@@ -353,18 +348,6 @@ def _lenient_chat_adapter_cls() -> Any:
             assert last_exc is not None
             raise last_exc
 
-    # DSPy's streaming support is gated by an allowlist keyed on the adapter's
-    # CLASS NAME STRING (dspy/streaming/streaming_listener.py: it checks
-    # ``settings.adapter.__class__.__name__ in {"ChatAdapter","XMLAdapter",
-    # "JSONAdapter"}``, NOT isinstance). Our lenient subclass IS a ChatAdapter but
-    # its name ("LenientChatAdapter") isn't in that list, so DSPy raises
-    # "Unsupported adapter for streaming: LenientChatAdapter" the moment a content
-    # chunk streams — which surfaced as nemotron/Sophia's TaskGroup/ExceptionGroup
-    # "live streaming failed before emitting output". Report the name as
-    # "ChatAdapter" so streaming is accepted; isinstance/behavior are unchanged.
-    LenientChatAdapter.__name__ = "ChatAdapter"
-    LenientChatAdapter.__qualname__ = "ChatAdapter"
-
     _LENIENT_CHAT_ADAPTER_CLS = LenientChatAdapter
     return _LENIENT_CHAT_ADAPTER_CLS
 
@@ -405,43 +388,6 @@ def _guided_output_enabled() -> bool:
             return conf.as_bool(os.environ.get("CLIO_LM_GUIDED_OUTPUT", ""))
         except ValueError:
             return False
-
-
-def _live_streaming_enabled() -> bool:
-    """Whether the top-level GACT turn streams the agent's answer live
-    (``dspy.streamify`` in :func:`gact.app._try_streamed_forward`) or runs the
-    canonical BLOCKING path instead.
-
-    Default ON — unchanged behavior for every model that streams cleanly
-    (gpt-oss / gemma / qwopus). The escape hatch exists because some
-    reasoning-model + provider combinations stream their answer entirely on the
-    ``reasoning_content`` delta channel — which DSPy's content-only stream
-    listeners cannot fold into the answer, and which bypasses the
-    ``content←reasoning_content`` recovery in
-    :meth:`IOLoggingLM._process_completion` (that recovery only runs on the
-    blocking path). Symptoms (observed on nvidia/nemotron over ALCF Sophia):
-    an empty answer (``stream_completed_without_chunks`` → ``empty_response``)
-    or a streamify async ``ExceptionGroup`` ("live streaming failed before
-    emitting output"). Disabling live streaming routes such a model through the
-    blocking path, where the reasoning channel is recovered and there is no
-    streamify task group to fail.
-
-    Configurable (``runtime.live_streaming`` / ``CLIO_LIVE_STREAMING``), default
-    ON; opt OUT per grind / per model.
-    """
-    try:
-        from clio_agent import conf  # noqa: PLC0415
-
-        return bool(
-            conf.resolve(
-                "runtime.live_streaming",
-                env="CLIO_LIVE_STREAMING",
-                default=True,
-                cast=conf.as_bool,
-            )
-        )
-    except Exception:  # noqa: BLE001 - never let config break streaming; default on
-        return True
 
 
 def _parse_retry_attempts(config: LMProviderConfig) -> int:
@@ -663,9 +609,9 @@ def _strict_guided_json_adapter_cls() -> Any:
     dspy = _dspy()
     from dspy.utils.exceptions import LMError  # noqa: PLC0415
 
-    from clio_agent.gact.agents.reactv2 import HistoryPreparationMixin  # noqa: PLC0415
+    from clio_agent.lm.history_attachments import HistoryAttachmentsMixin  # noqa: PLC0415
 
-    class StrictGuidedJSONAdapter(HistoryPreparationMixin, dspy.JSONAdapter):  # type: ignore[name-defined]
+    class StrictGuidedJSONAdapter(HistoryAttachmentsMixin, dspy.JSONAdapter):  # type: ignore[name-defined]
         def _call_preprocess(self, lm, lm_kwargs, signature, inputs):  # type: ignore[no-untyped-def]
             processed = super()._call_preprocess(lm, lm_kwargs, signature, inputs)
             # DSPy's JSONAdapter defaults native function calling ON. When the

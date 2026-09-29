@@ -32,13 +32,14 @@ from clio_agent.gact.transcript import (
     TurnTranscript,
 )
 from clio_agent.gact.types import Part
+from tests._harness import emit_live_text, install_scripted_module
 from tests.turn_signals import wait_for_terminal_status
 
 from .conftest import complete_turn
 
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
-# test's ``build_app(agent=...)`` host fake (tests that monkeypatch
-# ``_try_streamed_forward`` are unaffected).
+# test's ``build_app(agent=...)`` host fake (the streamed tests install their own
+# scripted module, which streams through the LM token hooks).
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 
@@ -403,23 +404,30 @@ def test_stream_tap_appends_through_the_ledger(
     streamed part id (fold/reload identity)."""
 
     seen: dict[str, Any] = {}
+    built: dict[str, Any] = {}
 
-    async def fake_streamed_forward(
-        app: Any, enriched_text: str, sid: str, emit_chunk: Any, **kwargs: Any
-    ) -> Any:
-        await emit_chunk("streamed ")
-        transcript = app.state.turn_transcripts.get(sid)
+    def streamed_forward(session_id: str, **kwargs: Any) -> Any:
+        del kwargs
+        app = built["app"]
+        emit_live_text("streamed ")
+        transcript = app.state.turn_transcripts.get(session_id)
         assert transcript is not None
+        # The tap schedules the delta onto the turn loop; wait for the ledger to
+        # open the streamed part before reading it mid-turn.
+        deadline = time.monotonic() + 10.0
+        while transcript.current_stream_part_id is None and time.monotonic() < deadline:
+            time.sleep(0.01)
         seen["mid_turn_alias_is_ledger"] = (
-            app.state.live_assistant_parts[sid] is transcript.live_parts_alias()
+            app.state.live_assistant_parts[session_id] is transcript.live_parts_alias()
         )
         seen["message_id"] = transcript.message_id
         seen["open_part_id"] = transcript.current_stream_part_id
-        await emit_chunk("answer")
+        emit_live_text("answer")
         return _Pred(answer="streamed answer", selected_expert="main")
 
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
-    app = _build(tmp_path, "tap", _Pred)  # agent unused: streamed path intercepts
+    install_scripted_module(monkeypatch, streamed_forward)
+    app = _build(tmp_path, "tap", _Pred)  # agent unused: the scripted module runs
+    built["app"] = app
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "s"}).json()["id"]
         assistant = complete_turn(client, sid, "stream please")
@@ -443,16 +451,17 @@ def test_failed_finalize_still_settles_the_ledger(
     monkeypatch.setattr("clio_agent.gact.app._enrich_cancellation_error_info", _boom)
 
     transcripts: dict[str, Any] = {}
+    built: dict[str, Any] = {}
 
-    async def fake_streamed_forward(
-        app: Any, enriched_text: str, sid: str, emit_chunk: Any, **kwargs: Any
-    ) -> Any:
-        await emit_chunk("partial ")
-        transcripts["turn"] = app.state.turn_transcripts.get(sid)
+    def streamed_forward(session_id: str, **kwargs: Any) -> Any:
+        del kwargs
+        emit_live_text("partial ")
+        transcripts["turn"] = built["app"].state.turn_transcripts.get(session_id)
         return _Pred(answer="partial answer", selected_expert="main")
 
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    install_scripted_module(monkeypatch, streamed_forward)
     app = _build(tmp_path, "envelope", _Pred)
+    built["app"] = app
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "s"}).json()["id"]
         cursor = app.state.bus.latest_event_id(sid)
@@ -474,12 +483,11 @@ def test_failed_finalize_still_settles_the_ledger(
             lambda app, sid, error_info: error_info,
         )
 
-        async def clean_forward(
-            app: Any, enriched_text: str, sid: str, emit_chunk: Any, **kwargs: Any
-        ) -> Any:
+        def clean_forward(**kwargs: Any) -> Any:
+            del kwargs
             return _Pred(answer="recovered", selected_expert="main")
 
-        monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", clean_forward)
+        install_scripted_module(monkeypatch, clean_forward)
         assistant = complete_turn(client, sid, "again")
         assert assistant["stop_reason"] == "end_turn"
         assert app.state.turn_transcripts.get(sid) is None
@@ -497,14 +505,19 @@ def test_late_chunk_after_settle_is_rejected_and_never_repopulates_legacy_dicts(
 
     taps: dict[str, Any] = {}
 
-    async def fake_streamed_forward(
-        app: Any, enriched_text: str, sid: str, emit_chunk: Any, **kwargs: Any
-    ) -> Any:
-        taps["emit"] = emit_chunk
-        await emit_chunk("live ")
+    def streamed_forward(**kwargs: Any) -> Any:
+        del kwargs
+        from clio_agent.runtime import lm_activity
+
+        # The turn's bound chunk publisher: what the LM token tap schedules onto
+        # the turn loop. Kept so the test can call it after the turn settled.
+        emitter = lm_activity._LIVE_CHUNK_EMITTER.get()
+        assert emitter is not None
+        taps["emit"] = emitter[1]
+        emit_live_text("live ")
         return _Pred(answer="live answer", selected_expert="main")
 
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    install_scripted_module(monkeypatch, streamed_forward)
     audits: list[tuple[str, dict[str, Any]]] = []
     monkeypatch.setattr(
         "clio_agent.gact.transcript.stream_audit",

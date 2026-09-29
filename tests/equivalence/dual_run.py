@@ -10,7 +10,7 @@ valid equivalence signal?* (See ``determinism_report``.)
 
 Two real producers are exercised (both are production paths, not stubs):
 
-* the real ARC ReAct loop (``_RetainingReAct`` via the test_arc live-plane helpers)
+* the real ARC ReAct loop (``ClioReAct`` via the test_arc live-plane helpers)
   writes the working-set segments → the **context** and **trace** surfaces;
 * a real gact ``build_app`` turn driven through ``TestClient`` writes the SSE bus +
   the persisted ledger → the **SSE** and **persistence** surfaces.
@@ -100,40 +100,26 @@ class DualRunReport:
 
 
 # --------------------------------------------------------------------------- #
-# ARC ReAct loop capture (context + trace) — the real _RetainingReAct
+# ARC ReAct loop capture (context + trace) — the real ClioReAct
 # --------------------------------------------------------------------------- #
 
 
-def _script_loop(use_v2: bool = True) -> DummyLM:
-    """Scripted LM matching the active loop: one exotic-tool step, then finish.
+def _script_loop() -> DummyLM:
+    """Scripted LM for ``ClioReAct``: one exotic-tool step, then ``submit``.
 
-    The ``probe`` tool returns the exotic observation (caveat a). V2 finishes via the
-    internal ``submit`` tool (no ``extract`` step); classic finishes via ``finish``
-    and a trailing ``extract`` response.
+    The ``probe`` tool returns the exotic observation (caveat a); the loop finishes
+    via the reserved ``submit`` tool (no ``extract`` step).
     """
-
-    if use_v2:
-        return DummyLM(
-            [
-                {
-                    "next_thought": "probe with an exotic tool output",
-                    "tool_calls": {"tool_calls": [{"name": "probe", "args": {}}]},
-                },
-                {
-                    "next_thought": "submit now",
-                    "tool_calls": {"tool_calls": [{"name": "submit", "args": {"answer": "FINAL"}}]},
-                },
-            ]
-        )
     return DummyLM(
         [
             {
                 "next_thought": "probe with an exotic tool output",
-                "next_tool_name": "probe",
-                "next_tool_args": "{}",
+                "tool_calls": {"tool_calls": [{"name": "probe", "args": {}}]},
             },
-            {"next_thought": "done", "next_tool_name": "finish", "next_tool_args": "{}"},
-            {"reasoning": "because", "answer": "FINAL_ANSWER"},
+            {
+                "next_thought": "submit now",
+                "tool_calls": {"tool_calls": [{"name": "submit", "args": {"answer": "FINAL"}}]},
+            },
         ]
     )
 
@@ -143,21 +129,19 @@ def _capture_arc_surfaces(
 ) -> tuple[list[Any], list[Any], list[Any]]:
     """Drive the real ARC ReAct loop; return (context, trace_live, trace_replay_final)."""
 
-    import clio_agent.gact.agents.runtime as runtime
+    from clio_agent.gact.agents.clio_react import ClioReAct
 
     def probe() -> Any:
         """A tool returning an exotic, non-JSON-native observation (caveat a)."""
         return EXOTIC_OBSERVATION
 
-    # V2 is the only expert loop since the v0.8.0 cleanup.
     arc = ARCMemory(
         data_dir=str(tmp_dir / "arc_loop"),
         store=_MemoryStore(),
         working_set_fold=config.working_set_fold,
     )
-    react_cls = runtime._retaining_react_cls()
-    agent = react_cls("question -> answer", tools=[dspy.Tool(probe, name="probe")])
-    lm = _script_loop(use_v2=True)
+    agent = ClioReAct("question -> answer", tools=[dspy.Tool(probe, name="probe")])
+    lm = _script_loop()
     with live_plane_context(arc, session=_SESSION, scope=_SCOPE):
         with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
             try:

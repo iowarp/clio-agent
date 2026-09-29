@@ -78,9 +78,6 @@ class _RebindLMStub:
         self._main_lm = SimpleNamespace(
             model=getattr(cfg, "model", ""), provider=getattr(cfg, "provider", ""), history=[]
         )
-        self._planner_lm = SimpleNamespace(
-            model=getattr(cfg, "model", ""), provider=getattr(cfg, "provider", ""), history=[]
-        )
         self._dspy_adapter = SimpleNamespace(provider=getattr(cfg, "provider", ""))
 
 
@@ -1333,7 +1330,6 @@ def test_put_argonne_omits_client_output_cap_when_omitted(tmp_path: Path, monkey
     monkeypatch.setattr("clio_agent.config._resolve_argonne_api_key", lambda: "token")
     monkeypatch.setattr("clio_agent.config.create_lm", _stub_create_lm)
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda cfg: object())
-    monkeypatch.setattr("clio_agent.config.create_planner_lm", lambda cfg: object())
     _patch_ambient_bind_network(monkeypatch)
 
     app = build_app(sessions_path=tmp_path / "s.json")
@@ -1396,7 +1392,6 @@ def test_put_argonne_preset_id_normalizes_to_runtime_provider_kind(
     monkeypatch.setattr("clio_agent.config._resolve_argonne_api_key", lambda: "token")
     monkeypatch.setattr("clio_agent.config.create_lm", _stub_create_lm)
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda cfg: object())
-    monkeypatch.setattr("clio_agent.config.create_planner_lm", lambda cfg: object())
     _patch_ambient_bind_network(monkeypatch)
 
     app = build_app(sessions_path=tmp_path / "s.json")
@@ -1455,7 +1450,6 @@ def test_put_argonne_ignores_placeholder_api_key(tmp_path: Path, monkeypatch) ->
     monkeypatch.setattr("clio_agent.config._resolve_argonne_api_key", lambda: "fresh-globus-token")
     monkeypatch.setattr("clio_agent.config.create_lm", _stub_create_lm)
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda cfg: object())
-    monkeypatch.setattr("clio_agent.config.create_planner_lm", lambda cfg: object())
     _patch_ambient_bind_network(monkeypatch)
 
     app = build_app(sessions_path=tmp_path / "s.json")
@@ -1483,18 +1477,15 @@ def test_argonne_runtime_refresh_updates_live_lm_kwargs(monkeypatch) -> None:
 
     monkeypatch.setattr("clio_agent.config._resolve_argonne_api_key", lambda: "runtime-token")
     main_lm = SimpleNamespace(kwargs={"api_key": "old-token"})
-    planner_lm = SimpleNamespace(kwargs={"api_key": "old-token"})
     agent = SimpleNamespace(
         _provider_config=SimpleNamespace(provider="argonne", api_key="old-token"),
         _main_lm=main_lm,
-        _planner_lm=planner_lm,
     )
 
     _refresh_argonne_lm_token(agent)
 
     assert agent._provider_config.api_key == "runtime-token"
     assert main_lm.kwargs["api_key"] == "runtime-token"
-    assert planner_lm.kwargs["api_key"] == "runtime-token"
 
 
 def test_put_lm_provider_rejects_invalid_codex_transport(tmp_path: Path, monkeypatch) -> None:
@@ -1901,7 +1892,6 @@ def test_put_lm_provider_applies_lm_studio_context_length(tmp_path: Path, monkey
     monkeypatch.setattr("clio_agent.agent.ClioAgent", _StubAgent)
     monkeypatch.setattr("clio_agent.config.create_lm", lambda cfg: object())
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda cfg: object())
-    monkeypatch.setattr("clio_agent.config.create_planner_lm", lambda cfg: object())
     _patch_ambient_bind_network(monkeypatch)
 
     app = build_app(sessions_path=tmp_path / "s.json")
@@ -1993,7 +1983,6 @@ def test_put_lm_provider_reuses_loaded_lm_studio_model(tmp_path: Path, monkeypat
     monkeypatch.setattr("clio_agent.agent.ClioAgent", _StubAgent)
     monkeypatch.setattr("clio_agent.config.create_lm", lambda cfg: object())
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda cfg: object())
-    monkeypatch.setattr("clio_agent.config.create_planner_lm", lambda cfg: object())
     _patch_ambient_bind_network(monkeypatch)
 
     app = build_app(sessions_path=tmp_path / "s.json")
@@ -2098,7 +2087,6 @@ def test_put_lm_provider_failed_first_connect_restores_env(tmp_path: Path, monke
 
     monkeypatch.setattr("clio_agent.config.create_lm", _fake_lm)
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", _fake_lm)
-    monkeypatch.setattr("clio_agent.config.create_planner_lm", _fake_lm)
     monkeypatch.setattr("clio_agent.agent.ClioAgent", _BoomAgent)
 
     app = build_app(sessions_path=tmp_path / "s.json")
@@ -2165,7 +2153,7 @@ def _make_stub_agent_cls() -> type:
     """A minimal ClioAgent stub whose construction needs no live LM.
 
     Only the ``arc`` surface the bind path touches is provided; the bind rebinds
-    ``_provider_config`` / ``_main_lm`` / ``_planner_lm`` / ``_dspy_adapter`` onto the
+    ``_provider_config`` / ``_main_lm`` / ``_dspy_adapter`` onto the
     instance via ``rebind_lms``.
     """
 
@@ -2198,7 +2186,6 @@ def _stub_lm_bind(monkeypatch) -> None:
         "clio_agent.config.create_lm", lambda cfg: type("LM", (), {"history": []})()
     )
     monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda cfg: object())
-    monkeypatch.setattr("clio_agent.config.create_planner_lm", lambda cfg: object())
 
     async def _no_handshake(ctx: Any, **kwargs: Any) -> Any:
         # No network from a unit test; the bind catches this and keeps the static

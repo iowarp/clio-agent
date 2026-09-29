@@ -95,7 +95,6 @@ from clio_agent.gact.runtime.globals import (  # noqa: E402, F401
     _active_lm_last_reasoning,
     _active_semantic_trace_id,
     _active_semantic_turn_id,
-    _BlueprintTerminalWorkflowState,
     _build_semantic_event,
     _cancelled_error_info,
     _coerce_error_info,
@@ -334,8 +333,6 @@ from clio_agent.gact.agents.runners import (  # noqa: E402
     _run_tool_user_agent,
 )
 from clio_agent.gact.agents.runtime import (  # noqa: E402,F401
-    _prediction_structured_metadata,
-    _retaining_react_cls,
     _summarize_segments_llm,
 )
 from clio_agent.gact.ask_user_tool import restore_pending_ask_user_questions  # noqa: E402
@@ -357,7 +354,6 @@ from clio_agent.gact.delegation import (  # noqa: E402,F401
 from clio_agent.gact.evidence import (  # noqa: E402,F401
     _bounded_tool_call_result,
     _dynamic_agent_runtime_provenance,
-    _extract_tools_called_from_trajectory,
     _is_bounded_tool_result,
     _propose_edit_diffs_from_pred,
     _tool_result_is_error,
@@ -679,38 +675,16 @@ from clio_agent.gact.resident_ledgers import build_resident_ledger_set, seed_met
 from clio_agent.gact.sessions import SessionStore, _default_store_path
 from clio_agent.gact.skills import SkillNotDelegatableError
 
-# Live-streaming + prediction-rendering cluster (#714 decomposition) moved to
-# gact/streaming.py: signature-compatible agent invocation, the DSPy streamify
-# pump + structured fallback ledger, stream-listener binding + streamability
-# gating, chunk/text extraction, and prediction rendering (trajectory / tools /
-# signature docstring). Re-exported here so existing
-# ``from clio_agent.gact.app import <name>`` callers + test seams stay green; in
-# particular the turn path + agents/builders import these via this module, and
-# ``_try_streamed_forward_compat`` resolves ``_try_streamed_forward`` back
-# through this re-export so the ``monkeypatch.setattr(
-# "clio_agent.gact.app._try_streamed_forward", ...)`` test seam keeps working.
+# Prediction rendering + the stream-fallback ledger (gact/streaming.py, #714),
+# re-exported for ``from clio_agent.gact.app import <name>`` callers.
 from clio_agent.gact.streaming import (  # noqa: E402,F401
-    _REASONING_HEARTBEAT_S,
-    _agent_streaming_unsupported_reason,
-    _append_stream_listener,
-    _build_stream_listeners,
-    _chunk_reasoning_text,
-    _chunk_text,
-    _config_is_reasoning_model,
-    _describe_stream_exc,
     _extract_tools_called,
-    _format_react_trajectory,
     _pop_stream_fallback,
     _pop_stream_fallback_notes,
     _record_stream_fallback,
-    _run_dynamic_agent_compat,
     _signature_prompt,
     _stream_fallback_payload,
     _stream_fallback_reasons,
-    _stream_response_prefix,
-    _StreamingOutputError,
-    _try_streamed_forward,
-    _try_streamed_forward_compat,
 )
 
 # gact/tool_observer.py -- tool-observer + live-assistant transcript cluster.
@@ -1002,7 +976,7 @@ async def _construct_agent_async(app: "FastAPI") -> None:
         )
         # Drop the boot env-handoff (design §9 step 9): hand the ONE boot config to
         # ClioAgent instead of letting it read the environment a SECOND time. The
-        # main agent binds ``_main_lm`` / ``_planner_lm`` / ``_dspy_adapter`` off
+        # main agent binds ``_main_lm`` / ``_dspy_adapter`` off
         # this exact config (credential included — the boot/default config is the
         # sanctioned env-credential read, design §6), so a GACT booted purely from
         # ``CLIO_LM_*`` still authenticates.

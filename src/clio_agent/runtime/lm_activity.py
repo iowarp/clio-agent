@@ -126,9 +126,8 @@ def note_suppressed_extract_field(
 ) -> None:
     """Record a ``kind: react`` EXTRACT-field suppression reason (#878).
 
-    Shared by both visible-emit seams (this module's live tap and
-    ``streaming._emit_visible_chunk``) so the no-silent-fallback record is emitted
-    identically wherever a react ``reasoning``/``answer`` field is dropped.
+    Emitted by this module's live tap wherever a react ``reasoning``/``answer``
+    field is dropped, so the suppression is never silent.
     """
     stream_audit(
         "bridge.contract_field",
