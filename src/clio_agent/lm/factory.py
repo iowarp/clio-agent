@@ -61,8 +61,8 @@ def _dspy():
 def _construct_lm(*, model: str, **lm_kwargs: Any) -> dspy.LM:
     """Construct a dspy.LM that emits an ``lm.call`` trace event per call.
 
-    Always uses the trace-emitting subclass so each call folds into the canonical
-    trace when a GACT turn is active; a cheap no-op otherwise (CLI/optimizer).
+    The LM carries the ``lm.call`` callback, so each call folds into the canonical
+    trace when a GACT turn is active (an audit row only otherwise: CLI/optimizer).
     """
     _dspy()  # ensure dspy is importable/configured before constructing the LM
     endpoint = urlparse(str(lm_kwargs.get("api_base") or ""))
@@ -74,7 +74,9 @@ def _construct_lm(*, model: str, **lm_kwargs: Any) -> dspy.LM:
             " <- ".join(frame.name for frame in traceback.extract_stack(limit=8)[:-1]),
         )
     _warn_dropped_params(model=model, kwargs=lm_kwargs)
-    return _io_logging_lm_cls()(model=model, **lm_kwargs)
+    from clio_agent.lm.call_trace import LM_CALL_TRACE  # noqa: PLC0415 - dspy stays lazy
+
+    return _io_logging_lm_cls()(model=model, callbacks=[LM_CALL_TRACE], **lm_kwargs)
 
 
 def create_lm(config: LMProviderConfig) -> dspy.LM:
@@ -172,6 +174,7 @@ def _codex_sdk_lm(config: LMProviderConfig) -> Any:
     """
     import dspy  # noqa: PLC0415
 
+    from clio_agent.lm.call_trace import LM_CALL_TRACE  # noqa: PLC0415
     from clio_agent.lm.io_logging import _lm_transient_retries  # noqa: PLC0415
     from clio_agent.providers.codex.sdk_engine import (  # noqa: PLC0415
         AsyncCodexSDKEngine,
@@ -197,6 +200,7 @@ def _codex_sdk_lm(config: LMProviderConfig) -> Any:
         cache=False,
         num_retries=_lm_transient_retries(),
         model_type="chat",
+        callbacks=[LM_CALL_TRACE],
         **generation,
     )
     lm._clio_tool_result_media = "native"  # the engine sends tool-result images natively

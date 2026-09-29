@@ -81,3 +81,24 @@ def test_an_emit_failure_never_fails_the_call(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(call_trace, "_emit", boom)
     lm, _ = scripted_lm([Reply(text="ok")], callbacks=[LMCallTrace()])
     assert lm(_request(lm, Message.user("q"))).message.parts == (TextPart(text="ok"),)
+
+
+def test_an_async_call_is_recorded_exactly_once(emitted: list[dict[str, Any]]) -> None:
+    import asyncio
+
+    lm, _ = scripted_lm([Reply(text="ok")], callbacks=[LMCallTrace()])
+    asyncio.run(lm.acall(_request(lm, Message.user("q"))))
+    assert [r["content"] for r in emitted] == ["ok"]
+
+
+def test_factory_lms_carry_the_trace() -> None:
+    from clio_agent.config import LMProviderConfig
+    from clio_agent.lm.factory import create_lm
+
+    for config in (
+        LMProviderConfig(provider="lm_studio", model="qwen", api_key="lm-studio"),
+        LMProviderConfig(
+            provider="codex", model="gpt-5.5", api_base="codex://direct", codex_variant="sdk"
+        ),
+    ):
+        assert call_trace.LM_CALL_TRACE in create_lm(config).callbacks

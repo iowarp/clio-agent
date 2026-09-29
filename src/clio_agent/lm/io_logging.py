@@ -14,7 +14,6 @@ from typing import Any
 
 from clio_agent.errors import ProviderError
 from clio_agent.lm.adapters import _guided_output_enabled
-from clio_agent.runtime.stream_audit import stream_audit
 
 _dspy_cache = None
 
@@ -120,20 +119,6 @@ def _shim_lmstudio_response_format(kwargs: dict[str, Any]) -> None:
         }
 
 
-def _kvnorm_response_id(response: Any) -> str:
-    """The provider response id (``chatcmpl-*``) for the kvnorm join, or ``""``.
-
-    Only meaningful when :func:`clio_agent.provenance_config.kvnorm_join_enabled`
-    holds (the ``provenance.kvnorm`` opt-in AND Flowcept configured); the caller
-    gates. Reads litellm's ``ModelResponse.id`` (dict responses supported).
-    """
-
-    rid = getattr(response, "id", None)
-    if rid is None and isinstance(response, dict):
-        rid = response.get("id")
-    return str(rid or "")
-
-
 def _is_transient_provider_error(exc: BaseException) -> bool:
     """True for transient provider/infrastructure failures that a re-issue can heal
     (vs. typed-output/parse errors, which are the repair loop's job, not retried)."""
@@ -225,14 +210,11 @@ def _io_logging_lm_cls() -> Any:
     dspy = _dspy()
 
     class IOLoggingLM(dspy.LM):  # type: ignore[name-defined,misc]
-        """dspy.LM that emits a durable ``lm.call`` trace event per call.
+        """dspy.LM with clio's provider contract on the adapter path.
 
-        Reads ``history[-1]`` after each call (same thread as the call), so it
-        captures the raw ``content`` AND ``reasoning_content`` channels even when
-        the response was truncated or failed downstream parsing -- the one place
-        an expert call's reasoning is reliably visible (expert LMs run in
-        executors the settle path cannot reach). The happy path is unchanged.
-        The canonical trace is the single recorder (no separate JSONL mirror).
+        The LM Studio response_format shim, the bounded transient retry, token
+        streaming for liveness, and the typed truncation error. The ``lm.call``
+        trace is the :data:`clio_agent.lm.call_trace.LM_CALL_TRACE` callback.
         """
 
         def _get_initial_kwargs(
@@ -307,8 +289,8 @@ def _io_logging_lm_cls() -> Any:
             # The async twin of ``__call__`` (#1333). The finalize GOAL judge is
             # awaited on the server loop (``Predict.acall`` -> ``LM.acall``) and must
             # keep the same provider contract: the LM Studio response_format shim,
-            # the bounded transient retry (same markers/backoff, ``asyncio.sleep``),
-            # and exactly one canonical ``lm.call`` trace per call. No streamed
+            # and the bounded transient retry (same markers/backoff,
+            # ``asyncio.sleep``). No streamed
             # branch: ``_clio_can_stream()`` is False under a running loop by
             # construction, so the blocking-equivalent ``super().acall`` is the
             # only path here.
@@ -333,24 +315,17 @@ def _io_logging_lm_cls() -> Any:
             raise last_exc
 
         async def _clio_ainvoke_once(self, prompt=None, messages=None, **kwargs):  # type: ignore[no-untyped-def]
-            try:
-                return await super().acall(prompt=prompt, messages=messages, **kwargs)
-            finally:
-                self._clio_log_last_call()
+            return await super().acall(prompt=prompt, messages=messages, **kwargs)
 
         def _clio_invoke_once(self, prompt=None, messages=None, **kwargs):  # type: ignore[no-untyped-def]
             # Token-streaming liveness: when enabled AND this call is synchronous
             # (outside a running event loop -- the loop's executor-run calls), drive it
             # streamed so each chunk refreshes the no-progress watchdog and reaches the
-            # live text/thinking lanes. The streamed call goes through ``_clio_ainvoke_once``,
-            # whose ``finally`` emits the canonical lm.call -- exactly once per call. A
-            # streaming failure is the call's failure: nothing re-issues it blocking.
+            # live text/thinking lanes. A streaming failure is the call's failure:
+            # nothing re-issues it blocking.
             if _token_liveness_enabled() and self._clio_can_stream():
                 return self._clio_streamed_call(prompt, messages, **kwargs)
-            try:
-                return super().__call__(prompt=prompt, messages=messages, **kwargs)
-            finally:
-                self._clio_log_last_call()
+            return super().__call__(prompt=prompt, messages=messages, **kwargs)
 
         def _process_completion(self, response, merged_kwargs):  # type: ignore[no-untyped-def]
             # Reasoning-model content<-reasoning_content fallback. Reasoning models
@@ -434,8 +409,7 @@ def _io_logging_lm_cls() -> Any:
             SAME processed outputs as the blocking ``__call__`` (``aforward`` +
             ``_process_lm_response``). The inner ``aforward`` assembles the
             authoritative result (litellm ``stream_chunk_builder``) and updates
-            ``self.history`` -- so the shared ``_clio_log_last_call`` finally still
-            emits ``lm.call``.
+            ``self.history``.
 
             Every error propagates as itself; nothing re-issues the call.
 
@@ -569,177 +543,6 @@ def _io_logging_lm_cls() -> Any:
                 return holder.get("result")
 
             return _asyncio.run(_drive())
-
-        @staticmethod
-        def _clio_trace_target() -> Any:
-            """Return the active GACT trace target (app, sid, turn, trace, emit)
-            or None. Lazily imports app to avoid an import cycle; resolves the
-            turn-scoped contextvars copied into the executor running this call."""
-            try:
-                from clio_agent.gact.context import (  # noqa: PLC0415
-                    active_app,
-                    active_session_id,
-                    active_trace_id,
-                    active_turn_id,
-                )
-                from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
-            except Exception:  # noqa: BLE001 - app may be unavailable (CLI/optimizer paths)
-                return None
-            app = active_app()
-            sid = active_session_id()
-            if app is None or not sid:
-                return None
-            return (
-                app,
-                sid,
-                active_turn_id(),
-                active_trace_id(),
-                _emit_semantic_event,
-            )
-
-        def _clio_log_last_call(self) -> None:
-            try:
-                # ONE capture per call. Read ``history[-1]`` exactly once here and
-                # stash the reasoning-channel text on the instance so the ReAct loop
-                # reuses THIS read (``app._active_lm_last_reasoning``) instead of a
-                # second independent ``history[-1]`` read. Done before the trace gate
-                # so the stash is populated for every call (the loop runs inside a
-                # GACT turn; a non-turn call simply emits no ``lm.call``).
-                history = getattr(self, "history", None) or []
-                if not history or not isinstance(history[-1], dict):
-                    return
-                entry = history[-1]
-                response = entry.get("response")
-                content = reasoning = finish = ""
-                choices = getattr(response, "choices", None)
-                if choices is None and isinstance(response, dict):
-                    choices = response.get("choices")
-                if choices:
-                    ch0 = choices[0]
-                    msg = getattr(ch0, "message", None)
-                    if msg is None and isinstance(ch0, dict):
-                        msg = ch0.get("message")
-                    if msg is not None:
-                        content = (
-                            getattr(msg, "content", None)
-                            if not isinstance(msg, dict)
-                            else msg.get("content")
-                        ) or ""
-                        reasoning = (
-                            getattr(msg, "reasoning_content", None)
-                            if not isinstance(msg, dict)
-                            else msg.get("reasoning_content")
-                        ) or ""
-                    finish = (
-                        getattr(ch0, "finish_reason", None)
-                        if not isinstance(ch0, dict)
-                        else ch0.get("finish_reason")
-                    ) or ""
-                # Stash the reasoning from this single read so the react step reuses it.
-                self._clio_last_reasoning = str(reasoning or "").strip()
-                record = {
-                    "model": entry.get("model"),
-                    "messages": entry.get("messages") or entry.get("prompt"),
-                    "content": content,
-                    "content_len": len(str(content)),
-                    "reasoning_content": reasoning,
-                    "reasoning_len": len(str(reasoning)),
-                    "finish_reason": finish,
-                    "usage": entry.get("usage"),
-                    "timestamp": entry.get("timestamp"),
-                }
-                # Stage 3 kvnorm crosslink: the vLLM response id keys this lm.call
-                # to its kv_token_importance record in the fused Flowcept store.
-                from clio_agent.provenance_config import kvnorm_join_enabled  # noqa: PLC0415
-
-                if kvnorm_join_enabled():
-                    record["response_id"] = _kvnorm_response_id(response)
-                try:
-                    from clio_agent.gact.context import (  # noqa: PLC0415
-                        active_session_id,
-                        active_trace_id,
-                        active_turn_id,
-                    )
-
-                    audit_sid = active_session_id()
-                    audit_turn_id = active_turn_id()
-                    audit_trace_id = active_trace_id()
-                except Exception:  # noqa: BLE001 - audit is best-effort
-                    audit_sid = ""
-                    audit_turn_id = ""
-                    audit_trace_id = ""
-                stream_audit(
-                    "provider.batch_response",
-                    provider="dspy_lm",
-                    session_id=audit_sid,
-                    turn_id=audit_turn_id,
-                    trace_id=audit_trace_id,
-                    model=str(record["model"] or ""),
-                    source_channel=(
-                        "content+reasoning_content"
-                        if content and reasoning
-                        else ("reasoning_content" if reasoning else "content")
-                    ),
-                    content_len=len(str(content)),
-                    reasoning_len=len(str(reasoning)),
-                    chunk_len=len(str(content or reasoning)),
-                    finish_reason=finish,
-                    head=str(content or reasoning)[:120],
-                )
-                # No active GACT turn -> nothing to emit (CLI/optimizer paths). The
-                # stash above is still set so a synchronous loop can read it, and the
-                # batch provider audit above still records timing when enabled.
-                target = self._clio_trace_target()
-                if target is None:
-                    return
-                # Emit the canonical trace's DURABLE-ONLY lm.call event: the one
-                # place an expert call's raw messages + reasoning_content are
-                # reliably visible (expert LMs run in executors the settle path
-                # can't reach), captured on the failure path too. detail_level="off"
-                # keeps it off SSE/UI. (Legacy CLIO_LOG_LM_IO JSONL mirror removed --
-                # the canonical trace is the single recorder.)
-                app, sid, turn_id, trace_id, emit = target
-                try:
-                    from clio_agent.arc.loop_guard import on_server_loop  # noqa: PLC0415
-
-                    def _emit_lm_call() -> Any:
-                        return emit(
-                            app,
-                            sid,
-                            "lm.call",
-                            turn_id=turn_id,
-                            trace_id=trace_id,
-                            status="completed",
-                            summary=f"LM call ({record['finish_reason'] or 'ok'}).",
-                            provider={"model_id": str(record["model"] or "")},
-                            payload=record,
-                            detail_level="off",
-                        )
-
-                    if on_server_loop():
-                        # #1334: the finalize GOAL judge takes the async path (LM.acall),
-                        # so this ``finally`` runs ON the server loop and the persist is a
-                        # blocking store RPC. Hand it to the executor: the loop stays live
-                        # and the event still lands (the guard would refuse it here, and
-                        # ARC's record_semantic_event swallows that raise -> lost event).
-                        from clio_agent.gact.off_loop import schedule_off_loop  # noqa: PLC0415
-
-                        schedule_off_loop(_emit_lm_call, label="lm.call")
-                    else:
-                        # No loop, or a PRIVATE one (``_clio_streamed_call``'s
-                        # ``asyncio.run`` on an anyio worker): blocking here blocks only
-                        # this call's own thread, never the server.
-                        _emit_lm_call()
-                except Exception as exc:  # noqa: BLE001 - capture must never fail a call
-                    # NEVER silent: surfaces e.g. the ARC-as-source fail-loud RuntimeError
-                    # (no ARC reachable) without breaking the call.
-                    from clio_agent.runtime import trace  # noqa: PLC0415
-
-                    trace.event("LM-CALL-CAPTURE", "lm.call capture/emit failed: %r", exc)
-            except Exception as exc:  # noqa: BLE001 - logging is best-effort, never fail a call
-                from clio_agent.runtime import trace  # noqa: PLC0415
-
-                trace.event("LM-CALL-CAPTURE", "lm.call logging failed: %r", exc)
 
     _IO_LOGGING_LM_CLS = IOLoggingLM
     return _IO_LOGGING_LM_CLS

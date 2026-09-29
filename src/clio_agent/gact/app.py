@@ -92,7 +92,6 @@ from clio_agent.gact.runtime.globals import (  # noqa: E402, F401
     _ACTIVE_GACT_TURN_ID,
     _PROCESS_ARC,
     ARC_OP_EVENT_TYPE,
-    _active_lm_last_reasoning,
     _active_semantic_trace_id,
     _active_semantic_turn_id,
     _build_semantic_event,

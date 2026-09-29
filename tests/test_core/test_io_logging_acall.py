@@ -132,26 +132,3 @@ def test_acall_does_not_retry_a_litellm_wrapped_claude_code_plan_limit(
     with pytest.raises(RuntimeError):
         asyncio.run(lm.acall(messages=_messages()))
     assert len(lm.async_kwargs) == 1  # never retried -- terminal until the window resets
-
-
-def test_acall_captures_the_lm_call_exactly_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    lm = _spy_lm()
-    captures: list[int] = []
-    monkeypatch.setattr(lm, "_clio_log_last_call", lambda: captures.append(1))
-
-    asyncio.run(lm.acall(messages=_messages()))
-
-    assert captures == [1]
-
-
-def test_acall_captures_the_lm_call_even_when_the_transport_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(io_logging, "_lm_transient_retries", lambda: 0)
-    lm = _spy_lm(failures=[ValueError("boom")])
-    captures: list[int] = []
-    monkeypatch.setattr(lm, "_clio_log_last_call", lambda: captures.append(1))
-
-    with pytest.raises(ValueError):
-        asyncio.run(lm.acall(messages=_messages()))
-    assert captures == [1]

@@ -309,28 +309,6 @@ def test_summarize_ambient_records_and_passes_boot_default(
 
 
 # --------------------------------------------------------------------------- #
-# swept call site: globals._active_lm_last_reasoning
-# --------------------------------------------------------------------------- #
-
-
-def test_active_lm_last_reasoning_bound_vs_ambient(
-    monkeypatch: pytest.MonkeyPatch, session_ctx: Any
-) -> None:
-    from clio_agent.gact.runtime.globals import _active_lm_last_reasoning
-
-    # bound: reads the bound LM's stashed reasoning, no record.
-    with dspy.context(lm=_LM("bound", _clio_last_reasoning="BOUND-COT")):
-        assert _active_lm_last_reasoning() == "BOUND-COT"
-    assert ambient_lm_fallbacks(session_ctx) == {}
-
-    # ambient: reads the boot default's stash AND records.
-    monkeypatch.setitem(main_thread_config, "lm", _LM("boot", _clio_last_reasoning="AMB-COT"))
-    assert _active_lm_last_reasoning() == "AMB-COT"
-    sites = [e["message"] for e in ambient_lm_fallbacks(session_ctx)["sess-1"]]
-    assert "globals._active_lm_last_reasoning" in sites
-
-
-# --------------------------------------------------------------------------- #
 # swept call site: app._current_lm_model_id
 # --------------------------------------------------------------------------- #
 

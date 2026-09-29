@@ -25,9 +25,8 @@ import logging
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any, Optional
 
-# Single source of truth for the reasoning-channel extractor: it already lives in
-# runtime.globals (where _active_lm_last_reasoning consumes it). Reuse it here
-# instead of carrying a second copy.
+# Single source of truth for the reasoning-channel extractor: it lives in
+# runtime.globals. Reuse it here instead of carrying a second copy.
 from clio_agent.gact.runtime.globals import _entry_reasoning_text
 from clio_agent.runtime import trace, turn_lm_ledger
 

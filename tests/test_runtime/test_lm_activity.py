@@ -727,7 +727,7 @@ def _count_provider_calls(
     """
     import dspy
 
-    counts = {"provider": 0, "blocking": 0, "lm_call": 0}
+    counts = {"provider": 0, "blocking": 0}
 
     async def fake_acall(self: Any, prompt: Any = None, messages: Any = None, **kwargs: Any) -> Any:
         del self, prompt, messages, kwargs
@@ -744,22 +744,17 @@ def _count_provider_calls(
 
     monkeypatch.setattr(dspy.LM, "acall", fake_acall)
     monkeypatch.setattr(dspy.LM, "__call__", fake_blocking)
-    monkeypatch.setattr(
-        type(lm),
-        "_clio_log_last_call",
-        lambda self: counts.__setitem__("lm_call", counts["lm_call"] + 1),
-    )
     monkeypatch.setattr(lm_activity, "note_lm_activity", lambda: None)
     return counts
 
 
-def test_a_streamed_call_is_one_provider_call_and_one_lm_call(monkeypatch):
+def test_a_streamed_call_is_one_provider_call(monkeypatch):
     monkeypatch.delenv("CLIO_LM_TOKEN_LIVENESS", raising=False)
     lm = cfg._io_logging_lm_cls()(model="openai/dummy")
     counts = _count_provider_calls(monkeypatch, lm, None)
 
     assert lm(messages=[{"role": "user", "content": "hi"}]) == ["STREAMED"]
-    assert counts == {"provider": 1, "blocking": 0, "lm_call": 1}
+    assert counts == {"provider": 1, "blocking": 0}
 
 
 def test_a_failed_streamed_call_is_never_reissued_blocking(monkeypatch):
@@ -770,7 +765,7 @@ def test_a_failed_streamed_call_is_never_reissued_blocking(monkeypatch):
 
     with pytest.raises(ValueError, match="typed output unparseable"):
         lm(messages=[{"role": "user", "content": "hi"}])
-    assert counts == {"provider": 1, "blocking": 0, "lm_call": 1}
+    assert counts == {"provider": 1, "blocking": 0}
 
 
 def test_a_transient_streamed_failure_retries_exactly_the_configured_attempts(monkeypatch):
@@ -789,4 +784,4 @@ def test_a_transient_streamed_failure_retries_exactly_the_configured_attempts(mo
 
     with pytest.raises(ConnectionError):
         lm(messages=[{"role": "user", "content": "hi"}])
-    assert counts == {"provider": 3, "blocking": 0, "lm_call": 3}
+    assert counts == {"provider": 3, "blocking": 0}

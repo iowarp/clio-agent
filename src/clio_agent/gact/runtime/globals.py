@@ -468,41 +468,6 @@ def _entry_reasoning_text(entry: dict[str, Any]) -> str:
     return "\n".join(p for p in parts if p).strip()
 
 
-def _active_lm_last_reasoning() -> str:
-    """Best-effort: the reasoning-channel text (chain-of-thought) of the most recent
-    call on the active dspy LM — i.e. the call that just produced a ReAct step or the
-    extract. Empty for content-channel models (e.g. gemma, whose reasoning is parsed
-    into ``next_thought``) or when unavailable. MUST be read immediately after the
-    LM call and before any tool runs (a delegation tool runs a child whose LM call
-    would otherwise become ``history[-1]``).
-
-    ONE capture per call: the ``IOLoggingLM`` boundary already reads ``history[-1]``
-    once per call (``config._clio_log_last_call``) and stashes the reasoning on the LM
-    as ``_clio_last_reasoning``. Reuse that read so the same buffer is not parsed a
-    second time. Falls back to a direct ``history[-1]`` read only for an LM that is not
-    our boundary subclass (e.g. a test DummyLM, which carries no reasoning channel)."""
-
-    try:
-        from clio_agent.gact.runtime.ambient_lm import resolve_active_lm  # noqa: PLC0415
-
-        # Inside the expert/main ``dspy.context`` this is the bound profile LM whose
-        # call just ran (the normal path). Outside one it falls through to the boot
-        # default AND records an ``ambient_lm_default`` reason so the miss is
-        # queryable rather than a silent ambient read (#818).
-        lm = resolve_active_lm(site="globals._active_lm_last_reasoning")
-        if lm is None:
-            return ""
-        stashed = getattr(lm, "_clio_last_reasoning", None)
-        if stashed is not None:
-            return str(stashed)
-        history = getattr(lm, "history", None)
-        if history:
-            return _entry_reasoning_text(history[-1])
-    except Exception:  # noqa: BLE001 - capture is best-effort, never break the loop
-        return ""
-    return ""
-
-
 def _emit_react_step_event(
     *,
     expert_id: str,
