@@ -6,6 +6,11 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.4.21] — 2026-09-29
+
+No GACT-contract change. Desktop hotfix release: ships the desktop app 0.11.2.22
+(big screen zoom support and a What's new window after updates).
+
 ## [0.9.4.20] — 2026-09-27
 
 ## [0.9.4.19] — 2026-09-27
