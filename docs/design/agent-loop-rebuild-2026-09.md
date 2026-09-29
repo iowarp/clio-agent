@@ -129,7 +129,9 @@ own live-verification legs and marketplace agents, with the gact-tui UI verified
    steps, input/cached/output tokens, full vs delta sends, one provider thread per conversation.
    Clearly faster, high cached share, no quality regression (eval scores / leg verdicts equal or
    better).
-4. gact-tui web UI verified in a real browser (screenshots/GIF): thinking streams live; tool calls
+4. gact-tui web UI verified in a real browser (screenshots/GIF) — driven with the Claude in Chrome
+   tools against the isolated live instance started with `CLIO_WEB_DIR` pointing at a built
+   gact-tui `web/dist` (served same-origin by `gact/app.py`): thinking streams live; tool calls
    and results render (concurrent too); injections, compaction checkpoints, edits and fixes
    visible as such; a mid-turn steer lands as a user message; cancel stops a running turn
    promptly; reload == live; a multi-turn follow-up reuses prior context without re-sending.
