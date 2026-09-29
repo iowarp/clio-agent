@@ -158,6 +158,15 @@ def test_context_window_exceeded_stops_without_another_call() -> None:
     assert len(engine.requests) == 1
 
 
+def test_an_engines_own_typed_error_reaches_the_turn_as_itself() -> None:
+    from clio_agent.providers.claude_code_plan_limit import ClaudeCodePlanLimitError
+
+    limit = ClaudeCodePlanLimitError("Claude subscription usage limit reached")
+    with pytest.raises(ClaudeCodePlanLimitError) as raised:
+        _run([Reply(raises=limit)], [search])
+    assert raised.value is limit
+
+
 def test_a_truncated_reply_is_a_typed_turn_failure() -> None:
     from clio_agent.lm.io_logging import LMOutputTruncatedError
 

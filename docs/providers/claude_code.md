@@ -3,28 +3,43 @@
 Use your Claude Code subscription as a CLIO LM provider without setting an
 `ANTHROPIC_API_KEY`.
 
-CLIO registers a LiteLLM `CustomLLM`
-(`src/clio_agent/providers/claude_code_litellm.py`) for the
-`claude_code/` model prefix. When `CLIO_LM_PROVIDER=claude_code`, DSPy
-constructs `dspy.LM(model="claude_code/<model>")`, LiteLLM routes that
-call to the custom handler, and the handler drives the Claude Agent SDK
-(`claude_agent_sdk`) through ONE pooled client per GACT session
-(`claude_code_sessions.py`). The SDK is the only transport (the old
-one-`claude -p`-per-call `exec` transport is deleted).
+CLIO runs Claude Code as a DSPy 3.4 engine
+(`src/clio_agent/providers/claude_code_engine.py`). When
+`CLIO_LM_PROVIDER=claude_code`, `create_lm` builds
+`dspy.LM("claude_code/<model>", engine=ClaudeCodeEngine(...),
+async_engine=AsyncClaudeCodeEngine(...))` -- no LiteLLM -- and the engine drives the
+Claude Agent SDK (`claude_agent_sdk`) through ONE pooled client per GACT session
+(`claude_code_sessions.py`).
 
-Claude Code is used only as a model transport: its built-in agent tools are
-disabled, and CLIO's agent loop (`ClioReAct`) and MCP/tool gateway remain the
-only tool execution path.
+Claude Code is used only as a model transport: its built-in agent tools, MCP
+servers, plugins and skills are disabled, and CLIO's agent loop (`ClioReAct`) and
+MCP/tool gateway remain the only tool execution path.
 
-**Stateful sessions.** Inside one agent-loop forward, the transport keeps one
-Claude Code session and sends only the newly appended messages on each
-following call (`claude_code_stateful.py`, sharing the delta detector in
-`stateful_common.py` with the Codex SDK transport); any other call is a full
-send under a fresh session, with a typed reset reason on the
-`provider.stateful` audit row. The session is released when the forward ends.
+**Requests and tools.** The engine takes a typed `dspy.lm15.Request` and returns a
+typed `Response`. The system prompt plus the tool rules and tool list ride
+`ClaudeAgentOptions.system_prompt`; the messages render as text
+(`lm/engines/text_tools.py`), and the model ends a message with one fenced
+`tool_calls` block, which comes back as typed tool calls (an unreadable block is one
+`clio_invalid_tool_calls` call whose observation is the parse error). Images and
+PDFs ride as native content blocks (`claude_code_multimodal.native_blocks`: supported
+media types only, size-bounded, remote image URLs only for allowlisted hosts).
 
-**Streaming.** Text and thinking stream live (`astreaming`) through the LM
-token hooks, so answer deltas arrive with `stream_source="live"`.
+**Stateful sessions.** Inside an agent loop the engine keeps one Claude Code session
+per conversation (GACT session + agent scope, model, cwd, thinking) and sends only
+the messages after what the session already holds, under the same session id. Any
+other call opens a new session and sends in full, with a typed reset reason on the
+`provider.stateful` audit row (`first_call` / `prefix_mismatch` / `ops_reset` /
+`session_evicted` / `provider_error`). A pooled client that is reconnected, reaped,
+released or dies announces the drop synchronously, and that session's conversations
+reset (`session_evicted`) -- a delta never reaches a fresh subprocess. Capacity:
+`providers.claude_code.stateful_capacity` / `CLIO_CLAUDE_CODE_STATEFUL_CAPACITY`.
+
+**Streaming.** Thinking streams as thinking, text streams live up to the tool-call
+block, then the calls and the usage (cache reads and writes included).
+
+**Errors.** A timeout or a dead transport raises a `dspy.lm15` type (DSPy retries it);
+a refused sign-in, a rejected model and an exhausted plan raise clio's typed errors,
+which the agent loop re-raises as themselves.
 
 ## Setup
 
@@ -62,10 +77,6 @@ when you want direct Anthropic API billing with `ANTHROPIC_API_KEY`.
 **Unexpected tool behavior.** The provider disables Claude Code tools.
 If a CLIO turn uses a tool, it should appear in CLIO/GACT tool telemetry,
 not in Claude Code's internal tool system.
-
-**No live streaming.** This provider shells out to `claude -p`, which returns
-a completed JSON result. Use GACT stream metadata to distinguish this
-post-hoc delivery from providers that emit live token chunks.
 
 ## Benchmark Lane
 

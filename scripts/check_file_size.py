@@ -902,40 +902,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # C1-S7 (#1309): +26 (896 -> 922) for four additive, all-Optional
     # attribution/routing wire fields on UserQuestion (audience / answered_by /
     # (types.py's entry retired: 741 lines, back under the flat 800 cap.)
-    # -120 (#891): the SDK-session machinery moved out to sibling owner modules —
-    # the blocking-path pool to providers/claude_code_sdk_pool.py and the per-expert
-    # streaming session/delta transport to providers/claude_code_sessions.py; this
-    # file keeps only the LiteLLM handler + exec/stream plumbing. Ratchet back down
-    # further with the #714/#767 decomposition.
-    # -12: the thinking-channel emission seams (provider-thinking forward + the
-    # provider_thinking_redacted typed reason) moved to their owner module,
-    # providers/claude_code_thinking_split.py.
-    # #1184 / #1211 review A3 (835 -> 861): +26 to classify a definitive
-    # model-rejection (api_error_status==404) on the streaming ResultMessage path
-    # and raise the shared typed litellm.BadRequestError (raise_model_rejected in
-    # _cli_provider.py) instead of a bare ClaudeCodeExecError -- so the account's
-    # rejection reaches the trace/transcript honestly instead of a misleading
-    # LMTransportError, and is never retried as transient.
-    # AF-IMG (PR #1298): 857 -> 855. The duplicated per-call request-trace record
-    # (two near-identical copies that had already drifted) moved to its owner
-    # module providers/claude_code_audit.py as emit_request_trace, which also
-    # paid for the restored module-header rationale and the restored (redacted)
-    # messages record.
-    # #1305: +7 (861 -> 868) to thread gact_session_id through the ONE
-    # entry_for() call site (an import + a one-line comment + the new kwarg,
-    # which pushes the call past the one-line width so ruff format expands it
-    # to one-arg-per-line) so ClaudeStreamClientPool.release_session_resources
-    # can find and deterministically free this scope-keyed connection when the
-    # owning agent task reaches a terminal status. All registry/dispatch logic
-    # lives in the owner modules providers/claude_code_stream_bounds.py and
-    # providers/session_lifecycle.py -- only the threaded kwarg is here.
-    # 862 -> 866 (#1333): acompletion runs the blocking pool bridge off the loop (+1 import,
-    # +2 comment, +1 to_thread call); the bridge itself stays in claude_code_sdk_pool.py.
-    # 866 -> 864 (S2 B2 rework): entry_for()'s call site drops the now-dead
-    # thinking=/system_prompt= peek kwargs (the warm pool they fed is deleted).
-    # 862 -> 838 (#1454): failed-result classification moved to the owner module
-    # providers/claude_code_result_errors.py.
-    "src/clio_agent/providers/claude_code_litellm.py": 838,
+    # (claude_code_litellm.py's entry retired: deleted by the DSPy 3.4 engine port.)
     # (process_census.py's entry retired: 711 lines, back under the flat 800 cap.)
     # NEW entry (#1305 review round): crossed the flat 800 cap (800 -> 825)
     # for the F2/F4/F6b fixes an adversarial review demanded on

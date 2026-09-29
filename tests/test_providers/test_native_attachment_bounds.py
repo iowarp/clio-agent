@@ -5,11 +5,9 @@ from __future__ import annotations
 import base64
 
 import pytest
+from dspy.lm15 import DocumentPart, ImagePart
 
-from clio_agent.providers.claude_code_litellm import (
-    ClaudeCodeUnsupportedMultimodalError,
-    _messages_to_claude_input,
-)
+from clio_agent.providers.claude_code_multimodal import native_blocks
 from clio_agent.providers.native_attachment_bounds import (
     NATIVE_ATTACHMENT_REFUSAL_REASONS,
     NativeAttachmentTooLargeError,
@@ -70,40 +68,16 @@ def test_the_bounds_are_conf_resolved_not_hardcoded() -> None:
 
 def test_claude_refuses_an_oversized_image_before_it_is_expanded() -> None:
     set_config("resources.native_image_max_bytes", 1024)
-    oversized = f"data:image/png;base64,{_b64_of(4096)}"
 
-    with pytest.raises(ClaudeCodeUnsupportedMultimodalError, match="per-image ceiling"):
-        _messages_to_claude_input(
-            [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "look"},
-                        {"type": "image_url", "image_url": {"url": oversized}},
-                    ],
-                }
-            ]
-        )
+    with pytest.raises(NativeAttachmentTooLargeError, match="per-image ceiling"):
+        native_blocks([ImagePart(data=_b64_of(4096), media_type="image/png")])
 
 
 def test_claude_refuses_an_oversized_pdf() -> None:
     set_config("resources.native_document_max_bytes", 512)
-    oversized = f"data:application/pdf;base64,{_b64_of(4096)}"
 
-    with pytest.raises(ClaudeCodeUnsupportedMultimodalError, match="per-document ceiling"):
-        _messages_to_claude_input(
-            [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "file",
-                            "file": {"file_data": oversized, "filename": "paper.pdf"},
-                        }
-                    ],
-                }
-            ]
-        )
+    with pytest.raises(NativeAttachmentTooLargeError, match="per-document ceiling"):
+        native_blocks([DocumentPart(data=_b64_of(4096), media_type="application/pdf")])
 
 
 def test_claude_refuses_individually_legal_attachments_that_sum_past_the_request_bound() -> None:
@@ -111,20 +85,11 @@ def test_claude_refuses_individually_legal_attachments_that_sum_past_the_request
 
     set_config("resources.native_image_max_bytes", 4096)
     set_config("resources.native_attachment_total_max_bytes", 5000)
-    image = f"data:image/png;base64,{_b64_of(3000)}"
+    image = ImagePart(data=_b64_of(3000), media_type="image/png")
 
-    with pytest.raises(ClaudeCodeUnsupportedMultimodalError, match="per-request ceiling"):
-        _messages_to_claude_input(
-            [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image_url", "image_url": {"url": image}},
-                        {"type": "image_url", "image_url": {"url": image}},
-                    ],
-                }
-            ]
-        )
+    native_blocks([image])  # one is within both bounds
+    with pytest.raises(NativeAttachmentTooLargeError, match="per-request ceiling"):
+        native_blocks([image, image])
 
 
 # NOTE (codex migration): the deleted Codex SDK provider's

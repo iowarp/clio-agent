@@ -606,18 +606,21 @@ class TestCreateLM:
         lm_default = create_lm(config_default)
         assert "codex_reasoning_effort" not in lm_default.kwargs
 
-    def test_claude_code_uses_custom_provider_prefix(self):
-        """Claude Code should keep user-facing model ids clean and mark internally."""
+    def test_claude_code_runs_on_the_engine(self):
+        """Claude Code is an engine LM (no LiteLLM route) with a clean model id."""
+        from clio_agent.providers.claude_code_engine import ClaudeCodeEngine
+
         config = LMProviderConfig(provider="claude_code", model="sonnet")
         lm = create_lm(config)
-        assert lm.model == "claude_code/cc-sonnet"
-        assert lm.kwargs["claude_code_transport"] == "sdk"  # sdk is the default
+        assert lm.model == "claude_code/sonnet"
+        assert isinstance(lm._engine_spec, ClaudeCodeEngine)
+        assert not any(k.startswith("claude_code_") for k in lm.kwargs)
 
     def test_claude_code_model_marker_is_not_doubled(self):
         """Claude Code should accept already-prefixed config values idempotently."""
         config = LMProviderConfig(provider="claude_code", model="claude_code/cc-sonnet")
         lm = create_lm(config)
-        assert lm.model == "claude_code/cc-sonnet"
+        assert lm.model == "claude_code/sonnet"
 
     def test_each_provider_returns_lm(self):
         """All providers should produce valid dspy.LM instances."""

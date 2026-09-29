@@ -268,18 +268,15 @@ def sweep_idle_session_entries(
 
 
 def reap_idle_session_entry(session_id: str, entry: "_StreamClientEntry") -> None:
-    """Close ``entry`` (idle-reap) and flag its stateful-delta scope, if any."""
+    """Close ``entry`` (idle-reap), announcing that its SDK conversations are gone."""
     from clio_agent.providers.claude_code_sessions import (  # noqa: PLC0415
-        _note_scope_provider_error,
         stream_audit,
         stream_audit_enabled,
         transport_failure_payload,
     )
 
     model = entry._model or ""  # noqa: SLF001
-    cwd = entry._cwd  # noqa: SLF001
-    thinking_key_ = entry._thinking_key  # noqa: SLF001
-    scope = entry._last_scope  # noqa: SLF001
+    entry.announce_dropped()
     entry.close_nonblocking()
     if stream_audit_enabled():
         stream_audit(
@@ -289,7 +286,6 @@ def reap_idle_session_entry(session_id: str, entry: "_StreamClientEntry") -> Non
             model=model,
             **transport_failure_payload("idle_reaped", f"session={session_id!r} idle-reaped"),
         )
-    _note_scope_provider_error(scope, model=model, cwd=cwd, thinking_key_=thinking_key_)
 
 
 def log_config_change_reconnect(model: str | None, changed_fields: list[str]) -> None:

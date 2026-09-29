@@ -50,6 +50,7 @@ from dspy.lm15 import (
     DocumentPart,
     FunctionTool,
     ImagePart,
+    LM15Error,
     Message,
     Request,
     Response,
@@ -57,7 +58,7 @@ from dspy.lm15 import (
     ThinkingPart,
     ToolCallPart,
 )
-from dspy.utils.exceptions import ContextWindowExceededError
+from dspy.utils.exceptions import ContextWindowExceededError, LMUnexpectedError
 
 from clio_agent.errors import ClioError, MCPProtocolError
 from clio_agent.gact.agents import clio_react_record as record
@@ -464,17 +465,28 @@ def _call_lm(lm: Any, request: Request) -> Response:
                     await send.aclose()
         except BaseExceptionGroup as group_error:
             # The task group wraps the call's own error; the caller handles it typed.
-            raise _sole(group_error) from None
+            # (Not ``from None``: that would erase the leaf's own ``__cause__``.)
+            leaf = _sole(group_error)
+            leaf.__suppress_context__ = True
+            raise leaf  # noqa: B904 - the leaf keeps its own cause chain
         assert response is not None
         return response
 
     try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(run())
-    # A caller already inside a running loop: run the call on a helper thread.
-    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="clio-lm") as pool:
-        return pool.submit(contextvars.copy_context().run, asyncio.run, run()).result()
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(run())
+        # A caller already inside a running loop: run the call on a helper thread.
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="clio-lm") as pool:
+            return pool.submit(contextvars.copy_context().run, asyncio.run, run()).result()
+    except LMUnexpectedError as exc:
+        # DSPy wraps an engine's own typed error (a refused sign-in, an exhausted plan,
+        # a Codex SDK failure) as unexpected; the turn classifies the original.
+        cause = exc.__cause__
+        if isinstance(cause, Exception) and not isinstance(cause, LM15Error):
+            raise cause from exc
+        raise
 
 
 def _sole(group: BaseExceptionGroup) -> BaseException:

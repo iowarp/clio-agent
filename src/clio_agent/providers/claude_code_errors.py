@@ -17,6 +17,10 @@ CLAUDE_CODE_SIGNED_OUT_MESSAGE = (
 )
 
 
+class ClaudeCodeCLIUnavailableError(RuntimeError):
+    """The Claude Agent SDK (or its bundled CLI) is not available on this agent."""
+
+
 class ClaudeCodeSignedOutError(RuntimeError):
     """The Claude subscription refused the credential (signed out, expired, revoked).
 

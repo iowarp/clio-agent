@@ -97,6 +97,8 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     """
     if config.provider == "codex" and config.codex_variant == "sdk":
         return _record_identity(_codex_sdk_lm(config), config)
+    if config.provider == "claude_code":
+        return _record_identity(_claude_code_lm(config), config)
     # Defer litellm's eager ~40 MB cl100k_base tiktoken load until first real
     # encode (see lm.lazy_tiktoken). MUST run before the provider import below,
     # which is the first ``import litellm`` in the server. Config-gated so an
@@ -165,6 +167,51 @@ def _record_identity(lm: Any, config: LMProviderConfig) -> Any:
     return lm
 
 
+def _claude_code_bare_model(config: LMProviderConfig) -> str:
+    """The Claude Code model id without any transport prefix a persisted value carries."""
+    return config.model.removeprefix("claude_code/").removeprefix("cc-")
+
+
+def _claude_code_lm(config: LMProviderConfig) -> Any:
+    """Claude Code: a ``dspy.LM`` on the Claude Code SDK engine pair.
+
+    The thinking config is the engine's (fixed per LM, part of the session key); the
+    remaining generation kwargs stay on the LM for callers that build their
+    ``Request.config`` from them.
+    """
+    import dspy  # noqa: PLC0415
+
+    from clio_agent.lm.call_trace import LM_CALL_TRACE  # noqa: PLC0415
+    from clio_agent.lm.io_logging import _lm_transient_retries  # noqa: PLC0415
+    from clio_agent.providers.claude_code_engine import (  # noqa: PLC0415
+        AsyncClaudeCodeEngine,
+        ClaudeCodeEngine,
+    )
+
+    if not config.model.strip():
+        raise ValueError("No model configured for LM provider 'claude_code'")
+    bare = _claude_code_bare_model(config)
+    extras = build_request_kwargs(config)
+    thinking = extras.pop("claude_code_thinking", None)
+    generation = {
+        k: v for k, v in extras.items() if not k.startswith("claude_code_") and k != "drop_params"
+    }
+    if config.max_tokens:
+        generation["max_tokens"] = config.max_tokens
+    lm = dspy.LM(
+        f"claude_code/{bare}",
+        engine=ClaudeCodeEngine(bare, thinking=thinking),
+        async_engine=AsyncClaudeCodeEngine(bare, thinking=thinking),
+        cache=False,
+        num_retries=_lm_transient_retries(),
+        model_type="chat",
+        callbacks=[LM_CALL_TRACE],
+        **generation,
+    )
+    lm._clio_tool_result_media = "native"  # the engine sends tool-result media natively
+    return lm
+
+
 def _codex_sdk_lm(config: LMProviderConfig) -> Any:
     """The Codex SDK variant: a ``dspy.LM`` on the Codex SDK engine pair.
 
@@ -217,12 +264,6 @@ def _ensure_provider_registered(config: LMProviderConfig) -> None:
     if config.provider == "codex":
         # Direct only: the SDK variant is an engine LM (create_lm returns before this).
         from clio_agent.providers.codex.litellm_adapter import (  # noqa: PLC0415
-            ensure_registered,
-        )
-
-        ensure_registered()
-    elif config.provider == "claude_code":
-        from clio_agent.providers.claude_code_litellm import (  # noqa: PLC0415
             ensure_registered,
         )
 
@@ -310,8 +351,7 @@ def _resolve_model_name(config: LMProviderConfig) -> str:
             return f"{_CODEX_LITELLM_PREFIX_SDK}/{bare}"  # the engine LM's model string
         return f"{_CODEX_LITELLM_PREFIX}/cg-{bare}"
     if config.provider == "claude_code":
-        bare = config.model.removeprefix("claude_code/").removeprefix("cc-")
-        return f"claude_code/cc-{bare}"
+        return f"claude_code/{_claude_code_bare_model(config)}"  # the engine LM's model
     return f"{_resolved_litellm_prefix(config)}/{config.model}"
 
 
@@ -360,15 +400,12 @@ _CHECKED_PARAM_NAMES: tuple[str, ...] = (
 )
 
 #: LiteLLM ``CustomLLM`` transports clio owns end-to-end
-#: (`providers.codex.litellm_adapter`, `providers.claude_code_litellm`). LiteLLM's provider registry does not know
+#: (`providers.codex.litellm_adapter`). LiteLLM's provider registry does not know
 #: these as dialects -- `get_llm_provider`/`get_supported_openai_params` raise
 #: or return nonsense for them -- and their own `completion()` reads a small,
 #: fixed set of `optional_params` keys directly, ignoring everything else. The
 #: drop_params proactive check below does not apply to them.
-_CUSTOM_TRANSPORT_PREFIXES: tuple[str, ...] = (
-    f"{_CODEX_LITELLM_PREFIX}/",
-    "claude_code/",
-)
+_CUSTOM_TRANSPORT_PREFIXES: tuple[str, ...] = (f"{_CODEX_LITELLM_PREFIX}/",)
 
 
 def _warn_dropped_params(*, model: str, kwargs: dict[str, Any]) -> None:

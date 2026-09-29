@@ -28,10 +28,7 @@ import asyncio
 import json
 import tempfile
 import threading
-import uuid
-from collections import OrderedDict
 from collections.abc import AsyncGenerator, AsyncIterator, Iterator
-from dataclasses import dataclass, field
 from typing import Any
 
 from dspy.lm15 import (
@@ -56,6 +53,7 @@ from dspy.lm15 import (
 from dspy.lm15 import TimeoutError as LMTimeoutError
 from openai_codex.types import ReasoningEffort
 
+from clio_agent.lm.engines.conversations import ConversationRegistry, Send, conversation_key
 from clio_agent.lm.engines.text_tools import (
     StreamSplitter,
     render_messages,
@@ -76,144 +74,14 @@ from clio_agent.providers.codex.sdk_client import (
     _item_root,
     _normalize_usage,
 )
-from clio_agent.providers.stateful_common import (
-    active_stateful_scope,
-    register_scope_registry,
-    stateful_reset_payload,
+from clio_agent.providers.native_attachment_bounds import (
+    base64_byte_length,
+    check_block_bytes,
+    check_total_bytes,
 )
+from clio_agent.providers.stateful_common import stateful_reset_payload
 
 __all__ = ["AsyncCodexSDKEngine", "CodexSDKEngine"]
-
-
-# --------------------------------------------------------------------------- #
-# Conversations: what each kept thread already holds                          #
-# --------------------------------------------------------------------------- #
-@dataclass
-class _Conversation:
-    thread_id: str
-    system: str
-    held: tuple[Message, ...]  # the messages the thread was sent
-
-
-@dataclass
-class _Send:
-    """One call's plan: the messages to render and whether it continues a thread."""
-
-    key: tuple[str, ...] | None
-    messages: tuple[Message, ...]
-    thread_id: str | None
-    reason: str | None
-    call_id: str = field(default_factory=lambda: uuid.uuid4().hex)
-
-
-class _Conversations:
-    """Process-wide registry of kept threads (bounded LRU, thread-safe)."""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._live: OrderedDict[tuple[str, ...], _Conversation] = OrderedDict()
-        self._resets: dict[tuple[str, ...], str] = {}
-        self._forward: dict[str, set[tuple[str, ...]]] = {}
-        self._to_archive: list[str] = []
-
-    def plan(self, key: tuple[str, ...] | None, request: Request, system: str) -> _Send:
-        if key is None:
-            return _Send(key=None, messages=request.messages, thread_id=None, reason=None)
-        forward = active_stateful_scope()
-        with self._lock:
-            if forward is not None:
-                self._forward.setdefault(forward, set()).add(key)
-            pending = self._resets.pop(key, None)
-            live = self._live.get(key)
-            if live is None:
-                return _Send(key, request.messages, None, pending or "first_call")
-            new = _new_messages(live, request, system)
-            if pending is not None or new is None:
-                self._drop(key)
-                return _Send(key, request.messages, None, pending or "prefix_mismatch")
-            self._live.move_to_end(key)
-            return _Send(key, new, live.thread_id, None)
-
-    def opened(self, key: tuple[str, ...], thread_id: str, request: Request, system: str) -> None:
-        with self._lock:
-            self._drop(key)
-            self._live[key] = _Conversation(thread_id, system, request.messages)
-            while len(self._live) > _capacity():
-                _old, conversation = self._live.popitem(last=False)
-                self._to_archive.append(conversation.thread_id)
-
-    def continued(self, key: tuple[str, ...], request: Request) -> None:
-        with self._lock:
-            live = self._live.get(key)
-            if live is not None:
-                live.held = request.messages
-
-    def reset(self, key: tuple[str, ...], reason: str) -> None:
-        with self._lock:
-            self._drop(key)
-            self._resets[key] = reason
-
-    def reset_forward(self, forward: str, reason: str) -> None:
-        with self._lock:
-            keys = set(self._forward.get(forward, set()))
-        for key in keys:
-            self.reset(key, reason)
-
-    def release_forward(self, forward: str) -> None:
-        with self._lock:
-            self._forward.pop(forward, None)
-
-    def take_archive(self) -> list[str]:
-        with self._lock:
-            pending, self._to_archive = self._to_archive, []
-            return pending
-
-    def _drop(self, key: tuple[str, ...]) -> None:
-        conversation = self._live.pop(key, None)
-        if conversation is not None:
-            self._to_archive.append(conversation.thread_id)
-
-    def clear_for_tests(self) -> None:
-        with self._lock:
-            self._live.clear()
-            self._resets.clear()
-            self._forward.clear()
-            self._to_archive.clear()
-
-
-def _new_messages(live: _Conversation, request: Request, system: str) -> tuple[Message, ...] | None:
-    """The messages after what the thread holds and its own reply, else ``None``.
-
-    The thread holds what it was sent (``live.held``) plus the reply it produced; the
-    next call must repeat both, then add only tool results / user / developer
-    messages. Anything else (an edit, a different system prompt) is not a delta.
-    """
-    held = live.held
-    messages = request.messages
-    if system != live.system or len(messages) <= len(held) or messages[: len(held)] != held:
-        return None
-    if messages[len(held)].role != "assistant":
-        return None
-    new = messages[len(held) + 1 :]
-    if not new or any(m.role == "assistant" for m in new):
-        return None
-    return new
-
-
-_CONVERSATIONS = _Conversations()
-
-
-class _ScopeAdapter:
-    """ARC ops reset every conversation a forward drove; threads outlive the forward."""
-
-    def mark_reset(self, scope_token: str, reason: str = "ops_reset") -> None:
-        _CONVERSATIONS.reset_forward(scope_token, reason)
-
-    def release(self, scope_token: str) -> None:
-        _CONVERSATIONS.release_forward(scope_token)
-
-
-register_scope_registry(_ScopeAdapter())
 
 
 def _capacity() -> int:
@@ -233,17 +101,7 @@ def _capacity() -> int:
     )
 
 
-def _conversation_key(model: str, cwd: str, effort: str) -> tuple[str, ...] | None:
-    """``(session, run-keyed scope, model, cwd, effort)`` inside an agent loop, else None."""
-    from clio_agent.gact import context as _ctx  # noqa: PLC0415
-
-    if active_stateful_scope() is None:
-        return None
-    session = (_ctx.active_session_id() or "").strip()
-    scope = _ctx.run_keyed_scope(_ctx.active_react_scope())
-    if not session or not scope:
-        return None
-    return (session, scope, model, cwd, effort)
+_CONVERSATIONS = ConversationRegistry(_capacity)
 
 
 # --------------------------------------------------------------------------- #
@@ -276,7 +134,7 @@ class AsyncCodexSDKEngine:
     async def stream(self, request: Request) -> AsyncGenerator[Any, None]:
         """Run one turn, yielding lm15 stream events."""
         system = render_system(request.system, request.tools)
-        key = _conversation_key(self.model, self.cwd, self.effort)
+        key = conversation_key(self.model, self.cwd, self.effort)
         send = _CONVERSATIONS.plan(key, request, system)
         try:
             async for event in self._turn(request, system, send):
@@ -292,9 +150,10 @@ class AsyncCodexSDKEngine:
     async def aclose(self) -> None:
         """Nothing to release: the SDK client is process-wide."""
 
-    async def _turn(self, request: Request, system: str, send: _Send) -> AsyncIterator[Any]:
+    async def _turn(self, request: Request, system: str, send: Send) -> AsyncIterator[Any]:
         body, images = render_messages(send.messages)
-        prompt = body if send.thread_id else f"{system}\n\n{body}" if system else body
+        inputs = _image_inputs(images)  # typed refusal of oversized images before any send
+        prompt = body if send.handle else f"{system}\n\n{body}" if system else body
         _audit(send, self.model, len(request.messages))
         call_index = _next_call_index()
         emit_call_started(
@@ -305,12 +164,12 @@ class AsyncCodexSDKEngine:
         try:
             async for event in _SDK_CLIENT.stream(
                 prompt=prompt,
-                images=[_image_url(image) for image in images],
+                images=inputs,
                 model=self.model,
                 cwd=self.cwd,
                 effort=ReasoningEffort(self.effort) if self.effort else None,
                 timeout=self.timeout,
-                thread_id=send.thread_id,
+                thread_id=send.handle,
                 keep_thread=send.key is not None,
                 on_thread=lambda tid: _CONVERSATIONS.opened(send.key, tid, request, system)
                 if send.key is not None
@@ -330,7 +189,7 @@ class AsyncCodexSDKEngine:
                 raise _typed(exc, self.model) from exc
             raise
         finally:
-            _SDK_CLIENT.archive_threads(_CONVERSATIONS.take_archive())
+            _SDK_CLIENT.archive_threads(_CONVERSATIONS.take_released())
             emit_call_usage(
                 call_id=send.call_id,
                 call_index=call_index,
@@ -338,7 +197,7 @@ class AsyncCodexSDKEngine:
                 usage=turn.usage,
                 output_chars=len(turn.reply),
             )
-        if send.thread_id and send.key is not None:
+        if send.handle and send.key is not None:
             _CONVERSATIONS.continued(send.key, request)
         for out in turn.finish(send.call_id):
             yield out
@@ -482,12 +341,27 @@ def _next_call_index() -> int:
         return _CALL_INDEX
 
 
-def _image_url(image: ImagePart) -> str:
-    if image.url:
-        return image.url
-    if image.data:
-        return f"data:{image.media_type};base64,{image.data}"
-    raise ValueError("a Codex SDK image needs a URL or inline data")
+def _image_inputs(images: list[ImagePart]) -> list[str]:
+    """The SDK image inputs, each and all within the native attachment ceilings.
+
+    Raises:
+        NativeAttachmentTooLargeError: One image, or all of them together, too large.
+        ValueError: An image with neither inline data nor a URL.
+    """
+    inline = 0
+    urls: list[str] = []
+    for image in images:
+        if image.data:
+            size = base64_byte_length(image.data)
+            check_block_bytes("image", size, label=image.media_type)
+            inline += size
+            urls.append(f"data:{image.media_type};base64,{image.data}")
+        elif image.url:
+            urls.append(image.url)
+        else:
+            raise ValueError("a Codex SDK image needs a URL or inline data")
+    check_total_bytes(inline)
+    return urls
 
 
 def _typed(exc: CodexSDKError, model: str) -> Exception:
@@ -505,7 +379,7 @@ def _typed(exc: CodexSDKError, model: str) -> Exception:
     return ServerError(message)
 
 
-def _audit(send: _Send, model: str, total: int) -> None:
+def _audit(send: Send, model: str, total: int) -> None:
     """One ``provider.stateful`` audit row per call inside an agent loop."""
     from clio_agent.runtime.stream_audit import stream_audit, stream_audit_enabled  # noqa: PLC0415
 
@@ -516,11 +390,11 @@ def _audit(send: _Send, model: str, total: int) -> None:
         "transport": "sdk",
         "model": f"codex_sdk/{model}",
         "call_id": send.call_id,
-        "stateful_mode": "delta" if send.thread_id else "full",
+        "stateful_mode": "delta" if send.handle else "full",
         "total_messages": total,
         "sent_messages": len(send.messages),
         "conversation": "::".join(send.key[:2]),
-        "thread_id": send.thread_id or "",
+        "thread_id": send.handle or "",
     }
     if send.reason is not None:
         row.update(stateful_reset_payload(send.reason))

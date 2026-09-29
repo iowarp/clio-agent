@@ -123,7 +123,13 @@ def _lm_kwargs(base: LMProviderConfig, effort: str | None) -> dict[str, Any]:
     agent_def = apply_turn_reasoning(_message(effort), AgentDef(id="main", title="Main"))
     resolved = _dynamic_agent_lm_config(SimpleNamespace(_provider_config=base), agent_def)
     cfg = resolved.materialize(SimpleNamespace(resolve=lambda *_args: "test-credential"))
-    return dict(create_lm(cfg).kwargs)
+    lm = create_lm(cfg)
+    kwargs = dict(lm.kwargs)
+    engine = getattr(lm, "_engine_spec", None)
+    if getattr(engine, "thinking", None) is not None:
+        # The Claude Code engine owns its thinking config (part of the session key).
+        kwargs["claude_code_thinking"] = engine.thinking
+    return kwargs
 
 
 def test_codex_message_effort_overrides_the_global_level() -> None:

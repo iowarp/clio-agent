@@ -1,122 +1,77 @@
-"""#1454: a signed-out Claude subscription is a typed, terminal provider error.
+"""#1454: provider refusals through the Claude Code engine are typed, terminal errors.
 
 The SDK sequence below is the one recorded live (claude-agent-sdk 0.2.156, a
 signed-out ``CLAUDE_CONFIG_DIR``): a synthetic ``AssistantMessage`` whose typed
 ``error`` is ``"authentication_failed"``, then a ``ResultMessage`` with
-``is_error=True`` but ``subtype="success"`` and no ``api_error_status``. The old
-raise printed the subtype, so the user read "...: success".
+``is_error=True`` but ``subtype="success"`` and no ``api_error_status``. The old raise
+printed the subtype, so the user read "...: success".
+
+A sign-out, a 404 model rejection and an exhausted plan are clio's typed errors
+(never retried -- re-issuing cannot succeed); an unclassified error result is a
+retryable ``dspy.lm15`` server error that names the CLI's own words. Through
+``ClioReAct`` each typed error reaches the turn as itself, not DSPy's wrapper.
 """
 
 from __future__ import annotations
 
-import sys
-from collections.abc import AsyncIterator, Iterator
-from types import ModuleType
-from typing import Any
+from collections.abc import Iterator
 
+import dspy
 import pytest
+from dspy.lm15 import ServerError
 
+from clio_agent.gact.agents.clio_react import ClioReAct
 from clio_agent.lm.io_logging import _is_transient_provider_error
-from clio_agent.providers import claude_code_litellm
+from clio_agent.providers import claude_code_engine
+from clio_agent.providers.claude_code_engine import AsyncClaudeCodeEngine, ClaudeCodeEngine
 from clio_agent.providers.claude_code_errors import (
     CLAUDE_CODE_SIGNED_OUT_MESSAGE,
     ClaudeCodeSignedOutError,
     contains_claude_code_signed_out,
 )
-from clio_agent.providers.claude_code_litellm import ClaudeCodeExecError
+from clio_agent.providers.claude_code_plan_limit import ClaudeCodePlanLimitError
 from clio_agent.providers.claude_code_result_errors import result_error_detail
+from clio_agent.providers.claude_code_sessions import _reset_sessions_for_tests
+from tests import _fake_claude_sdk as fake
 
 _NOT_LOGGED_IN = "Not logged in · Please run /login"
 
 
 @pytest.fixture(autouse=True)
 def _clean_pool() -> Iterator[None]:
-    """A clean provider map and client pool per test (the pooled client would
-    otherwise carry one test's fake SDK into the next)."""
-    from clio_agent.providers.claude_code_sessions import _reset_sessions_for_tests
-
-    claude_code_litellm._reset_for_tests()
+    """A clean client pool and conversation registry per test."""
     _reset_sessions_for_tests()
+    claude_code_engine._CONVERSATIONS.clear_for_tests()
     yield
-    claude_code_litellm._reset_for_tests()
     _reset_sessions_for_tests()
+    claude_code_engine._CONVERSATIONS.clear_for_tests()
 
 
-class _TextBlock:
-    def __init__(self, text: str) -> None:
-        self.text = text
+def _error_result(result: str, *, api_error_status: int | None = None) -> fake.ResultMessage:
+    return fake.ResultMessage(
+        usage={"input_tokens": 0, "output_tokens": 0},
+        result=result,
+        is_error=True,
+        api_error_status=api_error_status,
+        subtype="success",
+        stop_reason="stop_sequence",
+    )
 
 
-class _AssistantMessage:
-    def __init__(self, text: str, error: str | None) -> None:
-        self.content = [_TextBlock(text)]
-        self.error = error
-        self.usage = {"input_tokens": 0, "output_tokens": 0}
-        self.stop_reason = "stop_sequence"
-
-
-class _ResultMessage:
-    def __init__(self, result: str, *, api_error_status: int | None = None) -> None:
-        self.usage = {"input_tokens": 0, "output_tokens": 0}
-        self.stop_reason = "stop_sequence"
-        self.result = result
-        self.is_error = True
-        self.api_error_status = api_error_status
-        self.subtype = "success"
-
-
-def _install_fake_sdk(monkeypatch: pytest.MonkeyPatch, messages: list[Any]) -> None:
-    class FakeClaudeAgentOptions:
-        def __init__(self, **kwargs: Any) -> None:
-            self.kwargs = kwargs
-
-    class FakeClaudeSDKClient:
-        def __init__(self, options: FakeClaudeAgentOptions) -> None:
-            del options
-
-        async def connect(self) -> None:
-            return None
-
-        async def disconnect(self) -> None:
-            return None
-
-        async def query(self, prompt: str, session_id: str = "default") -> None:
-            del prompt, session_id
-
-        async def receive_response(self) -> AsyncIterator[Any]:
-            for message in messages:
-                yield message
-
-    fake_sdk = ModuleType("claude_agent_sdk")
-    fake_sdk.AssistantMessage = _AssistantMessage
-    fake_sdk.ClaudeAgentOptions = FakeClaudeAgentOptions
-    fake_sdk.ClaudeSDKClient = FakeClaudeSDKClient
-    fake_sdk.ResultMessage = _ResultMessage
-    fake_sdk.StreamEvent = type("FakeStreamEvent", (), {})
-    fake_sdk.TextBlock = _TextBlock
-    monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_sdk)
-
-
-async def _drain(model: str = "claude-sonnet-5") -> None:
-    async for _ in claude_code_litellm._astream_sdk(
-        prompt="Hello", model=model, timeout=5.0, cwd="/tmp/clio"
-    ):
-        pass
+def _signed_out_turn() -> list[object]:
+    return [
+        fake.AssistantMessage(_NOT_LOGGED_IN, error="authentication_failed"),
+        _error_result(_NOT_LOGGED_IN),
+    ]
 
 
 async def test_signed_out_result_raises_typed_terminal_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _install_fake_sdk(
-        monkeypatch,
-        [
-            _AssistantMessage(_NOT_LOGGED_IN, "authentication_failed"),
-            _ResultMessage(_NOT_LOGGED_IN),
-        ],
-    )
+    fake.install(monkeypatch, script=[_signed_out_turn()])
 
     with pytest.raises(ClaudeCodeSignedOutError) as excinfo:
-        await _drain()
+        await fake.drive(fake.request(model="claude-sonnet-5"))
 
     text = str(excinfo.value)
     assert text.startswith(CLAUDE_CODE_SIGNED_OUT_MESSAGE)
@@ -128,40 +83,95 @@ async def test_signed_out_result_raises_typed_terminal_error(
 
 
 async def test_a_401_result_status_is_a_sign_out_too(monkeypatch: pytest.MonkeyPatch) -> None:
-    _install_fake_sdk(monkeypatch, [_ResultMessage("Invalid bearer token", api_error_status=401)])
+    fake.install(
+        monkeypatch, script=[[_error_result("Invalid bearer token", api_error_status=401)]]
+    )
 
     with pytest.raises(ClaudeCodeSignedOutError):
-        await _drain()
+        await fake.drive(fake.request())
+
+
+async def test_a_404_result_is_a_typed_model_rejection_not_transient(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import litellm
+
+    rejection = _error_result(
+        "There's an issue with the selected model (claude-nope).", api_error_status=404
+    )
+    fake.install(monkeypatch, script=[[rejection]])
+
+    with pytest.raises(litellm.BadRequestError) as excinfo:
+        await fake.drive(fake.request(model="claude-nope"))
+
+    assert "rejected model 'claude-nope'" in str(excinfo.value)
+    assert "issue with the selected model" in str(excinfo.value)
+    assert _is_transient_provider_error(excinfo.value) is False
+
+
+async def test_an_exhausted_plan_is_the_typed_plan_limit_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake.install(monkeypatch, script=[[fake.RateLimitEvent("rejected")]])
+
+    with pytest.raises(ClaudeCodePlanLimitError, match="usage limit reached"):
+        await fake.drive(fake.request())
+
+
+async def test_an_allowed_rate_limit_event_is_not_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake.install(monkeypatch, script=[[fake.RateLimitEvent("allowed"), *fake.answer("ok")]])
+    response = await fake.drive(fake.request())
+    assert response.message.parts[0].text == "ok"
 
 
 async def test_unclassified_error_result_reports_the_cli_text_not_the_subtype(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """SABOTAGE-sensitive: an error result with no auth signal stays generic,
-    but names the CLI's own result text instead of ``subtype="success"``."""
-    _install_fake_sdk(
+    """SABOTAGE-sensitive: an error result with no auth signal stays generic (a
+    retryable server error), but names the CLI's own result text, not the subtype."""
+    fake.install(
         monkeypatch,
-        [_AssistantMessage("API Error: overloaded", "server_error"), _ResultMessage("overloaded")],
+        script=[
+            [
+                fake.AssistantMessage("API Error: overloaded", error="server_error"),
+                _error_result("overloaded"),
+            ]
+        ],
     )
 
-    with pytest.raises(ClaudeCodeExecError) as excinfo:
-        await _drain()
+    with pytest.raises(ServerError) as excinfo:
+        await fake.drive(fake.request(model="claude-sonnet-5"))
 
     assert not isinstance(excinfo.value, ClaudeCodeSignedOutError)
     assert str(excinfo.value).endswith("model=claude-sonnet-5: overloaded")
 
 
+def test_the_loop_surfaces_a_sign_out_as_itself(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DSPy wraps an engine's own error as unexpected; ClioReAct re-raises the original."""
+    fake.install(monkeypatch, script=[_signed_out_turn()])
+    lm = dspy.LM(
+        "claude_code/claude-sonnet-5",
+        engine=ClaudeCodeEngine("claude-sonnet-5", cwd="/w", timeout=5.0),
+        async_engine=AsyncClaudeCodeEngine("claude-sonnet-5", cwd="/w", timeout=5.0),
+        cache=False,
+        num_retries=0,
+    )
+
+    with dspy.context(lm=lm), pytest.raises(ClaudeCodeSignedOutError):
+        ClioReAct("question -> answer", tools=[])(question="hi")
+
+
 def test_result_error_detail_falls_back_to_status_then_subtype() -> None:
-    assert result_error_detail(_ResultMessage("  two\n words ")) == "two words"
-    assert result_error_detail(_ResultMessage("", api_error_status=500)) == "500"
-    assert result_error_detail(_ResultMessage("")) == "success"
+    assert result_error_detail(_error_result("  two\n words ")) == "two words"
+    assert result_error_detail(_error_result("", api_error_status=500)) == "500"
+    assert result_error_detail(_error_result("")) == "success"
 
 
-def test_sign_out_survives_litellm_text_wrapping_and_groups() -> None:
+def test_sign_out_survives_text_wrapping_and_groups() -> None:
     signed_out = ClaudeCodeSignedOutError(detail=_NOT_LOGGED_IN, model="claude-sonnet-5")
-    wrapped = RuntimeError(f"litellm.APIConnectionError: {signed_out}")
+    wrapped = RuntimeError(f"dspy.LMUnexpectedError: {signed_out}")
     group = ExceptionGroup("unhandled errors in a TaskGroup", [wrapped])
 
     assert contains_claude_code_signed_out(group)
     assert _is_transient_provider_error(wrapped) is False
-    assert not contains_claude_code_signed_out(RuntimeError("litellm.APIConnectionError: 401"))
+    assert not contains_claude_code_signed_out(RuntimeError("dspy.LMUnexpectedError: 401"))

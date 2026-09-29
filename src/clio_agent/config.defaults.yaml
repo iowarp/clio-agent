@@ -199,7 +199,7 @@ providers.claude_code.max_concurrent_processes: 4.0
 # starting at once.
 providers.claude_code.max_precede_connects: 2.0
 
-# CLIO_CLAUDE_CODE_STATEFUL_CAPACITY  (float)  <- src/clio_agent/providers/claude_code_stateful.py
+# CLIO_CLAUDE_CODE_STATEFUL_CAPACITY  (float)  <- src/clio_agent/providers/claude_code_engine.py
 # Max live Claude Code stateful-session entries before LRU eviction; raise
 # on a host running many concurrent stateful sessions.
 providers.claude_code.stateful_capacity: 128.0

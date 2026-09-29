@@ -1,8 +1,8 @@
 """Transport-level wiring of the provider-generic thinking knob (#895).
 
-Proves the level travels config → factory kwargs → optional_params → the SDK
-call: the LM-factory mapping, the claude_code provider pass-through into
-``_run_sdk``, the ``ClaudeAgentOptions.thinking`` placement, and (S2 B13) the
+Proves the level travels config → factory kwargs → the Claude Code engine → the SDK
+client: the LM-factory mapping, the factory handing the thinking config to the
+engine, the engine reaching ``ClaudeAgentOptions.thinking``, and (S2 B13) the
 session pool's own-entry reconnect on a thinking-config change. The env/config
 plumbing and typed-unsupported surfacing round it out.
 """
@@ -13,13 +13,12 @@ import logging
 import sys
 from types import ModuleType
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
 from clio_agent.config import LMProviderConfig, load_config_from_env
 from clio_agent.lm.request_builder import build_request_kwargs
-from clio_agent.providers import claude_code_litellm
+from clio_agent.providers import claude_code_engine
 from clio_agent.providers.capabilities import invalidation
 from clio_agent.providers.capabilities.accessor import clear_cache
 from clio_agent.providers.capabilities.records import (
@@ -28,8 +27,8 @@ from clio_agent.providers.capabilities.records import (
     ModelCapabilities,
     ThinkingSpec,
 )
-from clio_agent.providers.claude_code_litellm import ClaudeCodeLLM
 from clio_agent.providers.claude_code_options import build_sdk_options, thinking_key
+from clio_agent.providers.claude_code_sessions import _reset_sessions_for_tests
 from tests.env_isolation import isolated_environ
 
 _NOW = "2026-09-25T00:00:00+00:00"
@@ -122,44 +121,36 @@ def test_build_sdk_options_isolates_clio_from_personal_claude_capabilities() -> 
 
 
 # --------------------------------------------------------------------------- #
-# The claude_code provider passes optional_params thinking through to the SDK path.
-# (Fake ``_run_sdk`` asserts it received the option — the sabotage target: drop
-# ``thinking=thinking`` in ClaudeCodeLLM.completion and this goes red.)
+# The factory hands the thinking config to the engine, and the engine hands it to
+# the SDK client's options. (SABOTAGE: drop ``thinking=thinking`` in
+# ``factory._claude_code_lm`` or at the engine's ``entry.stream`` call -> red.)
 # --------------------------------------------------------------------------- #
-def test_completion_passes_thinking_from_optional_params_to_run_sdk(monkeypatch) -> None:
-    seen: dict = {}
+def test_the_thinking_config_reaches_the_sdk_client_options(monkeypatch) -> None:
+    import asyncio
 
-    def fake_sdk(
-        *,
-        prompt,
-        native_blocks,
-        model,
-        timeout,
-        cwd,
-        thinking=None,
-        system_prompt=None,
-        call_index=0,
-    ):
-        seen["thinking"] = thinking
-        return "ok", {"input_tokens": 1, "output_tokens": 1}
+    from dspy.lm15 import Message, Request
 
-    monkeypatch.setattr(claude_code_litellm, "_run_sdk", fake_sdk)
-    ClaudeCodeLLM().completion(
-        model="claude_code/cc-haiku",
-        messages=[{"role": "user", "content": "hi"}],
-        api_base="",
-        custom_prompt_dict={},
-        model_response=MagicMock(),
-        print_verbose=None,
-        encoding=None,
-        api_key=None,
-        logging_obj=None,
-        optional_params={
-            "claude_code_transport": "sdk",
-            "claude_code_thinking": {"type": "disabled"},
-        },
-    )
-    assert seen["thinking"] == {"type": "disabled"}
+    from clio_agent.lm.factory import create_lm
+    from tests import _fake_claude_sdk as fake
+
+    _reset_sessions_for_tests()
+    claude_code_engine._CONVERSATIONS.clear_for_tests()
+    try:
+        sdk = fake.install(monkeypatch)
+        config = LMProviderConfig(provider="claude_code", model="claude-sonnet-4-6")
+        config.thinking_level = "medium"  # type: ignore[attr-defined]
+        lm = create_lm(config)
+        thinking = lm._async_engine_spec.thinking
+        assert thinking == build_request_kwargs(config)["claude_code_thinking"]
+
+        request = Request(model=lm.model, messages=(Message.user("hi"),))
+        asyncio.run(lm._async_engine_spec.complete(request))
+        options = sdk.clients[0].options.kwargs
+        assert options["thinking"] == {k: v for k, v in thinking.items() if k != "effort"}
+        assert options["effort"] == thinking["effort"] == "medium"
+    finally:
+        _reset_sessions_for_tests()
+        claude_code_engine._CONVERSATIONS.clear_for_tests()
 
 
 # --------------------------------------------------------------------------- #

@@ -403,3 +403,21 @@ def test_a_plan_limit_hit_is_the_terminal_codex_plan_limit_never_retried() -> No
 
     assert isinstance(err, CodexPlanLimitError)
     assert not is_retryable_lm_error(err)
+
+
+def test_an_oversized_image_is_refused_typed_before_any_send(
+    client: FakeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dspy.lm15 import ImagePart
+
+    from clio_agent.providers import native_attachment_bounds
+    from clio_agent.providers.native_attachment_bounds import NativeAttachmentTooLargeError
+
+    monkeypatch.setattr(native_attachment_bounds, "image_max_bytes", lambda: 4)
+    image = ImagePart(data="aGVsbG8gd29ybGQ=", media_type="image/png")  # 11 bytes
+    with pytest.raises(NativeAttachmentTooLargeError):
+        _run(
+            AsyncCodexSDKEngine(MODEL),
+            _request(Message(role="user", parts=(TextPart(text="see"), image))),
+        )
+    assert client.sends == []

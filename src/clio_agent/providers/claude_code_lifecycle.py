@@ -29,11 +29,12 @@ at that key. What remains genuinely owned here is the same as before:
   race). The popped entry is marked ``_dead`` so a late caller's connect is
   REFUSED (typed, retryable) rather than silently reconnecting a slot+CLI
   invisible to the pool.
-* **Stateful-delta hazard.** A popped entry may have an ACTIVE stateful-delta
-  scope riding it (:mod:`claude_code_stateful`'s registry thinks its
-  last-seen prefix is live on that now-dead subprocess) — flagged exactly
-  like :func:`~clio_agent.providers.claude_code_stream_bounds.reap_idle_session_entry`
-  already does for the idle-TTL path.
+* **Kept conversations.** A popped entry's client takes every SDK conversation
+  it held with it; the release announces the drop synchronously
+  (:meth:`~clio_agent.providers.claude_code_sessions._StreamClientEntry.announce_dropped`)
+  so the engine never plans a delta against it, exactly like
+  :func:`~clio_agent.providers.claude_code_stream_bounds.reap_idle_session_entry`
+  does for the idle-TTL path.
 """
 
 from __future__ import annotations
@@ -97,14 +98,12 @@ def release_session_resources_nonblocking(pool: "ClaudeStreamClientPool", sessio
     """The claude_code #1305 release effect: non-blocking (F1), in-flight-safe (F2a).
 
     Pops the entry keyed to ``session_id`` (if any) that is NOT genuinely in
-    flight, marks it ``_dead`` (F6b), tells the stateful-delta registry the
-    session's connection is gone (if an active scope was riding it), and
-    closes it non-blocking. A session with no entry is a fast no-op — the
+    flight, marks it ``_dead`` (F6b), announces that its SDK conversations are
+    gone, and closes it non-blocking. A session with no entry is a fast no-op — the
     common, clean-path case (this backstop finds nothing because nothing
     abnormal happened).
     """
     from clio_agent.providers.claude_code_sessions import (  # noqa: PLC0415
-        _note_scope_provider_error,
         stream_audit,
         stream_audit_enabled,
     )
@@ -130,14 +129,9 @@ def release_session_resources_nonblocking(pool: "ClaudeStreamClientPool", sessio
                 **SESSION_RELEASE_REASONS["session_release_deferred_in_flight"],
             )
         return
-    model, cwd, thinking_key_, scope = (
-        entry._model or "",
-        entry._cwd,
-        entry._thinking_key,
-        entry._last_scope,
-    )  # noqa: SLF001
+    model = entry._model or ""  # noqa: SLF001
+    entry.announce_dropped()
     entry.close_nonblocking()
-    _note_scope_provider_error(scope, model=model, cwd=cwd, thinking_key_=thinking_key_)
     if stream_audit_enabled():
         stream_audit(
             "provider.transport_error",

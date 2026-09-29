@@ -8,8 +8,8 @@ carries the typed :class:`dspy.lm15.Request` across as text and brings tool call
   ``tool_calls`` block (a JSON list of ``{"name", "arguments"}``). Calls in one block
   run in parallel; a message without a block is the final answer.
 * :func:`render_messages` -- typed messages as text (user/developer text, the
-  assistant's own earlier text + calls, tool results by call id); images are collected
-  separately for the transport's native image input.
+  assistant's own earlier text + calls, tool results by call id); images (and, where
+  the transport takes them, documents) are collected for its native media input.
 * :func:`split_reply` -- the reply's visible text and its tool calls. A block that does
   not parse is NOT guessed at or repaired: it becomes one call to
   :data:`INVALID_TOOL_CALL`, whose observation is the parse error, so the model sees
@@ -77,25 +77,38 @@ def render_system(system: str | None, tools: Sequence[Any]) -> str:
     return "\n\n".join(parts)
 
 
-def render_messages(messages: Iterable[Message]) -> tuple[str, list[ImagePart]]:
-    """Typed messages as one transcript text, plus the images they carry."""
+def render_messages(
+    messages: Iterable[Message], *, media: tuple[type, ...] = (ImagePart,)
+) -> tuple[str, list[Any]]:
+    """Typed messages as one transcript text, plus the media parts they carry.
+
+    ``media`` is the part kinds the transport takes natively beside the text (images by
+    default; Claude Code also takes documents). Any other non-text part is a typed
+    error, never dropped.
+    """
     blocks: list[str] = []
-    images: list[ImagePart] = []
+    collected = _Media(media, [])
     for message in messages:
-        text = _render_message(message, images)
+        text = _render_message(message, collected)
         if text:
             blocks.append(text)
-    return "\n\n".join(blocks), images
+    return "\n\n".join(blocks), collected.parts
 
 
-def _render_message(message: Message, images: list[ImagePart]) -> str:
+@dataclass
+class _Media:
+    kinds: tuple[type, ...]
+    parts: list[Any]
+
+
+def _render_message(message: Message, media: _Media) -> str:
     if message.role == "tool":
         lines = ["[tool results]"]
         for part in message.parts:
             if isinstance(part, ToolResultPart):
                 status = " (error)" if part.is_error else ""
                 lines.append(
-                    f"[{part.id} {part.name or ''}{status}]\n{_content_text(part.content, images)}"
+                    f"[{part.id} {part.name or ''}{status}]\n{_content_text(part.content, media)}"
                 )
         return "\n".join(lines)
     if message.role == "assistant":
@@ -107,18 +120,19 @@ def _render_message(message: Message, images: list[ImagePart]) -> str:
         ]
         block = f"\n{FENCE}\n{json.dumps(calls)}\n```" if calls else ""
         return f"[assistant]\n{text}{block}".rstrip()
-    body = _content_text(message.parts, images)
+    body = _content_text(message.parts, media)
     return f"[{message.role}]\n{body}" if body else ""
 
 
-def _content_text(parts: Iterable[Any], images: list[ImagePart]) -> str:
+def _content_text(parts: Iterable[Any], media: _Media) -> str:
     out: list[str] = []
     for part in parts:
         if isinstance(part, TextPart):
             out.append(part.text)
-        elif isinstance(part, ImagePart):
-            images.append(part)
-            out.append(f"(image {len(images)} attached)")
+        elif isinstance(part, media.kinds):
+            media.parts.append(part)
+            kind = "image" if isinstance(part, ImagePart) else "document"
+            out.append(f"({kind} {len(media.parts)} attached)")
         elif isinstance(part, ThinkingPart):
             continue  # the transport keeps its own reasoning; never replayed as text
         else:
