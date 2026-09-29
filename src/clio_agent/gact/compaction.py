@@ -12,15 +12,14 @@ mirror -- its readers were unreachable) and the ``session_archives`` ledger snap
 (zero readers). The old ``ledger[-50:]`` summariser cap is gone too: the checkpoint IS
 the bound now, by construction, so there is nothing left to truncate defensively.
 
-ARC's live working set has meaning only INSIDE a turn (the per-turn reset in
-``clio_react.ClioReAct``); a manual compact between turns has no scope
-to fold, so ``arc_status`` is a typed description of that reality
-(:data:`ARC_STATUSES`), never a fabricated "stored". A MANUAL compact issued WHILE a
-turn is running (``trigger="manual"`` during an open minter, see Placement below)
-still reports :data:`ARC_NO_ACTIVE_SCOPE`: it executes on the route's off-loop
-executor thread, whose contextvars carry no react scope even though one is live
-inside that turn's own forward call -- only the AUTO trigger, which runs from inside
-``ClioReAct`` itself, ever observes a scope to fold.
+What is summarized is what the model sees: the agent scope's clio-core projection
+(its live working set, spanning turns -- every user message, step, tool result and
+answer, the running turn's own steps included). The summary replaces exactly the
+segments it was written from (``summarize_segments``, a recorded op), so nothing the
+model knew is dropped unsummarized. The AUTO trigger compacts the running scope; a
+MANUAL compact compacts every agent scope of the session that holds live context.
+``arc_status`` types the plane outcome (:data:`ARC_STATUSES`). The ledger checkpoint
+row is the UI's record of the same compaction.
 
 Placement: a checkpoint is never inserted ahead of an in-flight assistant message (that
 would reorder ``reload`` ahead of ``live``, see design note in the tracking issue), so
@@ -70,6 +69,7 @@ __all__ = [
     "PLACEMENT_STAGED",
     "SKIP_CHECKPOINT_ALREADY_STAGED",
     "SKIP_MODEL_CONTEXT_EMPTY",
+    "SKIP_NOTHING_NEW",
     "SKIP_SESSION_HAS_NO_MESSAGES",
     "CompactionError",
     "append_checkpoint",
@@ -89,6 +89,7 @@ __all__ = [
 SKIP_SESSION_HAS_NO_MESSAGES = "session_has_no_messages"
 SKIP_MODEL_CONTEXT_EMPTY = "model_context_empty"
 SKIP_CHECKPOINT_ALREADY_STAGED = "checkpoint_already_staged"
+SKIP_NOTHING_NEW = "nothing_new_since_last_compaction"
 
 #: ``arc_status`` values on the compaction memory event (frozen wire surface).
 ARC_NOT_CONFIGURED = "not_configured"
@@ -112,7 +113,6 @@ AUDIT_PERSIST_FAILED = "compaction.persist_failed"
 AUDIT_STAGED_FLUSH_FAILED = "compaction.staged_flush_failed"
 
 _BOUNDED_CHARS = 300
-_TEXT_PART_TYPES = frozenset({"text", "thinking", "error"})
 
 
 class CompactionError(Exception):
@@ -179,8 +179,7 @@ def _typed_persist_error(exc: BaseException, *, event_id: str, stage: str) -> Co
 
 
 # ---------------------------------------------------------------------------
-# Transcript rendering -- every part class the client-facing judge already
-# renders, not text only, so the summary can stand in for what it covers.
+# Transcript rendering helpers.
 # ---------------------------------------------------------------------------
 
 
@@ -189,54 +188,6 @@ def _bounded(text: str, limit: int = _BOUNDED_CHARS) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 3] + "..."
-
-
-def _bounded_tool_call_fact(part: Any) -> str:
-    name = getattr(part, "tool_name", "") or ""
-    args = getattr(part, "input", {}) or {}
-    return f"tool call: {name}({_bounded(str(args))})"
-
-
-def _bounded_tool_result_fact(part: Any) -> str:
-    name = getattr(part, "tool_name", "") or ""
-    status = "error" if getattr(part, "is_error", False) else "ok"
-    output = ""
-    content = getattr(part, "content", None) or []
-    if content:
-        output = getattr(content[0], "text", "") or ""
-    if not output:
-        structured = getattr(part, "structured_content", None)
-        if structured is not None:
-            output = str(structured)
-    return f"tool result: {name} {status}: {_bounded(output)}"
-
-
-def _part_line(part: Any) -> str:
-    part_type = getattr(part, "type", "")
-    if part_type == "compaction":
-        return (getattr(part, "summary", "") or "").strip()
-    if part_type in _TEXT_PART_TYPES:
-        return (getattr(part, "text", "") or "").strip()
-    if part_type == "tool_call":
-        return _bounded_tool_call_fact(part)
-    if part_type == "tool_result":
-        return _bounded_tool_result_fact(part)
-    return ""
-
-
-def _build_transcript(model_messages: list[Message]) -> str:
-    """Render the model context to a transcript blob -- no deterministic truncation;
-    the checkpoint IS the bound (#1339); an over-window input surfaces typed
-    (:data:`AUDIT_INPUT_OVER_WINDOW`), never a silent drop of older rows."""
-
-    lines: list[str] = []
-    for message in model_messages:
-        role = (getattr(message, "role", "user") or "user").upper()
-        for part in getattr(message, "parts", []) or []:
-            line = _part_line(part)
-            if line:
-                lines.append(f"{role}: {line}")
-    return "\n".join(lines)
 
 
 def _context_file_inventory(app: Any, sid: str) -> str:
@@ -291,48 +242,97 @@ def _build_prompt(transcript: str, focus: str, context_files: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
-# ARC fold -- meaning only inside a turn's live plane (see module docstring).
+# What is compacted: the agent scopes' live projection (see module docstring).
 # ---------------------------------------------------------------------------
 
 
-def _fold_arc_working_set(app: Any, summary: str, turn_id: str) -> str:
-    """Fold the live ARC working set into ``summary`` when a scope is live.
+def _live_scopes(app: Any, sid: str) -> tuple[str, dict[str, list[Any]]]:
+    """The agent scopes to compact and their live segments, with the plane status.
 
-    Returns one of :data:`ARC_STATUSES`. A MANUAL compact issued while a turn is
-    running still resolves :data:`ARC_NO_ACTIVE_SCOPE` here (see the module
-    docstring): this function reads the CALLING THREAD's contextvars, and a manual
-    compact runs on the route's off-loop executor thread, which carries none --
-    only the auto trigger (inside ``ClioReAct`` itself) ever observes a
-    live scope to fold.
-
-    CAN raise: ``arc.summarize_segments`` is a real store RPC and a store defect is
-    not this function's contract to hide -- it propagates to the caller
-    (:func:`compact_session_context`), which wraps it into the one typed
-    ``CompactionError`` a manual-route caller sees (:func:`_typed_persist_error`,
-    #1339 review F1).
+    Inside a turn (the auto trigger) that is the running scope; otherwise (a manual
+    compact) every scope of the session holding live context.
     """
 
-    top_arc = getattr(getattr(app, "state", None), "arc", None)
-    if top_arc is None:
-        return ARC_NOT_CONFIGURED
+    arc = getattr(getattr(app, "state", None), "arc", None)
+    if arc is None:
+        return ARC_NOT_CONFIGURED, {}
 
     from clio_agent.gact.agents.clio_react_record import arc_scope  # noqa: PLC0415
 
-    arc, session, scope = arc_scope()
-    if not scope or arc is None:
-        return ARC_NO_ACTIVE_SCOPE
-    live = arc.render_working_set(session, scope)
-    if len(live) <= 1:
-        return ARC_WORKING_SET_TOO_SMALL
-    arc.summarize_segments(
-        session,
-        scope,
-        [s.id for s in live],
-        {"text": summary},
-        token_count=_estimate_text_tokens(summary),
-        turn_id=turn_id,
-    )
-    return ARC_FOLDED
+    active, session, scope = arc_scope()
+    if active is not None and session == sid:
+        scopes = [scope]
+    else:
+        scopes = sorted(s for s in arc.list_segment_scopes(sid) if not s.startswith("_"))
+    live = {name: arc.render_working_set(sid, name) for name in scopes}
+    live = {name: segments for name, segments in live.items() if segments}
+    if not live:
+        return ARC_NO_ACTIVE_SCOPE, {}
+    if not any(_foldable(segments) for segments in live.values()):
+        return ARC_WORKING_SET_TOO_SMALL, live
+    return ARC_FOLDED, live
+
+
+def _foldable(segments: list[Any]) -> bool:
+    """A scope has something to compact unless it is already one lone summary."""
+
+    return not (len(segments) == 1 and getattr(segments[0], "kind", "") == "summary")
+
+
+def _scope_transcript(live: Mapping[str, list[Any]]) -> str:
+    """Render what the model sees in each scope as the summarizer's transcript."""
+
+    from clio_agent.gact.agents.clio_react_record import fold_steps  # noqa: PLC0415
+
+    blocks: list[str] = []
+    for scope, segments in live.items():
+        lines = [line for message in fold_steps(segments) for line in _message_lines(message)]
+        if not lines:
+            continue
+        body = "\n".join(lines)
+        blocks.append(body if len(live) == 1 else f"[agent {scope}]\n{body}")
+    return "\n\n".join(blocks)
+
+
+def _message_lines(message: Any) -> list[str]:
+    role = str(message.role).upper()
+    lines: list[str] = []
+    for part in message.parts:
+        kind = type(part).__name__
+        if kind in ("TextPart", "ThinkingPart") and part.text.strip():
+            lines.append(f"{role}: {part.text.strip()}")
+        elif kind == "ToolCallPart":
+            lines.append(f"{role}: tool call: {part.name}({_bounded(str(dict(part.input)))})")
+        elif kind == "ToolResultPart":
+            status = "error" if part.is_error else "ok"
+            text = "".join(getattr(p, "text", "") for p in part.content)
+            lines.append(f"TOOL: tool result: {part.name} {status}: {_bounded(text)}")
+        elif kind in ("ImagePart", "DocumentPart"):
+            lines.append(f"{role}: [attached {kind.removesuffix('Part').lower()}]")
+    return lines
+
+
+def _fold_scopes(
+    app: Any, sid: str, live: Mapping[str, list[Any]], summary: str, turn_id: str
+) -> None:
+    """Replace each scope's live segments with the summary written from them.
+
+    CAN raise: ``arc.summarize_segments`` is a real store RPC; the caller wraps a
+    store defect into the one typed ``CompactionError`` (#1339 review F1).
+    """
+
+    arc = app.state.arc
+    for scope, segments in live.items():
+        if not _foldable(segments):
+            continue
+        arc.summarize_segments(
+            sid,
+            scope,
+            [s.id for s in segments],
+            {"text": summary},
+            token_count=_estimate_text_tokens(summary),
+            turn_id=turn_id,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -377,7 +377,10 @@ def compact_session_context(
     if not model_messages:
         return _skip(sid, SKIP_MODEL_CONTEXT_EMPTY)
 
-    transcript = _build_transcript(model_messages)
+    arc_status, live = _live_scopes(app, sid)
+    if arc_status == ARC_WORKING_SET_TOO_SMALL:
+        return _skip(sid, SKIP_NOTHING_NEW)
+    transcript = _scope_transcript(live)
     if not transcript.strip():
         # #1339 review F2: a session whose model-context rows render to nothing (e.g.
         # only a2ui/mcp_app parts with no text-bearing class) has real work to skip,
@@ -452,7 +455,10 @@ def compact_session_context(
     )
 
     try:
-        arc_status = _fold_arc_working_set(app, summary or "", turn_id)
+        if arc_status == ARC_FOLDED:
+            # Outside a turn (manual) the checkpoint row is the compaction's turn, so a
+            # rollback of that row also rolls the fold back.
+            _fold_scopes(app, sid, live, summary or "", turn_id or checkpoint.id)
     except Exception as exc:  # noqa: BLE001 - typed below (#1339 review F1)
         raise _typed_persist_error(exc, event_id=event_id, stage="fold_arc_working_set") from exc
     if arc_status == ARC_FOLDED:

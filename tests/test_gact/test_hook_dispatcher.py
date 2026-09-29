@@ -1152,6 +1152,15 @@ def test_pre_compact_fires_once(tmp_path: Path) -> None:
         with TestClient(app) as c:
             sid = c.post("/v1/sessions", json={"title": "t"}).json()["id"]
             complete_turn(c, sid, "hello")
+            # The fake agent bypasses the loop that records each turn on the ARC
+            # plane, and compaction summarizes that plane (the agent's own context),
+            # so record the turn's user message and answer as the loop would.
+            ledger = app.state.messages[sid]
+            turn_id = next(m.turn_id or m.id for m in ledger if m.role == "user")
+            app.state.arc.append_segment(sid, "main", "user", {"text": "hello"}, turn_id=turn_id)
+            app.state.arc.append_segment(
+                sid, "main", "thought", {"text": _Pred.answer}, turn_id=turn_id
+            )
             before = disp.count(PRE_COMPACT)
             resp = c.post(f"/v1/sessions/{sid}/compact", json={})
             assert resp.status_code == 200, resp.text
