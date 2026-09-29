@@ -14,6 +14,14 @@ from clio_agent.gact.tool_result_presentation import project_presentation
 if TYPE_CHECKING:
     from clio_agent.gact.a2ui_catalogs.registry import CatalogResolver
 
+# Part types that stay on the 0.2 ledger and never become 0.3 blocks.
+# ``background_exit`` is the exactly-once consumption receipt for a finished
+# background child; every emitter pairs it with the child's terminal
+# ``expert_handoff``, which already projects as the ``subagent`` return. Letting
+# it fall through to the generic ``routing`` projection painted a second,
+# detail-less "Background Exit" row beside that return (gact-tui#342).
+UNPROJECTED_PART_TYPES = frozenset({"background_exit"})
+
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     """Return a typed mapping view for untrusted wire values."""
@@ -351,6 +359,8 @@ def message_to_v3(message: Any) -> dict[str, Any]:
             continue
         metadata = _mapping(part.get("metadata"))
         if part.get("type") == "a2ui" and metadata.get("projection_only") is True:
+            continue
+        if part.get("type") in UNPROJECTED_PART_TYPES:
             continue
         block = part_to_v3_block(part)
         if block["type"] == "tool":
