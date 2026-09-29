@@ -1,4 +1,4 @@
-"""LM runtime-behavior package (io_logging, adapters, factory).
+"""LM runtime-behavior package (factory, engines, call trace, adapters, policy).
 
 Extracted from :mod:`clio_agent.config` (#769) so no single module carries the
 whole LM construction + adapter + logging surface. :mod:`clio_agent.config`

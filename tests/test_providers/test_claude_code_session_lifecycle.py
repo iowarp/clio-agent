@@ -322,16 +322,6 @@ async def test_dead_entry_refuses_a_connect_after_being_released_mid_flight() ->
         await entry._ensure_client(lambda: None, model="m")
 
 
-def test_dead_entry_marker_is_a_recognized_transient_reason() -> None:
-    """The retry layer must classify a dead-entry refusal as transient (so
-    the LM retry loop re-issues on a fresh entry_for() instead of failing
-    the turn) -- pins the lm.io_logging marker-sync contract F6b relies on.
-    """
-    from clio_agent.lm.io_logging import _is_transient_provider_error
-
-    assert _is_transient_provider_error(RuntimeError(cc_lifecycle.dead_entry_error_message()))
-
-
 # --------------------------------------------------------------------------- #
 # F2 (strand fix, structural pin): STREAM_END must be queued strictly BEFORE
 # the abnormal-end reset in _pump's finally -- a cross-thread lifecycle

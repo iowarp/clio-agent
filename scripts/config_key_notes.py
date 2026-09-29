@@ -276,10 +276,6 @@ KEY_NOTES: dict[str, str] = {
         "Fraction (0-1) of the model's context window that triggers proactive auto-compaction; "
         "lower to compact earlier, raise to accumulate more."
     ),
-    "debug.dump_unparseable": (
-        "Filesystem path to dump raw LM completions the adapter failed to parse; set when "
-        "diagnosing a model/adapter mismatch, else a no-op."
-    ),
     "debug.level": (
         'Log verbosity ("off"/"low"/"med"/"high", default "low"); raise to "high" for '
         'per-call firehose logs, drop to "off" for quiet.'
@@ -533,14 +529,6 @@ KEY_NOTES: dict[str, str] = {
         "When streaming, seconds a call may go without a new token before it's stalled; raise to "
         "tolerate slower generation, lower to catch it faster."
     ),
-    "limits.lm_parse_retry_attempts": (
-        "Overrides re-sample attempts after an unrecoverable structured-output parse failure; "
-        "reasoning models default to 2, others 0."
-    ),
-    "limits.lm_transient_backoff_s": (
-        "Seconds to wait before re-issuing an LM call after a transient provider failure; default "
-        "8s lets LM Studio JIT-reload a crashed model."
-    ),
     "limits.lm_transient_retries": (
         "Bounded retry count for a transient (non-parse) provider failure before giving up; raise "
         "on a flaky provider connection."
@@ -626,10 +614,6 @@ KEY_NOTES: dict[str, str] = {
     "lm.defer_tiktoken": (
         "Defers litellm's ~40MB cl100k tiktoken vocab load until first real encode; disable if "
         "something depends on eager tiktoken load at boot."
-    ),
-    "lm.disable_json_adapter_fallback": (
-        "Force-disables the JSON-adapter fallback for cloud providers that reject response_format; "
-        "set true if a provider 400s on it."
     ),
     "lm.guided_output": (
         "Switches to schema-constrained JSON output instead of the text ChatAdapter; enable "
@@ -1066,10 +1050,6 @@ KEY_NOTES: dict[str, str] = {
     "runtime.environment": (
         'Deployment environment label ("dev" default) threaded into LM config; change to reflect '
         "staging/prod for environment-aware logging."
-    ),
-    "runtime.lm_token_liveness": (
-        "Streams expert LM calls token-by-token so each token refreshes the no-progress watchdog; "
-        "disable only if streaming plumbing misbehaves."
     ),
     "sandbox.enabled": (
         "Whether tool-execution sandboxing/confinement is applied; disable only for trusted local "

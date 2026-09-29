@@ -181,7 +181,7 @@ def test_streamed_text_part_seals_exactly_one_atom_with_the_full_text(tmp_path: 
 # --------------------------------------------------------------------------- #
 
 
-def test_whitespace_only_and_discarded_parts_never_seal(tmp_path: Path) -> None:
+def test_whitespace_only_parts_never_seal(tmp_path: Path) -> None:
     arc = _arc(tmp_path)
     app = _fake_app(arc)
     minter = open_turn_minter(app, "sess2", "turn2")
@@ -190,10 +190,6 @@ def test_whitespace_only_and_discarded_parts_never_seal(tmp_path: Path) -> None:
     # Whitespace-only: dropped from the ledger at close, so it was never eligible.
     transcript.append_text_delta("main", "answer", "   ")
     transcript.close_open_text()
-
-    # Discarded retry: the abandoned attempt never closes, so it never seals either.
-    transcript.append_text_delta("main", "reasoning", "abandoned attempt")
-    assert transcript.discard_open_text() is True
 
     assert minter.drain(timeout=5.0)
     assert _atoms_on_lane(arc, "sess2") == []

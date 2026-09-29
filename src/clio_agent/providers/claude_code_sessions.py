@@ -180,8 +180,8 @@ def _notify_client_dropped(gact_session_id: str) -> None:
 
 # --------------------------------------------------------------------------- #
 # One pooled ``ClaudeSDKClient`` per GACT session, hosted on a private
-# daemon-thread event loop so it survives the per-call ``asyncio.run()`` loops
-# the token-liveness driver spins up (lm.io_logging._clio_streamed_call).
+# daemon-thread event loop so it is independent of whichever loop the caller runs
+# the LM call on.
 # --------------------------------------------------------------------------- #
 _STREAM_END = object()  # queue sentinel: the pump's message stream is exhausted
 

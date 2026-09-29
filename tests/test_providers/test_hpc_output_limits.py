@@ -7,7 +7,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import pytest
-from litellm import ModelResponse
 
 from clio_agent.config import LMProviderConfig, create_lm
 from clio_agent.providers.capabilities import invalidation
@@ -66,23 +65,10 @@ def test_output_cap_reaches_provider_only_when_explicit(cap: int) -> None:
     if cap:
         assert lm.kwargs["max_tokens"] == cap
     else:
-        assert "max_tokens" not in lm.kwargs
-        assert "max_completion_tokens" not in lm.kwargs
-
-
-def test_length_finish_is_an_explicit_failure() -> None:
-    from clio_agent.lm.io_logging import LMOutputTruncatedError
-
-    lm = create_lm(LMProviderConfig(provider="vllm", model="granite-4.2-30b"))
-    response = ModelResponse(
-        choices=[
-            {"message": {"role": "assistant", "content": "partial"}, "finish_reason": "length"}
-        ]
-    )
-    with pytest.raises(LMOutputTruncatedError, match="truncated") as raised:
-        lm._process_lm_response(response, None, [{"role": "user", "content": "report"}])
-    assert lm.history[-1]["response"] is response
-    assert raised.value.to_dict()["details"]["reason"] == "output_truncated"
+        # dspy.LM keeps the key with no value; the wire test below pins that an
+        # unset cap is never sent to the provider.
+        assert lm.kwargs.get("max_tokens") is None
+        assert lm.kwargs.get("max_completion_tokens") is None
 
 
 def test_unknown_provider_cannot_inherit_lm_studio_defaults() -> None:
@@ -135,7 +121,6 @@ def test_real_openai_compatible_wire_omits_default_cap(
         def log_message(self, format: str, *args: Any) -> None:
             pass
 
-    monkeypatch.setattr("clio_agent.lm.io_logging._token_liveness_enabled", lambda: False)
     with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
         worker = threading.Thread(target=server.serve_forever, daemon=True)
         worker.start()

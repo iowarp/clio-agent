@@ -327,7 +327,7 @@ class _Loop:
             return self._stop("context_window_exceeded")
         if response.finish_reason == "length":
             # A cut-off reply is not an answer or a complete call: a typed turn failure.
-            from clio_agent.lm.io_logging import LMOutputTruncatedError  # noqa: PLC0415
+            from clio_agent.lm.policy import LMOutputTruncatedError  # noqa: PLC0415
 
             raise LMOutputTruncatedError(self.lm.model)
         thinking = [p for p in response.message.parts if isinstance(p, ThinkingPart)]

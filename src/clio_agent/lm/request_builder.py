@@ -276,9 +276,9 @@ def build_request_kwargs(config: "LMProviderConfig") -> dict[str, Any]:
 
     Returns:
         The kwargs dict to splat into ``dspy.LM(...)`` alongside ``model``/
-        ``api_key``/``api_base``/``max_tokens``/``cache``. Always includes
-        ``drop_params=True`` (item 9's safety net) unless the caller's own
-        ``provider_options`` already set it.
+        ``api_key``/``api_base``/``max_tokens``/``cache``. Every optional field
+        is gated on the effective parameter set; DSPy's native (lm15) backend
+        records any adaptation it still makes instead of dropping it silently.
     """
 
     dialect, accepted, effective = _resolve(config)
@@ -378,13 +378,6 @@ def build_request_kwargs(config: "LMProviderConfig") -> dict[str, Any]:
     elif config.provider == "claude_code":
         extras["claude_code_transport"] = config.claude_code_transport
 
-    # Safety net only (item 9): every optional field above is already gated
-    # on the effective parameter set. `drop_params` is the backstop for when
-    # that record is wrong, so a stale/incomplete capability record degrades
-    # to "field silently omitted" instead of a hard request failure; P2's
-    # `_warn_dropped_params` (factory.py, called from `_construct_lm`) turns
-    # every actual drop into a logged bug signal instead of a silent one.
-    extras.setdefault("drop_params", True)
     return extras
 
 

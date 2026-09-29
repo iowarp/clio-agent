@@ -708,27 +708,6 @@ class TestSetupDspy:
         adapter = mock_configure.call_args.kwargs["adapter"]
         assert adapter.use_json_adapter_fallback is False
 
-    def test_setup_cloud_openai_keeps_json_fallback(self):
-        """Real OpenAI API should retain DSPy's JSON adapter fallback."""
-        from clio_agent.config import setup_dspy
-
-        env = {
-            "CLIO_LM_PROVIDER": "openai",
-            "CLIO_LM_API_KEY": "sk-test",
-            # model-capabilities brief 9.1: no compiled-in suggested model any
-            # more, so an explicit model is required to construct an LM.
-            "CLIO_LM_MODEL": "gpt-4o-mini",
-        }
-        with isolated_environ(env):
-            # config.py imports dspy lazily via _dspy() — patch the
-            # underlying dspy.configure directly rather than the
-            # (no-longer-existent) module-level alias.
-            with patch("dspy.configure") as mock_configure:
-                setup_dspy(verbose=False)
-
-        adapter = mock_configure.call_args.kwargs["adapter"]
-        assert adapter.use_json_adapter_fallback is True
-
 
 class TestListLmStudioModels:
     """``list_lm_studio_models`` is the single CLI discovery path: it delegates to

@@ -33,7 +33,7 @@ resolver. It holds no per-session state of its own.
 The concrete ``HookedLM`` class is built lazily (:func:`hooked_lm_cls`) so it can
 subclass ``dspy.BaseLM`` — which ``dspy.Predict`` requires via
 ``isinstance(lm, BaseLM)`` — without paying a top-level ``import dspy`` on the boot
-path (mirrors :func:`clio_agent.lm.io_logging._io_logging_lm_cls`).
+path.
 """
 
 from __future__ import annotations
@@ -589,7 +589,7 @@ def wrap_lm_with_hooks(lm: Any, *, route_resolver: RouteResolver | None = None) 
 def _resolve_call_context() -> tuple[str, str, str]:
     """Best-effort (session_id, turn_id, cwd) for the model envelope.
 
-    Resolved from the GACT turn contextvars (the same seam ``io_logging`` reads),
+    Resolved from the GACT turn contextvars (the same seam ``call_trace`` reads),
     so no plumbing has to thread session identity through every ``dspy.context``
     site. Absent a live turn (CLI/optimizer) all three are empty — the hook still
     fires with the model request, just without session provenance.

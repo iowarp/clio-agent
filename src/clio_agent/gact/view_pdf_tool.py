@@ -2,14 +2,10 @@
 
 The PDF twin of :mod:`clio_agent.gact.view_image_tool` — same architecture,
 same reasons it exists. The native tool returns a small, durable descriptor
-instead of PDF bytes, because ReAct stores tool observations in ARC. The
-adapter-side hydration seam (:func:`hydrate_view_pdf_results` /
-:func:`promote_view_pdf_tool_messages`) revalidates the exact workspace file
-immediately before the next model call and replaces the descriptor with a
-native ``dspy.File`` PDF input only in the ephemeral provider request — the
-SAME representation :func:`clio_agent.gact.messaging._resource_ref_file` uses
-for a native PDF resource attachment, so both delivery paths reach the
-provider transport (``claude_code_multimodal._document_block``) identically.
+instead of PDF bytes, because the agent loop stores tool observations in ARC. When
+the loop rebuilds its context (:func:`clio_agent.gact.agents.clio_react_record.result_part`)
+it revalidates the exact workspace file and replaces the descriptor with a native
+document part only in the ephemeral provider request.
 
 A page range narrows a long document to the pages that matter for one call
 (``limits.view_pdf_max_pages`` bounds how many pages ride a single request).
@@ -31,7 +27,6 @@ from clio_agent.gact.resource_mime import detect_media_type
 from clio_agent.providers.native_attachment_bounds import (
     NativeAttachmentTooLargeError,
     check_block_bytes,
-    check_total_bytes,
 )
 from clio_agent.tools.execution import get_active_tool_workspace_root
 from clio_agent.tools.file_policy import FileAccessPolicy
@@ -351,107 +346,6 @@ def _hydrate_descriptor(value: Mapping[str, Any]) -> tuple[Any, int]:
     )
 
 
-def hydrate_view_pdf_results(
-    inputs: dict[str, Any],
-    history_field_name: str,
-    *,
-    running_total_bytes: list[int] | None = None,
-) -> int:
-    """Hydrate retained view-pdf descriptors in one DSPy History input.
-
-    The source ``dspy.History`` is replaced rather than mutated, mirroring
-    :func:`clio_agent.gact.view_image_tool.hydrate_view_image_results`. Returns
-    the number of hydrated PDFs; unrelated history values are byte-for-byte
-    equivalent.
-
-    ``running_total_bytes`` is a one-element mutable box shared with
-    :func:`clio_agent.gact.view_image_tool.hydrate_view_image_results` for the
-    SAME provider request -- see that function's docstring for why the two
-    kinds must share one aggregate counter rather than each checking its own.
-    """
-
-    import dspy  # noqa: PLC0415
-    from dspy.adapters.types.tool import ToolCallResults, ToolCalls  # noqa: PLC0415
-
-    history = inputs.get(history_field_name)
-    if not isinstance(history, dspy.History):
-        return 0
-
-    pdf_count = 0
-    total_bytes = running_total_bytes if running_total_bytes is not None else [0]
-    messages: list[dict[str, Any]] = []
-    for original in history.messages:
-        message = dict(original)
-        tool_calls = message.get("tool_calls")
-        results = tool_calls.tool_call_results if isinstance(tool_calls, ToolCalls) else None
-        if not isinstance(results, ToolCallResults):
-            messages.append(message)
-            continue
-
-        hydrated_results: list[ToolCallResults.ToolCallResult] = []
-        changed = False
-        for result in results.tool_call_results:
-            if result.name != "view_pdf" or result.is_error or not _is_descriptor(result.value):
-                hydrated_results.append(result)
-                continue
-            pdf_file, byte_length = _hydrate_descriptor(result.value)
-            total_bytes[0] += byte_length
-            check_total_bytes(total_bytes[0])
-            hydrated_results.append(result.model_copy(update={"value": pdf_file}))
-            pdf_count += 1
-            changed = True
-        if changed:
-            assert isinstance(tool_calls, ToolCalls)
-            hydrated = results.model_copy(update={"tool_call_results": hydrated_results})
-            message["tool_calls"] = tool_calls.model_copy(update={"tool_call_results": hydrated})
-        messages.append(message)
-
-    if pdf_count:
-        inputs[history_field_name] = dspy.History(messages=messages)
-    return pdf_count
-
-
-def promote_view_pdf_tool_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Promote JSONAdapter tool-file markers into real user file blocks.
-
-    Mirrors :func:`clio_agent.gact.view_image_tool.promote_view_image_tool_messages`
-    for the ``"file"`` content-part shape ``dspy.File`` formats to.
-    """
-
-    from dspy.adapters.types.base_type import (  # noqa: PLC0415
-        CUSTOM_TYPE_END_IDENTIFIER,
-        CUSTOM_TYPE_START_IDENTIFIER,
-        split_message_content_for_custom_types,
-    )
-
-    promoted: list[dict[str, Any]] = []
-    for original in messages:
-        message = dict(original)
-        content = message.get("content")
-        if not (
-            message.get("role") == "tool"
-            and message.get("name") == "view_pdf"
-            and isinstance(content, str)
-            and CUSTOM_TYPE_START_IDENTIFIER in content
-            and CUSTOM_TYPE_END_IDENTIFIER in content
-        ):
-            promoted.append(message)
-            continue
-
-        file_message = {"role": "user", "content": content}
-        split_message_content_for_custom_types([file_message])
-        blocks = file_message.get("content")
-        if not (
-            isinstance(blocks, list)
-            and any(isinstance(block, Mapping) and block.get("type") == "file" for block in blocks)
-        ):
-            promoted.append(message)
-            continue
-        message["content"] = "Workspace PDF attached in the following user message."
-        promoted.extend([message, file_message])
-    return promoted
-
-
 def build_view_pdf_tool() -> Any:
     """Build the declared native tool that inspects one workspace PDF."""
 
@@ -504,8 +398,6 @@ __all__ = [
     "VIEW_PDF_MEDIA_TYPE",
     "ViewPdfError",
     "build_view_pdf_tool",
-    "hydrate_view_pdf_results",
-    "promote_view_pdf_tool_messages",
     "resolved_view_pdf_pages",
     "view_pdf_max_pages",
     "view_pdf_source_max_bytes",

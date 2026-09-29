@@ -75,8 +75,8 @@ STATEFUL_RESET_REASONS: dict[str, dict[str, Any]] = {
         "description": (
             "A prior send on this session failed mid-flight (the pooled subprocess "
             "died / the stream broke). The poisoned session is dropped and the "
-            "retried call is a full send on a fresh session handle (bounded by the "
-            "LM retry layer)."
+            "retried call is a full send on a fresh session handle (bounded by "
+            "DSPy's retry count)."
         ),
     },
     "provider_compacted": {

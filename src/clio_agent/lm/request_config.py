@@ -18,8 +18,7 @@ from dspy.lm15 import Config, Reasoning
 
 __all__ = ["UnmappedGenerationSetting", "config_from_lm_kwargs"]
 
-#: Settings the engine, the LM object or the LiteLLM transport own -- not per-request
-#: generation options.
+#: Settings the engine or the LM object own -- not per-request generation options.
 _NOT_GENERATION = frozenset(
     {
         "model",
@@ -29,7 +28,6 @@ _NOT_GENERATION = frozenset(
         "api_key",
         "api_base",
         "rollout_id",
-        "drop_params",
     }
 )
 _UNIVERSAL = ("temperature", "top_p", "top_k", "seed", "frequency_penalty", "presence_penalty")

@@ -10,7 +10,6 @@ from typing import Any, cast
 
 import dspy
 import pytest
-from dspy.adapters.types.tool import ToolCallResults, ToolCalls
 from dspy.lm15 import DocumentPart, ToolResultPart
 from pypdf import PdfReader, PdfWriter
 
@@ -21,7 +20,6 @@ from clio_agent.gact.view_pdf_tool import (
     VIEW_PDF_DESCRIPTOR_TYPE,
     ViewPdfError,
     build_view_pdf_tool,
-    hydrate_view_pdf_results,
 )
 from clio_agent.tools.execution import tool_workspace_context
 from tests._config_layer import set_config
@@ -53,23 +51,13 @@ def _descriptor(
     return tool, result
 
 
-def _history(result: dict[str, Any], *, pages: str = "") -> dspy.History:
-    calls = ToolCalls(
-        tool_calls=[
-            ToolCalls.ToolCall(
-                id="call_0_0", name="view_pdf", args={"path": "doc.pdf", "pages": pages}
-            )
-        ]
-    )
-    results = ToolCallResults.from_tool_calls_and_values(calls, [result], [False])
-    return dspy.History(
-        messages=[
-            {
-                "next_thought": "Inspect the document.",
-                "tool_calls": calls.model_copy(update={"tool_call_results": results}),
-            }
-        ]
-    )
+def _hydrated(result: dict[str, Any]) -> DocumentPart:
+    """The loop's own hydration seam: the tool result as a native document part."""
+    from clio_agent.gact.agents.clio_react_record import result_part
+
+    [document] = result_part("call_0_0", "view_pdf", result, False).content
+    assert isinstance(document, DocumentPart)
+    return document
 
 
 def test_view_pdf_retains_only_verified_workspace_metadata(tmp_path: Path) -> None:
@@ -186,20 +174,10 @@ def test_view_pdf_slices_the_requested_page_range(tmp_path: Path) -> None:
     assert result["pages"] == "2-3"
     assert result["page_count"] == 5
 
-    inputs: dict[str, Any] = {"history": _history(result, pages="2-3")}
     with tool_workspace_context(tmp_path):
-        assert hydrate_view_pdf_results(inputs, "history") == 1
+        document = _hydrated(result)
 
-    hydrated_value = (
-        inputs["history"].messages[0]["tool_calls"].tool_call_results.tool_call_results[0].value
-    )
-    assert isinstance(hydrated_value, dspy.File)
-    assert hydrated_value.file_data is not None
-    header, _, encoded = hydrated_value.file_data.partition(",")
-    assert header.startswith("data:application/pdf;base64")
-    import base64
-
-    sliced_bytes = base64.b64decode(encoded)
+    sliced_bytes = base64.b64decode(document.data)
     assert len(PdfReader(io.BytesIO(sliced_bytes)).pages) == 2
 
 
@@ -269,31 +247,26 @@ def test_preparse_source_ceiling_fires_before_the_file_is_read_or_parsed(
     assert exc_info.value.reason == "view_pdf_source_too_large"
 
 
-def test_view_pdf_hydrates_the_pdf_without_mutating_retained_history(tmp_path: Path) -> None:
+def test_view_pdf_hydrates_the_pdf_without_mutating_the_retained_descriptor(
+    tmp_path: Path,
+) -> None:
     _tool, result = _descriptor(tmp_path, page_count=2)
-    retained = _history(result)
-    inputs: dict[str, Any] = {"history": retained}
+    retained = dict(result)
 
     with tool_workspace_context(tmp_path):
-        assert hydrate_view_pdf_results(inputs, "history") == 1
+        document = _hydrated(result)
 
-    original_value = retained.messages[0]["tool_calls"].tool_call_results.tool_call_results[0].value
-    hydrated_value = (
-        inputs["history"].messages[0]["tool_calls"].tool_call_results.tool_call_results[0].value
-    )
-    assert original_value == result
-    assert isinstance(hydrated_value, dspy.File)
-    assert hydrated_value.file_data is not None
-    assert hydrated_value.file_data.startswith("data:application/pdf;base64,")
+    assert result == retained  # the durable descriptor is never expanded in place
+    assert document.media_type == "application/pdf"
+    assert len(PdfReader(io.BytesIO(base64.b64decode(document.data))).pages) == 2
 
 
 def test_view_pdf_revalidates_hash_before_provider_delivery(tmp_path: Path) -> None:
     _tool, result = _descriptor(tmp_path, page_count=2)
     (tmp_path / "doc.pdf").write_bytes(_make_pdf(2) + b"\n%changed")
-    inputs: dict[str, Any] = {"history": _history(result)}
 
     with tool_workspace_context(tmp_path), pytest.raises(ViewPdfError) as exc_info:
-        hydrate_view_pdf_results(inputs, "history")
+        _hydrated(result)
 
     assert exc_info.value.reason == "view_pdf_file_changed"
 

@@ -27,7 +27,7 @@ from clio_agent.gact.agents.clio_react import ClioReAct
 from clio_agent.gact.app import build_app
 from clio_agent.gact.types import AgentDef
 from clio_agent.lm import hooked_lm as hooked_lm_mod
-from clio_agent.lm.io_logging import LMOutputTruncatedError
+from clio_agent.lm.policy import LMOutputTruncatedError
 from tests._scripted_engine import calls, scripted_lm
 from tests.turn_signals import wait_for_terminal_status
 
@@ -146,7 +146,6 @@ def test_real_http_submit_schema_retry_stays_on_session_endpoint(
         def log_message(self, format: str, *args: Any) -> None:
             pass
 
-    monkeypatch.setattr("clio_agent.lm.io_logging._token_liveness_enabled", lambda: False)
     wrong, wrong_engine = scripted_lm([])
     monkeypatch.setitem(main_thread_config, "lm", wrong)
     with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:

@@ -19,9 +19,9 @@ from collections.abc import Iterator
 import dspy
 import pytest
 from dspy.lm15 import ServerError
+from dspy.utils.exceptions import is_retryable_lm_error
 
 from clio_agent.gact.agents.clio_react import ClioReAct
-from clio_agent.lm.io_logging import _is_transient_provider_error
 from clio_agent.providers import claude_code_engine
 from clio_agent.providers.claude_code_engine import AsyncClaudeCodeEngine, ClaudeCodeEngine
 from clio_agent.providers.claude_code_errors import (
@@ -79,7 +79,7 @@ async def test_signed_out_result_raises_typed_terminal_error(
     assert ": success" not in text
     assert excinfo.value.detail == _NOT_LOGGED_IN
     # Terminal: re-issuing cannot succeed until the user signs in again.
-    assert _is_transient_provider_error(excinfo.value) is False
+    assert not is_retryable_lm_error(excinfo.value)
 
 
 async def test_a_401_result_status_is_a_sign_out_too(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -106,7 +106,7 @@ async def test_a_404_result_is_a_typed_model_rejection_not_transient(
 
     assert "rejected model 'claude-nope'" in str(excinfo.value)
     assert "issue with the selected model" in str(excinfo.value)
-    assert _is_transient_provider_error(excinfo.value) is False
+    assert not is_retryable_lm_error(excinfo.value)
 
 
 async def test_an_exhausted_plan_is_the_typed_plan_limit_error(
@@ -173,5 +173,5 @@ def test_sign_out_survives_text_wrapping_and_groups() -> None:
     group = ExceptionGroup("unhandled errors in a TaskGroup", [wrapped])
 
     assert contains_claude_code_signed_out(group)
-    assert _is_transient_provider_error(wrapped) is False
+    assert not is_retryable_lm_error(wrapped)
     assert not contains_claude_code_signed_out(RuntimeError("dspy.LMUnexpectedError: 401"))

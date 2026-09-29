@@ -26,10 +26,10 @@ class ClaudeCodeSignedOutError(RuntimeError):
 
     Classified from the SDK's typed ``AssistantMessage.error`` /
     ``ResultMessage.api_error_status`` (see ``claude_code_result_errors``).
-    Terminal: retrying cannot succeed until the user signs in again, so the LM
-    retry layer never re-issues it (``lm.io_logging``). ``str()`` always
-    starts with :data:`CLAUDE_CODE_SIGNED_OUT_MESSAGE`, CLIO's own constant, so
-    the classification survives LiteLLM re-wrapping the exception as text.
+    Terminal: retrying cannot succeed until the user signs in again, so it is
+    not a ``dspy.lm15`` retryable error (DSPy never re-issues it) and the agent
+    loop re-raises it as itself. ``str()`` always starts with
+    :data:`CLAUDE_CODE_SIGNED_OUT_MESSAGE`, CLIO's own constant.
     """
 
     def __init__(self, *, detail: str, model: str) -> None:

@@ -168,7 +168,7 @@ def test_an_engines_own_typed_error_reaches_the_turn_as_itself() -> None:
 
 
 def test_a_truncated_reply_is_a_typed_turn_failure() -> None:
-    from clio_agent.lm.io_logging import LMOutputTruncatedError
+    from clio_agent.lm.policy import LMOutputTruncatedError
 
     with pytest.raises(LMOutputTruncatedError):
         _run([Reply(text="The answer is", finish_reason="length")], [search])

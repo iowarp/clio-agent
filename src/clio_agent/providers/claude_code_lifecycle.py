@@ -52,8 +52,7 @@ __all__ = [
     "release_session_resources_nonblocking",
 ]
 
-#: Marker substring the LM retry layer recognizes as transient (kept in sync
-#: with ``lm.io_logging._TRANSIENT_PROVIDER_MARKERS``).
+#: Marker substring naming a released entry in the typed error's text.
 DEAD_ENTRY_MARKER = "claude agent sdk entry released during a queued connect"
 
 
