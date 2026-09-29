@@ -351,7 +351,5 @@ def test_usage_carries_cached_input_tokens() -> None:
     chunk = sdk_stream.usage_chunk(usage)
     assert chunk is not None
     assert chunk["prompt_tokens_details"] == {"cached_tokens": 900}
-    response = sdk_transport._build_model_response(
-        text="x", model="gpt-x", usage_payload=usage
-    )
+    response = sdk_transport._build_model_response(text="x", model="gpt-x", usage_payload=usage)
     assert response.usage.prompt_tokens_details.cached_tokens == 900  # type: ignore[union-attr]

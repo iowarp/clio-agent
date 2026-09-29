@@ -37,6 +37,7 @@ import queue
 import tempfile
 import threading
 from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from openai_codex import (
@@ -256,6 +257,68 @@ def _is_compaction_event(event: Any) -> bool:
     )
 
 
+async def _await_progress(awaitable: Any, *, timeout: float, phase: str) -> Any:
+    """Await one SDK exchange, failing typed when it makes no progress in ``timeout``."""
+    try:
+        return await asyncio.wait_for(awaitable, timeout=timeout)
+    except TimeoutError as exc:
+        raise CodexSDKError(
+            f"Codex SDK made no progress for {timeout:g}s during {phase} "
+            "reason=codex_sdk_progress_timeout"
+        ) from exc
+
+
+@dataclass(frozen=True)
+class _TurnRequest:
+    """One SDK turn: its input, model settings and thread continuation."""
+
+    prompt: str
+    images: list[str] | None
+    model: str
+    cwd: str | None
+    effort: ReasoningEffort | None
+    timeout: float
+    thread_id: str | None
+    keep_thread: bool
+    on_thread: Callable[[str], None] | None
+    on_compacted: Callable[[], None] | None
+
+    def turn_input(self) -> Any:
+        """The SDK turn input: the prompt text, plus native images when present."""
+        if not self.images:
+            return self.prompt
+        return [TextInput(self.prompt), *(ImageInput(url) for url in self.images)]
+
+
+class _EventRecorder:
+    """Validate each SDK event, report a thread compaction once, and deliver it."""
+
+    def __init__(
+        self,
+        chunks: queue.SimpleQueue[tuple[Any, Any]],
+        on_compacted: Callable[[], None] | None,
+        thread_id: str,
+    ) -> None:
+        self._chunks = chunks
+        self._on_compacted = on_compacted
+        self._thread_id = thread_id
+        self._compaction_reported = False
+
+    def __call__(self, event: Any) -> None:
+        """Record one event (raises typed on a hidden action or a failed turn)."""
+        _validate_bare_lm_event(event)
+        _raise_failed_turn(event)
+        if not self._compaction_reported and _is_compaction_event(event):
+            self._compaction_reported = True
+            logger.warning(
+                "Codex SDK compacted a clio thread reason=codex_sdk_thread_compacted thread=%s",
+                self._thread_id,
+            )
+            if self._on_compacted is not None:
+                self._on_compacted()
+        self._chunks.put(("event", event))
+
+
 class CodexSDKClient:
     """Persistent official SDK client hosted on a private event-loop thread."""
 
@@ -377,6 +440,101 @@ class CodexSDKClient:
                     self._client_users,
                 )
 
+    async def _open_thread(
+        self, client: AsyncCodex, generation: int, request: _TurnRequest, progress_timeout: float
+    ) -> Any:
+        """Resume the kept thread ``request`` names, or open a new one."""
+        if request.thread_id is not None:
+            kept = self._threads.get(request.thread_id)
+            if kept is None or kept[0] != generation:
+                self._threads.pop(request.thread_id, None)
+                raise CodexThreadLostError(request.thread_id)
+            return kept[1]
+        thread = await _await_progress(
+            client.thread_start(
+                approval_mode=ApprovalMode.deny_all,
+                base_instructions=BARE_LM_BASE_INSTRUCTIONS,
+                config=BARE_LM_THREAD_CONFIG,
+                cwd=request.cwd or tempfile.gettempdir(),
+                developer_instructions=BARE_LM_BASE_INSTRUCTIONS,
+                ephemeral=True,
+                model=request.model,
+                sandbox=Sandbox.read_only,
+            ),
+            timeout=progress_timeout,
+            phase="thread start",
+        )
+        new_id = str(getattr(thread, "id", "") or "")
+        if new_id:
+            if request.keep_thread:
+                self._threads[new_id] = (generation, thread)
+            if request.on_thread is not None:
+                request.on_thread(new_id)
+        return thread
+
+    async def _pump_turn(
+        self, request: _TurnRequest, chunks: queue.SimpleQueue[tuple[Any, Any]]
+    ) -> None:
+        """Run one SDK turn on the owner loop, delivering its events to ``chunks``."""
+        turn = None
+        stream = None
+        clean = False
+        keep_client = False
+        generation = -1
+        try:
+            progress_timeout = _sdk_progress_timeout_s(request.timeout)
+            client = await _await_progress(
+                self._ensure_client(), timeout=progress_timeout, phase="client startup"
+            )
+            # Claim a hold on this client generation. Every pump runs on the single
+            # owner loop, so recording the hold in the same synchronous block as the
+            # await's return is atomic with respect to the other pumps.
+            generation = self._generation
+            self._client_users += 1
+            thread = await self._open_thread(client, generation, request, progress_timeout)
+            record = _EventRecorder(chunks, request.on_compacted, str(getattr(thread, "id", "")))
+            turn = await _await_progress(
+                thread.turn(
+                    request.turn_input(),
+                    effort=request.effort,
+                    summary=ReasoningSummary.model_validate("detailed"),
+                ),
+                timeout=progress_timeout,
+                phase="turn start",
+            )
+            stream = turn.stream()
+            while True:
+                try:
+                    event = await _await_progress(
+                        anext(stream), timeout=progress_timeout, phase="event stream"
+                    )
+                except StopAsyncIteration:
+                    break
+                record(event)
+            clean = True
+        except asyncio.CancelledError:
+            keep_client = True
+            if turn is not None:
+                await _cleanup_sdk_action("turn_interrupt_cancel", turn.interrupt())
+            raise
+        except BaseException as exc:  # noqa: BLE001 - delivered to caller loop
+            if turn is not None:
+                await _cleanup_sdk_action("turn_interrupt_error", turn.interrupt())
+            # A lost thread is the caller's typed reset, not a runtime fault.
+            keep_client = isinstance(exc, CodexThreadLostError)
+            chunks.put(("exc", exc))
+        finally:
+            if stream is not None:
+                close_stream = getattr(stream, "aclose", None)
+                if callable(close_stream):
+                    await _cleanup_sdk_action("stream_close", close_stream())
+            if generation >= 0:
+                # Only a pump that actually obtained the client may ask for its
+                # teardown; a failure BEFORE the handshake completed would otherwise
+                # close a client that belongs entirely to other turns.
+                await self._release_client(generation, reset=not clean and not keep_client)
+            chunks.put((_STREAM_END, None))
+
     async def stream(
         self,
         *,
@@ -406,125 +564,22 @@ class CodexSDKClient:
             on_thread: Called with the id of a newly opened thread.
             on_compacted: Called once if Codex compacts the thread during the turn.
         """
+        request = _TurnRequest(
+            prompt=prompt,
+            images=images,
+            model=model,
+            cwd=cwd,
+            effort=effort,
+            timeout=timeout,
+            thread_id=thread_id,
+            keep_thread=keep_thread,
+            on_thread=on_thread,
+            on_compacted=on_compacted,
+        )
         owner_loop = self._ensure_loop()
         caller_loop = asyncio.get_running_loop()
         chunks: queue.SimpleQueue[tuple[Any, Any]] = queue.SimpleQueue()
-
-        async def _pump() -> None:
-            turn = None
-            stream = None
-            clean = False
-            cancelled = False
-            thread_lost = False
-            generation = -1
-            try:
-                progress_timeout = _sdk_progress_timeout_s(timeout)
-
-                compaction_reported = False
-
-                def _record(event: Any) -> None:
-                    nonlocal compaction_reported
-                    _validate_bare_lm_event(event)
-                    _raise_failed_turn(event)
-                    if not compaction_reported and _is_compaction_event(event):
-                        compaction_reported = True
-                        logger.warning(
-                            "Codex SDK compacted a clio thread "
-                            "reason=codex_sdk_thread_compacted thread=%s",
-                            getattr(thread, "id", ""),
-                        )
-                        if on_compacted is not None:
-                            on_compacted()
-                    chunks.put(("event", event))
-
-                async def _await_progress(awaitable: Any, *, phase: str) -> Any:
-                    try:
-                        return await asyncio.wait_for(awaitable, timeout=progress_timeout)
-                    except TimeoutError as exc:
-                        raise CodexSDKError(
-                            "Codex SDK made no progress for "
-                            f"{progress_timeout:g}s during {phase} "
-                            "reason=codex_sdk_progress_timeout"
-                        ) from exc
-
-                client = await _await_progress(self._ensure_client(), phase="client startup")
-                # Claim a hold on this client generation. Every pump runs on the single
-                # owner loop, so recording the hold in the same synchronous block as the
-                # await's return is atomic with respect to the other pumps.
-                generation = self._generation
-                self._client_users += 1
-                if thread_id is not None:
-                    kept = self._threads.get(thread_id)
-                    if kept is None or kept[0] != generation:
-                        self._threads.pop(thread_id, None)
-                        raise CodexThreadLostError(thread_id)
-                    thread = kept[1]
-                else:
-                    thread = await _await_progress(
-                        client.thread_start(
-                            approval_mode=ApprovalMode.deny_all,
-                            base_instructions=BARE_LM_BASE_INSTRUCTIONS,
-                            config=BARE_LM_THREAD_CONFIG,
-                            cwd=cwd or tempfile.gettempdir(),
-                            developer_instructions=BARE_LM_BASE_INSTRUCTIONS,
-                            ephemeral=True,
-                            model=model,
-                            sandbox=Sandbox.read_only,
-                        ),
-                        phase="thread start",
-                    )
-                    new_id = str(getattr(thread, "id", "") or "")
-                    if keep_thread and new_id:
-                        self._threads[new_id] = (generation, thread)
-                    if on_thread is not None and new_id:
-                        on_thread(new_id)
-                turn_input = (
-                    [TextInput(prompt), *(ImageInput(url) for url in images)] if images else prompt
-                )
-                turn = await _await_progress(
-                    thread.turn(
-                        turn_input,
-                        effort=effort,
-                        summary=ReasoningSummary.model_validate("detailed"),
-                    ),
-                    phase="turn start",
-                )
-                stream = turn.stream()
-
-                while True:
-                    try:
-                        assert stream is not None
-                        event = await _await_progress(anext(stream), phase="event stream")
-                    except StopAsyncIteration:
-                        break
-                    _record(event)
-                clean = True
-            except asyncio.CancelledError:
-                cancelled = True
-                if turn is not None:
-                    await _cleanup_sdk_action("turn_interrupt_cancel", turn.interrupt())
-                raise
-            except BaseException as exc:  # noqa: BLE001 - delivered to caller loop
-                if turn is not None:
-                    await _cleanup_sdk_action("turn_interrupt_error", turn.interrupt())
-                if isinstance(exc, CodexThreadLostError):
-                    thread_lost = True
-                chunks.put(("exc", exc))
-            finally:
-                if stream is not None:
-                    close_stream = getattr(stream, "aclose", None)
-                    if callable(close_stream):
-                        await _cleanup_sdk_action("stream_close", close_stream())
-                if generation >= 0:
-                    # Only a pump that actually obtained the client may ask for its
-                    # teardown; a failure BEFORE the handshake completed would otherwise
-                    # close a client that belongs entirely to other turns.
-                    await self._release_client(
-                        generation, reset=not clean and not cancelled and not thread_lost
-                    )
-                chunks.put((_STREAM_END, None))
-
-        future = asyncio.run_coroutine_threadsafe(_pump(), owner_loop)
+        future = asyncio.run_coroutine_threadsafe(self._pump_turn(request, chunks), owner_loop)
         try:
             from clio_agent.gact.context import active_session_id  # noqa: PLC0415
 

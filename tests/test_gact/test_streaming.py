@@ -40,6 +40,23 @@ from tests._config_layer import set_config
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 
+@pytest.fixture(autouse=True)
+def _claude_code_support_offline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the Claude Code support install off PyPI.
+
+    The SDK is absent from the test venv, so a claude_code turn's auth reprobe
+    starts a background model discovery whose support install would look the
+    release up on PyPI -- sometimes after the test ended, as a network error.
+    """
+    from clio_agent.providers import dependencies  # noqa: PLC0415
+
+    def fail_install(**kwargs: Any) -> bool:
+        del kwargs
+        raise dependencies.ProviderDependencyInstallError("offline")
+
+    monkeypatch.setattr(dependencies, "ensure_claude_code_support", fail_install)
+
+
 @dataclass
 class _Pred:
     answer: str = ""

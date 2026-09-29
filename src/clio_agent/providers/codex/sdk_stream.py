@@ -106,6 +106,100 @@ def _note_provider_thinking(text: str, *, summary: bool) -> None:
         pass
 
 
+class _TurnAccumulator:
+    """Fold one SDK turn's events into text deltas, thinking lanes, usage and a fallback."""
+
+    def __init__(self, call_index: int) -> None:
+        self.call_index = call_index
+        self.final_text = ""
+        self.fallback_text = ""
+        self.usage: dict[str, int] = {}
+        self._event_index = 0
+        self._summary_parts = 0
+
+    def handle(self, event: Any) -> str:
+        """Record ``event``; return the answer-text delta it carries (``""`` if none)."""
+        self._event_index += 1
+        method = str(getattr(event, "method", ""))
+        payload = event.payload
+        if method == "item/agentMessage/delta":
+            return self._text_delta(method, str(getattr(payload, "delta", "") or ""))
+        if method == "item/reasoning/summaryPartAdded":
+            self._summary_boundary(method)
+        elif method in {"item/reasoning/textDelta", "item/reasoning/summaryTextDelta"}:
+            self._thinking_delta(method, str(getattr(payload, "delta", "") or ""))
+        elif method == "thread/tokenUsage/updated":
+            self.usage = _normalize_usage(payload) or self.usage
+        elif method == "item/completed":
+            self._completed_item(_item_root(payload))
+        return ""
+
+    def _text_delta(self, method: str, text: str) -> str:
+        if not text:
+            return ""
+        self.final_text += text
+        emit_raw_event(
+            call_index=self.call_index,
+            event_index=self._event_index,
+            source_channel="text_delta",
+            text=text,
+            raw_event_type=method,
+        )
+        emit_normalized(
+            call_index=self.call_index,
+            event_index=self._event_index,
+            source_channel="text_delta",
+            normalized_event="contract.content",
+            text=text,
+        )
+        return text
+
+    def _summary_boundary(self, method: str) -> None:
+        if self._summary_parts:
+            boundary = "\n\n"
+            emit_raw_event(
+                call_index=self.call_index,
+                event_index=self._event_index,
+                source_channel="reasoning_summary",
+                text=boundary,
+                raw_event_type=method,
+            )
+            _note_provider_thinking(boundary, summary=True)
+        self._summary_parts += 1
+
+    def _thinking_delta(self, method: str, text: str) -> None:
+        is_summary = method.endswith("summaryTextDelta")
+        emit_raw_event(
+            call_index=self.call_index,
+            event_index=self._event_index,
+            source_channel="reasoning_summary" if is_summary else "reasoning_text",
+            text=text,
+            raw_event_type=method,
+        )
+        _note_provider_thinking(text, summary=is_summary)
+
+    def _completed_item(self, item: Any) -> None:
+        if str(getattr(item, "type", "")) != "agentMessage":
+            return
+        phase_value = getattr(item, "phase", None)
+        phase = getattr(phase_value, "value", phase_value)
+        if phase == "final_answer" or not self.fallback_text:
+            self.fallback_text = str(getattr(item, "text", "") or "")
+
+
+def _typed_stream_failure(exc: CodexError, *, model: str) -> Exception:
+    """Map an SDK error to CLIO's typed model-rejection or stream-failure error."""
+    message = str(exc)
+    if _is_codex_model_rejection(message, model=model):
+        raise_model_rejected(
+            message=f"codex sdk rejected model {model!r}: {message}",
+            model=f"codex_sdk/{model}",
+            llm_provider="codex_sdk",
+            cause=exc,
+        )
+    return CodexSDKError(f"Codex SDK stream failed (model={model}): {exc}")
+
+
 async def astream_sdk(
     *,
     prompt: str,
@@ -127,11 +221,7 @@ async def astream_sdk(
     """
     call_id = send.call_id if send is not None else uuid.uuid4().hex
     emit_call_started(call_id=call_id, call_index=call_index, model=model, prompt=prompt)
-    final_text = ""
-    fallback_text = ""
-    usage: dict[str, int] = {}
-    event_index = 0
-    summary_parts = 0
+    turn = _TurnAccumulator(call_index)
     try:
         async for event in _SDK_CLIENT.stream(
             prompt=prompt,
@@ -145,85 +235,17 @@ async def astream_sdk(
             on_thread=send.bind_thread if send is not None else None,
             on_compacted=send.note_provider_compacted if send is not None else None,
         ):
-            event_index += 1
-            method = str(getattr(event, "method", ""))
-            payload = event.payload
-            if method == "item/agentMessage/delta":
-                text = str(getattr(payload, "delta", "") or "")
-                if not text:
-                    continue
-                final_text += text
-                emit_raw_event(
-                    call_index=call_index,
-                    event_index=event_index,
-                    source_channel="text_delta",
-                    text=text,
-                    raw_event_type=method,
-                )
-                emit_normalized(
-                    call_index=call_index,
-                    event_index=event_index,
-                    source_channel="text_delta",
-                    normalized_event="contract.content",
-                    text=text,
-                )
+            if text := turn.handle(event):
                 yield _stream_chunk(text=text, is_finished=False)
-            elif method == "item/reasoning/summaryPartAdded":
-                if summary_parts:
-                    boundary = "\n\n"
-                    emit_raw_event(
-                        call_index=call_index,
-                        event_index=event_index,
-                        source_channel="reasoning_summary",
-                        text=boundary,
-                        raw_event_type=method,
-                    )
-                    _note_provider_thinking(boundary, summary=True)
-                summary_parts += 1
-            elif method in {
-                "item/reasoning/textDelta",
-                "item/reasoning/summaryTextDelta",
-            }:
-                text = str(getattr(payload, "delta", "") or "")
-                is_summary = method.endswith("summaryTextDelta")
-                source = "reasoning_summary" if is_summary else "reasoning_text"
-                emit_raw_event(
-                    call_index=call_index,
-                    event_index=event_index,
-                    source_channel=source,
-                    text=text,
-                    raw_event_type=method,
-                )
-                _note_provider_thinking(text, summary=is_summary)
-            elif method == "thread/tokenUsage/updated":
-                usage = _normalize_usage(payload) or usage
-            elif method == "item/completed":
-                item = _item_root(payload)
-                if str(getattr(item, "type", "")) == "agentMessage":
-                    phase_value = getattr(item, "phase", None)
-                    phase = getattr(phase_value, "value", phase_value)
-                    text = str(getattr(item, "text", "") or "")
-                    if phase == "final_answer" or not fallback_text:
-                        fallback_text = text
     except CodexThreadLostError:
         raise
-    except CodexError as exc:
-        if send is not None:
-            send.note_error()
-        message = str(exc)
-        if _is_codex_model_rejection(message, model=model):
-            raise_model_rejected(
-                message=f"codex sdk rejected model {model!r}: {message}",
-                model=f"codex_sdk/{model}",
-                llm_provider="codex_sdk",
-                cause=exc,
-            )
-        raise CodexSDKError(f"Codex SDK stream failed (model={model}): {exc}") from exc
-    except (Exception, asyncio.CancelledError):
+    except (Exception, asyncio.CancelledError) as exc:
         # A failed or cancelled turn leaves the thread in an unknown state: drop it
         # so the conversation's next call is a typed ``provider_error`` full send.
         if send is not None:
             send.note_error()
+        if isinstance(exc, CodexError):
+            raise _typed_stream_failure(exc, model=model) from exc
         raise
     finally:
         _SDK_CLIENT.archive_threads(take_threads_to_archive())
@@ -231,19 +253,19 @@ async def astream_sdk(
             call_id=call_id,
             call_index=call_index,
             model=model,
-            usage=usage,
-            output_chars=len(final_text or fallback_text),
+            usage=turn.usage,
+            output_chars=len(turn.final_text or turn.fallback_text),
         )
-    if not final_text and fallback_text:
-        final_text = fallback_text
-        yield _stream_chunk(text=fallback_text, is_finished=False)
-    if not final_text:
+    if not turn.final_text and turn.fallback_text:
+        turn.final_text = turn.fallback_text
+        yield _stream_chunk(text=turn.fallback_text, is_finished=False)
+    if not turn.final_text:
         raise CodexSDKError(f"Codex SDK returned empty content (model={model})")
     yield _stream_chunk(
         text="",
         is_finished=True,
         finish_reason="stop",
-        usage=usage_chunk(usage),
+        usage=usage_chunk(turn.usage),
     )
 
 
