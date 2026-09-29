@@ -208,6 +208,9 @@ steers/child results off tool observations.
 - **The design is the source of truth.** Where existing code, docs or a client expect the
   old behavior, the client/docs change to the design — never the reverse. Client priority:
   the gact-tui web/desktop app first (verified in the browser), the terminal TUI last.
+  The campaign owns the whole stack: clio-agent AND gact-tui (web, desktop, TUI) change
+  together, in stacked branches, for the users that matter — non-CS scientists on the
+  web/desktop app.
 - Stacked phase branches in worktrees; **commit and push after every coherent step**; never
   merge to develop/main or open PRs until the owner says (one merge at the end). Conventional commits; no
   Claude/Co-Authored-By attribution line.
