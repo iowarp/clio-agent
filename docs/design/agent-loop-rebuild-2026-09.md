@@ -438,6 +438,41 @@ projection code with clio-core search off, and is visible in the UI and in docto
 separate DSPy `History` path is built, since that would be a second context system. Losing
 ARC mid-turn is a typed turn failure (`ContextReadError`).
 
+### Phase 3 progress (2026-09-29)
+
+**Landed on `feat/context-projection`** (`d375955d`, `51999a73`, `75dc84af`; full suite 9956 passed, lint/mypy/guards green): steps 1–7 of the sub-plan, the context-frame part of step 8, and undo/rewind rolling back the agent context.
+
+- **The working set spans turns.**
+  - The per-forward wipe is deleted.
+  - Each forward records its user message as a `user` segment, with media byte-exact.
+  - `fold_steps` projects `user` segments, so turn 2 sees turn 1's real steps and answer.
+  - A lost plane write is a typed turn failure (`ContextWriteError`), no longer a logged warning.
+- **The prose blob is deleted:** `_compile_session_conversation_history` is gone.
+- **One loop for every agent kind.**
+  - The prompt-only agent and the `predict` / `chain_of_thought` blueprints now run `ClioReAct` with no tools; their reasoning is the model's own thinking.
+  - This was needed because those modules never read clio-core, and without the prose blob they would have lost earlier turns.
+  - `ClioReAct` now keeps a DSPy module LM (`get_lm` / `set_lm`), and the variant wrapper forwards it. Before this fix, `dspy.BestOfN` / `Refine` over `ClioReAct` raised "Multiple LMs", so variant blueprints could not run.
+- **Injections are recorded additions.**
+  - `memory_search`, `task_results`, `plan_mode`, `todos` and `replan` return blocks. They are no longer concatenated into the question.
+  - The loop records each block once as a user-role message headed `[clio: <source>]` with `actor: algorithm`, ahead of the turn's user message. It records a block again only when its text changes.
+  - The context frame lists each injection as `kind: injection`.
+- **Steers and child results arrive at the step boundary.**
+  - `ClioReAct` drains the loop inbox before every model call. A steer becomes a user message; a child result becomes a `[clio: task_results]` addition.
+  - The executor no longer appends anything to tool results.
+- **Compaction runs over what clio-core holds.**
+  - It summarizes the scope's own projection, the running turn's steps included, and folds exactly those segments.
+  - A manual compaction compacts every live scope of the session.
+  - If nothing but a lone summary is live, compaction is a typed skip (`nothing_new_since_last_compaction`).
+- **Provider conversations continue across turns.**
+  - With the projection append-only across turns, turn 2 is a delta send on the kept Codex thread.
+  - Test: `test_a_later_turn_of_the_agent_continues_the_thread_with_only_the_new_message`.
+
+**Open:**
+- Step 8, the UI rendering of injections in gact-tui web; this lands with Phase 4's browser pass.
+- BestOfN run scopes (`agent#runN`) now persist across turns, but each run only continues its own line. Proposed: fork each run from the base scope, and record the winner's answer on the base scope.
+- **Undo / rewind follow the ledger:** each scope's working set is rebuilt as it stood before the first rolled-back turn (recorded ops; a rolled-back compaction's originals come back; a kept question keeps its user message).
+- `render_keys` (the old trajectory projection) is still on the context route and in the gact-tui SPEC; it goes with the UI-projection step.
+
 ## Definition of done
 
 1. Full suite green on every phase branch (`pytest tests -m "not integration"`): zero failures,
