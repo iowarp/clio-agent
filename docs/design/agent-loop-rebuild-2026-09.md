@@ -87,7 +87,7 @@ own live-verification legs and marketplace agents, with the gact-tui UI verified
 - Custom LMs via `forward/aforward` and `messages=` dicts are deprecated (removed in 3.5) →
   migrate clio's custom transports to the Engine API.
 
-## Phases (each its own branch off `develop`, worktree, detailed sub-plan at start)
+## Phases (stacked branches — each cut from the previous phase's branch; worktree; detailed sub-plan at start)
 
 0. **Environment + baseline.** `uv sync --extra dev`; clio-core daemon working (the full suite
    needs it); Codex SDK signed in; gact-tui web built. Measure the baseline on unmodified
@@ -138,8 +138,13 @@ own live-verification legs and marketplace agents, with the gact-tui UI verified
 
 ## Rules
 
-- Branches off `develop` in worktrees; **commit and push after every coherent step**; never
-  merge to develop/main or open PRs until the owner says. Conventional commits; no
+- **Full replacement, one transition.** This is not an alternative loop behind a flag: no dual
+  paths, no old-vs-new switch, no compatibility shims, no "legacy" fallback kept alive. Each phase
+  deletes, in the same branch, the code it replaces; expect deletions to match or exceed additions
+  across the campaign. Phases STACK (each phase branch is cut from the previous phase's branch);
+  there is ONE merge, when the owner says, after which the old loop never exists again.
+- Stacked phase branches in worktrees; **commit and push after every coherent step**; never
+  merge to develop/main or open PRs until the owner says (one merge at the end). Conventional commits; no
   Claude/Co-Authored-By attribution line.
 - Read before changing (the relevant `docs/design/*` and the code path); keep DOES vs SHOULD
   separate. No silent fallbacks, no deterministic decisions on model prose, no accretion into god
