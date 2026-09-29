@@ -91,6 +91,30 @@ def kvnorm_join_enabled() -> bool:
     return "flowcept" in configured_provider_names()
 
 
+def attention_capture_enabled() -> bool:
+    """Whether vLLM calls declare attention ranges (vllm-attn-connector).
+
+    Requires the explicit ``provenance.attention`` opt-in AND Flowcept among the
+    configured providers: the connector's records land in Flowcept, and the
+    labelled ranges CLIO declares are joined to them there by response id.
+    """
+
+    if not conf.resolve(
+        "provenance.attention",
+        env="CLIO_PROVENANCE_ATTENTION",
+        default=False,
+        cast=conf.as_bool,
+    ):
+        return False
+    return "flowcept" in configured_provider_names()
+
+
+def response_id_join_enabled() -> bool:
+    """Whether ``lm.call`` records carry the provider response id (join key)."""
+
+    return kvnorm_join_enabled() or attention_capture_enabled()
+
+
 def native_durable_provenance_enabled() -> bool:
     """Whether ARC may release its event log after native persistence."""
 

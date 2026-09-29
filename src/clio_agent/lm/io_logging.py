@@ -252,6 +252,16 @@ def _io_logging_lm_cls() -> Any:
             return outputs
 
         def __call__(self, prompt=None, messages=None, **kwargs):  # type: ignore[override]
+            # vLLM attention capture (gact/attention): declare per-section token
+            # ranges on the request and expose them to this call's lm.call record.
+            from clio_agent.gact.attention.declare import declared_request  # noqa: PLC0415
+
+            with declared_request(
+                model=self.model, messages=messages, lm_kwargs=self.kwargs, call_kwargs=kwargs
+            ) as call_kwargs:
+                return self._clio_call(prompt, messages, **call_kwargs)
+
+        def _clio_call(self, prompt=None, messages=None, **kwargs):  # type: ignore[no-untyped-def]
             # LM Studio response_format shim (guided output only; qwopus experts:
             # main's delegation/workflow_state, ReAct's next_tool_args:dict).
             _shim_lmstudio_response_format(kwargs)
@@ -295,6 +305,14 @@ def _io_logging_lm_cls() -> Any:
             raise last_exc
 
         async def acall(self, prompt=None, messages=None, **kwargs):  # type: ignore[override]
+            from clio_agent.gact.attention.declare import declared_request  # noqa: PLC0415
+
+            with declared_request(
+                model=self.model, messages=messages, lm_kwargs=self.kwargs, call_kwargs=kwargs
+            ) as call_kwargs:
+                return await self._clio_acall(prompt, messages, **call_kwargs)
+
+        async def _clio_acall(self, prompt=None, messages=None, **kwargs):  # type: ignore[no-untyped-def]
             # The async twin of ``__call__`` (#1333). The finalize GOAL judge is
             # awaited on the server loop (``Predict.acall`` -> ``LM.acall``) and must
             # keep the same provider contract: the LM Studio response_format shim,
@@ -663,10 +681,13 @@ def _io_logging_lm_cls() -> Any:
                 }
                 # Stage 3 kvnorm crosslink: the vLLM response id keys this lm.call
                 # to its kv_token_importance record in the fused Flowcept store.
-                from clio_agent.provenance_config import kvnorm_join_enabled  # noqa: PLC0415
+                from clio_agent.gact.attention.declare import current_declaration  # noqa: PLC0415
+                from clio_agent.provenance_config import response_id_join_enabled  # noqa: PLC0415
 
-                if kvnorm_join_enabled():
+                if response_id_join_enabled():
                     record["response_id"] = _kvnorm_response_id(response)
+                if (declaration := current_declaration()) is not None:
+                    record["attention"] = declaration
                 try:
                     from clio_agent.gact.context import (  # noqa: PLC0415
                         active_session_id,
