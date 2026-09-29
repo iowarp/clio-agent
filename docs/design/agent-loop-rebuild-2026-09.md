@@ -244,7 +244,14 @@ Phase 2's tests that pin the adapter wire (`test_clio_react_wire_byte_equality`,
 `Request`; the ReActV2 differential becomes a semantic differential against 3.4 `ReActV2` with
 native function calling (same tool sequence and outputs for a scripted engine).
 
-**Revised phase order (owner to approve)**
+**Owner decisions (2026-09-29):** 2b approved — the DSPy 3.4 upgrade is step 0 of the rebuild
+("that was meant to be step 0"). Live validation runs on the **Codex SDK only**; Claude Code is
+tested once development is done. Codex direct: **benchmark stateless (`OpenAICodexLM`) vs
+stateful (WebSocket continuation)** on latency and reported cache hits before choosing (needs
+the owner's Codex direct login). Guided output: **configurable, default off**. The web-fetch leg
+runs against a local `clio-web-search` container.
+
+**Revised phase order (approved)**
 
 - **2b (new, next): DSPy 3.4 + engines + the direct-Request loop.** Pin `dspy==3.4.0`; Codex SDK
   and Claude Code SDK engines (stateful, structural deltas, a minimal text tool-call block because
