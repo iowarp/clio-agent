@@ -22,7 +22,7 @@ summary is never relabelled as full provider reasoning.
 The official SDK owns its pinned runtime, subprocess, and JSON-RPC lifecycle,
 which gives CLIO one typed cancellation path. Threads are kept open per
 conversation and continued with only the new messages
-(:mod:`clio_agent.providers.codex.sdk_stateful`); a thread the runtime no longer
+(:mod:`clio_agent.providers.codex.sdk_engine`); a thread the runtime no longer
 holds raises :class:`CodexThreadLostError` so the caller resets typed. Progress is
 bounded per SDK exchange, never by a composite turn deadline that could kill a
 healthy long-running stream.

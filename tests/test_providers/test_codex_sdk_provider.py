@@ -26,7 +26,7 @@ from clio_agent.providers.claude_code_cancel import (
 from clio_agent.providers.claude_code_cancel import (
     abort_session_streams,
 )
-from clio_agent.providers.codex import sdk_client, sdk_discovery, sdk_transport
+from clio_agent.providers.codex import sdk_client, sdk_discovery, sdk_engine
 from clio_agent.providers.codex.constants import LITELLM_PROVIDER, LITELLM_PROVIDER_SDK
 
 
@@ -91,7 +91,7 @@ def test_sdk_modules_never_reference_auth_json() -> None:
     not raw substring containment over the whole file.
     """
 
-    for module in (sdk_client, sdk_discovery, sdk_transport):
+    for module in (sdk_client, sdk_discovery, sdk_engine):
         source = Path(inspect.getfile(module)).read_text(encoding="utf-8")
         literals = _string_literals_excluding_docstrings(source)
         offenders = [lit for lit in literals if "auth.json" in lit]
@@ -396,10 +396,13 @@ def test_model_selection_routes_to_sdk_when_variant_selected() -> None:
     config = LMProviderConfig(
         provider="codex", model="gpt-5.5", api_base="codex://direct", codex_variant="sdk"
     )
-    assert _resolve_model_name(config) == f"{LITELLM_PROVIDER_SDK}/cg-gpt-5.5"
+    assert _resolve_model_name(config) == f"{LITELLM_PROVIDER_SDK}/gpt-5.5"
 
 
-def test_provider_registration_picks_the_bound_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_only_the_direct_transport_registers_a_litellm_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The SDK variant is an engine LM: nothing is registered with LiteLLM for it."""
     from clio_agent.config import LMProviderConfig
     from clio_agent.lm import factory
 
@@ -408,19 +411,10 @@ def test_provider_registration_picks_the_bound_transport(monkeypatch: pytest.Mon
         "clio_agent.providers.codex.litellm_adapter.ensure_registered",
         lambda: registered.append("direct"),
     )
-    monkeypatch.setattr(
-        "clio_agent.providers.codex.sdk_transport.ensure_registered",
-        lambda: registered.append("sdk"),
+    factory._ensure_provider_registered(
+        LMProviderConfig(provider="codex", model="gpt-5.5", api_base="codex://direct")
     )
-
-    direct_cfg = LMProviderConfig(provider="codex", model="gpt-5.5", api_base="codex://direct")
-    factory._ensure_provider_registered(direct_cfg)
-    sdk_cfg = LMProviderConfig(
-        provider="codex", model="gpt-5.5", api_base="codex://direct", codex_variant="sdk"
-    )
-    factory._ensure_provider_registered(sdk_cfg)
-
-    assert registered == ["direct", "sdk"]
+    assert registered == ["direct"]
 
 
 def test_invalid_codex_variant_is_rejected() -> None:

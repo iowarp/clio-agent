@@ -61,10 +61,10 @@ def test_build_spec_inherits_and_overrides_the_variant() -> None:
 
 
 @pytest.mark.parametrize(
-    ("variant", "litellm_provider"),
-    [("sdk", LITELLM_PROVIDER_SDK), ("direct", LITELLM_PROVIDER)],
+    ("variant", "model_name"),
+    [("sdk", f"{LITELLM_PROVIDER_SDK}/gpt-5.5"), ("direct", f"{LITELLM_PROVIDER}/cg-gpt-5.5")],
 )
-def test_resolver_binds_the_named_codex_transport(variant: str, litellm_provider: str) -> None:
+def test_resolver_binds_the_named_codex_transport(variant: str, model_name: str) -> None:
     from clio_agent.lm.factory import _resolve_model_name
 
     resolved = resolver_mod.resolve_endpoint_and_handshake(
@@ -72,7 +72,7 @@ def test_resolver_binds_the_named_codex_transport(variant: str, litellm_provider
     )
     config = resolved.materialize()
     assert config.codex_variant == variant
-    assert _resolve_model_name(config) == f"{litellm_provider}/cg-gpt-5.5"
+    assert _resolve_model_name(config) == model_name
 
 
 def _turn_state(effective_model: dict[str, str]) -> Any:

@@ -25,7 +25,7 @@ Submodules (direct transport):
 
 Submodules (sdk transport, S1b restore):
     sdk_client: the persistent official-SDK client + turn stream bridge.
-    sdk_transport: the LiteLLM ``CustomLLM`` registered as ``codex_sdk``.
+    sdk_engine: the DSPy 3.4 engine (``dspy.LM(engine=...)``) over the SDK client.
     sdk_discovery: installed/signed-in/live-model-list probe, asked of the
         SDK itself -- never a read of ``~/.codex/auth.json``.
     sdk_audit: stream-audit instrumentation mirroring the direct transport's.

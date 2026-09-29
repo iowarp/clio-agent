@@ -3,7 +3,7 @@
 The TTFT closer holds one detector, one bounded session registry, and one
 per-forward scope, shared by the ``claude_code`` SDK transport (a session per
 forward) and the Codex SDK transport (a thread per conversation, spanning turns —
-:mod:`clio_agent.providers.codex.sdk_stateful`).
+:mod:`clio_agent.providers.codex.sdk_engine`).
 
 **The problem (measured, #901/#891).** dspy/litellm is stateless: every LM call
 re-sends the FULL rendered prompt and the provider must re-ingest it (cache reads

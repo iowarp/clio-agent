@@ -23,27 +23,35 @@ the bind request / `ModelRef`).
 ### sdk transport
 
 `src/clio_agent/providers/codex/sdk_client.py` hosts the persistent
-`openai_codex` SDK client on its own event-loop thread;
-`sdk_transport.py` is the LiteLLM `CustomLLM` registered as `codex_sdk`;
-`sdk_discovery.py` asks the SDK itself (`account()` / `models()`) for
-availability and the live model list -- never a file check.
+`openai_codex` SDK client on its own event-loop thread; `sdk_engine.py` is the
+DSPy 3.4 engine over it (`dspy.LM("codex_sdk/<model>", engine=CodexSDKEngine(...),
+async_engine=AsyncCodexSDKEngine(...))`, built by `create_lm` for the sdk
+variant -- no LiteLLM); `sdk_discovery.py` asks the SDK itself (`account()` /
+`models()`) for availability and the live model list -- never a file check.
 
-**Stateful threads.** Inside an agent loop the sdk transport keeps ONE Codex
-thread per conversation (GACT session + agent scope, model, cwd, effort) and
-continues it with only the newly appended messages
-(`providers/codex/sdk_stateful.py`, sharing the delta detector in
-`providers/stateful_common.py` with the Claude Code transport). Any other
-call opens a new thread and sends in full, with a typed reset reason
-(`first_call` / `prefix_mismatch` / `ops_reset` / `session_evicted` /
-`provider_error` / `provider_compacted`) on the `provider.stateful` audit row.
-Codex auto-compaction is disabled for these threads (clio-core is the context
-system); a compaction that happens anyway resets the thread typed. Superseded
+**Requests and tools.** The engine takes a typed `dspy.lm15.Request` and returns
+a typed `Response`. The SDK takes one prompt string and has no native tools, so
+the request's tools and messages are rendered as text
+(`lm/engines/text_tools.py`): the model ends a message with one fenced
+`tool_calls` block, which comes back as typed tool calls. A block that does not
+parse is not repaired: it becomes one `clio_invalid_tool_calls` call whose
+observation is the parse error. Text before the block streams live; thinking
+streams as thinking; errors raise `dspy.lm15` types so DSPy owns retries.
+
+**Stateful threads.** Inside an agent loop the engine keeps ONE Codex thread per
+conversation (GACT session + agent scope, model, cwd, effort) and continues it
+with only the messages after what the thread already holds (its own reply
+included). Any other call opens a new thread and sends in full, with a typed
+reset reason (`first_call` / `prefix_mismatch` / `ops_reset` /
+`session_evicted` / `provider_error` / `provider_compacted`) on the
+`provider.stateful` audit row. Codex auto-compaction and Codex's own web search
+are disabled for these threads (clio-core is the context system; clio owns
+tools); a compaction that happens anyway resets the thread typed. Superseded
 threads are archived. Cached input tokens flow into the usage totals
-(`prompt_tokens_details.cached_tokens`). Capacity:
-`providers.codex.stateful_capacity` / `CLIO_CODEX_STATEFUL_CAPACITY`. No `env`
-override is ever passed to the SDK's `CodexConfig`, so the spawned `codex`
-runtime inherits CLIO's own process environment (the user's real
-`CODEX_HOME`) verbatim.
+(`Usage.cache_read_tokens`). Capacity: `providers.codex.stateful_capacity` /
+`CLIO_CODEX_STATEFUL_CAPACITY`. No `env` override is ever passed to the SDK's
+`CodexConfig`, so the spawned `codex` runtime inherits CLIO's own process
+environment (the user's real `CODEX_HOME`) verbatim.
 
 ### direct transport
 
@@ -144,8 +152,7 @@ downgraded.
 ## Related source
 
 - `src/clio_agent/providers/codex/` -- OAuth, credentials, both transports,
-  both LiteLLM adapters (`sdk_client.py`/`sdk_transport.py`/
-  `sdk_discovery.py` for `sdk`; `oauth.py`/`transport_ws.py`/
+  (`sdk_client.py`/`sdk_engine.py`/`sdk_discovery.py` for `sdk`; `oauth.py`/`transport_ws.py`/
   `transport_sse.py`/`litellm_adapter.py` for `direct`)
 - `src/clio_agent/providers/model_discovery/codex.py` /
   `providers/codex/model_list.py` -- the direct transport's live model list
