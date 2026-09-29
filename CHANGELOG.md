@@ -6,6 +6,11 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.4.22] — 2026-09-29
+
+No GACT-contract change. Desktop hotfix release: ships the desktop app 0.11.2.23
+(deploying CLIO to a remote computer no longer fails at the final connect step).
+
 ## [0.9.4.21] — 2026-09-29
 
 No GACT-contract change. Desktop hotfix release: ships the desktop app 0.11.2.22
