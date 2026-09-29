@@ -113,6 +113,59 @@ own live-verification legs and marketplace agents, with the gact-tui UI verified
 6. **Config-driven `dspy extract`** (+ contract amendment); relay onto MCP tasks per
    `mcp-client-unification-2026-08.md` campaign 2 (owner decides timing).
 
+## Phase 2 sub-plan (`feat/clio-react`, cut from `feat/codex-sdk-stateful`)
+
+Inventory taken 2026-09-28 against `feat/codex-sdk-stateful` (every item below was located in
+code; file:line in the phase report).
+
+**Add** `gact/agents/clio_react.py` — `ClioReAct(dspy.Module)`, constructor
+`(signature, tools, max_iters)` (the shape `builders.py` and tests use). One `dspy.Predict` over
+the react signature (task inputs + `history: dspy.History` + `tools` → `next_thought: str`,
+`tool_calls: dspy.ToolCalls`), built with public DSPy API only. Per step:
+
+1. boundary — cancel checked (typed `_TurnCancelled`); proactive compaction trigger;
+2. context — the ARC live plane folded BY STEP (one History event = thought + every tool call
+   of that step + their results, call ids preserved; a summary segment is its own event), static
+   task inputs folded once into the head. No ARC (no app/scope: unit tests, CLI) → the loop's own
+   History. An ARC read failure is a typed turn failure — the `reactv2_arc_history_read_failed`
+   fallback to DSPy's internal History is deleted;
+3. predict → record the step (ARC `step_open`, `react.step.completed`, spans, step thought);
+4. tool calls run CONCURRENTLY (one worker per call, each in a copy of the step's context);
+   results kept in call order; a terminal MCP refusal is classified directly from the call's
+   exception and re-raised after the step (no contextvar mark/pop), so async tools need no ban;
+   cancel checked before dispatch and after results;
+5. end: no tool call → `direct_response`; `submit` → its outputs; `ask_user`/`plan_exit` →
+   `*_yield`; `max_iters` (0 = unlimited) / `parse_error` / `context_window_exceeded`; a
+   `ClioError` closes the expert lifecycle `failed` and re-raises. Same events, Prediction fields
+   and termination reasons as today (the external contracts listed in the report).
+
+The turn engine runs the module ONCE in the forward executor (copied context, cancel checker);
+live text and thinking already stream through the LM's token hooks (`runtime/lm_activity`).
+
+**Delete** (same branch): `reactv2.py`, `reactv2_events.py`, `reactv2_upstream.py` and their
+hash pins; `runtime._retaining_react_cls`; the ARC read seam in the adapters
+(`HistoryPreparationMixin`'s override — image/PDF hydration stays); the `LenientChatAdapter`
+class-name spoof and the streamify path it exists for (`_try_streamed_forward`, dead stream
+listeners, the `llm.request.degraded` → sync second run in `turn_forward`, `stream_fallbacks`
+peeks for it); the streamed→blocking second LM call in `IOLoggingLM` (a streaming failure is a
+typed error, not a re-issue); the async-tool ban and refusal-marking wrapper; dead
+`trajectory`/`tools_called`-from-trajectory reads (`builders`, `turn.py`, `todos.py`,
+`evidence.py`, `messaging.py`, `_emit_blueprint_llm_failure`); the never-raised
+`_BlueprintTerminalWorkflowState` and its handlers; the prose-parsed `clio_prior_workflow_state`
+seed; the planner LM (built on every bind, used by nothing); the EarthScope `trace.hot` checks;
+the per-executor MCP `_call_lock` (per-namespace first-connect guard instead; elicitation
+correlation keeps its typed decline when concurrent calls on one client are ambiguous) and the
+one-call-at-a-time assumptions in the tool observer / artifact identity.
+
+**Tests:** ClioReAct differential vs stock `dspy.ReActV2` (scripted LM: identical message
+sequence for single-call steps; documented divergences: no forced submit, concurrent calls);
+concurrency (two slow tools in one step overlap; results in call order; one failing call doesn't
+stop the other); cancellation at each boundary; terminal-refusal escalation; the by-step ARC fold;
+the existing loop tests ported to `ClioReAct` (not kept against the deleted classes).
+
+Phase 3 then replaces the step 2 source with the cross-turn clio-core projection and moves
+steers/child results off tool observations.
+
 ## Definition of done
 
 1. Full suite green on every phase branch (`pytest tests -m "not integration"`): zero failures,
