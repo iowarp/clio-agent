@@ -225,6 +225,7 @@ def test_reset_catalog_covers_the_declared_reasons() -> None:
         "ops_reset",
         "session_evicted",
         "provider_error",
+        "provider_compacted",
     }
 
 

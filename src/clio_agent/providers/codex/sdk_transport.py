@@ -43,8 +43,9 @@ from clio_agent.providers._cli_provider import (
 )
 from clio_agent.providers.codex.constants import LITELLM_PROVIDER_SDK
 from clio_agent.providers.codex.errors import CodexSDKError
-from clio_agent.providers.codex.sdk_client import (
-    DEFAULT_TURN_TIMEOUT_S,
+from clio_agent.providers.codex.sdk_client import DEFAULT_TURN_TIMEOUT_S, CodexThreadLostError
+from clio_agent.providers.codex.sdk_stateful import CodexSend, resolve_codex_send
+from clio_agent.providers.codex.sdk_stream import (
     _next_call_index,
     astream_sdk,
     run_sdk,
@@ -183,6 +184,7 @@ def _build_model_response(
     """
     usage_payload = usage_payload or {}
     prompt_tokens = int(usage_payload.get("input_tokens", 0) or 0)
+    cached_tokens = int(usage_payload.get("cached_input_tokens", 0) or 0)
     completion_tokens = int(usage_payload.get("output_tokens", 0) or 0)
     reasoning_tokens = int(usage_payload.get("reasoning_output_tokens", 0) or 0)
     total = int(usage_payload.get("total_tokens", 0) or 0) or (prompt_tokens + completion_tokens)
@@ -203,6 +205,7 @@ def _build_model_response(
             completion_tokens=completion_tokens,
             total_tokens=total,
             completion_tokens_details={"reasoning_tokens": reasoning_tokens},
+            prompt_tokens_details={"cached_tokens": cached_tokens},
         ),
     )
 
@@ -223,6 +226,74 @@ def _resolve_effort(params: dict[str, Any]) -> ReasoningEffort | None:
 
 def _clean_model(model: str) -> str:
     return model.removeprefix(f"{LITELLM_PROVIDER_SDK}/").removeprefix("cg-")
+
+
+def _plan(messages: list[dict[str, Any]], model: str, params: dict[str, Any]) -> CodexSend:
+    """Resolve this call's stateful send plan (continue a thread or open one)."""
+    effort = _resolve_effort(params)
+    return resolve_codex_send(
+        messages=messages,
+        model=model,
+        cwd=_resolve_codex_cwd(params),
+        effort=effort.value if effort is not None else None,
+    )
+
+
+def _run_planned(
+    messages: list[dict[str, Any]], model: str, params: dict[str, Any], timeout: Any
+) -> tuple[str, dict[str, int]]:
+    """Blocking send under a stateful plan; a lost thread resets typed and resends."""
+    send = _plan(messages, model, params)
+    for attempt in range(2):
+        prompt, images = _messages_to_codex_input(send.messages)
+        try:
+            return run_sdk(
+                prompt=prompt,
+                images=images,
+                model=model,
+                cwd=_resolve_codex_cwd(params),
+                effort=_resolve_effort(params),
+                timeout=float(timeout) if timeout else DEFAULT_TURN_TIMEOUT_S,
+                call_index=_next_call_index(),
+                send=send,
+            )
+        except CodexThreadLostError:
+            if attempt:
+                raise
+            send.note_thread_lost()
+            send = _plan(messages, model, params)
+    raise AssertionError("unreachable")  # pragma: no cover - the loop returns or raises
+
+
+async def _astream_planned(
+    messages: list[dict[str, Any]], model: str, params: dict[str, Any], timeout: Any
+) -> AsyncIterator[dict[str, Any]]:
+    """Streaming send under a stateful plan; a lost thread resets typed and resends.
+
+    :class:`CodexThreadLostError` is raised before any input is sent or any chunk is
+    produced, so the one resend never duplicates output.
+    """
+    send = _plan(messages, model, params)
+    for attempt in range(2):
+        prompt, images = _messages_to_codex_input(send.messages)
+        try:
+            async for chunk in astream_sdk(
+                prompt=prompt,
+                images=images,
+                model=model,
+                cwd=_resolve_codex_cwd(params),
+                effort=_resolve_effort(params),
+                timeout=float(timeout) if timeout else DEFAULT_TURN_TIMEOUT_S,
+                call_index=_next_call_index(),
+                send=send,
+            ):
+                yield chunk
+            return
+        except CodexThreadLostError:
+            if attempt:
+                raise
+            send.note_thread_lost()
+            send = _plan(messages, model, params)
 
 
 class CodexSDKLLM(CustomLLM):
@@ -249,16 +320,7 @@ class CodexSDKLLM(CustomLLM):
     ) -> ModelResponse:
         params = optional_params or {}
         clean_model = _clean_model(model)
-        prompt, images = _messages_to_codex_input(messages)
-        text, usage = run_sdk(
-            prompt=prompt,
-            images=images,
-            model=clean_model,
-            cwd=_resolve_codex_cwd(params),
-            effort=_resolve_effort(params),
-            timeout=float(timeout) if timeout else DEFAULT_TURN_TIMEOUT_S,
-            call_index=_next_call_index(),
-        )
+        text, usage = _run_planned(messages, clean_model, params, timeout)
         return _build_model_response(text=text, model=clean_model, usage_payload=usage)
 
     async def acompletion(
@@ -284,20 +346,13 @@ class CodexSDKLLM(CustomLLM):
         clean_model = _clean_model(model)
         parts: list[str] = []
         usage: dict[str, int] = {}
-        prompt, images = _messages_to_codex_input(messages)
-        async for chunk in astream_sdk(
-            prompt=prompt,
-            images=images,
-            model=clean_model,
-            cwd=_resolve_codex_cwd(params),
-            effort=_resolve_effort(params),
-            timeout=float(timeout) if timeout else DEFAULT_TURN_TIMEOUT_S,
-            call_index=_next_call_index(),
-        ):
+        async for chunk in _astream_planned(messages, clean_model, params, timeout):
             parts.append(str(chunk.get("text") or ""))
             raw_usage = chunk.get("usage")
             if isinstance(raw_usage, dict):
+                details = raw_usage.get("prompt_tokens_details") or {}
                 usage = {
+                    "cached_input_tokens": int(details.get("cached_tokens", 0) or 0),
                     "input_tokens": int(raw_usage.get("prompt_tokens", 0) or 0),
                     "output_tokens": int(raw_usage.get("completion_tokens", 0) or 0),
                     "reasoning_output_tokens": int(
@@ -333,16 +388,7 @@ class CodexSDKLLM(CustomLLM):
         # through astreaming; sync streaming is the compatibility fallback).
         params = optional_params or {}
         clean_model = _clean_model(model)
-        prompt, images = _messages_to_codex_input(messages)
-        text, usage = run_sdk(
-            prompt=prompt,
-            images=images,
-            model=clean_model,
-            cwd=_resolve_codex_cwd(params),
-            effort=_resolve_effort(params),
-            timeout=float(timeout) if timeout else DEFAULT_TURN_TIMEOUT_S,
-            call_index=_next_call_index(),
-        )
+        text, usage = _run_planned(messages, clean_model, params, timeout)
         yield GenericStreamingChunk(
             text=text,
             tool_use=None,
@@ -380,16 +426,7 @@ class CodexSDKLLM(CustomLLM):
         # frozen chunk pipeline.
         params = optional_params or {}
         clean_model = _clean_model(model)
-        prompt, images = _messages_to_codex_input(messages)
-        async for chunk in astream_sdk(
-            prompt=prompt,
-            images=images,
-            model=clean_model,
-            cwd=_resolve_codex_cwd(params),
-            effort=_resolve_effort(params),
-            timeout=float(timeout) if timeout else DEFAULT_TURN_TIMEOUT_S,
-            call_index=_next_call_index(),
-        ):
+        async for chunk in _astream_planned(messages, clean_model, params, timeout):
             yield chunk  # type: ignore[misc]  # dict satisfies litellm's runtime chunk contract
 
 

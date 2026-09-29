@@ -837,6 +837,10 @@ KEY_NOTES: dict[str, str] = {
         "Max live Claude Code stateful-session entries before LRU eviction; raise on a host "
         "running many concurrent stateful sessions."
     ),
+    "providers.codex.stateful_capacity": (
+        "Max live Codex SDK conversations (one kept thread each) before LRU eviction; raise on "
+        "a host running many concurrent agent conversations."
+    ),
     "providers.claude_code.stream_idle_ttl_s": (
         "Seconds a session's pooled Claude Code connection may sit idle before the next request "
         "reaps it; lower to free idle connections sooner."

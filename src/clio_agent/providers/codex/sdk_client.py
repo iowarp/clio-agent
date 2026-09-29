@@ -19,39 +19,36 @@ directory at all.
 Provider-exposed reasoning text and reasoning summaries remain distinct. A
 summary is never relabelled as full provider reasoning.
 
-The official SDK owns its pinned runtime, subprocess, and thread state. That
-gives CLIO one typed cancellation path and removes the unsupported shell/app-
-server transports, at the measured cost of roughly 2.5x first-token latency.
-Progress is consequently bounded per SDK exchange, never by a composite turn
-deadline that could kill a healthy long-running stream.
+The official SDK owns its pinned runtime, subprocess, and JSON-RPC lifecycle,
+which gives CLIO one typed cancellation path. Threads are kept open per
+conversation and continued with only the new messages
+(:mod:`clio_agent.providers.codex.sdk_stateful`); a thread the runtime no longer
+holds raises :class:`CodexThreadLostError` so the caller resets typed. Progress is
+bounded per SDK exchange, never by a composite turn deadline that could kill a
+healthy long-running stream.
 """
 
 from __future__ import annotations
 
 import asyncio
 import atexit
-import concurrent.futures
 import logging
 import queue
-import re
 import tempfile
 import threading
-import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from openai_codex import (
     ApprovalMode,
     AsyncCodex,
     CodexConfig,
-    CodexError,
     ImageInput,
     Sandbox,
     TextInput,
 )
 from openai_codex.types import ReasoningEffort, ReasoningSummary
 
-from clio_agent.providers._cli_provider import raise_model_rejected
 from clio_agent.providers.claude_code_cancel import (
     register_sdk_stream,
     unregister_sdk_stream,
@@ -60,12 +57,6 @@ from clio_agent.providers.codex.errors import (
     CODEX_AUTHENTICATION_ERROR_MESSAGE,
     CodexSDKError,
     contains_codex_authentication_error,
-)
-from clio_agent.providers.codex.sdk_audit import (
-    emit_call_started,
-    emit_call_usage,
-    emit_normalized,
-    emit_raw_event,
 )
 from clio_agent.providers.components.client_binary import codex_client
 
@@ -123,10 +114,17 @@ BARE_LM_CONFIG_OVERRIDES = (
     "plugins={}",
     *(f"features.{name}=false" for name in BARE_LM_FEATURES),
 )
+#: Codex auto-compaction threshold for clio's threads. clio-core is the context
+#: system: Codex must never summarize a thread behind it, so the threshold is set
+#: beyond any context window. A compaction that happens anyway is detected
+#: (``thread/compacted`` / a ``contextCompaction`` item) and resets the thread typed.
+NO_AUTO_COMPACT_TOKEN_LIMIT = 2**62
+
 BARE_LM_THREAD_CONFIG: dict[str, Any] = {
     "mcp_servers": {},
     "plugins": {},
     "features": BARE_LM_FEATURES,
+    "model_auto_compact_token_limit": NO_AUTO_COMPACT_TOKEN_LIMIT,
 }
 
 _ALLOWED_ITEM_TYPES = frozenset({"agentMessage", "reasoning", "userMessage"})
@@ -151,12 +149,6 @@ _MODEL_ACTIVITY_METHODS = frozenset(
     }
 )
 _STREAM_END = object()
-_CALL_COUNTER_LOCK = threading.Lock()
-_CALL_COUNTER = 0
-_CODEX_MODEL_REJECTION_PATTERN = re.compile(
-    r"is not supported when using codex with (a|an)\b[^.]{0,40}account",
-    re.IGNORECASE,
-)
 
 
 def _sdk_progress_timeout_s(requested_timeout: float) -> float:
@@ -172,19 +164,6 @@ def _sdk_progress_timeout_s(requested_timeout: float) -> float:
     return max(0.01, min(float(requested_timeout), float(configured)))
 
 
-def _next_call_index() -> int:
-    """Return a process-local Codex SDK provider call index for audit correlation."""
-    global _CALL_COUNTER  # noqa: PLW0603
-    with _CALL_COUNTER_LOCK:
-        _CALL_COUNTER += 1
-        return _CALL_COUNTER
-
-
-def _is_codex_model_rejection(text: str, *, model: str) -> bool:
-    """Return whether ``text`` is the verified account/model rejection shape."""
-    return bool(text and model and model in text and _CODEX_MODEL_REJECTION_PATTERN.search(text))
-
-
 def _normalize_sdk_turn_error(message: str) -> str:
     """Replace a missing-authentication SDK failure with an actionable message."""
     return (
@@ -192,39 +171,6 @@ def _normalize_sdk_turn_error(message: str) -> str:
         if contains_codex_authentication_error(message)
         else message
     )
-
-
-def usage_chunk(usage: dict[str, int] | None) -> dict[str, int] | None:
-    """Map normalized SDK usage to the LiteLLM streaming usage shape."""
-    if not usage:
-        return None
-    prompt_tokens = int(usage.get("input_tokens", 0) or 0)
-    completion_tokens = int(usage.get("output_tokens", 0) or 0)
-    total = int(usage.get("total_tokens", 0) or 0) or prompt_tokens + completion_tokens
-    return {
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "reasoning_output_tokens": int(usage.get("reasoning_output_tokens", 0) or 0),
-        "total_tokens": total,
-    }
-
-
-def _stream_chunk(
-    *,
-    text: str,
-    is_finished: bool,
-    finish_reason: str | None = None,
-    usage: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Build one LiteLLM-compatible streaming chunk."""
-    return {
-        "text": text,
-        "is_finished": is_finished,
-        "finish_reason": finish_reason or ("stop" if is_finished else None),
-        "index": 0,
-        "tool_use": None,
-        "usage": usage,
-    }
 
 
 def _item_root(payload: Any) -> Any:
@@ -286,6 +232,30 @@ def _raise_failed_turn(event: Any) -> None:
     raise CodexSDKError(message)
 
 
+class CodexThreadLostError(CodexSDKError):
+    """A thread the caller asked to continue no longer exists on the SDK runtime.
+
+    Raised before any input is sent (e.g. the runtime restarted since the thread was
+    opened), so the caller can reset its conversation typed and send in full.
+    """
+
+    def __init__(self, thread_id: str) -> None:
+        self.thread_id = thread_id
+        super().__init__(
+            f"Codex SDK thread {thread_id!r} is no longer available reason=codex_sdk_thread_lost"
+        )
+
+
+def _is_compaction_event(event: Any) -> bool:
+    """Whether ``event`` shows Codex compacted the thread's own history."""
+    method = str(getattr(event, "method", ""))
+    if method == "thread/compacted":
+        return True
+    return method in {"item/started", "item/completed"} and (
+        _item_type(event.payload) == "contextCompaction"
+    )
+
+
 class CodexSDKClient:
     """Persistent official SDK client hosted on a private event-loop thread."""
 
@@ -304,6 +274,10 @@ class CodexSDKClient:
         self._reset_pending = False
         # The binary the live client was started on (see ``_ensure_client``).
         self._codex_bin: str | None = None
+        # Threads kept open for continuation: thread id -> (client generation,
+        # AsyncThread). Only touched on the owner loop. A generation change (the
+        # runtime restarted) invalidates every entry.
+        self._threads: dict[str, tuple[int, Any]] = {}
 
     def _ensure_loop(self) -> asyncio.AbstractEventLoop:
         with self._guard:
@@ -368,6 +342,7 @@ class CodexSDKClient:
         self._client_users = 0
         self._reset_pending = False
         self._generation += 1
+        self._threads.clear()
         if client is not None:
             await _cleanup_sdk_action("client_close", client.close())
 
@@ -411,8 +386,26 @@ class CodexSDKClient:
         cwd: str | None,
         effort: ReasoningEffort | None,
         timeout: float,
+        thread_id: str | None = None,
+        keep_thread: bool = False,
+        on_thread: Callable[[str], None] | None = None,
+        on_compacted: Callable[[], None] | None = None,
     ) -> AsyncIterator[Any]:
-        """Bridge one typed SDK turn stream from the owner loop to the caller loop."""
+        """Bridge one typed SDK turn stream from the owner loop to the caller loop.
+
+        Args:
+            prompt: The serialized input for this turn (full prompt or delta).
+            images: Native image inputs for this turn.
+            model: The Codex model id.
+            cwd: The neutral working directory for a new thread.
+            effort: Reasoning effort for this turn.
+            timeout: Per-exchange progress ceiling.
+            thread_id: Continue this kept thread instead of opening a new one.
+                Raises :class:`CodexThreadLostError` if it is gone.
+            keep_thread: Keep a newly opened thread for later continuation.
+            on_thread: Called with the id of a newly opened thread.
+            on_compacted: Called once if Codex compacts the thread during the turn.
+        """
         owner_loop = self._ensure_loop()
         caller_loop = asyncio.get_running_loop()
         chunks: queue.SimpleQueue[tuple[Any, Any]] = queue.SimpleQueue()
@@ -422,13 +415,26 @@ class CodexSDKClient:
             stream = None
             clean = False
             cancelled = False
+            thread_lost = False
             generation = -1
             try:
                 progress_timeout = _sdk_progress_timeout_s(timeout)
 
+                compaction_reported = False
+
                 def _record(event: Any) -> None:
+                    nonlocal compaction_reported
                     _validate_bare_lm_event(event)
                     _raise_failed_turn(event)
+                    if not compaction_reported and _is_compaction_event(event):
+                        compaction_reported = True
+                        logger.warning(
+                            "Codex SDK compacted a clio thread "
+                            "reason=codex_sdk_thread_compacted thread=%s",
+                            getattr(thread, "id", ""),
+                        )
+                        if on_compacted is not None:
+                            on_compacted()
                     chunks.put(("event", event))
 
                 async def _await_progress(awaitable: Any, *, phase: str) -> Any:
@@ -447,19 +453,31 @@ class CodexSDKClient:
                 # await's return is atomic with respect to the other pumps.
                 generation = self._generation
                 self._client_users += 1
-                thread = await _await_progress(
-                    client.thread_start(
-                        approval_mode=ApprovalMode.deny_all,
-                        base_instructions=BARE_LM_BASE_INSTRUCTIONS,
-                        config=BARE_LM_THREAD_CONFIG,
-                        cwd=cwd or tempfile.gettempdir(),
-                        developer_instructions=BARE_LM_BASE_INSTRUCTIONS,
-                        ephemeral=True,
-                        model=model,
-                        sandbox=Sandbox.read_only,
-                    ),
-                    phase="thread start",
-                )
+                if thread_id is not None:
+                    kept = self._threads.get(thread_id)
+                    if kept is None or kept[0] != generation:
+                        self._threads.pop(thread_id, None)
+                        raise CodexThreadLostError(thread_id)
+                    thread = kept[1]
+                else:
+                    thread = await _await_progress(
+                        client.thread_start(
+                            approval_mode=ApprovalMode.deny_all,
+                            base_instructions=BARE_LM_BASE_INSTRUCTIONS,
+                            config=BARE_LM_THREAD_CONFIG,
+                            cwd=cwd or tempfile.gettempdir(),
+                            developer_instructions=BARE_LM_BASE_INSTRUCTIONS,
+                            ephemeral=True,
+                            model=model,
+                            sandbox=Sandbox.read_only,
+                        ),
+                        phase="thread start",
+                    )
+                    new_id = str(getattr(thread, "id", "") or "")
+                    if keep_thread and new_id:
+                        self._threads[new_id] = (generation, thread)
+                    if on_thread is not None and new_id:
+                        on_thread(new_id)
                 turn_input = (
                     [TextInput(prompt), *(ImageInput(url) for url in images)] if images else prompt
                 )
@@ -489,6 +507,8 @@ class CodexSDKClient:
             except BaseException as exc:  # noqa: BLE001 - delivered to caller loop
                 if turn is not None:
                     await _cleanup_sdk_action("turn_interrupt_error", turn.interrupt())
+                if isinstance(exc, CodexThreadLostError):
+                    thread_lost = True
                 chunks.put(("exc", exc))
             finally:
                 if stream is not None:
@@ -499,7 +519,9 @@ class CodexSDKClient:
                     # Only a pump that actually obtained the client may ask for its
                     # teardown; a failure BEFORE the handshake completed would otherwise
                     # close a client that belongs entirely to other turns.
-                    await self._release_client(generation, reset=not clean and not cancelled)
+                    await self._release_client(
+                        generation, reset=not clean and not cancelled and not thread_lost
+                    )
                 chunks.put((_STREAM_END, None))
 
         future = asyncio.run_coroutine_threadsafe(_pump(), owner_loop)
@@ -529,6 +551,36 @@ class CodexSDKClient:
             unregister_sdk_stream(handle)
             if not future.done():
                 future.cancel()
+
+    async def _archive(self, thread_ids: list[str]) -> None:
+        """Archive kept threads on the runtime; each failure is logged typed."""
+        client = self._client
+        for thread_id in thread_ids:
+            self._threads.pop(thread_id, None)
+            if client is None:
+                continue
+            try:
+                await client.thread_archive(thread_id)
+            except Exception as exc:  # noqa: BLE001 - archival is typed and observable
+                logger.warning(
+                    "Codex SDK thread archive failed reason=codex_sdk_thread_archive_failed "
+                    "thread=%s error=%r",
+                    thread_id,
+                    exc,
+                )
+
+    def archive_threads(self, thread_ids: list[str]) -> None:
+        """Schedule archival of ``thread_ids`` on the owner loop (non-blocking)."""
+        if not thread_ids:
+            return
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            logger.info(
+                "Codex SDK threads not archived reason=codex_sdk_runtime_not_running count=%d",
+                len(thread_ids),
+            )
+            return
+        asyncio.run_coroutine_threadsafe(self._archive(list(thread_ids)), loop)
 
     def release_idle_runtime(self) -> bool:
         """Stop the SDK runtime if no turn holds it; ``False`` when a turn does.
@@ -574,204 +626,11 @@ _SDK_CLIENT = CodexSDKClient()
 atexit.register(_SDK_CLIENT.close_blocking)
 
 
-def _note_provider_thinking(text: str, *, summary: bool) -> None:
-    if not text:
-        return
-    try:
-        from clio_agent.runtime.lm_activity import note_lm_provider_thinking_delta
-
-        provider = "codex_sdk_summary" if summary else "codex_sdk_reasoning"
-        note_lm_provider_thinking_delta(text, provider=provider)
-    except Exception:  # noqa: BLE001,S110 - observability must not break the turn
-        pass
-
-
-async def astream_sdk(
-    *,
-    prompt: str,
-    images: list[str] | None = None,
-    model: str,
-    cwd: str | None,
-    effort: ReasoningEffort | None,
-    timeout: float,
-    call_index: int,
-) -> AsyncIterator[dict[str, Any]]:
-    """Stream one official SDK turn into LiteLLM chunks and CLIO thinking lanes."""
-    call_id = uuid.uuid4().hex
-    emit_call_started(call_id=call_id, call_index=call_index, model=model, prompt=prompt)
-    final_text = ""
-    fallback_text = ""
-    usage: dict[str, int] = {}
-    event_index = 0
-    summary_parts = 0
-    try:
-        async for event in _SDK_CLIENT.stream(
-            prompt=prompt,
-            images=images,
-            model=model,
-            cwd=cwd,
-            effort=effort,
-            timeout=timeout,
-        ):
-            event_index += 1
-            method = str(getattr(event, "method", ""))
-            payload = event.payload
-            if method == "item/agentMessage/delta":
-                text = str(getattr(payload, "delta", "") or "")
-                if not text:
-                    continue
-                final_text += text
-                emit_raw_event(
-                    call_index=call_index,
-                    event_index=event_index,
-                    source_channel="text_delta",
-                    text=text,
-                    raw_event_type=method,
-                )
-                emit_normalized(
-                    call_index=call_index,
-                    event_index=event_index,
-                    source_channel="text_delta",
-                    normalized_event="contract.content",
-                    text=text,
-                )
-                yield _stream_chunk(text=text, is_finished=False)
-            elif method == "item/reasoning/summaryPartAdded":
-                if summary_parts:
-                    boundary = "\n\n"
-                    emit_raw_event(
-                        call_index=call_index,
-                        event_index=event_index,
-                        source_channel="reasoning_summary",
-                        text=boundary,
-                        raw_event_type=method,
-                    )
-                    _note_provider_thinking(boundary, summary=True)
-                summary_parts += 1
-            elif method in {
-                "item/reasoning/textDelta",
-                "item/reasoning/summaryTextDelta",
-            }:
-                text = str(getattr(payload, "delta", "") or "")
-                is_summary = method.endswith("summaryTextDelta")
-                source = "reasoning_summary" if is_summary else "reasoning_text"
-                emit_raw_event(
-                    call_index=call_index,
-                    event_index=event_index,
-                    source_channel=source,
-                    text=text,
-                    raw_event_type=method,
-                )
-                _note_provider_thinking(text, summary=is_summary)
-            elif method == "thread/tokenUsage/updated":
-                usage = _normalize_usage(payload) or usage
-            elif method == "item/completed":
-                item = _item_root(payload)
-                if str(getattr(item, "type", "")) == "agentMessage":
-                    phase_value = getattr(item, "phase", None)
-                    phase = getattr(phase_value, "value", phase_value)
-                    text = str(getattr(item, "text", "") or "")
-                    if phase == "final_answer" or not fallback_text:
-                        fallback_text = text
-    except CodexError as exc:
-        message = str(exc)
-        if _is_codex_model_rejection(message, model=model):
-            raise_model_rejected(
-                message=f"codex sdk rejected model {model!r}: {message}",
-                model=f"codex_sdk/{model}",
-                llm_provider="codex_sdk",
-                cause=exc,
-            )
-        raise CodexSDKError(f"Codex SDK stream failed (model={model}): {exc}") from exc
-    finally:
-        emit_call_usage(
-            call_id=call_id,
-            call_index=call_index,
-            model=model,
-            usage=usage,
-            output_chars=len(final_text or fallback_text),
-        )
-    if not final_text and fallback_text:
-        final_text = fallback_text
-        yield _stream_chunk(text=fallback_text, is_finished=False)
-    if not final_text:
-        raise CodexSDKError(f"Codex SDK returned empty content (model={model})")
-    yield _stream_chunk(
-        text="",
-        is_finished=True,
-        finish_reason="stop",
-        usage=usage_chunk(usage),
-    )
-
-
-def run_sdk(
-    *,
-    prompt: str,
-    images: list[str] | None = None,
-    model: str,
-    cwd: str | None = None,
-    effort: ReasoningEffort | None = None,
-    timeout: float = DEFAULT_TURN_TIMEOUT_S,
-    call_index: int = 0,
-) -> tuple[str, dict[str, int]]:
-    """Collect one official SDK stream for LiteLLM's blocking completion path.
-
-    Provider-contract BACKSTOP (#1333): LiteLLM's sync ``completion`` must be callable
-    from a thread that already owns a running loop (claude_code's pool is), where a bare
-    ``asyncio.run()`` raises ``RuntimeError``. This uses the repository's
-    run-or-threadpool bridge (``handshake.run_handshake_sync``,
-    ``runtime.status._list_gateway_capabilities``): no loop on this thread -> run
-    inline; a loop is running -> run the collection on a helper thread and BLOCK the
-    caller. It turns a crash into a blocking call, it does not make the sync path
-    loop-friendly: clio's own loop-side LM calls (the finalize goal judge) take the
-    native async path (``acompletion``) and never reach here. Blocking is safe because
-    the stream only depends on the helper's own loop and the dedicated
-    ``codex-sdk-loop`` owner thread, never on the caller's loop.
-    """
-
-    async def _collect() -> tuple[str, dict[str, int]]:
-        parts: list[str] = []
-        final_usage: dict[str, int] = {}
-        async for chunk in astream_sdk(
-            prompt=prompt,
-            images=images,
-            model=model,
-            cwd=cwd,
-            effort=effort,
-            timeout=timeout,
-            call_index=call_index,
-        ):
-            parts.append(str(chunk.get("text") or ""))
-            raw_usage = chunk.get("usage")
-            if isinstance(raw_usage, dict):
-                final_usage = {
-                    "input_tokens": int(raw_usage.get("prompt_tokens", 0) or 0),
-                    "output_tokens": int(raw_usage.get("completion_tokens", 0) or 0),
-                    "reasoning_output_tokens": int(
-                        raw_usage.get("reasoning_output_tokens", 0) or 0
-                    ),
-                    "total_tokens": int(raw_usage.get("total_tokens", 0) or 0),
-                }
-        return "".join(parts), final_usage
-
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(_collect())
-    with concurrent.futures.ThreadPoolExecutor(
-        max_workers=1, thread_name_prefix="codex-sdk-sync"
-    ) as pool:
-        return pool.submit(lambda: asyncio.run(_collect())).result()
-
-
 __all__ = [
     "BARE_LM_CONFIG_OVERRIDES",
     "CodexSDKClient",
+    "CodexThreadLostError",
     "DEFAULT_SDK_PROGRESS_TIMEOUT_S",
     "DEFAULT_TURN_TIMEOUT_S",
     "_SDK_CLIENT",
-    "_next_call_index",
-    "astream_sdk",
-    "run_sdk",
-    "usage_chunk",
 ]

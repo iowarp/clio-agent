@@ -282,13 +282,12 @@ class _RetainingReActV2(dspy.ReActV2):  # type: ignore[misc, name-defined]
         pending = {
             name: input_args[name] for name in self.signature.input_fields if name in input_args
         }
-        # Bind a fresh per-forward stateful scope token (#901 stateful-delta): every
-        # ``self.react`` LM call inside this loop shares ONE claude_code SDK session so
-        # consecutive append-only prompts ride a byte-stable prefix and send only their
-        # delta tail. A fresh token per forward means a new turn always restarts the
-        # session, and parallel experts never share one; the scope releases its session
-        # registry entries on exit (the #900 explicit-teardown seam). Inert unless the
-        # stateful_delta flag is ON and the provider is claude_code.
+        # Bind a fresh per-forward stateful scope token (#901 stateful-delta). The
+        # stateful transports engage only under it: claude_code shares ONE SDK session
+        # across this loop's ``self.react`` calls (released at scope exit, the #900
+        # teardown seam); the Codex SDK keys a thread on the conversation (session +
+        # react scope) so it also survives into later turns, and uses this token only
+        # to route ARC-op resets. Append-only prompts send only their delta tail.
         with stateful_scope():
             pred = instrumented_forward(self, **input_args)
             self._publish_retained_history(pred, pending)

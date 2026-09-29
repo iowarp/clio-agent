@@ -26,7 +26,21 @@ the bind request / `ModelRef`).
 `openai_codex` SDK client on its own event-loop thread;
 `sdk_transport.py` is the LiteLLM `CustomLLM` registered as `codex_sdk`;
 `sdk_discovery.py` asks the SDK itself (`account()` / `models()`) for
-availability and the live model list -- never a file check. No `env`
+availability and the live model list -- never a file check.
+
+**Stateful threads.** Inside an agent loop the sdk transport keeps ONE Codex
+thread per conversation (GACT session + agent scope, model, cwd, effort) and
+continues it with only the newly appended messages
+(`providers/codex/sdk_stateful.py`, sharing the delta detector in
+`providers/stateful_common.py` with the Claude Code transport). Any other
+call opens a new thread and sends in full, with a typed reset reason
+(`first_call` / `prefix_mismatch` / `ops_reset` / `session_evicted` /
+`provider_error` / `provider_compacted`) on the `provider.stateful` audit row.
+Codex auto-compaction is disabled for these threads (clio-core is the context
+system); a compaction that happens anyway resets the thread typed. Superseded
+threads are archived. Cached input tokens flow into the usage totals
+(`prompt_tokens_details.cached_tokens`). Capacity:
+`providers.codex.stateful_capacity` / `CLIO_CODEX_STATEFUL_CAPACITY`. No `env`
 override is ever passed to the SDK's `CodexConfig`, so the spawned `codex`
 runtime inherits CLIO's own process environment (the user's real
 `CODEX_HOME`) verbatim.

@@ -107,7 +107,7 @@ def test_sdk_turn_runs_on_the_sdk_transport_without_direct_credentials(
     from clio_agent.lm.factory import create_lm
     from clio_agent.providers.codex import litellm_adapter, sdk_transport
     from clio_agent.providers.codex.credentials import CodexCredentialStore
-    from clio_agent.providers.codex.sdk_client import _stream_chunk, usage_chunk
+    from clio_agent.providers.codex.sdk_stream import _stream_chunk, usage_chunk
 
     # Direct is not signed in on this machine.
     assert CodexCredentialStore().load() is None

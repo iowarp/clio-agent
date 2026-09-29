@@ -1,8 +1,9 @@
-"""Core of the Claude SDK stateful session-delta transport (#901 / #891).
+"""Core of the stateful session-delta transports (#901 / #891).
 
-The TTFT closer holds one detector, one bounded per-loop session registry, and
-one per-forward scope for the ``claude_code`` SDK transport. Codex no longer
-uses this layer: its official Python SDK is the sole Codex provider boundary.
+The TTFT closer holds one detector, one bounded session registry, and one
+per-forward scope, shared by the ``claude_code`` SDK transport (a session per
+forward) and the Codex SDK transport (a thread per conversation, spanning turns —
+:mod:`clio_agent.providers.codex.sdk_stateful`).
 
 **The problem (measured, #901/#891).** dspy/litellm is stateless: every LM call
 re-sends the FULL rendered prompt and the provider must re-ingest it (cache reads
@@ -39,7 +40,7 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 __all__ = [
     "STATEFUL_RESET_REASONS",
@@ -103,6 +104,15 @@ STATEFUL_RESET_REASONS: dict[str, dict[str, Any]] = {
             "LM retry layer)."
         ),
     },
+    "provider_compacted": {
+        "category": "stateful_reset",
+        "description": (
+            "The provider compacted its own server-side conversation (e.g. a Codex "
+            "``thread/compacted`` notification), so the thread no longer holds what "
+            "clio sent. clio-core is the context system, so the thread is abandoned "
+            "and the next call is a full send on a fresh session."
+        ),
+    },
 }
 
 
@@ -143,14 +153,27 @@ _STATEFUL_SCOPE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "clio_stateful_scope", default=None
 )
 
+
+class ScopeParticipant(Protocol):
+    """Anything that takes part in per-forward scope resets + teardown.
+
+    :class:`StatefulSessionRegistry` is one; a provider whose sessions outlive a
+    forward (the Codex SDK conversation registry) registers an adapter instead.
+    """
+
+    def mark_reset(self, scope_token: str, reason: str = "ops_reset") -> None: ...
+
+    def release(self, scope_token: str) -> None: ...
+
+
 # Provider registries that must be torn down when a scope ends. Each provider
 # registers its process-wide singleton exactly once at module load; test-only
 # registries stay unregistered so they never leak across the global scope.
-_SCOPE_REGISTRIES: list[StatefulSessionRegistry] = []
+_SCOPE_REGISTRIES: list[ScopeParticipant] = []
 _SCOPE_REGISTRIES_LOCK = threading.Lock()
 
 
-def register_scope_registry(registry: StatefulSessionRegistry) -> None:
+def register_scope_registry(registry: ScopeParticipant) -> None:
     """Register a provider registry for scope-end teardown (idempotent).
 
     Called once per provider singleton at module load so :func:`stateful_scope`'s
