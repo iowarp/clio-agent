@@ -54,6 +54,7 @@ from dspy.lm15 import TimeoutError as LMTimeoutError
 
 from clio_agent.lm.engines.conversations import ConversationRegistry, Send, conversation_key
 from clio_agent.lm.engines.text_tools import (
+    TURN_REMINDER,
     StreamSplitter,
     render_messages,
     render_system,
@@ -149,6 +150,8 @@ class AsyncClaudeCodeEngine:
         # ClaudeCodeCLIUnavailableError -- never a raw ImportError mid-call.
         await asyncio.to_thread(require_claude_agent_sdk)
         body, media = render_messages(send.messages, media=(ImagePart, DocumentPart))
+        if request.tools:
+            body = f"{body}{chr(10) * 2}{TURN_REMINDER}"
         blocks = native_blocks(media)  # typed refusal (size, type, egress) before any send
         session_id = send.handle or uuid.uuid4().hex
         _audit(send, self.model, len(request.messages), session_id)

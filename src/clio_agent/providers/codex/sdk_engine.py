@@ -55,6 +55,7 @@ from openai_codex.types import ReasoningEffort
 
 from clio_agent.lm.engines.conversations import ConversationRegistry, Send, conversation_key
 from clio_agent.lm.engines.text_tools import (
+    TURN_REMINDER,
     StreamSplitter,
     render_messages,
     render_system,
@@ -151,10 +152,12 @@ class AsyncCodexSDKEngine:
         """Nothing to release: the SDK client is process-wide."""
 
     async def _turn(self, request: Request, system: str, send: Send) -> AsyncIterator[Any]:
+        # The system prompt and tool rules are the thread's developer instructions
+        # (set when the thread opens); the prompt carries only the conversation.
         body, images = render_messages(send.messages)
         inputs = _image_inputs(images)  # typed refusal of oversized images before any send
-        prompt = body if send.handle else f"{system}\n\n{body}" if system else body
-        _audit(send, self.model, len(request.messages))
+        prompt = f"{body}{chr(10) * 2}{TURN_REMINDER}" if request.tools else body
+        _audit(send, self.model, len(request.messages), len(request.tools), len(system))
         call_index = _next_call_index()
         emit_call_started(
             call_id=send.call_id, call_index=call_index, model=self.model, prompt=prompt
@@ -170,6 +173,7 @@ class AsyncCodexSDKEngine:
                 effort=ReasoningEffort(self.effort) if self.effort else None,
                 timeout=self.timeout,
                 thread_id=send.handle,
+                instructions=system or None,
                 keep_thread=send.key is not None,
                 on_thread=lambda tid: _CONVERSATIONS.opened(send.key, tid, request, system)
                 if send.key is not None
@@ -379,7 +383,7 @@ def _typed(exc: CodexSDKError, model: str) -> Exception:
     return ServerError(message)
 
 
-def _audit(send: Send, model: str, total: int) -> None:
+def _audit(send: Send, model: str, total: int, tools: int, instructions_chars: int) -> None:
     """One ``provider.stateful`` audit row per call inside an agent loop."""
     from clio_agent.runtime.stream_audit import stream_audit, stream_audit_enabled  # noqa: PLC0415
 
@@ -392,6 +396,8 @@ def _audit(send: Send, model: str, total: int) -> None:
         "call_id": send.call_id,
         "stateful_mode": "delta" if send.handle else "full",
         "total_messages": total,
+        "tools": tools,
+        "instructions_chars": instructions_chars,
         "sent_messages": len(send.messages),
         "conversation": "::".join(send.key[:2]),
         "thread_id": send.handle or "",

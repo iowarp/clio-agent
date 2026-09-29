@@ -38,6 +38,7 @@ from dspy.lm15 import (
 __all__ = [
     "INVALID_TOOL_CALL",
     "FENCE",
+    "TURN_REMINDER",
     "StreamSplitter",
     "render_messages",
     "render_system",
@@ -50,17 +51,38 @@ FENCE = "```tool_calls"
 INVALID_TOOL_CALL = "clio_invalid_tool_calls"
 
 _TOOL_RULES = """\
-# Calling tools
+# How you act
 
-You can call the tools listed below. To call tools, write your message, then end it with
-exactly one block that lists every call for this step:
+Your only way to look anything up, read or change data, or run an analysis is to call the
+tools in the Available tools list below -- there are no other capabilities. When the
+request needs information you have not observed in this conversation, call the tools
+that get it; do not answer from memory.
+
+These tools are NOT function calls of your own runtime: you call them by writing plain
+text in your reply. Write your message, then end it with exactly one block that lists
+every call for this step:
 
 ```tool_calls
 [{"name": "<tool name>", "arguments": {<arguments as a JSON object>}}]
 ```
 
-All calls in one block run at the same time; you see all their results together. A message
-that ends without a block is your final answer."""
+For example, a step that looks two things up at once ends like this:
+
+I'll check both sources.
+```tool_calls
+[{"name": "search_catalog", "arguments": {"query": "stations near Ridgecrest"}}, {"name": "read_notes", "arguments": {"path": "notes/site.md"}}]
+```
+
+(Those two names only illustrate the format -- call only names from the Available tools
+list.) All calls in one block run at the same time; you see all their results together in
+the next message. A message that ends without a block is your final answer."""
+
+#: Appended to every user or tool-result turn the transport sends (never to the
+#: system prompt), so the model is reminded where its tools are at each step.
+TURN_REMINDER = (
+    "(You act only through the Available tools: end your message with one ```tool_calls "
+    "block to call them; a message without a block is your final answer.)"
+)
 
 
 def render_system(system: str | None, tools: Sequence[Any]) -> str:
@@ -73,7 +95,7 @@ def render_system(system: str | None, tools: Sequence[Any]) -> str:
             f"{json.dumps(t.parameters, sort_keys=True)}"
             for t in functions
         )
-        parts.append(f"{_TOOL_RULES}\n\n# Tools\n\n{listing}")
+        parts.append(f"{_TOOL_RULES}\n\n# Available tools\n\n{listing}")
     return "\n\n".join(parts)
 
 

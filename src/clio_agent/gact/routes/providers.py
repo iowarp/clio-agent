@@ -139,12 +139,12 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
     def _codex_readiness(*, ignore_startup: bool = False) -> tuple[str, str, bool, str]:
         """Return status, message, verified flag, and live default for Codex."""
 
-        from clio_agent.providers.codex.credentials import CodexCredentialStore  # noqa: PLC0415
+        from clio_agent.providers.codex.credentials import direct_signed_in  # noqa: PLC0415
         from clio_agent.providers.codex.errors import (  # noqa: PLC0415
             CODEX_AUTHENTICATION_ERROR_MESSAGE,
         )
 
-        if not CodexCredentialStore().is_signed_in():
+        if not direct_signed_in():
             return (
                 "auth_required",
                 CODEX_AUTHENTICATION_ERROR_MESSAGE,

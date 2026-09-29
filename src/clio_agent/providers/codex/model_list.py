@@ -34,7 +34,11 @@ from typing import Any
 import httpx
 
 from clio_agent.providers.codex import constants as c
-from clio_agent.providers.codex.credentials import CodexCredentialStore
+from clio_agent.providers.codex.credentials import (
+    CodexCredentialStore,
+    codex_cli_signed_in,
+    direct_auth_headers,
+)
 from clio_agent.providers.codex.errors import CodexAuthError, CodexCredentialMissingError
 from clio_agent.providers.codex.login_flow import CodexCredential
 
@@ -115,12 +119,18 @@ def codex_client_version() -> str:
         ) from exc
 
 
-def _headers(credential: CodexCredential) -> dict[str, str]:
+def _headers(auth: CodexCredential | dict[str, str]) -> dict[str, str]:
     """Model-list request headers. Never log these: they carry the bearer token."""
 
+    if isinstance(auth, dict):
+        auth_headers = dict(auth)
+    else:
+        auth_headers = {
+            "Authorization": f"Bearer {auth.access_token}",
+            "chatgpt-account-id": auth.account_id,
+        }
     return {
-        "Authorization": f"Bearer {credential.access_token}",
-        "chatgpt-account-id": credential.account_id,
+        **auth_headers,
         "originator": c.ORIGINATOR,
         "User-Agent": "clio-agent",
         "accept": "application/json",
@@ -197,7 +207,9 @@ def parse_model_list(payload: Any, *, client_version: str, etag: str = "") -> Di
     )
 
 
-def _get(client: httpx.Client, credential: CodexCredential, client_version: str) -> httpx.Response:
+def _get(
+    client: httpx.Client, credential: CodexCredential | dict[str, str], client_version: str
+) -> httpx.Response:
     try:
         return client.get(
             c.CODEX_MODELS_URL,
@@ -213,9 +225,10 @@ def fetch_direct_models(
     store: CodexCredentialStore | None = None,
     client: httpx.Client | None = None,
 ) -> DirectModelList:
-    """Ask the Codex backend for this account's models with CLIO's own credential.
+    """Ask the Codex backend for this account's models.
 
-    A 401 refreshes the credential once and retries (the transports' A.7 rule).
+    With CLIO's own sign-in a 401 refreshes the credential once and retries (A.7);
+    without one, the local Codex CLI login is used (lm15 keeps it fresh).
 
     Raises:
         CodexModelListError: every failure, with a typed ``code``.
@@ -223,6 +236,8 @@ def fetch_direct_models(
 
     client_version = codex_client_version()
     credential_store = store or CodexCredentialStore()
+    if not credential_store.is_signed_in() and codex_cli_signed_in():
+        return _fetch_with_cli_login(client, client_version)
     try:
         credential = credential_store.get_valid_credential()
     except CodexCredentialMissingError as exc:
@@ -245,6 +260,27 @@ def fetch_direct_models(
     finally:
         if owns_client:
             http.close()
+    return _parsed(response, client_version)
+
+
+def _fetch_with_cli_login(client: httpx.Client | None, client_version: str) -> DirectModelList:
+    try:
+        headers = direct_auth_headers()
+    except CodexAuthError as exc:
+        raise CodexModelListError("codex_direct_auth_rejected", str(exc)) from exc
+    owns_client = client is None
+    http = client or httpx.Client(timeout=_TIMEOUT_S, follow_redirects=False)
+    try:
+        response = _get(http, headers, client_version)
+    finally:
+        if owns_client:
+            http.close()
+    if response.status_code == 401:
+        raise CodexModelListError("codex_direct_auth_rejected", "the Codex CLI login was refused")
+    return _parsed(response, client_version)
+
+
+def _parsed(response: httpx.Response, client_version: str) -> DirectModelList:
     if response.status_code >= 400:
         raise CodexModelListError("codex_direct_http_error", f"HTTP {response.status_code}")
     try:

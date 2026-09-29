@@ -34,7 +34,7 @@ from dspy.lm15 import (
 from dspy.lm15 import TimeoutError as LMTimeoutError
 
 from clio_agent.gact import context as gact_context
-from clio_agent.lm.engines.text_tools import FENCE
+from clio_agent.lm.engines.text_tools import FENCE, TURN_REMINDER
 from clio_agent.providers import claude_code_engine, stateful_common
 from clio_agent.providers.claude_code_engine import AsyncClaudeCodeEngine
 from clio_agent.providers.claude_code_errors import ClaudeCodeSignedOutError
@@ -208,8 +208,8 @@ def test_the_request_crosses_as_text_with_the_system_on_the_sdk_option(pool: Fak
     response = _run(_request(HEAD))
 
     [send] = pool.sends
-    assert send["system_prompt"].startswith("You are clio.\n\n# Calling tools")
-    assert send["payload"] == "[user]\nwhat?"
+    assert send["system_prompt"].startswith("You are clio.\n\n# How you act")
+    assert send["payload"] == f"[user]\nwhat?\n\n{TURN_REMINDER}"
     assert send["native_blocks"] == []
     parts = response.message.parts
     assert parts[0].text == "plan"
@@ -242,7 +242,7 @@ def test_append_only_calls_continue_the_session_with_new_messages_only(
 
     first, second = pool.sends
     assert second["session_id"] == first["session_id"]
-    assert second["payload"] == "[tool results]\n[c0 search]\nr0"
+    assert second["payload"] == f"[tool results]\n[c0 search]\nr0\n\n{TURN_REMINDER}"
     assert _stateful(audit) == [("full", "first_call"), ("delta", None)]
 
 

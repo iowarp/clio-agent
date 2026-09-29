@@ -38,7 +38,9 @@ def _block(calls: list[dict[str, object]]) -> str:
 
 def test_system_carries_the_rules_and_every_tool_schema() -> None:
     system = render_system("You are clio.", [SEARCH])
-    assert system.startswith("You are clio.\n\n# Calling tools")
+    assert system.startswith("You are clio.\n\n# How you act")
+    assert "NOT function calls of your own runtime" in system
+    assert "# Available tools" in system
     assert "- search: Search the corpus." in system
     assert json.dumps(SEARCH.parameters, sort_keys=True) in system
 

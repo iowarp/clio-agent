@@ -35,7 +35,7 @@ from dspy.lm15 import (
 )
 
 from clio_agent.gact import context as gact_context
-from clio_agent.lm.engines.text_tools import FENCE
+from clio_agent.lm.engines.text_tools import FENCE, TURN_REMINDER
 from clio_agent.providers import stateful_common
 from clio_agent.providers.codex import sdk_engine
 from clio_agent.providers.codex.errors import CodexSDKError
@@ -172,8 +172,11 @@ def test_a_full_send_carries_system_rules_tools_and_messages(client: FakeClient)
     response = _run(AsyncCodexSDKEngine(MODEL, effort="high"), _request(HEAD))
 
     [send] = client.sends
-    assert send["prompt"].startswith("You are clio.\n\n# Calling tools")
-    assert send["prompt"].endswith("[user]\nwhat?")
+    # The system prompt and tool rules are the thread's developer instructions;
+    # the prompt is only the conversation, with the per-turn tool reminder.
+    assert send["instructions"].startswith("You are clio.\n\n# How you act")
+    assert "# Available tools" in send["instructions"]
+    assert send["prompt"] == f"[user]\nwhat?\n\n{TURN_REMINDER}"
     assert (send["thread_id"], send["keep_thread"], send["model"]) == (None, False, MODEL)
     assert send["effort"].value == "high"
     parts = response.message.parts
@@ -257,8 +260,8 @@ def test_append_only_calls_continue_the_thread_with_the_new_messages_only(
 
     assert [s["thread_id"] for s in client.sends] == [None, "thread-1", "thread-1"]
     # The continued sends carry only the new tool results: no system, no replayed reply.
-    assert client.sends[1]["prompt"] == "[tool results]\n[c0 search]\nr0"
-    assert client.sends[2]["prompt"] == "[tool results]\n[c1 search]\nr1"
+    assert client.sends[1]["prompt"] == f"[tool results]\n[c0 search]\nr0\n\n{TURN_REMINDER}"
+    assert client.sends[2]["prompt"] == f"[tool results]\n[c1 search]\nr1\n\n{TURN_REMINDER}"
     assert _stateful(audit) == [("full", "first_call"), ("delta", None), ("delta", None)]
 
 
@@ -271,7 +274,8 @@ def test_an_edited_history_opens_a_new_thread_and_archives_the_old(
     _run(engine, _request(Message.user("a different head"), *_step(0)))
 
     assert [s["thread_id"] for s in client.sends] == [None, None]
-    assert client.sends[1]["prompt"].startswith("You are clio.")
+    assert client.sends[1]["prompt"].startswith("[user]\na different head")
+    assert client.sends[1]["instructions"].startswith("You are clio.")
     assert "thread-1" in client.archived
     assert _stateful(audit)[1] == ("full", "prefix_mismatch")
 

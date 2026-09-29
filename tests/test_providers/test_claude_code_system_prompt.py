@@ -55,9 +55,9 @@ async def test_tool_rules_ride_the_system_prompt(monkeypatch: pytest.MonkeyPatch
     await fake.drive(request)
 
     system = sdk.clients[0].options.system_prompt
-    assert system.startswith("You are clio.\n\n# Calling tools")
+    assert system.startswith("You are clio.\n\n# How you act")
     assert "- search: Search." in system
-    assert "Calling tools" not in sdk.queries()[0][0]
+    assert "# How you act" not in sdk.queries()[0][0]
 
 
 async def test_no_system_prompt_leaves_the_option_unset(monkeypatch: pytest.MonkeyPatch) -> None:

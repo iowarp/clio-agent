@@ -368,12 +368,12 @@ class CodexCatalogHandshake(CliCatalogHandshake):
 
         del client
         from clio_agent.providers import model_discovery  # noqa: PLC0415
-        from clio_agent.providers.codex.credentials import CodexCredentialStore  # noqa: PLC0415
+        from clio_agent.providers.codex.credentials import direct_signed_in  # noqa: PLC0415
         from clio_agent.providers.codex.errors import (  # noqa: PLC0415
             CODEX_AUTHENTICATION_ERROR_MESSAGE,
         )
 
-        if not CodexCredentialStore().is_signed_in():
+        if not direct_signed_in():
             return ConnectivityResult(
                 connectivity=ConnectivityState.SKIPPED,
                 auth=AuthState.MISSING,

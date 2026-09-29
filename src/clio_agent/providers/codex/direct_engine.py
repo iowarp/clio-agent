@@ -53,6 +53,11 @@ from dspy.lm15 import (
 from clio_agent.lm.engines.conversations import conversation_key, new_messages
 from clio_agent.providers.codex import constants as c
 from clio_agent.providers.codex.errors import CodexPlanLimitError, is_usage_limit_text
+from clio_agent.providers.codex.sdk_audit import (
+    emit_call_started,
+    emit_call_usage,
+    emit_raw_event,
+)
 from clio_agent.providers.stateful_common import stateful_reset_payload
 
 __all__ = ["AsyncCodexDirectEngine", "CodexDirectEngine", "close_all", "default_wire"]
@@ -351,7 +356,22 @@ async def _connect(headers: dict[str, str], key: tuple[str, ...] | None) -> Any:
 async def _exchange(
     wire: Any, request: Request, socket: Any, frame: dict[str, Any], out: queue.SimpleQueue[Any]
 ) -> str:
-    """Send one ``response.create`` frame; forward parsed events; return the response id."""
+    """Send one ``response.create`` frame; forward parsed events; return the response id.
+
+    Writes the same per-call audit rows as the SDK engines (``provider.call_started``,
+    the first streamed event, ``provider.call_usage`` with cached input).
+    """
+    call_id, call_index = uuid.uuid4().hex, _next_call_index()
+    emit_call_started(
+        call_id=call_id,
+        call_index=call_index,
+        model=str(frame.get("model") or ""),
+        prompt=json.dumps(frame.get("input") or []),
+        provider="codex_direct",
+        transport="websocket",
+    )
+    first = True
+    usage: Any = None
     await socket.send(json.dumps({"type": "response.create", **frame}))
     async for raw in socket:
         payload = json.loads(raw)
@@ -366,11 +386,56 @@ async def _exchange(
                 # The account's plan window is exhausted: terminal, never retried.
                 raise CodexPlanLimitError(message, code=_error_code(payload))
         for event in wire.parse_stream_events(request, _WireEvent(event=kind, data=raw)):
+            if first and event.type == "delta":
+                first = False
+                emit_raw_event(
+                    call_index=call_index,
+                    event_index=1,
+                    source_channel=str(getattr(event.delta, "type", "")),
+                    text="",
+                    raw_event_type=kind,
+                    provider="codex_direct",
+                )
+            if event.type == "end":
+                usage = event.usage
             out.put(event)
         if kind in _TERMINAL:
+            emit_call_usage(
+                call_id=call_id,
+                call_index=call_index,
+                model=str(frame.get("model") or ""),
+                usage=_usage_row(usage),
+                output_chars=0,
+                provider="codex_direct",
+                transport="websocket",
+            )
             response = payload.get("response") or {}
             return str(response.get("id") or "")
     raise ServerError("codex direct: the WebSocket closed before the response completed")
+
+
+_CALL_INDEX_LOCK = threading.Lock()
+_CALL_INDEX = 0
+
+
+def _next_call_index() -> int:
+    global _CALL_INDEX  # noqa: PLW0603
+    with _CALL_INDEX_LOCK:
+        _CALL_INDEX += 1
+        return _CALL_INDEX
+
+
+def _usage_row(usage: Any) -> dict[str, int]:
+    """lm15 usage in the audit's ``usage_*`` keys (the SDK engines' names)."""
+    if usage is None:
+        return {}
+    fields = {
+        "input_tokens": usage.input_tokens,
+        "cached_input_tokens": usage.cache_read_tokens,
+        "output_tokens": usage.output_tokens,
+        "reasoning_output_tokens": usage.reasoning_tokens,
+    }
+    return {k: int(v) for k, v in fields.items() if v is not None}
 
 
 class _ContinuationLost(Exception):

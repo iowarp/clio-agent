@@ -101,14 +101,14 @@ def _probe_codex_direct(
     directly, so the sole readiness signal is whether CLIO holds a valid,
     signed-in credential (:mod:`clio_agent.providers.codex.credentials`).
     """
-    from clio_agent.providers.codex.credentials import CodexCredentialStore  # noqa: PLC0415
+    from clio_agent.providers.codex.credentials import direct_signed_in  # noqa: PLC0415
 
     details: dict[str, Any] = {
         "provider": "codex",
         "model": config.model,
         "transport": config.codex_transport,
     }
-    if not CodexCredentialStore().is_signed_in():
+    if not direct_signed_in():
         return IntegrationStatus(
             name="lm_provider",
             state=IntegrationState.UNAVAILABLE,
