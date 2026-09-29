@@ -214,6 +214,13 @@ Facts below are cited against the 3.4.0 wheel (`dspy/…`, `lm15/` = `dspy/_vend
   constructed engine, never the model string. lm15's `claude_code` is HTTP with the CLI's
   credential file — not usable under the owner's credential rule.
 
+**Measured:** `feat/clio-react` with only `dspy==3.4.0` pinned runs the full suite at 10033
+passed / 1 failed (the test pinning the 3.3 prerelease); 3.4 keeps the 3.3 surfaces working but
+warns that clio uses the deprecated ones — `messages=` dicts (`lm/io_logging.py`,
+`lm/hooked_lm.py`) and custom LMs via `BaseLM.forward` (`io_logging`, `hooked_lm`,
+`gact/goal.py`, `agents/builders.py`), all removed in 3.5. So 3.4 is not a breaking upgrade; the
+reason for 2b is the design fit below, not breakage.
+
 **Verdicts on phases 1–2**
 
 | Piece | Verdict |
