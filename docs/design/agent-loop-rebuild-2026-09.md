@@ -45,6 +45,9 @@ own live-verification legs and marketplace agents, with the gact-tui UI verified
 - **Provider sessions span turns;** reset only on a recorded op or provider error (typed).
 - **Step anatomy:** thinking (provider payload, byte-exact) · text (what `next_thought` really is;
   optional with tool calls, required on the final step = the answer) · tool calls → results.
+  **Decided 2026-09-29 (owner):** `next_thought` is optional for EVERY model when the step calls
+  tools — clio forces no shape on the model; anything the model outputs (thinking, text) is
+  displayed.
 - **`dspy extract`** = literally DSPy's extract, config-driven (steps > N, default 3, can
   disable), recorded as an explicit amendment to `react-loop-completion-2026-09.md`.
 - **SDK providers are providers only** (Codex SDK, Claude Code SDK): no dynamicTools, no SDK tool
