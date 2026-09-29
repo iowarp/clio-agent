@@ -301,6 +301,42 @@ runs against a local `clio-web-search` container.
   with native function calling (same tool sequence and outputs for a scripted engine).
 - **F. Live** — Codex SDK only (owner), against the develop baseline.
 
+### B3 result: Codex direct, stateless vs stateful (2026-09-29, owner decision)
+
+Benchmark `opal-work/live/bench/codex_b3.py` (results `D:/t/bench/b3`): three `dspy.LM`
+candidates on `gpt-5.5`, reasoning effort `low`, driven with ClioReAct's request shape
+(append-only across steps and turns) over a deterministic lab toolset with realistic tool
+output sizes; 3 reps, candidates interleaved; a single multi-step turn, a four-turn
+conversation, and a return turn after a 12-minute idle gap. Every candidate answered every
+turn correctly.
+
+| four-turn conversation (medians) | Codex SDK engine | clio direct (WebSocket) | lm15 `OpenAICodexLM` (stateless HTTP) |
+|---|---|---|---|
+| TTFT (median / p90) | 1.92 / 4.13 s | **1.18 / 1.61 s** | 1.49 / 2.52 s |
+| call wall | 4.47 s | **4.21 s** | 5.15 s |
+| turn wall | **6.1 s** | 6.7 s | 8.7 s |
+| model calls (3 conversations) | **21** | 24 | 24 |
+| input tokens / call | 24,469 | 10,667 | 10,656 |
+| cache hit (cached / input) | 81% | 71% | 70% |
+| delta sends | 18/21 | 21/24 | 0 |
+
+- clio's stateful WebSocket beats lm15's stateless HTTP at equal cache hit rate and
+  correctness: TTFT -21% median / -36% p90, turns ~23% shorter. lm15 stateless is not adopted.
+- The SDK carries Codex's own ~14k-token base prompt on every call (2.3x the input); its
+  model took fewer steps here, so its turns finished first despite the slowest TTFT.
+- After the 12-minute gap: SDK continued its thread (98% cached), clio direct reconnected
+  typed (`session_evicted`) at 93% cached, lm15 89% cached.
+- Measured side facts: lm15's async transport pools its connection on the first event loop,
+  which the loop's per-step `asyncio.run` closes (a B4 item: one persistent LM loop);
+  `prompt_cache_key` alone did not make small stateless prompts cache.
+
+**Owner decision:** keep both transports. clio's direct WebSocket engine
+(`providers/codex/direct_engine.py`: lm15's payload and parser over a kept WebSocket with
+`previous_response_id`) replaces the old LiteLLM direct adapter; CLIO may read the local
+Codex CLI login (`~/.codex/auth.json`) when there is no CLIO sign-in; `CLIO_CODEX_TRANSPORT=sse`
+is an explicit stateless-HTTP mode, never a fallback. SDK vs direct is re-measured in the
+live legs before any removal.
+
 ## Definition of done
 
 1. Full suite green on every phase branch (`pytest tests -m "not integration"`): zero failures,
