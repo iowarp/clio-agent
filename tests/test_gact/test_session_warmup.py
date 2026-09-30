@@ -246,3 +246,19 @@ def test_a_hold_ends_by_itself_when_nobody_answers(monkeypatch: pytest.MonkeyPat
     while agent.leases and time.monotonic() < deadline:
         time.sleep(0.05)
     assert agent.leases == []
+
+
+def test_a_turn_with_every_server_connected_does_no_discovery() -> None:
+    """The warm-up a turn starts must cost nothing when the servers are up: it
+    runs beside the turn's own prologue, so it may not re-read blueprints then."""
+
+    class _NoDiscovery(_Agent):
+        def _discover_pack_servers(self, blueprint_id: str = "", *, cwd: str | None = None) -> Any:
+            raise AssertionError("discovery ran although every server was connected")
+
+    # "user_only" is a configured service this session does not use: never connected.
+    executor = _Executor(_specs("geo", "ndp", "user_only"))
+    executor.is_namespace_prepared = lambda ns: ns != "user_only"  # type: ignore[attr-defined]
+    executor._clio_warmed_namespaces = frozenset({"geo", "ndp"})  # type: ignore[attr-defined]
+
+    assert session_warmup.warm_session_servers(_NoDiscovery(executor, pack={})) == {}
