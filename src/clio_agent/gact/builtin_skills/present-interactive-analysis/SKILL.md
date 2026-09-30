@@ -22,10 +22,10 @@ Match the surface to the shape of the evidence, not to what looks impressive:
 
 - A spatial result (stations, sites, points on a map) → a map component.
 - Structured rows and columns → a data table.
-- A quantity that changes over an index or time for a few series → an interactive
-  time series.
+- A quantity that changes over an index or time for a few series → the catalog's
+  chart component (`clio.chart.v1`), typically its `trajectories` preset.
 - Many entities or grouped comparisons (one line per sample over time, spectra,
-  distributions per group, a matrix of values) → the catalog's general chart
+  distributions per group, a matrix of values) → the same `clio.chart.v1`
   component. Use one of its **named presets** by filling in field names; don't
   write a chart spec by hand unless no preset fits. That's longer, more likely to
   fail, and still has to pass the catalog's spec guard.

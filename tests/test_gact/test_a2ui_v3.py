@@ -44,6 +44,11 @@ _CATALOGS = CatalogRegistry()
 def _session_client(tmp_path: Path) -> tuple[TestClient, str, Path]:
     sessions_path = tmp_path / "sessions.json"
     app = build_app(sessions_path=sessions_path)
+    # ws_default seeds root_path=os.getcwd() (workspaces.py _seed_default) --
+    # rebind it to this test's own tmp_path so a producer-tool call (e.g. a
+    # minted surface-definition artifact, #1533 S4) never writes through it
+    # into the real invocation cwd.
+    app.state.workspaces.update("ws_default", root_path=str(tmp_path))
     session = app.state.sessions.create(workspace_id="ws_default", title="A2UI")
     return TestClient(app), session.id, sessions_path
 
@@ -1031,7 +1036,7 @@ def test_root_agent_tool_documents_how_to_revise_an_existing_surface() -> None:
     compact_description = " ".join(tool.desc.split())
 
     assert "session_surface_ids" in compact_description
-    assert "``created``" in compact_description
+    assert "revise it in place" in compact_description
 
 
 def test_server_and_tool_reject_string_accessibility_before_persisting(
@@ -1268,7 +1273,7 @@ def test_server_rejects_out_of_range_map_coordinates(tmp_path: Path) -> None:
     assert client.app.state.a2ui_store.get(sid, "surface_1") is None
 
 
-def test_server_accepts_registered_csv_time_series(tmp_path: Path) -> None:
+def test_server_accepts_registered_csv_chart(tmp_path: Path) -> None:
     client, sid, _ = _session_client(tmp_path)
     chart = {
         "version": "v0.9.1",
@@ -1277,10 +1282,12 @@ def test_server_accepts_registered_csv_time_series(tmp_path: Path) -> None:
             "components": [
                 {
                     "id": "root",
-                    "component": "clio.time-series.v1",
+                    "component": "clio.chart.v1",
                     "dataUri": "artifact://artifact_series_1",
-                    "xKey": "time",
-                    "yKeys": ["east", "north", "up"],
+                    "preset": "trajectories",
+                    "xField": "time",
+                    "yField": "east",
+                    "entityField": "station",
                 }
             ],
         },
@@ -1296,7 +1303,7 @@ def test_server_accepts_registered_csv_time_series(tmp_path: Path) -> None:
     assert response.json()["surfaces"][-1]["state"] == "ready"
 
 
-def test_server_rejects_ambiguous_time_series_sources(tmp_path: Path) -> None:
+def test_server_rejects_ambiguous_chart_sources(tmp_path: Path) -> None:
     client, sid, _ = _session_client(tmp_path)
     invalid = {
         "version": "v0.9.1",
@@ -1305,11 +1312,13 @@ def test_server_rejects_ambiguous_time_series_sources(tmp_path: Path) -> None:
             "components": [
                 {
                     "id": "root",
-                    "component": "clio.time-series.v1",
-                    "series": [{"time": 1, "east": 2}],
+                    "component": "clio.chart.v1",
+                    "data": [{"time": 1, "east": 2}],
                     "dataUri": "artifact://artifact_series_1",
-                    "xKey": "time",
-                    "yKeys": ["east"],
+                    "preset": "trajectories",
+                    "xField": "time",
+                    "yField": "east",
+                    "entityField": "station",
                 }
             ],
         },
@@ -1322,7 +1331,7 @@ def test_server_rejects_ambiguous_time_series_sources(tmp_path: Path) -> None:
     )
 
     assert response.status_code == 422
-    assert "component=clio.time-series.v1 id=root" in response.json()["error"]["message"]
+    assert "component=clio.chart.v1 id=root" in response.json()["error"]["message"]
     assert "not valid under any of the given schemas" in response.json()["error"]["message"]
     assert client.app.state.a2ui_store.get(sid, "surface_1") is None
 

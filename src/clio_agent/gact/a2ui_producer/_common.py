@@ -10,8 +10,10 @@ mistake is a tool RESULT, never an exception.
 
 from __future__ import annotations
 
+import json
 import uuid
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.a2ui import (
@@ -53,6 +55,66 @@ def existing_surface(app: Any, session_id: str, surface_id: str) -> Any:
     """Return the surface record (live or deleted) for ``surface_id``, or ``None``."""
 
     return app.state.a2ui_store.get(session_id, surface_id)
+
+
+def _upsert_components_by_id(
+    previous: "list[dict[str, Any]]", upserted: "list[dict[str, Any]]"
+) -> "list[dict[str, Any]]":
+    """Upsert ``upserted`` into ``previous`` by ``id``: an existing id is
+    REPLACED in place (its original position kept); a new id is appended.
+    Mirrors the ``updateComponents`` wire message's own upsert contract —
+    there is no per-component delete, only a whole-surface one."""
+
+    by_id: dict[Any, dict[str, Any]] = {}
+    order: list[Any] = []
+    for component in previous:
+        if not isinstance(component, dict):
+            continue
+        cid = component.get("id")
+        if cid not in by_id:
+            order.append(cid)
+        by_id[cid] = component
+    for component in upserted:
+        if not isinstance(component, dict):
+            continue
+        cid = component.get("id")
+        if cid not in by_id:
+            order.append(cid)
+        by_id[cid] = component
+    return [by_id[cid] for cid in order]
+
+
+def current_surface_components(existing: Any) -> "list[dict[str, Any]]":
+    """Replay ``existing``'s own ``updateComponents`` message history into the
+    FULL, currently-live component list (an empty list for ``None``/a
+    brand-new surface) -- the surface record stores raw ordered messages, not
+    a pre-reduced view, so every producer call that needs "what does this
+    surface look like right now" folds it the same way, here, once."""
+
+    merged: list[dict[str, Any]] = []
+    if existing is None:
+        return merged
+    for message in getattr(existing, "messages", None) or []:
+        update = message.get("updateComponents") if isinstance(message, dict) else None
+        components = update.get("components") if isinstance(update, dict) else None
+        if isinstance(components, list):
+            merged = _upsert_components_by_id(merged, components)
+    return merged
+
+
+def merged_surface_components(
+    existing: Any, new_components: "list[dict[str, Any]]"
+) -> "list[dict[str, Any]]":
+    """The surface's FULL component list AFTER upserting ``new_components``.
+
+    Used for the surface-definition artifact (#1533 S4): a producer call may
+    only touch a SUBSET of a multi-component surface (``update_a2ui_components``,
+    or ``create_a2ui_surface`` revising an existing id), so the stored
+    definition must be the whole live surface, never just this call's own
+    payload.
+    """
+
+    return _upsert_components_by_id(current_surface_components(existing), new_components)
 
 
 def surface_registry_fields(outcome: "A2UIBatchOutcome") -> dict[str, Any]:
@@ -132,10 +194,102 @@ def apply_messages(
         )
 
 
+def resolve_components(
+    app: Any,
+    session_id: str,
+    components: "Optional[list[dict[str, Any]]]",
+    components_path: str,
+) -> "list[dict[str, Any]] | dict[str, Any]":
+    """Resolve the caller's component list from exactly one of two sources.
+
+    ``components`` (inline) or ``components_path`` (a workspace JSON file
+    holding the components array) — passing both or neither is a typed
+    refusal, never a guess at which one the caller meant. A resolved
+    ``components_path`` must name an existing, readable, workspace-contained
+    JSON file whose top-level value is an array.
+    """
+
+    has_inline = components is not None
+    has_path = bool(components_path.strip())
+    if has_inline and has_path:
+        return refusal(
+            "a2ui_components_source_conflict",
+            detail="pass exactly one of components or components_path, never both",
+        )
+    if not has_inline and not has_path:
+        return refusal(
+            "a2ui_components_source_missing",
+            detail="pass one of components (inline) or components_path (a workspace JSON file)",
+        )
+    if has_inline:
+        assert components is not None
+        return components
+
+    from clio_agent.gact.artifacts.minting import (  # noqa: PLC0415
+        _contained,
+        _session_workspace_id,
+        _workspace_root,
+    )
+
+    workspace_id = _session_workspace_id(app, session_id)
+    root = _workspace_root(app, workspace_id)
+    if root is None:
+        return refusal(
+            "a2ui_components_path_unresolved",
+            detail="this session's workspace root is unresolvable; cannot read components_path",
+        )
+    candidate = Path(components_path).expanduser()
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    if not _contained(candidate, root):
+        return refusal(
+            "a2ui_components_path_unresolved",
+            detail=f"{components_path!r} is outside this session's workspace ({root})",
+        )
+    resolved = candidate.resolve(strict=False)
+    if not resolved.is_file():
+        return refusal(
+            "a2ui_components_path_unresolved",
+            detail=f"components_path names no file in this session's workspace: {components_path!r}",
+        )
+    try:
+        raw = resolved.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        return refusal(
+            "a2ui_components_path_unresolved",
+            detail=f"components_path could not be read: {exc}",
+        )
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return refusal(
+            "a2ui_components_path_invalid",
+            detail=f"components_path is not valid JSON: {exc}",
+        )
+    if not isinstance(parsed, list):
+        return refusal(
+            "a2ui_components_path_invalid",
+            detail="components_path JSON must be an array of component objects",
+        )
+    non_objects = [index for index, entry in enumerate(parsed) if not isinstance(entry, dict)]
+    if non_objects:
+        return refusal(
+            "a2ui_components_path_invalid",
+            detail=(
+                "components_path JSON must be an array of component OBJECTS; "
+                f"non-object entries at index(es): {non_objects}"
+            ),
+        )
+    return parsed
+
+
 __all__ = [
     "MAX_REPORTED_SURFACE_IDS",
     "active_app_and_session",
     "apply_messages",
+    "current_surface_components",
     "existing_surface",
+    "merged_surface_components",
+    "resolve_components",
     "surface_registry_fields",
 ]

@@ -610,7 +610,7 @@ requires-dist = [
     { name = "claude-agent-sdk", marker = "extra == 'claude-code'", specifier = ">=0.2.156" },
     { name = "clio-agent", extras = ["optimizers", "adios", "argonne", "claude-code", "desktop", "flowcept", "dev"], marker = "extra == 'all'" },
     { name = "clio-kit", marker = "extra == 'desktop'", specifier = "==2.10.6" },
-    { name = "clio-schemas", directory = "../clio-schemas-chart" },
+    { name = "clio-schemas", specifier = "==0.5.1" },
     { name = "ddgs", marker = "extra == 'desktop'", specifier = ">=6.0" },
     { name = "dspy", specifier = "==3.3.0b1" },
     { name = "fastapi", specifier = ">=0.140" },
@@ -683,30 +683,16 @@ wheels = [
 
 [[package]]
 name = "clio-schemas"
-version = "0.5.0"
-source = { directory = "../clio-schemas-chart" }
+version = "0.5.1"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jsonschema", extra = ["format"] },
     { name = "pydantic" },
     { name = "referencing" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "jsonschema", extras = ["format"], specifier = ">=4.23" },
-    { name = "pydantic", specifier = ">=2.7,<3" },
-    { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1.370" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
-    { name = "referencing", specifier = ">=0.35" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
-]
-provides-extras = ["dev"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pyright", specifier = ">=1.1.411" },
-    { name = "pytest", specifier = ">=9.1.1" },
-    { name = "ruff", specifier = ">=0.16.0" },
+sdist = { url = "https://files.pythonhosted.org/packages/e8/ad/80de41bbe8957fac2fc930fe3196dd1d945740e7618d40f5b4f9ab3a955b/clio_schemas-0.5.1.tar.gz", hash = "sha256:7459aed8f3fb1c5383f16ba79478e644baefa47b5276679e638af528b3176912", size = 215861, upload-time = "2026-09-30T10:34:14.288Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fb/23/4ba31719500adf381e56de1e980b0d9cc66e016f7f011ef85703a5a5600a/clio_schemas-0.5.1-py3-none-any.whl", hash = "sha256:295666ebcfd70dc78db7de2baf2032422a80f39d2632cc58e1688fb24ec2bae6", size = 158980, upload-time = "2026-09-30T10:34:13.229Z" },
 ]
 
 [[package]]

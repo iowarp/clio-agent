@@ -9,20 +9,24 @@ bytes come from the provider-owned store / CAS blob / contained workspace path,
 and every read is re-hashed against the immutable version hash.
 
 The query engine lives in :mod:`clio_agent.gact.artifacts.table_query`; this
-module owns limits, the worker-thread wall-clock budget, a small result cache
-keyed on ``(content sha256, canonical query)``, and the error envelope.
+module owns limits, cancellation (client-disconnect PRIMARY, a configured
+wall-clock backstop secondary), a concurrency guard over the shared worker
+thread pool, two small result caches (the exact final response, and the
+processed-but-unpaged result so paging through a large query does not
+re-read/re-process the source file per page), and the error envelope.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 
 from clio_agent.gact.artifacts.cas import sha256_file
 from clio_agent.gact.artifacts.records import ArtifactRecord, ArtifactVersion
@@ -31,7 +35,6 @@ from clio_agent.gact.artifacts.table_query_models import (
     DEFAULT_LIMIT,
     TableQueryError,
     TableQueryRequest,
-    TableQueryTimeout,
     table_format_for,
 )
 from clio_agent.gact.routes.artifact_table_preview import (
@@ -40,9 +43,17 @@ from clio_agent.gact.routes.artifact_table_preview import (
     _workspace_root,
 )
 
+if TYPE_CHECKING:
+    from clio_agent.gact.artifacts.table_query import ProcessedTable, QueryCancellation
+
 # A cached response larger than this many cells is not retained, so the bounded
 # entry count also bounds memory.
 _CACHE_MAX_CELLS = 250_000
+# A cached PROCESSED (pre-page) table larger than this many bytes is not
+# retained -- it is heavier than a final JSON result, so its own bound.
+_PROCESSED_CACHE_MAX_BYTES = 64 * 1024 * 1024
+# How often the disconnect watcher polls the client connection.
+_DISCONNECT_POLL_S = 0.25
 
 
 def table_query_max_rows() -> int:
@@ -88,6 +99,15 @@ def table_query_timeout_s() -> float:
     Config: ``artifacts.table_query_timeout_s`` /
     ``CLIO_ARTIFACTS_TABLE_QUERY_TIMEOUT_S`` (default 10). An overrun answers a
     typed 504 ``table_query_timeout``.
+
+    This is the SECONDARY guard, for a client that is still connected but has
+    waited too long — never a statement about how much data a caller can
+    reach (owner ruling: no cap that kneecaps intent); it is configurable
+    (raise it for a genuinely large one-shot query) and the reason is always
+    typed, never a silent drop. The PRIMARY cancellation path is the
+    requesting client disconnecting (see ``_watch_for_disconnect``): checked
+    between every stage and, in the per-entity downsample loop, on every
+    entity, not only once between stage boundaries.
     """
 
     from clio_agent import conf  # noqa: PLC0415
@@ -97,6 +117,46 @@ def table_query_timeout_s() -> float:
         env="CLIO_ARTIFACTS_TABLE_QUERY_TIMEOUT_S",
         default=10.0,
         cast=conf.as_float,
+    )
+
+
+def table_query_max_concurrency() -> int:
+    """Max table-query executions running at once, sharing the worker thread pool.
+
+    Config: ``artifacts.table_query_max_concurrency`` /
+    ``CLIO_ARTIFACTS_TABLE_QUERY_MAX_CONCURRENCY`` (default 8). A slow query
+    (a large source, an expensive aggregate) must not be free to exhaust the
+    process's shared default thread pool and starve every other request;
+    a request beyond this bound simply waits its turn, never refused.
+    """
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    return conf.resolve(
+        "artifacts.table_query_max_concurrency",
+        env="CLIO_ARTIFACTS_TABLE_QUERY_MAX_CONCURRENCY",
+        default=8,
+        cast=conf.as_int,
+    )
+
+
+def table_query_processed_cache_entries() -> int:
+    """How many PROCESSED (pre-page) query results the per-app cache keeps.
+
+    Config: ``artifacts.table_query_processed_cache_entries`` /
+    ``CLIO_ARTIFACTS_TABLE_QUERY_PROCESSED_CACHE_ENTRIES`` (default 8; 0
+    disables it). Every page of the SAME query (same everything except
+    ``offset``) reuses one entry, so paging avoids re-reading and
+    re-processing the source file per page.
+    """
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    return conf.resolve(
+        "artifacts.table_query_processed_cache_entries",
+        env="CLIO_ARTIFACTS_TABLE_QUERY_PROCESSED_CACHE_ENTRIES",
+        default=8,
+        cast=conf.as_int,
     )
 
 
@@ -160,6 +220,84 @@ def _cache_for(app: FastAPI) -> TableQueryCache:
     return cache
 
 
+class ProcessedTableCache:
+    """A small thread-safe LRU of PROCESSED (pre-page) query results.
+
+    Keyed on ``(content sha256, format, canonical query WITHOUT offset)``:
+    every page of the same query reuses the same entry (``ProcessedTable`` is
+    read-only from here on, safe to share across concurrent requests), so
+    paging through a large result costs one cheap ``.slice()`` per page
+    instead of re-reading, re-filtering, re-aggregating, re-downsampling and
+    re-sorting the source file each time.
+    """
+
+    def __init__(self) -> None:
+        self._entries: OrderedDict[tuple[str, str, str], "ProcessedTable"] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, key: tuple[str, str, str]) -> "ProcessedTable | None":
+        with self._lock:
+            found = self._entries.get(key)
+            if found is not None:
+                self._entries.move_to_end(key)
+            return found
+
+    def put(self, key: tuple[str, str, str], value: "ProcessedTable", capacity: int) -> None:
+        if capacity <= 0 or value.table.nbytes > _PROCESSED_CACHE_MAX_BYTES:
+            return
+        with self._lock:
+            self._entries[key] = value
+            self._entries.move_to_end(key)
+            while len(self._entries) > capacity:
+                self._entries.popitem(last=False)
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._entries)
+
+
+def _processed_cache_for(app: FastAPI) -> ProcessedTableCache:
+    cache = getattr(app.state, "table_query_processed_cache", None)
+    if cache is None:
+        cache = ProcessedTableCache()
+        app.state.table_query_processed_cache = cache
+    return cache
+
+
+def _concurrency_semaphore_for(app: FastAPI) -> asyncio.Semaphore:
+    """The app-wide semaphore bounding concurrent table-query executions.
+
+    Rebuilt if the configured limit changes (a config-file edit takes effect
+    on the next request, matching every other ``artifacts.table_query_*``
+    knob here).
+    """
+
+    limit = table_query_max_concurrency()
+    semaphore = getattr(app.state, "table_query_semaphore", None)
+    if semaphore is None or getattr(app.state, "table_query_semaphore_limit", None) != limit:
+        semaphore = asyncio.Semaphore(limit)
+        app.state.table_query_semaphore = semaphore
+        app.state.table_query_semaphore_limit = limit
+    return semaphore
+
+
+async def _watch_for_disconnect(request: Request, cancel_event: threading.Event) -> None:
+    """Set ``cancel_event`` as soon as ``request``'s own HTTP client disconnects.
+
+    The PRIMARY cancellation path (owner ruling): polled rather than a single
+    ``await``, since Starlette's ``is_disconnected`` only reports a truthful
+    answer when asked repeatedly. Cancelled by the route once the query
+    finishes (success or error) either way -- this task never outlives one
+    request.
+    """
+
+    while True:
+        if await request.is_disconnected():
+            cancel_event.set()
+            return
+        await asyncio.sleep(_DISCONNECT_POLL_S)
+
+
 def _owned_error(
     *, status_code: int, error: str, message: str, details: dict[str, Any] | None = None
 ) -> HTTPException:
@@ -168,8 +306,24 @@ def _owned_error(
     return _error(status_code, error, message, **(details or {}))
 
 
-def _table_source(app: FastAPI, record: ArtifactRecord, version: ArtifactVersion) -> Path:
-    """Resolve verified bytes exactly as ``/bytes`` does: owned store first, then CAS/path."""
+def _table_source(
+    app: FastAPI,
+    record: ArtifactRecord,
+    version: ArtifactVersion,
+    *,
+    verify: bool = True,
+) -> Path:
+    """Resolve bytes exactly as ``/bytes`` does: owned store first, then CAS/path.
+
+    ``verify`` (default ``True``) re-hashes the resolved bytes against
+    ``version.sha256``, exactly like every table-query/table-preview serving
+    path. ``verify=False`` trusts the artifact record's own recorded metadata
+    instead of re-reading and re-hashing the whole file — used by producer-
+    side, non-serving checks (e.g. ``_data_reference.py``'s dataQuery/*Field
+    shape validation, #1533 S4 adversarial review item 6) that run on every
+    ``create_a2ui_surface``/``update_a2ui_components`` call and must not pay
+    a full artifact re-hash each time just to check column names.
+    """
 
     from clio_agent.gact.artifacts.storage import (  # noqa: PLC0415
         resolve_owned_artifact_or_raise,
@@ -178,8 +332,8 @@ def _table_source(app: FastAPI, record: ArtifactRecord, version: ArtifactVersion
     root = _workspace_root(app, record.workspace_id)
     owned = resolve_owned_artifact_or_raise(app, version, workspace_root=root, error=_owned_error)
     if owned is None:
-        return _artifact_source(app, record, version)
-    if version.sha256:
+        return _artifact_source(app, record, version, verify=verify)
+    if verify and version.sha256:
         actual = sha256_file(owned)
         if actual != version.sha256:
             raise _error(
@@ -214,8 +368,7 @@ def _table_query(
     version: ArtifactVersion,
     request: TableQueryRequest,
     limit: int,
-    deadline: float,
-    timeout_s: float,
+    cancellation: "QueryCancellation",
 ) -> dict[str, Any]:
     """Resolve, bound-check and run one query (worker thread)."""
 
@@ -248,13 +401,30 @@ def _table_query(
         if cached is not None:
             return {**cached, "cached": True}
 
-    try:
-        # numpy/pyarrow load only when a query runs, not when the app registers routes.
-        from clio_agent.gact.artifacts.table_query import run_table_query  # noqa: PLC0415
+    # numpy/pyarrow load only when a query runs, not when the app registers routes.
+    from clio_agent.gact.artifacts.table_query import (  # noqa: PLC0415
+        compute_processed_table,
+        page_processed_table,
+    )
 
-        result = run_table_query(
-            source, fmt, request, limit=limit, deadline=deadline, timeout_s=timeout_s
-        )
+    processed_cache = _processed_cache_for(app)
+    processed_key = (
+        (version.sha256, fmt, request.canonical_json_for_processing(limit))
+        if version.sha256
+        else None
+    )
+    processed = processed_cache.get(processed_key) if processed_key is not None else None
+    try:
+        if processed is None:
+            # Cache MISS: read, filter, aggregate, downsample and sort the
+            # source file once; every page of this same query then reuses it
+            # (owner ruling: paging must not re-read/re-process per page).
+            processed = compute_processed_table(
+                source, fmt, request, limit=limit, cancellation=cancellation
+            )
+            if processed_key is not None:
+                processed_cache.put(processed_key, processed, table_query_processed_cache_entries())
+        result = page_processed_table(processed, offset=request.offset or 0, limit=limit)
     except TableQueryError as exc:
         raise _error(
             exc.status_code, exc.code, exc.message, artifact_id=version.artifact_id, **exc.details
@@ -270,8 +440,15 @@ def register_artifact_table_query_routes(app: FastAPI) -> None:
     """Register the bounded tabular query endpoint used by data-backed charts."""
 
     @app.post("/v1/artifacts/{artifact_id}/table-query")
-    async def artifact_table_query(artifact_id: str, body: TableQueryRequest) -> dict[str, Any]:
-        """Filter -> aggregate -> downsample -> limit over a CSV/Parquet artifact."""
+    async def artifact_table_query(
+        artifact_id: str, body: TableQueryRequest, request: Request
+    ) -> dict[str, Any]:
+        """Filter -> aggregate -> downsample -> sort -> offset/limit over a CSV/Parquet artifact."""
+
+        from clio_agent.gact.artifacts.table_query import (  # noqa: PLC0415
+            QueryCancellation,
+            TableQueryTimeout,
+        )
 
         limit = _effective_limit(body.limit)
         timeout_s = table_query_timeout_s()
@@ -286,13 +463,30 @@ def register_artifact_table_query_routes(app: FastAPI) -> None:
                 artifact_id=artifact_id,
             )
         record, version = found
+
+        # PRIMARY cancellation (owner ruling): a background task watches this
+        # request's own HTTP connection and flips cancel_event the moment the
+        # client disconnects; the engine checks it between every stage (and,
+        # in the per-entity downsample loop, on every entity).
+        cancel_event = threading.Event()
+        cancellation = QueryCancellation(
+            deadline=deadline, timeout_s=timeout_s, cancel_event=cancel_event
+        )
+        watcher = asyncio.ensure_future(_watch_for_disconnect(request, cancel_event))
+        semaphore = _concurrency_semaphore_for(app)
         try:
-            return await asyncio.wait_for(
-                asyncio.to_thread(
-                    _table_query, app, record, version, body, limit, deadline, timeout_s
-                ),
-                timeout=max(0.0, deadline - time.monotonic()),
-            )
+            async with semaphore:
+                # The outer wait_for is the SECONDARY, hard backstop: pyarrow's
+                # synchronous calls are not preemptible mid-call, so a single
+                # oversized stage could otherwise still run past the deadline
+                # before the next cancellation.check(); this bounds the HTTP
+                # response itself regardless.
+                return await asyncio.wait_for(
+                    asyncio.to_thread(
+                        _table_query, app, record, version, body, limit, cancellation
+                    ),
+                    timeout=max(0.0, deadline - time.monotonic()),
+                )
         except TimeoutError as exc:
             timeout = TableQueryTimeout(timeout_s)
             raise _error(
@@ -302,12 +496,18 @@ def register_artifact_table_query_routes(app: FastAPI) -> None:
                 artifact_id=artifact_id,
                 **timeout.details,
             ) from exc
+        finally:
+            watcher.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watcher
 
 
 __all__ = [
     "register_artifact_table_query_routes",
     "table_query_cache_entries",
+    "table_query_max_concurrency",
     "table_query_max_rows",
     "table_query_max_source_bytes",
+    "table_query_processed_cache_entries",
     "table_query_timeout_s",
 ]
