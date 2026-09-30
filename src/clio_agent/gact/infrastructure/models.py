@@ -362,6 +362,25 @@ class ServiceActionRequest(BaseModel):
     configuration: dict[str, str] = Field(default_factory=dict)
 
 
+class VersionConflictDetail(BaseModel):
+    """A healthy CLIO the claim step found but left running untouched.
+
+    Set only when ``error`` is ``clio_deploy_version_conflict``: an
+    ``install``/``reinstall``/``start`` on ``clio_agent`` found a healthy
+    CLIO on the conventional port that is not this exact install and
+    version, and the request did not say how to proceed (``configuration``
+    carries no ``on_conflict``). Nothing was stopped or installed. The
+    caller re-issues the same action with ``configuration.on_conflict`` set
+    to ``"connect"`` (adopt the running CLIO as-is) or ``"replace"`` (stop it
+    and install this desktop's version).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    installed_version: str
+    pid: str
+
+
 class InfrastructureOperation(BaseModel):
     """Durable operation state returned immediately to callers."""
 
@@ -373,6 +392,7 @@ class InfrastructureOperation(BaseModel):
     progress: str = "Queued"
     logs: str = ""
     error: str | None = None
+    conflict: VersionConflictDetail | None = None
     created_at: str = Field(default_factory=utc_now)
     updated_at: str = Field(default_factory=utc_now)
 

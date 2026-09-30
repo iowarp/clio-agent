@@ -8,11 +8,24 @@ therefore *claims* the port:
 
 * nothing listens: proceed;
 * this install's own server listens, is healthy, and runs the target
-  version: **adopt** it (the install and start steps are skipped);
-* any other CLIO server listens (another install prefix, an old version, a
-  hung server): **stop** it and report ``Stopped an old CLIO (pid N, path)``;
+  version: **adopt** it (the install and start steps are skipped) --
+  whether this desktop started it or not (a hand-run ``clio start``, or a
+  different desktop's earlier deploy, adopt the same way);
+* a healthy CLIO server listens under a different root or version, and the
+  caller has not said to replace it: **found** -- nothing is touched or
+  installed; the caller decides (see ``replace`` below);
+* the same case, but the caller passed ``replace=1`` (the person chose
+  "Replace it" after being shown the found version): **stop** it and report
+  ``Stopped an old CLIO (pid N, path)``;
 * anything that is not a CLIO server listens: fail with a typed line naming
   it. Unrelated processes are never touched.
+
+A CLIO is never stopped just because it differs from what this desktop would
+install -- only ``adopt`` (exact match) or an explicit ``replace=1`` may end
+one. This is a claim-time decision, not a core-agent one: the frontend shows
+the found version and asks "Connect to the running CLIO (vX)" or "Replace
+it", and either answer becomes one more claim call with ``replace`` set only
+for "Replace".
 
 A CLIO server is recognized only by what CLIO's own launcher leaves: the
 command line ``<prefix>/clio-agent/.venv/bin/clio-agent serve`` confirmed by
@@ -118,6 +131,7 @@ _CLAIM = (
     + _COMMON
     + r"""
 version="$3"
+replace="${4:-0}"
 existing_root=0; [ -d "$root" ] && existing_root=1
 if ! port_busy "$port"; then
   say "Port $port is free"
@@ -129,14 +143,19 @@ if [ -z "$pid" ]; then
   fail "Port $port is used by a process this account cannot inspect (another user's program)"
 fi
 owner="$(clio_prefix_of "$pid")" || fail "Port $port is used by another program (pid $pid: $(cmdline_of "$pid" | cut -c1-160))"
-if [ "$(real "$owner")" = "$(real "$root")" ]; then
-  installed="$("$root/clio-agent/.venv/bin/python" -c 'import importlib.metadata as m; print(m.version("clio-agent"))' 2>/dev/null || true)"
-  code="$(curl --noproxy '*' -sS -m 3 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/v1/health" 2>/dev/null || true)"
-  if [ "$installed" = "$version" ] && { [ "$code" = "200" ] || [ "$code" = "503" ]; }; then
-    say "Reusing the running CLIO (pid $pid, $owner)"
-    printf 'clio-deploy result=adopted existing_root=%s pid=%s\n' "$existing_root" "$pid"
-    exit 0
-  fi
+installed="$("$owner/clio-agent/.venv/bin/python" -c 'import importlib.metadata as m; print(m.version("clio-agent"))' 2>/dev/null || true)"
+code="$(curl --noproxy '*' -sS -m 3 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/v1/health" 2>/dev/null || true)"
+healthy=0
+{ [ "$code" = "200" ] || [ "$code" = "503" ]; } && healthy=1
+if [ "$healthy" = "1" ] && [ "$installed" = "$version" ] && [ "$(real "$owner")" = "$(real "$root")" ]; then
+  say "Reusing the running CLIO (pid $pid, $owner)"
+  printf 'clio-deploy result=adopted existing_root=%s pid=%s\n' "$existing_root" "$pid"
+  exit 0
+fi
+if [ "$healthy" = "1" ] && [ "$replace" != "1" ]; then
+  say "CLIO ${installed:-(unknown version)} is already running (pid $pid, $owner)"
+  printf 'clio-deploy result=found existing_root=%s pid=%s installed=%s\n' "$existing_root" "$pid" "${installed:-unknown}"
+  exit 0
 fi
 stop_clio_server "$pid" || fail "An old CLIO (pid $pid, $owner) did not stop"
 for i in $(seq 1 20); do
@@ -182,21 +201,39 @@ printf 'clio-deploy result=cleaned\n'
 
 @dataclass(frozen=True)
 class ClaimResult:
-    """What the claim step found on the API port."""
+    """What the claim step found on the API port.
 
-    result: Literal["free", "adopted", "stopped"]
+    ``found`` means a healthy CLIO is running but the claim did not touch it
+    (different root or version, ``replace`` unset): ``installed_version`` and
+    ``pid`` name what is running, so the caller can ask before a follow-up
+    claim with ``replace=True`` stops it.
+    """
+
+    result: Literal["free", "adopted", "stopped", "found"]
     existing_root: bool
+    installed_version: str | None = None
+    pid: str | None = None
 
 
 _RESULT_LINE = re.compile(r"clio-deploy result=(\w+)((?: \w+=\S+)*)")
 
 
-def claim_command(root: str, port: int, version: str) -> CommandSpec:
-    """The adopt-or-stop step that runs before installing."""
+def claim_command(root: str, port: int, version: str, *, replace: bool = False) -> CommandSpec:
+    """The adopt-or-stop step that runs before installing.
+
+    Args:
+        root: The install root this deploy would use.
+        port: CLIO's conventional API port.
+        version: The version this deploy would install.
+        replace: When ``True``, a healthy but non-matching CLIO found on the
+            port is stopped (the person chose "Replace it"). When ``False``
+            (default), such a CLIO is left running and reported as ``found``
+            instead -- claiming the port is never destructive on its own.
+    """
 
     return CommandSpec(
         program="bash",
-        args=["-lc", _CLAIM, "clio", root, str(port), version],
+        args=["-lc", _CLAIM, "clio", root, str(port), version, "1" if replace else "0"],
         timeout_seconds=90,
     )
 
@@ -311,10 +348,12 @@ def parse_claim(stdout: str) -> ClaimResult | None:
 
     for line in reversed(stdout.splitlines()):
         match = _RESULT_LINE.search(line)
-        if match and match.group(1) in {"free", "adopted", "stopped"}:
+        if match and match.group(1) in {"free", "adopted", "stopped", "found"}:
             fields = dict(item.split("=", 1) for item in match.group(2).split())
             return ClaimResult(
                 result=match.group(1),  # type: ignore[arg-type]
                 existing_root=fields.get("existing_root") == "1",
+                installed_version=fields.get("installed"),
+                pid=fields.get("pid"),
             )
     return None

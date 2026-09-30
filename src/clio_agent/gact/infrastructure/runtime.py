@@ -40,6 +40,7 @@ from clio_agent.gact.infrastructure.models import (
     ServiceRecord,
     ServiceState,
     TargetFacts,
+    VersionConflictDetail,
 )
 from clio_agent.gact.infrastructure.probe import probe_target
 from clio_agent.gact.infrastructure.resource_ledger import merge as merge_owned
@@ -419,6 +420,33 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                         or f"{spec.program} exited with code {result.exit_code}"
                     )
                 claim = parse_claim(result.stdout) or claim
+                if claim is not None and claim.result == "found":
+                    if request.configuration.get("on_conflict") == "connect":
+                        # The person chose to connect to the running CLIO
+                        # as-is; treat it like an exact-match adopt.
+                        break
+                    # Nothing was stopped or installed. Surface the found
+                    # version so the caller can ask "Connect" or "Replace"
+                    # instead of clio silently deciding either way.
+                    self.store.put_operation(
+                        row.model_copy(
+                            update={
+                                "state": "failed",
+                                "progress": (
+                                    f"CLIO {claim.installed_version or '(unknown version)'} "
+                                    f"is already running on this host "
+                                    f"(pid {claim.pid or 'unknown'})."
+                                ),
+                                "error": "clio_deploy_version_conflict",
+                                "conflict": VersionConflictDetail(
+                                    installed_version=claim.installed_version or "unknown",
+                                    pid=claim.pid or "",
+                                ),
+                                "logs": _bounded("\n".join(output)),
+                            }
+                        )
+                    )
+                    return
                 if claim is not None and claim.result == "adopted":
                     # The healthy server of this exact install and version
                     # keeps running; installing or starting again is not needed.
@@ -535,7 +563,12 @@ class InfrastructureRuntime(ExternalConnectionsMixin, ServerAccessMixin):
                 return await self._execute(target_id, spec)
 
             return (await remove_created(execute, target_id, created, target_os))[1]
-        if plan is None or plan.teardown is None or claim is None or claim.result == "adopted":
+        if (
+            plan is None
+            or plan.teardown is None
+            or claim is None
+            or claim.result in {"adopted", "found"}
+        ):
             return "Nothing this deploy started needed cleaning up."
         try:
             result = await self._execute(target_id, plan.teardown(claim))

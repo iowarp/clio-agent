@@ -259,7 +259,7 @@ def build_driver_plan(
     if service_id == "relay":
         return _relay_plan(action, configuration, target)
     if service_id == "clio_agent":
-        return _clio_agent_plan(action, target)
+        return _clio_agent_plan(action, target, configuration)
 
     container = "clio-web-search"
     if action in {"status", "logs", "stop", "uninstall"}:
@@ -463,7 +463,9 @@ def _ssh_destination(target: InfrastructureTarget | None) -> str:
     return f"{target.ssh.user.strip()}@{host}" if target.ssh.user.strip() else host
 
 
-def _clio_agent_plan(action: str, target: InfrastructureTarget | None) -> DriverPlan:
+def _clio_agent_plan(
+    action: str, target: InfrastructureTarget | None, configuration: dict[str, str] | None = None
+) -> DriverPlan:
     if target is None or target.kind != "ssh":
         raise ValueError("Remote CLIO deployment requires an SSH infrastructure target")
     root = target.install_root.strip()
@@ -495,8 +497,12 @@ def _clio_agent_plan(action: str, target: InfrastructureTarget | None) -> Driver
         raise ValueError(f"Unsupported CLIO lifecycle action {action!r}")
     version = clio_agent_version()
     # Adopt this install's healthy server of this version, or stop any other
-    # CLIO on the port, before touching anything; never start beside one.
-    commands.append(claim_command(root, CLIO_AGENT_PORT, version))
+    # CLIO on the port, before touching anything; never start beside one --
+    # unless the person already chose "Replace it" for a found conflict
+    # (`on_conflict: "replace"`, see runtime.py), which is the only case
+    # that may stop a CLIO this claim doesn't recognize as its own.
+    replace = (configuration or {}).get("on_conflict") == "replace"
+    commands.append(claim_command(root, CLIO_AGENT_PORT, version, replace=replace))
     if action in {"install", "reinstall"}:
         commands.append(install_command(root, version))
     commands.append(launcher('"$bin/clio" start'))
