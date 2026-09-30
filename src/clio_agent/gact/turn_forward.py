@@ -213,6 +213,7 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
     # module build below, before the actual LLM request dispatch begins.
     # The servers this turn may call start alongside it; the turn itself waits only
     # for tool listings, and a call only for its own server.
+    session_warmup.release_session_fleet(state.sid)  # the lease below holds it now
     session_warmup.start_session_warmup(state.app, state.sid, trigger="turn_started")
     bringup_timing.timer_for_session(state.app, state.sid).start_phase("blueprint.resolve")
     session_agent_id = _session_agent_id(state.sess)

@@ -190,3 +190,59 @@ def test_a_turn_starts_the_warmup(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
         complete_turn(c, sid, "hi")
     assert (sid, "turn_started") in starts
+
+
+class _LeasingAgent:
+    def __init__(self) -> None:
+        self.leases: list[str] = []
+
+    def lease_workspace_fleet(self, root: str) -> Any:
+        from contextlib import contextmanager
+
+        @contextmanager
+        def lease() -> Any:
+            self.leases.append(root)
+            try:
+                yield
+            finally:
+                self.leases.remove(root)
+
+        return lease()
+
+
+def _app_with_session(agent: Any) -> Any:
+    session = SimpleNamespace(workspace_id="ws1")
+    workspace = SimpleNamespace(root_path="D:/work")
+    return SimpleNamespace(
+        state=SimpleNamespace(
+            agent=agent,
+            sessions={"s1": session},
+            workspaces={"ws1": workspace},
+        )
+    )
+
+
+def test_a_session_waiting_on_its_user_keeps_its_servers_until_the_next_turn() -> None:
+    """Field report (2026-09-30): after answering a question the session sat on
+    "Setting up session" -- the idle reaper had closed its servers meanwhile."""
+    agent = _LeasingAgent()
+    app = _app_with_session(agent)
+
+    session_warmup.hold_session_fleet(app, "s1")
+    assert agent.leases == ["D:/work"]
+    session_warmup.hold_session_fleet(app, "s1")  # a second pause does not stack
+    assert agent.leases == ["D:/work"]
+
+    session_warmup.release_session_fleet("s1")
+    assert agent.leases == []
+
+
+def test_a_hold_ends_by_itself_when_nobody_answers(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(session_warmup, "hold_while_waiting_s", lambda: 0.2)
+    agent = _LeasingAgent()
+    session_warmup.hold_session_fleet(_app_with_session(agent), "s1")
+    assert agent.leases == ["D:/work"]
+    deadline = time.monotonic() + 5
+    while agent.leases and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert agent.leases == []

@@ -22,6 +22,7 @@ import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -158,3 +159,64 @@ def warm_session_servers(agent: Any) -> dict[str, str]:
     with ThreadPoolExecutor(max_workers=len(namespaces), thread_name_prefix="clio-warm") as pool:
         futures = {ns: pool.submit(contextvars.copy_context().run, start, ns) for ns in namespaces}
         return {ns: future.result() for ns, future in futures.items()}
+
+
+# --------------------------------------------------------------------------- #
+# Keep a waiting session's servers                                            #
+# --------------------------------------------------------------------------- #
+# A turn that stops to ask its user leaves the fleet idle; the idle reaper would
+# close the servers while the user answers, and the resume would start them all
+# again. The session's workspace fleet is held (a lease, as a running turn takes)
+# until its next turn starts, or for ``tools.mcp.hold_while_waiting_s``.
+_holds: dict[str, tuple[ExitStack, threading.Timer]] = {}
+_holds_lock = threading.Lock()
+
+
+def hold_while_waiting_s() -> float:
+    """How long a session waiting on its user keeps its servers (default 30 min)."""
+
+    from clio_agent import conf  # noqa: PLC0415
+
+    return conf.resolve(
+        "tools.mcp.hold_while_waiting_s",
+        env="CLIO_MCP_HOLD_WHILE_WAITING_S",
+        default=1800.0,
+        cast=conf.as_float,
+    )
+
+
+def hold_session_fleet(app: Any, sid: str) -> None:
+    """Keep ``sid``'s workspace fleet while the session waits on its user."""
+
+    state = getattr(app, "state", None)
+    lease = getattr(getattr(state, "agent", None), "lease_workspace_fleet", None)
+    sessions = getattr(state, "sessions", None)
+    workspaces = getattr(state, "workspaces", None)
+    sess = sessions.get(sid) if sessions is not None else None
+    workspace_id = str(getattr(sess, "workspace_id", "") or "")
+    ws = workspaces.get(workspace_id) if workspaces is not None and workspace_id else None
+    root = str(getattr(ws, "root_path", "") or "")
+    if not root or not callable(lease):
+        return
+    with _holds_lock:
+        if sid in _holds:
+            return
+        stack = ExitStack()
+        stack.enter_context(lease(root))
+        timer = threading.Timer(hold_while_waiting_s(), release_session_fleet, args=(sid,))
+        timer.daemon = True
+        _holds[sid] = (stack, timer)
+    timer.start()
+    logger.info("session_fleet_held session=%s root=%s", sid, root)
+
+
+def release_session_fleet(sid: str) -> None:
+    """Drop ``sid``'s hold (its next turn started, or the wait ran out)."""
+
+    with _holds_lock:
+        held = _holds.pop(sid, None)
+    if held is None:
+        return
+    stack, timer = held
+    timer.cancel()
+    stack.close()

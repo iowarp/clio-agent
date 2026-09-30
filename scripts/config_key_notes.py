@@ -1166,6 +1166,10 @@ KEY_NOTES: dict[str, str] = {
         "CSV allow-list of origins a url-mode elicitation may point to; add one to enable url "
         "elicitation for that server."
     ),
+    "tools.mcp.hold_while_waiting_s": (
+        "Seconds a session waiting on its user (a question or plan approval) keeps its MCP "
+        "servers from the idle reaper, so the answer resumes without starting them again."
+    ),
     "tools.mcp.input_required_max_rounds": (
         "Round cap on the modern-era InputRequiredResult retry loop for one tool call; raise for "
         "tools needing many follow-up inputs."

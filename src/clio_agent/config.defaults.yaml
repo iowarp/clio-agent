@@ -1186,6 +1186,12 @@ tools.mcp.elicitation.agent_audience.timeout_s: 90.0
 # enable url elicitation for that server.
 # tools.mcp.elicitation.url_trusted_origins:  # computed at runtime: default
 
+# CLIO_MCP_HOLD_WHILE_WAITING_S  (float)  <- src/clio_agent/gact/session_warmup.py
+# Seconds a session waiting on its user (a question or plan approval) keeps
+# its MCP servers from the idle reaper, so the answer resumes without
+# starting them again.
+tools.mcp.hold_while_waiting_s: 1800.0
+
 # CLIO_MCP_INPUT_REQUIRED_MAX_ROUNDS  (int)  <- src/clio_agent/tools/mcp_runtime.py
 # Round cap on the modern-era InputRequiredResult retry loop for one tool
 # call; raise for tools needing many follow-up inputs.
