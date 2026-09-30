@@ -211,7 +211,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # row (the parse itself is the leaf runtime/type_parsing.parse_module_variant).
     # Ratchet down -1 (S8 review, issue #1374 item 4): parse_expert_file no longer
     # copies blueprint.validation_errors onto a row's errors/metadata at all.
-    "src/clio_agent/gact/expert_packs.py": 817,
     # #919: +35 to WIRE progressive-disclosure skills into all three module
     # classes (block + load_skill tool; logic lives in agents/skill_runtime.py)
     # and to document the deleted stale extract alias that crashed every
