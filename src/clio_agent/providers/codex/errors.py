@@ -18,6 +18,12 @@ from clio_agent.providers.codex.constants import (
     RETRYABLE_STATUS_CODES,
     USAGE_LIMIT_MARKERS,
 )
+from clio_agent.providers.terminal_signal import (
+    TerminalProviderSignal,
+    find_terminal_signal,
+    is_terminal_provider_error,
+    recover_message,
+)
 
 
 class CodexError(RuntimeError):
@@ -61,10 +67,34 @@ class CodexResponseError(CodexError):
         self.status_code = status_code
 
 
+#: CLIO's own stable marker text, prepended to every ``CodexPlanLimitError``
+#: message (mirroring ``CLAUDE_CODE_SIGNED_OUT_MESSAGE``, whose docstring notes
+#: the SAME reason: LiteLLM re-wraps a mid-stream failure it does not
+#: recognize as ``litellm.MidStreamFallbackError: litellm.APIConnectionError:
+#: <original>\nTraceback (most recent call last): ...`` -- see
+#: ``clio_agent.providers.claude_code_plan_limit``'s module docstring for the
+#: full mechanism, BerriAI/litellm#4201). The backend's OWN words are not
+#: stable (they vary by account/plan), so without this marker a plan-limit hit
+#: could not be told apart from any other wrapped failure once re-wrapped --
+#: :func:`contains_codex_plan_limit` / :func:`codex_plan_limit_message`
+#: recover it by locating this marker, never by re-interpreting the backend's
+#: prose.
+CODEX_PLAN_LIMIT_MESSAGE_MARKER = "Codex account usage limit reached"
+
+
 class CodexPlanLimitError(CodexResponseError):
     """A 429 whose text names the Codex plan window -- terminal, never retried."""
 
     reason = "codex_plan_limit"
+
+    def __init__(
+        self, message: str, *, code: str | None = None, status_code: int | None = None
+    ) -> None:
+        #: The Codex backend's own words (kept verbatim, unprefixed).
+        self.detail = message
+        super().__init__(
+            f"{CODEX_PLAN_LIMIT_MESSAGE_MARKER}: {message}", code=code, status_code=status_code
+        )
 
 
 class CodexRetryExhaustedError(CodexError):
@@ -234,8 +264,58 @@ def raise_for_backend_error(
     raise CodexResponseError(text, code=code, status_code=status_code)
 
 
+def _codex_plan_limit_extra_details(node: object) -> dict[str, object]:
+    if isinstance(node, CodexPlanLimitError):
+        return {"code": node.code, "status_code": node.status_code}
+    return {}
+
+
+#: This signal's registry entry (see
+#: :mod:`clio_agent.providers.terminal_signal_catalog`) -- the SAME table
+#: entry :func:`contains_codex_plan_limit` / :func:`codex_plan_limit_message`
+#: below use, kept as this module's own thin wrappers around the shared
+#: mechanism for backward-compatible names.
+CODEX_PLAN_LIMIT_SIGNAL = TerminalProviderSignal(
+    reason="codex_plan_limit",
+    marker=CODEX_PLAN_LIMIT_MESSAGE_MARKER,
+    provider_id="codex",
+    exception_type=CodexPlanLimitError,
+    recovery_actions=("switch_model", "retry"),
+    extra_details=_codex_plan_limit_extra_details,
+)
+
+_SIGNALS = (CODEX_PLAN_LIMIT_SIGNAL,)
+
+
+def contains_codex_plan_limit(value: object) -> bool:
+    """Whether an exception (or group, or message) carries a Codex plan-limit hit.
+
+    Matches CLIO's own :data:`CODEX_PLAN_LIMIT_MESSAGE_MARKER`, never the
+    backend's prose directly -- the marker text is CLIO's, so it survives
+    LiteLLM re-wrapping the exception as text (see the marker's docstring).
+    """
+    return is_terminal_provider_error(value, _SIGNALS)
+
+
+def codex_plan_limit_message(value: object) -> str | None:
+    """The clean, typed one-line message for a Codex plan-limit failure, or ``None``.
+
+    Recovers CLIO's own marker + the backend's own words even after LiteLLM
+    has wrapped it and appended a full traceback, the same way
+    :func:`clio_agent.providers.claude_code_plan_limit.claude_code_plan_limit_message`
+    recovers its Claude Code counterpart.
+    """
+    found = find_terminal_signal(value, _SIGNALS)
+    if found is None:
+        return None
+    _signal, node = found
+    return recover_message(node, CODEX_PLAN_LIMIT_MESSAGE_MARKER)
+
+
 __all__ = [
     "CODEX_AUTHENTICATION_ERROR_MESSAGE",
+    "CODEX_PLAN_LIMIT_MESSAGE_MARKER",
+    "CODEX_PLAN_LIMIT_SIGNAL",
     "CodexAuthError",
     "CodexCredentialMissingError",
     "CodexError",
@@ -246,7 +326,9 @@ __all__ = [
     "CodexSDKError",
     "CodexTransportError",
     "RetryDecision",
+    "codex_plan_limit_message",
     "contains_codex_authentication_error",
+    "contains_codex_plan_limit",
     "is_retryable_status",
     "is_usage_limit_text",
     "next_retry_delay_ms",

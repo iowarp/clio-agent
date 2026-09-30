@@ -134,3 +134,90 @@ def test_non_streamed_sign_out_is_the_same_typed_provider_error() -> None:
     assert info.message == CLAUDE_CODE_SIGNED_OUT_MESSAGE
     assert info.details["reason"] == "provider_auth_required"
     assert info.details["provider_id"] == "claude_code"
+
+
+def _plan_limit_group() -> tuple[ExceptionGroup, str]:
+    """A Claude Code plan-limit hit, LiteLLM-mangled the way it reaches the
+    trace live (BerriAI/litellm#4201: an unrecognized exception type's
+    ``str()`` + a full traceback baked into the wrapper's own message) --
+    the shape ``clio_agent.providers.claude_code_plan_limit``'s own test
+    module proves in full fidelity against real ``litellm``/``dspy`` classes;
+    this mirrors ``_signed_out_group``'s simpler plain-``RuntimeError`` style
+    since only the text and tree shape matter here.
+    """
+    from types import SimpleNamespace
+
+    from clio_agent.providers.claude_code_plan_limit import (
+        PLAN_LIMIT_HTTP_STATUS,
+        plan_limit_from_result,
+    )
+
+    clean = plan_limit_from_result(
+        SimpleNamespace(is_error=True, api_error_status=PLAN_LIMIT_HTTP_STATUS, result=""),
+        model="claude-sonnet-5",
+    )
+    assert clean is not None
+    mangled = RuntimeError(
+        f"litellm.MidStreamFallbackError: litellm.APIConnectionError: {clean}\n"
+        "Traceback (most recent call last):\n"
+        '  File ".../claude_code_litellm.py", line 448, in _process\n'
+        "    raise plan_limit\n"
+        f"clio_agent.providers.claude_code_plan_limit.ClaudeCodePlanLimitError: {clean}\n"
+    )
+    return ExceptionGroup("unhandled errors in a TaskGroup", [mangled]), str(clean)
+
+
+def test_plan_limit_is_one_clean_line_regardless_of_the_configured_provider() -> None:
+    """#1529 live evidence: the session had already been switched to Codex when
+    a Claude Code plan-limit hit surfaced its raw traceback. Unlike the auth
+    detectors (deliberately scoped to the configured provider), a plan-limit
+    signal is CLIO's own unambiguous marker text, so it must be recognized no
+    matter what the turn's OWN configured provider was."""
+    group, clean = _plan_limit_group()
+
+    message = turn_failure_message(group, provider_id="codex", otherwise="should not be used")
+
+    assert message == clean
+    assert "Traceback" not in message
+    assert "claude-sonnet-5" in message
+
+
+def test_non_streamed_plan_limit_is_the_same_typed_provider_error() -> None:
+    from types import SimpleNamespace
+
+    from clio_agent.gact.stream_failures import (
+        CLAUDE_CODE_PLAN_LIMIT_REASON,
+        agent_forward_error_info,
+    )
+
+    group, clean = _plan_limit_group()
+    state = SimpleNamespace(
+        user_msg=SimpleNamespace(
+            metadata={"effective_model": {"provider_id": "codex", "model_id": "gpt-5"}}
+        )
+    )
+
+    info = agent_forward_error_info(state, group)
+
+    assert info.error == "provider_error"
+    assert info.message == clean
+    assert info.details["reason"] == CLAUDE_CODE_PLAN_LIMIT_REASON
+    assert info.details["model"] == "claude-sonnet-5"
+
+
+def test_streamed_plan_limit_is_the_same_typed_provider_error() -> None:
+    from clio_agent.gact.stream_failures import (
+        CLAUDE_CODE_PLAN_LIMIT_REASON,
+        streamed_turn_error_info,
+    )
+
+    group, clean = _plan_limit_group()
+    streaming_error = RuntimeError(f"live streaming failed before emitting output: {clean}")
+    streaming_error.__cause__ = group
+
+    info = streamed_turn_error_info(state=None, exc=streaming_error, partial_answer="")
+
+    assert info.error == "provider_error"
+    assert info.message == clean
+    assert info.details["reason"] == CLAUDE_CODE_PLAN_LIMIT_REASON
+    assert info.details["rate_limit_type"] is None  # the 429 result path carries none

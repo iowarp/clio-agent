@@ -147,10 +147,26 @@ def _is_transient_provider_error(exc: BaseException) -> bool:
     from clio_agent.providers.claude_code_errors import (  # noqa: PLC0415
         contains_claude_code_signed_out,
     )
+    from clio_agent.providers.terminal_signal import is_terminal_provider_error  # noqa: PLC0415
+    from clio_agent.providers.terminal_signal_catalog import (  # noqa: PLC0415
+        TERMINAL_PROVIDER_SIGNALS,
+    )
 
     if contains_claude_code_signed_out(exc):
         return False  # #1454: terminal until the user signs in; LiteLLM wraps it as a
         # connection error, which the markers below would otherwise re-issue.
+    if is_terminal_provider_error(exc, TERMINAL_PROVIDER_SIGNALS):
+        return False  # #1529: every registered terminal signal (a Claude Code or Codex
+        # plan-limit hit, a Claude Code safety-filter refusal, ...) is terminal
+        # for its own reason, never worth an immediate retry. LiteLLM wraps a
+        # mid-stream failure it cannot classify as MidStreamFallbackError/
+        # APIConnectionError (BerriAI/litellm#4201) -- both providers'
+        # ``astreaming`` re-raise their typed error bare into the same LiteLLM
+        # stream wrapper -- and BOTH wrapper class names are themselves
+        # transient markers below, so without this exclusion any of these
+        # signals was retried (with backoff) exactly like a crashed local
+        # model, delaying the user-facing failure and letting it resurface
+        # after the user had already moved on to another model/provider.
     names = " ".join(base.__name__.lower() for base in type(exc).__mro__)
     text = f"{names} {exc}".lower()
     return any(marker in text for marker in _TRANSIENT_PROVIDER_MARKERS)

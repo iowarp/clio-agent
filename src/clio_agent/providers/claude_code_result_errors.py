@@ -25,6 +25,7 @@ from typing import Any
 from clio_agent.providers._cli_provider import raise_model_rejected
 from clio_agent.providers.claude_code_errors import ClaudeCodeSignedOutError
 from clio_agent.providers.claude_code_plan_limit import plan_limit_from_result
+from clio_agent.providers.claude_code_safety_refusal import safety_refusal_from_result
 
 __all__ = [
     "CLAUDE_CODE_AUTH_FAILED",
@@ -75,6 +76,9 @@ def raise_classified_result_error(msg: Any, *, model: str, assistant_error: str 
         ClaudeCodeSignedOutError: The credential was refused (typed signal).
         litellm.BadRequestError: The model was rejected (404).
         ClaudeCodePlanLimitError: The plan window is exhausted (429).
+        ClaudeCodeSafetyRefusalError: Anthropic's safety filter refused the
+            request (#1529 follow-up; no dedicated status code, so this is
+            the last check, after every status-coded signal above).
     """
 
     status = getattr(msg, "api_error_status", None)
@@ -92,6 +96,9 @@ def raise_classified_result_error(msg: Any, *, model: str, assistant_error: str 
             model=f"claude_code/{model}",
             llm_provider="claude_code",
         )
-    plan_limit = plan_limit_from_result(msg)
+    plan_limit = plan_limit_from_result(msg, model=model)
     if plan_limit is not None:
         raise plan_limit
+    safety_refusal = safety_refusal_from_result(msg, model=model)
+    if safety_refusal is not None:
+        raise safety_refusal
