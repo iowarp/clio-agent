@@ -745,6 +745,91 @@ Earthscope's first turn, after start-up: 176 s = model 140 s (17 serial calls, ~
 - The reaper keeps a session's fleet while the session waits on a question.
 - Owner decisions: reasoning effort for tool-routing steps; a smaller tool set behind a gateway tool.
 
+## Phase 6: extract and BestOfN lines (`feat/react-extract`, cut from `feat/session-bringup`)
+
+### DSPy's extract, config-driven
+
+This follows the owner principle and amends `react-loop-completion-2026-09.md`. The code is in
+`gact/agents/clio_react_extract.py`.
+
+- **When it runs.** A loop that took more than `agents.react_extract.after_steps` model steps
+  (default 3; `agents.react_extract.enabled`, default on) ends one of two ways:
+  - `max_iters`, which has no answer at all;
+  - a direct answer on a signature that declares further outputs.
+- **What it does.** Literally DSPy's extract fills the missing outputs:
+  `ChainOfThought(inputs + missing outputs + trajectory)`.
+- **What it never does.**
+  - It never replaces the answer the model wrote, which the user already saw.
+  - `submit`, a yield, `context_window_exceeded`, a plain `question -> answer` direct answer and
+    a short loop never extract.
+- **What it records.** `expert.extract.completed` names the extracted fields in
+  `payload.extracted`.
+- **Tests.** `tests/test_gact/test_clio_react_extract.py` covers each case above and the off switch.
+
+### BestOfN / Refine keep one conversation line
+
+Tries run on run-keyed scopes (`agent#runN`), which stops one try from seeing another.
+
+- **The problem.** Across turns, try N continued its *own* line from the previous call, a line
+  the user never saw.
+- **Fork.** As a try starts, its scope's previous line is retired (a recorded delete) and the
+  base scope's working set is copied in.
+- **Winner.** After selection, the winning try's new segments are appended to the base scope.
+  A winner that compacted its fork hands the base its whole working set instead.
+- **Code and tests.** `gact/agents/variant_lines.py`; `tests/test_gact/test_module_variant_lines.py`.
+- **Sabotage test.** The existing test now pins the new consequence of collapsing the run keys:
+  the base continues from the *losing* try's line.
+
+### Relay onto MCP tasks: not done in this campaign
+
+`mcp-client-unification-2026-08.md` makes the relay work Campaign 2. The owner ruled that it
+is "a SEPARATE follow-on plan-execute process" with "its own kickoff, plan pass, and issue tree".
+It closes letters (b) and (c):
+
+- IOR, Darshan and ParaView artifact capture, proven on the clusters;
+- re-verification under production enforcement on both clusters;
+- the relay v1.7.0 release.
+
+None of it can be verified without the relay deployment and cluster access. The 9 relay
+configuration tests skip here for that reason. Nothing in this campaign blocks on it, and
+nothing in it changes the relay's current special path.
+
+### Rebase onto develop (2026-09-30, develop `96c3e6b2`)
+
+Develop moved 44 commits:
+
+- a2ui data by reference;
+- the clio-schemas 0.5.1 pin;
+- the `load_skill` `$defs` fix;
+- typed Claude Code / Codex plan-limit and safety-filter errors (#1529).
+
+The chain was rebased with `--update-refs`, and every commit subject is kept. Conflicts:
+
+| Where | Resolution |
+|---|---|
+| `stream_failures.py` | Develop's `_terminal_signal_error_info` and reason exports kept. The deleted streamed error path stays deleted: the chain's one `forward_error_info` already runs the terminal-signal check first. |
+| `streaming.py` | Develop's message change was inside the deleted `_try_streamed_forward`, so the deletion stands. |
+| `claude_code_litellm.py` (deleted) | Develop's `model=` on `plan_limit_from_rate_limit_event` is carried onto `claude_code_engine.py`. The engine's result path already uses `raise_classified_result_error`, so it gets develop's safety-refusal classification. |
+| `io_logging.py` (deleted) | Develop's "never retry a terminal signal" holds without it. DSPy 3.4 retries only its own retryable error types, and the managed-call boundary maps an engine's typed error to `LMUnexpectedError`, which is never retried. Develop's LiteLLM-shaped retry tests became tests through DSPy's real `error_boundary`. |
+| Tests | Develop's plan-limit and safety-refusal tests call `forward_error_info` (one `--fixup` autosquashed into the Phase 2 commit, so that branch is green too). |
+| Docs and ratchets | Develop's version (0.9.4.23) with the dspy 3.4.0 pin. |
+
+The chain is now strictly linear. Before the rebase, `feat/clio-react` held two commits the
+tip carried only in substance; it is now the rebased "load ClioReAct lazily" commit.
+
+| Branch | Commits over develop |
+|---|---|
+| `feat/codex-sdk-stateful` | 2 |
+| `feat/clio-react` | 4 |
+| `feat/dspy34-engines` | 15 |
+| `feat/context-projection` | 18 |
+| `feat/recorded-fixes` | 38 |
+| `feat/session-bringup` | 52 |
+| `feat/react-extract` | 54 |
+
+On the tip, `git diff --shortstat develop...` is 17,353 insertions and 23,408 deletions
+(`src/`: 7,025 and 11,408).
+
 ## Definition of done
 
 1. Full suite green on every phase branch (`pytest tests -m "not integration"`): zero failures,
