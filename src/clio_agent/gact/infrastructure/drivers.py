@@ -224,13 +224,20 @@ def build_driver_plan(
     target: InfrastructureTarget | None = None,
     owned: list[OwnedResource] | None = None,
     api_key: str | None = None,
+    on_conflict: str | None = None,
+    resolved_root: str | None = None,
 ) -> DriverPlan:
     """Compile one allowlisted lifecycle action into commands.
 
     ``owned`` is the service's ledger of what its deployment created; model
     runtimes remove exactly those resources on uninstall and reinstall.
     ``api_key`` is a keyed model server's deployment key (see
-    :mod:`clio_agent.gact.infrastructure.server_access`).
+    :mod:`clio_agent.gact.infrastructure.server_access`). ``on_conflict``
+    (``clio_agent`` only) is this ONE operation's answer to a found conflict
+    -- the caller must never read it back out of a persisted record and pass
+    it again; a fresh claim asks again every time. ``resolved_root``
+    overrides ``target.install_root`` when a prior ``connect`` adopted the
+    service under a different root than the target's configured one.
     """
 
     definitions = {row.id: row for row in service_definitions(facts)}
@@ -259,7 +266,9 @@ def build_driver_plan(
     if service_id == "relay":
         return _relay_plan(action, configuration, target)
     if service_id == "clio_agent":
-        return _clio_agent_plan(action, target, configuration)
+        return _clio_agent_plan(
+            action, target, on_conflict=on_conflict, resolved_root=resolved_root
+        )
 
     container = "clio-web-search"
     if action in {"status", "logs", "stop", "uninstall"}:
@@ -464,11 +473,18 @@ def _ssh_destination(target: InfrastructureTarget | None) -> str:
 
 
 def _clio_agent_plan(
-    action: str, target: InfrastructureTarget | None, configuration: dict[str, str] | None = None
+    action: str,
+    target: InfrastructureTarget | None,
+    *,
+    on_conflict: str | None = None,
+    resolved_root: str | None = None,
 ) -> DriverPlan:
     if target is None or target.kind != "ssh":
         raise ValueError("Remote CLIO deployment requires an SSH infrastructure target")
-    root = target.install_root.strip()
+    # A prior `connect` may have adopted this service under a root that
+    # differs from the target's configured one; lifecycle commands must act
+    # on where the process actually lives, not where a fresh install would go.
+    root = (resolved_root or target.install_root).strip()
 
     def launcher(script: str) -> CommandSpec:
         return CommandSpec(program="bash", args=["-lc", LAUNCHER_PRELUDE + script, "clio", root])
@@ -490,19 +506,23 @@ def _clio_agent_plan(
                 ),
             )
         )
-    commands: list[CommandSpec] = []
-    if action == "reinstall":
-        commands.extend(_clio_agent_plan("uninstall", target).commands)
     if action not in {"install", "reinstall", "start"}:
         raise ValueError(f"Unsupported CLIO lifecycle action {action!r}")
     version = clio_agent_version()
-    # Adopt this install's healthy server of this version, or stop any other
-    # CLIO on the port, before touching anything; never start beside one --
-    # unless the person already chose "Replace it" for a found conflict
-    # (`on_conflict: "replace"`, see runtime.py), which is the only case
-    # that may stop a CLIO this claim doesn't recognize as its own.
-    replace = (configuration or {}).get("on_conflict") == "replace"
-    commands.append(claim_command(root, CLIO_AGENT_PORT, version, replace=replace))
+    # Claim the port FIRST, before this root's own state is touched: a
+    # reinstall's uninstall step (stop + rm -rf) must never run ahead of the
+    # conflict check, or a found conflict destroys this root's install for
+    # nothing while leaving the actual conflict on the port untouched (#1528
+    # review). Adopt this install's healthy server of this version, or stop
+    # any other CLIO on the port, only once claimed; never start beside one
+    # -- unless the person already chose "Replace it" for a found conflict
+    # (`on_conflict: "replace"`, an operation-scoped answer runtime.py never
+    # persists), which is the only case that may stop a CLIO this claim
+    # doesn't recognize as its own.
+    replace = on_conflict == "replace"
+    commands: list[CommandSpec] = [claim_command(root, CLIO_AGENT_PORT, version, replace=replace)]
+    if action == "reinstall":
+        commands.extend(_clio_agent_plan("uninstall", target, resolved_root=resolved_root).commands)
     if action in {"install", "reinstall"}:
         commands.append(install_command(root, version))
     commands.append(launcher('"$bin/clio" start'))

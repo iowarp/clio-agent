@@ -33,6 +33,7 @@ from clio_agent.gact.infrastructure.models import (
     CommandResult,
     CreateTargetRequest,
     ServiceActionRequest,
+    ServiceRecord,
     SshRoute,
     TargetFacts,
 )
@@ -91,6 +92,49 @@ def test_install_claims_the_port_then_installs_this_clios_version(tmp_path: Path
     assert fresh.args[-1] == "1" and kept.args[-1] == "0"
 
 
+def test_reinstall_claims_the_port_before_uninstalling_this_roots_own_install() -> None:
+    """#1528 review, MEDIUM: the claim must run before reinstall's own
+    uninstall step (stop + rm -rf), or a found conflict destroys this root's
+    install for nothing while the actual conflict on the port stays
+    untouched. A conflict must leave the host and this root's record alone.
+    """
+
+    plan = build_driver_plan(
+        service_id="clio_agent",
+        action="reinstall",
+        variant_id="released",
+        configuration={},
+        facts=TargetFacts(target_id="t", label="ares", os="linux", arch="x86_64"),
+        target=_target(InfrastructureStore(None)),
+    )
+    tags = [spec.args[1].splitlines()[0] for spec in plan.commands]
+    assert tags[0] == "# clio-deploy:claim"
+    assert "rm -rf" not in plan.commands[0].args[1]
+
+
+def test_a_resolved_root_overrides_the_targets_configured_root_for_lifecycle_commands() -> None:
+    """#1528 review, MEDIUM: stop/logs/uninstall must act on a service's
+    adopted root (from a `connect` answer under a different root than the
+    target's configured one), or they act on the wrong install entirely.
+    """
+
+    target = _target(InfrastructureStore(None), install_root="/home/me/.local/share/clio")
+    for action in ("status", "stop", "logs", "uninstall"):
+        plan = build_driver_plan(
+            service_id="clio_agent",
+            action=action,
+            variant_id="released",
+            configuration={},
+            facts=TargetFacts(target_id="t", label="ares", os="linux", arch="x86_64"),
+            target=target,
+            resolved_root="/opt/someone-elses-clio",
+        )
+        # `root` travels as its own argv element (never interpolated into the
+        # script text), so check the exact args, not a substring of args[1].
+        assert "/opt/someone-elses-clio" in plan.commands[0].args, action
+        assert "/home/me/.local/share/clio" not in plan.commands[0].args, action
+
+
 def test_parse_claim_reads_the_result_line() -> None:
     assert parse_claim("==> Port 17800 is free\nclio-deploy result=free existing_root=0\n") == (
         ClaimResult(result="free", existing_root=False)
@@ -121,6 +165,8 @@ class _ScriptedTransports:
             return "probe"
         if script.startswith("# clio-deploy:"):
             return script.splitlines()[0].removeprefix("# clio-deploy:")
+        if 'rm -rf -- "$root"' in script:
+            return "uninstall"
         if '"$bin/clio" start' in script:
             return "start"
         return "other"
@@ -150,15 +196,18 @@ async def _run(
     *,
     cancel: bool = False,
     configuration: dict[str, str] | None = None,
+    action: str = "install",
+    store: InfrastructureStore | None = None,
+    target_id: str | None = None,
 ) -> Any:
-    store = InfrastructureStore(tmp_path / "infra.json")
-    target = _target(store)
+    store = store or InfrastructureStore(tmp_path / "infra.json")
+    resolved_target_id = target_id or _target(store).id
     runtime = InfrastructureRuntime(store, transports)  # type: ignore[arg-type]
     operation = runtime.start_action(
         "clio_agent",
         ServiceActionRequest(
-            target_id=target.id,
-            action="install",
+            target_id=resolved_target_id,
+            action=action,  # type: ignore[arg-type]
             variant_id="released",
             configuration=configuration or {},
         ),
@@ -221,6 +270,151 @@ async def test_on_conflict_connect_adopts_the_found_clio_without_installing(
 
 
 @pytest.mark.asyncio
+async def test_a_past_on_conflict_answer_is_never_replayed_on_a_later_operation(
+    tmp_path: Path,
+) -> None:
+    """#1528 review, HIGH: `on_conflict` is this ONE operation's answer, never
+    a persisted fact. A later start must claim fresh and ask again about a
+    new mismatch, rather than silently reusing a past "connect"/"replace" --
+    which could otherwise kill a different desktop's CLIO the second time
+    around.
+    """
+
+    store = InfrastructureStore(tmp_path / "infra.json")
+    target = _target(store)
+
+    connect_transports = _ScriptedTransports(
+        "clio-deploy result=found existing_root=1 pid=321 installed=0.9.4.1 "
+        "state=healthy owner=/other\n"
+    )
+    first = await _run(
+        tmp_path,
+        connect_transports,
+        configuration={"on_conflict": "connect"},
+        store=store,
+        target_id=target.id,
+    )
+    assert first.state == "succeeded"
+    record = store.service(target.id, "clio_agent")
+    assert record is not None
+    assert "on_conflict" not in record.configuration
+
+    # A DIFFERENT CLIO is on the port now. Nothing in this request answers
+    # the conflict -- it must be asked about again, not silently adopted or
+    # replaced because of the past "connect".
+    second_transports = _ScriptedTransports(
+        "clio-deploy result=found existing_root=1 pid=654 installed=0.9.4.2 "
+        "state=healthy owner=/someone-else\n"
+    )
+    second = await _run(
+        tmp_path, second_transports, action="start", store=store, target_id=target.id
+    )
+    assert second.state == "failed"
+    assert second.error == "clio_deploy_version_conflict"
+    assert second.conflict is not None
+    assert second.conflict.pid == "654"
+    assert "start" not in second_transports.ran
+
+
+@pytest.mark.asyncio
+async def test_an_on_conflict_saved_before_this_fix_is_ignored_too(tmp_path: Path) -> None:
+    """Defense in depth for #1528 review HIGH: even a record that already
+    has `on_conflict` saved (data from before this fix) is never replayed.
+    """
+
+    store = InfrastructureStore(tmp_path / "infra.json")
+    target = _target(store)
+    store.put_service(
+        ServiceRecord(
+            id=f"{target.id}:clio_agent",
+            service_id="clio_agent",
+            target_id=target.id,
+            variant_id="released",
+            configuration={"on_conflict": "replace"},
+            state="running",
+        )
+    )
+    transports = _ScriptedTransports(
+        "clio-deploy result=found existing_root=1 pid=999 installed=0.9.4.3 "
+        "state=healthy owner=/other\n"
+    )
+    operation = await _run(tmp_path, transports, action="start", store=store, target_id=target.id)
+    assert operation.state == "failed"
+    assert operation.error == "clio_deploy_version_conflict"
+    assert "start" not in transports.ran
+
+
+@pytest.mark.asyncio
+async def test_reinstall_with_a_found_conflict_leaves_this_roots_install_untouched(
+    tmp_path: Path,
+) -> None:
+    """#1528 review, MEDIUM: a conflict found while reinstalling must leave
+    the host, and this root's own prior install, untouched -- the claim runs
+    before reinstall's uninstall step, not after.
+    """
+
+    transports = _ScriptedTransports(
+        "clio-deploy result=found existing_root=1 pid=321 installed=0.9.4.1 "
+        "state=healthy owner=/other\n"
+    )
+    operation = await _run(tmp_path, transports, action="reinstall")
+    assert operation.state == "failed"
+    assert operation.error == "clio_deploy_version_conflict"
+    # "probe" is the target-capability check (always first, unrelated to
+    # this ordering fix); "claim" must be the only *plan* command that ran.
+    assert transports.ran == ["probe", "claim"]
+
+
+@pytest.mark.asyncio
+async def test_connect_to_a_different_root_records_it_on_the_service(tmp_path: Path) -> None:
+    """#1528 review, MEDIUM: adopting a CLIO under a different root than the
+    target's configured one must record that real root, so a later
+    stop/logs/uninstall targets the process actually adopted.
+    """
+
+    store = InfrastructureStore(tmp_path / "infra.json")
+    target = _target(store)
+    transports = _ScriptedTransports(
+        "clio-deploy result=found existing_root=0 pid=321 installed=0.9.4.1 "
+        "state=healthy owner=/opt/someone-elses-clio\n"
+    )
+    operation = await _run(
+        tmp_path,
+        transports,
+        configuration={"on_conflict": "connect"},
+        store=store,
+        target_id=target.id,
+    )
+    assert operation.state == "succeeded"
+    record = store.service(target.id, "clio_agent")
+    assert record is not None
+    assert record.resolved_root == "/opt/someone-elses-clio"
+
+
+@pytest.mark.asyncio
+async def test_an_unresponsive_found_clio_fails_typed_without_being_killed(
+    tmp_path: Path,
+) -> None:
+    """#1528 review, MEDIUM: a server that never answered its health check is
+    never a reason to stop it -- it is reported `found` with `health:
+    "unresponsive"`, exactly like a healthy-but-mismatched one, and the
+    caller decides.
+    """
+
+    transports = _ScriptedTransports(
+        "clio-deploy result=found existing_root=1 pid=321 installed=0.9.4.1 "
+        "state=unresponsive owner=/other\n"
+    )
+    operation = await _run(tmp_path, transports)
+    assert operation.state == "failed"
+    assert operation.error == "clio_deploy_version_conflict"
+    assert operation.conflict is not None
+    assert operation.conflict.health == "unresponsive"
+    assert "isn't answering" in operation.progress
+    assert "install" not in transports.ran and "start" not in transports.ran
+
+
+@pytest.mark.asyncio
 async def test_a_failure_after_the_claim_tears_down_what_the_deploy_started(
     tmp_path: Path,
 ) -> None:
@@ -273,6 +467,23 @@ _FAKE_SERVER = textwrap.dedent(
     """
 )
 
+# Binds the port and accepts connections, like a real server, but never
+# answers -- a slow/wedged process, not "nothing listening" (#1528 review).
+_FAKE_HANGING_SERVER = textwrap.dedent(
+    """\
+    #!/usr/bin/env python3
+    import socket, sys, time
+    port = int(sys.argv[sys.argv.index("--port") + 1])
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", port))
+    server.listen(5)
+    while True:
+        conn, _addr = server.accept()
+        time.sleep(3600)
+    """
+)
+
 
 def _free_port() -> int:
     with socket.socket() as sock:
@@ -289,11 +500,11 @@ def _wait_listening(port: int) -> None:
     raise AssertionError(f"nothing listens on {port}")
 
 
-def _fake_install(prefix: Path, version: str = VERSION) -> Path:
+def _fake_install(prefix: Path, version: str = VERSION, server_script: str = _FAKE_SERVER) -> Path:
     bin_dir = prefix / "clio-agent" / ".venv" / "bin"
     bin_dir.mkdir(parents=True)
     server = bin_dir / "clio-agent"
-    server.write_text(_FAKE_SERVER)
+    server.write_text(server_script)
     server.chmod(0o755)
     python = bin_dir / "python"
     python.write_text(f"#!/bin/sh\necho {version}\n")
@@ -345,7 +556,7 @@ def test_claim_adopts_this_installs_healthy_server_of_the_target_version(tmp_pat
         result = _run_script(claim_command(str(prefix), port, VERSION))
         assert result.returncode == 0, result.stdout
         assert parse_claim(result.stdout) == ClaimResult(
-            result="adopted", existing_root=True, pid=str(server.pid)
+            result="adopted", existing_root=True, pid=str(server.pid), owner=str(prefix)
         )
         assert f"Reusing the running CLIO (pid {server.pid}" in result.stdout
         assert _alive(server)
@@ -366,7 +577,12 @@ def test_claim_finds_another_installs_healthy_clio_without_stopping_it(tmp_path:
         result = _run_script(claim_command(str(ours), port, VERSION))
         assert result.returncode == 0, result.stdout
         assert parse_claim(result.stdout) == ClaimResult(
-            result="found", existing_root=False, pid=str(running.pid), installed_version=VERSION
+            result="found",
+            existing_root=False,
+            pid=str(running.pid),
+            installed_version=VERSION,
+            owner=str(other),
+            health="healthy",
         )
         assert f"CLIO {VERSION} is already running (pid {running.pid}, {other})" in result.stdout
         assert _alive(running)
@@ -387,7 +603,7 @@ def test_claim_with_replace_stops_another_installs_clio_holding_the_port(tmp_pat
         result = _run_script(claim_command(str(ours), port, VERSION, replace=True))
         assert result.returncode == 0, result.stdout
         assert parse_claim(result.stdout) == ClaimResult(
-            result="stopped", existing_root=False, pid=str(stale.pid)
+            result="stopped", existing_root=False, pid=str(stale.pid), owner=str(other)
         )
         assert f"Stopped an old CLIO (pid {stale.pid}, {other})" in result.stdout
         stale.wait(timeout=5)
@@ -407,7 +623,12 @@ def test_claim_finds_this_installs_old_version_without_stopping_it(tmp_path: Pat
     try:
         result = _run_script(claim_command(str(prefix), port, VERSION))
         assert parse_claim(result.stdout) == ClaimResult(
-            result="found", existing_root=True, pid=str(running.pid), installed_version="0.9.4.1"
+            result="found",
+            existing_root=True,
+            pid=str(running.pid),
+            installed_version="0.9.4.1",
+            owner=str(prefix),
+            health="healthy",
         )
         assert _alive(running)
     finally:
@@ -423,12 +644,58 @@ def test_claim_with_replace_stops_this_installs_old_version(tmp_path: Path) -> N
     try:
         result = _run_script(claim_command(str(prefix), port, VERSION, replace=True))
         assert parse_claim(result.stdout) == ClaimResult(
-            result="stopped", existing_root=True, pid=str(old.pid)
+            result="stopped", existing_root=True, pid=str(old.pid), owner=str(prefix)
         )
         old.wait(timeout=5)
     finally:
         if _alive(old):
             old.kill()
+
+
+@linux_only
+def test_claim_finds_an_unresponsive_clio_without_stopping_it(tmp_path: Path) -> None:
+    """A recognized CLIO process that never answers is asked about, never killed (#1528 review).
+
+    A fixed short health-check timeout must never be the thing that decides
+    to kill a server: it only decides what to call it (``unresponsive``).
+    """
+
+    prefix = tmp_path / "clio"
+    _fake_install(prefix, server_script=_FAKE_HANGING_SERVER)
+    port = _free_port()
+    hung = _start_clio(prefix, port)
+    try:
+        result = _run_script(claim_command(str(prefix), port, VERSION))
+        assert result.returncode == 0, result.stdout
+        assert parse_claim(result.stdout) == ClaimResult(
+            result="found",
+            existing_root=True,
+            pid=str(hung.pid),
+            installed_version=VERSION,
+            owner=str(prefix),
+            health="unresponsive",
+        )
+        assert _alive(hung)
+    finally:
+        hung.kill()
+
+
+@linux_only
+def test_claim_with_replace_stops_an_unresponsive_clio(tmp_path: Path) -> None:
+    prefix = tmp_path / "clio"
+    _fake_install(prefix, server_script=_FAKE_HANGING_SERVER)
+    port = _free_port()
+    hung = _start_clio(prefix, port)
+    try:
+        result = _run_script(claim_command(str(prefix), port, VERSION, replace=True))
+        assert result.returncode == 0, result.stdout
+        assert parse_claim(result.stdout) == ClaimResult(
+            result="stopped", existing_root=True, pid=str(hung.pid), owner=str(prefix)
+        )
+        hung.wait(timeout=5)
+    finally:
+        if _alive(hung):
+            hung.kill()
 
 
 @linux_only
@@ -494,7 +761,7 @@ def test_claim_checks_health_on_this_node_even_behind_a_site_proxy(
             # stopped, with replace) instead of adopted.
             result = _run_script(claim_command(str(prefix), port, VERSION))
             assert parse_claim(result.stdout) == ClaimResult(
-                result="adopted", existing_root=True, pid=str(server.pid)
+                result="adopted", existing_root=True, pid=str(server.pid), owner=str(prefix)
             )
             assert _alive(server)
         finally:
