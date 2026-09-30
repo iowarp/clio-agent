@@ -19,7 +19,7 @@ re-read/re-process the source file per page), and the error envelope.
 from __future__ import annotations
 
 import asyncio
-import contextlib
+import logging
 import threading
 import time
 from collections import OrderedDict
@@ -45,6 +45,8 @@ from clio_agent.gact.routes.artifact_table_preview import (
 
 if TYPE_CHECKING:
     from clio_agent.gact.artifacts.table_query import ProcessedTable, QueryCancellation
+
+logger = logging.getLogger(__name__)
 
 # A cached response larger than this many cells is not retained, so the bounded
 # entry count also bounds memory.
@@ -298,6 +300,24 @@ async def _watch_for_disconnect(request: Request, cancel_event: threading.Event)
         await asyncio.sleep(_DISCONNECT_POLL_S)
 
 
+def _report_watcher_failure(task: "asyncio.Task[None]") -> None:
+    """Log an unexpected ``_watch_for_disconnect`` failure; never re-raise it.
+
+    The route cancels the watcher fire-and-forget (see the route's own
+    ``finally``), so this done-callback is the only place a bug in the
+    watcher itself would otherwise surface -- without it, a non-cancellation
+    exception here would just vanish into "Task exception was never
+    retrieved" at GC time instead of a readable log line (no silent
+    fallback). Cancellation is the expected, silent outcome.
+    """
+
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning("table-query disconnect watcher failed: %r", exc)
+
+
 def _owned_error(
     *, status_code: int, error: str, message: str, details: dict[str, Any] | None = None
 ) -> HTTPException:
@@ -473,6 +493,7 @@ def register_artifact_table_query_routes(app: FastAPI) -> None:
             deadline=deadline, timeout_s=timeout_s, cancel_event=cancel_event
         )
         watcher = asyncio.ensure_future(_watch_for_disconnect(request, cancel_event))
+        watcher.add_done_callback(_report_watcher_failure)
         semaphore = _concurrency_semaphore_for(app)
         try:
             async with semaphore:
@@ -497,9 +518,19 @@ def register_artifact_table_query_routes(app: FastAPI) -> None:
                 **timeout.details,
             ) from exc
         finally:
+            # Cancel but deliberately do NOT await the watcher here. The
+            # response is already computed by this point; blocking on the
+            # watcher's own shutdown re-enters ``request.is_disconnected()``'s
+            # raw ASGI ``receive()``, and under real scheduling delay (many
+            # concurrent workers, a loaded CI runner) that in-flight receive
+            # does not always unwind promptly once cancelled -- observed as
+            # the whole request hanging past its 180s test timeout (#1534)
+            # even though the query itself had already finished. Once a
+            # result (or error) exists, the watcher has no further purpose;
+            # letting it finish cancelling on its own time is safe, and
+            # ``_report_watcher_failure`` still surfaces a genuine bug in it
+            # instead of a silently dropped exception.
             watcher.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await watcher
 
 
 __all__ = [
