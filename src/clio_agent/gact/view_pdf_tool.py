@@ -23,6 +23,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from clio_agent.gact import viewed_media
 from clio_agent.gact.resource_mime import detect_media_type
 from clio_agent.providers.native_attachment_bounds import (
     NativeAttachmentTooLargeError,
@@ -298,7 +299,11 @@ def _workspace_pdf(path: str, pages: str) -> tuple[Path, Path, bytes, int, bytes
 
 def _descriptor(path: str, pages: str) -> dict[str, Any]:
     _resolved, relative, data, page_count, sliced = _workspace_pdf(path, pages)
+    snapshot_path, snapshot_sha256 = viewed_media.snapshot(sliced, ".pdf")
     return {
+        # What the agent saw, kept: history reads this, never the live file.
+        "snapshot": snapshot_path,
+        "snapshot_sha256": snapshot_sha256,
         "type": VIEW_PDF_DESCRIPTOR_TYPE,
         "path": relative.as_posix(),
         "pages": pages.strip(),
@@ -314,6 +319,14 @@ def _is_descriptor(value: Any) -> bool:
 
 
 def _hydrate_descriptor(value: Mapping[str, Any]) -> tuple[Any, int]:
+    if value.get("snapshot"):
+        import dspy  # noqa: PLC0415 - keep UI/bootstrap imports light
+
+        data = viewed_media.read_snapshot(
+            str(value["snapshot"]), str(value.get("snapshot_sha256") or "")
+        )
+        name = Path(str(value.get("path") or "document.pdf")).name
+        return dspy.File.from_bytes(data, filename=name, mime_type=VIEW_PDF_MEDIA_TYPE), len(data)
     path = str(value.get("path") or "").strip()
     if not path or Path(path).is_absolute():
         raise ViewPdfError(

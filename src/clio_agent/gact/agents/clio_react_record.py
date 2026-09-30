@@ -258,8 +258,21 @@ class _StepFold:
 
 
 def result_part(call_id: str, name: str, value: Any, is_error: bool) -> ToolResultPart:
-    """A tool's result as the provider-native part (images/PDFs as media, else text)."""
-    media = _media(value)
+    """A tool's result as the provider-native part (images/PDFs as media, else text).
+
+    Media the history can no longer show (its snapshot is gone) becomes a note the
+    agent reads -- one old image never fails the whole conversation.
+    """
+    try:
+        media = _media(value)
+    except ValueError as exc:  # ViewImageError / ViewPdfError / ViewedMediaUnavailable
+        logger.warning("tool media unavailable reason=%s call=%s", type(exc).__name__, call_id)
+        note = (
+            f"[clio: media_unavailable] The media this call returned can no longer be shown: {exc}"
+        )
+        return ToolResultPart(
+            id=call_id, content=(TextPart(text=note),), name=name, is_error=is_error
+        )
     content: tuple[Any, ...] = (
         (media,) if media is not None else (TextPart(text=_observation_text(value)),)
     )
