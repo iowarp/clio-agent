@@ -226,6 +226,29 @@ def test_transport_for():
     assert str(transport_for(spec_from_declaration("n", "https://h/mcp")).url) == "https://h/mcp"
 
 
+def test_a_spawned_server_skips_the_fastmcp_banner_and_its_update_check():
+    """Measured live (2026-09-30): every FastMCP server start printed its banner and
+    fetched pypi.org to check for updates -- on the path between a message and its
+    first tool. A declaration that sets either keeps its own value."""
+    stdio = transport_for(
+        spec_from_declaration("ndp", {"command": sys.executable, "args": ["-c", "pass"]})
+    )
+    assert stdio.env["FASTMCP_SHOW_SERVER_BANNER"] == "false"
+    assert stdio.env["FASTMCP_CHECK_FOR_UPDATES"] == "off"
+
+    declared = transport_for(
+        spec_from_declaration(
+            "ndp",
+            {
+                "command": sys.executable,
+                "args": ["-c", "pass"],
+                "env": {"FASTMCP_CHECK_FOR_UPDATES": "stable"},
+            },
+        )
+    )
+    assert declared.env["FASTMCP_CHECK_FOR_UPDATES"] == "stable"
+
+
 def test_transport_for_stdio_cwd(tmp_path):
     """stdio transports spawn in the given cwd; http transports ignore it."""
     work = tmp_path / "ws"
