@@ -443,7 +443,7 @@ async def _astream_sdk(
                         "info": getattr(msg, "rate_limit_info", None),
                     }
                 )
-                plan_limit = plan_limit_from_rate_limit_event(msg)
+                plan_limit = plan_limit_from_rate_limit_event(msg, model=model)
                 if plan_limit is not None:
                     raise plan_limit
 
