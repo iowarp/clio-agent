@@ -694,6 +694,18 @@ Earthscope's first turn, after start-up: 176 s = model 140 s (17 serial calls, ~
 - It removes the listing wait from the first call. It saves little TTFT while the cache hit rate is ~90%.
 - It waits on the owner's go-ahead.
 
+**Chain tip live run** (`feat/session-bringup` at `f0a1eaeb`, Codex direct, 2026-09-30):
+
+| Leg or agent | Result |
+|---|---|
+| Synthetic session, compaction, goal judge, stress | All pass (109 / 156 / 141 / 108 s) |
+| deep-researcher | 1435 s, 85 calls, 78% cached, normal end |
+| data-semantics | 351 s. Model time was 294 s of it over 25 calls: slower model service this session. Tools and harness took 11-17 s per turn. |
+| factorio-flat | 16 evaluator lines. 8 were a bench-harness bug (it read no agent from `agent_ref`), now fixed. The real 8 are `useful_clarification` (no question asked) and `focused_skill_and_delegation` (no skill loaded or delegation). `parallel_investigation` fanned out 7 children. |
+| opal | First turn hit the harness's 1 h cap. Child sessions ran several 400-550 s shell commands over the full export; nothing on this branch touches shell execution. |
+
+**Full suite on the tip:** 10014 passed. The only error is a pre-existing leaked background turn that surfaces with `-W error::PytestUnraisableExceptionWarning`: the Phase 4 tree leaks identically in the same subset. It is a turn that escapes the runner's shutdown drain, plus a ledger `ContextVar` reset from the wrong context when the abandoned coroutine is collected.
+
 **Next:**
 - One spawn per server: list over the persistent connection. The listing currently also records the server's task capability, which the connect route reads (#1281), so the two must be reordered together.
 - The reaper keeps a session's fleet while the session waits on a question.
