@@ -638,17 +638,16 @@ def allow_pytest_tmp_path(request, tmp_path, monkeypatch):
     # blueprint is written on disk below; keep the network git bootstrap DISABLED.
     config_dir = xdg_root / "clio-agent"
     config_dir.mkdir(parents=True, exist_ok=True)
+    layer: dict[str, object] = {
+        "agents": {"disable_default_registry_bootstrap": True},
+        "tools": {"file_policy": {"allowed_roots": allowed_roots}},
+        "lm": {"model": "ibm/granite-4-h-tiny"},
+        "arc": {"store": "local"},
+    }
+    if request.node.get_closest_marker("live"):
+        del layer["lm"]  # a live test runs the model the operator configured (CLIO_LM_*)
     config_dir.joinpath("config.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "agents": {"disable_default_registry_bootstrap": True},
-                "tools": {"file_policy": {"allowed_roots": allowed_roots}},
-                "lm": {"model": "ibm/granite-4-h-tiny"},
-                "arc": {"store": "local"},
-            },
-            sort_keys=False,
-        ),
-        encoding="utf-8",
+        yaml.safe_dump(layer, sort_keys=False), encoding="utf-8"
     )
     # The process-wide store caches its file layer; drop it so this test's
     # freshly-written user config.yaml (and XDG) take effect.
