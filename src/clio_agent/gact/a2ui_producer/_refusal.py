@@ -122,6 +122,45 @@ _DEFAULT_HINTS: dict[str, str] = {
         "the file could not be read to register it as an artifact; check that it "
         "still exists and is readable, then retry"
     ),
+    "a2ui_data_reference_not_found": (
+        "reference an artifact://<id> a prior tool result actually returned "
+        "(e.g. stage_resource or create_artifact); this one is not registered"
+    ),
+    "a2ui_data_reference_unreadable": (
+        "check that the referenced artifact's bytes are still retrievable, then "
+        "retry with a valid dataUri"
+    ),
+    "a2ui_data_reference_unsupported_format": (
+        "reference a registered CSV or Parquet artifact when using *Field "
+        "column names, or drop them and let dataQuery pick default columns"
+    ),
+    "a2ui_field_not_in_dataset": (
+        "use one of the dataset's real column names named in this refusal's detail"
+    ),
+    "a2ui_data_reference_shape_invalid": (
+        "fix the referenced file's shape or content to match what this "
+        "component's dataUri requires, then retry"
+    ),
+    "a2ui_components_source_conflict": (
+        "pass exactly one of components or components_path, never both"
+    ),
+    "a2ui_components_source_missing": (
+        "pass components (inline) or components_path (a workspace JSON file "
+        "holding the components array)"
+    ),
+    "a2ui_components_path_unresolved": (
+        "reference an existing JSON file inside this session's workspace by its path"
+    ),
+    "a2ui_components_path_invalid": (
+        "fix components_path's JSON so its top-level value is an array of "
+        "component objects, then retry"
+    ),
+    "a2ui_definition_artifact_failed": (
+        "the surface's components were already applied; check that this "
+        "session's workspace is writable, then retry the same call to mint "
+        "its definition artifact (an unchanged definition dedups, never "
+        "double-applies the surface)"
+    ),
 }
 
 #: Every refusal reason the producer package can emit through :func:`refusal`
@@ -146,6 +185,16 @@ KNOWN_REFUSAL_REASONS: frozenset[str] = frozenset(
         "a2ui_preferred_catalog_not_selectable",
         "a2ui_url_unresolved",
         "a2ui_url_export_failed",
+        "a2ui_data_reference_not_found",
+        "a2ui_data_reference_unreadable",
+        "a2ui_data_reference_unsupported_format",
+        "a2ui_field_not_in_dataset",
+        "a2ui_data_reference_shape_invalid",
+        "a2ui_components_source_conflict",
+        "a2ui_components_source_missing",
+        "a2ui_components_path_unresolved",
+        "a2ui_components_path_invalid",
+        "a2ui_definition_artifact_failed",
     }
 )
 

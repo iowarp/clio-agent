@@ -51,6 +51,12 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARTIFACTS_PROPOSALS_PER_TURN` | `artifacts.proposals_per_turn` | int | `8` | `src/clio_agent/gact/artifacts/proposals.py` |
 | `CLIO_ARTIFACTS_TABLE_PREVIEW_MAX_ROWS` | `artifacts.table_preview_max_rows` | int | `2000` | `src/clio_agent/gact/routes/artifact_table_preview.py` |
 | `CLIO_ARTIFACTS_TABLE_PREVIEW_MAX_SOURCE_BYTES` | `artifacts.table_preview_max_source_bytes` | int | `268435456` | `src/clio_agent/gact/routes/artifact_table_preview.py` |
+| `CLIO_ARTIFACTS_TABLE_QUERY_CACHE_ENTRIES` | `artifacts.table_query_cache_entries` | int | `16` | `src/clio_agent/gact/routes/artifact_table_query.py` |
+| `CLIO_ARTIFACTS_TABLE_QUERY_MAX_CONCURRENCY` | `artifacts.table_query_max_concurrency` | int | `8` | `src/clio_agent/gact/routes/artifact_table_query.py` |
+| `CLIO_ARTIFACTS_TABLE_QUERY_MAX_ROWS` | `artifacts.table_query_max_rows` | int | `50000` | `src/clio_agent/gact/routes/artifact_table_query.py` |
+| `CLIO_ARTIFACTS_TABLE_QUERY_MAX_SOURCE_BYTES` | `artifacts.table_query_max_source_bytes` | int | `268435456` | `src/clio_agent/gact/routes/artifact_table_query.py` |
+| `CLIO_ARTIFACTS_TABLE_QUERY_PROCESSED_CACHE_ENTRIES` | `artifacts.table_query_processed_cache_entries` | int | `8` | `src/clio_agent/gact/routes/artifact_table_query.py` |
+| `CLIO_ARTIFACTS_TABLE_QUERY_TIMEOUT_S` | `artifacts.table_query_timeout_s` | float | `10.0` | `src/clio_agent/gact/routes/artifact_table_query.py` |
 | `CLIO_ARTIFACT_CAS_BUDGET_BYTES` | `artifacts.cas_budget_bytes` | int | `536870912` | `src/clio_agent/gact/artifacts/cas.py` |
 | `CLIO_ARTIFACT_CAS_MAX_FILE_BYTES` | `artifacts.cas_max_file_bytes` | int | `16777216` | `src/clio_agent/gact/artifacts/cas.py` |
 | `CLIO_ARTIFACT_HASH_STAT_CACHE` | `artifacts.hash_stat_cache` | bool | `false` | `src/clio_agent/gact/artifacts/cas.py` |

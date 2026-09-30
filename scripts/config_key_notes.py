@@ -248,6 +248,30 @@ KEY_NOTES: dict[str, str] = {
         "Largest CSV artifact, in bytes, the table-preview route will read; the file streams twice "
         "so this bounds latency, not memory."
     ),
+    "artifacts.table_query_cache_entries": (
+        "Results the per-server artifact table-query LRU keeps, keyed on content hash and "
+        "canonical query; 0 disables caching."
+    ),
+    "artifacts.table_query_max_concurrency": (
+        "Table-query executions allowed to run at once, sharing the process's worker thread "
+        "pool; a request beyond this bound queues rather than starving other requests."
+    ),
+    "artifacts.table_query_max_rows": (
+        "Ceiling on the limit one artifact table-query request may ask for; larger requests "
+        "are refused with a typed 400."
+    ),
+    "artifacts.table_query_max_source_bytes": (
+        "Largest CSV/Parquet artifact, in bytes, the table-query route will read; projected "
+        "columns load into memory, so this bounds latency and peak memory."
+    ),
+    "artifacts.table_query_processed_cache_entries": (
+        "Processed (pre-page) query results the per-server cache keeps; lets paging through "
+        "one large result reuse the same processed table instead of re-reading it per page."
+    ),
+    "artifacts.table_query_timeout_s": (
+        "Wall-clock budget in seconds for one artifact table-query request; an overrun "
+        "answers a typed 504."
+    ),
     "autocompact.pct": (
         "Fraction (0-1) of the model's context window that triggers proactive auto-compaction; "
         "lower to compact earlier, raise to accumulate more."

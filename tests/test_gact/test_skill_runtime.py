@@ -381,6 +381,12 @@ def test_interactive_analysis_skill_is_when_why_guidance_with_no_prop_lore() -> 
     # Points at catalog skills as the source of truth for exact shapes.
     assert 'load_skill("a2ui-catalog-<slug>")' in body
     assert 'file="catalog.json#/components/<Name>")' in body
+    # #1533 S4 adversarial review item 7: the retired clio.time-series.v1
+    # component is never named as a distinct view choice -- both time-series
+    # and multi-entity bullets point at the one real chart component.
+    assert "an interactive time series" not in " ".join(body.split())
+    assert "clio.chart.v1" in body
+    assert "clio.time-series.v1" not in body
 
 
 def test_flat_skill_has_no_bundled_files(scratch_flat: None, tmp_path: Path) -> None:
@@ -588,6 +594,78 @@ def test_load_skill_file_without_fragment_is_unaffected(pack: Path) -> None:
     tool = build_load_skill_tool(_agent(pack), rt)
 
     assert tool.func(skill_id="quality-rubric", file="references/checklist.md") == "THE CHECKLIST"
+
+
+# ---- #1533 phase 3: multi-file load_skill (files=[...]) ---------------------------
+
+
+def test_load_skill_files_returns_several_bundled_files_in_one_labelled_call(
+    pack: Path,
+) -> None:
+    catalog = {
+        "components": {
+            "Button": {"type": "object", "properties": {"component": {"const": "Button"}}},
+            "Text": {"type": "object", "properties": {"component": {"const": "Text"}}},
+        }
+    }
+    (pack / "skills" / "quality-rubric" / "catalog.json").write_text(
+        json.dumps(catalog), encoding="utf-8"
+    )
+    rt = _runtime(pack)
+    tool = build_load_skill_tool(_agent(pack), rt)
+
+    out = tool.func(
+        skill_id="quality-rubric",
+        files=[
+            "catalog.json#/components/Button",
+            "catalog.json#/components/Text",
+            "references/checklist.md",
+        ],
+    )
+
+    assert "=== File 1/3: catalog.json#/components/Button ===" in out
+    assert "=== File 2/3: catalog.json#/components/Text ===" in out
+    assert "=== File 3/3: references/checklist.md ===" in out
+    assert '"const": "Button"' in out
+    assert '"const": "Text"' in out
+    assert "THE CHECKLIST" in out
+    # Order in the output matches the order requested.
+    assert out.index("Button") < out.index("Text") < out.index("THE CHECKLIST")
+
+
+def test_load_skill_files_with_one_entry_matches_the_bare_file_form(pack: Path) -> None:
+    """A single-element ``files=[...]`` behaves exactly like ``file=`` (no headers)."""
+
+    rt = _runtime(pack)
+    tool = build_load_skill_tool(_agent(pack), rt)
+
+    assert (
+        tool.func(skill_id="quality-rubric", files=["references/checklist.md"]) == "THE CHECKLIST"
+    )
+
+
+def test_load_skill_rejects_both_file_and_files(pack: Path) -> None:
+    rt = _runtime(pack)
+    tool = build_load_skill_tool(_agent(pack), rt)
+
+    with pytest.raises(ValueError) as excinfo:
+        tool.func(
+            skill_id="quality-rubric",
+            file="references/checklist.md",
+            files=["references/checklist.md"],
+        )
+
+    assert "exactly one of file or files" in str(excinfo.value)
+
+
+def test_load_skill_files_propagates_an_unresolvable_entry(pack: Path) -> None:
+    rt = _runtime(pack)
+    tool = build_load_skill_tool(_agent(pack), rt)
+
+    with pytest.raises(ValueError) as excinfo:
+        tool.func(skill_id="quality-rubric", files=["references/checklist.md", "missing.md"])
+
+    assert "unreadable" in str(excinfo.value) or "outside" in str(excinfo.value)
 
 
 # ---- S4: catalogs disclosed as skill directories ----------------------------------
@@ -841,9 +919,14 @@ def test_catalog_skill_basic_exposes_both_sidecar_and_catalog_file_roots(
     assert '"const": "Button"' in component
 
 
-def test_catalog_skill_fragment_trailer_distinguishes_local_from_standard_refs(
+def test_catalog_skill_fragment_inlines_local_defs_and_names_standard_refs(
     tmp_path: Path,
 ) -> None:
+    """CatalogComponentCommon is a LOCAL ``$defs`` ref -- one load INLINES it
+    (its own ``weight`` property is visible without a second call); an
+    external common_types.json ref is only NAMED (this call cannot load it,
+    #1533 phase 3)."""
+
     from clio_agent.gact.app import build_app
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
@@ -854,6 +937,263 @@ def test_catalog_skill_fragment_trailer_distinguishes_local_from_standard_refs(
 
     out = tool.func(skill_id="a2ui-catalog-clio-workspace", file="catalog.json#/components/Button")
 
-    assert "Local refs (load via file=): catalog.json#/$defs/CatalogComponentCommon" in out
+    assert '"$ref": "#/$defs/CatalogComponentCommon"' not in out
+    assert '"weight"' in out
+    assert "Relative flex weight" in out
+    assert "Local refs" not in out
     assert "Standard refs (not loadable here):" in out
     assert "common_types.json#/$defs/Action" in out
+
+
+def test_catalog_skill_map_fragment_inlines_map_point_and_data_query(tmp_path: Path) -> None:
+    """A component that ``$ref``s several of its catalog's own ``$defs`` (map
+    references ``MapPoint``, ``DataQuery``, ``FieldName``, and
+    ``CatalogComponentCommon``) gets ALL of them inlined by one load."""
+
+    from clio_agent.gact.app import build_app
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="root")
+    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    rt = skill_runtime_for_agent(app, root, session_id=session.id)
+    tool = build_load_skill_tool(root, rt)
+
+    out = tool.func(
+        skill_id="a2ui-catalog-clio-workspace", file="catalog.json#/components/clio.map.v1"
+    )
+
+    # MapPoint's own required fields are visible without a second call.
+    assert '"latitude"' in out
+    assert '"longitude"' in out
+    # DataQuery's own nested shape (which itself $refs QueryFilter/QueryAggregate/
+    # QueryDownsample) is inlined too -- a multi-level chain, not just one hop.
+    assert '"aggregate"' in out
+    assert '"downsample"' in out
+    assert "per_entity_lttb" in out
+    assert '"$ref": "#/$defs/MapPoint"' not in out
+    assert '"$ref": "#/$defs/DataQuery"' not in out
+    assert '"$ref": "#/$defs/CatalogComponentCommon"' not in out
+
+
+def test_catalog_skill_fragment_inlines_defs_at_every_nesting_depth(tmp_path: Path) -> None:
+    """Regression: a def nested SEVERAL levels inside an already-inlined def
+    (DataQuery's own aggregate.metrics[].column -- itself a FieldName $ref,
+    reached only after allOf -> properties -> dataQuery -> DataQuery's own
+    properties -> aggregate -> anyOf -> QueryAggregate's own properties ->
+    metrics -> items -> properties -> column) must still be inlined. There is
+    no depth counter at all (an arbitrary number is either too tight -- the
+    original bug here -- or meaningless); only a genuine CYCLE is guarded."""
+
+    from clio_agent.gact.app import build_app
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="root")
+    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    rt = skill_runtime_for_agent(app, root, session_id=session.id)
+    tool = build_load_skill_tool(root, rt)
+
+    out = tool.func(
+        skill_id="a2ui-catalog-clio-workspace",
+        file="catalog.json#/components/clio.data-table.v1",
+    )
+
+    assert '"$ref": "#/$defs/FieldName"' not in out
+    assert "Local refs" not in out
+    assert "Standard refs (not loadable here):" in out
+
+
+def test_catalog_skill_fragment_leaves_a_genuinely_recursive_def_as_a_noted_ref(
+    tmp_path: Path,
+) -> None:
+    """The chart spec guard's ``SpecNoForbiddenKeys``/``SpecDataNamedSource``
+    $ref THEMSELVES (walking a Vega-Lite spec at any depth) -- a true cycle.
+    The outermost reference still inlines (its own if/then/else shape is
+    visible); only the SELF-referencing occurrence inside it is left as a
+    $ref, annotated as recursive rather than expanded forever."""
+
+    from clio_agent.gact.app import build_app
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="root")
+    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    rt = skill_runtime_for_agent(app, root, session_id=session.id)
+    tool = build_load_skill_tool(root, rt)
+
+    out = tool.func(
+        skill_id="a2ui-catalog-clio-workspace",
+        file="catalog.json#/components/clio.chart.v1",
+    )
+
+    # The outer reference inlined: SpecNoForbiddenKeys' own if/then/else shape
+    # (the "no url/usermeta key" rule) is visible, not just a bare $ref.
+    assert '"usermeta"' in out
+    # The self-referencing occurrence is left as a $ref, with a note.
+    assert '"$ref": "#/$defs/SpecNoForbiddenKeys"' in out
+    assert '"$ref": "#/$defs/SpecDataNamedSource"' in out
+    assert "recursive:" in out
+    assert "already being expanded on this path" in out
+    assert (
+        "catalog.json#/$defs/SpecNoForbiddenKeys" in out
+        and "catalog.json#/$defs/SpecDataNamedSource" in out
+    )
+
+
+def test_load_skill_files_batches_two_real_catalog_components(tmp_path: Path) -> None:
+    from clio_agent.gact.app import build_app
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="root")
+    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    rt = skill_runtime_for_agent(app, root, session_id=session.id)
+    tool = build_load_skill_tool(root, rt)
+
+    out = tool.func(
+        skill_id="a2ui-catalog-clio-workspace",
+        files=[
+            "catalog.json#/components/clio.map.v1",
+            "catalog.json#/components/clio.data-table.v1",
+        ],
+    )
+
+    assert "=== File 1/2: catalog.json#/components/clio.map.v1 ===" in out
+    assert "=== File 2/2: catalog.json#/components/clio.data-table.v1 ===" in out
+    assert '"const": "clio.map.v1"' in out
+    assert '"const": "clio.data-table.v1"' in out
+
+
+def test_load_skill_files_shares_a_diamond_def_once_instead_of_per_file(pack: Path) -> None:
+    """#1533 S4 adversarial review: two components both reaching the SAME
+    shared def (directly, or transitively through a second def) must not
+    each carry their own fully-inlined copy of it — it is rendered exactly
+    once, in a trailing shared-definitions block, and left as a bare $ref
+    everywhere else."""
+
+    catalog = {
+        "components": {
+            "A": {
+                "type": "object",
+                "properties": {
+                    "component": {"const": "A"},
+                    "shared": {"$ref": "#/$defs/Shared"},
+                },
+            },
+            "B": {
+                "type": "object",
+                "properties": {
+                    "component": {"const": "B"},
+                    "shared": {"$ref": "#/$defs/Shared"},
+                },
+            },
+        },
+        "$defs": {
+            "Shared": {
+                "type": "object",
+                "properties": {
+                    "marker": {"const": "UNIQUE_SHARED_MARKER_VALUE"},
+                    "nested": {"$ref": "#/$defs/Nested"},
+                },
+            },
+            "Nested": {"type": "object", "properties": {"deep": {"const": "UNIQUE_NESTED_MARKER"}}},
+        },
+    }
+    (pack / "skills" / "quality-rubric" / "catalog.json").write_text(
+        json.dumps(catalog), encoding="utf-8"
+    )
+    rt = _runtime(pack)
+    tool = build_load_skill_tool(_agent(pack), rt)
+
+    out = tool.func(
+        skill_id="quality-rubric",
+        files=["catalog.json#/components/A", "catalog.json#/components/B"],
+    )
+
+    # Both shared/transitive defs are rendered exactly ONCE across the whole
+    # result, never once per component that reaches them.
+    assert out.count("UNIQUE_SHARED_MARKER_VALUE") == 1
+    assert out.count("UNIQUE_NESTED_MARKER") == 1
+    assert "## Shared definitions" in out
+    # Each component's own body still names the def by a bare $ref (never
+    # silently dropped -- just not re-expanded).
+    assert out.count('"$ref": "#/$defs/Shared"') == 2
+
+
+def test_load_skill_files_all_real_catalog_components_stays_proportional(
+    tmp_path: Path,
+) -> None:
+    """Requesting EVERY component of a real, shared-$defs-heavy catalog in one
+    files=[...] call must stay smaller than each component's fully-inlined
+    body concatenated separately (the pre-fix behavior) -- proportional to
+    what was requested, not requested-files times shared-defs."""
+
+    from clio_agent.gact.app import build_app
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="root")
+    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    rt = skill_runtime_for_agent(app, root, session_id=session.id)
+    tool = build_load_skill_tool(root, rt)
+
+    resolution = rt.resolved["a2ui-catalog-clio-workspace"]
+    assert resolution.skill is not None
+    catalog_path = Path(resolution.skill.dir) / "catalog.json"
+    document = json.loads(catalog_path.read_text(encoding="utf-8"))
+    component_names = sorted(document["components"])
+    assert len(component_names) >= 4, "expected the real multi-component workspace catalog"
+    fragments = [f"catalog.json#/components/{name}" for name in component_names]
+
+    batched = tool.func(skill_id="a2ui-catalog-clio-workspace", files=fragments)
+    separately = sum(
+        len(tool.func(skill_id="a2ui-catalog-clio-workspace", file=fragment))
+        for fragment in fragments
+    )
+
+    assert len(batched) < separately
+    for name in component_names:
+        assert f'"const": "{name}"' in batched
+
+
+def test_load_skill_files_collapses_a_duplicate_request_to_one_read(pack: Path) -> None:
+    catalog = {"components": {"Button": {"type": "object", "properties": {}}}}
+    (pack / "skills" / "quality-rubric" / "catalog.json").write_text(
+        json.dumps(catalog), encoding="utf-8"
+    )
+    rt = _runtime(pack)
+    tool = build_load_skill_tool(_agent(pack), rt)
+
+    out = tool.func(
+        skill_id="quality-rubric",
+        files=["catalog.json#/components/Button", "catalog.json#/components/Button"],
+    )
+
+    # A single distinct fragment requested twice collapses to ONE read (the
+    # same shape a lone files=[the-one-fragment] call would produce), never
+    # duplicated content.
+    assert out.count("=== File") == 0
+    assert "duplicate file request" in out
+
+
+def test_load_skill_files_collapses_a_duplicate_alongside_a_distinct_file(pack: Path) -> None:
+    catalog = {
+        "components": {
+            "Button": {"type": "object", "properties": {}},
+            "Text": {"type": "object", "properties": {}},
+        }
+    }
+    (pack / "skills" / "quality-rubric" / "catalog.json").write_text(
+        json.dumps(catalog), encoding="utf-8"
+    )
+    rt = _runtime(pack)
+    tool = build_load_skill_tool(_agent(pack), rt)
+
+    out = tool.func(
+        skill_id="quality-rubric",
+        files=[
+            "catalog.json#/components/Button",
+            "catalog.json#/components/Button",
+            "catalog.json#/components/Text",
+        ],
+    )
+
+    assert "=== File 1/2: catalog.json#/components/Button ===" in out
+    assert "=== File 2/2: catalog.json#/components/Text ===" in out
+    assert "1 duplicate file request collapsed" in out

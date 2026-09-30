@@ -6,7 +6,7 @@ plus a ``resource_link`` part carrying ``artifact_id``. The **model** lane got
 nothing. The structured tool result the agent reads back names only the written
 path (``ndp_stage_resource`` → ``{"ok": true, "local_path": "...csv", ...}``), so an
 agent instructed to reference ``artifact://<artifact-id>`` — the grammar the trusted
-A2UI ``clio.time-series.v1`` ``dataUri`` requires, and the one
+A2UI ``clio.chart.v1`` ``dataUri`` requires, and the one
 ``GET /v1/artifacts/{id}/table-preview`` resolves — has no id to cite, honestly
 refuses to invent one, and the artifact-backed chart can never be built.
 
@@ -95,7 +95,7 @@ def artifact_id_uri(artifact_id: str) -> str:
     """The id-addressed artifact URI (``artifact://artifact_<hex>``).
 
     This is the grammar the trusted A2UI catalog validates for a
-    ``clio.time-series.v1`` ``dataUri`` / ``clio.artifact.v1`` ``uri`` and the one
+    ``clio.chart.v1`` ``dataUri`` / ``clio.artifact.v1`` ``uri`` and the one
     the bounded table-preview route resolves. It is deliberately NOT the logical
     version URI (``artifact://<ws>/<name>@vN``) the ``resource_link`` part carries:
     that one addresses a version chain, this one addresses the immutable version.
