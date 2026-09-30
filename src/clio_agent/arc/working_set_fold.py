@@ -5,7 +5,7 @@ segments to a per-expert scope AND (separately) the semantic-event bus writes th
 same history into the reserved ``_events`` log — two parallel materializations of
 one history (RULE 4 / the #737 thesis). This module removes the parallel write: the
 loop's content atoms become the ONLY copy, appended to the canonical ``_events``
-log, and ``render_working_set`` / ``render_segments`` / ``render_segments_keys`` are
+log, and ``render_working_set`` / ``render_segments`` / ``render_segment_text`` are
 re-expressed as a **fold** of that log (design ``docs/design/unified-arc-highway.md``
 §2.8b, §2.9, §2.10).
 
@@ -70,7 +70,7 @@ from clio_agent.arc.schema import (
     encode_segments,
     segment_text,
 )
-from clio_agent.arc.segments import SegmentStore, _coerce_content, segments_to_keys
+from clio_agent.arc.segments import SegmentStore, _coerce_content
 from clio_agent.arc.storage import ARCStore
 
 logger = logging.getLogger(__name__)
@@ -449,9 +449,12 @@ class FoldingSegmentStore(SegmentStore):
                 continue
             retired_at = tomb.get(a.id)
             retired = retired_at is not None and (as_of is None or retired_at <= as_of)
-            if retired and not include_tombstoned:
-                continue
-            out.append(a)
+            if not retired:
+                out.append(a)
+            elif include_tombstoned:  # the history view says it is retired, and when
+                out.append(
+                    msgspec.structs.replace(a, status="tombstoned", tombstoned_at=retired_at)
+                )
         return out
 
     def _live_fold(self, session_id: str, scope: str, *, as_of: int | None) -> list[Segment]:
@@ -851,14 +854,6 @@ class FoldingSegmentStore(SegmentStore):
             for s in self._live_fold(session_id, scope, as_of=as_of)
             if s.kind in WORKING_SET_KINDS
         ]
-
-    def render_keys(
-        self, session_id: str, scope: str, *, as_of: int | None = None
-    ) -> dict[str, Any]:
-        """The folded live view projected into dspy's trajectory dict."""
-        if not self._is_working_set_scope(scope):
-            return super().render_keys(session_id, scope, as_of=as_of)
-        return segments_to_keys(self._live_fold(session_id, scope, as_of=as_of))
 
     def render_text(
         self,
