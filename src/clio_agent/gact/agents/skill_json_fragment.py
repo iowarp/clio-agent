@@ -104,22 +104,12 @@ def _inline_local_defs(document: Any, node: Any, *, expanding: frozenset[str] = 
     return node
 
 
-def resolve_json_pointer_fragment(file_path: str, raw_text: str, fragment: str) -> str:
-    """Resolve an RFC 6901 JSON Pointer ``fragment`` against a bundled JSON file.
-
-    Every local ``#/$defs/<Name>`` reference reachable under the resolved
-    node is inlined (:func:`_inline_local_defs`) — e.g. a component's own
-    ``MapPoint``/``DataTableColumn``/``DataQuery``/``CatalogComponentCommon``
-    shape is expanded in place, so one load fully explains it. An external
-    (e.g. ``common_types.json``) reference is left as a ``$ref`` and named in
-    one trailing line, since this call cannot load it.
+def _parse_bundled_json_document(file_path: str, raw_text: str) -> Any:
+    """Parse ``raw_text`` as the JSON document backing a ``#`` fragment.
 
     Raises:
-        ValueError: ``file_path`` does not end in ``.json`` (fragments are
-            JSON-only, never silently ignored); ``fragment`` is not an
-            absolute pointer (does not start with ``/``); or the pointer does
-            not resolve — the message names the available keys at the
-            nearest resolvable parent.
+        ValueError: ``file_path`` does not end in ``.json``, or the text is
+            not valid JSON.
     """
 
     if not file_path.lower().endswith(".json"):
@@ -128,9 +118,20 @@ def resolve_json_pointer_fragment(file_path: str, raw_text: str, fragment: str) 
             "fragments are only supported for .json bundled files"
         )
     try:
-        document = json.loads(raw_text)
+        return json.loads(raw_text)
     except json.JSONDecodeError as exc:
         raise ValueError(f"bundled file {file_path!r} is not valid JSON: {exc}") from exc
+
+
+def _walk_pointer(document: Any, file_path: str, fragment: str) -> Any:
+    """Walk one RFC 6901 pointer against ``document``, returning the raw node.
+
+    Raises:
+        ValueError: ``fragment`` is not an absolute pointer, or does not
+            resolve — the message names the available keys at the nearest
+            resolvable parent.
+    """
+
     if not fragment.startswith("/"):
         raise ValueError(f"fragment {fragment!r} must be an absolute JSON pointer (start with '/')")
     node: Any = document
@@ -158,6 +159,29 @@ def resolve_json_pointer_fragment(file_path: str, raw_text: str, fragment: str) 
             f"JSON pointer {fragment!r} does not resolve in {file_path!r}: no "
             f"{part!r} at {pointer_so_far!r}; available keys: {available}"
         )
+    return node
+
+
+def resolve_json_pointer_fragment(file_path: str, raw_text: str, fragment: str) -> str:
+    """Resolve an RFC 6901 JSON Pointer ``fragment`` against a bundled JSON file.
+
+    Every local ``#/$defs/<Name>`` reference reachable under the resolved
+    node is inlined (:func:`_inline_local_defs`) — e.g. a component's own
+    ``MapPoint``/``DataTableColumn``/``DataQuery``/``CatalogComponentCommon``
+    shape is expanded in place, so one load fully explains it. An external
+    (e.g. ``common_types.json``) reference is left as a ``$ref`` and named in
+    one trailing line, since this call cannot load it.
+
+    Raises:
+        ValueError: ``file_path`` does not end in ``.json`` (fragments are
+            JSON-only, never silently ignored); ``fragment`` is not an
+            absolute pointer (does not start with ``/``); or the pointer does
+            not resolve — the message names the available keys at the
+            nearest resolvable parent.
+    """
+
+    document = _parse_bundled_json_document(file_path, raw_text)
+    node = _walk_pointer(document, file_path, fragment)
     inlined = _inline_local_defs(document, node)
     rendered = json.dumps(inlined, indent=2, sort_keys=False)
     refs = sorted(_collect_ref_targets(inlined))
@@ -178,4 +202,112 @@ def resolve_json_pointer_fragment(file_path: str, raw_text: str, fragment: str) 
     return rendered
 
 
-__all__ = ["resolve_json_pointer_fragment"]
+def _collect_local_def_names(document: Any, node: Any, needed: set[str]) -> None:
+    """Add every local ``$defs`` name reachable from ``node`` into ``needed``.
+
+    Recurses into a newly-discovered def's OWN body too (a def can itself
+    reference other defs), so ``needed`` ends up transitively closed: every
+    name a caller will actually need to look up ends up in the set, added
+    exactly once regardless of how many fragments reach it.
+    """
+
+    if isinstance(node, Mapping):
+        ref = node.get("$ref")
+        if isinstance(ref, str):
+            match = _LOCAL_DEF_REF_RE.match(ref)
+            if match:
+                def_name = match.group(1)
+                if def_name not in needed:
+                    needed.add(def_name)
+                    defs = document.get("$defs") if isinstance(document, Mapping) else None
+                    target = defs.get(def_name) if isinstance(defs, Mapping) else None
+                    if target is not None:
+                        _collect_local_def_names(document, target, needed)
+        for value in node.values():
+            _collect_local_def_names(document, value, needed)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_local_def_names(document, item, needed)
+
+
+def _render_shared_definitions_block(document: Any, def_names: set[str]) -> str:
+    """One "Definitions" section holding every name in ``def_names`` ONCE.
+
+    A def's own ``$ref`` to another def in ``def_names`` is left bare — that
+    def is listed right here, by name, in the same block, so nothing needs
+    expanding further. This is also how a mutually/self-recursive def (e.g.
+    the chart spec guard's ``SpecNoForbiddenKeys``) falls out for free: its
+    self-ref is simply a bare pointer to a name already in this same list.
+    """
+
+    if not def_names:
+        return ""
+    defs = document.get("$defs") if isinstance(document, Mapping) else None
+    parts = ["## Shared definitions (each referenced by name below, defined once for this call)"]
+    for name in sorted(def_names):
+        target = defs.get(name) if isinstance(defs, Mapping) else None
+        if target is None:
+            continue
+        parts.append(f"### $defs/{name}\n{json.dumps(target, indent=2, sort_keys=False)}")
+    return "\n\n".join(parts)
+
+
+def resolve_json_pointer_fragments_shared(
+    file_path: str, raw_text: str, fragments: list[str]
+) -> tuple[list[str], str]:
+    """Resolve several fragments of ONE document, sharing their ``$defs``.
+
+    Unlike :func:`resolve_json_pointer_fragment` (which fully inlines a
+    SINGLE fragment so it alone explains the shape), resolving several
+    fragments from the same catalog file at once must not re-inline the
+    same shared def (``DataQuery``, ``CatalogComponentCommon``, ...) once
+    per fragment that happens to reference it — the result would grow with
+    requested-files times shared-defs instead of staying proportional to
+    what was actually asked for (#1533 S4 adversarial review).
+
+    Every fragment's own body keeps its local ``$defs`` refs BARE; the
+    union of every def any fragment reaches (transitively) is rendered
+    exactly once in the second return value, meant to be appended after
+    all per-fragment bodies.
+
+    Returns:
+        ``(bodies, shared_definitions_block)`` — ``bodies[i]`` is fragment
+        ``fragments[i]``'s own rendered body; ``shared_definitions_block``
+        is ``""`` when no fragment reaches any local def.
+
+    Raises:
+        ValueError: see :func:`resolve_json_pointer_fragment`.
+    """
+
+    document = _parse_bundled_json_document(file_path, raw_text)
+    nodes = [_walk_pointer(document, file_path, fragment) for fragment in fragments]
+    needed: set[str] = set()
+    for node in nodes:
+        _collect_local_def_names(document, node, needed)
+    bodies: list[str] = []
+    for node in nodes:
+        rendered = json.dumps(node, indent=2, sort_keys=False)
+        refs = sorted(_collect_ref_targets(node))
+        # $defs refs are satisfied by the shared block the caller appends
+        # once; a ref elsewhere in this same document (not a $defs one) or
+        # into an external file is reported exactly like the single-fragment
+        # path, since neither is covered by that shared block.
+        other_local_refs = sorted(
+            f"catalog.json{ref}"
+            for ref in refs
+            if ref.startswith("#/") and not _LOCAL_DEF_REF_RE.match(ref)
+        )
+        standard_refs = sorted(ref for ref in refs if not ref.startswith("#/"))
+        if other_local_refs:
+            rendered += (
+                "\n\nLocal refs still needing a separate load_skill(..., file=): "
+                + ", ".join(other_local_refs)
+            )
+        if standard_refs:
+            rendered += "\n\nStandard refs (not loadable here): " + ", ".join(standard_refs)
+        bodies.append(rendered)
+    shared_block = _render_shared_definitions_block(document, needed)
+    return bodies, shared_block
+
+
+__all__ = ["resolve_json_pointer_fragment", "resolve_json_pointer_fragments_shared"]

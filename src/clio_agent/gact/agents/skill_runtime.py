@@ -38,7 +38,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.gact import context as _ctx
-from clio_agent.gact.agents.skill_json_fragment import resolve_json_pointer_fragment
+from clio_agent.gact.agents.skill_json_fragment import (
+    resolve_json_pointer_fragment,
+    resolve_json_pointer_fragments_shared,
+)
 from clio_agent.gact.skills import (
     SkillBodyUnreadableError,
     SkillCatalog,
@@ -412,6 +415,13 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
             raise ValueError("pass exactly one of file or files, never both")
         if file:
             requested_files = [file]
+        duplicates_collapsed = 0
+        if len(requested_files) > 1:
+            # A repeated request (e.g. two components both cited by id) is
+            # read/resolved once, not once per occurrence (#1533 S4).
+            deduped = list(dict.fromkeys(requested_files))
+            duplicates_collapsed = len(requested_files) - len(deduped)
+            requested_files = deduped
 
         def _emit_loaded(size: int, bundled_file: str = "") -> None:
             # skill.loaded (#920): typed provenance for every load, on the
@@ -464,13 +474,45 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
                     f"skill {skill_id!r} is a flat .md skill with no bundled directory"
                 )
         elif len(requested_files) > 1:
-            # Progressive disclosure, batched: several component schemas (or any
-            # other bundled files) in ONE call, clearly separated and labelled —
-            # each is still fragment-resolved/$defs-inlined exactly like a lone
-            # file= call.
+            # Progressive disclosure, batched: several component schemas (or
+            # any other bundled files) in ONE call, clearly separated and
+            # labelled. Fragments that share ONE catalog document also share
+            # ONE copy of every $defs entry they reach (#1533 S4 adversarial
+            # review) — grouped below by their (bundled) file_path so the
+            # result stays proportional to what was actually requested,
+            # never requested-files times shared-defs. A whole-file request
+            # (no "#" fragment, or a non-JSON file) is read on its own, same
+            # as a lone file= call.
+            bodies: dict[int, str] = {}
+            grouped_by_document: dict[str, list[tuple[int, str]]] = {}
+            document_text_cache: dict[str, str] = {}
+            for index, requested_file in enumerate(requested_files):
+                file_path, has_fragment, fragment = requested_file.partition("#")
+                if not has_fragment or not file_path.lower().endswith(".json"):
+                    bodies[index] = _read_one_bundled_file(requested_file)
+                    continue
+                if file_path not in document_text_cache:
+                    target = _resolve_bundled_file(skill_id, skill_dir, ref.extra_dirs, file_path)
+                    try:
+                        document_text_cache[file_path] = target.read_text(encoding="utf-8")
+                    except (OSError, UnicodeDecodeError) as exc:
+                        raise ValueError(f"bundled file {file_path!r} unreadable: {exc}") from exc
+                grouped_by_document.setdefault(file_path, []).append((index, fragment))
+
+            definitions_blocks: list[str] = []
+            for file_path in sorted(grouped_by_document):
+                entries = grouped_by_document[file_path]
+                fragment_bodies, shared_block = resolve_json_pointer_fragments_shared(
+                    file_path, document_text_cache[file_path], [f for _, f in entries]
+                )
+                for (index, _fragment), body in zip(entries, fragment_bodies, strict=True):
+                    bodies[index] = body
+                if shared_block:
+                    definitions_blocks.append(f"### Shared by {file_path}\n{shared_block}")
+
             sections: list[str] = []
             for index, requested_file in enumerate(requested_files, start=1):
-                content = _read_one_bundled_file(requested_file)
+                content = bodies[index - 1]
                 trace.event(
                     "SKILLS", "agent %s loaded %s file %s", agent_id, skill_id, requested_file
                 )
@@ -478,7 +520,14 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
                 sections.append(
                     f"=== File {index}/{len(requested_files)}: {requested_file} ===\n{content}"
                 )
+            if definitions_blocks:
+                sections.append("\n\n".join(definitions_blocks))
             combined = "\n\n".join(sections)
+            if duplicates_collapsed:
+                combined += (
+                    f"\n\n({duplicates_collapsed} duplicate file request"
+                    f"{'' if duplicates_collapsed == 1 else 's'} collapsed to a single read each.)"
+                )
             _declare_load_skill_structured_content(
                 skill_id=skill_id,
                 scope=ref.scope,
@@ -492,6 +541,12 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
             content = _read_one_bundled_file(requested_file)
             trace.event("SKILLS", "agent %s loaded %s file %s", agent_id, skill_id, requested_file)
             _emit_loaded(len(content.encode("utf-8")), bundled_file=requested_file)
+            if duplicates_collapsed:
+                content += (
+                    f"\n\n({duplicates_collapsed} duplicate file request"
+                    f"{'' if duplicates_collapsed == 1 else 's'} for this same file collapsed "
+                    "to a single read.)"
+                )
             _declare_load_skill_structured_content(
                 skill_id=skill_id, scope=ref.scope, path=ref.path, text=content, file=requested_file
             )
