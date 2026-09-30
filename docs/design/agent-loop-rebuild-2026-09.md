@@ -637,6 +637,45 @@ At the tip: `src` +6,144 / −11,226; `tests` +8,891 / −11,402; the rest +270 
 - `loop_inbox_drain` remains, as the new step-boundary drain: arrivals become their own user messages.
 - No `CLIO_*` variable or config key selects an old loop, trajectory or history path (`docs/ENVIRONMENT.md` checked).
 
+## Phase 7: session bring-up off the first message (`feat/session-bringup`, cut from `feat/recorded-fixes`)
+
+**Owner (2026-09-30):**
+- 248 s against 397 s is not enough; iowarp/clio-coder is much faster.
+- The start of a session is a big waste: CLIO waits for the first message to initialise the session and to start its MCP servers.
+- Start them early, and block only when a call needs a server that is still starting.
+- This supersedes the #1237 ruling ("activation mounts nothing eagerly").
+
+**Measured (earthscope, Phase 4 tree):** 78 s of the 206 s first turn passed before the first model call (`blueprint.resolve` 74 s):
+- The four declared servers mounted in a serial loop (`builders.py`), after the first message.
+- Each was spawned twice, once for a listing client and once for the persistent connection, at ~4 s per spawn through uv.
+- About 40 s went to discover-probe timeouts on a cold pandas server.
+- The launcher-cache file lock serializes cold spawns. It guards a real uv cache race (astral-sh/uv#11694) and stays.
+- Field report (Utah CHPC, via the patch-release session): "Setting up session" after every answered question. This is the same cost, because the idle reaper (120 s) closes the servers while the user answers.
+
+**What clio-coder does** (read at `4f03d2c`):
+- one long-lived agent per conversation;
+- the system prompt and tool list frozen per session;
+- MCP servers spawned on first use, from a 24 h disk listing cache;
+- about 8 tools, the rest behind a gateway tool;
+- reasoning `low` by default.
+
+**Landed:**
+- `7cd7e324`: a turn waits for tool listings, not connections. A server connects when a call needs it, and the executor's per-namespace connect joins concurrent callers.
+- `c13de240`: creating a session or activating a blueprint starts its servers (the blueprint's, plus always-load services) concurrently in the background, controlled by `tools.mcp.session_warmup` (default on).
+- `c8d07ffa`: every turn start kicks the warm-up, once per session at a time. This covers a resume after the reaper closed the servers.
+- `55cea154`: spawned FastMCP servers skip their banner and its pypi.org update check.
+
+**Result (earthscope, cold listing cache as the bench always has):**
+- `blueprint.resolve`: 74 s → 24 s.
+- First turn: 208 s → 166 s.
+- Run: 248 s → 222 s.
+- With a warm listing cache (normal use, 24 h), the first model call waits on no server at all.
+
+**Next:**
+- One spawn per server: list over the persistent connection. The listing currently also records the server's task capability, which the connect route reads (#1281), so the two must be reordered together.
+- The reaper keeps a session's fleet while the session waits on a question.
+- Owner decisions: reasoning effort for tool-routing steps; a smaller tool set behind a gateway tool.
+
 ## Definition of done
 
 1. Full suite green on every phase branch (`pytest tests -m "not integration"`): zero failures,
