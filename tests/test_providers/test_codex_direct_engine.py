@@ -100,7 +100,8 @@ class FakeSocket:
         self.frames.append(json.loads(raw))
         reply = self._script.pop(0)
         events = _answer(f"resp_{len(self.frames)}", reply) if isinstance(reply, str) else reply
-        self._pending = [json.dumps(e) for e in events]
+        # An exception in the script is the connection dropping at that point.
+        self._pending = [e if isinstance(e, BaseException) else json.dumps(e) for e in events]
 
     def __aiter__(self) -> FakeSocket:
         return self
@@ -108,7 +109,10 @@ class FakeSocket:
     async def __anext__(self) -> str:
         if not self._pending:
             raise StopAsyncIteration
-        return self._pending.pop(0)
+        item = self._pending.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
 
     async def close(self) -> None:
         self.closed = True
@@ -263,6 +267,38 @@ def test_a_lost_continuation_resends_in_full_on_a_fresh_socket(
     assert len(resend["input"]) > len(first.frames[-1]["input"])  # the FULL body
     assert response.message.parts == (TextPart(text="two"),)
     assert _stateful(audit)[-1] == ("full", "session_evicted")
+
+
+def _service_restart() -> websockets.ConnectionClosedError:
+    from websockets.frames import Close
+
+    close = Close(1012, "service restart")
+    return websockets.ConnectionClosedError(close, close, True)
+
+
+def test_a_connection_closed_before_any_output_reconnects_and_resends(
+    harness: Harness, audit: list[dict[str, Any]], loop_scope: None
+) -> None:
+    """Codex restarting (WebSocket 1012) before any output is not the user's problem:
+    the call reconnects and resends in full, typed as an evicted session."""
+    harness.script[:] = ["one", [_service_restart()], "two"]
+    engine = _engine()
+    _run(engine, _request(HEAD))
+    response = _run(engine, _request(HEAD, *_step(0)))
+
+    first, second = harness.sockets
+    [resend] = second.frames
+    assert "previous_response_id" not in resend
+    assert len(resend["input"]) > len(first.frames[-1]["input"])  # the FULL body
+    assert response.message.parts == (TextPart(text="two"),)
+    assert _stateful(audit)[-1] == ("full", "session_evicted")
+
+
+def test_a_connection_closed_mid_reply_is_a_clear_server_error(harness: Harness) -> None:
+    started = _answer("resp_1", "partial")[:2]
+    harness.script[:] = [[*started, _service_restart()]]
+    with pytest.raises(ServerError, match="Codex closed the connection during the reply"):
+        _run(_engine(), _request(HEAD))
 
 
 # --------------------------------------------------------------------------- #

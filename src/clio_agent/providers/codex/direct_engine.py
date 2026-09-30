@@ -183,8 +183,9 @@ class AsyncCodexDirectEngine:
         _audit(key, self.model, request, live is not None, reason, len(frame.get("input") or []))
         try:
             response_id = await _exchange(self.wire, request, socket, frame, out)
-        except _ContinuationLost:
-            # The backend no longer holds the previous response (nothing was streamed):
+        except (_ContinuationLost, _ConnectionLost):
+            # The backend no longer holds the previous response, or the connection
+            # dropped (a service restart, an idle-closed socket) -- nothing was streamed:
             # resend in full on a fresh socket, typed.
             _close_soon(socket)
             socket = await _connect(headers, key)
@@ -370,6 +371,29 @@ async def _exchange(
         provider="codex_direct",
         transport="websocket",
     )
+    streamed: list[bool] = []  # set once any event of the reply reached the caller
+    try:
+        return await _stream(wire, request, socket, frame, out, call_id, call_index, streamed)
+    except websockets.ConnectionClosed as exc:
+        if streamed:
+            reason = f"code {exc.rcvd.code}: {exc.rcvd.reason}" if exc.rcvd else "no close frame"
+            raise ServerError(
+                f"Codex closed the connection during the reply ({reason}); please try again"
+            ) from exc
+        raise _ConnectionLost from exc
+
+
+async def _stream(
+    wire: Any,
+    request: Request,
+    socket: Any,
+    frame: dict[str, Any],
+    out: queue.SimpleQueue[Any],
+    call_id: str,
+    call_index: int,
+    streamed: list[bool],
+) -> str:
+    """The body of :func:`_exchange`: send the frame and forward the reply's events."""
     first = True
     usage: Any = None
     await socket.send(json.dumps({"type": "response.create", **frame}))
@@ -398,6 +422,7 @@ async def _exchange(
                 )
             if event.type == "end":
                 usage = event.usage
+            streamed[:] = [True]
             out.put(event)
         if kind in _TERMINAL:
             emit_call_usage(
@@ -440,6 +465,10 @@ def _usage_row(usage: Any) -> dict[str, int]:
 
 class _ContinuationLost(Exception):
     """The backend no longer holds ``previous_response_id`` (before any event)."""
+
+
+class _ConnectionLost(Exception):
+    """The WebSocket closed before any event of the reply was forwarded."""
 
 
 def _error_message(payload: dict[str, Any]) -> str:
