@@ -509,6 +509,59 @@ ARC mid-turn is a typed turn failure (`ContextReadError`).
    - Remove the old `render_keys` context view in favour of the projection.
    - Verify in the browser with the Claude in Chrome tools against a `CLIO_WEB_DIR` instance (DoD 4).
 
+### Phase 4 progress (2026-09-29)
+
+**Landed on `feat/recorded-fixes`**, in `f171629f`, `fc561d5f`, `81125901`, `7eb2139a`, `eab64725` and `47f9a3a5`:
+
+- **Path repair became a suggestion.** The call runs exactly as the agent asked. If it fails, the result (or the raised error, as a note) carries `[clio: path_hint]` listing the same-named files that do exist. The silent substitution is deleted. It could redirect an output file the agent meant to create.
+- **Circuit breaker.**
+  - Configured by `tools.circuit_breaker.failure_limit` / `CLIO_TOOL_FAILURE_LIMIT` (default 3; 0 turns it off).
+  - The failure that reaches the limit tells the agent to take an alternative route.
+  - A blocked call says what failed and why it was not run.
+- **Oversize results.**
+  - The full result goes to the session's tool-output folder.
+  - The agent gets the head (`limits.model_tool_result_chars`) plus the file path to explore.
+  - The head/tail envelope is deleted.
+  - Bounding runs on the calling thread, so the file lands in the session workspace.
+- **The `injection` part.**
+  - Every CLIO addition, and every note the harness adds to a tool call, is minted as `injection {source, text, call_id?}` with the exact text the agent got. This covers turn additions, the path hint, the circuit breaker, spilled results and hook effects.
+  - It serializes to v3 as `type: injection`.
+  - Tests:
+    - UI vs agent: every `[clio: …]` message the agent sees has an injection part.
+    - Fix recorded and told: every executor note is collected with its call id.
+- **Hooks.**
+  - PreToolUse changing or answering a call, and PostToolUse replacing or objecting to a result, are told to the agent in the result and recorded.
+  - BeforeModel route, patch or answer, and an AfterModel rewrite, are recorded for the user.
+- **gact-tui web** (`feat/injection-parts`, `91df1449`).
+  - It renders the `injection` block with a syringe icon, named in plain words and expandable to the exact text.
+  - The contract is documented in `contract/PARTS.md`.
+  - The block is a client-local schema (as `compaction` is). Adding it to `clio-schemas` needs a schema release, which is the owner's call.
+
+**Found live and fixed:**
+
+- **A Codex/Claude Code bind right after launch** answered 401 "models are being checked". The bind now waits, bounded, for the startup check. A Codex bind now checks the models itself when nothing has, as the Claude Code bind does.
+- **A regenerated plot failed a later turn.** Cross-turn history re-read an old `view_image` file whose hash had changed. `view_image` and `view_pdf` now snapshot the viewed bytes, and history reads the snapshot. Media that history can no longer show becomes a `[clio: media_unavailable]` note, never a failed turn.
+- **A Codex WebSocket 1012 (service restart) failed a turn** with a raw error. Before any output, the call reconnects and resends. Mid-reply, it is a clear `ServerError`.
+
+**Live, phase 3 tree, Codex direct (medians of one run; develop baseline in brackets):**
+
+| scenario | wall | model calls | cache share | full sends |
+|---|---|---|---|---|
+| earthscope | 216 s [397] | 18 [18] | 91% [62%] | 1 of 18 (the only turn-boundary resend is gone) |
+| deep-researcher | 1362 s [2538] | 164 | 88% [63%] | 10 of 164 |
+| data-semantics | 239 s [430] | 28 [34] | 76% [70%] | 4 of 28 |
+| opal | 1085 s | 50 | 93% | 3 of 50 |
+
+- **Factorio evals:** 21 failure lines [25].
+- **SDK transport on the same tree:** deep-researcher made one model call, never called a tool, and claimed "the delegation tool failed". This is the SDK text-protocol tool-use weakness seen earlier.
+
+**Open:**
+
+- The Go TUI rendering of `injection`, last per the owner.
+- Removing `render_keys` from the context route and the SPEC.
+- The web UI browser verification (DoD 4).
+- Whether `injection` goes into a `clio-schemas` release.
+
 ## Definition of done
 
 1. Full suite green on every phase branch (`pytest tests -m "not integration"`): zero failures,
