@@ -342,8 +342,3 @@ also_copy = ["src/clio_agent/", "tests/"]
 override-dependencies = ["mcp>=2.0.0"]
 
 [tool.uv.sources]
-# Branch-local only: points at the unmerged clio-schemas PR #17
-# (feat/a2ui-data-everywhere, stacked on feat/chart-kernel) for the data-by-reference
-# catalog contract (clio-agent#1533 phase 3). Replace with the released clio-schemas
-# 0.5.1 (drop this table) before merging.
-clio-schemas = { git = "https://github.com/iowarp/clio-schemas.git", branch = "feat/a2ui-data-everywhere" }
