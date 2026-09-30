@@ -25,7 +25,6 @@ from clio_agent.tools.execution import (
     SyncMCPToolExecutor,
     ToolRuntimeHooks,
     _ground_output_paths,
-    _missing_path_hint,
     create_async_tool_executor,
     create_sync_tool_executor,
     set_tool_runtime_fallback,
@@ -35,6 +34,7 @@ from clio_agent.tools.mcp_executor import (
     AsyncMCPToolExecutor,
     UncertainMutatingToolOutcomeError,
 )
+from clio_agent.tools.path_hints import missing_path_hint
 from tests._config_layer import set_config
 
 
@@ -786,7 +786,7 @@ def test_sync_mcp_tool_executor_reports_structured_tool_error_result():
     assert "Output directory does not exist" in block["text"]
 
 
-def test_oversized_structured_failure_uses_raw_result_for_error_truth() -> None:
+def test_oversized_structured_failure_uses_raw_result_for_error_truth(tmp_path: Path) -> None:
     """Model truncation must not turn a real structured failure into success."""
 
     fake_client = OversizedStructuredErrorClient()
@@ -801,12 +801,13 @@ def test_oversized_structured_failure_uses_raw_result_for_error_truth() -> None:
     )
 
     try:
-        model_result = executor.call_tool("ndp_search_datasets", {"terms": ["GNSS"]})
+        with tool_workspace_context(str(tmp_path)):
+            model_result = executor.call_tool("ndp_search_datasets", {"terms": ["GNSS"]})
     finally:
         executor.close()
 
-    assert len(model_result) < 13_000
-    assert "model_tool_result_oversize" in model_result
+    assert len(model_result) <= 12_000
+    assert model_result.startswith("[clio: result_spilled] ")
     assert observed[-1][0] == "completed"
     assert observed[-1][1] == "catalog_unavailable: Catalog lookup failed"
 
@@ -1005,7 +1006,7 @@ def test_every_same_named_file_is_offered(tmp_path: Path) -> None:
         (tmp_path / sub).mkdir()
         (tmp_path / sub / "sample.fasta").write_text(">x\n", encoding="utf-8")
     set_config("tools.file_policy.allowed_roots", [str(tmp_path)])
-    hint = _missing_path_hint({"filepath": str(tmp_path / "typo" / "sample.fasta")})
+    hint = missing_path_hint({"filepath": str(tmp_path / "typo" / "sample.fasta")})
     assert str((tmp_path / "a" / "sample.fasta").resolve()) in hint
     assert str((tmp_path / "b" / "sample.fasta").resolve()) in hint
     assert " or " in hint
@@ -1013,7 +1014,7 @@ def test_every_same_named_file_is_offered(tmp_path: Path) -> None:
 
 def test_no_match_no_hint(tmp_path: Path) -> None:
     set_config("tools.file_policy.allowed_roots", [str(tmp_path)])
-    assert _missing_path_hint({"filepath": str(tmp_path / "nowhere.fasta")}) == ""
+    assert missing_path_hint({"filepath": str(tmp_path / "nowhere.fasta")}) == ""
 
 
 def test_the_hint_scan_is_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1024,7 +1025,7 @@ def test_the_hint_scan_is_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         for f in range(5):
             (sub / f"file_{f}.txt").write_text("x", encoding="utf-8")
     set_config("tools.file_policy.allowed_roots", [str(tmp_path)])
-    monkeypatch.setattr("clio_agent.tools.execution._HINT_SCAN_LIMIT", 5)
+    monkeypatch.setattr("clio_agent.tools.path_hints._HINT_SCAN_LIMIT", 5)
     real_scandir = os.scandir
     scanned_dirs: list[str] = []
 
@@ -1034,8 +1035,8 @@ def test_the_hint_scan_is_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
             scanned_dirs.append(text)
         return real_scandir(path)
 
-    monkeypatch.setattr("clio_agent.tools.execution.os.scandir", counting_scandir)
-    assert _missing_path_hint({"filepath": str(tmp_path / "typo" / "nowhere.fasta")}) == ""
+    monkeypatch.setattr("clio_agent.tools.path_hints.os.scandir", counting_scandir)
+    assert missing_path_hint({"filepath": str(tmp_path / "typo" / "nowhere.fasta")}) == ""
     assert 1 <= len(scanned_dirs) <= 2
 
 
@@ -1045,9 +1046,9 @@ def test_the_hint_logs_a_reason_when_the_file_policy_is_unavailable(
     def _boom(*_args: Any, **_kwargs: Any) -> Any:
         raise RuntimeError("policy exploded")
 
-    monkeypatch.setattr("clio_agent.tools.execution.FileAccessPolicy.from_env", _boom)
-    with caplog.at_level("WARNING", logger="clio_agent.tools.execution"):
-        assert _missing_path_hint({"filepath": "/nowhere/reference.fasta"}) == ""
+    monkeypatch.setattr("clio_agent.tools.path_hints.FileAccessPolicy.from_env", _boom)
+    with caplog.at_level("WARNING", logger="clio_agent.tools.path_hints"):
+        assert missing_path_hint({"filepath": "/nowhere/reference.fasta"}) == ""
     assert "reason=file_policy_unavailable" in caplog.text
 
 

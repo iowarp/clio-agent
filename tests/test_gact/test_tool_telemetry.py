@@ -10,6 +10,7 @@ so testing it directly is both faithful and deadlock-free.
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -411,7 +412,7 @@ class _RootDataClient:
 class _LiveWorkspaceMcpRootDataAgent:
     """Drive the same workspace MCP bridge used by blueprint tools in production."""
 
-    def __init__(self) -> None:
+    def __init__(self, workspace: Path) -> None:
         self.root = _RootExecutionResult(
             schema_version="jarvis.execution.v1",
             execution_id="execution-live-root",
@@ -419,17 +420,21 @@ class _LiveWorkspaceMcpRootDataAgent:
             payload="x" * 13_000,
         )
         self.model_text = ""
+        self.workspace = workspace
 
     def forward(self, question: str, session_id: str) -> object:
-        from clio_agent.tools.execution import SyncMCPToolExecutor
+        from clio_agent.tools.execution import SyncMCPToolExecutor, tool_workspace_context
 
         client = _RootDataClient(self.root)
-        with SyncMCPToolExecutor(
-            object(),
-            timeout=2.0,
-            client_factory=lambda _server: client,
-            permission_gate=lambda _name, _args: "allow",
-        ) as executor:
+        with (
+            tool_workspace_context(str(self.workspace)),
+            SyncMCPToolExecutor(
+                object(),
+                timeout=2.0,
+                client_factory=lambda _server: client,
+                permission_gate=lambda _name, _args: "allow",
+            ) as executor,
+        ):
             self.model_text = executor.call_tool(
                 "relay_jarvis_get_execution",
                 {"execution_id": self.root.execution_id},
@@ -859,7 +864,7 @@ def test_workspace_mcp_root_data_reaches_exact_gact_structured_content(tmp_path:
 
     from .conftest import complete_turn
 
-    agent = _LiveWorkspaceMcpRootDataAgent()
+    agent = _LiveWorkspaceMcpRootDataAgent(tmp_path / "workspace")
     app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "t"}).json()["id"]
@@ -873,14 +878,17 @@ def test_workspace_mcp_root_data_reaches_exact_gact_structured_content(tmp_path:
             and event.payload.get("part", {}).get("type") == "tool_result"
         )
 
-        model_result = json.loads(agent.model_text)
-        assert model_result["_clio"]["reason"] == "model_tool_result_oversize"
         model_input = json.dumps(
             agent.root,
             allow_nan=False,
             default=pydantic_json_default,
         )
-        assert model_result["_clio"]["original_chars"] == len(model_input)
+        assert agent.model_text.startswith(
+            f"[clio: result_spilled] This result is {len(model_input):,} characters"
+        )
+        spilled = re.search(r"the full result is in `([^`]+)`", agent.model_text)
+        assert spilled, agent.model_text[:400]
+        assert Path(spilled.group(1)).read_text(encoding="utf-8") == model_input
         assert len(agent.model_text) <= 12_000
         assert tool_result["metadata"]["result"]["truncated"] is True
         # #1190: the structured copy is served at the part TOP LEVEL (the UI
@@ -898,7 +906,9 @@ def test_workspace_mcp_root_data_reaches_exact_gact_structured_content(tmp_path:
         # the exact structuredContent payload the wire part carries. The complete
         # structured copy is trace/UI-only.
         assert json.dumps(tool_result["structured_content"]) not in agent.model_text
-        assert '"schema_version"' not in agent.model_text  # no JSON-keyed twin
+        # The shown head is the ``.data`` serialization (snake_case keys), never the
+        # structuredContent twin (camelCase ``schedulerNativeId``).
+        assert '"schedulerNativeId"' not in agent.model_text  # no JSON-keyed twin
 
 
 def test_live_observer_preserves_failed_structured_tool_result_evidence(tmp_path: Path) -> None:

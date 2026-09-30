@@ -31,9 +31,6 @@ from clio_agent.tools.mcp_errors import typed_mcp_call_error, typed_mcp_protocol
 from clio_agent.tools.mcp_namespace_executor import AsyncNamespacePreparationMixin
 from clio_agent.tools.mcp_result_json import pydantic_json_default
 from clio_agent.tools.mcp_result_projection import (
-    MODEL_TOOL_RESULT_TRUNCATED_REASON as MODEL_TOOL_RESULT_TRUNCATED_REASON,
-)
-from clio_agent.tools.mcp_result_projection import (
     bounded_model_tool_result as _bounded_model_tool_result,
 )
 from clio_agent.tools.mcp_result_projection import (
@@ -409,7 +406,8 @@ class AsyncMCPToolExecutor(AsyncNamespacePreparationMixin):
         """Call an MCP tool on the caller's event loop."""
 
         outcome = await self.call_tool_result(name, args)
-        return outcome.model_text
+        # Bounded here, in the caller's context (the spill lands in its workspace).
+        return _bounded_model_tool_result(outcome.model_text)
 
     async def call_tool_result(
         self,
@@ -871,7 +869,7 @@ def _result_to_text(result: Any) -> str:
     """
     data = getattr(result, "data", result)
     if isinstance(data, str):
-        return _bounded_model_tool_result(data)
+        return data
     if data is None:
         content = getattr(result, "content", None)
         if (
@@ -883,11 +881,9 @@ def _result_to_text(result: Any) -> str:
                 piece for piece in (_content_block_model_text(block) for block in content) if piece
             )
             if placeholder:
-                return _bounded_model_tool_result(placeholder)
+                return placeholder
     try:
-        return _bounded_model_tool_result(
-            json.dumps(data, allow_nan=False, default=pydantic_json_default)
-        )
+        return json.dumps(data, allow_nan=False, default=pydantic_json_default)
     except (TypeError, ValueError, RecursionError, OverflowError) as exc:
         logger.warning(
             "mcp result to text degraded to repr fallback reason=%s type=%s error=%s",
@@ -895,7 +891,7 @@ def _result_to_text(result: Any) -> str:
             type(data).__name__,
             exc,
         )
-        return _bounded_model_tool_result(str(data))
+        return str(data)
 
 
 def _active_session_mode() -> str:

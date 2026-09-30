@@ -1017,7 +1017,8 @@ def test_post_tool_use_rewrite_changes_observation(tmp_path: Path) -> None:
     install_global_dispatcher(make_command_dispatcher(tmp_path, event=POST_TOOL_USE, body=body))
     try:
         out = run_post_tool("echo", {"text": "hi"}, "REAL:hi", False, False)
-        assert out == "REWRITTEN"
+        # The agent is told a hook replaced the result, then sees the replacement.
+        assert out == "[clio: hook] A PostToolUse hook replaced this call's result.\n\nREWRITTEN"
     finally:
         install_global_dispatcher(None)
 
@@ -1030,7 +1031,7 @@ def test_post_tool_use_deny_feeds_reason(tmp_path: Path) -> None:
     try:
         out = run_post_tool("echo", {"text": "hi"}, "REAL:hi", False, False)
         assert "REAL:hi" in out
-        assert "secret found" in out
+        assert out.endswith("[clio: hook] A PostToolUse hook objected: secret found")
     finally:
         install_global_dispatcher(None)
 

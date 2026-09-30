@@ -43,6 +43,7 @@ from dspy.lm15 import (
 )
 
 from clio_agent.errors import ClioError
+from clio_agent.gact.injection_parts import emit_injection
 
 logger = logging.getLogger(__name__)
 
@@ -359,6 +360,7 @@ class StepRecorder:
             if text and latest.get(source) != text:
                 record = {"text": text, "source": source, "actor": "algorithm"}
                 self._write("user", record, 0, "")
+                emit_injection(source, text, agent_id=self.expert_id)
                 latest[source] = text
 
     def arrivals(self, arrivals: Sequence[tuple[str, str]], step: int) -> list[Message]:
@@ -372,6 +374,8 @@ class StepRecorder:
             actor = "user" if source == "steer" else "algorithm"
             record = {"text": text, "source": source, "actor": actor}
             self._write("user", record, step, "")
+            if actor == "algorithm":
+                emit_injection(source, text, agent_id=self.expert_id)
             messages.append(user_from_record(record))
         return messages
 

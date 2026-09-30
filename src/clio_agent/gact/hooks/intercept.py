@@ -133,11 +133,16 @@ def run_post_tool(
         cwd=cwd,
         context=context,
     )
+    from clio_agent.tools import injections  # noqa: PLC0415
+
     result = observation
     if outcome.updated_output:
-        result = outcome.updated_output
+        note = "[clio: hook] A PostToolUse hook replaced this call's result."
+        injections.note("hook", note)
+        result = f"{note}\n\n{outcome.updated_output}"
     if outcome.denied and outcome.reason:
-        feedback = f"[PostToolUse blocked] {outcome.reason}"
+        feedback = f"[clio: hook] A PostToolUse hook objected: {outcome.reason}"
+        injections.note("hook", feedback)
         result = f"{result}\n\n{feedback}" if str(result) else feedback
     return result
 

@@ -252,6 +252,17 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             "navigation": dict(navigation),
             **common,
         }
+    if part_type == "injection":
+        # Harness data the agent was given (plan reminder, todos, a path hint, ...):
+        # clients render it as what it is, never as model or user text.
+        return {
+            "id": part_id,
+            "type": "injection",
+            "source": str(part.get("source") or ""),
+            "text": str(part.get("text") or ""),
+            "call_id": str(metadata.get("call_id") or ""),
+            **common,
+        }
     if part_type == "action_card":
         return {
             "id": part_id,

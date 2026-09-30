@@ -6,12 +6,12 @@ import asyncio
 import concurrent.futures
 import contextvars
 import inspect
+import json
 import logging
-import os
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,8 +22,7 @@ from clio_agent.errors import ClioError
 from clio_agent.runtime import commitment_activity
 from clio_agent.runtime.stream_audit import stream_audit
 from clio_agent.tools import foreground_cancellation as foreground_cancel
-from clio_agent.tools import tool_presentation
-from clio_agent.tools.file_policy import FileAccessPolicy
+from clio_agent.tools import injections, tool_presentation
 from clio_agent.tools.mcp_executor import (
     AsyncMCPToolExecutor,
     ClientFactory,
@@ -35,6 +34,8 @@ from clio_agent.tools.mcp_executor import (
     _tool_visible_to_model,
 )
 from clio_agent.tools.mcp_namespace_executor import SyncNamespacePreparationMixin
+from clio_agent.tools.mcp_result_projection import bounded_model_tool_result
+from clio_agent.tools.path_hints import missing_path_hint
 from clio_agent.tools.result_errors import structured_tool_result_error
 from clio_agent.tools.tool_hooks import InterceptDecision, PostToolHook, assemble_model_observation
 from clio_agent.tools.tool_observation import (
@@ -725,6 +726,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
         if circuit_error is not None:
             notify_tool_observer(tool_observer, name, effective_args, "started", None)
             notify_tool_observer(tool_observer, name, effective_args, "completed", circuit_error)
+            injections.note("circuit_breaker", circuit_error)
             raise RepeatedToolFailureError(circuit_error)
 
         # P2.3: gate-stashed, single-fire PreToolUse decision. ``modify`` mutates input;
@@ -732,12 +734,18 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
         intercept = (
             hooks.tool_interceptor(name, dict(effective_args)) if hooks.tool_interceptor else None
         )
+        hook_note = ""
         if (
             intercept is not None
             and intercept.kind == "modify"
             and intercept.modified_args is not None
         ):
             effective_args = dict(intercept.modified_args)
+            hook_note = (
+                "[clio: hook] A PreToolUse hook changed this call's arguments to "
+                f"{json.dumps(effective_args, default=str)}."
+            )
+            injections.note("hook", hook_note)
         elif intercept is not None and intercept.kind == "synthesize":
             notify_tool_observer(tool_observer, name, effective_args, "started", None)
             notify_tool_observer(
@@ -746,7 +754,11 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             self._record_tool_success(name)
             if return_raw:
                 return intercept.result  # MCP Apps bridge is not model-facing: no PostToolUse
-            return assemble_model_observation(
+            synthesized = (
+                "[clio: hook] A PreToolUse hook answered this call without running the tool."
+            )
+            injections.note("hook", synthesized)
+            observation = assemble_model_observation(
                 hooks.post_tool,
                 name,
                 effective_args,
@@ -754,6 +766,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
                 is_error=False,
                 synthetic=True,
             )
+            return f"{synthesized}\n\n{observation}"
 
         observer_handle = notify_tool_observer(tool_observer, name, effective_args, "started", None)
         presentation_snapshot = tool_presentation.capture_tool_presentation(name, effective_args)
@@ -803,17 +816,21 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
                 )
                 raise uncertain from exc
             error_text = repr(exc)
-            if hint := _missing_path_hint(effective_args):
+            if hint := missing_path_hint(effective_args):
                 exc.add_note(hint)
+                injections.note("path_hint", hint)
             if not isinstance(exc, UncertainMutatingToolOutcomeError):
                 if warning := self._record_tool_failure(name, error_text):
                     exc.add_note(warning)
+                    injections.note("circuit_breaker", warning)
             trace = {"error": exc.to_dict()} if isinstance(exc, ClioError) else None
             notify_tool_observer(
                 tool_observer, name, effective_args, "completed", error_text, trace
             )
             raise
-        result = outcome.model_text
+        # The model-facing text is bounded HERE, on the calling thread, so an oversize
+        # result spills into the session's workspace and its note reaches the loop.
+        result = bounded_model_tool_result(outcome.model_text)
         observer_result = tool_presentation.observe_mcp_result(
             name, outcome.raw_result, effective_args, presentation_snapshot
         )
@@ -857,10 +874,14 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
 
         if return_raw:
             return outcome.raw_result  # MCP Apps bridge is not model-facing: no PostToolUse
-        if structured_error and (hint := _missing_path_hint(effective_args)):
+        if structured_error and (hint := missing_path_hint(effective_args)):
             result = f"{hint}\n\n{result}"
+            injections.note("path_hint", hint)
         if breaker_warning:
             result = f"{breaker_warning}\n\n{result}"
+            injections.note("circuit_breaker", breaker_warning)
+        if hook_note:
+            result = f"{hook_note}\n\n{result}"
         # The model-visible observation (minted artifact identity, then P2.3 PostToolUse),
         # assembled AFTER the observer recorded the real effect (the trace keeps the result).
         result = assemble_model_observation(
@@ -985,17 +1006,6 @@ class MCPToolBridge(SyncMCPToolExecutor):
     """Backward-compatible name for the sync MCP tool executor."""
 
 
-_FILE_ARGUMENT_NAMES = {
-    "file",
-    "filepath",
-    "file_path",
-    "path",
-    "input",
-    "input_path",
-    "source",
-    "source_path",
-}
-
 # Output-artifact designation table (issue #966 deletion inventory item 2): the
 # tool-declared output-arg names, artifact suffixes and the pre-call grounding
 # now live in the artifacts designation module — the ONE place that decides which
@@ -1016,91 +1026,6 @@ def _ground_output_paths(
     from clio_agent.gact.artifacts.designation import ground_output_paths  # noqa: PLC0415
 
     return ground_output_paths(args, input_schema, workspace_root)
-
-
-# Bounds on the allowed-root basename scan behind a path hint: a mistyped path must
-# not turn a failed call into an unbounded filesystem walk (a partial scan hints less).
-_HINT_SCAN_LIMIT = 20_000
-_HINT_DEADLINE_S = 2.0
-_HINT_MATCHES = 3  # the "did you mean" options offered per argument
-
-
-def _bounded_basename_matches(
-    roots: Sequence[Path],
-    basename: str,
-    scanned: int,
-    deadline: float,
-) -> tuple[list[Path], int, bool]:
-    """Walk ``roots`` for files named ``basename``, bounding every entry visited.
-
-    Unlike ``Path.rglob``, which only yields name-matches (so a no-match basename
-    over a huge tree would traverse it exhaustively before any bound could be
-    consulted), this walk increments ``scanned`` and checks the wall-clock
-    ``deadline`` for EVERY directory entry visited. Directory symlinks are not
-    followed, matching ``rglob``'s non-recursing behavior and avoiding cycles.
-
-    Returns:
-        ``(matches, scanned, aborted)``: resolved file matches (the walk stops
-        at ``_HINT_MATCHES``), the updated
-        entry count, and whether a bound aborted the walk.
-    """
-    matches: list[Path] = []
-    for root in roots:
-        stack: list[str] = [str(root)]
-        while stack:
-            directory = stack.pop()
-            try:
-                entries = os.scandir(directory)
-            except OSError:
-                continue
-            with entries:
-                for entry in entries:
-                    scanned += 1
-                    if scanned > _HINT_SCAN_LIMIT or time.monotonic() > deadline:
-                        return matches, scanned, True
-                    try:
-                        if entry.is_dir(follow_symlinks=False):
-                            stack.append(entry.path)
-                        elif entry.name == basename and entry.is_file():
-                            matches.append(Path(entry.path).resolve())
-                            if len(matches) >= _HINT_MATCHES:
-                                return matches, scanned, False
-                    except OSError:
-                        continue
-    return matches, scanned, False
-
-
-def _missing_path_hint(args: Mapping[str, Any]) -> str:
-    """A "did you mean" hint for path arguments of a failed call that do not exist.
-
-    The harness guides, it never decides: the call already ran as the agent asked;
-    this only tells the agent which same-named files exist under the allowed roots
-    (bounded walk, at most ``_HINT_MATCHES`` each). Empty when there is nothing to say.
-    """
-    try:
-        policy = FileAccessPolicy.from_env()
-    except Exception as exc:  # noqa: BLE001 - degradation surfaced via structured log below
-        logger.warning(
-            "path hint skipped: file policy unavailable reason=file_policy_unavailable error=%r",
-            exc,
-        )
-        return ""
-    lines: list[str] = []
-    scanned = 0
-    deadline = time.monotonic() + _HINT_DEADLINE_S
-    for key, value in args.items():
-        if key not in _FILE_ARGUMENT_NAMES or not isinstance(value, str) or not value.strip():
-            continue
-        candidate = Path(value).expanduser()
-        if candidate.exists() or candidate.name in {"", ".", ".."}:
-            continue
-        matches, scanned, _aborted = _bounded_basename_matches(
-            policy.allowed_roots, candidate.name, scanned, deadline
-        )
-        if matches:
-            options = " or ".join(f"'{m}'" for m in sorted(set(matches)))
-            lines.append(f"argument '{key}': '{value}' does not exist. Did you mean {options}?")
-    return "[clio: path_hint]\n" + "\n".join(lines) if lines else ""
 
 
 def _make_dspy_tools(
