@@ -614,8 +614,28 @@ ARC mid-turn is a typed turn failure (`ContextReadError`).
 - **Operator notes** (`fcf95cce`) for `tools.circuit_breaker.failure_limit` and the spill limit.
 - **Full suite:**
   - At `fcf95cce`: 9980 passed, 1 failed (the missing operator note, fixed in that commit), 100 skipped. The same ~100 skips have been there since phase 1: optional dependencies and platform- or live-gated tests.
-  - The run after `8a68f79d` was stopped by the host for low memory and is owed.
-  - Guards (size ratchet, silent fallbacks, env reference), ruff and the targeted suites (`tests/test_arc` 829, the context and compaction tests) are green.
+  - At `8a68f79d` (rerun with `-n 2` after the host stopped the first attempt for low memory): **9989 passed, 0 failed**, 100 skipped.
+    - The skips are all gated: 58 live (the 55 live ARC ones pass live on Codex direct, see above); 21 platform (Linux-only deploy / Landlock / setpriv, Windows symlink / POSIX bits); 9 relay configuration; 1 `flowcept` not installed.
+  - Guards (size ratchet, silent fallbacks, env reference) and ruff are green.
+
+### Deletion inventory (DoD 6), at `5913d866`
+
+**Lines, merge-base `c7a87d73` (develop) to each stacked branch:**
+
+| branch | files | + | − |
+|---|---|---|---|
+| `feat/codex-sdk-stateful` | 16 | 1,464 | 410 |
+| `feat/clio-react` | 149 | 5,778 | 7,674 |
+| `feat/dspy34-engines` | 262 | 11,941 | 21,126 |
+| `feat/context-projection` | 299 | 13,094 | 21,834 |
+| `feat/recorded-fixes` (the chain's tip) | 344 | 15,305 | 23,091 |
+
+At the tip: `src` +6,144 / −11,226; `tests` +8,891 / −11,402; the rest +270 / −463.
+
+**Zero-reference greps over `src tests scripts`:** `instrumented_forward`, `_RetainingReActV2`, `_RetainingReAct`, `reactv2_upstream`, `reset_working_set`, `_compile_session_conversation_history`, `segments_to_keys`, `render_keys`, `_format_trajectory`, `REPEATED_TRANSIENT_FAILURE_LIMIT`, `_repair_missing_file_arguments`, the ChatAdapter name spoof, the per-executor `_call_lock`.
+
+- `loop_inbox_drain` remains, as the new step-boundary drain: arrivals become their own user messages.
+- No `CLIO_*` variable or config key selects an old loop, trajectory or history path (`docs/ENVIRONMENT.md` checked).
 
 ## Definition of done
 
