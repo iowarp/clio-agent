@@ -355,6 +355,39 @@ class StepRecorder:
         """Record the forward's user message; the projection starts every turn with it."""
         self._write("user", user_to_record(message), 0, "")
 
+    def carry_over(self, ledger: Sequence[Any]) -> None:
+        """Seed a scope new to the conversation with its earlier turns, once.
+
+        An agent with nothing recorded yet (the user switched the session's agent,
+        or its store changed) joins a conversation that already has turns: the
+        transcript's model context -- user and assistant text, the latest
+        compaction summary -- is recorded as the messages it was, and the agent is
+        told its tool details are not included. From then on the scope is
+        append-only like any other.
+        """
+        if self.arc is None or self.arc.list_segments(
+            self.session, self.scope, include_tombstoned=True
+        ):
+            return
+        from clio_agent.gact.conversation_projection import (  # noqa: PLC0415
+            model_context_messages,
+        )
+
+        rows = list(model_context_messages(list(ledger)))
+        while rows and _field(rows[-1], "role") == "user":
+            rows.pop()  # this turn's own message is recorded by the loop itself
+        carried = 0
+        for row in rows:
+            for kind, content in _carried(row):
+                self._write(kind, content, 0, "")
+                carried += 1
+        if carried:
+            note = (
+                f"The {carried} earlier messages of this conversation were carried over "
+                "from its transcript (their tool calls and results are not included)."
+            )
+            self.injections([("earlier_turns", note)])
+
     def injections(self, injections: Sequence[tuple[str, str]]) -> None:
         """Record CLIO's additions for this turn, each once.
 
@@ -533,6 +566,30 @@ def _token_estimate(content: Mapping[str, Any]) -> int:
     media = content.get("media") or []
     text = {k: v for k, v in content.items() if k != "media"}
     return max(1, len(json.dumps(text, default=str)) // 4 + _MEDIA_TOKENS * len(media))
+
+
+def _field(row: Any, name: str) -> Any:
+    return row.get(name) if isinstance(row, Mapping) else getattr(row, name, None)
+
+
+def _carried(row: Any) -> list[tuple[str, dict[str, Any]]]:
+    """A transcript row as plane segments (text only; a checkpoint as its summary)."""
+    role = _field(row, "role")
+    texts: list[str] = []
+    for part in _field(row, "parts") or []:
+        kind = _field(part, "type")
+        if kind == "compaction" and _field(part, "summary"):
+            return [("summary", {"text": str(_field(part, "summary"))})]
+        if kind == "text" and str(_field(part, "text") or "").strip():
+            texts.append(str(_field(part, "text")))
+    if not texts:
+        return []
+    text = "\n\n".join(texts)
+    if role == "user":
+        return [("user", {"text": text})]
+    if role == "assistant":
+        return [("thought", {"text": text, "thinking": []})]
+    return []
 
 
 def pending_turn_yield(calls: Sequence[ToolCallPart]) -> str:

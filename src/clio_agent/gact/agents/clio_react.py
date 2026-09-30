@@ -300,6 +300,10 @@ class _Loop:
 
         expert_span = uuid.uuid4().hex[:16]
         self.recorder.started(expert_span, self.inputs)
+        state = getattr(_ctx.active_app(), "state", None)
+        ledger = getattr(state, "messages", None)
+        if ledger is not None:
+            self.recorder.carry_over(ledger.get(self.session, []) or [])
         self.recorder.injections(_ctx.turn_injections())
         self.recorder.user_message(self.head)
         parent_token = _ctx.set_parent_span(expert_span)
