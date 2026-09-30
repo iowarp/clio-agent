@@ -24,6 +24,7 @@ with a static test credential); the WebSocket is faked. Pins:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 from collections.abc import Iterator
 from typing import Any
@@ -461,3 +462,20 @@ def test_an_oversized_image_is_refused_typed_before_any_send(
     with pytest.raises(NativeAttachmentTooLargeError):
         _run(_engine(), _request(Message(role="user", parts=(TextPart(text="see"), image))))
     assert harness.sockets == []
+
+
+def test_codex_is_asked_for_its_reasoning_summary(harness: Harness) -> None:
+    """The model's thinking is shown to the user (owner: everything the model outputs
+    is displayed) -- Codex only streams it when the request asks for a summary."""
+    _run(_engine(), _request(HEAD))
+    [frame] = harness.sockets[0].frames
+    assert frame["reasoning"]["summary"] == "auto"
+
+
+def test_a_set_effort_keeps_its_value_and_gains_the_summary(harness: Harness) -> None:
+    from dspy.lm15 import Config, Reasoning
+
+    request = dataclasses.replace(_request(HEAD), config=Config(reasoning=Reasoning(effort="low")))
+    _run(_engine(), request)
+    [frame] = harness.sockets[0].frames
+    assert frame["reasoning"] == {"effort": "low", "summary": "auto"}

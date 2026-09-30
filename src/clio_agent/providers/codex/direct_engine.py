@@ -152,6 +152,7 @@ class AsyncCodexDirectEngine:
     ) -> None:
         try:
             _check_media(request)  # typed refusal of oversized attachments before any send
+            request = _with_reasoning_summary(request)
             if self.http:
                 await asyncio.to_thread(self._http, request, out)
                 return
@@ -461,6 +462,23 @@ def _usage_row(usage: Any) -> dict[str, int]:
         "reasoning_output_tokens": usage.reasoning_tokens,
     }
     return {k: int(v) for k, v in fields.items() if v is not None}
+
+
+def _with_reasoning_summary(request: Request) -> Request:
+    """Ask Codex for its reasoning summary: the model's thinking is shown to the user.
+
+    With no effort set, only the summary is asked for (the backend keeps its own
+    default effort) -- through ``extensions``, since lm15's ``Reasoning`` needs one.
+    """
+    config = request.config
+    if config.reasoning is not None:
+        if config.reasoning.summary is not None:
+            return request
+        reasoning = dataclasses.replace(config.reasoning, summary="auto")
+        return dataclasses.replace(request, config=dataclasses.replace(config, reasoning=reasoning))
+    extensions = dict(config.extensions or {})
+    extensions.setdefault("reasoning", {"summary": "auto"})
+    return dataclasses.replace(request, config=dataclasses.replace(config, extensions=extensions))
 
 
 class _ContinuationLost(Exception):
