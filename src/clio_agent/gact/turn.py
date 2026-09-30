@@ -626,6 +626,8 @@ async def _run_turn_in_background(
         state.answer_text = ""
         state.tools_called = []
     except Exception as exc:  # noqa: BLE001
+        # The envelope is short; the log keeps the whole failure, stack included.
+        logger.exception("turn forward failed session=%s", state.sid)
         state.error_info = forward_error_info(state, exc, state.transcript.raw_streamed_text())
 
     # #756 / #1339 / L1: everything finalize does (answer grounding, part assembly,

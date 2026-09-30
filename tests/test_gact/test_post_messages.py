@@ -13,6 +13,7 @@ Drives the app with a FakeClioAgent so no LM is needed. Covers:
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections.abc import Iterator
@@ -668,6 +669,23 @@ def test_post_message_agent_exception_populates_error_info(
         # Session left in error state.
         sess = c.get(f"/v1/sessions/{sid}").json()
         assert sess["status"] == "error"
+
+
+def test_an_untyped_forward_failure_logs_its_traceback(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Found live (opal, 2026-09-30): a PermissionError became ``agent_error`` with no
+    stack anywhere, so where it was raised could not be found. The envelope keeps its
+    short message; the log keeps the whole failure."""
+    from .conftest import complete_turn
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=FakeClioAgent(raise_on_forward=True))
+    with TestClient(app) as c, caplog.at_level(logging.ERROR, logger="clio_agent.gact.turn"):
+        sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
+        complete_turn(c, sid, "hi")
+    [record] = [r for r in caplog.records if r.name == "clio_agent.gact.turn" and r.exc_info]
+    assert "simulated agent failure" in str(record.exc_info[1])
+    assert sid in record.getMessage()
 
 
 def test_forward_provider_error_is_one_plain_line(tmp_path: Path) -> None:
