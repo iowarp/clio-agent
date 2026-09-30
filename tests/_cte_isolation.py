@@ -92,6 +92,7 @@ compose:
         bdev_type: "file"
         capacity_limit: "{file_tier_capacity}"
         score: 1.0
+        persistence_level: "temporary"
     dpe:
       dpe_type: "max_bw"
     performance:

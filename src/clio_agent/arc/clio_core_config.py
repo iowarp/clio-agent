@@ -121,9 +121,9 @@ def runtime_state_dir() -> Path:
 # Default clio-core CTE config: a self-managed DRAM↔disk hierarchy on the OS data
 # dir. The DRAM tier (score 1.0) is the hot working set; the file tier (score 0.0)
 # is the cold spill target. ``restart``/``metadata_log_path``/``transaction_log_capacity``
-# are declared so the backend is ready for clio-core's cross-restart data recovery
-# when it lands upstream (today that recovery is WIP, so durability rides the file
-# trace + rebuild-on-reload — a permanent warm-up step, not a stopgap).
+# plus the file tier's ``persistence_level: "temporary"`` make clio-core keep its data
+# across a daemon restart (see :mod:`clio_agent.arc.clio_core_durability`; a volatile
+# tier keeps nothing).
 #
 # MEMORY BUDGET (#906, owner ruling 2026-07-13 — release-gating): a desktop
 # clio-agent must NEVER be able to grow to clio-core's HPC default of 80% of
@@ -186,6 +186,7 @@ compose:
         bdev_type: "file"
         capacity_limit: "{file_capacity}"
         score: 1.0
+        persistence_level: "temporary"
     dpe:
       dpe_type: "max_bw"
     performance:
@@ -380,7 +381,13 @@ def default_cte_config_path() -> str:
         migrate_legacy_cte_store(legacy_dir, cte_dir, runtime_root=runtime_root)
     cte_dir.mkdir(parents=True, exist_ok=True)
     cfg = cte_dir / "cte.yaml"
-    if not cfg.is_file():
+    if cfg.is_file():
+        from clio_agent.arc.clio_core_durability import (  # noqa: PLC0415
+            ensure_seeded_config_durable,
+        )
+
+        ensure_seeded_config_durable(cfg)
+    else:
         budget = _default_cte_ram_capacity()
         if parse_capacity_bytes(budget) <= 0:
             raise ValueError(f"memory budget must be > 0, got {budget!r}")

@@ -423,13 +423,17 @@ class ClioCoreStore:
         config_path: str = "",
         log_level: str = "error",
         init_settle_s: float = 0.5,
+        namespace: str = "",
     ) -> None:
         config_path = self._ensure_runtime(config_path, log_level, init_settle_s)  # effective
         import clio_cte_core_ext as cte  # noqa: PLC0415
 
         self._cte = cte
         self._client = cte.get_cte_client()
-        self._tag_ids = TagIds(cte)  # Tag(name) blocks with the GIL: once per kind
+        # Records of one namespace live under ``<namespace>/<kind>`` tags; the default
+        # (empty) namespace keeps the bare ``<kind>`` tags every deployment already has.
+        self._namespace = namespace
+        self._tag_ids = TagIds(cte, self.tag)  # Tag(name) blocks with the GIL: once per kind
         self._config_path = config_path
         self._log_level = log_level
         # 905: cached once, not re-read per call -- see supports_search() below.
@@ -578,8 +582,12 @@ class ClioCoreStore:
         # ``tier`` is advisory: the default single DRAM tier makes ReorganizeBlob a no-op.
 
     @guard_store_op("get")
+    def tag(self, kind: str) -> str:
+        """The CTE tag holding ``kind`` records in this store's namespace."""
+        return f"{self._namespace}/{kind}" if self._namespace else kind
+
     def get(self, kind: str, name: str) -> Optional[bytes]:
-        tag = self._cte.Tag(kind)
+        tag = self._cte.Tag(self.tag(kind))
         size = tag.GetBlobSize(name)  # 0 for a missing blob (does not raise)
         if size == 0:
             return None
@@ -587,14 +595,14 @@ class ClioCoreStore:
 
     @guard_store_op("exists")
     def exists(self, kind: str, name: str) -> bool:
-        return self._cte.Tag(kind).GetBlobSize(name) > 0
+        return self._cte.Tag(self.tag(kind)).GetBlobSize(name) > 0
 
     def scan(self, kind: str, prefix: str = "") -> Iterator[tuple[str, bytes]]:
         # scan() is a generator: the decorator would guard only building it, not
         # iterating. Guard the ONE listing RPC inline; per-blob reads use guarded get().
         self._live()
         blobs = call_with_liveness(
-            lambda: list(self._cte.Tag(kind).GetContainedBlobs()),
+            lambda: list(self._cte.Tag(self.tag(kind)).GetContainedBlobs()),
             op_name="scan",
             port=self._gate.port,
             reconnect=self._reconnect,
@@ -621,7 +629,7 @@ class ClioCoreStore:
         # misclassified as a stalled peer; only a single hanging RPC trips the ladder.
         for kind in ARC_KINDS:
             blob_names = guarded_store_rpc(
-                self, "clear", lambda k: list(self._cte.Tag(k).GetContainedBlobs()), kind
+                self, "clear", lambda k: list(self._cte.Tag(self.tag(k)).GetContainedBlobs()), kind
             )
             for blob_name in blob_names:
                 guarded_store_rpc(self, "clear", store_delete, self, kind, blob_name)
@@ -647,7 +655,7 @@ class ClioCoreStore:
 
         blob_re = f"{re.escape(name_prefix)}.*{re.escape(_SEARCH_SUFFIX)}"
         results = self._client.SemanticSearch(
-            kind, blob_re, query_text, k, self._cte.PoolQuery.Dynamic()
+            self.tag(kind), blob_re, query_text, k, self._cte.PoolQuery.Dynamic()
         )
         out: list[tuple[str, float]] = []
         for r in results:
@@ -663,6 +671,7 @@ def make_arc_store(
     backend: Optional[str] = None,
     data_dir: "str | Path" = ".clio/agent/arc",
     config_path: str = "",
+    namespace: str | None = None,
 ) -> "ARCStore":
     """Build the ARC persistence backend.
 
@@ -690,5 +699,14 @@ def make_arc_store(
 
             ws_cfg = paths.workspace_core_dir() / "cte.yaml"
             cfg = str(ws_cfg) if ws_cfg.is_file() else default_cte_config_path()
-        return clio_core_attach.build_tracked_store(cfg, backend=backend, data_dir=data_dir)
+        ns = (
+            namespace
+            if namespace is not None
+            else conf.resolve(
+                "arc.namespace", env="CLIO_ARC_NAMESPACE", default="", cast=conf.as_str
+            )
+        )
+        return clio_core_attach.build_tracked_store(
+            cfg, backend=backend, data_dir=data_dir, namespace=ns
+        )
     raise ValueError(f"unknown CLIO_ARC_STORE {choice!r}; the only store is clio-core ('cte')")

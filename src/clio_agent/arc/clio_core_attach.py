@@ -181,7 +181,9 @@ class ClioCoreAttachError(RuntimeError):
         )
 
 
-def build_tracked_store(cfg: str, *, backend: str | None, data_dir: "str | Path") -> "ARCStore":
+def build_tracked_store(
+    cfg: str, *, backend: str | None, data_dir: "str | Path", namespace: str = ""
+) -> "ARCStore":
     """Build the clio-core ARC store for ``cfg``, publishing the attach state as it goes.
 
     ``starting`` before connect-or-spawn, ``attached`` on success, and on ANY init
@@ -200,13 +202,19 @@ def build_tracked_store(cfg: str, *, backend: str | None, data_dir: "str | Path"
         ArcStoreUnavailableError: clio-core could not be brought up.
     """
     from clio_agent.arc import clio_core_file_capacity, storage  # noqa: PLC0415 - cycle
+    from clio_agent.arc.clio_core_durability import require_durable_config  # noqa: PLC0415
     from clio_agent.arc.init_degradation import ArcStoreUnavailableError  # noqa: PLC0415
 
     port = storage._resolve_runtime_port(cfg)
     mark_starting(cfg, port)
     try:
+        require_durable_config(cfg)
+    except ArcStoreUnavailableError as failure:
+        mark_unavailable(failure.reason, str(failure), cfg, port)
+        raise
+    try:
         clio_core_file_capacity.preflight_clio_core_config(cfg, env=os.environ)
-        store = storage.ClioCoreStore(config_path=cfg)
+        store = storage.ClioCoreStore(config_path=cfg, namespace=namespace)
     except Exception as exc:  # noqa: BLE001 - re-raised typed: clio-core or nothing
         failure = ArcStoreUnavailableError(error=exc, config_path=cfg)
         mark_unavailable(failure.reason, str(exc), cfg, port)

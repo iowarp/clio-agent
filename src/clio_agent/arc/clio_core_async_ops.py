@@ -74,8 +74,9 @@ class TagIds:
     Tag ids are daemon state, so the cache is dropped whenever the store reconnects.
     """
 
-    def __init__(self, cte: Any) -> None:
+    def __init__(self, cte: Any, tag_name: Any = str) -> None:
         self._cte = cte
+        self._tag_name = tag_name  # kind -> the store's (namespaced) CTE tag name
         self._lock = threading.Lock()
         self._ids: dict[str, Any] = {}
 
@@ -84,7 +85,7 @@ class TagIds:
         with self._lock:
             tag_id = self._ids.get(kind)
         if tag_id is None:
-            tag_id = self._cte.Tag(kind).GetTagId()
+            tag_id = self._cte.Tag(self._tag_name(kind)).GetTagId()
             with self._lock:
                 self._ids.setdefault(kind, tag_id)
         return tag_id

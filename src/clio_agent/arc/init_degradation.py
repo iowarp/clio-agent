@@ -37,6 +37,7 @@ ARC_INIT_DEGRADE_REASONS = (
     CLIO_CORE_VERSION_MISMATCH,  # daemon runs a different iowarp-core version: refused
     CLIO_CORE_DAEMON_VERSION_UNKNOWN,  # daemon has no version record: refused
     CLIO_CORE_DAEMON_CONFIG_UNKNOWN,  # daemon's recorded config is unreadable: refused
+    "clio_core_not_durable",  # no durable tier: a restart would lose every record
     "clio_core_init_error",  # any other clio-core initialization failure
 )
 
