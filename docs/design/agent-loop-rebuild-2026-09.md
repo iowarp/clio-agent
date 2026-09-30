@@ -473,6 +473,42 @@ ARC mid-turn is a typed turn failure (`ContextReadError`).
 - **Undo / rewind follow the ledger:** each scope's working set is rebuilt as it stood before the first rolled-back turn (recorded ops; a rolled-back compaction's originals come back; a kept question keeps its user message).
 - `render_keys` (the old trajectory projection) is still on the context route and in the gact-tui SPEC; it goes with the UI-projection step.
 
+## Phase 4 sub-plan (`feat/recorded-fixes`, cut from `feat/context-projection`)
+
+### Owner decisions (2026-09-29)
+
+**Principle.** The harness works with the agent. It gives the agent freedom and a better environment, informs it, and never silently reinterprets what the agent meant. Every piece of data the harness hands the agent is an **injection**: recorded, visible in the UI, and told to the model.
+
+| Fix | Today | Decided |
+|---|---|---|
+| Oversize tool result | Head + tail JSON envelope; `limits.model_tool_result_chars` = 12000 | The full result goes to a file in the session workspace. The agent is told: "the result is too big; here are the first N chars (N configurable); the rest is in `<file>` for you to explore". |
+| Circuit breaker | Blocks after 2 transient failures (constant) | Configurable limit (default 3). When the limit is reached, the agent is told: "you have failed N times; consider an alternative route; this call will be blocked to prevent looping". The block itself is also told. |
+| Relative output paths | Resolved against the workspace root | Kept. This is semantics (CWD is the reference), not a repair, and is not an injection. |
+| Path-argument repair | Silently substitutes a unique basename match | **Removed.** The call fails with "`<arg>`: `<path>` not found. Did you mean `<match>`?", and the agent decides. |
+| Artifact identity / elicitation notes, tool-media relocation | Appended notes, not recorded | Recorded as injections. |
+| Hook effects (BeforeModel patch/route, AfterModel rewrite, PreToolUse modify/synthesize, PostToolUse rewrite/deny) | Only `hook.invoked` (trace-only) | Recorded as injections, with what changed. |
+
+**UI.** One special **`injection` message part**, used for every harness addition: turn additions (plan reminder, todos, replan, memory hits, task results), fix notices, hook effects and cleanup. gact-tui web and desktop render it with a vaccine/syringe icon, expandable to the exact text the agent got. `PARTS.md` and `SPEC.md` gain the kind.
+
+### Steps (each with its failing-first test, then commit and push)
+
+1. **The `injection` part.**
+   - Minted on `_events/m` by the turn minter with `{source, text, actor: "algorithm", call_id?}`.
+   - The loop mints one whenever it records an addition on the plane: turn injections, steers from CLIO, `task_results`.
+   - Test: every agent-visible `[clio: …]` message has an `injection` part in the UI projection (the UI-vs-agent test from phase 3 step 1f).
+2. **Fix notices as injections.** A tool-result note the harness adds is recorded as an `injection` tied to the call id, in the same text the model got. Test (fix-recorded-and-told): for each fix, the observation carries the note AND the UI has the injection.
+3. **Oversize results spill to a file.**
+   - The file goes under the session workspace's `.clio/tool-results/`.
+   - The agent is told the head N (`limits.model_tool_result_chars`) and the path.
+   - Delete the head/tail envelope.
+4. **Configurable circuit breaker** (`tools.circuit_breaker.failure_limit`, default 3), with the warning at the limit.
+5. **Path repair becomes a suggestion.** Delete the substitution and return the "did you mean" error.
+6. **Hook effects recorded as injections.**
+7. **gact-tui web.**
+   - Render `injection` (syringe icon, expandable).
+   - Remove the old `render_keys` context view in favour of the projection.
+   - Verify in the browser with the Claude in Chrome tools against a `CLIO_WEB_DIR` instance (DoD 4).
+
 ## Definition of done
 
 1. Full suite green on every phase branch (`pytest tests -m "not integration"`): zero failures,
