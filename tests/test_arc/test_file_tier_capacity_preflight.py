@@ -13,7 +13,15 @@ from clio_agent.arc.clio_core_file_capacity import (
     ClioCoreFileCapacityError,
     preflight_file_tier_capacity,
 )
-from clio_agent.arc.storage import LocalFSStore
+from clio_agent.arc.init_degradation import ArcStoreUnavailableError
+
+
+@pytest.fixture(autouse=True)
+def _undo_patches_before_namespace_clear(clio_core_namespace, monkeypatch):
+    """Undo this file's disk/allocation patches before the harness clears the test's
+    clio-core namespace (that clear builds a real store, preflight included)."""
+    yield
+    monkeypatch.undo()
 
 
 @dataclass(frozen=True)
@@ -47,7 +55,8 @@ def _write_config(tmp_path: Path, capacities: tuple[str, ...]) -> tuple[Path, tu
             f'      - path: "{target.as_posix()}"\n'
             '        bdev_type: "file"\n'
             f'        capacity_limit: "{capacity}"\n'
-            f"        score: {index}.0"
+            f"        score: {index}.0\n"
+            '        persistence_level: "temporary"'
         )
         for index, (target, capacity) in enumerate(zip(targets, capacities, strict=True))
     )
@@ -210,15 +219,10 @@ def test_sparse_posix_tier_reuses_an_expected_smaller_chunk(
     assert row.required_allocation_bytes == 0
 
 
-def test_factory_loudly_degrades_before_clio_core_spawn_on_capacity_failure(
+def test_factory_fails_typed_before_clio_core_spawn_on_capacity_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The capacity error reaches the typed init-degradation record and LocalFS."""
-
-    from clio_agent.arc.init_degradation import (
-        arc_init_degradation_snapshot,
-        reset_arc_init_degradation,
-    )
+    """The capacity error is a typed store error, raised before any daemon spawn."""
 
     config, _targets = _write_config(tmp_path, ("50GB",))
     _force_full_allocation(monkeypatch)
@@ -232,16 +236,9 @@ def test_factory_loudly_degrades_before_clio_core_spawn_on_capacity_failure(
         raise AssertionError("ClioCoreStore must not initialize after capacity preflight fails")
 
     monkeypatch.setattr(storage, "ClioCoreStore", unexpected_store)
-    reset_arc_init_degradation()
-    try:
-        store = storage.make_arc_store(
-            backend="cte", data_dir=tmp_path / "arc-local", config_path=str(config)
-        )
-        record = arc_init_degradation_snapshot()
-        assert isinstance(store, LocalFSStore)
-        assert record is not None
-        assert record.reason == CLIO_CORE_FILE_CAPACITY_UNAVAILABLE
-        assert record.error_type == "ClioCoreFileCapacityError"
-        assert "capacity_bytes=" in record.error
-    finally:
-        reset_arc_init_degradation()
+    with pytest.raises(ArcStoreUnavailableError) as caught:
+        storage.make_arc_store(backend="cte", data_dir=tmp_path / "arc", config_path=str(config))
+
+    assert caught.value.reason == CLIO_CORE_FILE_CAPACITY_UNAVAILABLE
+    assert caught.value.details["error_type"] == "ClioCoreFileCapacityError"
+    assert "capacity_bytes=" in caught.value.details["error"]

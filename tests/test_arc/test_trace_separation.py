@@ -9,10 +9,38 @@ the summary's provenance. The capturing op_logger here mirrors the event shape
 
 from __future__ import annotations
 
+import pytest
+
 from clio_agent.arc.replay import reconstruct_arc_segments
 from clio_agent.arc.schema import segment_text
 from clio_agent.arc.segments import SegmentStore
-from clio_agent.arc.storage import LocalFSStore
+
+# clio-core is the only ARC store: each backing ``path`` a test used to hand a local
+# store maps to its own namespace under this test's namespace on the worker's private
+# daemon, so a "cold store over the same dir" reopens the same records.
+_OPENED_STORES: list = []
+
+
+def _clio_core(path: object) -> object:
+    """The real clio-core ARC store for ``path`` (namespaced per test and path)."""
+    import hashlib  # noqa: PLC0415
+
+    from clio_agent import conf  # noqa: PLC0415
+    from clio_agent.arc.storage import make_arc_store  # noqa: PLC0415
+
+    base = conf.resolve("arc.namespace", env="CLIO_ARC_NAMESPACE", default="", cast=conf.as_str)
+    suffix = hashlib.sha1(str(path).encode()).hexdigest()[:8]
+    store = make_arc_store(backend="cte", namespace=f"{base or 'arc'}-{suffix}")
+    _OPENED_STORES.append(store)
+    return store
+
+
+@pytest.fixture(autouse=True)
+def _clear_clio_core_namespaces():
+    yield
+    while _OPENED_STORES:
+        _OPENED_STORES.pop().clear()
+
 
 SID, SCOPE = "s1", "agentA/expertB"
 
@@ -68,7 +96,7 @@ def _make_logger(events_out: list[dict]):
 
 def _store(tmp_path):
     events: list[dict] = []
-    ss = SegmentStore(LocalFSStore(str(tmp_path)), op_logger=_make_logger(events))
+    ss = SegmentStore(_clio_core(str(tmp_path)), op_logger=_make_logger(events))
     return ss, events
 
 
