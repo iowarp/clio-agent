@@ -33,14 +33,12 @@ declaring expert's own pack root, mirroring how the agent rows were loaded.
 
 from __future__ import annotations
 
-import json
-import re
-from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.agents.skill_json_fragment import resolve_json_pointer_fragment
 from clio_agent.gact.skills import (
     SkillBodyUnreadableError,
     SkillCatalog,
@@ -348,154 +346,6 @@ def _declare_load_skill_structured_content(
     declare_structured_content(payload)
 
 
-def _collect_ref_targets(node: Any) -> set[str]:
-    """Return every ``$ref`` string reachable under ``node`` (any nesting)."""
-
-    found: set[str] = set()
-    if isinstance(node, Mapping):
-        ref = node.get("$ref")
-        if isinstance(ref, str):
-            found.add(ref)
-        for value in node.values():
-            found.update(_collect_ref_targets(value))
-    elif isinstance(node, list):
-        for item in node:
-            found.update(_collect_ref_targets(item))
-    return found
-
-
-#: A local ``$defs`` reference this document defines itself, e.g.
-#: ``#/$defs/FieldName`` -- the shape :func:`_inline_local_defs` expands.
-_LOCAL_DEF_REF_RE = re.compile(r"^#/\$defs/([^/]+)$")
-#: Recursion guard for :func:`_inline_local_defs`. This counts every level of
-#: the JSON STRUCTURE walked (dicts/lists), not just ``$defs`` expansions, so
-#: it must comfortably exceed a real schema's nesting (e.g. a component's own
-#: allOf -> properties -> dataQuery -> DataQuery's own aggregate -> metrics ->
-#: items -> properties -> column is already ~10 levels before any $defs
-#: chaining). The actual cycle guard is ``expanding`` (a def name already
-#: being expanded is never re-entered); this cap only stops a genuinely
-#: pathological/malicious depth from consuming unbounded stack/work.
-_MAX_DEF_INLINE_DEPTH = 50
-
-
-def _inline_local_defs(
-    document: Any, node: Any, *, expanding: frozenset[str] = frozenset(), depth: int = 0
-) -> Any:
-    """Recursively inline every ``#/$defs/<Name>`` ref reachable under ``node``.
-
-    ``document`` is the whole parsed JSON file (its top-level ``$defs`` is the
-    lookup table); ``node`` is the (sub)value being expanded. A sibling key
-    next to ``$ref`` (e.g. a property's own ``description`` overriding the
-    def's) is preserved and wins over the inlined def's own value for that
-    key. A cycle or an over-deep chain leaves the ``$ref`` as-is rather than
-    looping or raising — inlining is a convenience that fully explains one
-    component in one call, never a hard requirement of a successful load.
-    """
-
-    if depth > _MAX_DEF_INLINE_DEPTH:
-        return node
-    if isinstance(node, Mapping):
-        ref = node.get("$ref")
-        if isinstance(ref, str):
-            match = _LOCAL_DEF_REF_RE.match(ref)
-            if match:
-                def_name = match.group(1)
-                defs = document.get("$defs") if isinstance(document, Mapping) else None
-                target = defs.get(def_name) if isinstance(defs, Mapping) else None
-                if target is not None and def_name not in expanding:
-                    expanded = _inline_local_defs(
-                        document, target, expanding=expanding | {def_name}, depth=depth + 1
-                    )
-                    merged: dict[str, Any] = dict(expanded) if isinstance(expanded, Mapping) else {}
-                    for key, value in node.items():
-                        if key != "$ref":
-                            merged[key] = value
-                    return merged
-        return {
-            key: _inline_local_defs(document, value, expanding=expanding, depth=depth + 1)
-            for key, value in node.items()
-        }
-    if isinstance(node, list):
-        return [
-            _inline_local_defs(document, item, expanding=expanding, depth=depth + 1)
-            for item in node
-        ]
-    return node
-
-
-def _resolve_json_pointer_fragment(file_path: str, raw_text: str, fragment: str) -> str:
-    """Resolve an RFC 6901 JSON Pointer ``fragment`` against a bundled JSON file.
-
-    Every local ``#/$defs/<Name>`` reference reachable under the resolved
-    node is inlined (:func:`_inline_local_defs`) — e.g. a component's own
-    ``MapPoint``/``DataTableColumn``/``DataQuery``/``CatalogComponentCommon``
-    shape is expanded in place, so one load fully explains it. An external
-    (e.g. ``common_types.json``) reference is left as a ``$ref`` and named in
-    one trailing line, since this call cannot load it.
-
-    Raises:
-        ValueError: ``file_path`` does not end in ``.json`` (fragments are
-            JSON-only, never silently ignored); ``fragment`` is not an
-            absolute pointer (does not start with ``/``); or the pointer does
-            not resolve — the message names the available keys at the
-            nearest resolvable parent.
-    """
-
-    if not file_path.lower().endswith(".json"):
-        raise ValueError(
-            f"file {file_path!r} does not support a '#' fragment: JSON pointer "
-            "fragments are only supported for .json bundled files"
-        )
-    try:
-        document = json.loads(raw_text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"bundled file {file_path!r} is not valid JSON: {exc}") from exc
-    if not fragment.startswith("/"):
-        raise ValueError(f"fragment {fragment!r} must be an absolute JSON pointer (start with '/')")
-    node: Any = document
-    walked: list[str] = []
-    for raw_part in fragment.split("/")[1:]:
-        part = raw_part.replace("~1", "/").replace("~0", "~")
-        if isinstance(node, Mapping) and part in node:
-            node = node[part]
-            walked.append(part)
-            continue
-        if isinstance(node, list):
-            index = int(part) if part.isdigit() else -1
-            if 0 <= index < len(node):
-                node = node[index]
-                walked.append(part)
-                continue
-        if isinstance(node, Mapping):
-            available: list[str] = sorted(node.keys())
-        elif isinstance(node, list):
-            available = [str(i) for i in range(len(node))]
-        else:
-            available = []
-        pointer_so_far = "/" + "/".join(walked)
-        raise ValueError(
-            f"JSON pointer {fragment!r} does not resolve in {file_path!r}: no "
-            f"{part!r} at {pointer_so_far!r}; available keys: {available}"
-        )
-    inlined = _inline_local_defs(document, node)
-    rendered = json.dumps(inlined, indent=2, sort_keys=False)
-    refs = sorted(_collect_ref_targets(inlined))
-    # A local ref (bare "#/...") that inlining did not expand (e.g. it points
-    # somewhere other than "#/$defs/<Name>") is still itself loadable with
-    # another load_skill(..., file="catalog.json#/...") call; a ref into an
-    # external file (typically common_types.json) names a STANDARD shape
-    # this catalog does not define and this call cannot load.
-    local_refs = sorted(f"catalog.json{ref}" for ref in refs if ref.startswith("#/"))
-    standard_refs = sorted(ref for ref in refs if not ref.startswith("#/"))
-    if local_refs:
-        rendered += "\n\nLocal refs still needing a separate load_skill(..., file=): " + ", ".join(
-            local_refs
-        )
-    if standard_refs:
-        rendered += "\n\nStandard refs (not loadable here): " + ", ".join(standard_refs)
-    return rendered
-
-
 def _resolve_bundled_file(
     skill_id: str, primary_dir: Path, extra_dirs: tuple[str, ...], file_path: str
 ) -> Path:
@@ -554,7 +404,7 @@ def build_load_skill_tool(agent_def: "AgentDef", runtime: SkillRuntime) -> Any:
             except (OSError, UnicodeDecodeError) as exc:
                 raise ValueError(f"bundled file {file_path!r} unreadable: {exc}") from exc
             if has_fragment:
-                content = _resolve_json_pointer_fragment(file_path, content, fragment)
+                content = resolve_json_pointer_fragment(file_path, content, fragment)
             return content
 
         requested_files = [str(f).strip() for f in files if str(f).strip()] if files else []

@@ -973,9 +973,10 @@ def test_catalog_skill_fragment_inlines_defs_at_every_nesting_depth(tmp_path: Pa
     """Regression: a def nested SEVERAL levels inside an already-inlined def
     (DataQuery's own aggregate.metrics[].column -- itself a FieldName $ref,
     reached only after allOf -> properties -> dataQuery -> DataQuery's own
-    properties -> aggregate -> properties -> metrics -> items -> properties
-    -> column) must still be inlined, not silently left as a bare $ref past
-    an over-tight recursion depth cap."""
+    properties -> aggregate -> anyOf -> QueryAggregate's own properties ->
+    metrics -> items -> properties -> column) must still be inlined. There is
+    no depth counter at all (an arbitrary number is either too tight -- the
+    original bug here -- or meaningless); only a genuine CYCLE is guarded."""
 
     from clio_agent.gact.app import build_app
 
@@ -993,6 +994,42 @@ def test_catalog_skill_fragment_inlines_defs_at_every_nesting_depth(tmp_path: Pa
     assert '"$ref": "#/$defs/FieldName"' not in out
     assert "Local refs" not in out
     assert "Standard refs (not loadable here):" in out
+
+
+def test_catalog_skill_fragment_leaves_a_genuinely_recursive_def_as_a_noted_ref(
+    tmp_path: Path,
+) -> None:
+    """The chart spec guard's ``SpecNoForbiddenKeys``/``SpecDataNamedSource``
+    $ref THEMSELVES (walking a Vega-Lite spec at any depth) -- a true cycle.
+    The outermost reference still inlines (its own if/then/else shape is
+    visible); only the SELF-referencing occurrence inside it is left as a
+    $ref, annotated as recursive rather than expanded forever."""
+
+    from clio_agent.gact.app import build_app
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="root")
+    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    rt = skill_runtime_for_agent(app, root, session_id=session.id)
+    tool = build_load_skill_tool(root, rt)
+
+    out = tool.func(
+        skill_id="a2ui-catalog-clio-workspace",
+        file="catalog.json#/components/clio.chart.v1",
+    )
+
+    # The outer reference inlined: SpecNoForbiddenKeys' own if/then/else shape
+    # (the "no url/usermeta key" rule) is visible, not just a bare $ref.
+    assert '"usermeta"' in out
+    # The self-referencing occurrence is left as a $ref, with a note.
+    assert '"$ref": "#/$defs/SpecNoForbiddenKeys"' in out
+    assert '"$ref": "#/$defs/SpecDataNamedSource"' in out
+    assert "recursive:" in out
+    assert "already being expanded on this path" in out
+    assert (
+        "catalog.json#/$defs/SpecNoForbiddenKeys" in out
+        and "catalog.json#/$defs/SpecDataNamedSource" in out
+    )
 
 
 def test_load_skill_files_batches_two_real_catalog_components(tmp_path: Path) -> None:
