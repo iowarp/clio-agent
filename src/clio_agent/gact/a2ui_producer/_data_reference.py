@@ -17,12 +17,18 @@ Three checks, by component:
   (``a2ui_data_reference_not_found`` / ``a2ui_data_reference_unreadable``).
 * **map / data-table / chart** ``*Field`` properties (the dataset column
   names, including ``selectionField`` when a component binds ``selection``)
-  are checked against the referenced CSV/Parquet artifact's real schema via
-  the same reader the table-query engine uses
-  (:mod:`clio_agent.gact.artifacts.table_query`) — a name not in the dataset
-  is ``a2ui_field_not_in_dataset``, naming the available columns. A
-  ``dataUri`` naming a non-tabular artifact is
-  ``a2ui_data_reference_unsupported_format``.
+  are checked against the referenced dataset's REAL columns via the same
+  reader the table-query engine uses (:mod:`clio_agent.gact.artifacts.
+  table_query`) — a name not in the dataset is ``a2ui_field_not_in_dataset``,
+  naming the available columns. A ``dataUri`` naming a non-tabular artifact
+  is ``a2ui_data_reference_unsupported_format``. When the component also
+  carries a ``dataQuery``, ``*Field``/``sort``/``columns`` names are checked
+  against its OUTPUT columns — the source schema unchanged, or, when
+  ``dataQuery.aggregate`` is set, ``groupBy`` plus each metric's own
+  ``<column>_<fn>`` name (the exact rule :class:`~clio_agent.gact.artifacts.
+  table_query_models.TableAggregate` applies) — while ``filter`` columns and
+  the aggregate's own ``groupBy``/metric ``column`` are checked against the
+  SOURCE schema, matching the engine's filter-then-aggregate pipeline order.
 * **workflow** ``dataUri`` content must be a JSON object shaped
   ``{"nodes": [...], "edges": [...]}``; **code / mermaid / diff** ``dataUri``
   content must be readable as UTF-8 text (it becomes the component's literal
@@ -104,11 +110,17 @@ def _resolve_artifact_path(
         )
     record, version = found
     try:
-        # Reused verbatim (owned-store first, then CAS/path, integrity-checked) --
-        # the SAME resolution the table-query route runs, format-agnostic.
+        # Reused verbatim (owned-store first, then CAS/path) -- the SAME
+        # resolution the table-query route runs, format-agnostic. verify=False:
+        # this is a producer-side, best-effort shape check (never a serving
+        # read), run on every create/update call, so it trusts the artifact
+        # record's own recorded metadata instead of re-hashing the whole
+        # (possibly large) file every time (#1533 S4 adversarial review item
+        # 6) -- the real integrity check still runs when a client actually
+        # reads the data through the table-query/table-preview routes.
         from clio_agent.gact.routes.artifact_table_query import _table_source  # noqa: PLC0415
 
-        path = _table_source(app, record, version)
+        path = _table_source(app, record, version, verify=False)
     except HTTPException as exc:
         detail_obj = exc.detail if isinstance(exc.detail, dict) else {}
         message = detail_obj.get("error", {}).get("message") or str(exc.detail)
@@ -119,12 +131,81 @@ def _resolve_artifact_path(
     return record, path
 
 
+def _aggregate_output_columns(aggregate_payload: Any) -> list[str] | None:
+    """The real OUTPUT columns ``dataQuery.aggregate`` produces, using the
+    SAME naming rule the table-query engine applies
+    (``TableAggregate``/``TableMetric.output_name``): ``groupBy`` plus each
+    metric's own ``<column>_<fn>``.
+
+    Returns ``None`` when ``aggregate_payload`` does not even parse as a
+    ``TableAggregate`` shape — the catalog's own schema validation
+    (``apply_messages``, downstream of this module) reports a malformed
+    ``dataQuery.aggregate``, never duplicated here.
+    """
+
+    from pydantic import ValidationError  # noqa: PLC0415
+
+    from clio_agent.gact.artifacts.table_query_models import TableAggregate  # noqa: PLC0415
+
+    if not isinstance(aggregate_payload, dict):
+        return None
+    try:
+        aggregate = TableAggregate.model_validate(aggregate_payload)
+    except ValidationError:
+        return None
+    return [*aggregate.group_by, *(metric.output_name for metric in aggregate.metrics)]
+
+
+def _data_query_output_columns(data_query: Any, available: list[str]) -> tuple[list[str], bool]:
+    """The dataset columns a rendered ``dataQuery`` actually exposes.
+
+    Returns ``(columns, is_aggregated)`` — ``available`` unchanged (source
+    schema) when there is no (parseable) ``dataQuery.aggregate``, else the
+    aggregate's own output names. Mirrors the exact source-vs-output split
+    ``table_query.py``'s engine makes (#1533 S4 adversarial review item 2 —
+    ``*Field``/``sort``/``columns`` name OUTPUT columns, never the source
+    columns an aggregate consumed).
+    """
+
+    if not isinstance(data_query, dict):
+        return available, False
+    aggregate_output = _aggregate_output_columns(data_query.get("aggregate"))
+    if aggregate_output is None:
+        return available, False
+    return aggregate_output, True
+
+
+def _data_query_column_refs(data_query: Any, key: str) -> list[str]:
+    """Every well-formed ``column`` named under ``dataQuery[key]``.
+
+    A malformed entry (not an object, or a non-string/empty ``column``) is
+    silently skipped here — the catalog's own schema validation reports
+    that shape problem, never duplicated in this module.
+    """
+
+    if not isinstance(data_query, dict):
+        return []
+    entries = data_query.get(key)
+    if not isinstance(entries, list):
+        return []
+    return [
+        entry["column"]
+        for entry in entries
+        if isinstance(entry, dict) and isinstance(entry.get("column"), str) and entry["column"]
+    ]
+
+
+def _missing_column_labels(checks: list[tuple[str, str]], available: list[str]) -> list[str]:
+    return sorted(f"{label}={column!r}" for label, column in checks if column not in available)
+
+
 def _validate_tabular_fields(
     record: "ArtifactRecord",
     path: Path,
     *,
     component_id: str,
     wanted_fields: dict[str, str],
+    data_query: Any,
 ) -> dict[str, Any] | None:
     from clio_agent.gact.artifacts.table_query_models import (  # noqa: PLC0415
         TableQueryError,
@@ -151,22 +232,118 @@ def _validate_tabular_fields(
             detail=f"component {component_id!r} dataset could not be read: {exc.message}",
         )
     available = list(schema.names)
-    missing = {prop: value for prop, value in wanted_fields.items() if value not in available}
-    if missing:
-        named = ", ".join(f"{prop}={value!r}" for prop, value in sorted(missing.items()))
+
+    # dataQuery.filter and dataQuery.aggregate's own groupBy/metric columns
+    # are read from the SOURCE table -- both run BEFORE any output renaming
+    # in the engine's filter -> aggregate -> downsample -> sort pipeline.
+    source_checks: list[tuple[str, str]] = [
+        ("dataQuery.filter[].column", column)
+        for column in _data_query_column_refs(data_query, "filter")
+    ]
+    if isinstance(data_query, dict) and isinstance(data_query.get("aggregate"), dict):
+        aggregate_payload = data_query["aggregate"]
+        for column in aggregate_payload.get("groupBy") or []:
+            if isinstance(column, str) and column:
+                source_checks.append(("dataQuery.aggregate.groupBy", column))
+        for metric in aggregate_payload.get("metrics") or []:
+            if (
+                isinstance(metric, dict)
+                and isinstance(metric.get("column"), str)
+                and metric["column"]
+            ):
+                source_checks.append(("dataQuery.aggregate.metrics[].column", metric["column"]))
+    missing_source = _missing_column_labels(source_checks, available)
+    if missing_source:
         return refusal(
             "a2ui_field_not_in_dataset",
             detail=(
-                f"component {component_id!r} names a column absent from "
-                f"{record.name!r}: {named}; available columns: {available}"
+                f"component {component_id!r} dataQuery names a source column absent from "
+                f"{record.name!r}: {', '.join(missing_source)}; available columns: {available}"
+            ),
+        )
+
+    # *Field properties, dataQuery.sort and dataQuery.columns all name OUTPUT
+    # columns: the source schema unchanged, or the aggregate's own output
+    # names when dataQuery.aggregate is set.
+    output_columns, is_aggregated = _data_query_output_columns(data_query, available)
+    output_checks: list[tuple[str, str]] = list(wanted_fields.items())
+    output_checks += [
+        ("dataQuery.sort[].column", column)
+        for column in _data_query_column_refs(data_query, "sort")
+    ]
+    if isinstance(data_query, dict):
+        for column in data_query.get("columns") or []:
+            if isinstance(column, str) and column:
+                output_checks.append(("dataQuery.columns[]", column))
+    missing_output = _missing_column_labels(output_checks, output_columns)
+    if missing_output:
+        scope = "the dataQuery.aggregate output" if is_aggregated else repr(record.name)
+        return refusal(
+            "a2ui_field_not_in_dataset",
+            detail=(
+                f"component {component_id!r} names a column absent from {scope}: "
+                f"{', '.join(missing_output)}; available columns: {output_columns}"
             ),
         )
     return None
 
 
+#: A per-chunk memory bound for streaming text reads (never a cap on how much
+#: of a file gets checked -- every byte is still read and decoded, just not
+#: held in memory all at once; #1533 S4 adversarial review item 6).
+_STREAM_CHUNK_BYTES = 1 << 20  # 1 MiB
+
+
+def _read_text_streaming(path: Path) -> str:
+    """Read ``path`` as UTF-8 text in bounded chunks, decoding incrementally.
+
+    Raises the same ``(OSError, UnicodeDecodeError)`` a plain
+    ``path.read_text()`` would, but never holds more than one chunk plus the
+    incremental decoder's small internal buffer at a time while scanning --
+    the caller (a shape check on a component's ``dataUri``) still needs the
+    full decoded text (JSON parsing has no way around that), but the READ
+    itself is bounded, not a single unbounded allocation.
+    """
+
+    import codecs  # noqa: PLC0415
+
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="strict")
+    parts: list[str] = []
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(_STREAM_CHUNK_BYTES)
+            if not chunk:
+                parts.append(decoder.decode(b"", final=True))
+                break
+            parts.append(decoder.decode(chunk))
+    return "".join(parts)
+
+
+def _check_text_readable_streaming(path: Path) -> None:
+    """Confirm ``path`` decodes as UTF-8, without retaining its content.
+
+    Unlike :func:`_read_text_streaming`, this discards each decoded chunk
+    immediately -- a text-component readability check never needs the
+    content itself (the export boundary already captured it as the
+    component's literal value), so this stays O(chunk size) in memory
+    regardless of file size.
+    """
+
+    import codecs  # noqa: PLC0415
+
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="strict")
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(_STREAM_CHUNK_BYTES)
+            if not chunk:
+                decoder.decode(b"", final=True)
+                break
+            decoder.decode(chunk)
+
+
 def _validate_workflow_shape(path: Path, *, component_id: str) -> dict[str, Any] | None:
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = _read_text_streaming(path)
     except (OSError, UnicodeDecodeError) as exc:
         return refusal(
             "a2ui_data_reference_unreadable",
@@ -196,7 +373,7 @@ def _validate_workflow_shape(path: Path, *, component_id: str) -> dict[str, Any]
 
 def _validate_text_readable(path: Path, *, component_id: str) -> dict[str, Any] | None:
     try:
-        path.read_text(encoding="utf-8")
+        _check_text_readable_streaming(path)
     except (OSError, UnicodeDecodeError) as exc:
         return refusal(
             "a2ui_data_reference_unreadable",
@@ -247,9 +424,14 @@ def validate_component_data_references(
                 for prop in field_props
                 if isinstance(component.get(prop), str) and component[prop]
             }
-            if wanted_fields:
+            data_query = component.get("dataQuery")
+            if wanted_fields or isinstance(data_query, dict):
                 outcome = _validate_tabular_fields(
-                    record, path, component_id=component_id, wanted_fields=wanted_fields
+                    record,
+                    path,
+                    component_id=component_id,
+                    wanted_fields=wanted_fields,
+                    data_query=data_query,
                 )
                 if outcome is not None:
                     return outcome

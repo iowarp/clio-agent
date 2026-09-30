@@ -95,24 +95,39 @@ def _artifact_source(
     app: FastAPI,
     record: ArtifactRecord,
     version: ArtifactVersion,
+    *,
+    verify: bool = True,
 ) -> Path:
-    """Resolve and verify the immutable bytes behind an artifact version."""
+    """Resolve the immutable bytes behind an artifact version.
+
+    ``verify`` (default ``True``, the serving routes' contract: "every read
+    is re-hashed against the immutable version hash") re-hashes the resolved
+    bytes against ``version.sha256`` and raises ``integrity_violation`` on a
+    mismatch. A caller that only needs the CURRENT bytes for a best-effort,
+    non-serving check (e.g. producer-side dataQuery/*Field shape validation,
+    #1533 S4 adversarial review item 6) passes ``verify=False`` to use the
+    artifact record's own recorded metadata to locate the file WITHOUT
+    re-reading and re-hashing the whole (possibly large) artifact on every
+    call — the real integrity check still runs when a client actually reads
+    the data through this module's serving routes.
+    """
 
     root = _workspace_root(app, record.workspace_id)
     recorded_sha = version.sha256
     if version.custody == Custody.CAS and recorded_sha:
         blob = CASStore(root).blob_path(recorded_sha)
         if blob.is_file():
-            actual = sha256_file(blob)
-            if actual != recorded_sha:
-                raise _error(
-                    409,
-                    "integrity_violation",
-                    "artifact CAS bytes do not match the immutable version hash",
-                    artifact_id=version.artifact_id,
-                    recorded_sha256=recorded_sha,
-                    actual_sha256=actual,
-                )
+            if verify:
+                actual = sha256_file(blob)
+                if actual != recorded_sha:
+                    raise _error(
+                        409,
+                        "integrity_violation",
+                        "artifact CAS bytes do not match the immutable version hash",
+                        artifact_id=version.artifact_id,
+                        recorded_sha256=recorded_sha,
+                        actual_sha256=actual,
+                    )
             return blob
 
     source = Path(version.path).expanduser().resolve(strict=False) if version.path else None
@@ -132,7 +147,7 @@ def _artifact_source(
             "artifact path escapes its workspace root",
             artifact_id=version.artifact_id,
         ) from exc
-    if recorded_sha:
+    if verify and recorded_sha:
         actual = sha256_file(source)
         if actual != recorded_sha:
             raise _error(
