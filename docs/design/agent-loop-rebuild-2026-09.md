@@ -671,6 +671,29 @@ At the tip: `src` +6,144 / −11,226; `tests` +8,891 / −11,402; the rest +270 
 - Run: 248 s → 222 s.
 - With a warm listing cache (normal use, 24 h), the first model call waits on no server at all.
 
+**Profiled on our own tree (owner, 2026-09-30: no more develop baselines; only semantics-preserving wins):**
+
+Earthscope's first turn, after start-up: 176 s = model 140 s (17 serial calls, ~2 s TTFT each) + tools 26 s + harness ~11 s.
+- Five steps were single `load_skill` calls. Five were one A2UI component schema each, followed by a 26–64 s decode of the surface JSON. The owner's `feat/a2ui-data-everywhere` branch targets both: multi-file `load_skill`, `$defs` inlining, `dataUri`.
+- One mid-chain call got 0 cached tokens despite a correct `prompt_cache_key` and `previous_response_id` delta. This is the server's cache; we count it per run.
+- Per-turn prologue: py-spy across all threads puts the YAML frontmatter parse of every blueprint, expert and pack at ~0.5 s per turn (now memoized on the text). The rest of the prologue is ~0.5–1 s: skill scans, blueprint metadata.
+- Model speed varies ~2x between identical runs (110 s vs 218 s), so single runs judge only model-independent phases.
+
+**Landed since:**
+- `c3cc7e93`: a session waiting on its user keeps its servers (`tools.mcp.hold_while_waiting_s`).
+- `7339ece0`: frontmatter memoized.
+- `f34dde7a`: an agent with tools is told once (an injection) that a step may call several. On its own this did not change the serial skill loads, because they were dependent fetches.
+- `4325474f`: clio-kit servers skip the shared uv-cache lock. clio-kit isolates its own cache and environments, so the lock only serialized their starts.
+- `28463f10`: one concurrent mount path for a turn and the warm-up.
+
+**Result:** turn start to first model call on a cold listing cache went from 28 s to 6.3 s (two runs: 6.39 and 6.33 s). Follow-up turns take 1–4 s.
+
+**Researched (progressive tool disclosure):**
+- Any mid-conversation tool-list change resets every stateful transport: Codex direct `prefix_mismatch`, and the Claude Code and Codex SDK sessions restart.
+- A disclosure design must therefore keep the tool list byte-identical: a category index plus stable `tool_info`/`call_tool` tools. That is the MCP client guidance too.
+- It removes the listing wait from the first call. It saves little TTFT while the cache hit rate is ~90%.
+- It waits on the owner's go-ahead.
+
 **Next:**
 - One spawn per server: list over the persistent connection. The listing currently also records the server's task capability, which the connect route reads (#1281), so the two must be reordered together.
 - The reaper keeps a session's fleet while the session waits on a question.
