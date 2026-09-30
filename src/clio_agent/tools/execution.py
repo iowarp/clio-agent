@@ -342,13 +342,11 @@ def tool_failure_limit() -> int:
     """Consecutive transient failures of one tool before its calls are blocked (0: never)."""
     from clio_agent import conf  # noqa: PLC0415
 
-    return int(
-        conf.resolve(
-            "tools.circuit_breaker.failure_limit",
-            env="CLIO_TOOL_FAILURE_LIMIT",
-            default=3,
-            cast=int,
-        )
+    return conf.resolve(
+        "tools.circuit_breaker.failure_limit",
+        env="CLIO_TOOL_FAILURE_LIMIT",
+        default=3,
+        cast=conf.as_int,
     )
 
 

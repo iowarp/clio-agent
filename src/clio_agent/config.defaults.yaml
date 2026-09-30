@@ -1093,8 +1093,8 @@ resources.upload_chunk_bytes: 8388608
 # File-policy sandboxing, shell execution bounds and the MCP tool fleet's
 # discovery/cache/timeouts.
 
-# CLIO_TOOL_FAILURE_LIMIT  (str)  <- src/clio_agent/tools/execution.py
-tools.circuit_breaker.failure_limit: "3"
+# CLIO_TOOL_FAILURE_LIMIT  (int)  <- src/clio_agent/tools/execution.py
+tools.circuit_breaker.failure_limit: 3
 
 # CLIO_ALLOW_SYMLINKS  (bool)  <- src/clio_agent/tools/file_policy.py
 # Whether tool file reads/writes may traverse symlinks; set true only if a
