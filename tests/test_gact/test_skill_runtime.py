@@ -381,6 +381,12 @@ def test_interactive_analysis_skill_is_when_why_guidance_with_no_prop_lore() -> 
     # Points at catalog skills as the source of truth for exact shapes.
     assert 'load_skill("a2ui-catalog-<slug>")' in body
     assert 'file="catalog.json#/components/<Name>")' in body
+    # #1533 S4 adversarial review item 7: the retired clio.time-series.v1
+    # component is never named as a distinct view choice -- both time-series
+    # and multi-entity bullets point at the one real chart component.
+    assert "an interactive time series" not in " ".join(body.split())
+    assert "clio.chart.v1" in body
+    assert "clio.time-series.v1" not in body
 
 
 def test_flat_skill_has_no_bundled_files(scratch_flat: None, tmp_path: Path) -> None:
@@ -1053,3 +1059,141 @@ def test_load_skill_files_batches_two_real_catalog_components(tmp_path: Path) ->
     assert "=== File 2/2: catalog.json#/components/clio.data-table.v1 ===" in out
     assert '"const": "clio.map.v1"' in out
     assert '"const": "clio.data-table.v1"' in out
+
+
+def test_load_skill_files_shares_a_diamond_def_once_instead_of_per_file(pack: Path) -> None:
+    """#1533 S4 adversarial review: two components both reaching the SAME
+    shared def (directly, or transitively through a second def) must not
+    each carry their own fully-inlined copy of it — it is rendered exactly
+    once, in a trailing shared-definitions block, and left as a bare $ref
+    everywhere else."""
+
+    catalog = {
+        "components": {
+            "A": {
+                "type": "object",
+                "properties": {
+                    "component": {"const": "A"},
+                    "shared": {"$ref": "#/$defs/Shared"},
+                },
+            },
+            "B": {
+                "type": "object",
+                "properties": {
+                    "component": {"const": "B"},
+                    "shared": {"$ref": "#/$defs/Shared"},
+                },
+            },
+        },
+        "$defs": {
+            "Shared": {
+                "type": "object",
+                "properties": {
+                    "marker": {"const": "UNIQUE_SHARED_MARKER_VALUE"},
+                    "nested": {"$ref": "#/$defs/Nested"},
+                },
+            },
+            "Nested": {"type": "object", "properties": {"deep": {"const": "UNIQUE_NESTED_MARKER"}}},
+        },
+    }
+    (pack / "skills" / "quality-rubric" / "catalog.json").write_text(
+        json.dumps(catalog), encoding="utf-8"
+    )
+    rt = _runtime(pack)
+    tool = build_load_skill_tool(_agent(pack), rt)
+
+    out = tool.func(
+        skill_id="quality-rubric",
+        files=["catalog.json#/components/A", "catalog.json#/components/B"],
+    )
+
+    # Both shared/transitive defs are rendered exactly ONCE across the whole
+    # result, never once per component that reaches them.
+    assert out.count("UNIQUE_SHARED_MARKER_VALUE") == 1
+    assert out.count("UNIQUE_NESTED_MARKER") == 1
+    assert "## Shared definitions" in out
+    # Each component's own body still names the def by a bare $ref (never
+    # silently dropped -- just not re-expanded).
+    assert out.count('"$ref": "#/$defs/Shared"') == 2
+
+
+def test_load_skill_files_all_real_catalog_components_stays_proportional(
+    tmp_path: Path,
+) -> None:
+    """Requesting EVERY component of a real, shared-$defs-heavy catalog in one
+    files=[...] call must stay smaller than each component's fully-inlined
+    body concatenated separately (the pre-fix behavior) -- proportional to
+    what was requested, not requested-files times shared-defs."""
+
+    from clio_agent.gact.app import build_app
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="root")
+    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    rt = skill_runtime_for_agent(app, root, session_id=session.id)
+    tool = build_load_skill_tool(root, rt)
+
+    resolution = rt.resolved["a2ui-catalog-clio-workspace"]
+    assert resolution.skill is not None
+    catalog_path = Path(resolution.skill.dir) / "catalog.json"
+    document = json.loads(catalog_path.read_text(encoding="utf-8"))
+    component_names = sorted(document["components"])
+    assert len(component_names) >= 4, "expected the real multi-component workspace catalog"
+    fragments = [f"catalog.json#/components/{name}" for name in component_names]
+
+    batched = tool.func(skill_id="a2ui-catalog-clio-workspace", files=fragments)
+    separately = sum(
+        len(tool.func(skill_id="a2ui-catalog-clio-workspace", file=fragment))
+        for fragment in fragments
+    )
+
+    assert len(batched) < separately
+    for name in component_names:
+        assert f'"const": "{name}"' in batched
+
+
+def test_load_skill_files_collapses_a_duplicate_request_to_one_read(pack: Path) -> None:
+    catalog = {"components": {"Button": {"type": "object", "properties": {}}}}
+    (pack / "skills" / "quality-rubric" / "catalog.json").write_text(
+        json.dumps(catalog), encoding="utf-8"
+    )
+    rt = _runtime(pack)
+    tool = build_load_skill_tool(_agent(pack), rt)
+
+    out = tool.func(
+        skill_id="quality-rubric",
+        files=["catalog.json#/components/Button", "catalog.json#/components/Button"],
+    )
+
+    # A single distinct fragment requested twice collapses to ONE read (the
+    # same shape a lone files=[the-one-fragment] call would produce), never
+    # duplicated content.
+    assert out.count("=== File") == 0
+    assert "duplicate file request" in out
+
+
+def test_load_skill_files_collapses_a_duplicate_alongside_a_distinct_file(pack: Path) -> None:
+    catalog = {
+        "components": {
+            "Button": {"type": "object", "properties": {}},
+            "Text": {"type": "object", "properties": {}},
+        }
+    }
+    (pack / "skills" / "quality-rubric" / "catalog.json").write_text(
+        json.dumps(catalog), encoding="utf-8"
+    )
+    rt = _runtime(pack)
+    tool = build_load_skill_tool(_agent(pack), rt)
+
+    out = tool.func(
+        skill_id="quality-rubric",
+        files=[
+            "catalog.json#/components/Button",
+            "catalog.json#/components/Button",
+            "catalog.json#/components/Text",
+        ],
+    )
+
+    assert "=== File 1/2: catalog.json#/components/Button ===" in out
+    assert "=== File 2/2: catalog.json#/components/Text ===" in out
+    assert "1 duplicate file request collapsed" in out

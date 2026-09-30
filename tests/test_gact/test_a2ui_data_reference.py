@@ -11,6 +11,7 @@ mermaid, diff, chart.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -413,6 +414,301 @@ def test_data_table_selection_field_is_validated_against_real_columns(
     )
     assert bad is not None
     assert bad["reason"] == "a2ui_field_not_in_dataset"
+
+
+# --------------------------------------------------------------------------- #
+# dataQuery: filter/aggregate columns are SOURCE columns; *Field/sort/columns
+# are OUTPUT columns (source unchanged, or the aggregate's own <col>_<fn>
+# names when dataQuery.aggregate is set) -- #1533 S4 adversarial review item 2.
+# --------------------------------------------------------------------------- #
+
+
+def test_data_query_filter_column_against_a_bogus_source_column_is_refused(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    app, sid, root = _producer_session(tmp_path, monkeypatch)
+    uri = _export_data_uri(app, sid, root, "rows.csv", CSV_ROWS)
+
+    result = _create(
+        [
+            {
+                "id": "root",
+                "component": "clio.data-table.v1",
+                "dataUri": uri,
+                "dataQuery": {"filter": [{"column": "not_a_column", "op": "eq", "value": "x"}]},
+            }
+        ]
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "a2ui_field_not_in_dataset"
+    assert "dataQuery.filter[].column='not_a_column'" in result["detail"]
+    assert "source column" in result["detail"]
+
+
+def test_data_query_aggregate_groupby_against_a_bogus_source_column_is_refused(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    app, sid, root = _producer_session(tmp_path, monkeypatch)
+    uri = _export_data_uri(app, sid, root, "rows.csv", CSV_ROWS)
+
+    result = _create(
+        [
+            {
+                "id": "root",
+                "component": "clio.data-table.v1",
+                "dataUri": uri,
+                "dataQuery": {
+                    "aggregate": {
+                        "groupBy": ["not_a_column"],
+                        "metrics": [{"column": "lat", "fn": "mean"}],
+                    },
+                    "columns": ["not_a_column", "lat_mean"],
+                },
+            }
+        ]
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "a2ui_field_not_in_dataset"
+    assert "dataQuery.aggregate.groupBy='not_a_column'" in result["detail"]
+
+
+def test_data_query_aggregate_metric_column_against_a_bogus_source_column_is_refused(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    app, sid, root = _producer_session(tmp_path, monkeypatch)
+    uri = _export_data_uri(app, sid, root, "rows.csv", CSV_ROWS)
+
+    result = _create(
+        [
+            {
+                "id": "root",
+                "component": "clio.data-table.v1",
+                "dataUri": uri,
+                "dataQuery": {
+                    "aggregate": {
+                        "groupBy": ["entity"],
+                        "metrics": [{"column": "not_a_column", "fn": "mean"}],
+                    },
+                    "columns": ["entity", "not_a_column_mean"],
+                },
+            }
+        ]
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "a2ui_field_not_in_dataset"
+    assert "dataQuery.aggregate.metrics[].column='not_a_column'" in result["detail"]
+
+
+def test_data_query_sort_column_after_aggregate_must_be_an_output_column(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """The reviewer's exact probe, mirrored at the producer boundary: after an
+    aggregate, ``sort`` (which runs on the AGGREGATED table) must name an
+    output column (``lat_mean``), never the source column it was built from
+    (``lat``)."""
+
+    app, sid, root = _producer_session(tmp_path, monkeypatch)
+    uri = _export_data_uri(app, sid, root, "rows.csv", CSV_ROWS)
+
+    result = _create(
+        [
+            {
+                "id": "root",
+                "component": "clio.data-table.v1",
+                "dataUri": uri,
+                "dataQuery": {
+                    "aggregate": {
+                        "groupBy": ["entity"],
+                        "metrics": [{"column": "lat", "fn": "mean"}],
+                    },
+                    "columns": ["entity", "lat_mean"],
+                    "sort": [{"column": "lat", "desc": True}],
+                },
+            }
+        ]
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "a2ui_field_not_in_dataset"
+    assert "dataQuery.sort[].column='lat'" in result["detail"]
+    assert "aggregate output" in result["detail"]
+
+
+def test_data_query_columns_after_aggregate_must_be_output_columns(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    app, sid, root = _producer_session(tmp_path, monkeypatch)
+    uri = _export_data_uri(app, sid, root, "rows.csv", CSV_ROWS)
+
+    result = _create(
+        [
+            {
+                "id": "root",
+                "component": "clio.data-table.v1",
+                "dataUri": uri,
+                "dataQuery": {
+                    "aggregate": {
+                        "groupBy": ["entity"],
+                        "metrics": [{"column": "lat", "fn": "mean"}],
+                    },
+                    "columns": ["lat"],  # source name, not the output "lat_mean"
+                },
+            }
+        ]
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "a2ui_field_not_in_dataset"
+    assert "dataQuery.columns[]='lat'" in result["detail"]
+    assert "aggregate output" in result["detail"]
+
+
+def test_map_field_after_aggregate_validates_against_aggregate_output(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    app, sid, root = _producer_session(tmp_path, monkeypatch)
+    uri = _export_data_uri(app, sid, root, "rows.csv", CSV_ROWS)
+
+    result = _create(
+        [
+            {
+                "id": "root",
+                "component": "clio.map.v1",
+                "dataUri": uri,
+                "dataQuery": {
+                    "aggregate": {
+                        "groupBy": ["entity"],
+                        "metrics": [
+                            {"column": "lat", "fn": "mean"},
+                            {"column": "lon", "fn": "mean"},
+                        ],
+                    },
+                    "columns": ["entity", "lat_mean", "lon_mean"],
+                },
+                "latitudeField": "lat_mean",
+                "longitudeField": "lon_mean",
+                "labelField": "entity",
+            }
+        ]
+    )
+
+    assert result.get("ok") is not False, result
+
+
+def test_map_field_after_aggregate_naming_the_source_column_is_refused(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    app, sid, root = _producer_session(tmp_path, monkeypatch)
+    uri = _export_data_uri(app, sid, root, "rows.csv", CSV_ROWS)
+
+    result = _create(
+        [
+            {
+                "id": "root",
+                "component": "clio.map.v1",
+                "dataUri": uri,
+                "dataQuery": {
+                    "aggregate": {
+                        "groupBy": ["entity"],
+                        "metrics": [
+                            {"column": "lat", "fn": "mean"},
+                            {"column": "lon", "fn": "mean"},
+                        ],
+                    },
+                    "columns": ["entity", "lat_mean", "lon_mean"],
+                },
+                "latitudeField": "lat",  # source name, not the aggregate output "lat_mean"
+                "longitudeField": "lon_mean",
+                "labelField": "entity",
+            }
+        ]
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "a2ui_field_not_in_dataset"
+    assert "latitudeField='lat'" in result["detail"]
+    assert "aggregate output" in result["detail"]
+
+
+def test_data_query_sort_and_columns_without_aggregate_validate_against_source(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    app, sid, root = _producer_session(tmp_path, monkeypatch)
+    uri = _export_data_uri(app, sid, root, "rows.csv", CSV_ROWS)
+
+    ok = _create(
+        [
+            {
+                "id": "root",
+                "component": "clio.data-table.v1",
+                "dataUri": uri,
+                "dataQuery": {"sort": [{"column": "lat", "desc": True}]},
+            }
+        ]
+    )
+    assert ok.get("ok") is not False, ok
+
+    bad = _create(
+        [
+            {
+                "id": "root",
+                "component": "clio.data-table.v1",
+                "dataUri": uri,
+                "dataQuery": {"sort": [{"column": "not_a_column"}]},
+            }
+        ]
+    )
+    assert bad["ok"] is False
+    assert bad["reason"] == "a2ui_field_not_in_dataset"
+    assert "dataQuery.sort[].column='not_a_column'" in bad["detail"]
+    assert "rows.csv" in bad["detail"]
+
+
+# --------------------------------------------------------------------------- #
+# Bounded streaming reads (#1533 S4 adversarial review item 6): workflow/text
+# shape checks read in fixed-size chunks via an incremental UTF-8 decoder, so
+# a multi-byte character split across a chunk boundary still decodes
+# correctly -- proving this is NOT a naive per-chunk decode (which would
+# incorrectly reject valid UTF-8 split across chunks).
+# --------------------------------------------------------------------------- #
+
+
+def test_text_component_data_uri_with_a_multibyte_char_at_the_chunk_boundary(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    from clio_agent.gact.a2ui_producer._data_reference import _STREAM_CHUNK_BYTES
+
+    app, sid, root = _producer_session(tmp_path, monkeypatch)
+    # A 4-byte UTF-8 character (U+1D11E, MUSICAL SYMBOL G CLEF) positioned so
+    # its bytes straddle the chunk boundary exactly: 2 bytes land in the
+    # first chunk, 2 bytes in the second.
+    content = ("a" * (_STREAM_CHUNK_BYTES - 2)) + "\U0001d11e" + ("b" * 100)
+    uri = _export_data_uri(app, sid, root, "big_script.py", content)
+
+    result = _create(
+        [{"id": "root", "component": "clio.code.v1", "dataUri": uri, "language": "python"}]
+    )
+
+    assert result.get("ok") is not False, result
+
+
+def test_workflow_data_uri_with_a_multibyte_char_at_the_chunk_boundary(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    from clio_agent.gact.a2ui_producer._data_reference import _STREAM_CHUNK_BYTES
+
+    app, sid, root = _producer_session(tmp_path, monkeypatch)
+    padding = "a" * (_STREAM_CHUNK_BYTES - 2 - len('{"nodes": [{"id": "a", "label": "'))
+    label = padding + "\U0001d11e" + "tail"
+    workflow = json.dumps({"nodes": [{"id": "a", "label": label}], "edges": []})
+    uri = _export_data_uri(app, sid, root, "big_workflow.json", workflow)
+
+    result = _create([{"id": "root", "component": "clio.workflow.v1", "dataUri": uri}])
+
+    assert result.get("ok") is not False, result
 
 
 # --------------------------------------------------------------------------- #

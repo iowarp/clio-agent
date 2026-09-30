@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -391,7 +392,16 @@ def test_group_by_with_every_metric(env: _Env) -> None:
         env.query(
             artifact_id,
             {
-                "columns": ["sensor", "value"],
+                # With aggregate set, columns selects OUTPUT columns.
+                "columns": [
+                    "sensor",
+                    "value_mean",
+                    "value_min",
+                    "value_max",
+                    "value_count",
+                    "value_sum",
+                    "value_median",
+                ],
                 "aggregate": {"groupBy": ["sensor"], "metrics": metrics},
             },
         )
@@ -425,7 +435,8 @@ def test_global_aggregate_after_filter(env: _Env) -> None:
         env.query(
             artifact_id,
             {
-                "columns": ["value"],
+                # With aggregate set, columns selects OUTPUT columns.
+                "columns": ["value_sum"],
                 "filter": [{"column": "sensor", "op": "eq", "value": "a"}],
                 "aggregate": {"metrics": [{"column": "value", "fn": "sum"}]},
             },
@@ -435,7 +446,7 @@ def test_global_aggregate_after_filter(env: _Env) -> None:
         env.query(
             artifact_id,
             {
-                "columns": ["value"],
+                "columns": ["value_count", "value_mean"],
                 "filter": [{"column": "sensor", "op": "eq", "value": "zzz"}],
                 "aggregate": {
                     "groupBy": [],
@@ -474,7 +485,9 @@ def test_downsample_over_aggregated_output(env: _Env) -> None:
         env.query(
             artifact_id,
             {
-                "columns": ["entity", "t", "v"],
+                # With aggregate set, columns selects OUTPUT columns:
+                # "v_mean", not the metric's source input column "v".
+                "columns": ["entity", "t", "v_mean"],
                 "aggregate": {
                     "groupBy": ["entity", "t"],
                     "metrics": [{"column": "v", "fn": "mean"}],
@@ -519,6 +532,34 @@ def test_stride_without_entity_samples_evenly_to_limit(env: _Env) -> None:
     assert body["truncated"] is False
     assert body["downsample"]["inputRows"] == 101
     assert body["downsample"]["outputRows"] == 5
+
+
+def test_max_per_entity_has_no_upper_bound(env: _Env) -> None:
+    """Owner ruling: no cap that kneecaps intent -- maxPerEntity's old 2000
+    ceiling is removed; the per-response limit is the real (transfer) guard,
+    and an over-limit per-entity result is now reduced evenly (never a
+    refusal), so a caller may ask for more points per entity than that."""
+
+    artifact_id = env.pin_csv("series.csv", _series_csv(1, 50))
+
+    body = _ok(
+        env.query(
+            artifact_id,
+            {
+                "columns": ["entity", "t"],
+                "downsample": {
+                    "mode": "stride",
+                    "entityColumn": "entity",
+                    "maxPerEntity": 5000,
+                },
+                "limit": 50_000,
+            },
+        )
+    )
+
+    # maxPerEntity(5000) exceeds this entity's 50 real points -- accepted
+    # (no 422 past an arbitrary ceiling) and every point is kept.
+    assert body["returnedRows"] == 50
 
 
 def test_stride_per_entity_caps_each_entity(env: _Env) -> None:
@@ -576,6 +617,56 @@ def test_per_entity_lttb_keeps_endpoints_and_respects_cap(env: _Env) -> None:
     assert info["maxPerEntity"] == 20
     assert info["inputRows"] == 36_000
     assert info["outputRows"] == 7_200
+
+
+def test_per_entity_lttb_over_response_limit_keeps_every_entity(env: _Env) -> None:
+    """Adversarial review defect: an explicit per-entity downsample that
+    still exceeds the per-RESPONSE limit (not bumped, unlike the test
+    above) must never head-slice by row order -- that drops whole entities
+    outright, since rows are grouped by entity. Every one of 360 entities
+    must still be represented, just with fewer points each."""
+
+    artifact_id = env.pin_csv("wide_series.csv", _series_csv(360, 50))
+
+    body = _ok(
+        env.query(
+            artifact_id,
+            {
+                "columns": ["entity", "t", "y"],
+                "downsample": {
+                    "mode": "per_entity_lttb",
+                    "entityColumn": "entity",
+                    "x": "t",
+                    "y": "y",
+                },
+                # No explicit limit: the DEFAULT (5000) is well under
+                # 360 * 50 = 18000 total downsampled points.
+            },
+        )
+    )
+
+    assert len(set(body["columns"]["entity"])) == 360
+    assert body["returnedRows"] <= 5000
+    assert body["downsample"]["reducedForResponseLimit"] is True
+    assert body["downsample"]["entities"] == 360
+
+
+def test_stride_per_entity_over_response_limit_keeps_every_entity(env: _Env) -> None:
+    artifact_id = env.pin_csv("wide_series.csv", _series_csv(360, 50))
+
+    body = _ok(
+        env.query(
+            artifact_id,
+            {
+                "columns": ["entity", "t"],
+                "downsample": {"mode": "stride", "entityColumn": "entity", "maxPerEntity": 50},
+            },
+        )
+    )
+
+    assert len(set(body["columns"]["entity"])) == 360
+    assert body["returnedRows"] <= 5000
+    assert body["downsample"]["reducedForResponseLimit"] is True
 
 
 def test_per_entity_lttb_on_iso_datetime_strings_and_unsorted_rows(env: _Env) -> None:
@@ -683,6 +774,31 @@ def test_over_limit_one_shot_query_strides_the_whole_range_not_a_head_slice(
         "inputRows": 30,
         "outputRows": 10,
     }
+
+
+def test_sort_with_limit_returns_the_true_top_n_not_a_sampled_approximation(
+    env: _Env,
+) -> None:
+    """Adversarial review defect: the automatic over-limit stride sample
+    used to run BEFORE sort, so a sort+limit (top-/bottom-N) query could
+    silently return an approximation instead of the true top N -- the
+    sample might not even include the actual largest values. A sort must
+    see the FULL matched set; only then does limit slice the true top N."""
+
+    size = 2000
+    rows = "\n".join(f"{i},{(i * 37) % 1009}" for i in range(size))
+    artifact_id = env.pin_csv("many.csv", "id,v\n" + rows + "\n")
+
+    body = _ok(
+        env.query(
+            artifact_id,
+            {"columns": ["id", "v"], "sort": [{"column": "v", "desc": True}], "limit": 5},
+        )
+    )
+
+    true_top_5 = sorted(((i * 37) % 1009 for i in range(size)), reverse=True)[:5]
+    assert body["columns"]["v"] == true_top_5
+    assert body["downsample"] == {"mode": "none"}
 
 
 def test_offset_paging_returns_a_plain_contiguous_page_never_sampled(env: _Env) -> None:
@@ -938,6 +1054,53 @@ def test_sort_unknown_column_is_columns_not_found(env: _Env) -> None:
     assert error["details"]["missing"] == ["nope"]
 
 
+def test_columns_with_aggregate_selects_output_columns_not_source(env: _Env) -> None:
+    """Adversarial review defect: ``columns`` alongside ``aggregate`` used to
+    be fed into the SOURCE projection unconditionally, so a caller naming an
+    aggregate OUTPUT column (e.g. ``value_mean``, which never exists in the
+    raw file) got a false ``columns_not_found`` instead of its own result."""
+
+    artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
+
+    body = _ok(
+        env.query(
+            artifact_id,
+            {
+                "columns": ["sensor", "value_mean"],
+                "aggregate": {
+                    "groupBy": ["sensor"],
+                    "metrics": [{"column": "value", "fn": "mean"}],
+                },
+            },
+        )
+    )
+
+    assert set(body["columns"]) == {"sensor", "value_mean"}
+    assert body["columns"]["sensor"] == ["a", "b", "c"]
+
+
+def test_columns_with_aggregate_naming_an_unknown_output_column_is_400(env: _Env) -> None:
+    artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
+
+    error = _error(
+        env.query(
+            artifact_id,
+            {
+                "columns": ["sensor", "not_a_real_output"],
+                "aggregate": {
+                    "groupBy": ["sensor"],
+                    "metrics": [{"column": "value", "fn": "mean"}],
+                },
+            },
+        ),
+        400,
+    )
+
+    assert error["error"] == "columns_not_found"
+    assert error["details"]["missing"] == ["not_a_real_output"]
+    assert set(error["details"]["available"]) == {"sensor", "value_mean"}
+
+
 def test_sort_by_an_aggregate_output_column(env: _Env) -> None:
     """With aggregate set, sort targets the AGGREGATE'S OWN output columns
     (e.g. a metric's ``{column}_{fn}`` name), not raw source columns."""
@@ -1077,6 +1240,80 @@ def test_tampered_bytes_are_an_integrity_violation(env: _Env) -> None:
     assert error["error"] == "integrity_violation"
 
 
+def test_table_source_verify_false_skips_the_integrity_rehash(env: _Env) -> None:
+    """#1533 S4 adversarial review item 6: a non-serving caller (producer-side
+    dataQuery/*Field validation, run on every create/update_a2ui_components
+    call) does not need cryptographic integrity assurance and must not pay a
+    full artifact re-hash just to resolve the current bytes. ``verify=True``
+    (every SERVING route's contract, unchanged) still catches tampering;
+    ``verify=False`` trusts the artifact record's own recorded metadata."""
+
+    from fastapi import HTTPException
+
+    artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
+    original = (env.root / "sensors.csv").read_bytes()
+    tampered = original.replace(b"100.0", b"999.0")
+    copies = [p for p in env.root.rglob("*") if p.is_file() and p.read_bytes() == original]
+    assert copies
+    for path in copies:
+        path.write_bytes(tampered)
+
+    app = env.client.app
+    record, version = app.state.artifact_registry.get_by_artifact_id(artifact_id)
+
+    with pytest.raises(HTTPException) as excinfo:
+        route._table_source(app, record, version, verify=True)
+    assert excinfo.value.status_code == 409
+
+    resolved = route._table_source(app, record, version, verify=False)
+    assert resolved.is_file()
+    assert resolved.read_bytes() == tampered
+
+
+def test_data_reference_validation_does_not_rehash_the_artifact(
+    env: _Env, monkeypatch: Any
+) -> None:
+    """The producer-side dataQuery/*Field check goes through _table_source
+    with verify=False -- proven end to end by asserting sha256_file is never
+    invoked while it resolves a registered artifact's bytes."""
+
+    from clio_agent.gact import context as gact_context
+    from clio_agent.gact.a2ui_producer._data_reference import validate_component_data_references
+    from clio_agent.gact.routes import artifact_table_preview as preview_route
+
+    artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
+    app = env.client.app
+    monkeypatch.setattr(gact_context, "active_app", lambda: app)
+    monkeypatch.setattr(gact_context, "active_session_id", lambda: env.session_id)
+
+    calls: list[Path] = []
+    real_sha256_file = preview_route.sha256_file
+    monkeypatch.setattr(
+        preview_route,
+        "sha256_file",
+        lambda path: (calls.append(path), real_sha256_file(path))[1],
+    )
+    monkeypatch.setattr(
+        route,
+        "sha256_file",
+        lambda path: (calls.append(path), real_sha256_file(path))[1],
+    )
+
+    outcome = validate_component_data_references(
+        app,
+        [
+            {
+                "id": "root",
+                "component": "clio.data-table.v1",
+                "dataUri": f"artifact://{artifact_id}",
+            }
+        ],
+    )
+
+    assert outcome is None
+    assert calls == []
+
+
 # --------------------------------------------------------------------------- #
 # Serialisation, cache, timeout
 # --------------------------------------------------------------------------- #
@@ -1123,13 +1360,13 @@ def test_csv_timestamps_serialize_as_iso(env: _Env) -> None:
 def test_identical_query_is_served_from_cache(env: _Env, monkeypatch: pytest.MonkeyPatch) -> None:
     artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
     calls: list[int] = []
-    real_run = engine.run_table_query
+    real_compute = engine.compute_processed_table
 
-    def counting(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    def counting(*args: Any, **kwargs: Any) -> Any:
         calls.append(1)
-        return real_run(*args, **kwargs)
+        return real_compute(*args, **kwargs)
 
-    monkeypatch.setattr(engine, "run_table_query", counting)
+    monkeypatch.setattr(engine, "compute_processed_table", counting)
     query = {"columns": ["sensor"], "filter": [{"column": "t", "op": "eq", "value": 0}]}
 
     first = _ok(env.query(artifact_id, query))
@@ -1168,15 +1405,100 @@ def test_cache_is_bounded_lru() -> None:
     assert cache.get(("sha", "csv", "huge")) is None
 
 
+def test_paging_reuses_the_processed_table_never_rereads_per_page(
+    env: _Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Owner ruling (memory/CPU): paging must not re-read/re-process the
+    source file per page -- every page of the SAME query (same everything
+    except offset) shares one cached, already filtered/aggregated/
+    downsampled/sorted ProcessedTable; only the (cheap) final slice differs."""
+
+    artifact_id = env.pin_csv("series.csv", _series_csv(1, 30))
+    calls: list[int] = []
+    real_compute = engine.compute_processed_table
+
+    def counting(*args: Any, **kwargs: Any) -> Any:
+        calls.append(1)
+        return real_compute(*args, **kwargs)
+
+    monkeypatch.setattr(engine, "compute_processed_table", counting)
+
+    first_page = _ok(env.query(artifact_id, {"columns": ["t"], "limit": 10, "offset": 0}))
+    second_page = _ok(env.query(artifact_id, {"columns": ["t"], "limit": 10, "offset": 10}))
+    third_page = _ok(env.query(artifact_id, {"columns": ["t"], "limit": 10, "offset": 20}))
+
+    assert first_page["columns"]["t"] == list(range(0, 10))
+    assert second_page["columns"]["t"] == list(range(10, 20))
+    assert third_page["columns"]["t"] == list(range(20, 30))
+    # compute_processed_table ran ONCE for all three pages of the same query.
+    assert len(calls) == 1
+
+
+def test_processed_table_cache_is_bounded_lru() -> None:
+    import pyarrow as pa
+
+    from clio_agent.gact.artifacts.table_query import ProcessedTable
+
+    cache = route.ProcessedTableCache()
+    small = ProcessedTable(
+        table=pa.table({"a": [1]}),
+        output_columns=["a"],
+        total_rows=1,
+        matched_rows=1,
+        downsample_info={"mode": "none"},
+    )
+    for index in range(5):
+        cache.put(("sha", "csv", str(index)), small, 3)
+
+    assert len(cache) == 3
+    assert cache.get(("sha", "csv", "0")) is None
+    assert cache.get(("sha", "csv", "4")) is not None
+
+    huge = ProcessedTable(
+        table=pa.table({"a": list(range(10_000_000))}),
+        output_columns=["a"],
+        total_rows=10_000_000,
+        matched_rows=10_000_000,
+        downsample_info={"mode": "none"},
+    )
+    cache.put(("sha", "csv", "huge"), huge, 3)
+    assert cache.get(("sha", "csv", "huge")) is None
+
+
+def test_concurrency_semaphore_uses_the_configured_limit() -> None:
+    set_config("artifacts", {"table_query_max_concurrency": 3})
+    assert route.table_query_max_concurrency() == 3
+
+
+def test_disconnect_watcher_sets_the_cancel_event() -> None:
+    import asyncio as _asyncio
+
+    class _FakeRequest:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def is_disconnected(self) -> bool:
+            self.calls += 1
+            return self.calls > 1
+
+    async def _run() -> None:
+        request = _FakeRequest()
+        event = threading.Event()
+        await _asyncio.wait_for(route._watch_for_disconnect(request, event), timeout=5)
+        assert event.is_set()
+
+    _asyncio.run(_run())
+
+
 def test_wall_clock_timeout_is_504(env: _Env, monkeypatch: pytest.MonkeyPatch) -> None:
     artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
     set_config("artifacts", {"table_query_timeout_s": 0.2})
 
-    def slow(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    def slow(*args: Any, **kwargs: Any) -> Any:
         time.sleep(1.0)
-        return {}
+        raise AssertionError("should never return: the outer wait_for must win first")
 
-    monkeypatch.setattr(engine, "run_table_query", slow)
+    monkeypatch.setattr(engine, "compute_processed_table", slow)
 
     error = _error(env.query(artifact_id, {"columns": ["t"]}), 504)
 
@@ -1188,8 +1510,26 @@ def test_engine_deadline_stops_between_stages(tmp_path: Path) -> None:
     source = tmp_path / "s.csv"
     source.write_text(_SENSORS_CSV, encoding="utf-8")
     request = engine.TableQueryRequest.model_validate({"columns": ["t"]})
+    cancellation = engine.QueryCancellation(deadline=time.monotonic() - 1, timeout_s=1.0)
 
     with pytest.raises(engine.TableQueryTimeout):
-        engine.run_table_query(
-            source, "csv", request, limit=10, deadline=time.monotonic() - 1, timeout_s=1.0
-        )
+        engine.run_table_query(source, "csv", request, limit=10, cancellation=cancellation)
+
+
+def test_engine_cancel_event_stops_the_query(tmp_path: Path) -> None:
+    """The PRIMARY cancellation path: a set ``cancel_event`` (the route's own
+    client-disconnect signal) stops the query even with plenty of deadline
+    left, with the client-disconnected reason, not the timeout one."""
+
+    source = tmp_path / "s.csv"
+    source.write_text(_SENSORS_CSV, encoding="utf-8")
+    request = engine.TableQueryRequest.model_validate({"columns": ["t"]})
+    already_cancelled = threading.Event()
+    already_cancelled.set()
+    cancellation = engine.QueryCancellation(
+        deadline=time.monotonic() + 60, timeout_s=60, cancel_event=already_cancelled
+    )
+
+    with pytest.raises(engine.TableQueryCancelled) as excinfo:
+        engine.run_table_query(source, "csv", request, limit=10, cancellation=cancellation)
+    assert excinfo.value.code == "table_query_client_disconnected"
