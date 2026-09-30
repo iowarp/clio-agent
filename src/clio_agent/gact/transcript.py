@@ -550,6 +550,7 @@ class TurnTranscript:
                     "message_id": self.message_id,
                     "part_id": part_id,
                     "metadata_patch": dict(metadata),
+                    "part": part.to_wire(),
                 },
             )
 

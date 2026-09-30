@@ -56,6 +56,8 @@ def promote_tool_free_response(
                 "message_id": transcript.message_id,
                 "part_id": part.id,
                 "metadata_patch": {"signature_field_name": "answer"},
+                # The whole updated part: a live client re-projects it as the answer.
+                "part": part.to_wire(),
             },
         )
         return True

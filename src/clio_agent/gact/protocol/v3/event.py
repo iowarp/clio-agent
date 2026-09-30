@@ -103,9 +103,13 @@ def _message_upsert(event: Event, payload: dict[str, Any], session: Any) -> _Pro
     return _Projection("message.upserted", projected, str(projected["id"]))
 
 
-def _message_block_upsert(event: Event, payload: dict[str, Any], session: Any) -> _Projection:
+def _message_block_upsert(
+    event: Event, payload: dict[str, Any], session: Any
+) -> _Projection | None:
     del session
     part = _mapping(payload.get("part"))
+    if not part.get("id"):
+        return None  # a patch-only update: there is no block to project
     block = part_to_v3_block(part)
     projected = {"message_id": str(payload.get("message_id") or ""), "block": block}
     if part.get("type") == "expert_handoff":
