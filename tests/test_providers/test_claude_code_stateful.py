@@ -20,7 +20,7 @@ import os
 from typing import Any
 
 import pytest
-from dspy.lm15 import Message, Request, TextPart, ToolCallPart, ToolResultPart
+from dspy.lm15 import Message, Request, TextPart, ThinkingPart, ToolCallPart, ToolResultPart
 
 from clio_agent.gact import context as gact_context
 from clio_agent.lm.engines.conversations import ConversationRegistry
@@ -279,6 +279,10 @@ async def test_a_dropped_client_evicts_that_sessions_conversations(
 # live: the real mid-loop delta send against the real SDK/API (task #58 / #1211 A4 --
 # "the layer-3 SDK 400"). CLIO_RUN_LIVE=1 only; two billed calls.
 # --------------------------------------------------------------------------- #
+# Claude tokens validate the Claude Code engine on Sonnet only (owner rule).
+_LIVE_MODEL = "sonnet"
+
+
 @pytest.mark.live
 @pytest.mark.skipif(
     os.environ.get("CLIO_RUN_LIVE") != "1",
@@ -303,7 +307,7 @@ async def test_live_mid_loop_delta_send_does_not_400(
     turn1 = Message.user("Probe turn 1: what is 2+2? Reply with just the digit.")
     turn2 = (turn1, Message.assistant("4"), Message.user("Probe turn 2: 3+3? Just the digit."))
 
-    engine = claude_code_engine.AsyncClaudeCodeEngine("haiku")
+    engine = claude_code_engine.AsyncClaudeCodeEngine(_LIVE_MODEL)
     first = await engine.complete(_request(turn1))
     # Continue with the SDK's own reply as the assistant message it holds.
     second = await engine.complete(_request(turn1, first.message, turn2[2]))
@@ -319,4 +323,41 @@ async def test_live_mid_loop_delta_send_does_not_400(
         ("full", "first_call"),
         ("delta", None),
     ]
+    assert stateful[1]["session_id"] == stateful[0]["session_id"]
+
+
+@pytest.mark.live
+@pytest.mark.skipif(
+    os.environ.get("CLIO_RUN_LIVE") != "1",
+    reason="live claude_code SDK thinking probe: set CLIO_RUN_LIVE=1 (2 billed API calls)",
+)
+async def test_live_thinking_streams_and_survives_the_delta_send(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any, loop_scope: None
+) -> None:
+    """Thinking pass-back on the stateful engine: with thinking on, call 1 streams
+    thinking, and call 2 continues the SAME SDK session as a delta -- the session holds
+    call 1's signed thinking blocks, so nothing has to be re-sent and nothing 400s."""
+    import json
+
+    audit_log = tmp_path / "stream_audit.jsonl"
+    monkeypatch.setenv("CLIO_STREAM_AUDIT_LOG", str(audit_log))
+    engine = claude_code_engine.AsyncClaudeCodeEngine(
+        _LIVE_MODEL, thinking={"type": "adaptive", "display": "summarized", "effort": "high"}
+    )
+    # Adaptive thinking is the model's choice: an easy question gets none, so ask one
+    # that needs reasoning.
+    turn1 = Message.user(
+        "How many positive integers below 10000 have digits summing to 20 and are "
+        "divisible by 7? Reason it out, then give just the number."
+    )
+    first = await engine.complete(_request(turn1))
+    second = await engine.complete(
+        _request(turn1, first.message, Message.user("And below 1000? Just the number."))
+    )
+
+    assert any(isinstance(p, ThinkingPart) and p.text for p in first.message.parts)
+    assert second.message.parts
+    rows = [json.loads(x) for x in audit_log.read_text(encoding="utf-8").splitlines() if x.strip()]
+    stateful = [r for r in rows if r.get("stage") == "provider.stateful"]
+    assert [r["stateful_mode"] for r in stateful] == ["full", "delta"]
     assert stateful[1]["session_id"] == stateful[0]["session_id"]
