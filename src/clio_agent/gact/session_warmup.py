@@ -17,11 +17,9 @@ Config: ``tools.mcp.session_warmup`` / ``CLIO_MCP_SESSION_WARMUP`` (default on).
 
 from __future__ import annotations
 
-import contextvars
 import logging
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from typing import Any
 
@@ -137,28 +135,9 @@ def warm_session_servers(agent: Any) -> dict[str, str]:
         return {}
 
     prepared = getattr(executor, "is_namespace_prepared", None)
-
-    def start(namespace: str) -> str:
-        if callable(prepared) and prepared(namespace):
-            return READY  # connected already (an earlier warm-up or call)
-        try:
-            mcp_readiness.mount_namespace_for_session(
-                executor, namespace, specs[namespace], connect=True
-            )
-        except Exception as exc:  # noqa: BLE001 - reported typed; a call retries it
-            reason = mcp_readiness.mount_failure_reason(exc)
-            logger.warning(
-                "session_warmup_server_failed namespace=%s reason=%s error=%s",
-                namespace,
-                reason,
-                exc,
-            )
-            return reason
-        return READY
-
-    with ThreadPoolExecutor(max_workers=len(namespaces), thread_name_prefix="clio-warm") as pool:
-        futures = {ns: pool.submit(contextvars.copy_context().run, start, ns) for ns in namespaces}
-        return {ns: future.result() for ns, future in futures.items()}
+    cold = {ns: specs[ns] for ns in namespaces if not (callable(prepared) and prepared(ns))}
+    _mounted, failures = mcp_readiness.mount_namespaces_for_session(executor, cold, connect=True)
+    return {ns: failures.get(ns, READY) for ns in namespaces}
 
 
 # --------------------------------------------------------------------------- #

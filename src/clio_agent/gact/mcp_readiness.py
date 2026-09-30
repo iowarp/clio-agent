@@ -290,3 +290,49 @@ def mount_namespace_for_session(
         tool_count=len(mounted_tools),
     )
     return mounted_tools
+
+
+def mount_namespaces_for_session(
+    tool_executor: Any, specs: Mapping[str, Any], *, connect: bool
+) -> tuple[dict[str, Mapping[str, Any]], dict[str, str]]:
+    """Mount several declared namespaces at the same time.
+
+    Each namespace goes through :func:`mount_namespace_for_session` on its own worker
+    (in a copy of the caller's context), so one slow server never delays another.
+
+    Returns:
+        ``(mounted, failures)``: the tools mounted per namespace, and a typed reason
+        per namespace that failed (logged; a later call tries it again).
+    """
+
+    import contextvars  # noqa: PLC0415
+    from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+
+    if not specs:
+        return {}, {}
+    mounted: dict[str, Mapping[str, Any]] = {}
+    failures: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=len(specs), thread_name_prefix="clio-mount") as pool:
+        futures = {
+            namespace: pool.submit(
+                contextvars.copy_context().run,
+                mount_namespace_for_session,
+                tool_executor,
+                namespace,
+                spec,
+                connect=connect,
+            )
+            for namespace, spec in specs.items()
+        }
+        for namespace, future in futures.items():
+            try:
+                mounted[namespace] = future.result()
+            except Exception as exc:  # noqa: BLE001 - typed + named, never cached
+                failures[namespace] = mount_failure_reason(exc)
+                logger.warning(
+                    "mcp_mount_failed namespace=%s reason=%s error=%s",
+                    namespace,
+                    failures[namespace],
+                    exc,
+                )
+    return mounted, failures

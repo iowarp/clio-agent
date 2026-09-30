@@ -88,6 +88,31 @@ class TestOnDemandMount:
         assert "geo_geocode" in available
         assert executor.prepared_namespaces == set()
 
+    def test_cold_namespaces_are_listed_at_the_same_time(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import time
+
+        executor = _FakeExecutor(
+            declared_specs={"geo": _spec("geo"), "ndp": _spec("ndp")}, preloaded={}
+        )
+
+        def slow_listing(namespace: str, spec: MCPServerSpec) -> dict[str, Any]:
+            del spec
+            time.sleep(0.4)  # a server's start-up
+            return {f"{namespace}_x": _FakeTool(f"{namespace}_x")}
+
+        monkeypatch.setattr("clio_agent.tools.mcp_discovery.ensure_namespace", slow_listing)
+        started = time.monotonic()
+        available, failures = _resolve_declared_tools_with_on_demand_mount(
+            executor, ["geo_x", "ndp_x"]
+        )
+        elapsed = time.monotonic() - started
+
+        assert {"geo_x", "ndp_x"} <= set(available)
+        assert failures == {}
+        assert elapsed < 0.75, f"listed one after another ({elapsed:.2f}s)"
+
     def test_declared_but_unmounted_tool_is_mounted_on_demand(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
