@@ -587,9 +587,8 @@ def allow_pytest_tmp_path(request, tmp_path, monkeypatch):
     - ``lm.model: ibm/granite-4-h-tiny`` — a pinned unit-test model that suppresses
       LM-Studio discovery via ``has_explicit_model_override`` (which reads the file
       layer).
-    - ``arc.store: local`` — the fast, isolated LocalFS backend (production defaults
-      to clio-core; the cte integration tests override via an explicit
-      ``backend="cte"`` arg, unaffected).
+    - ``arc.store: cte`` + ``arc.namespace`` — clio-core, the only store, on the
+      worker's private daemon; the test's own namespace isolates its records.
 
     Because the file wins over the env, a test that needs to override one of these
     knobs mutates the file layer (``tests._config_layer.set_config`` /
@@ -647,7 +646,9 @@ def allow_pytest_tmp_path(request, tmp_path, monkeypatch):
             "mcp": {"session_warmup": False},
         },
         "lm": {"model": "ibm/granite-4-h-tiny"},
-        "arc": {"store": "local"},
+        # clio-core is the only store: every test runs ARC on this worker's private
+        # daemon, in its own namespace (cleared at teardown by clio_core_namespace).
+        "arc": {"store": "cte", "namespace": _test_arc_namespace(request)},
     }
     if request.node.get_closest_marker("live"):
         del layer["lm"]  # a live test runs the model the operator configured (CLIO_LM_*)
@@ -683,6 +684,30 @@ def allow_pytest_tmp_path(request, tmp_path, monkeypatch):
         ]
 
     monkeypatch.setattr(_skills, "_skill_search_roots", _isolated_skill_roots)
+
+
+def _test_arc_namespace(request: pytest.FixtureRequest) -> str:
+    """A clio-core namespace unique to this test (records never cross tests)."""
+    import hashlib  # noqa: PLC0415
+
+    digest = hashlib.sha1(f"{os.getpid()}:{request.node.nodeid}".encode()).hexdigest()[:12]
+    return f"t-{digest}"
+
+
+@pytest.fixture(autouse=True)
+def clio_core_namespace(request, allow_pytest_tmp_path):
+    """Clear this test's clio-core namespace at teardown (only if the test attached)."""
+    yield
+    from clio_agent.arc import clio_core_attach  # noqa: PLC0415
+
+    if (
+        clio_core_attach.attach_state_snapshot().phase
+        is not clio_core_attach.ClioCoreAttachPhase.ATTACHED
+    ):
+        return
+    from clio_agent.arc.storage import make_arc_store  # noqa: PLC0415
+
+    make_arc_store(backend="cte", namespace=_test_arc_namespace(request)).clear()
 
 
 def _path_under(path: Path, base: Path) -> bool:

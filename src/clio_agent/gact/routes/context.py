@@ -387,26 +387,36 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
     async def search_context(
         sid: str, q: str, scope_prefix: str = "", k: int = 10
     ) -> ContextSearchResponse:
-        """Semantic discovery over a session's scopes — 'which expert/scope knows
-        about X'. BM25 on the clio-core backend WHEN its indexer chimod is actually
-        composed, naive word-overlap on LocalFS. ``semantic`` never claims True when
-        it isn't real (#905: a clio-core backend missing the indexer chimod reports
-        ``semantic=False`` + a typed ``semantic_unavailable_reason``, the same as it
-        would if search silently returned nothing — never a silent empty "semantic"
-        result)."""
+        """Semantic discovery over a session's scopes -- 'which expert/scope knows
+        about X' -- by clio-core's BM25 indexer. When clio-core cannot search (#905: the
+        indexer chimod is absent from the iowarp-core wheels) this is a typed ``503
+        search_unavailable`` naming the reason, never an empty result a caller could
+        read as "searched and found nothing"."""
         if app.state.sessions.get(sid) is None:
             raise _session_not_found(sid)
         arc = app.state.arc
         if arc is None:
             raise _arc_unavailable(sid)
+        if not arc.segment_search_is_semantic():
+            raise HTTPException(
+                status_code=503,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="search_unavailable",
+                        message="clio-core cannot search this deployment's context",
+                        details={
+                            "session_id": sid,
+                            "reason": arc.segment_search_degradation_reason(),
+                        },
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
         hits = arc.search_segment_scopes(sid, q, scope_prefix=scope_prefix, k=k)
-        semantic = arc.segment_search_is_semantic()
         return ContextSearchResponse(
             session_id=sid,
             query=q,
-            semantic=semantic,
-            semantic_unavailable_reason=(
-                "" if semantic else arc.segment_search_degradation_reason()
-            ),
+            semantic=True,
+            semantic_unavailable_reason="",
             hits=[ContextSearchHit(scope=s, score=score) for s, score in hits],
         )

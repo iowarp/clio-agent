@@ -288,29 +288,20 @@ def test_post_context_op_insert_without_position_400(tmp_path):
     assert r.status_code == 400
 
 
-def test_search_context_endpoint(tmp_path):
+def test_search_context_is_a_typed_503_when_clio_core_cannot_search(tmp_path):
+    """#905: the iowarp-core wheels ship no indexer chimod, so clio-core cannot search;
+    the route says so, typed, instead of answering with empty hits."""
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
     client = _client(tmp_path, arc)
     sid = _session(client)
-    arc.append_segment(
-        sid,
-        "agentA/hdf5",
-        "observation",
-        {"text": "HDF5 dataset chunk compression filters"},
-        step=0,
-    )
-    arc.append_segment(
-        sid,
-        "agentA/seismic",
-        "observation",
-        {"text": "earthquake waveform magnitude epicenter"},
-        step=0,
-    )
+    arc.append_segment(sid, "agentA/hdf5", "observation", {"text": "HDF5 compression"}, step=0)
+
     r = client.get(f"/v1/sessions/{sid}/context/search", params={"q": "HDF5 compression"})
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["semantic"] is False  # LocalFS in tests
-    assert body["hits"] and body["hits"][0]["scope"] == "agentA/hdf5"
+
+    assert r.status_code == 503, r.text
+    error = r.json()["error"]
+    assert error["error"] == "search_unavailable"
+    assert error["details"]["reason"] == "clio_core_search_indexer_absent"
 
 
 def test_search_context_404_503(tmp_path):
@@ -361,22 +352,17 @@ class _CteShapedStore:
         return []  # #905: a degraded clio-core-shaped backend reaches the bare core
 
 
-def test_search_context_reports_degraded_not_silent_semantic_true(tmp_path):
-    """#905: a clio-core-shaped backend whose indexer chimod is absent must report
-    ``semantic=False`` + the typed reason over the wire, not a silent empty result a
-    caller could misread as "semantic search ran and found nothing"."""
+def test_search_context_unavailable_is_typed_not_an_empty_result(tmp_path):
+    """#905: a clio-core-shaped backend whose indexer chimod is absent is a typed 503
+    with the reason, never a 200 with an empty list a caller could misread."""
     arc = ARCMemory(
         data_dir=str(tmp_path / "arc"), store=_CteShapedStore("clio_core_search_indexer_absent")
     )
     client = _client(tmp_path, arc)
     sid = _session(client)
-    arc.append_segment(sid, "agentA/hdf5", "observation", {"text": "HDF5 chunk compression"})
     r = client.get(f"/v1/sessions/{sid}/context/search", params={"q": "HDF5"})
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["semantic"] is False
-    assert body["semantic_unavailable_reason"] == "clio_core_search_indexer_absent"
-    assert body["hits"] == []
+    assert r.status_code == 503, r.text
+    assert r.json()["error"]["details"]["reason"] == "clio_core_search_indexer_absent"
 
 
 def test_search_context_semantic_true_carries_no_reason(tmp_path):
