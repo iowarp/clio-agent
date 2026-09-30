@@ -111,7 +111,6 @@ class _MCPCallOutcome:
 # server declarations (a server's ``timeout`` maps into ``tool_timeouts``),
 # not from a hardcoded core table. Core ships no default overrides.
 DEFAULT_TOOL_TIMEOUTS: dict[str, float] = {}
-REPEATED_TRANSIENT_FAILURE_LIMIT = 2
 SYNC_TOOL_RESULT_GRACE_SECONDS = 1.0
 
 

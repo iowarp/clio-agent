@@ -811,16 +811,16 @@ def test_oversized_structured_failure_uses_raw_result_for_error_truth() -> None:
     assert observed[-1][1] == "catalog_unavailable: Catalog lookup failed"
 
 
-def test_sync_mcp_tool_executor_bounds_repeated_transient_tool_failures():
-    """Repeated infrastructure failures should become a fast structured blocker."""
-    fake_client = FailingClient([TimeoutError("first timeout"), TimeoutError("second timeout")])
-    executor = SyncMCPToolExecutor(
-        object(),
-        timeout=1.0,
-        client_factory=lambda _: fake_client,
-    )
-    observed: list[tuple[str, dict[str, Any], str | None, str | None]] = []
+def _search(executor: SyncMCPToolExecutor, term: str) -> Any:
+    return executor.call_tool("ndp_search_datasets", {"search_terms": [term]})
 
+
+def test_the_breaker_warns_at_the_limit_then_blocks_and_says_why() -> None:
+    """The harness guides: the failure that reaches the limit tells the agent to take
+    another route; a later call is not run and the agent is told why."""
+    fake_client = FailingClient([TimeoutError("t1"), TimeoutError("t2"), TimeoutError("t3")])
+    executor = SyncMCPToolExecutor(object(), timeout=1.0, client_factory=lambda _: fake_client)
+    observed: list[tuple[str, dict[str, Any], str | None, str | None]] = []
     try:
         set_tool_runtime_fallback(
             ToolRuntimeHooks(
@@ -829,28 +829,42 @@ def test_sync_mcp_tool_executor_bounds_repeated_transient_tool_failures():
                 )
             )
         )
-
-        with pytest.raises(TimeoutError):
-            executor.call_tool("ndp_search_datasets", {"search_terms": ["UCSF"]})
-        with pytest.raises(TimeoutError):
-            executor.call_tool("ndp_search_datasets", {"search_terms": ["SBRU"]})
-        with pytest.raises(RepeatedToolFailureError, match="status='tool_failed'"):
-            executor.call_tool("ndp_search_datasets", {"search_terms": ["MHDL"]})
+        for term in ("A", "B"):
+            with pytest.raises(TimeoutError) as err:
+                _search(executor, term)
+            assert not getattr(err.value, "__notes__", [])
+        with pytest.raises(TimeoutError) as err:
+            _search(executor, "C")
+        [warning] = err.value.__notes__
+        assert warning.startswith("[clio: circuit_breaker] ndp_search_datasets has failed 3")
+        assert "alternative route" in warning
+        with pytest.raises(RepeatedToolFailureError) as blocked:
+            _search(executor, "D")
     finally:
         set_tool_runtime_fallback(ToolRuntimeHooks())
         executor.close()
 
-    assert fake_client.calls == 2
-    assert observed[-2] == (
-        "ndp_search_datasets",
-        {"search_terms": ["MHDL"]},
-        "started",
-        None,
-    )
-    assert observed[-1][0] == "ndp_search_datasets"
-    assert observed[-1][2] == "completed"
-    assert observed[-1][3] is not None
-    assert "RepeatedToolFailureError" in observed[-1][3]
+    assert fake_client.calls == 3, "the blocked call never reached the tool"
+    assert str(blocked.value).startswith("[clio: circuit_breaker] ndp_search_datasets was not run")
+    assert "(last error: " in str(blocked.value)
+    assert observed[-2:] == [
+        ("ndp_search_datasets", {"search_terms": ["D"]}, "started", None),
+        ("ndp_search_datasets", {"search_terms": ["D"]}, "completed", str(blocked.value)),
+    ]
+
+
+def test_the_breaker_limit_is_configurable_and_zero_turns_it_off() -> None:
+    set_config("tools.circuit_breaker.failure_limit", 0)
+    fake_client = FailingClient([TimeoutError(f"t{i}") for i in range(5)])
+    executor = SyncMCPToolExecutor(object(), timeout=1.0, client_factory=lambda _: fake_client)
+    try:
+        for i in range(5):
+            with pytest.raises(TimeoutError) as err:
+                _search(executor, str(i))
+            assert not getattr(err.value, "__notes__", [])
+    finally:
+        executor.close()
+    assert fake_client.calls == 5
 
 
 def test_sync_mcp_tool_executor_does_not_bound_non_transient_errors():

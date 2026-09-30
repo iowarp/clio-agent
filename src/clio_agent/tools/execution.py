@@ -337,7 +337,21 @@ class SyncToolExecutor(Protocol):
 
 ToolExecutor = SyncToolExecutor
 
-REPEATED_TRANSIENT_FAILURE_LIMIT = 2
+
+def tool_failure_limit() -> int:
+    """Consecutive transient failures of one tool before its calls are blocked (0: never)."""
+    from clio_agent import conf  # noqa: PLC0415
+
+    return int(
+        conf.resolve(
+            "tools.circuit_breaker.failure_limit",
+            env="CLIO_TOOL_FAILURE_LIMIT",
+            default=3,
+            cast=int,
+        )
+    )
+
+
 SYNC_TOOL_RESULT_GRACE_SECONDS = 1.0
 
 
@@ -709,7 +723,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
 
         raise_if_cancelled("tool_call_before")
 
-        circuit_error = self._repeated_transient_failure_error(name)
+        circuit_error = self._circuit_open_message(name)
         if circuit_error is not None:
             notify_tool_observer(tool_observer, name, effective_args, "started", None)
             notify_tool_observer(tool_observer, name, effective_args, "completed", circuit_error)
@@ -794,7 +808,8 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             if hint := _missing_path_hint(effective_args):
                 exc.add_note(hint)
             if not isinstance(exc, UncertainMutatingToolOutcomeError):
-                self._record_tool_failure(name, error_text)
+                if warning := self._record_tool_failure(name, error_text):
+                    exc.add_note(warning)
             trace = {"error": exc.to_dict()} if isinstance(exc, ClioError) else None
             notify_tool_observer(
                 tool_observer, name, effective_args, "completed", error_text, trace
@@ -805,8 +820,9 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             name, outcome.raw_result, effective_args, presentation_snapshot
         )
         structured_error = structured_tool_result_error(outcome.raw_result)
+        breaker_warning = ""
         if structured_error:
-            self._record_tool_failure(name, structured_error)
+            breaker_warning = self._record_tool_failure(name, structured_error)
             notify_tool_observer(
                 tool_observer,
                 name,
@@ -845,6 +861,8 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             return outcome.raw_result  # MCP Apps bridge is not model-facing: no PostToolUse
         if structured_error and (hint := _missing_path_hint(effective_args)):
             result = f"{hint}\n\n{result}"
+        if breaker_warning:
+            result = f"{breaker_warning}\n\n{result}"
         # The model-visible observation (minted artifact identity, then P2.3 PostToolUse),
         # assembled AFTER the observer recorded the real effect (the trace keeps the result).
         result = assemble_model_observation(
@@ -868,29 +886,37 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             action=f"MCP resource {uri!r}",
         )
 
-    def _repeated_transient_failure_error(self, name: str) -> str | None:
-        """Return a structured error when the tool circuit should stay open."""
+    def _circuit_open_message(self, name: str) -> str | None:
+        """What the agent is told when a call is not run because the tool keeps failing."""
 
+        limit = tool_failure_limit()
         with self._failure_lock:
             count, last_error = self._consecutive_transient_failures.get(name, (0, ""))
-        if count < REPEATED_TRANSIENT_FAILURE_LIMIT:
+        if limit <= 0 or count < limit:
             return None
         return (
-            f"RepeatedToolFailureError(tool={name!r}, consecutive_failures={count}, "
-            f"last_error={last_error!r}, status='tool_failed', "
-            "message='tool call skipped after repeated transient failures; "
-            "return structured blocker evidence instead of retrying broad variants')"
+            f"[clio: circuit_breaker] {name} was not run: it failed {count} times in a row "
+            f"(last error: {last_error}). Take an alternative route, or report what "
+            "blocks you -- repeating this call would loop."
         )
 
-    def _record_tool_failure(self, name: str, error_text: str) -> None:
-        """Track consecutive transient failures for bounded tool retries."""
+    def _record_tool_failure(self, name: str, error_text: str) -> str:
+        """Count a transient failure; at the limit, return the warning the agent gets."""
 
+        limit = tool_failure_limit()
         with self._failure_lock:
             if not _is_transient_tool_error(error_text):
                 self._consecutive_transient_failures.pop(name, None)
-                return
+                return ""
             count, _last_error = self._consecutive_transient_failures.get(name, (0, ""))
-            self._consecutive_transient_failures[name] = (count + 1, error_text)
+            count += 1
+            self._consecutive_transient_failures[name] = (count, error_text)
+        if limit <= 0 or count != limit:
+            return ""
+        return (
+            f"[clio: circuit_breaker] {name} has failed {count} times in a row. Consider an "
+            "alternative route: further calls to it will be blocked to prevent looping."
+        )
 
     def _record_tool_success(self, name: str) -> None:
         """Clear repeated-failure state after a successful tool call."""
