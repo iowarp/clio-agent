@@ -589,6 +589,7 @@ def _resolve_declared_tools_with_on_demand_mount(
                 tool_executor,
                 namespace,
                 declared_specs[namespace],
+                connect=False,
             )
         except Exception as exc:  # noqa: BLE001 - typed + named, never cached (next call retries)
             mount_failures[namespace] = mount_failure_reason(exc)
