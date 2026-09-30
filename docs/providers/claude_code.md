@@ -26,7 +26,9 @@ media types only, size-bounded, remote image URLs only for allowlisted hosts).
 
 **Stateful sessions.** Inside an agent loop the engine keeps one Claude Code session
 per conversation (GACT session + agent scope, model, cwd, thinking) and sends only
-the messages after what the session already holds, under the same session id. Any
+the messages after what the session already holds, under the same session id. The
+agent's context spans turns and is append-only, so the session carries over from one
+turn to the next as well. Any
 other call opens a new session and sends in full, with a typed reset reason on the
 `provider.stateful` audit row (`first_call` / `prefix_mismatch` / `ops_reset` /
 `session_evicted` / `provider_error`). A pooled client that is reconnected, reaped,

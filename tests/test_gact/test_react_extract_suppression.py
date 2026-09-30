@@ -114,7 +114,7 @@ def _drive(
     real react scope + module.kind, through the real emit path + ledger.
 
     ``action`` (if given) is run in the emitter-bound executor context INSTEAD of
-    the deltas loop — used to drive a real ``_RetainingReAct.forward`` whose extract
+    the deltas loop — used to drive a real ``ClioReAct.forward`` whose extract
     fires the tap. ``kind=None`` sets NO react_kind (unresolved-diagnostic)."""
 
     records = _install_audit_capture(monkeypatch)

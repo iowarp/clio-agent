@@ -104,7 +104,7 @@ def test_nested_react_layer_lifo_reset():
 
 
 def test_parent_span_nested_dance():
-    """Mirror the _RetainingReAct expert/step parent-span set/reset dance."""
+    """Mirror the ClioReAct expert/step parent-span set/reset dance."""
     expert_token = ctx.set_parent_span("EXPERT")
     try:
         assert ctx.active_parent_span_id() == "EXPERT"
