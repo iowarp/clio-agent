@@ -558,8 +558,8 @@ ARC mid-turn is a typed turn failure (`ContextReadError`).
 **Open:**
 
 - The Go TUI rendering of `injection`, last per the owner.
-- Removing `render_keys` from the context route and the SPEC.
-- The web UI browser verification (DoD 4).
+- ~~Removing `render_keys` from the context route and the SPEC.~~ Done (see below).
+- ~~The web UI browser verification (DoD 4).~~ Done (below).
 - Whether `injection` goes into a `clio-schemas` release.
 
 ### Web UI verification (DoD 4), 2026-09-29
@@ -595,6 +595,27 @@ ARC mid-turn is a typed turn failure (`ContextReadError`).
   - The composer label shows "Codex · SDK / Sol" after Direct / Sol is chosen, although the server binds `variant: direct`. The label resolves by model id.
   - Activity titles show raw markdown (`**…**`).
 - **clio-core:** a hard-killed daemon leaves a partial `storage.bin`. The next start's capacity preflight refuses it and ARC degrades (loudly) to LocalFS. On Windows every forced stop does this.
+
+### After the UI check (2026-09-29)
+
+- **gact-tui findings fixed** (`feat/injection-parts`):
+  - `323a79b5`: the composer names the session's own transport. The server side is `b3cf96c3`: v3 sessions carry `model_transport`.
+  - `44a2afa5`: activity titles drop inline markdown.
+- **`render_keys` removed.**
+  - `eb9f50fe` (clio-agent) and `403b93fb` (gact-tui SPEC and clients): the context state carries `messages`, the scope folded exactly as the loop folds it (`context_view.context_messages`).
+  - `segments_to_keys`, `SegmentStore.render_keys` and `ARCMemory.render_segments_keys` are deleted, along with the tests of the dict's shape.
+  - A fidelity fuzz over `fold_steps` replaced them. It found a tool call with no open step losing its name and arguments; that is fixed.
+- **Folded history marks retired atoms** (`9c58dc7c`). `list_segments(include_tombstoned=True)` on the folding store listed compacted or deleted atoms as `live`. It was found by the live compaction probe.
+- **Live ARC probes** (`f03f49a9`).
+  - The `CLIO_RUN_LIVE` tests still called deleted ReActV2 methods. Being skipped, they had gone unnoticed since phase 2.
+  - They now drive `ClioReAct` with one real call over the folded plane. A live-marked test runs the operator's configured model, where it was pinned to the unit-test model.
+  - 62 of 62 pass on Codex direct: needle recall while present, gone after delete, as-of time travel, and a real auto-compaction.
+- **Docs** (`8a68f79d`): `docs/tui/08-semantics-and-lifecycle.md` describes the cross-turn context, injections and fix notes; `docs/providers/claude_code.md` notes the session carries over across turns.
+- **Operator notes** (`fcf95cce`) for `tools.circuit_breaker.failure_limit` and the spill limit.
+- **Full suite:**
+  - At `fcf95cce`: 9980 passed, 1 failed (the missing operator note, fixed in that commit), 100 skipped. The same ~100 skips have been there since phase 1: optional dependencies and platform- or live-gated tests.
+  - The run after `8a68f79d` was stopped by the host for low memory and is owed.
+  - Guards (size ratchet, silent fallbacks, env reference), ruff and the targeted suites (`tests/test_arc` 829, the context and compaction tests) are green.
 
 ## Definition of done
 
