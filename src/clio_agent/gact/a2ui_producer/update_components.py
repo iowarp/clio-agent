@@ -56,20 +56,29 @@ def build_update_a2ui_components_tool() -> Any:
         if data_reference_error is not None:
             return data_reference_error
 
-        definition = _definition_artifact.mint_surface_definition_artifact(
-            app, session_id, surface_id, components
-        )
-        if "definition_artifact_id" not in definition:
-            return definition
-
         message = {
             "version": A2UI_V091_WIRE,
             "updateComponents": {"surfaceId": surface_id, "components": components},
         }
         outcome = _common.apply_messages(app, session_id, [message], catalog_id=existing.catalog_id)
         if isinstance(outcome, dict):
+            # A refused batch is never minted/overwritten (#1533 adversarial
+            # review): nothing was applied, so the surface's definition
+            # artifact keeps whatever it already recorded.
             return outcome
         surface = outcome.surfaces[-1]
+
+        # Mint AFTER apply succeeds, from the FULL merged component list --
+        # this call may only upsert a SUBSET of a multi-component surface, so
+        # the stored definition must be the whole live surface, never just
+        # this call's own payload.
+        merged_components = _common.merged_surface_components(existing, components)
+        definition = _definition_artifact.mint_surface_definition_artifact(
+            app, session_id, surface_id, merged_components
+        )
+        if "definition_artifact_id" not in definition:
+            return definition
+
         result: dict[str, Any] = {
             "rendered": True,
             "created": False,

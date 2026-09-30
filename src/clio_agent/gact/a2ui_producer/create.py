@@ -62,12 +62,6 @@ def build_create_a2ui_surface_tool() -> Any:
         if data_reference_error is not None:
             return data_reference_error
 
-        definition = _definition_artifact.mint_surface_definition_artifact(
-            app, session_id, surface_id, components
-        )
-        if "definition_artifact_id" not in definition:
-            return definition
-
         existing = _common.existing_surface(app, session_id, surface_id)
         is_new = existing is None or existing.state == "deleted"
         if not is_new:
@@ -120,8 +114,24 @@ def build_create_a2ui_surface_tool() -> Any:
 
         outcome = _common.apply_messages(app, session_id, messages, catalog_id=resolved_catalog_id)
         if isinstance(outcome, dict):
+            # A refused batch is never minted/overwritten (#1533 adversarial
+            # review): nothing was applied, so the surface's definition
+            # artifact -- if it already had one -- is untouched.
             return outcome
         surface = outcome.surfaces[-1]
+
+        # Mint AFTER apply succeeds, from the FULL merged component list (this
+        # call may only have touched a subset of a multi-component surface):
+        # a definition artifact only ever records a state the surface really
+        # reached.
+        merge_base = None if is_new else existing
+        merged_components = _common.merged_surface_components(merge_base, components)
+        definition = _definition_artifact.mint_surface_definition_artifact(
+            app, session_id, surface_id, merged_components
+        )
+        if "definition_artifact_id" not in definition:
+            return definition
+
         result: dict[str, Any] = {
             "rendered": True,
             "created": surface.id in outcome.created_surface_ids,

@@ -57,6 +57,66 @@ def existing_surface(app: Any, session_id: str, surface_id: str) -> Any:
     return app.state.a2ui_store.get(session_id, surface_id)
 
 
+def _upsert_components_by_id(
+    previous: "list[dict[str, Any]]", upserted: "list[dict[str, Any]]"
+) -> "list[dict[str, Any]]":
+    """Upsert ``upserted`` into ``previous`` by ``id``: an existing id is
+    REPLACED in place (its original position kept); a new id is appended.
+    Mirrors the ``updateComponents`` wire message's own upsert contract —
+    there is no per-component delete, only a whole-surface one."""
+
+    by_id: dict[Any, dict[str, Any]] = {}
+    order: list[Any] = []
+    for component in previous:
+        if not isinstance(component, dict):
+            continue
+        cid = component.get("id")
+        if cid not in by_id:
+            order.append(cid)
+        by_id[cid] = component
+    for component in upserted:
+        if not isinstance(component, dict):
+            continue
+        cid = component.get("id")
+        if cid not in by_id:
+            order.append(cid)
+        by_id[cid] = component
+    return [by_id[cid] for cid in order]
+
+
+def current_surface_components(existing: Any) -> "list[dict[str, Any]]":
+    """Replay ``existing``'s own ``updateComponents`` message history into the
+    FULL, currently-live component list (an empty list for ``None``/a
+    brand-new surface) -- the surface record stores raw ordered messages, not
+    a pre-reduced view, so every producer call that needs "what does this
+    surface look like right now" folds it the same way, here, once."""
+
+    merged: list[dict[str, Any]] = []
+    if existing is None:
+        return merged
+    for message in getattr(existing, "messages", None) or []:
+        update = message.get("updateComponents") if isinstance(message, dict) else None
+        components = update.get("components") if isinstance(update, dict) else None
+        if isinstance(components, list):
+            merged = _upsert_components_by_id(merged, components)
+    return merged
+
+
+def merged_surface_components(
+    existing: Any, new_components: "list[dict[str, Any]]"
+) -> "list[dict[str, Any]]":
+    """The surface's FULL component list AFTER upserting ``new_components``.
+
+    Used for the surface-definition artifact (#1533 S4): a producer call may
+    only touch a SUBSET of a multi-component surface (``update_a2ui_components``,
+    or ``create_a2ui_surface`` revising an existing id), so the stored
+    definition must be the whole live surface, never just this call's own
+    payload.
+    """
+
+    return _upsert_components_by_id(current_surface_components(existing), new_components)
+
+
 def surface_registry_fields(outcome: "A2UIBatchOutcome") -> dict[str, Any]:
     """Return the bounded ``session_surface_ids`` result fields for one outcome."""
 
@@ -211,6 +271,15 @@ def resolve_components(
             "a2ui_components_path_invalid",
             detail="components_path JSON must be an array of component objects",
         )
+    non_objects = [index for index, entry in enumerate(parsed) if not isinstance(entry, dict)]
+    if non_objects:
+        return refusal(
+            "a2ui_components_path_invalid",
+            detail=(
+                "components_path JSON must be an array of component OBJECTS; "
+                f"non-object entries at index(es): {non_objects}"
+            ),
+        )
     return parsed
 
 
@@ -218,7 +287,9 @@ __all__ = [
     "MAX_REPORTED_SURFACE_IDS",
     "active_app_and_session",
     "apply_messages",
+    "current_surface_components",
     "existing_surface",
+    "merged_surface_components",
     "resolve_components",
     "surface_registry_fields",
 ]

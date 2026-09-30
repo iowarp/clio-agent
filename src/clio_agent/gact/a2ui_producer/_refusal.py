@@ -156,8 +156,10 @@ _DEFAULT_HINTS: dict[str, str] = {
         "component objects, then retry"
     ),
     "a2ui_definition_artifact_failed": (
-        "check that this session's workspace is writable, then retry; the "
-        "surface itself was not created or updated"
+        "the surface's components were already applied; check that this "
+        "session's workspace is writable, then retry the same call to mint "
+        "its definition artifact (an unchanged definition dedups, never "
+        "double-applies the surface)"
     ),
 }
 

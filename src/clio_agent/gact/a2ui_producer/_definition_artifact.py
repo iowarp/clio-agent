@@ -12,7 +12,9 @@ live transcript state that only this session's store carries.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.a2ui_producer._refusal import refusal
@@ -25,11 +27,34 @@ if TYPE_CHECKING:
 #: of what a producer tool did, never a model decision).
 DEFINITION_ARTIFACT_DESIGNATION = "a2ui-surface-definition"
 
+#: ``surface_id`` passing this charset is used verbatim as the definition
+#: artifact's filename (no ``/``, ``\``, ``..``, or drive-letter separator can
+#: ever match it); anything else -- including a deliberately crafted
+#: traversal string -- gets a content-stable HASHED name instead, never the
+#: raw, model-authored string.
+_SAFE_SURFACE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _definition_file_name(surface_id: str) -> str:
+    """A filesystem-safe, stable filename for ``surface_id``'s definition artifact.
+
+    ``surface_id`` is a tool argument the model authors — never trusted as a
+    raw path component. A value that passes the allowed charset is used as-is
+    (readable, and stable so repeated create/update calls on the SAME surface
+    keep versioning the SAME logical artifact); anything else is hashed
+    instead — still stable per distinct ``surface_id``, never a path escape.
+    """
+
+    if _SAFE_SURFACE_ID_RE.fullmatch(surface_id):
+        return f"{surface_id}.json"
+    digest = hashlib.sha256(surface_id.encode("utf-8")).hexdigest()[:32]
+    return f"surface-{digest}.json"
+
 
 def mint_surface_definition_artifact(
     app: "FastAPI", session_id: str, surface_id: str, components: list[dict[str, Any]]
 ) -> dict[str, Any]:
-    """Write + register ``components`` as ``.clio/a2ui/<surface_id>.json``.
+    """Write + register ``components`` as ``.clio/a2ui/<safe name>.json``.
 
     Returns ``{"definition_artifact_id": ..., "definition_artifact_uri": ...}``
     on success, or a typed ``a2ui_definition_artifact_failed`` refusal.
@@ -37,6 +62,7 @@ def mint_surface_definition_artifact(
 
     from clio_agent.gact.artifacts.designation import kind_for_path  # noqa: PLC0415
     from clio_agent.gact.artifacts.minting import (  # noqa: PLC0415
+        _contained,
         _session_workspace_id,
         _workspace_root,
         artifact_name_for_path,
@@ -56,7 +82,19 @@ def mint_surface_definition_artifact(
                 "definition cannot be stored as an artifact"
             ),
         )
-    target = root / ".clio" / "a2ui" / f"{surface_id}.json"
+    resolved_root = root.resolve(strict=False)
+    target = (root / ".clio" / "a2ui" / _definition_file_name(surface_id)).resolve(strict=False)
+    # Defense in depth: _definition_file_name's charset already makes escaping
+    # impossible, but a definition artifact is NEVER written outside the
+    # workspace root regardless -- a typed refusal, never a silent path fix.
+    if not _contained(target, resolved_root):
+        return refusal(
+            "a2ui_definition_artifact_failed",
+            detail=(
+                f"the surface definition path resolved outside this session's "
+                f"workspace ({resolved_root}); refusing to write it"
+            ),
+        )
     payload = json.dumps(components, indent=2, sort_keys=False)
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
