@@ -786,7 +786,7 @@ Tries run on run-keyed scopes (`agent#runN`), which stops one try from seeing an
 - **Sabotage test.** The existing test now pins the new consequence of collapsing the run keys:
   the base continues from the *losing* try's line.
 
-### Relay onto MCP tasks: not done in this campaign
+### Relay onto MCP tasks: not done in this campaign (owner confirmed 2026-09-30)
 
 `mcp-client-unification-2026-08.md` makes the relay work Campaign 2. The owner ruled that it
 is "a SEPARATE follow-on plan-execute process" with "its own kickoff, plan pass, and issue tree".
