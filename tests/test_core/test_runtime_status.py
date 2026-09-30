@@ -68,39 +68,37 @@ def test_runtime_report_ready_path(tmp_path):
         return FakeResponse({"data": [{"id": "granite"}]})
 
     probe = RuntimeProbe(
-        env={"CLIO_DATA_DIR": str(tmp_path), "CLIO_ARC_STORE": "local"},
+        env={"CLIO_DATA_DIR": str(tmp_path), "CLIO_ARC_STORE": "cte"},
         http_get=fake_get,
         gateway_lister=lambda: HDF5_CAPS + PARQUET_CAPS,
-        module_checker=lambda name: name in {"h5py", "pyarrow.parquet"},
-        port_checker=lambda port: False,
+        module_checker=lambda name: name in {"h5py", "pyarrow.parquet", "iowarp_core"},
+        port_checker=lambda port: True,
         clio_runtime_dir=tmp_path / "clio-home",
     )
 
     report = probe.collect(api_state=IntegrationState.READY)
 
-    # The local ARC backend is DEGRADED by policy (underperforming fallback,
-    # owner ruling 2026-07-14) — a report on it can never be fully "ready".
-    assert report.overall_status == "degraded"
+    assert report.overall_status == "ready"
     assert report.by_name("lm_provider").state == IntegrationState.READY
-    assert report.by_name("arc").state == IntegrationState.DEGRADED
-    assert report.by_name("arc").details["storage_mode"] == "local"
+    assert report.by_name("arc").state == IntegrationState.READY
+    assert report.by_name("arc").details["storage_mode"] == "cte"
     assert report.by_name("file_policy").state == IntegrationState.READY
     assert report.by_name("gateway").state == IntegrationState.READY
     assert report.by_name("hdf5").state == IntegrationState.READY
     assert report.by_name("parquet").state == IntegrationState.READY
     assert report.by_name("api").state == IntegrationState.READY
-    assert report.by_name("clio_core").state == IntegrationState.SKIPPED
+    assert report.by_name("clio_core").state == IntegrationState.READY
     assert report.by_name("file_policy").details["max_file_size_bytes"] == 1 << 30
 
 
 def test_runtime_report_degraded_path(tmp_path):
     """Reachable but incomplete integrations are degraded, not crashes."""
     probe = RuntimeProbe(
-        env={"CLIO_DATA_DIR": str(tmp_path), "CLIO_ARC_STORE": "local"},
+        env={"CLIO_DATA_DIR": str(tmp_path), "CLIO_ARC_STORE": "cte"},
         http_get=lambda *args, **kwargs: FakeResponse({"data": []}),
         gateway_lister=lambda: HDF5_CAPS,
-        module_checker=lambda name: name in {"h5py", "pyarrow.parquet"},
-        port_checker=lambda port: False,
+        module_checker=lambda name: name in {"h5py", "pyarrow.parquet", "iowarp_core"},
+        port_checker=lambda port: True,
         clio_runtime_dir=tmp_path / "clio-home",
     )
 
@@ -127,11 +125,11 @@ def test_runtime_report_unavailable_path(tmp_path):
         raise RuntimeError("gateway import failed")
 
     probe = RuntimeProbe(
-        env={"CLIO_DATA_DIR": str(tmp_path), "CLIO_ARC_STORE": "local"},
+        env={"CLIO_DATA_DIR": str(tmp_path), "CLIO_ARC_STORE": "cte"},
         http_get=unavailable_lm,
         gateway_lister=unavailable_gateway,
-        module_checker=lambda name: False,
-        port_checker=lambda port: False,
+        module_checker=lambda name: name == "iowarp_core",
+        port_checker=lambda port: True,
         clio_runtime_dir=tmp_path / "clio-home",
     )
 
@@ -461,24 +459,6 @@ def test_arc_clio_core_backend_ready_when_daemon_listening(tmp_path):
     assert seen_ports and status.details["port"] == seen_ports[0]
 
 
-def test_arc_local_backend_keeps_writability_check(tmp_path):
-    """Explicit local backend keeps the writable-directory probe."""
-    probe = RuntimeProbe(
-        env={"CLIO_DATA_DIR": str(tmp_path), "CLIO_ARC_STORE": "local"},
-        port_checker=lambda port: False,
-        clio_runtime_dir=tmp_path / "clio-home",
-    )
-
-    status = probe.probe_arc()
-
-    # Writable local dir → the probe still succeeds, but local is DEGRADED by
-    # policy (underperforming fallback), never READY.
-    assert status.state == IntegrationState.DEGRADED
-    assert "DEGRADED TO LOCAL BACKEND" in status.summary
-    assert status.details["storage_mode"] == "local"
-    assert (tmp_path / "arc").is_dir()
-
-
 def test_arc_unknown_backend_is_misconfigured(tmp_path):
     """An unknown CLIO_ARC_STORE value is a structured misconfiguration."""
     probe = RuntimeProbe(
@@ -540,37 +520,6 @@ def test_clio_core_ready_when_daemon_listening(tmp_path):
     assert str(status.details["port"]) in status.endpoint
 
 
-def test_clio_core_skipped_when_local_backend_and_not_installed(tmp_path):
-    """Local ARC backend without the pip runtime: clio-core is simply not used."""
-    probe = RuntimeProbe(
-        env={"CLIO_ARC_STORE": "local"},
-        module_checker=lambda name: False,
-        port_checker=lambda port: False,
-        clio_runtime_dir=tmp_path / "clio-home",
-    )
-
-    status = probe.probe_clio_core()
-
-    assert status.state == IntegrationState.SKIPPED
-    assert status.required is False
-
-
-def test_clio_core_optional_when_local_backend_and_daemon_down(tmp_path):
-    """Installed runtime with a dead daemon is reported, but not required on local."""
-    probe = RuntimeProbe(
-        env={"CLIO_ARC_STORE": "local"},
-        module_checker=lambda name: name == "iowarp_core",
-        port_checker=lambda port: False,
-        clio_runtime_dir=tmp_path / "clio-home",
-    )
-
-    status = probe.probe_clio_core()
-
-    assert status.state == IntegrationState.UNAVAILABLE
-    assert status.required is False
-    assert status.details["reason"] == "clio_core_daemon_not_listening"
-
-
 # ---------------------------------------------------------------------------
 # probe_api — the gact /v1 surface (/v1/health + /v1/capabilities), not the
 # legacy /health /query /experts endpoints (#800).
@@ -617,7 +566,6 @@ def test_api_probe_red_when_gact_down():
     probe = RuntimeProbe(
         env={
             "CLIO_API_BASE": "http://127.0.0.1:17800",
-            "CLIO_ARC_STORE": "local",
             "CLIO_DATA_DIR": "unused",
         },
         http_get=refused,

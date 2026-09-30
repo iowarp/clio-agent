@@ -76,14 +76,14 @@ def _patch_engine(monkeypatch: pytest.MonkeyPatch, probe: RuntimeProbe) -> None:
 
 
 def _ready_probe(tmp_path: Path, **overrides: Any) -> RuntimeProbe:
-    """A fully-ready probe (local ARC backend, models loaded, tools mounted)."""
+    """A fully-ready probe (clio-core installed + listening, models loaded, tools mounted)."""
 
     kwargs: dict[str, Any] = {
-        "env": {"CLIO_DATA_DIR": str(tmp_path), "CLIO_ARC_STORE": "local"},
+        "env": {"CLIO_DATA_DIR": str(tmp_path), "CLIO_ARC_STORE": "cte"},
         "http_get": lambda *a, **k: _FakeResponse({"data": [{"id": "granite"}]}),
         "gateway_lister": lambda: HDF5_CAPS + PARQUET_CAPS,
-        "module_checker": lambda name: name in {"h5py", "pyarrow.parquet"},
-        "port_checker": lambda port: False,
+        "module_checker": lambda name: name in {"h5py", "pyarrow.parquet", "iowarp_core"},
+        "port_checker": lambda port: True,
         "clio_runtime_dir": tmp_path / "clio-home",
     }
     kwargs.update(overrides)
@@ -241,10 +241,9 @@ def test_health_returns_probe_engine_rows_not_hand_rolled(
     assert "sessions" not in rows
     assert "agent" not in rows
     assert "memory" not in rows
-    # The fixture selects the LOCAL ARC backend, which is DEGRADED by policy
-    # (underperforming fallback, owner ruling 2026-07-14) — never fully ready.
-    assert rows["arc"]["status"] == "degraded"
-    assert body["overall_status"] == "degraded"
+    # clio-core is installed and its daemon listening: ARC is ready. (The overall
+    # status also folds host rows such as the sandbox, which vary by machine.)
+    assert rows["arc"]["status"] == "ready"
     assert body["healthy"] is True
 
 
@@ -266,7 +265,7 @@ def test_widened_rows_carry_full_doctor_detail(
     assert fp["config_source"]
     assert fp["next_action"]
     arc = rows["arc"]
-    assert arc["endpoint"]  # local arc dir surfaces as endpoint
+    assert arc["endpoint"]  # the clio-core daemon address surfaces as endpoint
 
 
 def test_down_clio_core_daemon_turns_health_503(

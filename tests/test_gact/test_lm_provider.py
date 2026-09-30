@@ -1108,11 +1108,11 @@ def test_health_lm_row_is_unified_probe_lm_provider(tmp_path: Path, monkeypatch)
 
     monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")  # selected (else: unconfigured)
     probe = RuntimeProbe(
-        env={"CLIO_ARC_STORE": "local", "CLIO_DATA_DIR": str(tmp_path)},
+        env={"CLIO_ARC_STORE": "cte", "CLIO_DATA_DIR": str(tmp_path)},
         http_get=_refused,
         gateway_lister=lambda: [{"name": "hdf5_x"}],
         module_checker=lambda name: True,
-        port_checker=lambda port: False,
+        port_checker=lambda port: True,  # clio-core up: the LM row is the only outage
         clio_runtime_dir=tmp_path / "clio-home",
     )
     _patch_doctor(monkeypatch, probe)
@@ -1120,6 +1120,7 @@ def test_health_lm_row_is_unified_probe_lm_provider(tmp_path: Path, monkeypatch)
     rows = {r["name"]: r for r in resp.json()["integrations"]}
     assert "lm" not in rows  # old hand-rolled row is gone
     assert rows["lm_provider"]["status"] == "unavailable"
+    assert rows["arc"]["status"] == "ready"  # the 503 is the LM row's alone
     assert resp.status_code == 503
 
 
@@ -1183,12 +1184,12 @@ def test_health_surfaces_argonne_token_missing_via_probe(tmp_path: Path, monkeyp
     probe = RuntimeProbe(
         env={
             "CLIO_LM_PROVIDER": "argonne",
-            "CLIO_ARC_STORE": "local",
+            "CLIO_ARC_STORE": "cte",
             "CLIO_DATA_DIR": str(tmp_path),
         },
         gateway_lister=lambda: [{"name": "hdf5_x"}],
-        module_checker=lambda name: True,  # globus_sdk importable
-        port_checker=lambda port: False,
+        module_checker=lambda name: True,  # globus_sdk (and iowarp_core) importable
+        port_checker=lambda port: True,  # clio-core up: the LM row is the only issue
         clio_runtime_dir=tmp_path / "clio-home",
     )
     _patch_doctor(monkeypatch, probe)
