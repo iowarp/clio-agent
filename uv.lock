@@ -610,7 +610,7 @@ requires-dist = [
     { name = "claude-agent-sdk", marker = "extra == 'claude-code'", specifier = ">=0.2.156" },
     { name = "clio-agent", extras = ["optimizers", "adios", "argonne", "claude-code", "desktop", "flowcept", "dev"], marker = "extra == 'all'" },
     { name = "clio-kit", marker = "extra == 'desktop'", specifier = "==2.10.6" },
-    { name = "clio-schemas", directory = "../clio-schemas-chart" },
+    { name = "clio-schemas", git = "https://github.com/iowarp/clio-schemas.git?branch=feat%2Fa2ui-data-everywhere" },
     { name = "ddgs", marker = "extra == 'desktop'", specifier = ">=6.0" },
     { name = "dspy", specifier = "==3.3.0b1" },
     { name = "fastapi", specifier = ">=0.140" },
@@ -683,30 +683,12 @@ wheels = [
 
 [[package]]
 name = "clio-schemas"
-version = "0.5.0"
-source = { directory = "../clio-schemas-chart" }
+version = "0.5.1"
+source = { git = "https://github.com/iowarp/clio-schemas.git?branch=feat%2Fa2ui-data-everywhere#25e31b79f4f5b971cde51454c95c795c7bc4d5e4" }
 dependencies = [
     { name = "jsonschema", extra = ["format"] },
     { name = "pydantic" },
     { name = "referencing" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "jsonschema", extras = ["format"], specifier = ">=4.23" },
-    { name = "pydantic", specifier = ">=2.7,<3" },
-    { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1.370" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
-    { name = "referencing", specifier = ">=0.35" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
-]
-provides-extras = ["dev"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pyright", specifier = ">=1.1.411" },
-    { name = "pytest", specifier = ">=9.1.1" },
-    { name = "ruff", specifier = ">=0.16.0" },
 ]
 
 [[package]]
