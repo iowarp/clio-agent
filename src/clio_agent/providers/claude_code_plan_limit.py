@@ -22,9 +22,17 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from clio_agent.providers.terminal_signal import (
+    TerminalProviderSignal,
+    find_terminal_signal,
+    is_terminal_provider_error,
+    recover_message,
+)
+
 __all__ = [
     "PLAN_LIMIT_HTTP_STATUS",
     "PLAN_LIMIT_MESSAGE_MARKER",
+    "PLAN_LIMIT_SIGNAL",
     "ClaudeCodePlanLimitError",
     "claude_code_plan_limit_message",
     "contains_claude_code_plan_limit",
@@ -50,11 +58,6 @@ PLAN_LIMIT_HTTP_STATUS = 429
 #: recover the clean, typed sentence from the mangled text by locating this
 #: marker, never by re-interpreting the provider's/LiteLLM's own prose.
 PLAN_LIMIT_MESSAGE_MARKER = "Claude subscription usage limit reached"
-
-#: LiteLLM appends the full traceback after this literal line when it cannot
-#: map an exception type (see the marker's docstring above); the clean
-#: sentence :func:`claude_code_plan_limit_message` recovers ends right before it.
-_TRACEBACK_MARKER = "Traceback (most recent call last):"
 
 #: Recovers the ``model`` :func:`_plan_limit_message` embedded, from the clean
 #: sentence alone -- the SAME stable format (`` for <model>. Wait for the
@@ -160,48 +163,52 @@ def plan_limit_from_result(
     )
 
 
-def _exception_tree(value: Any) -> list[Any]:
-    """``value`` and every node reachable from it via ``.exceptions``/``__cause__``.
+def _plan_limit_extra_details(node: Any) -> dict[str, Any]:
+    """``model``/``rate_limit_type``/``resets_at`` for the registry's ``extra_details``.
 
-    The same shape ``contains_claude_code_signed_out`` walks in
-    ``claude_code_errors.py``, generalized to a flat list so both
-    :func:`find_claude_code_plan_limit` and the text search in
-    :func:`contains_claude_code_plan_limit` / :func:`claude_code_plan_limit_message`
-    share one traversal: an ``ExceptionGroup``'s own ``str()`` is just the
-    opaque "unhandled errors in a TaskGroup (N sub-exceptions)" wrapper (the
-    real text lives on its ``.exceptions`` leaves), so a text search that
-    only looked at ``str(value)`` would miss a marker one level down.
+    Full fidelity when ``node`` is the live :class:`ClaudeCodePlanLimitError`
+    (not guaranteed once LiteLLM has re-wrapped it); ``model`` alone,
+    best-effort parsed from the recovered clean sentence, otherwise (see
+    :func:`plan_limit_message_model`).
     """
-    seen: set[int] = set()
-    pending = [value]
-    nodes: list[Any] = []
-    while pending:
-        node = pending.pop(0)
-        if id(node) in seen:
-            continue
-        seen.add(id(node))
-        nodes.append(node)
-        pending.extend(getattr(node, "exceptions", None) or ())
-        cause = getattr(node, "__cause__", None)
-        if cause is not None:
-            pending.append(cause)
-    return nodes
+    if isinstance(node, ClaudeCodePlanLimitError):
+        return {
+            "model": node.model,
+            "rate_limit_type": node.rate_limit_type,
+            "resets_at": node.resets_at,
+        }
+    return {"model": plan_limit_message_model(node), "rate_limit_type": None, "resets_at": None}
+
+
+#: This signal's registry entry (see
+#: :mod:`clio_agent.providers.terminal_signal_catalog`) -- the SAME table
+#: entry :func:`find_claude_code_plan_limit` / :func:`contains_claude_code_plan_limit`
+#: / :func:`claude_code_plan_limit_message` below use, kept as this module's
+#: own thin wrappers around the shared mechanism for backward-compatible names.
+PLAN_LIMIT_SIGNAL = TerminalProviderSignal(
+    reason="claude_code_plan_limit",
+    marker=PLAN_LIMIT_MESSAGE_MARKER,
+    provider_id="claude_code",
+    exception_type=ClaudeCodePlanLimitError,
+    recovery_actions=("switch_model", "retry"),
+    extra_details=_plan_limit_extra_details,
+)
+
+_SIGNALS = (PLAN_LIMIT_SIGNAL,)
 
 
 def find_claude_code_plan_limit(value: Any) -> ClaudeCodePlanLimitError | None:
-    """The first :class:`ClaudeCodePlanLimitError` in ``value``'s tree, if any.
+    """The live :class:`ClaudeCodePlanLimitError` in ``value``'s tree, if reachable.
 
-    Walks exception groups and explicit causes so a direct (unwrapped)
-    plan-limit error is found without relying on its text having survived
-    re-wrapping, recovering its structured fields (``rate_limit_type``,
-    ``resets_at``, ``model``) when the object itself is still reachable
-    (never guaranteed once LiteLLM has re-wrapped it -- callers needing the
-    fields only should fall back to ``None`` gracefully).
+    Thin wrapper over :func:`~clio_agent.providers.terminal_signal.find_terminal_signal`
+    that only returns the typed object (never a wrapped node whose text merely
+    carried the marker) so existing callers keep the strict return type.
     """
-    for node in _exception_tree(value):
-        if isinstance(node, ClaudeCodePlanLimitError):
-            return node
-    return None
+    found = find_terminal_signal(value, _SIGNALS)
+    if found is None:
+        return None
+    _signal, node = found
+    return node if isinstance(node, ClaudeCodePlanLimitError) else None
 
 
 def contains_claude_code_plan_limit(value: Any) -> bool:
@@ -211,10 +218,7 @@ def contains_claude_code_plan_limit(value: Any) -> bool:
     or LiteLLM's prose -- the marker text is CLIO's, so it survives LiteLLM
     re-wrapping the exception as text (see the marker's docstring).
     """
-    return any(
-        isinstance(node, ClaudeCodePlanLimitError) or PLAN_LIMIT_MESSAGE_MARKER in str(node)
-        for node in _exception_tree(value)
-    )
+    return is_terminal_provider_error(value, _SIGNALS)
 
 
 def claude_code_plan_limit_message(value: Any) -> str | None:
@@ -222,13 +226,8 @@ def claude_code_plan_limit_message(value: Any) -> str | None:
 
     Recovers CLIO's own sentence (built by :func:`_plan_limit_message`) even
     after LiteLLM has wrapped it in ``MidStreamFallbackError``/
-    ``APIConnectionError`` and appended a full traceback: that wrapping always
-    keeps the original exception's ``str()`` as a literal substring (LiteLLM's
-    own documented behavior for an exception type it does not recognize,
-    BerriAI/litellm#4201), so slicing from :data:`PLAN_LIMIT_MESSAGE_MARKER` to
-    the next :data:`_TRACEBACK_MARKER` (or the end of the text) recovers
-    exactly the sentence this module raised -- never a re-interpretation of
-    LiteLLM's or the provider's own words.
+    ``APIConnectionError`` and appended a full traceback (see
+    :func:`~clio_agent.providers.terminal_signal.recover_message`).
 
     Args:
         value: The exception (or exception group) a failed turn raised.
@@ -236,15 +235,11 @@ def claude_code_plan_limit_message(value: Any) -> str | None:
     Returns:
         The clean sentence, or ``None`` when no plan-limit signal is present.
     """
-    for node in _exception_tree(value):
-        if isinstance(node, ClaudeCodePlanLimitError):
-            return str(node)
-        text = str(node)
-        start = text.find(PLAN_LIMIT_MESSAGE_MARKER)
-        if start != -1:
-            end = text.find(_TRACEBACK_MARKER, start)
-            return text[start : end if end != -1 else len(text)].strip()
-    return None
+    found = find_terminal_signal(value, _SIGNALS)
+    if found is None:
+        return None
+    _signal, node = found
+    return recover_message(node, PLAN_LIMIT_MESSAGE_MARKER)
 
 
 def plan_limit_message_model(value: Any) -> str | None:

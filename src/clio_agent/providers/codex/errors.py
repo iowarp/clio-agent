@@ -18,6 +18,12 @@ from clio_agent.providers.codex.constants import (
     RETRYABLE_STATUS_CODES,
     USAGE_LIMIT_MARKERS,
 )
+from clio_agent.providers.terminal_signal import (
+    TerminalProviderSignal,
+    find_terminal_signal,
+    is_terminal_provider_error,
+    recover_message,
+)
 
 
 class CodexError(RuntimeError):
@@ -74,9 +80,6 @@ class CodexResponseError(CodexError):
 #: recover it by locating this marker, never by re-interpreting the backend's
 #: prose.
 CODEX_PLAN_LIMIT_MESSAGE_MARKER = "Codex account usage limit reached"
-
-#: See :data:`clio_agent.providers.claude_code_plan_limit._TRACEBACK_MARKER`.
-_TRACEBACK_MARKER = "Traceback (most recent call last):"
 
 
 class CodexPlanLimitError(CodexResponseError):
@@ -261,22 +264,27 @@ def raise_for_backend_error(
     raise CodexResponseError(text, code=code, status_code=status_code)
 
 
-def _exception_tree(value: object) -> list[object]:
-    """See :func:`clio_agent.providers.claude_code_plan_limit._exception_tree`."""
-    seen: set[int] = set()
-    pending = [value]
-    nodes: list[object] = []
-    while pending:
-        node = pending.pop(0)
-        if id(node) in seen:
-            continue
-        seen.add(id(node))
-        nodes.append(node)
-        pending.extend(getattr(node, "exceptions", None) or ())
-        cause = getattr(node, "__cause__", None)
-        if cause is not None:
-            pending.append(cause)
-    return nodes
+def _codex_plan_limit_extra_details(node: object) -> dict[str, object]:
+    if isinstance(node, CodexPlanLimitError):
+        return {"code": node.code, "status_code": node.status_code}
+    return {}
+
+
+#: This signal's registry entry (see
+#: :mod:`clio_agent.providers.terminal_signal_catalog`) -- the SAME table
+#: entry :func:`contains_codex_plan_limit` / :func:`codex_plan_limit_message`
+#: below use, kept as this module's own thin wrappers around the shared
+#: mechanism for backward-compatible names.
+CODEX_PLAN_LIMIT_SIGNAL = TerminalProviderSignal(
+    reason="codex_plan_limit",
+    marker=CODEX_PLAN_LIMIT_MESSAGE_MARKER,
+    provider_id="codex",
+    exception_type=CodexPlanLimitError,
+    recovery_actions=("switch_model", "retry"),
+    extra_details=_codex_plan_limit_extra_details,
+)
+
+_SIGNALS = (CODEX_PLAN_LIMIT_SIGNAL,)
 
 
 def contains_codex_plan_limit(value: object) -> bool:
@@ -286,10 +294,7 @@ def contains_codex_plan_limit(value: object) -> bool:
     backend's prose directly -- the marker text is CLIO's, so it survives
     LiteLLM re-wrapping the exception as text (see the marker's docstring).
     """
-    return any(
-        isinstance(node, CodexPlanLimitError) or CODEX_PLAN_LIMIT_MESSAGE_MARKER in str(node)
-        for node in _exception_tree(value)
-    )
+    return is_terminal_provider_error(value, _SIGNALS)
 
 
 def codex_plan_limit_message(value: object) -> str | None:
@@ -300,20 +305,17 @@ def codex_plan_limit_message(value: object) -> str | None:
     :func:`clio_agent.providers.claude_code_plan_limit.claude_code_plan_limit_message`
     recovers its Claude Code counterpart.
     """
-    for node in _exception_tree(value):
-        if isinstance(node, CodexPlanLimitError):
-            return str(node)
-        text = str(node)
-        start = text.find(CODEX_PLAN_LIMIT_MESSAGE_MARKER)
-        if start != -1:
-            end = text.find(_TRACEBACK_MARKER, start)
-            return text[start : end if end != -1 else len(text)].strip()
-    return None
+    found = find_terminal_signal(value, _SIGNALS)
+    if found is None:
+        return None
+    _signal, node = found
+    return recover_message(node, CODEX_PLAN_LIMIT_MESSAGE_MARKER)
 
 
 __all__ = [
     "CODEX_AUTHENTICATION_ERROR_MESSAGE",
     "CODEX_PLAN_LIMIT_MESSAGE_MARKER",
+    "CODEX_PLAN_LIMIT_SIGNAL",
     "CodexAuthError",
     "CodexCredentialMissingError",
     "CodexError",

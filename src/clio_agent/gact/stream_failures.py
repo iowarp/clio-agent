@@ -17,16 +17,12 @@ from clio_agent.providers.claude_code_errors import (
     contains_claude_code_dependency_error,
     contains_claude_code_signed_out,
 )
-from clio_agent.providers.claude_code_plan_limit import (
-    claude_code_plan_limit_message,
-    find_claude_code_plan_limit,
-    plan_limit_message_model,
-)
 from clio_agent.providers.codex.errors import (
     CODEX_AUTHENTICATION_ERROR_MESSAGE,
-    codex_plan_limit_message,
     contains_codex_authentication_error,
 )
+from clio_agent.providers.terminal_signal import find_terminal_signal, recover_message
+from clio_agent.providers.terminal_signal_catalog import TERMINAL_PROVIDER_SIGNALS
 
 # Leaf-scan order for an exception group that matched nothing at the top
 # level. The top-level check already recurses for Claude Code (its detector
@@ -42,15 +38,14 @@ CLI_PROVIDER_FAILURE_MESSAGES: tuple[str, ...] = (
 #: sign-in (#1454): the client offers that provider's sign-in action.
 PROVIDER_AUTH_REQUIRED_REASON = "provider_auth_required"
 
-#: ``details.reason`` of a ``provider_error`` for a Claude Code subscription
-#: plan/usage-window limit (#1529): unconditional on the turn's configured
-#: provider -- see :func:`turn_failure_message`.
+#: ``details.reason`` values a caller can see from
+#: :data:`clio_agent.providers.terminal_signal_catalog.TERMINAL_PROVIDER_SIGNALS`
+#: (kept here too, as stable public re-exports for callers that only need the
+#: string, not the table) -- unconditional on the turn's configured provider,
+#: see :func:`turn_failure_message`.
 CLAUDE_CODE_PLAN_LIMIT_REASON = "claude_code_plan_limit"
-
-#: ``details.reason`` of a ``provider_error`` for a Codex plan/usage-window
-#: limit (#1529, the Codex analog): same rationale as
-#: :data:`CLAUDE_CODE_PLAN_LIMIT_REASON`.
 CODEX_PLAN_LIMIT_REASON = "codex_plan_limit"
+PROVIDER_SAFETY_REFUSAL_REASON = "provider_safety_refusal"
 
 
 def cli_provider_stream_failure(exc: BaseException, *, provider_id: str) -> str | None:
@@ -131,58 +126,45 @@ def _auth_error_info(provider_id: str, message: str, details: dict[str, Any]) ->
     )
 
 
-def _plan_limit_error_info(exc: BaseException, details: dict[str, Any]) -> Any | None:
-    """The typed ``provider_error`` for a Claude Code/Codex plan-limit hit, or ``None``.
+def _terminal_signal_error_info(exc: BaseException, details: dict[str, Any]) -> Any | None:
+    """The typed ``provider_error`` for any registered terminal signal, or ``None``.
+
+    ONE lookup against :data:`~clio_agent.providers.terminal_signal_catalog
+    .TERMINAL_PROVIDER_SIGNALS` replaces a per-signal chain of
+    ``if <signal>_message(exc): ...`` -- adding a new terminal signal to the
+    table (a new provider module's :class:`TerminalProviderSignal`) needs no
+    change here.
 
     Args:
-        exc: The exception the turn's provider call raised (searched for a
-            plan-limit signal regardless of the turn's configured provider --
-            see :func:`turn_failure_message`).
+        exc: The exception the turn's provider call raised (searched
+            regardless of the turn's configured provider -- see
+            :func:`turn_failure_message`).
         details: The caller's base ``ErrorInfo.details`` (extended, not
             replaced).
 
     Returns:
         The :class:`~clio_agent.gact.types.ErrorInfo`, or ``None`` when ``exc``
-        carries no plan-limit signal from either CLI provider.
+        carries no registered terminal signal.
     """
+    found = find_terminal_signal(exc, TERMINAL_PROVIDER_SIGNALS)
+    if found is None:
+        return None
+    signal, node = found
     from clio_agent.gact.types import ErrorInfo  # noqa: PLC0415
 
-    message = claude_code_plan_limit_message(exc)
-    if message is not None:
-        leaf = find_claude_code_plan_limit(exc)
-        return ErrorInfo(
-            error="provider_error",
-            message=message,
-            details={
-                **details,
-                "reason": CLAUDE_CODE_PLAN_LIMIT_REASON,
-                "provider_id": "claude_code",
-                "provider_label": provider_label("claude_code"),
-                # ``leaf`` (the live object) is not guaranteed reachable once
-                # LiteLLM has re-wrapped the failure -- ``plan_limit_message_model``
-                # falls back to parsing CLIO's own stable message format, which is.
-                "model": plan_limit_message_model(message),
-                "rate_limit_type": getattr(leaf, "rate_limit_type", None),
-                "resets_at": getattr(leaf, "resets_at", None),
-                "recovery_actions": ["switch_model", "retry"],
-            },
-            recoverable=True,
-        )
-    message = codex_plan_limit_message(exc)
-    if message is not None:
-        return ErrorInfo(
-            error="provider_error",
-            message=message,
-            details={
-                **details,
-                "reason": CODEX_PLAN_LIMIT_REASON,
-                "provider_id": "codex",
-                "provider_label": provider_label("codex"),
-                "recovery_actions": ["switch_model", "retry"],
-            },
-            recoverable=True,
-        )
-    return None
+    return ErrorInfo(
+        error="provider_error",
+        message=recover_message(node, signal.marker),
+        details={
+            **details,
+            "reason": signal.reason,
+            "provider_id": signal.provider_id,
+            "provider_label": provider_label(signal.provider_id),
+            "recovery_actions": list(signal.recovery_actions),
+            **signal.extra_details(node),
+        },
+        recoverable=True,
+    )
 
 
 def streamed_turn_error_info(state: Any, exc: BaseException, partial_answer: str) -> Any:
@@ -205,9 +187,9 @@ def streamed_turn_error_info(state: Any, exc: BaseException, partial_answer: str
         "partial_output": bool(partial_answer),
         "stream_source": ("live" if partial_answer else "batch"),
     }
-    plan_limit = _plan_limit_error_info(original, details)
-    if plan_limit is not None:
-        return plan_limit
+    terminal = _terminal_signal_error_info(original, details)
+    if terminal is not None:
+        return terminal
     provider_id = _turn_provider_id(state)
     auth = provider_auth_failure(original, provider_id=provider_id)
     if auth is not None:
@@ -296,18 +278,17 @@ def provider_failure_message(exc: BaseException, *, provider_label: str) -> str 
 def turn_failure_message(exc: BaseException, provider_id: str, otherwise: str) -> str:
     """The user-facing message for a failed turn, streamed or not.
 
-    The one formatter both failure paths share: a Claude Code or Codex
-    plan/usage-limit hit is CLIO's own clean sentence
-    (:func:`~clio_agent.providers.claude_code_plan_limit.claude_code_plan_limit_message`
-    / :func:`~clio_agent.providers.codex.errors.codex_plan_limit_message`)
-    recovered from the exception tree regardless of ``provider_id`` (#1529 --
-    a plan-limit failure can surface a turn after the session's configured
-    provider has already moved on to the other one, and the user still needs
-    to know which subscription call is what hit the limit); otherwise a
-    provider HTTP error is the provider's own words on one line
-    (:func:`provider_failure_message`), labelled with the configured
-    provider, or with the provider the error names when none is configured;
-    any other failure keeps ``otherwise``.
+    The one formatter both failure paths share: any registered terminal
+    provider signal (:data:`~clio_agent.providers.terminal_signal_catalog
+    .TERMINAL_PROVIDER_SIGNALS` -- a Claude Code or Codex plan/usage-limit
+    hit, a Claude Code safety-filter refusal, ...) is CLIO's own clean
+    sentence recovered from the exception tree regardless of ``provider_id``
+    (#1529 -- one of these can surface a turn after the session's configured
+    provider has already moved on, and the user still needs to know what
+    actually happened); otherwise a provider HTTP error is the provider's own
+    words on one line (:func:`provider_failure_message`), labelled with the
+    configured provider, or with the provider the error names when none is
+    configured; any other failure keeps ``otherwise``.
 
     Args:
         exc: The exception the turn's provider call raised.
@@ -318,9 +299,10 @@ def turn_failure_message(exc: BaseException, provider_id: str, otherwise: str) -
     Returns:
         The message the failed turn's error carries.
     """
-    plan_limit = claude_code_plan_limit_message(exc) or codex_plan_limit_message(exc)
-    if plan_limit is not None:
-        return plan_limit
+    found = find_terminal_signal(exc, TERMINAL_PROVIDER_SIGNALS)
+    if found is not None:
+        signal, node = found
+        return recover_message(node, signal.marker)
     leaf = _provider_error_leaf(exc)
     named = provider_id or str(getattr(leaf, "provider", "") or "")
     message = provider_failure_message(exc, provider_label=provider_label(named))
@@ -340,9 +322,9 @@ def agent_forward_error_info(state: Any, exc: BaseException) -> Any:
     """
     from clio_agent.gact.types import ErrorInfo  # noqa: PLC0415
 
-    plan_limit = _plan_limit_error_info(exc, {"original_error": type(exc).__name__})
-    if plan_limit is not None:
-        return plan_limit
+    terminal = _terminal_signal_error_info(exc, {"original_error": type(exc).__name__})
+    if terminal is not None:
+        return terminal
     provider_id = _turn_provider_id(state)
     auth = provider_auth_failure(exc, provider_id=provider_id)
     if auth is not None:
@@ -392,6 +374,7 @@ def describe_stream_exc(exc: BaseException, *, provider_id: str) -> str:
 __all__ = [
     "CLAUDE_CODE_PLAN_LIMIT_REASON",
     "CODEX_PLAN_LIMIT_REASON",
+    "PROVIDER_SAFETY_REFUSAL_REASON",
     "CLI_PROVIDER_FAILURE_MESSAGES",
     "PROVIDER_AUTH_REQUIRED_REASON",
     "provider_auth_failure",
