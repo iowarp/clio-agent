@@ -722,6 +722,24 @@ Earthscope's first turn, after start-up: 176 s = model 140 s (17 serial calls, ~
   - The status bar's token counter shows the running total live and 0 after a reload.
   - A thinking body can still show its raw `**heading**`; only the title was stripped.
 
+**Decisions and follow-ups (owner, 2026-09-30):**
+- **A2UI (`feat/a2ui-data-everywhere`): no rebase.** It reaches this chain through `develop` and is measured then.
+- **Codex SDK: fixed rather than dropped.**
+  - The runtime switches off every MCP server and plugin in the user's `config.toml` by name (`<table>.<name>.enabled=false`; Codex's `-c` splits on dots and keeps quotes, so names ride bare). An unreadable config or a dotted name is a typed failure.
+  - Live earthscope over the SDK ends every turn normally (`4780f2aa`).
+- **`injection` in clio-schemas:** `InjectionMessageBlock`, 0.5.2, iowarp/clio-schemas#18.
+- **Leaked test turn: fixed** (`2869c596`).
+  - Cause: the SDK suite's `StreamingASGITransport` never ran the ASGI lifespan, so the app's shutdown never drained turns.
+  - Its reproducing subset (3504 tests, run with unraisable warnings as errors) is now clean.
+- **Draft PRs:** clio-agent #1538-#1544, iowarp/gact-tui#510, iowarp/clio-schemas#18, iowarp/clio-kit#388. Merge after owner review.
+- **Tool-category index: not built.**
+  - The measured trade: every category costs an extra model round trip, about 2-3 s, in every conversation.
+  - It would save a first-call listing wait of about 6 s, which is 0 when listings are known and hidden by the background warm-up in real use.
+  - Round trips are the largest cost in the profile.
+- **Instead, exact listings** (`e07a614f` plus iowarp/clio-kit#388).
+  - `clio-kit mcp-server-identity <server>` prints the hash of a server's embedded source and lock in 0.3 s, starting nothing.
+  - A cached listing stored with that identity is reused at any age while it matches and dropped the moment it differs, replacing the 24 h TTL for clio-kit servers.
+
 **Next:**
 - One spawn per server: list over the persistent connection. The listing currently also records the server's task capability, which the connect route reads (#1281), so the two must be reordered together.
 - The reaper keeps a session's fleet while the session waits on a question.
