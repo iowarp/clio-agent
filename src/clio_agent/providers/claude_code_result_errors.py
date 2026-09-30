@@ -92,6 +92,6 @@ def raise_classified_result_error(msg: Any, *, model: str, assistant_error: str 
             model=f"claude_code/{model}",
             llm_provider="claude_code",
         )
-    plan_limit = plan_limit_from_result(msg)
+    plan_limit = plan_limit_from_result(msg, model=model)
     if plan_limit is not None:
         raise plan_limit

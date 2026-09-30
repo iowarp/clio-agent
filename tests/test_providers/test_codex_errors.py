@@ -5,8 +5,11 @@ from __future__ import annotations
 import pytest
 
 from clio_agent.providers.codex.errors import (
+    CODEX_PLAN_LIMIT_MESSAGE_MARKER,
     CodexPlanLimitError,
     CodexResponseError,
+    codex_plan_limit_message,
+    contains_codex_plan_limit,
     is_retryable_status,
     is_usage_limit_text,
     next_retry_delay_ms,
@@ -61,6 +64,54 @@ def test_raise_for_backend_error_generic_response_error() -> None:
     with pytest.raises(CodexResponseError) as exc_info:
         raise_for_backend_error(code="server_error", message="something broke")
     assert not isinstance(exc_info.value, CodexPlanLimitError)
+
+
+def test_plan_limit_message_keeps_the_backends_own_words() -> None:
+    """#1529 Codex analog: the marker is CLIO's own, but the backend's words
+    (which vary by account/plan) must still reach the user."""
+    err = CodexPlanLimitError("you have exceeded your monthly usage limit", status_code=429)
+
+    assert str(err).startswith(CODEX_PLAN_LIMIT_MESSAGE_MARKER)
+    assert "monthly usage limit" in str(err)
+    assert err.detail == "you have exceeded your monthly usage limit"
+
+
+def test_litellm_wrapped_codex_plan_limit_still_recovers_the_clean_sentence() -> None:
+    """#1529: the Codex ``astreaming`` re-raises its typed error bare (like
+    Claude Code's), so it hits the SAME LiteLLM generic exception-mapping
+    fallback (BerriAI/litellm#4201) that bakes a full traceback into the
+    wrapper's own message."""
+    clean = str(CodexPlanLimitError("usage limit reached", status_code=429))
+    mangled = RuntimeError(
+        f"litellm.MidStreamFallbackError: litellm.APIConnectionError: {clean}\n"
+        "Traceback (most recent call last):\n"
+        '  File ".../codex/litellm_adapter.py", line 405, in astreaming\n'
+        "    raise\n"
+        f"clio_agent.providers.codex.errors.CodexPlanLimitError: {clean}\n"
+    )
+    group = ExceptionGroup("unhandled errors in a TaskGroup", [mangled])
+
+    assert contains_codex_plan_limit(group) is True
+    message = codex_plan_limit_message(group)
+    assert message == clean
+    assert "Traceback" not in message
+
+
+def test_litellm_wrapped_codex_plan_limit_is_never_classified_transient() -> None:
+    """SABOTAGE (regression, #1529): same misclassification risk as Claude
+    Code's -- MidStreamFallbackError/APIConnectionError are transient markers
+    on their own."""
+    from clio_agent.lm.io_logging import _is_transient_provider_error
+
+    clean = str(CodexPlanLimitError("usage limit reached", status_code=429))
+    mangled = RuntimeError(
+        f"litellm.MidStreamFallbackError: litellm.APIConnectionError: {clean}\n"
+        "Traceback (most recent call last):\n"
+        "    raise\n"
+        f"clio_agent.providers.codex.errors.CodexPlanLimitError: {clean}\n"
+    )
+
+    assert _is_transient_provider_error(mangled) is False
 
 
 class TestRetryAfterParsing:

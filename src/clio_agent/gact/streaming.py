@@ -733,9 +733,8 @@ async def _try_streamed_forward(
                 )
             raise _StreamingOutputError(detail) from exc
         if emitted_any:
-            raise _StreamingOutputError(
-                f"live streaming failed after emitting output: {detail}"
-            ) from exc
+            after = f"live streaming failed after emitting output: {detail}"
+            raise _StreamingOutputError(_turn_failure_message(exc, provider_id, after)) from exc
         _record_stream_fallback(
             app,
             sid,
