@@ -725,7 +725,8 @@ class _ArcWritingInner(dspy.Module):
             ctx.active_react_session(),
             scope,
             "thought",
-            {"text": f"TRY{run}-THOUGHT"},
+            # Labelled by forward order (not ``run``), so a collapsed run key stays visible.
+            {"text": f"TRY{len(_ARC_OBS) - 1}-THOUGHT"},
             step=0,
             token_count=1,
         )
@@ -766,14 +767,14 @@ def test_variant_forward_run_keys_arc_partitions_through_real_bestofn(arc: ARCMe
         next(gen, None)
 
 
-def test_sabotage_neutralizing_set_react_run_leaks_prior_try_in_real_forward(
+def test_sabotage_neutralizing_set_react_run_hands_the_base_a_losing_line(
     arc: ARCMemory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Sabotage the single line wiring the variant loop to the keying plane: force
-    ``set_react_run`` to always bind run 0. Both tries then key to the same partition, so the
-    second try's real-loop fold accumulates try 0's trajectory — the silent cross-try model
-    -input contamination the discriminator prevents. Proves _RunKeyedModule's set_react_run is
-    load-bearing through the real forward."""
+    ``set_react_run`` to always bind run 0. Each try still forks (its predecessor's line is
+    retired), but both tries share one partition, so the line recorded on the base scope as
+    the winner's is the LAST try's -- here the loser's. Proves _RunKeyedModule's
+    set_react_run is load-bearing through the real forward."""
     _ARC_OBS.clear()
     orig_set = ctx.set_react_run
     monkeypatch.setattr(ctx, "set_react_run", lambda _idx: orig_set(0))
@@ -784,10 +785,30 @@ def test_sabotage_neutralizing_set_react_run_leaks_prior_try_in_real_forward(
     gen = _variant_scope_ctx(arc)
     next(gen)
     try:
-        lm = DummyLM([{"answer": "a0"}, {"score": "0.1"}, {"answer": "a1"}, {"score": "0.2"}])
+        lm = DummyLM([{"answer": "a0"}, {"score": "0.9"}, {"answer": "a1"}, {"score": "0.2"}])
         with dspy.context(lm=lm):
             wrapped(question="q")
+        base_line = _thoughts()
     finally:
         next(gen, None)
-    # The SECOND forward saw the FIRST try's trajectory (leak) — red under the real fix.
-    assert _ARC_OBS[1][1] == ["TRY0-THOUGHT"]
+    # Try 0 won, but the base continues from try 1's line -- red under the real keying.
+    assert base_line == ["TRY1-THOUGHT"]
+
+
+def test_the_base_continues_from_the_winning_try_in_real_forward(arc: ARCMemory) -> None:
+    """The unsabotaged twin: try 0 wins, and its line is what the base scope continues."""
+    _ARC_OBS.clear()
+    wrapped = mv.wrap_module_variant(
+        _ArcWritingInner(),
+        _agent(_module(n=2, threshold=1.0, reward=_reward_decl(inputs=["question"]))),
+    )
+    gen = _variant_scope_ctx(arc)
+    next(gen)
+    try:
+        lm = DummyLM([{"answer": "a0"}, {"score": "0.9"}, {"answer": "a1"}, {"score": "0.2"}])
+        with dspy.context(lm=lm):
+            wrapped(question="q")
+        base_line = _thoughts()
+    finally:
+        next(gen, None)
+    assert base_line == ["TRY0-THOUGHT"]
