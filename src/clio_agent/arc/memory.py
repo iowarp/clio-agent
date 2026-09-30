@@ -762,18 +762,10 @@ class ARCMemory:
            that expected ``sink.emit(event)``'s return are unaffected; ``{}`` when
            no sink is wired.
 
-        Each step is guarded so an observability record can never break a turn.
+        clio-core is the record: a persist failure raises, and nothing is derived
+        from an event clio-core does not hold.
         """
-        try:
-            self.on_semantic_event(event)
-        except Exception as exc:  # noqa: BLE001 - never break a turn, but NEVER swallow silently
-            trace.event(
-                "ARC-EVENTS",
-                "FAILED to persist event etype=%r sid=%r: %r",
-                getattr(event, "event_type", ""),
-                getattr(event, "session_id", ""),
-                exc,
-            )
+        self.on_semantic_event(event)
         sink = self._highway_sink
         if sink is None:
             return {}
