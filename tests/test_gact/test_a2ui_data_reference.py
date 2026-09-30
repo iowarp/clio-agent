@@ -15,13 +15,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-# Imported eagerly (unused directly): the table-query engine's own
-# ``import pyarrow as pa`` is otherwise this process's FIRST pyarrow import,
-# deep inside a deferred (``noqa: PLC0415``) production import, which can
-# race dspy's lazy numpy shim on first touch. Every other suite that exercises
-# the table-query engine (e.g. test_artifact_table_query.py) imports pyarrow
-# at module scope for the same reason.
-import pyarrow  # noqa: F401
+import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact import context as gact_context
@@ -33,6 +27,27 @@ from clio_agent.gact.app import build_app
 WORKSPACE_ID = workspace_catalog_id()
 
 CSV_ROWS = "time,lat,lon,label,entity\n0,34.0,-118.0,Site A,alpha\n1,34.1,-118.1,Site B,alpha\n"
+
+
+@pytest.fixture(autouse=True)
+def _prewarm_pyarrow() -> None:
+    """Import pyarrow before this module's tests reach the table-query engine.
+
+    The table-query engine's own ``import pyarrow as pa`` is otherwise this
+    process's FIRST pyarrow import, deep inside a deferred (``noqa: PLC0415``)
+    production import, which can race dspy's lazy numpy shim on first touch.
+    This has to run at TEST time, not at collection/module-import time: under
+    the flake-hunt job (many files collected per worker via
+    ``--dist loadfile``), a module-level ``import pyarrow`` runs during
+    collection, where it can itself lose that race against whatever else the
+    worker already imported while collecting earlier files, turning a flaky
+    runtime race into a hard collection ``ImportError``. Every other suite
+    that exercises the table-query engine (e.g. test_artifact_table_query.py)
+    imports pyarrow at module scope instead, but none of those carry the
+    ``concurrency`` marker collection sweeps here, so they never hit this.
+    """
+
+    import pyarrow  # noqa: F401
 
 
 def _client(tmp_path: Path) -> TestClient:
