@@ -6,6 +6,17 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Fixed
+
+- Deploying to a remote SSH host that already runs a healthy CLIO under a
+  different install root or version no longer stops it without asking. The
+  claim step now reports it as `found` (with its version and pid) instead of
+  silently replacing it; `POST /v1/infrastructure/services/clio_agent/actions`
+  fails with the typed `clio_deploy_version_conflict` reason (and a
+  `conflict` record) until the caller re-issues the action with
+  `configuration.on_conflict` set to `"connect"` (adopt it as-is) or
+  `"replace"` (stop it and install this desktop's version) (#1528).
+
 ## [0.9.4.22] — 2026-09-29
 
 No GACT-contract change. Desktop hotfix release: ships the desktop app 0.11.2.23
