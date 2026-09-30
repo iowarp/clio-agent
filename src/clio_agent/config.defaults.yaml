@@ -935,6 +935,39 @@ artifacts.table_preview_max_rows: 2000
 # file streams twice so this bounds latency, not memory.
 artifacts.table_preview_max_source_bytes: 268435456
 
+# CLIO_ARTIFACTS_TABLE_QUERY_CACHE_ENTRIES  (int)  <- src/clio_agent/gact/routes/artifact_table_query.py
+# Results the per-server artifact table-query LRU keeps, keyed on content
+# hash and canonical query; 0 disables caching.
+artifacts.table_query_cache_entries: 16
+
+# CLIO_ARTIFACTS_TABLE_QUERY_MAX_CONCURRENCY  (int)  <- src/clio_agent/gact/routes/artifact_table_query.py
+# Table-query executions allowed to run at once, sharing the process's
+# worker thread pool; a request beyond this bound queues rather than
+# starving other requests.
+artifacts.table_query_max_concurrency: 8
+
+# CLIO_ARTIFACTS_TABLE_QUERY_MAX_ROWS  (int)  <- src/clio_agent/gact/routes/artifact_table_query.py
+# Ceiling on the limit one artifact table-query request may ask for; larger
+# requests are refused with a typed 400.
+artifacts.table_query_max_rows: 50000
+
+# CLIO_ARTIFACTS_TABLE_QUERY_MAX_SOURCE_BYTES  (int)  <- src/clio_agent/gact/routes/artifact_table_query.py
+# Largest CSV/Parquet artifact, in bytes, the table-query route will read;
+# projected columns load into memory, so this bounds latency and peak
+# memory.
+artifacts.table_query_max_source_bytes: 268435456
+
+# CLIO_ARTIFACTS_TABLE_QUERY_PROCESSED_CACHE_ENTRIES  (int)  <- src/clio_agent/gact/routes/artifact_table_query.py
+# Processed (pre-page) query results the per-server cache keeps; lets paging
+# through one large result reuse the same processed table instead of re-
+# reading it per page.
+artifacts.table_query_processed_cache_entries: 8
+
+# CLIO_ARTIFACTS_TABLE_QUERY_TIMEOUT_S  (float)  <- src/clio_agent/gact/routes/artifact_table_query.py
+# Wall-clock budget in seconds for one artifact table-query request; an
+# overrun answers a typed 504.
+artifacts.table_query_timeout_s: 10.0
+
 # ==========================================================================
 # Workspace resources
 # ==========================================================================

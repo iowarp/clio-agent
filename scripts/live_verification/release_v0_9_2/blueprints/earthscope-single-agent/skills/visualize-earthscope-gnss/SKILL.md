@@ -11,11 +11,13 @@ from the profile. The primary plot is a live, data-backed A2UI chart, not a PNG.
 First load `present-interactive-analysis`. Reuse the registered staged CSV artifact
 from `workflow_state` when it already exists; do not register the same CSV again.
 Then create or update `earthscope-timeseries` using exactly one primary
-`clio.time-series.v1`, the registered staged CSV artifact URI as `dataUri`, the
-confirmed time column as `xKey`, and the confirmed displacement columns as
-`yKeys`. Require `rendered=true` and `state=ready` before moving on or saying the
-plot is available. Call these tools one at a time in causal order; do not batch a
-skill load, artifact registration, or surface creation into one model response.
+`clio.chart.v1`, the registered staged CSV artifact URI as `dataUri`, and an
+Altair/Vega-Lite `spec` (see `present-interactive-analysis`) that folds the
+confirmed displacement columns into one long-format series against the
+confirmed time column. Require `rendered=true` and `state=ready` before moving
+on or saying the plot is available. Call these tools one at a time in causal
+order; do not batch a skill load, artifact registration, or surface creation
+into one model response.
 
 For the normal request to "plot" or "show" the series, stop after the interactive
 chart is ready and answer from the observed chart/data state. The renderer owns

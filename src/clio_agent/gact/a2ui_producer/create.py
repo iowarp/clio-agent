@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from clio_agent.gact.a2ui_capability_selection import select_catalog
-from clio_agent.gact.a2ui_producer import _common, _export
+from clio_agent.gact.a2ui_producer import _common, _data_reference, _definition_artifact, _export
 from clio_agent.gact.a2ui_producer._presentation import surface_presentation
 from clio_agent.gact.a2ui_producer._refusal import catalog_selection_refusal, refusal
 from clio_agent.gact.agents.tool_instrumentation import native_tool
@@ -17,7 +17,8 @@ def build_create_a2ui_surface_tool() -> Any:
 
     def create_a2ui_surface(
         surface_id: str,
-        components: list[dict[str, Any]],
+        components: Optional[list[dict[str, Any]]] = None,
+        components_path: str = "",
         data_model: Optional[dict[str, Any]] = None,
         catalog_id: str = "",
     ) -> dict[str, Any]:
@@ -25,8 +26,9 @@ def build_create_a2ui_surface_tool() -> Any:
 
         ``surface_id`` selects the surface: reuse an id from a prior result's
         ``session_surface_ids`` to revise it in place; any other id creates a
-        new one (the result's ``created`` reports which happened). A new
-        surface uses ``catalog_id``, or this agent's default catalog if empty.
+        new one. A new surface uses ``catalog_id``, or this agent's default
+        catalog if empty. Pass exactly one of ``components`` or
+        ``components_path`` (a workspace JSON file with the components array).
 
         Component shapes and guidance: load_skill("a2ui-catalog-<slug>");
         one component: load_skill(..., file="catalog.json#/components/<Name>").
@@ -37,6 +39,13 @@ def build_create_a2ui_surface_tool() -> Any:
             return resolved
         app, session_id = resolved
         surface_id = surface_id.strip()
+
+        components_resolved = _common.resolve_components(
+            app, session_id, components, components_path
+        )
+        if isinstance(components_resolved, dict):
+            return components_resolved
+        components = components_resolved
         root_components = [c for c in components if c.get("id") == "root"]
         if len(root_components) != 1:
             return refusal(
@@ -48,6 +57,10 @@ def build_create_a2ui_surface_tool() -> Any:
         if isinstance(exported, dict):
             return exported
         components, export_report = exported
+
+        data_reference_error = _data_reference.validate_component_data_references(app, components)
+        if data_reference_error is not None:
+            return data_reference_error
 
         existing = _common.existing_surface(app, session_id, surface_id)
         is_new = existing is None or existing.state == "deleted"
@@ -101,8 +114,24 @@ def build_create_a2ui_surface_tool() -> Any:
 
         outcome = _common.apply_messages(app, session_id, messages, catalog_id=resolved_catalog_id)
         if isinstance(outcome, dict):
+            # A refused batch is never minted/overwritten (#1533 adversarial
+            # review): nothing was applied, so the surface's definition
+            # artifact -- if it already had one -- is untouched.
             return outcome
         surface = outcome.surfaces[-1]
+
+        # Mint AFTER apply succeeds, from the FULL merged component list (this
+        # call may only have touched a subset of a multi-component surface):
+        # a definition artifact only ever records a state the surface really
+        # reached.
+        merge_base = None if is_new else existing
+        merged_components = _common.merged_surface_components(merge_base, components)
+        definition = _definition_artifact.mint_surface_definition_artifact(
+            app, session_id, surface_id, merged_components
+        )
+        if "definition_artifact_id" not in definition:
+            return definition
+
         result: dict[str, Any] = {
             "rendered": True,
             "created": surface.id in outcome.created_surface_ids,
@@ -115,6 +144,7 @@ def build_create_a2ui_surface_tool() -> Any:
         }
         result.update(export_report)
         result.update(_common.surface_registry_fields(outcome))
+        result.update(definition)
         return result
 
     return native_tool(
@@ -136,7 +166,19 @@ def build_create_a2ui_surface_tool() -> Any:
             "components": {
                 "type": "array",
                 "items": {"type": "object"},
-                "description": "Component definitions in root-first order.",
+                "description": (
+                    "Component definitions in root-first order. Exactly one of "
+                    "components or components_path is required. A dataUri/url/uri "
+                    "value may be a plain path inside this session's workspace; "
+                    "it is exported to artifact:// automatically before validation."
+                ),
+            },
+            "components_path": {
+                "type": "string",
+                "description": (
+                    "Workspace JSON file holding the components array, instead "
+                    "of passing components inline."
+                ),
             },
             "data_model": {
                 "type": "object",

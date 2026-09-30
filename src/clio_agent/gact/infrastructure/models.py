@@ -348,6 +348,14 @@ class ServiceRecord(BaseModel):
     effective_parameters: list[EffectiveParameter] = Field(default_factory=list)
     #: Who can use it; the key itself lives only in the secret store.
     access: ServiceAccess | None = None
+    #: Set only for `clio_agent`, only when a claim's `on_conflict: "connect"`
+    #: adopted a healthy process under a root other than the owning
+    #: infrastructure target's configured `install_root` (from the claim's
+    #: own `owner`, i.e. that process's actual install prefix). Empty means
+    #: "use the target's configured install_root" -- the common case.
+    #: Lifecycle commands (stop/logs/uninstall/start) must act on this root
+    #: when set, not the target's, or they miss the process they adopted.
+    resolved_root: str = ""
     updated_at: str = Field(default_factory=utc_now)
 
 
@@ -362,6 +370,29 @@ class ServiceActionRequest(BaseModel):
     configuration: dict[str, str] = Field(default_factory=dict)
 
 
+class VersionConflictDetail(BaseModel):
+    """A CLIO-looking process the claim step found but left running untouched.
+
+    Set only when ``error`` is ``clio_deploy_version_conflict``: an
+    ``install``/``reinstall``/``start`` on ``clio_agent`` found something on
+    the conventional port that is not this exact install and version, and
+    the request did not say how to proceed (``configuration`` carries no
+    ``on_conflict``). Nothing was stopped or installed. ``health`` is
+    ``healthy`` when it answered its own health check (``installed_version``
+    is then a real version), or ``unresponsive``/``unknown`` when it did not
+    answer or could not be asked -- never a reason to have stopped it. The
+    caller re-issues the same action with ``configuration.on_conflict`` set
+    to ``"connect"`` (adopt it as-is; only meaningful when ``healthy``) or
+    ``"replace"`` (stop it and install this desktop's version).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    installed_version: str
+    pid: str
+    health: Literal["healthy", "unresponsive", "unknown"] = "unknown"
+
+
 class InfrastructureOperation(BaseModel):
     """Durable operation state returned immediately to callers."""
 
@@ -373,6 +404,7 @@ class InfrastructureOperation(BaseModel):
     progress: str = "Queued"
     logs: str = ""
     error: str | None = None
+    conflict: VersionConflictDetail | None = None
     created_at: str = Field(default_factory=utc_now)
     updated_at: str = Field(default_factory=utc_now)
 

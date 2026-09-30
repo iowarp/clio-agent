@@ -517,6 +517,7 @@ dependencies = [
     { name = "lru-dict" },
     { name = "matplotlib" },
     { name = "msgspec" },
+    { name = "numpy" },
     { name = "odfpy" },
     { name = "openai-codex" },
     { name = "openai-codex-cli-bin" },
@@ -609,7 +610,7 @@ requires-dist = [
     { name = "claude-agent-sdk", marker = "extra == 'claude-code'", specifier = ">=0.2.156" },
     { name = "clio-agent", extras = ["optimizers", "adios", "argonne", "claude-code", "desktop", "flowcept", "dev"], marker = "extra == 'all'" },
     { name = "clio-kit", marker = "extra == 'desktop'", specifier = "==2.10.6" },
-    { name = "clio-schemas", specifier = "==0.4.1" },
+    { name = "clio-schemas", specifier = "==0.5.1" },
     { name = "ddgs", marker = "extra == 'desktop'", specifier = ">=6.0" },
     { name = "dspy", specifier = "==3.3.0b1" },
     { name = "fastapi", specifier = ">=0.140" },
@@ -628,6 +629,7 @@ requires-dist = [
     { name = "matplotlib", specifier = ">=3.8.0" },
     { name = "msgspec", specifier = ">=0.18.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.7.0" },
+    { name = "numpy", specifier = ">=1.24.0" },
     { name = "numpy", marker = "extra == 'optimizers'", specifier = ">=1.24.0" },
     { name = "odfpy", specifier = ">=1.4.1,<2" },
     { name = "openai-codex", specifier = ">=0.157.1" },
@@ -681,16 +683,16 @@ wheels = [
 
 [[package]]
 name = "clio-schemas"
-version = "0.4.1"
+version = "0.5.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jsonschema", extra = ["format"] },
     { name = "pydantic" },
     { name = "referencing" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2b/8c/fb922be33a0ba3bf885069e9dd2abd4594820ace654dc3896bc3f161c5bc/clio_schemas-0.4.1.tar.gz", hash = "sha256:1a11059ed03f2da7ce4c6c6ab549069e6ecc2581186677eb521563356c098f42", size = 168953, upload-time = "2026-09-26T22:39:23.46Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e8/ad/80de41bbe8957fac2fc930fe3196dd1d945740e7618d40f5b4f9ab3a955b/clio_schemas-0.5.1.tar.gz", hash = "sha256:7459aed8f3fb1c5383f16ba79478e644baefa47b5276679e638af528b3176912", size = 215861, upload-time = "2026-09-30T10:34:14.288Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/70/bb/0caa01411b202a9f7c918bcb17efe660abc911390950edff5b9f5595e4ee/clio_schemas-0.4.1-py3-none-any.whl", hash = "sha256:cef0c812c9d8cfb3883a3b4fc8695cdecc1160aacd0d07ee35ca32554676891b", size = 124596, upload-time = "2026-09-26T22:39:22.503Z" },
+    { url = "https://files.pythonhosted.org/packages/fb/23/4ba31719500adf381e56de1e980b0d9cc66e016f7f011ef85703a5a5600a/clio_schemas-0.5.1-py3-none-any.whl", hash = "sha256:295666ebcfd70dc78db7de2baf2032422a80f39d2632cc58e1688fb24ec2bae6", size = 158980, upload-time = "2026-09-30T10:34:13.229Z" },
 ]
 
 [[package]]

@@ -71,6 +71,26 @@ def test_url_properties_are_read_from_the_catalog_schema() -> None:
     assert ("clio.artifact.v1", "uri") in url_properties(workspace.file)
 
 
+def test_every_data_by_reference_component_names_its_data_uri_as_a_url_property() -> None:
+    """#1533: the data-by-reference contract's ``dataUri`` is detected the
+    SAME generic way ``url``/``uri`` already are -- no per-component
+    special-casing, so the "workspace path is exported automatically"
+    guidance (below) covers every one of these components too."""
+
+    _basic, workspace = load_builtin_catalogs()
+    pairs = url_properties(workspace.file)
+    for component in (
+        "clio.map.v1",
+        "clio.data-table.v1",
+        "clio.workflow.v1",
+        "clio.code.v1",
+        "clio.mermaid.v1",
+        "clio.diff.v1",
+        "clio.chart.v1",
+    ):
+        assert (component, "dataUri") in pairs, component
+
+
 def test_a_catalog_without_url_properties_gets_no_media_section() -> None:
     file = {"components": {"Text": {"properties": {"text": {"type": "string"}}}}}
     assert url_properties(file) == []

@@ -8,11 +8,24 @@ therefore *claims* the port:
 
 * nothing listens: proceed;
 * this install's own server listens, is healthy, and runs the target
-  version: **adopt** it (the install and start steps are skipped);
-* any other CLIO server listens (another install prefix, an old version, a
-  hung server): **stop** it and report ``Stopped an old CLIO (pid N, path)``;
+  version: **adopt** it (the install and start steps are skipped) --
+  whether this desktop started it or not (a hand-run ``clio start``, or a
+  different desktop's earlier deploy, adopt the same way);
+* a healthy CLIO server listens under a different root or version, and the
+  caller has not said to replace it: **found** -- nothing is touched or
+  installed; the caller decides (see ``replace`` below);
+* the same case, but the caller passed ``replace=1`` (the person chose
+  "Replace it" after being shown the found version): **stop** it and report
+  ``Stopped an old CLIO (pid N, path)``;
 * anything that is not a CLIO server listens: fail with a typed line naming
   it. Unrelated processes are never touched.
+
+A CLIO is never stopped just because it differs from what this desktop would
+install -- only ``adopt`` (exact match) or an explicit ``replace=1`` may end
+one. This is a claim-time decision, not a core-agent one: the frontend shows
+the found version and asks "Connect to the running CLIO (vX)" or "Replace
+it", and either answer becomes one more claim call with ``replace`` set only
+for "Replace".
 
 A CLIO server is recognized only by what CLIO's own launcher leaves: the
 command line ``<prefix>/clio-agent/.venv/bin/clio-agent serve`` confirmed by
@@ -111,6 +124,40 @@ stop_clio_server() {
   return 1
 }
 real() { (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "$1"; }
+# The API's health state -- "healthy" (200/503), "unresponsive" (asked and
+# got neither), or "unknown" (no curl/python3/wget on this node to ask with).
+# NEVER used to decide whether to stop anything: only to name what was
+# found, so an unanswering-but-maybe-still-starting CLIO is reported (found)
+# rather than killed the way a hung server used to be.
+check_health_state() {
+  local url="$1" code
+  if command -v curl >/dev/null 2>&1; then
+    code="$(curl --noproxy '*' -sS -m 3 -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || true)"
+  elif command -v python3 >/dev/null 2>&1; then
+    code="$(python3 -c '
+import sys, urllib.request, urllib.error
+try:
+    print(urllib.request.urlopen(sys.argv[1], timeout=3).getcode())
+except urllib.error.HTTPError as exc:
+    print(exc.code)
+except Exception:
+    print("")
+' "$url" 2>/dev/null || true)"
+  elif command -v wget >/dev/null 2>&1; then
+    if wget -q -T 3 --server-response -O /dev/null "$url" 2>&1 | grep -qE 'HTTP/[0-9.]+ +(200|503)'; then
+      code=200
+    else
+      code=""
+    fi
+  else
+    printf 'unknown'
+    return 0
+  fi
+  case "$code" in
+    200|503) printf 'healthy' ;;
+    *) printf 'unresponsive' ;;
+  esac
+}
 """
 
 _CLAIM = (
@@ -118,6 +165,7 @@ _CLAIM = (
     + _COMMON
     + r"""
 version="$3"
+replace="${4:-0}"
 existing_root=0; [ -d "$root" ] && existing_root=1
 if ! port_busy "$port"; then
   say "Port $port is free"
@@ -129,14 +177,22 @@ if [ -z "$pid" ]; then
   fail "Port $port is used by a process this account cannot inspect (another user's program)"
 fi
 owner="$(clio_prefix_of "$pid")" || fail "Port $port is used by another program (pid $pid: $(cmdline_of "$pid" | cut -c1-160))"
-if [ "$(real "$owner")" = "$(real "$root")" ]; then
-  installed="$("$root/clio-agent/.venv/bin/python" -c 'import importlib.metadata as m; print(m.version("clio-agent"))' 2>/dev/null || true)"
-  code="$(curl --noproxy '*' -sS -m 3 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/v1/health" 2>/dev/null || true)"
-  if [ "$installed" = "$version" ] && { [ "$code" = "200" ] || [ "$code" = "503" ]; }; then
-    say "Reusing the running CLIO (pid $pid, $owner)"
-    printf 'clio-deploy result=adopted existing_root=%s pid=%s\n' "$existing_root" "$pid"
-    exit 0
+installed="$("$owner/clio-agent/.venv/bin/python" -c 'import importlib.metadata as m; print(m.version("clio-agent"))' 2>/dev/null || true)"
+health_state="$(check_health_state "http://127.0.0.1:$port/v1/health")"
+if [ "$health_state" = "healthy" ] && [ "$installed" = "$version" ] && [ "$(real "$owner")" = "$(real "$root")" ]; then
+  say "Reusing the running CLIO (pid $pid, $owner)"
+  printf 'clio-deploy result=adopted existing_root=%s pid=%s owner=%s\n' "$existing_root" "$pid" "$owner"
+  exit 0
+fi
+if [ "$replace" != "1" ]; then
+  if [ "$health_state" = "healthy" ]; then
+    say "CLIO ${installed:-(unknown version)} is already running (pid $pid, $owner)"
+  else
+    say "A CLIO-looking process on port $port isn't answering (pid $pid, $owner, health=$health_state)"
   fi
+  printf 'clio-deploy result=found existing_root=%s pid=%s installed=%s state=%s owner=%s\n' \
+    "$existing_root" "$pid" "${installed:-unknown}" "$health_state" "$owner"
+  exit 0
 fi
 stop_clio_server "$pid" || fail "An old CLIO (pid $pid, $owner) did not stop"
 for i in $(seq 1 20); do
@@ -145,7 +201,7 @@ for i in $(seq 1 20); do
 done
 port_busy "$port" && fail "Port $port is still in use after stopping an old CLIO (pid $pid, $owner)"
 say "Stopped an old CLIO (pid $pid, $owner)"
-printf 'clio-deploy result=stopped existing_root=%s pid=%s\n' "$existing_root" "$pid"
+printf 'clio-deploy result=stopped existing_root=%s pid=%s owner=%s\n' "$existing_root" "$pid" "$owner"
 """
 )
 
@@ -182,21 +238,47 @@ printf 'clio-deploy result=cleaned\n'
 
 @dataclass(frozen=True)
 class ClaimResult:
-    """What the claim step found on the API port."""
+    """What the claim step found on the API port.
 
-    result: Literal["free", "adopted", "stopped"]
+    ``found`` means a process is on the port but the claim did not touch it
+    (a different root or version, an unresponsive server, or ``replace``
+    unset): ``installed_version``, ``pid`` and ``owner`` (the process's own
+    install root, from its cmdline/pidfile -- not necessarily this claim's
+    ``root``) name what is running, so the caller can ask before a follow-up
+    claim with ``replace=True`` stops it, or record the real root a
+    ``connect`` answer adopted. ``health`` is only meaningful for ``found``:
+    ``healthy`` (answered 200/503), ``unresponsive`` (asked and got neither),
+    or ``unknown`` (no curl/python3/wget on that node to ask with) -- never a
+    reason to stop it on its own.
+    """
+
+    result: Literal["free", "adopted", "stopped", "found"]
     existing_root: bool
+    installed_version: str | None = None
+    pid: str | None = None
+    owner: str | None = None
+    health: Literal["healthy", "unresponsive", "unknown"] | None = None
 
 
 _RESULT_LINE = re.compile(r"clio-deploy result=(\w+)((?: \w+=\S+)*)")
 
 
-def claim_command(root: str, port: int, version: str) -> CommandSpec:
-    """The adopt-or-stop step that runs before installing."""
+def claim_command(root: str, port: int, version: str, *, replace: bool = False) -> CommandSpec:
+    """The adopt-or-stop step that runs before installing.
+
+    Args:
+        root: The install root this deploy would use.
+        port: CLIO's conventional API port.
+        version: The version this deploy would install.
+        replace: When ``True``, a healthy but non-matching CLIO found on the
+            port is stopped (the person chose "Replace it"). When ``False``
+            (default), such a CLIO is left running and reported as ``found``
+            instead -- claiming the port is never destructive on its own.
+    """
 
     return CommandSpec(
         program="bash",
-        args=["-lc", _CLAIM, "clio", root, str(port), version],
+        args=["-lc", _CLAIM, "clio", root, str(port), version, "1" if replace else "0"],
         timeout_seconds=90,
     )
 
@@ -311,10 +393,15 @@ def parse_claim(stdout: str) -> ClaimResult | None:
 
     for line in reversed(stdout.splitlines()):
         match = _RESULT_LINE.search(line)
-        if match and match.group(1) in {"free", "adopted", "stopped"}:
+        if match and match.group(1) in {"free", "adopted", "stopped", "found"}:
             fields = dict(item.split("=", 1) for item in match.group(2).split())
+            health = fields.get("state")
             return ClaimResult(
                 result=match.group(1),  # type: ignore[arg-type]
                 existing_root=fields.get("existing_root") == "1",
+                installed_version=fields.get("installed"),
+                pid=fields.get("pid"),
+                owner=fields.get("owner"),
+                health=health if health in {"healthy", "unresponsive", "unknown"} else None,  # type: ignore[arg-type]
             )
     return None

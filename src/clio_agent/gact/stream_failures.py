@@ -21,6 +21,8 @@ from clio_agent.providers.codex.errors import (
     CODEX_AUTHENTICATION_ERROR_MESSAGE,
     contains_codex_authentication_error,
 )
+from clio_agent.providers.terminal_signal import find_terminal_signal, recover_message
+from clio_agent.providers.terminal_signal_catalog import TERMINAL_PROVIDER_SIGNALS
 
 # Leaf-scan order for an exception group that matched nothing at the top
 # level. The top-level check already recurses for Claude Code (its detector
@@ -35,6 +37,15 @@ CLI_PROVIDER_FAILURE_MESSAGES: tuple[str, ...] = (
 #: ``details.reason`` of a ``provider_error`` whose provider refused the
 #: sign-in (#1454): the client offers that provider's sign-in action.
 PROVIDER_AUTH_REQUIRED_REASON = "provider_auth_required"
+
+#: ``details.reason`` values a caller can see from
+#: :data:`clio_agent.providers.terminal_signal_catalog.TERMINAL_PROVIDER_SIGNALS`
+#: (kept here too, as stable public re-exports for callers that only need the
+#: string, not the table) -- unconditional on the turn's configured provider,
+#: see :func:`turn_failure_message`.
+CLAUDE_CODE_PLAN_LIMIT_REASON = "claude_code_plan_limit"
+CODEX_PLAN_LIMIT_REASON = "codex_plan_limit"
+PROVIDER_SAFETY_REFUSAL_REASON = "provider_safety_refusal"
 
 
 def cli_provider_stream_failure(exc: BaseException, *, provider_id: str) -> str | None:
@@ -115,6 +126,47 @@ def _auth_error_info(provider_id: str, message: str, details: dict[str, Any]) ->
     )
 
 
+def _terminal_signal_error_info(exc: BaseException, details: dict[str, Any]) -> Any | None:
+    """The typed ``provider_error`` for any registered terminal signal, or ``None``.
+
+    ONE lookup against :data:`~clio_agent.providers.terminal_signal_catalog
+    .TERMINAL_PROVIDER_SIGNALS` replaces a per-signal chain of
+    ``if <signal>_message(exc): ...`` -- adding a new terminal signal to the
+    table (a new provider module's :class:`TerminalProviderSignal`) needs no
+    change here.
+
+    Args:
+        exc: The exception the turn's provider call raised (searched
+            regardless of the turn's configured provider -- see
+            :func:`turn_failure_message`).
+        details: The caller's base ``ErrorInfo.details`` (extended, not
+            replaced).
+
+    Returns:
+        The :class:`~clio_agent.gact.types.ErrorInfo`, or ``None`` when ``exc``
+        carries no registered terminal signal.
+    """
+    found = find_terminal_signal(exc, TERMINAL_PROVIDER_SIGNALS)
+    if found is None:
+        return None
+    signal, node = found
+    from clio_agent.gact.types import ErrorInfo  # noqa: PLC0415
+
+    return ErrorInfo(
+        error="provider_error",
+        message=recover_message(node, signal.marker),
+        details={
+            **details,
+            "reason": signal.reason,
+            "provider_id": signal.provider_id,
+            "provider_label": provider_label(signal.provider_id),
+            "recovery_actions": list(signal.recovery_actions),
+            **signal.extra_details(node),
+        },
+        recoverable=True,
+    )
+
+
 def streamed_turn_error_info(state: Any, exc: BaseException, partial_answer: str) -> Any:
     """The typed error for a turn whose streamed provider call failed.
 
@@ -135,6 +187,9 @@ def streamed_turn_error_info(state: Any, exc: BaseException, partial_answer: str
         "partial_output": bool(partial_answer),
         "stream_source": ("live" if partial_answer else "batch"),
     }
+    terminal = _terminal_signal_error_info(original, details)
+    if terminal is not None:
+        return terminal
     provider_id = _turn_provider_id(state)
     auth = provider_auth_failure(original, provider_id=provider_id)
     if auth is not None:
@@ -223,10 +278,17 @@ def provider_failure_message(exc: BaseException, *, provider_label: str) -> str 
 def turn_failure_message(exc: BaseException, provider_id: str, otherwise: str) -> str:
     """The user-facing message for a failed turn, streamed or not.
 
-    The one formatter both failure paths share: a provider HTTP error is the
-    provider's own words on one line (:func:`provider_failure_message`),
-    labelled with the configured provider, or with the provider the error
-    names when none is configured; any other failure keeps ``otherwise``.
+    The one formatter both failure paths share: any registered terminal
+    provider signal (:data:`~clio_agent.providers.terminal_signal_catalog
+    .TERMINAL_PROVIDER_SIGNALS` -- a Claude Code or Codex plan/usage-limit
+    hit, a Claude Code safety-filter refusal, ...) is CLIO's own clean
+    sentence recovered from the exception tree regardless of ``provider_id``
+    (#1529 -- one of these can surface a turn after the session's configured
+    provider has already moved on, and the user still needs to know what
+    actually happened); otherwise a provider HTTP error is the provider's own
+    words on one line (:func:`provider_failure_message`), labelled with the
+    configured provider, or with the provider the error names when none is
+    configured; any other failure keeps ``otherwise``.
 
     Args:
         exc: The exception the turn's provider call raised.
@@ -237,6 +299,10 @@ def turn_failure_message(exc: BaseException, provider_id: str, otherwise: str) -
     Returns:
         The message the failed turn's error carries.
     """
+    found = find_terminal_signal(exc, TERMINAL_PROVIDER_SIGNALS)
+    if found is not None:
+        signal, node = found
+        return recover_message(node, signal.marker)
     leaf = _provider_error_leaf(exc)
     named = provider_id or str(getattr(leaf, "provider", "") or "")
     message = provider_failure_message(exc, provider_label=provider_label(named))
@@ -256,6 +322,9 @@ def agent_forward_error_info(state: Any, exc: BaseException) -> Any:
     """
     from clio_agent.gact.types import ErrorInfo  # noqa: PLC0415
 
+    terminal = _terminal_signal_error_info(exc, {"original_error": type(exc).__name__})
+    if terminal is not None:
+        return terminal
     provider_id = _turn_provider_id(state)
     auth = provider_auth_failure(exc, provider_id=provider_id)
     if auth is not None:
@@ -303,6 +372,9 @@ def describe_stream_exc(exc: BaseException, *, provider_id: str) -> str:
 
 
 __all__ = [
+    "CLAUDE_CODE_PLAN_LIMIT_REASON",
+    "CODEX_PLAN_LIMIT_REASON",
+    "PROVIDER_SAFETY_REFUSAL_REASON",
     "CLI_PROVIDER_FAILURE_MESSAGES",
     "PROVIDER_AUTH_REQUIRED_REASON",
     "provider_auth_failure",
