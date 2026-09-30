@@ -640,12 +640,18 @@ def allow_pytest_tmp_path(request, tmp_path, monkeypatch):
     config_dir.mkdir(parents=True, exist_ok=True)
     layer: dict[str, object] = {
         "agents": {"disable_default_registry_bootstrap": True},
-        "tools": {"file_policy": {"allowed_roots": allowed_roots}},
+        # Unit tests start no MCP servers in the background (test_session_warmup
+        # covers the warm-up itself); a live test runs it as an operator would.
+        "tools": {
+            "file_policy": {"allowed_roots": allowed_roots},
+            "mcp": {"session_warmup": False},
+        },
         "lm": {"model": "ibm/granite-4-h-tiny"},
         "arc": {"store": "local"},
     }
     if request.node.get_closest_marker("live"):
         del layer["lm"]  # a live test runs the model the operator configured (CLIO_LM_*)
+        layer["tools"] = {"file_policy": {"allowed_roots": allowed_roots}}
     config_dir.joinpath("config.yaml").write_text(
         yaml.safe_dump(layer, sort_keys=False), encoding="utf-8"
     )

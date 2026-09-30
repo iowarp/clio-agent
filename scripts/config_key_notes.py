@@ -1190,6 +1190,11 @@ KEY_NOTES: dict[str, str] = {
         "Opts execution-path MCP clients into SEP-2549 server-hinted response caching; off by "
         "default (enabling it wraps the message handler, visible to a caller that type-checks it)."
     ),
+    "tools.mcp.session_warmup": (
+        "Start a session's MCP servers (its blueprint's and any always-load service) in the "
+        "background when the session is created or a blueprint is activated, so the first "
+        "message does not wait for them; set false to start servers only when a turn needs them."
+    ),
     "tools.mcp.setup_timeout_s": (
         "Seconds allowed for an MCP tool executor's startup handshake; raise for servers with slow "
         "cold starts, lower to fail faster."

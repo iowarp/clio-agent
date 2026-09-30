@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Literal, Optional, cast
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
 
+from clio_agent.gact import session_warmup
 from clio_agent.gact.a2ui_capabilities import catalog_ids_for_resolved_blueprint
 from clio_agent.gact.agent_blueprint_files import (
     BlueprintPathEscapesRootError,
@@ -72,6 +73,16 @@ from clio_agent.gact.routes.blueprint_file_write import register_blueprint_file_
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Session
 
 logger = logging.getLogger(__name__)
+
+
+def _not_found(message: str, **details: str) -> HTTPException:
+    """The 404 envelope for a session or blueprint that does not exist."""
+
+    error = ErrorInfo(error="not_found", message=message, details=details, recoverable=False)
+    return HTTPException(
+        status_code=404, detail=ErrorEnvelope(error=error).model_dump(exclude_none=True)
+    )
+
 
 if TYPE_CHECKING:
     from clio_agent.gact.routes.deps import GactDeps
@@ -770,17 +781,7 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
     async def set_session_agent_blueprint(sid: str, req: dict[str, Any]) -> dict[str, Any]:
         sess = app.state.sessions.get(sid)
         if sess is None:
-            raise HTTPException(
-                status_code=404,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="not_found",
-                        message=f"session not found: {sid}",
-                        details={"session_id": sid},
-                        recoverable=False,
-                    )
-                ).model_dump(exclude_none=True),
-            )
+            raise _not_found(f"session not found: {sid}", session_id=sid)
         blueprint_id = str(req.get("blueprint_id") or req.get("agent_blueprint_id") or "").strip()
         blueprint_path = str(req.get("path") or req.get("blueprint_path") or "").strip()
         cwd = _runtime_workspace_catalog_cwd(app, session_id=sid)
@@ -831,16 +832,10 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                 (row for row in discover_agent_blueprints(cwd=cwd) if row.id == blueprint_id), None
             )
             if blueprint is None:
-                raise HTTPException(
-                    status_code=404,
-                    detail=ErrorEnvelope(
-                        error=ErrorInfo(
-                            error="not_found",
-                            message=f"agent blueprint not found: {blueprint_id}",
-                            details={"agent_blueprint_id": blueprint_id, "session_id": sid},
-                            recoverable=False,
-                        )
-                    ).model_dump(exclude_none=True),
+                raise _not_found(
+                    f"agent blueprint not found: {blueprint_id}",
+                    agent_blueprint_id=blueprint_id,
+                    session_id=sid,
                 )
             blueprint_wire = blueprint.to_wire()
             activation_metadata = deps.agent_blueprint_activation_metadata(
@@ -858,6 +853,8 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
                     "active_expert_pack_path": "",
                 },
             )
+        # The blueprint's servers start now, not on the session's next message.
+        session_warmup.start_session_warmup(app, sid, trigger="blueprint_activated")
         return {
             "session_id": sid,
             "workspace_id": getattr(sess, "workspace_id", ""),

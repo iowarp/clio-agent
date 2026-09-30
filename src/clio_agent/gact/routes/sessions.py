@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
-from clio_agent.gact import context_reference_retry
+from clio_agent.gact import context_reference_retry, session_warmup
 from clio_agent.gact.autonomous_loop import stop_session_loop
 from clio_agent.gact.compaction import CompactionError, compact_session_context
 from clio_agent.gact.context_rollback import follow_rollback
@@ -130,10 +130,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         if "model" in supplied:
             model = req.model.model_dump(exclude_none=True) if req.model else None
         elif defaults.provider_id or defaults.model_id:
-            model = {
-                "provider_id": defaults.provider_id,
-                "model_id": defaults.model_id,
-            }
+            model = {"provider_id": defaults.provider_id, "model_id": defaults.model_id}
         else:
             model = None
         sess = app.state.sessions.create(
@@ -155,6 +152,8 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         # Session creation inherits territory and emits no fabricated grant (#979.2).
         sync_watcher_for_mode(app, sess)
         bringup_timing.timer_for_session(app, sess.id).end_phase("session.create")
+        # Start the session's servers now, not on its first message.
+        session_warmup.start_session_warmup(app, sess.id, trigger="session_created")
         return project_for_request(
             request,
             v3=lambda: JSONResponse(content=session_to_v3(sess), status_code=201),

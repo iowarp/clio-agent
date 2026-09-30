@@ -586,10 +586,7 @@ def _resolve_declared_tools_with_on_demand_mount(
     for namespace in sorted(needed_namespaces):
         try:
             mounted_tools = mount_namespace_for_session(
-                tool_executor,
-                namespace,
-                declared_specs[namespace],
-                connect=False,
+                tool_executor, namespace, declared_specs[namespace], connect=False
             )
         except Exception as exc:  # noqa: BLE001 - typed + named, never cached (next call retries)
             mount_failures[namespace] = mount_failure_reason(exc)

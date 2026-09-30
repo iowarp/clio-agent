@@ -1217,6 +1217,13 @@ tools.mcp.probe_timeout_retries: 3
 # a caller that type-checks it).
 tools.mcp.response_cache_enabled: false
 
+# CLIO_MCP_SESSION_WARMUP  (bool)  <- src/clio_agent/gact/session_warmup.py
+# Start a session's MCP servers (its blueprint's and any always-load
+# service) in the background when the session is created or a blueprint is
+# activated, so the first message does not wait for them; set false to start
+# servers only when a turn needs them.
+tools.mcp.session_warmup: true
+
 # CLIO_MCP_SETUP_TIMEOUT_S  (float)  <- src/clio_agent/gact/mcp_readiness.py
 # Seconds allowed for an MCP tool executor's startup handshake; raise for
 # servers with slow cold starts, lower to fail faster.
