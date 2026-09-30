@@ -207,11 +207,30 @@ def uses_shared_launcher_cache(spec: object) -> bool:
     of the shared dir, so it cannot race another spawn ON it.
     """
 
+    command = str(getattr(spec, "command", "") or "")
     return (
         getattr(spec, "transport", "") == "stdio"
-        and bool(getattr(spec, "command", ""))
+        and bool(command)
         and "UV_CACHE_DIR" not in (getattr(spec, "env", None) or {})
+        and _launcher_name(command) not in _SELF_ISOLATING_LAUNCHERS
     )
+
+
+# Launchers that run each server from their own locked environment on their own uv
+# cache (they set the child's ``UV_CACHE_DIR`` themselves), so their launches never
+# touch the shared cache this lock guards and may start concurrently. clio-kit:
+# ``_run_locked_local_server`` + ``environment_locks.EnvironmentInUseMarker``.
+_SELF_ISOLATING_LAUNCHERS = frozenset({"clio-kit"})
+
+
+def _launcher_name(command: str) -> str:
+    """The launcher's bare name: ``C:\\...\\clio-kit.EXE`` and ``/.../clio-kit`` -> ``clio-kit``."""
+
+    name = command.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    for suffix in (".exe", ".cmd", ".bat"):
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
 
 
 @contextmanager
