@@ -10,9 +10,7 @@ before the bounded default landed — is surfaced as a warning with the exact
 remediation, rather than silently rewritten (see
 :func:`clio_agent.arc.clio_core_config.default_cte_config_path`).
 
-The row is emitted only when the ARC backend is the clio-core backend (``CLIO_ARC_STORE`` is
-``cte`` or unset); for the explicit ``local`` backend the ram hot tier is irrelevant and
-no row is produced (mirrors :meth:`RuntimeProbe._arc_backend`).
+clio-core is the only ARC store, so the row is always emitted.
 """
 
 from __future__ import annotations
@@ -54,8 +52,7 @@ def _cap_source(cap: RamTierCap) -> str:
 def probe_clio_core_ram_cap(*, env: Mapping[str, str] | None = None) -> list[IntegrationStatus]:
     """Report the effective clio-core CTE ram hot-tier cap as a doctor row.
 
-    Returns a single-row list when the ARC backend is clio-core, and an empty list for the
-    explicit ``local`` backend (the ram tier does not apply). The row is:
+    Returns a single-row list (clio-core is the only ARC store). The row is:
 
     * MISCONFIGURED when the config file declares an unparseable cap (fail-loud);
     * DEGRADED when a PRESENT ram data tier is ``0g`` (= 80% of system DRAM — the
@@ -74,9 +71,6 @@ def probe_clio_core_ram_cap(*, env: Mapping[str, str] | None = None) -> list[Int
     import os  # noqa: PLC0415 - default env without a module-level os handle
 
     env = env if env is not None else os.environ
-    backend = env.get("CLIO_ARC_STORE", "cte").strip().lower()
-    if backend != "cte":
-        return []
 
     cap = effective_ram_cap(env=env)
     source = _cap_source(cap)
@@ -246,7 +240,7 @@ def probe_clio_core_attach(*, state: object | None = None) -> list[IntegrationSt
             config_source="runtime:clio_core_attach",
             next_action=next_action,
             endpoint=endpoint,
-            fallback="local" if snap.phase is ClioCoreAttachPhase.UNAVAILABLE else "none",
+            fallback="none",
             details=details,
             required=required,
         )
@@ -398,8 +392,7 @@ def probe_clio_core_daemon_memory(
     * DEGRADED with ``clio_core_daemon_rss_critical`` when RSS is >= the critical
       threshold (default 4 GiB), naming the opt-in recycle policy in the remediation.
 
-    Emitted only for the clio-core ARC backend (``CLIO_ARC_STORE`` is ``cte`` or unset)
-    and only when a daemon is actually located (a down daemon is surfaced by the #892
+    Emitted only when a daemon is actually located (a down daemon is surfaced by the #892
     liveness row instead). The typed ``ok`` | ``elevated`` | ``critical`` status rides in
     ``details['daemon_mem_status']``; both non-ok statuses map to DEGRADED (the doctor
     state vocabulary has no separate elevated/critical rows).
@@ -418,9 +411,6 @@ def probe_clio_core_daemon_memory(
     from clio_agent.arc import clio_core_daemon  # noqa: PLC0415 - lazy: avoid load-time cycle
 
     env = env if env is not None else os.environ
-    backend = env.get("CLIO_ARC_STORE", "cte").strip().lower()
-    if backend != "cte":
-        return []
 
     snap = (
         snapshot
@@ -535,12 +525,8 @@ def probe_cte_cold_tier_disk(*, env: Mapping[str, str] | None = None) -> list[In
     before writes fail. Actual trimming is upstream (clio-core); this is the demand-side
     visibility clio-agent can ship today.
 
-    Emitted only for the clio-core backend (``CLIO_ARC_STORE`` ``cte`` or unset).
     """
     env = env if env is not None else os.environ
-    backend = env.get("CLIO_ARC_STORE", "cte").strip().lower()
-    if backend != "cte":
-        return []
 
     cap = effective_ram_cap(env=env)
     if cap.final_tier_capacity is None:
@@ -648,8 +634,6 @@ def probe_clio_core_write_health(
         One required ``clio_core_write`` row, or an empty list.
     """
     env = env if env is not None else os.environ
-    if env.get("CLIO_ARC_STORE", "cte").strip().lower() != "cte":
-        return []
 
     from clio_agent.arc.clio_core_retry import last_lost_put_write  # noqa: PLC0415
 

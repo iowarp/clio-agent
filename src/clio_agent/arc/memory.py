@@ -103,19 +103,16 @@ class ARCMemory:
             data_dir: Directory path for persistent storage
             cache_capacity: Maximum number of cached items
             store: Optional ARCStore for record persistence. When ``None`` the
-                backend is chosen by :func:`make_arc_store` — clio-core by
-                default, LocalFS only on explicit ``CLIO_ARC_STORE=local``. Pass a
-                store to override the factory (e.g. tests injecting a specific backend).
+                store is clio-core, from :func:`make_arc_store` (a typed error when it
+                cannot be brought up). Pass a store to inject one (tests).
         """
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
         # Persistence seam: every record kind is read/written through an
         # ARCStore, so ARC never touches the filesystem directly. The LSM tree
-        # (below) remains a separate high-throughput subsystem. The backend is
-        # chosen by the factory (default clio-core; LocalFS only on explicit
-        # CLIO_ARC_STORE=local), NOT hardcoded -- a hardcoded LocalFS here is what
-        # silently kept ARC off clio-core regardless of config.
+        # (below) remains a separate high-throughput subsystem. The store is clio-core,
+        # built by the factory.
         self._store: ARCStore = (
             store if store is not None else make_arc_store(data_dir=self.data_dir)
         )
