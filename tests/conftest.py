@@ -696,18 +696,21 @@ def _test_arc_namespace(request: pytest.FixtureRequest) -> str:
 
 @pytest.fixture(autouse=True)
 def clio_core_namespace(request, allow_pytest_tmp_path):
-    """Clear this test's clio-core namespace at teardown (only if the test attached)."""
+    """Clear this test's clio-core namespace at teardown (only once a store attached).
+
+    Clears through a store bound straight to the ALREADY-attached config -- no factory,
+    no preflight, no config read -- so a test's still-active patches (conf, disk usage)
+    cannot break or slow the teardown.
+    """
     yield
-    from clio_agent.arc import clio_core_attach  # noqa: PLC0415
+    from clio_agent.arc import clio_core_attach, storage  # noqa: PLC0415
 
-    if (
-        clio_core_attach.attach_state_snapshot().phase
-        is not clio_core_attach.ClioCoreAttachPhase.ATTACHED
-    ):
+    state = clio_core_attach.attach_state_snapshot()
+    if state.phase is not clio_core_attach.ClioCoreAttachPhase.ATTACHED:
         return
-    from clio_agent.arc.storage import make_arc_store  # noqa: PLC0415
-
-    make_arc_store(backend="cte", namespace=_test_arc_namespace(request)).clear()
+    storage.ClioCoreStore(
+        config_path=state.config_path, namespace=_test_arc_namespace(request)
+    ).clear()
 
 
 def _path_under(path: Path, base: Path) -> bool:

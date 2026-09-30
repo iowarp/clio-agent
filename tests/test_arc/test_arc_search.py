@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from clio_agent.arc.clio_core_config import CLIO_CORE_SEARCH_INDEXER_ABSENT
-from clio_agent.arc.memory import ARCMemory
+from clio_agent.arc.memory import ARCMemory, SearchUnavailableError
 from clio_agent.arc.storage import make_arc_store
 
 
@@ -44,10 +44,12 @@ def test_search_companions_are_never_listed_as_scopes():
     assert arc.list_segment_scopes(sid) == ["agentA/hdf5", "agentA/seismic", "agentA/wildfire"]
 
 
-def test_search_empty_query():
+def test_search_is_a_typed_error_when_clio_core_cannot_search():
     arc = ARCMemory(store=make_arc_store(backend="cte"))
     sid = _seed(arc)
-    assert arc.search_segment_scopes(sid, "   ", k=3) == []
+    with pytest.raises(SearchUnavailableError) as caught:
+        arc.search_segment_scopes(sid, "earthquake", k=3)
+    assert caught.value.reason == CLIO_CORE_SEARCH_INDEXER_ABSENT
 
 
 @pytest.mark.integration
@@ -63,6 +65,6 @@ def test_search_on_clio_core_reports_degraded_not_silently_empty():
     sid = _seed(arc, sid="search_clio_core_s1")
     assert arc.segment_search_is_semantic() is False
     assert arc.segment_search_degradation_reason() == CLIO_CORE_SEARCH_INDEXER_ABSENT
-    hits = arc.search_segment_scopes(sid, "earthquake magnitude and epicenter location", k=3)
-    assert hits == []  # honest empty, not a fabricated ranking
+    with pytest.raises(SearchUnavailableError):  # typed, never an empty ranking
+        arc.search_segment_scopes(sid, "earthquake magnitude and epicenter location", k=3)
     arc.clear_all()

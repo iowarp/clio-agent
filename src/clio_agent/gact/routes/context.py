@@ -397,22 +397,22 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
         arc = app.state.arc
         if arc is None:
             raise _arc_unavailable(sid)
-        if not arc.segment_search_is_semantic():
+        from clio_agent.arc.memory import SearchUnavailableError  # noqa: PLC0415
+
+        try:
+            hits = arc.search_segment_scopes(sid, q, scope_prefix=scope_prefix, k=k)
+        except SearchUnavailableError as exc:
             raise HTTPException(
                 status_code=503,
                 detail=ErrorEnvelope(
                     error=ErrorInfo(
                         error="search_unavailable",
                         message="clio-core cannot search this deployment's context",
-                        details={
-                            "session_id": sid,
-                            "reason": arc.segment_search_degradation_reason(),
-                        },
+                        details={"session_id": sid, "reason": exc.reason},
                         recoverable=False,
                     )
                 ).model_dump(exclude_none=True),
-            )
-        hits = arc.search_segment_scopes(sid, q, scope_prefix=scope_prefix, k=k)
+            ) from exc
         return ContextSearchResponse(
             session_id=sid,
             query=q,

@@ -47,6 +47,7 @@ from clio_agent.arc.schema import (
 from clio_agent.arc.segments import OpLogger
 from clio_agent.arc.storage import ARCStore, make_arc_store
 from clio_agent.arc.working_set_fold import make_segment_store
+from clio_agent.errors import ClioError
 from clio_agent.runtime import trace
 
 # ``EVENTS_SCOPE`` (ARC's ONE persisted semantic-event log) is defined in ``arc.live``
@@ -69,6 +70,18 @@ logger = logging.getLogger(__name__)
 # Backend names that mean the durable semantic trace is DISABLED — the same set
 # :func:`clio_agent.gact.semantic_events.build_trace_backend` maps to the no-op
 # backend. Kept in sync by ``tests/test_arc/test_events_log_retention.py``.
+
+
+class SearchUnavailableError(ClioError):
+    """clio-core cannot search this deployment's context (typed reason)."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(
+            f"clio-core cannot search this context (reason={reason})",
+            error_type="search_unavailable",
+            details={"reason": reason},
+        )
 
 
 class ARCMemory:
@@ -1048,7 +1061,14 @@ class ARCMemory:
     def search_segment_scopes(
         self, session_id: str, query_text: str, *, scope_prefix: str = "", k: int = 10
     ) -> List[Any]:
-        """Rank a session's scopes by relevance to ``query_text`` (BM25 on clio-core)."""
+        """Rank a session's scopes by relevance to ``query_text`` (BM25 on clio-core).
+
+        Raises:
+            SearchUnavailableError: clio-core cannot search (#905: the indexer chimod is
+                absent) -- never an empty list a caller could read as "nothing found".
+        """
+        if not self._segments.supports_search():
+            raise SearchUnavailableError(self._segments.search_degradation_reason())
         return self._segments.search_scopes(session_id, query_text, scope_prefix=scope_prefix, k=k)
 
     def segment_search_is_semantic(self) -> bool:
