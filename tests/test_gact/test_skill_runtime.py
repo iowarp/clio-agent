@@ -590,6 +590,78 @@ def test_load_skill_file_without_fragment_is_unaffected(pack: Path) -> None:
     assert tool.func(skill_id="quality-rubric", file="references/checklist.md") == "THE CHECKLIST"
 
 
+# ---- #1533 phase 3: multi-file load_skill (files=[...]) ---------------------------
+
+
+def test_load_skill_files_returns_several_bundled_files_in_one_labelled_call(
+    pack: Path,
+) -> None:
+    catalog = {
+        "components": {
+            "Button": {"type": "object", "properties": {"component": {"const": "Button"}}},
+            "Text": {"type": "object", "properties": {"component": {"const": "Text"}}},
+        }
+    }
+    (pack / "skills" / "quality-rubric" / "catalog.json").write_text(
+        json.dumps(catalog), encoding="utf-8"
+    )
+    rt = _runtime(pack)
+    tool = build_load_skill_tool(_agent(pack), rt)
+
+    out = tool.func(
+        skill_id="quality-rubric",
+        files=[
+            "catalog.json#/components/Button",
+            "catalog.json#/components/Text",
+            "references/checklist.md",
+        ],
+    )
+
+    assert "=== File 1/3: catalog.json#/components/Button ===" in out
+    assert "=== File 2/3: catalog.json#/components/Text ===" in out
+    assert "=== File 3/3: references/checklist.md ===" in out
+    assert '"const": "Button"' in out
+    assert '"const": "Text"' in out
+    assert "THE CHECKLIST" in out
+    # Order in the output matches the order requested.
+    assert out.index("Button") < out.index("Text") < out.index("THE CHECKLIST")
+
+
+def test_load_skill_files_with_one_entry_matches_the_bare_file_form(pack: Path) -> None:
+    """A single-element ``files=[...]`` behaves exactly like ``file=`` (no headers)."""
+
+    rt = _runtime(pack)
+    tool = build_load_skill_tool(_agent(pack), rt)
+
+    assert (
+        tool.func(skill_id="quality-rubric", files=["references/checklist.md"]) == "THE CHECKLIST"
+    )
+
+
+def test_load_skill_rejects_both_file_and_files(pack: Path) -> None:
+    rt = _runtime(pack)
+    tool = build_load_skill_tool(_agent(pack), rt)
+
+    with pytest.raises(ValueError) as excinfo:
+        tool.func(
+            skill_id="quality-rubric",
+            file="references/checklist.md",
+            files=["references/checklist.md"],
+        )
+
+    assert "exactly one of file or files" in str(excinfo.value)
+
+
+def test_load_skill_files_propagates_an_unresolvable_entry(pack: Path) -> None:
+    rt = _runtime(pack)
+    tool = build_load_skill_tool(_agent(pack), rt)
+
+    with pytest.raises(ValueError) as excinfo:
+        tool.func(skill_id="quality-rubric", files=["references/checklist.md", "missing.md"])
+
+    assert "unreadable" in str(excinfo.value) or "outside" in str(excinfo.value)
+
+
 # ---- S4: catalogs disclosed as skill directories ----------------------------------
 
 
@@ -841,9 +913,14 @@ def test_catalog_skill_basic_exposes_both_sidecar_and_catalog_file_roots(
     assert '"const": "Button"' in component
 
 
-def test_catalog_skill_fragment_trailer_distinguishes_local_from_standard_refs(
+def test_catalog_skill_fragment_inlines_local_defs_and_names_standard_refs(
     tmp_path: Path,
 ) -> None:
+    """CatalogComponentCommon is a LOCAL ``$defs`` ref -- one load INLINES it
+    (its own ``weight`` property is visible without a second call); an
+    external common_types.json ref is only NAMED (this call cannot load it,
+    #1533 phase 3)."""
+
     from clio_agent.gact.app import build_app
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
@@ -854,6 +931,62 @@ def test_catalog_skill_fragment_trailer_distinguishes_local_from_standard_refs(
 
     out = tool.func(skill_id="a2ui-catalog-clio-workspace", file="catalog.json#/components/Button")
 
-    assert "Local refs (load via file=): catalog.json#/$defs/CatalogComponentCommon" in out
+    assert '"$ref": "#/$defs/CatalogComponentCommon"' not in out
+    assert '"weight"' in out
+    assert "Relative flex weight" in out
+    assert "Local refs" not in out
     assert "Standard refs (not loadable here):" in out
     assert "common_types.json#/$defs/Action" in out
+
+
+def test_catalog_skill_map_fragment_inlines_map_point_and_data_query(tmp_path: Path) -> None:
+    """A component that ``$ref``s several of its catalog's own ``$defs`` (map
+    references ``MapPoint``, ``DataQuery``, ``FieldName``, and
+    ``CatalogComponentCommon``) gets ALL of them inlined by one load."""
+
+    from clio_agent.gact.app import build_app
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="root")
+    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    rt = skill_runtime_for_agent(app, root, session_id=session.id)
+    tool = build_load_skill_tool(root, rt)
+
+    out = tool.func(
+        skill_id="a2ui-catalog-clio-workspace", file="catalog.json#/components/clio.map.v1"
+    )
+
+    # MapPoint's own required fields are visible without a second call.
+    assert '"latitude"' in out
+    assert '"longitude"' in out
+    # DataQuery's own nested shape (which itself $refs QueryFilter/QueryAggregate/
+    # QueryDownsample) is inlined too -- a multi-level chain, not just one hop.
+    assert '"aggregate"' in out
+    assert '"downsample"' in out
+    assert "per_entity_lttb" in out
+    assert '"$ref": "#/$defs/MapPoint"' not in out
+    assert '"$ref": "#/$defs/DataQuery"' not in out
+    assert '"$ref": "#/$defs/CatalogComponentCommon"' not in out
+
+
+def test_load_skill_files_batches_two_real_catalog_components(tmp_path: Path) -> None:
+    from clio_agent.gact.app import build_app
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="root")
+    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    rt = skill_runtime_for_agent(app, root, session_id=session.id)
+    tool = build_load_skill_tool(root, rt)
+
+    out = tool.func(
+        skill_id="a2ui-catalog-clio-workspace",
+        files=[
+            "catalog.json#/components/clio.map.v1",
+            "catalog.json#/components/clio.data-table.v1",
+        ],
+    )
+
+    assert "=== File 1/2: catalog.json#/components/clio.map.v1 ===" in out
+    assert "=== File 2/2: catalog.json#/components/clio.data-table.v1 ===" in out
+    assert '"const": "clio.map.v1"' in out
+    assert '"const": "clio.data-table.v1"' in out

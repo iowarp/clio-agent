@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
-from clio_agent.gact.a2ui_producer import _common, _export
+from clio_agent.gact.a2ui_producer import _common, _data_reference, _definition_artifact, _export
 from clio_agent.gact.a2ui_producer._presentation import surface_presentation
 from clio_agent.gact.a2ui_producer._refusal import refusal
 from clio_agent.gact.agents.tool_instrumentation import native_tool
@@ -14,12 +14,18 @@ from clio_agent.gact.protocol_v3 import A2UI_V091_WIRE
 def build_update_a2ui_components_tool() -> Any:
     """Build the tool that upserts components on an existing live surface."""
 
-    def update_a2ui_components(surface_id: str, components: list[dict[str, Any]]) -> dict[str, Any]:
+    def update_a2ui_components(
+        surface_id: str,
+        components: Optional[list[dict[str, Any]]] = None,
+        components_path: str = "",
+    ) -> dict[str, Any]:
         """Replace one or more components on an already-created A2UI surface.
 
         ``surface_id`` must name a live (non-deleted) surface from a prior
         create_a2ui_surface result's ``session_surface_ids``; an unknown or
-        deleted id is a typed refusal, not an error.
+        deleted id is a typed refusal, not an error. Pass exactly one of
+        ``components`` or ``components_path`` (a workspace JSON file with
+        the components array).
 
         Component shapes and guidance: load_skill("a2ui-catalog-<slug>");
         one component: load_skill(..., file="catalog.json#/components/<Name>").
@@ -33,10 +39,28 @@ def build_update_a2ui_components_tool() -> Any:
         existing = _common.existing_surface(app, session_id, surface_id)
         if existing is None or existing.state == "deleted":
             return refusal("a2ui_surface_not_found", detail=f"A2UI surface not found: {surface_id}")
+
+        components_resolved = _common.resolve_components(
+            app, session_id, components, components_path
+        )
+        if isinstance(components_resolved, dict):
+            return components_resolved
+        components = components_resolved
+
         exported = _export.export_workspace_paths(app, session_id, components)
         if isinstance(exported, dict):
             return exported
         components, export_report = exported
+
+        data_reference_error = _data_reference.validate_component_data_references(app, components)
+        if data_reference_error is not None:
+            return data_reference_error
+
+        definition = _definition_artifact.mint_surface_definition_artifact(
+            app, session_id, surface_id, components
+        )
+        if "definition_artifact_id" not in definition:
+            return definition
 
         message = {
             "version": A2UI_V091_WIRE,
@@ -58,6 +82,7 @@ def build_update_a2ui_components_tool() -> Any:
         }
         result.update(export_report)
         result.update(_common.surface_registry_fields(outcome))
+        result.update(definition)
         return result
 
     return native_tool(
@@ -72,7 +97,20 @@ def build_update_a2ui_components_tool() -> Any:
             "components": {
                 "type": "array",
                 "items": {"type": "object"},
-                "description": "Component definitions to upsert on this surface.",
+                "description": (
+                    "Component definitions to upsert on this surface. Exactly "
+                    "one of components or components_path is required. A "
+                    "dataUri/url/uri value may be a plain path inside this "
+                    "session's workspace; it is exported to artifact:// "
+                    "automatically before validation."
+                ),
+            },
+            "components_path": {
+                "type": "string",
+                "description": (
+                    "Workspace JSON file holding the components array, instead "
+                    "of passing components inline."
+                ),
             },
         },
     )

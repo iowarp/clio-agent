@@ -30,6 +30,7 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from clio_agent.gact.a2ui_catalogs.component_signature import generate_component_signature
 from clio_agent.gact.a2ui_catalogs.media_sources import media_source_lines
 from clio_agent.gact.skills import SkillRef
 
@@ -54,11 +55,24 @@ def catalog_skill_id(entry: "CatalogEntry") -> str:
     return f"{CATALOG_SKILL_PREFIX}{slug}"
 
 
-def _index_line(name: str, description: str) -> str:
-    return f"- `{name}` — {description}" if description else f"- `{name}`"
+def _index_line(name: str, description: str, signature: str = "") -> str:
+    parts = [f"- `{name}`"]
+    if description:
+        parts.append(f"— {description}")
+    if signature:
+        parts.append(f"`{signature}`")
+    return " ".join(parts) if len(parts) > 1 else parts[0]
 
 
 def _component_lines(file: dict[str, Any]) -> list[str]:
+    """One line per component: its ``description``, then a GENERATED signature.
+
+    The signature (:func:`~clio_agent.gact.a2ui_catalogs.component_signature.
+    generate_component_signature`) is read off the component's own JSON
+    Schema every render -- never hand-typed, so it can never drift from what
+    the validator actually enforces (#1533 phase 3).
+    """
+
     components = file.get("components")
     if not isinstance(components, dict) or not components:
         return []
@@ -66,7 +80,8 @@ def _component_lines(file: dict[str, Any]) -> list[str]:
     for name in sorted(components):
         schema = components[name]
         description = str(schema.get("description") or "") if isinstance(schema, dict) else ""
-        lines.append(_index_line(name, description))
+        signature = generate_component_signature(schema)
+        lines.append(_index_line(name, description, signature))
     return lines
 
 

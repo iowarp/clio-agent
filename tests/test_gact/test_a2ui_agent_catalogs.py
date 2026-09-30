@@ -81,6 +81,11 @@ def _source(unit: str, raw: Any, root: Path) -> CatalogDeclarationSource:
 
 def _app_session(tmp_path: Path) -> tuple[Any, str]:
     app = build_app(sessions_path=tmp_path / "sessions.json")
+    # ws_default seeds root_path=os.getcwd() (workspaces.py _seed_default) --
+    # rebind it to this test's own tmp_path so a producer-tool call in this
+    # file (e.g. a minted surface-definition artifact, #1533 S4) never writes
+    # through it into the real invocation cwd.
+    app.state.workspaces.update("ws_default", root_path=str(tmp_path))
     session = app.state.sessions.create(workspace_id="ws_default", title="per-agent catalogs")
     return app, session.id
 
