@@ -820,6 +820,23 @@ The chain was rebased with `--update-refs`, and every commit subject is kept. Co
 | Tests | Develop's plan-limit and safety-refusal tests call `forward_error_info` (one `--fixup` autosquashed into the Phase 2 commit, so that branch is green too). |
 | Docs and ratchets | Develop's version (0.9.4.23) with the dspy 3.4.0 pin. |
 
+**Found after the rebase.** Develop's #1529 fix covered only the retry layer it knew
+(`io_logging`). On the chain, the Codex **SDK** engine mapped a plan-limit failure to
+`ServerError`, which DSPy retries. A hit window was re-issued with backoff and reached the
+user as a generic error. The direct engine already raised the terminal `CodexPlanLimitError`.
+The SDK engine now does the same: a failing-first test, autosquashed into the commit that
+introduced its error mapping. Develop's Codex LiteLLM-shaped retry test became a DSPy
+retry-rule test.
+
+**Claude Code engine, live on Sonnet (2026-09-30).** Both probes pass:
+
+- A mid-loop delta send continues the same SDK session with no 400.
+- With thinking on, call 1 streams thinking and call 2 is a delta on the same session. The
+  session holds the signed thinking blocks, so pass-back needs no re-send.
+- Adaptive thinking is the model's own choice. On an easy question with CLIO's short system
+  prompt, Sonnet does not think at all (verified on the bare CLI with the SDK's exact flags),
+  so the probe asks a question that needs reasoning.
+
 The chain is now strictly linear. Before the rebase, `feat/clio-react` held two commits the
 tip carried only in substance; it is now the rebased "load ClioReAct lazily" commit.
 
