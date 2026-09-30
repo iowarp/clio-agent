@@ -95,6 +95,45 @@ def test_acall_does_not_retry_a_non_transient_failure(monkeypatch: pytest.Monkey
     assert len(lm.async_kwargs) == 1
 
 
+def test_acall_does_not_retry_a_litellm_wrapped_claude_code_plan_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1529 regression: once LiteLLM re-wraps a Claude Code plan-limit hit as
+    ``MidStreamFallbackError``/``APIConnectionError`` (its own documented
+    behavior for an exception type it does not recognize, BerriAI/litellm#4201),
+    BOTH class names are ``lm.io_logging`` transient markers on their own --
+    so the retry layer used to silently re-issue a terminal plan-limit failure
+    (with backoff), which is why the report says it "keeps retriggering" and
+    can resurface after the user has already switched providers."""
+    from types import SimpleNamespace
+
+    from clio_agent.providers.claude_code_plan_limit import (
+        PLAN_LIMIT_HTTP_STATUS,
+        plan_limit_from_result,
+    )
+
+    monkeypatch.setattr(io_logging, "_lm_transient_retries", lambda: 2)
+    monkeypatch.setattr(io_logging, "_lm_transient_backoff_s", lambda: 0.0)
+
+    clean = plan_limit_from_result(
+        SimpleNamespace(is_error=True, api_error_status=PLAN_LIMIT_HTTP_STATUS, result=""),
+        model="claude-sonnet-5",
+    )
+    assert clean is not None
+    mangled = RuntimeError(
+        f"litellm.MidStreamFallbackError: litellm.APIConnectionError: {clean}\n"
+        "Traceback (most recent call last):\n"
+        '  File ".../claude_code_litellm.py", line 448, in _process\n'
+        "    raise plan_limit\n"
+        f"clio_agent.providers.claude_code_plan_limit.ClaudeCodePlanLimitError: {clean}\n"
+    )
+    lm = _spy_lm(failures=[mangled])
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(lm.acall(messages=_messages()))
+    assert len(lm.async_kwargs) == 1  # never retried -- terminal until the window resets
+
+
 def test_acall_captures_the_lm_call_exactly_once(monkeypatch: pytest.MonkeyPatch) -> None:
     lm = _spy_lm()
     captures: list[int] = []
