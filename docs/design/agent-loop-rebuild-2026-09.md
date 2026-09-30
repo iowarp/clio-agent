@@ -115,6 +115,14 @@ own live-verification legs and marketplace agents, with the gact-tui UI verified
    calls on direct transports + Codex direct stateful chain (owner logs in when reached).
 6. **Config-driven `dspy extract`** (+ contract amendment); relay onto MCP tasks per
    `mcp-client-unification-2026-08.md` campaign 2 (owner decides timing).
+7. **Session bring-up off the first message** (`feat/session-bringup`).
+8. **clio-core fail-stop** (`feat/clio-core-failstop`): clio-core is the only context store and
+   nothing in its path falls back, degrades or drops. Every earlier verification is redone on
+   real clio-core.
+9. **BestOfN / Refine as runtime self-refinement** (goal of this campaign; see its section):
+   triggered on demand (subagent strategy, a per-turn tool, a user control), with an LM or user
+   judge. Refine's advice is owned by clio's loop, and every choice is recorded for long-term
+   optimization.
 
 ## Phase 2 sub-plan (`feat/clio-react`, cut from `feat/codex-sdk-stateful`)
 
@@ -852,6 +860,128 @@ tip carried only in substance; it is now the rebased "load ClioReAct lazily" com
 
 On the tip, `git diff --shortstat develop...` is 17,353 insertions and 23,408 deletions
 (`src/`: 7,025 and 11,408).
+
+## Phase 8: clio-core fail-stop (`feat/clio-core-failstop`, cut from `feat/react-extract`)
+
+**Why.** The owner's first principle is typed failure over fallback, and the only sanctioned
+fallback is DSPy `History` when the platform cannot run clio-core at all. The ARC layer was never
+audited against it. On 2026-09-30:
+
+- a benchmark silently ran on local files, because the clio-core file-tier preflight failed;
+- a read-only inventory then found 50 defects that can change the agent's context or lose data
+  in clio-core, 18 observability-only and 14 harmless. None is sanctioned.
+
+The test suite ran ARC on local files by default, so it proved nothing about clio-core. The
+guard `check_silent_fallbacks.py` reported 0 while 583 broad excepts were hidden from it by
+`noqa`.
+
+**Done so far (each with a failing-first test):**
+
+| Defect | Fix |
+|---|---|
+| Any clio-core init failure made local files the store (and `CLIO_ARC_STORE=local` was selectable) | clio-core is the only store: `ArcStoreUnavailableError` with a typed reason. `LocalFSStore`, the degrade record, its doctor row and every "set `CLIO_ARC_STORE=local`" remedy are deleted. |
+| clio-core kept nothing across a daemon restart: the seeded and harness configs left the file tier volatile | The file tier is `persistence_level: "temporary"`. Verified on iowarp-core 2.2.1: survives a clean restart, and a crash once the periodic flush has run. Existing seeded configs are upgraded in place; a non-durable user config is a typed error; a restart test does a real write, stop and read back. |
+| Release erased the session's `_events` family (event log and transcript atoms) whenever a durable trace was on, which is the default (`file`) | Release drops only the in-memory copy. The erase paths and the trace gate are deleted. |
+| A failed event persist was logged and still sent to trace and SSE (24 `blueprint.install.reason` lost in 11 live runs) | The persist failure raises. This surfaced blueprint install, uninstall and activation doing clio-core writes on the event loop; they now run off the loop. |
+| Context search on clio-core (no indexer chimod, #905) answered 200 with empty hits | `SearchUnavailableError`, and a typed 503 on the route. |
+| Doctor and status still offered a local mode | clio-core is always required; the local rows and skips are removed. |
+
+Store namespaces (`<ns>/<kind>` tags; the default empty namespace keeps existing keys) give every
+test its own namespace on the worker's private daemon.
+
+**Remaining.**
+
+- *The rest of the inventory:*
+  - writes that change memory before they persist, and segments dropped on an encode failure;
+  - the loop running without ARC on in-memory steps (to become typed, except the loud DSPy
+    `History` mode, which must be built);
+  - context rebuilt from the transcript file;
+  - the extract and BestOfN reading the loop's private steps instead of clio-core;
+  - stale-id edits silently not applied;
+  - compaction failures swallowed;
+  - the Claude Code CLI's own auto-compaction not detected.
+- *The ratchet* counts `noqa`-hidden broad excepts per file.
+- *Then the proofs, on real clio-core:*
+  - an edit in clio-core reaches the agent on each transport and reaches the UI;
+  - the per-step cost of clio-core in the loop;
+  - a session survives a restart and a move to another machine;
+  - suites, the browser UI check and the live legs again.
+
+## Phase 9: BestOfN / Refine as runtime self-refinement (goal of this campaign)
+
+Owner direction, 2026-09-30. BestOfN and Refine are DSPy "preparation" semantics: fixed when the
+program is built, applied to every call. We want them as the agent's own self-refinement: used on
+demand where a task is worth several tries, and recorded so the agent improves over time. The
+design follows from how they will be used.
+
+### How they work today (verified 2026-09-30)
+
+- **Trigger:** only a blueprint declaration,
+  `module: {kind, variant: best_of_n | refine, n, threshold, reward}`.
+  `wrap_module_variant` wraps the agent's module in DSPy's real `BestOfN` or `Refine`, and a
+  compiled LM judge scores each try against the declared reward.
+- **Tries:** each runs on its own clio-core scope (`agent#runN`). Phase 6 forks each try from
+  the base scope and appends the winner's line to it.
+- **BestOfN:** up to `n` sequential tries (fresh rollout id, `temperature=1.0`). It stops at
+  `threshold` and returns the best.
+- **Refine on a `react` agent is effectively a sequential BestOfN.** DSPy's Refine writes
+  per-predictor advice (`OfferFeedback`) after a try that falls short, and delivers it as a
+  `hint_` input by wrapping the adapter. `ClioReAct` has no named predictors and no adapter (each
+  step is one `lm(Request)`). So the advice is empty, never reaches the next try, and each
+  failed try costs one wasted feedback call. On `predict` / `chain_of_thought` agents it works
+  as designed.
+- **Why this went unnoticed:** the tests wrapped a stub inner module (`dspy.Predict` over
+  DummyLM), never the real loop.
+
+### Intended use
+
+1. **Subagent strategy.** The parent asks for it when the task merits it:
+   `spawn_agent(task, agent, strategy={variant, n, judge: "lm" | "user", rubric, threshold})`.
+   - The child is wrapped at build time (same wrapper, spec from the call).
+   - The parent receives the winner's final message plus `variant_selection`.
+2. **A single turn, by tool or user control.** Example: "write the email to Dana". The agent
+   calls `draft_alternatives(n=2, rubric)`, or the user asks for alternatives.
+   - The tries run **in parallel**, each on `main#runK`, forked from the conversation.
+   - The turn yields a `choice` question: the candidates side by side, "which one?", an optional
+     comment.
+   - With `best_of_n`, the pick's line continues the conversation.
+   - With `refine`, the comment becomes the advice for another try forked from the pick, until
+     the user accepts or `n` is reached.
+3. **The agent on itself.** The same tool at the model's initiative, with:
+   - a configured cap on `n`;
+   - an injection telling the user alternatives are being drafted;
+   - the cost shown.
+4. **Blueprint declaration: kept.** It's a good trigger for tests and for a narrow agent where
+   it's cheap and valuable. It is not the main path.
+
+### Design requirements
+
+- **clio owns Refine's advice.** The advice for the next try is a recorded injection on that
+  try's clio-core scope ("advice from the previous attempt: …"), shown in the UI and told to
+  the model, as with every harness addition. The source is either the LM feedback call, built
+  from the try's clio-core trajectory, or the user's comment.
+- **Human judge = pause and resume.** The tries are persisted on clio-core, the turn yields the
+  `choice` question, and the selection resumes on the answer. The wrapper becomes a small state
+  machine over clio-core, not one in-memory DSPy call.
+- **Parallel tries** for independent candidates. Each has its own scope, so nothing is shared.
+- **Recorded, visible:** a `variant.try` event per try, `variant.selected` with scores or the
+  user's pick, and the advice as injection parts.
+- **Long-term self-refinement.** Every run leaves a preference record in clio-core: candidates,
+  judge scores or user pick, comment, advice, rubric.
+  - *Offline:* DSPy optimizers (GEPA / MIPRO / SIMBA) use that log to improve the agent's
+    instructions and demos.
+  - *Online:* advice that proved useful can be kept as a lesson and recalled for similar tasks,
+    as a recorded, visible injection, never a silent prompt change.
+
+### Tests (the real composition, never a stub)
+
+- BestOfN and Refine wrapped around the real `ClioReAct` on real clio-core, through a scripted
+  engine that records every request:
+  - BestOfN returns the best try, and that line continues the conversation;
+  - **Refine: the next try's request carries the advice.** Red today.
+- A sabotage run for each of these.
+- Live legs: a blueprint with `best_of_n` and one with `refine`; a subagent with a strategy; the
+  email case with a user pick through the web UI.
 
 ## Definition of done
 
