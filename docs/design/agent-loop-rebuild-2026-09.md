@@ -562,6 +562,40 @@ ARC mid-turn is a typed turn failure (`ContextReadError`).
 - The web UI browser verification (DoD 4).
 - Whether `injection` goes into a `clio-schemas` release.
 
+### Web UI verification (DoD 4), 2026-09-29
+
+**Setup.**
+- gact-tui web at `feat/injection-parts` (`91df1449`), served same-origin (`CLIO_WEB_DIR`) by `feat/recorded-fixes`.
+- Isolated instance (`live/serve_ui4.sh`, port 17995), driven in Chrome with the Claude in Chrome tools.
+- Model: Codex direct `gpt-6-sol`. Realistic prompts on the OPAL APPL-CORE export.
+- The automation window is not on screen, and the web client pauses its live stream for a hidden tab (`use-session-live-stream`, by design). The check therefore marks the page visible and dispatches `visibilitychange`, the event the client listens for. The same test against `develop` behaves identically.
+
+**Verified live, and again after reload:**
+
+| Item | Result |
+|---|---|
+| Thinking streams | The reasoning summary shows as a Thinking block (after fix `f190b47a`). |
+| Concurrent tool calls | One step's calls are grouped ("Bash +4"). |
+| Approvals | The approval card appears live; "Allow for session" continues the turn. |
+| Injections | "… gave the agent: Large result saved to a file" (syringe icon) shows live; expanded, it is the exact text the agent got. |
+| Steer | A steer queued mid-turn shows as a user message and changes the answer: "keep it short, and say how many plants" → "360 distinct plants". |
+| Final answer | Renders as the message body live, not as an activity row (after fix `de7d1a6f`). |
+| Multi-turn | A follow-up ("which of those measurements…") uses the earlier turn without re-asking. |
+| Cancel | Stop interrupts within about 3 s; the tool row shows "Interrupted". |
+| Compaction | The "Context summarized · Requested" checkpoint shows live; the next question is answered correctly from the summary with no tool call. |
+| Reload == live | 177 page-text lines each. The only difference is the steer's timestamp: live shows when it was sent, reload shows when it was consumed. |
+
+**Fixed during the check** (each with a failing-first test):
+- `99aa6dc6`: an agent new to the conversation starts from its earlier turns.
+- `de7d1a6f`: a part that changes after it streams reaches live clients whole. The promotion and annotations published a patch, which v3 turned into an empty block.
+- `f190b47a`: Codex direct asks for its reasoning summary.
+
+**Open findings:**
+- **gact-tui:**
+  - The composer label shows "Codex · SDK / Sol" after Direct / Sol is chosen, although the server binds `variant: direct`. The label resolves by model id.
+  - Activity titles show raw markdown (`**…**`).
+- **clio-core:** a hard-killed daemon leaves a partial `storage.bin`. The next start's capacity preflight refuses it and ARC degrades (loudly) to LocalFS. On Windows every forced stop does this.
+
 ## Definition of done
 
 1. Full suite green on every phase branch (`pytest tests -m "not integration"`): zero failures,
