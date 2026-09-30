@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 
 READY = "ready"
 
+# Sessions whose warm-up is running: one at a time per session.
+_inflight: set[str] = set()
+_inflight_lock = threading.Lock()
+
 
 def session_warmup_enabled() -> bool:
     """Whether sessions start their servers in the background (default on)."""
@@ -55,11 +59,30 @@ def start_session_warmup(app: Any, sid: str, *, trigger: str) -> threading.Threa
     agent = getattr(getattr(app, "state", None), "agent", None)
     if not session_warmup_enabled() or not callable(getattr(agent, "_active_tool_executor", None)):
         return None
+    with _inflight_lock:
+        if sid in _inflight:
+            return None  # already warming; this caller joins it through the executor
+        _inflight.add(sid)
     thread = threading.Thread(
-        target=_warm, args=(app, sid, trigger), name=f"clio-warmup-{sid}", daemon=True
+        target=_warm_and_release,
+        args=(app, sid, trigger),
+        name=f"clio-warmup-{sid}",
+        daemon=True,
     )
     thread.start()
     return thread
+
+
+def _release(sid: str) -> None:
+    with _inflight_lock:
+        _inflight.discard(sid)
+
+
+def _warm_and_release(app: Any, sid: str, trigger: str) -> None:
+    try:
+        _warm(app, sid, trigger)
+    finally:
+        _release(sid)
 
 
 def _warm(app: Any, sid: str, trigger: str) -> None:
@@ -112,7 +135,11 @@ def warm_session_servers(agent: Any) -> dict[str, str]:
     if not namespaces:
         return {}
 
+    prepared = getattr(executor, "is_namespace_prepared", None)
+
     def start(namespace: str) -> str:
+        if callable(prepared) and prepared(namespace):
+            return READY  # connected already (an earlier warm-up or call)
         try:
             mcp_readiness.mount_namespace_for_session(
                 executor, namespace, specs[namespace], connect=True

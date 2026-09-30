@@ -119,3 +119,74 @@ def test_activating_a_blueprint_starts_its_warmup(
         activated = c.post(f"/v1/sessions/{sid}/agent-blueprint", json={"path": str(agent_md)})
         assert activated.status_code == 200, activated.text
     assert starts == [(sid, "session_created"), (sid, "blueprint_activated")]
+
+
+def test_connected_servers_are_not_started_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    mounted: list[str] = []
+
+    def mount(executor: Any, namespace: str, spec: Any, *, connect: bool = True) -> dict:
+        del executor, spec, connect
+        mounted.append(namespace)
+        return {}
+
+    monkeypatch.setattr("clio_agent.gact.mcp_readiness.mount_namespace_for_session", mount)
+    executor = _Executor(_specs("geo", "ndp"))
+    executor.is_namespace_prepared = lambda ns: ns == "geo"  # type: ignore[attr-defined]
+
+    report = session_warmup.warm_session_servers(_Agent(executor, pack={"geo": {}, "ndp": {}}))
+
+    assert mounted == ["ndp"]
+    assert report == {"geo": "ready", "ndp": "ready"}
+
+
+def test_one_warmup_per_session_at_a_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    release = threading.Event()
+    runs: list[str] = []
+
+    def warm(app: Any, sid: str, trigger: str) -> None:
+        del app
+        runs.append(trigger)
+        release.wait(5)
+
+    monkeypatch.setattr(session_warmup, "session_warmup_enabled", lambda: True)
+    monkeypatch.setattr(session_warmup, "_warm_and_release", _wrap(warm))
+    app = SimpleNamespace(state=SimpleNamespace(agent=_Agent(_Executor({}), pack={})))
+    first = session_warmup.start_session_warmup(app, "s1", trigger="session_created")
+    second = session_warmup.start_session_warmup(app, "s1", trigger="turn_started")
+    other = session_warmup.start_session_warmup(app, "s2", trigger="turn_started")
+    release.set()
+    for thread in (first, other):
+        assert thread is not None
+        thread.join(5)
+
+    assert second is None, "a session already warming is not warmed twice"
+    assert sorted(runs) == ["session_created", "turn_started"]
+    third = session_warmup.start_session_warmup(app, "s1", trigger="turn_started")
+    assert third is not None, "once done, the next turn may warm again"
+    third.join(5)
+
+
+def _wrap(warm: Any) -> Any:
+    def run(app: Any, sid: str, trigger: str) -> None:
+        try:
+            warm(app, sid, trigger)
+        finally:
+            session_warmup._release(sid)
+
+    return run
+
+
+def test_a_turn_starts_the_warmup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A turn builds its request from listings and never waits for a server; the
+    servers it may call start alongside it (after an answered question too, when the
+    idle reaper has closed them)."""
+    from .conftest import complete_turn
+
+    starts = _recorded_starts(monkeypatch)
+    from .test_post_messages import FakeClioAgent
+
+    app = build_app(sessions_path=tmp_path / "s.json", agent=FakeClioAgent())
+    with TestClient(app) as c:
+        sid = c.post("/v1/sessions", json={"title": "x"}).json()["id"]
+        complete_turn(c, sid, "hi")
+    assert (sid, "turn_started") in starts

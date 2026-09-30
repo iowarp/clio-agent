@@ -32,6 +32,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Any, Callable, cast
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact import session_warmup
 from clio_agent.gact.agents.composition import _apply_prompt_registry_to_agent
 from clio_agent.gact.agents.resolution import (
     _agent_definition_uses_blueprint_runtime,
@@ -210,6 +211,9 @@ async def _forward_turn_leased(state: "TurnState") -> Any:
     # #1215 S5: NESTED under workspace.lease (see forward_turn) -- resolves the
     # active agent + builds its DSPy module; end_phase call sits right after the
     # module build below, before the actual LLM request dispatch begins.
+    # The servers this turn may call start alongside it; the turn itself waits only
+    # for tool listings, and a call only for its own server.
+    session_warmup.start_session_warmup(state.app, state.sid, trigger="turn_started")
     bringup_timing.timer_for_session(state.app, state.sid).start_phase("blueprint.resolve")
     session_agent_id = _session_agent_id(state.sess)
     state.active_agent_id = state.turn_agent_id or session_agent_id
