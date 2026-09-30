@@ -69,24 +69,6 @@ logger = logging.getLogger(__name__)
 # Backend names that mean the durable semantic trace is DISABLED — the same set
 # :func:`clio_agent.gact.semantic_events.build_trace_backend` maps to the no-op
 # backend. Kept in sync by ``tests/test_arc/test_events_log_retention.py``.
-_DISABLED_TRACE_BACKENDS: frozenset[str] = frozenset({"", "none", "off", "disabled"})
-
-
-def _durable_trace_backend() -> str:
-    """Resolved durable semantic-trace backend name (``none`` when disabled).
-
-    Mirrors the decision :func:`clio_agent.gact.semantic_events.build_trace_backend`
-    makes, from the SAME config key (``trace.backend`` / env
-    ``CLIO_SEMANTIC_TRACE_BACKEND``, default ``none``), resolved here directly so
-    ``arc/`` stays free of any ``gact/`` import. The session-release paths gate the
-    destructive erase of the ``_events`` log on this: when the durable trace keeps
-    no copy, the log is the ONLY record of the session's events (#762).
-    """
-    # One ladder for both sides (arc stays gact-free): provenance_config owns
-    # the precedence + the Flowcept-is-not-permission-to-erase rule.
-    from clio_agent.provenance_config import durable_trace_backend_name  # noqa: PLC0415
-
-    return durable_trace_backend_name()
 
 
 class ARCMemory:
@@ -1168,41 +1150,14 @@ class ARCMemory:
 
             evicted_index = self._inv_index.delete_session(session_id)
 
-        # Outside the lock: LiveRuntimeContext and SegmentStore have their own locks. The
-        # observer's release ERASES the reserved ``_events`` scope (the single persisted raw
-        # semantic-event stream it projects over) so an idle server returns to baseline --
-        # but ONLY when the durable trace actually keeps the full history. The trace backend
-        # defaults to "none" (opt-in), so erasing unconditionally destroyed the ONLY copy of
-        # the session event log (#762). When the trace is disabled the log is RETAINED; the
-        # segment release below still drops the hot in-memory copy (write-through, nothing
-        # lost), so the heap returns toward baseline either way. Both paths log their reason.
-        backend = _durable_trace_backend()
-        if backend in _DISABLED_TRACE_BACKENDS:
-            live = 0
-            logger.warning(
-                "arc: retained _events log session=%s reason=durable_trace_disabled "
-                "backend=%r (the log is the only copy; erase skipped, #762)",
-                session_id,
-                backend,
-            )
-        else:
-            live = self._live.release(session_id)
-            # The chunk family is gone; the write cursor (arc.lane_chunking) notices on
-            # its own next append -- the erase already discarded ``store._loaded`` for
-            # every dropped chunk, which is exactly the staleness signal it checks
-            # (retention keeps the cursor valid — same chunk continues).
-            logger.info(
-                "arc: erased _events log session=%s reason=durable_trace_enabled "
-                "backend=%r turns=%d (the durable trace keeps the full history)",
-                session_id,
-                backend,
-                live,
-            )
+        # Outside the lock: the SegmentStore has its own locks. Release drops only the
+        # hot in-memory copy (write-through): clio-core keeps the session's whole
+        # ``_events`` family -- its event log and transcript atoms -- whatever the trace
+        # backend. clio-core is the one context store; nothing else is trusted to hold it.
         segments = self._segments.release(session_id)
         return {
             "cache": evicted_cache,
             "index": evicted_index,
-            "live": live,
             "segments": segments,
             # 0 on a clean drain; >0 only when the in-flight drain timed out, so a caller detects an under-counted release without grepping logs (#804).
             "inflight_pending": inflight_pending,
@@ -1226,27 +1181,8 @@ class ARCMemory:
         with self._lock:
             self._cache.clear()
             self._inv_index.clear()
-        # The observer's clear ERASES the reserved ``_events`` scope across every
-        # session (the single persisted semantic-event stream it projects over) —
-        # gated, like ``release_session``, on the durable trace actually retaining
-        # the full history. Under the default "none" backend the log is the ONLY
-        # copy and is retained (#762); ``SegmentStore.clear`` below only drops the
-        # in-memory copies (write-through store untouched), so the heap still
-        # returns to baseline. Both paths log their reason.
-        backend = _durable_trace_backend()
-        if backend in _DISABLED_TRACE_BACKENDS:
-            logger.warning(
-                "arc: retained _events log for all sessions reason=durable_trace_disabled "
-                "backend=%r (the log is the only copy; erase skipped, #762)",
-                backend,
-            )
-        else:
-            logger.info(
-                "arc: erased _events log for all sessions reason=durable_trace_enabled "
-                "backend=%r (the durable trace keeps the full history)",
-                backend,
-            )
-            self._live.clear()
+        # Drops only in-memory copies: clio-core keeps every session's ``_events``
+        # family (see ``release_session``).
         self._segments.clear()
 
     def clear_cache(self) -> None:

@@ -9,7 +9,6 @@ import pytest
 from clio_agent.arc.live import EVENTS_SCOPE, LiveRuntimeContext
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact.semantic_events import SemanticEvent
-from tests._config_layer import set_config
 
 
 def _ev(event_type, *, sid="s1", turn="t1", trace="trace_t1", occurred="", **kw):
@@ -117,15 +116,6 @@ class TestLiveFold:
         assert invs[0].tier == 1
         assert invs[0].agent_id == "chat"
 
-    def test_release_drops_session(self):
-        live = LiveRuntimeContext()
-        for e in _earthscope_turn_events():
-            live.fold(e)
-        assert live.view("s1")
-        released = live.release("s1")
-        assert released == 1
-        assert live.view("s1") == {}
-
     def test_fold_never_raises_on_garbage(self):
         live = LiveRuntimeContext()
         live.fold(object())  # missing all attributes -> swallowed
@@ -143,26 +133,6 @@ class TestARCMemoryLiveWiring:
         assert view["turns"][0]["question"] == "stations near San Diego"
         conv = arc.project_live_conversation("s1")
         assert conv is not None and len(conv.messages) == 2
-
-    def test_release_session_clears_live(self, tmp_path, monkeypatch):
-        # The _events erase is gated on the durable trace being enabled (#762);
-        # retention under the default "none" backend is covered by
-        # test_events_log_retention.py.
-        set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
-        arc = ARCMemory(data_dir=str(tmp_path / "arc"))
-        for e in _earthscope_turn_events():
-            arc.on_semantic_event(e)
-        result = arc.release_session("s1")
-        assert result["live"] == 1
-        assert arc.get_live_context("s1") == {}
-
-    def test_flush_and_release_clears_live(self, tmp_path, monkeypatch):
-        set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
-        arc = ARCMemory(data_dir=str(tmp_path / "arc"))
-        for e in _earthscope_turn_events():
-            arc.on_semantic_event(e)
-        arc.flush_and_release()
-        assert arc.get_live_context("s1") == {}
 
 
 def _multi_turn_corpus():
@@ -345,18 +315,3 @@ class TestBufferBacked:
             assert a.output == b.output
             assert a.duration_ms == b.duration_ms
             assert a.performance == b.performance
-
-    def test_release_returns_to_baseline(self, tmp_path, monkeypatch):
-        """release erases the '_events' log scope from the buffer (idle -> baseline).
-
-        The erase requires the durable trace to keep the full history (#762)."""
-        set_config("trace.backend", "file")  # file-layer (file > env); #985 config-first
-        arc = ARCMemory(data_dir=str(tmp_path / "arc"))
-        for e in _multi_turn_corpus():
-            arc.on_semantic_event(e)
-        assert arc.render_segments("s1", EVENTS_SCOPE)  # log holds the events
-
-        result = arc.release_session("s1")
-        assert result["live"] == 2  # two turns released
-        assert arc.render_segments("s1", EVENTS_SCOPE) == []  # scope erased
-        assert arc.get_live_context("s1") == {}

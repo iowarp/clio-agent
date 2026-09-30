@@ -209,8 +209,8 @@ def build_tracked_store(
     mark_starting(cfg, port)
     try:
         require_durable_config(cfg)
-    except ArcStoreUnavailableError as failure:
-        mark_unavailable(failure.reason, str(failure), cfg, port)
+    except ArcStoreUnavailableError as refused:
+        mark_unavailable(refused.reason, str(refused), cfg, port)
         raise
     try:
         clio_core_file_capacity.preflight_clio_core_config(cfg, env=os.environ)
