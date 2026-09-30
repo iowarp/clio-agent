@@ -214,6 +214,8 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_PROVIDER_COMPONENT_INDEX_URL` | `providers.component_updates.index_url` | str | `https://pypi.org/pypi` | `src/clio_agent/providers/components/pypi.py` |
 | `CLIO_PROVIDER_COMPONENT_TTL_S` | `providers.component_updates.ttl_s` | float | `3600.0` | `src/clio_agent/providers/components/pypi.py` |
 | `CLIO_PROVIDER_NATIVE_IMAGE_URL_ALLOWLIST` | `providers.native_image_url_allowlist` | str | _(unset)_ | `src/clio_agent/providers/claude_code_multimodal.py` |
+| `CLIO_REACT_EXTRACT_AFTER_STEPS` | `agents.react_extract.after_steps` | int | `3` | `src/clio_agent/gact/agents/clio_react_extract.py` |
+| `CLIO_REACT_EXTRACT_ENABLED` | `agents.react_extract.enabled` | bool | `true` | `src/clio_agent/gact/agents/clio_react_extract.py` |
 | `CLIO_RELAY_CLI_PATH` | `relay.install_surface.cli_path` | str | _(unset)_ | `src/clio_agent/tools/relay_cli_runner.py` |
 | `CLIO_RELAY_CLUSTER` | `relay.cluster` | str | _(unset)_ | `src/clio_agent/tools/relay_factory.py` |
 | `CLIO_RELAY_CONSOLE_ENABLED` | `relay.console.enabled` | bool | `true` | `src/clio_agent/tools/relay_console.py` |

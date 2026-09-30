@@ -497,8 +497,15 @@ class StepRecorder:
             is_finish=any(call.name == "submit" for call in calls),
         )
 
-    def completed(self, outputs: Mapping[str, Any] | None, step_count: int) -> None:
-        """Close the expert lifecycle with the final answer and structured outputs."""
+    def completed(
+        self,
+        outputs: Mapping[str, Any] | None,
+        step_count: int,
+        *,
+        extracted: list[str] | None = None,
+    ) -> None:
+        """Close the expert lifecycle with the final answer and structured outputs
+        (``extracted``: the outputs DSPy's extract filled from the trajectory)."""
         from clio_agent.gact.runtime.globals import _emit_expert_lifecycle_event  # noqa: PLC0415
 
         outputs = outputs or {}
@@ -513,6 +520,7 @@ class StepRecorder:
                     k: v for k, v in outputs.items() if k != "answer" and v not in (None, "")
                 },
                 "step_count": step_count,
+                "extracted": list(extracted or []),
             },
         )
 

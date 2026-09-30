@@ -64,6 +64,7 @@ from dspy.lm15 import (
 from dspy.utils.exceptions import ContextWindowExceededError, LMUnexpectedError
 
 from clio_agent.errors import ClioError, MCPProtocolError
+from clio_agent.gact.agents import clio_react_extract as extract
 from clio_agent.gact.agents import clio_react_record as record
 from clio_agent.gact.agents.clio_react_submit import active_react_scope_safe, record_submit_audit
 from clio_agent.gact.injection_parts import emit_injection
@@ -367,9 +368,7 @@ class _Loop:
         calls = [p for p in response.message.parts if isinstance(p, ToolCallPart)]
         if not calls:
             self._record(text, thinking, calls, {})
-            outputs = {"answer": text}
-            self.recorder.completed(outputs, self.step + 1)
-            return self._prediction(outputs, "direct_response")
+            return self._end({"answer": text}, "direct_response", self.step + 1)
         thought_token = _ctx.set_step_thought(text, "".join(t.text for t in thinking))
         try:
             self.recorder.step_open(self.step, self.span, text, calls)
@@ -510,8 +509,19 @@ class _Loop:
 
     def _stop(self, reason: str) -> dspy.Prediction:
         steps = self.max_iters if reason == "max_iters" and self.max_iters > 0 else self.step + 1
-        self.recorder.completed({}, steps)
-        return self._prediction({}, reason)
+        return self._end({}, reason, steps)
+
+    def _end(self, outputs: dict[str, Any], reason: str, steps: int) -> dspy.Prediction:
+        """Close the loop; after a long one, DSPy's extract fills the missing outputs."""
+        missing = extract.missing_outputs(self.agent.signature, outputs, reason, steps)
+        if missing:
+            _raise_if_cancelled()
+            outputs = {
+                **outputs,
+                **extract.extract(self.agent.signature, self.inputs, self.steps, missing, self.lm),
+            }
+        self.recorder.completed(outputs, steps, extracted=missing)
+        return self._prediction(outputs, reason)
 
     def _prediction(self, outputs: dict[str, Any], reason: str) -> dspy.Prediction:
         return dspy.Prediction(**outputs, messages=list(self.steps), termination_reason=reason)
