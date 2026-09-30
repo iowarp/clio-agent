@@ -6,6 +6,8 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.4.23] — 2026-09-30
+
 ### Fixed
 
 - Deploying to a remote SSH host that already runs a healthy CLIO under a
@@ -16,6 +18,35 @@ TUI/HTTP surface aren't tracked here.
   `conflict` record) until the caller re-issues the action with
   `configuration.on_conflict` set to `"connect"` (adopt it as-is) or
   `"replace"` (stop it and install this desktop's version) (#1528).
+
+### Added
+
+- A2UI `clio.chart.v1`: charts from presets or an Altair / Vega-Lite spec,
+  rows from inline `data` or a `dataUri` narrowed with `dataQuery`
+  (clio-schemas 0.5.1).
+- Every data-carrying A2UI component (map, data table, workflow, code,
+  mermaid, diff) accepts inline values or a `dataUri`; map and table take
+  `dataQuery`, `*Field` column names and a `selectionField` for linked
+  selection.
+- `POST /v1/artifacts/{id}/table-query`: filter, aggregate, downsample, sort
+  and page a registered table; `columns` omitted returns all columns.
+- `create_a2ui_surface` accepts `components_path`, and every surface's final
+  definition is stored as an artifact (reported in the tool result).
+- `load_skill` accepts several `files` in one call; catalog skills list every
+  component on one generated line (description and signature).
+
+### Changed
+
+- Claim of an existing remote CLIO reports a different version as `found`
+  (with its version, pid and health) instead of stopping it; install/start
+  take a one-time `on_conflict: connect | replace`.
+- Provider plan limits and safety refusals reach the transcript as short,
+  typed messages (`claude_code_plan_limit`, `codex_plan_limit`,
+  `provider_safety_refusal`) and are never retried.
+
+### Removed
+
+- A2UI `clio.time-series.v1` (replaced by `clio.chart.v1`).
 
 ## [0.9.4.22] — 2026-09-29
 
