@@ -161,13 +161,17 @@ def test_expert_scope_render_excludes_events(tmp_path):
     assert all(s.scope == "agentA" for s in ws)
     assert all(s.kind != "semantic_event" for s in ws)
 
-    # The trajectory projection (the model prompt) carries no reserved scope.
-    keys = arc.render_segments_keys("s1", "agentA")
-    assert keys == {"thought_0": "T0", "observation_0": "O0"}
+    # The expert scope's full render (the agent context's source) carries no reserved
+    # scope content either.
+    rendered = arc.render_segments("s1", "agentA")
+    assert [(s.kind, s.content.get("text")) for s in rendered] == [
+        ("thought", "T0"),
+        ("observation", "O0"),
+    ]
 
-    # And rendering the reserved scope's OWN keys yields nothing the prompt models
-    # (semantic_event is not in segments_to_keys' allowlist).
-    assert arc.render_segments_keys("s1", EVENTS_SCOPE) == {}
+    # And the reserved scope holds ONLY semantic_event atoms — none of the kinds the
+    # agent context models (thought / tool_call / observation / summary).
+    assert {s.kind for s in arc.render_segments("s1", EVENTS_SCOPE)} == {"semantic_event"}
 
 
 # --- (d) no highway sink: still persists + folds, returns {} ----------------

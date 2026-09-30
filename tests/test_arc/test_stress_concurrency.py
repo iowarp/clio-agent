@@ -33,7 +33,7 @@ import pytest
 
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.schema import decode_segments
-from clio_agent.arc.segments import SegmentStore, segments_to_keys
+from clio_agent.arc.segments import SegmentStore
 from clio_agent.arc.storage import LocalFSStore
 
 # #735 flake-hunt: ARC concurrency invariants run under xdist load x3.
@@ -94,9 +94,9 @@ def _assert_render_ordering(live) -> None:
     "tombstoned" on those same objects after ``render`` returns. ``render`` upheld
     its contract (it returned the segments live AT THE CALL, under the lock); a
     later out-of-lock ``status`` read is a reader-side TOCTOU, not a store fault.
-    Production reads (``render_keys``->``segments_to_keys``) only touch immutable
-    fields (``kind``/``content``/``order``), so this distinction is faithful to how
-    the live plane is actually consumed.
+    Production reads (``render_text`` / the agent-context fold over ``render``) only
+    touch immutable fields (``kind``/``content``/``order``), so this distinction is
+    faithful to how the live plane is actually consumed.
     """
     keys = [(s.order, s.logical_time) for s in live]
     assert keys == sorted(keys), "render not sorted by (order, logical_time)"
@@ -196,9 +196,8 @@ def test_concurrent_append_different_scopes_isolated(tmp_path):
         # every segment belongs to its own scope (no tag bleed)
         assert all(s.scope == scope for s in live)
         assert all(s.content["text"].startswith(f"{scope}:") for s in live)
-        # render-position dict is gapless 0..per_scope-1 thoughts
-        keys = segments_to_keys(live)
-        assert list(keys.keys()) == [f"thought_{i}" for i in range(per_scope)]
+        # the scope renders exactly its per_scope thoughts, nothing else
+        assert [s.kind for s in live] == ["thought"] * per_scope
         seen_lts.extend(s.logical_time for s in live)
         _assert_render_well_formed(live)
 
@@ -216,7 +215,7 @@ def test_concurrent_append_different_scopes_isolated(tmp_path):
 
 def test_interleaved_ops_count_accounting(tmp_path):
     """Mixed writers (appenders) + mutators (deleters, summarizers) + readers
-    (render / render_keys) on ONE scope. Reads must never observe corruption,
+    (render / render_text) on ONE scope. Reads must never observe corruption,
     and the final ledger must balance exactly:
 
         live_now == total_created - total_tombstoned
@@ -252,16 +251,21 @@ def test_interleaved_ops_count_accounting(tmp_path):
                 victims = live[:3]
                 ss.summarize(SID, scope, [v.id for v in victims], {"text": "SUMMARY"})
 
+    appended = {f"a{t}-{i}" for t in range(n_appenders) for i in range(per_appender)}
+
     def reader() -> None:
         while not stop.is_set():
             live = ss.render(SID, scope)
             # concurrency-safe checks only (immutable fields) — writers are live
             _assert_render_ordering(live)
-            # render_keys must always be a coherent gapless dspy dict — this is the
-            # PRODUCTION read path (_format_trajectory), so a torn/half-applied op
-            # would show up here as an index gap.
-            keys = ss.render_keys(SID, scope)
-            _assert_keys_gapless(keys)
+            # render_text is one flattened line per live segment, taken under the
+            # lock: a torn/half-applied op would surface as a foreign line or as an
+            # appended segment rendered twice.
+            text = ss.render_text(SID, scope)
+            lines = text.split("\n") if text else []
+            assert all(line == "SUMMARY" or line in appended for line in lines), lines
+            originals = [line for line in lines if line != "SUMMARY"]
+            assert len(originals) == len(set(originals)), "segment rendered twice"
 
     futures = []
     with ThreadPoolExecutor(max_workers=n_appenders + 4) as ex:
@@ -349,20 +353,6 @@ def test_interleaved_ops_count_accounting(tmp_path):
     _assert_render_well_formed(live)
 
 
-def _assert_keys_gapless(keys: dict) -> None:
-    """The dspy trajectory dict must have contiguous iteration indices 0..k with
-    no gap (stock dspy never has index holes; render recomputes positions)."""
-    import re
-
-    idxs = set()
-    for k in keys:
-        m = re.match(r"(?:thought|tool_name|tool_args|observation)_(\d+)$", k)
-        if m:
-            idxs.add(int(m.group(1)))
-    if idxs:
-        assert idxs == set(range(max(idxs) + 1)), f"gap in trajectory indices: {sorted(idxs)}"
-
-
 # --------------------------------------------------------------------------- #
 # 4. Concurrent delete of the SAME ids: tombstoned-exactly-once accounting
 # --------------------------------------------------------------------------- #
@@ -423,7 +413,7 @@ def test_concurrent_writes_then_cold_reload_matches(tmp_path):
         list(ex.map(worker, range(n_threads)))
 
     total = n_threads * per_thread
-    before_keys = ss.render_keys(SID, scope)
+    before = [(s.id, s.kind, s.content) for s in ss.render(SID, scope)]
     before_texts = {s.content["text"] for s in ss.render(SID, scope)}
     assert len(before_texts) == total
 
@@ -432,7 +422,7 @@ def test_concurrent_writes_then_cold_reload_matches(tmp_path):
     after = reloaded.render(SID, scope)
     assert len(after) == total, "cold reload lost segments (torn persist under concurrency)"
     assert {s.content["text"] for s in after} == before_texts
-    assert reloaded.render_keys(SID, scope) == before_keys
+    assert [(s.id, s.kind, s.content) for s in after] == before
 
     # recovered clock continues strictly past the persisted maximum
     max_lt = max(s.logical_time for s in after)
@@ -474,8 +464,10 @@ def test_arcmemory_passthrough_concurrency(tmp_path):
             f"{scope}: expected {per_scope - 1} live after one delete, got {len(live)}"
         )
         assert all(s.scope == scope for s in live)
-        keys = arc.render_segments_keys(SID, scope)
-        _assert_keys_gapless(keys)
+        # the one delete took the scope's FIRST segment; the rest render in order
+        assert arc.render_segment_text(SID, scope).split("\n") == [
+            f"{scope}#{i}" for i in range(1, per_scope)
+        ]
         # tokens_by_kind pass-through must agree with the live count (all thoughts)
         toks = arc.segment_tokens_by_kind(SID, scope)
         assert set(toks) <= {"thought"}

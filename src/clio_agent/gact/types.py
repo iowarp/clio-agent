@@ -275,7 +275,7 @@ class ContextStateResponse(BaseModel):
     categories: dict[str, int] = Field(default_factory=dict)
     segments: list[dict[str, Any]] = Field(default_factory=list)
     render_text: str = ""
-    render_keys: dict[str, Any] = Field(default_factory=dict)
+    messages: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ContextOpRequest(BaseModel):

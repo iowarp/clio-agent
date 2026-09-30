@@ -47,10 +47,10 @@ def test_step_open_excluded_from_render_but_on_the_log() -> None:
     # The breadcrumb is on the raw lane...
     raw_kinds = [a.kind for a in _raw_lane_atoms(arc, session)]
     assert STEP_OPEN_KIND in raw_kinds
-    # ...but NOT in any render (working set, full plane, or trajectory keys).
+    # ...but NOT in any render (working set, full plane, or flattened text).
     assert all(s.kind != STEP_OPEN_KIND for s in arc.render_segments(session, SCOPE))
     assert all(s.kind != STEP_OPEN_KIND for s in arc.render_working_set(session, SCOPE))
-    assert arc.render_segments_keys(session, SCOPE) == {"thought_0": "T"}
+    assert arc.render_segment_text(session, SCOPE) == "T"
 
 
 def test_crash_leaves_step_open(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -82,5 +82,8 @@ def test_crash_leaves_step_open(monkeypatch: pytest.MonkeyPatch) -> None:
     step_opens = [a for a in raw if a.kind == STEP_OPEN_KIND]
     assert step_opens, "the crash left no step_open breadcrumb on the log"
     assert step_opens[0].content.get("tools") == ["probe"]
-    # The post-execution working-set atoms never landed (the crash preceded them).
-    assert arc.render_segments_keys(session, SCOPE) == {}
+    # The post-execution working-set atoms never landed (the crash preceded them):
+    # only the turn's framing ``user`` segment is live — no thought/tool_call/observation.
+    assert [(s.kind, s.content) for s in arc.render_segments(session, SCOPE)] == [
+        ("user", {"text": "find alpha"})
+    ]

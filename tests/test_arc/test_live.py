@@ -278,9 +278,8 @@ class TestBufferBacked:
         assert all(s.kind != "semantic_event" for s in ws)
         assert all(s.scope == "agentA" for s in ws)
 
-        # The trajectory projection (the model prompt) likewise carries no '_events'.
-        keys = arc.render_segments_keys("s1", "agentA")
-        assert keys == {"thought_0": "T0", "observation_0": "O0"}
+        # The full scope render (the agent context's source) likewise carries no '_events'.
+        assert arc.render_segment_text("s1", "agentA") == "T0\nO0"
 
     def test_equivalence_multi_turn_multi_expert(self, tmp_path):
         """Feeding a multi-turn, multi-expert corpus through on_semantic_event

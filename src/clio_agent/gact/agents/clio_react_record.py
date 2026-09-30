@@ -178,9 +178,9 @@ def fold_steps(segments: Sequence[Any]) -> list[Message]:
 
     A ``user`` segment is the user message it recorded. A ``thought`` opens a step; its
     ``tool_call`` / ``observation`` segments attach to it (results matched by call id, by
-    order for a segment written without one). A ``summary`` -- or an observation with no
-    open step -- becomes a user message carrying the text, so compacted content still
-    reaches the model.
+    order for a segment written without one); a call with no step open starts its own. A
+    ``summary`` -- or an observation with no open step -- becomes a user message carrying
+    the text, so compacted content still reaches the model.
     """
     messages: list[Message] = []
     step: _StepFold | None = None
@@ -193,7 +193,9 @@ def fold_steps(segments: Sequence[Any]) -> list[Message]:
             if step is not None:
                 messages.extend(step.messages())
             step = _StepFold(content)
-        elif kind == "tool_call" and step is not None:
+        elif kind == "tool_call":
+            if step is None:  # a call with no thought before it (an edit put it there)
+                step = _StepFold({})
             step.add_call(content)
         elif kind == "observation" and step is not None and step.expects_result():
             step.add_result(content)

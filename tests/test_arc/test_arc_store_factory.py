@@ -501,7 +501,7 @@ def test_clio_core_backs_the_live_segment_plane():
     sid, scope = "clio_core_live_s1", "agentA"
     arc.append_segment(sid, scope, "thought", {"text": "on CTE"}, step=0)
     arc.append_segment(sid, scope, "observation", {"text": "OBS_CLIO_CORE"}, step=0)
-    assert "OBS_CLIO_CORE" in str(arc.render_segments_keys(sid, scope))
+    assert "OBS_CLIO_CORE" in arc.render_segment_text(sid, scope)
     # a second ARCMemory over the same runtime sees the persisted segments
     arc2 = ARCMemory(store=make_arc_store(backend="cte"))
     assert len(arc2.render_segments(sid, scope)) == 2

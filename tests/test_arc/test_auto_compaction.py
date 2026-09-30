@@ -34,6 +34,12 @@ from clio_agent.gact.types import Message, Part, Tokens
 SID, SCOPE = "s1", "agentA"
 
 
+def _view(arc, scope=SCOPE) -> list[tuple[str, Any]]:
+    """The scope's live render as ``(kind, text)`` pairs (``text`` is ``None`` for a
+    tool_call) -- precise enough to pin "collapsed to one summary" vs "untouched"."""
+    return [(s.kind, s.content.get("text")) for s in arc.render_segments(SID, scope)]
+
+
 def _populate(arc, scope=SCOPE):
     arc.append_segment(SID, scope, "thought", {"text": "T0"}, step=0)
     arc.append_segment(SID, scope, "tool_call", {"name": "a", "args": {}}, step=0)
@@ -143,23 +149,23 @@ def test_fires_over_threshold(arc, monkeypatch):
     _populate(arc)
     with _full_plane_context(arc, session=SID, scope=SCOPE, window=1000):
         maybe_autocompact()
-    # collapsed to a single summary observation
-    assert arc.render_segments_keys(SID, SCOPE) == {"observation_0": "COMPACT_SUMMARY"}
+    # collapsed to a single summary segment
+    assert _view(arc) == [("summary", "COMPACT_SUMMARY")]
 
 
 def test_does_not_fire_under_threshold(arc, monkeypatch):
     _patch_prompt_tokens(monkeypatch, prompt_tokens=500)  # 0.50 < 0.85
     _populate(arc)
-    before = arc.render_segments_keys(SID, SCOPE)
+    before = _view(arc)
     with _full_plane_context(arc, session=SID, scope=SCOPE, window=1000):
         maybe_autocompact()
-    assert arc.render_segments_keys(SID, SCOPE) == before  # untouched
+    assert _view(arc) == before  # untouched
 
 
 def test_session_can_disable_automatic_compaction(arc, monkeypatch):
     _patch_prompt_tokens(monkeypatch, prompt_tokens=900)
     _populate(arc)
-    before = arc.render_segments_keys(SID, SCOPE)
+    before = _view(arc)
     metadata = {
         "context_preferences": {
             "automatic_compaction": False,
@@ -176,7 +182,7 @@ def test_session_can_disable_automatic_compaction(arc, monkeypatch):
     ):
         maybe_autocompact()
 
-    assert arc.render_segments_keys(SID, SCOPE) == before
+    assert _view(arc) == before
 
 
 def test_session_threshold_overrides_deployment_default(arc, monkeypatch):
@@ -199,7 +205,7 @@ def test_session_threshold_overrides_deployment_default(arc, monkeypatch):
     ):
         maybe_autocompact()
 
-    assert arc.render_segments_keys(SID, SCOPE) == {"observation_0": "COMPACT_SUMMARY"}
+    assert _view(arc) == [("summary", "COMPACT_SUMMARY")]
 
 
 def test_threshold_is_env_configurable(arc, monkeypatch):
@@ -208,16 +214,16 @@ def test_threshold_is_env_configurable(arc, monkeypatch):
     _populate(arc)
     with _full_plane_context(arc, session=SID, scope=SCOPE, window=1000):
         maybe_autocompact()
-    assert arc.render_segments_keys(SID, SCOPE) == {"observation_0": "COMPACT_SUMMARY"}
+    assert _view(arc) == [("summary", "COMPACT_SUMMARY")]
 
 
 def test_disabled_when_window_unknown(arc, monkeypatch):
     _patch_prompt_tokens(monkeypatch, prompt_tokens=9999)  # huge, but window=0 => no denominator
     _populate(arc)
-    before = arc.render_segments_keys(SID, SCOPE)
+    before = _view(arc)
     with _full_plane_context(arc, session=SID, scope=SCOPE, window=0):
         maybe_autocompact()
-    assert arc.render_segments_keys(SID, SCOPE) == before  # auto-compaction off
+    assert _view(arc) == before  # auto-compaction off
 
 
 def test_skips_when_summary_llm_returns_empty(arc, monkeypatch):
@@ -231,7 +237,7 @@ def test_skips_when_summary_llm_returns_empty(arc, monkeypatch):
     _populate(arc)
     with _full_plane_context(arc, session=SID, scope=SCOPE, window=1000, summary=""):
         maybe_autocompact()
-    assert arc.render_segments_keys(SID, SCOPE) == {"observation_0": ""}
+    assert _view(arc) == [("summary", "")]
 
 
 def test_last_prompt_tokens_falls_back_to_token_counter(monkeypatch):
@@ -284,5 +290,9 @@ def test_per_expert_independent(arc, monkeypatch):
     # cold: window 100000 -> 0.009 does not fire
     with _full_plane_context(arc, session=SID, scope="agentA/cold", window=100000):
         maybe_autocompact()
-    assert arc.render_segments_keys(SID, "agentA/hot") == {"observation_0": "COMPACT_SUMMARY"}
-    assert "O0" in str(arc.render_segments_keys(SID, "agentA/cold"))  # untouched
+    assert _view(arc, "agentA/hot") == [("summary", "COMPACT_SUMMARY")]
+    assert _view(arc, "agentA/cold") == [  # untouched
+        ("thought", "T0"),
+        ("tool_call", None),
+        ("observation", "O0"),
+    ]

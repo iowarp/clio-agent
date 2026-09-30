@@ -66,14 +66,14 @@ SegmentKind = Literal[
     "tool_call",
     "observation",
     "summary",
-    # Richer ARC-as-source kinds. They are NOT part of the dspy trajectory
-    # projection (segments_to_keys ignores any kind it doesn't model).
+    # Richer ARC-as-source kinds. They are NOT part of the agent's context
+    # (fold_steps ignores any kind it doesn't model).
     "answer",  # an expert/turn final message
     "semantic_event",  # one persisted raw semantic event — ARC's ONE log (the
     # ARC-as-source highway record AND the substrate the live observer projects over)
     # Working-set-fold atoms (#737 S2). Both live on the canonical ``_events`` log
     # (the span-partitioned ``_events/w`` content lane) and are NEITHER working-set
-    # kinds nor modeled by ``segments_to_keys`` — so they never reach a prompt and
+    # kinds nor modeled by ``fold_steps`` — so they never reach a prompt and
     # never appear in a working-set render:
     "ws_op",  # an append-only working-set op record ({op, targets, ...}); the fold
     # applies it (e.g. ``delete`` tombstones its targets at the op's logical_time)
@@ -82,12 +82,12 @@ SegmentKind = Literal[
     "message_part",  # #737 S4: a wire-identity atom for one gact Message part (or a
     # zero-part message envelope). Lives on the canonical ``_events/m`` lane, dual-written
     # at message persist alongside final_message; NEITHER a working-set kind NOR modeled by
-    # segments_to_keys and NOT ``semantic_event``, so the live reader ignores it and it
+    # fold_steps and NOT ``semantic_event``, so the live reader ignores it and it
     # never reaches a prompt or a working-set render (see gact/part_atoms.py).
     "state_merge",  # #737 S6: an append-only op record for a delegated turn's merged
     # workflow_state RESULT ({inputs, produced, schema_version}). Lives on the canonical
     # ``_events/s`` lane (sibling of ``_events/m``); like ``message_part`` it is NEITHER a
-    # working-set kind NOR modeled by segments_to_keys and NOT ``semantic_event``, so the
+    # working-set kind NOR modeled by fold_steps and NOT ``semantic_event``, so the
     # live reader ignores it and it never reaches a prompt or a render (see
     # gact/workflow_state/state_merge.py). The recorded result is materialized onto the
     # transcript projection so workflow_state is never RE-FOLDED on read under a newer
@@ -95,19 +95,14 @@ SegmentKind = Literal[
 ]
 SegmentStatus = Literal["live", "tombstoned"]
 
-# The kinds the model's PROMPT is rendered from (the dspy trajectory projection's
-# domain) + the static framing kinds. These are the ONLY kinds the live-plane
-# consumers that MUTATE the working set operate over: the per-turn working-set reset
-# and the auto-compaction target. The richer ARC-as-source kinds (``answer``) plus
-# the reserved highway/observer atom (semantic_event in the ``_events`` scope —
-# ARC's ONE persisted semantic-event log, which the live observer projects its turn
-# records over) are part of ARC's COMPLETE freeze-anytime state but are NOT
-# working-set context, so they must never be reset-tombstoned at a new turn nor folded
-# into a compaction summary. They are also never rendered into a model prompt: they
-# live in their own reserved scope (so a normal expert scope's working-set/keys render
-# never sees them) AND they are not modeled by segments_to_keys. (render/render_keys
-# are UNCHANGED — segments_to_keys is a kind-allowlist that already ignores the new
-# kinds, so the prompt is immune.)
+# The kinds the agent's context is folded from (``fold_steps``) + the static framing
+# kinds. Compaction operates over these only. The richer ARC-as-source kinds
+# (``answer``) plus the reserved highway/observer atom (semantic_event in the
+# ``_events`` scope — ARC's ONE persisted semantic-event log, which the live observer
+# projects its turn records over) are part of ARC's COMPLETE freeze-anytime state but
+# are NOT working-set context, so they are never folded into a compaction summary nor
+# rendered into a model prompt: they live in their own reserved scope AND fold_steps
+# does not model them.
 WORKING_SET_KINDS: frozenset[str] = frozenset(
     {
         "system",
