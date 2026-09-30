@@ -122,7 +122,7 @@ def _resolve_artifact_path(
 
         path = _table_source(app, record, version, verify=False)
     except HTTPException as exc:
-        detail_obj = exc.detail if isinstance(exc.detail, dict) else {}
+        detail_obj: dict[str, Any] = exc.detail if isinstance(exc.detail, dict) else {}
         message = detail_obj.get("error", {}).get("message") or str(exc.detail)
         return refusal(
             "a2ui_data_reference_unreadable",
