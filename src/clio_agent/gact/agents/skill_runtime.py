@@ -367,9 +367,15 @@ def _collect_ref_targets(node: Any) -> set[str]:
 #: A local ``$defs`` reference this document defines itself, e.g.
 #: ``#/$defs/FieldName`` -- the shape :func:`_inline_local_defs` expands.
 _LOCAL_DEF_REF_RE = re.compile(r"^#/\$defs/([^/]+)$")
-#: Recursion guard for :func:`_inline_local_defs` (no known catalog ``$defs``
-#: chain is this deep; a cycle is a defensive case, never expected).
-_MAX_DEF_INLINE_DEPTH = 8
+#: Recursion guard for :func:`_inline_local_defs`. This counts every level of
+#: the JSON STRUCTURE walked (dicts/lists), not just ``$defs`` expansions, so
+#: it must comfortably exceed a real schema's nesting (e.g. a component's own
+#: allOf -> properties -> dataQuery -> DataQuery's own aggregate -> metrics ->
+#: items -> properties -> column is already ~10 levels before any $defs
+#: chaining). The actual cycle guard is ``expanding`` (a def name already
+#: being expanded is never re-entered); this cap only stops a genuinely
+#: pathological/malicious depth from consuming unbounded stack/work.
+_MAX_DEF_INLINE_DEPTH = 50
 
 
 def _inline_local_defs(

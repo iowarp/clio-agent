@@ -969,6 +969,32 @@ def test_catalog_skill_map_fragment_inlines_map_point_and_data_query(tmp_path: P
     assert '"$ref": "#/$defs/CatalogComponentCommon"' not in out
 
 
+def test_catalog_skill_fragment_inlines_defs_at_every_nesting_depth(tmp_path: Path) -> None:
+    """Regression: a def nested SEVERAL levels inside an already-inlined def
+    (DataQuery's own aggregate.metrics[].column -- itself a FieldName $ref,
+    reached only after allOf -> properties -> dataQuery -> DataQuery's own
+    properties -> aggregate -> properties -> metrics -> items -> properties
+    -> column) must still be inlined, not silently left as a bare $ref past
+    an over-tight recursion depth cap."""
+
+    from clio_agent.gact.app import build_app
+
+    app = build_app(sessions_path=tmp_path / "sessions.json")
+    session = app.state.sessions.create(workspace_id="ws_default", title="root")
+    root = AgentDef(id="root", title="Root", module={"kind": "react"})
+    rt = skill_runtime_for_agent(app, root, session_id=session.id)
+    tool = build_load_skill_tool(root, rt)
+
+    out = tool.func(
+        skill_id="a2ui-catalog-clio-workspace",
+        file="catalog.json#/components/clio.data-table.v1",
+    )
+
+    assert '"$ref": "#/$defs/FieldName"' not in out
+    assert "Local refs" not in out
+    assert "Standard refs (not loadable here):" in out
+
+
 def test_load_skill_files_batches_two_real_catalog_components(tmp_path: Path) -> None:
     from clio_agent.gact.app import build_app
 
