@@ -964,6 +964,9 @@ design follows from how they will be used.
   `choice` question, and the selection resumes on the answer. The wrapper becomes a small state
   machine over clio-core, not one in-memory DSPy call.
 - **Parallel tries** for independent candidates. Each has its own scope, so nothing is shared.
+- **UI: the tries as tabs or a carousel** (gact-tui web, REUI components): one tab per try ("Draft 1 / 2 / 3")
+  with its score or "your pick". Each tab has the pick action and, for Refine, the comment box. Each tab
+  streams its try live while they run in parallel. The same block renders a finished run read-only on reload.
 - **Recorded, visible:** a `variant.try` event per try, `variant.selected` with scores or the
   user's pick, and the advice as injection parts.
 - **Long-term self-refinement.** Every run leaves a preference record in clio-core: candidates,
