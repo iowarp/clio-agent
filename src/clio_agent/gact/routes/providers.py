@@ -75,7 +75,7 @@ from clio_agent.gact.providers.selection_store import (
     selection_status_fields,
 )
 from clio_agent.gact.relay_wiring import construct_agent_with_relay
-from clio_agent.gact.routes.codex_variant import apply_codex_readiness_gate
+from clio_agent.gact.routes.codex_variant import apply_codex_readiness_gate, await_startup_check
 from clio_agent.gact.routes.provider_auth import supports_logout
 from clio_agent.gact.routes.provider_catalog_routes import register_provider_catalog_routes
 from clio_agent.gact.runtime.globals import _set_app_arc
@@ -629,6 +629,8 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                     ) from auth_exc
 
             is_codex, is_cc = req.provider == "codex", req.provider == "claude_code"
+            if is_codex or is_cc:
+                await await_startup_check(app)
             cfg = LMProviderConfig(
                 provider=req.provider,  # type: ignore[arg-type]  # str validated at boundary
                 provider_id=req.provider_id,
@@ -675,11 +677,8 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                     cfg.model = default_model
             if is_codex:
                 await apply_codex_readiness_gate(cfg, req, _codex_readiness)
-            # Per-provider handshake: discover connectivity + per-model config and
-            # fold it into cfg — context-aware max_tokens (replacing the static ALCF
-            # 4096 cap on 128-256K-context models), reasoning/tool capability flags,
-            # and the queryable chosen_context. Never block a bind on a handshake
-            # failure: fall back to the static config unchanged.
+            # Per-provider handshake folds per-model config into cfg (context-aware
+            # max_tokens, capability flags); a handshake failure keeps the static config.
             handshake_report = None
             try:
                 from clio_agent.providers.handshake import (  # noqa: PLC0415
