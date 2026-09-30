@@ -20,7 +20,7 @@ the Python liveness probe all read the same file.
 TYPED ATTACH STATE. The attach runs off the server's event loop and can take a
 while (a fresh daemon spawn, a native handshake). :class:`ClioCoreAttachState` is
 a process-local record of where it is -- ``starting`` / ``attached`` /
-``unavailable(reason)`` / ``not_selected`` -- that the doctor turns into the
+``unavailable(reason)`` -- that the doctor turns into the
 ``clio_core_attach`` row (:func:`clio_agent.runtime.clio_core_health.probe_clio_core_attach`).
 It only reports what already happened; it never times anything out.
 
@@ -71,8 +71,7 @@ class ClioCoreAttachPhase(str, Enum):
     IDLE = "idle"  # no ARC store has been built in this process yet
     STARTING = "starting"  # connect-or-spawn + native attach in flight
     ATTACHED = "attached"  # the clio-core store is live
-    UNAVAILABLE = "unavailable"  # attach failed; ARC degraded to LocalFS (reason says why)
-    NOT_SELECTED = "not_selected"  # CLIO_ARC_STORE=local chose LocalFS deliberately
+    UNAVAILABLE = "unavailable"  # attach failed: a typed ArcStoreUnavailableError (reason)
 
 
 @dataclass(frozen=True)
@@ -134,11 +133,6 @@ def mark_unavailable(reason: str, error: str, config_path: str, port: int | None
     _set(ClioCoreAttachState(ClioCoreAttachPhase.UNAVAILABLE, reason, config_path, port, error))
 
 
-def mark_not_selected() -> None:
-    """Record that LocalFS was chosen deliberately (no clio-core attach attempted)."""
-    _set(ClioCoreAttachState(ClioCoreAttachPhase.NOT_SELECTED, "clio_core_not_selected"))
-
-
 def attach_state_snapshot() -> ClioCoreAttachState:
     """Return this process's current attach state."""
     with _lock:
@@ -191,31 +185,32 @@ def build_tracked_store(cfg: str, *, backend: str | None, data_dir: "str | Path"
     """Build the clio-core ARC store for ``cfg``, publishing the attach state as it goes.
 
     ``starting`` before connect-or-spawn, ``attached`` on success, and on ANY init
-    failure the LOUD degrade to LocalFS (#897: typed reason + WARNING + doctor row)
-    plus ``unavailable(reason)``. The body of ``make_arc_store``'s ``cte`` branch.
+    failure ``unavailable(reason)`` plus a raised :class:`ArcStoreUnavailableError`
+    (clio-core or nothing). The body of ``make_arc_store``.
 
     Args:
         cfg: The clio-core config path (daemon and client both use it).
         backend: The explicit ``backend`` arg given to ``make_arc_store``, if any.
-        data_dir: The LocalFS directory to degrade to.
+        data_dir: Unused; kept for the factory's signature.
 
     Returns:
-        A live ``ClioCoreStore``, or a ``LocalFSStore`` after a recorded degrade.
+        A live ``ClioCoreStore``.
+
+    Raises:
+        ArcStoreUnavailableError: clio-core could not be brought up.
     """
     from clio_agent.arc import clio_core_file_capacity, storage  # noqa: PLC0415 - cycle
-    from clio_agent.arc.init_degradation import record_arc_init_degradation  # noqa: PLC0415
+    from clio_agent.arc.init_degradation import ArcStoreUnavailableError  # noqa: PLC0415
 
     port = storage._resolve_runtime_port(cfg)
     mark_starting(cfg, port)
     try:
         clio_core_file_capacity.preflight_clio_core_config(cfg, env=os.environ)
         store = storage.ClioCoreStore(config_path=cfg)
-    except Exception as exc:  # noqa: BLE001 - LOUD degrade to LocalFS, recorded below
-        record = record_arc_init_degradation(
-            backend=backend, config_path=cfg, error=exc, data_dir=str(data_dir)
-        )
-        mark_unavailable(record.reason, str(exc), cfg, port)
-        return storage.LocalFSStore(data_dir)
+    except Exception as exc:  # noqa: BLE001 - re-raised typed: clio-core or nothing
+        failure = ArcStoreUnavailableError(error=exc, config_path=cfg)
+        mark_unavailable(failure.reason, str(exc), cfg, port)
+        raise failure from exc
     # The daemon's config, when this process adopted it (first config wins).
     effective = getattr(store, "_config_path", "") or cfg
     mark_attached(effective, storage._resolve_runtime_port(effective))

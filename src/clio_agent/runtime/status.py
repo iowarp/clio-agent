@@ -632,10 +632,7 @@ class RuntimeProbe:
                     "iowarp_core pip package is not installed."
                 ),
                 config_source=source,
-                next_action=(
-                    "Install the iowarp-core pip package, or set CLIO_ARC_STORE=local "
-                    "to deliberately use the LocalFS backend."
-                ),
+                next_action=("Install the iowarp-core pip package (clio-core is required)."),
                 endpoint=endpoint,
                 fallback="none",
                 details=details,
@@ -651,8 +648,8 @@ class RuntimeProbe:
                 ),
                 config_source=source,
                 next_action=(
-                    "Start the shared clio-core daemon (clio start / clio_run start) "
-                    f"or set CLIO_ARC_STORE=local; see {runtime.log_path}."
+                    "Start the shared clio-core daemon (clio start / clio_run start); "
+                    f"see {runtime.log_path}."
                 ),
                 endpoint=endpoint,
                 fallback="none",
@@ -1066,7 +1063,7 @@ class RuntimeProbe:
                     "iowarp_core pip package is not installed."
                 ),
                 config_source=source,
-                next_action=("Install the iowarp-core pip package, or set CLIO_ARC_STORE=local."),
+                next_action=("Install the iowarp-core pip package (clio-core is required)."),
                 endpoint=endpoint,
                 details=details,
                 required=True,

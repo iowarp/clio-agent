@@ -218,7 +218,6 @@ class ClioCoreRuntimeLostError(ClioError):
             "recovery_actions": [
                 "restart_clio_core_daemon",
                 "run_clio_doctor",
-                "set_clio_arc_store_local",
                 "retry",
             ],
         }

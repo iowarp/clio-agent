@@ -1,29 +1,18 @@
 """Persistent record backends for ARC.
 
-This module defines the storage seam ARC records go through and the two concrete
-backends that implement it. It is the durable tier beneath the in-memory hot layer
-(``LRUCache`` + ``BTreeIndex`` in ``memory.py``); it does NOT do access-pattern-driven
-tier migration -- there is no hot/warm/cold/archive mover here.
+This module defines the storage seam ARC records go through and its one backend:
+clio-core. It is the durable tier beneath the in-memory hot layer (``LRUCache`` +
+``BTreeIndex`` in ``memory.py``).
 
 The seam -- :class:`ARCStore` (a ``Protocol``): ``put(kind, name, data, search_text=...)``
 / ``get(kind, name)`` / ``scan(kind, prefix)`` over opaque ``bytes`` keyed by
-``(kind, name)``. Any backend that satisfies it plugs in.
+``(kind, name)``.
 
-Backends:
-    - :class:`LocalFSStore` -- plain files under ``<data_dir>``: one
-      ``<kind>/<name>.msgpack`` record per key plus a ``<kind>/<name>.search``
-      plain-text companion for the degraded keyword-overlap search. Durable on
-      disk; no external process.
-    - :class:`ClioCoreStore` -- the clio-core CTE (Convergent Tiered Environment)
-      binding, connecting to a shared per-user daemon (connect-or-spawn, stopped at
-      interpreter exit via ``atexit``). Its DRAM tier is the live working set backed by
-      a file tier; on-disk recovery is WIP, so for guaranteed disk durability today
-      prefer ``CLIO_ARC_STORE=local``.
-
-Backend selection is FAIL-LOUD, not a silent fallback: see :func:`make_arc_store`.
-``"cte"`` is the default and degrades to ``LocalFSStore`` only LOUDLY (a typed reason)
-if its binding is absent or fails to init; ``LocalFSStore`` is a silent choice only
-when ``CLIO_ARC_STORE=local`` is selected explicitly.
+:class:`ClioCoreStore` -- the clio-core CTE (Convergent Tiered Environment) binding,
+connecting to a per-user daemon (connect-or-spawn, stopped at interpreter exit via
+``atexit``). clio-core is THE context store: :func:`make_arc_store` raises a typed
+:class:`~clio_agent.arc.init_degradation.ArcStoreUnavailableError` when it cannot be
+brought up; there is no other store.
 """
 
 import atexit
@@ -36,7 +25,7 @@ import sys
 import threading
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Dict, Optional, Protocol, runtime_checkable
+from typing import Optional, Protocol, runtime_checkable
 
 # Clean-stop + the shutdown latch live in owner module arc/runtime_stop.py (file-size ratchet,
 # #775/#774), re-exported below. Also imported as a MODULE (not just names) so
@@ -105,8 +94,8 @@ from clio_agent.runtime.stream_audit import stream_audit
 
 logger = logging.getLogger(__name__)
 
-# The logical record families ARC persists (a directory per kind for LocalFSStore;
-# a namespace/key prefix for a clio-core-backed store). Single source of truth.
+# The logical record families ARC persists (a namespace/key prefix in clio-core).
+# Single source of truth.
 ARC_KINDS: tuple[str, ...] = (
     "conversations",
     "invocations",
@@ -125,9 +114,8 @@ class ARCStore(Protocol):
 
     A record is addressed by ``(kind, name)``: ``kind`` is one of :data:`ARC_KINDS`; ``name`` is the
     record stem (no extension). The store owns the physical layout and tiering, so ARC never touches
-    the filesystem directly. :class:`LocalFSStore` writes ``<data_dir>/<kind>/<name>.msgpack``; a
-    clio-core backend maps the same ``(kind, name)`` onto namespaced, multi-tier storage. This
-    Protocol is the seam where that backend plugs in.
+    the filesystem directly. clio-core maps ``(kind, name)`` onto namespaced, multi-tier
+    storage.
     """
 
     def put(
@@ -180,114 +168,6 @@ class ARCStore(Protocol):
         ...
 
 
-class LocalFSStore:
-    """Default :class:`ARCStore` backed by the local filesystem.
-
-    Lays records out as ``<data_dir>/<kind>/<name>.msgpack`` -- the historical
-    on-disk format ARC has always used, so existing data directories are read
-    unchanged. This is the extraction of the filesystem code that previously
-    lived inline in ``ARCMemory``; the LSM tree remains a separate subsystem.
-    """
-
-    def __init__(self, data_dir: str | Path):
-        self.data_dir = Path(data_dir)
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        self._dirs: Dict[str, Path] = {kind: self.data_dir / kind for kind in ARC_KINDS}
-        for directory in self._dirs.values():
-            directory.mkdir(exist_ok=True)
-
-    def _dir(self, kind: str) -> Path:
-        try:
-            return self._dirs[kind]
-        except KeyError:
-            raise ValueError(f"unknown ARC kind {kind!r}; expected one of {ARC_KINDS}") from None
-
-    def put(
-        self,
-        kind: str,
-        name: str,
-        data: bytes,
-        *,
-        tier: str = "warm",
-        search_text: Optional[str] = None,
-    ) -> None:
-        if kind == "segments":  # #1339: live-lane audit evidence (one row per put)
-            stream_audit("store.put", kind=kind, name=name, size=len(data))
-        directory = self._dir(kind)
-        (directory / f"{name}.msgpack").write_bytes(data)
-        # Plain-text companion sidecar for search (Thread D). ``.search`` so the
-        # ``*.msgpack`` scan never picks it up as a record.
-        companion = directory / f"{name}.search"
-        if search_text is not None:
-            companion.write_text(search_text, encoding="utf-8")
-        elif companion.exists():
-            companion.unlink()
-
-    def get(self, kind: str, name: str) -> Optional[bytes]:
-        path = self._dir(kind) / f"{name}.msgpack"
-        if not path.exists():
-            return None
-        return path.read_bytes()
-
-    def exists(self, kind: str, name: str) -> bool:
-        return (self._dir(kind) / f"{name}.msgpack").exists()
-
-    def scan(self, kind: str, prefix: str = "") -> Iterator[tuple[str, bytes]]:
-        for path in self._dir(kind).glob(f"{prefix}*.msgpack"):
-            try:
-                data = path.read_bytes()
-            except OSError:
-                continue
-            yield path.stem, data
-
-    def delete(self, kind: str, name: str) -> None:
-        directory = self._dir(kind)
-        for suffix in (".msgpack", ".search"):
-            path = directory / f"{name}{suffix}"
-            if path.exists():
-                path.unlink()
-
-    def clear(self) -> None:
-        for directory in self._dirs.values():
-            for pattern in ("*.msgpack", "*.search"):
-                for path in directory.glob(pattern):
-                    path.unlink()
-
-    def supports_search(self) -> bool:
-        return False  # naive word-overlap, not BM25 (use ClioCoreStore for real ranking)
-
-    def search(
-        self, kind: str, query_text: str, *, name_prefix: str = "", k: int = 10
-    ) -> list[tuple[str, float]]:
-        """Degraded fallback: rank by query-word overlap over the ``.search``
-        companions. Good enough for tests / non-clio-core deployments; ClioCoreStore does BM25."""
-        terms = {t for t in query_text.lower().split() if t}
-        if not terms:
-            return []
-        scored: list[tuple[str, float]] = []
-        for path in self._dir(kind).glob(f"{name_prefix}*.search"):
-            try:
-                text = path.read_text(encoding="utf-8", errors="ignore").lower()
-            except OSError:
-                continue
-            score = sum(1 for w in text.split() if w in terms)
-            if score > 0:
-                scored.append((path.stem, float(score)))  # .stem drops ".search"
-        scored.sort(key=lambda x: -x[1])
-        return scored[:k]
-
-
-# --------------------------------------------------------------------------- #
-# clio-core shared-runtime lifecycle (connect-or-spawn)
-#
-# clio-core's chimaera runtime is a host-global singleton: ONE runtime binds the RPC
-# port (default 9413) and serves many clients. ``chimaera_init(kClient, True)`` would
-# self-start an *embedded* runtime that dies with the caller and holds the port
-# exclusively (a second clio-agent process then FATALs). Instead it runs as a SHARED
-# standalone daemon: spawn once (``clio_run start``) iff none is up, then every client
-# attaches with ``chimaera_init(kClient, False)`` ("if no clio-core: spawn(); connect()").
-# --------------------------------------------------------------------------- #
-
 _RUNTIME_START_TIMEOUT_S = 30.0
 
 
@@ -324,7 +204,7 @@ def _spawn_runtime_daemon(iowarp_core: object, config_path: str, log_level: str)
         raise RuntimeError(
             f"clio-core runtime launcher (clio_run) not found in "
             f"{iowarp_core.get_bin_dir()!r}; cannot spawn the shared clio-core daemon "  # type: ignore[attr-defined]
-            "(set CLIO_ARC_STORE=local to use the LocalFS backend)."
+            "(reinstall the iowarp-core package; run clio doctor)."
         )
     lib_dir = iowarp_core.get_lib_dir()  # type: ignore[attr-defined]
     env = os.environ.copy()
@@ -531,8 +411,7 @@ class ClioCoreStore:
     instance. See ``_ensure_runtime``.
 
     DURABILITY: the default CTE config is a DRAM hot tier spilling to a file cold tier
-    (:func:`default_cte_config_path`). Cross-restart blob-data recovery is WIP upstream; for
-    guaranteed disk durability today, select the LocalFS backend (``CLIO_ARC_STORE=local``).
+    (:func:`default_cte_config_path`).
     """
 
     _initialized = False  # process-global init guard (the runtime inits exactly once)
@@ -566,8 +445,7 @@ class ClioCoreStore:
             "ClioCoreStore active: clio-core is the ARC backend (shared daemon runtime). "
             "The DEFAULT config is a DRAM hot tier + file cold tier; durable + "
             "fault-tolerant tiers (replication, erasure coding) are configured in the "
-            "CTE config via CLIO_ARC_STORE_CONFIG. Use CLIO_ARC_STORE=local for disk "
-            "durability today."
+            "CTE config via CLIO_ARC_STORE_CONFIG."
         )
 
     # NOTE: there is deliberately NO instance ``release()`` method. The shared clio-core
@@ -792,12 +670,9 @@ def make_arc_store(
     is the tiering component that backs the canonical ARC store. Selection (first
     match wins): explicit ``backend`` arg, env ``CLIO_ARC_STORE``, default ``"cte"``.
 
-    LOUD DEGRADE (#897): if clio-core is missing or fails to init, the store degrades to
-    ``LocalFSStore`` **loudly** — a typed reason (:mod:`clio_agent.arc.init_degradation`), a
-    WARNING log line, and a doctor DEGRADED row — never silently, never by refusing to run. Only an
-    explicit ``=local`` (or ``backend="local"``) selects LocalFS as a *choice* with no degrade row.
-    INIT-time only (a mid-life daemon loss stays the #892 quarantine); clio-core is retried afresh
-    on the next boot (no sticky state).
+    clio-core is THE context store: an init failure raises
+    :class:`~clio_agent.arc.init_degradation.ArcStoreUnavailableError` (typed reason),
+    never another store (supersedes the #897 LocalFS degrade).
     """
     from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
 
@@ -805,12 +680,6 @@ def make_arc_store(
         "arc.store", env="CLIO_ARC_STORE", default="cte", cast=conf.as_str
     )
     choice = resolved.strip().lower()
-    if choice == "local":
-        from clio_agent.arc.init_degradation import warn_local_backend_selected  # noqa: PLC0415
-
-        warn_local_backend_selected()
-        clio_core_attach.mark_not_selected()
-        return LocalFSStore(data_dir)
     if choice == "cte":
         cfg = config_path or conf.resolve(
             "arc.store_config", env="CLIO_ARC_STORE_CONFIG", default="", cast=conf.as_str
@@ -821,6 +690,5 @@ def make_arc_store(
 
             ws_cfg = paths.workspace_core_dir() / "cte.yaml"
             cfg = str(ws_cfg) if ws_cfg.is_file() else default_cte_config_path()
-        # Attach (or loud degrade to LocalFS) with its typed state tracked for /v1/health.
         return clio_core_attach.build_tracked_store(cfg, backend=backend, data_dir=data_dir)
-    raise ValueError(f"unknown CLIO_ARC_STORE {choice!r}; expected 'cte' or 'local'")
+    raise ValueError(f"unknown CLIO_ARC_STORE {choice!r}; the only store is clio-core ('cte')")

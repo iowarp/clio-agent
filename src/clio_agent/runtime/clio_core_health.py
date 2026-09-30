@@ -217,7 +217,7 @@ def probe_clio_core_attach(*, state: object | None = None) -> list[IntegrationSt
     )
 
     snap = state if isinstance(state, ClioCoreAttachState) else attach_state_snapshot()
-    if snap.phase in (ClioCoreAttachPhase.IDLE, ClioCoreAttachPhase.NOT_SELECTED):
+    if snap.phase is ClioCoreAttachPhase.IDLE:
         return []
     details = snap.to_details()
     removed = removed_embedded_runtime_env()
@@ -350,7 +350,7 @@ def probe_clio_core_liveness(*, snapshot: list[dict] | None = None) -> list[Inte
                 config_source="runtime:clio_core_liveness_gate",
                 next_action=(
                     "Restart the shared clio-core daemon (clio start / clio_run start); "
-                    "the store reconnects on the next ARC op. Or set CLIO_ARC_STORE=local."
+                    "the store reconnects on the next ARC op."
                 ),
                 endpoint=None if port is None else f"127.0.0.1:{port}",
                 fallback="none",
@@ -375,58 +375,6 @@ def probe_clio_core_liveness(*, snapshot: list[dict] | None = None) -> list[Inte
             next_action="No action required.",
             capabilities=["daemon-loss-guard"],
             details={"reason": "clio_core_liveness_healthy", "total_gates": len(snapshot)},
-            required=True,
-        )
-    ]
-
-
-def probe_clio_core_init_degradation(*, record: object | None = None) -> list[IntegrationStatus]:
-    """Surface an INIT-time degrade from the clio-core backend to LocalFS as a row (#897).
-
-    When ``make_arc_store`` cannot bring up the clio-core backend it degrades to
-    :class:`~clio_agent.arc.storage.LocalFSStore` *loudly* and records a typed
-    :class:`~clio_agent.arc.init_degradation.ArcInitDegradation` in a process-local
-    slot. This reads that slot (mirroring the #892 gate registry: meaningful only IN
-    the process that built the store — a separate doctor CLI holds none and reports
-    nothing) and emits a DEGRADED row naming the cause and stating that the
-    external-operator (clio-core) pathway is unavailable (#737).
-
-    Args:
-        record: Optional injected :class:`ArcInitDegradation` (or ``None``) for
-            testing; defaults to the live process-local record.
-
-    Returns:
-        A single DEGRADED row when a degrade was recorded this process, else empty.
-    """
-    if record is None:
-        from clio_agent.arc.init_degradation import arc_init_degradation_snapshot  # noqa: PLC0415
-
-        record = arc_init_degradation_snapshot()
-    if record is None:
-        return []
-
-    details = record.to_details()  # type: ignore[attr-defined]
-    reason = details["reason"]
-    selection = "explicit CLIO_ARC_STORE=cte" if details["was_explicit"] else "the default"
-    return [
-        IntegrationStatus(
-            name="clio_core_init",
-            state=IntegrationState.DEGRADED,
-            summary=(
-                "ARC degraded to LocalFSStore at init: the clio-core backend "
-                f"({selection}) is UNAVAILABLE — the external-operator (clio-core) "
-                f"pathway could not be brought up (reason={reason}: {details['error']}). "
-                "ARC is running on local files; the tiered clio-core backend is not active."
-            ),
-            config_source="runtime:arc_init_degradation",
-            next_action=(
-                "Fix the clio-core install/config to restore the tiered backend (run "
-                "clio doctor), or set CLIO_ARC_STORE=local to choose LocalFS "
-                "deliberately (no degrade row). clio-core is retried on the next boot."
-            ),
-            endpoint=str(details["config_path"]) if details["config_path"] else None,
-            fallback="local",
-            details=details,
             required=True,
         )
     ]
@@ -744,7 +692,6 @@ def probe_clio_core_health(*, env: Mapping[str, str] | None = None) -> list[Inte
     return [
         *probe_clio_core_attach(),
         *probe_clio_core_config_adoption(),
-        *probe_clio_core_init_degradation(),
         *probe_clio_core_ram_cap(env=env),
         *probe_clio_core_liveness(),
         *probe_clio_core_daemon_memory(env=env),
