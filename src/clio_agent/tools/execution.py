@@ -675,9 +675,10 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             if cancellation_checker is not None and cancellation_checker():
                 raise foreground_cancel._tool_cancellation_error(name, stage)
 
-        effective_args, repair_records = _repair_missing_file_arguments(args)
+        # The call runs exactly as the agent asked (relative paths resolve against the
+        # workspace root); a failed call gets a "did you mean" hint, never a rewrite.
         effective_args = _ground_output_paths(
-            effective_args,
+            dict(args),
             _tool_input_schema(self._mcp_tools.get(name)),  # fastmcp-4 snake-case-aware read
             get_active_tool_workspace_root(),
         )
@@ -790,6 +791,8 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
                 )
                 raise uncertain from exc
             error_text = repr(exc)
+            if hint := _missing_path_hint(effective_args):
+                exc.add_note(hint)
             if not isinstance(exc, UncertainMutatingToolOutcomeError):
                 self._record_tool_failure(name, error_text)
             trace = {"error": exc.to_dict()} if isinstance(exc, ClioError) else None
@@ -840,7 +843,8 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
 
         if return_raw:
             return outcome.raw_result  # MCP Apps bridge is not model-facing: no PostToolUse
-        result = _prepend_repair_notes(repair_records, result) if repair_records else result
+        if structured_error and (hint := _missing_path_hint(effective_args)):
+            result = f"{hint}\n\n{result}"
         # The model-visible observation (minted artifact identity, then P2.3 PostToolUse),
         # assembled AFTER the observer recorded the real effect (the trace keeps the result).
         result = assemble_model_observation(
@@ -990,12 +994,11 @@ def _ground_output_paths(
     return ground_output_paths(args, input_schema, workspace_root)
 
 
-# Bounds on the allowed-root basename scan: a mistyped path must not turn a tool
-# call into an unbounded filesystem walk. Both are hard ceilings — hitting either
-# aborts the scan and leaves the argument UNCHANGED, because a partial scan cannot
-# prove a match is unique.
-_REPAIR_SCAN_LIMIT = 20_000
-_REPAIR_DEADLINE_S = 2.0
+# Bounds on the allowed-root basename scan behind a path hint: a mistyped path must
+# not turn a failed call into an unbounded filesystem walk (a partial scan hints less).
+_HINT_SCAN_LIMIT = 20_000
+_HINT_DEADLINE_S = 2.0
+_HINT_MATCHES = 3  # the "did you mean" options offered per argument
 
 
 def _bounded_basename_matches(
@@ -1014,7 +1017,7 @@ def _bounded_basename_matches(
 
     Returns:
         ``(matches, scanned, aborted)``: resolved file matches (the walk stops
-        after a second match, which already disproves uniqueness), the updated
+        at ``_HINT_MATCHES``), the updated
         entry count, and whether a bound aborted the walk.
     """
     matches: list[Path] = []
@@ -1029,90 +1032,51 @@ def _bounded_basename_matches(
             with entries:
                 for entry in entries:
                     scanned += 1
-                    if scanned > _REPAIR_SCAN_LIMIT or time.monotonic() > deadline:
+                    if scanned > _HINT_SCAN_LIMIT or time.monotonic() > deadline:
                         return matches, scanned, True
                     try:
                         if entry.is_dir(follow_symlinks=False):
                             stack.append(entry.path)
                         elif entry.name == basename and entry.is_file():
                             matches.append(Path(entry.path).resolve())
-                            if len(matches) > 1:
+                            if len(matches) >= _HINT_MATCHES:
                                 return matches, scanned, False
                     except OSError:
                         continue
     return matches, scanned, False
 
 
-def _repair_missing_file_arguments(
-    args: Mapping[str, Any],
-) -> tuple[dict[str, Any], list[dict[str, str]]]:
-    """Repair obvious missing file-path typos to a unique allowed-root match.
+def _missing_path_hint(args: Mapping[str, Any]) -> str:
+    """A "did you mean" hint for path arguments of a failed call that do not exist.
 
-    Model-generated tool calls occasionally mistype a directory component while
-    preserving the target basename. Retrying a unique basename match under the
-    configured allowed roots keeps the repair inside the existing file policy:
-    no outside-root access, and no ambiguous guessing.
-
-    The allowed-root walk is bounded (``_REPAIR_SCAN_LIMIT`` entries across roots,
-    ``_REPAIR_DEADLINE_S`` seconds); exceeding either bound aborts the scan and
-    leaves the argument unchanged, since a partial scan cannot prove uniqueness.
-
-    Returns:
-        The (possibly repaired) argument dict, and a list of substitution records
-        ``{"argument", "requested", "used"}`` — one per actually-substituted
-        argument — so the caller can surface every repair in the tool result.
+    The harness guides, it never decides: the call already ran as the agent asked;
+    this only tells the agent which same-named files exist under the allowed roots
+    (bounded walk, at most ``_HINT_MATCHES`` each). Empty when there is nothing to say.
     """
-
-    repaired = dict(args)
-    records: list[dict[str, str]] = []
     try:
         policy = FileAccessPolicy.from_env()
     except Exception as exc:  # noqa: BLE001 - degradation surfaced via structured log below
         logger.warning(
-            "file-argument repair skipped: file policy unavailable "
-            "reason=file_policy_unavailable error=%r",
+            "path hint skipped: file policy unavailable reason=file_policy_unavailable error=%r",
             exc,
         )
-        return repaired, records
-
+        return ""
+    lines: list[str] = []
     scanned = 0
-    deadline = time.monotonic() + _REPAIR_DEADLINE_S
-    for key, value in list(repaired.items()):
+    deadline = time.monotonic() + _HINT_DEADLINE_S
+    for key, value in args.items():
         if key not in _FILE_ARGUMENT_NAMES or not isinstance(value, str) or not value.strip():
             continue
         candidate = Path(value).expanduser()
-        if candidate.exists():
+        if candidate.exists() or candidate.name in {"", ".", ".."}:
             continue
-        basename = candidate.name
-        if not basename or basename in {".", ".."}:
-            continue
-        matches, scanned, aborted = _bounded_basename_matches(
-            policy.allowed_roots, basename, scanned, deadline
+        matches, scanned, _aborted = _bounded_basename_matches(
+            policy.allowed_roots, candidate.name, scanned, deadline
         )
-        if aborted:
-            # A partial scan can't prove uniqueness — leave the argument as-is.
-            continue
-        unique = sorted(set(matches))
-        if len(unique) == 1:
-            used = str(unique[0])
-            repaired[key] = used
-            records.append({"argument": key, "requested": value, "used": used})
-    return repaired, records
-
-
-def _prepend_repair_notes(records: Sequence[Mapping[str, str]], result: str) -> str:
-    """Prepend a human-readable ``[path-repair]`` note per substitution to ``result``.
-
-    Every file-argument substitution the executor made is surfaced verbatim in the
-    tool result the model reads back, so a silently-corrected path is never
-    invisible — the repair is auditable in the trace and to the model itself.
-    """
-    notes = "".join(
-        f"[path-repair] argument '{rec['argument']}': '{rec['requested']}' not found; "
-        f"substituted unique match '{rec['used']}'\n"
-        for rec in records
-    )
-    return f"{notes}\n{result}"
+        if matches:
+            options = " or ".join(f"'{m}'" for m in sorted(set(matches)))
+            lines.append(f"argument '{key}': '{value}' does not exist. Did you mean {options}?")
+    return "[clio: path_hint]\n" + "\n".join(lines) if lines else ""
 
 
 def _make_dspy_tools(

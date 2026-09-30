@@ -262,7 +262,7 @@ def merge_artifact_identity(model_text: str, entries: list[dict[str, str]]) -> s
     (``create_artifact``) is returned untouched: the tool's own declaration wins.
     Any other shape (a bare string, a list, unparseable text) keeps its bytes and
     gains one trailing ``[artifacts]`` note — the same visible-annotation idiom the
-    boundary's ``[path-repair]`` note already uses, so the fact is never invisible.
+    boundary's ``[clio: path_hint]`` note already uses, so the fact is never invisible.
     """
 
     if not entries or not isinstance(model_text, str):

@@ -25,7 +25,7 @@ from clio_agent.tools.execution import (
     SyncMCPToolExecutor,
     ToolRuntimeHooks,
     _ground_output_paths,
-    _repair_missing_file_arguments,
+    _missing_path_hint,
     create_async_tool_executor,
     create_sync_tool_executor,
     set_tool_runtime_fallback,
@@ -916,140 +916,101 @@ def test_sync_mcp_tool_executor_clears_transient_failure_count_after_success():
     assert fake_client.calls == 4
 
 
-def test_sync_mcp_tool_executor_repairs_unique_missing_file_arg(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-):
-    """A model path typo should repair to one unique same-basename allowed-root file."""
-    good = tmp_path / "data" / "pathogen_reference.fasta"
-    good.parent.mkdir()
-    good.write_text(">chrA\nACGT\n", encoding="utf-8")
-    set_config("tools.file_policy.allowed_roots", [str(tmp_path)])  # file layer wins (#985)
+class NotFoundClient(FakeClient):
+    """Fake client whose tool reports a structured not-found error."""
 
-    fake_client = FakeClient()
-    executor = SyncMCPToolExecutor(
-        object(),
-        timeout=1.0,
-        client_factory=lambda _: fake_client,
-    )
-    observed: list[tuple[str, dict[str, Any], str | None, str | None]] = []
-
-    try:
-        set_tool_runtime_fallback(
-            ToolRuntimeHooks(
-                tool_observer=lambda name, args, phase, error: observed.append(
-                    (name, dict(args), phase, error)
-                )
-            )
-        )
-        result = executor.call_tool(
-            "fake_echo",
-            {"filepath": str(tmp_path / "typo" / "pathogen_reference.fasta")},
-        )
-    finally:
-        set_tool_runtime_fallback(ToolRuntimeHooks())
-        executor.close()
-
-    # The substitution is surfaced verbatim as a ``[path-repair]`` note prepended
-    # to the tool result the model reads back.
-    assert result.startswith("[path-repair] argument 'filepath':")
-    assert "substituted unique match" in result
-    assert str(good.resolve()) in result.splitlines()[0]
-
-    # The JSON body follows the note; compare the parsed arg with Path equality so
-    # the assertion is independent of separators and JSON backslash escaping.
-    body = result[result.index("{") :]
-    repaired = json.loads(body)["args"]["filepath"]
-    assert Path(repaired) == good.resolve()
-    assert observed == [
-        ("fake_echo", {"filepath": str(good.resolve())}, "started", None),
-        ("fake_echo", {"filepath": str(good.resolve())}, "completed", None),
-    ]
+    async def call_tool(self, name: str, args: dict[str, Any], *, progress_handler: Any = None):
+        self.seen = dict(args)
+        return SimpleNamespace(data={"error": {"code": "not_found", "message": "no such file"}})
 
 
-def test_sync_mcp_tool_executor_does_not_repair_ambiguous_missing_file_arg(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-):
-    """Ambiguous same-basename matches stay untouched instead of guessing."""
-    first = tmp_path / "a" / "sample.fasta"
-    second = tmp_path / "b" / "sample.fasta"
-    first.parent.mkdir()
-    second.parent.mkdir()
-    first.write_text(">a\nACGT\n", encoding="utf-8")
-    second.write_text(">b\nTGCA\n", encoding="utf-8")
-    set_config("tools.file_policy.allowed_roots", [str(tmp_path)])  # file layer wins (#985)
+class RaisingNotFoundClient(FakeClient):
+    """Fake client whose tool raises for a missing file."""
 
-    fake_client = FakeClient()
-    executor = SyncMCPToolExecutor(
-        object(),
-        timeout=1.0,
-        client_factory=lambda _: fake_client,
-    )
-
-    try:
-        result = executor.call_tool("fake_echo", {"filepath": str(tmp_path / "typo/sample.fasta")})
-    finally:
-        executor.close()
-
-    # Ambiguous matches stay untouched: the model's original path is preserved
-    # and neither candidate is substituted in.
-    kept = json.loads(result)["args"]["filepath"]
-    assert Path(kept) == tmp_path / "typo" / "sample.fasta"
-    assert Path(kept) != first.resolve()
-    assert Path(kept) != second.resolve()
+    async def call_tool(self, name: str, args: dict[str, Any], *, progress_handler: Any = None):
+        raise FileNotFoundError(args.get("filepath"))
 
 
-def test_repair_returns_records_for_each_substitution(tmp_path, monkeypatch: pytest.MonkeyPatch):
-    """A unique repair yields a structured record ``{argument, requested, used}``."""
+def _reference(tmp_path: Path) -> Path:
     good = tmp_path / "data" / "reference.fasta"
     good.parent.mkdir()
     good.write_text(">chrA\nACGT\n", encoding="utf-8")
     set_config("tools.file_policy.allowed_roots", [str(tmp_path)])  # file layer wins (#985)
+    return good
 
+
+def test_a_missing_path_is_never_rewritten(tmp_path: Path) -> None:
+    """The harness guides, it never decides: the call runs with the agent's own path
+    even when a same-named file exists elsewhere (it may be an output to create)."""
+    _reference(tmp_path)
     requested = str(tmp_path / "typo" / "reference.fasta")
-    repaired, records = _repair_missing_file_arguments({"filepath": requested})
+    executor = SyncMCPToolExecutor(object(), timeout=1.0, client_factory=lambda _: FakeClient())
+    try:
+        result = executor.call_tool("fake_echo", {"filepath": requested})
+    finally:
+        executor.close()
+    assert json.loads(result)["args"]["filepath"] == requested
+    assert "path_hint" not in result
 
-    assert Path(repaired["filepath"]) == good.resolve()
-    assert records == [
-        {"argument": "filepath", "requested": requested, "used": str(good.resolve())}
-    ]
 
-
-def test_repair_scan_bound_leaves_args_unchanged(tmp_path, monkeypatch: pytest.MonkeyPatch):
-    """Hitting the scan-entry bound aborts and leaves the argument untouched.
-
-    A partial scan cannot prove a basename match is unique, so no substitution is
-    made and no record is surfaced.
-    """
-    good = tmp_path / "data" / "reference.fasta"
-    good.parent.mkdir()
-    good.write_text(">chrA\nACGT\n", encoding="utf-8")
-    set_config("tools.file_policy.allowed_roots", [str(tmp_path)])  # file layer wins (#985)
-    # Force the very first scanned entry to trip the ceiling.
-    monkeypatch.setattr("clio_agent.tools.execution._REPAIR_SCAN_LIMIT", 0)
-
+def test_a_failed_call_on_a_missing_path_gets_a_did_you_mean_hint(tmp_path: Path) -> None:
+    good = _reference(tmp_path)
     requested = str(tmp_path / "typo" / "reference.fasta")
-    repaired, records = _repair_missing_file_arguments({"filepath": requested})
+    client = NotFoundClient()
+    executor = SyncMCPToolExecutor(object(), timeout=1.0, client_factory=lambda _: client)
+    try:
+        result = executor.call_tool("fake_echo", {"filepath": requested})
+    finally:
+        executor.close()
+    assert client.seen == {"filepath": requested}
+    assert result.startswith("[clio: path_hint]\n")
+    expected = (
+        f"argument 'filepath': '{requested}' does not exist. Did you mean '{good.resolve()}'?"
+    )
+    assert expected in result
+    assert "not_found" in result  # the tool's own error follows the hint
 
-    assert repaired == {"filepath": requested}
-    assert records == []
+
+def test_a_raised_error_on_a_missing_path_carries_the_hint(tmp_path: Path) -> None:
+    good = _reference(tmp_path)
+    requested = str(tmp_path / "typo" / "reference.fasta")
+    executor = SyncMCPToolExecutor(
+        object(), timeout=1.0, client_factory=lambda _: RaisingNotFoundClient()
+    )
+    try:
+        with pytest.raises(FileNotFoundError) as err:
+            executor.call_tool("fake_echo", {"filepath": requested})
+    finally:
+        executor.close()
+    notes = "\n".join(getattr(err.value, "__notes__", []))
+    assert "[clio: path_hint]" in notes and str(good.resolve()) in notes
 
 
-def test_repair_scan_bound_aborts_walk_with_no_matches(tmp_path, monkeypatch: pytest.MonkeyPatch):
-    """The scan bound stops the WALK itself, not just per-match bookkeeping.
+def test_every_same_named_file_is_offered(tmp_path: Path) -> None:
+    for sub in ("a", "b"):
+        (tmp_path / sub).mkdir()
+        (tmp_path / sub / "sample.fasta").write_text(">x\n", encoding="utf-8")
+    set_config("tools.file_policy.allowed_roots", [str(tmp_path)])
+    hint = _missing_path_hint({"filepath": str(tmp_path / "typo" / "sample.fasta")})
+    assert str((tmp_path / "a" / "sample.fasta").resolve()) in hint
+    assert str((tmp_path / "b" / "sample.fasta").resolve()) in hint
+    assert " or " in hint
 
-    A no-match basename is the canonical repair trigger (the mistyped file does
-    not exist anywhere). The walk must abort at the entry ceiling instead of
-    traversing the whole allowed-root tree looking for matches that never come.
-    """
-    # Tree much larger than the bound: 30 directories x 5 files = 180 entries.
+
+def test_no_match_no_hint(tmp_path: Path) -> None:
+    set_config("tools.file_policy.allowed_roots", [str(tmp_path)])
+    assert _missing_path_hint({"filepath": str(tmp_path / "nowhere.fasta")}) == ""
+
+
+def test_the_hint_scan_is_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A mistyped path never turns a failed call into an unbounded walk."""
     for d in range(30):
         sub = tmp_path / f"dir_{d:02d}"
         sub.mkdir()
         for f in range(5):
             (sub / f"file_{f}.txt").write_text("x", encoding="utf-8")
-    set_config("tools.file_policy.allowed_roots", [str(tmp_path)])  # file layer wins (#985)
-    monkeypatch.setattr("clio_agent.tools.execution._REPAIR_SCAN_LIMIT", 5)
-
+    set_config("tools.file_policy.allowed_roots", [str(tmp_path)])
+    monkeypatch.setattr("clio_agent.tools.execution._HINT_SCAN_LIMIT", 5)
     real_scandir = os.scandir
     scanned_dirs: list[str] = []
 
@@ -1060,51 +1021,19 @@ def test_repair_scan_bound_aborts_walk_with_no_matches(tmp_path, monkeypatch: py
         return real_scandir(path)
 
     monkeypatch.setattr("clio_agent.tools.execution.os.scandir", counting_scandir)
-
-    requested = str(tmp_path / "typo" / "nowhere.fasta")
-    repaired, records = _repair_missing_file_arguments({"filepath": requested})
-
-    # Aborted at the bound: unchanged args, no records surfaced.
-    assert repaired == {"filepath": requested}
-    assert records == []
-    # And the walk itself stopped: with a ceiling of 5 entries it can have
-    # opened at most 2 directories, nowhere near the 31 an unbounded
-    # traversal would visit.
+    assert _missing_path_hint({"filepath": str(tmp_path / "typo" / "nowhere.fasta")}) == ""
     assert 1 <= len(scanned_dirs) <= 2
 
 
-def test_repair_deadline_bound_leaves_args_unchanged(tmp_path, monkeypatch: pytest.MonkeyPatch):
-    """Hitting the wall-clock deadline aborts and leaves the argument untouched."""
-    good = tmp_path / "data" / "reference.fasta"
-    good.parent.mkdir()
-    good.write_text(">chrA\nACGT\n", encoding="utf-8")
-    set_config("tools.file_policy.allowed_roots", [str(tmp_path)])  # file layer wins (#985)
-    # A negative budget puts the deadline in the past before the first scan entry.
-    monkeypatch.setattr("clio_agent.tools.execution._REPAIR_DEADLINE_S", -1.0)
-
-    requested = str(tmp_path / "typo" / "reference.fasta")
-    repaired, records = _repair_missing_file_arguments({"filepath": requested})
-
-    assert repaired == {"filepath": requested}
-    assert records == []
-
-
-def test_repair_logs_reason_when_file_policy_unavailable(
+def test_the_hint_logs_a_reason_when_the_file_policy_is_unavailable(
     caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
-):
-    """A file-policy load failure surfaces a structured reason, not a silent skip."""
-
-    def _boom(*_args, **_kwargs):
+) -> None:
+    def _boom(*_args: Any, **_kwargs: Any) -> Any:
         raise RuntimeError("policy exploded")
 
     monkeypatch.setattr("clio_agent.tools.execution.FileAccessPolicy.from_env", _boom)
-
-    requested = "/nowhere/reference.fasta"
     with caplog.at_level("WARNING", logger="clio_agent.tools.execution"):
-        repaired, records = _repair_missing_file_arguments({"filepath": requested})
-
-    assert repaired == {"filepath": requested}
-    assert records == []
+        assert _missing_path_hint({"filepath": "/nowhere/reference.fasta"}) == ""
     assert "reason=file_policy_unavailable" in caplog.text
 
 
