@@ -47,8 +47,10 @@ from dspy.lm15 import (
     Request,
     Response,
     ServerError,
+    TransportError,
     materialize_response,
 )
+from dspy.lm15 import TimeoutError as ProviderTimeoutError
 
 from clio_agent.lm.engines.conversations import conversation_key, new_messages
 from clio_agent.providers.codex import constants as c
@@ -353,6 +355,13 @@ async def _connect(headers: dict[str, str], key: tuple[str, ...] | None) -> Any:
         if is_usage_limit_text(body):
             raise CodexPlanLimitError(body[:500], status_code=status) from exc
         raise ServerError(f"Codex WebSocket handshake failed (HTTP {status})") from exc
+    # Typed so DSPy retries them; a lasting failure reaches the user in plain words.
+    except TimeoutError as exc:
+        raise ProviderTimeoutError(
+            f"Codex did not answer the connection within {c.WS_CONNECT_TIMEOUT_S:.0f} s"
+        ) from exc
+    except OSError as exc:
+        raise TransportError(f"Could not connect to Codex: {exc}") from exc
 
 
 async def _exchange(

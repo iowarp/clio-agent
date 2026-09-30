@@ -24,6 +24,7 @@ with a static test credential); the WebSocket is faked. Pins:
 from __future__ import annotations
 
 import asyncio
+import builtins
 import dataclasses
 import json
 from collections.abc import Iterator
@@ -31,6 +32,7 @@ from typing import Any
 
 import pytest
 import websockets
+from dspy.clients.errors import wrap_error
 from dspy.lm15 import (
     AuthError,
     FunctionTool,
@@ -42,7 +44,12 @@ from dspy.lm15 import (
     TextPart,
     ToolCallPart,
     ToolResultPart,
+    TransportError,
 )
+from dspy.lm15 import (
+    TimeoutError as RequestTimeoutError,
+)
+from dspy.utils.exceptions import is_retryable_lm_error
 from websockets.datastructures import Headers
 from websockets.http11 import Response as HandshakeResponse
 
@@ -341,6 +348,33 @@ def test_handshake_failures_are_typed(
     monkeypatch.setattr(direct_engine.websockets, "connect", refuse)
     with pytest.raises(typed):
         asyncio.run(direct_engine._connect({"Authorization": "Bearer t"}, None))
+
+
+@pytest.mark.parametrize(
+    ("raised", "typed"),
+    [
+        (builtins.TimeoutError("timed out during opening handshake"), RequestTimeoutError),
+        (ConnectionRefusedError("refused"), TransportError),
+        (OSError("getaddrinfo failed"), TransportError),
+    ],
+)
+def test_a_connect_that_never_completes_is_a_retryable_typed_error(
+    monkeypatch: pytest.MonkeyPatch, raised: BaseException, typed: type[Exception]
+) -> None:
+    """Found live (opal, 2026-09-30): a handshake timeout reached the user raw.
+
+    Typed as lm15 errors DSPy retries them, and a lasting failure reaches the
+    user as a provider error in plain words.
+    """
+
+    async def stall(*_a: Any, **_k: Any) -> Any:
+        raise raised
+
+    monkeypatch.setattr(direct_engine.websockets, "connect", stall)
+    with pytest.raises(typed) as caught:
+        asyncio.run(direct_engine._connect({"Authorization": "Bearer t"}, None))
+    assert "Codex" in str(caught.value)
+    assert is_retryable_lm_error(wrap_error(caught.value, model="codex_direct/gpt-6-sol"))
 
 
 # --------------------------------------------------------------------------- #
