@@ -13,16 +13,12 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-#: Rendering-density guards for :class:`TableDownsample` only (a line chart
-#: cannot usefully show more points per entity than this regardless of how
-#: much data backs it) — kept as the one shape-count cap in this module;
-#: every other list (columns/filters/sort/groupBy/metrics/in-values) is
-#: unbounded in COUNT (owner ruling: no cap that kneecaps intent). The real
-#: guards are the source-artifact byte cap (``table_query_max_source_bytes``)
-#: and the per-response row cap (``table_query_max_rows`` / ``limit``), both
-#: pure transfer/memory guards a caller pages or downsamples around, never a
-#: refusal of reachable data.
-MAX_PER_ENTITY = 2_000
+#: No upper bound on ``maxPerEntity`` (owner ruling: no cap that kneecaps
+#: intent) — an explicit per-entity downsample that still exceeds the
+#: per-response transfer guard is reduced evenly ACROSS entities instead
+#: (``_reduce_evenly_per_entity_for_limit``, keeps every entity), so the real
+#: guard is the per-response row cap (``table_query_max_rows`` / ``limit``,
+#: a pure transfer/memory bound), never this shape count.
 DEFAULT_LIMIT = 5_000
 DEFAULT_MAX_PER_ENTITY = 500
 
@@ -48,14 +44,41 @@ class TableQueryError(Exception):
 
 
 class TableQueryTimeout(TableQueryError):
-    """The query overran its wall-clock budget."""
+    """The query overran its CONFIGURED wall-clock backstop.
+
+    Only the secondary guard (see :class:`TableQueryCancelled` for the
+    primary, client-driven one): a query whose own HTTP client is still
+    connected and waiting, but that has run longer than
+    ``artifacts.table_query_timeout_s``, is stopped here rather than left
+    unbounded -- a server-protection backstop, never a statement about how
+    much data is reachable (raise the config for a genuinely large query).
+    """
 
     def __init__(self, timeout_s: float) -> None:
         super().__init__(
             504,
             "table_query_timeout",
-            "table query exceeded its wall-clock budget",
+            "table query exceeded its configured wall-clock backstop",
             timeout_s=timeout_s,
+        )
+
+
+class TableQueryCancelled(TableQueryError):
+    """The query's own HTTP client disconnected before it finished.
+
+    The PRIMARY cancellation path (owner ruling: a long query should be
+    cancellable by the client, not killed by a fixed deadline): the route
+    watches ``request.is_disconnected()`` and the engine checks a shared
+    cancel signal between (and, in the per-entity downsample loop, WITHIN)
+    stages, so an abandoned query stops promptly instead of running to
+    completion for no one.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            499,
+            "table_query_client_disconnected",
+            "table query cancelled: the requesting client disconnected",
         )
 
 
@@ -169,9 +192,7 @@ class TableDownsample(_Strict):
     entity_column: str | None = Field(default=None, alias="entityColumn", min_length=1)
     x: str | None = Field(default=None, min_length=1)
     y: str | None = Field(default=None, min_length=1)
-    max_per_entity: int = Field(
-        default=DEFAULT_MAX_PER_ENTITY, alias="maxPerEntity", ge=1, le=MAX_PER_ENTITY
-    )
+    max_per_entity: int = Field(default=DEFAULT_MAX_PER_ENTITY, alias="maxPerEntity", ge=1)
 
     @model_validator(mode="after")
     def _check_mode(self) -> TableDownsample:
@@ -224,6 +245,22 @@ class TableQueryRequest(_Strict):
 
         payload = self.model_dump(mode="json", by_alias=True)
         payload["limit"] = effective_limit
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+    def canonical_json_for_processing(self, effective_limit: int) -> str:
+        """Stable identity of the OFFSET-LESS processed result this query
+        produces (``compute_processed_table``'s cache key): every page of
+        the same query shares one entry, since ``offset`` only selects which
+        page of an already-processed result to serialize. ``paging``
+        (whether ``offset`` was given AT ALL, not its value) is kept in the
+        key because it changes PROCESSING itself -- a one-shot (no offset)
+        over-limit query is sampled; a paging one never is.
+        """
+
+        payload = self.model_dump(mode="json", by_alias=True)
+        payload["limit"] = effective_limit
+        payload["offset"] = None
+        payload["paging"] = self.offset is not None
         return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 

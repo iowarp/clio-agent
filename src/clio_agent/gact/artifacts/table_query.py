@@ -13,10 +13,12 @@ can reach: an ``offset`` request plainly PAGES the full (filtered/sorted)
 result (never sampled, only capped if the page itself overflows); a
 one-shot request (no ``offset``) that still exceeds ``limit`` gets an
 even-stride sample across the WHOLE range instead of a biased head slice —
-see :func:`_apply_over_limit_stride`. Sorting runs AFTER downsampling (not
-before): an explicit or automatic sample picks its rows from the
-filtered/aggregated set first, and the caller's ``sort`` then orders exactly
-the rows that made it into the response.
+see :func:`~clio_agent.gact.artifacts.table_query_downsample.apply_over_limit_stride`.
+Sorting runs AFTER downsampling (not before): an explicit or automatic
+sample picks its rows from the filtered/aggregated set first, and the
+caller's ``sort`` then orders exactly the rows that made it into the
+response. A query's own client disconnecting, or a configured wall-clock
+backstop, cancels it between stages (see :class:`QueryCancellation`).
 
 This module owns no HTTP machinery: it raises :class:`TableQueryError` with a
 status code and a typed error code, and the route turns that into the standard
@@ -30,7 +32,9 @@ import base64
 import datetime as _dt
 import decimal
 import math
+import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +44,11 @@ import pyarrow.compute as pc
 import pyarrow.csv as pacsv
 import pyarrow.parquet as pq
 
-from clio_agent.gact.artifacts.lttb import lttb_indices
+from clio_agent.gact.artifacts.table_query_downsample import (
+    apply_downsample,
+    apply_over_limit_stride,
+    reduce_evenly_per_entity_for_limit,
+)
 from clio_agent.gact.artifacts.table_query_models import (
     DEFAULT_LIMIT,
     Scalar,
@@ -49,12 +57,38 @@ from clio_agent.gact.artifacts.table_query_models import (
     TableFilter,
     TableFormat,
     TableMetric,
+    TableQueryCancelled,
     TableQueryError,
     TableQueryRequest,
     TableQueryTimeout,
     TableSort,
     table_format_for,
 )
+
+
+@dataclass
+class QueryCancellation:
+    """The two ways one table-query execution stops early.
+
+    ``cancel_event`` (PRIMARY, owner ruling): set by the route when its own
+    HTTP client disconnects -- checked between EVERY stage and, in the
+    per-entity downsample loop, on every iteration (not only between
+    stages), so an abandoned query stops promptly. ``deadline`` (SECONDARY):
+    a configured wall-clock backstop (``artifacts.table_query_timeout_s``)
+    for a client that is still connected and waiting but has run too long --
+    never the primary mechanism, and never a statement about how much data
+    is reachable.
+    """
+
+    deadline: float
+    timeout_s: float
+    cancel_event: "threading.Event | None" = None
+
+    def check(self) -> None:
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            raise TableQueryCancelled()
+        if time.monotonic() > self.deadline:
+            raise TableQueryTimeout(self.timeout_s)
 
 
 def _read_schema(source: Path, fmt: TableFormat) -> pa.Schema:
@@ -87,20 +121,25 @@ def _source_columns_needed(request: TableQueryRequest, available: list[str]) -> 
         if name is not None and name not in wanted:
             wanted.append(name)
 
-    if request.columns:
-        for column in request.columns:
-            add(column)
-    elif request.aggregate is None:
-        for column in available:
-            add(column)
-    for flt in request.filters:
-        add(flt.column)
     if request.aggregate is not None:
+        # With aggregate set, ``columns`` selects OUTPUT columns (checked
+        # against the aggregate's real output names AFTER it runs, in
+        # run_table_query) -- e.g. "value_mean" never exists in the SOURCE
+        # table, so it must never be requested as a source projection.
+        # Only the aggregate's own inputs need reading from the source.
         for key in request.aggregate.group_by:
             add(key)
         for metric in request.aggregate.metrics:
             add(metric.column)
+    elif request.columns:
+        for column in request.columns:
+            add(column)
     else:
+        for column in available:
+            add(column)
+    for flt in request.filters:
+        add(flt.column)
+    if request.aggregate is None:
         # With aggregate set, downsample/sort target the AGGREGATE'S OWN
         # output columns (validated separately, stage="aggregated") -- they
         # are not necessarily raw source columns, so never added here.
@@ -141,6 +180,24 @@ def _validate_sort_columns(request: TableQueryRequest, available: list[str], *, 
             400,
             "columns_not_found",
             f"sort references columns absent from the {stage} table",
+            missing=missing,
+            available=available,
+        )
+
+
+def _validate_requested_output_columns(
+    request: TableQueryRequest, available: list[str], *, stage: str
+) -> None:
+    """With ``aggregate`` set, ``columns`` selects OUTPUT columns -- checked
+    against the aggregate's REAL output names (``available``), never the
+    source schema (a metric output like ``value_mean`` never exists there)."""
+
+    missing = [name for name in request.columns if name not in available]
+    if missing:
+        raise TableQueryError(
+            400,
+            "columns_not_found",
+            f"one or more requested columns do not exist in the {stage} result",
             missing=missing,
             available=available,
         )
@@ -371,188 +428,6 @@ def _apply_aggregate(table: pa.Table, aggregate: TableAggregate) -> pa.Table:
     return result
 
 
-def _x_as_epoch(column: str, values: pa.ChunkedArray) -> np.ndarray:
-    """Convert an x column to float64 (temporal -> epoch seconds)."""
-
-    dtype = values.type
-    if pa.types.is_string(dtype) or pa.types.is_large_string(dtype):
-        converted = None
-        for target in (pa.timestamp("us"), pa.timestamp("us", tz="UTC")):
-            try:
-                converted = pc.cast(values, target)
-                break
-            except (pa.ArrowInvalid, pa.ArrowNotImplementedError):
-                continue
-        if converted is None:
-            raise TableQueryError(
-                400,
-                "invalid_downsample",
-                f"x column {column!r} is neither numeric nor ISO-8601 datetimes",
-                column=column,
-            )
-        values = converted
-        dtype = values.type
-    if pa.types.is_timestamp(dtype):
-        per_second = {"s": 1, "ms": 1e3, "us": 1e6, "ns": 1e9}[dtype.unit]
-        raw = pc.cast(values, pa.int64()).to_numpy(zero_copy_only=False)
-        return _nullable_float(values, raw) / per_second
-    if pa.types.is_date32(dtype):
-        raw = pc.cast(values, pa.int32()).to_numpy(zero_copy_only=False)
-        return _nullable_float(values, raw) * 86_400.0
-    if pa.types.is_date64(dtype):
-        raw = pc.cast(values, pa.int64()).to_numpy(zero_copy_only=False)
-        return _nullable_float(values, raw) / 1e3
-    return _numeric_float(column, values, role="x")
-
-
-def _nullable_float(values: pa.ChunkedArray, raw: np.ndarray) -> np.ndarray:
-    out = np.asarray(raw, dtype=np.float64)
-    nulls = values.is_null().to_numpy(zero_copy_only=False)
-    out[nulls] = np.nan
-    return out
-
-
-def _numeric_float(column: str, values: pa.ChunkedArray, *, role: str) -> np.ndarray:
-    dtype = values.type
-    if not (_is_numeric(dtype) or pa.types.is_boolean(dtype)):
-        raise TableQueryError(
-            400,
-            "invalid_downsample",
-            f"{role} column {column!r} must be numeric; it is {dtype}",
-            column=column,
-        )
-    as_float = pc.cast(values, pa.float64())
-    return as_float.to_numpy(zero_copy_only=False).astype(np.float64, copy=True)
-
-
-def _even_indices(count: int, keep: int) -> np.ndarray:
-    """Evenly spaced indices over ``range(count)`` including both ends."""
-
-    if count <= keep:
-        return np.arange(count, dtype=np.int64)
-    if keep == 1:
-        return np.zeros(1, dtype=np.int64)
-    return np.unique(np.round(np.linspace(0, count - 1, keep)).astype(np.int64))
-
-
-def _apply_over_limit_stride(table: pa.Table, limit: int) -> tuple[pa.Table, dict[str, Any]]:
-    """An UNREQUESTED, protective even-stride sample across the whole range.
-
-    Applied only when a one-shot (non-paging: no ``offset``) request has no
-    explicit ``downsample`` and still exceeds ``limit`` after filter/aggregate/
-    sort. ``limit`` is a per-response TRANSFER guard, never a statement about
-    what the caller wanted — a naive head slice would silently bias a chart
-    or map toward the first rows only; an even stride keeps the whole range
-    represented instead. A caller that wants every row un-sampled pages
-    through it with ``offset`` (see :func:`run_table_query`).
-    """
-
-    picked = _even_indices(table.num_rows, limit)
-    result = table.take(pa.array(picked, type=pa.int64()))
-    info: dict[str, Any] = {
-        "mode": "stride",
-        "reason": "over_limit",
-        "inputRows": table.num_rows,
-        "outputRows": result.num_rows,
-    }
-    return result, info
-
-
-def _entity_bounds(table: pa.Table, entity: str | None) -> list[tuple[int, int]]:
-    """Contiguous ``[start, end)`` row ranges per entity (table must be entity-sorted)."""
-
-    if table.num_rows == 0:
-        return []
-    if entity is None:
-        return [(0, table.num_rows)]
-    encoded = pc.dictionary_encode(table.column(entity)).combine_chunks()
-    codes = pc.fill_null(encoded.indices, -1).to_numpy(zero_copy_only=False)
-    change = np.flatnonzero(np.diff(codes)) + 1
-    starts = np.concatenate(([0], change))
-    ends = np.concatenate((change, [table.num_rows]))
-    return [(int(s), int(e)) for s, e in zip(starts, ends, strict=True)]
-
-
-def _apply_downsample(
-    table: pa.Table,
-    downsample: TableDownsample,
-    limit: int,
-    deadline: float,
-    timeout_s: float,
-) -> tuple[pa.Table, dict[str, Any]]:
-    info: dict[str, Any] = {"mode": downsample.mode, "inputRows": table.num_rows}
-    entity = downsample.entity_column
-    if downsample.mode == "none":
-        info["outputRows"] = table.num_rows
-        return table, info
-
-    if downsample.mode == "stride" and entity is None:
-        picked = _even_indices(table.num_rows, limit)
-        result = table.take(pa.array(picked))
-        info.update({"target": limit, "outputRows": result.num_rows})
-        return result, info
-
-    # Sort by entity then (for LTTB) by the numeric x the algorithm sees, so ISO
-    # strings with mixed offsets still order chronologically. Arrow sorts are
-    # stable, so stride keeps the source order within an entity.
-    sort_keys: list[tuple[str, str]] = []
-    if entity is not None:
-        sort_keys.append((entity, "ascending"))
-    epoch_key = None
-    if downsample.mode == "per_entity_lttb":
-        assert downsample.x is not None and downsample.y is not None
-        epoch_key = "__clio_x_epoch__"
-        while epoch_key in table.column_names:
-            epoch_key += "_"
-        epoch = _x_as_epoch(downsample.x, table.column(downsample.x))
-        table = table.append_column(epoch_key, pa.array(epoch, type=pa.float64()))
-        sort_keys.append((epoch_key, "ascending"))
-    if sort_keys:
-        table = table.sort_by(sort_keys, null_placement="at_end")
-
-    x_values = y_values = usable = None
-    if epoch_key is not None:
-        assert downsample.y is not None
-        x_values = table.column(epoch_key).to_numpy().astype(np.float64, copy=True)
-        table = table.drop_columns([epoch_key])
-        y_values = _numeric_float(downsample.y, table.column(downsample.y), role="y")
-        usable = np.isfinite(x_values) & np.isfinite(y_values)
-
-    keep: list[np.ndarray] = []
-    bounds = _entity_bounds(table, entity)
-    dropped = 0
-    for start, end in bounds:
-        _check_deadline(deadline, timeout_s)
-        if downsample.mode == "stride":
-            keep.append(start + _even_indices(end - start, downsample.max_per_entity))
-            continue
-        assert x_values is not None and y_values is not None and usable is not None
-        rows = start + np.flatnonzero(usable[start:end])
-        dropped += (end - start) - rows.size
-        if rows.size == 0:
-            continue
-        chosen = lttb_indices(x_values[rows], y_values[rows], downsample.max_per_entity)
-        keep.append(rows[chosen])
-    picked = np.concatenate(keep) if keep else np.zeros(0, dtype=np.int64)
-    result = table.take(pa.array(picked, type=pa.int64()))
-    info.update(
-        {
-            "entityColumn": entity,
-            "entities": len(bounds),
-            "maxPerEntity": downsample.max_per_entity,
-            "outputRows": result.num_rows,
-        }
-    )
-    if downsample.mode == "per_entity_lttb":
-        info.update({"x": downsample.x, "y": downsample.y, "droppedNullRows": int(dropped)})
-    return result, info
-
-
-def _check_deadline(deadline: float, timeout_s: float) -> None:
-    if time.monotonic() > deadline:
-        raise TableQueryTimeout(timeout_s)
-
-
 # --------------------------------------------------------------------------- #
 # JSON-safe serialisation
 # --------------------------------------------------------------------------- #
@@ -596,31 +471,45 @@ def _column_values(values: pa.ChunkedArray) -> list[Any]:
 # --------------------------------------------------------------------------- #
 
 
-def run_table_query(
+@dataclass
+class ProcessedTable:
+    """Everything a query touches EXCEPT the final per-page offset/limit slice.
+
+    Split out so a caller (the route) can cache this by ``(artifact sha,
+    query-without-offset)``: paging through a large result then costs one
+    cheap ``.slice()`` per page instead of re-reading, re-filtering,
+    re-aggregating, re-downsampling and re-sorting the source file for
+    every page (owner ruling: avoid materializing/redoing the whole
+    pipeline per page when possible).
+    """
+
+    table: pa.Table
+    output_columns: list[str]
+    total_rows: int
+    matched_rows: int
+    downsample_info: dict[str, Any]
+
+
+def compute_processed_table(
     source: Path,
     fmt: TableFormat,
     request: TableQueryRequest,
     *,
     limit: int,
-    deadline: float,
-    timeout_s: float,
-) -> dict[str, Any]:
-    """Execute ``request`` against the tabular file at ``source``.
+    cancellation: "QueryCancellation",
+) -> ProcessedTable:
+    """Run every stage up to (and including) sort; never applies ``offset``/``limit``.
 
-    ``limit`` is the already-bounded PER-RESPONSE transfer cap, never a
-    ceiling on what a caller can reach — pass ``request.offset`` to page
-    through the full (filtered/sorted) result a plain, un-sampled page at a
-    time (capped to ``limit`` if the page itself overflows, reported via
-    ``truncated``); a one-shot request (no ``offset``) that still exceeds
-    ``limit`` and set no ``downsample`` gets an even-stride sample of the
-    WHOLE range instead (``downsample: {mode: "stride", reason:
-    "over_limit"}``), never a biased head slice. ``deadline`` is a
-    ``time.monotonic()`` instant after which the query stops at the next
-    stage boundary with :class:`TableQueryTimeout` — a configured
-    SERVER-PROTECTION backstop (pyarrow's synchronous reads are not
-    preemptible mid-call), never a statement about how much data is
-    reachable: raise ``artifacts.table_query_timeout_s`` for a genuinely
-    large one-shot query, or page it with ``offset`` instead.
+    ``limit`` is the already-bounded PER-RESPONSE transfer cap: a one-shot
+    request (no ``offset``) that would exceed it and set no ``downsample``
+    gets an even-stride sample of the WHOLE range instead (``downsample:
+    {mode: "stride", reason: "over_limit"}``), never a biased head slice --
+    that sampling happens HERE (before any page is sliced), never twice.
+    ``cancellation`` is checked between every stage (and, for a per-entity
+    downsample, on every entity): the requesting client disconnecting stops
+    the query immediately (:class:`TableQueryCancelled`); a configured
+    wall-clock backstop (:class:`TableQueryTimeout`) is the secondary guard
+    for a client that is still connected but has waited too long.
 
     Raises:
         TableQueryError: for unknown columns, incomparable filter/sort
@@ -646,17 +535,20 @@ def run_table_query(
 
     table = _read_table(source, fmt, needed)
     total_rows = table.num_rows
-    _check_deadline(deadline, timeout_s)
+    cancellation.check()
 
     table = _apply_filters(table, request.filters)
-    _check_deadline(deadline, timeout_s)
+    cancellation.check()
 
     if request.aggregate is not None:
         table = _apply_aggregate(table, request.aggregate)
-        output_columns = list(table.column_names)
-        _validate_downsample_columns(request, output_columns, stage="aggregated")
-        _validate_sort_columns(request, output_columns, stage="aggregated")
-        _check_deadline(deadline, timeout_s)
+        aggregate_output = list(table.column_names)
+        if request.columns:
+            _validate_requested_output_columns(request, aggregate_output, stage="aggregated")
+        output_columns = list(request.columns) if request.columns else aggregate_output
+        _validate_downsample_columns(request, aggregate_output, stage="aggregated")
+        _validate_sort_columns(request, aggregate_output, stage="aggregated")
+        cancellation.check()
     else:
         # An omitted columns list means "every column" — already what ``needed``
         # (and therefore this table's own schema) resolved to above.
@@ -670,38 +562,88 @@ def run_table_query(
     paging = request.offset is not None
     downsample_info: dict[str, Any] = {"mode": "none"}
     if request.downsample is not None:
-        table, downsample_info = _apply_downsample(
-            table, request.downsample, limit, deadline, timeout_s
-        )
-        _check_deadline(deadline, timeout_s)
-    elif not paging and table.num_rows > limit:
-        # One-shot request, no explicit downsample, still over the transfer
-        # guard: sample the WHOLE range instead of silently biasing toward
-        # the first rows (owner ruling — see _apply_over_limit_stride).
-        table, downsample_info = _apply_over_limit_stride(table, limit)
+        table, downsample_info = apply_downsample(table, request.downsample, limit, cancellation)
+        cancellation.check()
+        entity_column = request.downsample.entity_column
+        if entity_column is not None and not paging and table.num_rows > limit:
+            # An explicit PER-ENTITY downsample (per_entity_lttb, or stride
+            # with entityColumn) can still exceed the response limit when
+            # there are many entities -- a naive final slice would then
+            # silently DROP whole entities (a head slice by row order groups
+            # entities together). Reduce evenly ACROSS entities instead, so
+            # every entity keeps at least one point, and report it.
+            table, reduction_info = reduce_evenly_per_entity_for_limit(table, entity_column, limit)
+            downsample_info.update(reduction_info)
+    elif not paging and not request.sort and table.num_rows > limit:
+        # One-shot request, no explicit downsample AND no sort, still over
+        # the transfer guard: sample the WHOLE range instead of silently
+        # biasing toward the first rows (owner ruling — see
+        # apply_over_limit_stride). A SORT is excluded here on purpose: a
+        # sort+limit query is a top-/bottom-N request, and sampling before
+        # sorting would silently corrupt it -- let the full matched set
+        # flow through, sort it for real, then slice to limit below.
+        table, downsample_info = apply_over_limit_stride(table, limit)
 
     table = _apply_sort(table, request.sort)
-    _check_deadline(deadline, timeout_s)
+    cancellation.check()
 
-    offset = request.offset or 0
+    return ProcessedTable(
+        table=table,
+        output_columns=output_columns,
+        total_rows=total_rows,
+        matched_rows=matched_rows,
+        downsample_info=downsample_info,
+    )
+
+
+def page_processed_table(processed: ProcessedTable, *, offset: int, limit: int) -> dict[str, Any]:
+    """Slice+serialize ONE page of an already-:func:`compute_processed_table` result.
+
+    Cheap and side-effect-free (no file I/O, no re-filtering/-aggregating/
+    -downsampling/-sorting) — the route calls this once per request, reusing
+    a cached :class:`ProcessedTable` across every page of the SAME query.
+    """
+
+    table = processed.table
     truncated = (table.num_rows - offset) > limit
-    table = table.slice(offset, limit)
-    table = table.select(output_columns)
-
+    page = table.slice(offset, limit).select(processed.output_columns)
     return {
-        "schema": [{"name": field.name, "type": str(field.type)} for field in table.schema],
-        "columns": {name: _column_values(table.column(name)) for name in output_columns},
-        "totalRows": total_rows,
-        "matchedRows": matched_rows,
-        "returnedRows": table.num_rows,
+        "schema": [{"name": field.name, "type": str(field.type)} for field in page.schema],
+        "columns": {name: _column_values(page.column(name)) for name in processed.output_columns},
+        "totalRows": processed.total_rows,
+        "matchedRows": processed.matched_rows,
+        "returnedRows": page.num_rows,
         "truncated": truncated,
         "offset": offset,
-        "downsample": downsample_info,
+        "downsample": processed.downsample_info,
     }
+
+
+def run_table_query(
+    source: Path,
+    fmt: TableFormat,
+    request: TableQueryRequest,
+    *,
+    limit: int,
+    cancellation: "QueryCancellation",
+) -> dict[str, Any]:
+    """Convenience one-shot API: :func:`compute_processed_table` + one page.
+
+    The route calls the two halves directly instead, so it can cache the
+    :class:`ProcessedTable` across a query's pages; kept here for direct/test
+    callers that just want one full result.
+    """
+
+    processed = compute_processed_table(
+        source, fmt, request, limit=limit, cancellation=cancellation
+    )
+    return page_processed_table(processed, offset=request.offset or 0, limit=limit)
 
 
 __all__ = [
     "DEFAULT_LIMIT",
+    "ProcessedTable",
+    "QueryCancellation",
     "TableAggregate",
     "TableDownsample",
     "TableFilter",
@@ -711,6 +653,8 @@ __all__ = [
     "TableQueryRequest",
     "TableQueryTimeout",
     "TableSort",
+    "compute_processed_table",
+    "page_processed_table",
     "run_table_query",
     "table_format_for",
 ]
