@@ -16,13 +16,13 @@ on a small hand-written sequence):
     live store and the replay, plus equality of the full per-id segment state and
     ``trace_ref`` map (audit-grade).
   * Event-shape conformance to ``gact.app._emit_arc_op`` payload, verified by
-    driving the REAL ``_emit_arc_op`` through a real ``_RetainingReAct`` loop and
+    driving the REAL ``_emit_arc_op`` through a real ``ClioReAct`` loop and
     replaying the events it actually emitted into the trace.
   * Order/event-shuffle invariance (replay sorts by logical_time, so trace storage
     order must not matter) and cross-scope event-stream isolation.
   * A live (CLIO_RUN_LIVE=1) end-to-end audit against real ALCF inference.
 
-These exercise the REAL SegmentStore / ARCMemory / ClioCoreStore / _RetainingReAct — no
+These exercise the REAL SegmentStore / ARCMemory / ClioCoreStore / ClioReAct — no
 mocking of src code.
 """
 
@@ -476,7 +476,7 @@ def test_replay_through_arcmemory_passthroughs(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 8. End-to-end through the REAL _emit_arc_op + _RetainingReAct loop: the events
+# 8. End-to-end through the REAL _emit_arc_op + ClioReAct loop: the events
 #    that the actual gact trace logger emits must reconstruct the live plane.
 #    This is the audit on the production code path, not a hand-rolled logger.
 # ---------------------------------------------------------------------------
