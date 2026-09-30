@@ -706,6 +706,22 @@ Earthscope's first turn, after start-up: 176 s = model 140 s (17 serial calls, ~
 
 **Full suite on the tip:** 10014 passed. The only error is a pre-existing leaked background turn that surfaces with `-W error::PytestUnraisableExceptionWarning`: the Phase 4 tree leaks identically in the same subset. It is a turn that escapes the runner's shutdown drain, plus a ledger `ContextVar` reset from the wrong context when the abandoned coroutine is collected.
 
+**Web UI re-verified on the chain tip** (2026-09-30):
+- Setup: `live/serve_ui5.sh`, `feat/session-bringup` serving gact-tui `feat/injection-parts` at `be1f6451`, Codex direct. Driven in Chrome with the Claude in Chrome tools, the hidden-tab visibility override as in phase 4.
+- Verified live:
+  - thinking streams, with activity titles as plain text (no raw `**`);
+  - the composer names the bound transport ("Codex · Direct / Sol");
+  - the new `tool_use` injection row;
+  - concurrent tool calls grouped ("Bash +1");
+  - the approval card;
+  - a mid-turn steer shows as a user message and is honored ("File count: 135,086");
+  - Stop interrupts within 3 s, with "Interrupted" on the step;
+  - the page returns to idle ("No active work") after each turn, steer turns included;
+  - reload == live: 158 conversation lines each.
+- Differences, both cosmetic client-side items for gact-tui:
+  - The status bar's token counter shows the running total live and 0 after a reload.
+  - A thinking body can still show its raw `**heading**`; only the title was stripped.
+
 **Next:**
 - One spawn per server: list over the persistent connection. The listing currently also records the server's task capability, which the connect route reads (#1281), so the two must be reordered together.
 - The reaper keeps a session's fleet while the session waits on a question.
