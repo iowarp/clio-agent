@@ -764,6 +764,12 @@ This follows the owner principle and amends `react-loop-completion-2026-09.md`. 
     a short loop never extract.
 - **What it records.** `expert.extract.completed` names the extracted fields in
   `payload.extracted`.
+- **Who it serves.** Mostly long subagents handing their result to the parent; the main
+  agent rarely reaches it. The turn takes `pred.answer` as the final message, and the parent
+  reads the child's final message. So a child that hits its step cap now hands the parent a
+  summary extracted from its trajectory; before, it ended in `empty_response` with nothing
+  for the parent. Extra typed outputs reach the lifecycle event, not the parent's text.
+  This is why the extract is a config switch.
 - **Tests.** `tests/test_gact/test_clio_react_extract.py` covers each case above and the off switch.
 
 ### BestOfN / Refine keep one conversation line
