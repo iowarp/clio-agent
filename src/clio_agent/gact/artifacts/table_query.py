@@ -5,7 +5,14 @@ columns of a CSV or Parquet artifact, optionally filtered, aggregated and
 downsampled, and receives a small column-oriented JSON payload instead of the
 whole file. Execution is pyarrow-only and runs in a fixed order:
 
-    read (projected) -> filter -> aggregate -> downsample -> limit
+    read (projected) -> filter -> aggregate -> sort -> downsample/page -> limit
+
+``limit`` is a per-response TRANSFER guard, never a ceiling on what a caller
+can reach: an ``offset`` request plainly PAGES the full (filtered/sorted)
+result (never sampled, only capped if the page itself overflows); a
+one-shot request (no ``offset``) that still exceeds ``limit`` gets an
+even-stride sample across the WHOLE range instead of a biased head slice —
+see :func:`_apply_over_limit_stride`.
 
 This module owns no HTTP machinery: it raises :class:`TableQueryError` with a
 status code and a typed error code, and the route turns that into the standard
@@ -32,7 +39,6 @@ import pyarrow.parquet as pq
 from clio_agent.gact.artifacts.lttb import lttb_indices
 from clio_agent.gact.artifacts.table_query_models import (
     DEFAULT_LIMIT,
-    MAX_COLUMNS,
     Scalar,
     TableAggregate,
     TableDownsample,
@@ -42,6 +48,7 @@ from clio_agent.gact.artifacts.table_query_models import (
     TableQueryError,
     TableQueryRequest,
     TableQueryTimeout,
+    TableSort,
     table_format_for,
 )
 
@@ -61,8 +68,14 @@ def _read_schema(source: Path, fmt: TableFormat) -> pa.Schema:
         ) from exc
 
 
-def _source_columns_needed(request: TableQueryRequest) -> list[str]:
-    """Every source column the query touches, in first-use order (for projection)."""
+def _source_columns_needed(request: TableQueryRequest, available: list[str]) -> list[str]:
+    """Every source column the query touches, in first-use order (for projection).
+
+    An omitted ``columns`` (only possible without ``aggregate`` — the model
+    validator requires it otherwise) means "every column": ``available`` (the
+    source table's own schema) is used instead, so the server returns the
+    whole row set (bounded by ``limit``) rather than refusing the request.
+    """
 
     wanted: list[str] = []
 
@@ -70,8 +83,12 @@ def _source_columns_needed(request: TableQueryRequest) -> list[str]:
         if name is not None and name not in wanted:
             wanted.append(name)
 
-    for column in request.columns:
-        add(column)
+    if request.columns:
+        for column in request.columns:
+            add(column)
+    elif request.aggregate is None:
+        for column in available:
+            add(column)
     for flt in request.filters:
         add(flt.column)
     if request.aggregate is not None:
@@ -79,10 +96,16 @@ def _source_columns_needed(request: TableQueryRequest) -> list[str]:
             add(key)
         for metric in request.aggregate.metrics:
             add(metric.column)
-    elif request.downsample is not None:
-        add(request.downsample.entity_column)
-        add(request.downsample.x)
-        add(request.downsample.y)
+    else:
+        # With aggregate set, downsample/sort target the AGGREGATE'S OWN
+        # output columns (validated separately, stage="aggregated") -- they
+        # are not necessarily raw source columns, so never added here.
+        if request.downsample is not None:
+            add(request.downsample.entity_column)
+            add(request.downsample.x)
+            add(request.downsample.y)
+        for entry in request.sort:
+            add(entry.column)
     return wanted
 
 
@@ -102,6 +125,18 @@ def _validate_downsample_columns(
             400,
             "columns_not_found",
             f"downsample references columns absent from the {stage} table",
+            missing=missing,
+            available=available,
+        )
+
+
+def _validate_sort_columns(request: TableQueryRequest, available: list[str], *, stage: str) -> None:
+    missing = [entry.column for entry in request.sort if entry.column not in available]
+    if missing:
+        raise TableQueryError(
+            400,
+            "columns_not_found",
+            f"sort references columns absent from the {stage} table",
             missing=missing,
             available=available,
         )
@@ -208,6 +243,8 @@ def _filter_mask(table: pa.Table, flt: TableFilter) -> Any:
             if high is not None:
                 mask = pc.and_(mask, pc.less_equal(values, _scalar_for(flt.column, dtype, high)))
             return mask
+        if flt.op == "contains":
+            return pc.match_substring(values, str(flt.value), ignore_case=True)
         null_mask = pc.is_null(values, nan_is_null=True)
         return null_mask if flt.value in (None, True) else pc.invert(null_mask)
     except (pa.ArrowNotImplementedError, pa.ArrowTypeError, pa.ArrowInvalid) as exc:
@@ -221,6 +258,14 @@ def _filter_mask(table: pa.Table, flt: TableFilter) -> Any:
 
 
 def _apply_filters(table: pa.Table, filters: list[TableFilter]) -> pa.Table:
+    """AND every predicate together, including several on the SAME column.
+
+    Each filter is evaluated independently against ``table``'s own values and
+    combined with ``pc.and_`` — a caller-composed request (e.g. an agent's own
+    base ``dataQuery`` filter plus a UI-added one on the same column) narrows
+    correctly, never overwrites or shadows an earlier predicate on that column.
+    """
+
     if not filters:
         return table
     mask: Any = None
@@ -228,6 +273,20 @@ def _apply_filters(table: pa.Table, filters: list[TableFilter]) -> pa.Table:
         current = _filter_mask(table, flt)
         mask = current if mask is None else pc.and_(mask, current)
     return table.filter(mask, null_selection_behavior="drop")
+
+
+def _apply_sort(table: pa.Table, sort: list[TableSort]) -> pa.Table:
+    """Apply a (possibly compound) sort; a no-op when ``sort`` is empty."""
+
+    if not sort:
+        return table
+    keys = [(entry.column, "descending" if entry.desc else "ascending") for entry in sort]
+    try:
+        return table.sort_by(keys)
+    except (pa.ArrowNotImplementedError, pa.ArrowTypeError, pa.ArrowInvalid) as exc:
+        raise TableQueryError(
+            400, "invalid_sort", "sort is not supported on these columns", detail=str(exc)
+        ) from exc
 
 
 _ARROW_AGG = {"mean": "mean", "min": "min", "max": "max", "count": "count", "sum": "sum"}
@@ -370,6 +429,29 @@ def _even_indices(count: int, keep: int) -> np.ndarray:
     if keep == 1:
         return np.zeros(1, dtype=np.int64)
     return np.unique(np.round(np.linspace(0, count - 1, keep)).astype(np.int64))
+
+
+def _apply_over_limit_stride(table: pa.Table, limit: int) -> tuple[pa.Table, dict[str, Any]]:
+    """An UNREQUESTED, protective even-stride sample across the whole range.
+
+    Applied only when a one-shot (non-paging: no ``offset``) request has no
+    explicit ``downsample`` and still exceeds ``limit`` after filter/aggregate/
+    sort. ``limit`` is a per-response TRANSFER guard, never a statement about
+    what the caller wanted — a naive head slice would silently bias a chart
+    or map toward the first rows only; an even stride keeps the whole range
+    represented instead. A caller that wants every row un-sampled pages
+    through it with ``offset`` (see :func:`run_table_query`).
+    """
+
+    picked = _even_indices(table.num_rows, limit)
+    result = table.take(pa.array(picked, type=pa.int64()))
+    info: dict[str, Any] = {
+        "mode": "stride",
+        "reason": "over_limit",
+        "inputRows": table.num_rows,
+        "outputRows": result.num_rows,
+    }
+    return result, info
 
 
 def _entity_bounds(table: pa.Table, entity: str | None) -> list[tuple[int, int]]:
@@ -521,18 +603,30 @@ def run_table_query(
 ) -> dict[str, Any]:
     """Execute ``request`` against the tabular file at ``source``.
 
-    ``limit`` is the already-bounded row cap; ``deadline`` is a
-    ``time.monotonic()`` instant after which the query stops at the next stage
-    boundary with :class:`TableQueryTimeout`.
+    ``limit`` is the already-bounded PER-RESPONSE transfer cap, never a
+    ceiling on what a caller can reach — pass ``request.offset`` to page
+    through the full (filtered/sorted) result a plain, un-sampled page at a
+    time (capped to ``limit`` if the page itself overflows, reported via
+    ``truncated``); a one-shot request (no ``offset``) that still exceeds
+    ``limit`` and set no ``downsample`` gets an even-stride sample of the
+    WHOLE range instead (``downsample: {mode: "stride", reason:
+    "over_limit"}``), never a biased head slice. ``deadline`` is a
+    ``time.monotonic()`` instant after which the query stops at the next
+    stage boundary with :class:`TableQueryTimeout` — a configured
+    SERVER-PROTECTION backstop (pyarrow's synchronous reads are not
+    preemptible mid-call), never a statement about how much data is
+    reachable: raise ``artifacts.table_query_timeout_s`` for a genuinely
+    large one-shot query, or page it with ``offset`` instead.
 
     Raises:
-        TableQueryError: for unknown columns, incomparable filter values,
-            unsupported aggregates/downsample inputs, or unparsable files.
+        TableQueryError: for unknown columns, incomparable filter/sort
+            values, unsupported aggregates/downsample inputs, or unparsable
+            files.
     """
 
     schema = _read_schema(source, fmt)
     available = list(schema.names)
-    needed = _source_columns_needed(request)
+    needed = _source_columns_needed(request, available)
     missing = [name for name in needed if name not in available]
     if missing:
         raise TableQueryError(
@@ -544,6 +638,7 @@ def run_table_query(
         )
     if request.aggregate is None:
         _validate_downsample_columns(request, available, stage="source")
+        _validate_sort_columns(request, available, stage="source")
 
     table = _read_table(source, fmt, needed)
     total_rows = table.num_rows
@@ -556,21 +651,33 @@ def run_table_query(
         table = _apply_aggregate(table, request.aggregate)
         output_columns = list(table.column_names)
         _validate_downsample_columns(request, output_columns, stage="aggregated")
+        _validate_sort_columns(request, output_columns, stage="aggregated")
         _check_deadline(deadline, timeout_s)
     else:
-        output_columns = list(request.columns)
+        # An omitted columns list means "every column" — already what ``needed``
+        # (and therefore this table's own schema) resolved to above.
+        output_columns = list(request.columns) if request.columns else list(table.column_names)
     matched_rows = table.num_rows
 
+    table = _apply_sort(table, request.sort)
+    _check_deadline(deadline, timeout_s)
+
+    paging = request.offset is not None
     downsample_info: dict[str, Any] = {"mode": "none"}
     if request.downsample is not None:
         table, downsample_info = _apply_downsample(
             table, request.downsample, limit, deadline, timeout_s
         )
         _check_deadline(deadline, timeout_s)
+    elif not paging and table.num_rows > limit:
+        # One-shot request, no explicit downsample, still over the transfer
+        # guard: sample the WHOLE range instead of silently biasing toward
+        # the first rows (owner ruling — see _apply_over_limit_stride).
+        table, downsample_info = _apply_over_limit_stride(table, limit)
 
-    truncated = table.num_rows > limit
-    if truncated:
-        table = table.slice(0, limit)
+    offset = request.offset or 0
+    truncated = (table.num_rows - offset) > limit
+    table = table.slice(offset, limit)
     table = table.select(output_columns)
 
     return {
@@ -580,13 +687,13 @@ def run_table_query(
         "matchedRows": matched_rows,
         "returnedRows": table.num_rows,
         "truncated": truncated,
+        "offset": offset,
         "downsample": downsample_info,
     }
 
 
 __all__ = [
     "DEFAULT_LIMIT",
-    "MAX_COLUMNS",
     "TableAggregate",
     "TableDownsample",
     "TableFilter",
@@ -595,6 +702,7 @@ __all__ = [
     "TableQueryError",
     "TableQueryRequest",
     "TableQueryTimeout",
+    "TableSort",
     "run_table_query",
     "table_format_for",
 ]

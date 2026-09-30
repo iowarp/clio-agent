@@ -9,12 +9,19 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-MAX_COLUMNS = 64
-MAX_IN_VALUES = 10_000
+#: Rendering-density guards for :class:`TableDownsample` only (a line chart
+#: cannot usefully show more points per entity than this regardless of how
+#: much data backs it) — kept as the one shape-count cap in this module;
+#: every other list (columns/filters/sort/groupBy/metrics/in-values) is
+#: unbounded in COUNT (owner ruling: no cap that kneecaps intent). The real
+#: guards are the source-artifact byte cap (``table_query_max_source_bytes``)
+#: and the per-response row cap (``table_query_max_rows`` / ``limit``), both
+#: pure transfer/memory guards a caller pages or downsamples around, never a
+#: refusal of reachable data.
 MAX_PER_ENTITY = 2_000
 DEFAULT_LIMIT = 5_000
 DEFAULT_MAX_PER_ENTITY = 500
@@ -62,17 +69,22 @@ class _Strict(BaseModel):
 
 
 class TableFilter(_Strict):
-    """One predicate; all predicates in a request are AND-ed together.
+    """One predicate; all predicates in a request are AND-ed together — including
+    several predicates on the SAME column (e.g. an agent's own base ``dataQuery``
+    filter plus a UI-added one): each is evaluated independently against the
+    source values and combined, never merged/overwritten by column name.
 
     * ``eq`` — ``value`` is a non-null scalar.
     * ``in`` — ``value`` is a non-empty list of non-null scalars.
     * ``range`` — ``value`` is ``[min, max]``, inclusive; either side may be null.
+    * ``contains`` — ``value`` is a string; case-insensitive substring match on
+      a string column.
     * ``isnull`` — ``value`` is omitted/``true`` (match nulls, NaN included) or
       ``false`` (match non-nulls).
     """
 
     column: str = Field(min_length=1)
-    op: Literal["eq", "in", "range", "isnull"]
+    op: Literal["eq", "in", "range", "contains", "isnull"]
     value: Any = None
 
     @model_validator(mode="after")
@@ -82,8 +94,8 @@ class TableFilter(_Strict):
             if not _is_scalar(value):
                 raise ValueError("eq filter requires a non-null scalar value")
         elif self.op == "in":
-            if not isinstance(value, list) or not 1 <= len(value) <= MAX_IN_VALUES:
-                raise ValueError(f"in filter requires a list of 1..{MAX_IN_VALUES} values")
+            if not isinstance(value, list) or len(value) < 1:
+                raise ValueError("in filter requires a non-empty list of values")
             if not all(_is_scalar(item) for item in value):
                 raise ValueError("in filter values must be non-null scalars")
         elif self.op == "range":
@@ -91,9 +103,19 @@ class TableFilter(_Strict):
                 raise ValueError("range filter requires [min, max]")
             if not all(item is None or _is_scalar(item) for item in value):
                 raise ValueError("range bounds must be scalars or null")
+        elif self.op == "contains":
+            if not isinstance(value, str):
+                raise ValueError("contains filter requires a string value")
         elif value is not None and not isinstance(value, bool):
             raise ValueError("isnull filter value must be a boolean when given")
         return self
+
+
+class TableSort(_Strict):
+    """One sort key; multiple keys apply in order (a stable, compound sort)."""
+
+    column: str = Field(min_length=1)
+    desc: bool = False
 
 
 class TableMetric(_Strict):
@@ -112,8 +134,10 @@ class TableMetric(_Strict):
 class TableAggregate(_Strict):
     """Group rows by ``groupBy`` (may be empty: one global group) and reduce."""
 
-    group_by: list[str] = Field(default_factory=list, alias="groupBy", max_length=MAX_COLUMNS)
-    metrics: list[TableMetric] = Field(min_length=1, max_length=MAX_COLUMNS)
+    group_by: list[str] = Field(default_factory=list, alias="groupBy")
+    # min_length=1 is a CORRECTNESS requirement (an aggregate with no metric
+    # reduces nothing), not an intent cap; no upper bound.
+    metrics: list[TableMetric] = Field(min_length=1)
 
     @model_validator(mode="after")
     def _check_names(self) -> TableAggregate:
@@ -157,12 +181,31 @@ class TableDownsample(_Strict):
 
 
 class TableQueryRequest(_Strict):
-    """``POST /v1/artifacts/{artifact_id}/table-query`` request body."""
+    """``POST /v1/artifacts/{artifact_id}/table-query`` request body.
 
-    columns: list[str] = Field(min_length=1, max_length=MAX_COLUMNS)
-    filters: list[TableFilter] = Field(default_factory=list, alias="filter", max_length=64)
+    ``columns`` may be omitted when ``aggregate`` is not set: the server then
+    returns every column in the source table (rows still bounded by
+    ``limit``) instead of refusing the request. ``aggregate`` still requires
+    ``columns`` explicitly (its own ``groupBy``/metric columns are read
+    regardless, but the request must still name what it wants alongside
+    them, matching every other structured request shape here).
+
+    ``limit`` is a per-response TRANSFER guard, never a limit on the data a
+    caller can reach: ``offset`` pages through the full (filtered/sorted)
+    result — a caller that sets it gets a plain, un-sampled page (capped to
+    ``limit`` if the page itself is oversized, reported via ``truncated``).
+    Omitting ``offset`` keeps the one-shot, whole-range contract: if the
+    result still exceeds ``limit`` and ``downsample`` was not set, the engine
+    applies its own even-stride sample across the WHOLE range (never a head
+    slice) rather than silently biasing toward the first rows.
+    """
+
+    columns: list[str] = Field(default_factory=list)
+    filters: list[TableFilter] = Field(default_factory=list, alias="filter")
     aggregate: TableAggregate | None = None
     downsample: TableDownsample | None = None
+    sort: list[TableSort] = Field(default_factory=list)
+    offset: Optional[int] = Field(default=None, ge=0)
     limit: int | None = Field(default=None, ge=1)
     format: Literal["json"] = "json"
 
@@ -172,6 +215,8 @@ class TableQueryRequest(_Strict):
             raise ValueError("column names must be non-empty")
         if len(set(self.columns)) != len(self.columns):
             raise ValueError("columns must be distinct")
+        if self.aggregate is not None and not self.columns:
+            raise ValueError("columns is required when aggregate is set")
         return self
 
     def canonical_json(self, effective_limit: int) -> str:

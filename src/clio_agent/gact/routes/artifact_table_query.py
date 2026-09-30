@@ -88,6 +88,17 @@ def table_query_timeout_s() -> float:
     Config: ``artifacts.table_query_timeout_s`` /
     ``CLIO_ARTIFACTS_TABLE_QUERY_TIMEOUT_S`` (default 10). An overrun answers a
     typed 504 ``table_query_timeout``.
+
+    This is a SERVER-PROTECTION backstop, never a statement about how much
+    data a caller can reach (owner ruling: no cap that kneecaps intent) — it
+    is configurable (raise it for a genuinely large one-shot query) and the
+    reason is always typed, never a silent drop. True client-abort
+    cancellation of an in-flight query is not implemented here: pyarrow's
+    synchronous C++ reads/computes are not preemptible mid-call without
+    re-implementing the engine as chunked/incremental reads, which is out of
+    this edge module's scope; the practical mitigation is ``offset`` paging
+    (a bounded, cheap page per request) instead of one unbounded one-shot
+    query.
     """
 
     from clio_agent import conf  # noqa: PLC0415

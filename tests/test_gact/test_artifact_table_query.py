@@ -277,6 +277,64 @@ def test_filters_are_anded(env: _Env) -> None:
     assert body["columns"] == {"sensor": ["a", "a", "c"], "t": [0, 2, 0]}
 
 
+def test_filter_contains_matches_case_insensitive_substring(env: _Env) -> None:
+    artifact_id = env.pin_csv(
+        "notes.csv",
+        "sensor,note\na,Alpha Station\nb,beta STATION\nc,Gamma Site\n",
+    )
+
+    body = _ok(
+        env.query(
+            artifact_id,
+            {
+                "columns": ["sensor"],
+                "filter": [{"column": "note", "op": "contains", "value": "station"}],
+            },
+        )
+    )
+
+    assert body["columns"]["sensor"] == ["a", "b"]
+    assert body["matchedRows"] == 2
+
+
+def test_filter_contains_on_a_non_string_column_is_400(env: _Env) -> None:
+    artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
+
+    error = _error(
+        env.query(
+            artifact_id,
+            {"columns": ["t"], "filter": [{"column": "t", "op": "contains", "value": "1"}]},
+        ),
+        400,
+    )
+
+    assert error["error"] == "invalid_filter_value"
+
+
+def test_multiple_filters_on_the_same_column_combine_with_and(env: _Env) -> None:
+    """Owner ruling: the UI sends the agent's base dataQuery filters PLUS its
+    own, concatenated in one request -- two predicates on the SAME column
+    must narrow together (AND), and matchedRows must reflect all of them."""
+
+    artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
+
+    body = _ok(
+        env.query(
+            artifact_id,
+            {
+                "columns": ["sensor", "t"],
+                "filter": [
+                    {"column": "t", "op": "range", "value": [1, None]},
+                    {"column": "t", "op": "range", "value": [None, 2]},
+                ],
+            },
+        )
+    )
+
+    assert body["columns"] == {"sensor": ["a", "a", "b", "b"], "t": [1, 2, 1, 2]}
+    assert body["matchedRows"] == 4
+
+
 def test_filter_value_incomparable_with_column_is_400(env: _Env) -> None:
     artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
 
@@ -588,15 +646,67 @@ def test_lttb_without_x_is_validation_error(env: _Env) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_limit_truncates_and_flags(env: _Env) -> None:
+def test_over_limit_one_shot_query_strides_the_whole_range_not_a_head_slice(
+    env: _Env,
+) -> None:
+    """Owner ruling: ``limit`` is a transfer guard, never a statement about
+    intent — a one-shot (no ``offset``) request over the limit gets an even
+    stride across the WHOLE range, never a biased first-N slice."""
+
     artifact_id = env.pin_csv("series.csv", _series_csv(1, 30))
 
     body = _ok(env.query(artifact_id, {"columns": ["t"], "limit": 10}))
 
     assert body["returnedRows"] == 10
-    assert body["columns"]["t"] == list(range(10))
-    assert body["truncated"] is True
+    assert body["columns"]["t"] == [0, 3, 6, 10, 13, 16, 19, 23, 26, 29]
+    # The whole range is represented (spans 0..29, not capped at 9): NOT a
+    # naive truncation, so `truncated` stays False — the sampling itself
+    # (downsample.reason=over_limit) is how the response says "not everything".
+    assert body["truncated"] is False
     assert body["totalRows"] == 30
+    assert body["downsample"] == {
+        "mode": "stride",
+        "reason": "over_limit",
+        "inputRows": 30,
+        "outputRows": 10,
+    }
+
+
+def test_offset_paging_returns_a_plain_contiguous_page_never_sampled(env: _Env) -> None:
+    """The paging twin: an explicit ``offset`` never triggers the over-limit
+    stride -- a table pages through the exact, un-sampled row order."""
+
+    artifact_id = env.pin_csv("series.csv", _series_csv(1, 30))
+
+    first_page = _ok(env.query(artifact_id, {"columns": ["t"], "limit": 10, "offset": 0}))
+    second_page = _ok(env.query(artifact_id, {"columns": ["t"], "limit": 10, "offset": 10}))
+    last_page = _ok(env.query(artifact_id, {"columns": ["t"], "limit": 10, "offset": 25}))
+
+    assert first_page["columns"]["t"] == list(range(0, 10))
+    assert first_page["truncated"] is True
+    assert first_page["offset"] == 0
+    assert first_page["downsample"] == {"mode": "none"}
+
+    assert second_page["columns"]["t"] == list(range(10, 20))
+    assert second_page["truncated"] is True
+    assert second_page["offset"] == 10
+
+    # The final, short page: 5 rows left (25..29), not padded or sampled.
+    assert last_page["columns"]["t"] == list(range(25, 30))
+    assert last_page["returnedRows"] == 5
+    assert last_page["truncated"] is False
+    assert last_page["offset"] == 25
+
+
+def test_offset_past_the_end_returns_an_empty_page(env: _Env) -> None:
+    artifact_id = env.pin_csv("series.csv", _series_csv(1, 30))
+
+    body = _ok(env.query(artifact_id, {"columns": ["t"], "limit": 10, "offset": 1000}))
+
+    assert body["columns"]["t"] == []
+    assert body["returnedRows"] == 0
+    assert body["truncated"] is False
+    assert body["offset"] == 1000
 
 
 def test_limit_above_ceiling_is_400(env: _Env) -> None:
@@ -610,20 +720,19 @@ def test_limit_above_ceiling_is_400(env: _Env) -> None:
     assert default_ceiling["error"] == "limit_exceeds_ceiling"
     assert default_ceiling["details"]["max_rows"] == 50_000
     assert configured["details"]["max_rows"] == 3
-    # With no explicit limit the default is clamped under the configured ceiling.
+    # With no explicit limit the default is clamped under the configured
+    # ceiling; the 7->3 overflow is an even-stride sample, not a truncation.
     assert default_limit["returnedRows"] == 3
-    assert default_limit["truncated"] is True
+    assert default_limit["truncated"] is False
+    assert default_limit["downsample"]["mode"] == "stride"
+    assert default_limit["downsample"]["reason"] == "over_limit"
 
 
-def test_too_many_columns_is_validation_error(env: _Env) -> None:
+def test_duplicate_columns_is_a_validation_error(env: _Env) -> None:
     artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
 
-    too_many = env.query(artifact_id, {"columns": [f"c{index}" for index in range(65)]})
-    none = env.query(artifact_id, {"columns": []})
     duplicate = env.query(artifact_id, {"columns": ["t", "t"]})
 
-    assert _error(too_many, 422)["error"] == "validation_error"
-    assert _error(none, 422)["error"] == "validation_error"
     assert _error(duplicate, 422)["error"] == "validation_error"
 
 
@@ -635,6 +744,183 @@ def test_sixty_four_columns_are_accepted(env: _Env) -> None:
     body = _ok(env.query(artifact_id, {"columns": [f"c{index}" for index in range(64)]}))
 
     assert len(body["columns"]) == 64
+
+
+def test_more_than_sixty_four_columns_are_accepted(env: _Env) -> None:
+    """Owner ruling: no cap that kneecaps intent -- a genuinely wide table's
+    columns are all reachable, not refused past an arbitrary count."""
+
+    header = ",".join(f"c{index}" for index in range(100))
+    row = ",".join(str(index) for index in range(100))
+    artifact_id = env.pin_csv("very_wide.csv", f"{header}\n{row}\n")
+
+    body = _ok(env.query(artifact_id, {"columns": [f"c{index}" for index in range(100)]}))
+
+    assert len(body["columns"]) == 100
+
+    # Omitting columns entirely also returns every one of the 100.
+    all_columns = _ok(env.query(artifact_id, {}))
+    assert len(all_columns["columns"]) == 100
+
+
+# --------------------------------------------------------------------------- #
+# Omitted columns: "every column", still bounded by limit (owner review fix)
+# --------------------------------------------------------------------------- #
+
+
+def test_omitted_columns_returns_every_column(env: _Env) -> None:
+    artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
+
+    body = _ok(env.query(artifact_id, {}))
+
+    assert set(body["columns"]) == {"sensor", "t", "value", "flag", "note"}
+    assert [field["name"] for field in body["schema"]] == [
+        "sensor",
+        "t",
+        "value",
+        "flag",
+        "note",
+    ]
+    assert body["returnedRows"] == 7
+
+
+def test_omitted_columns_still_bounds_rows_by_limit(env: _Env) -> None:
+    artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
+
+    body = _ok(env.query(artifact_id, {"limit": 2}))
+
+    assert set(body["columns"]) == {"sensor", "t", "value", "flag", "note"}
+    assert body["returnedRows"] == 2
+    # 7 source rows over a limit of 2, no offset/downsample: an even-stride
+    # sample, not a naive truncation (see the over-limit stride tests).
+    assert body["truncated"] is False
+    assert body["downsample"]["mode"] == "stride"
+
+
+def test_omitted_columns_still_honours_filters(env: _Env) -> None:
+    artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
+
+    body = _ok(env.query(artifact_id, {"filter": [{"column": "sensor", "op": "eq", "value": "a"}]}))
+
+    assert body["matchedRows"] == 3
+    assert body["columns"]["sensor"] == ["a", "a", "a"]
+    assert set(body["columns"]) == {"sensor", "t", "value", "flag", "note"}
+
+
+def test_omitted_columns_with_aggregate_is_a_validation_error(env: _Env) -> None:
+    artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
+
+    response = env.query(
+        artifact_id,
+        {"aggregate": {"groupBy": ["sensor"], "metrics": [{"column": "value", "fn": "mean"}]}},
+    )
+
+    assert _error(response, 422)["error"] == "validation_error"
+
+
+# --------------------------------------------------------------------------- #
+# sort: a table pages through the whole dataset in a caller-chosen order
+# --------------------------------------------------------------------------- #
+
+
+def test_sort_ascending_single_key(env: _Env) -> None:
+    artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
+
+    body = _ok(
+        env.query(artifact_id, {"columns": ["sensor", "value"], "sort": [{"column": "value"}]})
+    )
+
+    # NaN sorts after real values with pyarrow's default null_placement.
+    assert body["columns"]["sensor"][:3] == ["a", "a", "a"]
+    assert body["columns"]["value"][0] == 1.0
+
+
+def test_sort_descending_key(env: _Env) -> None:
+    artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
+
+    body = _ok(
+        env.query(
+            artifact_id,
+            {"columns": ["sensor", "value"], "sort": [{"column": "value", "desc": True}]},
+        )
+    )
+
+    assert body["columns"]["sensor"][0] == "c"
+    assert body["columns"]["value"][0] == 100.0
+
+
+def test_sort_compound_keys_apply_in_order(env: _Env) -> None:
+    artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
+
+    body = _ok(
+        env.query(
+            artifact_id,
+            {
+                "columns": ["sensor", "t"],
+                "sort": [{"column": "sensor", "desc": True}, {"column": "t", "desc": True}],
+            },
+        )
+    )
+
+    assert body["columns"]["sensor"] == ["c", "b", "b", "b", "a", "a", "a"]
+    assert body["columns"]["t"] == [0, 2, 1, 0, 2, 1, 0]
+
+
+def test_sort_then_page_returns_the_right_slice_of_the_ordered_rows(env: _Env) -> None:
+    artifact_id = env.pin_csv("series.csv", _series_csv(1, 30))
+
+    body = _ok(
+        env.query(
+            artifact_id,
+            {
+                "columns": ["t"],
+                "sort": [{"column": "t", "desc": True}],
+                "limit": 5,
+                "offset": 0,
+            },
+        )
+    )
+
+    assert body["columns"]["t"] == [29, 28, 27, 26, 25]
+    assert body["truncated"] is True
+
+
+def test_sort_unknown_column_is_columns_not_found(env: _Env) -> None:
+    artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
+
+    error = _error(
+        env.query(artifact_id, {"columns": ["sensor"], "sort": [{"column": "nope"}]}), 400
+    )
+
+    assert error["error"] == "columns_not_found"
+    assert error["details"]["missing"] == ["nope"]
+
+
+def test_sort_by_an_aggregate_output_column(env: _Env) -> None:
+    """With aggregate set, sort targets the AGGREGATE'S OWN output columns
+    (e.g. a metric's ``{column}_{fn}`` name), not raw source columns."""
+
+    artifact_id = env.pin_csv(
+        "readings.csv",
+        "sensor,t\na,5\na,1\nb,10\nb,2\nc,3\n",
+    )
+
+    body = _ok(
+        env.query(
+            artifact_id,
+            {
+                "columns": ["sensor"],
+                "aggregate": {
+                    "groupBy": ["sensor"],
+                    "metrics": [{"column": "t", "fn": "max"}],
+                },
+                "sort": [{"column": "t_max", "desc": True}],
+            },
+        )
+    )
+
+    # Per-sensor max(t): b=10, a=5, c=3 -- strictly descending, no ties.
+    assert body["columns"]["sensor"] == ["b", "a", "c"]
 
 
 def test_oversized_source_is_413(env: _Env) -> None:
