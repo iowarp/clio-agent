@@ -86,7 +86,7 @@ def test_every_clio_addition_the_agent_sees_is_shown_to_the_user(
     seen_by_agent = _clio_messages(engine.requests[-1])
     shown = [f"[clio: {row['source']}]\n{row['text']}" for row in emitted]
     assert seen_by_agent == shown
-    assert [row["source"] for row in emitted] == ["todos", "plan_mode", "task_results"]
+    assert [row["source"] for row in emitted] == ["tool_use", "todos", "plan_mode", "task_results"]
 
 
 def test_a_note_on_a_tool_call_is_shown_with_its_call(
@@ -106,7 +106,7 @@ def test_a_note_on_a_tool_call_is_shown_with_its_call(
     with _plane(arc), dspy.context(lm=lm):
         agent(question="q")
 
-    [row] = emitted
+    [row] = [r for r in emitted if r["call_id"]]  # the note on the call, not a turn addition
     assert (row["source"], row["call_id"]) == ("path_hint", "call_0_0")
     observation = engine.requests[1].messages[-1].parts[0].content[0].text
     assert row["text"] in observation, "the user sees exactly what the agent was told"

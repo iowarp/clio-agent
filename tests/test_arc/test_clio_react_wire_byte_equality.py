@@ -31,7 +31,7 @@ from typing import Any
 import dspy
 from dspy.lm15 import Message, Request, TextPart, ToolCallPart, ToolResultPart
 
-from clio_agent.gact.agents.clio_react import ClioReAct
+from clio_agent.gact.agents.clio_react import TOOL_USE_NOTE, ClioReAct
 from clio_agent.gact.agents.clio_react_record import fold_steps, read_steps
 from tests._scripted_engine import Reply, ScriptedEngine, calls, scripted_lm, summarize
 
@@ -40,6 +40,8 @@ from .conftest import live_plane_context
 SESSION, SCOPE = "s1", "agentA"
 QUESTION = "find alpha"
 HEAD = Message(role="user", parts=(TextPart(text=QUESTION),))
+# An agent with tools is told once, ahead of the task, that a step may call several.
+NOTE = Message(role="user", parts=(TextPart(text=f"[clio: tool_use]\n{TOOL_USE_NOTE}"),))
 
 
 # ---- the independent reference -------------------------------------------------
@@ -178,7 +180,7 @@ def test_every_loop_call_is_equal_to_the_reference(arc):
     reference = expected_messages(_STEPS)
     assert len(engine.requests) == len(_STEPS) + 1
     for k, request in enumerate(engine.requests):
-        assert list(request.messages) == [HEAD, *reference[: 2 * k]], f"call {k} diverged"
+        assert list(request.messages) == [NOTE, HEAD, *reference[: 2 * k]], f"call {k} diverged"
 
 
 def test_plane_fold_equals_the_loops_own_steps(arc):
@@ -188,7 +190,7 @@ def test_plane_fold_equals_the_loops_own_steps(arc):
     with live_plane_context(arc, session=SESSION, scope=SCOPE):
         folded = read_steps(arc, SESSION, SCOPE)
     assert pred.messages[0] == HEAD
-    assert folded == pred.messages
+    assert folded == [NOTE, *pred.messages]  # the loop keeps the task; the plane the note too
 
 
 def test_consecutive_calls_are_strict_prefix_extensions(arc):
@@ -212,10 +214,10 @@ def test_inputs_ride_the_head_once(arc):
     request's native tool list and are never rendered into the text."""
     _, engine = _run_loop(arc, _agent(), _script(_STEPS))
     for request in engine.requests:
-        assert request.messages[0] == HEAD
+        assert request.messages[:2] == (NOTE, HEAD)
         assert _text(request).count(QUESTION) == 1
         assert [t.name for t in request.tools] == ["search", "submit"]
-        assert "submit" not in str(summarize(request.messages[:1]))
+        assert "submit" not in str(summarize(request.messages[1:2]))
 
 
 def test_summary_surfaces_as_earlier_context(arc):

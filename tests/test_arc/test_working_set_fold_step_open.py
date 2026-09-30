@@ -21,6 +21,7 @@ from clio_agent.arc.live import _MemoryStore
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.working_set_fold import STEP_OPEN_KIND, FoldingSegmentStore
 from clio_agent.gact.agents import clio_react
+from clio_agent.gact.agents.clio_react import TOOL_USE_NOTE
 from tests._scripted_engine import calls, scripted_lm
 
 from .conftest import live_plane_context
@@ -84,6 +85,7 @@ def test_crash_leaves_step_open(monkeypatch: pytest.MonkeyPatch) -> None:
     assert step_opens[0].content.get("tools") == ["probe"]
     # The post-execution working-set atoms never landed (the crash preceded them):
     # only the turn's framing ``user`` segment is live — no thought/tool_call/observation.
-    assert [(s.kind, s.content) for s in arc.render_segments(session, SCOPE)] == [
-        ("user", {"text": "find alpha"})
+    assert [(s.kind, s.content.get("text")) for s in arc.render_segments(session, SCOPE)] == [
+        ("user", TOOL_USE_NOTE),  # CLIO's note to an agent with tools, recorded once
+        ("user", "find alpha"),
     ]
