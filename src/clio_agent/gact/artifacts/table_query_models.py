@@ -77,8 +77,8 @@ class TableFilter(_Strict):
     * ``eq`` — ``value`` is a non-null scalar.
     * ``in`` — ``value`` is a non-empty list of non-null scalars.
     * ``range`` — ``value`` is ``[min, max]``, inclusive; either side may be null.
-    * ``contains`` — ``value`` is a string; case-insensitive substring match on
-      a string column.
+    * ``contains`` — ``value`` is a non-empty string; case-insensitive
+      substring match on a string column.
     * ``isnull`` — ``value`` is omitted/``true`` (match nulls, NaN included) or
       ``false`` (match non-nulls).
     """
@@ -104,8 +104,8 @@ class TableFilter(_Strict):
             if not all(item is None or _is_scalar(item) for item in value):
                 raise ValueError("range bounds must be scalars or null")
         elif self.op == "contains":
-            if not isinstance(value, str):
-                raise ValueError("contains filter requires a string value")
+            if not isinstance(value, str) or not value:
+                raise ValueError("contains filter requires a non-empty string value")
         elif value is not None and not isinstance(value, bool):
             raise ValueError("isnull filter value must be a boolean when given")
         return self

@@ -3,16 +3,20 @@
 Backs ``POST /v1/artifacts/{artifact_id}/table-query``: a chart asks for a few
 columns of a CSV or Parquet artifact, optionally filtered, aggregated and
 downsampled, and receives a small column-oriented JSON payload instead of the
-whole file. Execution is pyarrow-only and runs in a fixed order:
+whole file. Execution is pyarrow-only and runs in a fixed order, matching the
+shared ``DataQuery`` $def's own documented contract (clio-schemas):
 
-    read (projected) -> filter -> aggregate -> sort -> downsample/page -> limit
+    read (projected) -> filter -> aggregate -> downsample -> sort -> offset/limit
 
 ``limit`` is a per-response TRANSFER guard, never a ceiling on what a caller
 can reach: an ``offset`` request plainly PAGES the full (filtered/sorted)
 result (never sampled, only capped if the page itself overflows); a
 one-shot request (no ``offset``) that still exceeds ``limit`` gets an
 even-stride sample across the WHOLE range instead of a biased head slice —
-see :func:`_apply_over_limit_stride`.
+see :func:`_apply_over_limit_stride`. Sorting runs AFTER downsampling (not
+before): an explicit or automatic sample picks its rows from the
+filtered/aggregated set first, and the caller's ``sort`` then orders exactly
+the rows that made it into the response.
 
 This module owns no HTTP machinery: it raises :class:`TableQueryError` with a
 status code and a typed error code, and the route turns that into the standard
@@ -659,9 +663,10 @@ def run_table_query(
         output_columns = list(request.columns) if request.columns else list(table.column_names)
     matched_rows = table.num_rows
 
-    table = _apply_sort(table, request.sort)
-    _check_deadline(deadline, timeout_s)
-
+    # Downsample BEFORE sort (the shared DataQuery contract's own documented
+    # order): an explicit or automatic sample picks its rows from the
+    # filtered/aggregated set first, and the caller's sort then orders
+    # exactly the rows that made it into the response.
     paging = request.offset is not None
     downsample_info: dict[str, Any] = {"mode": "none"}
     if request.downsample is not None:
@@ -674,6 +679,9 @@ def run_table_query(
         # guard: sample the WHOLE range instead of silently biasing toward
         # the first rows (owner ruling — see _apply_over_limit_stride).
         table, downsample_info = _apply_over_limit_stride(table, limit)
+
+    table = _apply_sort(table, request.sort)
+    _check_deadline(deadline, timeout_s)
 
     offset = request.offset or 0
     truncated = (table.num_rows - offset) > limit

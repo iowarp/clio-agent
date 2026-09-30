@@ -684,7 +684,7 @@ wheels = [
 [[package]]
 name = "clio-schemas"
 version = "0.5.1"
-source = { git = "https://github.com/iowarp/clio-schemas.git?branch=feat%2Fa2ui-data-everywhere#25e31b79f4f5b971cde51454c95c795c7bc4d5e4" }
+source = { git = "https://github.com/iowarp/clio-schemas.git?branch=feat%2Fa2ui-data-everywhere#8e44de088077ffc4fab0bc4eb64b3ed3406118bb" }
 dependencies = [
     { name = "jsonschema", extra = ["format"] },
     { name = "pydantic" },

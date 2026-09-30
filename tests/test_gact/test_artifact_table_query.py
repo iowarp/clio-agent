@@ -311,6 +311,19 @@ def test_filter_contains_on_a_non_string_column_is_400(env: _Env) -> None:
     assert error["error"] == "invalid_filter_value"
 
 
+def test_filter_contains_with_an_empty_string_is_a_validation_error(env: _Env) -> None:
+    """Matches the shared QueryFilter contract: contains' value has minLength 1."""
+
+    artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
+
+    response = env.query(
+        artifact_id,
+        {"columns": ["sensor"], "filter": [{"column": "note", "op": "contains", "value": ""}]},
+    )
+
+    assert _error(response, 422)["error"] == "validation_error"
+
+
 def test_multiple_filters_on_the_same_column_combine_with_and(env: _Env) -> None:
     """Owner ruling: the UI sends the agent's base dataQuery filters PLUS its
     own, concatenated in one request -- two predicates on the SAME column
@@ -883,6 +896,35 @@ def test_sort_then_page_returns_the_right_slice_of_the_ordered_rows(env: _Env) -
 
     assert body["columns"]["t"] == [29, 28, 27, 26, 25]
     assert body["truncated"] is True
+
+
+def test_downsample_runs_before_sort_not_after(env: _Env) -> None:
+    """The shared DataQuery contract's own documented order is filter ->
+    aggregate -> downsample -> sort -> offset/limit -- downsample picks its
+    rows from the UNSORTED (filtered/aggregated) set; the caller's sort then
+    orders exactly the rows that made it through. id/value are shuffled so
+    picking positions [0, 3, 6, 9] before sorting selects a DIFFERENT row set
+    than sorting by value first and then picking those same positions."""
+
+    artifact_id = env.pin_csv(
+        "shuffled.csv",
+        "id,value\n0,3\n1,7\n2,1\n3,9\n4,4\n5,6\n6,0\n7,8\n8,2\n9,5\n",
+    )
+
+    body = _ok(
+        env.query(
+            artifact_id,
+            {
+                "columns": ["id", "value"],
+                "downsample": {"mode": "stride"},
+                "sort": [{"column": "value"}],
+                "limit": 4,
+            },
+        )
+    )
+
+    assert body["columns"]["id"] == [6, 0, 9, 3]
+    assert body["columns"]["value"] == [0, 3, 5, 9]
 
 
 def test_sort_unknown_column_is_columns_not_found(env: _Env) -> None:

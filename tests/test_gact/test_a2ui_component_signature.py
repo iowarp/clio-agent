@@ -57,21 +57,28 @@ def test_map_signature_shows_points_or_datauri_alternative() -> None:
     signature = generate_component_signature(components["clio.map.v1"])
 
     assert signature.startswith("points[] | dataUri + latitudeField/longitudeField/labelField ")
-    # The three OPTIONAL dataset-column properties are grouped, never hidden.
+    # The four OPTIONAL dataset-column properties are grouped, never hidden.
     assert "categoryField" in signature
     assert "detailField" in signature
     assert "idField" in signature
+    assert "selectionField" in signature
     # dataQuery is optional and dependent on dataUri -- its own bracket group.
     assert "[dataQuery]" in signature
     # title (and the other plain optional properties) trail with '?'.
     assert "title?" in signature
+    # selectionField is required-when-bound (a properties-value conditional,
+    # not the plain oneOf/if-required pattern) -- pointed at, not spelled out.
+    assert "see schema for conditional field requirements" in signature
 
 
 def test_data_table_signature_shows_columns_required_only_with_rows() -> None:
     components = _workspace_catalog_components()
     signature = generate_component_signature(components["clio.data-table.v1"])
 
-    assert signature == "rows[] + columns | dataUri [dataQuery]; action?, selection?"
+    assert signature == (
+        "rows[] + columns | dataUri [selectionField] [dataQuery]; "
+        "action?, selection?, see schema for conditional field requirements"
+    )
 
 
 def test_workflow_signature_shows_nodes_and_edges_together_or_datauri() -> None:
@@ -104,7 +111,7 @@ def test_chart_signature_names_field_properties_and_flags_preset_specifics() -> 
     for field in ("colorField", "entityField", "facetField", "selectionField", "xField", "yField"):
         assert field in signature
     assert "[dataQuery]" in signature
-    assert "see schema for preset-specific fields" in signature
+    assert "see schema for conditional field requirements" in signature
 
 
 # --------------------------------------------------------------------------- #

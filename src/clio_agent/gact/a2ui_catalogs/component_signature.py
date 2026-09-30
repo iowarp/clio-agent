@@ -18,11 +18,13 @@ more "exactly one of" ``oneOf`` branches plus an optional ``dataUri``-keyed
 ``if``/``then`` naming the fields that come with it. This module reads
 exactly that structure -- nothing here is a per-component special case.
 
-A conditional keyed on an enum ``const`` (chart's five per-preset field
-lists) is too specific for one line, so it is surfaced only as a pointer
-("see schema for preset-specific fields"), never spelled out -- that is
-exactly the "at most one schema lookup" progressive-disclosure boundary the
-index exists to draw.
+A conditional keyed on a ``properties`` value check -- an enum ``const``
+(chart's five per-preset field lists) or a type check (map/data-table's
+``selectionField`` required only when ``selection`` is bound) -- is too
+specific for one line, so it is surfaced only as a pointer ("see schema for
+conditional field requirements"), never spelled out -- that is exactly the
+"at most one schema lookup" progressive-disclosure boundary the index exists
+to draw.
 """
 
 from __future__ import annotations
@@ -116,7 +118,14 @@ def _simple_conditional_extra(entries: list[Any]) -> dict[tuple[str, ...], list[
 
 
 def _has_const_conditional(entries: list[Any]) -> bool:
-    """Whether an enum-``const``-keyed conditional exists (chart's presets)."""
+    """Whether a ``properties``-value-keyed conditional exists.
+
+    Covers both an enum ``const`` check (chart's five per-preset field lists)
+    and any other value check on a named property (map/data-table's
+    ``selectionField`` required only when ``selection`` is bound) -- anything
+    :func:`_simple_conditional_extra` skips because its ``if`` names a
+    ``properties`` check, not a bare ``required`` list.
+    """
 
     for entry in entries:
         condition = entry.get("if") if isinstance(entry, dict) else None
@@ -208,7 +217,7 @@ def generate_component_signature(schema: Any) -> str:
 
     tail_parts = [f"{name}?" for name in other]
     if _has_const_conditional(entries):
-        tail_parts.append("see schema for preset-specific fields")
+        tail_parts.append("see schema for conditional field requirements")
     tail = ", ".join(tail_parts)
 
     if head and tail:
