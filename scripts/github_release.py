@@ -142,7 +142,10 @@ def ensure_draft(api: GhApi, repo: str, tag: str) -> dict[str, Any]:
     existing = _single(find_releases(api, repo, tag), tag)
     if existing is not None:
         return existing
-    api(
+    # Use the created release from the POST response itself: the list endpoint is
+    # eventually consistent and can omit a draft created a moment ago (v0.9.4.20's
+    # first run failed exactly that way).
+    out = api(
         [
             "--method",
             "POST",
@@ -159,9 +162,18 @@ def ensure_draft(api: GhApi, repo: str, tag: str) -> dict[str, Any]:
             "make_latest=false",
         ]
     )
-    created = _single(find_releases(api, repo, tag), tag)
-    if created is None:
-        raise ReleaseError(f"created a draft for {tag} but cannot list it back")
+    try:
+        body = json.loads(out)
+    except json.JSONDecodeError as exc:
+        raise ReleaseError(f"creating the draft for {tag} returned no release JSON") from exc
+    if not isinstance(body, dict) or body.get("tag_name") != tag or "id" not in body:
+        raise ReleaseError(f"creating the draft for {tag} returned an unexpected body")
+    created = {key: body.get(key) for key in ("id", "tag_name", "name", "draft", "prerelease")}
+    # A concurrent creator shows up as a second release once the listing catches up;
+    # an empty listing here is only replication lag, so the POST body stands.
+    listed = find_releases(api, repo, tag)
+    if len(listed) > 1:
+        _single(listed, tag)
     return created
 
 

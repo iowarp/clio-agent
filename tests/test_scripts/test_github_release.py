@@ -76,7 +76,7 @@ class FakeGitHub:
                 json.dumps({k: r[k] for k in ("id", "tag_name", "name", "draft", "prerelease")})
                 + "\n"
                 for r in self.releases
-                if r["tag_name"] == tag
+                if r["tag_name"] == tag and r["id"] not in getattr(self, "hidden_ids", set())
             )
         if args[0] == f"repos/{REPO}/releases/latest":
             for release in self.releases:
@@ -90,8 +90,10 @@ class FakeGitHub:
             assert fields["name"] == fields["tag_name"]  # title is the bare version
             if self.create_hook is not None:
                 self.create_hook(self)
-            self.add(fields["tag_name"], draft=True)
-            return "{}"
+            created = self.add(fields["tag_name"], draft=True)
+            if getattr(self, "list_lag", False):
+                self.hidden_ids = getattr(self, "hidden_ids", set()) | {created["id"]}
+            return json.dumps(created)
         if args[:2] == ["--method", "PATCH"]:
             release_id = int(args[2].rsplit("/", 1)[1])
             fields = self._fields(args)
@@ -327,3 +329,13 @@ def test_main_reports_invariant_failures_with_exit_1(capsys: Any) -> None:
 def test_main_requires_a_repo(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
     assert main(["ensure", "--tag", "v0.9.4.19"], api=FakeGitHub()) == 1
+
+
+def test_ensure_draft_trusts_the_create_response_when_the_listing_lags() -> None:
+    """v0.9.4.20: the list endpoint omitted a draft created a moment earlier."""
+
+    gh = FakeGitHub()
+    gh.list_lag = True
+    release = ensure_draft(gh, REPO, "v9.9.9")
+    assert release["tag_name"] == "v9.9.9"
+    assert release["draft"] is True
