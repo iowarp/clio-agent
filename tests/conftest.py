@@ -695,22 +695,58 @@ def _test_arc_namespace(request: pytest.FixtureRequest) -> str:
 
 
 @pytest.fixture(autouse=True)
-def clio_core_namespace(request, allow_pytest_tmp_path):
-    """Clear this test's clio-core namespace at teardown (only once a store attached).
+def keep_the_workers_clio_core_runtime(monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
+    """An app's lifespan shutdown must not stop this worker's shared clio-core daemon.
 
-    Clears through a store bound straight to the ALREADY-attached config -- no factory,
-    no preflight, no config read -- so a test's still-active patches (conf, disk usage)
-    cannot break or slow the teardown.
+    In production a process hosts ONE app, and its lifespan end releasing the runtime
+    client (the last client out stops the daemon) is right. A test worker hosts hundreds
+    of apps on ONE private daemon, so the first app to shut down took clio-core away
+    from every later test. The per-app release is a recorded no-op here; the session
+    fixture does the one real release at the end. Tests about the release itself patch
+    ``release_runtime_client`` themselves (their patch runs later and wins).
     """
+    from clio_agent.arc import storage  # noqa: PLC0415
+
+    releases: list[tuple] = []
+    monkeypatch.setattr(storage, "release_runtime_client", lambda *a, **k: releases.append(a))
+    return releases
+
+
+@pytest.fixture(autouse=True)
+def clio_core_namespace(request, allow_pytest_tmp_path, monkeypatch):
+    """Give each test's ARC its own clio-core namespace(s); clear them at teardown.
+
+    The test's namespace comes from the config layer. An ``ARCMemory(data_dir=X)`` built
+    without a store gets ``<test namespace>-<hash of X>``: the same directory reopens the
+    same records, different directories stay independent -- what a data dir meant on local
+    files. Teardown clears every namespace the test opened, through a store bound straight
+    to the ALREADY-attached config (no factory, preflight or config read under the test's
+    still-active patches).
+    """
+    import hashlib  # noqa: PLC0415
+
+    from clio_agent.arc import memory as arc_memory  # noqa: PLC0415
+
+    base = _test_arc_namespace(request)
+    opened = {base}
+    real_make = arc_memory.make_arc_store
+
+    def make_for_data_dir(*args, **kwargs):
+        if kwargs.get("namespace") is None and kwargs.get("data_dir") is not None:
+            digest = hashlib.sha1(str(Path(kwargs["data_dir"]).resolve()).encode()).hexdigest()
+            kwargs["namespace"] = f"{base}-{digest[:8]}"
+            opened.add(kwargs["namespace"])
+        return real_make(*args, **kwargs)
+
+    monkeypatch.setattr(arc_memory, "make_arc_store", make_for_data_dir)
     yield
     from clio_agent.arc import clio_core_attach, storage  # noqa: PLC0415
 
     state = clio_core_attach.attach_state_snapshot()
     if state.phase is not clio_core_attach.ClioCoreAttachPhase.ATTACHED:
         return
-    storage.ClioCoreStore(
-        config_path=state.config_path, namespace=_test_arc_namespace(request)
-    ).clear()
+    for namespace in sorted(opened):
+        storage.ClioCoreStore(config_path=state.config_path, namespace=namespace).clear()
 
 
 def _path_under(path: Path, base: Path) -> bool:

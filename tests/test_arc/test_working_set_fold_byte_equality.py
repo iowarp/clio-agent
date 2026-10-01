@@ -36,21 +36,16 @@ def session() -> str:
     return "fold_" + uuid.uuid4().hex[:12]
 
 
-@pytest.fixture(params=["local", "cte"])
-def fold_arc(request, tmp_path) -> Iterator[ARCMemory]:
-    """A fresh fold-ON ARCMemory on BOTH backends (mirrors the ``arc`` fixture)."""
-    backend = request.param
-    if backend == "cte":
-        pytest.importorskip("clio_cte_core_ext")
-        from clio_agent.arc.storage import make_arc_store
+@pytest.fixture
+def fold_arc() -> Iterator[ARCMemory]:
+    """A fresh ARCMemory on clio-core (the only store), in this test's namespace."""
+    from clio_agent.arc.storage import make_arc_store
 
-        memory = ARCMemory(store=make_arc_store(backend="cte"), working_set_fold=True)
-        try:
-            yield memory
-        finally:
-            memory.clear_all()
-        return
-    yield ARCMemory(data_dir=str(tmp_path / "arc"), working_set_fold=True)
+    memory = ARCMemory(store=make_arc_store(backend="cte"), working_set_fold=True)
+    try:
+        yield memory
+    finally:
+        memory.clear_all()
 
 
 def _populate(arc: ARCMemory, session: str, *triples: Any) -> None:
