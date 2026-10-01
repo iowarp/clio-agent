@@ -197,7 +197,7 @@ def direct_auth_headers(store: CodexCredentialStore | None = None) -> dict[str, 
         raise CodexCredentialMissingError()
     from dspy.lm15 import Message, OpenAICodexLM, Request
 
-    wire = OpenAICodexLM.from_codex_cli()
+    wire = OpenAICodexLM.from_codex_cli(auth_path=codex_cli_auth_path())
     headers = dict(
         wire.build_request(
             Request(model="gpt-5.5", messages=(Message.user("."),)), stream=True

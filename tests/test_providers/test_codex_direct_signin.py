@@ -94,25 +94,8 @@ def test_clio_signin_wins_and_is_refreshed_by_clio(
 def test_the_cli_login_headers_come_from_lm15_never_a_clio_refresh(
     codex_home: Path, no_clio_signin: CodexCredentialStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """lm15 reads the login at ``$CODEX_HOME/auth.json`` -- not its own fixed ``~/.codex``."""
     _write_cli_login(codex_home, access_token="cli-tok", account_id="cli-acct")
-
-    class Wire:
-        def build_request(self, request: object, stream: bool) -> object:
-            return type(
-                "T",
-                (),
-                {
-                    "headers": [
-                        ("Authorization", "Bearer cli-tok"),
-                        ("chatgpt-account-id", "cli-acct"),
-                        ("originator", "lm15"),
-                    ]
-                },
-            )()
-
-    from dspy import lm15
-
-    monkeypatch.setattr(lm15.OpenAICodexLM, "from_codex_cli", classmethod(lambda cls: Wire()))
     refreshed: list[bool] = []
     monkeypatch.setattr(
         CodexCredentialStore, "get_valid_credential", lambda self: refreshed.append(True)
