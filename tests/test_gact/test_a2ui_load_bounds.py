@@ -60,9 +60,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact import a2ui as a2ui_module
+from clio_agent.gact.a2ui import A2UIComponentLimitExceededError
 from clio_agent.gact.a2ui_catalogs.builtin import workspace_catalog_id
 from clio_agent.gact.a2ui_catalogs.reasons import A2UI_CATALOG_REASON_RING_MAXLEN
 from clio_agent.gact.app import build_app
@@ -213,6 +215,73 @@ def test_sustained_component_updates_never_grow_past_one_merged_message(
     merged_components = surface.messages[1]["updateComponents"]["components"]
     assert len(merged_components) == 1 + updates  # the seeded "root" plus every "node_i"
     assert surface.state == "ready"
+
+
+def test_sustained_distinct_component_ids_hit_the_merged_cap_and_refuse(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """F5 (coordinator design, 2026-10-01): the merged state's component
+    COUNT is bounded too, not just the message list's LENGTH -- a surface
+    that accumulates distinct ids across many small updates, never any
+    single oversized one, was otherwise unbounded once materialization
+    (G2) made the stored list itself stay at one entry forever. A lowered
+    cap (not the 256 default) makes this a fast, deterministic test.
+    """
+
+    monkeypatch.setattr(a2ui_module, "MAX_A2UI_COMPONENTS", 5)
+
+    app = _isolated_app(tmp_path)
+    session = app.state.sessions.create(workspace_id="ws_default", title="load bounds")
+    sid = session.id
+    app.state.a2ui_store.apply_batch(sid, _create_batch("load_surface"))  # seeds "root" (1/5)
+
+    for i in range(4):  # "node_0".."node_3" -> exactly at the cap (5/5)
+        app.state.a2ui_store.apply_batch(
+            sid,
+            [
+                {
+                    "version": "v0.9.1",
+                    "updateComponents": {
+                        "surfaceId": "load_surface",
+                        "components": [
+                            {"id": f"node_{i}", "component": "Text", "text": f"update {i}"}
+                        ],
+                    },
+                }
+            ],
+        )
+
+    surface_at_cap = app.state.a2ui_store.get(sid, "load_surface")
+    assert surface_at_cap is not None
+    at_cap_components = surface_at_cap.messages[1]["updateComponents"]["components"]
+    assert len(at_cap_components) == 5
+
+    with pytest.raises(A2UIComponentLimitExceededError) as excinfo:
+        app.state.a2ui_store.apply_batch(
+            sid,
+            [
+                {
+                    "version": "v0.9.1",
+                    "updateComponents": {
+                        "surfaceId": "load_surface",
+                        "components": [
+                            {"id": "node_overflow", "component": "Text", "text": "one too many"}
+                        ],
+                    },
+                }
+            ],
+        )
+    assert excinfo.value.component_count == 6
+    assert excinfo.value.limit == 5
+
+    # The refusal rolls back: the surface still has exactly the 5 components
+    # it had before the rejected call, never a partially-applied 6th.
+    surface_after_refusal = app.state.a2ui_store.get(sid, "load_surface")
+    assert surface_after_refusal is not None
+    assert surface_after_refusal.revision == surface_at_cap.revision
+    after_refusal_components = surface_after_refusal.messages[1]["updateComponents"]["components"]
+    assert len(after_refusal_components) == 5
+    assert all(c["id"] != "node_overflow" for c in after_refusal_components)
 
 
 def test_sustained_actions_keep_the_per_session_reason_ring_at_256(tmp_path: Path) -> None:

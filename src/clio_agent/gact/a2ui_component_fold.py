@@ -37,11 +37,50 @@ module's fold and `a2ui_producer/_common.py`'s `current_surface_components`/
 same algorithm. It lives here, not there, because `a2ui.py` cannot depend on
 `a2ui_producer` (which already depends on `a2ui.py`) -- `_common.py` now
 imports it from here instead.
+
+Adversarial review (coordinator design, 2026-10-01): a probe against both
+PR heads together found the revision+fingerprint client design (gact-tui
+#513) still cannot tell "this merged slot changed" from "this merged slot
+is unchanged" without re-hashing its full content on every reconcile --
+exactly the O(surface size) re-stringify cost the fingerprint cache was
+built to avoid. The fix is a server-side revision STAMP: `messages` grows a
+parallel `revisions` list (`A2UISurfaceRecord.message_revisions`), one
+integer per message slot, naming the revision that produced the slot's
+CURRENT content. The merged `updateComponents` slot's stamp is the revision
+of its most recent change, however small; every other message's stamp is
+the revision it was appended at and never changes again. A client then
+knows exactly which slots are new since its own `appliedRevision` by
+comparing integers, never bytes.
+
+F5 (component cap): `materialize_update_components` also enforces
+`MAX_A2UI_COMPONENTS` on the MERGED state, not just on one incoming
+message's own component list (`validate_components`'s existing per-message
+check) -- a surface that accumulates distinct component ids across many
+small updates, never any single oversized one, was otherwise unbounded.
 """
 
 from __future__ import annotations
 
 from typing import Any, Mapping
+
+from clio_agent.gact.a2ui_catalogs.validation import A2UIValidationError
+
+
+class A2UIComponentLimitExceededError(A2UIValidationError):
+    """Raised when materializing a surface's components would exceed the cap.
+
+    Carries `component_count`/`limit` so a caller can attach the typed
+    `a2ui_component_limit_exceeded` reason, mirroring
+    `A2UICatalogUnknownError`'s `catalog_id` attribute.
+    """
+
+    def __init__(self, component_count: int, limit: int) -> None:
+        self.component_count = component_count
+        self.limit = limit
+        super().__init__(
+            f"A2UI surface's merged component state would carry {component_count} "
+            f"components, exceeding the {limit} limit"
+        )
 
 
 def upsert_components_by_id(
@@ -80,32 +119,54 @@ def is_structural_message(message: Mapping[str, Any]) -> bool:
 
 def materialize_update_components(
     messages: list[dict[str, Any]],
+    revisions: list[int],
     message: Mapping[str, Any],
-) -> list[dict[str, Any]]:
+    new_revision: int,
+    *,
+    max_components: int,
+) -> tuple[list[dict[str, Any]], list[int]]:
     """Fold `message` (a validated `updateComponents`) into the ONE current
-    `updateComponents` message `messages` carries, latest-id-wins.
+    `updateComponents` message `messages` carries, latest-id-wins, and stamp
+    it with `new_revision` (the revision this apply call produces).
 
     Args:
         messages: The surface's message history BEFORE this message (never
             mutated).
+        revisions: `messages`' parallel per-slot revision stamps (same
+            length as `messages`; never mutated).
         message: The new, already-validated `updateComponents` envelope
             (`{"version": ..., "updateComponents": {"surfaceId", "components"}}`).
+        new_revision: The revision number this message's apply produces --
+            stamped on the merged slot, since ITS CONTENT just changed,
+            however small the change.
+        max_components: F5 -- the merged component count this surface may
+            never exceed, cumulative across its whole lifetime (not just
+            this one message's own component list, which
+            `validate_components` already bounds separately).
 
     Returns:
-        A new message list: every non-`updateComponents` message from
-        `messages`, in its original relative order, plus exactly one
-        `updateComponents` message positioned right after `createSurface`.
-        An existing component id keeps its ORIGINAL position in the merged
-        list (only its definition is replaced); a component id `message`
-        introduces for the first time is appended at the end.
+        `(new_messages, new_revisions)`, parallel and the same length:
+        every non-`updateComponents` message from `messages` (with its
+        ORIGINAL stamp, unchanged), in its original relative order, plus
+        exactly one `updateComponents` message (stamped `new_revision`)
+        positioned right after `createSurface`. An existing component id
+        keeps its ORIGINAL position in the merged list (only its
+        definition is replaced); a component id `message` introduces for
+        the first time is appended at the end.
+
+    Raises:
+        A2UIComponentLimitExceededError: If the merged component count
+            would exceed `max_components`.
     """
 
     merged_components: list[dict[str, Any]] = []
     other_messages: list[dict[str, Any]] = []
-    for existing in messages:
+    other_revisions: list[int] = []
+    for existing, existing_revision in zip(messages, revisions, strict=True):
         payload = existing.get("updateComponents")
         if not isinstance(payload, Mapping):
             other_messages.append(existing)
+            other_revisions.append(existing_revision)
             continue
         merged_components = upsert_components_by_id(
             merged_components, list(payload.get("components") or [])
@@ -115,6 +176,8 @@ def materialize_update_components(
     merged_components = upsert_components_by_id(
         merged_components, list(new_payload.get("components") or [])
     )
+    if len(merged_components) > max_components:
+        raise A2UIComponentLimitExceededError(len(merged_components), max_components)
 
     merged_message: dict[str, Any] = {
         "version": message.get("version"),
@@ -125,5 +188,17 @@ def materialize_update_components(
     }
 
     create_messages = [existing for existing in other_messages if "createSurface" in existing]
+    create_revisions = [
+        revision
+        for existing, revision in zip(other_messages, other_revisions, strict=True)
+        if "createSurface" in existing
+    ]
     rest_messages = [existing for existing in other_messages if "createSurface" not in existing]
-    return [*create_messages, merged_message, *rest_messages]
+    rest_revisions = [
+        revision
+        for existing, revision in zip(other_messages, other_revisions, strict=True)
+        if "createSurface" not in existing
+    ]
+    new_messages = [*create_messages, merged_message, *rest_messages]
+    new_revisions = [*create_revisions, new_revision, *rest_revisions]
+    return new_messages, new_revisions

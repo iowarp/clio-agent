@@ -26,7 +26,11 @@ from clio_agent.gact.a2ui_catalogs.validation import (
     validate_event_context,
     validate_value,
 )
-from clio_agent.gact.a2ui_component_fold import is_structural_message, materialize_update_components
+from clio_agent.gact.a2ui_component_fold import (
+    A2UIComponentLimitExceededError,
+    is_structural_message,
+    materialize_update_components,
+)
 from clio_agent.gact.protocol.constants import A2UI_V091, A2UI_V091_WIRE, A2UI_WIRE_VERSIONS
 
 
@@ -160,6 +164,13 @@ class A2UISurfaceRecord:
     revision: int = 0
     state: str = "creating"
     messages: list[dict[str, Any]] = field(default_factory=list)
+    # Parallel to `messages` (same length/order): the revision that produced
+    # each slot's CURRENT content -- a sidecar list, not a key inside the
+    # official A2UI envelopes `messages` holds. Lets a client tell "this
+    # slot changed" from "unchanged" in O(1), never by re-hashing content.
+    # The merged `updateComponents` slot (`a2ui_component_fold.py`) is
+    # re-stamped on every change; every other slot keeps its own stamp.
+    message_revisions: list[int] = field(default_factory=list)
     run_id: str = ""
     message_id: str = ""
     part_id: str = ""
@@ -354,19 +365,16 @@ def validate_client_action(
 def _copy_record(record: A2UISurfaceRecord) -> A2UISurfaceRecord:
     """Return an independently foldable copy of one surface record.
 
-    The fold only ever rebinds scalars and appends/removes whole message dicts,
-    never mutates a stored message in place, so copying the message *list* is
-    enough. A deep copy would duplicate every persisted byte of every surface on
-    every projection read, which is what made the fold quadratic.
-
-    Args:
-        record: The surface record to copy.
-
-    Returns:
-        A copy whose message list can be folded without touching ``record``.
+    The fold only ever rebinds scalars and appends/removes whole message
+    dicts (and their parallel revision stamps) in place, so copying the
+    message and revision *lists* is enough -- a deep copy would duplicate
+    every persisted byte of every surface on every projection read, which is
+    what made the fold quadratic.
     """
 
-    return replace(record, messages=list(record.messages))
+    return replace(
+        record, messages=list(record.messages), message_revisions=list(record.message_revisions)
+    )
 
 
 def _apply_staged_message(
@@ -426,18 +434,19 @@ def _apply_staged_message(
         raise A2UIValidationError("A2UI surface does not exist in this session")
     elif surface.state == "deleted":
         raise A2UIValidationError("A2UI deleteSurface is terminal until a new createSurface")
+    new_revision = surface.revision + 1
     if operation == "updateComponents":
-        # Materialize, don't subset-drop (G2 merge-gate finding, gact-tui#513
-        # comment 5937313752): folds every updateComponents message, past and
-        # present, into ONE current definition per component id -- see
-        # `a2ui_component_fold.py` for why the old subset-only compaction left
-        # a fix stranded forever next to the bad message it was meant to
-        # replace whenever the fix touched FEWER ids than the bad message did.
-        # The fold already incorporates `message` itself; it is never ALSO
-        # appended below, and it never grows `surface.messages` by more than
-        # the one slot every merged state already occupies, so it never needs
-        # the message-limit eviction either.
-        surface.messages = materialize_update_components(surface.messages, message)
+        # Materialize, don't subset-drop (a2ui_component_fold.py has the full
+        # rationale): one current, re-stamped definition per component id.
+        # Never ALSO appended below, so this never needs eviction either.
+        # F5: raises A2UIComponentLimitExceededError past MAX_A2UI_COMPONENTS.
+        surface.messages, surface.message_revisions = materialize_update_components(
+            surface.messages,
+            surface.message_revisions,
+            message,
+            new_revision,
+            max_components=MAX_A2UI_COMPONENTS,
+        )
     else:
         if len(surface.messages) >= max_a2ui_messages():
             removable = next(
@@ -453,10 +462,12 @@ def _apply_staged_message(
                     "A2UI message limit cannot preserve createSurface and the current component tree"
                 )
             surface.messages.pop(removable)
+            surface.message_revisions.pop(removable)
             surface.eviction_reason = "a2ui_message_limit"
             surface.evicted_messages += 1
         surface.messages.append(dict(message))
-    surface.revision += 1
+        surface.message_revisions.append(new_revision)
+    surface.revision = new_revision
     surface.updated_at = observed_at
     # The repair-exhausted error is scoped to ONE revision (record.py's
     # fold_action_records: valid only while correlation.revision == surface.
@@ -625,6 +636,10 @@ def _unknown_catalog_stub(
             catalog_id=catalog_id,
             state="unknown",
             messages=[dict(m) for m in messages],
+            # Never incremented here (`.revision` isn't either) -- kept
+            # parallel to `messages` in LENGTH so a later reinstall's
+            # materialize zip(strict=True) never raises on this record.
+            message_revisions=[0] * len(messages),
             part_id=part_id,
             created_at=observed_at,
             updated_at=observed_at,
@@ -633,6 +648,7 @@ def _unknown_catalog_stub(
         existing,
         state="unknown",
         messages=[*existing.messages, *(dict(m) for m in messages)],
+        message_revisions=[*existing.message_revisions, *([existing.revision] * len(messages))],
         updated_at=observed_at,
     )
 
@@ -768,6 +784,7 @@ def project_a2ui_parts(
 __all__ = [
     "A2UICatalogNotProducibleError",
     "A2UICatalogUnknownError",
+    "A2UIComponentLimitExceededError",
     "A2UIEventContextInvalidError",
     "A2UIFunctionNotInCatalogError",
     "A2UISurfaceRecord",
