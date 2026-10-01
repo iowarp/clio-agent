@@ -23,7 +23,10 @@ from clio_agent.providers.codex.sdk_client import CodexThreadLostError
 
 @pytest.fixture(autouse=True)
 def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex_home"))
+    home = tmp_path / "codex_home"
+    home.mkdir()
+    (home / "config.toml").write_text('[mcp_servers.user_server]\ncommand = "x"\n', "utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(home))
 
 
 class _FakeTurn:
@@ -67,6 +70,9 @@ def _fake_client_cls(events: list[Any], started: list[_FakeThread]) -> type:
             )
             # Codex's own web search is a hidden action clio never allows.
             assert config["web_search"] == "disabled"
+            # The user's own servers are off in the THREAD, not only the runtime (found
+            # live: a thread's config is re-derived from config.toml).
+            assert config["mcp_servers"] == {"user_server": {"enabled": False}}
             thread = _FakeThread(f"thread-{len(started) + 1}", events)
             started.append(thread)
             return thread
