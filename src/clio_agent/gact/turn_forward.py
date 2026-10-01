@@ -122,7 +122,11 @@ async def _run_module(state: "TurnState", module: Any, cancel_cb: Callable[[], b
         **native,
     }
     loop = asyncio.get_running_loop()
-    turn_context = contextvars.copy_context()
+    injections_token = _ctx.set_turn_injections(state.injections)
+    try:
+        turn_context = contextvars.copy_context()
+    finally:
+        _ctx.reset(injections_token)
     return await loop.run_in_executor(
         _forward_executor(state), lambda: turn_context.run(module, **kwargs)
     )

@@ -43,6 +43,7 @@ from clio_agent.gact.runtime.type_parsing import (
     parse_module_variant,
 )
 from clio_agent.gact.types import AgentDef
+from tests._scripted_engine import Reply, scripted_lm
 
 # --------------------------------------------------------------------------- #
 # helpers
@@ -553,12 +554,14 @@ def test_builder_variant_forward_returns_winner_and_stamps_metadata(
     try's output AND carries variant_selection across the boundary (#953 [5]/[9]/[10]).
     Sabotage: delete the wrap call → a single-shot Predict returns 'wordy first attempt' with
     no variant_selection → both asserts red."""
-    lm = DummyLM(
+    # The expert answers as the agent loop (plain text); the reward judge is a DSPy
+    # predictor (field format). One engine serves every rollout copy of the LM.
+    lm, _engine = scripted_lm(
         [
-            {"answer": "wordy first attempt"},
-            {"score": "0.3"},
-            {"answer": "second"},
-            {"score": "0.9"},
+            Reply(text="wordy first attempt"),
+            Reply(text="[[ ## score ## ]]\n0.3"),
+            Reply(text="second"),
+            Reply(text="[[ ## score ## ]]\n0.9"),
         ]
     )
     module = _build_variant_module(

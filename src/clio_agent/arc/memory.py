@@ -49,13 +49,9 @@ from clio_agent.arc.storage import ARCStore, make_arc_store
 from clio_agent.arc.working_set_fold import make_segment_store
 from clio_agent.runtime import trace
 
-# ``EVENTS_SCOPE`` (the reserved scope holding ARC's ONE persisted semantic-event log)
-# is defined in ``arc.live`` (the observer that projects over it) and imported above so
-# the writer (this module) and the reader share one constant. The import re-exports it
-# as ``clio_agent.arc.memory.EVENTS_SCOPE`` for back-compat importers. It is its OWN
-# scope, so an expert/working-set render never sees it; combined with ``semantic_event``
-# not being a working-set kind nor part of the dspy trajectory projection, the persisted
-# log can never leak into a model prompt.
+# ``EVENTS_SCOPE`` (ARC's ONE persisted semantic-event log) is defined in ``arc.live``
+# and re-exported here. It is its OWN scope and ``semantic_event`` is not a working-set
+# kind, so the persisted log can never leak into a model prompt.
 
 # Event types NOT persisted as ``semantic_event`` segments.
 #   * ``lm.token.delta`` — the high-volume transient live-token stream (~1840/turn)
@@ -1050,20 +1046,24 @@ class ARCMemory:
         """Ordered LIVE segments for a scope (the decisive read; as-of-T optional)."""
         return self._segments.render(session_id, scope, as_of=as_of)
 
+    def list_segments(
+        self, session_id: str, scope: str, *, include_tombstoned: bool = False
+    ) -> Any:
+        """A scope's segments in order; ``include_tombstoned`` keeps retired ones (history)."""
+        return self._segments.list_segments(
+            session_id, scope, include_tombstoned=include_tombstoned
+        )
+
     def render_working_set(
         self, session_id: str, scope: str, *, as_of: Optional[int] = None
     ) -> Any:
-        """Ordered LIVE WORKING-SET segments — the kinds the prompt + the compaction/
-        reset paths operate on (excludes ``answer`` / ``semantic_event``). The
-        target of the per-turn reset and auto-compaction, NOT a new prompt source; see
-        :meth:`SegmentStore.render_working_set`."""
+        """Ordered LIVE working-set segments: the agent's context (compaction's target)."""
         return self._segments.render_working_set(session_id, scope, as_of=as_of)
 
     def render_segments_keys(
         self, session_id: str, scope: str, *, as_of: Optional[int] = None
     ) -> Dict[str, Any]:
-        """The live segments projected into dspy's trajectory dict (what the
-        ``_format_trajectory`` override reads)."""
+        """The live segments as a trajectory dict (the context route's inspection view)."""
         return self._segments.render_keys(session_id, scope, as_of=as_of)
 
     def render_segment_text(
@@ -1083,8 +1083,7 @@ class ARCMemory:
     def search_segment_scopes(
         self, session_id: str, query_text: str, *, scope_prefix: str = "", k: int = 10
     ) -> List[Any]:
-        """Semantic discovery: rank a session's scopes by content relevance to
-        ``query_text`` — "which expert/scope knows about X" (BM25 on clio-core)."""
+        """Rank a session's scopes by relevance to ``query_text`` (BM25 on clio-core)."""
         return self._segments.search_scopes(session_id, query_text, scope_prefix=scope_prefix, k=k)
 
     def segment_search_is_semantic(self) -> bool:

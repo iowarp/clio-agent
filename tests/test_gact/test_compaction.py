@@ -46,10 +46,24 @@ def _text_message(message_id: str, sid: str, text: str, *, role: str = "user") -
     )
 
 
+_SCOPE = "main"
+
+
+def _record(client: TestClient, sid: str, messages: list[Message]) -> None:
+    """Mirror messages onto the agent scope's plane, as a turn records them."""
+    arc = client.app.state.arc
+    for message in messages:
+        text = "\n".join(p.text for p in message.parts if p.type == "text")
+        kind = "user" if message.role == "user" else "thought"
+        turn = message.turn_id or message.id
+        arc.append_segment(sid, _SCOPE, kind, {"text": text}, turn_id=turn)
+
+
 def _seed(client: TestClient, sid: str, messages: list[Message]) -> None:
     client.app.state.messages[sid] = messages
     client.app.state.message_store.replace_session(sid, messages)
     client.app.state.sessions.update(sid, message_count=len(messages))
+    _record(client, sid, messages)
 
 
 class _CapturingAgent:
@@ -231,6 +245,7 @@ def test_repeated_compaction_retains_the_transcript_and_advances_the_checkpoint(
             "msg_after_first", sid, "AFTER FIRST CHECKPOINT", role="assistant"
         )
         ledger.append(after_first)
+        _record(client, sid, [after_first])
         client.app.state.messages[sid] = ledger
         client.app.state.message_store.replace_session(sid, ledger)
 
@@ -255,44 +270,6 @@ def test_repeated_compaction_retains_the_transcript_and_advances_the_checkpoint(
         assert "SUMMARY 1" in second_prompt
         assert "AFTER FIRST CHECKPOINT" in second_prompt
         assert "ORIGINAL TRANSCRIPT ROW" not in second_prompt
-
-
-# --------------------------------------------------------------------------- #
-# 5. history prepend renders the checkpoint, not the pre-checkpoint text.
-# --------------------------------------------------------------------------- #
-
-
-def test_history_prepend_renders_compacted_context_not_pre_checkpoint_text(
-    tmp_path: Path,
-) -> None:
-    from clio_agent.gact.session_store import _compile_session_conversation_history
-
-    agent = _CapturingAgent(["the checkpoint summary"])
-    with TestClient(build_app(sessions_path=tmp_path / "s.json", agent=agent)) as client:
-        sid = _create_session(client)
-        _seed(
-            client,
-            sid,
-            [
-                _text_message("msg_seed", sid, "PRE CHECKPOINT SECRET", role="assistant"),
-                _text_message("msg_user_2", sid, "a follow-up question", role="user"),
-            ],
-        )
-
-        resp = client.post(f"/v1/sessions/{sid}/compact", json={})
-        assert resp.status_code == 200, resp.text
-
-        # A fresh user message for the NEXT turn (the trailing-user-pop leaves prior
-        # turns only); the compaction row is `role="assistant"` so it survives the pop.
-        ledger = list(client.app.state.messages[sid])
-        ledger.append(_text_message("msg_user_3", sid, "next question", role="user"))
-        client.app.state.messages[sid] = ledger
-
-        history = _compile_session_conversation_history(client.app, sid, "CURRENT PROMPT")
-
-        assert "Compacted context: the checkpoint summary" in history
-        assert "PRE CHECKPOINT SECRET" not in history
-        assert "CURRENT PROMPT" in history
 
 
 # --------------------------------------------------------------------------- #
@@ -344,9 +321,9 @@ def _open_minter_with_one_prior_message(client: TestClient, sid: str) -> tuple[A
 
     # Through the real persist seam (atoms minted synchronously, no loop running)
     # so a reload-equality assertion downstream sees this row too.
-    _append_session_message(
-        client.app, sid, _text_message("msg_user_1", sid, "do the thing", role="user")
-    )
+    first = _text_message("msg_user_1", sid, "do the thing", role="user")
+    _append_session_message(client.app, sid, first)
+    _record(client, sid, [first])
     minter = open_turn_minter(client.app, sid, "turn_1")
     return minter, "msg_user_1"
 
@@ -544,21 +521,17 @@ def test_manual_compaction_during_a_running_turn_also_stages(tmp_path: Path) -> 
 def test_arc_status_typed_for_every_plane_outcome(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
-    """Exercises ``compaction._fold_arc_working_set`` directly -- the exact function
-    that types ``arc_status`` -- rather than the full route: with ``app.state.arc``
-    truly absent, ``memory.compacted``'s semantic-event emission hard-fails (ARC is
-    the mandatory source for the highway, by an unrelated, pre-existing invariant),
-    so the "not_configured" leg cannot be driven end to end through a live app."""
+    """``compaction._live_scopes`` types the plane outcome: no ARC, no scope with live
+    context, only a lone summary (nothing new), or something to fold."""
 
     from types import SimpleNamespace
 
-    import clio_agent.gact.agents.clio_react_record as clio_react_record
     from clio_agent.gact.compaction import (
         ARC_FOLDED,
         ARC_NO_ACTIVE_SCOPE,
         ARC_NOT_CONFIGURED,
         ARC_WORKING_SET_TOO_SMALL,
-        _fold_arc_working_set,
+        _live_scopes,
     )
 
     expected = {
@@ -569,29 +542,21 @@ def test_arc_status_typed_for_every_plane_outcome(
     }[case]
 
     if case == "not_configured":
-        fake_app = SimpleNamespace(state=SimpleNamespace(arc=None))
-        status = _fold_arc_working_set(fake_app, "summary text", "turn_1")
-        assert status == expected
-        assert status in ARC_STATUSES
+        status, live = _live_scopes(SimpleNamespace(state=SimpleNamespace(arc=None)), "s")
+        assert (status, live) == (expected, {})
         return
 
-    agent = _CapturingAgent(["plane summary"])
-    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
-    with TestClient(app):
-        arc = app.state.arc
-        sid = "sess_plane"
-        scope = "scope_plane"
-        if case != "no_active_scope":
-            # "no_active_scope" needs no monkeypatch: a bare test thread has no
-            # active react scope by construction, which is exactly the case.
-            if case == "folded":
-                arc.append_segment(sid, scope, "observation", {"text": "one"})
-                arc.append_segment(sid, scope, "observation", {"text": "two"})
-            monkeypatch.setattr(clio_react_record, "arc_scope", lambda: (arc, sid, scope))
-
-        status = _fold_arc_working_set(app, "summary text", "turn_1")
-        assert status == expected
-        assert status in ARC_STATUSES
+    arc = ARCMemory(data_dir=str(tmp_path / "arc"))
+    app = SimpleNamespace(state=SimpleNamespace(arc=arc))
+    sid = "sess_plane"
+    if case == "working_set_too_small":
+        arc.append_segment(sid, "scope_plane", "summary", {"text": "earlier"})
+    elif case == "folded":
+        arc.append_segment(sid, "scope_plane", "user", {"text": "one"})
+    status, live = _live_scopes(app, sid)
+    assert status == expected
+    assert status in ARC_STATUSES
+    assert list(live) == ([] if case == "no_active_scope" else ["scope_plane"])
 
 
 # --------------------------------------------------------------------------- #
@@ -620,6 +585,9 @@ def test_rewind_past_the_checkpoint_restores_the_full_model_context(tmp_path: Pa
         ledger = client.app.state.messages[sid]
         assert [m.id for m in ledger] == ["msg_seed"]
         assert model_context_messages(ledger) == ledger
+        # The agent's context follows: the fold is rolled back, the original is back.
+        live = client.app.state.arc.render_working_set(sid, _SCOPE)
+        assert [(s.kind, s.content["text"]) for s in live] == [("user", "original text")]
 
         messages = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
         assert len(messages) == 1
@@ -644,7 +612,9 @@ def test_checkpoint_and_history_survive_a_cold_reload(tmp_path: Path) -> None:
         # the seed row's atoms exist too -- otherwise it would only be reload-visible
         # by accident of ``has_atoms`` being False, which the checkpoint's own atoms
         # (minted below) would flip, defeating the point of this test.
-        _append_session_message(app, sid, _text_message("msg_seed", sid, "original text"))
+        seed = _text_message("msg_seed", sid, "original text")
+        _append_session_message(app, sid, seed)
+        _record(client, sid, [seed])
 
         resp = client.post(f"/v1/sessions/{sid}/compact", json={})
         assert resp.status_code == 200, resp.text
@@ -694,6 +664,7 @@ def test_coverage_keeps_the_compacting_turns_own_assistant_answer(tmp_path: Path
         ledger = list(client.app.state.messages[sid])
         own_answer = _text_message("msg_own_answer", sid, "THIS TURNS OWN ANSWER", role="assistant")
         ledger.append(own_answer)
+        _record(client, sid, [own_answer])
         client.app.state.messages[sid] = ledger
         client.app.state.message_store.replace_session(sid, ledger)
 
@@ -877,3 +848,57 @@ def test_empty_model_context_transcript_skips_without_calling_the_llm(
         assert agent.prompts == []
         # The row is untouched -- a skip is not a checkpoint.
         assert [m.id for m in client.app.state.messages[sid]] == ["msg_a2ui_only"]
+
+
+# --------------------------------------------------------------------------- #
+# 13. a mid-turn compaction summarizes what it replaces: the turn's own steps.
+# --------------------------------------------------------------------------- #
+
+
+def test_mid_turn_compaction_summarizes_the_turns_own_steps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fold replaces every live segment of the scope, this turn's steps included,
+    so the summary must be written from those segments -- never from the ledger,
+    which does not hold the in-flight turn yet (the old loss: the model forgot its
+    own tool results after an auto-compaction)."""
+
+    import clio_agent.gact.agents.clio_react_record as clio_react_record
+    import clio_agent.gact.context as gact_context
+    import clio_agent.gact.runtime.context_tokens as context_tokens
+    from clio_agent.gact import context as _ctx
+    from clio_agent.gact.compaction import maybe_autocompact
+
+    agent = _CapturingAgent(["mid-turn summary"])
+    app = build_app(sessions_path=tmp_path / "s.json", agent=agent)
+    arc = app.state.arc
+    scope = "main"
+
+    with TestClient(app) as client:
+        sid = _create_session(client)
+        _open_minter_with_one_prior_message(client, sid)
+        arc.append_segment(sid, scope, "user", {"text": "do the thing"})
+        arc.append_segment(sid, scope, "thought", {"text": "Reading the file."})
+        arc.append_segment(
+            sid, scope, "tool_call", {"id": "c1", "name": "read", "args": {"path": "a.csv"}}
+        )
+        arc.append_segment(
+            sid, scope, "observation", {"call_id": "c1", "text": "IN-TURN OBSERVATION 42"}
+        )
+
+        monkeypatch.setattr(clio_react_record, "arc_scope", lambda: (arc, sid, scope))
+        monkeypatch.setattr(gact_context, "active_react_context_window", lambda: 1000)
+        monkeypatch.setattr(context_tokens, "_last_prompt_tokens", lambda: 950)
+
+        app_token = _ctx.set_app(app)
+        try:
+            maybe_autocompact()
+        finally:
+            _ctx.reset(app_token)
+
+        [prompt] = agent.prompts
+        assert "IN-TURN OBSERVATION 42" in prompt
+        assert "read" in prompt and "a.csv" in prompt
+        live = arc.render_working_set(sid, scope)
+        assert [s.kind for s in live] == ["summary"]
+        assert live[0].content["text"].startswith("mid-turn summary")

@@ -153,6 +153,7 @@ async def test_the_module_runs_native_input_resolve_off_the_loop(
         sess=SimpleNamespace(mode="edit", edit_mode="diff"),
         native_images=[],
         native_files=[],
+        injections=[],
     )
 
     loop_thread = threading.current_thread().name

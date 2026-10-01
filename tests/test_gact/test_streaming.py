@@ -339,6 +339,7 @@ def _turn_state(
         sess=SimpleNamespace(mode="edit", edit_mode="diff"),
         native_images=list(images or []),
         native_files=list(files or []),
+        injections=[],
     )
 
 

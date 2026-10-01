@@ -105,9 +105,11 @@ def test_forward_writes_arc_and_emits_highway(tmp_path, monkeypatch: pytest.Monk
     assert step_events[1]["is_finish"] is True, "no finishing (submit) step on the highway"
     assert lifecycle_events == ["expert.lifecycle.started", "expert.extract.completed"]
 
-    # ARC half: thought / tool_call / observation per step, call id carried through.
+    # ARC half: the user message, then thought / tool_call / observation per step,
+    # call id carried through.
     live = arc.render_segments(SID, SCOPE)
     assert [s.kind for s in live] == [
+        "user",
         "thought",
         "tool_call",
         "observation",
@@ -115,7 +117,7 @@ def test_forward_writes_arc_and_emits_highway(tmp_path, monkeypatch: pytest.Monk
         "tool_call",
         "observation",
     ]
-    call, obs = live[1].content, live[2].content
+    call, obs = live[2].content, live[3].content
     assert (call["name"], call["args"]) == ("search", {"q": "alpha"})
     assert obs["call_id"] == call["id"]
     assert obs["is_error"] is False

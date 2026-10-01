@@ -182,13 +182,13 @@ def test_every_loop_call_is_equal_to_the_reference(arc):
 
 
 def test_plane_fold_equals_the_loops_own_steps(arc):
-    """The ARC fold of the plane after the turn == the step list the loop kept (minus
-    the task head): the loop's context and its record are one thing."""
+    """The ARC fold of the plane after the turn == the message list the loop kept
+    (the user message first): the loop's context and its record are one thing."""
     pred, _ = _run_loop(arc, _agent(), _script(_STEPS))
     with live_plane_context(arc, session=SESSION, scope=SCOPE):
         folded = read_steps(arc, SESSION, SCOPE)
     assert pred.messages[0] == HEAD
-    assert folded == pred.messages[1:]
+    assert folded == pred.messages
 
 
 def test_consecutive_calls_are_strict_prefix_extensions(arc):

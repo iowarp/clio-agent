@@ -12,8 +12,8 @@ two places it lives:
   session id, loaded from / flushed to ``app.state.context_files_path``.
 
 It also exposes ``_release_session_arc`` (drop a closed session's hot ARC
-footprint) and ``_compile_session_conversation_history`` (prepend a compact
-transcript of prior turns to the current prompt for multi-turn continuity).
+footprint). Earlier turns reach the model through the agent's clio-core projection
+(:mod:`clio_agent.gact.agents.clio_react_record`), never through the prompt.
 
 The reader-less per-workspace session/message mirror was DELETED in #771 (zero
 readers in ``src/`` or gact-tui; #737 direction is fewer materializations, not
@@ -34,7 +34,6 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from clio_agent.gact.conversation_projection import model_context_messages
 from clio_agent.platform_paths import atomic_write_text
 from clio_agent.runtime import trace
 
@@ -349,71 +348,6 @@ def _release_session_arc(app: "FastAPI", session_id: str) -> None:
             session_id,
             exc,
         )
-
-
-# ------------------------------------------------------------------------- #
-# Multi-turn conversation continuity #
-# ------------------------------------------------------------------------- #
-
-
-def _prior_message_text(message: "Message") -> str:
-    """The prior-turn text this message contributes: ``part.summary`` for a
-    checkpoint's ``compaction`` part (#1339), ``part.text`` for text/thinking/error."""
-
-    chunks = [
-        (part.summary if part.type == "compaction" else part.text).strip()
-        for part in message.parts
-        if part.type in {"text", "thinking", "error", "compaction"}
-        and (part.summary if part.type == "compaction" else part.text).strip()
-    ]
-    return "\n".join(chunks).strip()
-
-
-def _compile_session_conversation_history(
-    app: "FastAPI", session_id: str, current_prompt: str
-) -> str:
-    """Prepend a compact transcript of THIS session's prior turns to the turn's
-    prompt so a multi-turn orchestrator can reuse what earlier turns already
-    established (the resolved region, ranked stations, staged file paths) instead of
-    restarting blind on a follow-up like "now plot it". General to any blueprint and
-    a NO-OP on the first turn (no prior messages), so single-turn behaviour is
-    unchanged. The orchestrator otherwise receives only the latest user message.
-
-    Renders the MODEL CONTEXT (:func:`~clio_agent.gact.conversation_projection.
-    model_context_messages`), not the raw ledger (#1339): rows a checkpoint covers
-    are skipped here too, and a checkpoint row itself renders as "Compacted context"
-    from its ``summary`` field rather than the (empty) ``text`` field.
-    """
-    messages = model_context_messages(list(app.state.messages.get(session_id, [])))
-    prior = [m for m in messages if getattr(m, "role", "") in {"user", "assistant"}]
-    # The current user message is already appended before the turn runs — drop the
-    # trailing user message(s) so only PRIOR turns are carried.
-    while prior and prior[-1].role == "user":
-        prior.pop()
-    if not prior:
-        return current_prompt
-    lines: list[str] = []
-    for message in prior:
-        # Carry the FULL prior message text verbatim — clio must not heuristically
-        # truncate content the orchestrator sees; only an LLM may reduce content.
-        text = _prior_message_text(message)
-        if not text:
-            continue
-        is_checkpoint = any(part.type == "compaction" for part in message.parts)
-        if is_checkpoint:
-            speaker = "Compacted context"
-        else:
-            speaker = "User" if message.role == "user" else "Assistant"
-        lines.append(f"{speaker}: {text}")
-    if not lines:
-        return current_prompt
-    transcript = "\n".join(lines)
-    return (
-        "Earlier turns in THIS conversation — reuse what was already resolved "
-        "(region/coordinates, ranked stations, staged file paths) rather than "
-        "starting over; only the request after the marker is new:\n"
-        f"{transcript}\n\n=== Current request ===\n{current_prompt}"
-    )
 
 
 # ------------------------------------------------------------------------- #

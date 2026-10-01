@@ -196,7 +196,6 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
 
     import dspy  # noqa: PLC0415
 
-    from clio_agent.config import create_chat_adapter  # noqa: PLC0415
     from clio_agent.gact.app import (  # noqa: PLC0415
         _cancelled_error_info,
         _coerce_expert_handoff_rows,
@@ -239,7 +238,11 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
                 if part
             )
             self.has_declared_children = bool(child_context.strip())
-            self.answer_synthesizer = dspy.Predict(_prompt_user_agent_signature())
+            # The same loop as every agent: the conversation is the scope's clio-core projection.
+            from clio_agent.gact.agents.clio_react import ClioReAct  # noqa: PLC0415
+
+            self.answer_synthesizer = ClioReAct(_prompt_user_agent_signature(), tools=[])
+            self.answer_synthesizer._clio_expert_id = agent_def.id
 
         def forward(
             self,
@@ -254,7 +257,7 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
             _ = (
                 session_mode,
                 session_edit_mode,
-            )  # P1.2 #1064: kept for a stable forward() signature; mode is surfaced upstream in turn.py enrichment (inject_plan_mode_reminder), not here.
+            )  # P1.2 #1064: kept for a stable forward() signature; mode is surfaced upstream in turn.py enrichment (plan_mode_reminder), not here.
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
                     _cancelled_error_info(session_id, execution_cancellation="cooperative")
@@ -262,16 +265,21 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
             # Resolve the credential fresh for this call (tokens rotate); the
             # dspy.context boundary itself is unchanged (design §4).
             cfg = self._resolved_spec.materialize(self._cred_resolver)
-            with dspy.context(
-                lm=create_hooked_lm(cfg),
-                adapter=create_chat_adapter(cfg),
-            ):
-                result = self.answer_synthesizer(
-                    system_prompt=self.system_prompt,
-                    question=question,
-                    images=list(images or []),
-                    files=list(files or []),
-                )
+            scope_token = _ctx.set_react_scope(str(self.agent_def.id), "react")
+            session_token = _ctx.set_react_session(session_id)
+            window_token = _ctx.set_react_window(_resolve_expert_context_window(cfg))
+            try:
+                with dspy.track_usage(), dspy.context(lm=create_hooked_lm(cfg)):
+                    result = self.answer_synthesizer(
+                        system_prompt=self.system_prompt,
+                        question=question,
+                        images=list(images or []),
+                        files=list(files or []),
+                    )
+            finally:
+                _ctx.reset(window_token)
+                _ctx.reset(session_token)
+                _ctx.reset(scope_token)
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
                     _cancelled_error_info(session_id, execution_cancellation="cooperative")
@@ -948,7 +956,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
 
     import dspy  # noqa: PLC0415
 
-    from clio_agent.config import create_chat_adapter  # noqa: PLC0415
+    from clio_agent.gact.agents.clio_react import ClioReAct  # noqa: PLC0415
     from clio_agent.gact.agents.module_variants import (  # noqa: PLC0415
         wrap_module_variant as _wrap_module_variant,
     )
@@ -982,10 +990,10 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             skill_rt = _skill_runtime.skill_runtime_for_agent(
                 _ctx.active_app(), agent_def, session_id=_ctx.active_session_id()
             )
-            if self.kind == "predict":
-                self.program = dspy.Predict(self.signature)
-            elif self.kind == "chain_of_thought":
-                self.program = dspy.ChainOfThought(self.signature)
+            if self.kind in ("predict", "chain_of_thought"):
+                # One loop for every kind: tool-less (only ``submit``), thinking is its reasoning.
+                self.program = ClioReAct(self.signature, tools=[])
+                self.program._clio_expert_id = agent_def.id
             else:
                 # #948 S4: react mains route by SPAWNING declared children as real
                 # child turns (spawn_agent_task / wait_agent_tasks / fanout); the
@@ -1057,8 +1065,6 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                             session_id=_ctx.active_session_id(),
                         )
                     )
-                from clio_agent.gact.agents.clio_react import ClioReAct  # noqa: PLC0415
-
                 self.program = ClioReAct(
                     self.signature,
                     tools=tools,
@@ -1131,7 +1137,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             _ = (
                 session_mode,
                 session_edit_mode,
-            )  # P1.2 #1064: kept for a stable forward() signature; mode is surfaced upstream in turn.py enrichment (inject_plan_mode_reminder), not here.
+            )  # P1.2 #1064: kept for a stable forward() signature; mode is surfaced upstream in turn.py enrichment (plan_mode_reminder), not here.
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
                     _cancelled_error_info(session_id, execution_cancellation="cooperative")
@@ -1191,13 +1197,12 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 # Resolve the credential fresh for this call (tokens rotate); the
                 # dspy.context boundary below is unchanged (design §4).
                 _fwd_config = self._resolved_spec.materialize(self._cred_resolver)
-                adapter = create_chat_adapter(_fwd_config)
                 try:
                     # track_usage installs the usage tracker so the live plane's
                     # auto-compaction can read the call's exact prompt_tokens.
                     with (
                         dspy.track_usage(),
-                        dspy.context(lm=create_hooked_lm(_fwd_config), adapter=adapter),
+                        dspy.context(lm=create_hooked_lm(_fwd_config)),
                     ):
                         result = self.program(**kwargs)
                 except Exception as exc:
@@ -1250,7 +1255,6 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
 
     import dspy  # noqa: PLC0415
 
-    from clio_agent.config import create_chat_adapter  # noqa: PLC0415
     from clio_agent.gact.app import (  # noqa: PLC0415
         _cancelled_error_info,
         _coerce_expert_handoff_rows,
@@ -1352,7 +1356,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             _ = (
                 session_mode,
                 session_edit_mode,
-            )  # P1.2 #1064: kept for a stable forward() signature; mode is surfaced upstream in turn.py enrichment (inject_plan_mode_reminder), not here.
+            )  # P1.2 #1064: kept for a stable forward() signature; mode is surfaced upstream in turn.py enrichment (plan_mode_reminder), not here.
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
                     _cancelled_error_info(session_id, execution_cancellation="cooperative")
@@ -1368,13 +1372,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                 # Resolve the credential fresh for this call (tokens rotate); the
                 # dspy.context boundary itself is unchanged (design §4).
                 cfg = self._resolved_spec.materialize(self._cred_resolver)
-                with (
-                    dspy.track_usage(),
-                    dspy.context(
-                        lm=create_hooked_lm(cfg),
-                        adapter=create_chat_adapter(cfg),
-                    ),
-                ):
+                with dspy.track_usage(), dspy.context(lm=create_hooked_lm(cfg)):
                     result = self.react_agent(
                         system_prompt=self.system_prompt,
                         question=question,

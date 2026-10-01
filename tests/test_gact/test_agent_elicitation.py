@@ -22,9 +22,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import dspy
 import pytest
-from dspy.utils.dummies import DummyLM
 from fastapi.testclient import TestClient
 from fastmcp import Context, FastMCP
 
@@ -37,6 +35,7 @@ from clio_agent.gact.elicitation_bridge import (
 from clio_agent.gact.parts import Part
 from clio_agent.gact.types import Message, UserQuestion
 from clio_agent.tools.mcp_handlers import MCPInvocationContext
+from tests._scripted_engine import Reply, scripted_lm
 
 # --------------------------------------------------------------------------- #
 # audience_hint — pure, total, precise                                       #
@@ -609,41 +608,6 @@ def test_human_still_answers_normally_after_a_fallback(
 # --------------------------------------------------------------------------- #
 
 
-class _RealisticCoTAnswerLM(DummyLM):
-    """A DummyLM that ALSO drives the real ``note_lm_answer_delta`` live-stream
-    tap for its ``reasoning``/``answer`` fields before returning its formatted
-    response, reproducing exactly how a real live-streamed provider call
-    (claude_code_sdk in the live #1309 avenue) feeds the turn's transcript:
-    per-field text deltas through the SAME production tap
-    ``test_react_extract_suppression.py`` drives directly.
-
-    For a ``chain_of_thought`` module (what the F1 tool-allowlist mint flips
-    the answer turn to), ``reasoning`` is NEVER suppressed (#878's pinned
-    truth table -- it is that expert kind's entire visible conversation), so
-    it lands as its own VISIBLE ``text`` part alongside the ``answer`` field's
-    own VISIBLE ``text`` part -- two SEPARATE parts, each tagged with its own
-    ``signature_field_name``. A reader that joins every ``text`` part of the
-    message without regard to which field produced it (the pre-fix
-    ``_message_text``/``_flatten_message_text`` behavior) concatenates the
-    reasoning prose immediately ahead of the declared JSON answer -- exactly
-    the live failure.
-    """
-
-    def __init__(self, reasoning: str, answer: str) -> None:
-        # A few repeats: harmless if a bounded schema-repair retry ever fires
-        # (it shouldn't for a well-formed reply), never a hard StopIteration.
-        super().__init__([{"reasoning": reasoning, "answer": answer}] * 3)
-        self._reasoning = reasoning
-        self._answer = answer
-
-    def forward(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> Any:
-        from clio_agent.runtime.lm_activity import note_lm_answer_delta
-
-        note_lm_answer_delta(self._reasoning, field="reasoning")
-        note_lm_answer_delta(self._answer, field="answer")
-        return super().forward(prompt=prompt, messages=messages, **kwargs)
-
-
 def _stub_resolved_lm_spec() -> Any:
     """A minimal ``ResolvedLMSpec`` stand-in: ``.materialize(cred)`` returns a
     plain config object, sidestepping real handshake/credential resolution
@@ -712,8 +676,8 @@ def test_real_answer_turn_reply_parses_through_the_real_message_chain(
     Mocks only the dspy LM (house rule) -- the real spawn machinery
     (:func:`agent_elicitation._spawn_agent_answer_turn` ->
     ``InProcessExpertInvoker``/``spawn_child_turn_threadsafe``), the real
-    blueprint ``chain_of_thought`` module build, the real ``ChatAdapter``
-    parse, and the real transcript/message-part pipeline all run for real.
+    blueprint ``chain_of_thought`` module build (the agent loop), and the real
+    transcript/message-part pipeline all run for real.
     """
 
     reasoning_prose = (
@@ -723,11 +687,12 @@ def test_real_answer_turn_reply_parses_through_the_real_message_chain(
     nonce = "leg-c2-nonce-f391a49e00d8"
     answer_json = f'{{"answer": {{"nonce": "{nonce}"}}}}'
 
+    # The model thinks (its own lane) and answers with the declared JSON as its text,
+    # exactly as a live-streamed provider does through the agent loop.
     monkeypatch.setattr(
         "clio_agent.config.create_lm",
-        lambda config: _RealisticCoTAnswerLM(reasoning_prose, answer_json),
+        lambda config: scripted_lm([Reply(thinking=reasoning_prose, text=answer_json)] * 3)[0],
     )
-    monkeypatch.setattr("clio_agent.config.create_chat_adapter", lambda config: dspy.ChatAdapter())
     monkeypatch.setattr(
         "clio_agent.gact.agents.builders._dynamic_agent_lm_config",
         lambda base_agent, agent_def: _stub_resolved_lm_spec(),

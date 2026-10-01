@@ -167,8 +167,8 @@ class _RunKeyedModule(dspy.Module):
     :class:`_VariantRunLedger` and sets :func:`clio_agent.gact.context.set_react_run`
     for the duration of the inner call — so the ARC live-plane + transcript-tap KEYS
     partition per try (via ``run_keyed_scope``) while attribution stays on the bare
-    agent id. Being a real ``dspy.Module``, it forwards ``get_lm`` / ``set_lm`` /
-    ``named_predictors`` through to ``self.inner`` (DSPy recurses into sub-modules), so
+    agent id. It forwards ``get_lm`` / ``set_lm`` to ``self.inner`` (the agent loop keeps
+    its own module LM, which DSPy's leaf-predictor recursion does not see), so
     ``dspy.BestOfN``/``Refine`` drive the inner exactly as if unwrapped."""
 
     def __init__(self, inner: dspy.Module, *, agent_id: str, variant: str) -> None:
@@ -176,6 +176,14 @@ class _RunKeyedModule(dspy.Module):
         self.inner = inner
         self._clio_agent_id = agent_id
         self._clio_variant = variant
+
+    def get_lm(self) -> Any:
+        """The inner program's LM (``None``: the context's LM is used)."""
+        return self.inner.get_lm()
+
+    def set_lm(self, lm: Any) -> None:
+        """Bind the inner program to ``lm`` (a variant's per-rollout copy)."""
+        self.inner.set_lm(lm)
 
     def forward(self, **kwargs: Any) -> Any:
         ledger = _LEDGER.get()

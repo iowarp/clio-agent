@@ -46,21 +46,20 @@ from clio_agent.gact.enrichment import (
     _context_file_turn_provenance,
     _record_context_frame,
     enrich_turn_context,
-    inject_pending_agent_task_notifications,
+    pending_task_notifications,
 )
 from clio_agent.gact.events import _publish_transcript_event
 from clio_agent.gact.off_loop import schedule_off_loop
 from clio_agent.gact.part_atom_minter import open_turn_minter
-from clio_agent.gact.plan_mode import inject_plan_mode_reminder
-from clio_agent.gact.replanning import inject_replan_suggestion
+from clio_agent.gact.plan_mode import plan_mode_reminder
+from clio_agent.gact.replanning import replan_suggestion
 from clio_agent.gact.runtime import bringup_timing
 from clio_agent.gact.runtime.globals import (
     _ContextFileAccessError,
     _emit_semantic_event,
     _session_agent_id,
 )
-from clio_agent.gact.session_store import _compile_session_conversation_history
-from clio_agent.gact.todos import inject_todo_recitation
+from clio_agent.gact.todos import todo_recitation
 from clio_agent.gact.turn_state import (
     PROLOGUE_COMPLETED,
     PROLOGUE_FAILED,
@@ -199,30 +198,33 @@ def _prepare_turn_off_loop_steps(
     try:
         # #1215 S5: enrich_turn_context times BOTH mechanisms below as ONE
         # "enrichment" bring-up phase (owner module gact/enrichment.py).
-        state.enriched_text, state.memory_search_metadata = enrich_turn_context(
+        state.enriched_text, memory_hits, state.memory_search_metadata = enrich_turn_context(
             state.app, state.sid, state.user_text, state.user_msg
         )
         # #948 S6 [1]/[4]: surface prior-turn background task results (observe-later).
         # STAGE the ids only; consumption + terminal emission defer to the commit-to-
         # run seam, so a turn aborted after enrichment leaves them pending.
-        state.enriched_text, state.pending_notification_task_ids = (
-            inject_pending_agent_task_notifications(state.app, state.sid, state.enriched_text)
+        task_results, state.pending_notification_task_ids = pending_task_notifications(
+            state.app, state.sid
         )
         # P1.2 #1064: surface plan mode to the model each turn (survives compaction; no-op otherwise).
-        state.enriched_text = inject_plan_mode_reminder(
-            state.app, state.sid, state.sess, state.enriched_text
-        )
-        state.enriched_text = inject_todo_recitation(
-            state.app, state.sid, state.sess, state.enriched_text
-        )
+        reminder = plan_mode_reminder(state.app, state.sid, state.sess)
+        todos = todo_recitation(state.app, state.sid, state.sess)
         # P1.6d #1068: surface a pending stall-triggered replanning suggestion once (no-op otherwise).
-        state.enriched_text = inject_replan_suggestion(
-            state.app, state.sid, state.sess, state.enriched_text
-        )
-        # Carry prior turns so a follow-up ("now plot it") reuses resolved state (no-op turn 1).
-        state.enriched_text = _compile_session_conversation_history(
-            state.app, state.sid, state.enriched_text
-        )
+        replan = replan_suggestion(state.app, state.sid, state.sess)
+        # CLIO's own additions: recorded by the agent loop as messages of their own,
+        # ahead of the user's message, never glued into the user's text.
+        state.injections = [
+            (source, block)
+            for source, block in (
+                ("memory_search", memory_hits),
+                ("task_results", task_results),
+                ("plan_mode", reminder),
+                ("todos", todos),
+                ("replan", replan),
+            )
+            if block
+        ]
     except _ContextFileAccessError as exc:
         state.enriched_text = state.user_text
         state.context_file_error = exc.error_info
@@ -238,6 +240,7 @@ def _prepare_turn_off_loop_steps(
         user_text=state.user_text,
         enriched_text=state.enriched_text,
         context_error=state.context_file_error,
+        injections=state.injections,
     )
     if state.memory_search_metadata:
         _check_not_cancelled(state)

@@ -26,6 +26,7 @@ from fastapi.responses import JSONResponse
 from clio_agent.gact import context_reference_retry
 from clio_agent.gact.autonomous_loop import stop_session_loop
 from clio_agent.gact.compaction import CompactionError, compact_session_context
+from clio_agent.gact.context_rollback import follow_rollback
 from clio_agent.gact.events import Event
 from clio_agent.gact.goal import stop_session_goal
 from clio_agent.gact.mcp_apps import cleanup_session_mcp_apps
@@ -404,6 +405,8 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
     ) -> dict[str, Any]:
         replacement_messages = preserve_a2ui(sid, kept_messages, deleted_messages, operation)
         await run_off_loop(deps.replace_session_messages, app, sid, replacement_messages)
+        # The agents' context follows the ledger: rolled-back turns leave it too.
+        await run_off_loop(follow_rollback, app, sid, deleted_messages, replacement_messages)
         deleted_ids = [m.id for m in deleted_messages]
         updated = app.state.sessions.update(
             sid,
@@ -448,10 +451,8 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         if sess is None:
             raise _session_not_found(sid)
         _reject_rollback_while_active(sid, sess)
-        # Optional free-form body: malformed/``null`` is treated as ``{}`` (a
-        # structured ``request_body_unparseable`` trace reason), but a
-        # valid-JSON non-object payload keeps its pre-#772 422 -- undo is
-        # destructive and must not proceed on a wrong-shaped coerced body.
+        # Malformed/``null`` body is ``{}`` (traced); a non-object JSON payload is a
+        # 422 -- undo is destructive and must not proceed on a coerced body.
         try:
             body = await json_body(
                 request, route="POST /v1/sessions/{sid}/undo", non_object="raise"
@@ -510,11 +511,9 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
         if sess is None:
             raise _session_not_found(sid)
         _reject_rollback_while_active(sid, sess)
-        # A malformed body is treated as ``{}`` (unchanged behavior, now with a
-        # structured ``request_body_unparseable`` reason in the trace), but a
-        # valid-JSON non-object payload -- including ``null``, which rewind's
-        # pre-#772 guard never coerced -- keeps its 422: rewind is destructive
-        # and must not proceed on a wrong-shaped body coerced to defaults.
+        # A malformed body is ``{}`` (traced); a non-object JSON payload, ``null``
+        # included, is a 422 -- rewind is destructive and must not proceed on a
+        # wrong-shaped body coerced to defaults.
         try:
             body = await json_body(
                 request,

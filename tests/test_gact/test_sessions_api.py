@@ -44,6 +44,7 @@ def _seed_text_message(client: TestClient, sid: str, text: str) -> None:
     )
     client.app.state.messages[sid] = [message]
     client.app.state.message_store.replace_session(sid, [message])
+    _record_on_plane(client, sid, [message])
 
 
 def _seed_text_messages(client: TestClient, sid: str, messages: list[tuple[str, str]]) -> None:
@@ -64,6 +65,24 @@ def _seed_text_messages(client: TestClient, sid: str, messages: list[tuple[str, 
         )
     client.app.state.messages[sid] = seeded
     client.app.state.message_store.replace_session(sid, seeded)
+    _record_on_plane(client, sid, seeded)
+
+
+def _record_on_plane(client: TestClient, sid: str, messages: list[Message]) -> None:
+    """Mirror seeded ledger rows onto the agent scope's ARC plane, as a turn records them.
+
+    Compaction summarizes the agent's own context (its ARC working set), not the UI
+    ledger, so a ledger-only seed would leave nothing to compact. No-op when the app
+    runs without ARC.
+    """
+
+    arc = client.app.state.arc
+    if arc is None:
+        return
+    for m in messages:
+        text = "\n".join(p.text for p in m.parts if p.type == "text")
+        kind = "user" if m.role == "user" else "thought"
+        arc.append_segment(sid, "main", kind, {"text": text}, turn_id=m.turn_id or m.id)
 
 
 def test_messages_includes_inflight_live_assistant_projection(client: TestClient) -> None:
@@ -206,8 +225,8 @@ class CapturingCompactAgent(RetryCompactAgent):
 def test_compact_retries_transient_provider_errors(tmp_path: Path) -> None:
     """#1339: compaction APPENDS a checkpoint -- the seed row is retained, and the
     fake compact agent's OWN ``.arc`` (a stand-in for the deleted conversation-record
-    mirror) is never touched; the fold now runs through ``app.state.arc`` via the
-    turn-scoped ``_arc_scope()``, which has no active scope between turns."""
+    mirror) is never touched; the fold runs through ``app.state.arc`` over every agent
+    scope holding live context, replacing the seeded segment with the summary."""
 
     agent = RetryCompactAgent()
     with TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=agent)) as c:
@@ -260,7 +279,9 @@ def test_compact_retries_transient_provider_errors(tmp_path: Path) -> None:
         assert event["type"] == "compact_summary"
         assert event["summary_message_id"] == messages[0]["id"]
         assert event["archived_count"] == 1
-        assert event["arc_status"] == "no_active_scope"
+        assert event["arc_status"] == "folded"
+        folded = c.app.state.arc.render_working_set(sid, "main")
+        assert [seg.kind for seg in folded] == ["summary"]
         assert event["trigger"] == "manual"
         assert event["checkpoint_placement"] == "appended"
         assert event["metadata"]["source"] == "gact_compact"
@@ -409,10 +430,13 @@ def test_compact_prompt_preserves_late_scientific_identifiers(tmp_path: Path) ->
         assert "operator_note" in prompt
 
 
-def test_compact_prompt_includes_the_full_message_ledger(tmp_path: Path) -> None:
+def test_compact_prompt_includes_the_agents_full_context(tmp_path: Path) -> None:
+    """The summarizer sees the agent's whole working set (no ``[-50:]`` cap), so the
+    first message of a long context still reaches the prompt."""
+
     agent = CapturingCompactAgent()
     with TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=agent)) as c:
-        sid = c.post("/v1/sessions", json={"title": "compact full ledger"}).json()["id"]
+        sid = c.post("/v1/sessions", json={"title": "compact full context"}).json()["id"]
         messages = [
             ("user", "FIRST_MESSAGE_MUST_SURVIVE_COMPACTION"),
             *(("assistant", f"filler message {index}") for index in range(55)),

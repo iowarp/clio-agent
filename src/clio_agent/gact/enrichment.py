@@ -11,12 +11,11 @@ This module prepares one turn's *prompt context* and records what went into it:
   ``_context_file_access_error`` rather than proceeding with missing context),
   and ``_BINARY_CONTEXT_INSPECTORS`` is the generic extension->inspector hook for
   scientific formats.
-* **Explicit memory search** -- ``_memory_search_request_from_message`` reads the
-  opt-in request off the user message metadata and
-  ``_enrich_with_requested_memory_search`` runs it and inlines the ranked hits,
+* **Explicit memory search** -- ``_requested_memory_search`` runs the opt-in request
+  off the user message metadata and returns the ranked hits as a CLIO addition,
   emitting ``memory.search.completed`` so the recall stays visible.
 * **Context frames** -- ``_record_context_frame`` snapshots the assembled context
-  (visible transcript + attached files, with token estimates) into
+  (visible transcript, attached files, CLIO's additions, with token estimates) into
   ``app.state.context_frames`` and publishes ``context.frame.created``;
   ``_finalize_context_frame`` stamps the assistant message id + terminal status
   and publishes ``context.frame.completed``. ``_message_text_for_frame`` /
@@ -35,7 +34,7 @@ module top. ``app`` is passed explicitly so handlers do not close over app local
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
@@ -139,6 +138,7 @@ def _record_context_frame(
     user_text: str,
     enriched_text: str,
     context_error: Optional[ErrorInfo],
+    injections: "Sequence[tuple[str, str]]" = (),
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
     visible_messages = list(app.state.messages.get(sid, []))
@@ -205,6 +205,21 @@ def _record_context_frame(
     reference_items = context_reference_delivery.context_reference_frame_items(user_msg)
     items.extend(reference_items)
     token_total += sum(int(item.get("tokens_estimated", 0) or 0) for item in reference_items)
+
+    # CLIO's own additions this turn, each shown as what it is (never user text).
+    for source, text in injections:
+        tokens = _estimate_context_tokens(text)
+        token_total += tokens
+        items.append(
+            {
+                "kind": "injection",
+                "source_id": source,
+                "included": True,
+                "reason": "clio_addition",
+                "tokens_estimated": tokens,
+                "metadata": {"actor": "algorithm", "text": text},
+            }
+        )
 
     enriched_delta = max(0, len(enriched_text) - len(user_text))
     agent_ref = getattr(sess, "agent", {}) or {}
@@ -525,22 +540,23 @@ def _memory_search_request_from_message(
     return dict(raw)
 
 
-def _enrich_with_requested_memory_search(
+def _requested_memory_search(
     app: "FastAPI",
     sid: str,
     user_text: str,
     user_msg: "Message",
 ) -> tuple[str, dict[str, Any]]:
-    """Prepend explicitly requested memory-search hits to one turn.
+    """Explicitly requested memory-search hits as this turn's CLIO addition.
 
-    This is intentionally opt-in through user message metadata. It gives the
+    Returns ``(block, metadata)``; the block is empty without a request or hits. This
+    is intentionally opt-in through user message metadata. It gives the
     orchestrator/TUI a tool-like way to make cross-session recall visible to the
     model without weakening the default per-session context boundary.
     """
 
     req = _memory_search_request_from_message(user_msg, user_text)
     if req is None:
-        return user_text, {}
+        return "", {}
 
     query = str(req.get("query") or user_text).strip()
     include_cross_session = bool(req.get("include_cross_session", False))
@@ -588,7 +604,7 @@ def _enrich_with_requested_memory_search(
         )
     )
     if not response.hits:
-        return user_text, metadata
+        return "", metadata
 
     blocks = []
     for idx, hit in enumerate(response.hits, start=1):
@@ -608,33 +624,32 @@ def _enrich_with_requested_memory_search(
         + f"Reason: {reason or 'not provided'}\n"
         + f"Scope: {metadata['scope']}\n\n"
         + "\n\n".join(blocks)
-        + "\n\n## User question\n\n"
-        + user_text
     ), metadata
 
 
 def enrich_turn_context(
     app: "FastAPI", sid: str, user_text: str, user_msg: "Message"
-) -> tuple[str, dict[str, Any]]:
-    """#1215 S5: both enrichment mechanisms as ONE timed "enrichment" phase.
+) -> tuple[str, str, dict[str, Any]]:
+    """#1215 S5: the enrichment mechanisms as ONE timed "enrichment" phase.
 
-    Pure timed combinator -- delegates unchanged to the two real functions
-    above (no logic moves); the turn loop's single call site replaces its
-    former two separate calls with this one.
+    Returns ``(text, memory_block, memory_metadata)``: the user's message with the
+    user's own attachments (files, resources, context references), and the requested
+    memory hits as a separate CLIO addition (never glued into the user's text).
     """
 
     with bringup_timing.timer_for_session(app, sid).phase("enrichment"):
         text = _enrich_with_context_files(app, sid, user_text)
         text = enrich_with_workspace_resources(app, sid, text, user_msg)
         text = context_reference_delivery.enrich_with_context_references(app, sid, text, user_msg)
-        return _enrich_with_requested_memory_search(app, sid, text, user_msg)
+        block, metadata = _requested_memory_search(app, sid, user_text, user_msg)
+        return text, block, metadata
 
 
 # Clio-owned marker for the server-composed observe-later notification block
 # (#948 S6). The block is SERVER grounding prepended to the model's turn input —
 # never user text and never model output — so it carries this constant header (the
 # #881 marker discipline). The constant is DEFINED here and USED by the composer
-# (:func:`inject_pending_agent_task_notifications`) to head every injected block,
+# (:func:`pending_task_notifications`) to head every injected block,
 # and is exported for the injection tests. NOTE: no presentation-model splitter
 # keys off this marker on this lineage TODAY — the split machinery that would
 # register it and keep the block out of the user-text lane is future work (see
@@ -655,11 +670,9 @@ def _notify_block(task: Any, *, app: "FastAPI | None" = None) -> str:
     return compose_task_notification(task, app=app, marker=PENDING_TASK_NOTIFICATION_MARKER)
 
 
-def inject_pending_agent_task_notifications(
-    app: "FastAPI", sid: str, enriched_text: str
-) -> tuple[str, list[str]]:
-    """Prepend a bounded block of completed-but-unconsumed background task results
-    to this turn's enriched input and STAGE (do not consume) the selected task ids
+def pending_task_notifications(app: "FastAPI", sid: str) -> tuple[str, list[str]]:
+    """A bounded block of completed-but-unconsumed background task results as this
+    turn's CLIO addition, and the selected task ids to STAGE (do not consume)
     (#948 S6 observe-later; adversarial-review [1]/[4]).
 
     An async child spawned in a PRIOR turn that was never collected (via
@@ -670,7 +683,7 @@ def inject_pending_agent_task_notifications(
 
     Consumption is DEFERRED to the commit-to-run seam
     (:func:`consume_pending_agent_task_notifications`): this function only composes
-    the block and RETURNS ``(text, selected_task_ids)`` so the caller stages the ids
+    the block and RETURNS ``(block, selected_task_ids)`` so the caller stages the ids
     on the turn state WITHOUT consuming. If the turn then aborts after enrichment (a
     pre_message hook veto, a cancellation before forward), the tasks stay
     ``notify_pending`` and the NEXT turn injects them again — the observe-later
@@ -681,7 +694,7 @@ def inject_pending_agent_task_notifications(
 
     pending = pending_notifications(app, sid)
     if not pending:
-        return enriched_text, []
+        return "", []
     selected = pending[:_MAX_NOTIFY_BLOCKS]
     blocks = [_notify_block(task, app=app) for task in selected]
     remaining = len(pending) - len(selected)
@@ -690,20 +703,13 @@ def inject_pending_agent_task_notifications(
         if remaining > 0
         else ""
     )
-    text = (
-        PENDING_TASK_NOTIFICATION_MARKER
-        + "\n\n"
-        + "\n\n".join(blocks)
-        + truncation
-        + "\n\n---\n\n"
-        + enriched_text
-    )
-    return text, [task.task_id for task in selected]
+    block = PENDING_TASK_NOTIFICATION_MARKER + "\n\n" + "\n\n".join(blocks) + truncation
+    return block, [task.task_id for task in selected]
 
 
 def consume_pending_agent_task_notifications(app: "FastAPI", sid: str, task_ids: list[str]) -> None:
     """Consume the observe-later notifications staged by
-    :func:`inject_pending_agent_task_notifications` AND emit each one's delegation
+    :func:`pending_task_notifications` AND emit each one's delegation
     terminal — at the COMMIT-TO-RUN seam, never at compose time (#948 S6
     adversarial-review [1]/[4]).
 

@@ -26,7 +26,7 @@ from clio_agent.gact.agents.invoker import (
     TaskResult,
 )
 from clio_agent.gact.app import build_app
-from clio_agent.gact.enrichment import inject_pending_agent_task_notifications
+from clio_agent.gact.enrichment import pending_task_notifications
 from clio_agent.gact.turn_spawn import _on_child_done
 from clio_agent.gact.types import Message, Part
 
@@ -141,7 +141,7 @@ def test_folded_terminal_has_callback_payload_and_observe_later_parity(
         assert len(parent_events) == len(child_events) == 1
         assert parent_events[0].payload == child_events[0].payload == asdict(outcome.task)
         assert parent_events[0].payload == completed.to_metadata()["agent_task"]
-        injected, task_ids = inject_pending_agent_task_notifications(app, parent, "NEXT")
+        injected, task_ids = pending_task_notifications(app, parent)
         assert task_ids == [running.task_id]
         assert "folded answer" in injected
 
