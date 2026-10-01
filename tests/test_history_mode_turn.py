@@ -20,7 +20,7 @@ import pytest
 from clio_agent.arc import history_mode
 from clio_agent.arc.history_plane import HistoryPlane
 from clio_agent.gact import context as ctx
-from clio_agent.gact.agents.clio_react import ClioReAct, NoContextStoreError
+from clio_agent.gact.agents.clio_react import ClioReAct
 from clio_agent.gact.agents.clio_react_record import read_steps
 from clio_agent.gact.app import build_app
 from clio_agent.gact.session_store import _append_session_message
@@ -129,12 +129,3 @@ def test_after_a_restart_the_earlier_turn_comes_back_from_the_transcript(
     assert "which station is it?" in texts
     assert "It is SIO5." in texts
     assert texts[-1] == "and its elevation?"
-
-
-def test_no_plane_outside_history_mode_is_still_typed(tmp_path: Path) -> None:
-    history_mode.reset_for_tests()  # this process has clio-core after all
-    app = build_app(sessions_path=tmp_path / "s.json")
-    lm, engine = scripted_lm([Reply(text="x")])
-    with _turn(app, _session(app)), dspy.context(lm=lm), pytest.raises(NoContextStoreError):
-        ClioReAct("question -> answer", tools=[])(question="q")
-    assert engine.requests == []

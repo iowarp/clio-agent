@@ -251,9 +251,16 @@ def _validate_bare_lm_event(event: Any) -> None:
         marker in item_type.lower()
         for marker in ("toolcall", "commandexecution", "filechange", "subagent")
     ):
+        root = _item_root(event.payload)
+        named = [
+            f"{field}={getattr(root, field)}"
+            for field in ("server", "tool", "name", "command")
+            if getattr(root, field, None)
+        ]
+        detail = f": {', '.join(named)}" if named else ""
         raise CodexSDKError(
             "bare Codex SDK LM attempted a hidden internal action "
-            f"({item_type}); Clio owns tools and orchestration"
+            f"({item_type}{detail}); Clio owns tools and orchestration"
         )
     if item_type not in _ALLOWED_ITEM_TYPES:
         logger.info(
