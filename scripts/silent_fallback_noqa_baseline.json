@@ -119,7 +119,7 @@
  "gact/runtime/ai_review.py": 3,
  "gact/runtime/ambient_lm.py": 6,
  "gact/runtime/context_tokens.py": 8,
- "gact/runtime/globals.py": 3,
+ "gact/runtime/globals.py": 1,
  "gact/runtime/grants.py": 12,
  "gact/runtime/permission_policies.py": 1,
  "gact/runtime/type_parsing.py": 2,

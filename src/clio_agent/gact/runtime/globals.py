@@ -709,13 +709,10 @@ def _wire_arc_op_logger(app: "FastAPI") -> None:
     but emit NO ``arc.op`` -> the Trace/highway/interface never see the writes.
     """
     arc = getattr(getattr(app, "state", None), "arc", None)
-    if arc is not None and hasattr(arc, "set_segment_op_logger"):
-        try:
-            arc.set_segment_op_logger(
-                lambda op, session_id, scope, **kw: _emit_arc_op(app, op, session_id, scope, **kw)
-            )
-        except Exception as exc:  # noqa: BLE001 - observability wiring is best-effort
-            trace.event("ARC-OP", "arc op-logger wiring failed: %r", exc)
+    if arc is not None:  # a wiring failure raises: the ops would go unrecorded otherwise
+        arc.set_segment_op_logger(
+            lambda op, session_id, scope, **kw: _emit_arc_op(app, op, session_id, scope, **kw)
+        )
 
 
 def _set_app_arc(app: "FastAPI", arc: Any) -> None:
@@ -742,17 +739,14 @@ def _set_app_arc(app: "FastAPI", arc: Any) -> None:
     # async/bind ordering — the sink may be constructed after this wiring runs). The
     # sink itself carries NO arc consumer (see build_app), so arc.record -> sink.emit
     # has no path back into arc.record: no recursion.
-    if arc is not None and hasattr(arc, "set_highway_sink"):
-        try:
-            arc.set_highway_sink(
-                lambda e: (
-                    app.state.semantic_event_sink.emit(e)
-                    if getattr(app.state, "semantic_event_sink", None) is not None
-                    else {}
-                )
+    if arc is not None:  # a wiring failure raises: the highway would get nothing
+        arc.set_highway_sink(
+            lambda e: (
+                app.state.semantic_event_sink.emit(e)
+                if getattr(app.state, "semantic_event_sink", None) is not None
+                else {}
             )
-        except Exception as exc:  # noqa: BLE001 - highway wiring is best-effort
-            trace.event("ARC-AS-SOURCE", "arc highway-sink wiring failed: %r", exc)
+        )
 
 
 def _coerce_error_info(value: Any) -> Optional["ErrorInfo"]:
