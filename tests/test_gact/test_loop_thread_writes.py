@@ -282,3 +282,42 @@ def test_a_turn_cancelled_before_its_prologue_still_persists_the_user_message(
         atoms = load_message_part_atoms(app.state.arc, sid)
     assert user_id in atoms, f"the cancelled turn dropped its user message's atoms: {atoms.keys()}"
     assert _write_hits() == [], "the orphan flush must run off the loop"
+
+
+def test_a_blueprint_install_reason_recorded_on_the_loop_is_written_off_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Found live (exp67 benchmark, 2026-10-01): discovery on the loop recorded
+    ``default_registry_migration_busy`` and its semantic event's store write was refused
+    (``LoopThreadStoreWrite``) -- the reason was lost. It is written off the loop."""
+
+    import clio_agent.gact.runtime.globals as runtime_globals
+    from clio_agent.gact.agent_blueprint_refresh import record_blueprint_install_reason
+
+    real_emit = runtime_globals._emit_semantic_event
+    written = threading.Event()
+    threads: list[str] = []
+
+    def _spy_emit(app: Any, sid: str, event_type: str, **kw: Any) -> dict[str, Any]:
+        result = real_emit(app, sid, event_type, **kw)
+        if event_type == "blueprint.install.reason":
+            threads.append(threading.current_thread().name)
+            written.set()
+        return result
+
+    monkeypatch.setattr(runtime_globals, "_emit_semantic_event", _spy_emit)
+    reset_guard_hits()
+    app = build_app(sessions_path=tmp_path / "s.json", agent=FakeClioAgent())
+    with TestClient(app):
+        loop = app.state.mcp_app_loop
+
+        async def _record_on_the_loop() -> str:
+            record_blueprint_install_reason("probe_reason", app=app, session_id="")
+            return threading.current_thread().name
+
+        loop_thread = asyncio.run_coroutine_threadsafe(_record_on_the_loop(), loop).result(
+            timeout=10
+        )
+        assert written.wait(timeout=10), "the install reason's event never landed"
+    assert threads and loop_thread not in threads, threads
+    assert _write_hits() == []
