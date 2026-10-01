@@ -3,7 +3,7 @@
  * Overview hero. Replaces Starlight's Hero component; Starlight renders it
  * only on pages whose frontmatter sets `hero`, which is the overview alone.
  */
-import { ArrowRight, Container, Globe, Monitor, SquareTerminal } from 'lucide-react';
+import { ArrowRight, Container, Globe, Monitor } from 'lucide-react';
 import HeroDownload from './HeroDownload';
 import Capture from './Capture';
 import { release } from '@/lib/release';
@@ -16,7 +16,6 @@ const surfaces = [
 	{ icon: Monitor, label: 'Desktop app', href: '#download' },
 	{ icon: Globe, label: 'In your browser', href: '#interfaces' },
 	{ icon: Container, label: 'Docker', href: '#interfaces' },
-	{ icon: SquareTerminal, label: 'Terminal', href: '#interfaces' },
 ];
 ---
 

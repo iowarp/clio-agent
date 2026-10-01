@@ -1,9 +1,9 @@
 ---
 /**
- * Where CLIO runs: the desktop app, the browser workspace, Docker, and the
- * terminal UI. Commands come from install/clio and docker-compose.yml.
+ * Where CLIO runs. The desktop app leads; the same workspace also opens in a
+ * browser or a container. Commands come from install/clio and docker-compose.yml.
  */
-import { Container, Globe, Monitor, SquareTerminal } from 'lucide-react';
+import { ArrowRight, Container, Globe, Monitor } from 'lucide-react';
 import { Frame, FramePanel } from '@/components/reui/frame';
 import { IconTile } from '@/components/reui/icon-tile';
 import SectionHeading from './SectionHeading.astro';
@@ -16,18 +16,21 @@ import { release } from '@/lib/release';
 	<SectionHeading
 		id="interfaces"
 		label="Interfaces"
-		title="One workspace,"
-		emphasis="wherever you work."
-		lede="The desktop app is the simplest start. On a server or a shared machine, open the same workspace in a browser or run it in a container. A keyboard-only terminal interface is there if you prefer it."
+		title="Start with the"
+		emphasis="desktop app."
+		lede="The desktop app is the simplest way to use CLIO. On a server or a shared machine, open the same workspace in a browser or run it in a container."
 	/>
 
 	<div class="grid">
-		<Frame>
+		<Frame className="desktop">
 			<FramePanel className="flex h-full flex-col gap-3">
 				<IconTile variant="soft"><Monitor /></IconTile>
 				<h3>Desktop app</h3>
-				<p>Windows, macOS, and Linux installers. The bundled build includes everything and starts CLIO for you.</p>
-				<a class="link" href="#download">Download the desktop app</a>
+				<p>
+					Installers for Windows, macOS, and Linux. The recommended build includes the CLIO backend and starts it
+					for you, keeps running in the system tray when you close the window, and updates itself from each release.
+				</p>
+				<a class="link" href="#download">Download the desktop app <ArrowRight aria-hidden="true" size={16} /></a>
 			</FramePanel>
 		</Frame>
 
@@ -53,15 +56,11 @@ import { release } from '@/lib/release';
 			</FramePanel>
 		</Frame>
 
-		<Frame>
-			<FramePanel className="flex h-full flex-col gap-3">
-				<IconTile variant="soft"><SquareTerminal /></IconTile>
-				<h3>Terminal</h3>
-				<p>After the install script, <code>clio</code> starts CLIO and opens the terminal interface in your shell.</p>
-				<a class="link" href="/docs/cli/">Command-line reference</a>
-			</FramePanel>
-		</Frame>
 	</div>
+	<p class="also">
+		Prefer the keyboard? After the install script, <code>clio</code> opens a terminal interface. See the
+		<a href="/docs/cli/">command-line reference</a>.
+	</p>
 </section>
 
 <style>
@@ -79,6 +78,17 @@ import { release } from '@/lib/release';
 		.grid {
 			grid-template-columns: repeat(2, minmax(0, 1fr));
 		}
+		.grid > :global(.desktop) {
+			grid-column: 1 / -1;
+		}
+	}
+	.also {
+		margin-top: 1.5rem;
+		font-size: var(--sl-text-sm);
+		color: var(--muted);
+	}
+	.also a {
+		color: var(--ink-soft);
 	}
 	h3 {
 		margin: 0.25rem 0 0;
@@ -102,6 +112,9 @@ import { release } from '@/lib/release';
 		color: var(--ink);
 	}
 	.link {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
 		margin-top: auto;
 		font-weight: 600;
 		color: var(--accent);

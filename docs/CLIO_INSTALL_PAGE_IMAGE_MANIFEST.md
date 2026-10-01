@@ -28,11 +28,11 @@ Known gaps in the current set (recorded on v0.9.2):
 
 ## Wanted
 
-These open slots on the site are ordered by impact.
+The site leads with the desktop app, so desktop captures come first. The terminal interface is mentioned once and needs no capture.
 
-1. **Terminal interface.** The CLIO-branded terminal UI running a real analysis, for the Interfaces section and the command-line docs. The old `hero.png` (GACT-branded) was dropped for this reason.
-2. **Desktop app window.** The native desktop window, with its title bar, showing a finished EarthScope or NDP result, for the Desktop card and the Install docs.
-3. **One end-to-end EarthScope run in a single theme.** This replaces the hero, Ask, and tutorial captures with images from one session (see below).
+1. **Desktop app window.** The native window, title bar included, showing a finished EarthScope or NDP result. It goes in the Interfaces section's Desktop card and on the Install page.
+2. **One end-to-end EarthScope run in the desktop app, in a single theme.** It replaces the hero, Ask, and tutorial captures with images from one session (see below).
+3. **The desktop app's first launch.** The model provider dialog that appears on first start, for Connect a model.
 
 ## Tutorial captures
 
