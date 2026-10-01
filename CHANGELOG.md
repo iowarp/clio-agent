@@ -6,8 +6,27 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Added
+
+- Compaction is visible: `compaction.started` / `compaction.completed` /
+  `compaction.failed` events (`session_id`, `compaction_id`, `scope`, `trigger`
+  `auto|manual`, `turn_id`; completed adds `message_id`, `part_id`,
+  `replaced_count`; failed adds `error {code, message}`, `message_id`, `part_id`),
+  served on the event stream and as typed v3 events.
+- A compaction is recorded as an `injection` part with `source: "summarization"`
+  (`text`, `trigger`, `compaction_id`; `metadata.derived_from`), mid-turn inside the
+  turn's assistant message, between turns as its own row. A failed one is a `notice`
+  part (`source: "compaction_failed"`, `text`, `code`, `compaction_id`, `trigger`) the
+  model is never told; v3 projects it as a `notice` block.
+- `POST /v1/sessions/{sid}/compact?scope=` compacts one agent scope; the response is
+  `{session_id, compacted, compactions: [...]}`.
+- The `recall_context` agent tool returns compacted steps byte-exact.
+
 ### Removed
 
+- `POST /v1/sessions/{sid}/context/compact` (use `POST /v1/sessions/{sid}/compact?scope=`),
+  the `session.compacted` event and the `compaction` part: new compactions never write
+  it, and a stored one is served as the summarization injection.
 - The Codex SDK transport. The `codex` provider's only transport is `direct`
   (CLIO's own sign-in, else the Codex CLI login at `$CODEX_HOME/auth.json`):
   the Codex catalog row has no `transports` list, its models carry no
