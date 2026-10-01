@@ -17,8 +17,8 @@ contention shapes and asserts the invariants a RELEASE depends on:
       correctly-ordered live view (never a half-applied summarize/delete).
     * EXACT COUNTS — final live/tombstoned counts equal what the recorded ops imply.
 
-All tests use the REAL :class:`SegmentStore` over a REAL :class:`LocalFSStore`
-(fast disk backend) and the REAL :class:`ARCMemory` pass-throughs — no mocking of
+All tests use the REAL :class:`SegmentStore` over the REAL clio-core store (the
+test's own namespace on the worker's private daemon) and the REAL :class:`ARCMemory` pass-throughs — no mocking of
 src code. Determinism of *thread scheduling* is not assumed; the assertions are
 invariants that must hold under ANY interleaving, so a flake here is a real bug.
 """
@@ -34,12 +34,21 @@ import pytest
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.schema import decode_segments
 from clio_agent.arc.segments import SegmentStore
-from clio_agent.arc.storage import LocalFSStore
+from clio_agent.arc.storage import ARCStore, make_arc_store
 
 # #735 flake-hunt: ARC concurrency invariants run under xdist load x3.
 pytestmark = pytest.mark.concurrency
 
 SID = "stress-sess"
+
+
+def _cte_backend() -> ARCStore:
+    """The real clio-core store in this test's own namespace (the harness clears it).
+
+    Its tags are brand new, so the concurrent writers below also exercise the first-use
+    tag creation (``TagIds.get`` resolves under its lock).
+    """
+    return make_arc_store(backend="cte")
 
 
 # --------------------------------------------------------------------------- #
@@ -48,8 +57,8 @@ SID = "stress-sess"
 
 
 def _fresh_store(tmp_path) -> SegmentStore:
-    """A SegmentStore over a fresh LocalFSStore (no op_logger)."""
-    return SegmentStore(LocalFSStore(str(tmp_path / "arc")))
+    """A SegmentStore over the clio-core store (no op_logger)."""
+    return SegmentStore(_cte_backend())
 
 
 def _logging_store(tmp_path) -> tuple[SegmentStore, list[dict], threading.Lock]:
@@ -70,11 +79,11 @@ def _logging_store(tmp_path) -> tuple[SegmentStore, list[dict], threading.Lock]:
             logged.append({"event_id": event_id, "op": op, "scope": scope, **kw})
         return {"event_id": event_id}
 
-    return SegmentStore(LocalFSStore(str(tmp_path / "arc")), op_logger=op_logger), logged, guard
+    return SegmentStore(_cte_backend(), op_logger=op_logger), logged, guard
 
 
-def _all_persisted_segments(store: LocalFSStore, session_id: str, scope: str):
-    """Decode the persisted record for (session_id, scope) straight off disk —
+def _all_persisted_segments(store: ARCStore, session_id: str, scope: str):
+    """Decode the persisted record for (session_id, scope) straight from clio-core —
     bypassing the store's in-memory copy to prove durability / no torn writes."""
     name = SegmentStore._record_name(session_id, scope)
     raw = store.get("segments", name)
@@ -397,10 +406,10 @@ def test_concurrent_delete_same_ids_tombstoned_once(tmp_path):
 
 def test_concurrent_writes_then_cold_reload_matches(tmp_path):
     """After a concurrent write storm, a brand-new SegmentStore over the SAME
-    backend dir (cold reload) must reproduce the exact live render — proving the
+    clio-core namespace (cold reload) must reproduce the exact live render — proving the
     write-through persistence survived every interleaving with no torn record and
     the recovered clock continues past the persisted max."""
-    backend = LocalFSStore(str(tmp_path / "arc"))
+    backend = _cte_backend()
     ss = SegmentStore(backend)
     scope = "agentA/persist"
     n_threads, per_thread = 10, 30
@@ -417,8 +426,8 @@ def test_concurrent_writes_then_cold_reload_matches(tmp_path):
     before_texts = {s.content["text"] for s in ss.render(SID, scope)}
     assert len(before_texts) == total
 
-    # cold reload over the SAME directory
-    reloaded = SegmentStore(LocalFSStore(str(tmp_path / "arc")))
+    # cold reload over the SAME clio-core namespace
+    reloaded = SegmentStore(_cte_backend())
     after = reloaded.render(SID, scope)
     assert len(after) == total, "cold reload lost segments (torn persist under concurrency)"
     assert {s.content["text"] for s in after} == before_texts

@@ -82,12 +82,13 @@ class TagIds:
 
     def get(self, kind: str) -> Any:
         """Return the tag id for ``kind``, creating the tag on first use."""
+        # Resolve (create) under the lock: concurrent first writes to a NEW tag each
+        # raced GetOrCreateTag outside it and stalled. Once per kind, then cached.
         with self._lock:
             tag_id = self._ids.get(kind)
-        if tag_id is None:
-            tag_id = self._cte.Tag(self._tag_name(kind)).GetTagId()
-            with self._lock:
-                self._ids.setdefault(kind, tag_id)
+            if tag_id is None:
+                tag_id = self._cte.Tag(self._tag_name(kind)).GetTagId()
+                self._ids[kind] = tag_id
         return tag_id
 
     def clear(self) -> None:

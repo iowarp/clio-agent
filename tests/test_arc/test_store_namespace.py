@@ -29,3 +29,14 @@ def test_the_default_namespace_is_the_bare_kind_tag() -> None:
     store = make_arc_store(backend="cte", namespace="")
     assert store.tag("segments") == "segments"
     assert make_arc_store(backend="cte", namespace="t1").tag("segments") == "t1/segments"
+
+
+def test_tag_naming_is_pure_and_every_rpc_op_is_guarded() -> None:
+    """``tag`` only names (no RPC, no liveness guard -- a guard there nests a pooled call
+    inside every op and deadlocks the 8-worker pool under concurrent first writes);
+    every native op keeps its liveness guard."""
+    from clio_agent.arc.storage import ClioCoreStore
+
+    assert not hasattr(ClioCoreStore.tag, "__wrapped__")
+    for op in ("get", "put", "exists", "scan", "delete", "search"):
+        assert hasattr(getattr(ClioCoreStore, op), "__wrapped__"), f"{op} lost its guard"

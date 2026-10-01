@@ -581,11 +581,11 @@ class ClioCoreStore:
             guarded_store_rpc(self, "put", store_delete, self, kind, companion)  # a stale one
         # ``tier`` is advisory: the default single DRAM tier makes ReorganizeBlob a no-op.
 
-    @guard_store_op("get")
     def tag(self, kind: str) -> str:
-        """The CTE tag holding ``kind`` records in this store's namespace."""
+        """The CTE tag holding ``kind`` records in this store's namespace (pure; no RPC)."""
         return f"{self._namespace}/{kind}" if self._namespace else kind
 
+    @guard_store_op("get")
     def get(self, kind: str, name: str) -> Optional[bytes]:
         tag = self._cte.Tag(self.tag(kind))
         size = tag.GetBlobSize(name)  # 0 for a missing blob (does not raise)
