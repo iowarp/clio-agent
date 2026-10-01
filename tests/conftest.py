@@ -719,34 +719,37 @@ def clio_core_namespace(request, allow_pytest_tmp_path, monkeypatch):
     The test's namespace comes from the config layer. An ``ARCMemory(data_dir=X)`` built
     without a store gets ``<test namespace>-<hash of X>``: the same directory reopens the
     same records, different directories stay independent -- what a data dir meant on local
-    files. Teardown clears every namespace the test opened, through a store bound straight
-    to the ALREADY-attached config (no factory, preflight or config read under the test's
-    still-active patches).
+    files. Every store the test builds is recorded and cleared at teardown through the
+    store itself: no construction, config read or file check, so nothing the test
+    patches (``Path.is_file``, conf, disk usage) can break the teardown.
     """
     import hashlib  # noqa: PLC0415
 
     from clio_agent.arc import memory as arc_memory  # noqa: PLC0415
+    from clio_agent.arc import storage  # noqa: PLC0415
 
     base = _test_arc_namespace(request)
-    opened = {base}
-    real_make = arc_memory.make_arc_store
+    built: list[object] = []
+    real_make = storage.make_arc_store
 
-    def make_for_data_dir(*args, **kwargs):
+    def recording_make(*args, **kwargs):
         if kwargs.get("namespace") is None and kwargs.get("data_dir") is not None:
             digest = hashlib.sha1(str(Path(kwargs["data_dir"]).resolve()).encode()).hexdigest()
             kwargs["namespace"] = f"{base}-{digest[:8]}"
-            opened.add(kwargs["namespace"])
-        return real_make(*args, **kwargs)
+        store = real_make(*args, **kwargs)
+        built.append(store)
+        return store
 
-    monkeypatch.setattr(arc_memory, "make_arc_store", make_for_data_dir)
+    monkeypatch.setattr(arc_memory, "make_arc_store", recording_make)
+    monkeypatch.setattr(storage, "make_arc_store", recording_make)
     yield
-    from clio_agent.arc import clio_core_attach, storage  # noqa: PLC0415
-
-    state = clio_core_attach.attach_state_snapshot()
-    if state.phase is not clio_core_attach.ClioCoreAttachPhase.ATTACHED:
-        return
-    for namespace in sorted(opened):
-        storage.ClioCoreStore(config_path=state.config_path, namespace=namespace).clear()
+    cleared: set[str] = set()
+    for store in built:
+        namespace = getattr(store, "_namespace", None)
+        if namespace is None or namespace in cleared:
+            continue
+        cleared.add(namespace)
+        store.clear()
 
 
 def _path_under(path: Path, base: Path) -> bool:

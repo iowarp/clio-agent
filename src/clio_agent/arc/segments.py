@@ -33,7 +33,7 @@ from typing import Any, Callable, Optional
 import msgspec
 from sortedcontainers import SortedDict
 
-from clio_agent.arc.loop_guard import assert_store_write_off_loop
+from clio_agent.arc.loop_guard import LoopThreadStoreWrite, assert_store_write_off_loop
 from clio_agent.arc.schema import (
     WORKING_SET_KINDS,
     Segment,
@@ -337,6 +337,8 @@ class SegmentStore:
             self._scopes.pop(key, None)
             self._loaded.discard(key)
             self._index.drop_scope(session_id, scope)
+            if isinstance(exc, LoopThreadStoreWrite):
+                raise  # a write from the event loop is a caller bug, typed as itself
             raise ArcPersistError(session_id, scope, exc) from exc
 
     def _put_scope(self, session_id: str, scope: str, segs: list[Segment]) -> None:

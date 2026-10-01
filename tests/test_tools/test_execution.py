@@ -1334,22 +1334,16 @@ def test_sync_mcp_tool_executor_keeps_absolute_output_path(tmp_path):
     assert Path(kept) != tmp_path / "keep.png"
 
 
-def test_notify_tool_observer_failure_logs_reason(caplog):
-    """An observer that raises is swallowed but leaves a structured warning (#772)."""
-    import logging
-
+def test_notify_tool_observer_failure_propagates():
+    """An observer that cannot record the call is not swallowed: clio-core would no
+    longer hold what the agent did, so the failure reaches the caller."""
     from clio_agent.tools.execution import notify_tool_observer
 
     def exploding_observer(name, args, phase, error):
         raise ValueError("observer exploded")
 
-    with caplog.at_level(logging.WARNING, logger="clio_agent.tools.execution"):
+    with pytest.raises(ValueError, match="observer exploded"):
         notify_tool_observer(exploding_observer, "fake_echo", {"value": "x"}, "end")
-
-    matching = [r for r in caplog.records if "reason=tool_observer_failed" in r.getMessage()]
-    assert matching, "expected a structured tool_observer_failed warning"
-    assert "tool=fake_echo" in matching[0].getMessage()
-    assert "phase=end" in matching[0].getMessage()
 
 
 def test_permission_gate_deny_message_surfaces_to_model():

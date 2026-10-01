@@ -52,6 +52,7 @@ from clio_agent.gact.agents.resolution import (
 from clio_agent.gact.blueprint_activation import blueprint_mcp_servers
 from clio_agent.gact.events import Event
 from clio_agent.gact.mcp_apps import call_tool_result_to_observer
+from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.permission_gate import (
     _external_mcp_permission_context,
     _invoke_permission_gate,
@@ -530,7 +531,10 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
             tool_observer = getattr(app.state, "pending_tool_observer", None)
             if tool_observer is None:
                 tool_observer = app.state.make_tool_observer()
-            notify_tool_observer(tool_observer, observer_name, tool_args, "started")
+            # The observer records into clio-core (store writes): never on the event loop.
+            await run_off_loop(
+                lambda: notify_tool_observer(tool_observer, observer_name, tool_args, "started")
+            )
             try:
                 async with client_ctx as client:
                     from clio_agent.tools.mcp_header_mismatch import (  # noqa: PLC0415
@@ -549,8 +553,10 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
             except Exception as raw_exc:  # noqa: BLE001
                 # #1114: typed translation first — no raw SDK class/message on the wire.
                 surfaced = typed_mcp_call_error(raw_exc, tool=tool_name) or raw_exc
-                notify_tool_observer(
-                    tool_observer, observer_name, tool_args, "completed", error=repr(surfaced)
+                await run_off_loop(
+                    lambda: notify_tool_observer(
+                        tool_observer, observer_name, tool_args, "completed", error=repr(surfaced)
+                    )
                 )
                 raise HTTPException(
                     status_code=502,
@@ -571,12 +577,11 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                     if isinstance(data, Mapping)
                     else str(data if data is not None else result)
                 )
-            notify_tool_observer(
-                tool_observer,
-                observer_name,
-                tool_args,
-                "completed",
-                result=call_tool_result_to_observer(result),
+            observed = call_tool_result_to_observer(result)
+            await run_off_loop(
+                lambda: notify_tool_observer(
+                    tool_observer, observer_name, tool_args, "completed", result=observed
+                )
             )
             return {
                 "server_id": sid,

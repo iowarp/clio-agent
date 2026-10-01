@@ -358,16 +358,16 @@ def private_daemon_failure_report(isolation: CteIsolation) -> str:
         isolation: The session's private-daemon environment.
 
     Returns:
-        The typed degrade record, the daemon's crash record and log tail, and (on
+        The attach state (typed reason), the daemon's crash record and log tail, and (on
         Windows) the commit charge, whose exhaustion is the failure seen on this box.
     """
-    from clio_agent.arc.init_degradation import arc_init_degradation_snapshot  # noqa: PLC0415
+    from clio_agent.arc.clio_core_attach import attach_state_snapshot  # noqa: PLC0415
     from clio_agent.arc.runtime_crash import read_crash_record, summarize_crash  # noqa: PLC0415
 
     lines = [
-        "the suite's private clio-core daemon did not come up; the cte legs would "
-        "otherwise run on local files, so this run fails instead.",
-        f"degrade record: {arc_init_degradation_snapshot()!r}",
+        "the suite's private clio-core daemon did not come up; every test runs on "
+        "clio-core, so this run fails instead.",
+        f"attach state: {attach_state_snapshot()!r}",
         f"port {isolation.port}, state dir {isolation.state_dir}",
     ]
     crash = read_crash_record(isolation.state_dir)
