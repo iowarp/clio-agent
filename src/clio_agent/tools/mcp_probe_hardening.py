@@ -274,3 +274,42 @@ __all__ = [
     "probe_server_context",
     "resolve_timeout_retries",
 ]
+
+
+class NoProgressTimeout(TimeoutError):
+    """An MCP server answered nothing and its process tree did no work for a whole slice
+    (or the ``tools.mcp.max_wait_s`` ceiling passed)."""
+
+
+async def wait_while_server_works(awaitable: Any, *, slice_s: float) -> Any:
+    """Await ``awaitable`` while the MCP servers' process tree keeps working.
+
+    A fixed deadline failed a server still starting on a slow machine (uv installing,
+    Python importing). Each ``slice_s`` without an answer is checked against
+    :func:`~clio_agent.arc.daemon_progress.descendants_work`: progress keeps waiting, up
+    to :func:`mcp_max_wait_s`; a slice with no progress raises :class:`NoProgressTimeout`.
+    """
+    import asyncio  # noqa: PLC0415
+    import time  # noqa: PLC0415
+
+    from clio_agent.arc import daemon_progress  # noqa: PLC0415
+
+    task = asyncio.ensure_future(awaitable)
+    started = time.monotonic()
+    last_work = daemon_progress.descendants_work()
+    try:
+        while True:
+            done, _pending = await asyncio.wait({task}, timeout=slice_s)
+            if done:
+                return task.result()
+            work = daemon_progress.descendants_work()
+            waited = time.monotonic() - started
+            if work - last_work < 0.01 or waited >= mcp_max_wait_s():
+                raise NoProgressTimeout(
+                    f"no answer and no progress for {slice_s:g}s (waited {waited:.0f}s)"
+                )
+            last_work = work
+            logger.info("mcp_probe_server_busy reason=server_working waited_s=%.0f", waited)
+    finally:
+        if not task.done():
+            task.cancel()

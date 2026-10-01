@@ -166,7 +166,11 @@ async def _probe_one(spec: Any, *, timeout_s: float) -> MCPServerReport:
                 }
                 return tools, discovered
 
-        tools, discovered = await asyncio.wait_for(_list(), timeout=timeout_s)
+        from clio_agent.tools.mcp_probe_hardening import wait_while_server_works  # noqa: PLC0415
+
+        # No fixed deadline: a server still starting (its process tree working) is waited
+        # for; only a whole ``timeout_s`` slice with no answer and no progress times out.
+        tools, discovered = await wait_while_server_works(_list(), slice_s=timeout_s)
         names = tuple(sorted(getattr(t, "name", str(t)) for t in tools))
         return MCPServerReport(
             name=spec.name,
@@ -186,7 +190,7 @@ async def _probe_one(spec: Any, *, timeout_s: float) -> MCPServerReport:
             name=spec.name,
             connectivity=ConnectivityState.TIMEOUT,
             transport=transport,
-            error=f"did not respond within {timeout_s:g}s",
+            error=f"did not respond and made no progress for {timeout_s:g}s",
             latency_ms=(time.monotonic() - started) * 1000.0,
             execution_era=execution_era,
             declared_extensions=declared_extensions,
