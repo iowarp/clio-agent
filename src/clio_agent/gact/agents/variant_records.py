@@ -28,7 +28,9 @@ __all__ = [
     "PreferenceRecord",
     "TryRecord",
     "VariantRun",
+    "VariantRecordUnreadableError",
     "VariantRunNotFoundError",
+    "latest_runs",
     "load_run",
     "preference_records",
     "save_run",
@@ -55,6 +57,19 @@ class VariantRunNotFoundError(ClioError):
         )
 
 
+class VariantRecordUnreadableError(ClioError):
+    """A ``variant_record`` in clio-core does not decode as a run (never skipped)."""
+
+    reason = "variant_record_unreadable"
+
+    def __init__(self, session_id: str, segment_id: str, cause: BaseException) -> None:
+        super().__init__(
+            f"variant record {segment_id!r} of session {session_id!r} is unreadable: {cause}",
+            error_type=self.reason,
+            details={"session_id": session_id, "segment_id": segment_id},
+        )
+
+
 @dataclass
 class TryRecord:
     """One try of a run: its scope, what it produced and what it cost."""
@@ -71,6 +86,10 @@ class TryRecord:
     # The ids of the conversation prefix this try was forked onto (its first
     # ``len(prefix_ids)`` segments): what follows them is the try's own line.
     prefix_ids: list[str] = field(default_factory=list)
+    # The turn the try ran in (its user message id) and the ids of the try's own
+    # segments on its scope, kept so its steps are served even after the scope is reused.
+    turn_id: str = ""
+    segment_ids: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -168,21 +187,29 @@ def save_run(app: Any, run: VariantRun) -> None:
     )
 
 
-def _latest(app: Any, session_id: str) -> dict[str, VariantRun]:
-    """The latest snapshot of every run of ``session_id``, in first-recorded order."""
+def latest_runs(app: Any, session_id: str) -> dict[str, VariantRun]:
+    """The latest snapshot of every run of ``session_id``, in first-recorded order.
+
+    A record that does not decode is a :class:`VariantRecordUnreadableError`.
+    """
     runs: dict[str, VariantRun] = {}
     for seg in _plane(app).list_segments(session_id, VARIANT_RECORD_SCOPE):
-        content = getattr(seg, "content", None)
-        if getattr(seg, "kind", "") != VARIANT_RECORD_KIND or not isinstance(content, Mapping):
+        if getattr(seg, "kind", "") != VARIANT_RECORD_KIND:
             continue
-        run = VariantRun.from_content(content)
+        content = getattr(seg, "content", None)
+        try:
+            if not isinstance(content, Mapping):
+                raise TypeError(f"content is {type(content).__name__}, not a mapping")
+            run = VariantRun.from_content(content)
+        except (TypeError, KeyError, ValueError) as exc:
+            raise VariantRecordUnreadableError(session_id, str(seg.id), exc) from exc
         runs[run.variants_id] = run
     return runs
 
 
 def load_run(app: Any, session_id: str, variants_id: str) -> VariantRun:
     """The latest recorded state of run ``variants_id`` (typed error when absent)."""
-    run = _latest(app, session_id).get(variants_id)
+    run = latest_runs(app, session_id).get(variants_id)
     if run is None:
         raise VariantRunNotFoundError(session_id, variants_id)
     return run
@@ -191,7 +218,7 @@ def load_run(app: Any, session_id: str, variants_id: str) -> VariantRun:
 def preference_records(app: Any, session_id: str) -> list[PreferenceRecord]:
     """Every finished run of ``session_id`` as a typed preference record, oldest first."""
     records: list[PreferenceRecord] = []
-    for run in _latest(app, session_id).values():
+    for run in latest_runs(app, session_id).values():
         if run.status != "selected" or run.selected_index is None:
             continue
         records.append(

@@ -101,6 +101,14 @@ def fork_try(run_index: int, *, source: str = "", cut_id: str = "") -> list[str]
     return _copy(arc, session, scope, segments)
 
 
+def own_ids(run_index: int, prefix_ids: list[str]) -> list[str]:
+    """The ids of try ``run_index``'s own segments: what follows its forked prefix (all
+    of its live segments when it compacted what it forked)."""
+    arc, session, base = _plane()
+    live = [seg.id for seg in arc.render_working_set(session, _run_scope(base, run_index))]
+    return live[len(prefix_ids) :] if live[: len(prefix_ids)] == prefix_ids else live
+
+
 def try_scope(run_index: int) -> str:
     """The run-keyed scope try ``run_index`` of the active agent runs on."""
     _arc, _session, base = _plane()
@@ -128,7 +136,8 @@ def record_advice(run_index: int, advice: str, source: str) -> None:
     from clio_agent.gact.injection_parts import emit_injection  # noqa: PLC0415
 
     arc, session, base = _plane()
-    note = {"text": advice, "source": source, "actor": "algorithm"}
+    # Inside a try the note carries its variants_id / try_index, like its injection part.
+    note = _ctx.stamp_active_try({"text": advice, "source": source, "actor": "algorithm"})
     arc.append_segment(session, _run_scope(base, run_index), "user", note, step=0)
     emit_injection(source, advice, agent_id=base)
 

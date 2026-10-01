@@ -217,18 +217,27 @@ class _Drafts:
         with self.lock:
             self.run.tries.append(record)
         self.save(record)
+        forked: list[str] = []
         try:
-            with try_context(self.run, record):
-                forked = variant_lines.fork_try(try_index, source=source, cut_id=cut)
-                record.prefix_ids = forked if keep_prefix is None else forked[:keep_prefix]
-                if advice:
-                    variant_lines.record_advice(try_index, advice, ADVICE_SOURCE)
-                module = self.module.deepcopy()
-                module.set_lm(self.lm.copy(rollout_id=self.start + try_index, temperature=1.0))
-                from clio_agent.gact.agents.clio_react import continuing_fork  # noqa: PLC0415
+            try:
+                with try_context(self.run, record):
+                    forked = variant_lines.fork_try(try_index, source=source, cut_id=cut)
+                    record.prefix_ids = forked if keep_prefix is None else forked[:keep_prefix]
+                    if advice:
+                        variant_lines.record_advice(try_index, advice, ADVICE_SOURCE)
+                    module = self.module.deepcopy()
+                    lm = self.lm.copy(rollout_id=self.start + try_index, temperature=1.0)
+                    module.set_lm(lm)
+                    from clio_agent.gact.agents.clio_react import (  # noqa: PLC0415
+                        continuing_fork,
+                    )
 
-                with continuing_fork() if source else contextlib.nullcontext():
-                    pred = module(**self.inputs)
+                    with continuing_fork() if source else contextlib.nullcontext():
+                        pred = module(**self.inputs)
+            finally:
+                # The try's tab shows its own steps: a refine try's copy of the pick's
+                # line (part of its line to commit) is not among them.
+                record.segment_ids = record.segment_ids[len(forked) - len(record.prefix_ids) :]
         except Exception as exc:
             record.status, record.error = "failed", f"{type(exc).__name__}: {exc}"
             self.outcomes[try_index] = exc

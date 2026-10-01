@@ -165,13 +165,16 @@ def try_context(run: VariantRun, record: TryRecord) -> Iterator[None]:
     Inside, the ARC scope is ``<agent>#run<k>`` (``set_react_run``), streamed deltas go
     to ``variant.try.delta`` instead of the turn's answer lane, every semantic event is
     stamped with the try, and the try's token usage is tallied onto ``record.tokens``
-    (and still reaches the enclosing usage tracker).
+    (and still reaches the enclosing usage tracker). The try's turn and, once it ends,
+    the ids of its own segments are kept on ``record`` (its steps are served from them).
     """
+    from clio_agent.gact.agents.variant_lines import own_ids  # noqa: PLC0415
     from clio_agent.runtime.lm_activity import (  # noqa: PLC0415
         redirect_live_chunks,
         reset_live_chunks,
     )
 
+    record.turn_id = _ctx.active_turn_id()
     run_token = _ctx.set_react_run(record.try_index)
     try_token = _ctx.set_variant_try(run.variants_id, record.try_index)
     stream_token = redirect_live_chunks(_delta_emitter(run, record.try_index))
@@ -181,6 +184,7 @@ def try_context(run: VariantRun, record: TryRecord) -> Iterator[None]:
                 yield
             finally:
                 record.tokens = _tokens(tracker)
+                record.segment_ids = own_ids(record.try_index, record.prefix_ids)
     finally:
         reset_live_chunks(stream_token)
         _ctx.reset_variant_try(try_token)

@@ -72,8 +72,12 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
     cross-concern seam from ``deps`` (it is accepted to match the uniform
     ``register_<concern>_routes(app, deps)`` factory signature). The
     ARC-unavailable ``503`` envelope and the state-assembly helpers are defined here
-    as closures over ``app``. Compaction is ``POST /v1/sessions/{sid}/compact``.
+    as closures over ``app``. Compaction is ``POST /v1/sessions/{sid}/compact``. The
+    variant-run records (``/variant-runs``, served from clio-core) register with them.
     """
+    from clio_agent.gact.routes.variant_runs import register_variant_run_routes  # noqa: PLC0415
+
+    register_variant_run_routes(app)
 
     def _session_not_found(sid: str) -> HTTPException:
         return HTTPException(
