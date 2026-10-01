@@ -18,6 +18,7 @@ from clio_agent import conf
 from clio_agent.gact.app import build_app
 from clio_agent.gact.artifacts import table_query as engine
 from clio_agent.gact.routes import artifact_table_query as route
+from clio_agent.gact.routes import table_route_shared as shared_route
 from tests._config_layer import set_config
 
 
@@ -1262,10 +1263,10 @@ def test_table_source_verify_false_skips_the_integrity_rehash(env: _Env) -> None
     record, version = app.state.artifact_registry.get_by_artifact_id(artifact_id)
 
     with pytest.raises(HTTPException) as excinfo:
-        route._table_source(app, record, version, verify=True)
+        shared_route.table_source(app, record, version, verify=True)
     assert excinfo.value.status_code == 409
 
-    resolved = route._table_source(app, record, version, verify=False)
+    resolved = shared_route.table_source(app, record, version, verify=False)
     assert resolved.is_file()
     assert resolved.read_bytes() == tampered
 
@@ -1294,7 +1295,7 @@ def test_data_reference_validation_does_not_rehash_the_artifact(
         lambda path: (calls.append(path), real_sha256_file(path))[1],
     )
     monkeypatch.setattr(
-        route,
+        shared_route,
         "sha256_file",
         lambda path: (calls.append(path), real_sha256_file(path))[1],
     )
@@ -1484,10 +1485,94 @@ def test_disconnect_watcher_sets_the_cancel_event() -> None:
     async def _run() -> None:
         request = _FakeRequest()
         event = threading.Event()
-        await _asyncio.wait_for(route._watch_for_disconnect(request, event), timeout=5)
+        await _asyncio.wait_for(shared_route.watch_for_disconnect(request, event), timeout=5)
         assert event.is_set()
 
     _asyncio.run(_run())
+
+
+def test_route_registration_imports_the_query_engine_eagerly_on_the_main_thread() -> None:
+    """#1551 review item 6: numpy's C extension has been observed to fail
+    with "numpy._core.multiarray failed to import" when its FIRST import in
+    the process happens inside a worker thread (every query execution runs
+    via `asyncio.to_thread`) instead of the main thread. Registering the
+    route must import the engine module eagerly, synchronously, right here --
+    proven by asserting it is already in `sys.modules` immediately after
+    registration, before any request (and so any worker thread) exists."""
+
+    import sys
+
+    from fastapi import FastAPI
+
+    # Restored in `finally`: other already-imported modules (this test file's
+    # own `from clio_agent.gact.artifacts import table_query as engine`
+    # included) hold a reference to the ORIGINAL module object, which a bare
+    # pop-and-reimport here would silently orphan for the rest of the test
+    # session -- a later `monkeypatch.setattr(engine, ...)` would then patch
+    # an object the real code path no longer uses.
+    module_name = "clio_agent.gact.artifacts.table_query"
+    original = sys.modules.pop(module_name, None)
+    try:
+        assert module_name not in sys.modules
+
+        app = FastAPI()
+        route.register_artifact_table_query_routes(app)
+
+        assert module_name in sys.modules
+    finally:
+        if original is not None:
+            sys.modules[module_name] = original
+        else:
+            sys.modules.pop(module_name, None)
+
+
+def test_eager_import_retries_once_on_a_simulated_concurrent_import_corruption() -> None:
+    """#1551 review item 6: a concurrent numpy import elsewhere in the
+    process (observed: `dspy`'s own lazy loader, triggered by nothing more
+    than a bare ``build_app()`` in a fresh process) can corrupt numpy's
+    partially-initialized state on the FIRST attempt; a clean retry recovers.
+    Simulated here (rather than relying on reproducing the real race, which
+    is environment-timing-dependent) by making the first import attempt
+    raise the exact observed symptom."""
+
+    import sys
+
+    attempts = {"count": 0}
+    real_import_module = __import__("importlib").import_module
+
+    def _flaky_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "clio_agent.gact.artifacts.table_query":
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise ImportError("numpy._core.multiarray failed to import")
+        return real_import_module(name, *args, **kwargs)
+
+    module_name = "clio_agent.gact.artifacts.table_query"
+    original = sys.modules.pop(module_name, None)
+    try:
+        import importlib
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(importlib, "import_module", _flaky_import)
+            shared_route.import_table_engine_once()
+    finally:
+        if original is not None:
+            sys.modules[module_name] = original
+
+    assert attempts["count"] >= 1
+    assert module_name in sys.modules
+
+
+def test_route_registration_eager_import_does_not_block_a_real_first_query(
+    env: _Env,
+) -> None:
+    """End-to-end companion to the ``sys.modules`` check above: a fresh app's
+    very first table-query still succeeds (the numpy race, when it reproduces,
+    surfaces as a 500 on exactly this first call)."""
+
+    artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
+    response = env.query(artifact_id, {"columns": ["sensor"]})
+    assert response.status_code == 200, response.text
 
 
 def test_wall_clock_timeout_is_504(env: _Env, monkeypatch: pytest.MonkeyPatch) -> None:

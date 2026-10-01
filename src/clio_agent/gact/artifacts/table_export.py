@@ -30,6 +30,8 @@ it only ever reads the ``Path`` the route resolves and integrity-checks.
 from __future__ import annotations
 
 import json
+import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -77,12 +79,19 @@ def _full_scope_result(
     fmt: TableFormat,
     request: TableQueryRequest,
     *,
+    max_rows: int,
     cancellation: QueryCancellation,
 ) -> ExportResult:
     """The raw source table projected to ``request.columns`` (or every column).
 
     Every filter/aggregate/downsample/sort is ignored -- this is the "whole
     dataset" scope, independent of whatever the current view happens to show.
+    Still bounded by ``max_rows`` like the current-view scope: "full" means
+    "ignore the view's own filter," never "ignore the row ceiling."
+
+    Raises:
+        TableQueryError: ``export_too_large`` when the source has more than
+            ``max_rows`` rows.
     """
 
     schema = _read_schema(source, fmt)
@@ -100,6 +109,14 @@ def _full_scope_result(
     table = _read_table(source, fmt, wanted)
     cancellation.check()
     projected = table.select(wanted)
+    if projected.num_rows > max_rows:
+        raise TableQueryError(
+            413,
+            "export_too_large",
+            "export exceeds the configured row ceiling; narrow it with filters",
+            rows=projected.num_rows,
+            max_rows=max_rows,
+        )
     return ExportResult(
         table=projected,
         columns=wanted,
@@ -156,32 +173,151 @@ def resolve_export_table(
     """Resolve the table an export request should serialize, per ``scope``."""
 
     if scope == "full":
-        return _full_scope_result(source, fmt, request, cancellation=cancellation)
+        return _full_scope_result(source, fmt, request, max_rows=max_rows, cancellation=cancellation)
     return _current_scope_result(source, fmt, request, max_rows=max_rows, cancellation=cancellation)
 
 
-def _rows_as_json_bytes(table: pa.Table, columns: list[str]) -> bytes:
-    """Row-oriented JSON (an array of objects) -- the portable "export" shape,
-    distinct from table-query's own column-oriented wire format."""
+#: Rows per chunk while streaming CSV/JSON/Parquet out -- bounds the memory any
+#: ONE step holds to roughly one batch's worth of data, never the whole export.
+_STREAM_BATCH_ROWS = 8_192
+#: A Parquet write buffer larger than this spills from memory to a temp file on
+#: disk (``tempfile.SpooledTemporaryFile``) -- Parquet's footer is only valid
+#: once the writer closes, so this bounds PEAK MEMORY, not time-to-first-byte.
+_PARQUET_SPOOL_MAX_BYTES = 16 * 1024 * 1024
 
-    values = {name: _column_values(table.column(name)) for name in columns}
-    rows = [{name: values[name][index] for name in columns} for index in range(table.num_rows)]
-    return json.dumps(rows).encode("utf-8")
+
+class _ChunkSink:
+    """A minimal binary file-like object pyarrow's writers write into.
+
+    Buffers each ``write()`` and hands it back via :meth:`drain` -- the
+    bridge that turns a synchronous, whole-buffer pyarrow writer API into an
+    incremental generator a ``StreamingResponse`` can send one chunk at a
+    time, instead of buffering an entire export in memory before the first
+    byte goes out.
+    """
+
+    closed = False
+
+    def __init__(self) -> None:
+        self._chunks: list[bytes] = []
+        self._pos = 0
+
+    def write(self, data: bytes) -> int:
+        chunk = bytes(data)
+        self._chunks.append(chunk)
+        self._pos += len(chunk)
+        return len(chunk)
+
+    def flush(self) -> None:
+        return None
+
+    def close(self) -> None:
+        self.closed = True
+
+    def tell(self) -> int:
+        return self._pos
+
+    def seekable(self) -> bool:
+        return False
+
+    def writable(self) -> bool:
+        return True
+
+    def readable(self) -> bool:
+        return False
+
+    def drain(self) -> bytes:
+        """Return (and clear) everything written since the last drain."""
+
+        if not self._chunks:
+            return b""
+        joined = b"".join(self._chunks)
+        self._chunks.clear()
+        return joined
 
 
-def serialize_export(result: ExportResult, fmt: ExportFormat) -> bytes:
-    """Serialize ``result.table`` (already projected to ``result.columns``) to bytes."""
+def _stream_csv(result: ExportResult, *, cancellation: QueryCancellation) -> Iterator[bytes]:
+    """Yield CSV bytes incrementally, one row-batch at a time."""
 
     table = result.table.select(result.columns)
+    sink = _ChunkSink()
+    writer = pacsv.CSVWriter(pa.PythonFile(sink, mode="w"), table.schema)
+    try:
+        for batch in table.to_batches(max_chunksize=_STREAM_BATCH_ROWS):
+            cancellation.check()
+            writer.write_batch(batch)
+            chunk = sink.drain()
+            if chunk:
+                yield chunk
+    finally:
+        writer.close()
+    tail = sink.drain()
+    if tail:
+        yield tail
+
+
+def _stream_json(result: ExportResult, *, cancellation: QueryCancellation) -> Iterator[bytes]:
+    """Yield a row-oriented JSON array (the portable "export" shape, distinct
+    from table-query's own column-oriented wire format) incrementally, one
+    row-batch at a time."""
+
+    table = result.table.select(result.columns)
+    columns = result.columns
+    yield b"["
+    first = True
+    for batch in table.to_batches(max_chunksize=_STREAM_BATCH_ROWS):
+        cancellation.check()
+        values = {name: _column_values(batch.column(index)) for index, name in enumerate(columns)}
+        encoded_rows = [
+            json.dumps({name: values[name][row] for name in columns})
+            for row in range(batch.num_rows)
+        ]
+        if not encoded_rows:
+            continue
+        prefix = "" if first else ","
+        yield (prefix + ",".join(encoded_rows)).encode("utf-8")
+        first = False
+    yield b"]"
+
+
+def _stream_parquet(result: ExportResult, *, cancellation: QueryCancellation) -> Iterator[bytes]:
+    """Yield Parquet bytes: written row-group by row-group to a size-bounded
+    spooled temp file, then streamed back once the writer (and so the
+    footer) closes.
+    """
+
+    table = result.table.select(result.columns)
+    with tempfile.SpooledTemporaryFile(max_size=_PARQUET_SPOOL_MAX_BYTES) as spooled:
+        writer = pq.ParquetWriter(spooled, table.schema)
+        try:
+            for batch in table.to_batches(max_chunksize=_STREAM_BATCH_ROWS):
+                cancellation.check()
+                writer.write_table(
+                    pa.Table.from_batches([batch], schema=table.schema),
+                    row_group_size=batch.num_rows or 1,
+                )
+        finally:
+            writer.close()
+        cancellation.check()
+        spooled.seek(0)
+        while chunk := spooled.read(65_536):
+            yield chunk
+
+
+def stream_export(
+    result: ExportResult, fmt: ExportFormat, *, cancellation: QueryCancellation
+) -> Iterator[bytes]:
+    """Serialize ``result.table`` (already projected to ``result.columns``) as
+    an incremental stream of bytes, checking ``cancellation`` between chunks
+    so an abandoned download stops promptly instead of finishing unread work.
+    """
+
     if fmt == "csv":
-        sink = pa.BufferOutputStream()
-        pacsv.write_csv(table, sink)
-        return sink.getvalue().to_pybytes()
-    if fmt == "json":
-        return _rows_as_json_bytes(table, result.columns)
-    sink = pa.BufferOutputStream()
-    pq.write_table(table, sink)
-    return sink.getvalue().to_pybytes()
+        yield from _stream_csv(result, cancellation=cancellation)
+    elif fmt == "json":
+        yield from _stream_json(result, cancellation=cancellation)
+    else:
+        yield from _stream_parquet(result, cancellation=cancellation)
 
 
 def export_filename(artifact_name: str, scope: ExportScope, fmt: ExportFormat) -> str:
@@ -199,5 +335,5 @@ __all__ = [
     "ExportScope",
     "export_filename",
     "resolve_export_table",
-    "serialize_export",
+    "stream_export",
 ]

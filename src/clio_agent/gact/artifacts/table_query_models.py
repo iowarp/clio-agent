@@ -264,6 +264,22 @@ class TableQueryRequest(_Strict):
         return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
+class RowKey(BaseModel):
+    """A table-query result's stable per-row key (G0): one value per row in
+    ``columns``, same order, same length as every other reported column.
+
+    Documents the ``rowKey`` field of ``POST .../table-query``'s response
+    (``page_processed_table``'s own return is a plain ``dict`` like every
+    other table-query/preview route, so this model is not wired in as a
+    FastAPI ``response_model`` — it exists so the shape has one typed,
+    OpenAPI-visible definition instead of only prose). Absent entirely when
+    the query aggregated (grouped rows have no single source row to key by).
+    """
+
+    column: str
+    values: list[Scalar]
+
+
 class TableExportRequest(_Strict):
     """``POST /v1/artifacts/{artifact_id}/table-export`` request body.
 

@@ -240,6 +240,15 @@ KEY_NOTES: dict[str, str] = {
         "Ceiling on new artifact promotions one turn may make via create_artifact; re-designating "
         "identical bytes is free."
     ),
+    "artifacts.table_export_max_rows": (
+        "Ceiling on the processed row count a table-export (current-view or full-dataset) "
+        "request may reach; past it the export is refused with a typed 413 rather than "
+        "ever silently sampling a download."
+    ),
+    "artifacts.table_export_timeout_s": (
+        "Wall-clock budget in seconds for one artifact table-export request, resolution and "
+        "streaming together; an overrun answers a typed 504."
+    ),
     "artifacts.table_preview_max_rows": (
         "Ceiling on rows returned by one artifact table-preview response; raise for a denser "
         "chart, lower to shrink the JSON payload."

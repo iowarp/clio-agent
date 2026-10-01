@@ -171,6 +171,44 @@ def test_row_key_column_name_avoids_collision_with_a_real_column(env: _Env) -> N
     assert body["rowKey"]["values"] == [0, 1]
 
 
+def test_row_key_name_is_stable_regardless_of_whether_the_real_column_is_projected(
+    env: _Env,
+) -> None:
+    """#1551 review item 5: the synthetic key's NAME is derived from the
+    dataset's own schema, not this particular query's projected columns -- a
+    query that happens not to need the real `__row` column must still pick
+    the SAME disambiguated name a query that DOES project it would, or the
+    same dataset could report two different row-key column names depending
+    on what each view happened to ask for."""
+
+    csv_text = "__row,value\n5,1.0\n6,2.0\n"
+    artifact_id = env.pin_csv("collide2.csv", csv_text)
+
+    # Does not request (or otherwise need) the real "__row" column at all.
+    narrow = _ok(env.query(artifact_id, {"columns": ["value"]}))
+    # Explicitly requests it.
+    wide = _ok(env.query(artifact_id, {"columns": ["__row", "value"]}))
+
+    assert narrow["rowKey"]["column"] == wide["rowKey"]["column"]
+    assert narrow["rowKey"]["column"] != "__row"
+
+
+def test_row_key_values_are_correct_across_offset_pages(env: _Env) -> None:
+    """Paging (`offset`) reuses the cached `ProcessedTable`; each page's slice
+    of `rowKey.values` must still name the real underlying source rows, not
+    page-relative positions."""
+
+    artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
+
+    page1 = _ok(env.query(artifact_id, {"columns": ["sensor"], "offset": 0, "limit": 3}))
+    page2 = _ok(env.query(artifact_id, {"columns": ["sensor"], "offset": 3, "limit": 3}))
+    page3 = _ok(env.query(artifact_id, {"columns": ["sensor"], "offset": 6, "limit": 3}))
+
+    assert page1["rowKey"]["values"] == [0, 1, 2]
+    assert page2["rowKey"]["values"] == [3, 4, 5]
+    assert page3["rowKey"]["values"] == [6]
+
+
 def test_two_queries_over_the_same_artifact_agree_on_row_identity(env: _Env) -> None:
     """Different column projections of the SAME artifact must key the same
     underlying row identically -- the basis for auto-linking two views."""

@@ -51,6 +51,7 @@ from clio_agent.gact.artifacts.table_query_downsample import (
 )
 from clio_agent.gact.artifacts.table_query_models import (
     DEFAULT_LIMIT,
+    RowKey,
     Scalar,
     TableAggregate,
     TableDownsample,
@@ -576,7 +577,13 @@ def compute_processed_table(
     # key by, so it is skipped entirely when `request.aggregate` is set.
     row_key_column: str | None = None
     if request.aggregate is None:
-        row_key_column = _row_key_column_name(table.column_names)
+        # Derived from the DATASET'S OWN schema (`available`, read once
+        # above), not this query's own projected/needed columns: the
+        # synthetic name must be stable for a given dataset regardless of
+        # which columns any particular query happens to request, or two
+        # queries projecting different columns could compute two different
+        # synthetic key names for the exact same concept (#1551 review).
+        row_key_column = _row_key_column_name(available)
         table = table.append_column(
             row_key_column, pa.array(np.arange(table.num_rows, dtype=np.int64))
         )
@@ -626,14 +633,18 @@ def compute_processed_table(
             # every entity keeps at least one point, and report it.
             table, reduction_info = reduce_evenly_per_entity_for_limit(table, entity_column, limit)
             downsample_info.update(reduction_info)
-    elif not paging and not request.sort and table.num_rows > limit:
-        # One-shot request, no explicit downsample AND no sort, still over
-        # the transfer guard: sample the WHOLE range instead of silently
-        # biasing toward the first rows (owner ruling — see
-        # apply_over_limit_stride). A SORT is excluded here on purpose: a
-        # sort+limit query is a top-/bottom-N request, and sampling before
-        # sorting would silently corrupt it -- let the full matched set
-        # flow through, sort it for real, then slice to limit below.
+    elif not paging and table.num_rows > limit:
+        # One-shot request, no explicit downsample, still over the transfer
+        # guard. `allow_over_limit_sampling=False` (an export) refuses
+        # OUTRIGHT here regardless of `sort` -- an export is never paged or
+        # sliced by `limit` afterward (unlike table-query's own paging step),
+        # so a sorted-but-unsampled oversized table would otherwise flow
+        # through completely unbounded. Only interactive table-query
+        # (`allow_over_limit_sampling=True`) gets the SORT exclusion below:
+        # a sort+limit query there is a top-/bottom-N request, and sampling
+        # before sorting would silently corrupt it -- the full matched set
+        # flows through, gets sorted for real, and `page_processed_table`
+        # slices it to `limit` afterward.
         if not allow_over_limit_sampling:
             raise TableQueryError(
                 413,
@@ -642,7 +653,8 @@ def compute_processed_table(
                 rows=table.num_rows,
                 max_rows=limit,
             )
-        table, downsample_info = apply_over_limit_stride(table, limit)
+        if not request.sort:
+            table, downsample_info = apply_over_limit_stride(table, limit)
 
     table = _apply_sort(table, request.sort)
     cancellation.check()
@@ -665,13 +677,13 @@ def page_processed_table(processed: ProcessedTable, *, offset: int, limit: int) 
     a cached :class:`ProcessedTable` across every page of the SAME query.
 
     Response shape (``dict[str, Any]``, no separate Pydantic model -- matches
-    every other table-query/preview route): adds an OPTIONAL ``rowKey`` field,
-    ``{"column": <name>, "values": [...]}``, sized and ordered exactly like
-    ``columns`` (one value per returned row) -- the client's stable key for
-    linking a selection across views of the same artifact, independent of
-    which columns each view happened to request. Present whenever the query
-    did not aggregate (see :attr:`ProcessedTable.row_key_column`); absent
-    otherwise.
+    every other table-query/preview route): adds an OPTIONAL ``rowKey`` field
+    (:class:`~clio_agent.gact.artifacts.table_query_models.RowKey`), sized and
+    ordered exactly like ``columns`` (one value per returned row) -- the
+    client's stable key for linking a selection across views of the same
+    artifact, independent of which columns each view happened to request.
+    Present whenever the query did not aggregate (see
+    :attr:`ProcessedTable.row_key_column`); absent otherwise.
     """
 
     table = processed.table
@@ -689,10 +701,10 @@ def page_processed_table(processed: ProcessedTable, *, offset: int, limit: int) 
         "downsample": processed.downsample_info,
     }
     if processed.row_key_column is not None:
-        result["rowKey"] = {
-            "column": processed.row_key_column,
-            "values": _column_values(sliced.column(processed.row_key_column)),
-        }
+        result["rowKey"] = RowKey(
+            column=processed.row_key_column,
+            values=_column_values(sliced.column(processed.row_key_column)),
+        ).model_dump(mode="json")
     return result
 
 

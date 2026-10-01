@@ -11,13 +11,17 @@ refusal.
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import json
+import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
@@ -181,6 +185,35 @@ def test_export_too_large_refuses_rather_than_silently_sampling(
     assert response.json()["error"]["error"] == "export_too_large"
 
 
+def test_export_route_registration_imports_the_export_engine_eagerly() -> None:
+    """#1551 review item 6: the same numpy-import-race fix as table-query's
+    own route -- see that test's docstring for the mechanism."""
+
+    import sys
+
+    from fastapi import FastAPI
+
+    from clio_agent.gact.routes import artifact_table_export as route
+
+    # Restored in `finally` -- see the matching test in
+    # `test_artifact_table_query.py` for why a bare pop-and-reimport would
+    # pollute the rest of the test session.
+    module_name = "clio_agent.gact.artifacts.table_export"
+    original = sys.modules.pop(module_name, None)
+    try:
+        assert module_name not in sys.modules
+
+        app = FastAPI()
+        route.register_artifact_table_export_routes(app)
+
+        assert module_name in sys.modules
+    finally:
+        if original is not None:
+            sys.modules[module_name] = original
+        else:
+            sys.modules.pop(module_name, None)
+
+
 def test_export_unknown_artifact_is_404(env: _Env) -> None:
     response = _export(env, "artifact_missing", {"scope": "current", "format": "csv"})
     assert response.status_code == 404, response.text
@@ -192,3 +225,191 @@ def test_export_unsupported_format_media_type_for_non_tabular_artifact(env: _Env
     response = _export(env, artifact_id, {"scope": "current", "format": "csv"})
 
     assert response.status_code == 415, response.text
+
+
+def test_export_too_large_refuses_even_with_an_explicit_sort(
+    env: _Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1551 review item 2: `table_query.py`'s over-limit guard used to gate
+    `export_too_large` on `not request.sort`, so a SORTED current-view export
+    past the ceiling flowed through completely unbounded -- a sort+limit
+    query is a legitimate top-/bottom-N request for interactive table-query
+    (which still slices to `limit` afterward), but an export is never sliced
+    afterward at all."""
+
+    from clio_agent.gact.routes import artifact_table_export as route
+
+    monkeypatch.setattr(route, "table_export_max_rows", lambda: 2)
+    artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
+
+    response = _export(
+        env,
+        artifact_id,
+        {"columns": ["sensor", "value"], "sort": [{"column": "value"}], "scope": "current", "format": "csv"},
+    )
+
+    assert response.status_code == 413, response.text
+    assert response.json()["error"]["error"] == "export_too_large"
+
+
+def test_full_scope_export_too_large_also_refuses(
+    env: _Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1551 review item 2: `_full_scope_result` never checked `max_rows` at
+    all -- "full" means "ignore the view's own filter," never "ignore the row
+    ceiling.\""""
+
+    from clio_agent.gact.routes import artifact_table_export as route
+
+    monkeypatch.setattr(route, "table_export_max_rows", lambda: 2)
+    artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
+
+    response = _export(
+        env, artifact_id, {"columns": ["sensor"], "scope": "full", "format": "csv"}
+    )
+
+    assert response.status_code == 413, response.text
+    assert response.json()["error"]["error"] == "export_too_large"
+
+
+def test_full_scope_columns_not_found_is_a_typed_400(env: _Env) -> None:
+    artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
+
+    response = _export(
+        env, artifact_id, {"columns": ["not_a_real_column"], "scope": "full", "format": "csv"}
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["error"]["error"] == "columns_not_found"
+
+
+def test_parquet_source_artifact_exports_to_csv(env: _Env) -> None:
+    """The export engine reads a Parquet SOURCE artifact just as readily as a
+    CSV one -- `table_format_for` dispatches on the artifact's own name."""
+
+    table = pa.table({"sensor": ["a", "b", "c"], "value": [1.0, 2.0, 3.0]})
+    artifact_id = env.pin("sensors.parquet", lambda path: pq.write_table(table, path))
+
+    response = _export(env, artifact_id, {"scope": "full", "format": "csv"})
+
+    assert response.status_code == 200, response.text
+    rows = _rows_from_csv(response.content)
+    assert [row["sensor"] for row in rows] == ["a", "b", "c"]
+
+
+def test_non_latin1_filename_round_trips_through_content_disposition(env: _Env) -> None:
+    """#1551 review item 4: a non-latin-1 artifact name used to 500 deep
+    inside header encoding -- HTTP header values are latin-1 only."""
+
+    artifact_id = env.pin_csv("数据.csv", _SENSORS_CSV)
+
+    response = _export(env, artifact_id, {"scope": "current", "format": "csv"})
+
+    assert response.status_code == 200, response.text
+    disposition = response.headers["content-disposition"]
+    assert 'filename="' in disposition  # an ASCII fallback is always present
+    assert "filename*=UTF-8''%E6%95%B0%E6%8D%AE" in disposition
+
+
+def test_filename_with_a_literal_quote_never_breaks_the_header() -> None:
+    """A literal double quote in a filename must not break the quoted-string
+    syntax (nor crash) -- #1551 review item 4. A real double-quote character
+    is not a legal Windows path, so this exercises the header builder
+    directly rather than round-tripping an artifact with that literal name."""
+
+    from clio_agent.gact.routes.content_disposition import content_disposition
+
+    disposition = content_disposition('weird"name.csv')
+
+    # Exactly the opening/closing quote of the ASCII fallback's filename=
+    # value -- the embedded quote was replaced, never left to break the
+    # quoted-string syntax.
+    assert disposition.count('"') == 2
+    assert 'filename="weird_name.csv"' in disposition
+    assert "filename*=UTF-8''weird%22name.csv" in disposition
+
+
+def test_export_stream_stops_once_cancelled(env: _Env) -> None:
+    """#1551 review item 3: the streaming serializer checks cancellation
+    between batches, so an abandoned download stops promptly instead of
+    finishing unread work."""
+
+    from clio_agent.gact.artifacts import table_export
+    from clio_agent.gact.artifacts import table_query as engine
+    from clio_agent.gact.artifacts.table_query_models import TableQueryRequest
+
+    artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
+    app = env.client.app
+    record, version = app.state.artifact_registry.get_by_artifact_id(artifact_id)
+    from clio_agent.gact.routes.table_route_shared import table_source
+
+    source = table_source(app, record, version)
+
+    already_cancelled = threading.Event()
+    already_cancelled.set()
+    cancellation = engine.QueryCancellation(
+        deadline=time.monotonic() + 60, timeout_s=60, cancel_event=already_cancelled
+    )
+    result = table_export.resolve_export_table(
+        source,
+        "csv",
+        TableQueryRequest(columns=["sensor", "value"]),
+        scope="current",
+        max_rows=1_000_000,
+        cancellation=engine.QueryCancellation(deadline=time.monotonic() + 60, timeout_s=60),
+    )
+
+    with pytest.raises(engine.TableQueryCancelled):
+        list(table_export.stream_export(result, "csv", cancellation=cancellation))
+
+
+def test_concurrent_exports_are_bounded_by_the_shared_semaphore(
+    env: _Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1551 review item 3: exports reuse table-query's own concurrency
+    semaphore -- a burst of exports waits its turn rather than running fully
+    concurrently without bound."""
+
+    from clio_agent.gact.routes import artifact_table_export as route
+
+    # The SAME semaphore instance every call -- the real
+    # `_concurrency_semaphore_for` caches one on `app.state`; a lambda that
+    # built a fresh `Semaphore(1)` per call would give each concurrent
+    # request its own uncontended semaphore, proving nothing.
+    shared_semaphore = asyncio.Semaphore(1)
+    monkeypatch.setattr(route, "_concurrency_semaphore_for", lambda app: shared_semaphore)
+
+    artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+
+    real_resolve = route._resolve_export
+
+    def _tracking_resolve(*args: Any, **kwargs: Any) -> Any:
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            time.sleep(0.2)
+            return real_resolve(*args, **kwargs)
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(route, "_resolve_export", _tracking_resolve)
+
+    async def _run() -> None:
+        transport = httpx.ASGITransport(app=env.client.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as client:
+            body = {"scope": "current", "format": "csv"}
+            responses = await asyncio.gather(
+                client.post(f"/v1/artifacts/{artifact_id}/table-export", json=body),
+                client.post(f"/v1/artifacts/{artifact_id}/table-export", json=body),
+            )
+            for response in responses:
+                assert response.status_code == 200, response.text
+
+    asyncio.run(_run())
+    assert peak == 1

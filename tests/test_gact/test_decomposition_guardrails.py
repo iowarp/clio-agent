@@ -149,7 +149,10 @@ from clio_agent.gact.app import build_app
 # 281 -> 282: POST /v1/artifacts/{id}/table-query (bounded filter/aggregate/downsample
 # over CSV/Parquet artifacts for charts), owned by routes/artifact_table_query.py,
 # registered from routes/artifact_extensions.py.
-EXPECTED_ROUTE_METHOD_PAIRS = 282
+# 282 -> 283: POST /v1/artifacts/{id}/table-export (CSV/JSON/Parquet download of the
+# current view or the full dataset, reusing table-query's own engine), owned by
+# routes/artifact_table_export.py, registered from routes/artifact_extensions.py.
+EXPECTED_ROUTE_METHOD_PAIRS = 283
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
