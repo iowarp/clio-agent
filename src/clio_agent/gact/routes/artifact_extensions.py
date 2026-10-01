@@ -12,6 +12,7 @@ def register_artifact_extension_routes(app: FastAPI) -> None:
     from clio_agent.gact.routes.artifact_export import register_artifact_export_routes
     from clio_agent.gact.routes.artifact_lineage import register_artifact_lineage_routes
     from clio_agent.gact.routes.artifact_references import register_artifact_reference_routes
+    from clio_agent.gact.routes.artifact_table_export import register_artifact_table_export_routes
     from clio_agent.gact.routes.artifact_table_preview import register_artifact_table_preview_routes
     from clio_agent.gact.routes.artifact_table_query import register_artifact_table_query_routes
 
@@ -20,4 +21,5 @@ def register_artifact_extension_routes(app: FastAPI) -> None:
     register_artifact_export_routes(app)
     register_artifact_table_preview_routes(app)
     register_artifact_table_query_routes(app)
+    register_artifact_table_export_routes(app)
     register_artifact_reference_routes(app)

@@ -264,6 +264,39 @@ class TableQueryRequest(_Strict):
         return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
+class TableExportRequest(_Strict):
+    """``POST /v1/artifacts/{artifact_id}/table-export`` request body.
+
+    Shares ``columns``/``filter``/``aggregate``/``downsample``/``sort`` with
+    :class:`TableQueryRequest` (:meth:`as_query_request` builds one) so an
+    export runs through the identical engine a chart/map/table's own query
+    does -- never a second, divergent implementation. ``scope`` picks between
+    the current (filtered/sorted) view and the full, unfiltered dataset;
+    ``format`` picks the serialization. Neither ``offset`` nor a transfer
+    ``limit`` applies here: an export is never paged or silently sampled (see
+    :mod:`clio_agent.gact.artifacts.table_export`).
+    """
+
+    columns: list[str] = Field(default_factory=list)
+    filters: list[TableFilter] = Field(default_factory=list, alias="filter")
+    aggregate: TableAggregate | None = None
+    downsample: TableDownsample | None = None
+    sort: list[TableSort] = Field(default_factory=list)
+    scope: Literal["current", "full"] = "current"
+    format: Literal["csv", "json", "parquet"] = "csv"
+
+    def as_query_request(self) -> TableQueryRequest:
+        """This export's filter/aggregate/downsample/sort, as a plain query."""
+
+        return TableQueryRequest(
+            columns=self.columns,
+            filter=self.filters,
+            aggregate=self.aggregate,
+            downsample=self.downsample,
+            sort=self.sort,
+        )
+
+
 def _is_scalar(value: Any) -> bool:
     return isinstance(value, (str, int, float, bool)) and value is not None
 
