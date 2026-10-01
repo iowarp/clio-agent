@@ -24,7 +24,8 @@ engine changes only the transport:
   (never retried); a refused sign-in is a typed ``AuthError``; everything else is
   lm15's typed error.
 * **Auth** is clio's own Codex sign-in when there is one (refreshed per call), else
-  the local Codex CLI login (``~/.codex/auth.json``, read by lm15).
+  the local Codex CLI login (``$CODEX_HOME/auth.json``, default ``~/.codex``, read
+  by lm15).
 """
 
 from __future__ import annotations
@@ -288,15 +289,25 @@ def _check_media(request: Request) -> None:
 
 
 def default_wire() -> Any:
-    """lm15's Codex LM on clio's sign-in (a fresh token per call), else the CLI login."""
+    """lm15's Codex LM on clio's sign-in (a fresh token per call), else the CLI login.
+
+    The CLI login is ``$CODEX_HOME/auth.json`` (default ``~/.codex``), resolved by
+    :func:`~clio_agent.providers.codex.credentials.codex_cli_auth_path` -- lm15's own
+    default path ignores ``CODEX_HOME``, so the path is always passed explicitly.
+    """
     from dspy.lm15 import OpenAICodexLM  # noqa: PLC0415
 
-    from clio_agent.providers.codex.credentials import CodexCredentialStore  # noqa: PLC0415
+    from clio_agent.providers.codex.credentials import (  # noqa: PLC0415
+        CodexCredentialStore,
+        codex_cli_auth_path,
+    )
 
     store = CodexCredentialStore()
     credential = store.load()
     if credential is None:
-        return OpenAICodexLM.from_codex_cli(originator=c.ORIGINATOR)
+        return OpenAICodexLM.from_codex_cli(
+            auth_path=codex_cli_auth_path(), originator=c.ORIGINATOR
+        )
     return OpenAICodexLM(
         api_key=lambda: store.get_valid_credential().access_token,
         account_id=credential.account_id,

@@ -296,10 +296,9 @@ def test_lm_provider_sdk_transport_unavailable_when_cli_absent(tmp_path, monkeyp
 def test_codex_doctor_uses_credential_store_not_path(tmp_path, monkeypatch):
     """Codex readiness follows its signed-in-credential contract, not a CLI on PATH.
 
-    Unlike the deleted Codex SDK provider (bundled binary + ``auth.json`` on
-    disk), the direct Codex provider has no CLI/SDK dependency at all -- the
-    sole local readiness signal is a signed-in credential
-    (``CodexCredentialStore.is_signed_in``).
+    The direct Codex provider has no CLI binary or SDK dependency -- the local
+    readiness signal is a usable sign-in (CLIO's own credential here,
+    ``CodexCredentialStore.is_signed_in``; else the CLI's ``$CODEX_HOME/auth.json``).
     """
     from clio_agent.providers.codex.credentials import CodexCredentialStore
 

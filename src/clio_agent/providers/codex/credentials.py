@@ -1,8 +1,10 @@
 """Durable Codex OAuth credential store (A.4).
 
-One credential per machine (mirrors the previous single ``~/.codex/auth.json``
-model, except CLIO owns this file end to end and never reads or writes
-``~/.codex/auth.json``). Persistence reuses
+One credential per machine, owned by CLIO end to end. CLIO never WRITES the Codex
+CLI's ``$CODEX_HOME/auth.json`` (default ``~/.codex``); without a CLIO sign-in the
+direct transport authenticates with that CLI login instead, read (and refreshed under
+the CLI's own lock) by lm15 -- :func:`codex_cli_auth_path` is the one place the path
+is resolved, so ``CODEX_HOME`` is honoured everywhere. Persistence reuses
 :class:`clio_agent.tools.atomic_json_store.AtomicJsonFileStore` (0600, atomic
 write-before-use) rather than duplicating that dance.
 

@@ -442,25 +442,30 @@ def test_the_wire_uses_clios_sign_in_with_a_fresh_token_per_call(
     assert headers[0]["chatgpt-account-id"] == "acct-9"
 
 
-def test_without_a_clio_sign_in_the_wire_reads_the_codex_cli_login(
-    monkeypatch: pytest.MonkeyPatch,
+def test_without_a_clio_sign_in_the_wire_reads_the_codex_home_login(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:
+    """No clio sign-in: the wire reads ``$CODEX_HOME/auth.json``, not lm15's fixed ``~/.codex``."""
     from clio_agent.providers.codex import credentials
-
-    seen: list[str] = []
 
     class Store:
         def load(self) -> None:
             return None
 
-    monkeypatch.setattr(credentials, "CodexCredentialStore", Store)
-    monkeypatch.setattr(
-        OpenAICodexLM,
-        "from_codex_cli",
-        classmethod(lambda cls, **kw: seen.append(kw["originator"])),
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    (codex_home / "auth.json").write_text(
+        json.dumps({"tokens": {"access_token": "tok-cli", "account_id": "acct-cli"}}),
+        encoding="utf-8",
     )
-    direct_engine.default_wire()
-    assert seen == [c.ORIGINATOR]  # ~/.codex/auth.json via lm15 -- allowed by the owner
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setattr(credentials, "CodexCredentialStore", Store)
+
+    wire = direct_engine.default_wire()
+    headers = dict(wire.build_request(_request(HEAD), stream=True).headers)
+    assert headers["Authorization"] == "Bearer tok-cli"
+    assert headers["chatgpt-account-id"] == "acct-cli"
+    assert headers["originator"] == c.ORIGINATOR
 
 
 def test_create_lm_builds_the_direct_engine_lm(monkeypatch: pytest.MonkeyPatch) -> None:
