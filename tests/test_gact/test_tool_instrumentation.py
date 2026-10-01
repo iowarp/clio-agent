@@ -626,6 +626,9 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(
             # the wait loop ever touches the processing task record — fast,
             # deterministic, and offline, like the rest of this table.
             "workspace_resource_wait": {"task_id": "missing", "timeout_s": 0},
+            # Reads back compacted context; called with neither query nor ids on
+            # purpose: a typed refusal, and the tool_call part must land anyway.
+            "recall_context": {},
             "memory_search_sessions": {"query": "missing"},
             "memory_read_session_summary": {"target_session_id": sid},
             "memory_read_context_frame": {

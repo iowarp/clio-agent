@@ -15,6 +15,8 @@ domain-tool budget (RULE 5), the same way ``load_skill`` and the child-delegatio
   deterministic-gate met?). There is deliberately NO ``set_goal`` / ``goal_clear`` tool: a
   goal is armed only by the user (/goal) or a declared skill-effect, never by the model
   (a self-armed halt is the self-grading anti-pattern, ⚑ RULE 1).
+* ``recall_context`` (Phase 11b) -- read back earlier context, compacted steps included,
+  byte-exact from clio-core;
 * ``raise_alert_card`` (spotter-ai follow-on) — a GENERIC way for any spawned child agent
   to raise a notification/action card into its PARENT session's transcript. Auto-attached
   (not spotter-specific) so a spawned child never has to remember to declare it just to
@@ -56,6 +58,7 @@ from clio_agent.gact.cron_tools import build_cron_tools
 from clio_agent.gact.goal import build_goal_status_tool
 from clio_agent.gact.memory_tools import build_memory_tools
 from clio_agent.gact.plan_mode import build_plan_exit_tool
+from clio_agent.gact.recall_context_tool import build_recall_context_tool
 from clio_agent.gact.resource_tools import build_resource_tools
 from clio_agent.gact.todos import build_write_todos_tool
 from clio_agent.providers.model_discovery import build_refresh_provider_models_tool
@@ -105,6 +108,9 @@ def build_auto_react_tools(agent_def: Any, *, a2ui_producers: bool | None = None
         # prefix vary with mutable workspace state, breaking the prompt-cache
         # stability the fixed order above exists to protect.
         *build_resource_tools(agent_def),
+        # Every agent can be compacted, so every agent can read back what a summary
+        # replaced (its last line names this tool). Read-only, own session only.
+        build_recall_context_tool(),
     ]
     declared = {str(name).strip() for name in (getattr(agent_def, "tools", None) or [])}
     if not (getattr(agent_def, "parent_id", "") or ""):
