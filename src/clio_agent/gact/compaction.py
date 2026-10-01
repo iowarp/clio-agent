@@ -125,7 +125,7 @@ def _skip(sid: str, reason: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# The summarizer prompt.
+# The summarizer prompt's inputs (the template: ``clio_agent.compaction_prompt``).
 # ---------------------------------------------------------------------------
 
 
@@ -151,36 +151,6 @@ def _context_file_inventory(app: Any, sid: str) -> str:
                 facts.append(f"{key}={_bounded(str(value))}")
         rows.append("- " + "; ".join(facts))
     return "\n".join(sorted(rows))
-
-
-_PROMPT_RULES = (
-    "Create an evidence-preserving compact memory for the following CLIO "
-    "conversation transcript. This becomes the next model-context checkpoint, "
-    "so preserve concrete scientific evidence, not just a high-level story.\n\n"
-    "Rules:\n"
-    "- Keep exact file paths, dataset names, column names, variable names, "
-    "units, dimensions, counts, statistics, artifact paths, and error messages "
-    "when they appear in the transcript.\n"
-    "- Preserve which findings came from which source, grouped by file/provider "
-    "or workflow stage.\n"
-    "- Preserve unresolved gaps, failed inspections, missing dependencies, and "
-    "next checks.\n"
-    "- If evidence is missing or a source was not inspected, say that explicitly. "
-    "Do not fill gaps with plausible details.\n"
-    "- Do not invent dataset names, columns, statistics, compression settings, "
-    "or readiness conclusions that are not supported by the transcript.\n"
-    "- Prefer concise structured bullets over prose. Keep the summary compact, "
-    "but do not omit identifiers needed for a later expert to continue the work."
-)
-
-
-def _build_prompt(transcript: str, focus: str, context_files: str = "") -> str:
-    prompt = _PROMPT_RULES
-    if focus:
-        prompt += f"\n\nFocus the summary on: {focus}"
-    if context_files:
-        prompt += f"\n\n--- attached session files ---\n{context_files}\n--- end files ---"
-    return prompt + f"\n\n--- transcript ---\n{transcript}\n--- end ---"
 
 
 def _message_lines(message: Any) -> list[str]:
@@ -440,7 +410,17 @@ def _summary(app: Any, sid: str, transcript: str, focus: str) -> str:
         raise CompactionError(
             503, "agent_unavailable", "no LM agent wired; configure one via PUT /v1/providers/lm"
         )
-    prompt = _build_prompt(transcript, focus, _context_file_inventory(app, sid))
+    from clio_agent.compaction_prompt import (  # noqa: PLC0415
+        CompactionPromptError,
+        render_compaction_prompt,
+    )
+
+    try:  # read from the configured file at every compaction (no restart, no fallback)
+        prompt = render_compaction_prompt(
+            transcript, focus=focus, files=_context_file_inventory(app, sid)
+        )
+    except CompactionPromptError as exc:
+        raise CompactionError(500, exc.reason, str(exc), dict(exc.details or {})) from exc
 
     def _call() -> str:
         return str(agent._run_chat_agent(prompt, "") or "")

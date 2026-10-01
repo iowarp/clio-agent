@@ -91,6 +91,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_COMPACTION_KEEP_HEAD` | `compaction.keep.head` | bool | `true` | `src/clio_agent/gact/compaction_policy.py` |
 | `CLIO_COMPACTION_KEEP_LAST_STEPS` | `compaction.keep.last_steps` | int | `0` | `src/clio_agent/gact/compaction_policy.py` |
 | `CLIO_COMPACTION_KEEP_LAST_TURNS` | `compaction.keep.last_turns` | int | `0` | `src/clio_agent/gact/compaction_policy.py` |
+| `CLIO_COMPACTION_PROMPT_FILE` | `compaction.prompt_file` | str | _(unset)_ | `src/clio_agent/compaction_prompt.py` |
 | `CLIO_CONTEXT_REFERENCE_BROWSE_LIMIT` | `gact.context_references.browse_limit_per_kind` | int | `20` | `src/clio_agent/gact/context_reference_search.py` |
 | `CLIO_CONTEXT_REFERENCE_MAX_HASHABLE_BYTES` | `gact.context_references.max_hashable_bytes` | int | `67108864` | `src/clio_agent/gact/context_references.py` |
 | `CLIO_CONTEXT_REFERENCE_SEARCH_LIMIT` | `gact.context_references.search_limit` | int | `100` | `src/clio_agent/gact/context_reference_search.py` |
