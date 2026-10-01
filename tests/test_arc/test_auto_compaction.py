@@ -336,3 +336,25 @@ def test_per_expert_independent(arc, monkeypatch):
         ("tool_call", None),
         ("observation", "O0"),
     ]
+
+
+def test_an_estimated_usage_is_not_taken_for_a_real_count(arc, monkeypatch):
+    """The durable usage a provider without counts leaves is an estimate from the user
+    prompt alone: it must not trigger (or suppress) compaction as if it were measured."""
+    rows: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.compaction.stream_audit",
+        lambda stage, **row: rows.append({"stage": stage, **row}),
+    )
+    _patch_prompt_tokens(monkeypatch, prompt_tokens=0)
+    _populate(arc)
+    before = _view(arc)
+    estimated = {"context_usage_by_scope": {SCOPE: {"used_tokens": 950, "source": "estimated"}}}
+    with _full_plane_context(
+        arc, session=SID, scope=SCOPE, window=1000, session_metadata=estimated
+    ):
+        maybe_autocompact()
+    assert _view(arc) == before
+    assert [r["reason"] for r in rows if r["stage"] == "compaction.auto_skipped"] == [
+        "no_token_count"
+    ]

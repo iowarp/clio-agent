@@ -759,8 +759,10 @@ def maybe_autocompact() -> None:
     durable_usage = (
         usage_by_scope.get(usage_scope, {}) if isinstance(usage_by_scope, Mapping) else {}
     )
+    # Only a measured count decides: an ``estimated`` usage is the user prompt alone.
+    measured = isinstance(durable_usage, Mapping) and durable_usage.get("source") != "estimated"
     try:
-        durable_prompt_tokens = int(durable_usage.get("used_tokens", 0) or 0)
+        durable_prompt_tokens = int(durable_usage.get("used_tokens", 0) or 0) if measured else 0
     except (TypeError, ValueError, AttributeError):
         durable_prompt_tokens = 0
     # Subscription-backed providers create a fresh LM binding for each turn, so
