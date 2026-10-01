@@ -76,8 +76,10 @@ SSE_UI_EVENT_TYPES: frozenset[str] = frozenset(
         "compaction.started",
         "compaction.completed",
         "compaction.failed",
-        # A BestOfN / Refine run: one row per try, then the selection with its scores.
+        # A BestOfN / Refine run: each try (started / ended), its live stream, then the
+        # selection with the scores or the user's pick.
         "variant.try",
+        "variant.try.delta",
         "variant.selected",
         # Routing decisions are OBSERVABILITY events (the prototype's timeline
         # "routing_decision" rows), never transcript parts (clean-wire rule).

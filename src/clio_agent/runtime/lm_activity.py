@@ -33,7 +33,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from typing import Any
 
 from clio_agent import conf
@@ -108,6 +108,25 @@ def set_live_chunk_emitter(loop: Any, emit_coro: Any, record_dedup: Any = None) 
     executor that runs the expert and dies with the turn's context — no explicit
     reset is needed (or provided)."""
     _LIVE_CHUNK_EMITTER.set((loop, emit_coro, record_dedup))
+
+
+def redirect_live_chunks(emit_coro: Any) -> Token[tuple[Any, Any, Any] | None] | None:
+    """Send this context's streamed deltas to ``emit_coro`` instead of the turn's lane.
+
+    A variant try streams into its own tab, never into the turn's answer: the coroutine
+    is scheduled on the turn's loop like the chat publisher. ``None`` off-turn (nothing
+    is bound, so nothing streams); otherwise the token to :func:`reset_live_chunks`.
+    """
+    bound = _LIVE_CHUNK_EMITTER.get()
+    if bound is None:
+        return None
+    return _LIVE_CHUNK_EMITTER.set((bound[0], emit_coro, None))
+
+
+def reset_live_chunks(token: Token[tuple[Any, Any, Any] | None] | None) -> None:
+    """Undo :func:`redirect_live_chunks` (a ``None`` token changed nothing)."""
+    if token is not None:
+        _LIVE_CHUNK_EMITTER.reset(token)
 
 
 def note_suppressed_extract_field(

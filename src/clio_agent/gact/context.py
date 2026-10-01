@@ -447,3 +447,35 @@ def set_parent_span(span_id: str) -> contextvars.Token[RuntimeContext]:
     """Set ``parent_span_id`` (``_ACTIVE_PARENT_SPAN_ID.set``)."""
     cur = _RUNTIME.get()
     return _RUNTIME.set(replace(cur, parent_span_id=span_id))
+
+
+# A variant try (Phase 9) running in this context: ``(variants_id, try_index)``. Every
+# semantic event emitted inside the try carries both (``stamp_active_try``), so a client
+# groups the try's own steps under its tab. A separate var (not on RuntimeContext): it
+# is set and reset only around one try, in the try's own context.
+_VARIANT_TRY: contextvars.ContextVar[tuple[str, int] | None] = contextvars.ContextVar(
+    "clio_variant_try", default=None
+)
+
+
+def active_variant_try() -> tuple[str, int] | None:
+    """``(variants_id, try_index)`` of the variant try running here, if any."""
+    return _VARIANT_TRY.get()
+
+
+def set_variant_try(variants_id: str, try_index: int) -> contextvars.Token[tuple[str, int] | None]:
+    """Mark this context as running try ``try_index`` of run ``variants_id``."""
+    return _VARIANT_TRY.set((variants_id, int(try_index)))
+
+
+def reset_variant_try(token: contextvars.Token[tuple[str, int] | None]) -> None:
+    """Undo :func:`set_variant_try`."""
+    _VARIANT_TRY.reset(token)
+
+
+def stamp_active_try(payload: dict[str, Any]) -> dict[str, Any]:
+    """``payload`` with the running try's ``variants_id`` / ``try_index`` (as is off-try)."""
+    current = _VARIANT_TRY.get()
+    if current is None or "variants_id" in payload:
+        return payload
+    return {**payload, "variants_id": current[0], "try_index": current[1]}

@@ -27,7 +27,10 @@ INJECTION_TRANSCRIPT_FROZEN = "injection_transcript_frozen"
 
 def injection_part(source: str, text: str, *, call_id: str = "", agent_id: str = "") -> Part:
     """Build one ``injection`` part (``call_id``: the tool call it is about, if any)."""
-    metadata: dict[str, Any] = {"actor": "algorithm"}
+    from clio_agent.gact import context as _ctx  # noqa: PLC0415
+
+    # Inside a variant try the part belongs to the try's tab (its variants_id / try_index).
+    metadata: dict[str, Any] = _ctx.stamp_active_try({"actor": "algorithm"})
     if call_id:
         metadata["call_id"] = call_id
     return Part(
