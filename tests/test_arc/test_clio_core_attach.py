@@ -303,9 +303,22 @@ def _short_window(monkeypatch, seconds: float) -> None:
     monkeypatch.setattr(rpc_liveness, "health_probe_window_s", lambda policy=None: seconds)
 
 
+def _stuck_daemon(monkeypatch) -> None:
+    """The probed daemon makes no progress: its work counter stays flat.
+
+    The stand-in store is attached to no real daemon, so the progress signal must come
+    from the same stand-in, not from whatever clio-core daemon this worker runs (on
+    Linux an idle one polls, so its CPU time always advances).
+    """
+    from clio_agent.arc import daemon_progress  # noqa: PLC0415
+
+    monkeypatch.setattr(daemon_progress, "daemon_cpu_seconds", lambda: 1.0)
+
+
 def test_post_attach_probe_against_a_stuck_daemon_expires_typed(monkeypatch):
     """A daemon that never answers costs the bound, then a typed error; never a hang."""
     _short_window(monkeypatch, 0.3)
+    _stuck_daemon(monkeypatch)
     future = _Future(code=None)
     deregistered: list[bool] = []
     started = time.monotonic()

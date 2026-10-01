@@ -566,7 +566,7 @@ def _call_lm(lm: Any, request: Request) -> Response:
         return run_on_lm_loop(run)
     except LMUnexpectedError as exc:
         # DSPy wraps an engine's own typed error (a refused sign-in, an exhausted plan,
-        # a Codex SDK failure) as unexpected; the turn classifies the original.
+        # a Codex transport failure) as unexpected; the turn classifies the original.
         cause = exc.__cause__
         if isinstance(cause, Exception) and not isinstance(cause, LM15Error):
             raise cause from exc

@@ -79,6 +79,12 @@ class ResultMessage:
         self.total_cost_usd = None
 
 
+class SystemMessage:
+    def __init__(self, subtype: str, data: dict[str, Any]) -> None:
+        self.subtype = subtype
+        self.data = data
+
+
 class RateLimitEvent:
     def __init__(self, status: str) -> None:
         self.rate_limit_info = SimpleNamespace(
@@ -406,8 +412,6 @@ def test_a_cli_side_compaction_resets_the_conversation_typed(
 ) -> None:
     """The Claude Code CLI compacting its own session changes the model's real context
     behind clio-core: the next call is a full send from clio-core, reason recorded."""
-    from claude_agent_sdk.types import SystemMessage
-
     compacted = SystemMessage(subtype="compact_boundary", data={"trigger": "auto"})
     pool.turns = [
         [_text("a"), _result()],

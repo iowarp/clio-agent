@@ -228,29 +228,21 @@ def test_user_updatable_components_are_exact_floors_in_pyproject() -> None:
 
 def test_a_user_updated_component_above_the_lock_is_not_drift() -> None:
     """SABOTAGE: drop the exception -> the updated SDKs show up as drift rows."""
-    locked = {
-        "openai-codex": "0.157.1",
-        "openai-codex-cli-bin": "0.157.1",
-        "claude-agent-sdk": "0.2.156",
-    }
-    scope = {"openai-codex", "openai-codex-cli-bin"}  # claude-agent-sdk is installed on demand
-    installed = {
-        "openai-codex": "0.158.0",
-        "openai-codex-cli-bin": "0.158.0",
-        "claude-agent-sdk": "0.2.159",
-    }
+    locked = {"openai-codex-cli-bin": "0.157.1", "claude-agent-sdk": "0.2.156"}
+    scope = {"openai-codex-cli-bin"}  # claude-agent-sdk is installed on demand
+    installed = {"openai-codex-cli-bin": "0.158.0", "claude-agent-sdk": "0.2.159"}
     assert cbl.find_drift(locked, installed, scope) == []
 
 
 def test_the_exception_is_exact_not_a_weakened_check() -> None:
     """Below the lock, unparsable, unknown to the lock, or not an updatable name: all still drift."""
-    locked = {"openai-codex": "0.157.1", "click": "8.3.3"}
-    scope = {"openai-codex", "click"}
-    assert cbl.find_drift(locked, {"openai-codex": "0.147.0"}, scope) == [
-        ("openai-codex", "0.157.1", "0.147.0")
+    locked = {"openai-codex-cli-bin": "0.157.1", "click": "8.3.3"}
+    scope = {"openai-codex-cli-bin", "click"}
+    assert cbl.find_drift(locked, {"openai-codex-cli-bin": "0.147.0"}, scope) == [
+        ("openai-codex-cli-bin", "0.157.1", "0.147.0")
     ]
-    assert cbl.find_drift(locked, {"openai-codex": "0.158.0rc1"}, scope) == [
-        ("openai-codex", "0.157.1", "0.158.0rc1")
+    assert cbl.find_drift(locked, {"openai-codex-cli-bin": "0.158.0rc1"}, scope) == [
+        ("openai-codex-cli-bin", "0.157.1", "0.158.0rc1")
     ]
     assert cbl.find_drift(locked, {"claude-agent-sdk": "0.2.159"}, scope) == [
         ("claude-agent-sdk", None, "0.2.159")
@@ -262,13 +254,16 @@ def test_verify_runtime_names_user_updated_components_and_passes(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
     """A runtime whose SDK was updated in place still verifies, and says so by name."""
-    locked = {"click": "8.3.3", "openai-codex": "0.157.1"}
+    locked = {"click": "8.3.3", "openai-codex-cli-bin": "0.157.1"}
     monkeypatch.setattr(cbl, "load_lock_versions", lambda _lock: locked)
     monkeypatch.setattr(cbl, "load_bundle_scope", lambda _p, _e: set(locked))
     monkeypatch.setattr(
-        cbl, "load_installed_versions", lambda _py: {"click": "8.3.3", "openai-codex": "0.158.0"}
+        cbl,
+        "load_installed_versions",
+        lambda _py: {"click": "8.3.3", "openai-codex-cli-bin": "0.158.0"},
     )
     assert cbl.verify_runtime(tmp_path / "python", tmp_path / "uv.lock", tmp_path) == 0
-    assert "user-updatable component: openai-codex locked='0.157.1' installed='0.158.0'" in (
-        capsys.readouterr().out
+    assert (
+        "user-updatable component: openai-codex-cli-bin locked='0.157.1' installed='0.158.0'"
+        in (capsys.readouterr().out)
     )

@@ -92,8 +92,6 @@ def test_claude_refuses_individually_legal_attachments_that_sum_past_the_request
         native_blocks([image, image])
 
 
-# NOTE (engine port): the Codex SDK engine re-checks these bounds on its image inputs
-# (``providers.codex.sdk_engine._image_inputs``, pinned in test_codex_sdk_engine). The
-# Codex direct engine hands images/files to lm15's Responses payload builder with no
-# provider-level re-check; the ingestion-level check in ``gact/messaging.py`` still
-# applies before any provider is invoked.
+# NOTE (engine port): the Codex direct engine hands images/files to lm15's Responses
+# payload builder with no provider-level re-check; the ingestion-level check in
+# ``gact/messaging.py`` still applies before any provider is invoked.

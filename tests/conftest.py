@@ -271,6 +271,28 @@ def claude_sdk_installed(monkeypatch):
 
 
 @pytest.fixture
+def codex_test_login():
+    """Write a test Codex CLI login into this test's own ``$CODEX_HOME``.
+
+    Codex direct reads ``$CODEX_HOME/auth.json`` when CLIO holds no sign-in of its
+    own. Every test gets an empty home (``allow_pytest_tmp_path``), so a test that
+    builds the Codex wire declares the login it needs here -- never the developer's
+    real one (found 2026-10-01: the wire ignored ``CODEX_HOME`` and these tests
+    passed only on the real login).
+    """
+    import json as _json
+
+    home = Path(os.environ["CODEX_HOME"])
+    home.mkdir(parents=True, exist_ok=True)
+    auth = home / "auth.json"
+    auth.write_text(
+        _json.dumps({"tokens": {"access_token": "test-codex-token", "account_id": "acct-test"}}),
+        encoding="utf-8",
+    )
+    return auth
+
+
+@pytest.fixture
 def globus_sdk_installed(monkeypatch):
     """Make ``find_spec("globus_sdk")`` succeed without the real SDK.
 
@@ -609,7 +631,10 @@ def allow_pytest_tmp_path(request, tmp_path, monkeypatch):
     monkeypatch.setenv("CLIO_USER_DIR", str(xdg_root / "clio-agent"))
     # Codex direct also signs in from the local Codex CLI login ($CODEX_HOME/auth.json):
     # a unit test must never see the developer's real login, so each gets an empty home.
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex_home"))
+    # A ``live`` test is the exception: it exists to call the real provider with the
+    # real login (found 2026-10-01: the live Codex discovery test could never pass).
+    if request.node.get_closest_marker("live") is None:
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex_home"))
     # Likewise the developer's ALCF (Globus) sign-in: a stored token made every
     # provider probe a real auth.globus.org round trip (53 errors on a fresh worktree,
     # hidden on an old one by a cached handshake). Each test gets empty token stores.

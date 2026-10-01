@@ -72,8 +72,8 @@ def test_normalize_of_empty_string_is_empty() -> None:
 
 
 def test_normalize_is_identity_for_an_sdk_marker() -> None:
-    # codex://sdk / claude-code://sdk carry no host/port to canonicalize.
-    assert normalize("codex://sdk") == "codex://sdk"
+    # codex://direct / claude-code://sdk carry no host/port to canonicalize.
+    assert normalize("codex://direct") == "codex://direct"
     assert normalize("claude-code://sdk") == "claude-code://sdk"
 
 

@@ -1,16 +1,16 @@
 """Fresh-interpreter provider check run after a component update.
 
 ``python -m clio_agent.providers.components.verify <provider_kind>`` imports
-the just-installed SDK in a NEW process (the updating process still holds the
-old modules) and re-runs the provider's own check and model discovery there.
+the just-installed component in a NEW process (the updating process still holds
+the old modules) and re-runs the provider's own check and model discovery there.
 It prints one JSON line ``{"ok", "code", "detail", "client"}`` and exits 0 only
 when the update left a working provider.
 
-What counts as working is "the SDK and its CLI start and answer": a signed-out
-account or an empty model list is the account's state, not a broken install,
-so those pass with their code recorded. A failure to import, to launch the
-runtime, or to complete the discovery exchange fails the update (which then
-rolls back).
+What counts as working is "the component loads and the provider answers": a
+signed-out account or an empty model list is the account's state, not a broken
+install, so those pass with their code recorded. A failure to import, to read
+the runtime version, or to complete the discovery exchange fails the update
+(which then rolls back).
 """
 
 from __future__ import annotations
@@ -19,8 +19,9 @@ import json
 import sys
 from typing import Any
 
-#: Codex discovery outcomes that prove the SDK + runtime answered.
-_CODEX_WORKING_CODES = frozenset({"", "codex_sdk_signed_out", "codex_sdk_zero_models"})
+#: Codex direct model-list outcomes that prove the runtime version was read and
+#: the backend answered (the account's state, not a broken install).
+_CODEX_WORKING_CODES = frozenset({"codex_direct_signed_out", "codex_direct_zero_models"})
 
 
 def _code(failed_reason: str) -> str:
@@ -28,17 +29,28 @@ def _code(failed_reason: str) -> str:
 
 
 def verify_codex() -> dict[str, Any]:
-    """Import the Codex SDK and ask its runtime for the account's models."""
-    from clio_agent.providers.codex.sdk_discovery import discover_codex_sdk  # noqa: PLC0415
-    from clio_agent.providers.components.client_binary import codex_client  # noqa: PLC0415
+    """Import the Codex runtime and ask the backend for the models its version unlocks."""
+    import codex_cli_bin  # noqa: F401, PLC0415
 
-    result = discover_codex_sdk()
-    code = _code(result.failed_reason or "")
+    from clio_agent.providers.codex.model_list import (  # noqa: PLC0415
+        CodexModelListError,
+        fetch_direct_models,
+    )
+
+    try:
+        listed = fetch_direct_models()
+    except CodexModelListError as exc:
+        return {
+            "ok": exc.code in _CODEX_WORKING_CODES,
+            "code": exc.code,
+            "detail": str(exc),
+            "client": None,
+        }
     return {
-        "ok": code in _CODEX_WORKING_CODES,
-        "code": code or "codex_sdk_models_listed",
-        "detail": result.failed_reason or f"{len(result.discovered)} models",
-        "client": codex_client().to_wire(),
+        "ok": True,
+        "code": "codex_direct_models_listed",
+        "detail": f"{len(listed.models)} models for client_version {listed.client_version}",
+        "client": None,
     }
 
 

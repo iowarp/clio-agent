@@ -111,7 +111,7 @@ def _overlay_capabilities(row: dict[str, Any]) -> tuple[str, ...]:
 def _thinking_fact_for(provider_kind: str, raw: dict[str, Any]) -> Fact[ThinkingSpec]:
     """This overlay-sourced row's ``ThinkingSpec`` fact, dispatched by CLI provider.
 
-    Codex's own SDK effort vocabulary and Claude Code's CLI-reported effort
+    Codex's own effort vocabulary and Claude Code's CLI-reported effort
     levels need different per-provider translation
     (:mod:`clio_agent.providers.capabilities.dialects.codex`/``.claude_code``);
     every other (future) no-HTTP-surface CLI provider has no known thinking

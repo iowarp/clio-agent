@@ -525,10 +525,6 @@ KEY_NOTES: dict[str, str] = {
         "when a child blueprint returns; raise for larger reports, lower to bound resumed "
         "parent context growth."
     ),
-    "limits.codex_sdk_progress_timeout_s": (
-        "Max silence (seconds) for one Codex SDK exchange/event, resetting on every progress event "
-        "rather than a fixed clock; raise for long turns."
-    ),
     "limits.context_inline_bytes": (
         "Byte cap per attached file inlined into context injection; raise to inline larger "
         "attachments, lower to bound prompt growth."
@@ -617,11 +613,7 @@ KEY_NOTES: dict[str, str] = {
     ),
     "lm.codex_transport": (
         'Selects the Codex transport; "websocket" (default, with delta continuation) or "sse" '
-        "to force the automatic-fallback transport."
-    ),
-    "lm.codex_variant": (
-        'Selects which Codex transport a config binds: "direct" (default, CLIO sign-in) or '
-        '"sdk" (the local Codex app login).'
+        "to force the stateless HTTP transport."
     ),
     "lm.context_window": (
         "Override the effective context window (tokens); 0 auto-derives from the "
@@ -829,10 +821,6 @@ KEY_NOTES: dict[str, str] = {
     "providers.claude_code.stateful_capacity": (
         "Max live Claude Code stateful-session entries before LRU eviction; raise on a host "
         "running many concurrent stateful sessions."
-    ),
-    "providers.codex.stateful_capacity": (
-        "Max live Codex SDK conversations (one kept thread each) before LRU eviction; raise on "
-        "a host running many concurrent agent conversations."
     ),
     "providers.claude_code.stream_idle_ttl_s": (
         "Seconds a session's pooled Claude Code connection may sit idle before the next request "

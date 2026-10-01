@@ -24,7 +24,8 @@ engine changes only the transport:
   (never retried); a refused sign-in is a typed ``AuthError``; everything else is
   lm15's typed error.
 * **Auth** is clio's own Codex sign-in when there is one (refreshed per call), else
-  the local Codex CLI login (``~/.codex/auth.json``, read by lm15).
+  the local Codex CLI login (``$CODEX_HOME/auth.json``, default ``~/.codex``, read
+  by lm15).
 """
 
 from __future__ import annotations
@@ -54,12 +55,12 @@ from dspy.lm15 import TimeoutError as ProviderTimeoutError
 
 from clio_agent.lm.engines.conversations import conversation_key, new_messages
 from clio_agent.providers.codex import constants as c
-from clio_agent.providers.codex.errors import CodexPlanLimitError, is_usage_limit_text
-from clio_agent.providers.codex.sdk_audit import (
+from clio_agent.providers.codex.audit import (
     emit_call_started,
     emit_call_usage,
     emit_raw_event,
 )
+from clio_agent.providers.codex.errors import CodexPlanLimitError, is_usage_limit_text
 from clio_agent.providers.stateful_common import stateful_reset_payload
 
 __all__ = ["AsyncCodexDirectEngine", "CodexDirectEngine", "close_all", "default_wire"]
@@ -288,15 +289,25 @@ def _check_media(request: Request) -> None:
 
 
 def default_wire() -> Any:
-    """lm15's Codex LM on clio's sign-in (a fresh token per call), else the CLI login."""
+    """lm15's Codex LM on clio's sign-in (a fresh token per call), else the CLI login.
+
+    The CLI login is ``$CODEX_HOME/auth.json`` (default ``~/.codex``), resolved by
+    :func:`~clio_agent.providers.codex.credentials.codex_cli_auth_path` -- lm15's own
+    default path ignores ``CODEX_HOME``, so the path is always passed explicitly.
+    """
     from dspy.lm15 import OpenAICodexLM  # noqa: PLC0415
 
-    from clio_agent.providers.codex.credentials import CodexCredentialStore  # noqa: PLC0415
+    from clio_agent.providers.codex.credentials import (  # noqa: PLC0415
+        CodexCredentialStore,
+        codex_cli_auth_path,
+    )
 
     store = CodexCredentialStore()
     credential = store.load()
     if credential is None:
-        return OpenAICodexLM.from_codex_cli(originator=c.ORIGINATOR)
+        return OpenAICodexLM.from_codex_cli(
+            auth_path=codex_cli_auth_path(), originator=c.ORIGINATOR
+        )
     return OpenAICodexLM(
         api_key=lambda: store.get_valid_credential().access_token,
         account_id=credential.account_id,
@@ -369,7 +380,7 @@ async def _exchange(
 ) -> str:
     """Send one ``response.create`` frame; forward parsed events; return the response id.
 
-    Writes the same per-call audit rows as the SDK engines (``provider.call_started``,
+    Writes the same per-call audit rows as Claude Code (``provider.call_started``,
     the first streamed event, ``provider.call_usage`` with cached input).
     """
     call_id, call_index = uuid.uuid4().hex, _next_call_index()
@@ -378,8 +389,6 @@ async def _exchange(
         call_index=call_index,
         model=str(frame.get("model") or ""),
         prompt=json.dumps(frame.get("input") or []),
-        provider="codex_direct",
-        transport="websocket",
     )
     streamed: list[bool] = []  # set once any event of the reply reached the caller
     try:
@@ -428,7 +437,6 @@ async def _stream(
                     source_channel=str(getattr(event.delta, "type", "")),
                     text="",
                     raw_event_type=kind,
-                    provider="codex_direct",
                 )
             if event.type == "end":
                 usage = event.usage
@@ -441,8 +449,6 @@ async def _stream(
                 model=str(frame.get("model") or ""),
                 usage=_usage_row(usage),
                 output_chars=0,
-                provider="codex_direct",
-                transport="websocket",
             )
             response = payload.get("response") or {}
             return str(response.get("id") or "")
@@ -461,7 +467,7 @@ def _next_call_index() -> int:
 
 
 def _usage_row(usage: Any) -> dict[str, int]:
-    """lm15 usage in the audit's ``usage_*`` keys (the SDK engines' names)."""
+    """lm15 usage in the audit's ``usage_*`` keys (the Claude Code engine's names)."""
     if usage is None:
         return {}
     fields = {

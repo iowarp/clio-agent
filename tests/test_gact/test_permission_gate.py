@@ -37,6 +37,7 @@ from clio_agent.gact.permission_gate import (
 from clio_agent.gact.types import Message, Part
 from clio_agent.tools.execution import SyncMCPToolExecutor
 from tests.test_gact.conftest import complete_turn
+from tests.turn_signals import TURN_SIGNAL_BACKSTOP_S
 
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
 # test's ``build_app(agent=...)`` host fake.
@@ -173,6 +174,45 @@ def test_external_mcp_non_read_only_hint_registers_pending_permission(tmp_path: 
         assert result["decision"] == "deny"
 
 
+def _permission_events_once_published(
+    bus: Any, stream_ids: tuple[str, ...], event_type: str, matches: Any
+) -> dict[str, list[Any]]:
+    """Each stream's ``event_type`` events matching ``matches``, once every stream has one.
+
+    A gate on a tool thread publishes through ``call_soon_threadsafe``, so the events
+    land in the replay history after the pending row is visible. Wait on the history
+    itself (the bus's synchronous subscription primitive), never a wall-clock guess;
+    the helper thread's backstop is only a hang detector.
+    """
+
+    found: dict[str, list[Any]] = {}
+
+    def collect() -> dict[str, list[Any]]:
+        return {
+            stream_id: [
+                event
+                for event in bus.session_events_since(stream_id)
+                if event.type == event_type and matches(event.payload)
+            ]
+            for stream_id in stream_ids
+        }
+
+    def watch() -> None:
+        while True:
+            cursor = bus.latest_session_event_id(list(stream_ids))
+            events = collect()
+            if all(events.values()):
+                found.update(events)
+                return
+            bus.wait_for_session_events(list(stream_ids), after_event_id=cursor)
+
+    watcher = threading.Thread(target=watch, name="permission-event-watch", daemon=True)
+    watcher.start()
+    watcher.join(TURN_SIGNAL_BACKSTOP_S)
+    assert found, f"no {event_type} reached every stream within the backstop"
+    return found
+
+
 def test_child_permission_lifecycle_is_visible_on_attended_root(tmp_path: Path) -> None:
     """A child owns the approval while the root stream receives an actionable mirror."""
 
@@ -199,24 +239,19 @@ def test_child_permission_lifecycle_is_visible_on_attended_root(tmp_path: Path) 
 
         thread = threading.Thread(target=call_gate)
         thread.start()
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline and not app.state.permissions:
-            time.sleep(0.01)
-
-        pending = next(iter(app.state.permissions.values()))
-        permission_id = pending["id"]
-        child_requested = [
-            event
-            for event in app.state.bus._history.get(child.id, [])
-            if event.type == "permission.requested" and event.payload.get("id") == permission_id
-        ]
-        root_requested = [
-            event
-            for event in app.state.bus._history.get(root_id, [])
-            if event.type == "permission.requested" and event.payload.get("id") == permission_id
-        ]
+        requested = _permission_events_once_published(
+            app.state.bus,
+            (child.id, root_id),
+            "permission.requested",
+            lambda payload: payload.get("tool_call", {}).get("tool_name") == "remote.submit",
+        )
+        child_requested = requested[child.id]
+        root_requested = requested[root_id]
         assert len(child_requested) == 1
         assert len(root_requested) == 1
+        permission_id = child_requested[0].payload["id"]
+        assert permission_id in app.state.permissions
+        assert root_requested[0].payload["id"] == permission_id
         assert root_requested[0].payload["session_id"] == child.id
         assert root_requested[0].payload["forwarded_from_session_id"] == child.id
         assert root_requested[0].payload["attended_session_id"] == root_id
@@ -230,15 +265,15 @@ def test_child_permission_lifecycle_is_visible_on_attended_root(tmp_path: Path) 
         assert not thread.is_alive()
         assert result["decision"] == "allow"
 
+        resolved = _permission_events_once_published(
+            app.state.bus,
+            (child.id, root_id),
+            "permission.resolved",
+            lambda payload: payload.get("permission_id") == permission_id,
+        )
         for stream_id in (child.id, root_id):
-            resolved = [
-                event
-                for event in app.state.bus._history.get(stream_id, [])
-                if event.type == "permission.resolved"
-                and event.payload.get("permission_id") == permission_id
-            ]
-            assert len(resolved) == 1
-            assert resolved[0].payload["session_id"] == child.id
+            assert len(resolved[stream_id]) == 1
+            assert resolved[stream_id][0].payload["session_id"] == child.id
 
 
 def test_declared_mcp_mutation_blocks_before_transport_until_ui_resolution(

@@ -18,8 +18,11 @@ identity is written:
 * ``lm.model``, and ``lm.api_base`` when the bind named one (otherwise the key is
   removed so the preset default applies);
 * the transport keys of the bound provider (``lm.claude_code_transport`` /
-  ``lm.codex_transport`` + ``lm.codex_variant``); a previous provider's transport
-  keys are removed.
+  ``lm.codex_transport``); a previous provider's transport keys are removed.
+
+A removed key (:data:`clio_agent.config.REMOVED_CONFIG_KEYS`) still set anywhere is
+never rewritten around: the write is refused with the typed reason below and the
+plain-language detail naming what to delete.
 
 API keys are never written: the secret tier stays out of config files, and a
 saved key already survives restarts in ``ProviderApiKeyStore``. A failure to
@@ -50,7 +53,6 @@ OWNED_LM_KEYS = (
     "api_base",
     "claude_code_transport",
     "codex_transport",
-    "codex_variant",
 )
 
 #: Typed reason recorded when the selection could not be written.
@@ -93,8 +95,6 @@ def selection_entries(cfg: Any, *, requested_api_base: str) -> dict[str, Any]:
         entries["claude_code_transport"] = str(cfg.claude_code_transport)
     elif provider == "codex":
         entries["codex_transport"] = str(cfg.codex_transport)
-        if getattr(cfg, "codex_variant", ""):
-            entries["codex_variant"] = str(cfg.codex_variant)
     return entries
 
 
@@ -111,11 +111,13 @@ def persist_lm_selection(cfg: Any, *, requested_api_base: str) -> SelectionPersi
     """
 
     from clio_agent import conf  # noqa: PLC0415 - avoid import cycle at module load
+    from clio_agent.config import reject_removed_config_keys  # noqa: PLC0415
 
     path = user_config_path()
     entries = selection_entries(cfg, requested_api_base=requested_api_base)
     try:
         with _LOCK:
+            reject_removed_config_keys()  # RemovedConfigKeyError is a ValueError
             document = _read_document(path)
             current = document.get("lm")
             lm = dict(current) if isinstance(current, Mapping) else {}

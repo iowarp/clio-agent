@@ -1,7 +1,7 @@
 """User-updatable provider components: which CLI runs, update checks, in-place updates.
 
-* :mod:`.client_binary` -- installed vs bundled CLI selection for the Codex and
-  Claude Code SDK transports.
+* :mod:`.client_binary` -- installed vs bundled CLI selection for the
+  Claude Code SDK transport.
 * :mod:`.registry` -- the ONLY user-updatable distributions.
 * :mod:`.pypi` / :mod:`.status` -- latest installable release and
   ``update_available`` per provider.

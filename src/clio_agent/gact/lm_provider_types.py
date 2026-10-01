@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from clio_agent.providers.codex.errors import CODEX_VARIANT_REMOVED_MESSAGE
+
 
 class LMProviderConfigurationField(BaseModel):
     """One non-secret option rendered in a provider settings form."""
@@ -178,14 +180,21 @@ class LMProviderRequest(BaseModel):
     parallel: int = 0
     turn_timeout_s: float = 0.0
     transport: str | None = None
-    # WHICH of a multi-transport provider's implementations to bind (S1b).
-    # Only the ``codex`` provider reads this today (``"sdk"`` | ``"direct"``,
-    # default ``"direct"``) -- distinct from ``transport`` above, which is a
-    # provider's own internal delivery choice (codex direct's websocket/sse,
-    # claude_code's sdk). Named ``variant`` to mirror ``ModelRef.variant``,
-    # which a session/message model ref uses to request the same transport.
-    variant: str = ""
     thinking_level: (
         Literal["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] | None
     ) = None
     thinking_budget: int = 0
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_codex_variant(cls, data: object) -> object:
+        """Refuse a Codex bind that names any ``variant``.
+
+        Codex always connects directly, so a variant (the removed SDK path's
+        ``"sdk"``, or the ``"direct"`` an older client echoed) is a stale
+        selection: it is refused in plain language, never silently dropped.
+        """
+        if isinstance(data, dict) and str(data.get("provider") or "") == "codex":
+            if str(data.get("variant") or "").strip():
+                raise ValueError(CODEX_VARIANT_REMOVED_MESSAGE)
+        return data

@@ -1,7 +1,7 @@
-"""Kept provider conversations for the stateful SDK engines (Codex, Claude Code).
+"""Kept provider conversations for the stateful engines (Codex direct, Claude Code).
 
-A provider that holds a conversation server-side (a Codex thread, a Claude Code
-session) is sent only what it has not seen. :class:`ConversationRegistry` remembers,
+A provider that holds a conversation open (a Codex WebSocket response chain, a
+Claude Code session) is sent only what it has not seen. :class:`ConversationRegistry` remembers,
 per conversation key, the provider's handle (thread or session id), the system prompt
 it was opened with and the messages it was sent. A call whose messages repeat all of
 that plus the provider's own reply, then add only non-assistant messages, continues the

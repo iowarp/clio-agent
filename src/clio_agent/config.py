@@ -196,7 +196,6 @@ class LMProviderConfig:
         max_tokens: Maximum tokens per response
         environment: Deployment environment (dev/staging/production)
         codex_transport: Codex transport: "websocket" (default, A.6) or "sse"
-        codex_variant: Which codex transport this config binds: "sdk" or "direct" (default, S1b)
     """
 
     # ProviderKind (the dialect selector, not an identity -- Part 3): the
@@ -230,7 +229,6 @@ class LMProviderConfig:
     context_length: int = 0
     environment: str = "dev"
     codex_transport: Literal["websocket", "sse"] = "websocket"
-    codex_variant: Literal["", "sdk", "direct"] = ""  # S1b; "" normalizes to "direct" below
     # "sdk" (the only transport since v0.8.0): the in-process Claude Agent SDK
     #   with a persistent CLI session — no per-call spawn, streaming-capable, and
     #   setting_sources=[] keeps the user's ~/.claude/CLAUDE.md out of the prompt.
@@ -326,11 +324,6 @@ class LMProviderConfig:
             raise ValueError(
                 f"codex_transport must be 'websocket' or 'sse' (got {self.codex_transport!r})"
             )
-        if self.codex_variant not in {"", "sdk", "direct"}:
-            raise ValueError(
-                f"codex_variant must be 'sdk' or 'direct' (got {self.codex_variant!r})"
-            )
-        self.codex_variant = self.codex_variant or "direct"
         if self.claude_code_transport != "sdk":
             raise ValueError(
                 "claude_code_transport 'exec' was removed in the v0.8.0 cleanup — "
@@ -453,6 +446,37 @@ def _resolve_argonne_api_key() -> str:
     return _credentials.resolve_argonne_token()
 
 
+#: Config keys clio no longer supports: (config-file key, env var, what was removed).
+#: A key here that is still set is a typed error, never ignored or remapped.
+REMOVED_CONFIG_KEYS: tuple[tuple[str, str, str], ...] = (
+    (
+        "lm.codex_variant",
+        "CLIO_CODEX_VARIANT",
+        "The Codex SDK path was removed (Codex now always connects directly)",
+    ),
+)
+
+
+def reject_removed_config_keys() -> None:
+    """Raise when a removed config key is still set in a config file or the environment.
+
+    Raises:
+        RemovedConfigKeyError: naming the removed feature, the key, and every
+            place it is set (each config file path / the environment variable).
+    """
+    from clio_agent import conf  # noqa: PLC0415 - keep config.py a leaf; lazy per-call
+    from clio_agent.errors import RemovedConfigKeyError  # noqa: PLC0415
+
+    for key, env, removed in REMOVED_CONFIG_KEYS:
+        locations = conf.store().where_set(key, env=env)
+        if locations:
+            raise RemovedConfigKeyError(
+                f"{removed}; delete {key} from {' and '.join(locations)}.",
+                key=key,
+                locations=locations,
+            )
+
+
 def load_config_from_env() -> LMProviderConfig:
     """Load LM boot configuration via ``conf`` (file → env → default).
 
@@ -470,7 +494,6 @@ def load_config_from_env() -> LMProviderConfig:
         ``lm.max_tokens`` / CLIO_LM_MAX_TOKENS: Override max tokens
         ``lm.top_p`` / ``lm.top_k`` / ``lm.min_p`` / ``lm.presence_penalty``: sampling
         ``lm.codex_transport`` / CLIO_CODEX_TRANSPORT: direct codex transport (websocket/sse)
-        ``lm.codex_variant`` / CLIO_CODEX_VARIANT: codex provider transport (sdk/direct)
         ``lm.claude_code_transport`` / CLIO_CLAUDE_CODE_TRANSPORT: Claude Code transport
         ``lm.context_window`` / CLIO_LM_CONTEXT_WINDOW: Override effective context window
             (tokens); 0 = auto-derive from handshake (default). Set to assert a larger
@@ -487,9 +510,11 @@ def load_config_from_env() -> LMProviderConfig:
 
     Raises:
         ValueError: If cloud provider is selected without API key
+        RemovedConfigKeyError: If a removed key (``REMOVED_CONFIG_KEYS``) is still set
     """
     from clio_agent import conf  # noqa: PLC0415 - keep config.py a leaf; lazy per-call
 
+    reject_removed_config_keys()
     provider = conf.resolve(
         "lm.provider", env="CLIO_LM_PROVIDER", default="lm_studio", cast=conf.as_str
     )
@@ -502,11 +527,6 @@ def load_config_from_env() -> LMProviderConfig:
     )
     codex_transport = (
         conf.resolve("lm.codex_transport", env="CLIO_CODEX_TRANSPORT", default="", cast=conf.as_str)
-        .strip()
-        .lower()
-    )
-    codex_variant = (
-        conf.resolve("lm.codex_variant", env="CLIO_CODEX_VARIANT", default="", cast=conf.as_str)
         .strip()
         .lower()
     )
@@ -574,8 +594,6 @@ def load_config_from_env() -> LMProviderConfig:
         kwargs["presence_penalty"] = presence_penalty
     if codex_transport:
         kwargs["codex_transport"] = codex_transport
-    if codex_variant:
-        kwargs["codex_variant"] = codex_variant
     if claude_code_transport:
         kwargs["claude_code_transport"] = claude_code_transport
     if thinking_level:

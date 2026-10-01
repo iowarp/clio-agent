@@ -305,3 +305,43 @@ def test_a_daemon_making_no_progress_is_killed_loudly(
 
     assert outcome == runtime_stop.StopOutcome(stopped=False, path="stall_kill")
     assert killed == [True]
+
+
+def test_a_failed_stop_helper_is_not_waited_on_while_the_daemon_idles(
+    fake_iowarp_core: types.SimpleNamespace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``clio_run stop`` exiting non-zero (it could not load the config, so the daemon
+    was never asked to stop) ends the wait at once, loudly, even while the daemon's
+    own idle polling keeps its CPU time advancing (clio-core on Linux)."""
+
+    class FailedProcess:
+        def poll(self) -> int:
+            return 1
+
+    from clio_agent.arc import daemon_progress
+
+    work = {"w": 0.0}
+
+    def idle_polling(pid: int) -> float:
+        work["w"] += 0.1
+        return work["w"]
+
+    (tmp_path / "daemon.pid").write_text("4242 ", encoding="utf-8")
+    monkeypatch.setattr(runtime_stop.subprocess, "Popen", lambda *a, **k: FailedProcess())
+    monkeypatch.setattr(runtime_stop, "_resolve_runtime_port", lambda config_path: 65001)
+    monkeypatch.setattr(runtime_stop, "_runtime_alive", lambda port: True)
+    monkeypatch.setattr(runtime_stop, "expect_daemon_exit", lambda pid: None)
+    monkeypatch.setattr(daemon_progress, "process_work", idle_polling)
+    killed: list[bool] = []
+    monkeypatch.setattr(storage, "_kill_daemon_pidfile", lambda: killed.append(True))
+    monkeypatch.setattr(storage, "_daemon_pidfile", lambda: tmp_path / "daemon.pid")
+
+    with caplog.at_level(logging.WARNING, logger=runtime_stop.logger.name):
+        outcome = runtime_stop.stop_runtime_daemon("", "error")
+
+    assert outcome == runtime_stop.StopOutcome(stopped=False, path="helper_failed_kill")
+    assert killed == [True]
+    assert any("exited with code 1" in record.getMessage() for record in caplog.records)

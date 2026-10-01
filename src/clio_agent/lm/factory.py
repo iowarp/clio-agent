@@ -20,9 +20,6 @@ if TYPE_CHECKING:  # pragma: no cover
 
 from clio_agent.lm.request_builder import build_request_kwargs
 from clio_agent.providers.codex.constants import LITELLM_PROVIDER as _CODEX_LITELLM_PREFIX
-from clio_agent.providers.codex.constants import (
-    LITELLM_PROVIDER_SDK as _CODEX_LITELLM_PREFIX_SDK,
-)
 from clio_agent.runtime import turn_lm_ledger
 
 _dspy_cache = None
@@ -97,8 +94,7 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
         Configured dspy.LM instance
     """
     if config.provider == "codex":
-        engine_lm = _codex_sdk_lm if config.codex_variant == "sdk" else _codex_direct_lm
-        return _record_identity(engine_lm(config), config)
+        return _record_identity(_codex_direct_lm(config), config)
     if config.provider == "claude_code":
         return _record_identity(_claude_code_lm(config), config)
     # Defer litellm's eager ~40 MB cl100k_base tiktoken load until first real
@@ -254,50 +250,10 @@ def _codex_direct_lm(config: LMProviderConfig) -> Any:
     return lm
 
 
-def _codex_sdk_lm(config: LMProviderConfig) -> Any:
-    """The Codex SDK variant: a ``dspy.LM`` on the Codex SDK engine pair.
-
-    The reasoning effort is the engine's (fixed per LM, like every other setting of
-    the thread); the remaining generation kwargs stay on the LM for callers that
-    build their own ``Request.config`` from them.
-    """
-    import dspy  # noqa: PLC0415
-
-    from clio_agent.lm.call_trace import LM_CALL_TRACE  # noqa: PLC0415
-    from clio_agent.lm.policy import lm_retries  # noqa: PLC0415
-    from clio_agent.providers.codex.sdk_engine import (  # noqa: PLC0415
-        AsyncCodexSDKEngine,
-        CodexSDKEngine,
-    )
-
-    if not config.model.strip():
-        raise ValueError("No model configured for LM provider 'codex'")
-    bare = _codex_bare_model(config)
-    extras = build_request_kwargs(config)
-    effort = extras.pop("codex_reasoning_effort", None)
-    engine_args: dict[str, Any] = {"effort": effort}
-    generation = {k: v for k, v in extras.items() if not k.startswith("codex_")}
-    if config.max_tokens:
-        generation["max_tokens"] = config.max_tokens
-    lm = dspy.LM(
-        f"{_CODEX_LITELLM_PREFIX_SDK}/{bare}",
-        engine=CodexSDKEngine(bare, **engine_args),
-        async_engine=AsyncCodexSDKEngine(bare, **engine_args),
-        cache=False,
-        num_retries=lm_retries(),
-        model_type="chat",
-        callbacks=[LM_CALL_TRACE],
-        **generation,
-    )
-    lm._clio_tool_result_media = "native"  # the engine sends tool-result images natively
-    return lm
-
-
 def _codex_bare_model(config: LMProviderConfig) -> str:
     """The Codex model id without any transport prefix a persisted value may carry."""
     return (
         config.model.removeprefix(f"{_CODEX_LITELLM_PREFIX}/")
-        .removeprefix(f"{_CODEX_LITELLM_PREFIX_SDK}/")
         .removeprefix("codex/")
         .removeprefix("cg-")
     )
@@ -365,15 +321,9 @@ def _resolve_model_name(config: LMProviderConfig) -> str:
             f"No model configured for LM provider {config.provider_id or config.provider!r}"
         )
     if config.provider == "codex":
-        # Strip a legacy/already-litellm-prefixed value defensively (a
-        # persisted config.model could in principle already carry either
-        # transport's prefix) before re-applying the CURRENT litellm-facing
-        # prefix for the BOUND transport (S1b: sdk vs direct).
-        bare = _codex_bare_model(config)
-        prefix = (
-            _CODEX_LITELLM_PREFIX_SDK if config.codex_variant == "sdk" else _CODEX_LITELLM_PREFIX
-        )
-        return f"{prefix}/{bare}"  # the engine LM's model string
+        # Strip an already-litellm-prefixed value (a persisted config.model may
+        # carry the direct prefix) before re-applying it.
+        return f"{_CODEX_LITELLM_PREFIX}/{_codex_bare_model(config)}"  # the engine LM's model
     if config.provider == "claude_code":
         return f"claude_code/{_claude_code_bare_model(config)}"  # the engine LM's model
     return f"{_resolved_litellm_prefix(config)}/{config.model}"

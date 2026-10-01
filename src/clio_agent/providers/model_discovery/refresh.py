@@ -58,16 +58,6 @@ async def refresh_subscription_catalogs_at_startup() -> None:
                 logger.warning(
                     "%s model discovery failed at startup: %s", result["provider"], failure
                 )
-    # Codex's SECOND transport (S1b): the SDK is asked independently of the
-    # direct transport's sign-in state above (`is_provider_configured` gates
-    # on the direct credential store, which says nothing about whether a
-    # local SDK/runtime is signed in). Without this, the SDK stayed
-    # "codex_sdk_not_checked" until someone clicked an explicit refresh --
-    # the owner's original complaint. Runs off the same background startup
-    # task (never the request path), and the probe itself already degrades
-    # to a typed failure rather than raising when the SDK isn't installed.
-    if get_provider("codex") is not None:
-        await refresh_codex_sdk_transport()
 
 
 def refresh_online_catalogs() -> dict[str, str]:
@@ -105,25 +95,6 @@ def refresh_online_catalogs() -> dict[str, str]:
     for name, failure in failures.items():
         logger.warning("online catalog unavailable at startup name=%s: %s", name, failure)
     return failures
-
-
-async def refresh_codex_sdk_transport() -> None:
-    """Probe the Codex SDK transport once and persist the result to the overlay.
-
-    The overlay write is what makes this "persist last-good": a restart
-    serves whatever this last recorded (marked stale via the overlay's own
-    ``generated_at``) immediately, rather than showing "not checked" again
-    until the next probe completes.
-    """
-    from clio_agent.providers.codex.sdk_discovery import discover_codex_sdk_async
-
-    try:
-        result = await discover_codex_sdk_async()
-        record_refresh(result)
-    except OverlayMalformedError as exc:
-        logger.warning("Codex SDK transport overlay write failed at startup: %s", exc)
-    except Exception as exc:  # noqa: BLE001 - the SDK probe must never crash startup
-        logger.warning("Codex SDK transport discovery failed at startup: %s", exc)
 
 
 def is_provider_configured(preset: Provider) -> bool:
@@ -344,6 +315,5 @@ __all__ = [
     "refresh_all",
     "refresh_all_sync",
     "refresh_online_catalogs",
-    "refresh_codex_sdk_transport",
     "refresh_subscription_catalogs_at_startup",
 ]

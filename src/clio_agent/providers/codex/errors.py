@@ -121,24 +121,20 @@ class CodexUnsupportedInputError(CodexError):
     reason = "codex_unsupported_input"
 
 
-class CodexSDKError(CodexError):
-    """The local Codex SDK/runtime transport failed.
-
-    Covers a bare-LM validation trip (the SDK started a hidden internal
-    action), a failed SDK turn, or any other error the official ``openai_codex``
-    SDK surfaces. Distinct from :class:`CodexTransportError`/:class:`CodexResponseError`,
-    which are the DIRECT (HTTP/WebSocket) transport's own failure shapes.
-    """
-
-    reason = "codex_sdk_error"
-
-
 #: Shown wherever a refresh/handshake failure turns out to be an auth
 #: rejection rather than a generic transport failure. No "on the connected
 #: agent" -- that phrasing named the deleted local-CLI transport; the direct
 #: subscription provider authenticates against openai.com, not anything
 #: running on the backend host.
 CODEX_AUTHENTICATION_ERROR_MESSAGE = "Codex sign-in is required"
+
+#: The plain-language refusal for a Codex selection that still names a model
+#: variant (a bind request's or a model reference's ``variant``): Codex has one
+#: way to connect, so any variant is a stale client selection.
+CODEX_VARIANT_REMOVED_MESSAGE = (
+    "Model variants are no longer used for Codex (it always connects directly); "
+    "choose the model again from the model picker."
+)
 
 _AUTH_FAILURE_MARKERS: tuple[str, ...] = (
     "401",
@@ -313,6 +309,7 @@ def codex_plan_limit_message(value: object) -> str | None:
 
 
 __all__ = [
+    "CODEX_VARIANT_REMOVED_MESSAGE",
     "CODEX_AUTHENTICATION_ERROR_MESSAGE",
     "CODEX_PLAN_LIMIT_MESSAGE_MARKER",
     "CODEX_PLAN_LIMIT_SIGNAL",
@@ -323,7 +320,6 @@ __all__ = [
     "CodexRefreshFailedError",
     "CodexResponseError",
     "CodexRetryExhaustedError",
-    "CodexSDKError",
     "CodexTransportError",
     "RetryDecision",
     "codex_plan_limit_message",

@@ -123,7 +123,6 @@ def test_switching_provider_replaces_the_previous_selection_keys(
         provider_id="codex",
         model="gpt-5",
         codex_transport="websocket",
-        codex_variant="direct",
         claude_code_transport="sdk",
     )
     assert persist_lm_selection(codex, requested_api_base="").persisted
@@ -134,7 +133,6 @@ def test_switching_provider_replaces_the_previous_selection_keys(
         provider_id="claude_code",
         model="sonnet",
         codex_transport="websocket",
-        codex_variant="",
         claude_code_transport="sdk",
     )
     assert persist_lm_selection(claude, requested_api_base="").persisted
@@ -142,7 +140,7 @@ def test_switching_provider_replaces_the_previous_selection_keys(
     assert lm["provider"] == "claude_code"
     assert lm["model"] == "sonnet"
     assert lm["claude_code_transport"] == "sdk"
-    assert "codex_transport" not in lm and "codex_variant" not in lm
+    assert "codex_transport" not in lm
     assert "api_base" not in lm  # preset default applies
 
 
@@ -160,7 +158,6 @@ def test_an_unwritable_config_is_a_typed_reason_not_a_silent_loss(
         model="sonnet",
         claude_code_transport="sdk",
         codex_transport="websocket",
-        codex_variant="",
     )
 
     outcome = selection_store.persist_lm_selection(cfg, requested_api_base="")

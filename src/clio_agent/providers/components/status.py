@@ -1,8 +1,6 @@
 """``update_available`` per provider: the installed component versions against PyPI.
 
-A lockstep group (Codex: ``openai-codex`` X pins ``openai-codex-cli-bin==X``)
-targets the newest version EVERY member has an installable wheel for; a single
-distribution targets its own newest installable release. The installed version
+Each distribution targets its own newest installable release. The installed version
 is read from the distribution metadata on disk each time (never a module
 attribute), so a status read right after an update sees the new files.
 """
@@ -109,13 +107,6 @@ def installed_version(distribution: str) -> str:
 
 def group_targets(spec: ProviderComponents, indexes: dict[str, ReleaseIndex]) -> dict[str, str]:
     """The version each distribution of ``spec`` should move to ("" when none is installable)."""
-    if spec.lockstep:
-        common: set[str] | None = None
-        for name in spec.distributions:
-            versions = set(indexes[name].installable)
-            common = versions if common is None else common & versions
-        best = max(common or set(), key=Version, default="")
-        return dict.fromkeys(spec.distributions, best)
     return {name: indexes[name].latest for name in spec.distributions}
 
 

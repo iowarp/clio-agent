@@ -157,9 +157,6 @@ def _apply_turn_model_selection(state: "TurnState", agent_def: "AgentDef") -> "A
         update={
             "default_provider": provider_id,
             "default_model": model_id,
-            # The picked half of a multi-transport provider (Codex SDK vs
-            # Direct). Dropping it let an SDK pick resolve to Direct.
-            "variant": str(raw.get("variant") or "").strip(),
             "metadata": metadata,
         }
     )

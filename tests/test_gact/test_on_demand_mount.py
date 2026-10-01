@@ -16,6 +16,9 @@ from clio_agent.gact.agents.builders import _resolve_declared_tools_with_on_dema
 from clio_agent.gact.runtime.globals import _UnsupportedSessionAgent
 from clio_agent.tools.mcp_config import MCPServerSpec
 
+#: Hang detector for the overlap wait, never a timing budget.
+_OVERLAP_BACKSTOP_S = 30.0
+
 
 class _FakeTool:
     def __init__(self, name: str) -> None:
@@ -91,27 +94,38 @@ class TestOnDemandMount:
     def test_cold_namespaces_are_listed_at_the_same_time(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import time
+        """Both cold servers start at once: each listing is still in flight when the
+        other begins. Proven by overlap, not by a wall-clock sum a loaded runner skews."""
+        import threading
 
         executor = _FakeExecutor(
             declared_specs={"geo": _spec("geo"), "ndp": _spec("ndp")}, preloaded={}
         )
+        lock = threading.Lock()
+        in_flight: list[str] = []
+        both_in_flight = threading.Event()
+        overlapped: list[str] = []
 
         def slow_listing(namespace: str, spec: MCPServerSpec) -> dict[str, Any]:
             del spec
-            time.sleep(0.4)  # a server's start-up
+            with lock:
+                in_flight.append(namespace)
+                if len(in_flight) == 2:
+                    both_in_flight.set()
+            # A server's start-up, which lasts until the other listing has begun. The
+            # bound is only a hang detector: a serial listing never sees the other.
+            if both_in_flight.wait(timeout=_OVERLAP_BACKSTOP_S):
+                overlapped.append(namespace)
             return {f"{namespace}_x": _FakeTool(f"{namespace}_x")}
 
         monkeypatch.setattr("clio_agent.tools.mcp_discovery.ensure_namespace", slow_listing)
-        started = time.monotonic()
         available, failures = _resolve_declared_tools_with_on_demand_mount(
             executor, ["geo_x", "ndp_x"]
         )
-        elapsed = time.monotonic() - started
 
         assert {"geo_x", "ndp_x"} <= set(available)
         assert failures == {}
-        assert elapsed < 0.75, f"listed one after another ({elapsed:.2f}s)"
+        assert sorted(overlapped) == ["geo", "ndp"], f"listed one after another: {in_flight}"
 
     def test_declared_but_unmounted_tool_is_mounted_on_demand(
         self, monkeypatch: pytest.MonkeyPatch

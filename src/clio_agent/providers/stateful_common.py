@@ -1,4 +1,4 @@
-"""Shared plumbing of the stateful SDK engines (Codex threads, Claude Code sessions).
+"""Shared plumbing of the stateful engines (Codex direct sockets, Claude Code sessions).
 
 The conversation logic itself lives in
 :class:`clio_agent.lm.engines.conversations.ConversationRegistry` (typed messages, one
@@ -131,8 +131,8 @@ _STATEFUL_SCOPE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 class ScopeParticipant(Protocol):
     """Anything that takes part in per-forward scope resets + teardown.
 
-    :class:`StatefulSessionRegistry` is one; a provider whose sessions outlive a
-    forward (the Codex SDK conversation registry) registers an adapter instead.
+    :class:`StatefulSessionRegistry` is one; a provider whose conversations outlive
+    a forward registers an adapter instead.
     """
 
     def mark_reset(self, scope_token: str, reason: str = "ops_reset") -> None: ...

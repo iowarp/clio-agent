@@ -6,6 +6,25 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Removed
+
+- The Codex SDK transport. The `codex` provider's only transport is `direct`
+  (CLIO's own sign-in, else the Codex CLI login at `$CODEX_HOME/auth.json`):
+  the Codex catalog row has no `transports` list, its models carry no
+  `transport` tag and the row no `client` fact. A Codex `PUT /v1/providers/lm`
+  naming any `variant` (`direct` included) is a 422, and a Codex message model
+  reference naming one is a typed `400 model_transport_removed`. A leftover
+  `lm.codex_variant` / `CLIO_CODEX_VARIANT` is a typed `config_key_removed`
+  error naming where it is set; `providers.codex.stateful_capacity` and
+  `limits.codex_sdk_progress_timeout_s` are gone. The Codex user-updatable
+  component is the `openai-codex-cli-bin` runtime alone.
+
+### Fixed
+
+- Without a CLIO sign-in, Codex direct reads the Codex CLI login from
+  `$CODEX_HOME/auth.json`; it read `~/.codex/auth.json` whatever `CODEX_HOME`
+  said.
+
 ## [0.9.4.23] — 2026-09-30
 
 ### Fixed

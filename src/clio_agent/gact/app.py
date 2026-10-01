@@ -783,8 +783,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Reap proven CLIO orphans before the MCP-cache liveness check (order matters,
     # off-loop). The direct Codex provider owns one durable credential file,
-    # not a spawned CLI's scratch home, so unlike the deleted Codex SDK
-    # provider's IsolatedCodexHome there is nothing here for it to reap.
+    # not a spawned CLI's scratch home, so there is nothing here for it to reap.
     from clio_agent.gact import default_registry_migration as _registry_resync  # noqa: PLC0415
     from clio_agent.gact.routes.system import _prime_orphan_scan_cache  # noqa: PLC0415
     from clio_agent.tools.mcp_cache import boot_prune_off_loop  # noqa: PLC0415

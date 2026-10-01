@@ -378,6 +378,22 @@ class ConfigError(ClioError):
         super().__init__(message, error_type="config_error", details=details)
 
 
+class RemovedConfigKeyError(ConfigError, ValueError):
+    """A config key that clio no longer supports is still set.
+
+    Raised instead of ignoring or remapping the key (fail over fallback): the
+    message names the removed feature and every place the key is set, so the
+    user knows exactly what to delete. Also a :class:`ValueError`, so every
+    existing invalid-configuration handler reports it the same way.
+    """
+
+    def __init__(self, message: str, *, key: str, locations: list[str]) -> None:
+        super().__init__(message, details={"key": key, "locations": list(locations)})
+        self.error_type = "config_key_removed"
+        self.key = key
+        self.locations = list(locations)
+
+
 class CancellationError(ClioError):
     """User-requested cancellation observed by a cooperative execution path."""
 

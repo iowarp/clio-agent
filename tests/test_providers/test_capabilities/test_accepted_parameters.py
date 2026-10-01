@@ -75,7 +75,6 @@ def _seed_openrouter(model_id: str, supported: list[str]) -> None:
     [
         ("claude_code", "claude-code://sdk", "claude_code", "claude_code"),
         ("codex", "codex://direct", "codex", "codex_direct"),
-        ("codex", "codex://sdk", "codex", "codex_sdk"),
     ],
 )
 def test_sdk_transports_accept_no_response_settings(
@@ -91,7 +90,6 @@ def test_sdk_transports_accept_no_response_settings(
     [
         ("claude_code", "claude-code://sdk", "claude_code", "claude_code"),
         ("codex", "codex://direct", "codex", "codex_direct"),
-        ("codex", "codex://sdk", "codex", "codex_sdk"),
     ],
 )
 def test_engine_transports_offer_nothing_even_with_a_litellm_handler(

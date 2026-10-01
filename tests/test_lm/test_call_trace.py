@@ -91,14 +91,13 @@ def test_an_async_call_is_recorded_exactly_once(emitted: list[dict[str, Any]]) -
     assert [r["content"] for r in emitted] == ["ok"]
 
 
+@pytest.mark.usefixtures("codex_test_login")
 def test_factory_lms_carry_the_trace() -> None:
     from clio_agent.config import LMProviderConfig
     from clio_agent.lm.factory import create_lm
 
     for config in (
         LMProviderConfig(provider="lm_studio", model="qwen", api_key="lm-studio"),
-        LMProviderConfig(
-            provider="codex", model="gpt-5.5", api_base="codex://direct", codex_variant="sdk"
-        ),
+        LMProviderConfig(provider="codex", model="gpt-5.5", api_base="codex://direct"),
     ):
         assert call_trace.LM_CALL_TRACE in create_lm(config).callbacks

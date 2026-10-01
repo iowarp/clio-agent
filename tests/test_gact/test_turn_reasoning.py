@@ -132,6 +132,7 @@ def _lm_kwargs(base: LMProviderConfig, effort: str | None) -> dict[str, Any]:
     return kwargs
 
 
+@pytest.mark.usefixtures("codex_test_login")
 def test_codex_message_effort_overrides_the_global_level() -> None:
     _seed_thinking(
         provider_id="codex",
@@ -287,6 +288,7 @@ def test_anthropic_adaptive_model_message_effort_sends_reasoning_effort(
     assert _lm_kwargs(base, "max")["reasoning_effort"] == "max"
 
 
+@pytest.mark.usefixtures("codex_test_login")
 def test_codex_message_minimal_effort_is_sent() -> None:
     _seed_thinking(
         provider_id="codex",
