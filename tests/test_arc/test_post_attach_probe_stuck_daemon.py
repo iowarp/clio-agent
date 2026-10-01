@@ -108,6 +108,6 @@ def test_post_attach_probe_is_bounded_against_a_stuck_daemon(tmp_path: Path, mod
     assert result["outcome"] == "typed_error", result
     assert result["stage_name"] == "post_attach_probe"
     assert result["reason"] == "clio_core_post_attach_probe_timeout"
-    assert f"did not answer within {_WINDOW_S:g}s" in result["message"]
+    assert f"made no progress for {_WINDOW_S:g}s" in result["message"]
     assert result["elapsed_s"] < _WINDOW_S + 2.0, result  # the bound, not a hang
     assert result["deregistered"] == [True]

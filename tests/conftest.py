@@ -695,7 +695,7 @@ def _test_arc_namespace(request: pytest.FixtureRequest) -> str:
 
 
 @pytest.fixture(autouse=True)
-def keep_the_workers_clio_core_runtime(monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
+def keep_the_workers_clio_core_runtime(request, monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
     """An app's lifespan shutdown must not stop this worker's shared clio-core daemon.
 
     In production a process hosts ONE app, and its lifespan end releasing the runtime
@@ -708,6 +708,8 @@ def keep_the_workers_clio_core_runtime(monkeypatch: pytest.MonkeyPatch) -> list[
     from clio_agent.arc import storage  # noqa: PLC0415
 
     releases: list[tuple] = []
+    if request.node.get_closest_marker("real_runtime_release"):
+        return releases  # the test exercises the real release (with the stop patched)
     monkeypatch.setattr(storage, "release_runtime_client", lambda *a, **k: releases.append(a))
     return releases
 
@@ -733,14 +735,18 @@ def clio_core_namespace(request, allow_pytest_tmp_path, monkeypatch):
     real_make = storage.make_arc_store
 
     def recording_make(*args, **kwargs):
-        if kwargs.get("namespace") is None and kwargs.get("data_dir") is not None:
-            digest = hashlib.sha1(str(Path(kwargs["data_dir"]).resolve()).encode()).hexdigest()
-            kwargs["namespace"] = f"{base}-{digest[:8]}"
         store = real_make(*args, **kwargs)
         built.append(store)
         return store
 
-    monkeypatch.setattr(arc_memory, "make_arc_store", recording_make)
+    def make_for_data_dir(*args, **kwargs):
+        # ARCMemory(data_dir=X) without a store: X names its own namespace.
+        if kwargs.get("namespace") is None and kwargs.get("data_dir") is not None:
+            digest = hashlib.sha1(str(Path(kwargs["data_dir"]).resolve()).encode()).hexdigest()
+            kwargs["namespace"] = f"{base}-{digest[:8]}"
+        return recording_make(*args, **kwargs)
+
+    monkeypatch.setattr(arc_memory, "make_arc_store", make_for_data_dir)
     monkeypatch.setattr(storage, "make_arc_store", recording_make)
     yield
     cleared: set[str] = set()

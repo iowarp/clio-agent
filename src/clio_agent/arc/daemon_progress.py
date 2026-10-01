@@ -40,15 +40,10 @@ def max_wait_s() -> float:
     return value if value > 0 else _DEFAULT_MAX_WAIT_S
 
 
-def daemon_cpu_seconds() -> float | None:
-    """The clio-core daemon's work so far (CPU seconds + I/O MiB), ``None`` if none is found."""
+def process_work(pid: int) -> float | None:
+    """A process's work so far (CPU seconds + I/O MiB), ``None`` if it is gone."""
     import psutil  # noqa: PLC0415
 
-    from clio_agent.arc.clio_core_daemon import _resolve_daemon_pid  # noqa: PLC0415
-
-    pid, _source = _resolve_daemon_pid("", None)
-    if pid is None:
-        return None
     try:
         proc = psutil.Process(pid)
         times = proc.cpu_times()
@@ -59,6 +54,14 @@ def daemon_cpu_seconds() -> float | None:
     # slow disk is busy while its CPU time stays flat.
     io_mib = (io.read_bytes + io.write_bytes) / float(1 << 20)
     return float(times.user + times.system) + io_mib
+
+
+def daemon_cpu_seconds() -> float | None:
+    """The clio-core daemon's work so far (CPU seconds + I/O MiB), ``None`` if none is found."""
+    from clio_agent.arc.clio_core_daemon import _resolve_daemon_pid  # noqa: PLC0415
+
+    pid, _source = _resolve_daemon_pid("", None)
+    return None if pid is None else process_work(pid)
 
 
 def future_done_within(future: Future) -> Callable[[float], bool]:

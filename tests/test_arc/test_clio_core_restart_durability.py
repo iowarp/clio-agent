@@ -33,6 +33,9 @@ _CHILD = textwrap.dedent(
         assert store.get("segments", "s__agent") == b"needle=42" * 1000
         outcome = stop_runtime_daemon(store._config_path, "error")
         print("STOPPED", outcome.stopped, outcome.path)
+    elif sys.argv[1] == "write-and-exit":
+        store.put("segments", "s__agent", b"needle=42" * 1000)
+        print("EXITING")  # normal exit: the last client out stops the daemon (atexit)
     else:
         got = store.get("segments", "s__agent")
         print("READ", None if got is None else len(got))
@@ -63,4 +66,13 @@ def test_a_record_survives_a_clean_daemon_restart(tmp_path: Path) -> None:
     root = tmp_path / "clio-core"
 
     assert "STOPPED True clean_stop" in _run("write", root)
+    assert "READ 9000" in _run("read", root)
+
+
+def test_a_record_survives_a_normal_process_exit(tmp_path: Path) -> None:
+    """The ordinary path: the process exits, its atexit release stops the daemon as the
+    last client out -- the record must be flushed, not lost or left half-written."""
+    root = tmp_path / "clio-core"
+
+    assert "EXITING" in _run("write-and-exit", root)
     assert "READ 9000" in _run("read", root)

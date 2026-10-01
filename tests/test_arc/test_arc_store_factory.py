@@ -332,6 +332,7 @@ def test_live_pids_prunes_dead_and_reused(monkeypatch, tmp_path):
     assert not (reg / str(os.getpid())).exists()  # pruned (create-time mismatch)
 
 
+@pytest.mark.real_runtime_release
 def test_release_keeps_daemon_when_another_client_alive(monkeypatch, tmp_path):
     _isolate_clio_home(monkeypatch, tmp_path)
     calls: list[int] = []
@@ -345,6 +346,7 @@ def test_release_keeps_daemon_when_another_client_alive(monkeypatch, tmp_path):
     assert os.getpid() not in storage._live_client_pids()  # but we deregistered
 
 
+@pytest.mark.real_runtime_release
 def test_release_stops_daemon_when_last_and_is_idempotent(monkeypatch, tmp_path):
     _isolate_clio_home(monkeypatch, tmp_path)
     calls: list[int] = []

@@ -811,6 +811,12 @@ arc.liveness.backoff_initial_s: 2.0
 # lower to fail faster overall, raise to tolerate longer hiccups.
 arc.liveness.backoff_max_s: 15.0
 
+# CLIO_ARC_LIVENESS_MAX_WAIT_S  (float)  <- src/clio_agent/arc/daemon_progress.py
+# Ceiling (seconds) on waiting for a clio-core answer while the daemon is
+# visibly working (its CPU or I/O advancing); a daemon making no progress is
+# a stall well before this.
+arc.liveness.max_wait_s: 600.0
+
 # CLIO_ARC_LIVENESS_RETRIES  (int)  <- src/clio_agent/arc/rpc_liveness.py
 # Retry attempts after a clio-core RPC stalls (no response) before the store
 # is quarantined as runtime-lost; raise for a flakier daemon.

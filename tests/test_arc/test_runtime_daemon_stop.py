@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -211,15 +212,13 @@ def test_stop_outcome_reports_stall_kill(
     assert killed == [True]
 
 
-def test_stop_runtime_daemon_grace_polls_before_helper_exit_kill(
+def test_a_helper_exiting_while_the_daemon_still_stops_is_not_a_kill(
     fake_iowarp_core: types.SimpleNamespace,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A helper that exits 0 while the port still reads bound for a couple of
-    polls must NOT be immediately hard-killed as ``helper_exit_kill`` -- the
-    post-exit grace window should catch the ordinary case where the port
-    frees a beat later than the helper's own exit."""
+    """The stop waits on the DAEMON: a helper that exits while the port still reads
+    bound for a couple of polls is not a reason to kill."""
 
     class ExitedProcess:
         def poll(self) -> int:
@@ -241,18 +240,53 @@ def test_stop_runtime_daemon_grace_polls_before_helper_exit_kill(
     outcome = runtime_stop.stop_runtime_daemon("", "error")
 
     assert outcome == runtime_stop.StopOutcome(stopped=True, path="clean_stop")
-    # 1: main-loop check (alive) -> 2: 1st grace poll (alive) -> 3: 2nd grace
-    # poll (freed) -> 4: the post-loop "confirm actually freed" re-check.
-    assert calls["n"] == 4
 
 
-def test_stop_runtime_daemon_reports_helper_exit_kill_when_grace_expires(
+def test_a_busy_daemon_keeps_the_stop_waiting_past_the_slice(
     fake_iowarp_core: types.SimpleNamespace,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """If the port never frees within the grace window, the run is genuinely
-    ``helper_exit_kill`` and must still fall back to a hard kill."""
+    """A durable daemon flushing on a slow disk takes longer than any fixed bound; while
+    its work advances the stop keeps waiting -- no kill, no lost data."""
+
+    class ExitedProcess:
+        def poll(self) -> int:
+            return 0
+
+    from clio_agent.arc import daemon_progress
+
+    alive = {"until": time.monotonic() + 0.4}  # frees after several stall slices
+    work = {"w": 0.0}
+
+    def advancing(pid: int) -> float:
+        work["w"] += 1.0
+        return work["w"]
+
+    (tmp_path / "daemon.pid").write_text("4242 ", encoding="utf-8")
+    monkeypatch.setattr(runtime_stop.subprocess, "Popen", lambda *a, **k: ExitedProcess())
+    monkeypatch.setattr(runtime_stop, "_resolve_runtime_port", lambda config_path: 65001)
+    monkeypatch.setattr(
+        runtime_stop, "_runtime_alive", lambda port: time.monotonic() < alive["until"]
+    )
+    monkeypatch.setattr(runtime_stop, "_RUNTIME_STOP_STALL_SECONDS", 0.05)
+    monkeypatch.setattr(runtime_stop, "_RUNTIME_STOP_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(runtime_stop, "expect_daemon_exit", lambda pid: None)
+    monkeypatch.setattr(daemon_progress, "process_work", advancing)
+    monkeypatch.setattr(storage, "_kill_daemon_pidfile", lambda: pytest.fail("must not hard-kill"))
+    monkeypatch.setattr(storage, "_daemon_pidfile", lambda: tmp_path / "daemon.pid")
+
+    outcome = runtime_stop.stop_runtime_daemon("", "error")
+
+    assert outcome == runtime_stop.StopOutcome(stopped=True, path="clean_stop")
+
+
+def test_a_daemon_making_no_progress_is_killed_loudly(
+    fake_iowarp_core: types.SimpleNamespace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A whole slice with no daemon progress is a stall: killed, reported as such."""
 
     class ExitedProcess:
         def poll(self) -> int:
@@ -261,7 +295,7 @@ def test_stop_runtime_daemon_reports_helper_exit_kill_when_grace_expires(
     monkeypatch.setattr(runtime_stop.subprocess, "Popen", lambda *a, **k: ExitedProcess())
     monkeypatch.setattr(runtime_stop, "_resolve_runtime_port", lambda config_path: 65001)
     monkeypatch.setattr(runtime_stop, "_runtime_alive", lambda port: True)
-    monkeypatch.setattr(runtime_stop, "_HELPER_EXIT_GRACE_SECONDS", 0.03)
+    monkeypatch.setattr(runtime_stop, "_RUNTIME_STOP_STALL_SECONDS", 0.05)
     monkeypatch.setattr(runtime_stop, "_RUNTIME_STOP_POLL_SECONDS", 0.01)
     killed: list[bool] = []
     monkeypatch.setattr(storage, "_kill_daemon_pidfile", lambda: killed.append(True))
@@ -269,5 +303,5 @@ def test_stop_runtime_daemon_reports_helper_exit_kill_when_grace_expires(
 
     outcome = runtime_stop.stop_runtime_daemon("", "error")
 
-    assert outcome == runtime_stop.StopOutcome(stopped=False, path="helper_exit_kill")
+    assert outcome == runtime_stop.StopOutcome(stopped=False, path="stall_kill")
     assert killed == [True]

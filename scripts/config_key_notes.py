@@ -200,6 +200,10 @@ KEY_NOTES: dict[str, str] = {
         "Path to a clio-core server YAML config the port-resolution logic reads; set to point "
         "liveness probing at a non-default config file."
     ),
+    "arc.liveness.max_wait_s": (
+        "Ceiling (seconds) on waiting for a clio-core answer while the daemon is visibly working "
+        "(its CPU or I/O advancing); a daemon making no progress is a stall well before this."
+    ),
     "arc.namespace": (
         "clio-core namespace ARC records live under (tags <namespace>/<kind>); empty keeps the "
         "bare tags. Set to keep two deployments on one clio-core apart."
