@@ -15,7 +15,9 @@ app with a canonical-log substrate. The strangler flag
 the legacy read branch; pre-atom sessions migrate transparently on first touch via
 the retained-ledger backfill (:func:`mint_atoms_from_ledger`, loud per-message).
 The messages-store read survives ONLY as the no-substrate degenerate case (an app
-without ARC has exactly one storage).
+without ARC has exactly one storage). With ``transcript.file`` off
+(:mod:`clio_agent.gact.transcript_file`) there is no messages-store copy at all: the
+atoms are read alone, with no file repair or backfill.
 
 Design decisions (each answering a named constraint):
 
@@ -64,6 +66,7 @@ from clio_agent.gact.part_atoms import (
     mint_message_part_atoms,
     reproduce_message_wire,
 )
+from clio_agent.gact.transcript_file import file_transcript_enabled, materialize_from_atoms
 from clio_agent.gact.types import Message
 from clio_agent.gact.workflow_state.state_merge import (
     drop_state_merge_lane,
@@ -257,7 +260,7 @@ def mint_atoms_from_ledger(arc: Any, session_id: str, messages: list[Message]) -
         except Exception as exc:  # noqa: BLE001 - re-raised as a typed, per-message reason
             raise TranscriptBackfillError(session_id, getattr(message, "id", ""), exc) from exc
         # #737 S6: re-provision the state_merge op from the ledger too, so the recorded
-        # result survives a lifecycle-erased (#762) or pre-S6 ledger backfill.
+        # result survives a divergent-lane repair or a pre-S6 ledger backfill.
         record_state_merge_best_effort(arc, session_id, message)
 
 
@@ -272,15 +275,14 @@ def materialize_ledger(app: "FastAPI", session_id: str) -> Optional[list[Message
     Repoints :class:`~clio_agent.gact.resident_ledgers.ResidentLedgerSet` rehydration:
     under the **atoms** regime the ledger is assembled from the canonical log
     (:func:`assemble_session_messages`), backfilling once from the RETAINED messages-store
-    ledger (:func:`mint_atoms_from_ledger`) when the atom lane is absent — either because
-    the session predates the atoms (migration) OR because the ``_events/m`` lane was
-    lifecycle-erased by a trace-enabled ``release_session`` (#762: under
-    ``trace.backend=file/factory`` the whole ``_events`` family is dropped on session
-    release, and the atoms are NOT in the durable JSONL trace). The retained store copy
-    is precisely the re-derivable fallback that makes the atoms regime robust to that
-    erase — the reason the residency decision keeps it (see the module docstring). Under
-    the **legacy** regime it falls through to ``MessageStore.load_session`` exactly as
-    today. The LRU/TTL/pinning semantics (#889) are unchanged — only the SOURCE moves.
+    ledger (:func:`mint_atoms_from_ledger`) when the atom lane is absent because the
+    session predates the atoms (migration), and repairing a divergent lane from it.
+    (``ARCMemory.release_session`` no longer erases the ``_events`` family -- clio-core
+    keeps the atoms on release -- so the old #762 lifecycle-erase case is gone.) Without
+    an ARC it falls through to ``MessageStore.load_session``. With ``transcript.file``
+    off there is no retained ledger: :func:`~clio_agent.gact.transcript_file.
+    materialize_from_atoms` reads the atoms alone. The LRU/TTL/pinning semantics (#889)
+    are unchanged — only the SOURCE moves.
 
     Preserves the store's contract precisely: ``None`` => the session has no ledger (a
     cache-miss ``KeyError`` upstream), ``[]`` => an existing-but-empty ledger,
@@ -294,6 +296,8 @@ def materialize_ledger(app: "FastAPI", session_id: str) -> Optional[list[Message
         The session's ``list[Message]``, or ``None`` when it has never been persisted.
     """
 
+    if not file_transcript_enabled(app):
+        return materialize_from_atoms(app, session_id)
     store = getattr(getattr(app, "state", None), "message_store", None)
     arc = _arc(app)
     if arc is None:
@@ -336,9 +340,8 @@ def materialize_ledger(app: "FastAPI", session_id: str) -> Optional[list[Message
     if atoms_present:
         assert assembled is not None  # narrows for the type checker
         # Repair lanes written by the pre-lock race. The retained message ledger is
-        # deliberately kept as the re-derivable fallback for lifecycle-erased atom
-        # lanes; it is also the only trustworthy source for repairing a structurally
-        # divergent lane. This is exact wire comparison, never text heuristics.
+        # the only trustworthy source for repairing a structurally divergent lane.
+        # This is exact wire comparison, never text heuristics.
         if ledger is None or [m.model_dump(exclude_none=True) for m in assembled] == [
             m.model_dump(exclude_none=True) for m in ledger
         ]:

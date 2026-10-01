@@ -92,6 +92,9 @@ def _construct_process_arc(app: "FastAPI") -> Any:
 
     _set_app_arc(app, arc)
     _record_context_mode(app, mode)
+    from clio_agent.gact.transcript_file import on_process_arc_bound  # noqa: PLC0415
+
+    on_process_arc_bound(app)  # transcript.file off: reconcile + metrics seed from the atoms
     return arc
 
 

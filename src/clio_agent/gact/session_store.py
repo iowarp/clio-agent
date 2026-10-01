@@ -5,9 +5,10 @@ the cohesive cluster that persists a session's *conversation state* across the
 two places it lives:
 
 * **In-memory + durable message store** -- ``app.state.messages`` (hot copy) plus
-  the write-through :class:`~clio_agent.gact.messages.MessageStore` on disk. The
-  ``_append/_extend/_replace/_delete_session_messages`` helpers keep both in lock
-  step.
+  the write-through :class:`~clio_agent.gact.messages.MessageStore` on disk (absent
+  with ``transcript.file`` off, :mod:`clio_agent.gact.transcript_file`) and the
+  ``message_part`` atoms. The ``_append/_extend/_replace/_delete_session_messages``
+  helpers keep them in lock step.
 * **Context-file attachments** -- the ``app.state.context_files`` ledger keyed by
   session id, loaded from / flushed to ``app.state.context_files_path``.
 
@@ -75,16 +76,19 @@ def _append_session_message(
     store = getattr(app.state, "message_store", None)
     if store is not None:
         store.append(session_id, message)
-    # #737 S5: the single append-one persist seam pins the session's transcript regime
-    # (on message #1) and mints the message's ``message_part`` atoms onto the canonical
-    # ARC log. Under the atoms regime the atoms are the transcript's source of truth
-    # (must-succeed, §3.4); under the default legacy regime the messages-store copy above
-    # is authoritative and minting is best-effort-but-loud (as S4 landed it).
+    # #737 S5: the single append-one persist seam mints the message's ``message_part``
+    # atoms onto the canonical ARC log -- the transcript's source of truth (must-succeed,
+    # §3.4). With ``transcript.file`` off they are the only durable copy, so a failed
+    # mint takes the message back out of the in-memory ledger before the error propagates.
+    from clio_agent.gact.transcript_file import (  # noqa: PLC0415 - lazy: keep leaf
+        forget_unminted_on_failure,
+    )
     from clio_agent.gact.transcript_projection import (  # noqa: PLC0415 - lazy: keep leaf
         on_message_appended,
     )
 
-    on_message_appended(app, session_id, message, atoms_minted=atoms_minted)
+    with forget_unminted_on_failure(app, session_id, message):
+        on_message_appended(app, session_id, message, atoms_minted=atoms_minted)
 
 
 def _interrupted_assistant_row(
@@ -167,18 +171,24 @@ def _reconcile_restart_interrupted_sessions(app: "FastAPI") -> None:
     exits mid-turn, the session registry can therefore retain ``running`` and an
     older message count even though no :class:`TurnRunner` task can survive the
     restart. Reconcile only those stale running rows, reading one ledger at a
-    time so ordinary historical sessions remain lazily materialized.
+    time so ordinary historical sessions remain lazily materialized. The ledger is
+    the durable transcript: the ``messages/`` file, or the atoms with
+    ``transcript.file`` off (:func:`~clio_agent.gact.transcript_file.load_durable_transcript`).
     """
 
-    store = getattr(app.state, "message_store", None)
+    from clio_agent.gact.transcript_file import (  # noqa: PLC0415 - lazy: keep leaf
+        has_durable_transcript_store,
+        load_durable_transcript,
+    )
+
     sessions = getattr(app.state, "sessions", None)
-    if store is None or sessions is None:
+    if sessions is None or not has_durable_transcript_store(app):
         return
     for session in sessions.list():
         if session.status != "running":
             continue
         try:
-            messages = store.load_session(session.id) or []
+            messages = load_durable_transcript(app, session.id) or []
         except OSError as exc:
             logger.error(
                 "restart interruption reconciliation failed session=%s error=%r",
@@ -196,9 +206,10 @@ def _reconcile_restart_interrupted_sessions(app: "FastAPI") -> None:
                 # seam (the same one undo/rewind uses) so the atom lane is
                 # re-materialized to match -- file and lane agree by
                 # construction and materialize_ledger's divergence repair never
-                # fires on this session's first post-restart read. At boot there
-                # is no loop running, so on_ledger_replaced's mint runs inline
-                # (never deferred), still off any server loop thread.
+                # fires on this session's first post-restart read. Reconciliation
+                # runs at boot (no loop) or, with transcript.file off and the ARC
+                # attached later, on the ARC construction worker -- so
+                # on_ledger_replaced's mint runs inline, off any server loop thread.
                 _replace_session_messages(app, session.id, durable_messages)
             except OSError as exc:
                 logger.error(
