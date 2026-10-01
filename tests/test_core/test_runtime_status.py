@@ -59,8 +59,16 @@ GACT_CAPABILITIES = {
 }
 
 
-def test_runtime_report_ready_path(tmp_path):
+def test_runtime_report_ready_path(tmp_path, monkeypatch):
     """All required integrations report ready when probes succeed."""
+
+    # The clio-core health rows locate the shared daemon by port; a daemon left running
+    # on this machine (default port) made this report "degraded" (found 2026-10-01).
+    import socket
+
+    with socket.socket() as free:
+        free.bind(("127.0.0.1", 0))
+        monkeypatch.setenv("CLIO_CORE_PORT", str(free.getsockname()[1]))
 
     def fake_get(url: str, timeout: float):
         assert url.endswith("/models")
