@@ -14,6 +14,14 @@ engine changes only the transport:
   tool list, an idle or aged socket) sends the full input, typed on the
   ``provider.stateful`` audit row. Outside a loop every call is a full send on a
   short-lived socket.
+* **One build per call.** The wire request is built once; the delta is a slice of its
+  input items. Whether the kept conversation continues is decided by the item count
+  it was sent and a running sha256 over those items (never an element-wise compare
+  of the message history).
+* **ARC ops reset typed.** The engine takes part in the per-forward scope registry
+  (:func:`~clio_agent.providers.stateful_common.register_scope_registry`): an ARC op
+  on a forward (compaction, delete) drops the conversations it drove, and the next
+  call is a full send audited ``ops_reset`` -- not an inferred ``prefix_mismatch``.
 * **An owner loop.** The loop runs each step under its own ``asyncio.run``; a socket
   is bound to the event loop that opened it, so every socket lives on this module's
   own daemon loop and events are bridged to the caller.
@@ -32,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import hashlib
 import json
 import queue
 import threading
@@ -44,7 +53,6 @@ from typing import Any
 import websockets
 from dspy.lm15 import (
     AuthError,
-    Message,
     Request,
     Response,
     ServerError,
@@ -53,7 +61,7 @@ from dspy.lm15 import (
 )
 from dspy.lm15 import TimeoutError as ProviderTimeoutError
 
-from clio_agent.lm.engines.conversations import conversation_key, new_messages
+from clio_agent.lm.engines.conversations import conversation_key
 from clio_agent.providers.codex import constants as c
 from clio_agent.providers.codex.audit import (
     emit_call_started,
@@ -61,9 +69,21 @@ from clio_agent.providers.codex.audit import (
     emit_raw_event,
 )
 from clio_agent.providers.codex.errors import CodexPlanLimitError, is_usage_limit_text
-from clio_agent.providers.stateful_common import stateful_reset_payload
+from clio_agent.providers.stateful_common import (
+    active_stateful_scope,
+    register_scope_registry,
+    stateful_reset_payload,
+)
 
-__all__ = ["AsyncCodexDirectEngine", "CodexDirectEngine", "close_all", "default_wire"]
+__all__ = [
+    "AsyncCodexDirectEngine",
+    "CodexDirectEngine",
+    "PreparedRequest",
+    "close_all",
+    "continuation",
+    "default_wire",
+    "prepare_request",
+]
 
 _END = object()
 _TERMINAL = frozenset({"response.completed", "response.failed", "response.incomplete", "error"})
@@ -77,18 +97,99 @@ class _WireEvent:
     data: str
 
 
+class PreparedRequest:
+    """One call's wire request, built once, with a running sha256 over its input items.
+
+    Attributes:
+        body: The full Responses payload (``input`` holds every item).
+        headers: The transport headers.
+        system: The instructions the payload carries.
+        tools: The payload's tool list, serialized (the identity a continuation needs).
+        items: The full input items.
+    """
+
+    def __init__(self, body: dict[str, Any], headers: dict[str, str]) -> None:
+        """Wrap a built payload (see :func:`prepare_request`)."""
+        self.body = body
+        self.headers = headers
+        self.system = str(body.get("instructions") or "")
+        self.tools = json.dumps(body.get("tools") or [])
+        self.items: list[Any] = list(body.get("input") or [])
+        self._hasher = hashlib.sha256()
+        self._hashed = 0
+
+    def digest_at(self, count: int) -> str:
+        """sha256 over the first ``count`` items (each as compact JSON), hashed once.
+
+        Raises:
+            ValueError: ``count`` is behind a point already hashed past, or past the end.
+        """
+        if count < self._hashed or count > len(self.items):
+            raise ValueError(f"digest at {count}: hashed {self._hashed} of {len(self.items)}")
+        for item in self.items[self._hashed : count]:
+            self._hasher.update(
+                json.dumps(item, separators=(",", ":"), ensure_ascii=False).encode()
+            )
+            self._hasher.update(b"\n")
+        self._hashed = count
+        return self._hasher.copy().hexdigest()
+
+
+def prepare_request(wire: Any, request: Request) -> PreparedRequest:
+    """Build ``request``'s wire payload -- the ONE build of a call."""
+    wire_request = wire.build_request(request, stream=True)
+    return PreparedRequest(json.loads(wire_request.body), dict(wire_request.headers))
+
+
+def _from_assistant(item: Any) -> bool:
+    """Whether an input item renders an assistant message (reply text, reasoning, call)."""
+    if not isinstance(item, dict):
+        return False
+    return item.get("type") in {"reasoning", "function_call"} or item.get("role") == "assistant"
+
+
 @dataclass
 class _Conversation:
     socket: Any
     system: str
     tools: str
-    held: tuple[Message, ...]
+    held: int  # messages the provider was sent
+    sent_items: int  # input items the provider holds from what it was sent
+    digest: str  # running sha256 over those items
     response_id: str
     opened_at: float = field(default_factory=time.monotonic)
     used_at: float = field(default_factory=time.monotonic)
 
     def expired(self, now: float) -> bool:
         return (now - self.opened_at) >= c.WS_MAX_AGE_S or (now - self.used_at) >= c.WS_IDLE_CLOSE_S
+
+
+def continuation(live: _Conversation, request: Request, prepared: PreparedRequest) -> int | None:
+    """The index of the first input item to send on ``live``, or ``None`` (send in full).
+
+    ``request`` continues the kept conversation when the system prompt and tools are the
+    same, its messages repeat the ``live.held`` sent ones plus the provider's own reply
+    and then add only non-assistant messages, and its first ``live.sent_items`` input
+    items hash to what was sent. The reply's items follow; the new items are the rest.
+    """
+    messages = request.messages
+    if prepared.system != live.system or prepared.tools != live.tools:
+        return None
+    if len(messages) <= live.held + 1 or messages[live.held].role != "assistant":
+        return None
+    if any(m.role == "assistant" for m in messages[live.held + 1 :]):
+        return None
+    items = prepared.items
+    if len(items) <= live.sent_items or prepared.digest_at(live.sent_items) != live.digest:
+        return None
+    first_new = live.sent_items
+    while first_new < len(items) and _from_assistant(items[first_new]):
+        first_new += 1
+    if first_new == live.sent_items or first_new == len(items):
+        return None  # no reply items, or nothing new after them
+    if any(_from_assistant(item) for item in items[first_new:]):
+        return None
+    return first_new
 
 
 class _Owner:
@@ -132,7 +233,7 @@ class AsyncCodexDirectEngine:
     async def stream(self, request: Request) -> AsyncGenerator[Any, None]:
         """Run one call on the owner loop, yielding lm15 stream events."""
         events: queue.SimpleQueue[Any] = queue.SimpleQueue()
-        key = conversation_key(self.model)
+        key = _driven_key(conversation_key(self.model))
         future = asyncio.run_coroutine_threadsafe(self._call(request, key, events), _OWNER.loop())
         loop = asyncio.get_running_loop()
         try:
@@ -172,18 +273,15 @@ class AsyncCodexDirectEngine:
     ) -> None:
         # The backend takes the bare model id, whatever the dspy.LM model string is.
         request = dataclasses.replace(request, model=self.model)
-        wire_request = self.wire.build_request(request, stream=True)
-        body = json.loads(wire_request.body)
-        headers = dict(wire_request.headers)
-        system, tools = str(body.get("instructions") or ""), json.dumps(body.get("tools") or [])
-        live, reason = _plan(key, request, system, tools)
+        prepared = prepare_request(self.wire, request)
+        body = prepared.body
+        items = prepared.items
+        live, first_new, reason = _plan(key, request, prepared)
         frame = body
-        if live is not None:
-            new = new_messages(live.held, live.system, request, system)
-            assert new is not None  # _plan checked it
-            frame = {**body, "input": self._items(request, len(request.messages) - len(new))}
+        if live is not None and first_new is not None:
+            frame = {**body, "input": items[first_new:]}
             frame["previous_response_id"] = live.response_id
-        socket = live.socket if live is not None else await _connect(headers, key)
+        socket = live.socket if live is not None else await _connect(prepared.headers, key)
         _audit(key, self.model, request, live is not None, reason, len(frame.get("input") or []))
         try:
             response_id = await _exchange(self.wire, request, socket, frame, out)
@@ -192,8 +290,8 @@ class AsyncCodexDirectEngine:
             # dropped (a service restart, an idle-closed socket) -- nothing was streamed:
             # resend in full on a fresh socket, typed.
             _close_soon(socket)
-            socket = await _connect(headers, key)
-            _audit(key, self.model, request, False, "session_evicted", len(body["input"]))
+            socket = await _connect(prepared.headers, key)
+            _audit(key, self.model, request, False, "session_evicted", len(items))
             response_id = await _exchange(self.wire, request, socket, body, out)
         if key is None:
             await socket.close()
@@ -201,9 +299,11 @@ class AsyncCodexDirectEngine:
         with _CONVERSATIONS_LOCK:
             _CONVERSATIONS[key] = _Conversation(
                 socket=socket,
-                system=system,
-                tools=tools,
-                held=request.messages,
+                system=prepared.system,
+                tools=prepared.tools,
+                held=len(request.messages),
+                sent_items=len(items),
+                digest=prepared.digest_at(len(items)),
                 response_id=response_id,
                 opened_at=live.opened_at if live is not None else time.monotonic(),
             )
@@ -220,21 +320,6 @@ class AsyncCodexDirectEngine:
                 raise CodexPlanLimitError(str(exc)) from exc
             raise
 
-    def _items(self, request: Request, first_new: int) -> list[Any]:
-        """The input items of ``request.messages[first_new:]`` (lm15's own rendering)."""
-        whole = json.loads(self.wire.build_request(request, stream=True).body)["input"]
-        prefix = Request(
-            model=request.model,
-            system=request.system,
-            messages=request.messages[:first_new],
-            tools=request.tools,
-            config=request.config,
-        )
-        head = json.loads(self.wire.build_request(prefix, stream=True).body)["input"]
-        if whole[: len(head)] != head:
-            raise ServerError("codex direct: the rendered input is not append-only")
-        return list(whole[len(head) :])
-
 
 class CodexDirectEngine(AsyncCodexDirectEngine):
     """Sync twin: the same owner-loop call, consumed on the calling thread."""
@@ -245,7 +330,7 @@ class CodexDirectEngine(AsyncCodexDirectEngine):
     def stream(self, request: Request) -> Iterator[Any]:  # type: ignore[override]
         events: queue.SimpleQueue[Any] = queue.SimpleQueue()
         asyncio.run_coroutine_threadsafe(
-            self._call(request, conversation_key(self.model), events), _OWNER.loop()
+            self._call(request, _driven_key(conversation_key(self.model)), events), _OWNER.loop()
         )
         while True:
             item = events.get()
@@ -328,23 +413,68 @@ def close_all() -> int:
 
 
 def _plan(
-    key: tuple[str, ...] | None, request: Request, system: str, tools: str
-) -> tuple[_Conversation | None, str | None]:
-    """The kept conversation to continue (and ``None`` reason), or ``None`` + why not."""
+    key: tuple[str, ...] | None, request: Request, prepared: PreparedRequest
+) -> tuple[_Conversation | None, int | None, str | None]:
+    """``(kept conversation, first new item, None)`` to continue, or ``(None, None, why)``."""
     if key is None:
-        return None, None
+        return None, None, None
     with _CONVERSATIONS_LOCK:
         live = _CONVERSATIONS.pop(key, None)
+        pending = _RESETS.pop(key, None)
+    if pending is not None:
+        if live is not None:
+            _close_soon(live.socket)
+        return None, None, pending
     if live is None:
-        return None, "first_call"
+        return None, None, "first_call"
     if live.expired(time.monotonic()):
         _close_soon(live.socket)
-        return None, "session_evicted"
-    if tools != live.tools or new_messages(live.held, live.system, request, system) is None:
+        return None, None, "session_evicted"
+    first_new = continuation(live, request, prepared)
+    if first_new is None:
         _close_soon(live.socket)
-        return None, "prefix_mismatch"
+        return None, None, "prefix_mismatch"
     live.used_at = time.monotonic()
-    return live, None
+    return live, first_new, None
+
+
+# Which conversations each per-forward stateful scope drove, and the typed reason the
+# next call of a conversation an ARC op reset must report.
+_FORWARDS: dict[str, set[tuple[str, ...]]] = {}
+_RESETS: dict[tuple[str, ...], str] = {}
+
+
+def _driven_key(key: tuple[str, ...] | None) -> tuple[str, ...] | None:
+    """Note that the active forward drives ``key`` (on the caller's thread: the owner
+    loop does not see the forward's context)."""
+    forward = active_stateful_scope()
+    if key is not None and forward is not None:
+        with _CONVERSATIONS_LOCK:
+            _FORWARDS.setdefault(forward, set()).add(key)
+    return key
+
+
+class _ScopeParticipant:
+    """An ARC op on a forward resets every conversation that forward drove."""
+
+    def mark_reset(self, scope_token: str, reason: str = "ops_reset") -> None:
+        stateful_reset_payload(reason)  # a typo is a ValueError, never a silent reason
+        with _CONVERSATIONS_LOCK:
+            keys = set(_FORWARDS.get(scope_token, set()))
+            dropped = [_CONVERSATIONS.pop(key, None) for key in keys]
+            for key in keys:
+                _RESETS[key] = reason
+        loop = _OWNER.loop()
+        for conversation in dropped:
+            if conversation is not None:
+                asyncio.run_coroutine_threadsafe(conversation.socket.close(), loop)
+
+    def release(self, scope_token: str) -> None:
+        with _CONVERSATIONS_LOCK:
+            _FORWARDS.pop(scope_token, None)
+
+
+register_scope_registry(_ScopeParticipant())
 
 
 async def _connect(headers: dict[str, str], key: tuple[str, ...] | None) -> Any:
