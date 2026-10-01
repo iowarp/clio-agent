@@ -91,6 +91,7 @@ def test_an_async_call_is_recorded_exactly_once(emitted: list[dict[str, Any]]) -
     assert [r["content"] for r in emitted] == ["ok"]
 
 
+@pytest.mark.usefixtures("codex_test_login")
 def test_factory_lms_carry_the_trace() -> None:
     from clio_agent.config import LMProviderConfig
     from clio_agent.lm.factory import create_lm
