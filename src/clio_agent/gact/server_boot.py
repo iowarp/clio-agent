@@ -52,8 +52,10 @@ def process_arc(app: "FastAPI") -> Any:
         return arc
     from clio_agent.arc import history_mode  # noqa: PLC0415
 
-    if history_mode.resolve().is_history:
-        return None  # the platform has no clio-core: the loud History mode, decided once
+    mode = history_mode.resolve()
+    if mode.is_history:  # the platform has no clio-core: the loud History mode, decided once
+        _record_context_mode(app, mode)
+        return None
     from clio_agent.arc.memory import ARCMemory  # noqa: PLC0415
     from clio_agent.arc.storage import make_arc_store  # noqa: PLC0415
 
@@ -62,7 +64,28 @@ def process_arc(app: "FastAPI") -> Any:
     from clio_agent.gact.runtime.globals import _set_app_arc  # noqa: PLC0415 - import cycle
 
     _set_app_arc(app, arc)
+    _record_context_mode(app, mode)
     return arc
+
+
+def _record_context_mode(app: "FastAPI", mode: Any) -> None:
+    """Record which context mode this boot runs in (a trace-only boot event, sid ``""``)."""
+    from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
+
+    summary = (
+        f"CLIO runs in History mode ({mode.reason}): context in memory only, nothing durable."
+        if mode.is_history
+        else "CLIO runs on clio-core."
+    )
+    _emit_semantic_event(
+        app,
+        "",
+        "context.mode",
+        status="completed",
+        summary=summary,
+        actor={"mechanism": "harness"},
+        payload=mode.as_dict(),
+    )
 
 
 async def _construct(app: "FastAPI") -> Any:

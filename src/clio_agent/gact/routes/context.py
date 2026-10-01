@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any
 import msgspec
 from fastapi import FastAPI, HTTPException
 
+from clio_agent.arc import history_mode
 from clio_agent.gact.agents import runtime as agents_runtime
 from clio_agent.gact.context_view import context_messages
 from clio_agent.gact.off_loop import run_off_loop
@@ -90,6 +91,18 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
         )
 
     def _arc_unavailable(sid: str) -> HTTPException:
+        if history_mode.active():
+            return HTTPException(
+                status_code=409,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error=history_mode.HistoryModeUnsupportedError.reason,
+                        message="This CLIO runs in History mode: no clio-core context to edit",
+                        details={"session_id": sid, "context_mode": "history"},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
         return HTTPException(
             status_code=503,
             detail=ErrorEnvelope(

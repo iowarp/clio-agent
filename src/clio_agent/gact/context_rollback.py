@@ -19,9 +19,15 @@ __all__ = ["follow_rollback", "roll_back_agent_context", "rolled_back_turns"]
 
 def follow_rollback(app: Any, session: str, deleted: list[Any], kept: list[Any]) -> None:
     """Roll the session's agent context back with the ledger (undo / rewind)."""
+    from clio_agent.arc.history_plane import HistoryPlane, plane_for  # noqa: PLC0415
+
     rolled, kept_users = rolled_back_turns(deleted, kept)
-    arc = getattr(app.state, "arc", None)
-    roll_back_agent_context(arc, session, rolled_back=rolled, kept_user_turns=kept_users)
+    plane = plane_for(app)
+    if isinstance(plane, HistoryPlane):
+        if rolled:
+            plane.drop_session(session)  # History mode: reseeded from the transcript
+        return
+    roll_back_agent_context(plane, session, rolled_back=rolled, kept_user_turns=kept_users)
 
 
 def rolled_back_turns(deleted: Iterable[Any], kept: Iterable[Any]) -> tuple[set[str], set[str]]:

@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Literal, Optional
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from clio_agent.arc import history_mode
 from clio_agent.errors import MCP_TASK_RECORD_STORE_ABSENT
 from clio_agent.gact.composer_runtime import resource_capabilities
 from clio_agent.gact.context_references import CONTEXT_REFERENCE_CAPABILITY
@@ -423,6 +424,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
             # #772: surface the tool-runtime hooks flag so a failed permission-gate
             # install (ungated/unobserved tools) is visible, not silent.
             tool_hooks_installed=getattr(app.state, "tool_hooks_installed", None),
+            context_mode=history_mode.resolve().mode,
         )
         if overall == "unavailable":
             content = response.model_dump(mode="json", exclude_none=True)

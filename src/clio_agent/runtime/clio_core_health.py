@@ -32,6 +32,7 @@ from clio_agent.runtime.status import IntegrationState, IntegrationStatus
 
 if TYPE_CHECKING:
     from clio_agent.arc.clio_core_daemon import DaemonMemorySnapshot
+    from clio_agent.arc.history_mode import ContextMode
 
 _REMEDIATION = (
     "Set a bounded ram cap via arc.cte.ram_capacity (or env CLIO_ARC_CTE_RAM_CAPACITY), "
@@ -184,21 +185,44 @@ def probe_clio_core_ram_cap(*, env: Mapping[str, str] | None = None) -> list[Int
     ]
 
 
+def history_mode_arc_row(
+    mode: "ContextMode", source: str, endpoint: str, details: dict[str, object]
+) -> IntegrationStatus:
+    """The ``arc`` row in the loud History mode: DEGRADED (a working server, never a 503),
+    with the mode, its reason and the remedy."""
+    return IntegrationStatus(
+        name="arc",
+        state=IntegrationState.DEGRADED,
+        summary=(
+            "clio-core is not installed on this platform, so CLIO runs in History mode: the "
+            "agent's context is held in memory only (nothing durable; context edits, "
+            "compaction and search are unavailable)."
+        ),
+        config_source=source,
+        next_action="Install a build of iowarp-core for this platform, then restart CLIO.",
+        endpoint=endpoint,
+        fallback="history",
+        details={**details, **mode.as_dict()},
+        required=True,
+    )
+
+
 def probe_clio_core_attach(*, state: object | None = None) -> list[IntegrationStatus]:
     """Surface this process's clio-core attach progress as the ``clio_core_attach`` row.
 
     ARC construction (connect-or-spawn + native attach) runs off the server's event
     loop, so ``/v1/health`` answers while it is still in flight; this row says where it
     is: ``starting`` (DEGRADED, never 503 by itself), ``attached`` (READY), or
-    ``unavailable`` with the typed init-degrade reason (DEGRADED; ARC is on LocalFS).
+    ``unavailable`` with the typed init reason (DEGRADED; the agent stays unready, typed).
     Process-local like the #892 gate registry: a separate doctor CLI reports nothing.
+    History mode attempts no attach (no row); the ``arc`` row reports it.
 
     Args:
         state: Optional injected :class:`~clio_agent.arc.clio_core_attach.ClioCoreAttachState`
             for testing; defaults to the live process record.
 
     Returns:
-        One row, or empty when no attach was attempted (idle, or LocalFS chosen).
+        One row, or empty when no attach was attempted (idle, or History mode).
     """
     from clio_agent.arc.clio_core_attach import (  # noqa: PLC0415 - keep import light
         ClioCoreAttachPhase,

@@ -20,7 +20,7 @@ import importlib.util
 import logging
 import threading
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from clio_agent.errors import ClioError
 
@@ -35,7 +35,7 @@ _REMEDY = "install a build of iowarp-core for this platform, then restart CLIO"
 class ContextMode:
     """Where the agent's context lives for this process."""
 
-    mode: str  # "clio_core" | "history"
+    mode: Literal["clio_core", "history"]
     reason: str = ""
     detail: str = ""
 
@@ -46,7 +46,7 @@ class ContextMode:
 
     def as_dict(self) -> dict[str, str]:
         """The mode as health/UI fields."""
-        out = {"context_mode": self.mode}
+        out: dict[str, str] = {"context_mode": self.mode}
         if self.is_history:
             out.update(reason=self.reason, detail=self.detail, remedy=_REMEDY)
         return out

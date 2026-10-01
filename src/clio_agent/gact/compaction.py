@@ -36,6 +36,7 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
+from clio_agent.arc import history_mode
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.conversation_projection import model_context_messages
 from clio_agent.gact.delegation import _compact_exact_evidence_index
@@ -368,6 +369,13 @@ def compact_session_context(
     sess = app.state.sessions.get(sid)
     if sess is None:
         raise CompactionError(404, "not_found", f"session not found: {sid}", {"session_id": sid})
+    if history_mode.active():
+        raise CompactionError(
+            409,
+            history_mode.HistoryModeUnsupportedError.reason,
+            "compaction needs clio-core; this CLIO runs in History mode",
+            {"session_id": sid, "context_mode": "history"},
+        )
 
     ledger = list(app.state.messages.get(sid, []))
     if not ledger:
@@ -684,8 +692,8 @@ def maybe_autocompact() -> None:
     )
 
     arc, session, scope = arc_scope()
-    if arc is None:
-        return
+    if arc is None or history_mode.active():
+        return  # History mode has no compaction (declared on the health row and the UI)
     app = _ctx.active_app()
     if app is None:
         # #1339 review round: active_app() is documented nullable

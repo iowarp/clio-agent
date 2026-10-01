@@ -615,25 +615,16 @@ class RuntimeProbe:
         )
 
     def _probe_arc_clio_core(self, source: str) -> IntegrationStatus:
-        """Probe the clio-core backend (pip runtime + shared daemon)."""
+        """Probe the clio-core backend (pip runtime + shared daemon); without the binding
+        this process runs in the loud History mode, a DEGRADED row (never a 503)."""
+        from clio_agent.arc import history_mode  # noqa: PLC0415 - keep import light
+        from clio_agent.runtime.clio_core_health import history_mode_arc_row  # noqa: PLC0415
+
         runtime = self._probe_clio_core_runtime()
         details = {"storage_mode": "cte", **runtime.to_details()}
         endpoint = f"127.0.0.1:{runtime.port}"
-        if not runtime.installed:
-            return IntegrationStatus(
-                name="arc",
-                state=IntegrationState.UNAVAILABLE,
-                summary=(
-                    "ARC is configured for the clio-core backend but the "
-                    "iowarp_core pip package is not installed."
-                ),
-                config_source=source,
-                next_action=("Install the iowarp-core pip package (clio-core is required)."),
-                endpoint=endpoint,
-                fallback="none",
-                details=details,
-                required=True,
-            )
+        if (mode := history_mode.resolve()).is_history:
+            return history_mode_arc_row(mode, source, endpoint, details)
         if not runtime.daemon_alive:
             return IntegrationStatus(
                 name="arc",
@@ -666,8 +657,8 @@ class RuntimeProbe:
         else:
             issue = clio_core_config.UPSTREAM_INDEXER_ISSUE
             summary += (
-                f" Semantic (BM25) scope search is degraded to zero hits -- the clio_cte_indexer "
-                f"chimod is not composed (clio-core#905: {issue})."
+                f" Semantic (BM25) scope search is unavailable (typed search_unavailable) -- the "
+                f"clio_cte_indexer chimod is not composed (clio-core#905: {issue})."
             )
             details = {**details, "reason": clio_core_config.CLIO_CORE_SEARCH_INDEXER_ABSENT}
             details["upstream"] = issue

@@ -415,23 +415,6 @@ def test_arc_clio_core_default_backend_red_when_daemon_down(tmp_path):
     assert "clio-runtime.log" in status.details["log_path"]
 
 
-def test_arc_clio_core_backend_red_when_iowarp_core_missing(tmp_path):
-    """clio-core selected but the pip runtime is absent: a broken install goes red."""
-    probe = RuntimeProbe(
-        env={"CLIO_ARC_STORE": "cte"},
-        module_checker=lambda name: False,
-        port_checker=lambda port: False,
-        clio_runtime_dir=tmp_path / "clio-home",
-    )
-
-    status = probe.probe_arc()
-
-    assert status.state == IntegrationState.UNAVAILABLE
-    assert status.details["storage_mode"] == "cte"
-    assert status.details["reason"] == "iowarp_core_not_installed"
-    assert "iowarp" in status.summary.lower()
-
-
 def test_arc_clio_core_backend_ready_when_daemon_listening(tmp_path):
     """Installed pip runtime + listening daemon reports READY with cte mode."""
     clio_home = tmp_path / "clio-home"

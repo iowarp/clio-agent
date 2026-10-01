@@ -6,8 +6,9 @@ clio-core). It holds the same segment records clio-core would, one immutable
 variant lines use (append, list, render, working set, delete), so the one projection
 (``clio_react_record.fold_steps``) serves both modes. Nothing is durable: after a restart
 a scope is empty and the loop seeds it from the transcript file (``carry_over``), as it
-does for any scope new to a conversation. Context edits, compaction and search are not
-offered here (``history_mode_unsupported``).
+does for any scope new to a conversation. Undo/rewind drops the session's scopes (the
+next turn reseeds them from the rolled-back transcript); context edits, compaction and
+search answer ``history_mode_unsupported``.
 """
 
 from __future__ import annotations
@@ -103,6 +104,13 @@ class HistoryPlane:
                 out.append(rec)
             self._scopes[key] = dspy.History(messages=out)
             return deleted
+
+    def drop_session(self, session_id: str) -> None:
+        """Forget every scope of a session (undo/rewind): the next turn reseeds each
+        scope from the rolled-back transcript."""
+        with self._lock:
+            for key in [k for k in self._scopes if k[0] == session_id]:
+                del self._scopes[key]
 
 
 def plane_for(app: Any) -> Any:
