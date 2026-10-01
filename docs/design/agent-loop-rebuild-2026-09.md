@@ -1007,7 +1007,8 @@ directly each can change what the model sees; each fix lands with a failing-firs
      marker, so the UI does not show the compaction and a rollback cannot find it. The
      options are to fail the turn after its answer, or to keep the entry staged and surface
      it until it lands.
-   - Not yet: using an estimated prompt usage (`source: estimated`) as if it were real.
+   - Done (`7599c811`): only a measured token count decides; an estimate is ignored and the
+     skip is audited.
 5. *Context silently rebuilt from the transcript file:*
    - `carry_over` re-seeds any scope whose `list_segments` comes back empty, and a missing
      clio-core record reads as empty (`if raw else []`);
@@ -1038,8 +1039,11 @@ directly each can change what the model sees; each fix lands with a failing-firs
    - `op_logger` failures are swallowed with "op still applied".
 
    Done (`b33e6e1b`): the wiring raises, and a trace write failure is kept and raised typed
-   (`TraceWriteError`) by the next emit or flush. Still open: `op_logger` failures after an
-   applied op ("op still applied").
+   (`TraceWriteError`) by the next emit or flush. Done (`c4dd6868`): an op whose `arc.op`
+   record fails is not applied (`ContextOpLogError`).
+
+   Full suite after the inventory work: 10,310 passed (`72e3646a`); the noqa-hidden swallow
+   baseline is 554.
 
 Items 1–3 done: `c85ab687` (Claude Code CLI compaction), `2ac785b7` (stale ids), `dcea7e43`
 (strict fold).
