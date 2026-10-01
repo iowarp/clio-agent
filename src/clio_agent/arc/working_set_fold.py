@@ -265,7 +265,7 @@ class FoldingSegmentStore(SegmentStore):
             segs = self._segs(session_id, storage_scope)
             segs.append(seg)
             self._index.add(session_id, storage_scope, seg)
-            self._persist(session_id, storage_scope, just_written=[seg])
+            self._persist(session_id, storage_scope)
         self._note_partition(session_id, storage_scope)
         return seg
 

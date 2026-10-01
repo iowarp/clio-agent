@@ -43,7 +43,7 @@ from clio_agent.arc.schema import (
     segment_text,
 )
 from clio_agent.arc.storage import ARCStore
-from clio_agent.runtime import trace
+from clio_agent.errors import ClioError
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +104,18 @@ def _encode_safe(value: Any) -> Any:
         return _encode_safe(obj_dict)
     # Last resort: a stable string form (never throws on a foreign object).
     return str(value)
+
+
+class ArcPersistError(ClioError):
+    """clio-core did not accept a write; the in-memory copy was discarded."""
+
+    def __init__(self, session_id: str, scope: str, cause: BaseException) -> None:
+        self.scope = scope
+        super().__init__(
+            f"clio-core did not store the write to {session_id}/{scope}: {cause}",
+            error_type="arc_persist_failed",
+            details={"session_id": session_id, "scope": scope, "cause": type(cause).__name__},
+        )
 
 
 def _coerce_content(content: dict[str, Any]) -> dict[str, Any]:
@@ -310,50 +322,22 @@ class SegmentStore:
             )
         return self._scopes[key]
 
-    def _persist(
-        self, session_id: str, scope: str, *, just_written: list[Segment] | None = None
-    ) -> None:
-        """Encode + put the whole scope record. NON-POISONING: a segment that still fails
-        to encode (despite the :func:`_coerce_content` chokepoint) is REMOVED from the
-        in-memory list and logged via ``runtime.trace`` (never silently), so it can NEVER
-        wedge the scope's future persists. ``just_written`` is what the current op produced; they
-        are the prime suspects and are dropped first."""
+    def _persist(self, session_id: str, scope: str) -> None:
+        """Encode + put the whole scope record; clio-core must accept it.
+
+        The in-memory scope was changed before this call. When the put fails, that copy
+        now holds something clio-core does not, so it is DISCARDED (the next read reloads
+        clio-core's record) and a typed :class:`ArcPersistError` is raised -- never a
+        dropped segment, never memory that disagrees with clio-core."""
         segs = self._scopes[(session_id, scope)]
         try:
             self._put_scope(session_id, scope, segs)
-            return
-        except Exception:  # noqa: BLE001,S110 - encode/put failed; isolate the offender below
-            pass
-        # Drop the just-written segment(s) first (the most likely offender), then any
-        # other segment that fails to encode in isolation, so the rest of the scope
-        # persists cleanly and never re-throws on the next op.
-        suspects = list(just_written or [])
-        dropped: list[str] = []
-        for seg in suspects:
-            if seg in segs and not self._segment_encodes(seg):
-                segs.remove(seg)
-                self._index_remove(session_id, scope, seg)
-                dropped.append(seg.id)
-        try:
-            self._put_scope(session_id, scope, segs)
-        except Exception:  # noqa: BLE001 - a non-just-written segment is also bad; isolate it
-            survivors = [s for s in segs if self._segment_encodes(s)]
-            for seg in segs:
-                if seg not in survivors:
-                    self._index_remove(session_id, scope, seg)
-                    dropped.append(seg.id)
-            segs[:] = survivors
-            self._put_scope(session_id, scope, segs)
-        if dropped:
-            trace.event(
-                "SEGMENT-DROP",
-                "scope=%s session=%s dropped=%d ids=%s (un-encodable content removed; "
-                "scope persisted without it, no durable wedge)",
-                scope,
-                session_id,
-                len(dropped),
-                dropped,
-            )
+        except Exception as exc:  # noqa: BLE001 - re-raised typed after the memory is discarded
+            key = (session_id, scope)
+            self._scopes.pop(key, None)
+            self._loaded.discard(key)
+            self._index.drop_scope(session_id, scope)
+            raise ArcPersistError(session_id, scope, exc) from exc
 
     def _put_scope(self, session_id: str, scope: str, segs: list[Segment]) -> None:
         """Encode the scope's segments and put the record (with the live search_text
@@ -375,15 +359,6 @@ class SegmentStore:
             encode_segments(segs),
             search_text=search_text,
         )
-
-    @staticmethod
-    def _segment_encodes(seg: Segment) -> bool:
-        """Whether a single segment survives the strict msgpack encode in isolation."""
-        try:
-            encode_segments([seg])
-            return True
-        except Exception:  # noqa: BLE001 - this segment is the un-encodable offender
-            return False
 
     def _index_remove(self, session_id: str, scope: str, seg: Segment) -> None:
         """Drop a dropped segment from the per-scope locator so the index stays in sync
@@ -809,7 +784,7 @@ class SegmentStore:
                     lt,
                     exc_info=True,
                 )
-        self._persist(session_id, scope, just_written=written)
+        self._persist(session_id, scope)
         logger.debug(
             "segments: persisted op=%s scope=%s lt=%d written=%d tombstoned=%d",
             op,

@@ -23,7 +23,6 @@ directly.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 import msgspec
 import pytest
@@ -176,71 +175,39 @@ def test_insert_replace_summarize_coerce_exotic_content(tmp_path):
 #     into the in-memory list) is dropped (logged, never silent) and subsequent
 #     appends+persists to the SAME scope still succeed — no durable wedge.
 # ---------------------------------------------------------------------------
-def test_poison_segment_does_not_durably_wedge_scope(tmp_path, monkeypatch):
-    import clio_agent.arc.segments as seg_mod
+def test_poison_segment_fails_typed_and_does_not_wedge_scope(tmp_path):
+    """A segment clio-core cannot store fails the write typed; memory reloads clio-core's
+    record (which never held it), and the scope keeps working -- never a silent drop."""
+    from clio_agent.arc.segments import ArcPersistError
 
     store = _store(tmp_path)
     sid, scope = "sess_poison", "agentD"
-
-    # First, a clean append establishes the scope + loads it.
     store.append(sid, scope, "thought", {"text": "good-1"})
 
-    # Forge a POISON segment whose content holds a raw un-encodable object and splice
-    # it directly into the in-memory list, bypassing the _coerce_content chokepoint —
-    # simulating a hypothetical write that slipped an un-encodable value through.
+    # Splice an un-encodable segment into the in-memory list, bypassing the
+    # _coerce_content chokepoint (a hypothetical write that slipped one through).
     poison = Segment(
         scope=scope,
         kind="observation",
-        content={"raw": _Unencodable()},  # strict msgpack cannot encode this
+        content={"raw": _Unencodable()},
         session_id=sid,
         step=0,
         order=99.0,
         logical_time=10_000,
     )
-    # Sanity: this segment genuinely does NOT encode (so the test exercises the guard).
     with pytest.raises((TypeError, msgspec.MsgspecError)):
         encode_segments([poison])
-
-    segs = store._segs(sid, scope)  # loaded in-memory list for the scope
-    segs.append(poison)
+    store._segs(sid, scope).append(poison)
     store._index.add(sid, scope, poison)
 
-    drops: list[tuple[Any, ...]] = []
-    orig_event = seg_mod.trace.event
+    with pytest.raises(ArcPersistError):
+        store.append(sid, scope, "thought", {"text": "good-2"})
 
-    def _spy(tag: str, fmt: str, *args: Any) -> None:
-        if tag == "SEGMENT-DROP":
-            drops.append((fmt, *args))
-        orig_event(tag, fmt, *args)
-
-    monkeypatch.setattr(seg_mod.trace, "event", _spy)
-
-    # The NEXT append triggers a persist of the whole scope. Without the guard this
-    # would throw on the poison segment AND keep re-throwing forever (durable wedge).
-    store.append(sid, scope, "thought", {"text": "good-2"})
-
-    # The poison was dropped (logged, not silent) and the good segments survive.
-    assert drops, "poison segment was not logged via SEGMENT-DROP"
-    live_texts = [s.content.get("text") for s in store.render(sid, scope)]
-    assert "good-1" in live_texts
-    assert "good-2" in live_texts
-    assert all("raw" not in s.content for s in store.render(sid, scope))
-
-    # The scope is NOT wedged: another append+persist still succeeds, and a fresh
-    # store reloads the persisted (clean) record.
+    assert [s.content.get("text") for s in store.render(sid, scope)] == ["good-1"]
     store.append(sid, scope, "thought", {"text": "good-3"})
-    store2 = _store(tmp_path)
-    reloaded = [s.content.get("text") for s in store2.render(sid, scope)]
-    assert "good-3" in reloaded
-
-    # Index stays consistent with the scan after the drop (no orphan locator entry).
-    assert store._index_matches_scan(sid, scope)
+    assert [s.content.get("text") for s in store.render(sid, scope)] == ["good-1", "good-3"]
 
 
-# ---------------------------------------------------------------------------
-# The _events log path is ALSO routed through the same chokepoint (belt-and-suspenders
-# with build_event_content's own _encode_safe), via the observer/ARC writer.
-# ---------------------------------------------------------------------------
 def test_events_scope_segment_also_coerced(tmp_path):
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
     sid = "sess_ev"
