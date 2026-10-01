@@ -1311,7 +1311,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 termination_reason=getattr(result, "termination_reason", ""),
                 # #953 [5]: carry the variant winner stamp (else dropped here) to the turn.
                 variant_selection=getattr(result, "variant_selection", None),
-                error_info=None,
+                error_info=getattr(result, "error_info", None),
             )
 
     return BlueprintExpertModule(base_agent, agent_def)
@@ -1501,7 +1501,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                 trajectory=getattr(result, "trajectory", None),
                 tools_called=tools_called,
                 termination_reason=getattr(result, "termination_reason", ""),
-                error_info=None,
+                error_info=getattr(result, "error_info", None),
             )
 
     return ToolUserAgentModule(base_agent, agent_def)
