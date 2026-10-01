@@ -10,8 +10,11 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, cast
 
+from clio_agent.arc.context_view import ViewSnapshot
 from clio_agent.arc.schema import SegmentKind
+from clio_agent.arc.search_companion import ContextSearchHit
 from clio_agent.arc.segments import OpLogger, SegmentStore
+from clio_agent.arc.working_set_fold import FoldingSegmentStore
 from clio_agent.errors import ClioError
 
 __all__ = ["SearchUnavailableError", "SegmentPlane"]
@@ -179,6 +182,17 @@ class SegmentPlane:
         """Stable dispatch over the five ops — the KV-backend swap seam."""
         return self._segments.apply(op, session_id, scope, **kwargs)
 
+    def context_view(self, session_id: str, scope: str) -> ViewSnapshot:
+        """The scope's live segments and their view generation (the loop's context read).
+
+        Appends keep the generation; every recorded op renews it.
+        """
+        return self._segments.context_view(session_id, scope)
+
+    def has_segments(self, session_id: str, scope: str) -> bool:
+        """Whether anything was ever recorded in the scope (any status)."""
+        return self._segments.has_segments(session_id, scope)
+
     def render_segments(self, session_id: str, scope: str, *, as_of: Optional[int] = None) -> Any:
         """Ordered LIVE segments for a scope (the decisive read; as-of-T optional)."""
         return self._segments.render(session_id, scope, as_of=as_of)
@@ -223,6 +237,24 @@ class SegmentPlane:
         if not self._segments.supports_search():
             raise SearchUnavailableError(self._segments.search_degradation_reason())
         return self._segments.search_scopes(session_id, query_text, scope_prefix=scope_prefix, k=k)
+
+    def search_context(
+        self, session_id: str, query_text: str, *, scope_prefix: str = "", k: int = 10
+    ) -> List[ContextSearchHit]:
+        """Search every atom the session's agents ever had in context, compacted included.
+
+        Each hit is a companion chunk with the atom ids it covers, each marked
+        ``compacted`` when it is no longer live.
+
+        Raises:
+            SearchUnavailableError: clio-core cannot search (#905), or the plane is not
+                the fold (only the fold keeps the atom companion).
+        """
+        if not isinstance(self._segments, FoldingSegmentStore):
+            raise SearchUnavailableError("context_search_needs_the_working_set_fold")
+        if not self._segments.supports_search():
+            raise SearchUnavailableError(self._segments.search_degradation_reason())
+        return self._segments.search_context(session_id, query_text, scope_prefix=scope_prefix, k=k)
 
     def segment_search_is_semantic(self) -> bool:
         """Whether scope search uses real BM25 (clio-core backend) vs the naive fallback."""

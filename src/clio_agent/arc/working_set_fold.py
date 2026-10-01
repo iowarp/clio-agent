@@ -1,112 +1,108 @@
 """FoldingSegmentStore: the working set as a FOLD of the canonical ``_events`` log.
 
-The #737 S2 slice collapses the dual ARC. TODAY the ReAct loop writes working-set
-segments to a per-expert scope AND (separately) the semantic-event bus writes the
-same history into the reserved ``_events`` log — two parallel materializations of
-one history (RULE 4 / the #737 thesis). This module removes the parallel write: the
-loop's content atoms become the ONLY copy, appended to the canonical ``_events``
-log, and ``render_working_set`` / ``render_segments`` / ``render_segment_text`` are
-re-expressed as a **fold** of that log (design ``docs/design/unified-arc-highway.md``
-§2.8b, §2.9, §2.10).
+The #737 S2 slice collapses the dual ARC: the loop's content atoms are the ONLY copy,
+appended to the canonical ``_events`` log, and the working-set reads are a **fold** of
+that log (design ``docs/design/unified-arc-highway.md`` §2.8b, §2.9, §2.10). Phase 11a
+keeps that fold as a **context view** per (session, logical scope) so neither a read
+nor an append costs O(history):
 
-Design decisions (each answering a named review finding):
-
-* **Raw append lane + separate op-emit (§2.9).** Content atoms and op records are
-  *persisted* through :meth:`FoldingSegmentStore._append_raw`, which NEVER runs
-  ``_finish_write`` — so the persist itself does not re-form the documented
-  ``record -> op_logger -> arc.op -> record`` recursion. The ``op_logger`` is invoked
-  SEPARATELY via :meth:`FoldingSegmentStore._emit_op` on the LOGICAL working-set scope,
-  because the ``arc.op`` durable stream is a FROZEN reproducibility contract (§2 /
-  GOAL.md DoD #4): ``arc.replay`` must rebuild the live plane byte-identically from
-  ``arc.op`` events alone. That call cannot recurse: the production op-logger
-  (``runtime.globals._emit_arc_op``) derives ``arc.op`` directly to the durable sink and
-  never re-enters ``arc.record`` (``test_trace_derivation``). The per-``append`` frame
-  rides the DURABLE trace (for replay) but stays OFF the served SSE wire via
-  ``_emit_arc_op``'s own ``mutates_context`` gate — that gate, not the fold, drops the
-  ~190 per-turn frames from the UI stream.
-* **On the ``_events`` family, span-partitioned (§2.10).** Content atoms live in the
-  ``_events/w/<span>`` chunk lane — part of the reserved ``_events`` family (so they
-  are search-excluded and lifecycle-erased with the log) but partitioned by
-  ``expert_span_id`` so concurrent experts do not serialize on one chunk lock. Each
-  atom carries its LOGICAL working-set scope in ``Segment.scope`` (e.g. ``"agentA"``),
-  so the fold recovers a scope's working set by filtering the merged lane. The
-  semantic-event readers (:class:`~clio_agent.arc.live.LiveRuntimeContext`) are
-  unaffected — they keep only ``semantic_event``-kind segments, and these atoms are
-  ``thought`` / ``tool_call`` / ``observation`` / ``summary`` / ``ws_op`` /
-  ``step_open``.
+* **Raw append lane + separate op-emit (§2.9).** Atoms are persisted through the chunk
+  writer below, which NEVER runs ``_finish_write`` -- so the persist itself does not
+  re-form the ``record -> op_logger -> arc.op -> record`` recursion. The ``op_logger``
+  is invoked SEPARATELY via :meth:`FoldingSegmentStore._emit_op` on the LOGICAL scope,
+  because the ``arc.op`` durable stream is a FROZEN reproducibility contract: replay
+  rebuilds the live plane byte-identically from ``arc.op`` events alone.
+* **Span-partitioned, chunked (§2.10).** Atoms live in the ``_events/w/<span>`` lane
+  (search-excluded, lifecycle-erased with the log), partitioned by ``expert_span_id``
+  and chunked with :func:`~clio_agent.arc.lane_chunking.chunk_for_append` (capacity
+  ``arc.ws_chunk_segments``), so an append re-puts one bounded chunk. Each atom carries
+  its LOGICAL scope in ``Segment.scope``.
+* **The session index** (:mod:`clio_agent.arc.lane_index`, ``_events/w/_index``) lists
+  the chunks, the scopes each holds and each scope's anchor. A cold read gets it, then
+  only the chunks holding the scope's atoms from its anchor on -- no store scan. A
+  session stored before the index is migrated once (:mod:`clio_agent.arc.lane_migration`).
+* **The context view** (:mod:`clio_agent.arc.context_view`): appends extend it, ops
+  rebuild it with the ONE fold (:func:`~clio_agent.arc.context_view.fold_atoms`) over
+  the atoms from the anchor on; a summarize that retires everything before it moves the
+  anchor. ``as_of`` and tombstone (history) reads fold the scope's whole log.
 * **Op records, append-only (§2.5).** A ``delete`` is an appended ``ws_op`` atom
-  ``{op, targets}``; ``summarize`` / ``replace`` piggy-back on the produced atom's
-  ``derived_from`` (which lists the ids it supersedes). The fold TOMBSTONES a target
-  at the ``logical_time`` of the op/producer that retired it — never rewriting stored
-  content — so as-of-T replay is exact (the trace view = the log with operations
-  visible).
-* **Byte-exact ``order`` (§4.1.A).** Each content atom carries a SCOPE-LOCAL ``order``
-  computed exactly as :class:`~clio_agent.arc.segments.SegmentStore` computes it
-  (``max(order)+1`` for append, gap-midpoint for insert, the replaced slot for summarize/
-  replace), so the fold is byte-identical to a separately-written working set.
-* **Ingest-time search companion (§2.7).** Content leaves the per-expert scope, so the
-  fold rewrites the per-scope ``.search`` companion at ingest (a zero-segment record
-  under the logical scope carrying the folded live text); ``search_scopes`` is unchanged.
+  ``{op, targets}``; ``summarize`` / ``replace`` retire the ids in their producer's
+  ``derived_from``. Stored content is never rewritten, so as-of-T replay is exact.
+* **Byte-exact ``order`` (§4.1.A).** Each content atom carries the scope-local ``order``
+  the plain :class:`~clio_agent.arc.segments.SegmentStore` would give it.
+* **Search companion (§2.7)** (:mod:`clio_agent.arc.search_companion`): append-only
+  per-scope text chunks over every atom ever written; retired atoms are marked at query
+  time. A companion write clio-core refuses is a typed write failure.
 
-The store is a drop-in behind the ``SegmentStore`` seam: it subclasses SegmentStore
-and overrides only the working-set ops/reads, delegating every reserved-scope
-(``_events`` / ``_events/N``) call to ``super()`` unchanged.
+Every reserved-scope call (the semantic-event log itself) is delegated to ``super()``.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import msgspec
 
-from clio_agent.arc.live import EVENTS_SCOPE, is_events_scope
-from clio_agent.arc.loop_guard import assert_store_write_off_loop
-from clio_agent.arc.schema import (
-    WORKING_SET_KINDS,
-    Segment,
-    SegmentKind,
-    encode_segments,
-    segment_text,
+from clio_agent import conf
+from clio_agent.arc.context_search import ContextSearch
+from clio_agent.arc.context_view import (
+    STEP_OPEN_KIND,
+    WS_OP_KIND,
+    AnchorEntry,
+    ContextView,
+    ViewSnapshot,
+    fold_atoms,
+)
+from clio_agent.arc.lane_chunking import chunk_for_append
+from clio_agent.arc.lane_index import (
+    INDEX_SCOPE,
+    WS_CONTENT_FAMILY,
+    SessionIndex,
+    chunks_holding,
+    encode_index,
+    is_ws_content_scope,
+    note_atom,
+    set_anchor,
+    ws_content_partition,
+)
+from clio_agent.arc.lane_migration import load_or_migrate
+from clio_agent.arc.live import is_events_scope
+from clio_agent.arc.loop_guard import LoopThreadStoreWrite, assert_store_write_off_loop
+from clio_agent.arc.schema import WORKING_SET_KINDS, Segment, SegmentKind, segment_text
+from clio_agent.arc.search_companion import (
+    SearchCompanion,
+    is_search_scope,
 )
 from clio_agent.arc.segment_ids import ContextOpLogError, require_live
-from clio_agent.arc.segments import SegmentStore, _coerce_content
+from clio_agent.arc.segments import ArcPersistError, SegmentStore
+from clio_agent.arc.segments import _coerce_content as _coerce_content
 from clio_agent.arc.storage import ARCStore
 
 logger = logging.getLogger(__name__)
 
-# The content lane of the canonical log: a chunk family UNDER ``_events`` (so
-# ``is_events_scope`` is True — search-excluded + lifecycle-erased with the log),
-# partitioned by ``expert_span_id`` so parallel experts do not contend on one lock.
-WS_CONTENT_FAMILY = f"{EVENTS_SCOPE}/w"
-
-# Log-internal atom kinds that are NEVER renderable content: the append-only op
-# record and the pre-execution crash breadcrumb. Excluded from every fold render.
-WS_OP_KIND: SegmentKind = "ws_op"
-STEP_OPEN_KIND: SegmentKind = "step_open"
-_NON_CONTENT_KINDS = frozenset({WS_OP_KIND, STEP_OPEN_KIND})
-
-
-def ws_content_partition(expert_span_id: str) -> str:
-    """Physical scope of the content lane for one ``expert_span_id``.
-
-    Concurrent experts write disjoint partitions (``_events/w/<span>``) so their
-    appends take different per-scope locks. An empty span (unstamped writers, tests)
-    maps to the shared ``_events/w/_`` partition.
-
-    Args:
-        expert_span_id: The owning expert-turn span id, or ``""``.
-
-    Returns:
-        The reserved content-lane scope string.
-    """
-    return f"{WS_CONTENT_FAMILY}/{expert_span_id or '_'}"
+__all__ = [
+    "STEP_OPEN_KIND",
+    "WS_CONTENT_FAMILY",
+    "WS_OP_KIND",
+    "FoldingSegmentStore",
+    "emit_step_open",
+    "is_ws_content_scope",
+    "make_segment_store",
+    "ws_content_partition",
+]
 
 
-def is_ws_content_scope(scope: str) -> bool:
-    """Whether ``scope`` is a content-lane partition (``_events/w`` or ``_events/w/*``)."""
-    return scope == WS_CONTENT_FAMILY or scope.startswith(f"{WS_CONTENT_FAMILY}/")
+def _chunk_capacity() -> int:
+    """Atoms per content-lane chunk before the writer rolls (file -> env -> default)."""
+    return conf.resolve(
+        "arc.ws_chunk_segments",
+        env="CLIO_ARC_WS_CHUNK_SEGMENTS",
+        default=32,
+        cast=conf.as_int,
+    )
 
 
 def _default_search_indexed(scope: str) -> bool:
@@ -171,17 +167,15 @@ def make_segment_store(
 ) -> SegmentStore:
     """Construct the live-plane segment store, folding or not per the S2 flag.
 
-    The fold is THE production working-set semantics (the S2 proofs went green —
-    byte-equality dual-run, reload==live on the real corpus — and the v0.8.0
-    cleanup deleted the ``CLIO_ARC_WORKING_SET_FOLD`` opt-out). The
-    ``working_set_fold=False`` parameter remains ONLY for the dual-run
-    equivalence harness, which proves the fold against the plain store.
+    The fold is THE production working-set semantics. ``working_set_fold=False``
+    remains ONLY for the dual-run equivalence harness, which proves the fold against
+    the plain store.
 
     Args:
         store: The persistence backend.
         search_indexed: Optional scope-search predicate (defaults to excluding the
             reserved ``_events`` family).
-        working_set_fold: Force the regime; ``None`` resolves the config flag.
+        working_set_fold: Force the regime; ``None`` folds.
 
     Returns:
         A :class:`FoldingSegmentStore` when the fold is on, else a plain
@@ -189,51 +183,45 @@ def make_segment_store(
     """
     predicate = search_indexed or _default_search_indexed
     if working_set_fold is False:
-        # Explicit legacy request from the dual-run equivalence HARNESS only —
-        # the config flag was deleted in the v0.8.0 cleanup; production always
-        # folds. (The harness compares fold output against the plain store to
-        # prove byte-equality of the fold itself.)
         return SegmentStore(store, search_indexed=predicate)
     return FoldingSegmentStore(store, search_indexed=predicate)
 
 
-class FoldingSegmentStore(SegmentStore):
-    """A :class:`SegmentStore` whose working-set is a fold of the canonical log.
+@dataclass
+class _Session:
+    """One session's index and views (in memory, re-derivable from clio-core)."""
 
-    Working-set-scope writes (any scope that is NOT a reserved ``_events`` family
-    scope) are redirected to the ``_events/w`` content lane via the raw append lane;
-    working-set reads are derived as a fold with the append-only ops applied. Every
-    reserved-scope call (the semantic-event log itself) is delegated to ``super()``
-    unchanged, so the observer/highway path is byte-for-byte the old behavior.
+    index: SessionIndex
+    lock: threading.RLock = field(default_factory=threading.RLock)
+    views: dict[str, ContextView] = field(default_factory=dict)
+
+
+class FoldingSegmentStore(ContextSearch, SegmentStore):
+    """A :class:`SegmentStore` whose working set is a fold of the canonical log.
+
+    Working-set-scope writes (any scope outside the reserved ``_events`` family) go to
+    the ``_events/w`` content lane; working-set reads come from the scope's context
+    view. Every reserved-scope call is delegated to ``super()`` unchanged.
     """
 
-    def __init__(
-        self,
-        store: ARCStore,
-        *,
-        search_indexed: Any = None,
-    ) -> None:
+    def __init__(self, store: ARCStore, *, search_indexed: Any = None) -> None:
         """Back the folding store with an :class:`ARCStore`.
 
         Args:
-            store: The persistence backend (LocalFS or clio-core), shared verbatim
-                with the base store.
-            search_indexed: Optional ``scope -> bool`` predicate deciding which
-                physical scopes get a plain-text search companion. The content lane is
-                already excluded (it is an ``_events`` family scope); the fold writes
-                the logical-scope companion itself (§2.7).
+            store: The persistence backend, shared verbatim with the base store.
+            search_indexed: Optional ``scope -> bool`` predicate for the base store's
+                own companion (the content lane is an ``_events`` scope: excluded).
         """
         super().__init__(store, search_indexed=search_indexed)
-        # The ingest-time search companion (§2.7). Kept toggleable so a deployment that
-        # never uses scope search can skip the per-append companion write entirely.
-        self._search_companion_enabled = True
-        # Per-session cache of the discovered content-lane partition scopes, so a warm
-        # fold render does NOT re-scan the store to re-discover partitions (§2.10 read
-        # budget): populated by one scan on first access, then kept current as new
-        # partitions are appended. Guarded by its own lock (partitions can be created
-        # from concurrent expert threads).
-        self._lane_cache: dict[str, set[str]] = {}
-        self._lane_cache_lock = threading.Lock()
+        self._search = SearchCompanion(store, self._record_name)
+        self._sessions: dict[str, _Session] = {}
+        self._session_locks: dict[str, threading.Lock] = {}
+        self._sessions_lock = threading.Lock()
+        # One writer per content-lane partition (chunk choice + persist as one step).
+        # Separate from the base per-scope locks so a writer never holds a scope lock
+        # while it takes another (the base ``release`` takes them all under its registry
+        # lock).
+        self._partition_locks: dict[tuple[str, str], threading.Lock] = {}
 
     # ---- scope routing -------------------------------------------------
 
@@ -243,32 +231,110 @@ class FoldingSegmentStore(SegmentStore):
         family — i.e. the per-expert scopes the loop renders its prompt from."""
         return bool(scope) and not is_events_scope(scope)
 
-    # ---- raw append lane (§2.9) ----------------------------------------
+    # ---- session index + views -----------------------------------------
 
-    def _append_raw(self, session_id: str, storage_scope: str, seg: Segment) -> Segment:
-        """Append a pre-built ``Segment`` to a physical scope WITHOUT the op-logger.
+    def _session(self, session_id: str) -> _Session:
+        """The session's index (read, or migrated once) and views, loaded once."""
+        with self._sessions_lock:
+            state = self._sessions.get(session_id)
+            if state is not None:
+                return state
+            load_lock = self._session_locks.setdefault(session_id, threading.Lock())
+        with load_lock:
+            with self._sessions_lock:
+                state = self._sessions.get(session_id)
+            if state is not None:
+                return state
+            state = _Session(index=load_or_migrate(self, session_id))
+            with self._sessions_lock:
+                return self._sessions.setdefault(session_id, state)
 
-        This is the canonical-log write primitive: it persists the atom and keeps the
-        per-scope locator in sync, but it does NOT call ``_finish_write`` (which would
-        invoke the ``op_logger`` and re-form the ``arc.op`` recursion, §2.9). Held
-        under the physical scope's per-scope lock.
+    def _view(self, session_id: str, scope: str) -> ContextView:
+        """The scope's context view, built on first use from the chunks the index lists."""
+        state = self._session(session_id)
+        with state.lock:
+            view = state.views.get(scope)
+            entry = state.index.scopes.get(scope)
+            chunks = list(entry.chunks) if entry is not None else []
+            anchor = entry.anchor if entry is not None else None
+        if view is not None:
+            return view
+        atoms: list[Segment] = []
+        for chunk in chunks:
+            with self._lock_for(session_id, chunk):
+                atoms.extend(a for a in self._segs(session_id, chunk) if a.scope == scope)
+        built = ContextView(scope, anchor, atoms)
+        with state.lock:
+            return state.views.setdefault(scope, built)
 
-        Args:
-            session_id: Owning session.
-            storage_scope: The physical content-lane scope (``_events/w/<span>``).
-            seg: The fully-formed segment (its ``.scope`` is the LOGICAL working-set
-                scope, distinct from ``storage_scope``).
+    def _full_atoms(self, session_id: str, scope: str) -> list[Segment]:
+        """Every atom of ``scope`` ever written (the as-of / history read)."""
+        state = self._session(session_id)
+        with state.lock:
+            chunks = chunks_holding(state.index, scope)
+        atoms: list[Segment] = []
+        for chunk in chunks:
+            with self._lock_for(session_id, chunk):
+                atoms.extend(a for a in self._segs(session_id, chunk) if a.scope == scope)
+        return atoms
 
-        Returns:
-            The appended segment.
+    def raw_lane_atoms(self, session_id: str) -> list[Segment]:
+        """Every atom on the session's content lane, breadcrumbs included (crash reads)."""
+        state = self._session(session_id)
+        with state.lock:
+            chunks = list(state.index.chunks)
+        atoms: list[Segment] = []
+        for chunk in chunks:
+            with self._lock_for(session_id, chunk):
+                atoms.extend(self._segs(session_id, chunk))
+        return sorted(atoms, key=lambda s: s.logical_time)
+
+    def _put_index(self, session_id: str, index: SessionIndex) -> None:
+        """Put the session index record; a refusal is a typed :class:`ArcPersistError`."""
+        assert_store_write_off_loop("segments.put", scope=INDEX_SCOPE)
+        try:
+            self._store.put(
+                "segments", self._record_name(session_id, INDEX_SCOPE), encode_index(index)
+            )
+        except LoopThreadStoreWrite:
+            raise
+        except Exception as exc:  # noqa: BLE001 - re-raised typed; the write failed
+            raise ArcPersistError(session_id, INDEX_SCOPE, exc) from exc
+
+    def _mark_absent(self, session_id: str, chunk: str) -> None:
+        """A chunk the index does not list is not stored: load it as empty, no get."""
+        with self._lock_for(session_id, chunk):
+            key = (session_id, chunk)
+            if key not in self._loaded:
+                self._scopes[key] = []
+                self._loaded.add(key)
+
+    def _write(self, session_id: str, partition: str, atom: Segment) -> str:
+        """Persist ONE atom to its partition's active chunk; returns the chunk scope.
+
+        Index first (it only ever lists more than is stored), then the chunk. Never
+        runs ``_finish_write`` (§2.9). Held under the partition's writer lock so chunk
+        choice and persist are one step per partition.
         """
-        with self._lock_for(session_id, storage_scope):
-            segs = self._segs(session_id, storage_scope)
-            segs.append(seg)
-            self._index.add(session_id, storage_scope, seg)
-            self._persist(session_id, storage_scope)
-        self._note_partition(session_id, storage_scope)
-        return seg
+        state = self._session(session_id)
+        with self._sessions_lock:
+            writer = self._partition_locks.setdefault((session_id, partition), threading.Lock())
+        with writer:
+            with state.lock:
+                if partition not in state.index.chunks:
+                    self._mark_absent(session_id, partition)
+            chunk = chunk_for_append(self, session_id, partition, capacity=_chunk_capacity())
+            with state.lock:
+                if chunk not in state.index.chunks:
+                    self._mark_absent(session_id, chunk)
+                if note_atom(state.index, chunk, atom):
+                    self._put_index(session_id, state.index)
+            with self._lock_for(session_id, chunk):
+                segs = self._segs(session_id, chunk)
+                segs.append(atom)
+                self._index.add(session_id, chunk, atom)
+                self._persist(session_id, chunk)
+        return chunk
 
     def _emit_op(
         self,
@@ -286,18 +352,9 @@ class FoldingSegmentStore(SegmentStore):
         """Emit ONE ``arc.op`` durable-trace event for a folded working-set mutation.
 
         Mirrors :meth:`SegmentStore._finish_write`'s op-logger call so the ``arc.op``
-        reproducibility contract holds for the fold: the durable trace carries the full
-        segment dicts written + the ids tombstoned, so
-        :func:`clio_agent.arc.replay.reconstruct_arc_segments` rebuilds the live plane
-        byte-identically at the head and at every ``logical_time``. The event's
-        ``event_id`` is stamped onto each written atom's ``trace_ref``, so the caller
-        MUST invoke this BEFORE :meth:`_append_raw` (the persisted copy then carries the
-        back-link). ``scope`` is the LOGICAL working-set scope so replay's
-        ``scope_filter`` sees the same address the non-folding store logged. ``op`` is
-        the plain-store vocabulary (append/insert/delete/summarize/replace);
-        ``logical_time`` is the producer's creation clock or, for ``delete``, the
-        tombstoning clock. Called before anything is persisted, so a failure here is a
-        typed :class:`ContextOpLogError` with the op not applied.
+        reproducibility contract holds for the fold. The event's ``event_id`` is stamped
+        onto each written atom's ``trace_ref``, so it runs BEFORE the atom is persisted;
+        a failure is a typed :class:`ContextOpLogError` with nothing persisted.
         """
         if self._op_logger is None:
             return
@@ -330,15 +387,15 @@ class FoldingSegmentStore(SegmentStore):
         *,
         order: float,
         step: int,
-        trace_ref: str,
-        derived_from: list[str] | None,
-        token_count: int,
-        turn_id: str,
-        expert_span_id: str,
-        run_span_id: str,
+        trace_ref: str = "",
+        derived_from: list[str] | None = None,
+        token_count: int = 0,
+        turn_id: str = "",
+        expert_span_id: str = "",
+        run_span_id: str = "",
     ) -> Segment:
-        """Build a content/op atom with a store-wide ``logical_time`` and the given
-        scope-local ``order`` (content is coerced through the ONE ingest chokepoint)."""
+        """Build an atom with a store-wide ``logical_time`` and the given scope-local
+        ``order`` (content is coerced through the ONE ingest chokepoint)."""
         return Segment(
             scope=scope,
             kind=kind,
@@ -355,145 +412,15 @@ class FoldingSegmentStore(SegmentStore):
             run_span_id=run_span_id,
         )
 
-    # ---- the fold (read side) ------------------------------------------
-
-    def _lane_scopes(self, session_id: str) -> list[str]:
-        """Every content-lane partition scope persisted for a session, in a stable
-        order. The fold merges them by ``logical_time`` (store-wide monotonic), so the
-        partition order does not affect the result.
-
-        Discovered by ONE store scan on first access per session, then served from an
-        in-memory cache kept current by :meth:`_note_partition` — so warm renders do not
-        re-scan the store (§2.10 read budget)."""
-        with self._lane_cache_lock:
-            cached = self._lane_cache.get(session_id)
-            if cached is not None:
-                return sorted(cached)
-        # Scan the BASE store: the fold's own read side needs the physical partitions
-        # that :meth:`scan_scopes` hides from external callers.
-        discovered = {
-            s for s in super().scan_scopes(session_id, WS_CONTENT_FAMILY) if is_ws_content_scope(s)
-        }
-        with self._lane_cache_lock:
-            # Union so a partition appended between the scan and here is not lost.
-            merged = self._lane_cache.setdefault(session_id, set())
-            merged |= discovered
-            return sorted(merged)
-
-    def _note_partition(self, session_id: str, storage_scope: str) -> None:
-        """Record a content-lane partition in the per-session cache (called on append)."""
-        with self._lane_cache_lock:
-            self._lane_cache.setdefault(session_id, set()).add(storage_scope)
-
-    def _lane_atoms(self, session_id: str) -> list[Segment]:
-        """All atoms (content + op records + breadcrumbs) across the session's content
-        lane, merged. Reads each partition under its own lock via the base loader."""
-        atoms: list[Segment] = []
-        for pscope in self._lane_scopes(session_id):
-            with self._lock_for(session_id, pscope):
-                atoms.extend(self._segs(session_id, pscope))
-        return atoms
-
-    def _fold(
-        self,
-        session_id: str,
-        scope: str,
-        *,
-        as_of: int | None,
-        include_tombstoned: bool,
-    ) -> list[Segment]:
-        """Fold the content lane into ``scope``'s ordered segment view.
-
-        Content atoms of ``scope`` are ordered by ``(order, logical_time)``; a target
-        is tombstoned at the ``logical_time`` of the ``delete`` op or the
-        ``summarize`` / ``replace`` producer that retired it. ``as_of`` yields the
-        view as it was at that clock (atoms created after it are unborn; a tombstone
-        after it has not yet landed) — the trace/as-of-T contract.
-
-        Args:
-            session_id: Owning session.
-            scope: The LOGICAL working-set scope to reconstruct.
-            as_of: Optional ``logical_time`` upper bound (``None`` = live view).
-            include_tombstoned: When True, retired atoms are kept (replay/provenance);
-                when False, they are dropped (the live render).
-
-        Returns:
-            The folded segment list in render order.
-        """
-        lane = self._lane_atoms(session_id)
-        content = [a for a in lane if a.scope == scope and a.kind not in _NON_CONTENT_KINDS]
-        tomb: dict[str, int] = {}
-
-        def _tombstone(ids: list[str], lt: int) -> None:
-            for i in ids:
-                cur = tomb.get(i)
-                if cur is None or lt < cur:
-                    tomb[i] = lt
-
-        # summarize/replace retire their `derived_from` at the producer's clock.
-        for a in content:
-            if a.derived_from:
-                _tombstone(list(a.derived_from), a.logical_time)
-        # `delete` op records retire their targets at the op's clock.
-        for a in lane:
-            if a.scope == scope and a.kind == WS_OP_KIND and a.content.get("op") == "delete":
-                _tombstone(list(a.content.get("targets") or []), a.logical_time)
-
-        out: list[Segment] = []
-        for a in sorted(content, key=lambda s: (s.order, s.logical_time)):
-            if as_of is not None and a.logical_time > as_of:
-                continue
-            retired_at = tomb.get(a.id)
-            retired = retired_at is not None and (as_of is None or retired_at <= as_of)
-            if not retired:
-                out.append(a)
-            elif include_tombstoned:  # the history view says it is retired, and when
-                out.append(
-                    msgspec.structs.replace(a, status="tombstoned", tombstoned_at=retired_at)
-                )
-        return out
-
-    def _live_fold(self, session_id: str, scope: str, *, as_of: int | None) -> list[Segment]:
-        """The live (non-retired) folded render of ``scope``."""
-        return self._fold(session_id, scope, as_of=as_of, include_tombstoned=False)
-
-    def _next_order(self, live_and_dead: list[Segment]) -> float:
-        """``append``'s scope-local order — ``max(order)+1`` over ALL of a scope's
-        content atoms (retired included), matching :meth:`SegmentStore.append`."""
-        return max((s.order for s in live_and_dead), default=0.0) + 1.0
-
-    def _scope_content(self, session_id: str, scope: str) -> list[Segment]:
-        """Every content atom of a logical scope (any tombstone status) — the domain
-        the scope-local ``order`` is computed over."""
-        return self._fold(session_id, scope, as_of=None, include_tombstoned=True)
-
-    # ---- search companion (§2.7) ---------------------------------------
-
-    def _refresh_search_companion(self, session_id: str, scope: str) -> None:
-        """Rewrite the logical scope's plain-text search companion from the fold.
-
-        Content lives on the (search-excluded) ``_events/w`` lane, so the per-scope
-        ``.search`` companion is maintained here at INGEST time as a zero-segment
-        record whose ``search_text`` is the folded live render — byte-identical to the
-        text the old per-scope write produced, so ``search_scopes`` ranks the scope
-        the same. Never raises into the write path.
-        """
-        if not self._search_companion_enabled:
-            return
-        assert_store_write_off_loop("segments.put", scope=scope)  # #1334: outside the catch
-        try:
-            live = self._live_fold(session_id, scope, as_of=None)
-            text = "\n".join(segment_text(s) for s in live) or None
-            self._store.put(
-                "segments",
-                self._record_name(session_id, scope),
-                encode_segments([]),
-                search_text=text,
-            )
-        except Exception:  # noqa: BLE001 - a search-index refresh must never break a write
-            logger.warning(
-                "working_set_fold: search companion refresh failed scope=%s", scope, exc_info=True
-            )
+    def _record_op(
+        self, session_id: str, view: ContextView, op: str, atom: Segment, **emit: Any
+    ) -> str:
+        """Emit, persist and fold in one op's atom; index its text. Returns its chunk."""
+        self._emit_op(op, session_id, view.scope, logical_time=atom.logical_time, **emit)
+        chunk = self._write(session_id, ws_content_partition(atom.expert_span_id), atom)
+        view.apply_op(atom)
+        self._search.add(session_id, [atom])
+        return chunk
 
     # ---- overridden write surface --------------------------------------
 
@@ -512,8 +439,8 @@ class FoldingSegmentStore(SegmentStore):
         expert_span_id: str = "",
         run_span_id: str = "",
     ) -> Segment:
-        """Append a working-set atom to the canonical log (or delegate reserved-scope
-        appends to the base store unchanged)."""
+        """Append a working-set atom: O(1) on the view, one bounded chunk put (or
+        delegate reserved-scope appends to the base store unchanged)."""
         if not self._is_working_set_scope(scope):
             return super().append(
                 session_id,
@@ -528,26 +455,36 @@ class FoldingSegmentStore(SegmentStore):
                 expert_span_id=expert_span_id,
                 run_span_id=run_span_id,
             )
-        order = self._next_order(self._scope_content(session_id, scope))
-        atom = self._make_atom(
-            session_id,
-            scope,
-            kind,
-            content,
-            order=order,
-            step=step,
-            trace_ref=trace_ref,
-            derived_from=derived_from,
-            token_count=token_count,
-            turn_id=turn_id,
-            expert_span_id=expert_span_id,
-            run_span_id=run_span_id,
-        )
-        self._emit_op(
-            "append", session_id, scope, written=[atom], step=step, logical_time=atom.logical_time
-        )
-        self._append_raw(session_id, ws_content_partition(expert_span_id), atom)
-        self._refresh_search_companion(session_id, scope)
+        view = self._view(session_id, scope)
+        with view.lock:
+            atom = self._make_atom(
+                session_id,
+                scope,
+                kind,
+                content,
+                order=view.next_order,
+                step=step,
+                trace_ref=trace_ref,
+                derived_from=derived_from,
+                token_count=token_count,
+                turn_id=turn_id,
+                expert_span_id=expert_span_id,
+                run_span_id=run_span_id,
+            )
+            if atom.derived_from:  # a producer retires its sources: that is an op
+                self._record_op(session_id, view, "append", atom, written=[atom], step=step)
+                return atom
+            self._emit_op(
+                "append",
+                session_id,
+                scope,
+                written=[atom],
+                step=step,
+                logical_time=atom.logical_time,
+            )
+            self._write(session_id, ws_content_partition(expert_span_id), atom)
+            view.append(atom)
+            self._search.add(session_id, [atom])
         return atom
 
     def insert(
@@ -582,71 +519,48 @@ class FoldingSegmentStore(SegmentStore):
                 expert_span_id=expert_span_id,
                 run_span_id=run_span_id,
             )
-        all_content = self._scope_content(session_id, scope)
-        live = self._live_fold(session_id, scope, as_of=None)
-        order = self._order_for_position(all_content, live, position)
-        atom = self._make_atom(
-            session_id,
-            scope,
-            kind,
-            content,
-            order=order,
-            step=step,
-            trace_ref=trace_ref,
-            derived_from=derived_from,
-            token_count=token_count,
-            turn_id=turn_id,
-            expert_span_id=expert_span_id,
-            run_span_id=run_span_id,
-        )
-        self._emit_op(
-            "insert",
-            session_id,
-            scope,
-            written=[atom],
-            step=step,
-            position=position,
-            logical_time=atom.logical_time,
-        )
-        self._append_raw(session_id, ws_content_partition(expert_span_id), atom)
-        self._refresh_search_companion(session_id, scope)
+        view = self._view(session_id, scope)
+        with view.lock:
+            atom = self._make_atom(
+                session_id,
+                scope,
+                kind,
+                content,
+                order=view.order_for_position(position),
+                step=step,
+                trace_ref=trace_ref,
+                derived_from=derived_from,
+                token_count=token_count,
+                turn_id=turn_id,
+                expert_span_id=expert_span_id,
+                run_span_id=run_span_id,
+            )
+            self._record_op(
+                session_id, view, "insert", atom, written=[atom], step=step, position=position
+            )
         return atom
 
     def delete(self, session_id: str, scope: str, ids: list[str]) -> int:
-        """Retire working-set atoms by id via an append-only ``ws_op`` record.
+        """Retire live working-set atoms by id via an append-only ``ws_op`` record.
 
-        Only ids that are currently LIVE in the fold are retired (matching
-        :meth:`SegmentStore.delete`'s live-only tombstone); the count returned is the
-        number actually retired.
+        Only ids that are currently LIVE may be retired (matching
+        :meth:`SegmentStore.delete`); the count returned is the number retired.
         """
         if not self._is_working_set_scope(scope):
             return super().delete(session_id, scope, ids)
-        live_ids = {s.id for s in self._live_fold(session_id, scope, as_of=None)}
-        require_live(ids, live_ids, op="delete", scope=scope)
-        targets = list(dict.fromkeys(ids))
-        op = self._make_atom(
-            session_id,
-            scope,
-            WS_OP_KIND,
-            {"op": "delete", "targets": list(targets)},
-            order=0.0,  # op records are not rendered; order is immaterial
-            step=-1,
-            trace_ref="",
-            derived_from=None,
-            token_count=0,
-            turn_id="",
-            expert_span_id="",
-            run_span_id="",
-        )
-        self._emit_op(
-            "delete",
-            session_id,
-            scope,
-            tombstoned=list(targets),
-            logical_time=op.logical_time,
-        )
-        self._append_raw(session_id, ws_content_partition(""), op)
-        self._refresh_search_companion(session_id, scope)
+        view = self._view(session_id, scope)
+        with view.lock:
+            require_live(ids, {s.id for s in view.live}, op="delete", scope=scope)
+            targets = list(dict.fromkeys(ids))
+            op = self._make_atom(
+                session_id,
+                scope,
+                WS_OP_KIND,
+                {"op": "delete", "targets": list(targets)},
+                order=0.0,  # op records are not rendered; order is immaterial
+                step=-1,
+            )
+            self._record_op(session_id, view, "delete", op, tombstoned=list(targets))
         return len(targets)
 
     def summarize(
@@ -662,9 +576,9 @@ class FoldingSegmentStore(SegmentStore):
         expert_span_id: str = "",
         run_span_id: str = "",
     ) -> Segment:
-        """summarize = tombstone ``ids`` + emit one ``summary`` atom at the first
-        replaced slot, atomically at ONE ``logical_time`` (the producer's
-        ``derived_from`` drives the tombstoning in the fold)."""
+        """summarize = retire ``ids`` + one ``summary`` atom at the first replaced slot,
+        at ONE ``logical_time``. When it retires everything before it, it becomes the
+        scope's anchor (recorded in the session index)."""
         if not self._is_working_set_scope(scope):
             return super().summarize(
                 session_id,
@@ -677,40 +591,57 @@ class FoldingSegmentStore(SegmentStore):
                 expert_span_id=expert_span_id,
                 run_span_id=run_span_id,
             )
-        target = set(ids)
-        live = self._live_fold(session_id, scope, as_of=None)
-        require_live(ids, {s.id for s in live}, op="summarize", scope=scope)
-        replaced = [s for s in live if s.id in target]
-        first = min(replaced, key=lambda s: (s.order, s.logical_time))
-        order = first.order
-        step = min((s.step for s in replaced), default=-1)
-        atom = self._make_atom(
-            session_id,
-            scope,
-            "summary",
-            summary_content,
-            order=order,
-            step=step,
-            trace_ref=trace_ref,
-            derived_from=list(ids),
-            token_count=token_count,
-            turn_id=turn_id,
-            expert_span_id=expert_span_id,
-            run_span_id=run_span_id,
-        )
-        self._emit_op(
-            "summarize",
-            session_id,
-            scope,
-            written=[atom],
-            tombstoned=[s.id for s in replaced],
-            step=step,
-            derived_from=list(ids),
-            logical_time=atom.logical_time,
-        )
-        self._append_raw(session_id, ws_content_partition(expert_span_id), atom)
-        self._refresh_search_companion(session_id, scope)
+        view = self._view(session_id, scope)
+        with view.lock:
+            require_live(ids, {s.id for s in view.live}, op="summarize", scope=scope)
+            target = set(ids)
+            replaced = [s for s in view.live if s.id in target]
+            first = min(replaced, key=lambda s: (s.order, s.logical_time))
+            step = min((s.step for s in replaced), default=-1)
+            atom = self._make_atom(
+                session_id,
+                scope,
+                "summary",
+                summary_content,
+                order=first.order,
+                step=step,
+                trace_ref=trace_ref,
+                derived_from=list(ids),
+                token_count=token_count,
+                turn_id=turn_id,
+                expert_span_id=expert_span_id,
+                run_span_id=run_span_id,
+            )
+            chunk = self._record_op(
+                session_id,
+                view,
+                "summarize",
+                atom,
+                written=[atom],
+                tombstoned=[s.id for s in replaced],
+                step=step,
+                derived_from=list(ids),
+            )
+            if view.anchors_at(atom):
+                self._move_anchor(session_id, view, atom, chunk)
         return atom
+
+    def _move_anchor(self, session_id: str, view: ContextView, atom: Segment, chunk: str) -> None:
+        """Make ``atom`` the scope's anchor in the index (put) and in the view."""
+        if view.min_order is None or view.max_order is None:
+            raise ValueError("an anchoring summary is a content atom: the order bounds exist")
+        anchor = AnchorEntry(
+            atom_id=atom.id,
+            logical_time=atom.logical_time,
+            chunk=chunk,
+            min_order=view.min_order,
+            max_order=view.max_order,
+        )
+        state = self._session(session_id)
+        with state.lock:
+            set_anchor(state.index, view.scope, anchor)
+            self._put_index(session_id, state.index)
+        view.move_anchor(anchor)
 
     def replace(
         self,
@@ -741,35 +672,34 @@ class FoldingSegmentStore(SegmentStore):
                 expert_span_id=expert_span_id,
                 run_span_id=run_span_id,
             )
-        live = self._live_fold(session_id, scope, as_of=None)
-        require_live([target_id], {s.id for s in live}, op="replace", scope=scope)
-        original = next(s for s in live if s.id == target_id)
-        atom = self._make_atom(
-            session_id,
-            scope,
-            kind if kind is not None else original.kind,
-            content,
-            order=original.order,
-            step=original.step,
-            trace_ref=trace_ref,
-            derived_from=[original.id],
-            token_count=token_count,
-            turn_id=turn_id or original.turn_id,
-            expert_span_id=expert_span_id or original.expert_span_id,
-            run_span_id=run_span_id or original.run_span_id,
-        )
-        self._emit_op(
-            "replace",
-            session_id,
-            scope,
-            written=[atom],
-            tombstoned=[original.id],
-            step=atom.step,
-            derived_from=[original.id],
-            logical_time=atom.logical_time,
-        )
-        self._append_raw(session_id, ws_content_partition(atom.expert_span_id), atom)
-        self._refresh_search_companion(session_id, scope)
+        view = self._view(session_id, scope)
+        with view.lock:
+            require_live([target_id], {s.id for s in view.live}, op="replace", scope=scope)
+            original = next(s for s in view.live if s.id == target_id)
+            atom = self._make_atom(
+                session_id,
+                scope,
+                kind if kind is not None else original.kind,
+                content,
+                order=original.order,
+                step=original.step,
+                trace_ref=trace_ref,
+                derived_from=[original.id],
+                token_count=token_count,
+                turn_id=turn_id or original.turn_id,
+                expert_span_id=expert_span_id or original.expert_span_id,
+                run_span_id=run_span_id or original.run_span_id,
+            )
+            self._record_op(
+                session_id,
+                view,
+                "replace",
+                atom,
+                written=[atom],
+                tombstoned=[original.id],
+                step=atom.step,
+                derived_from=[original.id],
+            )
         return atom
 
     def append_step_open(
@@ -786,65 +716,82 @@ class FoldingSegmentStore(SegmentStore):
         """Append a pre-execution ``step_open`` breadcrumb to the log (caveat b).
 
         Written BEFORE a step's tool executes so a crash mid-step still leaves the
-        step's opening atoms on the canonical log. It is NOT renderable content — the
-        fold excludes it from every render — so it never perturbs the working set; a
-        crash-path reader inspects the raw content lane. A no-op for reserved scopes.
+        step's opening atoms on the canonical log. It is NOT renderable content (no
+        render, no view, no search). A no-op for reserved scopes.
         """
         if not self._is_working_set_scope(scope):
             return None
-        atom = self._make_atom(
-            session_id,
-            scope,
-            STEP_OPEN_KIND,
-            content,
-            order=0.0,
-            step=step,
-            trace_ref="",
-            derived_from=None,
-            token_count=0,
-            turn_id=turn_id,
-            expert_span_id=expert_span_id,
-            run_span_id=run_span_id,
-        )
-        self._append_raw(session_id, ws_content_partition(expert_span_id), atom)
+        view = self._view(session_id, scope)
+        with view.lock:
+            atom = self._make_atom(
+                session_id,
+                scope,
+                STEP_OPEN_KIND,
+                content,
+                order=0.0,
+                step=step,
+                turn_id=turn_id,
+                expert_span_id=expert_span_id,
+                run_span_id=run_span_id,
+            )
+            self._write(session_id, ws_content_partition(expert_span_id), atom)
         return atom
 
     # ---- overridden read surface ---------------------------------------
 
     def scan_scopes(self, session_id: str, scope_pattern: str = "") -> list[str]:
-        """Scope addresses under a prefix, with the fold's INTERNAL content lane hidden.
+        """Scope addresses under a prefix, the fold's INTERNAL records hidden.
 
-        Folded content physically lives on the ``_events/w`` lane (partitioned by
-        ``expert_span_id``), an implementation detail: external discovery
-        (``list_segment_scopes``, search prefix scans) must surface the LOGICAL
-        working-set scopes exactly as the non-folding store did, never the raw lane, so
-        the ``_events/w`` partitions are filtered out here (they would otherwise leak in
-        as bogus ``_events/w/<span>`` scopes). The logical scopes still appear via the
-        ingest-time search companion (§2.7). The fold's own read side reaches the
-        partitions through :meth:`_lane_scopes` (a base scan), so this does not starve it.
+        The content lane, its index and the search-companion chunks are implementation
+        records, never scopes; the logical working-set scopes come from the session
+        index (an ``_events`` pattern never names one, so it skips the index).
         """
-        return [
-            s for s in super().scan_scopes(session_id, scope_pattern) if not is_ws_content_scope(s)
-        ]
+        found = {
+            s
+            for s in super().scan_scopes(session_id, scope_pattern)
+            if not is_ws_content_scope(s) and not is_search_scope(s)
+        }
+        if not is_events_scope(scope_pattern):
+            state = self._session(session_id)
+            with state.lock:
+                found.update(s for s in state.index.scopes if s.startswith(scope_pattern))
+        return sorted(found)
+
+    def context_view(self, session_id: str, scope: str) -> ViewSnapshot:
+        """The scope's live segments with their view generation."""
+        if not self._is_working_set_scope(scope):
+            return super().context_view(session_id, scope)
+        return self._view(session_id, scope).snapshot()
+
+    def has_segments(self, session_id: str, scope: str) -> bool:
+        """Whether anything was ever recorded in the scope (the index knows; no fold)."""
+        if not self._is_working_set_scope(scope):
+            return super().has_segments(session_id, scope)
+        state = self._session(session_id)
+        with state.lock:
+            return scope in state.index.scopes
+
+    def _read(self, session_id: str, scope: str, as_of: int | None) -> list[Segment]:
+        if as_of is None:
+            return list(self.context_view(session_id, scope).segments)
+        return fold_atoms(
+            self._full_atoms(session_id, scope), scope, as_of=as_of, include_tombstoned=False
+        )
 
     def render(self, session_id: str, scope: str, *, as_of: int | None = None) -> list[Segment]:
-        """Ordered LIVE view of a scope — folded for working-set scopes, delegated for
-        reserved ``_events`` scopes."""
+        """Ordered LIVE view of a scope — the context view, or the whole-log fold as of
+        ``as_of``; delegated for reserved ``_events`` scopes."""
         if not self._is_working_set_scope(scope):
             return super().render(session_id, scope, as_of=as_of)
-        return self._live_fold(session_id, scope, as_of=as_of)
+        return self._read(session_id, scope, as_of)
 
     def render_working_set(
         self, session_id: str, scope: str, *, as_of: int | None = None
     ) -> list[Segment]:
-        """The folded live view restricted to working-set kinds."""
+        """The live view restricted to working-set kinds."""
         if not self._is_working_set_scope(scope):
             return super().render_working_set(session_id, scope, as_of=as_of)
-        return [
-            s
-            for s in self._live_fold(session_id, scope, as_of=as_of)
-            if s.kind in WORKING_SET_KINDS
-        ]
+        return [s for s in self._read(session_id, scope, as_of) if s.kind in WORKING_SET_KINDS]
 
     def render_text(
         self,
@@ -854,52 +801,55 @@ class FoldingSegmentStore(SegmentStore):
         as_of: int | None = None,
         separator: str = "\n",
     ) -> str:
-        """The folded live view flattened to text."""
+        """The live view flattened to text."""
         if not self._is_working_set_scope(scope):
             return super().render_text(session_id, scope, as_of=as_of, separator=separator)
-        return separator.join(
-            segment_text(s) for s in self._live_fold(session_id, scope, as_of=as_of)
-        )
+        return separator.join(segment_text(s) for s in self._read(session_id, scope, as_of))
 
     def list_segments(
         self, session_id: str, scope: str, *, include_tombstoned: bool = False
     ) -> list[Segment]:
-        """All of a scope's content atoms in render order (optionally including the
-        retired ones, for replay/provenance). Excludes the log-internal op/breadcrumb
-        atoms — they are not segments of the working set."""
+        """A scope's content atoms in render order; ``include_tombstoned`` folds the
+        whole log (replay/provenance). Op records and breadcrumbs are never segments."""
         if not self._is_working_set_scope(scope):
             return super().list_segments(session_id, scope, include_tombstoned=include_tombstoned)
-        return self._fold(session_id, scope, as_of=None, include_tombstoned=include_tombstoned)
+        if not include_tombstoned:
+            return self._read(session_id, scope, None)
+        return fold_atoms(
+            self._full_atoms(session_id, scope), scope, as_of=None, include_tombstoned=True
+        )
 
     def tokens_by_kind(self, session_id: str, scope: str) -> dict[str, int]:
-        """Sum ``token_count`` of LIVE folded segments grouped by kind."""
+        """Sum ``token_count`` of LIVE segments grouped by kind."""
         if not self._is_working_set_scope(scope):
             return super().tokens_by_kind(session_id, scope)
         out: dict[str, int] = {}
-        for s in self._live_fold(session_id, scope, as_of=None):
+        for s in self._read(session_id, scope, None):
             out[s.kind] = out.get(s.kind, 0) + s.token_count
         return out
 
-    # ---- lifecycle (keep the lane-scope cache re-derivable) ------------
+    # ---- lifecycle -----------------------------------------------------
 
     def drop_scope(self, session_id: str, scope: str) -> int:
-        """Erase a scope; if it is a content-lane partition, forget it in the cache."""
+        """Erase a scope; erasing a content-lane chunk drops the session's views (they
+        rebuild from clio-core, where the index may now list the erased chunk: empty)."""
         if is_ws_content_scope(scope):
-            with self._lane_cache_lock:
-                cached = self._lane_cache.get(session_id)
-                if cached is not None:
-                    cached.discard(scope)
+            self._forget(session_id)
         return super().drop_scope(session_id, scope)
 
     def release(self, session_id: str) -> int:
-        """Drop a session's in-memory scopes and its lane-scope cache entry (the cache
-        re-derives by scan on next access)."""
-        with self._lane_cache_lock:
-            self._lane_cache.pop(session_id, None)
+        """Drop a session's in-memory scopes, index and views (re-read on next access)."""
+        self._forget(session_id)
         return super().release(session_id)
 
     def clear(self) -> None:
-        """Drop all in-memory scope state and the whole lane-scope cache."""
-        with self._lane_cache_lock:
-            self._lane_cache.clear()
+        """Drop all in-memory scope state, indexes and views."""
+        with self._sessions_lock:
+            self._sessions.clear()
+        self._search.clear()
         super().clear()
+
+    def _forget(self, session_id: str) -> None:
+        with self._sessions_lock:
+            self._sessions.pop(session_id, None)
+        self._search.forget(session_id)

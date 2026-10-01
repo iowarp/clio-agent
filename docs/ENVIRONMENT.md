@@ -42,8 +42,10 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARC_LSM_MEMTABLE_SIZE` | `arc.lsm_memtable_size` | int | `1000` | `src/clio_agent/arc/memory.py` |
 | `CLIO_ARC_MESSAGE_PART_CHUNK_SEGMENTS` | `arc.message_part_chunk_segments` | int | `512` | `src/clio_agent/gact/part_atoms.py` |
 | `CLIO_ARC_NAMESPACE` | `arc.namespace` | str | _(unset)_ | `src/clio_agent/arc/storage.py` |
+| `CLIO_ARC_SEARCH_CHUNK_ATOMS` | `arc.search_chunk_atoms` | int | `16` | `src/clio_agent/arc/search_companion.py` |
 | `CLIO_ARC_STORE` | `arc.store` | str | `cte` | `src/clio_agent/arc/storage.py` |
 | `CLIO_ARC_STORE_CONFIG` | `arc.store_config` | str | _(unset)_ | `src/clio_agent/arc/storage.py` |
+| `CLIO_ARC_WS_CHUNK_SEGMENTS` | `arc.ws_chunk_segments` | int | `32` | `src/clio_agent/arc/working_set_fold.py` |
 | `CLIO_ARTIFACTS_EXPORT_LICENSE` | `artifacts.export_license` | str | `NOASSERTION` | `src/clio_agent/gact/artifacts/export.py` |
 | `CLIO_ARTIFACTS_HASH_MAX_FILE_BYTES` | `artifacts.hash_max_file_bytes` | int | `67108864` | `src/clio_agent/gact/artifacts/hashing.py` |
 | `CLIO_ARTIFACTS_INSTRUMENT_ARG_MAX_BYTES` | `artifacts.instrument_arg_max_bytes` | int | `2048` | `src/clio_agent/gact/artifacts/transforms.py` |
@@ -121,6 +123,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_GACT_MAX_QUEUED_MESSAGES_PER_SESSION` | `gact.message_intents.max_queued_per_session` | int | `100` | `src/clio_agent/gact/message_intents.py` |
 | `CLIO_GACT_MAX_SETTLED_STEERS_PER_SESSION` | `gact.message_intents.max_settled_steers_per_session` | int | `100` | `src/clio_agent/gact/message_intents.py` |
 | `CLIO_GACT_MCP_RECONNECT_TIMEOUT_S` | `limits.mcp_reconnect_timeout_s` | float | `15.0` | `src/clio_agent/gact/routes/mcp.py` |
+| `CLIO_GACT_MEDIA_CACHE_BYTES` | `gact.media_cache_bytes` | int | `67108864` | `src/clio_agent/gact/agents/media_cache.py` |
 | `CLIO_GACT_TURN_TIMEOUT_S` | `limits.turn_timeout_s` | float | `900.0` | `src/clio_agent/gact/_params.py` |
 | `CLIO_GOAL_JUDGE_MODEL` | `goal.judge_model` | str | _(unset)_ | `src/clio_agent/gact/goal.py` |
 | `CLIO_HOOKS_ALLOW_MANAGED_ONLY` | `hooks.allow_managed_only` | bool | `false` | `src/clio_agent/gact/hooks/dispatcher.py` |

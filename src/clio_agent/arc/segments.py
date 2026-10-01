@@ -32,6 +32,7 @@ from typing import Any, Callable, Optional
 
 import msgspec
 
+from clio_agent.arc.context_view import ViewSnapshot, next_generation, order_at
 from clio_agent.arc.loop_guard import LoopThreadStoreWrite, assert_store_write_off_loop
 from clio_agent.arc.schema import (
     WORKING_SET_KINDS,
@@ -196,6 +197,8 @@ class SegmentStore:
         self._index = SegmentIndex()
         # Store-wide monotonic logical clock, recovered past the persisted max.
         self._next_lt = 1
+        # Per-scope op generation (bumped by every op but append): see context_view.
+        self._generations: dict[tuple[str, str], int] = {}
 
     # ---- record naming -------------------------------------------------
 
@@ -443,14 +446,8 @@ class SegmentStore:
     @staticmethod
     def _order_for_position(segs: list[Segment], live: list[Segment], position: int) -> float:
         """Gap-allocated float order so a mid-insert never renumbers neighbours."""
-        if position <= 0:
-            lo = min((s.order for s in segs), default=1.0)
-            return lo - 1.0 if live else 1.0
-        if position >= len(live):
-            return max((s.order for s in segs), default=0.0) + 1.0
-        before = live[position - 1].order
-        after = live[position].order
-        return (before + after) / 2.0
+        orders = [s.order for s in segs]
+        return order_at(min(orders, default=None), max(orders, default=None), live, position)
 
     def delete(self, session_id: str, scope: str, ids: list[str]) -> int:
         """Tombstone live segments by id (render skips them). Tombstone-not-erase
@@ -677,6 +674,9 @@ class SegmentStore:
         """Log the applied op to the Trace, stamp ``trace_ref`` on written segments,
         then persist. Called under this scope's per-scope lock."""
         written = written or []
+        if op != "append":  # an op may rewrite the prefix: a new view generation
+            key = (session_id, scope)
+            self._generations[key] = next_generation()
         for seg in written:  # parallel locator: index every newly-written segment
             self._index.add(session_id, scope, seg)
         if logical_time is not None:
@@ -782,6 +782,17 @@ class SegmentStore:
             segs = self._segs(session_id, scope)
             pool = segs if include_tombstoned else [s for s in segs if s.status == "live"]
             return sorted(pool, key=lambda s: (s.order, s.logical_time))
+
+    def context_view(self, session_id: str, scope: str) -> ViewSnapshot:
+        """The scope's live segments with their op generation (appends keep it)."""
+        with self._lock_for(session_id, scope):
+            live = self._live_sorted(self._segs(session_id, scope))
+            return ViewSnapshot(self._generations.get((session_id, scope), 0), tuple(live))
+
+    def has_segments(self, session_id: str, scope: str) -> bool:
+        """Whether anything was ever recorded in the scope (any status)."""
+        with self._lock_for(session_id, scope):
+            return bool(self._segs(session_id, scope))
 
     def locate_segment_ids(
         self,
@@ -891,6 +902,7 @@ class SegmentStore:
             self._scopes.pop(key, None)
             self._loaded.discard(key)
             self._index.drop_scope(session_id, scope)
+            self._generations[key] = next_generation()  # erased: no reader keeps a prefix
             assert_store_write_off_loop("segments.delete", scope=scope)
             self._store.delete("segments", self._record_name(session_id, scope))
             logger.debug("segments: drop_scope %s/%s dropped=%d", session_id, scope, count)
