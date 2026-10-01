@@ -26,6 +26,7 @@ from clio_agent.gact.a2ui_catalogs.validation import (
     validate_event_context,
     validate_value,
 )
+from clio_agent.gact.a2ui_component_fold import is_structural_message, materialize_update_components
 from clio_agent.gact.protocol.constants import A2UI_V091, A2UI_V091_WIRE, A2UI_WIRE_VERSIONS
 
 
@@ -350,27 +351,6 @@ def validate_client_action(
     return action
 
 
-def _component_ids(message: Mapping[str, Any]) -> set[str]:
-    """Return the component ids an ``updateComponents`` message declares.
-
-    Args:
-        message: One validated server message.
-
-    Returns:
-        The declared component ids, or an empty set for any other operation.
-    """
-
-    payload = message.get("updateComponents")
-    if not isinstance(payload, Mapping):
-        return set()
-    components = payload.get("components")
-    if not isinstance(components, list):
-        return set()
-    return {
-        str(component.get("id") or "") for component in components if isinstance(component, Mapping)
-    }
-
-
 def _copy_record(record: A2UISurfaceRecord) -> A2UISurfaceRecord:
     """Return an independently foldable copy of one surface record.
 
@@ -447,30 +427,35 @@ def _apply_staged_message(
     elif surface.state == "deleted":
         raise A2UIValidationError("A2UI deleteSurface is terminal until a new createSurface")
     if operation == "updateComponents":
-        # Compaction is only lossless for the components this message redefines:
-        # an incremental upsert must not erase sibling definitions the client
-        # still needs, or replay would render a surface the live view never had.
-        superseded = _component_ids(message)
-        surface.messages = [
-            existing
-            for existing in surface.messages
-            if "updateComponents" not in existing or not _component_ids(existing) <= superseded
-        ]
-    if len(surface.messages) >= max_a2ui_messages():
-        removable = next(
-            (
-                index
-                for index, existing in enumerate(surface.messages)
-                if "createSurface" not in existing
-            ),
-            None,
-        )
-        if removable is None:
-            raise A2UIValidationError("A2UI message limit cannot preserve createSurface")
-        surface.messages.pop(removable)
-        surface.eviction_reason = "a2ui_message_limit"
-        surface.evicted_messages += 1
-    surface.messages.append(dict(message))
+        # Materialize, don't subset-drop (G2 merge-gate finding, gact-tui#513
+        # comment 5937313752): folds every updateComponents message, past and
+        # present, into ONE current definition per component id -- see
+        # `a2ui_component_fold.py` for why the old subset-only compaction left
+        # a fix stranded forever next to the bad message it was meant to
+        # replace whenever the fix touched FEWER ids than the bad message did.
+        # The fold already incorporates `message` itself; it is never ALSO
+        # appended below, and it never grows `surface.messages` by more than
+        # the one slot every merged state already occupies, so it never needs
+        # the message-limit eviction either.
+        surface.messages = materialize_update_components(surface.messages, message)
+    else:
+        if len(surface.messages) >= max_a2ui_messages():
+            removable = next(
+                (
+                    index
+                    for index, existing in enumerate(surface.messages)
+                    if not is_structural_message(existing)
+                ),
+                None,
+            )
+            if removable is None:
+                raise A2UIValidationError(
+                    "A2UI message limit cannot preserve createSurface and the current component tree"
+                )
+            surface.messages.pop(removable)
+            surface.eviction_reason = "a2ui_message_limit"
+            surface.evicted_messages += 1
+        surface.messages.append(dict(message))
     surface.revision += 1
     surface.updated_at = observed_at
     # The repair-exhausted error is scoped to ONE revision (record.py's
