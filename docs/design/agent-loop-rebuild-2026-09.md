@@ -1499,6 +1499,45 @@ The 1k/10k baseline run was stopped by the machine's memory guard (1k completed 
     - a cold read touches only post-anchor chunks;
     - the full suite is green.
 
+### Phase 11a progress (`feat/context-view`, 2026-10-01)
+
+**Commits:**
+- `9094c1b8`: owner modules `arc/memory_segments.py` and `arc/segment_index.py`.
+- `bc30b99f`: context view, chunked lane, session index, migration, search companion and cached loop read.
+- `bfcc0023`: Codex builds each request once, checks the prefix by hash, and resets on ARC ops.
+- `2a1dfe36`: bench and ratchets.
+
+**What landed:**
+- One fold (`arc/context_view.fold_atoms`) and a per-scope `ContextView` anchored at the last full summarize. An append is O(1); ops rebuild from the anchor.
+- The `_events/w/<span>` lane is chunked (`arc.ws_chunk_segments`, default 32).
+- `_events/w/_index` (`arc/lane_index.py`): a cold read fetches only the chunks after the anchor, with no scan.
+- A one-time typed migration of sessions stored without an index (`arc/lane_migration.py`).
+- An append-only search companion over every atom, live and retired (`arc/search_companion.py`). Retired atoms are marked compacted at query time, and failures are typed.
+- The cached loop read (`gact/agents/context_reader.py`) and the media cache (`gact/agents/media_cache.py`).
+
+**Tests:**
+- property tests on real clio-core: view == full fold across op sequences and restarts; cold == warm;
+- prefix and generation; anchor-only cold read; migration;
+- 11 sabotage checks, all red.
+
+**Smoke N=100, before → after:**
+
+| Measure | Before | After |
+|---|---|---|
+| Atoms touched per read | 119 | 0 |
+| Cold read | 17 calls / 301 KB | 8 calls / 77 KB |
+| KB put per append | 72–149 | 30–42 |
+| Codex request builds per step | 2.7 | 1.0 |
+| Pre-compaction atoms scanned after a compaction | 62 | 0 |
+
+Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap the independent puts.
+
+**Open:**
+- BM25 search is unavailable on clio-core 2.2.1 (#905): `search_context` raises `SearchUnavailableError`.
+- The session index is re-put per new chunk, so it grows O(chunks). Archiving pre-anchor entries is deferred because of a data-loss risk when a forward writes after a compaction.
+
+**Release gate (owner, 2026-10-01):** the 1k/10k before (`037e66ec`) / after benchmark runs once everything else is done. It is a release gate, not a per-phase step.
+
 ### Known follow-ups recorded with the transcript flag
 - Turning `transcript.file` off later needs an atomic `replace_session` in clio-core (write the new lane generation, then swap); with the flag off a failed whole-transcript replace can leave a truncated lane. Not needed for release: the default stays on.
 - `SessionStore._legacy_interaction_at` (`sessions.py:566`) still reads the `messages/<sid>.json` mtime for old rows lacking `last_interaction_at`.
