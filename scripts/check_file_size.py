@@ -211,7 +211,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # row (the parse itself is the leaf runtime/type_parsing.parse_module_variant).
     # Ratchet down -1 (S8 review, issue #1374 item 4): parse_expert_file no longer
     # copies blueprint.validation_errors onto a row's errors/metadata at all.
-    "src/clio_agent/gact/expert_packs.py": 817,
     # #919: +35 to WIRE progressive-disclosure skills into all three module
     # classes (block + load_skill tool; logic lives in agents/skill_runtime.py)
     # and to document the deleted stale extract alias that crashed every
@@ -278,7 +277,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # CLIO_LM_DISABLE_THINKING qwen-output-discipline prompt injection (its
     # forward() block) is deleted -- thinking is now driven per-dialect off
     # the model's own ThinkingSpec, never a global on/off knob.
-    "src/clio_agent/gact/agents/builders.py": 1424,  # L1: -24, the 6 identical cancelled_error_info(..., executor_work_may_continue=False) calls collapsed to one line each
+    "src/clio_agent/gact/agents/builders.py": 1408,  # L1: -24, the 6 identical cancelled_error_info(..., executor_work_may_continue=False) calls collapsed to one line each
     # NEW entry (#1282, C1-S2 D1): crossed the flat 800 cap (797 -> 884) for
     # the #1275 fix's ONE chokepoint. Two pieces: (1) __init__ wraps every
     # tool callable this loop will ever run (MCP-bridged, instrumented
@@ -582,7 +581,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # gact/agent_blueprint_requires.py (install_refusal_http_exception,
     # path_activation_invalid_http_exception) instead of building the
     # ErrorEnvelope inline here.
-    "src/clio_agent/gact/routes/blueprints.py": 870,
+    "src/clio_agent/gact/routes/blueprints.py": 867,
     "src/clio_agent/gact/routes/catalog.py": 898,  # +4: /goal command dispatch wiring (#1080; logic in gact/goal.py)
     # #1201 (adversarial review, PR #1202): +6 for two direct-connect era-
     # classification call sites (call_external_mcp_tool + _external_mcp_inventory's
@@ -709,7 +708,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # gact/compaction.py::compact_session_context (one operation, two triggers); the
     # whole manual-compact body, gact/compact_memory.py's import, and the dead
     # session_archives snapshot are gone -- 1407 -> 1176.
-    "src/clio_agent/gact/routes/sessions.py": 1168,  # side sessions: fork and aside share one context copy (-4)
+    "src/clio_agent/gact/routes/sessions.py": 1167,  # side sessions: fork and aside share one context copy (-4)
     # #1215 S5: crossed the 800 new-file cap (793 -> 809) for enrich_turn_context —
     # a thin timed combinator wrapping the TWO existing enrichment calls
     # (_enrich_with_context_files + _enrich_with_requested_memory_search) in ONE

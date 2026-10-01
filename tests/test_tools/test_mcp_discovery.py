@@ -11,6 +11,7 @@ Pins the bounded-concurrent discovery pass and the background healer:
 
 from __future__ import annotations
 
+import importlib
 import threading
 import time
 from typing import Any
@@ -19,6 +20,10 @@ import pytest
 
 from clio_agent.errors import MCP_NAMESPACE_DISCOVERY_TIMEOUT, MCP_NAMESPACE_DISCOVERY_UNREACHABLE
 from clio_agent.tools import mcp_discovery
+
+# The package lazily exports a ``gateway`` object that shadows this submodule by name
+# until the submodule is imported; patch the module object itself.
+_gateway_module = importlib.import_module("clio_agent.tools.gateway")
 from clio_agent.tools.mcp_config import MCPServerSpec
 
 
@@ -153,7 +158,7 @@ def test_list_one_namespace_forwards_the_attempt_timeout_and_key(
         captured["attempt_key"] = attempt_key
         return []
 
-    monkeypatch.setattr("clio_agent.tools.gateway._list_declared_tools", _fake_list_declared_tools)
+    monkeypatch.setattr(_gateway_module, "_list_declared_tools", _fake_list_declared_tools)
     monkeypatch.setattr(
         "clio_agent.tools.launcher_cache_lock.uses_shared_launcher_cache", lambda spec: False
     )
@@ -183,7 +188,7 @@ def test_list_one_namespace_binds_declared_probe_retry_budget(
         observed["retries"] = resolve_timeout_retries()
         return []
 
-    monkeypatch.setattr("clio_agent.tools.gateway._list_declared_tools", _fake_list_declared_tools)
+    monkeypatch.setattr(_gateway_module, "_list_declared_tools", _fake_list_declared_tools)
     monkeypatch.setattr(
         "clio_agent.tools.launcher_cache_lock.uses_shared_launcher_cache", lambda spec: False
     )

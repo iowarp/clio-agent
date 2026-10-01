@@ -76,16 +76,21 @@ def namespaces_requiring_preparation(
     available_tools: Mapping[str, Any],
     declared_specs: Mapping[str, Any],
 ) -> set[str]:
-    """Return declared namespaces whose requested tools are absent or disconnected."""
+    """Return declared namespaces whose requested tools are not listed yet.
 
-    namespace_prepared = getattr(tool_executor, "is_namespace_prepared", None)
+    The first model call needs only the listing (a cached one counts); a server
+    connects when a call needs it, or earlier when the session's warm-up reaches it
+    (:mod:`clio_agent.gact.session_warmup`). So a turn never waits on a connection
+    it has not used yet.
+    """
+
+    del tool_executor
     needed: set[str] = set()
     for name in requested_tools:
         namespace, sep, bare = name.partition("_")
         if not sep or not bare or namespace not in declared_specs:
             continue
-        prepared = callable(namespace_prepared) and namespace_prepared(namespace)
-        if name not in available_tools or not prepared:
+        if name not in available_tools:
             needed.add(namespace)
     return needed
 
@@ -166,12 +171,14 @@ def mount_namespace_for_session(
     spec: Any,
     *,
     retry_delays_s: tuple[float, ...] | None = None,
+    connect: bool = True,
 ) -> Mapping[str, Any]:
     """Mount one declared namespace with bounded readiness semantics.
 
-    The first turn waits for this bounded preparation instead of immediately
-    failing while asynchronous discovery is still warming.  A terminal failure
-    is still raised to the existing typed tool-resolution boundary.
+    A turn lists (``connect=False``): the model call needs the tools, not the
+    connection. The session warm-up lists and connects, so the server is ready by
+    the time a call needs it. A terminal failure is still raised to the existing
+    typed tool-resolution boundary.
 
     Args:
         tool_executor: The live MCP executor receiving the mounted tools.
@@ -217,6 +224,8 @@ def mount_namespace_for_session(
             if not callable(merger):
                 raise RuntimeError("live MCP executor cannot accept mounted tools")
             merger(namespace, mounted_tools)
+            if not connect:
+                break
             connector = getattr(tool_executor, "prepare_namespace", None)
             if not callable(connector):
                 raise RuntimeError("live MCP executor cannot prepare namespace connections")
@@ -269,13 +278,61 @@ def mount_namespace_for_session(
                 reason=_classify_degrade_reason(exc),
             )
             raise
-        _publish_dependency_state(
-            namespace,
-            phase="connect",
-            state="ready",
-            attempt=attempt,
-            max_attempts=max_attempts,
-            tool_count=len(mounted_tools),
-        )
-        return mounted_tools
-    raise AssertionError("MCP readiness attempts exhausted without a result")
+        break
+    else:
+        raise AssertionError("MCP readiness attempts exhausted without a result")
+    _publish_dependency_state(
+        namespace,
+        phase="connect" if connect else "launch",
+        state="ready",
+        attempt=attempt,
+        max_attempts=max_attempts,
+        tool_count=len(mounted_tools),
+    )
+    return mounted_tools
+
+
+def mount_namespaces_for_session(
+    tool_executor: Any, specs: Mapping[str, Any], *, connect: bool
+) -> tuple[dict[str, Mapping[str, Any]], dict[str, str]]:
+    """Mount several declared namespaces at the same time.
+
+    Each namespace goes through :func:`mount_namespace_for_session` on its own worker
+    (in a copy of the caller's context), so one slow server never delays another.
+
+    Returns:
+        ``(mounted, failures)``: the tools mounted per namespace, and a typed reason
+        per namespace that failed (logged; a later call tries it again).
+    """
+
+    import contextvars  # noqa: PLC0415
+    from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+
+    if not specs:
+        return {}, {}
+    mounted: dict[str, Mapping[str, Any]] = {}
+    failures: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=len(specs), thread_name_prefix="clio-mount") as pool:
+        futures = {
+            namespace: pool.submit(
+                contextvars.copy_context().run,
+                mount_namespace_for_session,
+                tool_executor,
+                namespace,
+                spec,
+                connect=connect,
+            )
+            for namespace, spec in specs.items()
+        }
+        for namespace, future in futures.items():
+            try:
+                mounted[namespace] = future.result()
+            except Exception as exc:  # noqa: BLE001 - typed + named, never cached
+                failures[namespace] = mount_failure_reason(exc)
+                logger.warning(
+                    "mcp_mount_failed namespace=%s reason=%s error=%s",
+                    namespace,
+                    failures[namespace],
+                    exc,
+                )
+    return mounted, failures

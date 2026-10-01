@@ -82,6 +82,15 @@ _SYSTEM_INPUT = "system_prompt"
 _MEDIA_INPUTS = ("images", "files")
 
 
+#: Recorded once per agent context (an injection the user sees): a step's calls run at
+#: the same time, and each extra step is a whole model round trip.
+TOOL_USE_NOTE = (
+    "You can make several tool calls in one step; the calls of a step run at the same "
+    "time. When calls do not depend on each other's results -- loading several skills, "
+    "reading several files, independent lookups -- make them together in one step."
+)
+
+
 class NoLanguageModelError(ClioError):
     """The loop ran with no LM bound (``dspy.context(lm=...)``)."""
 
@@ -304,7 +313,7 @@ class _Loop:
         ledger = getattr(state, "messages", None)
         if ledger is not None:
             self.recorder.carry_over(ledger.get(self.session, []) or [])
-        self.recorder.injections(_ctx.turn_injections())
+        self.recorder.injections([*self._tool_use_note(), *_ctx.turn_injections()])
         self.recorder.user_message(self.head)
         parent_token = _ctx.set_parent_span(expert_span)
         try:
@@ -325,6 +334,10 @@ class _Loop:
             raise
         finally:
             _ctx.reset(parent_token)
+
+    def _tool_use_note(self) -> list[tuple[str, str]]:
+        """Tell an agent with tools, once, that one step may call several at once."""
+        return [("tool_use", TOOL_USE_NOTE)] if set(self.agent.tools) - {"submit"} else []
 
     def _one_step(self) -> dspy.Prediction | None:
         from clio_agent.gact import context as _ctx  # noqa: PLC0415

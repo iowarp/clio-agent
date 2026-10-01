@@ -563,8 +563,7 @@ def _resolve_declared_tools_with_on_demand_mount(
     """
 
     from clio_agent.gact.mcp_readiness import (  # noqa: PLC0415
-        mount_failure_reason,
-        mount_namespace_for_session,
+        mount_namespaces_for_session,
         namespaces_requiring_preparation,
     )
 
@@ -582,26 +581,11 @@ def _resolve_declared_tools_with_on_demand_mount(
         available_tools,
         declared_specs,
     )
-    merged_any = False
-    for namespace in sorted(needed_namespaces):
-        try:
-            mounted_tools = mount_namespace_for_session(
-                tool_executor,
-                namespace,
-                declared_specs[namespace],
-            )
-        except Exception as exc:  # noqa: BLE001 - typed + named, never cached (next call retries)
-            mount_failures[namespace] = mount_failure_reason(exc)
-            logger.warning(
-                "on_demand_mount_failed namespace=%s reason=%s error=%s",
-                namespace,
-                mount_failures[namespace],
-                exc,
-            )
-            continue
-        if mounted_tools:
-            merged_any = True
-    if merged_any:
+    mounted, failures = mount_namespaces_for_session(
+        tool_executor, {ns: declared_specs[ns] for ns in sorted(needed_namespaces)}, connect=False
+    )
+    mount_failures.update(failures)
+    if any(mounted.values()):
         available_tools = {
             name: tool
             for tool in tool_executor.to_dspy_tools()

@@ -12,9 +12,10 @@ override to :class:`~openai_codex.CodexConfig`, so the spawned ``codex``
 runtime inherits this process's real environment verbatim (the user's own
 ``CODEX_HOME``, or the SDK's own ``~/.codex`` default when unset) and owns its
 own login/refresh end to end. ``config_overrides`` still zeroes the bare-LM
-feature surface (mcp servers, plugins, apps, ...) so this stays a pure
-completion backend -- that mechanism does not touch credentials or the home
-directory at all.
+feature surface (apps, web search, built-in tools, ...) and switches off, by name,
+every MCP server and plugin the user's ``config.toml`` declares (Codex merges
+overrides into that file, so an empty table would leave them loaded) -- this stays
+a pure completion backend, and nothing here touches credentials.
 
 Provider-exposed reasoning text and reasoning summaries remain distinct. A
 summary is never relabelled as full provider reasoning.
@@ -33,11 +34,14 @@ from __future__ import annotations
 import asyncio
 import atexit
 import logging
+import os
 import queue
 import tempfile
 import threading
-from collections.abc import AsyncIterator, Callable
+import tomllib
+from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from openai_codex import (
@@ -119,6 +123,54 @@ BARE_LM_CONFIG_OVERRIDES = (
     'web_search="disabled"',
     *(f"features.{name}=false" for name in BARE_LM_FEATURES),
 )
+# Codex MERGES ``-c`` overrides into the user's ``config.toml``: ``mcp_servers={}``
+# leaves every declared server in place (found live: every opal turn failed on a
+# hidden ``mcpToolCall``). Each server and plugin the user declared is switched off
+# by name instead.
+_USER_CONFIG_TABLES = ("mcp_servers", "plugins")
+
+
+def user_config_disables(env: Mapping[str, str] | None = None) -> tuple[str, ...]:
+    """``<table>.<name>.enabled=false`` for every MCP server and plugin the user's
+    Codex config declares (``$CODEX_HOME/config.toml``, else ``~/.codex``).
+
+    Reads configuration only, never credentials. A config that cannot be read is a
+    typed failure: a runtime CLIO cannot make bare must not run.
+    """
+
+    env = os.environ if env is None else env
+    home = Path(env.get("CODEX_HOME") or (Path.home() / ".codex"))
+    path = home / "config.toml"
+    try:
+        config = tomllib.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return ()
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        raise CodexSDKError(
+            f"Codex could not start as a plain model: its config at {path} could not "
+            f"be read ({exc}), so its own tools and plugins cannot be switched off"
+        ) from exc
+    names = [
+        (table, str(name)) for table in _USER_CONFIG_TABLES for name in config.get(table) or {}
+    ]
+    # Codex's ``-c`` splits the key path on dots and keeps quotes as part of a name,
+    # so a name rides bare; one containing a dot cannot be addressed at all.
+    unaddressable = [f"{table}.{name}" for table, name in names if "." in name]
+    if unaddressable:
+        raise CodexSDKError(
+            f"Codex could not start as a plain model: {', '.join(unaddressable)} in {path} "
+            "cannot be switched off from the command line (its name contains a dot)"
+        )
+    return tuple(f"{table}.{name}.enabled=false" for table, name in names)
+
+
+def bare_lm_config_overrides() -> tuple[str, ...]:
+    """The runtime's overrides: the bare-LM switches plus the user's own servers and
+    plugins switched off by name."""
+
+    return (*BARE_LM_CONFIG_OVERRIDES, *user_config_disables())
+
+
 #: Codex auto-compaction threshold for clio's threads. clio-core is the context
 #: system: Codex must never summarize a thread behind it, so the threshold is set
 #: beyond any context window. A compaction that happens anyway is detected
@@ -386,7 +438,7 @@ class CodexSDKClient:
                     CodexConfig(
                         codex_bin=codex_bin,
                         cwd=tempfile.gettempdir(),
-                        config_overrides=BARE_LM_CONFIG_OVERRIDES,
+                        config_overrides=bare_lm_config_overrides(),
                         client_name="clio_agent",
                         client_title="CLIO Agent",
                     )

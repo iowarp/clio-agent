@@ -61,7 +61,11 @@ def live_plane_context(
     and the context window that drives auto-compaction)."""
     fake_session = types.SimpleNamespace(metadata=session_metadata or {})
     fake_app = types.SimpleNamespace(
-        state=types.SimpleNamespace(arc=arc_memory, sessions={session: fake_session})
+        state=types.SimpleNamespace(
+            arc=arc_memory,
+            sessions={session: fake_session},
+            bus=types.SimpleNamespace(publish=lambda event: None),
+        )
     )
     # Layer the turn app, then scope/session/window on the single runtime var.
     # Reset in strict reverse-LIFO of the sets (window -> session -> scope -> app)

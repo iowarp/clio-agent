@@ -67,6 +67,20 @@ def test_uses_shared_launcher_cache_false_for_explicit_uv_cache_dir() -> None:
     assert uses_shared_launcher_cache(spec) is False
 
 
+@pytest.mark.parametrize(
+    "command",
+    ["clio-kit", r"C:\Users\u\.local\bin\clio-kit.EXE", "/home/u/.local/bin/clio-kit"],
+)
+def test_a_clio_kit_server_does_not_wait_on_the_shared_cache_lock(command: str) -> None:
+    """clio-kit gives each server its own locked environment and its own uv cache
+    (it sets the child's UV_CACHE_DIR itself), so its launches never touch the
+    shared cache this lock guards. Measured live (2026-09-30): the lock still made
+    a blueprint's four clio-kit servers start one after another."""
+
+    spec = MCPServerSpec(name="geo", transport="stdio", command=command, args=("mcp-server", "geo"))
+    assert uses_shared_launcher_cache(spec) is False
+
+
 def test_uses_shared_launcher_cache_false_for_http() -> None:
     spec = MCPServerSpec(name="s", transport="http", url="https://example.com/mcp")
     assert uses_shared_launcher_cache(spec) is False

@@ -3998,7 +3998,8 @@ def test_dynamic_agent_tools_include_enabled_agent_blueprint_mcp_tool(tmp_path: 
 def test_root_agent_mounts_user_service_declared_always_load(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A connected global service is attached when a root session starts."""
+    """A global always-load service is attached when a root session starts: listed
+    for the model call, connected later (by the warm-up or its first call)."""
 
     app = build_app(sessions_path=tmp_path / "sessions.json")
 
@@ -4023,11 +4024,14 @@ def test_root_agent_mounts_user_service_declared_always_load(
             return namespace in self.prepared
 
     executor = _Executor()
+    mounts: list[tuple[str, bool]] = []
 
-    def _mount(tool_executor: _Executor, namespace: str, spec: Any) -> dict[str, Any]:
+    def _mount(
+        tool_executor: _Executor, namespace: str, spec: Any, *, connect: bool = True
+    ) -> dict[str, Any]:
         del spec
         assert namespace == "web"
-        tool_executor.prepared.add(namespace)
+        mounts.append((namespace, connect))
         tool = _Tool("web_search")
         tool_executor.tools.append(tool)
         return {tool.name: tool}
@@ -4048,7 +4052,7 @@ def test_root_agent_mounts_user_service_declared_always_load(
         tools = _dynamic_agent_tools(base_agent, agent_def, {})
 
     assert [tool.name for tool in tools] == ["fs_read_file", "web_search"]
-    assert executor.prepared == {"web"}
+    assert mounts == [("web", False)]
 
 
 def test_dynamic_agent_tools_degrades_one_unprojected_tool_instead_of_bricking(
