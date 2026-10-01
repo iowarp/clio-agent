@@ -981,8 +981,13 @@ directly each can change what the model sees; each fix lands with a failing-firs
    - leaves a call with no result in the context;
    - defaults missing ids and names.
 
-   It also runs outside the typed `ContextReadError` wrapper. Fix: typed failure for each case,
-   and the recorder's failed-step observation gets a `call_id`.
+   It also runs outside the typed `ContextReadError` wrapper. Fix: typed failure for each case
+   (`ContextFoldError`). The recorder's failed-step note becomes a CLIO addition
+   (`turn_escalated`), not an orphan observation.
+   - Done (`dcea7e43`): `POST /context/ops` folds the plane as the op would leave it, and
+     refuses an incoherent edit (409 `context_fold_failed`, nothing applied).
+     `/context/state` and compaction report an unfoldable plane typed, never as an untyped
+     500. Internal writers (rollback, variant lines, compaction) operate on whole steps.
 4. *Compaction:*
    - an empty LM summary replaces the working set;
    - a manual compact during a turn folds clio-core and then discards the checkpoint
