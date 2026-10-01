@@ -1,9 +1,9 @@
 """Console output never crashes a cp1252 (non-UTF-8) console.
 
-Regression: ``CLIO_ARC_STORE=local`` printed the ``⚑ DEGRADED TO LOCAL BACKEND``
-banner to a cp1252 stdout opened with ``errors="strict"`` (a redirected Windows
-console), the ``UnicodeEncodeError`` aborted ARC boot (``arc_boot_failed``), and
-every ``trace`` line (``⚑ TAG ...``) carries the same glyph.
+Regression: a ``⚑``-flagged line printed to a cp1252 stdout opened with
+``errors="strict"`` (a redirected Windows console) raised ``UnicodeEncodeError`` and
+aborted ARC boot (``arc_boot_failed``); every ``trace`` line (``⚑ TAG ...``) carries the
+same glyph.
 """
 
 from __future__ import annotations
@@ -17,7 +17,6 @@ from typing import Any
 
 import pytest
 
-from clio_agent.arc import init_degradation
 from clio_agent.runtime import trace
 from clio_agent.runtime.console_encoding import ensure_utf8_console
 
@@ -54,7 +53,7 @@ def test_the_unconfigured_stream_really_crashes(monkeypatch: pytest.MonkeyPatch)
         print("⚑ probe")
 
 
-def test_the_local_store_banner_and_trace_lines_survive_a_cp1252_console(
+def test_flagged_lines_and_trace_lines_survive_a_cp1252_console(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     out, err = _install_cp1252_console(monkeypatch)
@@ -64,12 +63,11 @@ def test_the_local_store_banner_and_trace_lines_survive_a_cp1252_console(
     handler.setFormatter(logging.Formatter("%(levelname)s | %(message)s"))
     clio_logger = logging.getLogger("clio_agent")
     clio_logger.addHandler(handler)
-    monkeypatch.setattr(init_degradation, "_local_banner_emitted", False)
     monkeypatch.setattr(trace, "EVENT_ON", True)
     monkeypatch.setattr(trace, "_ONLY", None)
     try:
         ensure_utf8_console()
-        init_degradation.warn_local_backend_selected()
+        print("⚑ FLAGGED — clio-core startup line")
         trace.event("CONSOLE-PROBE", "arrow=%s section=%s", "→", "§")
     finally:
         clio_logger.removeHandler(handler)
@@ -77,8 +75,7 @@ def test_the_local_store_banner_and_trace_lines_survive_a_cp1252_console(
     assert sys.stdout.encoding == "utf-8"
     assert sys.stderr.encoding == "utf-8"
     stdout_text = _written(out)
-    assert f"⚑ {init_degradation.LOCAL_BACKEND_BANNER}" in stdout_text
-    assert "Unit-test convenience ONLY — never" in stdout_text
+    assert "⚑ FLAGGED — clio-core startup line" in stdout_text
     stderr_text = _written(err)
     assert "⚑ CONSOLE-PROBE arrow=→ section=§" in stderr_text
 
@@ -153,16 +150,15 @@ def test_installing_the_console_log_handler_reconfigures_the_streams(
     assert _written(out) == ""
 
 
-_BANNER_SCRIPT = """
+_FLAGGED_SCRIPT = """
 import sys
 {ensure}
-from clio_agent.arc.init_degradation import warn_local_backend_selected
-warn_local_backend_selected()
+print("\u2691 FLAGGED \u2014 clio-core startup line")
 """
 
 
 @pytest.mark.parametrize("fixed", [True, False])
-def test_a_real_cp1252_process_prints_the_banner_only_when_fixed(fixed: bool) -> None:
+def test_a_real_cp1252_process_prints_a_flagged_line_only_when_fixed(fixed: bool) -> None:
     """A real interpreter whose std streams are strict cp1252 pipes."""
 
     ensure = (
@@ -172,7 +168,7 @@ def test_a_real_cp1252_process_prints_the_banner_only_when_fixed(fixed: bool) ->
     )
     env = {**os.environ, "PYTHONIOENCODING": "cp1252:strict", "PYTHONUTF8": "0"}
     proc = subprocess.run(
-        [sys.executable, "-c", _BANNER_SCRIPT.format(ensure=ensure)],
+        [sys.executable, "-c", _FLAGGED_SCRIPT.format(ensure=ensure)],
         capture_output=True,
         env=env,
         timeout=120,
@@ -180,7 +176,7 @@ def test_a_real_cp1252_process_prints_the_banner_only_when_fixed(fixed: bool) ->
     )
     if fixed:
         assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
-        assert "⚑ DEGRADED TO LOCAL BACKEND" in proc.stdout.decode("utf-8")
+        assert "⚑ FLAGGED — clio-core startup line" in proc.stdout.decode("utf-8")
     else:
         assert proc.returncode != 0
         assert b"UnicodeEncodeError" in proc.stderr

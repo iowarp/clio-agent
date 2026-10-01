@@ -34,7 +34,6 @@ def test_doctor_reports_local_file_policy_and_tool_backends(tmp_path):
         env={
             "CLIO_DATA_DIR": str(tmp_path / "data"),
             "CLIO_ALLOWED_ROOTS": str(tmp_path),
-            "CLIO_ARC_STORE": "local",
         },
         http_get=fake_get,
         port_checker=lambda port: False,

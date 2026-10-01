@@ -30,10 +30,16 @@ from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.replay import reconstruct_arc_segments
 from clio_agent.arc.schema import Segment, segment_text
 from clio_agent.arc.segments import SegmentStore
-from clio_agent.arc.storage import LocalFSStore
+from clio_agent.arc.storage import ARCStore, make_arc_store
 
 SID = "fuzz-sess"
 SCOPE = "agentZ/expertQ"
+
+
+def _cte_backend() -> ARCStore:
+    """The real clio-core store in this test's own namespace (the harness clears it)."""
+    return make_arc_store(backend="cte")
+
 
 # The working-set kinds the agent loop writes (and compaction summarizes). The
 # framing kinds (system/user/tool_def) are deliberately NOT generated here.
@@ -46,7 +52,7 @@ TRAJECTORY_KINDS = ("thought", "tool_call", "observation", "summary")
 
 
 def _store(tmp_path) -> tuple[SegmentStore, list[dict]]:
-    """A SegmentStore over a fresh LocalFSStore, recording every logged op so the
+    """A SegmentStore over the clio-core store, recording every logged op so the
     Trace-replay invariant can be checked against the exact same op stream."""
     logged: list[dict] = []
 
@@ -59,7 +65,7 @@ def _store(tmp_path) -> tuple[SegmentStore, list[dict]]:
         logged.append(ev)
         return ev
 
-    return SegmentStore(LocalFSStore(str(tmp_path)), op_logger=op_logger), logged
+    return SegmentStore(_cte_backend(), op_logger=op_logger), logged
 
 
 def _content_for(kind: str, tag: str) -> dict[str, Any]:
@@ -174,7 +180,7 @@ def test_fuzz_with_mutations_invariants(tmp_path, seed):
     _assert_content_fidelity(ss)
 
     # cold reload reproduces the render byte-for-byte (persistence parity)
-    reloaded = SegmentStore(LocalFSStore(str(tmp_path)))
+    reloaded = SegmentStore(_cte_backend())
     assert _proj(reloaded.render(SID, SCOPE)) == _proj(live)
     assert reloaded.render_text(SID, SCOPE) == text
 
