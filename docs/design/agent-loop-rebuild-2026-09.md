@@ -1545,6 +1545,13 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
   - the 1k/10k context-view benchmark.
 
   All other live verification is normal campaign work.
+- **Released with it (owner, 2026-10-01):** the base APPL-CORE pack.
+  - **How:** merge `clio-agent-marketplace` branch `feat/appl-core-pack` into `main` at release time.
+  - **What it contains:** the version without the handoff's APPL-specific skills; `appl-core-exports` and `appl-instruments` stay placeholders. The richer drafts in `opal-work/handoff/appl-skills-draft/` are not part of it.
+  - **Checked 2026-10-01 at `34cca15`:**
+    - it merges cleanly into `main`, which is 3 commits ahead (the `clio.chart.v1` change, not touching `appl-core`);
+    - it requires `clio_agent >= 0.9.4.19`;
+    - it has no Codex SDK or `codex_variant` references.
 - **Test procedure:** the broad suite runs on GitHub CI (`gh workflow run ci.yml --ref <branch>`), never locally. Locally, only the tests targeting the changed areas. The next phase starts without waiting for CI. A CI failure is fixed on the branch it belongs to, and the later phases are rebased onto the fix.
 
 ### Known follow-ups recorded with the transcript flag
