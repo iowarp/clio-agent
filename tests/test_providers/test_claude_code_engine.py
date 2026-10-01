@@ -399,3 +399,42 @@ def test_redacted_thinking_is_recorded_typed_not_dropped(
     rows = [r for r in audit if r.get("duplicate_reason") == "provider_thinking_redacted"]
     assert [r["thinking_tokens_estimated"] for r in rows] == [40, 40]
     assert durable == [40]  # one durable trace event per call
+
+
+def test_a_cli_side_compaction_resets_the_conversation_typed(
+    pool: FakePool, audit: list[dict[str, Any]], loop_scope: None
+) -> None:
+    """The Claude Code CLI compacting its own session changes the model's real context
+    behind clio-core: the next call is a full send from clio-core, reason recorded."""
+    from claude_agent_sdk.types import SystemMessage
+
+    compacted = SystemMessage(subtype="compact_boundary", data={"trigger": "auto"})
+    pool.turns = [
+        [_text("a"), _result()],
+        [compacted, _text("b"), _result()],
+        [_text("c"), _result()],
+    ]
+    _run(_request(HEAD))
+    _run(_request(HEAD, *_step(0)))
+    _run(_request(HEAD, *_step(0), *_step(1)))
+
+    assert _stateful(audit) == [
+        ("full", "first_call"),
+        ("delta", None),
+        ("full", "provider_compacted"),
+    ]
+    assert pool.sends[2]["session_id"] != pool.sends[1]["session_id"]
+    assert any(r["stage"] == "provider.compacted" for r in audit)
+
+
+def test_an_unhandled_sdk_message_is_audited_not_dropped(
+    pool: FakePool, audit: list[dict[str, Any]]
+) -> None:
+    class SomethingNew:
+        pass
+
+    pool.turns = [[SomethingNew(), _text("a"), _result()]]
+    _run(_request(HEAD))
+
+    [row] = [r for r in audit if r["stage"] == "provider.message_unhandled"]
+    assert row["message_type"] == "SomethingNew"

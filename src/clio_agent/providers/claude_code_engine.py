@@ -207,7 +207,9 @@ class AsyncClaudeCodeEngine:
             )
         # Recorded after the query: connecting it may have dropped an older client.
         if send.key is not None:
-            if send.handle is None:
+            if turn.provider_compacted:
+                _CONVERSATIONS.reset(send.key, "provider_compacted")
+            elif send.handle is None:
                 _CONVERSATIONS.opened(send.key, session_id, request, system)
             else:
                 _CONVERSATIONS.continued(send.key, request)
@@ -258,6 +260,9 @@ class _Turn:
         self.usage: dict[str, Any] = {}
         self.stop_reason = ""
         self.assistant_error: str | None = None
+        # The CLI compacted its own session (``compact_boundary``): its context no longer
+        # matches clio-core's, so the conversation is reset after this call.
+        self.provider_compacted = False
         self._splitter = StreamSplitter()
 
     def handle(self, message: Any) -> list[Any]:
@@ -305,6 +310,12 @@ class _Turn:
             plan_limit = plan_limit_from_rate_limit_event(message, model=self.model)
             if plan_limit is not None:
                 raise plan_limit
+        elif kind == "SystemMessage":
+            if getattr(message, "subtype", "") == "compact_boundary":
+                self.provider_compacted = True
+                _audit_message("provider.compacted", self.model, message)
+        else:
+            _audit_message("provider.message_unhandled", self.model, message)
         return []
 
     def _note_usage(self, message: Any) -> None:
@@ -417,6 +428,19 @@ def _forget_costs(session_ids: list[str]) -> None:
     with _SESSION_COST_LOCK:
         for session_id in session_ids:
             _SESSION_COST.pop(session_id, None)
+
+
+def _audit_message(stage: str, model: str, message: Any) -> None:
+    """Record an SDK message the engine does not turn into output (never a silent drop)."""
+    from clio_agent.runtime.stream_audit import stream_audit  # noqa: PLC0415
+
+    stream_audit(
+        stage,
+        provider="claude_code",
+        model=model,
+        message_type=type(message).__name__,
+        subtype=str(getattr(message, "subtype", "") or ""),
+    )
 
 
 def _reset(send: Send) -> None:
