@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import contextvars
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -51,6 +52,7 @@ from clio_agent.gact.agents import variant_lines
 from clio_agent.gact.runtime.type_parsing import (
     VariantSpec,
     _blueprint_module_variant,
+    parse_module_variant,
 )
 
 if TYPE_CHECKING:
@@ -462,6 +464,60 @@ def compile_reward_fn(spec: VariantSpec, *, agent_id: str) -> Callable[[dict, Pr
         return score
 
     return scored_reward
+
+
+def strategy_module(strategy: Any, *, agent_id: str) -> dict[str, Any]:
+    """A spawn's ``strategy`` as the blueprint ``module`` variant it stands for, validated.
+
+    ``{variant, n, rubric, threshold, judge}``: ``rubric`` is the LM judge's instructions.
+    Raises ``ValueError`` with the same messages a blueprint declaration gets. Only the LM
+    judge exists yet (a human judge is the pause/resume step of Phase 9).
+    """
+    if not isinstance(strategy, Mapping):
+        raise ValueError(f"strategy for {agent_id!r} must be a mapping, got {strategy!r}")
+    judge = str(strategy.get("judge") or "lm")
+    if judge != "lm":
+        raise ValueError(f"strategy judge {judge!r} for {agent_id!r}: only 'lm' is supported")
+    rubric = str(strategy.get("rubric") or "").strip()
+    if not rubric:
+        raise ValueError(f"strategy for {agent_id!r} requires a rubric (what makes a try good)")
+    module = {
+        "variant": strategy.get("variant"),
+        "n": strategy.get("n"),
+        "threshold": strategy.get("threshold", 1.0),
+        "reward": {"instructions": rubric},
+    }
+    parse_module_variant(module, agent_id=agent_id)
+    return module
+
+
+def spawn_scope_with_strategy(
+    scope: Mapping[str, Any] | None, strategy: Any, *, agent_id: str
+) -> dict[str, Any] | None:
+    """The child session's scope metadata, carrying a validated spawn ``strategy``.
+
+    An invalid strategy is a typed refused spawn (``invalid_strategy``): no child exists.
+    """
+    from clio_agent.gact.turn_spawn import SpawnError  # noqa: PLC0415
+
+    if not strategy:
+        return None if scope is None else dict(scope)
+    try:
+        module = strategy_module(strategy, agent_id=agent_id)
+    except ValueError as exc:
+        raise SpawnError(str(exc), reason="invalid_strategy") from exc
+    return {**dict(scope or {}), "variant_strategy": module}
+
+
+def with_session_strategy(agent_def: "AgentDef") -> "AgentDef":
+    """``agent_def`` with the active session's spawn strategy as its module variant."""
+    sessions = getattr(getattr(_ctx.active_app(), "state", None), "sessions", None)
+    row = sessions.get(_ctx.active_session_id()) if sessions is not None else None
+    strategy = (getattr(row, "metadata", None) or {}).get("variant_strategy")
+    if not strategy:
+        return agent_def
+    module = {**dict(agent_def.module or {}), **dict(strategy)}
+    return agent_def.model_copy(update={"module": module})
 
 
 def wrap_module_variant(inner: dspy.Module, agent_def: "AgentDef") -> dspy.Module:
