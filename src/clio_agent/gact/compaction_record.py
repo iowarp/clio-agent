@@ -10,7 +10,8 @@ The record is the summarization injection (:mod:`clio_agent.gact.summarization_r
 the row's envelope between turns) and returns a :class:`PendingRecord`. The caller then
 folds: on success :meth:`PendingRecord.publish` shows it (the open transcript, or the
 ledger and ``message.created``); on a failed fold :meth:`PendingRecord.retract` writes a
-retract atom, so the record is never served. A record that cannot be written raises
+retract atom, so the record is never served. A mid-turn record whose turn settled
+between its write and the fold is still shown live (:func:`_publish_after_settle`). A record that cannot be written raises
 :class:`RecordWriteError` and nothing is folded. There is no staging.
 """
 
@@ -30,8 +31,8 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["PendingRecord", "RecordWriteError", "write_notice", "write_record"]
 
-#: Typed reason when a mid-turn record lands after its turn settled.
-RECORD_AFTER_SETTLE = "compaction_record_after_settle"
+#: Typed reason when a record's live publish failed (it is on clio-core; reload shows it).
+RECORD_NOT_PUBLISHED = "compaction_record_not_published"
 
 
 class RecordWriteError(ClioError):
@@ -56,14 +57,15 @@ class PendingRecord:
         message_id: The assistant message holding the record part.
         part_id: The record part's id.
         turn_id: The open turn's id, or ``""`` between turns.
-        publish: Show the record (call once, after the fold succeeded).
+        publish: Show the record (call once, after the fold succeeded); returns the
+            ``(message id, part id)`` it is shown as.
         retract: Make the durable record unservable (call once, after a failed fold).
     """
 
     message_id: str
     part_id: str
     turn_id: str
-    publish: Callable[[], None]
+    publish: Callable[[], tuple[str, str]]
     retract: Callable[[], None]
 
 
@@ -141,18 +143,22 @@ def _in_open_turn(app: Any, sid: str, transcript: Any, part: Part) -> PendingRec
     except Exception as exc:  # noqa: BLE001 - raised typed: the caller folds nothing
         raise RecordWriteError(sid, "open_turn", exc) from exc
 
-    def publish() -> None:
-        if transcript.append_part(part) is None:
-            # The turn settled between the write and the fold: the durable atom is the
-            # record (reload shows it); the live view could not take it.
+    def publish() -> tuple[str, str]:
+        if transcript.append_part(part) is not None:
+            _mirror_transcript_state(app, sid, transcript)
+            return message_id, str(part.id)
+        try:
+            return _publish_after_settle(app, sid, minter, message_id, index, part)
+        except (ClioError, OSError, RuntimeError, ValueError):  # a store/ledger write
+            # Durable already (reload shows it): the live publish alone failed, logged typed.
             logger.warning(
                 "compaction record not shown live reason=%s session=%s part=%s",
-                RECORD_AFTER_SETTLE,
+                RECORD_NOT_PUBLISHED,
                 sid,
                 part.id,
+                exc_info=True,
             )
-            return
-        _mirror_transcript_state(app, sid, transcript)
+            return message_id, str(part.id)
 
     def retract() -> None:
         from clio_agent.gact.part_atoms import append_part_atom  # noqa: PLC0415
@@ -169,6 +175,46 @@ def _in_open_turn(app: Any, sid: str, transcript: Any, part: Part) -> PendingRec
         )
 
     return PendingRecord(message_id, str(part.id), transcript.turn_id, publish, retract)
+
+
+def _publish_after_settle(
+    app: Any, sid: str, minter: Any, message_id: str, index: int, part: Part
+) -> tuple[str, str]:
+    """Show a record whose turn settled between its write and the fold, as reload will.
+
+    Waits for the turn's transcript writer to finish (progress, never a clock), so the
+    turn's assistant message is in the ledger. Reload serves the record inside that
+    message at its sealed index, so the live row gets it there too (the ledger, the
+    retained file copy, and ``message.created``, which clients upsert). A turn that
+    persisted no such message (a pause carried it on) gets the record as its own row,
+    and the sealed atom is retracted so reload agrees.
+    """
+    from clio_agent.gact.events import Event  # noqa: PLC0415
+    from clio_agent.gact.part_atoms import (  # noqa: PLC0415
+        append_part_atom,
+        build_retract_atom,
+        message_stub,
+    )
+
+    minter.wait_closed()
+    ledger = app.state.messages.get(sid, [])
+    row = next((m for m in reversed(ledger) if m.id == message_id), None)
+    if row is None:
+        stub = message_stub(
+            message_id=message_id,
+            turn_id=minter.turn_id,
+            session_id=sid,
+            created_at=minter.opened_at,
+        )
+        append_part_atom(minter.arc._segments, sid, build_retract_atom(stub, [str(part.id)], index))
+        own = _own_row(app, sid, part)
+        return own.publish()
+    row.parts.insert(min(index, len(row.parts)), part)
+    store = getattr(app.state, "message_store", None)
+    if store is not None:
+        store.replace_session(sid, list(ledger))
+    app.state.bus.publish(Event(type="message.created", session_id=sid, payload=row.to_wire()))
+    return message_id, str(part.id)
 
 
 def _own_row(app: Any, sid: str, part: Part) -> PendingRecord:
@@ -219,12 +265,13 @@ def _own_row(app: Any, sid: str, part: Part) -> PendingRecord:
             append_part_atom(store, sid, build_retract_atom(stub, written, 0))
         raise RecordWriteError(sid, "own_row", exc) from exc
 
-    def publish() -> None:
+    def publish() -> tuple[str, str]:
         _append_session_message(app, sid, message, atoms_minted=True)
         app.state.sessions.update(sid, message_count=len(app.state.messages.get(sid, [])))
         app.state.bus.publish(
             Event(type="message.created", session_id=sid, payload=message.to_wire())
         )
+        return message.id, str(part.id)
 
     def retract() -> None:
         append_part_atom(store, sid, build_retract_atom(stub, [str(part.id)], 0))

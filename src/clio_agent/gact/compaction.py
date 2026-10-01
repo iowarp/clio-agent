@@ -423,12 +423,12 @@ def _summarize_record_fold(
     except RecordWriteError as exc:
         raise CompactionError(500, exc.reason, str(exc), dict(exc.details or {})) from exc
     _fold(app, sid, plan, text, base, record)
-    record.publish()
-    _remember(app, sid, base, record.message_id, len(plan.summarize))
+    message_id, part_id = record.publish()
+    _remember(app, sid, base, message_id, len(plan.summarize))
     return {
         **base,
-        "message_id": record.message_id,
-        "part_id": record.part_id,
+        "message_id": message_id,
+        "part_id": part_id,
         "replaced_count": len(plan.summarize),
         "summary": text,
     }

@@ -326,6 +326,15 @@ class PartAtomMinter:
         append_part_atom(self.arc._segments, self.session_id, build_envelope_atom(message))
         return written + 1
 
+    def wait_closed(self) -> None:
+        """Block until this minter closed and its consumer drained (the turn settled).
+
+        Progress-based: returns when the turn's settle closes the minter, never on a
+        wall clock.
+        """
+
+        self._thread.join()
+
     def close(self, *, timeout: float = 5.0) -> None:
         """Stop accepting jobs, drain what is queued, stop the thread."""
 

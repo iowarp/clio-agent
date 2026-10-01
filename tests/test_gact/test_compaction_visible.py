@@ -605,3 +605,98 @@ def test_the_summary_renders_first_even_when_the_oldest_context_is_kept(
     assert "HITS-q2" in summarizer.prompts[0] and "question 0" not in summarizer.prompts[0]
     assert any("question 0" in t for t in flat[1:]) and "answer 1" in flat
     assert "question 2" in flat[-1]
+
+
+def test_a_record_whose_turn_settled_before_the_fold_is_still_shown_live(
+    app_env: tuple[Any, TestClient, SummarizerAgent, list[Any]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A manual compaction during a turn writes its record into the turn's message;
+    the turn settles before the fold lands. Live must still equal reload: the record is
+    published into that message (a ``message.created`` upsert after the turn settled)."""
+    from tests.turn_signals import wait_for_terminal_status
+
+    app, client, _summarizer, events = app_env
+    sid = _session(client)
+    started, release = threading.Event(), threading.Event()
+
+    def slow(q: str) -> str:
+        started.set()
+        release.wait()
+        return f"SLOW-{q}"
+
+    def run(question: str, session_id: str, **_kwargs: Any) -> Any:
+        lm, _engine = scripted_lm([calls(("slow", {"q": "x"}), text="wait"), Reply(text="done")])
+        tokens = [ctx.set_react_scope(SCOPE), ctx.set_react_session(session_id)]
+        try:
+            with dspy.context(lm=lm):
+                tools = instrument_tools([dspy.Tool(slow, name="slow")])
+                return ClioReAct("question -> answer", tools=tools)(question=question)
+        finally:
+            for token in reversed(tokens):
+                ctx.reset(token)
+
+    install_scripted_module(monkeypatch, run)
+    _patch_tokens(monkeypatch, high_on=set())
+    bus = app.state.bus
+    cursor = bus.latest_event_id(sid)
+    ack = client.post(
+        f"/v1/sessions/{sid}/messages", json={"parts": [{"type": "text", "text": "go"}]}
+    )
+    assert ack.status_code == 200, ack.text
+    assert started.wait(120), "the turn never reached its tool"
+
+    real_fold = app.state.arc.summarize_segments
+    settled: list[int] = []
+
+    def fold_after_the_turn_settled(*args: Any, **kwargs: Any) -> Any:
+        release.set()
+        assert wait_for_terminal_status(bus, sid, after_event_id=cursor) == "idle"
+        settled.append(bus.latest_event_id(sid))
+        return real_fold(*args, **kwargs)
+
+    monkeypatch.setattr(app.state.arc, "summarize_segments", fold_after_the_turn_settled)
+    r = client.post(f"/v1/sessions/{sid}/compact", params={"scope": SCOPE})
+    assert r.status_code == 200, r.text
+    [done] = r.json()["compactions"]
+    assert settled, "the fold did not wait for the turn"
+
+    live_wire = _transcript(client, sid)
+    [assistant] = [m for m in live_wire if m["role"] == "assistant"]
+    assert assistant["id"] == done["message_id"]
+    assert [p["id"] for p in assistant["parts"] if _is_record(p)] == [done["part_id"]]
+    assert _reload(app, client, sid) == live_wire
+    upserts = [
+        e
+        for e in bus.session_events_since(sid, cursor=settled[0] + 1)
+        if e.type == "message.created" and e.payload.get("id") == done["message_id"]
+    ]
+    assert upserts and any(_is_record(p) for p in upserts[-1].payload["parts"])
+    seq = [e.event_type for e in _compaction_events(events)]
+    assert seq == ["compaction.started", "compaction.completed"]
+
+
+def test_the_sdk_reads_the_record_and_the_notice_as_typed_parts() -> None:
+    """The client SDK's ``Part`` declares the injection and notice fields (no extras)."""
+    from clio_agent.gact.summarization_record import failure_notice_part, summarization_part
+    from clio_agent.sdk.types import Part as SdkPart
+
+    record = summarization_part(
+        "S", trigger="auto", compaction_id="cmp_1", derived_from=["a"], compacted_message_ids=[]
+    )
+    notice = failure_notice_part("F", code="fold_failed", compaction_id="cmp_2", trigger="manual")
+    parsed = SdkPart.model_validate(record.to_wire())
+    assert (parsed.type, parsed.source, parsed.trigger, parsed.compaction_id) == (
+        "injection",
+        "summarization",
+        "auto",
+        "cmp_1",
+    )
+    parsed = SdkPart.model_validate(notice.to_wire())
+    assert (parsed.type, parsed.source, parsed.code, parsed.compaction_id, parsed.trigger) == (
+        "notice",
+        "compaction_failed",
+        "fold_failed",
+        "cmp_2",
+        "manual",
+    )
+    assert not (parsed.model_extra or {})
