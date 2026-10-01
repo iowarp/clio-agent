@@ -30,7 +30,6 @@
  "gact/agents/clio_react_record.py": 1,
  "gact/agents/clio_react_submit.py": 1,
  "gact/agents/composition.py": 4,
- "gact/agents/module_variants.py": 1,
  "gact/agents/resolution.py": 1,
  "gact/agents/runtime.py": 1,
  "gact/agents/skill_effects.py": 1,

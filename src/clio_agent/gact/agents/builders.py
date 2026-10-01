@@ -940,10 +940,8 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
 
     import dspy  # noqa: PLC0415
 
+    from clio_agent.gact.agents import module_variants as _mv  # noqa: PLC0415
     from clio_agent.gact.agents.clio_react import ClioReAct  # noqa: PLC0415
-    from clio_agent.gact.agents.module_variants import (  # noqa: PLC0415
-        wrap_module_variant as _wrap_module_variant,
-    )
     from clio_agent.gact.app import (  # noqa: PLC0415
         _cancelled_error_info,
         _coerce_expert_handoff_rows,
@@ -1056,9 +1054,10 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 )
                 # The loop attributes each step to this expert on the highway.
                 self.program._clio_expert_id = agent_def.id
-            # #948 S5: wrap the inner program (any kind) in the declared dspy.BestOfN /
-            # Refine variant (no-op when unset; typed ValueError on an invalid decl).
-            self.program = _wrap_module_variant(self.program, agent_def)
+            # Wrap in the declared (or spawn-requested) BestOfN / Refine variant, if any.
+            self.program = _mv.wrap_module_variant(
+                self.program, _mv.with_session_strategy(agent_def)
+            )
             agent_prompt = agent_def.system_prompt.strip() or agent_def.description
             active_app = _ctx.active_app()
             # Do not short-circuit on active_app is None: a build without the active

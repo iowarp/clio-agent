@@ -81,3 +81,36 @@ def test_the_runtime_is_launched_with_them(tmp_path: Path, monkeypatch: pytest.M
         sdk_client.BARE_LM_CONFIG_OVERRIDES
     )
     assert "plugins.computer-use@openai-bundled.enabled=false" in overrides
+
+
+def test_every_thread_switches_them_off_too(tmp_path: Path) -> None:
+    """Found live (exp67 benchmark, 2026-10-01): a thread's ``config`` is re-derived from
+    config.toml, so the runtime-level ``-c`` disables never reached it -- every thread had
+    the user's servers live (21st, node_repl, shadcn ...), Codex added list_mcp_resources
+    and every turn hit a hidden mcpToolCall. The thread config carries the same disables."""
+    config = sdk_client.bare_lm_thread_config(_home(tmp_path, CONFIG))
+
+    assert config["mcp_servers"] == {
+        "pdf2md-service": {"enabled": False},
+        "21st": {"enabled": False},
+        "node_repl": {"enabled": False},
+    }
+    assert config["plugins"] == {
+        "browser@openai-bundled": {"enabled": False},
+        "computer-use@openai-bundled": {"enabled": False},
+    }
+    assert config["features"] == sdk_client.BARE_LM_FEATURES
+    assert config["web_search"] == "disabled"
+    assert config["model_auto_compact_token_limit"] == sdk_client.NO_AUTO_COMPACT_TOKEN_LIMIT
+
+
+def test_a_thread_config_for_no_user_config_switches_nothing_by_name(tmp_path: Path) -> None:
+    config = sdk_client.bare_lm_thread_config({"CODEX_HOME": str(tmp_path)})
+
+    assert config["mcp_servers"] == {}
+    assert config["plugins"] == {}
+
+
+def test_the_plugin_system_is_off() -> None:
+    assert "features.plugins=false" in sdk_client.BARE_LM_CONFIG_OVERRIDES
+    assert sdk_client.BARE_LM_FEATURES["plugins"] is False

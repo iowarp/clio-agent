@@ -30,9 +30,9 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
     ),
     (
         "GACT server",
-        ("gact", "a2ui", "autocompact", "permissions", "hooks"),
-        "The GACT HTTP/SSE server: ledgers, auth, hooks, A2UI payload bounds and context "
-        "auto-compaction.",
+        ("gact", "a2ui", "autocompact", "permissions", "hooks", "transcript"),
+        "The GACT HTTP/SSE server: ledgers, the transcript file copy, auth, hooks, A2UI payload "
+        "bounds and context auto-compaction.",
     ),
     (
         "ARC memory",
@@ -1274,6 +1274,11 @@ KEY_NOTES: dict[str, str] = {
     "trace.semantic_factory": (
         "Import path of a custom Python factory supplying the semantic-trace backend; set only to "
         "replace the built-in jsonl/flowcept providers."
+    ),
+    "transcript.file": (
+        "Keep the per-session messages/<sid>.json copy of every transcript next to clio-core's "
+        "atoms; set false to make clio-core the only transcript store (not allowed in History "
+        "mode, where the file is the only durable copy)."
     ),
     "workflows.step_inactivity_s": (
         "No-activity window (seconds) before a declared-workflow step's child is judged stalled; a "

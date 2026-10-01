@@ -173,7 +173,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # plane byte-identically (the S2 slice had dropped these, breaking replay). Footprint
     # minimized to concise docstrings; the per-op payload passing is irreducible. Ratchet
     # down with the #714/#767 decomposition.
-    "src/clio_agent/arc/working_set_fold.py": 910,
+    "src/clio_agent/arc/working_set_fold.py": 905,
     # #1326: adapters.py was 780 lines (under the 800 cap). +56 for: a new
     # _ContextOverflowError typed exception, a _check_context_overflow pre-flight
     # helper (mirrors the guided path's _bound_guided_output_kwargs shape), pre-
@@ -276,7 +276,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # CLIO_LM_DISABLE_THINKING qwen-output-discipline prompt injection (its
     # forward() block) is deleted -- thinking is now driven per-dialect off
     # the model's own ThinkingSpec, never a global on/off knob.
-    "src/clio_agent/gact/agents/builders.py": 1408,  # L1: -24, the 6 identical cancelled_error_info(..., executor_work_may_continue=False) calls collapsed to one line each
+    "src/clio_agent/gact/agents/builders.py": 1407,  # L1: -24, the 6 identical cancelled_error_info(..., executor_work_may_continue=False) calls collapsed to one line each
     # NEW entry (#1282, C1-S2 D1): crossed the flat 800 cap (797 -> 884) for
     # the #1275 fix's ONE chokepoint. Two pieces: (1) __init__ wraps every
     # tool callable this loop will ever run (MCP-bridged, instrumented
@@ -477,7 +477,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # with develop's activation extraction and provider startup refresh.
     # Ratchet down 2469 -> 2467 (naming reversal): removed the now-unneeded
     # codex->chatgpt boot migration call (the provider id never changed).
-    "src/clio_agent/gact/app.py": 2435,  # L1: -1, the deleted hard_abort_supported/upstream_abort/executor_work_may_continue triad
+    # Ratchet down 2435 -> 2419: the transcript-store boot moved to gact/transcript_file.py.
+    "src/clio_agent/gact/app.py": 2419,
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -731,7 +732,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # mount_failures map (namespace -> typed reason) so the exception itself
     # can name a declared tool's server + reason -- turn.py's except handler
     # is the only reader; the mount decision lives in gact/agents/builders.py.
-    "src/clio_agent/gact/runtime/globals.py": 906,  # blueprint-path arg threading (#1247); L1: -5, executor_work_may_continue param deleted from _cancelled_error_info
+    "src/clio_agent/gact/runtime/globals.py": 904,  # blueprint-path arg threading (#1247); L1: -5, executor_work_may_continue param deleted from _cancelled_error_info
     # #948 S5: +2 to read the RUN-KEYED tap-dedup bucket under an in-process module
     # variant (context.run_keyed_scope; bare invoking_expert still owns attribution).
     # merge(main->develop): +10 (932 -> 942) integrating main's #964 structured

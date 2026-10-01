@@ -292,17 +292,10 @@ class SessionStore:
         self._lifecycle_observer = observer
 
     def _observe_lifecycle(self, event_type: str, session: Session) -> None:
+        # The lifecycle record is clio-core's: a failure is the caller's error.
         observer = self._lifecycle_observer
-        if observer is None:
-            return
-        try:
+        if observer is not None:
             observer(event_type, session)
-        except Exception:  # noqa: BLE001 - observability cannot change CRUD semantics
-            logger.exception(
-                "session lifecycle provenance failed event=%s session=%s",
-                event_type,
-                session.id,
-            )
 
     def _load(self) -> None:
         """Populate in-memory dict from the on-disk JSON, if any."""
@@ -394,6 +387,14 @@ class SessionStore:
         with self._lock:
             self._sessions[sid] = sess
             self._flush()
+        try:
+            self._observe_lifecycle("session.created", sess)
+        except BaseException:
+            # No session exists that clio-core has no record of.
+            with self._lock:
+                self._sessions.pop(sid, None)
+                self._flush()
+            raise
         # P2.3 SessionStart lifecycle hook (observation): fires exactly once per
         # created session, after it is persisted. Never blocks — the dispatcher
         # returns a no-op outcome when no hook is configured.
@@ -408,7 +409,6 @@ class SessionStore:
                 "mode": sess.mode,
             },
         )
-        self._observe_lifecycle("session.created", sess)
         return sess
 
     def get(self, sid: str) -> Optional[Session]:

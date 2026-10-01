@@ -26,12 +26,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
 logger = logging.getLogger(__name__)
+
+
+_PROCESS_ARC_LOCK = threading.Lock()
 
 
 def process_arc(app: "FastAPI") -> Any:
@@ -50,6 +54,29 @@ def process_arc(app: "FastAPI") -> Any:
     arc = getattr(getattr(app, "state", None), "arc", None)
     if arc is not None:
         return arc
+    with _PROCESS_ARC_LOCK:  # single-flight: the boot attach and a first event never race
+        arc = getattr(getattr(app, "state", None), "arc", None)
+        return arc if arc is not None else _construct_process_arc(app)
+
+
+def arc_for_first_event(app: Any, event_type: str, sid: str) -> Any:
+    """The process ARC for an event emitted before any exists (lost before: found live).
+
+    Off the event loop it is obtained through the one construction door
+    (``server_boot.process_arc``, single-flight with the boot attach). On the loop clio-core
+    cannot be attached: a typed failure naming the event, never a bypass of ARC.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return process_arc(app)
+    raise RuntimeError(
+        f"ARC-as-source: semantic event {event_type!r} (session={sid!r}) was emitted on the "
+        "event loop before clio-core is attached; emit it off the loop"
+    )
+
+
+def _construct_process_arc(app: "FastAPI") -> Any:
     from clio_agent.arc import history_mode  # noqa: PLC0415
 
     mode = history_mode.resolve()
@@ -65,6 +92,9 @@ def process_arc(app: "FastAPI") -> Any:
 
     _set_app_arc(app, arc)
     _record_context_mode(app, mode)
+    from clio_agent.gact.transcript_file import on_process_arc_bound  # noqa: PLC0415
+
+    on_process_arc_bound(app)  # transcript.file off: reconcile + metrics seed from the atoms
     return arc
 
 

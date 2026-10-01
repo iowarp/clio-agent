@@ -126,7 +126,9 @@ def test_session_context_policy_reports_current_compartment_semantics(
     assert body["metadata"]["source"] == "clio_backend_default"
     assert body["metadata"]["session_mode"] == "plan"
     assert body["metadata"]["routing_mode"] == "chat"
-    assert body["metadata"]["arc_wired"] is False
+    # The session's own session.created event builds the process ARC (b80479ea): a
+    # created session always has clio-core behind it.
+    assert body["metadata"]["arc_wired"] is True
     assert body["metadata"]["cross_session_default"] == "deny_without_user_intent"
     assert any("Other-workspace memory is denied" in note for note in body["notes"])
 

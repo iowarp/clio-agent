@@ -610,6 +610,16 @@ def allow_pytest_tmp_path(request, tmp_path, monkeypatch):
     # Codex direct also signs in from the local Codex CLI login ($CODEX_HOME/auth.json):
     # a unit test must never see the developer's real login, so each gets an empty home.
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex_home"))
+    # Likewise the developer's ALCF (Globus) sign-in: a stored token made every
+    # provider probe a real auth.globus.org round trip (53 errors on a fresh worktree,
+    # hidden on an old one by a cached handshake). Each test gets empty token stores.
+    from clio_agent.providers import argonne_auth  # noqa: PLC0415
+
+    monkeypatch.setattr(argonne_auth, "TOKENS_PATH", str(tmp_path / "globus" / "tokens.json"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg_data"))
+    for var in ("CLIO_ARGONNE_TOKEN", "ALCF_INFERENCE_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
 
     # Union tmp_path with any dev-shell CLIO_ALLOWED_ROOTS, then build the FILE
     # value from it and DELETE the stale env var so the file is authoritative.

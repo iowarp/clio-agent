@@ -112,6 +112,8 @@ BARE_LM_FEATURES: dict[str, bool] = {
     "image_generation": False,
     "memories": False,
     "multi_agent": False,
+    # The whole plugin system, not only the plugins config.toml names.
+    "plugins": False,
     "shell_tool": False,
     "view_image": False,
     "view_pdf": False,
@@ -130,9 +132,9 @@ BARE_LM_CONFIG_OVERRIDES = (
 _USER_CONFIG_TABLES = ("mcp_servers", "plugins")
 
 
-def user_config_disables(env: Mapping[str, str] | None = None) -> tuple[str, ...]:
-    """``<table>.<name>.enabled=false`` for every MCP server and plugin the user's
-    Codex config declares (``$CODEX_HOME/config.toml``, else ``~/.codex``).
+def _user_config_names(env: Mapping[str, str] | None) -> tuple[Path, list[tuple[str, str]]]:
+    """``(table, name)`` for every MCP server and plugin the user's Codex config declares
+    (``$CODEX_HOME/config.toml``, else ``~/.codex``), with the config's path.
 
     Reads configuration only, never credentials. A config that cannot be read is a
     typed failure: a runtime CLIO cannot make bare must not run.
@@ -144,15 +146,22 @@ def user_config_disables(env: Mapping[str, str] | None = None) -> tuple[str, ...
     try:
         config = tomllib.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return ()
+        return path, []
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise CodexSDKError(
             f"Codex could not start as a plain model: its config at {path} could not "
             f"be read ({exc}), so its own tools and plugins cannot be switched off"
         ) from exc
-    names = [
+    return path, [
         (table, str(name)) for table in _USER_CONFIG_TABLES for name in config.get(table) or {}
     ]
+
+
+def user_config_disables(env: Mapping[str, str] | None = None) -> tuple[str, ...]:
+    """``<table>.<name>.enabled=false`` for every MCP server and plugin the user's
+    Codex config declares (the runtime's ``-c`` overrides)."""
+
+    path, names = _user_config_names(env)
     # Codex's ``-c`` splits the key path on dots and keeps quotes as part of a name,
     # so a name rides bare; one containing a dot cannot be addressed at all.
     unaddressable = [f"{table}.{name}" for table, name in names if "." in name]
@@ -177,14 +186,28 @@ def bare_lm_config_overrides() -> tuple[str, ...]:
 #: (``thread/compacted`` / a ``contextCompaction`` item) and resets the thread typed.
 NO_AUTO_COMPACT_TOKEN_LIMIT = 2**62
 
-BARE_LM_THREAD_CONFIG: dict[str, Any] = {
-    "mcp_servers": {},
-    "plugins": {},
-    # Codex's own web search is a hidden action: clio owns tools (web search too).
-    "web_search": "disabled",
-    "features": BARE_LM_FEATURES,
-    "model_auto_compact_token_limit": NO_AUTO_COMPACT_TOKEN_LIMIT,
-}
+
+def bare_lm_thread_config(env: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """The config every clio thread starts with: the bare-LM switches plus the user's
+    own servers and plugins switched off by name.
+
+    Found live (exp67 benchmark, 2026-10-01): a thread's config is re-derived from
+    config.toml, so the runtime's ``-c`` disables never reached it -- every thread had
+    the user's servers live, Codex added ``list_mcp_resources`` and every turn hit a
+    hidden ``mcpToolCall``.
+    """
+
+    disabled: dict[str, dict[str, Any]] = {table: {} for table in _USER_CONFIG_TABLES}
+    for table, name in _user_config_names(env)[1]:
+        disabled[table][name] = {"enabled": False}
+    return {
+        **disabled,
+        # Codex's own web search is a hidden action: clio owns tools (web search too).
+        "web_search": "disabled",
+        "features": dict(BARE_LM_FEATURES),
+        "model_auto_compact_token_limit": NO_AUTO_COMPACT_TOKEN_LIMIT,
+    }
+
 
 _ALLOWED_ITEM_TYPES = frozenset({"agentMessage", "reasoning", "userMessage"})
 _ACTION_ITEM_TYPES = frozenset(
@@ -251,9 +274,16 @@ def _validate_bare_lm_event(event: Any) -> None:
         marker in item_type.lower()
         for marker in ("toolcall", "commandexecution", "filechange", "subagent")
     ):
+        root = _item_root(event.payload)
+        named = [
+            f"{field}={getattr(root, field)}"
+            for field in ("server", "tool", "name", "command")
+            if getattr(root, field, None)
+        ]
+        detail = f": {', '.join(named)}" if named else ""
         raise CodexSDKError(
             "bare Codex SDK LM attempted a hidden internal action "
-            f"({item_type}); Clio owns tools and orchestration"
+            f"({item_type}{detail}); Clio owns tools and orchestration"
         )
     if item_type not in _ALLOWED_ITEM_TYPES:
         logger.info(
@@ -396,6 +426,9 @@ class CodexSDKClient:
         self._reset_pending = False
         # The binary the live client was started on (see ``_ensure_client``).
         self._codex_bin: str | None = None
+        # The config every thread of the live client starts with, read with its launch
+        # overrides so the runtime and its threads switch off the same servers.
+        self._thread_config: dict[str, Any] = {}
         # Threads kept open for continuation: thread id -> (client generation,
         # AsyncThread). Only touched on the owner loop. A generation change (the
         # runtime restarted) invalidates every entry.
@@ -434,6 +467,7 @@ class CodexSDKClient:
                 # constructs, reads, or writes an auth.json path. ``codex_bin`` is
                 # the user's installed Codex CLI when present, else the bundled one.
                 self._codex_bin = codex_bin
+                self._thread_config = bare_lm_thread_config()
                 client = AsyncCodex(
                     CodexConfig(
                         codex_bin=codex_bin,
@@ -513,7 +547,7 @@ class CodexSDKClient:
             client.thread_start(
                 approval_mode=ApprovalMode.deny_all,
                 base_instructions=BARE_LM_BASE_INSTRUCTIONS,
-                config=BARE_LM_THREAD_CONFIG,
+                config=self._thread_config,
                 cwd=request.cwd or tempfile.gettempdir(),
                 # The caller's own system prompt (tool rules included) rides the
                 # thread's developer instructions: in the prompt text it sat under

@@ -51,6 +51,7 @@ from clio_agent.gact.runtime.constants import (
     GACT_BACKEND_VERSION,
 )
 from clio_agent.gact.runtime.context_tokens import _resolve_expert_context_window
+from clio_agent.gact.transcript_file import seeded_metrics_counters
 from clio_agent.gact.types import (
     AuthInfo,
     BackendInfo,
@@ -668,7 +669,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
         # instead of re-walking every message of every session on each poll. The
         # reported values are byte-identical to the old full walk: _latency_stat
         # sorts its samples, so accumulation order does not matter.
-        counters = app.state.metrics_counters
+        counters = seeded_metrics_counters(app)
         message_total = counters.message_total
         role_counts = counters.role_counts()
         latencies = {key: _latency_stat(vals) for key, vals in counters.latency_samples.items()}

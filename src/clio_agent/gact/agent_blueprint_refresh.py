@@ -403,17 +403,23 @@ def record_blueprint_install_reason(
     # durable trace backend regardless of session_id being empty.
     if resolved_app is not None:
         resolved_sid = session_id if session_id is not None else gact_context.active_session_id()
-        from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
+        from clio_agent.gact.off_loop import schedule_off_loop  # noqa: PLC0415
+        from clio_agent.gact.runtime import globals as runtime_globals  # noqa: PLC0415
 
-        _emit_semantic_event(
-            resolved_app,
-            resolved_sid,
-            "blueprint.install.reason",
-            status="completed",
-            summary=f"blueprint install: {reason}",
-            blueprint={"id": str(fields.get("blueprint_id") or "")},
-            payload=row,
-        )
+        def _emit() -> None:
+            runtime_globals._emit_semantic_event(
+                resolved_app,
+                resolved_sid,
+                "blueprint.install.reason",
+                status="completed",
+                summary=f"blueprint install: {reason}",
+                blueprint={"id": str(fields.get("blueprint_id") or "")},
+                payload=row,
+            )
+
+        # Discovery records reasons from the server loop (found live: the store write
+        # was refused there and the reason lost): written off the loop, inline otherwise.
+        schedule_off_loop(_emit, label=f"blueprint.install.reason:{reason}")
     return row
 
 

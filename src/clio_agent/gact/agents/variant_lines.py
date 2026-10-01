@@ -79,6 +79,25 @@ def fork_try(run_index: int) -> list[str]:
     return _copy(arc, session, scope, list(arc.render_working_set(session, base)))
 
 
+def try_steps(run_index: int) -> list[Any]:
+    """Try ``run_index``'s context as clio-core holds it (what it saw and did)."""
+    from clio_agent.gact.agents.clio_react_record import read_steps  # noqa: PLC0415
+
+    arc, session, base = _plane()
+    return read_steps(arc, session, _run_scope(base, run_index))
+
+
+def record_advice(run_index: int, advice: str, source: str) -> None:
+    """Record advice on try ``run_index``'s own scope, before it runs: a CLIO addition the
+    model is told and the UI shows."""
+    from clio_agent.gact.injection_parts import emit_injection  # noqa: PLC0415
+
+    arc, session, base = _plane()
+    note = {"text": advice, "source": source, "actor": "algorithm"}
+    arc.append_segment(session, _run_scope(base, run_index), "user", note, step=0)
+    emit_injection(source, advice, agent_id=base)
+
+
 def record_winner(run_index: int, forked: list[str]) -> None:
     """Continue the base scope with the winning try's line."""
     arc, session, base = _plane()

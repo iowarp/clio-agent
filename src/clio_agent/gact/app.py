@@ -174,8 +174,6 @@ from clio_agent.gact.enrichment import (  # noqa: E402,F401
     _record_context_frame,
     _requested_memory_search,
 )
-from clio_agent.gact.metrics_counters import MetricsCounters  # noqa: E402
-from clio_agent.gact.runtime.retention import init_retention_state  # noqa: E402
 from clio_agent.gact.session_store import (  # noqa: E402,F401
     _append_session_message,
     _delete_session_context_files,
@@ -659,7 +657,6 @@ from clio_agent.gact.expert_packs import (
     validate_expert_hierarchy,
 )
 from clio_agent.gact.loop_inbox import _make_loop_inbox_drain, drain_inbox_and_notify_spotter
-from clio_agent.gact.messages import MessageStore
 from clio_agent.gact.permission_gate import (  # noqa: E402,F401
     _direct_permission_denied,
     _guard_direct_destructive_action,
@@ -668,7 +665,6 @@ from clio_agent.gact.permission_gate import (  # noqa: E402,F401
     _policy_action_for_tool,
     _record_resolved_permission,
 )
-from clio_agent.gact.resident_ledgers import build_resident_ledger_set, seed_metrics_counters
 from clio_agent.gact.sessions import SessionStore, _default_store_path
 from clio_agent.gact.skills import SkillNotDelegatableError
 
@@ -707,6 +703,7 @@ from clio_agent.gact.tool_observer import (  # noqa: E402,F401
     _tool_calls_from_handoff_rows,
 )
 from clio_agent.gact.transcript import TurnTranscriptRegistry
+from clio_agent.gact.transcript_file import boot_transcript_store
 from clio_agent.gact.types import (
     AgentDef,
     ErrorEnvelope,
@@ -1153,22 +1150,9 @@ def build_app(
     # (ARC's arc.op op-logger AND highway-derive sink are wired via _set_app_arc
     # whenever app.state.arc is assigned — see _set_app_arc; the highway closure reads
     # app.state.semantic_event_sink at fire-time, so this construction order is fine.)
-    # Durable per-session message log (POST /messages writes, GET /messages reads);
-    # per-session JSON ledgers so adapter deletion/redeploy preserves transcripts.
-    app.state.message_store = MessageStore(path=session_store_path.parent / "messages")
-    # #1334 F2: placeholder for the reconciliation's _replace_session_messages write.
-    app.state.messages = {}
-    _reconcile_restart_interrupted_sessions(app)
-    # #770 C3: bounded eviction-audit trail (init before the resident set).
-    init_retention_state(app)
-    # #770 C3 / #889: running metrics aggregate, seeded by a streaming parse-and-
-    # DISCARD walk so the metrics wire stays byte-identical across a restart WITHOUT
-    # pinning every transcript in RAM.
-    app.state.metrics_counters = MetricsCounters()
-    seed_metrics_counters(app.state.message_store, app.state.metrics_counters)
-    # #889: BOUNDED (LRU + byte cap + idle-TTL) resident projection over the store —
-    # boots empty (index only), materializes lazily. See gact.resident_ledgers.
-    app.state.messages = build_resident_ledger_set(app)
+    # Transcript store (the ``transcript.file`` switch, resolved once): the messages/
+    # file copy + its index, restart reconciliation, metrics seed, resident set.
+    boot_transcript_store(app, session_store_path.parent)
     composer_runtime.initialize_composer_state(app, session_store_path)
     # cooperative cancellation flags. POST /cancel
     # adds a sid; the POST-message handler checks + clears after the

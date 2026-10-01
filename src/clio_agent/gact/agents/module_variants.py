@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import contextvars
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -51,6 +52,7 @@ from clio_agent.gact.agents import variant_lines
 from clio_agent.gact.runtime.type_parsing import (
     VariantSpec,
     _blueprint_module_variant,
+    parse_module_variant,
 )
 
 if TYPE_CHECKING:
@@ -89,6 +91,11 @@ class _VariantRunLedger:
     # Per-try forked segment ids (``variant_lines.fork_try``): the winner's line is
     # what it added after them.
     forks: dict[int, list[str] | None] = field(default_factory=dict)
+    # Each scored try's prediction, and whether clio writes Refine's advice between tries
+    # (a ``react`` inner: DSPy's hint_ advice cannot reach ClioReAct).
+    answers: dict[int, Any] = field(default_factory=dict)
+    advise: bool = False
+    threshold: float | None = None
 
 
 _LEDGER: contextvars.ContextVar[_VariantRunLedger | None] = contextvars.ContextVar(
@@ -122,6 +129,25 @@ class VariantTotalFailure(RuntimeError):
         self.variant = variant
         self.per_try_errors = per_try_errors
         self.last_error = last_error
+
+
+def _emit_variant_event(event_type: str, status: str, payload: dict[str, Any]) -> None:
+    """Put a variant run on the highway (clio-core first, then UI, trace and hooks)."""
+    from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
+
+    app, sid = _ctx.active_app(), _ctx.active_session_id()
+    if app is None or not sid:
+        return  # a bare call outside a session: there is no highway to put it on
+    agent_id = str(payload.get("agent_id", ""))
+    _emit_semantic_event(
+        app,
+        sid,
+        event_type,
+        status=status,
+        summary=f"{agent_id or 'agent'} {event_type.rsplit('.', 1)[-1]}",
+        actor={"agent_id": agent_id, "role": "expert"},
+        payload=payload,
+    )
 
 
 def _total_variant_failure(
@@ -206,15 +232,20 @@ class _RunKeyedModule(dspy.Module):
             ledger.current_index = run_index
             ledger.next_index += 1
         token = _ctx.set_react_run(run_index)
-        logger.info(
-            "variant.try agent=%s variant=%s run_index=%d",
-            self._clio_agent_id,
-            self._clio_variant,
-            run_index,
+        _emit_variant_event(
+            "variant.try",
+            "running",
+            {
+                "agent_id": self._clio_agent_id,
+                "variant": self._clio_variant,
+                "run_index": run_index,
+            },
         )
         try:
             if ledger is not None:
                 ledger.forks[run_index] = variant_lines.fork_try(run_index)
+                if ledger.advise and run_index > 0:
+                    self._advise(ledger, run_index, kwargs)
             return self.inner(**kwargs)
         except Exception as exc:  # noqa: BLE001 - record the REAL error the engine only prints
             # The engine (`dspy.BestOfN`/`Refine`) catches + PRINTS each failed try and
@@ -231,6 +262,23 @@ class _RunKeyedModule(dspy.Module):
         finally:
             _ctx.reset(token)
 
+    def _advise(self, ledger: _VariantRunLedger, run_index: int, kwargs: dict) -> None:
+        """Write Refine's advice for this try from the previous one, onto its scope."""
+        from clio_agent.gact.agents import variant_advice  # noqa: PLC0415
+
+        previous = run_index - 1
+        score = dict(ledger.scores).get(previous, 0.0)
+        answer = str(getattr(ledger.answers.get(previous), "answer", "") or "")
+        advice = variant_advice.advise(
+            self.get_lm() or dspy.settings.lm,
+            task=kwargs,
+            attempt=variant_lines.try_steps(previous),
+            answer=answer,
+            score=score,
+            threshold=ledger.threshold,
+        )
+        variant_lines.record_advice(run_index, advice, variant_advice.ADVICE_SOURCE)
+
 
 class _RunScopedVariantMixin:
     """Bracket a ``dspy.BestOfN``/``Refine`` ``forward`` with the per-call run ledger.
@@ -245,12 +293,35 @@ class _RunScopedVariantMixin:
     _clio_variant: str = ""
     _clio_agent_id: str = ""
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)  # type: ignore[call-arg]
+        judge = self.reward_fn  # type: ignore[has-type]
+
+        def recorded_reward(call_kwargs: dict, pred: Prediction) -> float:
+            """Score a try and record it: selection never depends on the reward fn."""
+            score = float(judge(call_kwargs, pred))
+            ledger = _LEDGER.get()
+            if ledger is not None:
+                ledger.scores.append((ledger.current_index, score))
+                ledger.answers[ledger.current_index] = pred
+            return score
+
+        self.reward_fn = recorded_reward
+
     def forward(self, **kwargs: Any) -> Any:
+        from clio_agent.gact.agents.clio_react import ClioReAct  # noqa: PLC0415
+
         ledger = _VariantRunLedger()
+        inner = getattr(getattr(self, "module", None), "inner", None)
+        ledger.advise = isinstance(self, dspy.Refine) and isinstance(inner, ClioReAct)
+        ledger.threshold = getattr(self, "threshold", None)
+        # Refine over ClioReAct: DSPy's BestOfN loop, with clio's advice between tries
+        # (DSPy's own feedback call cannot reach the loop and only costs a call).
+        engine = dspy.BestOfN.forward if ledger.advise else super().forward  # type: ignore[misc]
         token = _LEDGER.set(ledger)
         try:
             try:
-                pred = super().forward(**kwargs)  # type: ignore[misc]
+                pred = engine(self, **kwargs) if ledger.advise else engine(**kwargs)
             except Exception as engine_exc:  # noqa: BLE001
                 if ledger.terminal_refusal is not None:
                     # #1282 F7: a deterministic MCP protocol refusal must reach
@@ -314,18 +385,8 @@ def _stamp_variant_selection(
         "winning_score": winning_score,
         "scores": [{"run_index": idx, "score": score} for idx, score in ledger.scores],
     }
-    try:
-        pred.variant_selection = selection
-    except Exception:  # noqa: BLE001 - never let observability metadata break a turn
-        logger.warning("variant.selection.stamp_failed agent=%s variant=%s", agent_id, variant)
-    logger.info(
-        "variant.selected agent=%s variant=%s winning_index=%d winning_score=%.3f tries=%d",
-        agent_id,
-        variant,
-        winning_index,
-        winning_score,
-        ledger.next_index,
-    )
+    pred.variant_selection = selection
+    _emit_variant_event("variant.selected", "completed", {"agent_id": agent_id, **selection})
 
 
 def _clamp_score(raw: Any) -> float:
@@ -399,12 +460,64 @@ def compile_reward_fn(spec: VariantSpec, *, agent_id: str) -> Callable[[dict, Pr
                 exc,
             )
             score = 0.0
-        if ledger is not None:
-            ledger.scores.append((run_index, score))
         logger.info("variant.reward agent=%s run_index=%d score=%.3f", agent_id, run_index, score)
         return score
 
     return scored_reward
+
+
+def strategy_module(strategy: Any, *, agent_id: str) -> dict[str, Any]:
+    """A spawn's ``strategy`` as the blueprint ``module`` variant it stands for, validated.
+
+    ``{variant, n, rubric, threshold, judge}``: ``rubric`` is the LM judge's instructions.
+    Raises ``ValueError`` with the same messages a blueprint declaration gets. Only the LM
+    judge exists yet (a human judge is the pause/resume step of Phase 9).
+    """
+    if not isinstance(strategy, Mapping):
+        raise ValueError(f"strategy for {agent_id!r} must be a mapping, got {strategy!r}")
+    judge = str(strategy.get("judge") or "lm")
+    if judge != "lm":
+        raise ValueError(f"strategy judge {judge!r} for {agent_id!r}: only 'lm' is supported")
+    rubric = str(strategy.get("rubric") or "").strip()
+    if not rubric:
+        raise ValueError(f"strategy for {agent_id!r} requires a rubric (what makes a try good)")
+    module = {
+        "variant": strategy.get("variant"),
+        "n": strategy.get("n"),
+        "threshold": strategy.get("threshold", 1.0),
+        "reward": {"instructions": rubric},
+    }
+    parse_module_variant(module, agent_id=agent_id)
+    return module
+
+
+def spawn_scope_with_strategy(
+    scope: Mapping[str, Any] | None, strategy: Any, *, agent_id: str
+) -> dict[str, Any] | None:
+    """The child session's scope metadata, carrying a validated spawn ``strategy``.
+
+    An invalid strategy is a typed refused spawn (``invalid_strategy``): no child exists.
+    """
+    from clio_agent.gact.turn_spawn import SpawnError  # noqa: PLC0415
+
+    if not strategy:
+        return None if scope is None else dict(scope)
+    try:
+        module = strategy_module(strategy, agent_id=agent_id)
+    except ValueError as exc:
+        raise SpawnError(str(exc), reason="invalid_strategy") from exc
+    return {**dict(scope or {}), "variant_strategy": module}
+
+
+def with_session_strategy(agent_def: "AgentDef") -> "AgentDef":
+    """``agent_def`` with the active session's spawn strategy as its module variant."""
+    sessions = getattr(getattr(_ctx.active_app(), "state", None), "sessions", None)
+    row = sessions.get(_ctx.active_session_id()) if sessions is not None else None
+    strategy = (getattr(row, "metadata", None) or {}).get("variant_strategy")
+    if not strategy:
+        return agent_def
+    module = {**dict(agent_def.module or {}), **dict(strategy)}
+    return agent_def.model_copy(update={"module": module})
 
 
 def wrap_module_variant(inner: dspy.Module, agent_def: "AgentDef") -> dspy.Module:

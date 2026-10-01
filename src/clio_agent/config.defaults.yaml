@@ -462,8 +462,8 @@ workflows.step_inactivity_s: 120.0
 # ==========================================================================
 # GACT server
 # ==========================================================================
-# The GACT HTTP/SSE server: ledgers, auth, hooks, A2UI payload bounds and
-# context auto-compaction.
+# The GACT HTTP/SSE server: ledgers, the transcript file copy, auth, hooks,
+# A2UI payload bounds and context auto-compaction.
 
 # CLIO_A2UI_MAX_MESSAGE_BYTES  (int)  <- src/clio_agent/gact/a2ui.py
 # Byte ceiling on one encoded A2UI server-to-client message; raise only for
@@ -724,6 +724,12 @@ hooks.stop_loop_cap: 8
 # Seconds the AI-review permission gate waits for a reviewer LM verdict
 # before failing safe to human escalation; lower to fail fast.
 permissions.ai_review_timeout_s: "45.0"
+
+# CLIO_TRANSCRIPT_FILE  (bool)  <- src/clio_agent/gact/transcript_file.py
+# Keep the per-session messages/<sid>.json copy of every transcript next to
+# clio-core's atoms; set false to make clio-core the only transcript store
+# (not allowed in History mode, where the file is the only durable copy).
+transcript.file: true
 
 # ==========================================================================
 # ARC memory

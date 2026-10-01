@@ -404,10 +404,12 @@ def _emit_semantic_event(
     if sink is None:
         return {}
     arc = getattr(state, "arc", None) or _PROCESS_ARC
+    if arc is None and not history_mode.active():  # no ARC yet: build it (may decide History)
+        from clio_agent.gact.server_boot import arc_for_first_event  # noqa: PLC0415
+
+        arc = arc_for_first_event(app, event_type, sid)
     history = arc is None and history_mode.active()
-    if history:
-        # The loud History mode (no clio-core on this platform): there is no record to
-        # derive from, so the highway is fed directly and every event says so.
+    if history:  # loud History mode: no record to derive from; every event says so
         payload = {**(payload or {}), "context_mode": "history"}
     event = _build_semantic_event(
         app,
@@ -426,13 +428,9 @@ def _emit_semantic_event(
         live_observed=live_observed,
         detail_level=detail_level,
     )
-    # ARC is the SOURCE of the highway: EVERY semantic event MUST enter through ARC, which
-    # records it (current-view update) and DERIVES the highway (trace/SSE/hooks) from that
-    # record. There is exactly ONE ARC per process; resolve it from the request app, else
-    # the process singleton (a deep/threaded emit context may not carry the app). If it is
-    # STILL not reachable, FAIL LOUD — never silently fall back to sink.emit, which would
-    # feed the trace/UI an event ARC never saw (a hidden split: trace has data ARC doesn't).
-    # The one exception is the History mode above, decided once and marked on each event.
+    # ARC is the SOURCE of the highway: every semantic event enters through ARC, which
+    # records it and DERIVES the highway (trace/SSE/hooks) from that record -- never a
+    # sink.emit bypass (trace ⊋ ARC). The one exception is the History mode above.
     if history:
         return sink.emit(event)
     rec = getattr(arc, "record_semantic_event", None)

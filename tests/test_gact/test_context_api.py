@@ -244,10 +244,25 @@ def test_get_context_state_unknown_session_404(tmp_path):
 
 
 def test_get_context_state_arc_disabled_503(tmp_path):
-    client = TestClient(build_app(sessions_path=tmp_path / "sessions.json", arc=None))
+    """No ARC bound for the request (clio-core not attached yet) is a typed 503.
+
+    Since b80479ea the first semantic event attaches the process ARC, so an
+    ``arc=None`` build gains one as soon as a session is created; the session is made
+    with an in-memory ARC and the app is then detached to reach the unattached state.
+    """
+    from clio_agent.arc.live import _MemoryStore
+    from clio_agent.gact.runtime.globals import _set_app_arc
+
+    app = build_app(
+        sessions_path=tmp_path / "sessions.json",
+        arc=ARCMemory(data_dir=str(tmp_path / "arc"), store=_MemoryStore()),
+    )
+    client = TestClient(app)
     sid = _session(client)
+    _set_app_arc(app, None)
     r = client.get(f"/v1/sessions/{sid}/context/state", params={"scope": SCOPE})
     assert r.status_code == 503
+    assert r.json()["error"]["error"] == "arc_unavailable"
 
 
 def test_post_context_op_append_then_delete(tmp_path):

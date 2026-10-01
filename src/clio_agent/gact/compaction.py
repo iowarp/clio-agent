@@ -553,27 +553,26 @@ def append_checkpoint(
     v3 ``message.upserted`` projector) and ``session.compacted``.
 
     A failure below the ledger/file write (the atom mint, via ``run_transcript_job``
-    -> ``on_message_appended``) can still raise: the checkpoint row is then ALREADY
-    in the in-memory ledger and the per-session ``MessageStore`` file -- that file is
-    the durable copy, and the atom lane's own backfill
-    (``transcript_projection.mint_atoms_from_ledger``) repairs the projection from it
-    on the next read, so no data is lost, only the atom mint is deferred. Every
+    -> ``on_message_appended``) can still raise. With ``transcript.file`` on the row
+    is then ALREADY in the in-memory ledger and the per-session ``MessageStore`` file
+    -- the durable copy the next read repairs the atom lane from. With it off the
+    mint IS the durable write: the row is taken back out of the in-memory ledger
+    (``transcript_file.forget_unminted_on_failure``) and nothing was persisted. Every
     caller (the immediate manual-route landing, and :func:`flush_staged_checkpoint`)
-    is responsible for turning that raise into ITS OWN typed handling -- this
-    function itself raises whatever the write seams raise, untyped.
+    turns that raise into ITS OWN typed handling -- this function raises whatever the
+    write seams raise, untyped.
     """
 
     from clio_agent.gact.part_atom_minter import run_transcript_job  # noqa: PLC0415
     from clio_agent.gact.session_store import _append_session_message  # noqa: PLC0415
+    from clio_agent.gact.transcript_file import forget_unminted_on_failure  # noqa: PLC0415
     from clio_agent.gact.transcript_projection import on_message_appended  # noqa: PLC0415
 
     _append_session_message(app, sid, checkpoint, atoms_minted=True)
-    run_transcript_job(
-        app,
-        sid,
-        f"compaction:{event_id}",
-        lambda: on_message_appended(app, sid, checkpoint),
-    )
+    with forget_unminted_on_failure(app, sid, checkpoint):
+        run_transcript_job(
+            app, sid, f"compaction:{event_id}", lambda: on_message_appended(app, sid, checkpoint)
+        )
     app.state.sessions.update(sid, message_count=len(app.state.messages.get(sid, [])))
 
     now = datetime.now(timezone.utc).isoformat()
