@@ -81,3 +81,16 @@ def test_the_runtime_is_launched_with_them(tmp_path: Path, monkeypatch: pytest.M
         sdk_client.BARE_LM_CONFIG_OVERRIDES
     )
     assert "plugins.computer-use@openai-bundled.enabled=false" in overrides
+
+
+def test_the_plugin_system_is_off_not_only_the_plugins_config_names() -> None:
+    """Found live (exp67 benchmark): plugins installed from the account's remote
+    marketplace are not in config.toml, so disabling config.toml names left them on; their
+    connectors made Codex add list_mcp_resources and every turn hit a hidden mcpToolCall."""
+    from clio_agent.providers.codex.sdk_client import (
+        BARE_LM_CONFIG_OVERRIDES,
+        BARE_LM_THREAD_CONFIG,
+    )
+
+    assert "features.plugins=false" in BARE_LM_CONFIG_OVERRIDES
+    assert BARE_LM_THREAD_CONFIG["features"]["plugins"] is False

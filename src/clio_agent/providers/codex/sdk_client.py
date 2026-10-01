@@ -112,6 +112,10 @@ BARE_LM_FEATURES: dict[str, bool] = {
     "image_generation": False,
     "memories": False,
     "multi_agent": False,
+    # The whole plugin system: plugins installed from the account's remote marketplace
+    # are not in config.toml, so disabling config names left them on (their connectors
+    # made Codex add list_mcp_resources -- found live, every turn a hidden mcpToolCall).
+    "plugins": False,
     "shell_tool": False,
     "view_image": False,
     "view_pdf": False,
