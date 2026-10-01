@@ -50,11 +50,12 @@ it). A reconcile needing only a different MODEL is free (``set_model``, B13).
 design gave every ACTIVE ``stateful_scope()`` its own connection since a
 spawned child was not yet a first-class GACT session; #948 made every
 declared child real, so session-id keying gives the same isolation without a
-second bookkeeping layer. The #901 stateful-delta layer is UNCHANGED and
-orthogonal (its own SDK-level conversation continuation, independent of which
-physical client a query rides on); this module still flags it when a
-connection dies out from under an ACTIVE scope (reap/dead-replace) so a delta
-is never shipped to a fresh subprocess with no memory of the dropped prefix.
+second bookkeeping layer. Kept SDK conversations (the engine's stateful delta,
+:mod:`clio_agent.providers.claude_code_engine`) are independent of which physical
+client a query rides on, so every dropped client is announced
+(:func:`on_client_dropped`): the engine resets that session's conversations typed
+(``session_evicted``) and never ships a delta to a fresh subprocess with no memory of
+the dropped prefix.
 """
 
 from __future__ import annotations
@@ -66,10 +67,9 @@ import logging
 import queue
 import threading
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
-from clio_agent.providers.claude_code_bridge import usage_chunk_fields
 from clio_agent.providers.claude_code_cancel import (
     register_sdk_stream,
     unregister_sdk_stream,
@@ -105,33 +105,9 @@ __all__ = [
     "transient_transport_error_message",
     "transient_transport_error_types",
     "transport_failure_payload",
-    "_streaming_chunk",
     "_STREAM_CLIENT_POOL",
     "_reset_sessions_for_tests",
 ]
-
-
-def _streaming_chunk(
-    *,
-    text: str,
-    is_finished: bool,
-    finish_reason: str | None = None,
-    usage_payload: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Build a LiteLLM-compatible streaming chunk (streaming-transport helper).
-
-    Token/cost field conversion is shared with the blocking transport --
-    see :func:`clio_agent.providers.claude_code_bridge.usage_chunk_fields`.
-    """
-    usage = usage_chunk_fields(usage_payload) if usage_payload is not None else None
-    return {
-        "text": text,
-        "is_finished": is_finished,
-        "finish_reason": finish_reason or ("stop" if is_finished else None),
-        "index": 0,
-        "tool_use": None,
-        "usage": usage,
-    }
 
 
 # --------------------------------------------------------------------------- #
@@ -184,46 +160,28 @@ def _active_gact_session_id() -> str:
         return ""
 
 
-def _active_stateful_scope() -> str | None:
-    """The active per-forward stateful-delta scope token, or ``None`` off the V2 loop.
-
-    Deferred import: the same cross-module boundary :mod:`claude_code_stateful`
-    itself documents (this module must never import it at module load — the
-    delta layer imports THIS module's sibling, not the other way).
-    """
-    try:
-        from clio_agent.providers.stateful_common import active_stateful_scope  # noqa: PLC0415
-
-        return active_stateful_scope()
-    except Exception:  # noqa: BLE001 - never let the delta layer break a plain send
-        return None
+#: Called with the GACT session id whenever a connected client is dropped (reconnect,
+#: dead transport, idle reap, teardown): every SDK conversation that client held is gone.
+_CLIENT_DROPPED: list[Callable[[str], None]] = []
 
 
-def _note_scope_provider_error(
-    scope: str | None, *, model: str, cwd: str | None, thinking_key_: str | None
-) -> None:
-    """Flag the stateful-delta registry when a LIVE connection dies out from under it.
+def on_client_dropped(listener: Callable[[str], None]) -> None:
+    """Register ``listener`` for dropped clients (the Claude Code engine resets them)."""
+    _CLIENT_DROPPED.append(listener)
 
-    A no-op unless ``scope`` is set (the entry's last call was an ENGAGED,
-    delta-capable send) — the common case (a classic ReAct call, or a scope
-    that already cleanly released via its own ``stateful_scope()`` teardown)
-    has nothing to flag. See this module's docstring for why the two layers
-    still touch here.
-    """
-    if not scope:
-        return
-    try:
-        from clio_agent.providers.claude_code_stateful import stateful_registry  # noqa: PLC0415
 
-        stateful_registry().note_provider_error((scope, model, cwd, thinking_key_), scope)
-    except Exception:  # noqa: BLE001 - a bookkeeping miss must never break teardown
-        logger.debug("claude_code stateful registry notification failed", exc_info=True)
+def _notify_client_dropped(gact_session_id: str) -> None:
+    for listener in list(_CLIENT_DROPPED):
+        try:
+            listener(gact_session_id)
+        except Exception:  # noqa: BLE001 - a listener must never break teardown
+            logger.warning("claude client-dropped listener failed", exc_info=True)
 
 
 # --------------------------------------------------------------------------- #
 # One pooled ``ClaudeSDKClient`` per GACT session, hosted on a private
-# daemon-thread event loop so it survives the per-call ``asyncio.run()`` loops
-# the token-liveness driver spins up (lm.io_logging._clio_streamed_call).
+# daemon-thread event loop so it is independent of whichever loop the caller runs
+# the LM call on.
 # --------------------------------------------------------------------------- #
 _STREAM_END = object()  # queue sentinel: the pump's message stream is exhausted
 
@@ -267,11 +225,23 @@ class _StreamClientEntry:
         self._thinking: dict[str, Any] | None = None
         self._thinking_key: str | None = None
         self._system_prompt: str | None = None
-        self._last_scope: str | None = None  # last call's stateful-delta scope, if any
+        self._bound_session = ""  # the GACT session the connected client serves
+        self._drop_announced = False  # this client's loss was already announced
 
     @property
     def dead(self) -> bool:
         return self._dead
+
+    def announce_dropped(self) -> None:
+        """Announce, once per connected client, that its SDK conversations are gone.
+
+        Called synchronously wherever the entry is taken out of service (so no delta
+        is planned against it after that point), and by the disconnect itself.
+        """
+        if self._drop_announced or not self._bound_session:
+            return
+        self._drop_announced = True
+        _notify_client_dropped(self._bound_session)
 
     def _ensure_loop(self) -> None:
         with self._lock:
@@ -360,6 +330,8 @@ class _StreamClientEntry:
                 self._connect_slots.release()
             raise
         self._client = client
+        self._bound_session = gact_session_id
+        self._drop_announced = False
         self._model, self._cwd = model, cwd
         self._thinking, self._thinking_key = thinking, thinking_key_
         self._system_prompt = system_prompt
@@ -481,6 +453,7 @@ class _StreamClientEntry:
         client, self._client = self._client, None
         if client is None:
             return
+        self.announce_dropped()
         try:
             await client.disconnect()
         except Exception:  # noqa: BLE001 - best-effort teardown; never block the caller
@@ -502,12 +475,6 @@ class _StreamClientEntry:
     async def _mark_dead_and_reset(self) -> None:
         """B17: burn this entry (F6b) and disconnect — the pool replaces it next use."""
         self._dead = True
-        _note_scope_provider_error(
-            self._last_scope,
-            model=self._model or "",
-            cwd=self._cwd,
-            thinking_key_=self._thinking_key,
-        )
         await self._areset_client()
 
     def request_interrupt(self, abandon: "threading.Event") -> None:
@@ -550,7 +517,6 @@ class _StreamClientEntry:
         # Captured in the CALLER's context -- the owner-loop pump has no access
         # to either contextvar once scheduled cross-thread (#993 / #901).
         gact_sid = _active_gact_session_id()
-        self._last_scope = _active_stateful_scope()
         abandon = threading.Event()
         # B14: registered for the WHOLE call, not just while the query lock is
         # held, so a cancel arriving before this call ever sends a query still
@@ -800,6 +766,6 @@ def _reset_sessions_for_tests() -> None:
     """Drop all pooled streaming-client state (test isolation).
 
     Mutates the singleton IN PLACE so importers that bound it by value
-    (``claude_code_litellm``) keep pointing at the reset object.
+    (``claude_code_engine``) keep pointing at the reset object.
     """
     _STREAM_CLIENT_POOL.reset_for_tests()

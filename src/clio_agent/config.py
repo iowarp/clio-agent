@@ -642,34 +642,19 @@ def has_explicit_model_override(env: Mapping[str, str] | None = None) -> bool:
 # ``config.<name>`` and the monkeypatch seams keep resolving); ``# noqa: E402,
 # F401`` marks the intentional after-code, imported-but-unused re-export.
 from clio_agent.lm.adapters import (
-    _coerce_constructor_repr_to_jsonable,  # noqa: E402, F401
     _ContextOverflowError,  # noqa: E402, F401
-    _dump_unparseable_completion,  # noqa: E402, F401
     _fix_guided_schema,  # noqa: E402, F401
     _guided_output_enabled,  # noqa: E402, F401
-    _lenient_chat_adapter_cls,  # noqa: E402, F401
-    _parse_retry_attempts,  # noqa: E402, F401
-    _recover_malformed_structured_value,  # noqa: E402, F401
     _signature_strict_response_format,  # noqa: E402, F401
     _strict_guided_json_adapter_cls,  # noqa: E402, F401
-    _unwrap_self_named_envelope,  # noqa: E402, F401
     create_chat_adapter,  # noqa: E402, F401
 )
 from clio_agent.lm.factory import (
     _construct_lm,  # noqa: E402, F401
-    _ensure_provider_registered,  # noqa: E402, F401
     _is_argonne_sophia,  # noqa: E402, F401
     _resolve_lm_studio_model_if_needed,  # noqa: E402, F401
     _resolve_model_name,  # noqa: E402, F401
     create_lm,  # noqa: E402, F401
-)
-from clio_agent.lm.io_logging import (
-    _TRANSIENT_PROVIDER_MARKERS,  # noqa: E402, F401
-    _io_logging_lm_cls,  # noqa: E402, F401
-    _is_transient_provider_error,  # noqa: E402, F401
-    _lm_transient_backoff_s,  # noqa: E402, F401
-    _lm_transient_retries,  # noqa: E402, F401
-    _token_liveness_enabled,  # noqa: E402, F401
 )
 from clio_agent.lm.request_builder import build_request_kwargs  # noqa: E402, F401
 from clio_agent.providers.lmstudio_discovery import (

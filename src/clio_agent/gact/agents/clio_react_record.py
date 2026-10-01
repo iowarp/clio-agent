@@ -2,29 +2,39 @@
 
 One step of the loop is recorded three ways, all span-correlated:
 
-* the ARC live plane -- a ``thought`` segment, then a ``tool_call`` + ``observation``
-  segment per call (carrying the call id and whether the result is an error), after a
-  pre-execution ``step_open`` breadcrumb;
-* the semantic highway -- ``react.step.completed`` per step and the expert lifecycle
-  (``expert.lifecycle.started`` / ``expert.extract.completed`` / ``expert.lifecycle.failed``);
+* the ARC live plane -- a ``thought`` segment (the step's visible text and its thinking
+  parts with their provider continuation state, byte-exact), then a ``tool_call`` +
+  ``observation`` segment per call (call id, name, arguments; result text, error flag),
+  after a pre-execution ``step_open`` breadcrumb;
+* the semantic highway -- ``react.step.completed`` per step (every call of the step)
+  and the expert lifecycle (``expert.lifecycle.started`` / ``expert.extract.completed``
+  / ``expert.lifecycle.failed``);
 * the step's context for the tool observer (step thought + parent span).
 
-The loop's context is read back from the same plane BY STEP: :func:`fold_steps` turns
-the ordered live segments into one ``dspy.History`` event per step (thought + every
-tool call of that step + their results), so a step with concurrent calls renders as
-the one step it was. A read failure is a typed :class:`ContextReadError` -- there is no
-fallback to another history.
+The loop's context is read back from the same plane as typed ``dspy.lm15`` messages
+(:func:`fold_steps`): per step one assistant message (thinking, text, tool calls) and
+one tool message (the results), so a step with concurrent calls renders as the one step
+it was. A read failure is a typed :class:`ContextReadError` -- there is no fallback.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
-import dspy
-from dspy.adapters import ToolCallResults
+from dspy.lm15 import (
+    ContinuationState,
+    DocumentPart,
+    ImagePart,
+    Message,
+    TextPart,
+    ThinkingPart,
+    ToolCallPart,
+    ToolResultPart,
+)
 
 from clio_agent.errors import ClioError
 
@@ -58,7 +68,7 @@ def arc_scope() -> tuple[Any, str, str]:
     """Resolve ``(ARCMemory, session_id, scope)`` for the live plane, or ``(None, '', '')``.
 
     ``arc`` is ``None`` whenever there is no app, no ARC, or no react scope (a bare
-    unit call, the CLI) -- then the loop's own History is its context. The in-process
+    unit call, the CLI) -- then the loop's own step list is its context. The in-process
     variant try index is folded into the ARC key only (#953).
     """
     from clio_agent.gact import context as _ctx  # noqa: PLC0415
@@ -84,8 +94,8 @@ def reset_working_set(arc: Any, session: str, scope: str) -> None:
         logger.warning("arc live-plane reset failed scope=%s", scope, exc_info=True)
 
 
-def read_steps(arc: Any, session: str, scope: str) -> list[dict[str, Any]]:
-    """Fold the scope's live plane into History events; typed failure on a read error."""
+def read_steps(arc: Any, session: str, scope: str) -> list[Message]:
+    """Fold the scope's live plane into typed messages; typed failure on a read error."""
     try:
         segments = arc.render_segments(session, scope)
     except Exception as exc:  # noqa: BLE001 - re-raised typed, never swallowed
@@ -93,16 +103,40 @@ def read_steps(arc: Any, session: str, scope: str) -> list[dict[str, Any]]:
     return fold_steps(segments)
 
 
-def fold_steps(segments: list[Any]) -> list[dict[str, Any]]:
-    """Group ordered live segments into one ``dspy.History`` event per step.
+# --------------------------------------------------------------------------- #
+# The step codec: typed parts <-> plane content (CLIO-owned, JSON)            #
+# --------------------------------------------------------------------------- #
+def thinking_to_record(part: ThinkingPart) -> dict[str, Any]:
+    """A thinking part as plane content, provider continuation state kept byte-exact."""
+    return {
+        "text": part.text,
+        "continuation": [
+            {"provider": c.provider, "kind": c.kind, "data": c.data} for c in part.continuation
+        ],
+    }
+
+
+def thinking_from_record(record: Mapping[str, Any]) -> ThinkingPart:
+    """Rebuild a thinking part from :func:`thinking_to_record`'s content."""
+    return ThinkingPart(
+        text=str(record.get("text") or ""),
+        continuation=tuple(
+            ContinuationState(provider=c["provider"], kind=c["kind"], data=c.get("data") or {})
+            for c in record.get("continuation") or []
+            if isinstance(c, Mapping)
+        ),
+    )
+
+
+def fold_steps(segments: Sequence[Any]) -> list[Message]:
+    """Group ordered live segments into typed messages, one assistant + tool pair per step.
 
     A ``thought`` opens a step; its ``tool_call`` / ``observation`` segments attach to
-    it, observations matched to calls by call id (by order for a segment written
-    without one). A ``summary`` -- or an observation with no open step -- is its own
-    event carrying the text as ``next_thought``, so compacted content still reaches
-    the wire. Pure; tolerant of malformed content.
+    it (results matched by call id, by order for a segment written without one). A
+    ``summary`` -- or an observation with no open step -- becomes a user message
+    carrying the text, so compacted content still reaches the model.
     """
-    events: list[dict[str, Any]] = []
+    messages: list[Message] = []
     step: _StepFold | None = None
     for seg in segments:
         kind = getattr(seg, "kind", "")
@@ -111,38 +145,40 @@ def fold_steps(segments: list[Any]) -> list[dict[str, Any]]:
         content = getattr(seg, "content", None) or {}
         if kind == "thought":
             if step is not None:
-                events.append(step.event())
-            step = _StepFold(_text(content.get("text")))
+                messages.extend(step.messages())
+            step = _StepFold(content)
         elif kind == "tool_call" and step is not None:
             step.add_call(content)
         elif kind == "observation" and step is not None and step.expects_result():
             step.add_result(content)
         else:
             if step is not None:
-                events.append(step.event())
+                messages.extend(step.messages())
                 step = None
-            events.append({"next_thought": _text(content.get("text"))})
+            messages.append(Message.user(f"[earlier context]\n{_text(content.get('text'))}"))
     if step is not None:
-        events.append(step.event())
-    return events
+        messages.extend(step.messages())
+    return messages
 
 
 class _StepFold:
-    """Accumulates one step's thought, calls and results while folding."""
+    """Accumulates one step's thinking, text, calls and results while folding."""
 
-    def __init__(self, thought: str) -> None:
-        self.thought = thought
-        self.calls: list[dspy.ToolCalls.ToolCall] = []
-        self.results: dict[str, tuple[Any, bool]] = {}
+    def __init__(self, content: Mapping[str, Any]) -> None:
+        self.text = _text(content.get("text"))
+        self.thinking = [
+            thinking_from_record(t) for t in content.get("thinking") or [] if isinstance(t, Mapping)
+        ]
+        self.calls: list[ToolCallPart] = []
+        self.results: dict[str, ToolResultPart] = {}
 
     def add_call(self, content: Mapping[str, Any]) -> None:
         args = content.get("args")
-        call_id = str(content.get("id") or f"call_{len(self.calls)}")
         self.calls.append(
-            dspy.ToolCalls.ToolCall(
-                id=call_id,
-                name=_text(content.get("name")),
-                args=dict(args) if isinstance(args, Mapping) else {},
+            ToolCallPart(
+                id=str(content.get("id") or f"call_{len(self.calls)}"),
+                name=_text(content.get("name")) or "unknown",
+                input=dict(args) if isinstance(args, Mapping) else {},
             )
         )
 
@@ -152,29 +188,78 @@ class _StepFold:
     def add_result(self, content: Mapping[str, Any]) -> None:
         call_id = str(content.get("call_id") or "")
         if call_id not in {c.id for c in self.calls} or call_id in self.results:
-            call_id = next(str(c.id) for c in self.calls if c.id not in self.results)
-        self.results[call_id] = (content.get("text", ""), bool(content.get("is_error")))
+            call_id = next(c.id for c in self.calls if c.id not in self.results)
+        name = next(c.name for c in self.calls if c.id == call_id)
+        self.results[call_id] = result_part(
+            call_id, name, content.get("text", ""), bool(content.get("is_error"))
+        )
 
-    def event(self) -> dict[str, Any]:
-        event: dict[str, Any] = {"next_thought": self.thought}
-        if not self.calls:
-            return event
-        tool_calls = dspy.ToolCalls(tool_calls=list(self.calls))
-        answered = [c for c in self.calls if c.id in self.results]
+    def messages(self) -> list[Message]:
+        parts: list[Any] = [*self.thinking]
+        if self.text or not (self.thinking or self.calls):
+            parts.append(TextPart(text=self.text))
+        parts.extend(self.calls)
+        out = [Message(role="assistant", parts=tuple(parts))]
+        answered = [self.results[c.id] for c in self.calls if c.id in self.results]
         if answered:
-            tool_calls = tool_calls.model_copy(
-                update={
-                    "tool_call_results": ToolCallResults.from_tool_calls_and_values(
-                        answered,
-                        [self.results[str(c.id)][0] for c in answered],
-                        [self.results[str(c.id)][1] for c in answered],
-                    )
-                }
-            )
-        event["tool_calls"] = tool_calls
-        return event
+            out.append(Message(role="tool", parts=tuple(answered)))
+        return out
 
 
+def result_part(call_id: str, name: str, value: Any, is_error: bool) -> ToolResultPart:
+    """A tool's result as the provider-native part (images/PDFs as media, else text)."""
+    media = _media(value)
+    content: tuple[Any, ...] = (
+        (media,) if media is not None else (TextPart(text=_observation_text(value)),)
+    )
+    return ToolResultPart(id=call_id, content=content, name=name, is_error=is_error)
+
+
+def _media(value: Any) -> ImagePart | DocumentPart | None:
+    """Hydrate a view_image / view_pdf result descriptor into a native media part."""
+    from clio_agent.gact.view_image_tool import (
+        _hydrate_descriptor as image_hydrate,  # noqa: PLC0415
+    )
+    from clio_agent.gact.view_image_tool import _is_descriptor as is_image  # noqa: PLC0415
+    from clio_agent.gact.view_pdf_tool import _hydrate_descriptor as pdf_hydrate  # noqa: PLC0415
+    from clio_agent.gact.view_pdf_tool import _is_descriptor as is_pdf  # noqa: PLC0415
+
+    if not isinstance(value, Mapping):
+        return None
+    if is_image(value):
+        media, _size = image_hydrate(value)
+        media_type, data = _split_data_url(str(getattr(media, "url", "")))
+        return ImagePart(data=data, media_type=media_type)
+    if is_pdf(value):
+        media, _size = pdf_hydrate(value)
+        media_type, data = _split_data_url(
+            str(getattr(media, "url", "") or getattr(media, "file_data", ""))
+        )
+        return DocumentPart(data=data, media_type=media_type or "application/pdf")
+    return None
+
+
+def _split_data_url(url: str) -> tuple[str, str]:
+    header, _, data = url.partition(",")
+    media_type = header.removeprefix("data:").split(";", 1)[0]
+    if not data:
+        raise ValueError("an attachment descriptor did not hydrate to inline data")
+    base64.b64decode(data, validate=True)  # typed failure on a corrupt payload
+    return media_type, data
+
+
+def _observation_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value or "(empty result)"
+    try:
+        return json.dumps(value, default=str)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+# --------------------------------------------------------------------------- #
+# Recording                                                                   #
+# --------------------------------------------------------------------------- #
 class StepRecorder:
     """Writes one expert forward's steps to the ARC live plane and the highway."""
 
@@ -202,7 +287,7 @@ class StepRecorder:
             payload={"input": wire_value(dict(inputs), mode="gact_runtime")},
         )
 
-    def step_open(self, step: int, span: str, thought: str, calls: dspy.ToolCalls) -> None:
+    def step_open(self, step: int, span: str, text: str, calls: Sequence[ToolCallPart]) -> None:
         """The pre-execution breadcrumb: a crash mid-step still leaves the step's opening."""
         from clio_agent.arc.working_set_fold import emit_step_open  # noqa: PLC0415
 
@@ -210,7 +295,7 @@ class StepRecorder:
             self.arc,
             self.session,
             self.scope,
-            {"thought": thought, "tools": [c.name for c in calls.tool_calls]},
+            {"thought": text, "tools": [c.name for c in calls]},
             step=step,
             turn_id=self.turn_id,
             expert_span_id=self.expert_span_id,
@@ -222,53 +307,54 @@ class StepRecorder:
         step: int,
         span: str,
         *,
-        thought: str,
-        reasoning: str,
-        calls: dspy.ToolCalls,
-        results: ToolCallResults,
+        text: str,
+        thinking: Sequence[ThinkingPart],
+        calls: Sequence[ToolCallPart],
+        results: Mapping[str, tuple[Any, bool]],
     ) -> None:
         """Write the step's segments and put ``react.step.completed`` on the highway."""
         from clio_agent.gact.runtime.context_tokens import _arc_obs_value  # noqa: PLC0415
         from clio_agent.gact.runtime.globals import _emit_react_step_event  # noqa: PLC0415
 
-        by_id = {r.call_id: r for r in results.tool_call_results if r.call_id is not None}
-        self._write("thought", {"text": thought}, step, span)
-        for call in calls.tool_calls:
-            result = by_id.get(call.id)
+        self._write(
+            "thought",
+            {"text": text, "thinking": [thinking_to_record(t) for t in thinking]},
+            step,
+            span,
+        )
+        rows: list[dict[str, Any]] = []
+        for call in calls:
+            value, is_error = results.get(call.id, ("", False))
             self._write(
                 "tool_call",
-                {"id": call.id, "name": call.name, "args": dict(call.args or {})},
+                {"id": call.id, "name": call.name, "args": dict(call.input)},
                 step,
                 span,
             )
             self._write(
                 "observation",
-                {
-                    "call_id": call.id,
-                    "text": _arc_obs_value(result.value if result is not None else ""),
-                    "is_error": bool(result is not None and result.is_error),
-                },
+                {"call_id": call.id, "text": _arc_obs_value(value), "is_error": is_error},
                 step,
                 span,
+            )
+            rows.append(
+                {
+                    "id": call.id,
+                    "name": call.name,
+                    "args": dict(call.input),
+                    "observation": value,
+                    "is_error": is_error,
+                }
             )
         _emit_react_step_event(
             expert_id=self.expert_id,
             expert_span_id=self.expert_span_id,
             step_span_id=span,
             step_index=step,
-            thought=thought,
-            reasoning=reasoning,
-            tool_calls=[
-                {
-                    "id": call.id,
-                    "name": call.name,
-                    "args": dict(call.args or {}),
-                    "observation": by_id[call.id].value if call.id in by_id else "",
-                    "is_error": bool(call.id in by_id and by_id[call.id].is_error),
-                }
-                for call in calls.tool_calls
-            ],
-            is_finish=any(call.name == "submit" for call in calls.tool_calls),
+            thought=text,
+            reasoning="".join(t.text for t in thinking),
+            tool_calls=rows,
+            is_finish=any(call.name == "submit" for call in calls),
         )
 
     def completed(self, outputs: Mapping[str, Any] | None, step_count: int) -> None:
@@ -336,7 +422,7 @@ class StepRecorder:
             )
 
 
-def pending_turn_yield(calls: dspy.ToolCalls) -> str:
+def pending_turn_yield(calls: Sequence[ToolCallPart]) -> str:
     """The successful turn-ending tool in this step (``ask_user`` / ``plan_exit``), if any.
 
     The tool name alone is not enough: a rejected ``plan_exit`` or malformed
@@ -345,7 +431,7 @@ def pending_turn_yield(calls: dspy.ToolCalls) -> str:
     """
     from clio_agent.gact import context as _ctx  # noqa: PLC0415
 
-    names = {str(call.name or "") for call in calls.tool_calls}
+    names = {call.name for call in calls}
     if not names.intersection(TURN_YIELD_METADATA):
         return ""
     app = _ctx.active_app()

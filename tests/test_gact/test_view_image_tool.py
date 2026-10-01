@@ -9,7 +9,7 @@ from typing import Any, cast
 
 import dspy
 import pytest
-from dspy.adapters.types.tool import ToolCallResults, ToolCalls
+from dspy.lm15 import ImagePart, ToolResultPart
 
 from clio_agent.gact.agents.clio_react import ClioReAct
 from clio_agent.gact.agents.declared_native_tools import resolve_declared_native_tools
@@ -18,10 +18,9 @@ from clio_agent.gact.view_image_tool import (
     VIEW_IMAGE_DESCRIPTOR_TYPE,
     ViewImageError,
     build_view_image_tool,
-    hydrate_view_image_results,
 )
-from clio_agent.lm.adapters import _lenient_chat_adapter_cls, _strict_guided_json_adapter_cls
 from clio_agent.tools.execution import tool_workspace_context
+from tests._scripted_engine import Reply, calls, scripted_lm
 
 _ONE_PIXEL_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6ZQAAAABJRU5ErkJggg=="
@@ -35,23 +34,6 @@ def _descriptor(tmp_path: Path, name: str = "page-1.png") -> tuple[Any, dict[str
     with tool_workspace_context(tmp_path):
         result = tool(path=name)
     return tool, result
-
-
-def _history(result: dict[str, Any]) -> dspy.History:
-    calls = ToolCalls(
-        tool_calls=[
-            ToolCalls.ToolCall(id="call_0_0", name="view_image", args={"path": "page-1.png"})
-        ]
-    )
-    results = ToolCallResults.from_tool_calls_and_values(calls, [result], [False])
-    return dspy.History(
-        messages=[
-            {
-                "next_thought": "Inspect the rendered page.",
-                "tool_calls": calls.model_copy(update={"tool_call_results": results}),
-            }
-        ]
-    )
 
 
 def test_view_image_retains_only_verified_workspace_metadata(tmp_path: Path) -> None:
@@ -81,59 +63,53 @@ def test_view_image_refuses_a_file_outside_the_active_workspace(tmp_path: Path) 
     assert exc_info.value.reason == "view_image_outside_workspace"
 
 
-def test_view_image_hydrates_pixels_without_mutating_retained_history(tmp_path: Path) -> None:
+def test_view_image_hydrates_pixels_without_mutating_the_retained_descriptor(
+    tmp_path: Path,
+) -> None:
+    from clio_agent.gact.agents.clio_react_record import result_part
+
     _tool, result = _descriptor(tmp_path)
-    retained = _history(result)
-    inputs: dict[str, Any] = {"history": retained}
-
+    retained = dict(result)
     with tool_workspace_context(tmp_path):
-        assert hydrate_view_image_results(inputs, "history") == 1
+        part = result_part("call_0_0", "view_image", result, False)
 
-    original_value = retained.messages[0]["tool_calls"].tool_call_results.tool_call_results[0].value
-    hydrated_value = (
-        inputs["history"].messages[0]["tool_calls"].tool_call_results.tool_call_results[0].value
-    )
-    assert original_value == result
-    assert isinstance(hydrated_value, dspy.Image)
-    assert hydrated_value.url.startswith("data:image/png;base64,")
+    assert result == retained  # the durable descriptor is never expanded in place
+    [image] = part.content
+    assert isinstance(image, ImagePart)
+    assert image.media_type == "image/png"
+    assert base64.b64decode(image.data) == _ONE_PIXEL_PNG
 
 
 def test_view_image_revalidates_hash_before_provider_delivery(tmp_path: Path) -> None:
+    from clio_agent.gact.agents.clio_react_record import result_part
+
     _tool, result = _descriptor(tmp_path)
     (tmp_path / "page-1.png").write_bytes(_ONE_PIXEL_PNG + b"changed")
-    inputs: dict[str, Any] = {"history": _history(result)}
 
     with tool_workspace_context(tmp_path), pytest.raises(ViewImageError) as exc_info:
-        hydrate_view_image_results(inputs, "history")
+        result_part("call_0_0", "view_image", result, False)
 
     assert exc_info.value.reason == "view_image_file_changed"
 
 
-@pytest.mark.parametrize(
-    "adapter_class",
-    [_lenient_chat_adapter_cls, _strict_guided_json_adapter_cls],
-    ids=["lenient-chat", "strict-guided-json"],
-)
-def test_every_adapter_emits_a_real_image_content_block(tmp_path: Path, adapter_class: Any) -> None:
-    tool, result = _descriptor(tmp_path)
-    react = ClioReAct(cast(Any, "question -> answer"), tools=[tool])
-    adapter = adapter_class()()
-    inputs = {
-        "question": "What is visible?",
-        "history": _history(result),
-        "tools": [tool],
-    }
+def test_the_loop_sends_a_real_image_part_for_the_tool_result(tmp_path: Path) -> None:
+    tool, _result = _descriptor(tmp_path)
+    lm, engine = scripted_lm([calls(("view_image", {"path": "page-1.png"})), Reply(text="ok")])
 
-    with tool_workspace_context(tmp_path), dspy.context(adapter=adapter):
-        messages = adapter.format(react.react.signature, [], inputs)
+    with tool_workspace_context(tmp_path), dspy.context(lm=lm):
+        ClioReAct(cast(Any, "question -> answer"), tools=[tool])(question="What is visible?")
 
-    blocks = [
-        block
-        for message in messages
-        for block in (message.get("content") if isinstance(message.get("content"), list) else [])
-        if isinstance(block, dict)
+    results = [
+        part
+        for message in engine.requests[1].messages
+        for part in message.parts
+        if isinstance(part, ToolResultPart)
     ]
-    assert any(block.get("type") == "image_url" for block in blocks)
+    [result] = results
+    [media] = result.content
+    assert isinstance(media, ImagePart)
+    assert (media.media_type, base64.b64decode(media.data)) == ("image/png", _ONE_PIXEL_PNG)
+    assert not result.is_error
 
 
 def test_view_image_is_exposed_only_to_image_capable_agents() -> None:

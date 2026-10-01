@@ -179,16 +179,25 @@ def test_litellm_wrapped_safety_refusal_recovers_the_clean_sentence() -> None:
     assert extra["request_id"] == clean.request_id
 
 
-def test_litellm_wrapped_safety_refusal_is_never_classified_transient() -> None:
-    """SABOTAGE (regression, #1529 follow-up): the SAME litellm re-wrap trap
-    the plan-limit fix closed -- MidStreamFallbackError/APIConnectionError are
-    transient markers on their own, so an unrecognized terminal exception type
-    would otherwise be silently retried."""
-    from clio_agent.lm.io_logging import _is_transient_provider_error
+def test_an_engine_raised_safety_refusal_is_never_retried_by_dspy() -> None:
+    """#1529 follow-up on the DSPy 3.4 engine: the engine raises the typed refusal
+    bare; DSPy's managed-call boundary maps an unclassified engine failure to
+    ``LMUnexpectedError``, which it never retries, and the refusal is still found."""
+    from dspy.clients.errors import error_boundary
+    from dspy.utils.exceptions import is_retryable_lm_error
 
-    group, _clean = _litellm_wrapped_safety_refusal()
-
-    assert _is_transient_provider_error(group.exceptions[0]) is False
+    clean = safety_refusal_from_result(
+        _result_message(is_error=True, result=_LIVE_RESULT_TEXT), model="sonnet"
+    )
+    assert clean is not None
+    try:
+        with error_boundary("claude_code/sonnet", provider="claude_code", unexpected=True):
+            raise clean
+    except Exception as wrapped:  # noqa: BLE001 - the boundary's mapped error
+        assert not is_retryable_lm_error(wrapped)
+        assert is_terminal_provider_error(wrapped, TERMINAL_PROVIDER_SIGNALS)
+    else:
+        raise AssertionError("the boundary did not re-raise")
 
 
 def test_forward_error_info_is_typed_with_request_id_in_details() -> None:

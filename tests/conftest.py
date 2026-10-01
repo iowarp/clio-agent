@@ -608,6 +608,9 @@ def allow_pytest_tmp_path(request, tmp_path, monkeypatch):
     # pytest fixture rows found 2026-08-13). Point it at the same tree the XDG
     # layout resolves to so both resolution paths agree.
     monkeypatch.setenv("CLIO_USER_DIR", str(xdg_root / "clio-agent"))
+    # Codex direct also signs in from the local Codex CLI login ($CODEX_HOME/auth.json):
+    # a unit test must never see the developer's real login, so each gets an empty home.
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex_home"))
 
     # Union tmp_path with any dev-shell CLIO_ALLOWED_ROOTS, then build the FILE
     # value from it and DELETE the stale env var so the file is authoritative.

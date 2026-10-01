@@ -25,22 +25,30 @@ from clio_agent.runtime.stream_audit import stream_audit, stream_audit_enabled
 _PROVIDER = "codex_sdk"
 
 
-def emit_call_started(*, call_id: str, call_index: int, model: str, prompt: str) -> None:
-    """Emit a ``provider.call_started`` row at turn-submission time (codex sdk)."""
+def emit_call_started(
+    *,
+    call_id: str,
+    call_index: int,
+    model: str,
+    prompt: str,
+    provider: str = _PROVIDER,
+    transport: str = "sdk",
+) -> None:
+    """Emit a ``provider.call_started`` row at submission time (codex sdk / direct)."""
     if not stream_audit_enabled():
         return
     session_id, turn_id, trace_id = active_gact_ids()
     prefix_small, prefix_large = prompt_prefix_fingerprint(prompt)
     stream_audit(
         "provider.call_started",
-        provider=_PROVIDER,
+        provider=provider,
         call_id=call_id,
         call_index=call_index,
         session_id=session_id,
         turn_id=turn_id,
         trace_id=trace_id,
         model=model,
-        transport="sdk",
+        transport=transport,
         prompt_chars=len(prompt),
         prefix_2k_sha256=prefix_small,
         prefix_16k_sha256=prefix_large,
@@ -48,7 +56,14 @@ def emit_call_started(*, call_id: str, call_index: int, model: str, prompt: str)
 
 
 def emit_call_usage(
-    *, call_id: str, call_index: int, model: str, usage: dict[str, Any], output_chars: int
+    *,
+    call_id: str,
+    call_index: int,
+    model: str,
+    usage: dict[str, Any],
+    output_chars: int,
+    provider: str = _PROVIDER,
+    transport: str = "sdk",
 ) -> None:
     """Emit a ``provider.call_usage`` row when the codex sdk turn's usage lands.
 
@@ -61,14 +76,14 @@ def emit_call_usage(
         return
     session_id, turn_id, trace_id = active_gact_ids()
     fields: dict[str, Any] = {
-        "provider": _PROVIDER,
+        "provider": provider,
         "call_id": call_id,
         "call_index": call_index,
         "session_id": session_id,
         "turn_id": turn_id,
         "trace_id": trace_id,
         "model": model,
-        "transport": "sdk",
+        "transport": transport,
         "output_chars": output_chars,
         "usage_keys": sorted(str(key) for key in usage),
         "usage_raw": dict(usage),
@@ -79,7 +94,13 @@ def emit_call_usage(
 
 
 def emit_raw_event(
-    *, call_index: int, event_index: int, source_channel: str, text: str, raw_event_type: str
+    *,
+    call_index: int,
+    event_index: int,
+    source_channel: str,
+    text: str,
+    raw_event_type: str,
+    provider: str = _PROVIDER,
 ) -> None:
     """Emit a ``provider.raw_event`` row for one codex sdk notification."""
     if not stream_audit_enabled():
@@ -87,7 +108,7 @@ def emit_raw_event(
     session_id, turn_id, trace_id = active_gact_ids()
     stream_audit(
         "provider.raw_event",
-        provider=_PROVIDER,
+        provider=provider,
         session_id=session_id,
         turn_id=turn_id,
         trace_id=trace_id,

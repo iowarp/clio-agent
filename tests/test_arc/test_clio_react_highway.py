@@ -22,7 +22,6 @@ from typing import Any
 
 import dspy
 import pytest
-from dspy.utils.dummies import DummyLM
 
 import clio_agent.gact.compaction as compaction
 import clio_agent.gact.runtime.globals as runtime_globals
@@ -30,6 +29,7 @@ from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact import context as ctx
 from clio_agent.gact.agents import clio_react
 from clio_agent.gact.agents.clio_react import ClioReAct
+from tests._scripted_engine import calls, scripted_lm
 
 from .conftest import live_plane_context
 
@@ -41,33 +41,28 @@ def _search(q: str) -> str:
     return "SEARCH_RESULT"
 
 
-def _two_step_lm() -> DummyLM:
-    """One ``search`` step then a ``submit`` step (ToolCalls/submit shape)."""
-    return DummyLM(
+def _two_step_lm() -> dspy.LM:
+    """One ``search`` step then a ``submit`` step."""
+    lm, _ = scripted_lm(
         [
-            {
-                "next_thought": "search first",
-                "tool_calls": {"tool_calls": [{"name": "search", "args": {"q": "alpha"}}]},
-            },
-            {
-                "next_thought": "done",
-                "tool_calls": {"tool_calls": [{"name": "submit", "args": {"answer": "FINAL"}}]},
-            },
+            calls(("search", {"q": "alpha"}), text="search first"),
+            calls(("submit", {"answer": "FINAL"}), text="done"),
         ]
     )
+    return lm
 
 
 def _build_agent() -> ClioReAct:
     return ClioReAct("question -> answer", tools=[dspy.Tool(_search, name="search")], max_iters=6)
 
 
-def _run_in_plane(arc: ARCMemory, agent: ClioReAct, lm: DummyLM) -> Any:
+def _run_in_plane(arc: ARCMemory, agent: ClioReAct, lm: dspy.LM) -> Any:
     fake_app = types.SimpleNamespace(state=types.SimpleNamespace(arc=arc))
     sess_token = ctx.set_session_id(SID)
     app_token = ctx.set_app(fake_app)
     try:
         with live_plane_context(arc, session=SID, scope=SCOPE):
-            with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+            with dspy.context(lm=lm):
                 return agent(question="find alpha")
     finally:
         ctx.reset(app_token)
@@ -148,26 +143,12 @@ def test_a_multi_call_step_is_one_highway_event_carrying_every_call(
         tools=[dspy.Tool(_search, name="search"), dspy.Tool(_boom, name="boom")],
         max_iters=6,
     )
-    lm = DummyLM(
+    lm, _ = scripted_lm(
         [
-            {
-                "next_thought": "both",
-                "tool_calls": {
-                    "tool_calls": [
-                        {"name": "search", "args": {"q": "alpha"}},
-                        {"name": "boom", "args": {"x": "1"}},
-                    ]
-                },
-            },
-            {
-                "next_thought": "look and finish",
-                "tool_calls": {
-                    "tool_calls": [
-                        {"name": "search", "args": {"q": "beta"}},
-                        {"name": "submit", "args": {"answer": "FINAL"}},
-                    ]
-                },
-            },
+            calls(("search", {"q": "alpha"}), ("boom", {"x": "1"}), text="both"),
+            calls(
+                ("search", {"q": "beta"}), ("submit", {"answer": "FINAL"}), text="look and finish"
+            ),
         ]
     )
     pred = _run_in_plane(arc, agent, lm)
@@ -192,15 +173,15 @@ def test_forward_fires_autocompact_trigger_each_step(
     """The proactive auto-compaction TRIGGER is wired into the loop: it fires at every
     step boundary before the model call (removing the call turns this red)."""
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
-    calls = {"n": 0}
+    fired = {"n": 0}
     monkeypatch.setattr(
-        compaction, "maybe_autocompact", lambda: calls.__setitem__("n", calls["n"] + 1)
+        compaction, "maybe_autocompact", lambda: fired.__setitem__("n", fired["n"] + 1)
     )
 
     _run_in_plane(arc, _build_agent(), _two_step_lm())
 
     # Two steps (search + submit) => the trigger fired once per model call.
-    assert calls["n"] == 2, f"autocompact trigger did not fire per step; fired {calls['n']}x"
+    assert fired["n"] == 2, f"autocompact trigger did not fire per step; fired {fired['n']}x"
 
 
 def test_escalation_closes_the_lifecycle_span_and_records_the_step(
@@ -226,18 +207,10 @@ def test_escalation_closes_the_lifecycle_span_and_records_the_step(
     )
     # Step 1 succeeds (search) so there IS prior-step context by the time step 2's
     # refusal escalates.
-    lm = DummyLM(
+    lm, _ = scripted_lm(
         [
-            {
-                "next_thought": "search first",
-                "tool_calls": {"tool_calls": [{"name": "search", "args": {"q": "alpha"}}]},
-            },
-            {
-                "next_thought": "call it",
-                "tool_calls": {
-                    "tool_calls": [{"name": "_refusing_tool", "args": {"payload": "x"}}]
-                },
-            },
+            calls(("search", {"q": "alpha"}), text="search first"),
+            calls(("_refusing_tool", {"payload": "x"}), text="call it"),
         ]
     )
 
@@ -284,14 +257,7 @@ def test_generic_crash_escalates_unchanged_no_arc_enrichment(
     agent = ClioReAct(
         "question -> answer", tools=[dspy.Tool(lambda: "ok", name="probe")], max_iters=6
     )
-    lm = DummyLM(
-        [
-            {
-                "next_thought": "call probe",
-                "tool_calls": {"tool_calls": [{"name": "probe", "args": {}}]},
-            }
-        ]
-    )
+    lm, _ = scripted_lm([calls(("probe", {}), text="call probe")])
 
     # A HARD mid-step failure: the loop turns tool-callable errors into observations,
     # so fail the execution STAGE itself, as the ARC contract's own pin does.

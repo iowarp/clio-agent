@@ -93,16 +93,12 @@ def _expert_forward(api_base: str) -> None:
 
     import dspy
 
-    from clio_agent.config import create_chat_adapter
+    from clio_agent.gact.agents.clio_react import ClioReAct
     from clio_agent.lm.hooked_lm import create_hooked_lm
 
-    class Answer(dspy.Signature):
-        question: str = dspy.InputField()
-        answer: str = dspy.OutputField()
-
     cfg = _metis_config(api_base)
-    with dspy.context(lm=create_hooked_lm(cfg), adapter=create_chat_adapter(cfg)):
-        dspy.Predict(Answer)(question="Which station?")
+    with dspy.context(lm=create_hooked_lm(cfg)):
+        ClioReAct("question -> answer", tools=[])(question="Which station?")
 
 
 def test_a_streamed_call_asks_for_and_records_the_provider_usage(metis: str) -> None:
@@ -111,10 +107,11 @@ def test_a_streamed_call_asks_for_and_records_the_provider_usage(metis: str) -> 
     lm = create_lm(_metis_config(metis))
     import dspy
 
-    from clio_agent.config import create_chat_adapter
+    from clio_agent.gact.agents.clio_react import ClioReAct
 
-    with dspy.context(lm=lm, adapter=create_chat_adapter(_metis_config(metis))):
-        dspy.Predict("question -> answer")(question="Which station?")
+    # The agent loop streams every call.
+    with dspy.context(lm=lm):
+        ClioReAct("question -> answer", tools=[])(question="Which station?")
 
     assert _MetisReplay.requests[-1]["stream"] is True
     assert _MetisReplay.requests[-1]["stream_options"] == {"include_usage": True}

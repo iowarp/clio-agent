@@ -33,7 +33,7 @@ resolver. It holds no per-session state of its own.
 The concrete ``HookedLM`` class is built lazily (:func:`hooked_lm_cls`) so it can
 subclass ``dspy.BaseLM`` — which ``dspy.Predict`` requires via
 ``isinstance(lm, BaseLM)`` — without paying a top-level ``import dspy`` on the boot
-path (mirrors :func:`clio_agent.lm.io_logging._io_logging_lm_cls`).
+path.
 """
 
 from __future__ import annotations
@@ -123,6 +123,117 @@ def _coerce_outputs(response: Any) -> list[Any]:
     return [response]
 
 
+def _is_typed(prompt: Any) -> bool:
+    """The agent loop's ``lm(Request)`` call (not the adapter's ``messages=`` call)."""
+    return hasattr(prompt, "messages") and hasattr(prompt, "config") and hasattr(prompt, "model")
+
+
+def _typed_model_request(inner: Any, request: Any) -> ModelRequest:
+    """The public :class:`ModelRequest` for a typed call: JSON messages, params, tools."""
+    import dataclasses  # noqa: PLC0415
+
+    from clio_agent.lm.call_trace import _request_messages  # noqa: PLC0415
+
+    params = {
+        f.name: getattr(request.config, f.name)
+        for f in dataclasses.fields(request.config)
+        if f.name != "extensions" and getattr(request.config, f.name) not in (None, (), {})
+    }
+    tools = [
+        {
+            "name": getattr(t, "name", ""),
+            "description": getattr(t, "description", None),
+            "parameters": getattr(t, "parameters", None),
+        }
+        for t in request.tools
+    ]
+    return ModelRequest(
+        model=str(getattr(inner, "model", "") or request.model),
+        messages=_request_messages(request),
+        params={
+            k: v if isinstance(v, (str, int, float, bool)) else str(v) for k, v in params.items()
+        },
+        tools=tools,
+    )
+
+
+def _text_of(value: Any) -> str:
+    """The text of a hook ``llm_response`` in any of its accepted shapes."""
+    first = value[0] if isinstance(value, (list, tuple)) and value else value
+    if isinstance(first, dict):
+        return str(first.get("text") or first.get("content") or "")
+    return "" if first is None else str(first)
+
+
+def _typed_response(request: Any, llm_response: Any) -> Any:
+    """A synthesized assistant reply (text only) as a typed ``Response``."""
+    from dspy.lm15 import Message, Response, TextPart, Usage  # noqa: PLC0415
+
+    return Response(
+        id=None,
+        model=request.model,
+        message=Message.assistant([TextPart(text=_text_of(llm_response))]),
+        finish_reason="stop",
+        usage=Usage(),
+    )
+
+
+def _response_text(response: Any) -> str:
+    return "".join(p.text for p in response.message.parts if getattr(p, "type", "") == "text")
+
+
+def _rewritten(response: Any, llm_response: Any) -> Any:
+    """An AfterModel rewrite: the visible text replaced; thinking and tool calls kept."""
+    import dataclasses  # noqa: PLC0415
+
+    from dspy.lm15 import Message, TextPart  # noqa: PLC0415
+
+    kept = [p for p in response.message.parts if getattr(p, "type", "") != "text"]
+    text = TextPart(text=_text_of(llm_response))
+    thinking = [p for p in kept if getattr(p, "type", "") == "thinking"]
+    rest = [p for p in kept if getattr(p, "type", "") != "thinking"]
+    return dataclasses.replace(
+        response, message=Message(role="assistant", parts=(*thinking, text, *rest))
+    )
+
+
+def _patched_request(request: Any, patch: Mapping[str, Any]) -> Any:
+    """Apply a BeforeModel ``request_patch`` (text messages / config params) to a Request."""
+    import dataclasses  # noqa: PLC0415
+
+    from dspy.lm15 import Message, TextPart  # noqa: PLC0415
+
+    if "messages" in patch:
+        messages = []
+        for item in patch["messages"]:
+            role = str(item.get("role") or "user")
+            if role == "system":
+                continue  # the system prompt is not a message on the typed request
+            messages.append(
+                Message(role=role, parts=(TextPart(text=str(item.get("content") or "")),))
+            )
+        request = dataclasses.replace(request, messages=tuple(messages))
+    params = patch.get("params")
+    if isinstance(params, Mapping):
+        known = {f.name for f in dataclasses.fields(request.config)}
+        unknown = sorted(k for k in params if k not in known)
+        if unknown:
+            record_hook_reason("hook_patch_params_unmapped", params=unknown)
+        request = dataclasses.replace(
+            request,
+            config=dataclasses.replace(
+                request.config, **{k: v for k, v in params.items() if k in known}
+            ),
+        )
+    return request
+
+
+def _with_model(request: Any, model: str) -> Any:
+    import dataclasses  # noqa: PLC0415
+
+    return request if request.model == model else dataclasses.replace(request, model=model)
+
+
 _HOOKED_LM_CLS: Any = None
 
 
@@ -204,7 +315,9 @@ class _HookedLMBehaviour:
     # ----------------------------------------------------------------- #
     # The per-request hook dance.                                        #
     # ----------------------------------------------------------------- #
-    def __call__(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> list[Any]:
+    def __call__(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> Any:
+        if _is_typed(prompt):
+            return self._typed_call(prompt, kwargs, sync=True)
         # Per-wrapper invocation state. Each blueprint forward builds its own
         # wrapper, so concurrent sessions cannot overwrite one another. Clear it
         # before hooks: synthetic, denied, or failed routing must never reuse a
@@ -224,7 +337,9 @@ class _HookedLMBehaviour:
             synthetic = False
         return self._apply_after(request, outputs, synthetic, sid, turn_id, cwd)
 
-    async def acall(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> list[Any]:
+    async def acall(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> Any:
+        if _is_typed(prompt):
+            return await self._typed_acall(prompt, kwargs)
         self._last_effective_lm = None
         request = self._build_request(prompt, messages, kwargs)
         sid, turn_id, cwd = _resolve_call_context()
@@ -239,6 +354,71 @@ class _HookedLMBehaviour:
             outputs = await target.acall(prompt=prompt, messages=call_messages, **call_kwargs)
             synthetic = False
         return self._apply_after(request, outputs, synthetic, sid, turn_id, cwd)
+
+    # ----------------------------------------------------------------- #
+    # The same dance for the agent loop's typed ``lm(Request)`` call.    #
+    # ----------------------------------------------------------------- #
+    def _typed_call(self, request: Any, kwargs: Mapping[str, Any], *, sync: bool) -> Any:
+        self._last_effective_lm = None
+        public = _typed_model_request(self._inner, request)
+        sid, turn_id, cwd = _resolve_call_context()
+        before = dispatch_before_model(public, session_id=sid, turn_id=turn_id, cwd=cwd)
+        self._enforce_deny(before)
+        if self._should_synthesize(before):
+            response, synthetic = _typed_response(request, before.llm_response), True
+        else:
+            target, call_request = self._typed_target(before, request)
+            self._last_effective_lm = target
+            response, synthetic = target(call_request, **kwargs), False
+        return self._typed_after(public, response, synthetic, sid, turn_id, cwd)
+
+    async def _typed_acall(self, request: Any, kwargs: Mapping[str, Any]) -> Any:
+        self._last_effective_lm = None
+        public = _typed_model_request(self._inner, request)
+        sid, turn_id, cwd = _resolve_call_context()
+        before = dispatch_before_model(public, session_id=sid, turn_id=turn_id, cwd=cwd)
+        self._enforce_deny(before)
+        if self._should_synthesize(before):
+            response, synthetic = _typed_response(request, before.llm_response), True
+        else:
+            target, call_request = self._typed_target(before, request)
+            self._last_effective_lm = target
+            response, synthetic = await target.acall(call_request, **kwargs), False
+        return self._typed_after(public, response, synthetic, sid, turn_id, cwd)
+
+    def _typed_target(self, before: HookOutcome, request: Any) -> tuple[Any, Any]:
+        target = self._inner
+        if before.model_override:
+            routed = self._resolve_route(before.model_override)
+            if routed is not None:
+                target = routed
+            else:
+                record_hook_reason("hook_route_unresolved", model_override=before.model_override)
+        if before.has_request_patch and before.request_patch is not None:
+            request = _patched_request(request, before.request_patch)
+        # A routed LM is called with its own model string (lm15 requires it).
+        return target, _with_model(request, str(getattr(target, "model", "") or request.model))
+
+    def _typed_after(
+        self,
+        public: ModelRequest,
+        response: Any,
+        synthetic: bool,
+        sid: str,
+        turn_id: str,
+        cwd: str,
+    ) -> Any:
+        after = dispatch_after_model(
+            public,
+            response=[_response_text(response)],
+            synthetic=synthetic,
+            session_id=sid,
+            turn_id=turn_id,
+            cwd=cwd,
+        )
+        if after.llm_response_present:
+            return _rewritten(response, after.llm_response)
+        return response
 
     # ----------------------------------------------------------------- #
     # Helpers (kept tiny so __call__/acall read as the contract).       #
@@ -409,7 +589,7 @@ def wrap_lm_with_hooks(lm: Any, *, route_resolver: RouteResolver | None = None) 
 def _resolve_call_context() -> tuple[str, str, str]:
     """Best-effort (session_id, turn_id, cwd) for the model envelope.
 
-    Resolved from the GACT turn contextvars (the same seam ``io_logging`` reads),
+    Resolved from the GACT turn contextvars (the same seam ``call_trace`` reads),
     so no plumbing has to thread session identity through every ``dspy.context``
     site. Absent a live turn (CLI/optimizer) all three are empty — the hook still
     fires with the model request, just without session provenance.

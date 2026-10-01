@@ -22,7 +22,7 @@ summary is never relabelled as full provider reasoning.
 The official SDK owns its pinned runtime, subprocess, and JSON-RPC lifecycle,
 which gives CLIO one typed cancellation path. Threads are kept open per
 conversation and continued with only the new messages
-(:mod:`clio_agent.providers.codex.sdk_stateful`); a thread the runtime no longer
+(:mod:`clio_agent.providers.codex.sdk_engine`); a thread the runtime no longer
 holds raises :class:`CodexThreadLostError` so the caller resets typed. Progress is
 bounded per SDK exchange, never by a composite turn deadline that could kill a
 healthy long-running stream.
@@ -92,11 +92,14 @@ async def _cleanup_sdk_action(action: str, awaitable: Any) -> None:
         )
 
 
-BARE_LM_BASE_INSTRUCTIONS = """You are a language-model completion backend inside Clio.
-Answer only the serialized prompt supplied by Clio. Do not inspect the workspace,
-invoke Codex tools, delegate to agents, browse, use plugins, or perform work outside
-the prompt. Clio owns the agent loop and all tool execution. Follow the response
-contract in the prompt and return its requested assistant content directly."""
+BARE_LM_BASE_INSTRUCTIONS = """You are the model of a CLIO agent. CLIO runs the agent loop
+and executes every tool call: the developer instructions describe the task, the tools
+you can call and exactly how to call them. Use those tools whenever the task needs data,
+files or actions you have not observed in this conversation. Codex's own built-in
+capabilities (shell, file edits, web search, apps, plugins, sub-agents) are unavailable
+here; never attempt them. The sandbox, network and approval settings of this environment
+describe only those disabled built-ins: CLIO's tools run outside it with their own access
+to data and the network, so a restricted sandbox is never a reason not to call them."""
 
 BARE_LM_FEATURES: dict[str, bool] = {
     "apps": False,
@@ -113,6 +116,7 @@ BARE_LM_FEATURES: dict[str, bool] = {
 BARE_LM_CONFIG_OVERRIDES = (
     "mcp_servers={}",
     "plugins={}",
+    'web_search="disabled"',
     *(f"features.{name}=false" for name in BARE_LM_FEATURES),
 )
 #: Codex auto-compaction threshold for clio's threads. clio-core is the context
@@ -124,6 +128,8 @@ NO_AUTO_COMPACT_TOKEN_LIMIT = 2**62
 BARE_LM_THREAD_CONFIG: dict[str, Any] = {
     "mcp_servers": {},
     "plugins": {},
+    # Codex's own web search is a hidden action: clio owns tools (web search too).
+    "web_search": "disabled",
     "features": BARE_LM_FEATURES,
     "model_auto_compact_token_limit": NO_AUTO_COMPACT_TOKEN_LIMIT,
 }
@@ -282,6 +288,7 @@ class _TurnRequest:
     keep_thread: bool
     on_thread: Callable[[str], None] | None
     on_compacted: Callable[[], None] | None
+    instructions: str | None = None
 
     def turn_input(self) -> Any:
         """The SDK turn input: the prompt text, plus native images when present."""
@@ -456,7 +463,10 @@ class CodexSDKClient:
                 base_instructions=BARE_LM_BASE_INSTRUCTIONS,
                 config=BARE_LM_THREAD_CONFIG,
                 cwd=request.cwd or tempfile.gettempdir(),
-                developer_instructions=BARE_LM_BASE_INSTRUCTIONS,
+                # The caller's own system prompt (tool rules included) rides the
+                # thread's developer instructions: in the prompt text it sat under
+                # the base instructions, and the model answered without its tools.
+                developer_instructions=request.instructions or BARE_LM_BASE_INSTRUCTIONS,
                 ephemeral=True,
                 model=request.model,
                 sandbox=Sandbox.read_only,
@@ -548,6 +558,7 @@ class CodexSDKClient:
         keep_thread: bool = False,
         on_thread: Callable[[str], None] | None = None,
         on_compacted: Callable[[], None] | None = None,
+        instructions: str | None = None,
     ) -> AsyncIterator[Any]:
         """Bridge one typed SDK turn stream from the owner loop to the caller loop.
 
@@ -575,6 +586,7 @@ class CodexSDKClient:
             keep_thread=keep_thread,
             on_thread=on_thread,
             on_compacted=on_compacted,
+            instructions=instructions,
         )
         owner_loop = self._ensure_loop()
         caller_loop = asyncio.get_running_loop()

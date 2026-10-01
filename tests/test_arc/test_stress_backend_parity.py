@@ -39,10 +39,10 @@ from typing import Any, Callable
 
 import dspy
 import pytest
-from dspy.utils.dummies import DummyLM
 
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.storage import ClioCoreStore, LocalFSStore, make_arc_store
+from tests._scripted_engine import calls, scripted_lm
 
 from .conftest import live_plane_context, make_react_agent
 
@@ -538,27 +538,16 @@ def test_as_of_render_parity(tmp_path, clio_core_arc) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _scripted_lm() -> DummyLM:
-    """A 2-iteration ReAct script: search then submit.
-
-    Speaks the ``ClioReAct`` step contract (``next_thought`` + typed
-    ``tool_calls``); ``make_react_agent`` builds the real loop.
-    """
-    return DummyLM(
+def _scripted_lm() -> dspy.LM:
+    """A 2-step ReAct script: search then submit (typed lm15 replies);
+    ``make_react_agent`` builds the real loop."""
+    lm, _ = scripted_lm(
         [
-            {
-                "next_thought": "search first",
-                "tool_calls": {"tool_calls": [{"name": "search", "args": {"q": "alpha"}}]},
-            },
-            {
-                "next_thought": "done",
-                "tool_calls": {
-                    "tool_calls": [{"name": "submit", "args": {"answer": "FINAL_ANSWER"}}]
-                },
-            },
-            {"reasoning": "because", "answer": "FINAL_ANSWER"},
+            calls(("search", {"q": "alpha"}), text="search first"),
+            calls(("submit", {"answer": "FINAL_ANSWER"}), text="done"),
         ]
     )
+    return lm
 
 
 def _run_real_loop(arc: ARCMemory, sid: str, scope: str) -> None:
@@ -567,7 +556,7 @@ def _run_real_loop(arc: ARCMemory, sid: str, scope: str) -> None:
     agent = make_react_agent()
     lm = _scripted_lm()
     with live_plane_context(arc, session=sid, scope=scope):
-        with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+        with dspy.context(lm=lm):
             agent(question="find alpha")
 
 

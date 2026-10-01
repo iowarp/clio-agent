@@ -25,9 +25,8 @@ import logging
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any, Optional
 
-# Single source of truth for the reasoning-channel extractor: it already lives in
-# runtime.globals (where _active_lm_last_reasoning consumes it). Reuse it here
-# instead of carrying a second copy.
+# Single source of truth for the reasoning-channel extractor: it lives in
+# runtime.globals. Reuse it here instead of carrying a second copy.
 from clio_agent.gact.runtime.globals import _entry_reasoning_text
 from clio_agent.runtime import trace, turn_lm_ledger
 
@@ -190,6 +189,11 @@ def _usage_from_history_slice(start: Any, app: Optional["FastAPI"] = None) -> di
             entry_cost_raw = entry.get("cost")
             if entry_cost_raw is None:
                 entry_cost_raw = usage.get("cost_usd") or usage.get("total_cost")
+            if entry_cost_raw is None:
+                # An engine LM (Claude Code) reports its provider cost on the typed
+                # response; DSPy has no pricing provider for custom engines.
+                provider_data = getattr(entry.get("response"), "provider_data", None) or {}
+                entry_cost_raw = provider_data.get("cost_usd")
             entry_cost = float(entry_cost_raw or 0.0)
             if entry_cost_raw is not None:
                 cost_reported = True

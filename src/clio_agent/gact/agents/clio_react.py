@@ -1,68 +1,98 @@
-"""``ClioReAct`` -- clio's own ReAct loop, a ``dspy.Module`` on public DSPy API.
+"""``ClioReAct`` -- clio's agent loop on DSPy 3.4's direct LM interface.
 
-clio owns the loop (it used to run a modified copy of ``dspy.ReActV2.forward``
-behind hash pins on upstream code it never ran). DSPy still provides the
-signature, the adapter, the LM layer and module composition (``BestOfN`` /
-``Refine`` wrap this module like any other). The wire matches stock ``ReActV2``
-(same react signature and instructions, the reserved ``submit`` tool, one
-``dspy.History`` event per step), which the differential test pins.
+Each step is ONE ``lm(dspy.lm15.Request)`` call -- no ``dspy.Predict``, no adapter, no
+field format. The request carries the system prompt (the signature's instructions + the
+expert's system prompt), the task as one user message, every earlier step of this turn
+as typed messages, and the tools as native function tools (``submit`` among them for
+structured outputs). The reply comes back typed: thinking (with the provider's
+continuation state, sent back as-is on the next call), the visible text (shown as
+written), and tool calls. Transports without native tools (the Codex and Claude Code
+SDKs) carry tools as text inside their engine; the loop is the same for every provider.
 
 Per step:
 
-1. **boundary** -- cancellation is checked (a typed ``_TurnCancelled``), then the
-   proactive compaction trigger runs;
-2. **context** -- the task inputs (+ tools) are ONE static head event; the steps
-   after it come from the ARC live plane folded by step
-   (:func:`~clio_agent.gact.agents.clio_react_record.fold_steps`), or from the
-   loop's own History when there is no ARC scope. A plane read failure is a typed
-   turn failure; there is no fallback between the two;
-3. **predict** once -- no current inputs, so every call is the previous call plus
-   the new step beneath one byte-static closing instruction;
+1. **boundary** -- cancellation (a typed ``_TurnCancelled``), then the proactive
+   compaction trigger;
+2. **context** -- the head plus the ARC live plane folded into typed messages
+   (:func:`~clio_agent.gact.agents.clio_react_record.fold_steps`), or the loop's own
+   step list when there is no ARC scope; a plane read failure is a typed turn failure;
+3. **call** -- streamed on the one persistent LM loop (connections are reused across
+   steps): text deltas to the transcript lane, thinking to the thinking lane, as they
+   arrive;
 4. **tools** -- a step's calls run concurrently, one worker each in a copy of the
    step's context; results keep call order. A terminal MCP protocol refusal or a
    cancellation raised by a tool escalates after the step is recorded;
-5. **end** -- no tool call is the answer (``direct_response``); ``submit`` returns
-   its typed outputs; ``ask_user`` / ``plan_exit`` yield; ``max_iters`` (``<= 0`` =
-   unlimited), ``parse_error`` and ``context_window_exceeded`` stop. Nothing calls
-   the model after the loop (``react-loop-completion-2026-09.md``).
+5. **end** -- no tool call: the text is the answer (``direct_response``); ``submit``:
+   its typed outputs; ``ask_user`` / ``plan_exit``: yield to the user; ``max_iters``
+   (``<= 0`` unlimited) or ``context_window_exceeded``: stop. Nothing calls the model
+   after the loop (``react-loop-completion-2026-09.md``).
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextvars
+import dataclasses
 import inspect
 import itertools
+import math
 import traceback
 import uuid
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, get_args
+from typing import Any
 
+import anyio
 import dspy
 import pydantic
-from dspy.adapters import ToolCallResults
-from dspy.utils.exceptions import AdapterParseError, ContextWindowExceededError
+from dspy.lm15 import (
+    CacheConfig,
+    Config,
+    ContextLengthError,
+    DocumentPart,
+    FunctionTool,
+    ImagePart,
+    LM15Error,
+    Message,
+    Request,
+    Response,
+    TextPart,
+    ThinkingPart,
+    ToolCallPart,
+)
+from dspy.utils.exceptions import ContextWindowExceededError, LMUnexpectedError
 
 from clio_agent.errors import ClioError, MCPProtocolError
 from clio_agent.gact.agents import clio_react_record as record
-from clio_agent.gact.agents.clio_react_submit import (
-    active_react_scope_safe,
-    record_submit_audit,
-)
+from clio_agent.gact.agents.clio_react_submit import active_react_scope_safe, record_submit_audit
+from clio_agent.lm.engines.lm_loop import run_on_lm_loop
+from clio_agent.lm.engines.text_tools import INVALID_TOOL_CALL
+from clio_agent.lm.request_config import config_from_lm_kwargs
 
 __all__ = ["ClioReAct"]
 
-#: A submit output field's value flowed to the return contract (the final Prediction),
-#: not to a visible text lane.
+#: A submit output field's value flowed to the return contract (the final Prediction).
 REACT_SUBMIT_FIELD_SUPPRESSED = "react_submit_field_suppressed"
 #: The ``submit`` tool rejected a typed/missing final-output arg: the value did not flow.
 REACT_SUBMIT_INVALID_OUTPUT = "react_submit_invalid_output"
+_SYSTEM_INPUT = "system_prompt"
+_MEDIA_INPUTS = ("images", "files")
+
+
+class NoLanguageModelError(ClioError):
+    """The loop ran with no LM bound (``dspy.context(lm=...)``)."""
+
+    reason = "no_language_model"
+
+    def __init__(self) -> None:
+        super().__init__(
+            "ClioReAct needs an LM bound with dspy.context(lm=...)", error_type=self.reason
+        )
 
 
 class ClioReAct(dspy.Module):
-    """clio's ReAct loop (see the module docstring)."""
+    """clio's agent loop (see the module docstring)."""
 
     def __init__(self, signature: Any, tools: Iterable[Any], max_iters: int = 20) -> None:
         super().__init__()
@@ -73,19 +103,20 @@ class ClioReAct(dspy.Module):
         if "submit" in self.tools:
             raise ValueError("`submit` is reserved as the final-output tool.")
         self.tools["submit"] = _submit_tool(self.signature)
-        self.react = dspy.Predict(_react_signature(self.signature, self.tools))
 
     def forward(self, **input_args: Any) -> dspy.Prediction:
         """Run the loop for one expert turn (see the module docstring)."""
         from clio_agent.providers.stateful_common import stateful_scope  # noqa: PLC0415
 
-        # A fresh stateful scope per forward: the claude_code transport shares one SDK
-        # session across this forward's calls; the Codex SDK keys its thread on the
-        # conversation and uses the token only to route ARC-op resets.
+        # A fresh stateful scope per forward: the SDK transports key their sessions on
+        # it (Codex keeps its thread across turns; the scope routes ARC-op resets).
         with stateful_scope():
             return _Loop(self, input_args).run()
 
 
+# --------------------------------------------------------------------------- #
+# The request pieces                                                          #
+# --------------------------------------------------------------------------- #
 def _submit_tool(signature: Any) -> dspy.Tool:
     """The reserved ``submit`` tool: its args are the signature's outputs.
 
@@ -110,37 +141,109 @@ def _submit_tool(signature: Any) -> dspy.Tool:
     return dspy.Tool(
         submit,
         name="submit",
-        desc="Submit the final outputs for the task.",
+        desc=(
+            "Submit the final outputs for the task. Use it only when these structured "
+            "outputs are required; otherwise reply without calling a tool."
+        ),
         args={name: _json_schema(field.annotation) for name, field in output_fields.items()},
         arg_types={name: field.annotation for name, field in output_fields.items()},
     )
 
 
-def _react_signature(signature: Any, tools: dict[str, dspy.Tool]) -> Any:
-    """Task inputs (optional: they ride the head event) + history + tools -> step."""
-    fields: dict[str, Any] = {
-        name: (
-            _optional(field.annotation),
-            dspy.InputField(desc=field.json_schema_extra.get("desc")),
-        )
-        for name, field in signature.input_fields.items()
-    }
-    fields["history"] = (dspy.History, dspy.InputField())
-    fields["tools"] = (list[dspy.Tool] | None, dspy.InputField())
-    fields["next_thought"] = (str, dspy.OutputField())
-    fields["tool_calls"] = (dspy.ToolCalls, dspy.OutputField())
-    inputs = ", ".join(f"`{name}`" for name in signature.input_fields)
-    outputs = ", ".join(f"`{name}`" for name in signature.output_fields)
-    instructions = "\n".join(
-        [
-            signature.instructions,
-            f"You are an Agent. Use the supplied tools to produce {outputs} from {inputs}.",
-            "Call tools when more information is needed.",
-            f"When the final answer is ready, call `submit` with {outputs}.",
-            f"The available tools are: {', '.join(f'`{name}`' for name in tools)}.",
-        ]
-    ).strip()
-    return dspy.Signature(fields, instructions)
+def _function_tool(tool: dspy.Tool) -> FunctionTool:
+    spec = tool.format_as_litellm_function_call()["function"]
+    return FunctionTool(
+        name=spec["name"],
+        description=spec.get("description") or None,
+        parameters=spec["parameters"],
+    )
+
+
+def _system(signature: Any, inputs: dict[str, Any]) -> str:
+    """The expert's system prompt; the signature's instructions when there is none."""
+    expert = str(inputs.get(_SYSTEM_INPUT) or "").strip()
+    return expert or signature.instructions.strip()
+
+
+def _head(signature: Any, inputs: dict[str, Any]) -> Message:
+    """The task as one user message: the inputs as text, images/files as native parts."""
+    parts: list[Any] = []
+    lines: list[str] = []
+    for name in signature.input_fields:
+        if name in (_SYSTEM_INPUT, *_MEDIA_INPUTS) or name not in inputs:
+            continue
+        value = inputs[name]
+        lines.append(str(value) if name == "question" else f"{name}: {value}")
+    if lines:
+        parts.append(TextPart(text="\n\n".join(lines)))
+    for name in _MEDIA_INPUTS:
+        for item in inputs.get(name) or []:
+            parts.append(_media_part(item))
+    return Message(role="user", parts=tuple(parts or [TextPart(text="")]))
+
+
+def _media_part(item: Any) -> ImagePart | DocumentPart:
+    url = str(getattr(item, "url", "") or getattr(item, "file_data", "") or "")
+    header, _, data = url.partition(",")
+    media_type = header.removeprefix("data:").split(";", 1)[0]
+    if not data:
+        raise ValueError(f"attachment {type(item).__name__} carries no inline data")
+    if media_type.startswith("image/"):
+        return ImagePart(data=data, media_type=media_type)
+    return DocumentPart(data=data, media_type=media_type or "application/pdf")
+
+
+def _with_cache_key(config: Config, lm: Any) -> Config:
+    """Route this conversation's calls to one prompt cache, where the LM takes a key.
+
+    ``prompt_cache_key`` (OpenAI Responses, Codex direct) is a routing hint: calls
+    with the same key and prefix land on the same cache. The key is the
+    conversation (GACT session + agent scope), so parallel agents never share one.
+    Only an LM that declares ``_clio_prompt_cache_key`` gets it -- lm15 raises for a
+    provider without the field.
+    """
+    from clio_agent.gact import context as _ctx  # noqa: PLC0415
+
+    session = _ctx.active_session_id()
+    scope = _ctx.run_keyed_scope(_ctx.active_react_scope())
+    if not getattr(lm, "_clio_prompt_cache_key", False) or not session or not scope:
+        return config
+    cache = config.cache or CacheConfig()
+    return dataclasses.replace(
+        config, cache=dataclasses.replace(cache, key=f"clio:{session}:{scope}")
+    )
+
+
+def _place_tool_media(messages: list[Message], placement: str) -> list[Message]:
+    """Put tool-result images/documents where the LM's API takes them.
+
+    ``native``: inside the tool result. ``user_message`` (chat-completions servers take
+    text-only tool rows): the tool result keeps a text marker and the media follows in
+    one user message right after the tool message -- the same content, in the one
+    place that API carries it. Deterministic, so the context stays prefix-stable.
+    """
+    if placement == "native":
+        return messages
+    out: list[Message] = []
+    for message in messages:
+        media: list[Any] = []
+        if message.role == "tool":
+            parts = []
+            for part in message.parts:
+                kept = [p for p in part.content if not isinstance(p, ImagePart | DocumentPart)]
+                moved = [p for p in part.content if isinstance(p, ImagePart | DocumentPart)]
+                if moved:
+                    note = f"({len(moved)} attachment(s) of this result follow in the next message)"
+                    kept.append(TextPart(text=note))
+                    media.extend(moved)
+                    part = dataclasses.replace(part, content=tuple(kept))
+                parts.append(part)
+            message = dataclasses.replace(message, parts=tuple(parts))
+        out.append(message)
+        if media:
+            label = TextPart(text="[attachments from the tool results above]")
+            out.append(Message(role="user", parts=(label, *media)))
+    return out
 
 
 @dataclass
@@ -156,10 +259,19 @@ class _Loop:
     def __init__(self, agent: ClioReAct, input_args: dict[str, Any]) -> None:
         self.agent = agent
         self.max_iters = int(input_args.pop("max_iters", agent.max_iters))
-        prior = input_args.pop("history", None)
+        input_args.pop("history", None)
         self.inputs = {n: input_args[n] for n in agent.signature.input_fields if n in input_args}
-        self.head = {**self.inputs, "tools": list(agent.tools.values())}
-        self.events: list[dict[str, Any]] = list(getattr(prior, "messages", None) or [])
+        self.lm = dspy.settings.lm
+        if self.lm is None:
+            raise NoLanguageModelError()
+        self.system = _system(agent.signature, self.inputs)
+        self.head = _head(agent.signature, self.inputs)
+        self.tools = tuple(_function_tool(t) for t in agent.tools.values())
+        self.config = _with_cache_key(
+            config_from_lm_kwargs(getattr(self.lm, "kwargs", {}) or {}), self.lm
+        )
+        self.tool_media = str(getattr(self.lm, "_clio_tool_result_media", "native"))
+        self.steps: list[Message] = []
         self.arc, self.session, self.scope = record.arc_scope()
         self.recorder = record.StepRecorder(
             self.arc,
@@ -199,42 +311,49 @@ class _Loop:
     def _one_step(self) -> dspy.Prediction | None:
         from clio_agent.gact import context as _ctx  # noqa: PLC0415
         from clio_agent.gact.compaction import maybe_autocompact  # noqa: PLC0415
-        from clio_agent.gact.runtime.globals import _active_lm_last_reasoning  # noqa: PLC0415
 
         _raise_if_cancelled()
         maybe_autocompact()
+        request = Request(
+            model=self.lm.model,
+            system=self.system,
+            messages=(self.head, *_place_tool_media(self._context(), self.tool_media)),
+            tools=self.tools,
+            config=self.config,
+        )
         try:
-            pred = self.agent.react(history=self._context())
-            calls = _tool_calls(getattr(pred, "tool_calls", None), self.step)
-        except (AdapterParseError, ValueError):
-            return self._stop("parse_error")
-        except ContextWindowExceededError:
+            response = _call_lm(self.lm, request)
+        except (ContextWindowExceededError, ContextLengthError):
             return self._stop("context_window_exceeded")
-        thought = str(getattr(pred, "next_thought", "") or "")
-        reasoning = _active_lm_last_reasoning()
-        if not calls.tool_calls:
-            self._record(thought, reasoning, calls, ToolCallResults(tool_call_results=[]))
-            outputs = {"answer": thought}
+        if response.finish_reason == "length":
+            # A cut-off reply is not an answer or a complete call: a typed turn failure.
+            from clio_agent.lm.policy import LMOutputTruncatedError  # noqa: PLC0415
+
+            raise LMOutputTruncatedError(self.lm.model)
+        thinking = [p for p in response.message.parts if isinstance(p, ThinkingPart)]
+        text = "".join(p.text for p in response.message.parts if isinstance(p, TextPart))
+        calls = [p for p in response.message.parts if isinstance(p, ToolCallPart)]
+        if not calls:
+            self._record(text, thinking, calls, {})
+            outputs = {"answer": text}
             self.recorder.completed(outputs, self.step + 1)
             return self._prediction(outputs, "direct_response")
-        thought_token = _ctx.set_step_thought(thought, reasoning)
+        thought_token = _ctx.set_step_thought(text, "".join(t.text for t in thinking))
         try:
-            self.recorder.step_open(self.step, self.span, thought, calls)
+            self.recorder.step_open(self.step, self.span, text, calls)
             _raise_if_cancelled()
             outcomes = self._execute(calls)
         finally:
             _ctx.reset(thought_token)
-        results = ToolCallResults.from_tool_calls_and_values(
-            calls, [o.value for o in outcomes], [o.is_error for o in outcomes]
-        )
-        self._record(thought, reasoning, calls, results)
+        results = {c.id: (o.value, o.is_error) for c, o in zip(calls, outcomes, strict=True)}
+        self._record(text, thinking, calls, results)
         for outcome in outcomes:
             if outcome.escalate is not None:
                 raise outcome.escalate
         return self._finish_step(calls, outcomes)
 
     def _finish_step(
-        self, calls: dspy.ToolCalls, outcomes: list[_CallOutcome]
+        self, calls: list[ToolCallPart], outcomes: list[_CallOutcome]
     ) -> dspy.Prediction | None:
         final = self._submitted(calls, outcomes)
         if yield_name := record.pending_turn_yield(calls):
@@ -245,35 +364,37 @@ class _Loop:
         _raise_if_cancelled()
         return None
 
-    def _context(self) -> dspy.History:
-        steps = (
-            record.read_steps(self.arc, self.session, self.scope)
-            if self.arc is not None
-            else self.events
-        )
-        return dspy.History(messages=[self.head, *steps])
+    def _context(self) -> list[Message]:
+        if self.arc is not None:
+            return record.read_steps(self.arc, self.session, self.scope)
+        return list(self.steps)
 
-    def _execute(self, calls: dspy.ToolCalls) -> list[_CallOutcome]:
+    def _execute(self, calls: list[ToolCallPart]) -> list[_CallOutcome]:
         """Run the step's calls concurrently; outcomes in call order."""
-        items = list(calls.tool_calls)
-        if len(items) == 1:
-            return [self._call(items[0])]
-        with ThreadPoolExecutor(max_workers=len(items), thread_name_prefix="clio-tool") as pool:
-            futures = [pool.submit(contextvars.copy_context().run, self._call, c) for c in items]
+        if len(calls) == 1:
+            return [self._call(calls[0])]
+        with ThreadPoolExecutor(max_workers=len(calls), thread_name_prefix="clio-tool") as pool:
+            futures = [pool.submit(contextvars.copy_context().run, self._call, c) for c in calls]
             return [f.result() for f in futures]
 
-    def _call(self, call: dspy.ToolCalls.ToolCall) -> _CallOutcome:
+    def _call(self, call: ToolCallPart) -> _CallOutcome:
         from clio_agent.gact.runtime.globals import _TurnCancelled  # noqa: PLC0415
         from clio_agent.tools.mcp_errors import typed_mcp_protocol_error  # noqa: PLC0415
 
+        if call.name == INVALID_TOOL_CALL:
+            return _CallOutcome(
+                "Your tool_calls block could not be read: "
+                f"{call.input.get('error')}. Send the calls again as one valid block.",
+                True,
+            )
         tool = self.agent.tools.get(call.name)
         if tool is None:
             return _CallOutcome(f"Unknown tool: {call.name}", True)
         try:
             if inspect.iscoroutinefunction(getattr(tool, "func", None)):
                 # The worker thread has no running loop; the task copies this context.
-                return _CallOutcome(asyncio.run(tool.acall(**(call.args or {}))), False)
-            return _CallOutcome(tool(**(call.args or {})), False)
+                return _CallOutcome(asyncio.run(tool.acall(**call.input)), False)
+            return _CallOutcome(tool(**call.input), False)
         except Exception as err:  # noqa: BLE001 - a tool error is the model's observation
             refusal = err if isinstance(err, MCPProtocolError) else typed_mcp_protocol_error(err)
             escalate = (
@@ -284,12 +405,12 @@ class _Loop:
             return _CallOutcome(f"Execution error in {call.name}: {_fmt_exc(err)}", True, escalate)
 
     def _submitted(
-        self, calls: dspy.ToolCalls, outcomes: list[_CallOutcome]
+        self, calls: list[ToolCallPart], outcomes: list[_CallOutcome]
     ) -> dict[str, Any] | None:
         """The typed final outputs of a successful ``submit`` in this step, audited."""
         final: dict[str, Any] | None = None
         agent_id = active_react_scope_safe()
-        for call, outcome in zip(calls.tool_calls, outcomes, strict=True):
+        for call, outcome in zip(calls, outcomes, strict=True):
             if call.name != "submit":
                 continue
             if outcome.is_error:
@@ -313,18 +434,26 @@ class _Loop:
         return final
 
     def _record(
-        self, thought: str, reasoning: str, calls: dspy.ToolCalls, results: ToolCallResults
+        self,
+        text: str,
+        thinking: list[ThinkingPart],
+        calls: list[ToolCallPart],
+        results: dict[str, tuple[Any, bool]],
     ) -> None:
-        event: dict[str, Any] = {"next_thought": thought}
-        if calls.tool_calls:
-            event["tool_calls"] = (
-                calls.model_copy(update={"tool_call_results": results})
-                if results.tool_call_results
-                else calls
+        parts: list[Any] = [*thinking]
+        if text or not (thinking or calls):
+            parts.append(TextPart(text=text))
+        parts.extend(calls)
+        self.steps.append(Message(role="assistant", parts=tuple(parts)))
+        if results:
+            self.steps.append(
+                Message(
+                    role="tool",
+                    parts=tuple(record.result_part(c.id, c.name, *results[c.id]) for c in calls),
+                )
             )
-        self.events.append(event)
         self.recorder.step_done(
-            self.step, self.span, thought=thought, reasoning=reasoning, calls=calls, results=results
+            self.step, self.span, text=text, thinking=thinking, calls=calls, results=results
         )
 
     def _stop(self, reason: str) -> dspy.Prediction:
@@ -333,10 +462,94 @@ class _Loop:
         return self._prediction({}, reason)
 
     def _prediction(self, outputs: dict[str, Any], reason: str) -> dspy.Prediction:
-        history = dspy.History(messages=[self.inputs, *self.events])
-        return dspy.Prediction(**outputs, history=history, termination_reason=reason)
+        return dspy.Prediction(
+            **outputs, messages=[self.head, *self.steps], termination_reason=reason
+        )
 
 
+# --------------------------------------------------------------------------- #
+# The streamed LM call                                                        #
+# --------------------------------------------------------------------------- #
+def _call_lm(lm: Any, request: Request) -> Response:
+    """One streamed call: text and thinking reach the live lanes as they arrive."""
+
+    async def run() -> Response:
+        send, receive = anyio.create_memory_object_stream(math.inf)
+        response: Response | None = None
+
+        async def consume() -> None:
+            async with receive:
+                async for chunk in receive:
+                    _route_chunk(chunk)
+
+        try:
+            async with anyio.create_task_group() as group:
+                group.start_soon(consume)
+                try:
+                    with dspy.context(send_stream=send):
+                        response = await lm.acall(request)
+                finally:
+                    await send.aclose()
+        except BaseExceptionGroup as group_error:
+            # The task group wraps the call's own error; the caller handles it typed.
+            # (Not ``from None``: that would erase the leaf's own ``__cause__``.)
+            leaf = _sole(group_error)
+            leaf.__suppress_context__ = True
+            raise leaf  # noqa: B904 - the leaf keeps its own cause chain
+        assert response is not None
+        return response
+
+    try:
+        # One persistent LM loop: connections survive across steps, turns and agents.
+        return run_on_lm_loop(run)
+    except LMUnexpectedError as exc:
+        # DSPy wraps an engine's own typed error (a refused sign-in, an exhausted plan,
+        # a Codex SDK failure) as unexpected; the turn classifies the original.
+        cause = exc.__cause__
+        if isinstance(cause, Exception) and not isinstance(cause, LM15Error):
+            raise cause from exc
+        raise
+
+
+def _sole(group: BaseExceptionGroup) -> BaseException:
+    """The one leaf error of a task-group failure (the group itself when there are more)."""
+    leaves: list[BaseException] = []
+    pending: list[BaseException] = [group]
+    while pending:
+        exc = pending.pop()
+        if isinstance(exc, BaseExceptionGroup):
+            pending.extend(exc.exceptions)
+        else:
+            leaves.append(exc)
+    return leaves[0] if len(leaves) == 1 else group
+
+
+def _route_chunk(chunk: Any) -> None:
+    from clio_agent.runtime.lm_activity import (  # noqa: PLC0415
+        note_lm_activity,
+        note_lm_answer_delta,
+        note_lm_provider_thinking_delta,
+        note_lm_token_event,
+    )
+
+    note_lm_activity()
+    delta = (
+        chunk.choices[0]["delta"] if isinstance(chunk.choices[0], dict) else chunk.choices[0].delta
+    )
+    get = delta.get if isinstance(delta, dict) else lambda k, d=None: getattr(delta, k, d)
+    text = get("content") or ""
+    thinking = get("reasoning_content") or ""
+    if thinking:
+        note_lm_provider_thinking_delta(thinking, provider="model")
+    if text:
+        note_lm_answer_delta(text, field="next_thought")
+    if text or thinking:
+        note_lm_token_event(text, thinking, field="next_thought")
+
+
+# --------------------------------------------------------------------------- #
+# helpers                                                                     #
+# --------------------------------------------------------------------------- #
 def _raise_if_cancelled() -> None:
     """Typed cooperative cancellation at a loop boundary."""
     from clio_agent.agent import cancellation_requested  # noqa: PLC0415
@@ -350,19 +563,6 @@ def _raise_if_cancelled() -> None:
         raise _TurnCancelled(
             _cancelled_error_info(_ctx.active_session_id(), execution_cancellation="cooperative")
         )
-
-
-def _tool_calls(value: Any, step: int) -> dspy.ToolCalls:
-    """Coerce the step's tool calls and give every call a stable id."""
-    calls = (
-        dspy.ToolCalls.model_validate(value) if value is not None else dspy.ToolCalls(tool_calls=[])
-    )
-    return dspy.ToolCalls(
-        tool_calls=[
-            c if c.id is not None else c.model_copy(update={"id": f"call_{step}_{i}"})
-            for i, c in enumerate(calls.tool_calls)
-        ]
-    )
 
 
 def _declared_default(field: Any) -> tuple[bool, Any]:
@@ -383,15 +583,6 @@ def _json_schema(annotation: Any) -> dict[str, Any]:
         return pydantic.TypeAdapter(annotation).json_schema()
     except (pydantic.PydanticSchemaGenerationError, TypeError, ValueError):
         return {"type": "string"}
-
-
-def _optional(annotation: Any) -> Any:
-    if type(None) in get_args(annotation):
-        return annotation
-    try:
-        return annotation | None
-    except TypeError:
-        return annotation
 
 
 def _fmt_exc(err: BaseException, *, limit: int = 5) -> str:

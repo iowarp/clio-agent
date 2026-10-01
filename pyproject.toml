@@ -39,7 +39,7 @@ classifiers = [
 dependencies = [
     # Intentional exact prereleases: registry-backed uv installs must declare DSPy,
     # FastMCP, and FastMCP Tasks as explicit roots because the top-level release is stable.
-    "dspy==3.3.0b1",
+    "dspy==3.4.0",
     # DSPy permits a broad LiteLLM range. Pin the tested stable wheel so a global
     # prerelease policy can never select a LiteLLM dev sdist on Windows.
     "litellm==1.102.1",

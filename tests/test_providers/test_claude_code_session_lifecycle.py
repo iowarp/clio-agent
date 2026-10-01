@@ -91,55 +91,47 @@ def _isolated_lifecycle_providers() -> Any:
 
 
 # --------------------------------------------------------------------------- #
-# B2 BLOCKER (#1305 round 3): release_session_resources_nonblocking must tell
-# the claude_code stateful delta registry, exactly like
-# reap_idle_session_entry already does for the idle-TTL path (pinned in
-# test_claude_code_idle_reap.py's key-shape style: session_key =
-# (scope, model, cwd, thinking)) -- derived here from the entry's own
-# ``_last_scope``/``_model``/``_cwd``/``_thinking_key`` bookkeeping (S2), not
-# a separate scope<->session registry.
+# B2 BLOCKER (#1305 round 3): release_session_resources_nonblocking must announce
+# the dropped client synchronously, exactly like reap_idle_session_entry does for
+# the idle-TTL path (pinned in test_claude_code_idle_reap.py), so the Claude Code
+# engine resets that session's kept conversations.
 # --------------------------------------------------------------------------- #
 def test_release_session_resources_forces_the_next_stateful_send_to_a_full_resend() -> None:
-    """Without this, the registry still thinks its last-seen prefix is live
-    on the now-dead subprocess, and the next send on this scope would
-    classify as a DELTA (append-only tail) shipped to a fresh subprocess
-    that never saw the prefix -- a silent conversation-coherence bug, not
-    merely a reconnect.
+    """Without this, the engine still thinks its conversation is live on the
+    now-dead subprocess, and the next send would plan a DELTA (append-only tail)
+    shipped to a fresh subprocess that never saw the prefix -- a silent
+    conversation-coherence bug, not merely a reconnect.
 
-    SABOTAGE: drop the ``_note_scope_provider_error(...)`` call from
-    ``release_session_resources_nonblocking`` -> the registry still thinks
-    its last-seen prefix is live, the next ``plan()`` call classifies as
-    delta, and this goes red.
+    SABOTAGE: drop ``entry.announce_dropped()`` from
+    ``release_session_resources_nonblocking`` (the non-blocking close announces too
+    late) -> the next ``plan()`` is a delta, and this goes red.
     """
-    from clio_agent.providers import claude_code_stateful as cst
+    from dspy.lm15 import Message, Request
 
-    cst.stateful_registry().reset_for_tests()
+    from clio_agent.providers import claude_code_engine
+
+    registry = claude_code_engine._CONVERSATIONS
+    registry.clear_for_tests()
     try:
         pool = ccs.ClaudeStreamClientPool(max_concurrent=2)
-        scope = "loop-a"
-        session_key = (scope, "m", "/w", None)
-        registry = cst.stateful_registry()
-        # Prime a live session: call 1 (full/first_call).
-        registry.plan(
-            session_key=session_key, scope_token=scope, messages=[{"role": "user", "content": "a"}]
+        key = ("sess-1", "main#react", "m", "/w", "")
+        registry.opened(
+            key, "sdk-session-1", Request(model="claude_code/m", messages=(Message.user("a"),)), "s"
         )
 
         entry = pool.entry_for(session_id="sess-1")
-        entry._model, entry._cwd, entry._thinking_key, entry._last_scope = "m", "/w", None, scope
+        entry._bound_session = "sess-1"  # what a real connect records
 
         pool.release_session_resources("sess-1")
 
-        # An append-only extension that WOULD be a delta (call 2 normally is)
-        # is instead forced full=provider_error because the connection died.
-        plan, _handle = registry.plan(
-            session_key=session_key,
-            scope_token=scope,
-            messages=[{"role": "user", "content": "a"}, {"role": "user", "content": "b"}],
+        extended = Request(
+            model="claude_code/m",
+            messages=(Message.user("a"), Message.assistant("ok"), Message.user("b")),
         )
-        assert plan.mode == "full"
-        assert plan.reason == "provider_error"
+        send = registry.plan(key, extended, "s")
+        assert (send.handle, send.reason) == (None, "session_evicted")
     finally:
-        cst.stateful_registry().reset_for_tests()
+        registry.clear_for_tests()
 
 
 def test_release_session_resources_emits_a_typed_row_distinct_from_idle_reaped(
@@ -328,16 +320,6 @@ async def test_dead_entry_refuses_a_connect_after_being_released_mid_flight() ->
     assert entry._dead is True
     with pytest.raises(RuntimeError, match=cc_lifecycle.DEAD_ENTRY_MARKER):
         await entry._ensure_client(lambda: None, model="m")
-
-
-def test_dead_entry_marker_is_a_recognized_transient_reason() -> None:
-    """The retry layer must classify a dead-entry refusal as transient (so
-    the LM retry loop re-issues on a fresh entry_for() instead of failing
-    the turn) -- pins the lm.io_logging marker-sync contract F6b relies on.
-    """
-    from clio_agent.lm.io_logging import _is_transient_provider_error
-
-    assert _is_transient_provider_error(RuntimeError(cc_lifecycle.dead_entry_error_message()))
 
 
 # --------------------------------------------------------------------------- #

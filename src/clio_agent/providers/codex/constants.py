@@ -19,32 +19,15 @@ from __future__ import annotations
 PROVIDER_ID = "codex"
 PROVIDER_LABEL = "Codex"
 
-#: The LiteLLM-facing custom-provider key AND model-string prefix
-#: (``f"{LITELLM_PROVIDER}/cg-<model>"``, registered via
-#: ``providers._cli_provider.register_custom_provider`` in
-#: ``providers.codex.litellm_adapter``). Kept DELIBERATELY DISTINCT from
-#: ``PROVIDER_ID`` ("codex") even though "codex" itself is not a litellm
-#: native provider name (verified against the installed litellm build:
-#: ``"codex" in litellm.provider_list`` is False) -- this module was
-#: ORIGINALLY registered under "chatgpt" (matching the catalog id at the
-#: time), and litellm ships its own native "chatgpt" provider
-#: (``litellm/llms/chatgpt/`` -- a device-code OAuth client against
-#: auth.openai.com) that silently intercepted every turn before this
-#: module's handler ever ran, hanging on a real device-code prompt instead
-#: of reaching ``CodexCredentialStore``/the WS-SSE transport. Keeping the
-#: litellm wire name separate from the public catalog id is the permanent
-#: fix, not a one-off rename: it means a FUTURE catalog id can never
-#: collide with a litellm-native provider name either. Never register this
-#: module under ``PROVIDER_ID`` directly.
+#: The direct transport's model-string prefix (``codex_direct/<model>``) and the
+#: provider key capability lookups use. Kept DELIBERATELY DISTINCT from
+#: ``PROVIDER_ID`` ("codex"): LiteLLM ships a native "chatgpt"/device-code provider,
+#: and a transport name that collides with a LiteLLM-native one once silently
+#: intercepted every turn; a separate wire name can never collide again.
 LITELLM_PROVIDER = "codex_direct"
 
-#: The SDK transport's own LiteLLM-facing custom-provider key (S1b): the
-#: restored official ``openai_codex`` Python SDK, run against the user's OWN
-#: ``CODEX_HOME`` (never CLIO-copied credentials). Kept distinct from
-#: ``LITELLM_PROVIDER`` (the direct/HTTP transport) for the exact reason that
-#: one is kept distinct from ``PROVIDER_ID`` above -- two transports of the
-#: SAME catalog provider must resolve to two different litellm dialects so a
-#: selection can route to the right one end to end.
+#: The SDK transport's model-string prefix (``codex_sdk/<model>``), distinct from
+#: ``LITELLM_PROVIDER`` so a selection routes to the right transport end to end.
 LITELLM_PROVIDER_SDK = "codex_sdk"
 
 #: Transport ids for the ``codex`` provider's catalog row (owner requirement:

@@ -15,14 +15,15 @@ that and its no-silent-fallback records:
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import dspy
 import pytest
-from dspy.utils.dummies import DummyLM
 
 from clio_agent.gact.agents import clio_react
 from clio_agent.gact.agents.clio_react import ClioReAct
+from tests._scripted_engine import Reply, calls, scripted_lm
 
 
 def _search(q: str) -> str:
@@ -56,21 +57,23 @@ def _reasons(records: list[dict[str, Any]]) -> list[str]:
     return [r.get("duplicate_reason") for r in records]
 
 
-def _step(name: str, thought: str = "step", **args: Any) -> dict[str, Any]:
-    return {
-        "next_thought": thought,
-        "tool_calls": {"tool_calls": [{"name": name, "args": args}]},
-    }
+def _step(name: str, thought: str = "step", **args: Any) -> Reply:
+    return calls((name, args), text=thought)
 
 
-def _run(agent: ClioReAct, *steps: dict[str, Any]) -> dspy.Prediction:
-    lm = DummyLM([dict(s) for s in steps])
-    with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+def _run(agent: ClioReAct, *steps: Reply) -> dspy.Prediction:
+    lm, _ = scripted_lm(steps)
+    with dspy.context(lm=lm):
         return agent(question="q")
 
 
 def _first_result(pred: dspy.Prediction) -> Any:
-    return pred.history.messages[1]["tool_calls"].tool_call_results.tool_call_results[0]
+    """The first step's first tool result (messages: head, assistant, tool, ...)."""
+    return pred.messages[2].parts[0]
+
+
+def _text(result: Any) -> str:
+    return "".join(getattr(p, "text", "") for p in result.content)
 
 
 # --- 1. present: answer + valid workflow_state flow + are recorded -------------
@@ -124,7 +127,7 @@ def test_valid_submit_values_line_up() -> None:
     assert (pred.answer, pred.workflow_state) == ("A", {"k": "v"})
     result = _first_result(pred)
     assert result.is_error is False
-    assert result.value == {"answer": "A", "workflow_state": {"k": "v"}}
+    assert json.loads(_text(result)) == {"answer": "A", "workflow_state": {"k": "v"}}
 
 
 def test_invalid_typed_workflow_state_rejected_and_recorded(

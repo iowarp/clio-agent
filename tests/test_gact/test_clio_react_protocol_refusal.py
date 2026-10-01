@@ -16,7 +16,6 @@ from typing import Any
 
 import dspy
 import pytest
-from dspy.utils.dummies import DummyLM
 from mcp.shared.exceptions import MCPError
 
 from clio_agent.errors import (
@@ -24,6 +23,7 @@ from clio_agent.errors import (
     MCPUnsupportedProtocolVersionError,
 )
 from clio_agent.gact.agents.clio_react import ClioReAct
+from tests._scripted_engine import ScriptedEngine, calls, scripted_lm
 
 
 def _make_refusing_tool(calls: list[int]) -> Any:
@@ -38,15 +38,11 @@ def _make_refusing_tool(calls: list[int]) -> Any:
     return task_echo
 
 
-def _always_retry_lm(tool: str = "task_echo") -> DummyLM:
+def _always_retry_lm(tool: str = "task_echo") -> tuple[dspy.LM, ScriptedEngine]:
     """Scripts the SAME doomed tool call ten times -- an LM that never recognizes a
     deterministic refusal is permanent (the #1275 shape); far more than the ONE call
     the loop must stop at."""
-    step = {
-        "next_thought": f"retry {tool}",
-        "tool_calls": {"tool_calls": [{"name": tool, "args": {"payload": "ping"}}]},
-    }
-    return DummyLM([dict(step) for _ in range(10)])
+    return scripted_lm([calls((tool, {"payload": "ping"}), text=f"retry {tool}")] * 10)
 
 
 def test_protocol_refusal_terminates_the_loop_on_the_first_call() -> None:
@@ -56,15 +52,15 @@ def test_protocol_refusal_terminates_the_loop_on_the_first_call() -> None:
     agent = ClioReAct(
         "question -> answer", tools=[dspy.Tool(_make_refusing_tool(calls))], max_iters=0
     )
-    lm = _always_retry_lm()
+    lm, engine = _always_retry_lm()
 
-    with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+    with dspy.context(lm=lm):
         with pytest.raises(MCPMissingRequiredClientCapabilityError) as excinfo:
             agent(question="fetch it")
 
     assert excinfo.value.reason == "mcp_capability_refused"
     assert calls[0] == 1
-    assert len(lm.history) == 1
+    assert len(engine.requests) == 1
 
 
 def test_protocol_refusal_message_names_the_redial_extension() -> None:
@@ -72,7 +68,7 @@ def test_protocol_refusal_message_names_the_redial_extension() -> None:
     agent = ClioReAct(
         "question -> answer", tools=[dspy.Tool(_make_refusing_tool([0]))], max_iters=6
     )
-    with dspy.context(lm=_always_retry_lm(), adapter=dspy.ChatAdapter()):
+    with dspy.context(lm=_always_retry_lm()[0]):
         with pytest.raises(MCPMissingRequiredClientCapabilityError) as excinfo:
             agent(question="fetch it")
 
@@ -95,11 +91,11 @@ def test_raw_mcp_refusal_code_is_classified_and_escalated(code: int, typed: type
         raise MCPError(code, "refused by server", {"detail": "x"})
 
     agent = ClioReAct("question -> answer", tools=[dspy.Tool(task_echo)], max_iters=0)
-    lm = _always_retry_lm()
-    with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+    lm, engine = _always_retry_lm()
+    with dspy.context(lm=lm):
         with pytest.raises(typed):
             agent(question="fetch it")
-    assert len(lm.history) == 1
+    assert len(engine.requests) == 1
 
 
 def test_async_tool_refusal_escalates() -> None:
@@ -116,12 +112,12 @@ def test_async_tool_refusal_escalates() -> None:
         )
 
     agent = ClioReAct("question -> answer", tools=[dspy.Tool(task_echo)], max_iters=0)
-    lm = _always_retry_lm()
-    with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+    lm, engine = _always_retry_lm()
+    with dspy.context(lm=lm):
         with pytest.raises(MCPMissingRequiredClientCapabilityError):
             agent(question="fetch it")
     assert calls[0] == 1
-    assert len(lm.history) == 1
+    assert len(engine.requests) == 1
 
 
 def test_ordinary_tool_error_is_not_escalated() -> None:
@@ -140,26 +136,16 @@ def test_ordinary_tool_error_is_not_escalated() -> None:
     agent = ClioReAct(
         "question -> answer", tools=[dspy.Tool(flaky), dspy.Tool(rpc_error)], max_iters=6
     )
-    lm = DummyLM(
+    lm, engine = scripted_lm(
         [
-            {
-                "next_thought": "try both",
-                "tool_calls": {
-                    "tool_calls": [
-                        {"name": "flaky", "args": {"payload": "x"}},
-                        {"name": "rpc_error", "args": {"payload": "x"}},
-                    ]
-                },
-            },
-            {
-                "next_thought": "give up, submit",
-                "tool_calls": {"tool_calls": [{"name": "submit", "args": {"answer": "n/a"}}]},
-            },
+            calls(("flaky", {"payload": "x"}), ("rpc_error", {"payload": "x"}), text="try both"),
+            calls(("submit", {"answer": "n/a"}), text="give up, submit"),
         ]
     )
-    with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+    with dspy.context(lm=lm):
         pred = agent(question="fetch it")
     assert (pred.answer, pred.termination_reason) == ("n/a", "submit")
-    step_results = pred.history.messages[1]["tool_calls"].tool_call_results.tool_call_results
-    assert [r.is_error for r in step_results] == [True, True]
-    assert "transient upstream hiccup" in step_results[0].value
+    first, second = pred.messages[2].parts
+    assert [first.is_error, second.is_error] == [True, True]
+    assert "transient upstream hiccup" in first.content[0].text
+    assert len(engine.requests) == 2

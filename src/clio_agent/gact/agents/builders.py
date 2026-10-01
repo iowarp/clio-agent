@@ -878,11 +878,8 @@ def _blueprint_runtime_signature(
     # field was flattened to a free dict, a small model (qwopus) emitted the
     # ranking under the wrong key (``catalog`` instead of ``station_catalog``), so
     # ``station_catalog.status`` resolved to None and the data->resolver contract
-    # never fired. Code-trained models still tend to emit this typed field as a
-    # Python constructor-repr (``Model(field=...)``) rather than JSON; that is
-    # recovered by the LenientChatAdapter (constructor-repr -> JSON, no re-request)
-    # with DSPy's JSON-adapter fallback OFF for local backends so the recovery is
-    # not bypassed. The recovery preserves the correct keys.
+    # never fired. The typed field rides the ``submit`` tool's JSON schema, so the
+    # model is asked for exactly these keys.
     if trace.HF_ON:
         trace.hot(
             "SIG-BUILD",

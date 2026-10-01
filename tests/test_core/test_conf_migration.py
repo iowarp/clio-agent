@@ -97,46 +97,9 @@ class TestGactTurnTimeout:
 # global on/off knob. ``TestReasoningModelCapability`` was deleted alongside
 # ``_reasoning_model_capability`` / ``CLIO_LM_REASONING_MODEL`` -- the qwen-name
 # heuristic (``_uses_local_reasoning_model_profile``) it fell back to is
-# deleted too; every caller (``_parse_retry_attempts`` below,
-# ``gact.streaming._config_is_reasoning_model``) now reads
+# deleted too; every caller (``gact.streaming._config_is_reasoning_model``) reads
 # ``config.is_reasoning`` directly (the handshake-derived effective-capabilities
 # fact, model-capabilities brief 5.5), with no separate env override.
-
-
-class TestParseRetryAttempts:
-    """``limits.lm_parse_retry_attempts`` / ``CLIO_LM_PARSE_RETRY_ATTEMPTS``."""
-
-    @staticmethod
-    def _cfg(is_reasoning=False, provider="openai"):
-        from types import SimpleNamespace
-
-        return SimpleNamespace(
-            provider=provider,
-            model="gpt-4o",
-            is_reasoning=is_reasoning,
-            parse_retry_capability="single_attempt" if provider == "codex" else "bounded",
-        )
-
-    def test_default(self, monkeypatch):
-        from clio_agent.config import _parse_retry_attempts
-
-        monkeypatch.delenv("CLIO_LM_PARSE_RETRY_ATTEMPTS", raising=False)
-        assert _parse_retry_attempts(self._cfg(is_reasoning=False)) == 0
-        assert _parse_retry_attempts(self._cfg(is_reasoning=True)) == 2
-        assert _parse_retry_attempts(self._cfg(is_reasoning=True, provider="codex")) == 0
-
-    def test_env(self, monkeypatch):
-        from clio_agent.config import _parse_retry_attempts
-
-        monkeypatch.setenv("CLIO_LM_PARSE_RETRY_ATTEMPTS", "5")
-        assert _parse_retry_attempts(self._cfg()) == 5
-
-    def test_file_wins(self, monkeypatch, tmp_path):
-        from clio_agent.config import _parse_retry_attempts
-
-        monkeypatch.setenv("CLIO_LM_PARSE_RETRY_ATTEMPTS", "5")
-        _write_user_config(monkeypatch, tmp_path, "limits:\n  lm_parse_retry_attempts: 9\n")
-        assert _parse_retry_attempts(self._cfg()) == 9
 
 
 # NOTE (#948 S4b): ``TestLegacyNativeExpertsEnabled`` was deleted alongside the
@@ -318,17 +281,11 @@ class TestStopSequencesOverride:
         monkeypatch.setenv("CLIO_LM_STOP_SEQUENCES", "</s>||STOP")
         assert build_request_kwargs(self._cfg())["stop"] == ["</s>", "STOP"]
 
-    def test_default_when_unset(self, monkeypatch):
+    def test_no_stop_sent_when_unset(self, monkeypatch):
         from clio_agent.lm.request_builder import build_request_kwargs
 
         monkeypatch.delenv("CLIO_LM_STOP_SEQUENCES", raising=False)
-        stop = build_request_kwargs(self._cfg())["stop"]
-        assert stop == [
-            "[[ ## observation",
-            "[[ ## thought_",
-            "[[ ## tool_name_",
-            "[[ ## tool_args_",
-        ]
+        assert "stop" not in build_request_kwargs(self._cfg())
 
     def test_file_list_wins(self, monkeypatch, tmp_path):
         from clio_agent.lm.request_builder import build_request_kwargs
@@ -736,84 +693,6 @@ class TestLmStudioFlashAttention:
         monkeypatch.setenv("CLIO_LMSTUDIO_FLASH_ATTENTION", "1")
         _write_user_config(monkeypatch, tmp_path, "lm:\n  lmstudio_flash_attention: false\n")
         assert _lmstudio_flash_attention_enabled() is False
-
-
-class TestDisableJsonAdapterFallback:
-    """``lm.disable_json_adapter_fallback`` / ``CLIO_DISABLE_JSON_ADAPTER_FALLBACK``."""
-
-    @staticmethod
-    def _remote_cfg():
-        from types import SimpleNamespace
-
-        # A remote (non-local) backend keeps the JSON-adapter fallback ON unless
-        # the knob disables it.
-        return SimpleNamespace(
-            provider="openai",
-            api_base="https://api.openai.com/v1",
-            model="gpt-4o",
-            is_reasoning=False,
-        )
-
-    def test_default(self, monkeypatch):
-        from clio_agent.config import create_chat_adapter
-
-        monkeypatch.delenv("CLIO_DISABLE_JSON_ADAPTER_FALLBACK", raising=False)
-        monkeypatch.delenv("CLIO_LM_GUIDED_OUTPUT", raising=False)
-        adapter = create_chat_adapter(self._remote_cfg())
-        assert adapter.use_json_adapter_fallback is True
-
-    def test_env(self, monkeypatch):
-        from clio_agent.config import create_chat_adapter
-
-        monkeypatch.setenv("CLIO_DISABLE_JSON_ADAPTER_FALLBACK", "1")
-        monkeypatch.delenv("CLIO_LM_GUIDED_OUTPUT", raising=False)
-        adapter = create_chat_adapter(self._remote_cfg())
-        assert adapter.use_json_adapter_fallback is False
-
-    def test_file_wins(self, monkeypatch, tmp_path):
-        from clio_agent.config import create_chat_adapter
-
-        monkeypatch.setenv("CLIO_DISABLE_JSON_ADAPTER_FALLBACK", "1")
-        monkeypatch.delenv("CLIO_LM_GUIDED_OUTPUT", raising=False)
-        _write_user_config(monkeypatch, tmp_path, "lm:\n  disable_json_adapter_fallback: false\n")
-        adapter = create_chat_adapter(self._remote_cfg())
-        assert adapter.use_json_adapter_fallback is True
-
-
-class TestDumpUnparseable:
-    """``debug.dump_unparseable`` / ``CLIO_DUMP_UNPARSEABLE`` — diagnostic dump path."""
-
-    @staticmethod
-    def _dump():
-        from clio_agent.config import _dump_unparseable_completion
-
-        _dump_unparseable_completion(object, "raw completion", "answer", "value", "boom")
-
-    def test_default_no_write(self, monkeypatch, tmp_path):
-        monkeypatch.delenv("CLIO_DUMP_UNPARSEABLE", raising=False)
-        self._dump()
-        assert [p for p in tmp_path.iterdir() if p.name != "xdg"] == []
-
-    def test_env(self, monkeypatch, tmp_path):
-        import json
-
-        dump = tmp_path / "dump.jsonl"
-        monkeypatch.setenv("CLIO_DUMP_UNPARSEABLE", str(dump))
-        self._dump()
-        row = json.loads(dump.read_text(encoding="utf-8").splitlines()[0])
-        assert row["failing_field"] == "answer"
-        assert row["raw_completion"] == "raw completion"
-
-    def test_file_wins(self, monkeypatch, tmp_path):
-        env_dump = tmp_path / "env.jsonl"
-        file_dump = tmp_path / "file.jsonl"
-        monkeypatch.setenv("CLIO_DUMP_UNPARSEABLE", str(env_dump))
-        _write_user_config(
-            monkeypatch, tmp_path, f"debug:\n  dump_unparseable: {file_dump.as_posix()}\n"
-        )
-        self._dump()
-        assert file_dump.exists()
-        assert not env_dump.exists()
 
 
 class TestCaptureReasoning:

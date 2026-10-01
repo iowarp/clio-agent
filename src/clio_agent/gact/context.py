@@ -164,7 +164,7 @@ def react_extract_field_suppressed(kind: str, field: str, *, answer_is_deliverab
     """Whether a ``kind: react`` expert's contract ``field`` is a redundant EXTRACT
     field that must NOT become a visible transcript part (#878).
 
-    Read by the one visible-emit seam (the io_logging live tap
+    Read by the one visible-emit seam (the live tap
     ``lm_activity.note_lm_answer_delta``) so the kind-gate logic lives in one place.
 
     A ``kind: react`` expert's visible conversation is its per-step ``next_thought``

@@ -56,11 +56,6 @@ runtime.capture_reasoning: true
 # change to reflect staging/prod for environment-aware logging.
 runtime.environment: "dev"
 
-# CLIO_LM_TOKEN_LIVENESS  (bool)  <- src/clio_agent/lm/io_logging.py
-# Streams expert LM calls token-by-token so each token refreshes the no-
-# progress watchdog; disable only if streaming plumbing misbehaves.
-runtime.lm_token_liveness: true
-
 # CLIO_SANDBOX_ENABLED  (bool)  <- src/clio_agent/runtime/sandbox.py
 # Whether tool-execution sandboxing/confinement is applied; disable only for
 # trusted local dev where sandbox setup gets in the way.
@@ -108,11 +103,6 @@ lm.context_window: 0
 # Defers litellm's ~40MB cl100k tiktoken vocab load until first real encode;
 # disable if something depends on eager tiktoken load at boot.
 lm.defer_tiktoken: true
-
-# CLIO_DISABLE_JSON_ADAPTER_FALLBACK  (bool)  <- src/clio_agent/lm/adapters.py
-# Force-disables the JSON-adapter fallback for cloud providers that reject
-# response_format; set true if a provider 400s on it.
-lm.disable_json_adapter_fallback: false
 
 # CLIO_LM_GUIDED_OUTPUT  (bool)  <- src/clio_agent/lm/adapters.py
 # Switches to schema-constrained JSON output instead of the text
@@ -199,7 +189,7 @@ providers.claude_code.max_concurrent_processes: 4.0
 # starting at once.
 providers.claude_code.max_precede_connects: 2.0
 
-# CLIO_CLAUDE_CODE_STATEFUL_CAPACITY  (float)  <- src/clio_agent/providers/claude_code_stateful.py
+# CLIO_CLAUDE_CODE_STATEFUL_CAPACITY  (float)  <- src/clio_agent/providers/claude_code_engine.py
 # Max live Claude Code stateful-session entries before LRU eviction; raise
 # on a host running many concurrent stateful sessions.
 providers.claude_code.stateful_capacity: 128.0
@@ -209,7 +199,7 @@ providers.claude_code.stateful_capacity: 128.0
 # next request reaps it; lower to free idle connections sooner.
 providers.claude_code.stream_idle_ttl_s: 15.0
 
-# CLIO_CODEX_STATEFUL_CAPACITY  (float)  <- src/clio_agent/providers/codex/sdk_stateful.py
+# CLIO_CODEX_STATEFUL_CAPACITY  (float)  <- src/clio_agent/providers/codex/sdk_engine.py
 # Max live Codex SDK conversations (one kept thread each) before LRU
 # eviction; raise on a host running many concurrent agent conversations.
 providers.codex.stateful_capacity: 128.0
@@ -311,17 +301,7 @@ limits.lm_call_s: 1800.0
 # stalled; raise to tolerate slower generation, lower to catch it faster.
 limits.lm_inter_token_idle_s: 120.0
 
-# CLIO_LM_PARSE_RETRY_ATTEMPTS  (str)  <- src/clio_agent/lm/adapters.py
-# Overrides re-sample attempts after an unrecoverable structured-output
-# parse failure; reasoning models default to 2, others 0.
-# limits.lm_parse_retry_attempts:  # default unset; resolved in code
-
-# CLIO_LM_TRANSIENT_BACKOFF_S  (float)  <- src/clio_agent/lm/io_logging.py
-# Seconds to wait before re-issuing an LM call after a transient provider
-# failure; default 8s lets LM Studio JIT-reload a crashed model.
-limits.lm_transient_backoff_s: 8.0
-
-# CLIO_LM_TRANSIENT_RETRIES  (float)  <- src/clio_agent/lm/io_logging.py
+# CLIO_LM_TRANSIENT_RETRIES  (float)  <- src/clio_agent/lm/policy.py
 # Bounded retry count for a transient (non-parse) provider failure before
 # giving up; raise on a flaky provider connection.
 limits.lm_transient_retries: 2.0
@@ -1411,11 +1391,6 @@ relay.tool_surfaces_ttl_seconds: 300
 # ==========================================================================
 # Agentic provenance export (Flowcept/JSONL), the semantic trace backend and
 # debug/diagnostic knobs.
-
-# CLIO_DUMP_UNPARSEABLE  (str)  <- src/clio_agent/lm/adapters.py
-# Filesystem path to dump raw LM completions the adapter failed to parse;
-# set when diagnosing a model/adapter mismatch, else a no-op.
-# debug.dump_unparseable:  # default unset; resolved in code
 
 # CLIO_DEBUG  (str)  <- src/clio_agent/runtime/trace.py
 # Log verbosity ("off"/"low"/"med"/"high", default "low"); raise to "high"

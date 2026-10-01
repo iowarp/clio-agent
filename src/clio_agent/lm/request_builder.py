@@ -247,31 +247,19 @@ def _lm_studio_allowed_options(config: "LMProviderConfig") -> tuple[str, ...] | 
 
 
 def _stop_sequences() -> list[str]:
-    """The DSPy trajectory-regurgitation stop list, or ``lm.stop_sequences``' override.
+    """The operator's ``lm.stop_sequences`` override; none by default.
 
-    Unchanged literal list / override mechanism from the pre-P5 code; the
-    difference (Part 7 item 3) is purely in WHEN the caller sends this --
-    only when ``"stop"`` is in the effective accepted-parameter set, never on
-    a per-model reasoning-capability guess.
+    The loop reads typed replies (no field-format markers), so there is nothing to
+    stop on unless an operator sets a list -- sent only when the effective
+    accepted-parameter set includes ``stop``.
     """
 
     from clio_agent import conf  # noqa: PLC0415 - keep this module import-light
 
     raw_stop = conf.resolve("lm.stop_sequences", env="CLIO_LM_STOP_SEQUENCES", default=None)
     if isinstance(raw_stop, (list, tuple)):
-        override = [str(s) for s in raw_stop if str(s)]
-        if override:
-            return override
-    elif raw_stop:
-        override = [s for s in str(raw_stop).split("||") if s]
-        if override:
-            return override
-    return [
-        "[[ ## observation",
-        "[[ ## thought_",
-        "[[ ## tool_name_",
-        "[[ ## tool_args_",
-    ]
+        return [str(s) for s in raw_stop if str(s)]
+    return [s for s in str(raw_stop or "").split("||") if s]
 
 
 def build_request_kwargs(config: "LMProviderConfig") -> dict[str, Any]:
@@ -288,9 +276,9 @@ def build_request_kwargs(config: "LMProviderConfig") -> dict[str, Any]:
 
     Returns:
         The kwargs dict to splat into ``dspy.LM(...)`` alongside ``model``/
-        ``api_key``/``api_base``/``max_tokens``/``cache``. Always includes
-        ``drop_params=True`` (item 9's safety net) unless the caller's own
-        ``provider_options`` already set it.
+        ``api_key``/``api_base``/``max_tokens``/``cache``. Every optional field
+        is gated on the effective parameter set; DSPy's native (lm15) backend
+        records any adaptation it still makes instead of dropping it silently.
     """
 
     dialect, accepted, effective = _resolve(config)
@@ -375,8 +363,9 @@ def build_request_kwargs(config: "LMProviderConfig") -> dict[str, Any]:
 
     # -- stop sequences (item 3) -------------------------------------------
     # An unknown accepted-set answer (codex/claude_code) stays "don't send it".
-    if "stop" not in extras and "stop" in accepted:
-        extras["stop"] = _stop_sequences()
+    stop = _stop_sequences() if "stop" not in extras and "stop" in accepted else []
+    if stop:
+        extras["stop"] = stop
         sent_optional = True
 
     # OpenRouter: refuse to silently route around an optional param this
@@ -389,13 +378,6 @@ def build_request_kwargs(config: "LMProviderConfig") -> dict[str, Any]:
     elif config.provider == "claude_code":
         extras["claude_code_transport"] = config.claude_code_transport
 
-    # Safety net only (item 9): every optional field above is already gated
-    # on the effective parameter set. `drop_params` is the backstop for when
-    # that record is wrong, so a stale/incomplete capability record degrades
-    # to "field silently omitted" instead of a hard request failure; P2's
-    # `_warn_dropped_params` (factory.py, called from `_construct_lm`) turns
-    # every actual drop into a logged bug signal instead of a silent one.
-    extras.setdefault("drop_params", True)
     return extras
 
 

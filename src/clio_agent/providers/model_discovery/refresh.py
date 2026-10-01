@@ -145,9 +145,9 @@ def is_provider_configured(preset: Provider) -> bool:
       local server is actually running.
     """
     if preset.provider_kind == "codex":
-        from clio_agent.providers.codex.credentials import CodexCredentialStore  # noqa: PLC0415
+        from clio_agent.providers.codex.credentials import direct_signed_in  # noqa: PLC0415
 
-        return CodexCredentialStore().is_signed_in()
+        return direct_signed_in()
     if preset.provider_kind == "claude_code":
         import importlib.util  # noqa: PLC0415
 

@@ -72,7 +72,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_CLAUDE_CODE_AUTH_STATUS_TIMEOUT_S` | `providers.claude_code.auth_status_timeout_s` | float | `20.0` | `src/clio_agent/providers/model_discovery/claude_code.py` |
 | `CLIO_CLAUDE_CODE_MAX_CONCURRENT_PROCESSES` | `providers.claude_code.max_concurrent_processes` | float | `4.0` | `src/clio_agent/providers/claude_code_stream_bounds.py` |
 | `CLIO_CLAUDE_CODE_MAX_PRECEDE_CONNECTS` | `providers.claude_code.max_precede_connects` | float | `2.0` | `src/clio_agent/providers/claude_code_stream_bounds.py` |
-| `CLIO_CLAUDE_CODE_STATEFUL_CAPACITY` | `providers.claude_code.stateful_capacity` | float | `128.0` | `src/clio_agent/providers/claude_code_stateful.py` |
+| `CLIO_CLAUDE_CODE_STATEFUL_CAPACITY` | `providers.claude_code.stateful_capacity` | float | `128.0` | `src/clio_agent/providers/claude_code_engine.py` |
 | `CLIO_CLAUDE_CODE_STREAM_IDLE_TTL_S` | `providers.claude_code.stream_idle_ttl_s` | float | `15.0` | `src/clio_agent/providers/claude_code_stream_bounds.py` |
 | `CLIO_CLAUDE_CODE_TRANSPORT` | `lm.claude_code_transport` | str | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_CMF_ARTIFACT_ROOT` | `provenance.artifacts.cmf.artifact_root` | str | _(unset)_ | `src/clio_agent/gact/artifacts/provenance/cmf_mode.py` |
@@ -84,7 +84,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_CMF_SERVER_URL` | `provenance.artifacts.cmf.server_url` | str | _(unset)_ | `src/clio_agent/gact/artifacts/provenance/cmf_mode.py` |
 | `CLIO_CMF_WORKER_URL` | `provenance.artifacts.cmf.worker_url` | str | _(unset)_ | `src/clio_agent/gact/artifacts/provenance/cmf_mode.py` |
 | `CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S` | `limits.codex_sdk_progress_timeout_s` | float | `120.0` | `src/clio_agent/providers/codex/sdk_client.py` |
-| `CLIO_CODEX_STATEFUL_CAPACITY` | `providers.codex.stateful_capacity` | float | `128.0` | `src/clio_agent/providers/codex/sdk_stateful.py` |
+| `CLIO_CODEX_STATEFUL_CAPACITY` | `providers.codex.stateful_capacity` | float | `128.0` | `src/clio_agent/providers/codex/sdk_engine.py` |
 | `CLIO_CODEX_TRANSPORT` | `lm.codex_transport` | str | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_CODEX_VARIANT` | `lm.codex_variant` | str | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_CONTEXT_REFERENCE_BROWSE_LIMIT` | `gact.context_references.browse_limit_per_kind` | int | `20` | `src/clio_agent/gact/context_reference_search.py` |
@@ -103,9 +103,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_DEBUG_MEMPROF_OUT` | `debug.memprof_out` | str | _(unset)_ | `src/clio_agent/gact/diagnostics.py` |
 | `CLIO_DEBUG_ONLY` | `debug.only` | list | `_no_only` _(computed)_ | `src/clio_agent/runtime/trace.py` |
 | `CLIO_DEFAULT_AGENT_BLUEPRINT_ID` | `agents.default_blueprint_id` | str | `base-agent` | `src/clio_agent/gact/agent_blueprint_refresh.py` |
-| `CLIO_DISABLE_JSON_ADAPTER_FALLBACK` | `lm.disable_json_adapter_fallback` | bool | `false` | `src/clio_agent/lm/adapters.py` |
 | `CLIO_DOCUMENT_PROCESSOR_URL` | `resources.document_processor_url` | str | _(unset)_ | `src/clio_agent/gact/composer_runtime.py` |
-| `CLIO_DUMP_UNPARSEABLE` | `debug.dump_unparseable` | str | _(unset)_ | `src/clio_agent/lm/adapters.py` |
 | `CLIO_ENVIRONMENT` | `runtime.environment` | str | `dev` | `src/clio_agent/config.py` |
 | `CLIO_FLOWCEPT_CAMPAIGN_ID` | `provenance.agentic.flowcept.campaign_id` | str | _(unset)_ | `src/clio_agent/gact/provenance/factory.py` |
 | `CLIO_FLOWCEPT_CAMPAIGN_SCOPE` | `provenance.agentic.flowcept.campaign_scope` | str | `session` | `src/clio_agent/gact/provenance/factory.py` |
@@ -159,18 +157,15 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_LM_MAX_TOKENS` | `lm.max_tokens` | int | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_LM_MIN_P` | `lm.min_p` | float | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_LM_MODEL` | `lm.model` | str | _(unset)_ | `src/clio_agent/config.py` |
-| `CLIO_LM_PARSE_RETRY_ATTEMPTS` | `limits.lm_parse_retry_attempts` | str | _(unset)_ | `src/clio_agent/lm/adapters.py` |
 | `CLIO_LM_PRESENCE_PENALTY` | `lm.presence_penalty` | float | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_LM_PROVIDER` | `lm.provider` | str | `lm_studio` | `src/clio_agent/config.py` |
 | `CLIO_LM_STOP_SEQUENCES` | `lm.stop_sequences` | str | _(unset)_ | `src/clio_agent/lm/request_builder.py` |
 | `CLIO_LM_TEMPERATURE` | `lm.temperature` | float | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_LM_THINKING_BUDGET` | `lm.thinking_budget` | int | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_LM_THINKING_LEVEL` | `lm.thinking_level` | str | _(unset)_ | `src/clio_agent/config.py` |
-| `CLIO_LM_TOKEN_LIVENESS` | `runtime.lm_token_liveness` | bool | `true` | `src/clio_agent/lm/io_logging.py` |
 | `CLIO_LM_TOP_K` | `lm.top_k` | int | _(unset)_ | `src/clio_agent/config.py` |
 | `CLIO_LM_TOP_P` | `lm.top_p` | float | _(unset)_ | `src/clio_agent/config.py` |
-| `CLIO_LM_TRANSIENT_BACKOFF_S` | `limits.lm_transient_backoff_s` | float | `8.0` | `src/clio_agent/lm/io_logging.py` |
-| `CLIO_LM_TRANSIENT_RETRIES` | `limits.lm_transient_retries` | float | `2.0` | `src/clio_agent/lm/io_logging.py` |
+| `CLIO_LM_TRANSIENT_RETRIES` | `limits.lm_transient_retries` | float | `2.0` | `src/clio_agent/lm/policy.py` |
 | `CLIO_LOG_LM_RESPONSE` | `debug.lm_response` | bool | `false` | `src/clio_agent/runtime/trace.py` |
 | `CLIO_MAX_CONCURRENT_AGENT_TASKS` | `agent_tasks.max_concurrent` | int | `3` | `src/clio_agent/gact/turn_spawn_executor.py` |
 | `CLIO_MAX_FILE_SIZE_BYTES` | `tools.file_policy.max_file_size_bytes` | str | `1073741824` | `src/clio_agent/tools/file_policy.py` |

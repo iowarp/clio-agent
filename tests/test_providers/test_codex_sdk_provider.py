@@ -26,7 +26,7 @@ from clio_agent.providers.claude_code_cancel import (
 from clio_agent.providers.claude_code_cancel import (
     abort_session_streams,
 )
-from clio_agent.providers.codex import sdk_client, sdk_discovery, sdk_transport
+from clio_agent.providers.codex import sdk_client, sdk_discovery, sdk_engine
 from clio_agent.providers.codex.constants import LITELLM_PROVIDER, LITELLM_PROVIDER_SDK
 
 
@@ -91,7 +91,7 @@ def test_sdk_modules_never_reference_auth_json() -> None:
     not raw substring containment over the whole file.
     """
 
-    for module in (sdk_client, sdk_discovery, sdk_transport):
+    for module in (sdk_client, sdk_discovery, sdk_engine):
         source = Path(inspect.getfile(module)).read_text(encoding="utf-8")
         literals = _string_literals_excluding_docstrings(source)
         offenders = [lit for lit in literals if "auth.json" in lit]
@@ -386,7 +386,7 @@ def test_model_selection_routes_to_direct_by_default() -> None:
 
     config = LMProviderConfig(provider="codex", model="gpt-5.5", api_base="codex://direct")
     assert config.codex_variant == "direct"
-    assert _resolve_model_name(config) == f"{LITELLM_PROVIDER}/cg-gpt-5.5"
+    assert _resolve_model_name(config) == f"{LITELLM_PROVIDER}/gpt-5.5"
 
 
 def test_model_selection_routes_to_sdk_when_variant_selected() -> None:
@@ -396,31 +396,35 @@ def test_model_selection_routes_to_sdk_when_variant_selected() -> None:
     config = LMProviderConfig(
         provider="codex", model="gpt-5.5", api_base="codex://direct", codex_variant="sdk"
     )
-    assert _resolve_model_name(config) == f"{LITELLM_PROVIDER_SDK}/cg-gpt-5.5"
+    assert _resolve_model_name(config) == f"{LITELLM_PROVIDER_SDK}/gpt-5.5"
 
 
-def test_provider_registration_picks_the_bound_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_both_variants_are_engine_lms_and_register_nothing_with_litellm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each variant builds its own engine; LiteLLM's provider map is never touched."""
+    import litellm
+    from dspy.lm15 import OpenAICodexLM
+
     from clio_agent.config import LMProviderConfig
-    from clio_agent.lm import factory
+    from clio_agent.lm.factory import create_lm
+    from clio_agent.providers.codex import direct_engine
 
-    registered: list[str] = []
     monkeypatch.setattr(
-        "clio_agent.providers.codex.litellm_adapter.ensure_registered",
-        lambda: registered.append("direct"),
+        direct_engine, "default_wire", lambda: OpenAICodexLM(api_key="t", account_id="a")
     )
-    monkeypatch.setattr(
-        "clio_agent.providers.codex.sdk_transport.ensure_registered",
-        lambda: registered.append("sdk"),
+    before = list(litellm.custom_provider_map)
+    direct = create_lm(
+        LMProviderConfig(provider="codex", model="gpt-5.5", api_base="codex://direct")
     )
-
-    direct_cfg = LMProviderConfig(provider="codex", model="gpt-5.5", api_base="codex://direct")
-    factory._ensure_provider_registered(direct_cfg)
-    sdk_cfg = LMProviderConfig(
-        provider="codex", model="gpt-5.5", api_base="codex://direct", codex_variant="sdk"
+    sdk = create_lm(
+        LMProviderConfig(
+            provider="codex", model="gpt-5.5", api_base="codex://direct", codex_variant="sdk"
+        )
     )
-    factory._ensure_provider_registered(sdk_cfg)
-
-    assert registered == ["direct", "sdk"]
+    assert isinstance(direct._engine_spec, direct_engine.CodexDirectEngine)
+    assert isinstance(sdk._engine_spec, sdk_engine.CodexSDKEngine)
+    assert list(litellm.custom_provider_map) == before
 
 
 def test_invalid_codex_variant_is_rejected() -> None:

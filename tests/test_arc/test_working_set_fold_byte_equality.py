@@ -59,7 +59,7 @@ def _populate(arc: ARCMemory, session: str, *triples: Any) -> None:
 
 
 def _wire_text(arc: ARCMemory, session: str) -> str:
-    """The loop's History events over the fold render, flattened to text."""
+    """The loop's context messages over the fold render, flattened to text."""
     msgs = fold_steps(arc.render_segments(session, SCOPE))
     return "\n".join(str(m) for m in msgs)
 
@@ -146,7 +146,7 @@ def test_fold_insert_propagates_at_position(fold_arc: ARCMemory, session: str) -
 
 
 def test_fold_append_only_is_a_prefix(fold_arc: ARCMemory, session: str) -> None:
-    """Appends extend the History event list; the prior events are a byte-stable prefix."""
+    """Appends extend the folded message list; the prior messages are a stable prefix."""
     _populate(
         fold_arc,
         session,
@@ -215,14 +215,14 @@ def _populate_steps(arc: ARCMemory, session: str, steps: list[dict[str, Any]]) -
 
 
 def test_fold_steps_match_reference(fold_arc: ARCMemory, session: str) -> None:
-    """``fold_steps`` over the fold reproduces the independently-built reference event
-    list exactly (the anti-shadow wire proof)."""
-    from .test_clio_react_wire_byte_equality import expected_history_messages
+    """``fold_steps`` over the fold reproduces the independently-built reference
+    messages exactly (the anti-shadow wire proof)."""
+    from .test_clio_react_wire_byte_equality import expected_messages
 
     _populate_steps(fold_arc, session, _STEPS)
     with live_plane_context(fold_arc, session=session, scope=SCOPE):
         folded = fold_steps(fold_arc.render_segments(session, SCOPE))
-    assert folded == expected_history_messages(_STEPS)
+    assert folded == expected_messages(_STEPS)
 
 
 def test_fold_delete_propagates_on_the_loop_context(fold_arc: ARCMemory, session: str) -> None:

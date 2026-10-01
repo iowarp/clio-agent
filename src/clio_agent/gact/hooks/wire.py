@@ -174,6 +174,13 @@ _HOOK_REASON_DEFINITIONS: dict[str, dict[str, Any]] = {
             "resolve; the call ran on the DEFAULT model instead"
         ),
     },
+    "hook_patch_params_unmapped": {
+        "severity": "warning",
+        "detail": (
+            "a BeforeModel request_patch named params the typed request has no field "
+            "for; those params were not applied"
+        ),
+    },
     "hook_model_denied": {
         "severity": "warning",
         "detail": "a BeforeModel hook denied the model request; the call was blocked",

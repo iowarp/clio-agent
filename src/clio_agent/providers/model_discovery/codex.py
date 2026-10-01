@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from clio_agent.providers.codex.credentials import CodexCredentialStore
+from clio_agent.providers.codex.credentials import CodexCredentialStore, direct_signed_in
 from clio_agent.providers.codex.errors import CODEX_AUTHENTICATION_ERROR_MESSAGE
 from clio_agent.providers.codex.model_list import (
     CodexModelListError,
@@ -95,7 +95,7 @@ def discover_codex(
     """
 
     store = credential_store or CodexCredentialStore()
-    if not store.is_signed_in():
+    if not direct_signed_in(store):
         return ProviderDiscoveryResult(
             provider="codex",
             discovered=[],
