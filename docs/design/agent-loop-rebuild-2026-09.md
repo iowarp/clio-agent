@@ -943,10 +943,12 @@ Open (next):
   "smaller than capacity_limit; clio-core would reuse it without growing it". The July rule
   ("clio-core creates each file tier at its full capacity") does not match what the daemon
   did. Measure the real allocation behaviour before changing the rule.
-- **The browser renders no live updates on this branch** (History and clio-core mode alike):
-  the session SSE route answers from inside the page (200, frames flowing), and a reload shows
-  everything, but nothing (text, tools, the permission prompt) appears until reload. To
-  bisect: web build vs server branch.
+- ~~The browser renders no live updates on this branch~~ — not a product bug. The automation
+  window was not on screen (`document.visibilityState === "hidden"`), and the web app by
+  design opens no live stream while hidden (`use-session-live-stream.ts`), catching up on
+  reconnect. Verified: the v3 SSE stream carries the whole turn, and every captured frame
+  reduces cleanly in the client's own `reduceTransportFrame`. Live UI checks need the browser
+  window visible.
 - **The health `lm_provider` row reads environment variables only**, falls back to
   `lm_studio`, and ignores `config.yaml` and the server's provider profile: a server with Codex
   configured answered 503 "unavailable".
