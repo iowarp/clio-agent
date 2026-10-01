@@ -936,27 +936,31 @@ Fixed:
   42 GB free the agent never started. An unallocated old seed that cannot fit is resized
   in place.
 
+Fixed after the check (2026-10-01):
+- **The file-tier preflight refused a store clio-core was serving (second start failed)**
+  (`22b92b30`). Measured on iowarp-core 2.2.1 (Windows): 3 GB and 6 GB tiers both start at
+  1 GiB, and writing ~1.4 GB through the store grows the file to 2 GiB with every blob read
+  back. The capacity is a growth ceiling on every platform: a fresh tier needs its first chunk
+  plus the reserve, and an existing backing file is reused. The July rule ("Windows allocates
+  the full capacity") is deleted.
+- **The health `lm_provider` row probed LM Studio on a Codex-configured server** (`82b98356`):
+  with no bound LM, health and the CLI doctor now probe the boot config the agent is built from.
+- **`/v1/health` was 503 before clio-core started** (`4ebea3c3`): a daemon not listening is
+  down only after a failed attach, a lost daemon or a crash record; otherwise DEGRADED
+  `clio_core_starting`.
+- **The ReAct-step and expert-lifecycle emitters swallowed every failure** (`c9604c0c`):
+  removed, so an event clio-core cannot record fails the turn.
+- **The ratchet** (`8b914c46`): `check_noqa_swallows.py` counts BLE001/S110/E722 with
+  `noqa` ignored, per file, in CI. The baseline (558 in 226 files) only lowers.
+
 Open (next):
-- **The file-tier preflight refuses a store clio-core is serving (second start fails).**
-  A fresh 3 GB seed came up with a 1 GiB `storage.bin_node0` (iowarp-core 2.2.1, Windows),
-  and the daemon served turns. On the next server start the preflight refused it as
-  "smaller than capacity_limit; clio-core would reuse it without growing it". The July rule
-  ("clio-core creates each file tier at its full capacity") does not match what the daemon
-  did. Measure the real allocation behaviour before changing the rule.
 - ~~The browser renders no live updates on this branch~~ — not a product bug. The automation
   window was not on screen (`document.visibilityState === "hidden"`), and the web app by
   design opens no live stream while hidden (`use-session-live-stream.ts`), catching up on
   reconnect. Verified: the v3 SSE stream carries the whole turn, and every captured frame
   reduces cleanly in the client's own `reduceTransportFrame`. Live UI checks need the browser
   window visible.
-- **The health `lm_provider` row reads environment variables only**, falls back to
-  `lm_studio`, and ignores `config.yaml` and the server's provider profile: a server with Codex
-  configured answered 503 "unavailable".
-- **`/v1/health` is 503 while a cold clio-core attach is still starting** (`arc` and
-  `clio_core` rows UNAVAILABLE before the daemon is up): the first impression is "down".
-- Swallows seen on the way: the semantic trace writer drops an event on a write error;
-  `_emit_expert_lifecycle_event` swallowed "ARC-as-source violated" (caught here only by
-  the event count).
+- The semantic trace writer drops an event on a write error (with the rest of the inventory).
 
 ### History mode sub-plan (the one sanctioned fallback)
 
