@@ -1539,9 +1539,12 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
 **Release gate (owner, 2026-10-01):** the 1k/10k before (`037e66ec`) / after benchmark runs once everything else is done. It is a release gate, not a per-phase step.
 
 **Release gates and test procedure (owner, 2026-10-01):**
+- **Deliverable:** one branch, `rework_agent`, over the current `develop`, containing all of this work (and the same for gact-tui). It has CI green, docs and deletion evidence done, and the live legs, marketplace agents and OPAL runs done on Codex direct against the baselines.
 - **Release gates, run once at the end on the final tip, before merge:**
-  - the 1k/10k context-view benchmark;
-  - the gact-tui browser check, done by the owner. Claude does no browser checks in this campaign; the UI is covered by component and reducer tests.
+  - the Chrome-driven live verification of the UI (not per phase; the UI is covered by component, reducer and e2e tests until then);
+  - the 1k/10k context-view benchmark.
+
+  All other live verification is normal campaign work.
 - **Test procedure:** the broad suite runs on GitHub CI (`gh workflow run ci.yml --ref <branch>`), never locally. Locally, only the tests targeting the changed areas. The next phase starts without waiting for CI. A CI failure is fixed on the branch it belongs to, and the later phases are rebased onto the fix.
 
 ### Known follow-ups recorded with the transcript flag
