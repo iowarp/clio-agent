@@ -149,7 +149,9 @@ from clio_agent.gact.app import build_app
 # 281 -> 282: POST /v1/artifacts/{id}/table-query (bounded filter/aggregate/downsample
 # over CSV/Parquet artifacts for charts), owned by routes/artifact_table_query.py,
 # registered from routes/artifact_extensions.py.
-EXPECTED_ROUTE_METHOD_PAIRS = 282
+# 282 -> 281: POST /v1/sessions/{sid}/context/compact deleted (Phase 11b): compaction is
+# ONE operation, POST /v1/sessions/{sid}/compact?scope= (routes/sessions.py).
+EXPECTED_ROUTE_METHOD_PAIRS = 281
 
 # app.py is build_app + lifecycle + re-export shims only. The ceiling is
 # the current size (~2892 lines) plus ~300 lines of headroom so ordinary
