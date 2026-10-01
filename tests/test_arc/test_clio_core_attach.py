@@ -29,23 +29,28 @@ from clio_agent.arc.init_degradation import (
     CLIO_CORE_CLIENT_ATTACH_FAILED,
     CLIO_CORE_CLIENT_ATTACH_TIMEOUT,
     CLIO_CORE_POST_ATTACH_PROBE_TIMEOUT,
+    ArcStoreUnavailableError,
     classify_init_failure,
-    reset_arc_init_degradation,
 )
 
 
 @pytest.fixture(autouse=True)
 def _fresh_attach_state():
     clio_core_attach.reset_attach_state()
-    reset_arc_init_degradation()
     yield
     clio_core_attach.reset_attach_state()
-    reset_arc_init_degradation()
 
 
 def _cfg(tmp_path: Path, port: int) -> str:
     path = tmp_path / "cte.yaml"
-    path.write_text(f"networking:\n  port: {port}\nruntime:\n  num_threads: 4\n", encoding="utf-8")
+    # A durable file tier: the factory refuses a config that would forget on restart.
+    path.write_text(
+        f"networking:\n  port: {port}\nruntime:\n  num_threads: 4\n"
+        "compose:\n  - mod_name: clio_cte_core\n    storage:\n"
+        '      - path: "x/storage.bin"\n        bdev_type: "file"\n'
+        '        persistence_level: "temporary"\n',
+        encoding="utf-8",
+    )
     return str(path)
 
 
@@ -226,10 +231,11 @@ def test_attach_state_starting_then_attached(monkeypatch, tmp_path):
     cfg = _cfg(tmp_path, 21045)
     observed: list[ClioCoreAttachPhase] = []
 
-    class _Store(storage.LocalFSStore):
-        def __init__(self, *, config_path: str) -> None:
+    class _Store:
+        """Stands in for the native ClioCoreStore build (this test is about the state)."""
+
+        def __init__(self, *, config_path: str, namespace: str = "") -> None:
             observed.append(attach_state_snapshot().phase)  # while "attaching"
-            super().__init__(tmp_path / "arc")
 
     _patch_store_build(monkeypatch, _Store)
     store = storage.make_arc_store(backend="cte", data_dir=tmp_path / "fb", config_path=cfg)
@@ -244,22 +250,18 @@ def test_attach_state_starting_then_attached(monkeypatch, tmp_path):
 def test_attach_state_unavailable_carries_the_typed_reason(monkeypatch, tmp_path):
     cfg = _cfg(tmp_path, 21045)
 
-    def _fail(*, config_path: str) -> None:
+    def _fail(*, config_path: str, namespace: str = "") -> None:
         raise ClioCoreAttachError(port=21045, config_path=config_path)
 
     _patch_store_build(monkeypatch, _fail)
-    store = storage.make_arc_store(backend="cte", data_dir=tmp_path / "fb", config_path=cfg)
+    with pytest.raises(ArcStoreUnavailableError) as caught:  # typed, never another store
+        storage.make_arc_store(backend="cte", data_dir=tmp_path / "fb", config_path=cfg)
 
-    assert isinstance(store, storage.LocalFSStore)  # LOUD degrade, not a crash
+    assert caught.value.reason == CLIO_CORE_CLIENT_ATTACH_FAILED
     snap = attach_state_snapshot()
     assert snap.phase is ClioCoreAttachPhase.UNAVAILABLE
     assert snap.reason == CLIO_CORE_CLIENT_ATTACH_FAILED
     assert "21045" in snap.error
-
-
-def test_attach_state_not_selected_for_explicit_local(tmp_path):
-    storage.make_arc_store(backend="local", data_dir=tmp_path / "arc")
-    assert attach_state_snapshot().phase is ClioCoreAttachPhase.NOT_SELECTED
 
 
 class _Future:
@@ -315,7 +317,7 @@ def test_post_attach_probe_against_a_stuck_daemon_expires_typed(monkeypatch):
 
     assert time.monotonic() - started < 5.0
     assert info.value.stage == "post_attach_probe"
-    assert "did not answer within 0.3s" in str(info.value) and "21045" in str(info.value)
+    assert "made no progress for 0.3s" in str(info.value) and "21045" in str(info.value)
     assert classify_init_failure(info.value) == CLIO_CORE_POST_ATTACH_PROBE_TIMEOUT
     assert deregistered == [True]
     assert future.waits == []  # never waited on the unfinished Future

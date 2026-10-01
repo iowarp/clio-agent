@@ -36,6 +36,8 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
+from clio_agent.arc import history_mode
+from clio_agent.errors import ClioError
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.conversation_projection import model_context_messages
 from clio_agent.gact.delegation import _compact_exact_evidence_index
@@ -107,12 +109,30 @@ PLACEMENT_STAGED = "staged_for_finalize"
 #: Audit reasons (``stream_audit`` stage names double as the reason).
 AUDIT_INPUT_OVER_WINDOW = "compaction.input_over_window"
 AUDIT_AUTO_FAILED = "compaction.auto_failed"
+SKIP_NO_TOKEN_COUNT = "no_token_count"
 AUDIT_AUTO_SKIPPED = "compaction.auto_skipped"
 AUDIT_STAGED_FLUSH_AT_CLOSE = "compaction.staged_flush_at_close"
 AUDIT_PERSIST_FAILED = "compaction.persist_failed"
 AUDIT_STAGED_FLUSH_FAILED = "compaction.staged_flush_failed"
 
 _BOUNDED_CHARS = 300
+
+
+class AutoCompactionFailedError(ClioError):
+    """The proactive compaction a turn needed failed: the turn fails typed, nothing folded.
+
+    It used to be audited and the turn went on, so the user never learned the context was
+    not compacted. The working set is untouched (the fold runs only after a summary).
+    """
+
+    reason = "auto_compaction_failed"
+
+    def __init__(self, exc: "CompactionError", session_id: str) -> None:
+        super().__init__(
+            f"automatic context compaction failed ({exc.error}): {exc.message}",
+            error_type=self.reason,
+            details={"session_id": session_id, "compaction_error": exc.error},
+        )
 
 
 class CompactionError(Exception):
@@ -368,6 +388,13 @@ def compact_session_context(
     sess = app.state.sessions.get(sid)
     if sess is None:
         raise CompactionError(404, "not_found", f"session not found: {sid}", {"session_id": sid})
+    if history_mode.active():
+        raise CompactionError(
+            409,
+            history_mode.HistoryModeUnsupportedError.reason,
+            "compaction needs clio-core; this CLIO runs in History mode",
+            {"session_id": sid, "context_mode": "history"},
+        )
 
     ledger = list(app.state.messages.get(sid, []))
     if not ledger:
@@ -380,7 +407,14 @@ def compact_session_context(
     arc_status, live = _live_scopes(app, sid)
     if arc_status == ARC_WORKING_SET_TOO_SMALL:
         return _skip(sid, SKIP_NOTHING_NEW)
-    transcript = _scope_transcript(live)
+    from clio_agent.gact.agents.clio_react_record import (  # noqa: PLC0415 - turn-only
+        ContextFoldError,
+    )
+
+    try:
+        transcript = _scope_transcript(live)
+    except ContextFoldError as exc:
+        raise CompactionError(409, exc.reason, str(exc), dict(exc.details or {})) from exc
     if not transcript.strip():
         # #1339 review F2: a session whose model-context rows render to nothing (e.g.
         # only a2ui/mcp_app parts with no text-bearing class) has real work to skip,
@@ -416,6 +450,12 @@ def compact_session_context(
         },
     )
 
+    from clio_agent.gact.part_atom_minter import turn_minter  # noqa: PLC0415
+
+    in_turn = turn_minter(app, sid) is not None
+    if in_turn and staged_checkpoint(app, sid) is not None:
+        return _skip(sid, SKIP_CHECKPOINT_ALREADY_STAGED)  # before any LM call or fold
+
     agent = getattr(app.state, "agent", None)
     if agent is None:
         raise CompactionError(
@@ -438,6 +478,11 @@ def compact_session_context(
         raise CompactionError(
             502, "upstream_error", f"compact summarisation failed: {exc!r}"
         ) from exc
+
+    if not (summary or "").strip():
+        raise CompactionError(
+            502, "empty_summary", "the summary LM returned no text; nothing was compacted"
+        )
 
     evidence_index = _compact_exact_evidence_index(transcript)
     if evidence_index:
@@ -478,11 +523,7 @@ def compact_session_context(
         "summary": summary,
     }
 
-    from clio_agent.gact.part_atom_minter import turn_minter  # noqa: PLC0415
-
-    if turn_minter(app, sid) is not None:
-        if staged_checkpoint(app, sid) is not None:
-            return _skip(sid, SKIP_CHECKPOINT_ALREADY_STAGED)
+    if in_turn:
         return stage_checkpoint(app, sid, checkpoint, **fields)
     try:
         return append_checkpoint(app, sid, checkpoint, **fields)
@@ -684,8 +725,8 @@ def maybe_autocompact() -> None:
     )
 
     arc, session, scope = arc_scope()
-    if arc is None:
-        return
+    if arc is None or history_mode.active():
+        return  # History mode has no compaction (declared on the health row and the UI)
     app = _ctx.active_app()
     if app is None:
         # #1339 review round: active_app() is documented nullable
@@ -718,8 +759,10 @@ def maybe_autocompact() -> None:
     durable_usage = (
         usage_by_scope.get(usage_scope, {}) if isinstance(usage_by_scope, Mapping) else {}
     )
+    # Only a measured count decides: an ``estimated`` usage is the user prompt alone.
+    measured = isinstance(durable_usage, Mapping) and durable_usage.get("source") != "estimated"
     try:
-        durable_prompt_tokens = int(durable_usage.get("used_tokens", 0) or 0)
+        durable_prompt_tokens = int(durable_usage.get("used_tokens", 0) or 0) if measured else 0
     except (TypeError, ValueError, AttributeError):
         durable_prompt_tokens = 0
     # Subscription-backed providers create a fresh LM binding for each turn, so
@@ -728,6 +771,7 @@ def maybe_autocompact() -> None:
     # that signal so proactive compaction still works across those bindings.
     last = max(last, durable_prompt_tokens)
     if not window or not last:
+        stream_audit(AUDIT_AUTO_SKIPPED, reason=SKIP_NO_TOKEN_COUNT, session_id=session)
         return
     if (last / window) < threshold:
         return
@@ -740,3 +784,4 @@ def maybe_autocompact() -> None:
             error=exc.error,
             message=exc.message[:300],
         )
+        raise AutoCompactionFailedError(exc, session) from exc

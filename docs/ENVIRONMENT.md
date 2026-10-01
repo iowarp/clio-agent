@@ -30,16 +30,18 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARC_CLIO_CORE_WRITE_RETRY_FIRST_DELAY_S` | `arc.clio_core_write_retry.first_delay_s` | float | `0.2` | `src/clio_agent/arc/clio_core_retry.py` |
 | `CLIO_ARC_CTE_DIR` | `arc.cte.dir` | str | _(unset)_ | `src/clio_agent/arc/clio_core_config.py` |
 | `CLIO_ARC_CTE_DISK_WARN_FRACTION` | `arc.cte.disk_warn_fraction` | float | `0.5` | `src/clio_agent/arc/clio_core_config.py` |
-| `CLIO_ARC_CTE_FILE_CAPACITY` | `arc.cte.file_capacity` | str | `50GB` | `src/clio_agent/arc/clio_core_config.py` |
+| `CLIO_ARC_CTE_FILE_CAPACITY` | `arc.cte.file_capacity` | str | _(unset)_ | `src/clio_agent/arc/clio_core_config.py` |
 | `CLIO_ARC_CTE_RAM_CAPACITY` | `arc.cte.ram_capacity` | str | `1GB` | `src/clio_agent/arc/clio_core_config.py` |
 | `CLIO_ARC_EVENTS_CHUNK_SEGMENTS` | `arc.events_chunk_segments` | int | `512` | `src/clio_agent/arc/memory.py` |
 | `CLIO_ARC_LIVENESS_BACKOFF_INITIAL_S` | `arc.liveness.backoff_initial_s` | float | `2.0` | `src/clio_agent/arc/rpc_liveness.py` |
 | `CLIO_ARC_LIVENESS_BACKOFF_MAX_S` | `arc.liveness.backoff_max_s` | float | `15.0` | `src/clio_agent/arc/rpc_liveness.py` |
+| `CLIO_ARC_LIVENESS_MAX_WAIT_S` | `arc.liveness.max_wait_s` | float | `600.0` | `src/clio_agent/arc/daemon_progress.py` |
 | `CLIO_ARC_LIVENESS_RETRIES` | `arc.liveness.retries` | int | `3` | `src/clio_agent/arc/rpc_liveness.py` |
 | `CLIO_ARC_LIVENESS_STALL_AFTER_S` | `arc.liveness.stall_after_s` | float | `30.0` | `src/clio_agent/arc/rpc_liveness.py` |
 | `CLIO_ARC_LSM_COMPACTION_THRESHOLD` | `arc.lsm_compaction_threshold` | int | `5` | `src/clio_agent/arc/memory.py` |
 | `CLIO_ARC_LSM_MEMTABLE_SIZE` | `arc.lsm_memtable_size` | int | `1000` | `src/clio_agent/arc/memory.py` |
 | `CLIO_ARC_MESSAGE_PART_CHUNK_SEGMENTS` | `arc.message_part_chunk_segments` | int | `512` | `src/clio_agent/gact/part_atoms.py` |
+| `CLIO_ARC_NAMESPACE` | `arc.namespace` | str | _(unset)_ | `src/clio_agent/arc/storage.py` |
 | `CLIO_ARC_STORE` | `arc.store` | str | `cte` | `src/clio_agent/arc/storage.py` |
 | `CLIO_ARC_STORE_CONFIG` | `arc.store_config` | str | _(unset)_ | `src/clio_agent/arc/storage.py` |
 | `CLIO_ARTIFACTS_EXPORT_LICENSE` | `artifacts.export_license` | str | `NOASSERTION` | `src/clio_agent/gact/artifacts/export.py` |
@@ -191,6 +193,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_MCP_INPUT_REQUIRED_MAX_ROUNDS` | `tools.mcp.input_required_max_rounds` | int | `DEFAULT_INPUT_REQUIRED_MAX_ROUNDS` _(computed)_ | `src/clio_agent/tools/mcp_runtime.py` |
 | `CLIO_MCP_LAUNCHER_CACHE_LOCK_TIMEOUT_S` | `tools.mcp.launcher_cache_lock_timeout_s` | float | `600.0` | `src/clio_agent/tools/launcher_cache_lock.py` |
 | `CLIO_MCP_LISTING_TTL_H` | `tools.mcp.listing_ttl_h` | float | `24.0` | `src/clio_agent/tools/listing_cache.py` |
+| `CLIO_MCP_MAX_WAIT_S` | `tools.mcp.max_wait_s` | float | `600.0` | `src/clio_agent/tools/mcp_probe_hardening.py` |
 | `CLIO_MCP_MOUNT_RETRY_DELAYS_S` | `tools.mcp.mount_retry_delays_s` | list | `0.5,1.5` | `src/clio_agent/gact/mcp_readiness.py` |
 | `CLIO_MCP_PROBE_TIMEOUT_RETRIES` | `tools.mcp.probe_timeout_retries` | int | `3` | `src/clio_agent/tools/mcp_probe_hardening.py` |
 | `CLIO_MCP_RESPONSE_CACHE_ENABLED` | `tools.mcp.response_cache_enabled` | bool | `false` | `src/clio_agent/tools/mcp_runtime.py` |

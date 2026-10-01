@@ -42,7 +42,7 @@ def main() -> int:
 
         from clio_agent.arc import storage
         from clio_agent.arc.clio_core_native_preflight import removed_embedded_runtime_env
-        from clio_agent.arc.init_degradation import arc_init_degradation_snapshot
+        from clio_agent.arc.init_degradation import ArcStoreUnavailableError
 
         daemon_config = os.environ["CLIO_EXIT_DAEMON_CONFIG"]
         port = storage._resolve_runtime_port(daemon_config)
@@ -61,11 +61,13 @@ def main() -> int:
                 text.replace("num_threads: 2", "num_threads: two"), encoding="utf-8"
             )
         result["stage"] = "attach"
-        store = storage.make_arc_store(backend="cte")
-        result["store_type"] = type(store).__name__
-        record = arc_init_degradation_snapshot()
-        result["reason"] = getattr(record, "reason", None)
-        result["error"] = str(getattr(record, "error", "") or "")
+        try:
+            store = storage.make_arc_store(backend="cte")
+            result["store_type"] = type(store).__name__
+        except ArcStoreUnavailableError as failure:  # the typed outcome under test
+            result["raised"] = type(failure).__name__
+            result["reason"] = failure.reason
+            result["error"] = str(failure.details.get("error", ""))
         result["removed_env"] = removed_embedded_runtime_env()
         result["with_runtime_after"] = os.environ.get("CLIO_WITH_RUNTIME")
         return 0

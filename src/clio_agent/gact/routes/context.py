@@ -33,11 +33,14 @@ imports only leaf packages and never loads :mod:`clio_agent.gact.app`.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import msgspec
 from fastapi import FastAPI, HTTPException
 
+from clio_agent.arc import history_mode
+from clio_agent.arc.segment_ids import StaleSegmentIdError
 from clio_agent.gact.agents import runtime as agents_runtime
 from clio_agent.gact.context_view import context_messages
 from clio_agent.gact.off_loop import run_off_loop
@@ -62,6 +65,7 @@ from clio_agent.gact.types import (
 from clio_agent.gact.workspace_scope import workspace_scope
 
 if TYPE_CHECKING:
+    from clio_agent.gact.agents.clio_react_record import ContextFoldError
     from clio_agent.gact.routes.deps import GactDeps
 
 
@@ -90,6 +94,18 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
         )
 
     def _arc_unavailable(sid: str) -> HTTPException:
+        if history_mode.active():
+            return HTTPException(
+                status_code=409,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error=history_mode.HistoryModeUnsupportedError.reason,
+                        message="This CLIO runs in History mode: no clio-core context to edit",
+                        details={"session_id": sid, "context_mode": "history"},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            )
         return HTTPException(
             status_code=503,
             detail=ErrorEnvelope(
@@ -101,6 +117,47 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
                 )
             ).model_dump(exclude_none=True),
         )
+
+    def _fold_failed(exc: "ContextFoldError", sid: str, scope: str) -> HTTPException:
+        return HTTPException(
+            status_code=409,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error=exc.reason,
+                    message=str(exc),
+                    details={"session_id": sid, "scope": scope, **dict(exc.details or {})},
+                    recoverable=True,
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    def _refuse_unfoldable_op(sid: str, req: ContextOpRequest) -> None:
+        """Fold the plane as the op would leave it; refuse (nothing applied) if it cannot."""
+        from clio_agent.gact.agents.clio_react_record import (  # noqa: PLC0415 - turn-only
+            ContextFoldError,
+            fold_steps,
+        )
+
+        live = list(app.state.arc.render_segments(sid, req.scope))
+        if req.op in ("append", "insert"):
+            new = SimpleNamespace(kind=req.kind or "", content=req.content or {}, id="<new>")
+            at = len(live) if req.op == "append" else max(0, min(req.position or 0, len(live)))
+            live.insert(at, new)
+        else:
+            ids = set(req.ids or [])
+            kept = [s for s in live if s.id not in ids]
+            if req.op == "summarize":
+                first = next((i for i, s in enumerate(live) if s.id in ids), len(live))
+                at = len([s for s in live[:first] if s.id not in ids])
+                kept.insert(
+                    at,
+                    SimpleNamespace(kind="summary", content=req.summary_content or {}, id="<new>"),
+                )
+            live = kept
+        try:
+            fold_steps(live)
+        except ContextFoldError as exc:
+            raise _fold_failed(exc, sid, req.scope) from exc
 
     def _context_window_for_state() -> int:
         agent = getattr(app.state, "agent", None)
@@ -153,8 +210,18 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
             categories=_bucket_context_categories(tokens_by_kind, used, live_tokens),
             segments=[msgspec.to_builtins(s) for s in segments],
             render_text=arc.render_segment_text(sid, scope, as_of=as_of),
-            messages=context_messages(segments),
+            messages=_folded_messages(segments, sid, scope),
         )
+
+    def _folded_messages(segments: Any, sid: str, scope: str) -> Any:
+        from clio_agent.gact.agents.clio_react_record import (  # noqa: PLC0415 - turn-only
+            ContextFoldError,
+        )
+
+        try:
+            return context_messages(segments)
+        except ContextFoldError as exc:
+            raise _fold_failed(exc, sid, scope) from exc
 
     def _context_preferences(sid: str) -> ContextPreferences:
         session = app.state.sessions.get(sid)
@@ -266,6 +333,7 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
         arc = app.state.arc
         if arc is None:
             raise _arc_unavailable(sid)
+        await run_off_loop(lambda: _refuse_unfoldable_op(sid, req))
         # Build only the kwargs relevant to req.op.
         if req.op in ("append", "insert"):
             kwargs: dict[str, Any] = {
@@ -290,6 +358,18 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
             result = await run_off_loop(  # #1334: a working-set write is a store RPC
                 lambda: app.state.arc.apply_segment_op(req.op, sid, req.scope, **kwargs)
             )
+        except StaleSegmentIdError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error=exc.reason,
+                        message=str(exc),
+                        details=dict(exc.details or {}),
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
         except (ValueError, TypeError) as exc:
             raise HTTPException(
                 status_code=400,
@@ -387,26 +467,36 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
     async def search_context(
         sid: str, q: str, scope_prefix: str = "", k: int = 10
     ) -> ContextSearchResponse:
-        """Semantic discovery over a session's scopes — 'which expert/scope knows
-        about X'. BM25 on the clio-core backend WHEN its indexer chimod is actually
-        composed, naive word-overlap on LocalFS. ``semantic`` never claims True when
-        it isn't real (#905: a clio-core backend missing the indexer chimod reports
-        ``semantic=False`` + a typed ``semantic_unavailable_reason``, the same as it
-        would if search silently returned nothing — never a silent empty "semantic"
-        result)."""
+        """Semantic discovery over a session's scopes -- 'which expert/scope knows
+        about X' -- by clio-core's BM25 indexer. When clio-core cannot search (#905: the
+        indexer chimod is absent from the iowarp-core wheels) this is a typed ``503
+        search_unavailable`` naming the reason, never an empty result a caller could
+        read as "searched and found nothing"."""
         if app.state.sessions.get(sid) is None:
             raise _session_not_found(sid)
         arc = app.state.arc
         if arc is None:
             raise _arc_unavailable(sid)
-        hits = arc.search_segment_scopes(sid, q, scope_prefix=scope_prefix, k=k)
-        semantic = arc.segment_search_is_semantic()
+        from clio_agent.arc.memory import SearchUnavailableError  # noqa: PLC0415
+
+        try:
+            hits = arc.search_segment_scopes(sid, q, scope_prefix=scope_prefix, k=k)
+        except SearchUnavailableError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error="search_unavailable",
+                        message="clio-core cannot search this deployment's context",
+                        details={"session_id": sid, "reason": exc.reason},
+                        recoverable=False,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
         return ContextSearchResponse(
             session_id=sid,
             query=q,
-            semantic=semantic,
-            semantic_unavailable_reason=(
-                "" if semantic else arc.segment_search_degradation_reason()
-            ),
+            semantic=True,
+            semantic_unavailable_reason="",
             hits=[ContextSearchHit(scope=s, score=score) for s, score in hits],
         )

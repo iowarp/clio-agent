@@ -174,7 +174,8 @@ def test_declared_structured_content_never_leaks_when_observer_raises() -> None:
             return f"did {task}"
 
         (tool,) = instrument_tools([_bare_tool(leaking_tool, "leaking_tool_a")])
-        assert tool(task="t1") == "did t1"
+        with pytest.raises(RuntimeError, match="observer blew up"):
+            tool(task="t1")  # an observer that cannot record fails the call
         # Without the fix this is the leaked payload; the wrapper's own
         # finally-pop must have already consumed it.
         assert pop_declared_structured_content() is None

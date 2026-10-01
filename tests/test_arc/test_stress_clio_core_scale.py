@@ -16,12 +16,9 @@ Correctness is asserted against the same in-memory truth the writer produced,
 and each phase is wall-clock-bounded so a pathological slowdown fails loudly
 instead of hanging.
 
-The clio-core runtime is process-global and DRAM-backed: data put by one
-``make_arc_store(backend="cte")`` is visible to the next within the same
-process, and ``clear()`` wipes ALL kinds for ALL sessions. To stay hermetic
-under a shared pytest process, every test namespaces its records with a
-unique-per-test session prefix, and the destructive ``clear()`` test owns its
-setup/teardown so it never races another test's data.
+Each test runs in its own clio-core namespace on the worker's private daemon:
+data put by one ``make_arc_store(backend="cte")`` is visible to the next in the
+same test, and ``clear()`` wipes every kind of that namespace only.
 
 Run:
     cd <worktree> && CLIO_ALLOWED_ROOTS="/tmp:$PWD" \
@@ -89,15 +86,10 @@ def _serialize_clio_core_global_daemon():
 
 
 def _clio_core_store():
-    """Build a real clio-core-backed ARCStore, skipping if the binding/runtime is
-    genuinely unavailable (graceful-degradation falls back to LocalFSStore, which
-    would make these "clio-core" tests silently test the wrong backend)."""
+    """The real clio-core-backed ARCStore in this test's own namespace (clio-core is
+    the only store: an unavailable runtime is a typed ArcStoreUnavailableError)."""
     store = make_arc_store(backend="cte")
-    if type(store).__name__ != "ClioCoreStore":
-        pytest.skip(
-            "clio-core backend unavailable (fell back to %s); "
-            "build iowarp-core to run the clio-core scale lane" % type(store).__name__
-        )
+    assert type(store).__name__ == "ClioCoreStore"
     return store
 
 

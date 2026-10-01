@@ -312,14 +312,14 @@ def _record_with_file_trace(tmp_path: Path, monkeypatch: Any) -> tuple[ARCMemory
 
 
 def test_backfill_roundtrip_is_lossless(tmp_path: Path, monkeypatch: Any) -> None:
-    """Scope 3c: ``_events`` -> [#762 erase] -> backfill-from-JSONL -> byte-equal
-    ``_events`` content. The trace is a lossless recovery source."""
+    """Scope 3c: backfill-from-JSONL reproduces ``_events`` byte-equal (the trace is a
+    lossless copy), and a release never erases clio-core's ``_events``."""
     arc, trace_dir = _record_with_file_trace(tmp_path, monkeypatch)
     original = _read_events_contents(arc, "s1")
     assert original  # holds the recorded events
 
-    arc.release_session("s1")  # #762: file backend => _events erased
-    assert _read_events_contents(arc, "s1") == []
+    arc.release_session("s1")
+    assert _read_events_contents(arc, "s1") == original
 
     result = backfill_events_from_trace(trace_dir / "s1.semantic.jsonl")
     report = verify_events_roundtrip(original, result)

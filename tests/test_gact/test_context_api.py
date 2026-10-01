@@ -32,8 +32,15 @@ def test_get_context_state(tmp_path, monkeypatch):
     client = _client(tmp_path, arc)
     sid = _session(client)
     arc.append_segment(sid, SCOPE, "thought", {"text": "T0"}, step=0, token_count=5)
-    arc.append_segment(sid, SCOPE, "tool_call", {"name": "a", "args": {}}, step=0)
-    arc.append_segment(sid, SCOPE, "observation", {"text": "O0"}, step=0, token_count=10)
+    arc.append_segment(sid, SCOPE, "tool_call", {"id": "call_0", "name": "a", "args": {}}, step=0)
+    arc.append_segment(
+        sid,
+        SCOPE,
+        "observation",
+        {"call_id": "call_0", "text": "O0", "is_error": False},
+        step=0,
+        token_count=10,
+    )
     render_segments = arc.render_segments
     rendered_off_loop: list[bool] = []
 
@@ -88,11 +95,13 @@ def test_context_state_categories_and_autocompact(tmp_path):
     client = _client(tmp_path, arc)
     sid = _session(client)
     arc.append_segment(sid, SCOPE, "thought", {"text": "T0"}, step=0, token_count=5)
-    arc.append_segment(sid, SCOPE, "observation", {"text": "O0"}, step=0, token_count=10)
-    arc.append_segment(sid, SCOPE, "tool_def", {"name": "fs"}, step=0, token_count=3)
+    call = {"id": "call_0", "name": "fs", "args": {}}
+    arc.append_segment(sid, SCOPE, "tool_call", call, step=0, token_count=3)
+    obs = {"call_id": "call_0", "text": "O0", "is_error": False}
+    arc.append_segment(sid, SCOPE, "observation", obs, step=0, token_count=10)
 
     body = client.get(f"/v1/sessions/{sid}/context/state", params={"scope": SCOPE}).json()
-    assert body["categories"] == {"reasoning": 5, "observations": 10, "tools": 3}
+    assert body["categories"] == {"reasoning": 5, "observations": 10, "tool_calls": 3}
     assert body["autocompact_pct"] == 0.85  # default trigger fraction
     assert body["autocompact_enabled"] is True
     # No LM call in-test -> model-grounded reading is unavailable (no framing entry).
@@ -210,8 +219,15 @@ def test_post_context_compact_summarizes_working_set(tmp_path, monkeypatch):
     client = _client(tmp_path, arc)
     sid = _session(client)
     arc.append_segment(sid, SCOPE, "thought", {"text": "T0"}, step=0, token_count=5)
-    arc.append_segment(sid, SCOPE, "tool_call", {"name": "a", "args": {}}, step=0)
-    arc.append_segment(sid, SCOPE, "observation", {"text": "O0"}, step=0, token_count=10)
+    arc.append_segment(sid, SCOPE, "tool_call", {"id": "call_0", "name": "a", "args": {}}, step=0)
+    arc.append_segment(
+        sid,
+        SCOPE,
+        "observation",
+        {"call_id": "call_0", "text": "O0", "is_error": False},
+        step=0,
+        token_count=10,
+    )
 
     r = client.post(f"/v1/sessions/{sid}/context/compact", params={"scope": SCOPE})
     assert r.status_code == 200, r.text
@@ -244,14 +260,14 @@ def test_post_context_op_append_then_delete(tmp_path):
         json={
             "op": "append",
             "scope": SCOPE,
-            "kind": "observation",
+            "kind": "user",
             "content": {"text": "NEEDLE"},
             "token_count": 7,
         },
     )
     assert r.status_code == 200, r.text
     assert r.json()["live_block_count"] == 1
-    assert r.json()["tokens_by_kind"] == {"observation": 7}
+    assert r.json()["tokens_by_kind"] == {"user": 7}
 
     state = client.get(f"/v1/sessions/{sid}/context/state", params={"scope": SCOPE}).json()
     assert "NEEDLE" in str(state["messages"])
@@ -288,29 +304,20 @@ def test_post_context_op_insert_without_position_400(tmp_path):
     assert r.status_code == 400
 
 
-def test_search_context_endpoint(tmp_path):
+def test_search_context_is_a_typed_503_when_clio_core_cannot_search(tmp_path):
+    """#905: the iowarp-core wheels ship no indexer chimod, so clio-core cannot search;
+    the route says so, typed, instead of answering with empty hits."""
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
     client = _client(tmp_path, arc)
     sid = _session(client)
-    arc.append_segment(
-        sid,
-        "agentA/hdf5",
-        "observation",
-        {"text": "HDF5 dataset chunk compression filters"},
-        step=0,
-    )
-    arc.append_segment(
-        sid,
-        "agentA/seismic",
-        "observation",
-        {"text": "earthquake waveform magnitude epicenter"},
-        step=0,
-    )
+    arc.append_segment(sid, "agentA/hdf5", "observation", {"text": "HDF5 compression"}, step=0)
+
     r = client.get(f"/v1/sessions/{sid}/context/search", params={"q": "HDF5 compression"})
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["semantic"] is False  # LocalFS in tests
-    assert body["hits"] and body["hits"][0]["scope"] == "agentA/hdf5"
+
+    assert r.status_code == 503, r.text
+    error = r.json()["error"]
+    assert error["error"] == "search_unavailable"
+    assert error["details"]["reason"] == "clio_core_search_indexer_absent"
 
 
 def test_search_context_404_503(tmp_path):
@@ -361,22 +368,17 @@ class _CteShapedStore:
         return []  # #905: a degraded clio-core-shaped backend reaches the bare core
 
 
-def test_search_context_reports_degraded_not_silent_semantic_true(tmp_path):
-    """#905: a clio-core-shaped backend whose indexer chimod is absent must report
-    ``semantic=False`` + the typed reason over the wire, not a silent empty result a
-    caller could misread as "semantic search ran and found nothing"."""
+def test_search_context_unavailable_is_typed_not_an_empty_result(tmp_path):
+    """#905: a clio-core-shaped backend whose indexer chimod is absent is a typed 503
+    with the reason, never a 200 with an empty list a caller could misread."""
     arc = ARCMemory(
         data_dir=str(tmp_path / "arc"), store=_CteShapedStore("clio_core_search_indexer_absent")
     )
     client = _client(tmp_path, arc)
     sid = _session(client)
-    arc.append_segment(sid, "agentA/hdf5", "observation", {"text": "HDF5 chunk compression"})
     r = client.get(f"/v1/sessions/{sid}/context/search", params={"q": "HDF5"})
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["semantic"] is False
-    assert body["semantic_unavailable_reason"] == "clio_core_search_indexer_absent"
-    assert body["hits"] == []
+    assert r.status_code == 503, r.text
+    assert r.json()["error"]["details"]["reason"] == "clio_core_search_indexer_absent"
 
 
 def test_search_context_semantic_true_carries_no_reason(tmp_path):
@@ -413,7 +415,7 @@ def test_context_op_append_does_not_publish_arc_op_frame(tmp_path, monkeypatch):
         json={
             "op": "append",
             "scope": SCOPE,
-            "kind": "observation",
+            "kind": "user",
             "content": {"text": "SECRET_CONTENT"},
             "token_count": 3,
         },
@@ -426,4 +428,4 @@ def test_context_op_append_does_not_publish_arc_op_frame(tmp_path, monkeypatch):
     assert all("SECRET_CONTENT" not in str(getattr(e, "payload", "")) for e in published)
     # The op still actually landed (visible via the on-demand context state).
     state = client.get(f"/v1/sessions/{sid}/context/state", params={"scope": SCOPE}).json()
-    assert any(seg.get("kind") == "observation" for seg in state["segments"])
+    assert any(seg.get("kind") == "user" for seg in state["segments"])

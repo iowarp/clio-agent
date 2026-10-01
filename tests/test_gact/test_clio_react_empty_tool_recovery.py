@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import dspy
+import pytest
 from dspy.lm15 import TextPart
 
 from clio_agent.gact.agents.clio_react import ClioReAct
 from tests._scripted_engine import Reply, calls, scripted_lm
+
+pytestmark = pytest.mark.usefixtures("clio_core_plane")
 
 
 def _agent(*, max_iters: int = 0, tool: dspy.Tool | None = None) -> ClioReAct:
@@ -26,8 +29,8 @@ def test_tool_free_prose_is_the_direct_answer_after_one_model_call() -> None:
     assert len(engine.requests) == 1
     assert prediction.answer == "Ready."
     assert prediction.termination_reason == "direct_response"
-    # the messages are the task head, then one assistant message per step
-    head, step = prediction.messages
+    # the messages are the tool-use note and the task head, then one assistant message
+    _note, head, step = prediction.messages
     assert (head.role, head.parts) == ("user", (TextPart(text="Reply ready. Do not call tools."),))
     assert (step.role, step.parts) == ("assistant", (TextPart(text="Ready."),))
 

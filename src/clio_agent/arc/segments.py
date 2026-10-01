@@ -33,7 +33,7 @@ from typing import Any, Callable, Optional
 import msgspec
 from sortedcontainers import SortedDict
 
-from clio_agent.arc.loop_guard import assert_store_write_off_loop
+from clio_agent.arc.loop_guard import LoopThreadStoreWrite, assert_store_write_off_loop
 from clio_agent.arc.schema import (
     WORKING_SET_KINDS,
     Segment,
@@ -42,8 +42,9 @@ from clio_agent.arc.schema import (
     encode_segments,
     segment_text,
 )
+from clio_agent.arc.segment_ids import ContextOpLogError, require_live
 from clio_agent.arc.storage import ARCStore
-from clio_agent.runtime import trace
+from clio_agent.errors import ClioError
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,18 @@ def _encode_safe(value: Any) -> Any:
         return _encode_safe(obj_dict)
     # Last resort: a stable string form (never throws on a foreign object).
     return str(value)
+
+
+class ArcPersistError(ClioError):
+    """clio-core did not accept a write; the in-memory copy was discarded."""
+
+    def __init__(self, session_id: str, scope: str, cause: BaseException) -> None:
+        self.scope = scope
+        super().__init__(
+            f"clio-core did not store the write to {session_id}/{scope}: {cause}",
+            error_type="arc_persist_failed",
+            details={"session_id": session_id, "scope": scope, "cause": type(cause).__name__},
+        )
 
 
 def _coerce_content(content: dict[str, Any]) -> dict[str, Any]:
@@ -310,50 +323,24 @@ class SegmentStore:
             )
         return self._scopes[key]
 
-    def _persist(
-        self, session_id: str, scope: str, *, just_written: list[Segment] | None = None
-    ) -> None:
-        """Encode + put the whole scope record. NON-POISONING: a segment that still fails
-        to encode (despite the :func:`_coerce_content` chokepoint) is REMOVED from the
-        in-memory list and logged via ``runtime.trace`` (never silently), so it can NEVER
-        wedge the scope's future persists. ``just_written`` is what the current op produced; they
-        are the prime suspects and are dropped first."""
+    def _persist(self, session_id: str, scope: str) -> None:
+        """Encode + put the whole scope record; clio-core must accept it. On failure the
+        in-memory copy (changed before this call) is DISCARDED -- the next read reloads
+        clio-core's record -- and a typed :class:`ArcPersistError` is raised."""
         segs = self._scopes[(session_id, scope)]
         try:
             self._put_scope(session_id, scope, segs)
-            return
-        except Exception:  # noqa: BLE001,S110 - encode/put failed; isolate the offender below
-            pass
-        # Drop the just-written segment(s) first (the most likely offender), then any
-        # other segment that fails to encode in isolation, so the rest of the scope
-        # persists cleanly and never re-throws on the next op.
-        suspects = list(just_written or [])
-        dropped: list[str] = []
-        for seg in suspects:
-            if seg in segs and not self._segment_encodes(seg):
-                segs.remove(seg)
-                self._index_remove(session_id, scope, seg)
-                dropped.append(seg.id)
-        try:
-            self._put_scope(session_id, scope, segs)
-        except Exception:  # noqa: BLE001 - a non-just-written segment is also bad; isolate it
-            survivors = [s for s in segs if self._segment_encodes(s)]
-            for seg in segs:
-                if seg not in survivors:
-                    self._index_remove(session_id, scope, seg)
-                    dropped.append(seg.id)
-            segs[:] = survivors
-            self._put_scope(session_id, scope, segs)
-        if dropped:
-            trace.event(
-                "SEGMENT-DROP",
-                "scope=%s session=%s dropped=%d ids=%s (un-encodable content removed; "
-                "scope persisted without it, no durable wedge)",
-                scope,
-                session_id,
-                len(dropped),
-                dropped,
-            )
+        except Exception as exc:  # noqa: BLE001 - re-raised typed after the memory is discarded
+            self._discard_scope(session_id, scope)
+            if isinstance(exc, LoopThreadStoreWrite):
+                raise  # a write from the event loop is a caller bug, typed as itself
+            raise ArcPersistError(session_id, scope, exc) from exc
+
+    def _discard_scope(self, session_id: str, scope: str) -> None:
+        """Drop the in-memory copy (changed, not persisted); the next read reloads clio-core."""
+        self._scopes.pop((session_id, scope), None)
+        self._loaded.discard((session_id, scope))
+        self._index.drop_scope(session_id, scope)
 
     def _put_scope(self, session_id: str, scope: str, segs: list[Segment]) -> None:
         """Encode the scope's segments and put the record (with the live search_text
@@ -375,15 +362,6 @@ class SegmentStore:
             encode_segments(segs),
             search_text=search_text,
         )
-
-    @staticmethod
-    def _segment_encodes(seg: Segment) -> bool:
-        """Whether a single segment survives the strict msgpack encode in isolation."""
-        try:
-            encode_segments([seg])
-            return True
-        except Exception:  # noqa: BLE001 - this segment is the un-encodable offender
-            return False
 
     def _index_remove(self, session_id: str, scope: str, seg: Segment) -> None:
         """Drop a dropped segment from the per-scope locator so the index stays in sync
@@ -548,6 +526,7 @@ class SegmentStore:
         number actually tombstoned."""
         with self._lock_for(session_id, scope):
             segs = self._segs(session_id, scope)
+            require_live(ids, {s.id for s in segs if s.status == "live"}, op="delete", scope=scope)
             target = set(ids)
             tombstoned: list[str] = []
             op_lt = 0
@@ -569,8 +548,6 @@ class SegmentStore:
                 self._finish_write(
                     session_id, scope, "delete", tombstoned=tombstoned, logical_time=op_lt
                 )
-            else:
-                logger.debug("segments: delete scope=%s matched no live ids=%s", scope, ids)
             return len(tombstoned)
 
     def summarize(
@@ -595,17 +572,15 @@ class SegmentStore:
         summary_content = _coerce_content(summary_content)
         with self._lock_for(session_id, scope):
             segs = self._segs(session_id, scope)
+            live_ids = {s.id for s in segs if s.status == "live"}
+            require_live(ids, live_ids, op="summarize", scope=scope)
             target = set(ids)
             replaced = [s for s in segs if s.id in target and s.status == "live"]
             # Summary takes the position (order) of the first replaced segment so it
             # renders where the range was; its step is the min replaced step.
-            if replaced:
-                first = min(replaced, key=lambda s: (s.order, s.logical_time))
-                order = first.order
-                step = min((s.step for s in replaced), default=-1)
-            else:
-                order = (max((s.order for s in segs), default=0.0)) + 1.0
-                step = -1
+            first = min(replaced, key=lambda s: (s.order, s.logical_time))
+            order = first.order
+            step = min((s.step for s in replaced), default=-1)
             summary_lt = self._new_lt()
             tombstoned: list[str] = []
             for s in replaced:
@@ -690,14 +665,9 @@ class SegmentStore:
         content = _coerce_content(content)
         with self._lock_for(session_id, scope):
             segs = self._segs(session_id, scope)
-            original = next((s for s in segs if s.id == target_id and s.status == "live"), None)
-            if original is None:
-                logger.debug(
-                    "segments: replace scope=%s matched no live id=%s (no-op)",
-                    scope,
-                    target_id,
-                )
-                return None
+            live_ids = {s.id for s in segs if s.status == "live"}
+            require_live([target_id], live_ids, op="replace", scope=scope)
+            original = next(s for s in segs if s.id == target_id and s.status == "live")
             op_lt = self._new_lt()
             original.status = "tombstoned"
             original.tombstoned_at = op_lt  # replaced exactly when the new segment appears
@@ -801,15 +771,10 @@ class SegmentStore:
                 if event_id:
                     for s in written:
                         s.trace_ref = event_id
-            except Exception:  # noqa: BLE001 - Trace logging must never break a context op
-                logger.warning(
-                    "segments: op_logger raised for op=%s scope=%s lt=%d (op still applied)",
-                    op,
-                    scope,
-                    lt,
-                    exc_info=True,
-                )
-        self._persist(session_id, scope, just_written=written)
+            except Exception as exc:  # noqa: BLE001 - re-raised typed; memory discarded
+                self._discard_scope(session_id, scope)  # changed in memory, not persisted
+                raise ContextOpLogError(op=op, scope=scope, cause=exc) from exc
+        self._persist(session_id, scope)
         logger.debug(
             "segments: persisted op=%s scope=%s lt=%d written=%d tombstoned=%d",
             op,

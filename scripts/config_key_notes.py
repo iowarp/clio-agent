@@ -157,8 +157,8 @@ KEY_NOTES: dict[str, str] = {
         "for earlier warnings before the tier fills."
     ),
     "arc.cte.file_capacity": (
-        'Capacity string (e.g. "50GB") for clio-core\'s disk-backed file storage tier; raise if '
-        "the working set needs more durable disk space."
+        'Capacity (e.g. "20GB") of clio-core\'s disk file tier; unset, a fresh install sizes it '
+        "to 10% of the disk's free space (2-50 GB). Windows allocates it up front."
     ),
     "arc.cte.ram_capacity": (
         'Hard byte ceiling (e.g. "1GB") for clio-core\'s RAM working arena; raise for more '
@@ -200,9 +200,17 @@ KEY_NOTES: dict[str, str] = {
         "Path to a clio-core server YAML config the port-resolution logic reads; set to point "
         "liveness probing at a non-default config file."
     ),
+    "arc.liveness.max_wait_s": (
+        "Ceiling (seconds) on waiting for a clio-core answer while the daemon is visibly working "
+        "(its CPU or I/O advancing); a daemon making no progress is a stall well before this."
+    ),
+    "arc.namespace": (
+        "clio-core namespace ARC records live under (tags <namespace>/<kind>); empty keeps the "
+        "bare tags. Set to keep two deployments on one clio-core apart."
+    ),
     "arc.store": (
-        'Selects the ARC persistence backend: "cte" (clio-core, default) or "local" (plain '
-        'files); use "local" for guaranteed on-disk durability.'
+        'The ARC store: "cte" (clio-core), the only store; any other value is a typed '
+        "configuration error."
     ),
     "arc.store_config": (
         'Path to the clio-core CTE config used when arc.store is "cte"; set to point ARC at a '
@@ -1189,6 +1197,10 @@ KEY_NOTES: dict[str, str] = {
     "tools.mcp.listing_ttl_h": (
         "Hours a cached MCP tool listing stays valid before a live relist is forced; lower to pick "
         "up upstream tool changes sooner."
+    ),
+    "tools.mcp.max_wait_s": (
+        "Ceiling (seconds) on waiting for an MCP server that is still visibly starting (its "
+        "process tree working); until then a slow start never spends the probe retry budget."
     ),
     "tools.mcp.mount_retry_delays_s": (
         "Increasing waits (seconds, comma-separated) between an on-demand MCP mount's retry "

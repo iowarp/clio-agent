@@ -4,7 +4,7 @@ Two pieces of startup work used to make a freshly started server unable to answe
 ``/v1/health`` (ares, 2026-09-25: uvicorn bound 17800, zero health requests served,
 ``clio start`` gave up after ~90 s):
 
-* **ARC construction** (:func:`clio_agent.gact.runtime.globals._process_arc`) --
+* **ARC construction** (:func:`process_arc`) --
   clio-core connect-or-spawn plus a native client attach that can wait tens of
   seconds -- ran inline on the loop inside the deferred agent-construction task.
 * **The first doctor collection** is cold (~2-5 s), longer than the launcher's 1 s
@@ -34,10 +34,62 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-async def _construct(app: "FastAPI") -> Any:
-    from clio_agent.gact.runtime.globals import _process_arc  # noqa: PLC0415 - import cycle
+def process_arc(app: "FastAPI") -> Any:
+    """Return the ONE ARCMemory for this clio-agent, constructing it once on first use.
 
-    return await asyncio.to_thread(_process_arc, app)
+    ARC is a per-clio-agent keystone: exactly one per process (one ARC per clio-agent,
+    N clio-agents per node, one clio-core per node). The gact server OWNS that single
+    ARC's lifecycle so that every agent build/bind reuses the SAME instance — the agent
+    no longer mints a fresh ARC per build (which stranded already-recorded events on an
+    orphaned ARC while the shared durable trace kept them: the trace ⊋ ARC split).
+
+    Stored on ``app.state.arc`` via ``_set_app_arc`` so a single, fail-loud path reaches
+    it; rebuilt only if the app has none yet (first build). ``None`` in History mode
+    (:mod:`clio_agent.arc.history_mode`): the platform cannot run clio-core.
+    """
+    arc = getattr(getattr(app, "state", None), "arc", None)
+    if arc is not None:
+        return arc
+    from clio_agent.arc import history_mode  # noqa: PLC0415
+
+    mode = history_mode.resolve()
+    if mode.is_history:  # the platform has no clio-core: the loud History mode, decided once
+        _record_context_mode(app, mode)
+        return None
+    from clio_agent.arc.memory import ARCMemory  # noqa: PLC0415
+    from clio_agent.arc.storage import make_arc_store  # noqa: PLC0415
+
+    data_dir = ".clio/agent/arc"
+    arc = ARCMemory(data_dir=data_dir, cache_capacity=1000, store=make_arc_store(data_dir=data_dir))
+    from clio_agent.gact.runtime.globals import _set_app_arc  # noqa: PLC0415 - import cycle
+
+    _set_app_arc(app, arc)
+    _record_context_mode(app, mode)
+    return arc
+
+
+def _record_context_mode(app: "FastAPI", mode: Any) -> None:
+    """Record which context mode this boot runs in (a trace-only boot event, sid ``""``)."""
+    from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
+
+    summary = (
+        f"CLIO runs in History mode ({mode.reason}): context in memory only, nothing durable."
+        if mode.is_history
+        else "CLIO runs on clio-core."
+    )
+    _emit_semantic_event(
+        app,
+        "",
+        "context.mode",
+        status="completed",
+        summary=summary,
+        actor={"mechanism": "harness"},
+        payload=mode.as_dict(),
+    )
+
+
+async def _construct(app: "FastAPI") -> Any:
+    return await asyncio.to_thread(process_arc, app)
 
 
 async def process_arc_off_loop(app: "FastAPI") -> Any:
@@ -53,7 +105,8 @@ async def process_arc_off_loop(app: "FastAPI") -> Any:
         app: The GACT FastAPI app.
 
     Returns:
-        The ``ARCMemory`` stored on ``app.state.arc``.
+        The ``ARCMemory`` stored on ``app.state.arc``; ``None`` in the loud History mode
+        (:mod:`clio_agent.arc.history_mode`), decided once and cached like an ARC.
     """
     arc = getattr(app.state, "arc", None)
     if arc is not None:

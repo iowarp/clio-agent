@@ -219,8 +219,13 @@ def test_compact_folds_the_arc_working_set_off_the_loop(
     with TestClient(app) as client:
         sid = _create_session(client)
         complete_turn(client, sid, "first")
-        arc.append_segment(sid, scope, "observation", {"text": "first live segment"})
-        arc.append_segment(sid, scope, "observation", {"text": "second live segment"})
+        # one coherent step, as the recorder writes it: calls answered by call id
+        arc.append_segment(sid, scope, "thought", {"text": "working"})
+        for i, text in enumerate(("first live segment", "second live segment")):
+            call = {"id": f"call_{i}", "name": "t", "args": {}}
+            arc.append_segment(sid, scope, "tool_call", call)
+            obs = {"call_id": f"call_{i}", "text": text, "is_error": False}
+            arc.append_segment(sid, scope, "observation", obs)
 
         import clio_agent.gact.agents.clio_react_record as clio_react_record
 

@@ -36,21 +36,16 @@ def session() -> str:
     return "fold_" + uuid.uuid4().hex[:12]
 
 
-@pytest.fixture(params=["local", "cte"])
-def fold_arc(request, tmp_path) -> Iterator[ARCMemory]:
-    """A fresh fold-ON ARCMemory on BOTH backends (mirrors the ``arc`` fixture)."""
-    backend = request.param
-    if backend == "cte":
-        pytest.importorskip("clio_cte_core_ext")
-        from clio_agent.arc.storage import make_arc_store
+@pytest.fixture
+def fold_arc() -> Iterator[ARCMemory]:
+    """A fresh ARCMemory on clio-core (the only store), in this test's namespace."""
+    from clio_agent.arc.storage import make_arc_store
 
-        memory = ARCMemory(store=make_arc_store(backend="cte"), working_set_fold=True)
-        try:
-            yield memory
-        finally:
-            memory.clear_all()
-        return
-    yield ARCMemory(data_dir=str(tmp_path / "arc"), working_set_fold=True)
+    memory = ARCMemory(store=make_arc_store(backend="cte"), working_set_fold=True)
+    try:
+        yield memory
+    finally:
+        memory.clear_all()
 
 
 def _populate(arc: ARCMemory, session: str, *triples: Any) -> None:
@@ -83,8 +78,8 @@ def test_fold_append_propagates(fold_arc: ARCMemory, session: str) -> None:
         fold_arc,
         session,
         ("thought", {"text": "T0"}),
-        ("tool_call", {"name": "a", "args": {}}),
-        ("observation", {"text": "O0"}),
+        ("tool_call", {"id": "c0", "name": "a", "args": {}}),
+        ("observation", {"call_id": "c0", "text": "O0", "is_error": False}),
     )
     before, after = _rendered_after_edit(
         fold_arc,
@@ -96,18 +91,23 @@ def test_fold_append_propagates(fold_arc: ARCMemory, session: str) -> None:
 
 
 def test_fold_delete_propagates_absent(fold_arc: ARCMemory, session: str) -> None:
-    """THE killer: a deleted segment vanishes from the next fold render (a shadow
-    store would still show it)."""
+    """THE killer: a deleted call + its observation vanish from the next fold render (a
+    shadow store would still show them). The pair is deleted together: a call left
+    without its result is an incoherent plane the fold refuses."""
     _populate(
         fold_arc,
         session,
         ("thought", {"text": "KEEP_T"}),
-        ("tool_call", {"name": "a", "args": {}}),
-        ("observation", {"text": "DELETE_ME"}),
+        ("tool_call", {"id": "c0", "name": "a", "args": {}}),
+        ("observation", {"call_id": "c0", "text": "DELETE_ME", "is_error": False}),
     )
-    obs = [s for s in fold_arc.render_segments(session, SCOPE) if s.kind == "observation"][0]
+    pair = [
+        s.id
+        for s in fold_arc.render_segments(session, SCOPE)
+        if s.kind in ("tool_call", "observation")
+    ]
     before, after = _rendered_after_edit(
-        fold_arc, session, lambda: fold_arc.delete_segments(session, SCOPE, [obs.id])
+        fold_arc, session, lambda: fold_arc.delete_segments(session, SCOPE, pair)
     )
     assert "DELETE_ME" in before
     assert "DELETE_ME" not in after
@@ -119,8 +119,8 @@ def test_fold_summarize_propagates(fold_arc: ARCMemory, session: str) -> None:
         fold_arc,
         session,
         ("thought", {"text": "ORIGINAL_THOUGHT"}),
-        ("tool_call", {"name": "a", "args": {}}),
-        ("observation", {"text": "ORIGINAL_OBS"}),
+        ("tool_call", {"id": "c0", "name": "a", "args": {}}),
+        ("observation", {"call_id": "c0", "text": "ORIGINAL_OBS", "is_error": False}),
     )
     ids = [s.id for s in fold_arc.render_segments(session, SCOPE)]
     before, after = _rendered_after_edit(
@@ -151,8 +151,8 @@ def test_fold_append_only_is_a_prefix(fold_arc: ARCMemory, session: str) -> None
         fold_arc,
         session,
         ("thought", {"text": "A0"}),
-        ("tool_call", {"name": "t", "args": {}}),
-        ("observation", {"text": "B0"}),
+        ("tool_call", {"id": "c0", "name": "t", "args": {}}),
+        ("observation", {"call_id": "c0", "text": "B0", "is_error": False}),
     )
     with live_plane_context(fold_arc, session=session, scope=SCOPE):
         first = fold_steps(fold_arc.render_segments(session, SCOPE))
@@ -226,10 +226,16 @@ def test_fold_steps_match_reference(fold_arc: ARCMemory, session: str) -> None:
 
 
 def test_fold_delete_propagates_on_the_loop_context(fold_arc: ARCMemory, session: str) -> None:
+    """Deleting the last step's call + observation (a coherent unit) removes its result
+    from the loop context; the earlier step is untouched."""
     _populate_steps(fold_arc, session, _STEPS)
     with live_plane_context(fold_arc, session=session, scope=SCOPE):
-        obs = [s for s in fold_arc.render_segments(session, SCOPE) if s.kind == "observation"]
-        fold_arc.delete_segments(session, SCOPE, [obs[-1].id])
+        last = [
+            s.id
+            for s in fold_arc.render_segments(session, SCOPE)
+            if s.kind in ("tool_call", "observation")
+        ][-2:]
+        fold_arc.delete_segments(session, SCOPE, last)
         after = fold_steps(fold_arc.render_segments(session, SCOPE))
     after_text = "\n".join(str(m) for m in after)
     assert "SECOND_RESULT" not in after_text

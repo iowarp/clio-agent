@@ -13,14 +13,41 @@ import pytest
 
 from clio_agent.arc.schema import Segment, decode_segment, decode_segments, encode_segments
 from clio_agent.arc.segments import SegmentStore
-from clio_agent.arc.storage import ARC_KINDS, LocalFSStore
+from clio_agent.arc.storage import ARC_KINDS
+
+# clio-core is the only ARC store: each backing ``path`` a test used to hand a local
+# store maps to its own namespace under this test's namespace on the worker's private
+# daemon, so a "cold store over the same dir" reopens the same records.
+_OPENED_STORES: list = []
+
+
+def _clio_core(path: object) -> object:
+    """The real clio-core ARC store for ``path`` (namespaced per test and path)."""
+    import hashlib  # noqa: PLC0415
+
+    from clio_agent import conf  # noqa: PLC0415
+    from clio_agent.arc.storage import make_arc_store  # noqa: PLC0415
+
+    base = conf.resolve("arc.namespace", env="CLIO_ARC_NAMESPACE", default="", cast=conf.as_str)
+    suffix = hashlib.sha1(str(path).encode()).hexdigest()[:8]
+    store = make_arc_store(backend="cte", namespace=f"{base or 'arc'}-{suffix}")
+    _OPENED_STORES.append(store)
+    return store
+
+
+@pytest.fixture(autouse=True)
+def _clear_clio_core_namespaces():
+    yield
+    while _OPENED_STORES:
+        _OPENED_STORES.pop().clear()
+
 
 SID = "sess-1"
 SCOPE = "agentA/expertB"
 
 
 def _store(tmp_path):
-    """A SegmentStore over a fresh LocalFSStore, recording every logged op."""
+    """A SegmentStore over a fresh recording every logged op."""
     logged: list[dict] = []
 
     def op_logger(op, session_id, scope, **kw):
@@ -28,7 +55,7 @@ def _store(tmp_path):
         logged.append(ev)
         return ev
 
-    return SegmentStore(LocalFSStore(str(tmp_path)), op_logger=op_logger), logged
+    return SegmentStore(_clio_core(str(tmp_path)), op_logger=op_logger), logged
 
 
 def _iteration(ss, sid, scope, step, thought, tool, args, obs):
@@ -132,14 +159,14 @@ def test_persistence_reload(tmp_path):
     ss, _ = _store(tmp_path)
     _iteration(ss, SID, SCOPE, 0, "t0", "a", {"k": 1}, "o0")
     before = [(s.id, s.kind, s.content) for s in ss.render(SID, SCOPE)]
-    reloaded = SegmentStore(LocalFSStore(str(tmp_path)))  # cold store, same backend dir
+    reloaded = SegmentStore(_clio_core(str(tmp_path)))  # cold store, same backend dir
     assert [(s.id, s.kind, s.content) for s in reloaded.render(SID, SCOPE)] == before
 
 
 def test_logical_time_recovered_after_reload(tmp_path):
     ss, _ = _store(tmp_path)
     last = ss.append(SID, SCOPE, "thought", {"text": "x"})
-    reloaded = SegmentStore(LocalFSStore(str(tmp_path)))
+    reloaded = SegmentStore(_clio_core(str(tmp_path)))
     nxt = reloaded.append(SID, SCOPE, "thought", {"text": "y"})
     assert nxt.logical_time > last.logical_time  # clock not reset to 1
 
@@ -326,12 +353,15 @@ def test_replace_can_rekind_the_slot(tmp_path):
     assert new2 is not None and new2.kind == "observation"
 
 
-def test_replace_no_live_target_is_noop(tmp_path):
+def test_replace_no_live_target_fails_typed(tmp_path):
+    from clio_agent.arc.segment_ids import StaleSegmentIdError
+
     ss, logged = _store(tmp_path)
     ss.append(SID, SCOPE, "thought", {"text": "x"})
     n_before = len(logged)
-    assert ss.replace(SID, SCOPE, "does-not-exist", {"text": "y"}) is None
-    assert len(logged) == n_before  # no op logged for a no-op replace
+    with pytest.raises(StaleSegmentIdError):
+        ss.replace(SID, SCOPE, "does-not-exist", {"text": "y"})
+    assert len(logged) == n_before  # nothing applied, nothing logged
 
 
 def test_replace_via_apply_dispatch(tmp_path):

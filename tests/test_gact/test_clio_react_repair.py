@@ -17,6 +17,8 @@ from clio_agent.gact.agents import clio_react
 from clio_agent.gact.agents.clio_react import ClioReAct
 from tests._scripted_engine import Reply, ScriptedEngine, calls, scripted_lm
 
+pytestmark = pytest.mark.usefixtures("clio_core_plane")
+
 
 def _search(q: str) -> str:
     """A deterministic search tool."""
@@ -68,8 +70,9 @@ def _run(agent: ClioReAct, *steps: Reply) -> tuple[dspy.Prediction, ScriptedEngi
 
 
 def _step_results(pred: dspy.Prediction, step: int) -> list[Any]:
-    """The step's tool results: messages are head, then (assistant, tool) per step."""
-    tool_message = pred.messages[2 + 2 * step]
+    """The step's tool results: messages are the tool-use note and the head, then
+    (assistant, tool) per step."""
+    tool_message = pred.messages[3 + 2 * step]
     assert tool_message.role == "tool"
     return list(tool_message.parts)
 
@@ -123,10 +126,11 @@ def test_default_field_arg_schema_matches_declared_outputs() -> None:
 
 def test_prediction_carries_the_loop_messages() -> None:
     """The exact in-loop messages are on the returned Prediction for trace/failure
-    consumers: the task head first, then the step's assistant and tool messages."""
+    consumers: the tool-use note and the task head, then the step's assistant and tool
+    messages."""
     pred, _ = _run(_build(_WsSig), _submit_step("done", answer="A", workflow_state={"k": 1}))
 
-    head, step, results = pred.messages
+    _note, head, step, results = pred.messages
     assert (head.role, head.parts[0].text) == ("user", "q")
     assert step.role == "assistant"
     assert step.parts[0].text == "done"

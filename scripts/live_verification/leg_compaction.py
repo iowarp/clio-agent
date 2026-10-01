@@ -38,8 +38,8 @@ earlier draft's assumptions turned out to be materially wrong and are fixed here
 
 4. **The amplification-bound / lane-chunking claim now has a REAL evidence source**,
    landed in THIS SAME branch, commit ``911b0aac`` ("test(arc): audit segment puts for
-   the live lane proof (#1339)"): ``LocalFSStore.put`` / ``ClioCoreStore.put``
-   (``arc/storage.py``) emit ``stream_audit("store.put", kind="segments", name=...,
+   the live lane proof (#1339)"): ``ClioCoreStore.put``
+   (``arc/storage.py``) emits ``stream_audit("store.put", kind="segments", name=...,
    size=...)`` for every ``kind == "segments"`` put. The earlier draft grepped for a
    ``scope`` field and an ``_events/m``-prefixed audit row that does not exist; the
    real row carries ``name`` (a record name, not a scope), already proven by

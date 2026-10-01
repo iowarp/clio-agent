@@ -40,7 +40,7 @@ from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.replay import reconstruct_arc_segments
 from clio_agent.arc.schema import Segment
 from clio_agent.arc.segments import SegmentStore
-from clio_agent.arc.storage import LocalFSStore, make_arc_store
+from clio_agent.arc.storage import make_arc_store
 
 # ---------------------------------------------------------------------------
 # Capturing op_logger — mirrors gact.app._emit_arc_op's emitted event EXACTLY
@@ -86,9 +86,11 @@ def _make_capturing_logger(events_out: list[dict]) -> Callable[..., dict]:
     return op_logger
 
 
-def _store(tmp_path, sub: str = "store") -> tuple[SegmentStore, list[dict]]:
+def _store(tmp_path) -> tuple[SegmentStore, list[dict]]:
+    """A SegmentStore over the real clio-core store, in this test's own namespace (the
+    harness clears it); a second store over the same namespace is a cold reload."""
     events: list[dict] = []
-    ss = SegmentStore(LocalFSStore(str(tmp_path / sub)), op_logger=_make_capturing_logger(events))
+    ss = SegmentStore(make_arc_store(backend="cte"), op_logger=_make_capturing_logger(events))
     return ss, events
 
 
@@ -222,7 +224,7 @@ def _random_content(kind: str, tag: str) -> dict[str, Any]:
 
 def _run_fuzz(seed: int, n_ops: int, tmp_path) -> tuple[SegmentStore, list[dict], str, list[str]]:
     rng = random.Random(seed)
-    ss, events = _store(tmp_path, sub=f"fuzz{seed}")
+    ss, events = _store(tmp_path)
     sid = f"fuzz-s{seed}"
     scopes = ["agentA/x", "agentB/y", "agentC/z"]
     for i in range(n_ops):
@@ -390,7 +392,7 @@ def test_as_of_exact_boundaries(tmp_path):
 def test_two_sessions_one_event_stream(tmp_path):
     events: list[dict] = []
     logger = _make_capturing_logger(events)
-    ss = SegmentStore(LocalFSStore(str(tmp_path)), op_logger=logger)
+    ss = SegmentStore(make_arc_store(backend="cte"), op_logger=logger)
     scope = "agentA/exp"  # SAME scope address in both sessions
     s1, s2 = "sess-1", "sess-2"
     for step in range(4):
@@ -579,8 +581,8 @@ def test_real_react_loop_trace_reconstructs_arc(tmp_path):
 
 def test_cold_reload_and_replay_agree(tmp_path):
     ss, events, sid, scopes = _run_fuzz(seed=131, n_ops=100, tmp_path=tmp_path)
-    # Cold store re-reads the persisted segments from the same backend dir.
-    cold = SegmentStore(LocalFSStore(str(tmp_path / "fuzz131")))
+    # Cold store re-reads the persisted segments from the same clio-core namespace.
+    cold = SegmentStore(make_arc_store(backend="cte"))
     for sc in scopes:
         reloaded = _render_proj(cold.render(sid, sc))
         replayed = _render_proj(reconstruct_arc_segments(events, scope_filter=sc))
@@ -682,30 +684,22 @@ def test_live_alcf_trace_reconstructs_arc(tmp_path):
 
 @pytest.mark.integration
 def test_clio_core_backed_replay_audit():
-    try:
-        store = make_arc_store(backend="cte")
-    except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"clio-core runtime unavailable: {exc}")
-    if type(store).__name__ != "ClioCoreStore":
-        pytest.skip("clio-core backend not active (fell back to local)")
+    """The replay audit over the production clio-core store, driven directly."""
+    store = make_arc_store(backend="cte")
+    assert type(store).__name__ == "ClioCoreStore"
 
     events: list[dict] = []
     ss = SegmentStore(store, op_logger=_make_capturing_logger(events))
     sid, scope = "clio_core_audit_s1", "agentA/exp"
-    try:
-        for step in range(3):
-            ss.append(sid, scope, "thought", {"text": f"ct{step}"}, step=step)
-            ss.append(sid, scope, "observation", {"text": f"co{step}"}, step=step)
-        live_ids = [s.id for s in ss.render(sid, scope)]
-        ss.delete(sid, scope, live_ids[:1])
-        ss.summarize(sid, scope, live_ids[2:4], {"text": "CLIO_CORE_SUMM"})
+    for step in range(3):
+        ss.append(sid, scope, "thought", {"text": f"ct{step}"}, step=step)
+        ss.append(sid, scope, "observation", {"text": f"co{step}"}, step=step)
+    live_ids = [s.id for s in ss.render(sid, scope)]
+    ss.delete(sid, scope, live_ids[:1])
+    ss.summarize(sid, scope, live_ids[2:4], {"text": "CLIO_CORE_SUMM"})
 
-        live = ss.render(sid, scope)
-        replayed = reconstruct_arc_segments(events, scope_filter=scope)
-        assert _render_proj(replayed) == _render_proj(live)
-        assert _trace_ref_map(replayed) == _trace_ref_map(live)
-        _assert_replay_matches_store(ss, events, sid, [scope], max_lt=_max_lt(events))
-    finally:
-        # leave the shared in-process runtime clean for other integration tests
-        for name in [n for n, _ in store.scan("segments", prefix=f"{sid}")]:
-            store.delete("segments", name)
+    live = ss.render(sid, scope)
+    replayed = reconstruct_arc_segments(events, scope_filter=scope)
+    assert _render_proj(replayed) == _render_proj(live)
+    assert _trace_ref_map(replayed) == _trace_ref_map(live)
+    _assert_replay_matches_store(ss, events, sid, [scope], max_lt=_max_lt(events))

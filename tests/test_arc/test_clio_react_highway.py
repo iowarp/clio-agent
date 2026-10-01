@@ -29,6 +29,7 @@ from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact import context as ctx
 from clio_agent.gact.agents import clio_react
 from clio_agent.gact.agents.clio_react import ClioReAct
+from clio_agent.gact.agents.clio_react_record import fold_steps
 from tests._scripted_engine import calls, scripted_lm
 
 from .conftest import live_plane_context
@@ -195,7 +196,9 @@ def test_escalation_closes_the_lifecycle_span_and_records_the_step(
     """#1282 F6 (#1275 ask 3): a typed refusal escalating out of the loop must not leave
     ``expert.lifecycle.started`` without a matching close on the highway, and the step
     that died is recorded on the plane (its refused call's error observation) plus the
-    ``[turn escalated]`` note, so the plane holds what the turn produced before it died."""
+    escalation note -- a ``user`` CLIO addition (``source: turn_escalated``), never an
+    observation -- so the plane holds what the turn produced before it died and still
+    folds coherently."""
     from clio_agent.errors import MCPMissingRequiredClientCapabilityError
 
     def _refusing_tool(payload: str = "") -> str:
@@ -242,11 +245,20 @@ def test_escalation_closes_the_lifecycle_span_and_records_the_step(
     thoughts = [s.content["text"] for s in live if s.kind == "thought"]
     assert thoughts == ["search first", "call it"]
     observations = [s.content for s in live if s.kind == "observation"]
+    assert len(observations) == 2, "the escalation note is not an observation"
     assert observations[0]["text"] == "SEARCH_RESULT"
     refused = observations[1]
     assert refused["is_error"] is True
     assert "Execution error in _refusing_tool" in refused["text"]
-    assert observations[-1]["text"].startswith("[turn escalated] mcp_capability_refused")
+    note = live[-1]
+    assert note.kind == "user"
+    assert note.content["source"] == "turn_escalated"
+    assert note.content["actor"] == "algorithm"
+    assert note.content["text"].startswith("mcp_capability_refused: ")
+    # The plane the turn left behind folds: the note reaches the model as a CLIO addition.
+    last = fold_steps(live)[-1]
+    assert last.role == "user"
+    assert last.parts[0].text.startswith("[clio: turn_escalated]\nmcp_capability_refused: ")
 
 
 def test_generic_crash_escalates_unchanged_no_arc_enrichment(

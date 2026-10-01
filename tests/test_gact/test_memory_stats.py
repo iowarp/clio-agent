@@ -56,6 +56,10 @@ class FakeARC:
     def get_cache_stats(self) -> dict[str, Any]:
         return dict(self._stats)
 
+    # The op-logger the app wires on every ARC (a failure to wire now raises).
+    def set_segment_op_logger(self, _logger: Any) -> None:
+        return None
+
     def list_segment_scopes(self, session_id: str, scope_prefix: str = "") -> list[str]:
         # No agent context on this stats-only stub (a rewind rolls back nothing).
         return []

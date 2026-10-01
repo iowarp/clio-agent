@@ -2,7 +2,7 @@
 
 The native client ends the process with ``exit(1)`` (``HLOG(kFatal, ...)``) on some
 startup failures instead of returning. Before the guard, both setups below ended the
-attaching process within a second of ``clio_init``, with no degrade record and no
+attaching process within a second of ``clio_init``, with no typed error and no
 result (reproduced against iowarp-core 2.2.1):
 
 - ``with_runtime``: an inherited ``CLIO_WITH_RUNTIME=1`` makes the native client start
@@ -13,7 +13,7 @@ result (reproduced against iowarp-core 2.2.1):
   LoadFromFile yaml-cpp: ... bad conversion``).
 
 Now the first is removed before the attach (recorded) and the attach succeeds; the
-second degrades ARC with the typed ``clio_core_native_client_exit`` and the process
+second raises the typed ``clio_core_native_client_exit`` store error and the process
 lives. Hermetic: private daemon, reserved port, own state dir, driven from a subprocess.
 """
 
@@ -42,18 +42,28 @@ from tests.test_arc.test_clio_core_offload_spill import (  # noqa: E402 - after 
 _CHILD_TIMEOUT_S = 180.0
 
 
+def _durable(config_text: str) -> str:
+    """The shared private config with its file tier marked durable: clio-core refuses a
+    config that would forget everything on restart before it ever attaches."""
+    marker = '        bdev_type: "file"\n'
+    assert config_text.count(marker) == 1
+    return config_text.replace(marker, marker + '        persistence_level: "temporary"\n')
+
+
 def _write_config(path: Path, *, port: int, root: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     (root / "conf").mkdir(parents=True, exist_ok=True)
     (root / "store").mkdir(parents=True, exist_ok=True)
     path.write_text(
-        _PRIVATE_CONFIG.format(
-            port=port,
-            conf_dir=(root / "conf").as_posix(),
-            ram_cap=_RAM_CAP,
-            file_tier=(root / "store" / "storage.bin").as_posix(),
-            file_cap=_FILE_CAP,
-            metadata_log=(root / "store" / "metadata.log").as_posix(),
+        _durable(
+            _PRIVATE_CONFIG.format(
+                port=port,
+                conf_dir=(root / "conf").as_posix(),
+                ram_cap=_RAM_CAP,
+                file_tier=(root / "store" / "storage.bin").as_posix(),
+                file_cap=_FILE_CAP,
+                metadata_log=(root / "store" / "metadata.log").as_posix(),
+            )
         ),
         encoding="utf-8",
     )
@@ -120,6 +130,6 @@ def test_the_native_client_cannot_exit_the_attaching_process(tmp_path: Path, mod
         assert result["removed_env"] == {"CLIO_WITH_RUNTIME": "1"}, result
         assert result["with_runtime_after"] is None, result
     else:
-        assert result["store_type"] == "LocalFSStore", result
+        assert result.get("raised") == "ArcStoreUnavailableError", result
         assert result["reason"] == "clio_core_native_client_exit", result
         assert "bad conversion" in result["error"], result

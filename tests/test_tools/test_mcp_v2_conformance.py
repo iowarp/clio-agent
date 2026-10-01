@@ -780,6 +780,7 @@ def test_capability_demotion_guard_refuses_a_downgraded_false() -> None:
 # --------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("clio_core_plane")
 def test_permanent_protocol_refusal_terminates_the_react_loop_fast() -> None:
     """#1275 failing-first repro: a task=required tool reached through a
     client that never declares the tasks extension (``_NoExtensionClient`` --

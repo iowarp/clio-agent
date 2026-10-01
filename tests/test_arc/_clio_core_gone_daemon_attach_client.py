@@ -36,7 +36,7 @@ def main() -> int:
         import psutil
 
         from clio_agent.arc import storage
-        from clio_agent.arc.init_degradation import arc_init_degradation_snapshot
+        from clio_agent.arc.init_degradation import ArcStoreUnavailableError
 
         config_path = os.environ["CLIO_ARC_STORE_CONFIG"]
         port = storage._resolve_runtime_port(config_path)
@@ -60,12 +60,16 @@ def main() -> int:
             daemon.suspend()
         result["stage"] = mode
         started = time.monotonic()
-        store = storage.make_arc_store(backend="cte")
+        try:
+            store = storage.make_arc_store(backend="cte")
+        except ArcStoreUnavailableError as failure:  # the typed outcome under test
+            result["elapsed_s"] = time.monotonic() - started
+            result["raised"] = type(failure).__name__
+            result["reason"] = failure.reason
+            result["error"] = str(failure.details.get("error", ""))
+            return 0
         result["elapsed_s"] = time.monotonic() - started
         result["store_type"] = type(store).__name__
-        record = arc_init_degradation_snapshot()
-        result["reason"] = getattr(record, "reason", None)
-        result["error"] = str(getattr(record, "error", "") or "")
         return 0
     except Exception as exc:  # noqa: BLE001 - reported to the parent as a failure
         result["exception"] = f"{type(exc).__name__}: {exc}"

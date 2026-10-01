@@ -147,9 +147,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # comment lines explaining why the stamp is deliberately absent here.
     # MERGE (PR #1298 x #1310): 1030 -> 1032. Both campaigns' call-site lines
     # coexist; neither side's additions were dropped.
-    "src/clio_agent/agent.py": 988,  # MCP refresh moved to gact/mcp_gateway_refresh.py; L1: -4 (executor_work_may_continue deleted)
-    "src/clio_agent/arc/memory.py": 1333,  # #1339: the _events chunk writer cursor moved to arc/lane_chunking.py
-    "src/clio_agent/arc/segments.py": 1057,
+    "src/clio_agent/agent.py": 985,  # MCP refresh moved to gact/mcp_gateway_refresh.py; L1: -4 (executor_work_may_continue deleted)
+    "src/clio_agent/arc/memory.py": 1278,  # #1339: the _events chunk writer cursor moved to arc/lane_chunking.py
+    "src/clio_agent/arc/segments.py": 1024,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
     # owner ruling 2026-07-14: +3 to route explicit =local through the loud
     # DEGRADED banner (owner module: arc/init_degradation.py).
@@ -167,14 +167,13 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1439 (C1): 863 -> 843. The version gate + config adoption live in the owner
     # module arc/clio_core_daemon_version.py; the PID-identity helpers moved to
     # arc/pid_identity.py (re-exported here under their old names).
-    "src/clio_agent/arc/storage.py": 826,
     # #737 S2 fold owner module. Crossed the 800 new-file cap restoring the FROZEN
     # arc.op reproducibility contract (§2 / GOAL.md DoD #4): the five working-set write
     # overrides now emit a per-op arc.op via _emit_op so arc.replay rebuilds the live
     # plane byte-identically (the S2 slice had dropped these, breaking replay). Footprint
     # minimized to concise docstrings; the per-op payload passing is irreducible. Ratchet
     # down with the #714/#767 decomposition.
-    "src/clio_agent/arc/working_set_fold.py": 914,
+    "src/clio_agent/arc/working_set_fold.py": 910,
     # #1326: adapters.py was 780 lines (under the 800 cap). +56 for: a new
     # _ContextOverflowError typed exception, a _check_context_overflow pre-flight
     # helper (mirrors the guided path's _bound_guided_output_kwargs shape), pre-
@@ -478,7 +477,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # with develop's activation extraction and provider startup refresh.
     # Ratchet down 2469 -> 2467 (naming reversal): removed the now-unneeded
     # codex->chatgpt boot migration call (the provider id never changed).
-    "src/clio_agent/gact/app.py": 2439,  # L1: -1, the deleted hard_abort_supported/upstream_abort/executor_work_may_continue triad
+    "src/clio_agent/gact/app.py": 2435,  # L1: -1, the deleted hard_abort_supported/upstream_abort/executor_work_may_continue triad
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -581,7 +580,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # gact/agent_blueprint_requires.py (install_refusal_http_exception,
     # path_activation_invalid_http_exception) instead of building the
     # ErrorEnvelope inline here.
-    "src/clio_agent/gact/routes/blueprints.py": 867,
     "src/clio_agent/gact/routes/catalog.py": 898,  # +4: /goal command dispatch wiring (#1080; logic in gact/goal.py)
     # #1201 (adversarial review, PR #1202): +6 for two direct-connect era-
     # classification call sites (call_external_mcp_tool + _external_mcp_inventory's
@@ -602,7 +600,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # builders.py above (owner module tools/mcp_header_mismatch.py).
     # MERGE (PR #1298 x #1310): 962 -> 972. The two campaigns' route additions are
     # disjoint and both survive intact.
-    "src/clio_agent/gact/routes/mcp.py": 972,  # declared MCP assembly moved to routes/mcp_specs.py
+    "src/clio_agent/gact/routes/mcp.py": 970,  # declared MCP assembly moved to routes/mcp_specs.py
     # #947 DEBT (recorded 2026-07-18, #948 S4 branch): the MCP-apps landing grew
     # these files past their baselines without a ratchet update (it merged to
     # develop with the check job red). Recording current counts makes the debt
@@ -733,7 +731,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # mount_failures map (namespace -> typed reason) so the exception itself
     # can name a declared tool's server + reason -- turn.py's except handler
     # is the only reader; the mount decision lives in gact/agents/builders.py.
-    "src/clio_agent/gact/runtime/globals.py": 931,  # blueprint-path arg threading (#1247); L1: -5, executor_work_may_continue param deleted from _cancelled_error_info
+    "src/clio_agent/gact/runtime/globals.py": 906,  # blueprint-path arg threading (#1247); L1: -5, executor_work_may_continue param deleted from _cancelled_error_info
     # #948 S5: +2 to read the RUN-KEYED tap-dedup bucket under an in-process module
     # variant (context.run_keyed_scope; bare invoking_expert still owns attribution).
     # merge(main->develop): +10 (932 -> 942) integrating main's #964 structured
@@ -892,7 +890,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1201 (adversarial review, PR #1202): +4 to register the mcp_yaml doctor
     # sub-check (import + the probe_mcp_yaml_declarations() call); the probe
     # logic lives in the owner module runtime/mcp_launcher.py.
-    "src/clio_agent/runtime/status.py": 1235,
+    "src/clio_agent/runtime/status.py": 1137,
     # #932: +62 for preloaded tool definitions (start() without the list_tools
     # fan-out) and namespace-direct call routing with lazy per-namespace
     # clients — the executor IS the owner module for this.

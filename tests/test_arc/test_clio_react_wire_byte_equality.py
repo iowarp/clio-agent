@@ -183,14 +183,14 @@ def test_every_loop_call_is_equal_to_the_reference(arc):
         assert list(request.messages) == [NOTE, HEAD, *reference[: 2 * k]], f"call {k} diverged"
 
 
-def test_plane_fold_equals_the_loops_own_steps(arc):
-    """The ARC fold of the plane after the turn == the message list the loop kept
-    (the user message first): the loop's context and its record are one thing."""
+def test_prediction_messages_are_the_plane_fold(arc):
+    """The Prediction's messages are the ARC fold of the plane after the turn: the
+    loop keeps no step list of its own, clio-core is the one record."""
     pred, _ = _run_loop(arc, _agent(), _script(_STEPS))
     with live_plane_context(arc, session=SESSION, scope=SCOPE):
         folded = read_steps(arc, SESSION, SCOPE)
-    assert pred.messages[0] == HEAD
-    assert folded == [NOTE, *pred.messages]  # the loop keeps the task; the plane the note too
+    assert pred.messages[:2] == [NOTE, HEAD]
+    assert folded == pred.messages
 
 
 def test_consecutive_calls_are_strict_prefix_extensions(arc):
@@ -254,14 +254,21 @@ def test_wire_prefix_is_stable_across_appends(arc):
 
 
 def test_out_of_band_delete_changes_the_next_call(arc):
-    """THE killer test at the real loop: a segment deleted from the plane mid-turn is
-    absent from the loop's NEXT model call -- a loop reading its own in-memory steps
-    would still send it."""
+    """THE killer test at the real loop: a call + its observation deleted from the plane
+    mid-turn are absent from the loop's NEXT model call -- a loop reading its own
+    in-memory steps would still send them. The pair is deleted together: a call left
+    without its result is an incoherent plane the fold refuses."""
 
     def prune() -> str:
-        """Deletes the first observation from the live plane."""
-        first_obs = next(s for s in arc.render_segments(SESSION, SCOPE) if s.kind == "observation")
-        arc.delete_segments(SESSION, SCOPE, [first_obs.id])
+        """Deletes the first tool call and its observation from the live plane."""
+        segs = arc.render_segments(SESSION, SCOPE)
+        first_call = next(s for s in segs if s.kind == "tool_call")
+        first_obs = next(
+            s
+            for s in segs
+            if s.kind == "observation" and s.content.get("call_id") == first_call.content["id"]
+        )
+        arc.delete_segments(SESSION, SCOPE, [first_call.id, first_obs.id])
         return "PRUNED"
 
     script = [
@@ -273,16 +280,18 @@ def test_out_of_band_delete_changes_the_next_call(arc):
     requests = engine.requests
     assert "SEARCH_RESULT" in _text(requests[1])
     assert "SEARCH_RESULT" not in _text(requests[2])
+    assert "'q': 'alpha'" in _text(requests[1])  # the deleted call itself ...
+    assert "'q': 'alpha'" not in _text(requests[2])  # ... is gone from the next call too
     assert "PRUNED" in _text(requests[2])
     assert "search first" in _text(requests[2])  # the step's thought survives
 
 
 def test_delete_propagates_absent_on_the_wire(arc):
-    """A deleted segment vanishes from the next plane-rendered messages."""
+    """A deleted call + observation vanish from the next plane-rendered messages."""
     _populate(arc, _STEPS)
     before = plane_messages(arc)
-    obs = [s for s in arc.render_segments(SESSION, SCOPE) if s.kind == "observation"]
-    arc.delete_segments(SESSION, SCOPE, [obs[-1].id])  # delete the SECOND step's obs
+    pair = [s.id for s in arc.render_segments(SESSION, SCOPE) if s.kind != "thought"][-2:]
+    arc.delete_segments(SESSION, SCOPE, pair)  # delete the SECOND step's call + obs
     after = plane_messages(arc)
     assert "SECOND_RESULT" in _text(before)
     assert "SECOND_RESULT" not in _text(after)

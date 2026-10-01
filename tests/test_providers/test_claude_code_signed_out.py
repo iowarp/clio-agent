@@ -34,6 +34,8 @@ from clio_agent.providers.claude_code_result_errors import result_error_detail
 from clio_agent.providers.claude_code_sessions import _reset_sessions_for_tests
 from tests import _fake_claude_sdk as fake
 
+pytestmark = pytest.mark.usefixtures("clio_core_plane")
+
 _NOT_LOGGED_IN = "Not logged in · Please run /login"
 
 

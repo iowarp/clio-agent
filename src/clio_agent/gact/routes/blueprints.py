@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING, Any, Literal, Optional, cast
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
 
-from clio_agent.gact import session_warmup
 from clio_agent.gact.a2ui_capabilities import catalog_ids_for_resolved_blueprint
 from clio_agent.gact.agent_blueprint_files import (
     BlueprintPathEscapesRootError,
@@ -67,10 +66,12 @@ from clio_agent.gact.agents.resolution import (
     _runtime_workspace_catalog_cwd,
 )
 from clio_agent.gact.agents.tool_instrumentation import mcp_tool_title
+from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.permission_gate import _normalize_mcp_tool_annotations
 from clio_agent.gact.routes.blueprint_catalog import register_blueprint_catalog_route
 from clio_agent.gact.routes.blueprint_file_write import register_blueprint_file_write_route
-from clio_agent.gact.types import ErrorEnvelope, ErrorInfo, Session
+from clio_agent.gact.routes.blueprint_session_activation import activate_session_blueprint
+from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
 
 logger = logging.getLogger(__name__)
 
@@ -429,16 +430,19 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
         )
 
         try:
-            result = install_agent_blueprint(
-                source=source,
-                scope=scope,  # type: ignore[arg-type]
-                cwd=cwd or Path.cwd(),
-                ref=str(req.get("ref") or source_row.get("ref") or ""),
-                blueprint_id=str(req.get("blueprint_id") or ""),
-                pinned_commit=str(
-                    req.get("pinned_commit") or source_row.get("pinned_commit") or ""
-                ),
-                app=app,
+            # A fetch, a copy and clio-core writes: never on the event loop.
+            result = await run_off_loop(
+                lambda: install_agent_blueprint(
+                    source=source,
+                    scope=scope,  # type: ignore[arg-type]
+                    cwd=cwd or Path.cwd(),
+                    ref=str(req.get("ref") or source_row.get("ref") or ""),
+                    blueprint_id=str(req.get("blueprint_id") or ""),
+                    pinned_commit=str(
+                        req.get("pinned_commit") or source_row.get("pinned_commit") or ""
+                    ),
+                    app=app,
+                )
             )
             _invalidate_a2ui_catalogs(app)
             return result
@@ -511,10 +515,12 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
             )
         cwd = _runtime_workspace_catalog_cwd(app, workspace_id=workspace_id)
         try:
-            result = uninstall_agent_blueprint(
-                blueprint_id=blueprint_id,
-                scope=scope,  # type: ignore[arg-type]
-                cwd=cwd or Path.cwd(),
+            result = await run_off_loop(
+                lambda: uninstall_agent_blueprint(
+                    blueprint_id=blueprint_id,
+                    scope=scope,  # type: ignore[arg-type]
+                    cwd=cwd or Path.cwd(),
+                )
             )
             _invalidate_a2ui_catalogs(app)
             return result
@@ -779,89 +785,8 @@ def register_blueprints_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.post("/v1/sessions/{sid}/agent-blueprint")
     async def set_session_agent_blueprint(sid: str, req: dict[str, Any]) -> dict[str, Any]:
-        sess = app.state.sessions.get(sid)
-        if sess is None:
-            raise _not_found(f"session not found: {sid}", session_id=sid)
-        blueprint_id = str(req.get("blueprint_id") or req.get("agent_blueprint_id") or "").strip()
-        blueprint_path = str(req.get("path") or req.get("blueprint_path") or "").strip()
-        cwd = _runtime_workspace_catalog_cwd(app, session_id=sid)
-        if blueprint_path:
-            validation = validate_agent_blueprint_path(
-                Path(blueprint_path),
-                scope="session",
-                runtime_tool_names=runtime_tool_names_for_validation(app),
-            )
-            blueprint_wire = validation["agent_blueprint"]
-            if not validation.get("enabled", False):
-                from clio_agent.gact.agent_blueprint_requires import (  # noqa: PLC0415
-                    path_activation_invalid_http_exception,
-                )
-
-                raise path_activation_invalid_http_exception(
-                    validation, blueprint_path, blueprint_wire, app=app, session_id=sid
-                )
-            install_root = Path(str(blueprint_wire.get("root") or blueprint_path)).expanduser()
-            activation_metadata = deps.agent_blueprint_activation_metadata(
-                blueprint_wire=blueprint_wire,
-                install_root=install_root,
-                scope="session",
-                session_id=sid,
-            )
-            updated = app.state.sessions.update(
-                sid,
-                metadata_patch={
-                    **activation_metadata,
-                    "active_agent_blueprint_path": str(Path(blueprint_path).expanduser()),
-                    "active_expert_pack_id": "",
-                    "active_expert_pack_path": "",
-                },
-            )
-        else:
-            if not blueprint_id:
-                raise HTTPException(
-                    status_code=400,
-                    detail=ErrorEnvelope(
-                        error=ErrorInfo(
-                            error="validation_error",
-                            message="blueprint_id or path is required",
-                            recoverable=True,
-                        )
-                    ).model_dump(exclude_none=True),
-                )
-            blueprint = next(
-                (row for row in discover_agent_blueprints(cwd=cwd) if row.id == blueprint_id), None
-            )
-            if blueprint is None:
-                raise _not_found(
-                    f"agent blueprint not found: {blueprint_id}",
-                    agent_blueprint_id=blueprint_id,
-                    session_id=sid,
-                )
-            blueprint_wire = blueprint.to_wire()
-            activation_metadata = deps.agent_blueprint_activation_metadata(
-                blueprint_wire=blueprint_wire,
-                install_root=blueprint.root,
-                scope=blueprint.scope,
-                session_id=sid,
-            )
-            updated = app.state.sessions.update(
-                sid,
-                metadata_patch={
-                    **activation_metadata,
-                    "active_agent_blueprint_path": "",
-                    "active_expert_pack_id": "",
-                    "active_expert_pack_path": "",
-                },
-            )
-        # The blueprint's servers start now, not on the session's next message.
-        session_warmup.start_session_warmup(app, sid, trigger="blueprint_activated")
-        return {
-            "session_id": sid,
-            "workspace_id": getattr(sess, "workspace_id", ""),
-            "active_agent_blueprint_id": str(blueprint_wire.get("id") or ""),
-            "active_agent_blueprint_path": str(blueprint_path),
-            "agent_blueprint": blueprint_wire,
-            "session": Session(**updated.to_wire()).model_dump(exclude_none=True)
-            if updated
-            else None,
-        }
+        # Validation, discovery and activation record reasons in clio-core (store
+        # writes): the whole activation runs off the event loop.
+        return await run_off_loop(
+            lambda: activate_session_blueprint(app, deps, sid, req, not_found=_not_found)
+        )

@@ -26,12 +26,16 @@ logger = logging.getLogger(__name__)
 
 
 def _plane() -> tuple[Any, str, str]:
-    """``(arc, session, base_scope)`` for the active agent, or ``(None, '', '')``."""
+    """``(plane, session, base_scope)`` for the active agent: its clio-core ARC, or the
+    History mode plane; no plane is :class:`NoContextStoreError`."""
+    from clio_agent.arc.history_plane import plane_for  # noqa: PLC0415
+    from clio_agent.gact.agents.clio_react import NoContextStoreError  # noqa: PLC0415
+
     app = _ctx.active_app()
     base = _ctx.active_react_scope()
-    arc = getattr(getattr(app, "state", None), "arc", None) if (app is not None and base) else None
+    arc = plane_for(app) if (app is not None and base) else None
     if arc is None:
-        return None, "", ""
+        raise NoContextStoreError()
     return arc, _ctx.active_react_session(), base
 
 
@@ -67,12 +71,9 @@ def _retire_live(arc: Any, session: str, scope: str) -> None:
         arc.delete_segments(session, scope, live)
 
 
-def fork_try(run_index: int) -> list[str] | None:
-    """Start try ``run_index`` from the base scope; returns the forked segment ids
-    (``None`` when there is no live plane: the loop's own step list is its context)."""
+def fork_try(run_index: int) -> list[str]:
+    """Start try ``run_index`` from the base scope; returns the forked segment ids."""
     arc, session, base = _plane()
-    if arc is None:
-        return None
     scope = _run_scope(base, run_index)
     _retire_live(arc, session, scope)
     return _copy(arc, session, scope, list(arc.render_working_set(session, base)))
@@ -81,8 +82,6 @@ def fork_try(run_index: int) -> list[str] | None:
 def record_winner(run_index: int, forked: list[str]) -> None:
     """Continue the base scope with the winning try's line."""
     arc, session, base = _plane()
-    if arc is None:
-        return
     live = list(arc.render_working_set(session, _run_scope(base, run_index)))
     if [seg.id for seg in live[: len(forked)]] == forked:
         new = live[len(forked) :]

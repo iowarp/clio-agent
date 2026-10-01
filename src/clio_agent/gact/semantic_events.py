@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from clio_agent.arc.segments import _encode_safe
+from clio_agent.errors import ClioError
 from clio_agent.gact.events import Event, EventBus
 
 SCHEMA_VERSION = "clio.semantic_event.v1"
@@ -574,6 +575,22 @@ class NoopSemanticTraceBackend:
 _TRACE_WRITE_QUEUE: "queue.Queue[tuple[Path, SemanticEvent] | None]" = queue.Queue()
 _TRACE_WRITER_THREAD: threading.Thread | None = None
 _TRACE_WRITER_LOCK = threading.Lock()
+# A write the shared writer could not make, kept per trace file until reported: the next
+# ``emit`` to that file or ``flush`` of its backend raises it (never a silent drop).
+_TRACE_WRITE_FAILURES: dict[Path, str] = {}
+
+
+class TraceWriteError(ClioError):
+    """The durable semantic trace could not write an event; it was not recorded."""
+
+    reason = "trace_write_failed"
+
+    def __init__(self, path: Path, cause: str) -> None:
+        super().__init__(
+            f"the semantic trace could not write to {path}: {cause}",
+            error_type=self.reason,
+            details={"path": str(path), "cause": cause},
+        )
 
 
 def _trace_writer_loop() -> None:
@@ -592,10 +609,11 @@ def _trace_writer_loop() -> None:
                 with path.open("a", encoding="utf-8") as f:
                     f.write(line)
                     f.write("\n")
-            except Exception as exc:  # noqa: BLE001 - a write error must not kill the writer
+            except Exception as exc:  # noqa: BLE001 - kept and raised by the backend (typed)
                 from clio_agent.runtime import trace  # noqa: PLC0415
 
-                trace.event("TRACE-WRITE", "durable trace write failed (event dropped): %r", exc)
+                trace.event("TRACE-WRITE", "durable trace write failed: %r", exc)
+                _TRACE_WRITE_FAILURES.setdefault(path, f"{type(exc).__name__}: {exc}")
         finally:
             _TRACE_WRITE_QUEUE.task_done()
 
@@ -651,11 +669,17 @@ class FileSemanticTraceBackend:
     def emit(self, event: SemanticEvent) -> None:
         # Near-zero work on the caller (which may be the turn's event-loop thread):
         # just resolve the path + enqueue. Serialization + I/O happen in the writer.
-        _TRACE_WRITE_QUEUE.put((self._path_for(event), event))
+        path = self._path_for(event)
+        if path in _TRACE_WRITE_FAILURES:
+            raise TraceWriteError(path, _TRACE_WRITE_FAILURES[path])
+        _TRACE_WRITE_QUEUE.put((path, event))
 
     def flush(self) -> None:
-        """Block until all enqueued events have been written (tests/readers)."""
+        """Block until all enqueued events have been written; raise a write that failed."""
         _TRACE_WRITE_QUEUE.join()
+        for path, cause in list(_TRACE_WRITE_FAILURES.items()):
+            if path == self.path or self.path in path.parents:
+                raise TraceWriteError(path, cause)
 
     def close(self) -> None:
         """Drain pending writes (the shared daemon writer lives for the process)."""

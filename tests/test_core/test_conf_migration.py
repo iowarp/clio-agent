@@ -341,10 +341,10 @@ class TestArcServerConf:
 
 
 class TestArcStore:
-    """``arc.store`` / ``CLIO_ARC_STORE`` — ARC backend selection."""
+    """``arc.store`` / ``CLIO_ARC_STORE`` -- clio-core ('cte') is the only store."""
 
-    def test_env(self, monkeypatch, tmp_path):
-        from clio_agent.arc.storage import LocalFSStore, make_arc_store
+    def test_env_local_is_rejected(self, monkeypatch, tmp_path):
+        from clio_agent.arc.storage import make_arc_store
 
         # Drop the fixture's file-layer ``arc.store`` so the env is the real source
         # under test (file > env; a bare setenv would otherwise be shadowed).
@@ -352,29 +352,33 @@ class TestArcStore:
 
         delete_config("arc.store")
         monkeypatch.setenv("CLIO_ARC_STORE", "local")
-        assert isinstance(make_arc_store(data_dir=tmp_path / "arc"), LocalFSStore)
+        with pytest.raises(ValueError, match="clio-core"):
+            make_arc_store(data_dir=tmp_path / "arc")
 
     def test_file_wins(self, monkeypatch, tmp_path):
-        from clio_agent.arc.storage import LocalFSStore, make_arc_store
+        from clio_agent.arc.storage import make_arc_store
 
-        # env says cte (which would raise without clio-core); file layer wins.
+        # env says cte; the file layer's value is the one resolved (and rejected).
         monkeypatch.setenv("CLIO_ARC_STORE", "cte")
-        _write_user_config(monkeypatch, tmp_path, "arc:\n  store: local\n")
-        assert isinstance(make_arc_store(data_dir=tmp_path / "arc"), LocalFSStore)
+        _write_user_config(monkeypatch, tmp_path, "arc:\n  store: fromfile\n")
+        with pytest.raises(ValueError, match="fromfile"):
+            make_arc_store(data_dir=tmp_path / "arc")
 
-    def test_explicit_backend_arg_beats_config(self, monkeypatch, tmp_path):
-        from clio_agent.arc.storage import LocalFSStore, make_arc_store
+    def test_explicit_backend_arg_beats_config(self, tmp_path, _captured_store_args):
+        from clio_agent.arc.storage import make_arc_store
+        from tests._config_layer import set_config
 
-        monkeypatch.setenv("CLIO_ARC_STORE", "cte")
-        assert isinstance(make_arc_store(backend="local", data_dir=tmp_path / "arc"), LocalFSStore)
+        set_config("arc.store", "banana")
+        make_arc_store(backend="cte", data_dir=tmp_path / "arc")
+        assert _captured_store_args["backend"] == "cte"
 
     def test_unknown_backend_fails_loud(self, monkeypatch, tmp_path):
         from clio_agent.arc.storage import make_arc_store
 
-        # The autouse fixture pins ``arc.store: local`` in the config-FILE layer
-        # (file > env), so a ``setenv`` here could never reach the resolver. Express
-        # the fail-loud contract at the file layer instead: an unknown backend name
-        # in config.yaml must still raise (#985 residual re-expression).
+        # The autouse fixture pins ``arc.store`` in the config-FILE layer (file > env),
+        # so a ``setenv`` here could never reach the resolver. Express the fail-loud
+        # contract at the file layer instead: an unknown backend name in config.yaml
+        # must still raise (#985 residual re-expression).
         from tests._config_layer import set_config
 
         set_config("arc.store", "banana")
@@ -382,36 +386,42 @@ class TestArcStore:
             make_arc_store(data_dir=tmp_path / "arc")
 
 
-class TestArcStoreConfig:
-    """``arc.store_config`` / ``CLIO_ARC_STORE_CONFIG`` — CTE config path."""
+@pytest.fixture()
+def _captured_store_args(monkeypatch):
+    """Record the arguments ``make_arc_store`` resolves for the clio-core attach.
 
-    @pytest.fixture()
-    def _stub_clio_core(self, monkeypatch):
-        from clio_agent.arc import storage
+    The subject is config resolution, so the attach seam records what it was given
+    and returns a marker instead of attaching (no daemon for a resolution test).
+    """
+    from clio_agent.arc import clio_core_attach
 
-        captured: dict[str, str] = {}
+    captured: dict[str, object] = {}
 
-        class _StubClioCore:
-            def __init__(self, config_path: str = "") -> None:
-                captured["config_path"] = config_path
-
-        monkeypatch.setattr(storage, "ClioCoreStore", _StubClioCore)
+    def _record(cfg, *, backend, data_dir, namespace=""):
+        captured.update(config_path=cfg, backend=backend, namespace=namespace)
         return captured
 
-    def test_env(self, monkeypatch, tmp_path, _stub_clio_core):
+    monkeypatch.setattr(clio_core_attach, "build_tracked_store", _record)
+    return captured
+
+
+class TestArcStoreConfig:
+    """``arc.store_config`` / ``CLIO_ARC_STORE_CONFIG`` -- CTE config path."""
+
+    def test_env(self, monkeypatch, tmp_path, _captured_store_args):
         from clio_agent.arc.storage import make_arc_store
 
-        # Drop the fixture's file-pinned ``arc.store: local`` so the cte branch is
-        # reachable; the SUBJECT here is the ``store_config`` env resolution (#985).
+        # Drop the fixture's file-pinned ``arc.store`` so the env drives the backend;
+        # the SUBJECT here is the ``store_config`` env resolution (#985).
         from tests._config_layer import delete_config
 
         delete_config("arc.store")
         monkeypatch.setenv("CLIO_ARC_STORE", "cte")
         monkeypatch.setenv("CLIO_ARC_STORE_CONFIG", str(tmp_path / "env-cte.yaml"))
         make_arc_store(data_dir=tmp_path / "arc")
-        assert _stub_clio_core["config_path"] == str(tmp_path / "env-cte.yaml")
+        assert _captured_store_args["config_path"] == str(tmp_path / "env-cte.yaml")
 
-    def test_file_wins(self, monkeypatch, tmp_path, _stub_clio_core):
+    def test_file_wins(self, monkeypatch, tmp_path, _captured_store_args):
         from clio_agent.arc.storage import make_arc_store
 
         monkeypatch.setenv("CLIO_ARC_STORE", "cte")
@@ -419,7 +429,27 @@ class TestArcStoreConfig:
         file_cfg = (tmp_path / "file-cte.yaml").as_posix()
         _write_user_config(monkeypatch, tmp_path, f"arc:\n  store_config: {file_cfg}\n")
         make_arc_store(data_dir=tmp_path / "arc")
-        assert _stub_clio_core["config_path"] == file_cfg
+        assert _captured_store_args["config_path"] == file_cfg
+
+
+class TestArcNamespace:
+    """``arc.namespace`` / ``CLIO_ARC_NAMESPACE`` -- the clio-core store namespace."""
+
+    def test_file_value_reaches_the_attach(self, tmp_path, _captured_store_args):
+        from clio_agent.arc.storage import make_arc_store
+        from tests._config_layer import set_config
+
+        set_config("arc.namespace", "team-a")
+        make_arc_store(backend="cte", data_dir=tmp_path / "arc")
+        assert _captured_store_args["namespace"] == "team-a"
+
+    def test_explicit_namespace_arg_beats_config(self, tmp_path, _captured_store_args):
+        from clio_agent.arc.storage import make_arc_store
+        from tests._config_layer import set_config
+
+        set_config("arc.namespace", "team-a")
+        make_arc_store(backend="cte", data_dir=tmp_path / "arc", namespace="team-b")
+        assert _captured_store_args["namespace"] == "team-b"
 
 
 class TestSessionsPath:

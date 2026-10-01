@@ -20,6 +20,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from mcp.types import TextContent
 
 from clio_agent.gact.app import (
     _gact_app_context,
@@ -380,7 +381,7 @@ def test_dynamic_external_mcp_read_only_hint_invokes_client(
         ) -> Any:
             FakeClient.called = True
             return SimpleNamespace(
-                content=[SimpleNamespace(type="text", text=f"{name}:ok")],
+                content=[TextContent(type="text", text=f"{name}:ok")],
                 isError=False,
             )
 
@@ -1058,7 +1059,7 @@ def test_external_mcp_call_policy_allow_executes_without_prompt(
         ) -> Any:
             FakeClient.called = True
             return SimpleNamespace(
-                content=[SimpleNamespace(type="text", text=f"{name}:{args['cmd']}")],
+                content=[TextContent(type="text", text=f"{name}:{args['cmd']}")],
                 isError=False,
             )
 
@@ -1128,7 +1129,7 @@ def test_external_mcp_call_uses_explicit_session_for_policy_and_telemetry(
             self, name: str, args: dict[str, Any], *, progress_handler: Any = None
         ) -> Any:
             return SimpleNamespace(
-                content=[SimpleNamespace(type="text", text=f"{name}:{args['cmd']}")],
+                content=[TextContent(type="text", text=f"{name}:{args['cmd']}")],
                 isError=False,
             )
 

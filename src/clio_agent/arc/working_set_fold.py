@@ -70,6 +70,7 @@ from clio_agent.arc.schema import (
     encode_segments,
     segment_text,
 )
+from clio_agent.arc.segment_ids import ContextOpLogError, require_live
 from clio_agent.arc.segments import SegmentStore, _coerce_content
 from clio_agent.arc.storage import ARCStore
 
@@ -265,7 +266,7 @@ class FoldingSegmentStore(SegmentStore):
             segs = self._segs(session_id, storage_scope)
             segs.append(seg)
             self._index.add(session_id, storage_scope, seg)
-            self._persist(session_id, storage_scope, just_written=[seg])
+            self._persist(session_id, storage_scope)
         self._note_partition(session_id, storage_scope)
         return seg
 
@@ -295,7 +296,8 @@ class FoldingSegmentStore(SegmentStore):
         ``scope_filter`` sees the same address the non-folding store logged. ``op`` is
         the plain-store vocabulary (append/insert/delete/summarize/replace);
         ``logical_time`` is the producer's creation clock or, for ``delete``, the
-        tombstoning clock. Best-effort — durable logging must never break a context op.
+        tombstoning clock. Called before anything is persisted, so a failure here is a
+        typed :class:`ContextOpLogError` with the op not applied.
         """
         if self._op_logger is None:
             return
@@ -316,14 +318,8 @@ class FoldingSegmentStore(SegmentStore):
             if event_id:
                 for s in written:
                     s.trace_ref = event_id
-        except Exception:  # noqa: BLE001 - durable-trace logging must never break a context op
-            logger.warning(
-                "working_set_fold: op_logger raised for op=%s scope=%s lt=%d (op still applied)",
-                op,
-                scope,
-                logical_time,
-                exc_info=True,
-            )
+        except Exception as exc:  # noqa: BLE001 - re-raised typed; nothing persisted yet
+            raise ContextOpLogError(op=op, scope=scope, cause=exc) from exc
 
     def _make_atom(
         self,
@@ -626,9 +622,8 @@ class FoldingSegmentStore(SegmentStore):
         if not self._is_working_set_scope(scope):
             return super().delete(session_id, scope, ids)
         live_ids = {s.id for s in self._live_fold(session_id, scope, as_of=None)}
-        targets = [i for i in ids if i in live_ids]
-        if not targets:
-            return 0
+        require_live(ids, live_ids, op="delete", scope=scope)
+        targets = list(dict.fromkeys(ids))
         op = self._make_atom(
             session_id,
             scope,
@@ -684,14 +679,11 @@ class FoldingSegmentStore(SegmentStore):
             )
         target = set(ids)
         live = self._live_fold(session_id, scope, as_of=None)
+        require_live(ids, {s.id for s in live}, op="summarize", scope=scope)
         replaced = [s for s in live if s.id in target]
-        if replaced:
-            first = min(replaced, key=lambda s: (s.order, s.logical_time))
-            order = first.order
-            step = min((s.step for s in replaced), default=-1)
-        else:
-            order = self._next_order(self._scope_content(session_id, scope))
-            step = -1
+        first = min(replaced, key=lambda s: (s.order, s.logical_time))
+        order = first.order
+        step = min((s.step for s in replaced), default=-1)
         atom = self._make_atom(
             session_id,
             scope,
@@ -750,9 +742,8 @@ class FoldingSegmentStore(SegmentStore):
                 run_span_id=run_span_id,
             )
         live = self._live_fold(session_id, scope, as_of=None)
-        original = next((s for s in live if s.id == target_id), None)
-        if original is None:
-            return None
+        require_live([target_id], {s.id for s in live}, op="replace", scope=scope)
+        original = next(s for s in live if s.id == target_id)
         atom = self._make_atom(
             session_id,
             scope,

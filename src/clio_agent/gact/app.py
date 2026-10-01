@@ -115,7 +115,6 @@ from clio_agent.gact.runtime.globals import (  # noqa: E402, F401
     _new_part_id,
     _new_question_id,
     _not_implemented,
-    _process_arc,
     _resolve_tool_session,
     _semantic_trace_id,
     _session_agent_id,
@@ -1051,15 +1050,12 @@ from clio_agent.gact.scheduler_runtime import (  # noqa: E402,F401 - re-exported
 
 
 class ARCLike(Protocol):
-    """Structural interface for the ARC reference /v1/memory/stats
-    pulls from. Real ``ARCMemory`` matches it; tests pass a fake.
+    """The ARC the app wires (highway sink, op logger) and /v1/memory/stats reads
+    (``get_cache_stats``: hits / misses / hit_rate / capacity). ``ARCMemory`` matches it."""
 
-    ``get_cache_stats`` returns a dict with ``hits`` / ``misses`` /
-    ``hit_rate`` / ``capacity`` (see ``ARCMemory.get_cache_stats``).
-    """
-
-    def get_cache_stats(self) -> dict[str, Any]:  # pragma: no cover
-        ...
+    def get_cache_stats(self) -> dict[str, Any]: ...  # pragma: no cover
+    def set_highway_sink(self, sink: Any) -> None: ...  # pragma: no cover
+    def set_segment_op_logger(self, logger: Any) -> None: ...  # pragma: no cover
 
 
 def build_app(

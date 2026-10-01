@@ -10,8 +10,8 @@ It owns, as the single source of truth:
 * **The ARC singleton + accessors.** ``_PROCESS_ARC`` is the ONE
   :class:`~clio_agent.arc.memory.ARCMemory` per process (ARC is a per-clio-agent
   keystone). ``_set_app_arc`` publishes it and wires the durable-trace op-logger
-  + highway-derive sink; ``_process_arc`` lazily constructs it once;
-  ``_emit_arc_op`` logs an applied ARC context op to the durable Trace.
+  + highway-derive sink (:func:`clio_agent.gact.server_boot.process_arc` constructs it
+  once); ``_emit_arc_op`` logs an applied ARC context op to the durable Trace.
 * **The semantic-event FUNNEL.** ``_build_semantic_event`` /
   ``_emit_semantic_event`` (+ the react-step / expert-lifecycle wrappers) are the
   60+-callsite choke point through which EVERY semantic event enters ARC, the
@@ -41,6 +41,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Iterator, Optional
 
+from clio_agent.arc import history_mode
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.events import Event
 from clio_agent.gact.semantic_events import DEFAULT_DETAIL_LEVEL, SemanticEvent
@@ -402,6 +403,12 @@ def _emit_semantic_event(
     sink = getattr(state, "semantic_event_sink", None)
     if sink is None:
         return {}
+    arc = getattr(state, "arc", None) or _PROCESS_ARC
+    history = arc is None and history_mode.active()
+    if history:
+        # The loud History mode (no clio-core on this platform): there is no record to
+        # derive from, so the highway is fed directly and every event says so.
+        payload = {**(payload or {}), "context_mode": "history"}
     event = _build_semantic_event(
         app,
         sid,
@@ -425,7 +432,9 @@ def _emit_semantic_event(
     # the process singleton (a deep/threaded emit context may not carry the app). If it is
     # STILL not reachable, FAIL LOUD — never silently fall back to sink.emit, which would
     # feed the trace/UI an event ARC never saw (a hidden split: trace has data ARC doesn't).
-    arc = getattr(state, "arc", None) or _PROCESS_ARC
+    # The one exception is the History mode above, decided once and marked on each event.
+    if history:
+        return sink.emit(event)
     rec = getattr(arc, "record_semantic_event", None)
     if rec is None:
         msg = (
@@ -495,47 +504,45 @@ def _emit_react_step_event(
     projection for THIS event type via ``SSE_KEEP_KEYS_BY_EVENT`` (so the model's
     chain-of-thought reaches the live UI here while staying redacted on lm.call /
     lm.token.delta / raw-prompt events). Steps of one expert share
-    ``expert_span_id``. Best-effort: capture must never break the expert loop.
+    ``expert_span_id``. The step is part of clio-core's record: an event it cannot
+    record fails the turn (typed), never a silent drop.
     """
 
     app = _ctx.active_app()
     sid = _ctx.active_session_id()
     if app is None or not sid:
         return
-    try:
-        _emit_semantic_event(
-            app,
-            sid,
-            "react.step.completed",
-            turn_id=_active_semantic_turn_id(),
-            trace_id=_active_semantic_trace_id(),
-            parent_span_id=expert_span_id,
-            status="completed",
-            summary=(
-                f"{expert_id or 'expert'} model action {step_index}: "
-                f"{', '.join(str(c.get('name') or '') for c in tool_calls) or 'finish'}"
-            ),
-            actor={"agent_id": expert_id, "role": "expert"},
-            payload={
-                "expert_id": expert_id,
-                "expert_span_id": expert_span_id,
-                # This step's span: the lm.call (self.react) and tool.call (act/
-                # observe) of this step carry parent_span_id == step_span_id, so a
-                # consumer links them to this step.
-                "step_span_id": step_span_id,
-                "step_index": step_index,
-                # ``thought`` = DSPy's parsed next_thought (good for content-channel
-                # models like gemma). ``reasoning`` = the raw reasoning channel
-                # (chain-of-thought) for reasoning models — distinct from thought.
-                # Allowed through the SSE projection only for this event type.
-                "thought": wire_value(thought, mode="gact_runtime"),
-                "reasoning": wire_value(reasoning, mode="gact_runtime"),
-                "tool_calls": wire_value(tool_calls, mode="gact_runtime"),
-                "is_finish": bool(is_finish),
-            },
-        )
-    except Exception:  # noqa: BLE001,S110 - capture must never break the expert loop
-        pass
+    _emit_semantic_event(
+        app,
+        sid,
+        "react.step.completed",
+        turn_id=_active_semantic_turn_id(),
+        trace_id=_active_semantic_trace_id(),
+        parent_span_id=expert_span_id,
+        status="completed",
+        summary=(
+            f"{expert_id or 'expert'} model action {step_index}: "
+            f"{', '.join(str(c.get('name') or '') for c in tool_calls) or 'finish'}"
+        ),
+        actor={"agent_id": expert_id, "role": "expert"},
+        payload={
+            "expert_id": expert_id,
+            "expert_span_id": expert_span_id,
+            # This step's span: the lm.call (self.react) and tool.call (act/
+            # observe) of this step carry parent_span_id == step_span_id, so a
+            # consumer links them to this step.
+            "step_span_id": step_span_id,
+            "step_index": step_index,
+            # ``thought`` = DSPy's parsed next_thought (good for content-channel
+            # models like gemma). ``reasoning`` = the raw reasoning channel
+            # (chain-of-thought) for reasoning models — distinct from thought.
+            # Allowed through the SSE projection only for this event type.
+            "thought": wire_value(thought, mode="gact_runtime"),
+            "reasoning": wire_value(reasoning, mode="gact_runtime"),
+            "tool_calls": wire_value(tool_calls, mode="gact_runtime"),
+            "is_finish": bool(is_finish),
+        },
+    )
 
 
 def _emit_expert_lifecycle_event(
@@ -554,27 +561,25 @@ def _emit_expert_lifecycle_event(
     delegating scope); ``expert.extract.completed`` is emitted while the active
     span IS this expert (so it nests under the lifecycle). The extract output is
     carried FULL/uncapped — what the parent ultimately filters to is a downstream
-    projection (#710), not a capture-time loss. Best-effort.
+    projection (#710), not a capture-time loss. An event clio-core cannot record
+    fails the turn (typed), never a silent drop.
     """
 
     app = _ctx.active_app()
     sid = _ctx.active_session_id()
     if app is None or not sid:
         return
-    try:
-        _emit_semantic_event(
-            app,
-            sid,
-            event_type,
-            turn_id=_active_semantic_turn_id(),
-            trace_id=_active_semantic_trace_id(),
-            status=status,
-            summary=f"expert {expert_id or '?'} {event_type.rsplit('.', 1)[-1]}",
-            actor={"agent_id": expert_id, "role": "expert"},
-            payload={"expert_id": expert_id, "expert_span_id": expert_span_id, **payload},
-        )
-    except Exception:  # noqa: BLE001,S110 - capture must never break the expert loop
-        pass
+    _emit_semantic_event(
+        app,
+        sid,
+        event_type,
+        turn_id=_active_semantic_turn_id(),
+        trace_id=_active_semantic_trace_id(),
+        status=status,
+        summary=f"expert {expert_id or '?'} {event_type.rsplit('.', 1)[-1]}",
+        actor={"agent_id": expert_id, "role": "expert"},
+        payload={"expert_id": expert_id, "expert_span_id": expert_span_id, **payload},
+    )
 
 
 # The single new event type for ARC live-context-plane mutations. event_type is a
@@ -704,13 +709,10 @@ def _wire_arc_op_logger(app: "FastAPI") -> None:
     but emit NO ``arc.op`` -> the Trace/highway/interface never see the writes.
     """
     arc = getattr(getattr(app, "state", None), "arc", None)
-    if arc is not None and hasattr(arc, "set_segment_op_logger"):
-        try:
-            arc.set_segment_op_logger(
-                lambda op, session_id, scope, **kw: _emit_arc_op(app, op, session_id, scope, **kw)
-            )
-        except Exception as exc:  # noqa: BLE001 - observability wiring is best-effort
-            trace.event("ARC-OP", "arc op-logger wiring failed: %r", exc)
+    if arc is not None:  # a wiring failure raises: the ops would go unrecorded otherwise
+        arc.set_segment_op_logger(
+            lambda op, session_id, scope, **kw: _emit_arc_op(app, op, session_id, scope, **kw)
+        )
 
 
 def _set_app_arc(app: "FastAPI", arc: Any) -> None:
@@ -737,41 +739,14 @@ def _set_app_arc(app: "FastAPI", arc: Any) -> None:
     # async/bind ordering — the sink may be constructed after this wiring runs). The
     # sink itself carries NO arc consumer (see build_app), so arc.record -> sink.emit
     # has no path back into arc.record: no recursion.
-    if arc is not None and hasattr(arc, "set_highway_sink"):
-        try:
-            arc.set_highway_sink(
-                lambda e: (
-                    app.state.semantic_event_sink.emit(e)
-                    if getattr(app.state, "semantic_event_sink", None) is not None
-                    else {}
-                )
+    if arc is not None:  # a wiring failure raises: the highway would get nothing
+        arc.set_highway_sink(
+            lambda e: (
+                app.state.semantic_event_sink.emit(e)
+                if getattr(app.state, "semantic_event_sink", None) is not None
+                else {}
             )
-        except Exception as exc:  # noqa: BLE001 - highway wiring is best-effort
-            trace.event("ARC-AS-SOURCE", "arc highway-sink wiring failed: %r", exc)
-
-
-def _process_arc(app: "FastAPI") -> Any:
-    """Return the ONE ARCMemory for this clio-agent, constructing it once on first use.
-
-    ARC is a per-clio-agent keystone: exactly one per process (one ARC per clio-agent,
-    N clio-agents per node, one clio-core per node). The gact server OWNS that single
-    ARC's lifecycle so that every agent build/bind reuses the SAME instance — the agent
-    no longer mints a fresh ARC per build (which stranded already-recorded events on an
-    orphaned ARC while the shared durable trace kept them: the trace ⊋ ARC split).
-
-    Stored on ``app.state.arc`` via ``_set_app_arc`` so a single, fail-loud path reaches
-    it; rebuilt only if the app has none yet (first build).
-    """
-    arc = getattr(getattr(app, "state", None), "arc", None)
-    if arc is not None:
-        return arc
-    from clio_agent.arc.memory import ARCMemory  # noqa: PLC0415
-    from clio_agent.arc.storage import make_arc_store  # noqa: PLC0415
-
-    data_dir = ".clio/agent/arc"
-    arc = ARCMemory(data_dir=data_dir, cache_capacity=1000, store=make_arc_store(data_dir=data_dir))
-    _set_app_arc(app, arc)
-    return arc
+        )
 
 
 def _coerce_error_info(value: Any) -> Optional["ErrorInfo"]:

@@ -222,8 +222,13 @@ def test_maybe_autocompact_wires_ops_reset_through_the_loop(
 
     arc = app.state.arc
     scope = "scope_auto"
-    arc.append_segment(sid, scope, "observation", {"text": "first live segment"})
-    arc.append_segment(sid, scope, "observation", {"text": "second live segment"})
+    # one coherent step, as the recorder writes it: calls answered by call id
+    arc.append_segment(sid, scope, "thought", {"text": "working"})
+    for i, text in enumerate(("first live segment", "second live segment")):
+        call = {"id": f"call_{i}", "name": "t", "args": {}}
+        arc.append_segment(sid, scope, "tool_call", call)
+        obs = {"call_id": f"call_{i}", "text": text, "is_error": False}
+        arc.append_segment(sid, scope, "observation", obs)
 
     monkeypatch.setattr(clio_react_record, "arc_scope", lambda: (arc, sid, scope))
     monkeypatch.setattr(_ctx, "active_react_context_window", lambda: 1000)
@@ -266,6 +271,7 @@ def test_maybe_autocompact_wires_ops_reset_through_the_loop(
 #     the binding unlocks, directly on the Claude SDK registry (append-only
 #     growing message list under an active scope).
 # --------------------------------------------------------------------------- #
+@pytest.mark.usefixtures("clio_core_plane")
 def test_clio_react_forward_binds_stateful_scope() -> None:
     """``ClioReAct.forward`` binds a fresh per-forward stateful scope for its LM sends.
 

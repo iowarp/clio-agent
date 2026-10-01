@@ -22,30 +22,16 @@ from clio_agent.gact.agents.clio_react import ClioReAct, _call_lm
 from clio_agent.gact.agents.clio_react_record import fold_steps, read_steps
 
 
-@pytest.fixture(params=["local", "cte"])
-def arc(request, tmp_path) -> Iterator[ARCMemory]:
-    """A fresh ARCMemory, exercised on BOTH backends.
+@pytest.fixture
+def arc() -> Iterator[ARCMemory]:
+    """A fresh ARCMemory on clio-core (the only store), in this test's namespace."""
+    from clio_agent.arc.storage import make_arc_store
 
-    The acceptance contract must hold identically whether ARC persists through the
-    fast LocalFS store or the production clio-core runtime, so every test using
-    this fixture runs once per backend. ``local`` is isolated by ``tmp_path``; ``cte``
-    shares the process-global in-process runtime (the first param boots it, the rest
-    connect), so it is cleared at setup + teardown for per-test isolation. The ``cte``
-    leg skips when the binding is absent (binding-free CI keeps the ``local`` leg).
-    """
-    backend = request.param
-    if backend == "cte":
-        pytest.importorskip("clio_cte_core_ext")
-        from clio_agent.arc.storage import make_arc_store
-
-        memory = ARCMemory(store=make_arc_store(backend="cte"))
-        memory.clear_all()  # fresh start on the shared runtime
-        try:
-            yield memory
-        finally:
-            memory.clear_all()
-        return
-    yield ARCMemory(data_dir=str(tmp_path / "arc"))
+    memory = ARCMemory(store=make_arc_store(backend="cte"))
+    try:
+        yield memory
+    finally:
+        memory.clear_all()
 
 
 @contextlib.contextmanager

@@ -34,7 +34,6 @@ import logging
 import threading
 import time
 from concurrent.futures import Future
-from concurrent.futures import wait as _futures_wait
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
@@ -260,15 +259,22 @@ def _run_with_stall_watch(
 ) -> tuple[bool, Any, Optional[BaseException]]:
     """Run ``make_call`` on a pooled daemon worker; watch for failure to progress.
 
-    Returns ``(completed, value, error)``. ``completed`` is False iff the call did not
-    return within ``stall_after_s`` (a stall). A completed call reports its value or the
+    Returns ``(completed, value, error)``. ``completed`` is False iff a whole
+    ``stall_after_s`` window passed with the daemon making no progress (a stall; see
+    :mod:`clio_agent.arc.daemon_progress`). A completed call reports its value or the
     exception it raised (re-raised on the caller thread). A stalled worker is a daemon
     thread and is ABANDONED (a native hung RPC cannot be interrupted from Python); the
     pool bound (:data:`_STALL_WATCH_MAX_WORKERS`) caps the resulting leak.
     """
+    from clio_agent.arc.daemon_progress import (  # noqa: PLC0415 - cycle
+        future_done_within,
+        wait_while_progressing,
+    )
+
     fut = _submit_stall_watch(make_call)
-    done, _ = _futures_wait([fut], timeout=stall_after_s)
-    if fut not in done:
+    # A stall is a whole window with the daemon making NO progress (gone, or its CPU time
+    # flat); a slow but working daemon is waited for -- never a fixed wall-clock failure.
+    if not wait_while_progressing(future_done_within(fut), slice_s=stall_after_s, op_name="rpc"):
         return False, None, None  # stalled: worker abandoned, still holds its pool slot
     error = fut.exception()
     if error is not None:

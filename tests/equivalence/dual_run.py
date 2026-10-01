@@ -21,8 +21,8 @@ crash** (caveat-b, the pre-execute/error path), because those are exactly where 
 write-path fold silently diverges.
 
 Must be driven from within pytest: the autouse fixtures in ``tests/conftest.py`` set
-the env (``CLIO_LM_MODEL``, the default registry blueprint, ``CLIO_ARC_STORE=local``)
-a real gact turn needs to settle.
+the env (``CLIO_LM_MODEL``, the default registry blueprint, the test's own clio-core
+namespace) a real gact turn needs to settle.
 """
 
 from __future__ import annotations

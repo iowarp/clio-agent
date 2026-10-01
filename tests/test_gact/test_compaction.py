@@ -59,6 +59,17 @@ def _record(client: TestClient, sid: str, messages: list[Message]) -> None:
         arc.append_segment(sid, _SCOPE, kind, {"text": text}, turn_id=turn)
 
 
+def _append_answered_step(arc: Any, sid: str, scope: str, *observations: str) -> None:
+    """Record one coherent step as the recorder writes it: a thought, a call per
+    observation, and each observation answering its call by id."""
+    arc.append_segment(sid, scope, "thought", {"text": "working"})
+    for i, _ in enumerate(observations):
+        arc.append_segment(sid, scope, "tool_call", {"id": f"call_{i}", "name": "t", "args": {}})
+    for i, text in enumerate(observations):
+        obs = {"call_id": f"call_{i}", "text": text, "is_error": False}
+        arc.append_segment(sid, scope, "observation", obs)
+
+
 def _seed(client: TestClient, sid: str, messages: list[Message]) -> None:
     client.app.state.messages[sid] = messages
     client.app.state.message_store.replace_session(sid, messages)
@@ -348,8 +359,7 @@ def test_auto_trigger_stages_and_flushes_after_the_turns_assistant_row(
         sid = _create_session(client)
         _, _ = _open_minter_with_one_prior_message(client, sid)
 
-        arc.append_segment(sid, scope, "observation", {"text": "first live segment"})
-        arc.append_segment(sid, scope, "observation", {"text": "second live segment"})
+        _append_answered_step(arc, sid, scope, "first live segment", "second live segment")
 
         monkeypatch.setattr(clio_react_record, "arc_scope", lambda: (arc, sid, scope))
         monkeypatch.setattr(gact_context, "active_react_context_window", lambda: 1000)
@@ -431,7 +441,7 @@ def test_auto_trigger_uses_durable_usage_when_new_lm_binding_has_no_history(
     with TestClient(app) as client:
         sid = _create_session(client)
         _open_minter_with_one_prior_message(client, sid)
-        arc.append_segment(sid, scope, "observation", {"text": "live segment"})
+        _append_answered_step(arc, sid, scope, "live segment")
         session = app.state.sessions.get(sid)
         assert session is not None
         app.state.sessions.update(
@@ -748,8 +758,7 @@ def test_fold_arc_working_set_failure_returns_typed_500(
 
         arc = app.state.arc
         scope = "scope_fold_fail"
-        arc.append_segment(sid, scope, "observation", {"text": "one"})
-        arc.append_segment(sid, scope, "observation", {"text": "two"})
+        _append_answered_step(arc, sid, scope, "one", "two")
         monkeypatch.setattr(clio_react_record, "arc_scope", lambda: (arc, sid, scope))
 
         def _raise(*_args: Any, **_kwargs: Any) -> None:

@@ -1112,8 +1112,7 @@ def test_declared_structured_content_does_not_leak_when_sid_is_unresolved(tmp_pa
 def test_declared_structured_content_does_not_leak_when_observer_raises_before_its_own_pop(
     tmp_path: Path,
 ) -> None:
-    """Leak path #2: execution.notify_tool_observer swallows any exception the
-    observer raises. Forcing the REAL observe() to raise partway through its
+    """Leak path #2: an observer that raises partway through. Forcing the REAL observe() to raise partway through its
     completed-phase bookkeeping (well before its own pop, via a broken
     ``app.state.cancel_events``) must not let the declaration ride onto a
     later, unrelated call."""
@@ -1129,9 +1128,10 @@ def test_declared_structured_content_does_not_leak_when_observer_raises_before_i
     observer("wait_agent_tasks", {"task_ids": []}, "started", None)
     declare_structured_content({"leaked": "should never survive an observer crash"})
     app.state.cancel_events = None  # forces an AttributeError deep in "completed"
-    _execution.notify_tool_observer(
-        observer, "wait_agent_tasks", {"task_ids": []}, "completed", None, "result-text"
-    )  # swallowed exactly like production's notify_global_tool_observer
+    with pytest.raises(AttributeError):  # an observer that cannot record is not swallowed
+        _execution.notify_tool_observer(
+            observer, "wait_agent_tasks", {"task_ids": []}, "completed", None, "result-text"
+        )
 
     app.state.cancel_events = {}
     observer("hdf5_list_datasets", {"filepath": "x.h5"}, "started", None)

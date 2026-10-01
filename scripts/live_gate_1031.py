@@ -1004,12 +1004,13 @@ _GATES_NEEDING_BASE = {"p2", "composed"}
 # agent's tool executor mounts it — the legitimate, executor-recognized way to add a
 # tool (an in-process monkeypatch is rejected by the runtime custom-tool guard). On
 # Windows the codex fence blocks fleet spawns (#974), so P3 runs with the OS fence OFF
-# (provenance is minted at the clio boundary, fence-independent); CLIO_ARC_STORE=local
-# avoids the CTE file-capacity preflight on this disk-tight box.
+# (provenance is minted at the clio boundary, fence-independent). ARC is clio-core
+# (the only store); on a disk-tight box run the gate under
+# scripts/live_verification/run_with_private_cte.py (a bounded private file tier).
 _GATE_BOOT_SCRIPTS: dict[str, str] = {}
 _GATE_EXTRA_ENV: dict[str, dict[str, str]] = {
-    "p3": {"CLIO_SANDBOX_ENABLED": "false", "CLIO_ARC_STORE": "local"},
-    "composed": {"CLIO_SANDBOX_ENABLED": "false", "CLIO_ARC_STORE": "local"},
+    "p3": {"CLIO_SANDBOX_ENABLED": "false"},
+    "composed": {"CLIO_SANDBOX_ENABLED": "false"},
 }
 # Gates that require an <repo>/.clio/mcp.yaml declaring extra stdio MCP servers,
 # written BEFORE boot (the base agent reads it at init) and removed after.

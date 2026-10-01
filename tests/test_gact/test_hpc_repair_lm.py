@@ -31,7 +31,7 @@ from clio_agent.lm.policy import LMOutputTruncatedError
 from tests._scripted_engine import calls, scripted_lm
 from tests.turn_signals import wait_for_terminal_status
 
-pytestmark = pytest.mark.usefixtures("host_agent_executor")
+pytestmark = pytest.mark.usefixtures("host_agent_executor", "clio_core_plane")
 
 
 class _WsSig(dspy.Signature):

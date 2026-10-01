@@ -131,8 +131,20 @@ def _resolve_global_timeout_retries() -> int:
     )
 
 
+def mcp_max_wait_s() -> float:
+    """``tools.mcp.max_wait_s`` / ``CLIO_MCP_MAX_WAIT_S`` (600 s): the ceiling on waiting for
+    a server that is still visibly starting (its process tree working)."""
+    from clio_agent import conf  # noqa: PLC0415
+
+    return conf.resolve(
+        "tools.mcp.max_wait_s", env="CLIO_MCP_MAX_WAIT_S", default=600.0, cast=conf.as_float
+    )
+
+
 async def hardened_negotiate_auto(session: Any) -> None:
     """``negotiate_auto`` with the timeout-is-not-evidence correction (see module doc)."""
+
+    import time  # noqa: PLC0415
 
     import mcp_types as types  # noqa: PLC0415
     from mcp.client._probe import _parse_supported  # noqa: PLC0415
@@ -145,9 +157,13 @@ async def hardened_negotiate_auto(session: Any) -> None:
     )
     from pydantic import ValidationError  # noqa: PLC0415
 
+    from clio_agent.arc import daemon_progress  # noqa: PLC0415
+
     version = LATEST_MODERN_VERSION
     mutual_retry_used = False
     timeout_retries_left = resolve_timeout_retries()
+    started = time.monotonic()
+    last_work = daemon_progress.descendants_work()
 
     while True:
         try:
@@ -157,6 +173,21 @@ async def hardened_negotiate_auto(session: Any) -> None:
                 # THE correction: latency is not version information. Retry the
                 # same probe — the slow-starting server is warming and the era
                 # may already be locked modern server-side. Typed log per retry.
+                # A server still starting (its process tree doing work: uv installing,
+                # Python importing) is waited for without spending the budget -- a slow
+                # machine is not a failure -- up to the long ceiling.
+                work = daemon_progress.descendants_work()
+                waited = time.monotonic() - started
+                if work - last_work >= 0.01 and waited < mcp_max_wait_s():
+                    last_work = work
+                    logger.info(
+                        "mcp_probe_server_busy reason=discover_timed_out_server_working "
+                        "version=%s waited_s=%.0f",
+                        version,
+                        waited,
+                    )
+                    continue
+                last_work = work
                 if timeout_retries_left > 0:
                     timeout_retries_left -= 1
                     logger.warning(

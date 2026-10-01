@@ -31,8 +31,8 @@ from typing import Any, Callable, Dict, Iterator, List
 import dspy
 
 from clio_agent import conf
+from clio_agent.arc import history_mode
 from clio_agent.arc.memory import ARCMemory
-from clio_agent.arc.retrieval import ContextRetriever
 from clio_agent.arc.schema import Conversation
 from clio_agent.arc.storage import make_arc_store
 from clio_agent.blueprint_server_resolution import discover_blueprint_servers
@@ -116,8 +116,7 @@ class ClioAgent(dspy.Module):
 
     Attributes:
         chat_agent: DSPy Predict with ChatAgentSignature (chat synthesis)
-        arc: ARC Memory instance
-        context_retriever: Context retrieval module
+        arc: ARC Memory instance (None in the loud History mode)
         _tool_definitions: preloaded tool defs from the boot listing pass
             (#932); None -> executors fall back to eager list_tools
         registry: Agent registry for discovery
@@ -196,20 +195,8 @@ class ClioAgent(dspy.Module):
         self._relay_status = dict(relay_status or {})
 
         # ARC Memory: reuse the injected one (the gact server owns the single per-process
-        # ARC and re-injects it on every bind) or mint one. The persistence backend comes
-        # from the factory: clio-core by default (the gold-standard, in-process tiered
-        # store), LocalFSStore via CLIO_ARC_STORE=local. Falls back to LocalFS if the clio-core
-        # binding/runtime is unavailable.
-        self.arc = (
-            arc
-            if arc is not None
-            else ARCMemory(
-                data_dir=f"{data_dir}/arc",
-                cache_capacity=1000,
-                store=make_arc_store(data_dir=f"{data_dir}/arc"),
-            )
-        )
-        self.context_retriever = ContextRetriever(self.arc)
+        # ARC and re-injects it on every bind) or mint one; None in History mode.
+        self.arc = self._arc_for_mode(arc, data_dir=data_dir)
 
         # Initialize Agent Registry (for discovery, not routing)
         self.registry = AgentRegistry()
@@ -955,13 +942,23 @@ class ClioAgent(dspy.Module):
 
         return str(value)
 
+    @staticmethod
+    def _arc_for_mode(arc: ARCMemory | None, *, data_dir: str) -> ARCMemory | None:
+        """The injected ARC, else a new clio-core one (typed error if it cannot come up),
+        else ``None`` in the loud History mode (no clio-core binding on the platform)."""
+        if arc is not None or history_mode.resolve().is_history:
+            return arc
+        store = make_arc_store(data_dir=f"{data_dir}/arc")
+        return ARCMemory(data_dir=f"{data_dir}/arc", cache_capacity=1000, store=store)
+
     def get_arc_stats(self) -> Dict[str, Any]:
-        """Get ARC memory statistics."""
-        return self.arc.get_cache_stats()
+        """Get ARC memory statistics (typed ``history_mode_unsupported`` in History mode)."""
+        return history_mode.require_arc(self.arc, "ARC statistics").get_cache_stats()
 
     def get_session_history(self, session_id: str, limit: int = 10) -> List[Conversation]:
         """Get conversation history for session from ARC Memory."""
-        return self.arc.get_conversation_history(session_id, limit=limit)
+        arc = history_mode.require_arc(self.arc, "ARC conversation history")
+        return arc.get_conversation_history(session_id, limit=limit)
 
     def shutdown(self) -> None:
         """Close persistent MCP tool executors, stop the namespace-discovery

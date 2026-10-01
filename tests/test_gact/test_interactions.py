@@ -194,10 +194,14 @@ def test_ask_user_success_ends_react_turn_before_another_model_step(tmp_path) ->
     app_token = gact_context.set_app(app)
     session_token = gact_context.set_session_id(session.id)
     turn_token = gact_context.set_turn_id_token("turn_ask")
+    scope_token = gact_context.set_react_scope("asker")
+    react_session_token = gact_context.set_react_session(session.id)
     try:
         with dspy.context(lm=lm):
             prediction = react(question="Help me design a simulation study.")
     finally:
+        gact_context.reset(react_session_token)
+        gact_context.reset(scope_token)
         gact_context.reset(turn_token)
         gact_context.reset(session_token)
         gact_context.reset(app_token)

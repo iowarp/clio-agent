@@ -92,6 +92,18 @@ TOOL_USE_NOTE = (
 )
 
 
+class NoContextStoreError(ClioError):
+    """The loop ran with no clio-core context plane (no app, ARC or react scope)."""
+
+    reason = "no_context_store"
+
+    def __init__(self) -> None:
+        super().__init__(
+            "ClioReAct needs clio-core as its context store: no app/ARC/react scope is bound",
+            error_type=self.reason,
+        )
+
+
 class NoLanguageModelError(ClioError):
     """The loop ran with no LM bound (``dspy.context(lm=...)``)."""
 
@@ -294,8 +306,9 @@ class _Loop:
             config_from_lm_kwargs(getattr(self.lm, "kwargs", {}) or {}), self.lm
         )
         self.tool_media = str(getattr(self.lm, "_clio_tool_result_media", "native"))
-        self.steps: list[Message] = [self.head]
         self.arc, self.session, self.scope = record.arc_scope()
+        if self.arc is None:
+            raise NoContextStoreError()
         self.recorder = record.StepRecorder(
             self.arc,
             self.session,
@@ -405,12 +418,10 @@ class _Loop:
             return
         arrived = drain()
         if arrived:
-            self.steps.extend(self.recorder.arrivals(arrived, max(self.step, 0)))
+            self.recorder.arrivals(arrived, max(self.step, 0))
 
     def _context(self) -> list[Message]:
-        if self.arc is not None:
-            return record.read_steps(self.arc, self.session, self.scope)
-        return list(self.steps)
+        return record.read_steps(self.arc, self.session, self.scope)
 
     def _execute(self, calls: list[ToolCallPart]) -> list[_CallOutcome]:
         """Run the step's calls concurrently; outcomes in call order."""
@@ -491,18 +502,6 @@ class _Loop:
         calls: list[ToolCallPart],
         results: dict[str, tuple[Any, bool]],
     ) -> None:
-        parts: list[Any] = [*thinking]
-        if text or not (thinking or calls):
-            parts.append(TextPart(text=text))
-        parts.extend(calls)
-        self.steps.append(Message(role="assistant", parts=tuple(parts)))
-        if results:
-            self.steps.append(
-                Message(
-                    role="tool",
-                    parts=tuple(record.result_part(c.id, c.name, *results[c.id]) for c in calls),
-                )
-            )
         self.recorder.step_done(
             self.step, self.span, text=text, thinking=thinking, calls=calls, results=results
         )
@@ -518,13 +517,16 @@ class _Loop:
             _raise_if_cancelled()
             outputs = {
                 **outputs,
-                **extract.extract(self.agent.signature, self.inputs, self.steps, missing, self.lm),
+                **extract.extract(
+                    self.agent.signature, self.inputs, self._context(), missing, self.lm
+                ),
             }
         self.recorder.completed(outputs, steps, extracted=missing)
         return self._prediction(outputs, reason)
 
     def _prediction(self, outputs: dict[str, Any], reason: str) -> dspy.Prediction:
-        return dspy.Prediction(**outputs, messages=list(self.steps), termination_reason=reason)
+        # The agent's messages are what clio-core holds for its scope: one source.
+        return dspy.Prediction(**outputs, messages=self._context(), termination_reason=reason)
 
 
 # --------------------------------------------------------------------------- #
