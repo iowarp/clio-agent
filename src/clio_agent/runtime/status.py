@@ -618,13 +618,13 @@ class RuntimeProbe:
         """Probe the clio-core backend (pip runtime + shared daemon); without the binding
         this process runs in the loud History mode, a DEGRADED row (never a 503)."""
         from clio_agent.arc import history_mode  # noqa: PLC0415 - keep import light
-        from clio_agent.runtime.clio_core_health import history_mode_arc_row  # noqa: PLC0415
+        from clio_agent.runtime.clio_core_health import history_mode_row  # noqa: PLC0415
 
         runtime = self._probe_clio_core_runtime()
         details = {"storage_mode": "cte", **runtime.to_details()}
         endpoint = f"127.0.0.1:{runtime.port}"
         if (mode := history_mode.resolve()).is_history:
-            return history_mode_arc_row(mode, source, endpoint, details)
+            return history_mode_row("arc", mode, source, endpoint, details)
         if not runtime.daemon_alive:
             return IntegrationStatus(
                 name="arc",
@@ -974,26 +974,16 @@ class RuntimeProbe:
         (one shared helper, no duplication). clio-core is the only store, so the row is always
         required.
         """
+        from clio_agent.arc import history_mode  # noqa: PLC0415 - keep import light
+        from clio_agent.runtime.clio_core_health import history_mode_row  # noqa: PLC0415
+
         backend, backend_source = self._arc_backend()
         runtime = self._probe_clio_core_runtime()
         source = f"pip:iowarp_core; {backend_source}"
         endpoint = f"127.0.0.1:{runtime.port}"
         details = {"arc_backend": backend, **runtime.to_details()}
-
-        if not runtime.installed:
-            return IntegrationStatus(
-                name="clio_core",
-                state=IntegrationState.UNAVAILABLE,
-                summary=(
-                    "clio-core runtime is required (ARC backend 'cte') but the "
-                    "iowarp_core pip package is not installed."
-                ),
-                config_source=source,
-                next_action=("Install the iowarp-core pip package (clio-core is required)."),
-                endpoint=endpoint,
-                details=details,
-                required=True,
-            )
+        if (mode := history_mode.resolve()).is_history:
+            return history_mode_row("clio_core", mode, source, endpoint, details)
 
         if not runtime.daemon_alive:
             return IntegrationStatus(

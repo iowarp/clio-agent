@@ -185,13 +185,13 @@ def probe_clio_core_ram_cap(*, env: Mapping[str, str] | None = None) -> list[Int
     ]
 
 
-def history_mode_arc_row(
-    mode: "ContextMode", source: str, endpoint: str, details: dict[str, object]
+def history_mode_row(
+    name: str, mode: "ContextMode", source: str, endpoint: str, details: dict[str, object]
 ) -> IntegrationStatus:
-    """The ``arc`` row in the loud History mode: DEGRADED (a working server, never a 503),
-    with the mode, its reason and the remedy."""
+    """The ``arc`` / ``clio_core`` row in the loud History mode: DEGRADED (a working
+    server, never a 503; no daemon is expected), with the mode, its reason and the remedy."""
     return IntegrationStatus(
-        name="arc",
+        name=name,
         state=IntegrationState.DEGRADED,
         summary=(
             "clio-core is not installed on this platform, so CLIO runs in History mode: the "

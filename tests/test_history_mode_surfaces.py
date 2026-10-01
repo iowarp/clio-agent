@@ -40,6 +40,21 @@ def test_the_arc_row_is_degraded_history_mode_with_the_remedy(
 
 
 @pytest.mark.history_mode
+def test_no_clio_core_row_is_down_in_history_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No daemon is expected in History mode: neither clio-core row may read as down."""
+    _no_binding(monkeypatch)
+    probe = RuntimeProbe(env={}, port_checker=lambda _port: False)
+
+    rows = [probe.probe_arc(), probe.probe_clio_core()]
+
+    assert [(r.name, r.state) for r in rows] == [
+        ("arc", IntegrationState.DEGRADED),
+        ("clio_core", IntegrationState.DEGRADED),
+    ]
+    assert all(r.details["context_mode"] == "history" for r in rows)
+
+
+@pytest.mark.history_mode
 def test_health_is_degraded_not_down_and_names_the_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
