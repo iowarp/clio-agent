@@ -49,7 +49,9 @@ _RUNTIME_STOP_STALL_SECONDS = 3.0
 _RUNTIME_STOP_POLL_SECONDS = 0.1
 
 
-StopPath = Literal["clean_stop", "stall_kill", "launcher_missing_kill", "error_kill"]
+StopPath = Literal[
+    "clean_stop", "stall_kill", "helper_failed_kill", "launcher_missing_kill", "error_kill"
+]
 
 
 @dataclass(frozen=True)
@@ -59,7 +61,7 @@ class StopOutcome:
     Attributes:
         stopped: Whether the clean ``clio_run stop`` handshake observed the
             runtime port free itself (no hard pidfile kill was needed).
-        path: Which of the five stop paths this attempt took -- a structured
+        path: Which of the stop paths this attempt took -- a structured
             reason for the trace/log, never a control-flow signal (every
             degraded path here already carries its own typed reason, #775
             no-silent-fallback).
@@ -280,6 +282,21 @@ def stop_runtime_daemon(config_path: str, log_level: str) -> StopOutcome:
                 if not _runtime_alive(runtime_port):
                     stopped = True
                     path = "clean_stop"
+                    break
+                # The helper FAILING (non-zero exit: it could not load the config or
+                # reach the daemon) means the stop request was never delivered: the
+                # daemon is not stopping, so there is nothing to wait for. A helper
+                # exiting 0 delivered it, and the daemon may still be flushing.
+                helper_code = stop_process.poll()
+                if helper_code not in (None, 0):
+                    logger.warning(
+                        "clio-core daemon stop request failed (reason=helper_failed "
+                        "clio_run stop exited with code %d while the daemon still holds "
+                        "port %d); killing it -- data not yet flushed may be lost",
+                        helper_code,
+                        runtime_port,
+                    )
+                    path = "helper_failed_kill"
                     break
                 now = time.monotonic()
                 if now - window >= _RUNTIME_STOP_STALL_SECONDS:
