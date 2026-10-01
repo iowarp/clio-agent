@@ -1001,7 +1001,7 @@ directly each can change what the model sees; each fix lands with a failing-firs
      - a failed automatic compaction fails the turn typed (`AutoCompactionFailedError`,
        nothing folded);
      - a missing token count is audited.
-   - **Owner decision needed:** a failed flush of a staged checkpoint is still audited and the
+   - **Superseded (owner, 2026-10-01):** Phase 11b records the summary where it happened, with the fold; no staging. Before: a failed flush of a staged checkpoint is still audited and the
      checkpoint dropped. The #1339 review (F1) chose this so a turn whose answer is already
      persisted never fails. The fold is in clio-core, but the transcript loses its compaction
      marker, so the UI does not show the compaction and a rollback cannot find it. The
@@ -1211,6 +1211,230 @@ design follows from how they will be used.
 - A sabotage run for each of these.
 - Live legs: a blueprint with `best_of_n` and one with `refine`; a subagent with a strategy; the
   email case with a user pick through the web UI.
+
+## Final stretch to release (planned 2026-10-01, owner-approved)
+
+### Context
+The campaign (`docs/design/agent-loop-rebuild-2026-09.md`, branch `docs/agent-loop-rebuild`) has its
+phases 1–9 on one stacked, pushed branch chain ending at `feat/variant-self-refine` (`fd35e911`).
+Today's conversation changed the remaining scope:
+- **Codex SDK removed** (owner, 2026-10-01). Codex direct reading `~/.codex/auth.json` is the only
+  Codex path. The SDK can't do clio-owned compaction in-thread and is ~0% of traffic.
+- **clio-core is the data highway.** It holds everything. The agent context, UI, file traces,
+  provenance and search are views over it. The context view must be materialized (from the
+  start or the last compaction), appended per event, and invalidated only by recorded ops. It is
+  performance-critical.
+- **Compaction must stay visible and lossless.** The UI shows: messages → "Summarizing context"
+  (shimmer, auto|manual) → injection "Summarization" (≈3 lines) → next steps, the same live and
+  after reload. History stays searchable and recallable.
+- **Transcript file:** kept behind `transcript.file` (default on); nothing may depend on it.
+- **Merge/PR:** when everything is done.
+
+What exploration found today (verified, file:line in the explorer reports):
+- **No context view exists.** Every step re-folds the whole session (`working_set_fold._fold`: all
+  `_events/w/<span>` partitions, every scope and turn, retired atoms included). Each append does
+  2 more full folds and re-puts the whole partition (`_events/w` is not chunked → O(n²) bytes per
+  turn), plus a full-text search-companion put. A cold read scans the whole `segments` tag. There
+  is no anchor at the last compaction. Codex direct builds the full request 3× per step and
+  compares the prefix element by element.
+- **Compaction:**
+  - it summarizes ALL live ids, including the current user question (not kept verbatim);
+  - the auto row lands after the turn's answer (staged; F1 loss);
+  - there is no start event, so no shimmer;
+  - the row renders as its own block, not as an injection;
+  - the panel's `POST /context/compact` folds invisibly;
+  - search indexes the live fold only;
+  - no agent tool recalls compacted steps.
+- **SDK footprint:** about 3.5–3.8k lines to delete. Keep `openai-codex-cli-bin` (Windows sandbox,
+  direct model-list `client_version`) and the emitters in `sdk_audit.py` (direct imports them).
+  Direct already falls back to `~/.codex/auth.json`. Known bug: lm15 ignores `CODEX_HOME`, while the
+  readiness check honours it.
+- **Transcript flag** is implemented but uncommitted (13 tests pass, sabotage checked). With the
+  flag off, a failed whole-transcript replace can leave a truncated lane in clio-core.
+
+### Branches
+The chain continues. Each phase is cut from the previous tip in its own worktree, committed and
+pushed after every step, never merged:
+`feat/variant-self-refine` → `feat/codex-direct-only` → `feat/context-view` →
+`feat/compaction-visible` → (Phase 9 remainder on `feat/variant-self-refine-2`) → release checks.
+UI: `gact-tui` `feat/compaction-visible`, cut from `feat/history-mode-badge` (`be5c71f8`).
+
+### Step 0: housekeeping (on `feat/variant-self-refine`)
+- Stop the SDK tip server (port 17991) and its watch.
+- Finish the transcript flag:
+  - re-run `tests/test_gact` and `tests/test_docs` (`-n 3`, `CLIO_TEST_RUNTIME_ROOT=D:/t/rt`);
+  - ruff, mypy, ratchets;
+  - small commits and push.
+- Record in the doc that flipping the flag to off later needs an atomic `replace_session` in
+  clio-core (write the new lane generation, then swap). It is not needed for release because the
+  default stays on.
+- Write the final-stretch sub-plans (this plan) into the design doc, with the corrections:
+  - F1 superseded by Phase 11;
+  - the transcript-file decision;
+  - Codex direct only.
+
+### Phase 10: Codex direct only (`feat/codex-direct-only`)
+1. **Delete** `providers/codex/sdk_client.py`, `sdk_engine.py`, `sdk_discovery.py`, the SDK half of
+   `gact/routes/codex_variant.py`, the SDK block in `gact/provider_catalog.py`, `_codex_sdk_lm` in
+   `lm/factory.py`, the SDK refresh in `providers/model_discovery/*`, `CODEX_SDK_*` constants, and
+   `CodexSDKError`. Move the emitters in `sdk_audit.py` into a direct-owned module (renamed).
+2. **Remove the `codex_variant` field** and its plumbing (`config.py`, `gact/providers/*`,
+   `lm_spec`, `resolver`, `selection_store`). A persisted `codex_variant: sdk` gives a
+   plain-language config error ("the Codex SDK path was removed; delete codex_variant"). No silent
+   mapping.
+3. **Delete config keys** `providers.codex.stateful_capacity`, `limits.codex_sdk_progress_timeout_s`
+   and `CLIO_CODEX_VARIANT`. Regenerate `config.defaults.yaml`, `docs/ENVIRONMENT.md` and
+   `.env.example` (`scripts/gen_env_reference.py`, `config_key_notes.py`).
+4. **Packaging:**
+   - drop `openai-codex` from `pyproject.toml` and `uv.lock`;
+   - remove the codex lockstep group in `components/registry.py`, plus `verify_codex`'s SDK
+     discovery, `check_bundle_matches_lock.py`, `bump_provider_sdks.py` and the CI workflow
+     entry;
+   - keep `openai-codex-cli-bin`.
+5. **Fix the auth-path mismatch:** pass `codex_cli_auth_path()` (which honours `CODEX_HOME`) to
+   `OpenAICodexLM.from_codex_cli` in `direct_engine.default_wire`. Correct the stale "never reads
+   auth.json" docstrings.
+6. **Tests and docs:**
+   - delete the 4 SDK test files and their fixture; edit about 12 others;
+   - `docs/providers/codex.md` becomes direct-only;
+   - a failing-first test that a persisted `sdk` variant is a typed config error;
+   - a test that `CODEX_HOME` reaches the wire.
+7. **Live harness:** `live/*/user/config.yaml` → `codex_variant` removed,
+   `api_base: codex://direct`; drop `CLIO_CODEX_VARIANT=sdk` from `serve*.sh`.
+8. **gact-tui:** remove the `sdk` transport from the picker and provider-status (web and Go TUI).
+   The backend no longer reports it.
+
+DoD evidence: deletions ≫ additions; `rg -i "codex_sdk|openai_codex|codex://sdk"` returns 0 in
+src, tests and docs (historical design docs excepted).
+
+### Phase 11a: the context view (`feat/context-view`), measured first
+1. **Measure first.** Add a harness `scripts/bench_context_view.py` over real clio-core (private
+   daemon) that measures, at 100 / 1k / 10k atoms over many turns and scopes:
+   - warm context build per step;
+   - append cost (time, RPCs, bytes);
+   - cold first read after restart;
+   - Codex-direct request build per step.
+
+   Record the baseline in the doc.
+2. **`ContextView` per (session, scope)**, owned by `arc/working_set_fold.py` (new module
+   `arc/context_view.py`):
+   - holds the folded live messages from the anchor;
+   - is appended in the write path (append → O(1));
+   - recorded ops (delete, replace, summarize, rollback) rebuild it from the anchor;
+   - `read_steps`/`fold_steps` read the view; rehydrated media are cached by sha;
+   - `next order` comes from the view (no fold per append).
+3. **Anchor:**
+   - a summarize writes an anchor record per scope (the summary atom's id and lane position);
+   - cold rebuild reads snapshot + tail (from the anchor forward), not the whole history;
+   - `as_of` and tombstone reads keep the full-log path (rare: rollback and UI only).
+4. **Chunk the `_events/w` lane** with the existing `lane_chunking.chunk_for_append`, so an
+   append puts one chunk, not the whole partition.
+5. **Cold scan:** a per-session partition index record, replacing the full `segments`-tag scan
+   plus a get per record.
+6. **Search companion:**
+   - appended incrementally;
+   - indexes everything, live and compacted (marked);
+   - a refresh failure is a typed write failure (removes the swallow at `working_set_fold.py:493`).
+7. **Codex direct:**
+   - build the request once per step;
+   - prefix check by held length + hash instead of element-wise;
+   - register with `_SCOPE_REGISTRIES`, so a compaction is an `ops_reset`, not a
+     `prefix_mismatch`.
+8. **Tests:**
+   - view == full fold (property test over random op sequences, real clio-core);
+   - prefix stability;
+   - restart from the anchor;
+   - a sabotage check for each.
+
+   Re-run the bench and record before/after. The budget is decided from the numbers.
+
+### Phase 11b: compaction visible and lossless (`feat/compaction-visible`)
+1. **One operation.** Manual, auto and panel compactions all go through
+   `POST /v1/sessions/{sid}/compact?scope=`. Delete `POST /context/compact` and its client call in
+   gact-tui (`context-repository.ts:103`, `use-session-context.ts:25`).
+2. **What the model sees after, as one editable policy (owner, 2026-10-01).** The default is:
+   system prompt + summary + **the current user question verbatim** + new steps. The rule lives
+   in a single clearly named function, `compaction_policy.post_compaction_context(...)` in a new
+   `gact/compaction_policy.py`. It decides two things:
+   - which live ids are summarized;
+   - which are kept verbatim: the head question, optionally the last K turns or steps.
+
+   It is easy to swap for research. Parameters (`keep_head`, `keep_last_turns`, `keep_last_steps`)
+   resolve via `conf.resolve` (`compaction.keep.*`). Tests pin the default and one alternative
+   (last 2 turns kept), so experimenting never needs code changes outside this function.
+3. **Events:** `compaction.started`, `compaction.completed` and `compaction.failed`, each with
+   `trigger` (auto|manual), scope and turn/step. They are projected to v3 (`protocol/v3/event.py`)
+   and in `packages/core/src/v3`.
+4. **Recorded where it happened:**
+   - mid-turn (between ReAct steps), the summary is an injection part of the open turn at that step
+     (kind `summarization`: summary, replaced ids, trigger), minted together with the fold;
+   - between turns, it is its own row;
+   - no staging (`stage_checkpoint`/`flush_staged_checkpoint` deleted; F1 gone);
+   - a failed record is a typed compaction failure and nothing is folded.
+5. **Recall tool** (`recall_context`): search the session's own earlier steps, compacted ones
+   included, by query or by the summary's `derived_from` ids, byte-exact from clio-core. The
+   summary injection names the tool.
+6. **Undo and rewind** find the compaction by its recorded part.
+7. **gact-tui:**
+   - a "Summarizing context" shimmer row from `compaction.started` (badge Automatic/Requested);
+   - it becomes the injection "Summarization" (syringe; 3-line preview, Show more), reusing
+     `CompactionSummary`'s preview inside `HarnessInjection`;
+   - a failure is shown in place;
+   - reload renders the same.
+8. Fix the wrong `maybe_autocompact` docstring ("swallowed").
+9. **Tests:**
+   - real ClioReAct on real clio-core: after an auto-compaction, search finds a compacted step,
+     recall returns it byte-exact, and the next request = system + summary + question + new step;
+   - transcript order live == reload;
+   - a failed record leaves the context unfolded;
+   - the panel produces the same events and row.
+
+### Phase 9 remainder: in this release (owner, 2026-10-01), on `feat/variant-self-refine-2`, before the release checks
+**Purpose (owner):** BestOfN, Refine and the judges are there to **validate that clio's
+integration with DSPy is good and proper**. Each feature is therefore built on DSPy's own
+modules and contracts (`dspy.BestOfN`, `dspy.Refine`, reward functions, module composition) over
+`ClioReAct`, with no clio-side reimplementation of their semantics. Every test asserts DSPy's
+documented behaviour holds through the real composition: selection by reward, Refine's feedback
+reaching the next try, threshold stop and `N` attempts. A clio wrapper may only add recording and
+UI, never change the outcome DSPy would produce. Any place where clio has to work around DSPy is
+written up as an integration finding.
+- `draft_alternatives` (parallel tries in one turn).
+- The human judge as pause/resume over clio-core.
+- The preference record.
+- REUI tabs/carousel in gact-tui.
+- Live legs: a `best_of_n` blueprint, a `refine` blueprint, a subagent with a strategy, and the
+  email case with a user pick.
+
+### Release checks (all on the chain tip, Codex direct `gpt-6-sol`)
+1. **Full suite** on every phase branch (`-n 3`, never alongside live legs), plus ruff, mypy,
+   `check_file_size`, `check_silent_fallbacks`, `check_noqa_swallows` and `gen_env_reference
+   --check`.
+2. **Live legs** via `live/bench/suite.sh <tip worktree> final`:
+   - preflight, C, compaction, goal judge, B (local `clio-web-search` container), stress, A, D;
+   - marketplace agents: earthscope, deep-researcher, factorio-flat, data-semantics;
+   - OPAL exp67.
+
+   Compare with the recorded develop baselines (wall, steps, cache, quality checklist).
+3. **Browser check** of the gact-tui tip on real clio-core: thinking, concurrent tools,
+   injections, compaction shimmer → injection, fixes, steer, cancel, reload == live, History-mode
+   badge, variant tabs.
+   - This needs you to keep the Chrome window visible during the session.
+4. **Docs:**
+   - design-doc progress and results;
+   - `docs/providers/codex.md`;
+   - ENVIRONMENT;
+   - the RUNBOOK status.
+5. **DoD 6 evidence:** `git diff --shortstat origin/develop...tip`, plus the zero-reference greps.
+6. Ask the owner for merge/PR timing.
+
+### Verification
+Each step: a failing-first test, a sabotage check, the touched test files green, then commit and
+push. Each phase: the full suite plus guards. Phase 11a passes only on before/after bench numbers.
+Final: live legs, the browser check and DoD evidence recorded in the design doc.
+
+### Known follow-ups recorded with the transcript flag
+- Turning `transcript.file` off later needs an atomic `replace_session` in clio-core (write the new lane generation, then swap); with the flag off a failed whole-transcript replace can leave a truncated lane. Not needed for release: the default stays on.
+- `SessionStore._legacy_interaction_at` (`sessions.py:566`) still reads the `messages/<sid>.json` mtime for old rows lacking `last_interaction_at`.
 
 ## Definition of done
 
