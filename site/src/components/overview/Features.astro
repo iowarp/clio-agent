@@ -1,0 +1,90 @@
+---
+/** The numbered capability sections, each beside its product capture. */
+import { ArrowRight } from 'lucide-react';
+import SectionHeading from './SectionHeading.astro';
+import Capture from './Capture';
+import { features } from '@/data/overview';
+import { captureImage } from '@/lib/captures';
+
+const rows = await Promise.all(features.map(async (f) => ({ ...f, capture: await captureImage(f.image) })));
+---
+
+<div class="features not-content">
+	{
+		rows.map((f, i) => (
+			<section class:list={['feature', { flip: i % 2 === 1 }]} aria-labelledby={f.id}>
+				<div class="text">
+					<SectionHeading
+						id={f.id}
+						number={String(i + 1).padStart(2, '0')}
+						label={f.label}
+						title={f.title}
+						emphasis={f.emphasis}
+					/>
+					<p class="body">{f.body}</p>
+					{f.example && <p class="example">{f.example}</p>}
+					<a class="more" href={f.link.href}>
+						{f.link.label} <ArrowRight aria-hidden="true" size={16} />
+					</a>
+				</div>
+				<div class="media">
+					<Capture client:visible image={f.capture} alt={f.alt} caption={f.caption} />
+				</div>
+			</section>
+		))
+	}
+</div>
+
+<style>
+	.features {
+		display: grid;
+		gap: clamp(4rem, 9vw, 7rem);
+		padding-block: clamp(4rem, 8vw, 6rem);
+	}
+	.feature {
+		display: grid;
+		gap: 2rem;
+		align-items: center;
+	}
+	@media (min-width: 64rem) {
+		.feature {
+			grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+			gap: 3.5rem;
+		}
+		.feature.flip .text {
+			order: 2;
+		}
+	}
+	.body {
+		margin: 1.25rem 0 0;
+		font-size: 1.05rem;
+		line-height: 1.65;
+		color: var(--ink-soft);
+	}
+	.example {
+		margin: 1.25rem 0 0;
+		padding-inline-start: 1rem;
+		border-inline-start: 2px solid var(--copper);
+		font-family: var(--font-display);
+		font-style: italic;
+		font-size: 1.15rem;
+		line-height: 1.5;
+		color: var(--ink);
+	}
+	.more {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		margin-top: 1.5rem;
+		font-weight: 600;
+		color: var(--ink);
+		text-decoration: none;
+	}
+	.more :global(svg) {
+		color: var(--accent);
+		transition: transform var(--motion-fast) var(--motion-ease);
+	}
+	.more:hover :global(svg) {
+		transform: translateX(3px);
+	}
+</style>
