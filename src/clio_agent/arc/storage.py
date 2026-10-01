@@ -414,6 +414,8 @@ class ClioCoreStore:
     (:func:`default_cte_config_path`).
     """
 
+    _namespace = ""  # the default (bare-tag) namespace; set per instance in __init__
+
     _initialized = False  # process-global init guard (the runtime inits exactly once)
     _init_lock = threading.Lock()
 

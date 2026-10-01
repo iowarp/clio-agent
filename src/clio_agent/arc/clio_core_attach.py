@@ -362,7 +362,8 @@ def verify_post_attach(store: "ClioCoreStore", *, on_failure: Callable[[], None]
     daemon that never answers freezes the entire interpreter, stall watchers included.
     So the probe uses the ASYNC API -- ``AsyncTagQuery`` on the store's liveness
     sentinel (a pure RPC: no tag is created, no ``Tag`` constructor runs) -- and polls
-    its ``Future.done()`` until the bound expires, sleeping (GIL released) in between.
+    its ``Future.done()`` while the daemon makes progress (its CPU time advances; see
+    :mod:`clio_agent.arc.daemon_progress`), sleeping (GIL released) in between.
     ``Future.wait(max_sec)`` is only called once the Future is done: against a daemon
     that is GONE it ignores ``max_sec`` and blocks for good. The bound is the configured
     health-probe window (:func:`~clio_agent.arc.rpc_liveness.health_probe_window_s`). An
@@ -379,19 +380,27 @@ def verify_post_attach(store: "ClioCoreStore", *, on_failure: Callable[[], None]
     future = store._client.AsyncTagQuery(
         store._HEALTH_PROBE_NAME, 1, store._cte.PoolQuery.Dynamic()
     )
-    deadline = time.monotonic() + window
+    from clio_agent.arc.daemon_progress import wait_while_progressing  # noqa: PLC0415
+
+    def done_within(timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while not future.done():
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(_PROBE_POLL_S)
+        return True
+
     reason = CLIO_CORE_CLIENT_ATTACH_FAILED
-    while not future.done():
-        if time.monotonic() >= deadline:
-            detail = f"the first RPC after the attach did not answer within {window:g}s"
-            reason = CLIO_CORE_POST_ATTACH_PROBE_TIMEOUT
-            break
-        time.sleep(_PROBE_POLL_S)
-    else:
+    # A slow but working daemon (first run on a laptop, a busy machine) is waited for;
+    # only a window with no daemon progress, or the long ceiling, is a failure.
+    if wait_while_progressing(done_within, slice_s=window, op_name="post_attach_probe"):
         code = future.wait(0)  # finished: returns its code at once
         if code == 0:
             return
         detail = f"the first RPC after the attach answered with return code {code}"
+    else:
+        detail = f"the first RPC after the attach got no answer and the daemon made no progress for {window:g}s"
+        reason = CLIO_CORE_POST_ATTACH_PROBE_TIMEOUT
     on_failure()
     error = ClioCoreAttachError(
         port=store._gate.port,

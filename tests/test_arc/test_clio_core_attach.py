@@ -317,7 +317,7 @@ def test_post_attach_probe_against_a_stuck_daemon_expires_typed(monkeypatch):
 
     assert time.monotonic() - started < 5.0
     assert info.value.stage == "post_attach_probe"
-    assert "did not answer within 0.3s" in str(info.value) and "21045" in str(info.value)
+    assert "made no progress for 0.3s" in str(info.value) and "21045" in str(info.value)
     assert classify_init_failure(info.value) == CLIO_CORE_POST_ATTACH_PROBE_TIMEOUT
     assert deregistered == [True]
     assert future.waits == []  # never waited on the unfinished Future
