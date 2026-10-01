@@ -49,3 +49,54 @@ def test_an_explicit_capacity_still_wins(tmp_path: Path, monkeypatch: pytest.Mon
     cfg = Path(_seed(tmp_path, monkeypatch, free_gb=35))
 
     assert 'capacity_limit: "7GB"' in cfg.read_text(encoding="utf-8")
+
+
+def _old_seed(tmp_path: Path) -> Path:
+    """A config seeded before the tier was sized to the disk: the fixed 50 GB."""
+    cfg = tmp_path / "cte" / "cte.yaml"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text(
+        clio_core_config._DEFAULT_CTE_CONFIG_TEMPLATE.format(
+            core_port=9413,
+            conf_dir=clio_core_config._cte_yaml_path(tmp_path / "cte" / "conf"),
+            file_tier=clio_core_config._cte_yaml_path(tmp_path / "cte" / "storage.bin"),
+            file_capacity="50GB",
+            ram_budget="1GB",
+            metadata_log=clio_core_config._cte_yaml_path(tmp_path / "cte" / "metadata.log"),
+        ),
+        encoding="utf-8",
+    )
+    return cfg
+
+
+def test_an_old_fixed_seed_that_does_not_fit_is_resized_before_first_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Found live: a 50 GB seed from before the sizing failed the first run (42 GB free)."""
+    cfg = _old_seed(tmp_path)
+
+    _seed(tmp_path, monkeypatch, free_gb=42)
+
+    assert 'capacity_limit: "4GB"' in cfg.read_text(encoding="utf-8")
+    clio_core_file_capacity.preflight_clio_core_config(str(cfg), env={})
+
+
+def test_an_allocated_tier_is_never_resized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _old_seed(tmp_path)
+    (tmp_path / "cte" / "storage.bin_node0").write_bytes(b"\0" * 16)  # data may live here
+
+    _seed(tmp_path, monkeypatch, free_gb=42)
+
+    assert 'capacity_limit: "50GB"' in cfg.read_text(encoding="utf-8")
+
+
+def test_an_old_seed_that_fits_is_left_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _old_seed(tmp_path)
+
+    _seed(tmp_path, monkeypatch, free_gb=900)
+
+    assert 'capacity_limit: "50GB"' in cfg.read_text(encoding="utf-8")

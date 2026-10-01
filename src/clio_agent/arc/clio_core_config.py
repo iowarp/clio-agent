@@ -301,6 +301,12 @@ def _default_cte_file_capacity(target_dir: Path | None = None) -> str:
     return _fc.seeded_file_capacity(target_dir) if target_dir is not None else "50GB"
 
 
+def _seeded_capacity_fits(cfg: Path, capacity: str) -> None:
+    from clio_agent.arc import clio_core_file_capacity as _fc  # noqa: PLC0415 - cycle
+
+    _fc.ensure_seeded_capacity_fits(cfg, capacity)
+
+
 def _default_cte_ram_capacity() -> str:
     """Return the MEMORY BUDGET — the hard DRAM bound of the storage arena.
 
@@ -374,6 +380,7 @@ def default_cte_config_path() -> str:
     cfg = cte_dir / "cte.yaml"
     if cfg.is_file():
         _durability.ensure_seeded_config_durable(cfg)  # a pre-durability seed, upgraded once
+        _seeded_capacity_fits(cfg, _default_cte_file_capacity(cte_dir))  # a pre-sizing seed
     else:
         budget = _default_cte_ram_capacity()
         if parse_capacity_bytes(budget) <= 0:

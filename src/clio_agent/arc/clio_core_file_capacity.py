@@ -8,6 +8,7 @@ free-space reserve for both shapes without rejecting a valid sparse Linux tier.
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 from collections.abc import Mapping
@@ -18,6 +19,8 @@ import yaml
 
 from clio_agent.arc.clio_core_config import RamTierCap, boot_check_ram_cap, parse_capacity_bytes
 from clio_agent.arc.init_degradation import CLIO_CORE_FILE_CAPACITY_UNAVAILABLE
+
+logger = logging.getLogger(__name__)
 
 # Preserve capacity for CTE's 32 MiB transaction log, ARC metadata, and normal host
 # operation. A fixed GiB is deterministic and does not grow with an archival tier.
@@ -289,3 +292,38 @@ def seeded_file_capacity(target_dir: Path) -> str:
     free = shutil.disk_usage(_closest_existing_directory(target_dir)).free
     gib = int(free * _SEED_FRACTION_OF_FREE) // (1 << 30)
     return f"{min(max(gib, _SEED_MIN_GIB), _SEED_MAX_GIB)}GB"
+
+
+_OLD_FIXED_SEED = "50GB"
+
+
+def ensure_seeded_capacity_fits(config_path: Path, capacity: str) -> None:
+    """Resize CLIO's own seed from before the disk-based sizing, once, when it cannot run.
+
+    A config seeded with the old fixed 50 GB whose single file tier is not allocated yet
+    and does not fit its disk failed the first run (found live: 42 GB free). It is
+    rewritten in place to ``capacity`` (the seed rule, or an explicit
+    ``arc.cte.file_capacity``) and logged. An allocated tier, a config that fits, and any
+    other capacity value (a user's choice) are left alone; the preflight still judges them.
+    """
+    text = config_path.read_text(encoding="utf-8")
+    old = f'capacity_limit: "{_OLD_FIXED_SEED}"'
+    tiers = _configured_file_tiers(config_path)
+    if text.count(old) != 1 or len(tiers) != 1:
+        return
+    target, capacity_bytes = tiers[0]
+    backing = Path(f"{target}_node0")  # clio-core's local backing file
+    if backing.exists():
+        return
+    free = shutil.disk_usage(_closest_existing_directory(backing.parent)).free
+    if capacity_bytes + _FILE_TIER_FREE_SPACE_RESERVE_BYTES <= free:
+        return
+    config_path.write_text(text.replace(old, f'capacity_limit: "{capacity}"'), encoding="utf-8")
+    logger.warning(
+        "clio-core config %s: the old fixed %s file tier does not fit its disk (%d bytes "
+        "free) and is not allocated yet; resized in place to %s",
+        config_path,
+        _OLD_FIXED_SEED,
+        free,
+        capacity,
+    )
