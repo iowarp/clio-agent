@@ -48,6 +48,7 @@ from dspy.utils.exceptions import AdapterParseError, ContextWindowExceededError
 
 from clio_agent.arc.working_set_fold import emit_step_open
 from clio_agent.errors import ClioError
+from clio_agent.gact.agents.react_parse_failure import parse_failure_error_info
 from clio_agent.gact.runtime.context_tokens import _arc_obs_value
 from clio_agent.gact.runtime.globals import (
     _active_lm_last_reasoning,
@@ -329,6 +330,7 @@ def instrumented_forward(agent: Any, **input_args: Any) -> Prediction:
     turn_index = -1
     step_span_id = ""
     thought: Any = ""
+    parse_error_info = None
     try:
         for turn_index in turn_indices:
             step_span_id = uuid.uuid4().hex[:16]
@@ -343,8 +345,17 @@ def instrumented_forward(agent: Any, **input_args: Any) -> Prediction:
                         **pending_inputs,
                     )
                     tool_calls = _coerce_tool_calls(getattr(pred, "tool_calls", None))
-                except (AdapterParseError, ValueError):
+                except (AdapterParseError, ValueError) as exc:
                     break_reason = "parse_error"
+                    parse_error_info = parse_failure_error_info(
+                        exc, step_index=turn_index, expert_id=expert_id
+                    )
+                    logger.warning(
+                        "reactv2 step reply unparseable expert_id=%s step=%s: %s",
+                        expert_id,
+                        turn_index,
+                        parse_error_info.details["parse_message"],
+                    )
                     break
                 except ContextWindowExceededError:
                     break_reason = "context_window_exceeded"
@@ -459,7 +470,9 @@ def instrumented_forward(agent: Any, **input_args: Any) -> Prediction:
             {},
             step_count,
         )
-        return Prediction(history=history, termination_reason=break_reason)
+        return Prediction(
+            history=history, termination_reason=break_reason, error_info=parse_error_info
+        )
     except ClioError as exc:
         # #1282 F6 (#1275 ask 3): a TYPED clio escalation (the D1 refusal
         # escalation is the concrete reproducer; ClioError/MCPProtocolError

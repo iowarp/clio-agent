@@ -6,6 +6,14 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Fixed
+
+- A turn whose model reply is neither a tool call nor a readable answer (for
+  example, the model announces its next step and stops) now ends with the
+  recoverable error `model_reply_unparseable` instead of `empty_response`.
+  `error_info.details` carries the raw reply (`raw_reply`), the parse message,
+  the exception type and the step index, so the trace shows what the model said.
+
 ## [0.9.4.23] — 2026-09-30
 
 ### Fixed
