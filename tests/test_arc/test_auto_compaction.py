@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterator
 
 import dspy
+import pytest
 
 import clio_agent.gact.app as app
 import clio_agent.gact.runtime.context_tokens as context_tokens
@@ -227,18 +228,56 @@ def test_disabled_when_window_unknown(arc, monkeypatch):
     assert _view(arc) == before  # auto-compaction off
 
 
-def test_skips_when_summary_llm_returns_empty(arc, monkeypatch):
-    """#1339: an empty LM summary no longer aborts the fold -- ``compact_session_context``
-    folds whatever text it got (empty or not); this pins that an empty ``summary``
-    still lands as the fold text (no more "empty means skip the whole compaction"
-    special case, since the checkpoint is the unit of work now, not the ARC fold
-    alone -- see the module docstring)."""
+def test_an_empty_summary_fails_typed_and_folds_nothing(arc, monkeypatch):
+    """An empty LM summary used to replace the agent's whole working set with an empty
+    summary (it lost its context). It is a typed failure now, applied before any fold,
+    and the auto trigger fails the turn with it instead of auditing it away."""
+    from clio_agent.gact.compaction import AutoCompactionFailedError
 
     _patch_prompt_tokens(monkeypatch, prompt_tokens=900)
     _populate(arc)
-    with _full_plane_context(arc, session=SID, scope=SCOPE, window=1000, summary=""):
+    before = _view(arc)
+    with _full_plane_context(arc, session=SID, scope=SCOPE, window=1000, summary="  "):
+        with pytest.raises(AutoCompactionFailedError) as err:
+            maybe_autocompact()
+    assert err.value.details["compaction_error"] == "empty_summary"
+    assert _view(arc) == before
+
+
+def test_no_token_count_is_audited_never_silent(arc, monkeypatch):
+    """Without a real token count auto-compaction cannot decide: recorded, not skipped
+    silently (it used to never fire and say nothing)."""
+    from clio_agent.runtime import stream_audit as audit_mod
+
+    rows: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        "clio_agent.gact.compaction.stream_audit",
+        lambda stage, **row: rows.append({"stage": stage, **row}),
+    )
+    assert audit_mod is not None
+    _patch_prompt_tokens(monkeypatch, prompt_tokens=0)
+    _populate(arc)
+    with _full_plane_context(arc, session=SID, scope=SCOPE, window=1000):
         maybe_autocompact()
-    assert _view(arc) == [("summary", "")]
+    assert [r["reason"] for r in rows if r["stage"] == "compaction.auto_skipped"] == [
+        "no_token_count"
+    ]
+
+
+def test_a_staged_checkpoint_is_checked_before_any_work(arc, monkeypatch):
+    """A manual compact during a turn that already staged a checkpoint used to fold
+    clio-core, call the LM and then discard the checkpoint. It skips before any work."""
+    from clio_agent.gact import compaction, part_atom_minter
+
+    _populate(arc)
+    before = _view(arc)
+    monkeypatch.setattr(part_atom_minter, "turn_minter", lambda _app, _sid: object())
+    monkeypatch.setattr(compaction, "staged_checkpoint", lambda _app, _sid: object())
+    with _full_plane_context(arc, session=SID, scope=SCOPE, window=1000) as agent:
+        result = compaction.compact_session_context(ctx.active_app(), SID, trigger="manual")
+    assert result["reason"] == compaction.SKIP_CHECKPOINT_ALREADY_STAGED
+    assert agent.prompts == []  # no LM call
+    assert _view(arc) == before  # nothing folded
 
 
 def test_last_prompt_tokens_falls_back_to_token_counter(monkeypatch):
