@@ -1,15 +1,17 @@
 """Init-time filesystem-capacity gate for clio-core CTE file tiers.
 
-Windows allocates a file bdev at its full ``capacity_limit`` before registration.
-POSIX clio-core grows sparse backing files lazily in 1 GiB units, so the configured
-capacity is a ceiling rather than an up-front allocation. This module preserves a
-free-space reserve for both shapes without rejecting a valid sparse Linux tier.
+clio-core grows a file tier's backing file in 1 GiB chunks on every platform, so the
+configured ``capacity_limit`` is a growth ceiling, not an up-front allocation. Measured on
+iowarp-core 2.2.1 (Windows, 2026-10-01): a 3 GB and a 6 GB tier both started at 1 GiB, and
+writing ~1.4 GB through the store grew the file to 2 GiB with every blob read back. (The
+earlier rule -- Windows allocates the full capacity, an existing smaller file is never
+grown -- refused a store clio-core was serving, on its second start.) So a fresh tier needs
+its first chunk plus a free-space reserve, and an existing backing file is reused as is.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import shutil
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -27,10 +29,8 @@ logger = logging.getLogger(__name__)
 _FILE_TIER_FREE_SPACE_RESERVE_BYTES = 1 * 1024**3
 
 
-def _file_tiers_grow_lazily() -> bool:
-    """Return whether this host uses clio-core's sparse, chunked file growth."""
-
-    return os.name != "nt"
+# clio-core's file-tier growth unit: the first chunk is all a fresh tier allocates.
+_FILE_TIER_GROWTH_CHUNK_BYTES = 1 * 1024**3
 
 
 class ClioCoreFileCapacityError(RuntimeError):
@@ -49,7 +49,6 @@ class ClioCoreFileCapacityError(RuntimeError):
         existing_bytes: int,
         free_bytes: int,
         reserve_bytes: int,
-        detail: str = "",
     ) -> None:
         """Build a typed, operator-actionable capacity failure.
 
@@ -62,7 +61,6 @@ class ClioCoreFileCapacityError(RuntimeError):
             existing_bytes: Bytes already provisioned by reusable backing files.
             free_bytes: Filesystem free bytes observed by the preflight.
             reserve_bytes: Safety reserve that must remain after allocation.
-            detail: Optional diagnosis, such as an undersized existing file.
         """
 
         self.config_path = config_path
@@ -75,7 +73,6 @@ class ClioCoreFileCapacityError(RuntimeError):
         self.reserve_bytes = reserve_bytes
         required_free_bytes = required_allocation_bytes + reserve_bytes
         targets = ", ".join(str(path) for path in target_paths)
-        suffix = f" detail={detail}" if detail else ""
         super().__init__(
             "clio-core file-tier capacity preflight failed "
             f"(reason={self.degradation_reason} config={config_path} "
@@ -83,7 +80,7 @@ class ClioCoreFileCapacityError(RuntimeError):
             f"capacity_bytes={capacity_bytes} "
             f"required_allocation_bytes={required_allocation_bytes} "
             f"existing_bytes={existing_bytes} free_bytes={free_bytes} "
-            f"reserve_bytes={reserve_bytes} required_free_bytes={required_free_bytes}{suffix}); "
+            f"reserve_bytes={reserve_bytes} required_free_bytes={required_free_bytes}); "
             "choose a file-tier path on a filesystem with sufficient free space or lower "
             "arc.cte.file_capacity / CLIO_ARC_CTE_FILE_CAPACITY"
         )
@@ -159,10 +156,9 @@ def _configured_file_tiers(config_path: Path) -> list[tuple[Path, int]]:
 def inspect_file_tier_capacities(config_path: str | Path) -> tuple[FileTierCapacity, ...]:
     """Inspect allocation requirements for every configured CTE file tier.
 
-    clio-core appends ``_node0`` to the configured path for the local daemon. On
-    POSIX, a smaller sparse file is the expected lazy-growth representation. On
-    Windows, an undersized non-empty file is rejected because the runtime reuses it
-    without completing the configured allocation.
+    clio-core appends ``_node0`` to the configured path for the local daemon. A fresh
+    tier allocates its first growth chunk (at most the capacity); an existing backing file
+    -- usually smaller than the capacity, as clio-core grows it in chunks -- needs nothing.
 
     Args:
         config_path: Exact CTE YAML file being initialized.
@@ -171,7 +167,6 @@ def inspect_file_tier_capacities(config_path: str | Path) -> tuple[FileTierCapac
         Immutable file-tier allocation facts.
 
     Raises:
-        ClioCoreFileCapacityError: If an existing backing file is undersized.
         ValueError: If a configured capacity is malformed.
     """
 
@@ -181,22 +176,7 @@ def inspect_file_tier_capacities(config_path: str | Path) -> tuple[FileTierCapac
         backing = Path(f"{target}_node0")
         filesystem_path = _closest_existing_directory(backing.parent)
         existing_bytes = backing.stat().st_size if backing.is_file() else 0
-        lazy_growth = _file_tiers_grow_lazily()
-        if not lazy_growth and 0 < existing_bytes < capacity_bytes:
-            raise ClioCoreFileCapacityError(
-                config_path=config,
-                filesystem_path=filesystem_path,
-                target_paths=(target,),
-                capacity_bytes=capacity_bytes,
-                required_allocation_bytes=0,
-                existing_bytes=existing_bytes,
-                free_bytes=shutil.disk_usage(filesystem_path).free,
-                reserve_bytes=_FILE_TIER_FREE_SPACE_RESERVE_BYTES,
-                detail=(
-                    f"existing backing file {backing} is smaller than capacity_limit; "
-                    "clio-core would reuse it without growing it"
-                ),
-            )
+        first_chunk = min(capacity_bytes, _FILE_TIER_GROWTH_CHUNK_BYTES)
         rows.append(
             FileTierCapacity(
                 target_path=target,
@@ -205,9 +185,7 @@ def inspect_file_tier_capacities(config_path: str | Path) -> tuple[FileTierCapac
                 filesystem_device=filesystem_path.stat().st_dev,
                 capacity_bytes=capacity_bytes,
                 existing_bytes=existing_bytes,
-                required_allocation_bytes=(
-                    0 if lazy_growth or existing_bytes > 0 else capacity_bytes
-                ),
+                required_allocation_bytes=0 if existing_bytes > 0 else first_chunk,
             )
         )
     return tuple(rows)
@@ -285,9 +263,10 @@ def seeded_file_capacity(target_dir: Path) -> str:
     """The file-tier capacity a fresh install seeds into ``target_dir``: 10% of that disk's
     free space, at least 2 GB and at most 50 GB.
 
-    Windows allocates a file tier up front, and the preflight demands the capacity plus a
-    reserve free, so a fixed 50 GB both took 50 GB at once and failed a first run on a
-    smaller disk. A disk too small even for the floor fails the preflight, typed.
+    The capacity is the tier's growth ceiling (clio-core grows the file in 1 GiB chunks), so
+    a ceiling the disk cannot hold would fail writes once the disk fills; a fixed 50 GB
+    promised more than a small disk has. A disk too small even for the floor fails the
+    preflight, typed.
     """
     free = shutil.disk_usage(_closest_existing_directory(target_dir)).free
     gib = int(free * _SEED_FRACTION_OF_FREE) // (1 << 30)
