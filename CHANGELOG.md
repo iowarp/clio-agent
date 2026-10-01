@@ -6,6 +6,16 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+### Fixed
+
+- A standalone `clio.approval.v1` card (the agent's own yes/no question, not
+  bound to a real pending native permission) no longer 422s on Approve/Cancel.
+  `approval.respond` only routes to the permission gate when its `context`
+  structurally carries a `permission_id`; otherwise it delivers to the agent
+  like any other action, with its resolved context (e.g. `{"approved":
+  true}`) as the next turn's input. A `permission_id` that names no pending
+  permission still gets a typed 404, never a silent reroute (#1549 #28).
+
 ## [0.9.4.24] — 2026-09-30
 
 ### Fixed
