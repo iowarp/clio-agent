@@ -249,3 +249,31 @@ def test_flush_fsyncs_before_rename(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     # And the record actually landed on disk.
     reloaded = SessionStore(path=tmp_path / "sessions.json")
     assert reloaded.count() == 1
+
+
+class _RecordFailed(RuntimeError):
+    pass
+
+
+def _failing_observer(event_type: str, _session: object) -> None:
+    raise _RecordFailed(event_type)
+
+
+def test_a_session_whose_creation_cannot_be_recorded_is_not_created(store: SessionStore) -> None:
+    """The lifecycle record is clio-core's: a failure is the caller's error, never a log
+    line, and no session exists that clio-core has no record of."""
+    store.set_lifecycle_observer(_failing_observer)
+
+    with pytest.raises(_RecordFailed, match="session.created"):
+        store.create(workspace_id="ws_default", title="unrecorded")
+
+    assert store.list() == []
+    assert SessionStore(path=store._path).list() == []
+
+
+def test_a_deletion_that_cannot_be_recorded_is_the_callers_error(store: SessionStore) -> None:
+    sess = store.create(workspace_id="ws_default", title="t")
+    store.set_lifecycle_observer(_failing_observer)
+
+    with pytest.raises(_RecordFailed, match="session.deleted"):
+        store.delete(sess.id)
