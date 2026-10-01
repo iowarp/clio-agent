@@ -1,48 +1,187 @@
-# CLIO Site Capture Manifest
+# CLIO Site Shot List
 
-The public site (`site/`, served at clio.iowarp.ai) shows real product captures. This file lists the captures in use, what each one has to show, and the captures still to record. It is the checklist for anyone collecting screenshots for the site.
+This is the list of product screenshots for the public site (`site/`, served at clio.iowarp.ai). Each entry says where the image goes, what the app must show, how to get there, and the file to save it as. The site leads with the desktop app, so every shot is taken in the desktop app unless the entry says otherwise. The terminal interface needs no shots.
 
-## Rules
+Save each file at the path given. If a file with that name already exists, replace it; its page picks up the new image with no code change. Entries marked **new slot** need a small code change to place the image, so mention them in the pull request that adds them.
 
-- Record every capture from a real CLIO session on the current release. Do not use mockups, edited images, or QA fixtures.
-- Show a real question, real data, and a finished result. Avoid empty states, settings-only views, provider setup screens, error states, and raw JSON.
-- Use the CLIO-branded interface. Do not show GACT branding, debug rails, internal release names, or issue numbers.
-- Save PNGs at 1246 × 720 or larger, at a consistent window size within a set. The build converts them to responsive WebP.
-- Keep the file name when you replace a capture, so pages pick up the new image without code changes.
+## How to shoot
 
-## In use on the overview (`site/src/assets/captures/`)
+| Setting | Value |
+|---|---|
+| App | The CLIO desktop app on the current release, bundled build |
+| Window | 1440 × 900, not maximized, title bar visible for shots marked "window"; content area only otherwise |
+| Scale | 2× (Retina or 200% display scaling); save as PNG |
+| Theme | Dark, for every shot, so the set matches the site |
+| Model | A capable hosted model; the model chip in the composer will be visible, so use one you are happy to show |
+| Workspace and session names | Plain names a user would choose, such as "Ground motion" or "Fire season". Never release or test names like "Release v0.9.2 qualification" or "candidate". |
+| Status bar | Close or hide anything that shows "Unavailable", errors, or debug counters |
 
-| File | Where | Must show |
-|---|---|---|
-| `earthscope-chart.png` | Hero | An interactive time-series chart from a real dataset, with the "N of M rows" sampling label visible |
-| `earthscope-map.png` | 01 Ask | The agent pausing for the user to pick from an interactive map |
-| `factorio-report.png` | 02 Delegate | Several expert child agents completed, with their report open beside the session |
-| `agent-gantt.png` | 03 Watch | The Gantt timeline with the main agent, child agents, and tool calls |
-| `provenance-evidence.png` | 04 Verify | The Evidence panel: files read, changed files, and artifacts |
-| `deep-search.png` | 05 Continue | Session memory search returning matches from earlier sessions |
+Avoid in every shot:
 
-Known gaps in the current set (recorded on v0.9.2):
+- error states, retries, and provider setup failures
+- raw JSON or debug panels
+- personal data such as paths with your user name, email addresses, or API keys
+- notification badges and empty states, unless the entry asks for them
 
-- `earthscope-map.png` and `earthscope-chart.png` use the light theme and the other captures use the dark theme. They also come from two different runs and stations.
-- `deep-search.png` shows a qualification prompt, not a user question. Retake it with a natural follow-up question.
+## One story, one session
 
-## Wanted
+Shots 1 through 5 come from **one** session, so the overview tells a single continuous story:
 
-The site leads with the desktop app, so desktop captures come first. The terminal interface is mentioned once and needs no capture.
+- **Blueprint:** EarthScope (the multi-expert one, `earthscope-gnss-region`)
+- **Workspace:** "Ground motion"
+- **Session:** "Palm Springs stations"
+- **First prompt:**
+  > Find the five EarthScope GNSS stations nearest Palm Springs, California, show them on a map, and wait for me to choose one.
+- **Then:** choose one station on the map and confirm.
+- **Follow-up:**
+  > Plot the east, north, and up position of that station over its full record and tell me how much to trust the data.
 
-1. **Desktop app window.** The native window, title bar included, showing a finished EarthScope or NDP result. It goes in the Interfaces section's Desktop card and on the Install page.
-2. **One end-to-end EarthScope run in the desktop app, in a single theme.** It replaces the hero, Ask, and tutorial captures with images from one session (see below).
-3. **The desktop app's first launch.** The model provider dialog that appears on first start, for Connect a model.
+Let the run finish before you take shots 2 through 5.
 
-## Tutorial captures
+## Overview page
 
-Each tutorial lists the captures it needs in a `Captures needed` or `Captures to refresh` note. A draft tutorial goes live when its captures exist.
+### 1. Hero: the chart
+
+- **File:** `site/src/assets/captures/earthscope-chart.png`
+- **Where:** first screen of the overview, beside the headline
+- **Show:**
+  - the session with the interactive time-series chart fully in view, east, north, and up series
+  - the "N evenly sampled rows from M total" label visible
+  - the hover tooltip open on one point
+  - the left sidebar with the workspace and session names
+- **Frame:** content area, no title bar
+
+### 2. Ask: choosing on the map
+
+- **File:** `site/src/assets/captures/earthscope-map.png`
+- **Where:** overview section 01 Ask, and the first tutorial
+- **Show:**
+  - the "response needed" question with the interactive map
+  - five labeled stations, with one selected and highlighted in the location list
+  - the confirm control visible
+- **Frame:** content area
+
+### 3. Delegate: experts in parallel
+
+- **File:** `site/src/assets/captures/factorio-report.png` (keep the name even though the content changes)
+- **Where:** overview section 02 Delegate
+- **Show:**
+  - the transcript where the expert child agents have completed, each with its completion time and green check
+  - the resulting report artifact open in the side panel, with the Preview, Versions, and Lineage tabs visible
+- **Frame:** content area
+
+### 4. Watch: the timeline
+
+- **File:** `site/src/assets/captures/agent-gantt.png`
+- **Where:** overview section 03 Watch
+- **Show:**
+  - the observability dock on the Gantt tab
+  - the main agent, at least two child agents, and their tool calls as bars over time
+  - the transcript on the left showing the final answer
+- **Frame:** content area
+
+### 5. Verify: the evidence
+
+- **File:** `site/src/assets/captures/provenance-evidence.png`
+- **Where:** overview section 04 Verify, and the first tutorial
+- **Show:**
+  - the observability dock on the Evidence tab, listing "Read by agent" files, Changed files, and Artifacts
+  - one artifact expanded so its content hash shows
+- **Frame:** content area
+
+### 6. Continue: earlier work
+
+- **File:** `site/src/assets/captures/deep-search.png`
+- **Where:** overview section 05 Continue
+- **How:**
+  - Start a **new** session in the same workspace.
+  - Ask: "Last week I looked at a GNSS station near Palm Springs. Which one was it, and what did we conclude?"
+- **Show:**
+  - the memory search tool call expanded, with its matches from the earlier session
+  - the answer that names the station
+- **Frame:** content area
+
+### 7. Desktop app window (new slot)
+
+- **File:** `site/src/assets/captures/desktop-window.png`
+- **Where:**
+  - the Desktop app card in the overview's Interfaces section
+  - the top of the Install page
+- **Show:** the whole desktop window, title bar included, on a plain desktop background, with the finished session from shots 1 through 5 visible.
+- **Frame:** window
+
+## Docs pages (all new slots)
+
+### 8. First launch: choose a model
+
+- **File:** `site/src/assets/docs/first-launch-provider.png`
+- **Where:** Connect a model, top
+- **Show:** the model provider dialog that appears the first time the desktop app starts, with the provider list open.
+- **Frame:** window
+
+### 9. Models settings
+
+- **File:** `site/src/assets/docs/settings-models.png`
+- **Where:** Connect a model, "Change the model later"
+- **Show:** Settings, Models page, with a provider selected and **Apply provider and model** visible.
+
+### 10. New session
+
+- **File:** `site/src/assets/docs/new-session.png`
+- **Where:** Sessions and modes
+- **Show:** the New session dialog with the **Agent blueprint** list open and EarthScope highlighted.
+
+### 11. Composer controls
+
+- **File:** `site/src/assets/docs/composer-controls.png`
+- **Where:** Sessions and modes, "Choose how the agent works"
+- **Show:** the composer with the Execution mode menu open, showing Execute, Plan, and Deep research.
+- **Crop:** the composer area only
+
+### 12. Permission prompt
+
+- **File:** `site/src/assets/docs/permission-prompt.png`
+- **Where:** Permissions and sandbox
+- **Show:** a pending permission request for a file write, with Allow once, Deny, Allow for session, and Allow for workspace visible.
+- **How:** set the confirmation policy to Ask first, then ask the agent to save a summary to a file.
+
+### 13. Diff review
+
+- **File:** `site/src/assets/docs/diff-review.png`
+- **Where:** Permissions and sandbox, and Memory and evidence
+- **Show:** a proposed file change open in the diff view, with **Apply change** and **Reject change** visible.
+
+### 14. Marketplace
+
+- **File:** `site/src/assets/docs/marketplace.png`
+- **Where:** Agent blueprints
+- **Show:** Settings, **Marketplaces & blueprints**, on the Marketplaces tab, with the default marketplace expanded and several blueprints listed, one with an **Install** button.
+
+### 15. MCP tools
+
+- **File:** `site/src/assets/docs/mcp-tools.png`
+- **Where:** Tools and MCP servers
+- **Show:** the **MCP tools** settings page with one connected server and the **Connect MCP** button visible.
+
+### 16. Timeline and Context tabs
+
+- **Files:**
+  - `site/src/assets/docs/observability-timeline.png`
+  - `site/src/assets/docs/observability-context.png`
+- **Where:** Memory and evidence
+- **Show:** the observability dock on the Timeline tab, then the same session on the Context tab.
+
+## Tutorials
+
+Each tutorial lists its shots in a `Captures needed` or `Captures to refresh` note at the end of the page. Save them in `site/src/assets/tutorials/<tutorial-slug>/`. A draft tutorial goes live once its shots exist.
 
 ### Your first analysis (published; refresh)
 
-- The New session dialog with the **Agent blueprint** list open and EarthScope Skills selected.
-- The map after a station is selected, with the confirm button visible.
-- The time-series chart for the station chosen in the map capture.
+Use the same session as shots 1 through 5.
+
+- The New session dialog with the **Agent blueprint** list open and EarthScope selected.
+- The map after you choose a station, with the confirm control visible.
+- The time-series chart for that same station.
 - The Evidence tab for the same run, with the artifacts expanded to show content hashes.
 - The artifact view with the **Versions** and **Lineage** tabs.
 
@@ -50,13 +189,13 @@ Each tutorial lists the captures it needs in a `Captures needed` or `Captures to
 
 - Settings > **Models** with **LM Studio** selected and **Apply provider and model** visible.
 - The LM Studio window with the local server running and a model loaded.
-- The composer model control showing LM Studio and the model name.
-- A finished answer to the workspace file question, with the tool calls visible.
+- The composer model chip showing LM Studio and the model name.
+- A finished answer to the workspace-files question, with the tool calls visible.
 
 ### Install a blueprint from the marketplace (draft)
 
 - The **Marketplaces** tab with the default marketplace expanded and an **Install** button visible.
-- The **Installed** tab after installing, with the actions menu open.
+- The **Installed** tab after the install, with the actions menu open.
 - The **View details** dialog.
 - The New session dialog with the **Agent blueprint** list open.
 - The session header showing the blueprint name.
@@ -66,17 +205,19 @@ Each tutorial lists the captures it needs in a `Captures needed` or `Captures to
 
 - The **MCP tools** page with the **Connect MCP** button.
 - The **Connect an MCP service** dialog filled in for a local command.
-- The service detail dialog with its **Tools** tab.
+- The service detail dialog on its **Tools** tab.
 - A session transcript showing the tool call and its result.
 - The permission request for the tool call.
 
 ### Run the CLIO workspace on a server with Docker (draft)
 
+This is the one set taken outside the desktop app.
+
 - A terminal showing `docker compose up clio-web` with the container running.
 - The web interface open in a browser on another computer, with the address bar visible.
 - The `host_not_allowed` error, and the same page working after `CLIO_GACT_ALLOWED_HOSTS` is set.
-- The model settings page showing the provider taken from the environment variables.
+- The Models settings page showing the provider taken from the environment variables.
 
-## Adding captures
+## After you add shots
 
-See `site/README.md` under "Add a tutorial" and "Refresh product captures".
+See `site/README.md`, sections "Add a tutorial" and "Refresh product captures".
