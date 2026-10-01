@@ -90,3 +90,36 @@ def test_refine_tells_the_next_try_the_advice(arc: ARCMemory) -> None:
     # the advice is recorded on the second try's own clio-core scope, as a CLIO addition
     second_scope = read_steps(arc, SESSION, f"{SCOPE}#run1")
     assert any("Say it plainly" in getattr(p, "text", "") for m in second_scope for p in m.parts)
+
+
+def test_each_try_and_the_selection_are_on_the_highway(tmp_path: Path) -> None:
+    """variant.try per try and variant.selected with the scores: recorded on clio-core and
+    sent to the UI and the trace, not only log lines."""
+    from clio_agent.gact.app import build_app
+
+    arc_memory = ARCMemory(data_dir=str(tmp_path / "arc2"))
+    app = build_app(sessions_path=tmp_path / "s.json", arc=arc_memory)
+    sid = app.state.sessions.create(workspace_id="ws_default", title="v").id
+    events: list[Any] = []
+    real_emit = app.state.semantic_event_sink.emit
+    app.state.semantic_event_sink.emit = lambda e: (events.append(e), real_emit(e))[1]
+    tokens = [
+        ctx.set_app(app),
+        ctx.set_session_id(sid),
+        ctx.set_react_scope(SCOPE),
+        ctx.set_react_session(sid),
+    ]
+    lm, _engine = scripted_lm([Reply(text="BAD draft"), Reply(text="GOOD draft")])
+    try:
+        with dspy.context(lm=lm):
+            _wrap(module_variants._RunScopedBestOfN)(question="write the email")
+    finally:
+        for token in reversed(tokens):
+            ctx.reset(token)
+
+    variant = [e for e in events if e.event_type.startswith("variant.")]
+    assert [e.event_type for e in variant] == ["variant.try", "variant.try", "variant.selected"]
+    assert [e.payload["run_index"] for e in variant[:2]] == [0, 1]
+    selected = variant[-1].payload
+    assert selected["winning_index"] == 1
+    assert [s["score"] for s in selected["scores"]] == [0.0, 1.0]

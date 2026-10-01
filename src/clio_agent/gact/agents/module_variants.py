@@ -129,6 +129,25 @@ class VariantTotalFailure(RuntimeError):
         self.last_error = last_error
 
 
+def _emit_variant_event(event_type: str, status: str, payload: dict[str, Any]) -> None:
+    """Put a variant run on the highway (clio-core first, then UI, trace and hooks)."""
+    from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
+
+    app, sid = _ctx.active_app(), _ctx.active_session_id()
+    if app is None or not sid:
+        return  # a bare call outside a session: there is no highway to put it on
+    agent_id = str(payload.get("agent_id", ""))
+    _emit_semantic_event(
+        app,
+        sid,
+        event_type,
+        status=status,
+        summary=f"{agent_id or 'agent'} {event_type.rsplit('.', 1)[-1]}",
+        actor={"agent_id": agent_id, "role": "expert"},
+        payload=payload,
+    )
+
+
 def _total_variant_failure(
     agent_id: str,
     variant: str,
@@ -211,11 +230,14 @@ class _RunKeyedModule(dspy.Module):
             ledger.current_index = run_index
             ledger.next_index += 1
         token = _ctx.set_react_run(run_index)
-        logger.info(
-            "variant.try agent=%s variant=%s run_index=%d",
-            self._clio_agent_id,
-            self._clio_variant,
-            run_index,
+        _emit_variant_event(
+            "variant.try",
+            "running",
+            {
+                "agent_id": self._clio_agent_id,
+                "variant": self._clio_variant,
+                "run_index": run_index,
+            },
         )
         try:
             if ledger is not None:
@@ -361,18 +383,8 @@ def _stamp_variant_selection(
         "winning_score": winning_score,
         "scores": [{"run_index": idx, "score": score} for idx, score in ledger.scores],
     }
-    try:
-        pred.variant_selection = selection
-    except Exception:  # noqa: BLE001 - never let observability metadata break a turn
-        logger.warning("variant.selection.stamp_failed agent=%s variant=%s", agent_id, variant)
-    logger.info(
-        "variant.selected agent=%s variant=%s winning_index=%d winning_score=%.3f tries=%d",
-        agent_id,
-        variant,
-        winning_index,
-        winning_score,
-        ledger.next_index,
-    )
+    pred.variant_selection = selection
+    _emit_variant_event("variant.selected", "completed", {"agent_id": agent_id, **selection})
 
 
 def _clamp_score(raw: Any) -> float:
