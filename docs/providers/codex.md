@@ -5,9 +5,9 @@ provider has ONE transport, **direct**: CLIO sends the Responses API request
 to the Codex backend (`chatgpt.com/backend-api`) from its own process over a
 kept WebSocket. No Codex SDK and no Codex CLI process is involved.
 
-The provider catalog still reports Codex's transport as a one-row
-`transports` list (`id: "direct"`), and each model row carries
-`transport: "direct"`, which clients echo back as `ModelRef.variant`.
+Codex models sit on the provider catalog row like any other provider's:
+there is no `transports` list and no per-model `transport` tag, and a Codex
+selection carries no `variant`.
 
 ## Architecture
 
@@ -89,8 +89,10 @@ full input). There is no automatic fallback between them.
 **Removed:** the Codex SDK transport. A leftover `lm.codex_variant` in a config
 file or `CLIO_CODEX_VARIANT` in the environment is a typed configuration error
 (`config_key_removed`) naming every place it is set -- delete it. A bind
-request or model reference naming a transport other than `direct` is refused in
-plain language; choose the model again from the picker.
+request or model reference for Codex that names any `variant` (including
+`direct`) is refused in plain language ("Model variants are no longer used for
+Codex ..."; a model reference answers `400 model_transport_removed`); choose the
+model again from the picker.
 
 ## Streaming and reasoning truth
 
@@ -115,7 +117,6 @@ which DSPy retries when they are retryable (never after anything streamed).
 - `src/clio_agent/providers/model_discovery/codex.py` -- discovery rows from
   the live model list
 - `src/clio_agent/gact/routes/codex_readiness.py` -- the bind readiness gate
-- `src/clio_agent/gact/provider_catalog.py` -- the one-row `transports`
-  catalog entry (`_codex_direct_transport_row`)
+- `src/clio_agent/gact/provider_catalog.py` -- the provider catalog row
 - `src/clio_agent/gact/routes/provider_auth.py` -- the generic sign-in API
 - `src/clio_agent/providers/catalog.py` -- the catalog entry
