@@ -26,13 +26,6 @@ PROVIDER_LABEL = "Codex"
 #: intercepted every turn; a separate wire name can never collide again.
 LITELLM_PROVIDER = "codex_direct"
 
-#: The ``codex`` provider's one catalog transport row (its id is what a client
-#: echoes back as ``ModelRef.variant``) and its label.
-TRANSPORT_DIRECT = "direct"
-TRANSPORT_LABELS: dict[str, str] = {TRANSPORT_DIRECT: "Direct"}
-#: The transport's endpoint identity (a pseudo-scheme, never dialed). Capability
-#: DEPLOYMENT records are keyed by it.
-TRANSPORT_API_BASES: dict[str, str] = {TRANSPORT_DIRECT: "codex://direct"}
 
 #: The Codex CLI's public OAuth client id. Not a secret -- every open-source
 #: harness that reuses this login flow (pi, OpenCode, Cline) ships the same
@@ -175,9 +168,6 @@ __all__ = [
     "RETRY_MAX_DELAY_MS",
     "SCOPE",
     "TOKEN_URL",
-    "TRANSPORT_API_BASES",
-    "TRANSPORT_DIRECT",
-    "TRANSPORT_LABELS",
     "USAGE_LIMIT_MARKERS",
     "WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE",
     "WS_CONNECT_TIMEOUT_S",

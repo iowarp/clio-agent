@@ -21,12 +21,8 @@ from clio_agent.config import LMProviderConfig, load_config_from_env
 from clio_agent.errors import RemovedConfigKeyError
 from clio_agent.gact.types import AgentDef
 from clio_agent.providers import resolver as resolver_mod
-from clio_agent.providers.codex.constants import (
-    LITELLM_PROVIDER,
-    TRANSPORT_API_BASES,
-    TRANSPORT_DIRECT,
-    TRANSPORT_LABELS,
-)
+from clio_agent.providers.codex import constants as codex_constants
+from clio_agent.providers.codex.constants import LITELLM_PROVIDER
 from clio_agent.providers.lm_spec import LMSpec
 from tests._config_layer import set_config, user_config_path
 
@@ -127,21 +123,28 @@ def test_a_written_selection_carries_no_transport_choice() -> None:
 # --------------------------------------------------------------------------- #
 # the bind request and the transport catalog                                   #
 # --------------------------------------------------------------------------- #
-def test_codex_has_only_the_direct_transport() -> None:
-    assert TRANSPORT_LABELS == {TRANSPORT_DIRECT: "Direct"}
-    assert TRANSPORT_API_BASES == {TRANSPORT_DIRECT: "codex://direct"}
+def test_codex_has_no_transport_vocabulary() -> None:
+    for name in ("TRANSPORT_DIRECT", "TRANSPORT_LABELS", "TRANSPORT_API_BASES"):
+        assert not hasattr(codex_constants, name)
 
 
-def test_a_bind_naming_the_removed_sdk_transport_is_refused_in_plain_language() -> None:
+@pytest.mark.parametrize("variant", ["sdk", "direct", "anything"])
+def test_a_bind_naming_any_variant_is_refused_in_plain_language(variant: str) -> None:
     from clio_agent.gact.lm_provider_types import LMProviderRequest
 
     body = {"provider": "codex", "api_base": "", "model": "gpt-5.5"}
     with pytest.raises(ValidationError) as err:
-        LMProviderRequest(**body, variant="sdk")
-    assert "The Codex SDK path was removed" in str(err.value)
-    # The catalog's one transport row id (what clients echo back) binds as before.
-    assert LMProviderRequest(**body, variant="direct").model == "gpt-5.5"
+        LMProviderRequest(**body, variant=variant)
+    assert "Model variants are no longer used for Codex" in str(err.value)
+    assert "choose the model again from the model picker" in str(err.value)
+
+
+def test_a_bind_without_a_variant_is_accepted() -> None:
+    from clio_agent.gact.lm_provider_types import LMProviderRequest
+
+    body = {"provider": "codex", "api_base": "", "model": "gpt-5.5"}
     assert LMProviderRequest(**body).model == "gpt-5.5"
+    assert LMProviderRequest(**body, variant="").model == "gpt-5.5"
 
 
 def test_the_config_has_no_transport_choice_field() -> None:
@@ -186,7 +189,7 @@ def test_a_codex_turn_runs_on_the_direct_engine(monkeypatch: pytest.MonkeyPatch)
         _provider_config=LMProviderConfig(provider="lm_studio", model="qwen", api_key="lm-studio")
     )
     agent_def = _apply_turn_model_selection(
-        _turn_state({"provider_id": "codex", "model_id": "gpt-5.5", "variant": "direct"}),
+        _turn_state({"provider_id": "codex", "model_id": "gpt-5.5"}),
         AgentDef(id="main", title="Main"),
     )
     assert (agent_def.default_provider, agent_def.default_model) == ("codex", "gpt-5.5")

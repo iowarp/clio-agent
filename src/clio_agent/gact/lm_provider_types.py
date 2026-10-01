@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from clio_agent.providers.codex.constants import TRANSPORT_DIRECT
+from clio_agent.providers.codex.errors import CODEX_VARIANT_REMOVED_MESSAGE
 
 
 class LMProviderConfigurationField(BaseModel):
@@ -187,20 +187,14 @@ class LMProviderRequest(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _reject_removed_transport_row(cls, data: object) -> object:
-        """Refuse a ``variant`` naming a transport row the catalog no longer has.
+    def _reject_codex_variant(cls, data: object) -> object:
+        """Refuse a Codex bind that names any ``variant``.
 
-        Clients echo the catalog transport row id a model came from as ``variant``.
-        Codex's only row is ``"direct"`` (carried no further: there is nothing to
-        choose); any other value is a stale selection of the removed Codex SDK
-        path and is refused in plain language rather than silently bound direct.
+        Codex always connects directly, so a variant (the removed SDK path's
+        ``"sdk"``, or the ``"direct"`` an older client echoed) is a stale
+        selection: it is refused in plain language, never silently dropped.
         """
-        if isinstance(data, dict):
-            variant = str(data.get("variant") or "").strip().lower()
-            if variant not in {"", TRANSPORT_DIRECT}:
-                raise ValueError(
-                    f"The Codex SDK path was removed; transport {variant!r} no longer "
-                    "exists. Choose the model again from the model picker (Codex now "
-                    "always connects directly)."
-                )
+        if isinstance(data, dict) and str(data.get("provider") or "") == "codex":
+            if str(data.get("variant") or "").strip():
+                raise ValueError(CODEX_VARIANT_REMOVED_MESSAGE)
         return data

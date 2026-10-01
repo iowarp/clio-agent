@@ -406,11 +406,11 @@ def test_normalized_codex_catalog_bootstraps_live_discovery(
     assert refreshed == ["codex"]
     assert [model["model_id"] for model in provider["models"]] == ["gpt-5.6-luna"]
     assert provider["health"] == "ready"
-    # Codex has ONE transport row (direct); every model is tagged with it, and
-    # there is no CLI ``client`` fact (the direct transport runs no binary).
-    assert [row["id"] for row in provider["transports"]] == ["direct"]
-    assert provider["transports"][0]["label"] == "Direct"
-    assert {model["transport"] for model in provider["models"]} == {"direct"}
+    # Codex models sit on the provider row like any other provider's: no
+    # ``transports`` list, no per-model ``transport`` tag, and no CLI ``client``
+    # fact (the direct transport runs no binary).
+    assert "transports" not in provider
+    assert all("transport" not in model for model in provider["models"])
     assert "client" not in provider
 
 

@@ -23,7 +23,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from clio_agent.gact.types import ModelRef
-from clio_agent.providers.codex.constants import TRANSPORT_API_BASES
 from clio_agent.providers.handshake.model import resolve_model_id
 
 
@@ -178,24 +177,10 @@ def _catalog_modalities(app: Any, model: ModelRef) -> ModalityEvidence:
     return ModalityEvidence(modalities, label, generated_at)
 
 
-def _report_serves_transport(report: Any, model: ModelRef) -> bool:
-    """Whether the bound handshake report describes the selection's own transport.
-
-    The codex provider's handshake report is its Direct transport
-    (``codex://direct``); a selection naming the SDK transport must read the
-    SDK rows' evidence instead, never the Direct report's (which adds PDF).
-    """
-
-    wanted = TRANSPORT_API_BASES.get(model.variant)
-    return wanted is None or wanted == getattr(report, "api_base", None)
-
-
 def live_model_modalities(app: Any, model: ModelRef) -> ModalityEvidence:
     """Return the evidenced input modalities for one exact provider/model selection."""
 
     report = getattr(app.state, "lm_handshake_report", None)
-    if report is not None and not _report_serves_transport(report, model):
-        report = None
     if (
         report is not None
         and report.ok

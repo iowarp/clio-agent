@@ -63,10 +63,9 @@ def _seed_direct_model_record() -> None:
     )
 
 
-def _row(transport: str, modalities: list[str]) -> dict[str, Any]:
+def _row(modalities: list[str]) -> dict[str, Any]:
     return {
         "model_id": _MODEL,
-        "transport": transport,
         "modalities": modalities,
         "availability": "available",
         "evidence": {
@@ -85,7 +84,7 @@ def _app(report: HandshakeReport | None = None) -> Any:
                 "id": "codex",
                 "health": "ready",
                 "models": [
-                    _row("direct", ["image", "pdf", "text"]),
+                    _row(["image", "pdf", "text"]),
                 ],
             }
         ]
@@ -99,12 +98,9 @@ def test_catalog_rows_answer_for_a_codex_selection() -> None:
     app = _app()
 
     rows = catalog_model_rows(app, ModelRef(provider_id="codex", model_id=_MODEL))
-    echoed = catalog_model_rows(
-        app, ModelRef(provider_id="codex", model_id=_MODEL, variant="direct")
-    )
 
-    assert [row["transport"] for row in rows] == ["direct"]
-    assert echoed == rows
+    assert [row["model_id"] for row in rows] == [_MODEL]
+    assert "transport" not in rows[0]
     modalities = live_model_modalities(app, ModelRef(provider_id="codex", model_id=_MODEL))
     assert modalities.modalities == frozenset({"text", "image", "pdf"})
 

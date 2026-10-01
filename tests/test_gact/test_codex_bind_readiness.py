@@ -119,11 +119,9 @@ def test_binding_codex_with_no_sign_in_is_the_typed_401(signed_out_app: Any) -> 
     assert response.json()["error"]["error"] == "codex_auth_required"
 
 
-def test_binding_codex_naming_the_removed_sdk_transport_is_refused(signed_out_app: Any) -> None:
+@pytest.mark.parametrize("variant", ["sdk", "direct"])
+def test_binding_codex_with_any_variant_is_refused(signed_out_app: Any, variant: str) -> None:
     with TestClient(signed_out_app) as client:
-        refused = client.put("/v1/providers/lm", json=_codex_bind("sdk"))
-        echoed = client.put("/v1/providers/lm", json=_codex_bind("direct"))
+        refused = client.put("/v1/providers/lm", json=_codex_bind(variant))
     assert refused.status_code == 422, refused.text
-    assert "The Codex SDK path was removed" in refused.text
-    # The catalog's one transport row id is accepted: it reaches the auth gate.
-    assert echoed.status_code == 401, echoed.text
+    assert "Model variants are no longer used for Codex" in refused.text

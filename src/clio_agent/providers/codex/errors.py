@@ -128,6 +128,14 @@ class CodexUnsupportedInputError(CodexError):
 #: running on the backend host.
 CODEX_AUTHENTICATION_ERROR_MESSAGE = "Codex sign-in is required"
 
+#: The plain-language refusal for a Codex selection that still names a model
+#: variant (a bind request's or a model reference's ``variant``): Codex has one
+#: way to connect, so any variant is a stale client selection.
+CODEX_VARIANT_REMOVED_MESSAGE = (
+    "Model variants are no longer used for Codex (it always connects directly); "
+    "choose the model again from the model picker."
+)
+
 _AUTH_FAILURE_MARKERS: tuple[str, ...] = (
     "401",
     "unauthorized",
@@ -301,6 +309,7 @@ def codex_plan_limit_message(value: object) -> str | None:
 
 
 __all__ = [
+    "CODEX_VARIANT_REMOVED_MESSAGE",
     "CODEX_AUTHENTICATION_ERROR_MESSAGE",
     "CODEX_PLAN_LIMIT_MESSAGE_MARKER",
     "CODEX_PLAN_LIMIT_SIGNAL",

@@ -416,40 +416,6 @@ async def _with_last_good(
     return served, model_discovery.last_good_staleness(last_good, report)
 
 
-def _codex_direct_transport_row(
-    preset: LMProviderPreset,
-    *,
-    report: HandshakeReport,
-    models: tuple[DiscoveredModel, ...],
-    health: str,
-    failure: str,
-) -> dict[str, Any]:
-    """Build the ``direct`` transport row from the already-run generic handshake.
-
-    The direct transport IS what :func:`discover_provider`'s generic pipeline
-    (the backend's live model list asked with the direct sign-in, cached through
-    the overlay) computed for the ``codex`` provider; the row carries the same
-    result, tagged with its transport id, plus the sign-out affordance.
-    """
-    # Lazy: provider_auth -> provider_catalog_snapshot -> this module.
-    from clio_agent.gact.routes.provider_auth import supports_logout  # noqa: PLC0415
-    from clio_agent.providers.codex import constants as codex_constants
-
-    rows = [model_catalog_row(preset, report, model) for model in models]
-    for row in rows:
-        row["transport"] = codex_constants.TRANSPORT_DIRECT
-    return {
-        "id": codex_constants.TRANSPORT_DIRECT,
-        "label": codex_constants.TRANSPORT_LABELS[codex_constants.TRANSPORT_DIRECT],
-        "health": health,
-        "reason": failure,
-        # `logout` comes from the SAME registry POST .../auth {action: logout}
-        # dispatches on, so the client never infers "Sign out" on its own.
-        "auth": {"method": "oauth", "logout": supports_logout(preset.provider)},
-        "models": rows,
-    }
-
-
 async def discover_provider(preset: LMProviderPreset, *, refresh: bool = False) -> dict[str, Any]:
     """Run one passive handshake and return a normalized provider record."""
 
@@ -514,15 +480,6 @@ async def discover_provider(preset: LMProviderPreset, *, refresh: bool = False) 
         payload["client"] = await asyncio.to_thread(
             provider_client_fact, preset.provider, refresh=refresh
         )
-    if preset.provider == "codex":
-        # Codex's one transport row (direct): the result this pipeline already
-        # evidenced above, each model tagged with its ``transport`` so a client
-        # echoes it back as ``ModelRef.variant``.
-        direct_row = _codex_direct_transport_row(
-            preset, report=report, models=models, health=health, failure=failure
-        )
-        payload["transports"] = [direct_row]
-        payload["models"] = direct_row["models"]
     return payload
 
 

@@ -30,7 +30,6 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact.types import ErrorEnvelope, ErrorInfo
-from clio_agent.providers.codex.constants import TRANSPORT_DIRECT
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -295,17 +294,13 @@ def _model_ref_is_empty(value: Any) -> bool:
 def _active_lm_model_ref(app: "FastAPI") -> dict[str, str]:
     """Return the active global LM as a GACT ModelRef-shaped dict.
 
-    ``variant`` is the catalog transport row the bound model comes from: Codex
-    reports its one transport (``"direct"``), which is what a client echoes back
-    in a per-message/session model ref; every other provider has no transport
-    rows and reports ``""``.
+    ``variant`` is always ``""``: no provider has model variants.
     """
 
     cfg = _effective_lm_config(app)
     provider = str(cfg.get("provider_id") or cfg.get("provider") or "")
     model = str(cfg.get("model") or "")
-    variant = TRANSPORT_DIRECT if cfg.get("provider") == "codex" else ""
-    return {"provider_id": provider, "model_id": model, "variant": variant}
+    return {"provider_id": provider, "model_id": model, "variant": ""}
 
 
 def _model_ref_matches_active(value: Any, app: "FastAPI") -> bool:
@@ -362,30 +357,28 @@ def _bare_provider_kind_error(value: Any, *, session_id: str, source: str) -> Er
 
 
 def removed_transport_message(value: Any) -> str:
-    """The plain-language refusal for a model ref naming a removed transport, else ``""``.
+    """The plain-language refusal for a Codex model ref that names a variant, else ``""``.
 
-    Codex's one transport row is ``"direct"``; a ref whose ``variant`` names any
-    other transport (the removed Codex SDK path's ``"sdk"``) is refused rather
-    than silently run direct.
+    Codex always connects directly; a ref with any ``variant`` (the removed SDK
+    path's ``"sdk"``, or an older client's echoed ``"direct"``) is refused rather
+    than silently run.
     """
 
     ref = _model_ref_dict(value)
-    variant = ref["variant"].strip().lower()
-    if variant in {"", TRANSPORT_DIRECT} or not ref["provider_id"]:
+    if not ref["variant"].strip() or not ref["provider_id"]:
         return ""
     from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
 
     preset = get_provider(ref["provider_id"])
     if preset is None or preset.provider_kind != "codex":
         return ""
-    return (
-        f"The Codex SDK path was removed; transport {variant!r} no longer exists. "
-        "Choose the model again from the model picker (Codex now always connects directly)."
-    )
+    from clio_agent.providers.codex.errors import CODEX_VARIANT_REMOVED_MESSAGE  # noqa: PLC0415
+
+    return CODEX_VARIANT_REMOVED_MESSAGE
 
 
 def _removed_transport_error(value: Any, *, session_id: str, source: str) -> ErrorEnvelope | None:
-    """A typed 400 body for a model ref naming a removed transport (see the message helper)."""
+    """A typed 400 body for a Codex model ref that names a variant (see the message helper)."""
 
     message = removed_transport_message(value)
     if not message:
