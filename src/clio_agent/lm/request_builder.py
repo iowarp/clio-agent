@@ -47,11 +47,11 @@ which also feeds the catalog's ``accepted_parameters`` -- so the settings a
 person is offered are exactly the settings this module sends.
 
 **A saved setting the model does not accept is never sent**, and each such
-drop is logged with a typed reason (``response_setting_not_sent``). The CLI/SDK
-transports (codex, claude_code) accept none: their SDK options carry no
-sampling field at all (claude-agent-sdk ``ClaudeAgentOptions``; openai-codex
-``TurnStartParams``/the Responses body clio builds), so nothing is sent there
-rather than being handed to a transport that silently ignores it.
+drop is logged with a typed reason (``response_setting_not_sent``). The engine
+transports (codex, claude_code) accept none: their request carries no sampling
+field at all (claude-agent-sdk ``ClaudeAgentOptions``; the Codex Responses body
+clio builds), so nothing is sent there rather than being handed to a transport
+that silently ignores it.
 
 **Thinking is ONE mapping, covering every dialect** (item 5, dialect table).
 :func:`clio_agent.lm.dialect_wire.thinking_wire` builds the on/off/level

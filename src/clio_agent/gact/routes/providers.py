@@ -75,7 +75,7 @@ from clio_agent.gact.providers.selection_store import (
     selection_status_fields,
 )
 from clio_agent.gact.relay_wiring import construct_agent_with_relay
-from clio_agent.gact.routes.codex_variant import apply_codex_readiness_gate, await_startup_check
+from clio_agent.gact.routes.codex_readiness import apply_codex_readiness_gate, await_startup_check
 from clio_agent.gact.routes.provider_auth import supports_logout
 from clio_agent.gact.routes.provider_catalog_routes import register_provider_catalog_routes
 from clio_agent.gact.runtime.globals import _set_app_arc
@@ -644,7 +644,6 @@ def register_providers_routes(app: FastAPI, deps: "GactDeps") -> None:
                 # Per-provider transport (v0.8.0): only the bound provider's field reads req.transport.
                 codex_transport=(req.transport or "websocket") if is_codex else "websocket",  # type: ignore[arg-type]  # LMProviderConfig validates
                 claude_code_transport=(req.transport or "sdk") if is_cc else "sdk",  # type: ignore[arg-type]  # LMProviderConfig validates; deleted values 400 typed
-                codex_variant=(req.variant or "direct").lower() if is_codex else "",  # type: ignore[arg-type]
             )
             if is_cc:
                 status, message, verified, default_model = _claude_code_readiness()

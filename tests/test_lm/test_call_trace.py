@@ -97,8 +97,6 @@ def test_factory_lms_carry_the_trace() -> None:
 
     for config in (
         LMProviderConfig(provider="lm_studio", model="qwen", api_key="lm-studio"),
-        LMProviderConfig(
-            provider="codex", model="gpt-5.5", api_base="codex://direct", codex_variant="sdk"
-        ),
+        LMProviderConfig(provider="codex", model="gpt-5.5", api_base="codex://direct"),
     ):
         assert call_trace.LM_CALL_TRACE in create_lm(config).callbacks

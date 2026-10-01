@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from clio_agent.gact.types import ModelRef
-from clio_agent.providers.codex.constants import TRANSPORT_API_BASES, TRANSPORT_DIRECT
+from clio_agent.providers.codex.constants import TRANSPORT_API_BASES
 from clio_agent.providers.handshake.model import resolve_model_id
 
 
@@ -70,7 +70,7 @@ def _modalities(values: Any) -> frozenset[str]:
 
 #: Evidence-source labels that count as real discovery evidence for a model row.
 #: ``live_handshake`` is a probe this process ran; ``discovery_overlay`` is a
-#: persisted earlier discovery run (the Codex SDK catalog read / the claude_code
+#: persisted earlier discovery run (the Codex backend model-list read / the claude_code
 #: alias probe) served through the passive handshake; ``documented_catalog`` is
 #: a static catalog row whose modalities are documented. Anything else --
 #: notably ``unavailable`` -- is not evidence the model exists here at all.
@@ -109,11 +109,7 @@ def catalog_model_rows(app: Any, model: ModelRef) -> list[dict[str, Any]]:
     A configured model id may be an alias (e.g. claude_code's "sonnet" for
     "claude-sonnet-5"); it is resolved against the provider's own catalog rows
     through the same resolution point ``HandshakeReport.model`` uses, so an
-    alias-bound selection is never treated as an unknown model. When the rows
-    carry a ``transport`` (codex sdk/direct list the same model ids), only the
-    selection's own transport (``model.variant``; the Direct transport when
-    unset, matching ``LMProviderConfig``'s normalization) answers -- the two
-    transports carry different input (only Direct delivers PDFs).
+    alias-bound selection is never treated as an unknown model.
     """
     catalog = getattr(app.state, "provider_catalog", None)
     if not isinstance(catalog, dict):
@@ -138,11 +134,7 @@ def catalog_model_rows(app: Any, model: ModelRef) -> list[dict[str, Any]]:
         ((str(row.get("model_id") or ""), _catalog_row_aliases(row)) for row in rows),
         model.model_id,
     )
-    matches = [row for row in rows if row.get("model_id") == canonical_id]
-    if any(row.get("transport") for row in matches):
-        wanted = model.variant or TRANSPORT_DIRECT
-        matches = [row for row in matches if row.get("transport") == wanted]
-    return matches
+    return [row for row in rows if row.get("model_id") == canonical_id]
 
 
 def _catalog_modalities(app: Any, model: ModelRef) -> ModalityEvidence:

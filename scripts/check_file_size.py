@@ -276,7 +276,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # CLIO_LM_DISABLE_THINKING qwen-output-discipline prompt injection (its
     # forward() block) is deleted -- thinking is now driven per-dialect off
     # the model's own ThinkingSpec, never a global on/off knob.
-    "src/clio_agent/gact/agents/builders.py": 1407,  # L1: -24, the 6 identical cancelled_error_info(..., executor_work_may_continue=False) calls collapsed to one line each
+    "src/clio_agent/gact/agents/builders.py": 1406,  # L1: -24, the 6 identical cancelled_error_info(..., executor_work_may_continue=False) calls collapsed to one line each
     # NEW entry (#1282, C1-S2 D1): crossed the flat 800 cap (797 -> 884) for
     # the #1275 fix's ONE chokepoint. Two pieces: (1) __init__ wraps every
     # tool callable this loop will ever run (MCP-bridged, instrumented
@@ -478,7 +478,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # Ratchet down 2469 -> 2467 (naming reversal): removed the now-unneeded
     # codex->chatgpt boot migration call (the provider id never changed).
     # Ratchet down 2435 -> 2419: the transcript-store boot moved to gact/transcript_file.py.
-    "src/clio_agent/gact/app.py": 2419,
+    "src/clio_agent/gact/app.py": 2418,
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg
@@ -655,15 +655,15 @@ RATCHET_BASELINE: dict[str, int] = {
     # routes moved verbatim to gact/routes/provider_catalog_routes.py, which
     # also absorbed the subscription-readiness growth from e0c66ff5.
     # Ratchet down 1172 -> 1163 (S1, direct Codex provider): the simplified
-    # _codex_readiness dropped the "openai_codex" importlib probe -- the
+    # _codex_readiness dropped the Codex SDK importlib probe -- the
     # Codex credential store is a plain, always-importable class.
-    # S1 (1163 -> 1142) + S1b (codex readiness gate moved to routes/codex_variant.py).
+    # S1 (1163 -> 1142) + S1b (codex readiness gate moved to routes/codex_readiness.py).
     # P5 (request builder): the static `supports_vision` wire-metadata key in
     # `_provider_to_wire` is deleted (brief 9.1): ratcheted to 1116.
     # P4b adds the 3-line surrogate refusal on the chat-model bind: 1116 -> 1119.
     # 1096 -> 1077 (#1506): duplicated LM-apply failure branches merged; selection persistence lives in gact/providers/selection_store.py.
     # 1077 -> 1076: the Claude Code missing-support status moved to providers/support_restore.py.
-    "src/clio_agent/gact/routes/providers.py": 1074,
+    "src/clio_agent/gact/routes/providers.py": 1073,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (merged to develop with the size check red, baseline 1478 -> actual); ratchet
     # back below the pre-#947 count with the mcp_app_* owner-module split (see the

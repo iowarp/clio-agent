@@ -1,21 +1,14 @@
-"""Which provider CLI binary the SDK transports run: the user's installed one or the bundled one.
+"""Which ``claude`` binary the Claude Code SDK transport runs: the user's or the bundled one.
 
-The Codex and Claude Code SDK transports each drive a CLI binary. Both SDK
-wheels ship one (``openai-codex-cli-bin``'s ``codex``, ``claude-agent-sdk``'s
-``_bundled/claude``), but the providers gate NEW MODELS by client version: the
-ChatGPT backend hides a model from every Codex client older than the model's
-``minimal_client_version``, so a bundled binary that lags the user's own install
-hides models the user can already see in their terminal. This module is the ONE
-answer to "which binary", used by the transports, model discovery and the
-provider row's ``client`` fact:
-
-* **Codex** (``codex_client``): the user's installed Codex CLI when one is found
-  (PATH, or the npm/Homebrew/standalone install locations) -- that is what the
-  picker promises ("Through the installed Codex"). The bundled binary only when
-  none is installed.
-* **Claude Code** (``claude_client``): the user's installed ``claude`` when it is
-  NEWER than the bundled one, or when the wheel bundles none; otherwise the
-  bundled one (it is the build the installed SDK was released against).
+The Claude Code SDK transport drives a CLI binary. ``claude-agent-sdk`` ships one
+(``_bundled/claude``), but the provider gates NEW MODELS by client version, so a
+bundled binary that lags the user's own install hides models the user can already
+see in their terminal. This module is the ONE answer to "which binary", used by the
+transport, model discovery and the provider row's ``client`` fact
+(``claude_client``): the user's installed ``claude`` when it is NEWER than the
+bundled one, or when the wheel bundles none; otherwise the bundled one (it is the
+build the installed SDK was released against). Codex runs no CLI binary (its one
+transport is direct), so it has no ``client`` fact.
 
 Every outcome carries a typed ``reason`` (no silent fallback): an installed
 binary that exists but cannot report a version is recorded as such, not skipped
@@ -30,7 +23,6 @@ from __future__ import annotations
 
 import logging
 import os
-import platform
 import re
 import shutil
 import subprocess
@@ -49,17 +41,6 @@ ClientSource = Literal["installed", "bundled"]
 VERSION_PROBE_TIMEOUT_S = 5.0
 
 _VERSION_PATTERN = re.compile(r"(\d+\.\d+\.\d+(?:[-.+][0-9A-Za-z.]+)?)")
-
-#: The npm platform package per target triple (``@openai/codex``'s own
-#: ``bin/codex.js`` ``PLATFORM_PACKAGE_BY_TARGET``).
-_CODEX_NPM_PLATFORM_PACKAGES: dict[str, str] = {
-    "x86_64-unknown-linux-musl": "codex-linux-x64",
-    "aarch64-unknown-linux-musl": "codex-linux-arm64",
-    "x86_64-apple-darwin": "codex-darwin-x64",
-    "aarch64-apple-darwin": "codex-darwin-arm64",
-    "x86_64-pc-windows-msvc": "codex-win32-x64",
-    "aarch64-pc-windows-msvc": "codex-win32-arm64",
-}
 
 
 @dataclass(frozen=True)
@@ -178,17 +159,6 @@ def is_native_executable(path: Path) -> bool:
     }
 
 
-def _target_triple() -> str:
-    machine = platform.machine().lower()
-    arch = "aarch64" if machine in {"arm64", "aarch64"} else "x86_64"
-    system = platform.system()
-    if system == "Windows":
-        return f"{arch}-pc-windows-msvc"
-    if system == "Darwin":
-        return f"{arch}-apple-darwin"
-    return f"{arch}-unknown-linux-musl"
-
-
 def _unique(paths: list[Path]) -> list[Path]:
     seen: set[str] = set()
     out: list[Path] = []
@@ -198,107 +168,6 @@ def _unique(paths: list[Path]) -> list[Path]:
             seen.add(key)
             out.append(path)
     return out
-
-
-def _codex_candidates() -> list[Path]:
-    """Where a user-installed Codex CLI lives: PATH first, then the standard locations."""
-    found: list[Path] = []
-    for name in ("codex.exe", "codex") if os.name == "nt" else ("codex",):
-        hit = shutil.which(name)
-        if hit:
-            found.append(Path(hit))
-    home = Path.home()
-    if os.name == "nt":
-        appdata = os.environ.get("APPDATA")
-        if appdata:
-            found += [Path(appdata) / "npm" / "codex.cmd", Path(appdata) / "npm" / "codex"]
-        found.append(home / ".local" / "bin" / "codex.exe")
-    else:
-        found += [
-            home / ".npm-global" / "bin" / "codex",
-            Path("/opt/homebrew/bin/codex"),
-            Path("/usr/local/bin/codex"),
-            home / ".local" / "bin" / "codex",
-            home / ".cargo" / "bin" / "codex",
-        ]
-    return _unique(found)
-
-
-def _npm_vendor_codex(candidate: Path) -> Path | None:
-    """The native binary behind an npm ``@openai/codex`` launcher (``codex.cmd``/``codex.js``)."""
-    triple = _target_triple()
-    platform_package = _CODEX_NPM_PLATFORM_PACKAGES.get(triple, "")
-    exe_name = "codex.exe" if os.name == "nt" else "codex"
-    try:
-        resolved = candidate.resolve()
-    except OSError:
-        return None
-    roots = [
-        candidate.parent / "node_modules" / "@openai" / "codex",
-        candidate.parent.parent / "lib" / "node_modules" / "@openai" / "codex",
-    ]
-    if resolved.name == "codex.js":
-        roots.insert(0, resolved.parent.parent)
-    for root in roots:
-        bases = [
-            root / "node_modules" / "@openai" / platform_package,
-            root.parent / platform_package,
-            root,
-        ]
-        for base in bases:
-            exe = base / "vendor" / triple / "bin" / exe_name
-            if is_native_executable(exe):
-                return exe
-    return None
-
-
-def _installed_codex() -> tuple[ClientBinary | None, str]:
-    """The user's installed Codex binary, or ``(None, typed reason)``."""
-    unreadable = ""
-    for candidate in _codex_candidates():
-        if not candidate.exists():
-            continue
-        native = (
-            candidate.resolve()
-            if is_native_executable(candidate.resolve())
-            else _npm_vendor_codex(candidate)
-        )
-        if native is None:
-            continue
-        version = probe_version(str(native))
-        if version:
-            return ClientBinary(path=str(native), version=version, source="installed"), ""
-        unreadable = str(native)
-    if unreadable:
-        return None, "codex_installed_version_unreadable"
-    return None, "codex_installed_not_found"
-
-
-def _bundled_codex() -> ClientBinary | None:
-    """``openai-codex-cli-bin``'s binary, versioned by its distribution metadata."""
-    try:
-        from codex_cli_bin import bundled_codex_path  # noqa: PLC0415
-
-        path = bundled_codex_path()
-    except (ImportError, FileNotFoundError, OSError):
-        return None
-    try:
-        import importlib.metadata as metadata  # noqa: PLC0415
-
-        version = metadata.version("openai-codex-cli-bin")
-    except metadata.PackageNotFoundError:
-        version = ""
-    return ClientBinary(path=str(path), version=version, source="bundled")
-
-
-def _select_codex() -> ClientSelection:
-    installed, installed_reason = _installed_codex()
-    bundled = _bundled_codex()
-    if installed is not None:
-        return ClientSelection(installed, "codex_installed_cli", installed, bundled)
-    if bundled is not None:
-        return ClientSelection(bundled, installed_reason, None, bundled)
-    return ClientSelection(None, "codex_no_cli", None, None)
 
 
 def _claude_candidates() -> list[Path]:
@@ -395,11 +264,6 @@ def _cached(key: str, select: Any) -> ClientSelection:
     return selection
 
 
-def codex_client() -> ClientSelection:
-    """The Codex binary the SDK half runs (cached until :func:`reset_client_cache`)."""
-    return _cached("codex", _select_codex)
-
-
 def claude_client() -> ClientSelection:
     """The ``claude`` binary the Claude Code SDK transport runs (cached until reset)."""
     return _cached("claude_code", _select_claude)
@@ -407,8 +271,6 @@ def claude_client() -> ClientSelection:
 
 def provider_client(provider_kind: str) -> ClientSelection | None:
     """The selection for a provider kind that runs a CLI, else ``None``."""
-    if provider_kind == "codex":
-        return codex_client()
     if provider_kind == "claude_code":
         return claude_client()
     return None
@@ -433,7 +295,6 @@ __all__ = [
     "VERSION_PROBE_TIMEOUT_S",
     "bundled_claude_path",
     "claude_client",
-    "codex_client",
     "is_native_executable",
     "parse_version",
     "probe_version",

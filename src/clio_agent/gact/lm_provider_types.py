@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from clio_agent.providers.codex.constants import TRANSPORT_DIRECT
+
 
 class LMProviderConfigurationField(BaseModel):
     """One non-secret option rendered in a provider settings form."""
@@ -178,14 +180,27 @@ class LMProviderRequest(BaseModel):
     parallel: int = 0
     turn_timeout_s: float = 0.0
     transport: str | None = None
-    # WHICH of a multi-transport provider's implementations to bind (S1b).
-    # Only the ``codex`` provider reads this today (``"sdk"`` | ``"direct"``,
-    # default ``"direct"``) -- distinct from ``transport`` above, which is a
-    # provider's own internal delivery choice (codex direct's websocket/sse,
-    # claude_code's sdk). Named ``variant`` to mirror ``ModelRef.variant``,
-    # which a session/message model ref uses to request the same transport.
-    variant: str = ""
     thinking_level: (
         Literal["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] | None
     ) = None
     thinking_budget: int = 0
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_transport_row(cls, data: object) -> object:
+        """Refuse a ``variant`` naming a transport row the catalog no longer has.
+
+        Clients echo the catalog transport row id a model came from as ``variant``.
+        Codex's only row is ``"direct"`` (carried no further: there is nothing to
+        choose); any other value is a stale selection of the removed Codex SDK
+        path and is refused in plain language rather than silently bound direct.
+        """
+        if isinstance(data, dict):
+            variant = str(data.get("variant") or "").strip().lower()
+            if variant not in {"", TRANSPORT_DIRECT}:
+                raise ValueError(
+                    f"The Codex SDK path was removed; transport {variant!r} no longer "
+                    "exists. Choose the model again from the model picker (Codex now "
+                    "always connects directly)."
+                )
+        return data

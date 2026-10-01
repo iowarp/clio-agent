@@ -89,7 +89,7 @@ def test_a_finished_component_update_records_its_versions_as_the_floor() -> None
     recorded: list[tuple[str, dict[str, str]]] = []
 
     def _perform(job: updater.UpdateJob, _env: updater.UpdateEnvironment) -> None:
-        job.to_versions = {"openai-codex": "0.158.0", "openai-codex-cli-bin": "0.158.0"}
+        job.to_versions = {"openai-codex-cli-bin": "0.158.0"}
         job.changed = True
 
     env = updater.UpdateEnvironment(record_support=lambda k, v: recorded.append((k, v)))
@@ -102,7 +102,7 @@ def test_a_finished_component_update_records_its_versions_as_the_floor() -> None
         updater._perform = original  # type: ignore[assignment]
 
     assert job.stage == "done"
-    assert recorded == [("codex", {"openai-codex": "0.158.0", "openai-codex-cli-bin": "0.158.0"})]
+    assert recorded == [("codex", {"openai-codex-cli-bin": "0.158.0"})]
 
 
 def test_an_unchanged_or_failed_component_update_records_nothing(
@@ -137,15 +137,18 @@ def test_a_recorded_support_whose_module_is_gone_is_planned_for_install() -> Non
 
 
 def test_a_component_older_than_its_recorded_floor_is_planned_for_update() -> None:
-    versions = {"openai-codex": "0.157.1", "openai-codex-cli-bin": "0.157.1"}
+    versions = {"openai-codex-cli-bin": "0.157.1"}
     steps = support_restore.plan_restores(
-        {"codex": {"openai-codex": "0.158.0", "openai-codex-cli-bin": "0.157.1"}},
+        {"codex": {"openai-codex-cli-bin": "0.158.0"}},
         installed=lambda _kind: True,
         version_of=versions.__getitem__,
     )
     assert steps == [
         support_restore.RestoreStep(
-            "codex", "update", support_restore.COMPONENT_BELOW_RECORD, {"openai-codex": "0.158.0"}
+            "codex",
+            "update",
+            support_restore.COMPONENT_BELOW_RECORD,
+            {"openai-codex-cli-bin": "0.158.0"},
         )
     ]
 
@@ -154,13 +157,16 @@ def test_nothing_is_planned_when_the_environment_already_satisfies_the_record() 
     steps = support_restore.plan_restores(
         {
             "claude_code": {"claude-agent-sdk": "0.2.150"},
-            "codex": {"openai-codex": "0.157.1", "bogus": "9"},
+            # A distribution no longer in the registry (the removed Codex SDK
+            # package, a typo) is not a component and plans nothing.
+            "codex": {"openai-codex-cli-bin": "0.157.1", "openai-codex": "9.9.9", "bogus": "9"},
             "not_a_provider": {},
         },
         installed=lambda _kind: True,
-        version_of=lambda name: {"claude-agent-sdk": "0.2.159", "openai-codex": "0.160.0"}.get(
-            name, "garbage-version"
-        ),
+        version_of=lambda name: {
+            "claude-agent-sdk": "0.2.159",
+            "openai-codex-cli-bin": "0.160.0",
+        }.get(name, "garbage-version"),
     )
     assert steps == []
 
@@ -226,7 +232,10 @@ def test_a_failed_restore_says_so_plainly_and_install_retries_it() -> None:
 def test_a_component_restore_fails_with_the_update_jobs_own_code() -> None:
     restorer = support_restore.RESTORER
     step = support_restore.RestoreStep(
-        "codex", "update", support_restore.COMPONENT_BELOW_RECORD, {"openai-codex": "0.158.0"}
+        "codex",
+        "update",
+        support_restore.COMPONENT_BELOW_RECORD,
+        {"openai-codex-cli-bin": "0.158.0"},
     )
     jobs = restorer.claim([step])
 

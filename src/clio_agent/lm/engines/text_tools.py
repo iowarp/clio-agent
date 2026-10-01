@@ -1,6 +1,6 @@
-"""Tool calls over a single-prompt transport (Codex SDK, Claude Code SDK).
+"""Tool calls over a single-prompt transport (the Claude Code SDK engine).
 
-Those transports take ONE prompt string per turn and no native tools, so the engine
+Such a transport takes ONE prompt string per turn and no native tools, so the engine
 carries the typed :class:`dspy.lm15.Request` across as text and brings tool calls back:
 
 * :func:`render_system` -- the system prompt plus the tool list and the one rule the

@@ -47,13 +47,9 @@ async def test_startup_refreshes_configured_cli_and_remote_claude_catalog(
         seen.extend(preset.id for preset in presets)
         return []
 
-    async def _sdk() -> None:
-        seen.append("codex_sdk")
-
     monkeypatch.setattr(md_refresh, "refresh_all", _refresh)
-    monkeypatch.setattr(md_refresh, "refresh_codex_sdk_transport", _sdk)
     await md_refresh.refresh_subscription_catalogs_at_startup()
-    assert seen == ["clio", "github", "codex", "codex_sdk"]
+    assert seen == ["clio", "github", "codex"]
 
 
 @pytest.fixture(autouse=True)

@@ -46,20 +46,11 @@ def _error(status: int, code: str, message: str) -> HTTPException:
     )
 
 
-def release_provider_runtimes(provider_kind: str) -> None:
-    """Stop this process's idle SDK runtime so its bundled binary can be replaced."""
-    if provider_kind == "codex" and "clio_agent.providers.codex.sdk_client" in sys.modules:
-        from clio_agent.providers.codex.sdk_client import _SDK_CLIENT  # noqa: PLC0415
-
-        _SDK_CLIENT.release_idle_runtime()
-
-
 def live_update_environment() -> UpdateEnvironment:
     """The environment of THIS runtime: its interpreter, PyPI, and the real provider check."""
     return UpdateEnvironment(
         python=sys.executable,
         verify_provider=verify_provider_in_child,
-        release_runtimes=release_provider_runtimes,
         record_support=record_support,
     )
 
@@ -128,5 +119,4 @@ def register_provider_component_routes(app: FastAPI, presets: list[LMProviderPre
 __all__ = [
     "live_update_environment",
     "register_provider_component_routes",
-    "release_provider_runtimes",
 ]

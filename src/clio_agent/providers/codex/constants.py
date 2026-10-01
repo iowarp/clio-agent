@@ -26,26 +26,13 @@ PROVIDER_LABEL = "Codex"
 #: intercepted every turn; a separate wire name can never collide again.
 LITELLM_PROVIDER = "codex_direct"
 
-#: The SDK transport's model-string prefix (``codex_sdk/<model>``), distinct from
-#: ``LITELLM_PROVIDER`` so a selection routes to the right transport end to end.
-LITELLM_PROVIDER_SDK = "codex_sdk"
-
-#: Transport ids for the ``codex`` provider's catalog row (owner requirement:
-#: offer the local SDK when installed+signed in, direct/OAuth otherwise, and
-#: report the provider READY when either is available).
-TRANSPORT_SDK = "sdk"
+#: The ``codex`` provider's one catalog transport row (its id is what a client
+#: echoes back as ``ModelRef.variant``) and its label.
 TRANSPORT_DIRECT = "direct"
-TRANSPORT_LABELS: dict[str, str] = {
-    TRANSPORT_SDK: "Codex (local)",
-    TRANSPORT_DIRECT: "Direct",
-}
-#: Each transport's endpoint identity (a pseudo-scheme, never dialed). Capability
-#: DEPLOYMENT records are keyed by it, so one transport's facts for a shared model
-#: id (what the transport can carry, e.g. PDF input) never overwrite the other's.
-TRANSPORT_API_BASES: dict[str, str] = {
-    TRANSPORT_SDK: "codex://sdk",
-    TRANSPORT_DIRECT: "codex://direct",
-}
+TRANSPORT_LABELS: dict[str, str] = {TRANSPORT_DIRECT: "Direct"}
+#: The transport's endpoint identity (a pseudo-scheme, never dialed). Capability
+#: DEPLOYMENT records are keyed by it.
+TRANSPORT_API_BASES: dict[str, str] = {TRANSPORT_DIRECT: "codex://direct"}
 
 #: The Codex CLI's public OAuth client id. Not a secret -- every open-source
 #: harness that reuses this login flow (pi, OpenCode, Cline) ships the same
@@ -93,9 +80,8 @@ CODEX_WS_URL = "wss://chatgpt.com/backend-api/codex/responses"
 #: models come back.
 CODEX_MODELS_URL = f"{CODEX_BASE}/codex/models"
 #: The distribution whose version is the Codex client version CLIO presents to
-#: the backend on BOTH transports: the SDK's app-server sends its own runtime's
-#: version, and the Direct model list sends the same one, so the two halves are
-#: gated identically. Bumping the pin in pyproject.toml is the one knob.
+#: the backend's model list (which gates each model on ``minimal_client_version``).
+#: Bumping the pin in pyproject.toml is the one knob.
 CODEX_CLIENT_DISTRIBUTION = "openai-codex-cli-bin"
 ORIGINATOR = "clio"
 OPENAI_BETA_SSE = "responses=experimental"
@@ -168,7 +154,6 @@ __all__ = [
     "DEVICE_VERIFY_URL",
     "JWT_AUTH_CLAIM",
     "LITELLM_PROVIDER",
-    "LITELLM_PROVIDER_SDK",
     "LOOPBACK_HOST",
     "LOOPBACK_PATH",
     "LOOPBACK_PORT",
@@ -193,7 +178,6 @@ __all__ = [
     "TRANSPORT_API_BASES",
     "TRANSPORT_DIRECT",
     "TRANSPORT_LABELS",
-    "TRANSPORT_SDK",
     "USAGE_LIMIT_MARKERS",
     "WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE",
     "WS_CONNECT_TIMEOUT_S",

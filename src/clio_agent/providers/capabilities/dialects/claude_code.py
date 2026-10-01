@@ -5,7 +5,7 @@ effort evidence is real account/CLI truth
 (:mod:`clio_agent.providers.model_discovery.claude_code_effort`, one
 ``initialize`` read, no model turn), and the CLI's own vocabulary
 (``low``/``medium``/``high``/``xhigh``/``max``) is already CLIO's own level
-vocabulary, so no translation table is needed here (unlike Codex's SDK
+vocabulary, so no translation table is needed here (unlike Codex's
 naming). This module only turns that already-discovered data into a
 :class:`~clio_agent.providers.capabilities.records.ThinkingSpec`; the actual
 CLI read lives in ``model_discovery.claude_code_effort``.

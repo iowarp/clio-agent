@@ -3,18 +3,16 @@
 The official Codex CLI reads its account model list from the ChatGPT Codex
 backend (``codex-rs/codex-api/src/endpoint/models.rs``, ``ModelsClient``:
 ``GET {base}/models?client_version=<v>`` with the ChatGPT bearer token and the
-``chatgpt-account-id`` header). This module asks the same endpoint with CLIO's
-OWN OAuth credential (:class:`~clio_agent.providers.codex.credentials.
-CodexCredentialStore`) -- never ``~/.codex/auth.json`` -- so the Direct half of
-the picker shows exactly what the signed-in account can use, the way the SDK
-half does through the SDK's ``model/list`` RPC.
+``chatgpt-account-id`` header). This module asks the same endpoint with the direct
+transport's sign-in (:func:`~clio_agent.providers.codex.credentials.direct_auth_headers`:
+CLIO's own credential, else the Codex CLI login at ``$CODEX_HOME/auth.json``), so
+the picker shows exactly what the signed-in account can use.
 
 **The client version decides the list.** The backend gates each model on its
 ``minimal_client_version`` (verified live 2026-09-26: ``client_version=0.147.0``
 returns no ``gpt-6-*`` rows, ``0.155.1`` and later return them). CLIO presents
 the version of the Codex runtime it ships (:data:`~clio_agent.providers.codex.
-constants.CODEX_CLIENT_DISTRIBUTION`) -- the same version the SDK half's
-app-server presents -- so both transports are gated identically.
+constants.CODEX_CLIENT_DISTRIBUTION`).
 
 Caching is NOT done here: the result becomes a
 :class:`~clio_agent.providers.model_discovery.overlay.ProviderDiscoveryResult`
@@ -64,8 +62,8 @@ DIRECT_MODEL_LIST_REASONS: dict[str, str] = {
 
 _TIMEOUT_S = 20.0
 #: The picker-visible visibility value (``ModelVisibility::List``); ``hide``
-#: rows (internal reviewers, reserve models) are what the SDK's
-#: ``model/list`` also omits unless ``include_hidden`` is asked for.
+#: rows (internal reviewers, reserve models) are what the Codex CLI's own
+#: model list also omits.
 _VISIBLE = "list"
 
 

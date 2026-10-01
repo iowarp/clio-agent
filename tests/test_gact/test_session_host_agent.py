@@ -21,7 +21,8 @@ from clio_agent.gact.app import build_app
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
-_CODEX_SDK = {"provider_id": "codex", "model_id": "gpt-5.5", "variant": "sdk"}
+_CODEX = {"provider_id": "codex", "model_id": "gpt-5.5", "variant": "direct"}
+_CODEX_REMOVED_SDK = {"provider_id": "codex", "model_id": "gpt-5.5", "variant": "sdk"}
 
 
 @dataclass
@@ -77,7 +78,7 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
                 "models": [
                     {
                         "model_id": "gpt-5.5",
-                        "transport": "sdk",
+                        "transport": "direct",
                         "availability": "available",
                         "modalities": ["text"],
                         "evidence": {"live": True, "generated_at": "2026-09-26T00:00:00+00:00"},
@@ -103,11 +104,11 @@ def test_first_message_with_a_model_ref_builds_the_host_and_runs(
     from .conftest import complete_turn
 
     sid = _session(client)
-    assistant = complete_turn(client, sid, "hi", json_override={"model": _CODEX_SDK})
+    assistant = complete_turn(client, sid, "hi", json_override={"model": _CODEX})
 
     assert len(built) == 1
     cfg = built[0]._provider_config
-    assert (cfg.provider_id, cfg.model, cfg.codex_variant) == ("codex", "gpt-5.5", "sdk")
+    assert (cfg.provider_id, cfg.model) == ("codex", "gpt-5.5")
     assert built[0].calls == ["hi"]
     assert client.app.state.agent is built[0]
     assert assistant.get("error_info") is None
@@ -117,18 +118,18 @@ def test_first_message_with_a_model_ref_builds_the_host_and_runs(
 def test_a_session_default_model_is_enough(client: TestClient, built: list[_HostAgent]) -> None:
     from .conftest import complete_turn
 
-    sid = _session(client, model=_CODEX_SDK)
+    sid = _session(client, model=_CODEX)
     complete_turn(client, sid, "hi")
 
-    assert [host._provider_config.codex_variant for host in built] == ["sdk"]
+    assert [host._provider_config.model for host in built] == ["gpt-5.5"]
 
 
 def test_later_turns_reuse_the_host(client: TestClient, built: list[_HostAgent]) -> None:
     from .conftest import complete_turn
 
     sid = _session(client)
-    complete_turn(client, sid, "one", json_override={"model": _CODEX_SDK})
-    complete_turn(client, sid, "two", json_override={"model": _CODEX_SDK})
+    complete_turn(client, sid, "one", json_override={"model": _CODEX})
+    complete_turn(client, sid, "two", json_override={"model": _CODEX})
 
     assert len(built) == 1
     assert len(built[0].calls) == 2
@@ -160,7 +161,7 @@ def test_a_failed_host_build_is_a_typed_refusal(
     sid = _session(client)
     resp = client.post(
         f"/v1/sessions/{sid}/messages",
-        json={"parts": [{"type": "text", "text": "hi"}], "model": _CODEX_SDK},
+        json={"parts": [{"type": "text", "text": "hi"}], "model": _CODEX},
     )
 
     assert resp.status_code == 503
@@ -168,3 +169,38 @@ def test_a_failed_host_build_is_a_typed_refusal(
     assert inner["error"] == "agent_not_available"
     assert "provider exploded" in inner["details"]["agent_init_error"]
     assert client.get(f"/v1/sessions/{sid}/messages").json()["messages"] == []
+
+
+def test_a_ref_naming_the_removed_sdk_transport_builds_nothing_and_says_why(
+    client: TestClient, built: list[_HostAgent]
+) -> None:
+    sid = _session(client)
+    resp = client.post(
+        f"/v1/sessions/{sid}/messages",
+        json={"parts": [{"type": "text", "text": "hi"}], "model": _CODEX_REMOVED_SDK},
+    )
+
+    assert resp.status_code == 503
+    inner = resp.json()["error"]
+    assert inner["error"] == "agent_not_available"
+    assert "The Codex SDK path was removed" in inner["details"]["agent_init_error"]
+    assert built == []
+
+
+def test_with_a_host_a_ref_naming_the_removed_sdk_transport_is_a_typed_400(
+    client: TestClient, built: list[_HostAgent]
+) -> None:
+    from .conftest import complete_turn
+
+    sid = _session(client)
+    complete_turn(client, sid, "hi", json_override={"model": _CODEX})
+    resp = client.post(
+        f"/v1/sessions/{sid}/messages",
+        json={"parts": [{"type": "text", "text": "again"}], "model": _CODEX_REMOVED_SDK},
+    )
+
+    assert resp.status_code == 400
+    inner = resp.json()["error"]
+    assert inner["error"] == "model_transport_removed"
+    assert inner["message"].startswith("The Codex SDK path was removed")
+    assert built[0].calls == ["hi"]

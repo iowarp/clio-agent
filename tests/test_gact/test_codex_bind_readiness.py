@@ -10,18 +10,20 @@ has, as the Claude Code bind does.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 
-from clio_agent.gact.routes import codex_variant
-from clio_agent.gact.routes.codex_variant import apply_codex_readiness_gate, await_startup_check
+from clio_agent.gact.routes import codex_readiness
+from clio_agent.gact.routes.codex_readiness import apply_codex_readiness_gate, await_startup_check
 
 
-def _cfg(variant: str = "direct") -> Any:
-    return SimpleNamespace(codex_variant=variant, model="")
+def _cfg() -> Any:
+    return SimpleNamespace(model="")
 
 
 async def test_a_bind_waits_for_the_startup_check_in_flight() -> None:
@@ -35,7 +37,7 @@ async def test_a_bind_waits_for_the_startup_check_in_flight() -> None:
 
 
 async def test_the_wait_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(codex_variant, "STARTUP_CHECK_WAIT_S", 0.01)
+    monkeypatch.setattr(codex_readiness, "STARTUP_CHECK_WAIT_S", 0.01)
     never = asyncio.get_running_loop().create_future()
     await await_startup_check(
         SimpleNamespace(state=SimpleNamespace(provider_catalog_startup_task=never))
@@ -79,3 +81,49 @@ async def test_a_signed_out_login_is_still_refused_typed(monkeypatch: pytest.Mon
         await apply_codex_readiness_gate(_cfg(), SimpleNamespace(model=""), _readiness)
     assert err.value.status_code == 401
     assert err.value.detail["error"]["error"] == "codex_auth_required"
+
+
+# --------------------------------------------------------------------------- #
+# The real bind route: Codex is direct-only                                    #
+# --------------------------------------------------------------------------- #
+def _codex_bind(variant: str | None = None) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "provider": "codex",
+        "api_base": "codex://direct",
+        "model": "gpt-5.6-sol",
+        "api_key": "x",
+    }
+    if variant is not None:
+        body["variant"] = variant
+    return body
+
+
+@pytest.fixture
+def signed_out_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """The real app with no Codex sign-in anywhere (no CLIO credential, empty CODEX_HOME)."""
+    from clio_agent.gact.app import build_app
+    from clio_agent.providers.codex.credentials import CodexCredentialStore
+
+    codex_home = tmp_path / "codex_home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("CLIO_MODEL_CATALOG", str(tmp_path / "overlay.json"))
+    monkeypatch.setattr(CodexCredentialStore, "is_signed_in", lambda self: False)
+    return build_app(sessions_path=tmp_path / "s.json")
+
+
+def test_binding_codex_with_no_sign_in_is_the_typed_401(signed_out_app: Any) -> None:
+    with TestClient(signed_out_app) as client:
+        response = client.put("/v1/providers/lm", json=_codex_bind())
+    assert response.status_code == 401, response.text
+    assert response.json()["error"]["error"] == "codex_auth_required"
+
+
+def test_binding_codex_naming_the_removed_sdk_transport_is_refused(signed_out_app: Any) -> None:
+    with TestClient(signed_out_app) as client:
+        refused = client.put("/v1/providers/lm", json=_codex_bind("sdk"))
+        echoed = client.put("/v1/providers/lm", json=_codex_bind("direct"))
+    assert refused.status_code == 422, refused.text
+    assert "The Codex SDK path was removed" in refused.text
+    # The catalog's one transport row id is accepted: it reaches the auth gate.
+    assert echoed.status_code == 401, echoed.text

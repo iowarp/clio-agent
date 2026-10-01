@@ -73,8 +73,7 @@ def _discovered_row(model: DirectModel) -> dict[str, Any]:
         "output_limit": None,
         "context_source": CODEX_SOURCE,
         **_capability_row(model),
-        # The SAME field names the SDK transport's rows use, so the codex
-        # thinking dialect reads both transports' rows identically.
+        # The field names the codex thinking dialect reads.
         "supported_reasoning_efforts": list(model.reasoning_efforts),
         "default_reasoning_effort": model.default_reasoning_effort,
     }

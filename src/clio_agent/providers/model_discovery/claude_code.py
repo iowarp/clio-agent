@@ -161,7 +161,7 @@ def discover_claude_code(
     ruling CLIO does not manufacture one via per-model probing: the maintained
     GitHub catalog (:mod:`.claude_code_catalog`) is the single source of model
     ids, their input-modality capabilities, and the account default -- the same
-    trust model as Codex's SDK-reported catalog. This function's only live
+    trust model as Codex's backend-reported catalog. This function's only live
     check is whether Claude Code is installed and signed in on this machine
     (:func:`_resolve_claude_binary` + one ``auth status`` call); a transient
     catalog or CLI failure returns a typed failure and never promotes a cached

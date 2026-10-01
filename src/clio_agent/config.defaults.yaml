@@ -84,13 +84,8 @@ system.release_manifest_url: "https://github.com/iowarp/clio-agent/releases/late
 
 # CLIO_CODEX_TRANSPORT  (str)  <- src/clio_agent/config.py
 # Selects the Codex transport; "websocket" (default, with delta
-# continuation) or "sse" to force the automatic-fallback transport.
+# continuation) or "sse" to force the stateless HTTP transport.
 # lm.codex_transport:  # default unset; resolved in code
-
-# CLIO_CODEX_VARIANT  (str)  <- src/clio_agent/config.py
-# Selects which Codex transport a config binds: "direct" (default, CLIO
-# sign-in) or "sdk" (the local Codex app login).
-# lm.codex_variant:  # default unset; resolved in code
 
 # CLIO_LM_CONTEXT_WINDOW  (int)  <- src/clio_agent/config.py
 # Override the effective context window (tokens); 0 auto-derives from the
@@ -199,11 +194,6 @@ providers.claude_code.stateful_capacity: 128.0
 # next request reaps it; lower to free idle connections sooner.
 providers.claude_code.stream_idle_ttl_s: 15.0
 
-# CLIO_CODEX_STATEFUL_CAPACITY  (float)  <- src/clio_agent/providers/codex/sdk_engine.py
-# Max live Codex SDK conversations (one kept thread each) before LRU
-# eviction; raise on a host running many concurrent agent conversations.
-providers.codex.stateful_capacity: 128.0
-
 # CLIO_PROVIDER_COMPONENT_INDEX_URL  (str)  <- src/clio_agent/providers/components/pypi.py
 # PyPI JSON API base the provider SDK update check reads
 # (<index>/<distribution>/json); point at a mirror that serves the same API.
@@ -275,11 +265,6 @@ limits.agent_task_artifact_context_chars: 64000
 # inline larger child answers, lower to bound coordinator context growth
 # sooner.
 limits.agent_task_output_digest_chars: 8000
-
-# CLIO_CODEX_SDK_PROGRESS_TIMEOUT_S  (float)  <- src/clio_agent/providers/codex/sdk_client.py
-# Max silence (seconds) for one Codex SDK exchange/event, resetting on every
-# progress event rather than a fixed clock; raise for long turns.
-limits.codex_sdk_progress_timeout_s: 120.0
 
 # CLIO_CTX_MAX_BYTES  (int)  <- src/clio_agent/gact/runtime/constants.py
 # Byte cap per attached file inlined into context injection; raise to inline

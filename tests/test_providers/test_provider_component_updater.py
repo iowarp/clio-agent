@@ -30,7 +30,6 @@ SPEC = ProviderComponents(
     provider_kind="fake",
     distributions=("clio-fake-sdk",),
     modules=("clio_fake_sdk",),
-    lockstep=False,
     release_notes_url="https://example.invalid/notes",
 )
 
@@ -199,13 +198,13 @@ def test_a_failed_provider_check_rolls_back_with_its_typed_code(
             venv,
             {"1.0.0": wheels["1.0.0"], "1.1.0": wheels["1.1.0"]},
             verify_provider=lambda _py, _kind: updater.VerifyOutcome(
-                False, "codex_sdk_probe_failed", "no answer"
+                False, "codex_direct_transport_error", "no answer"
             ),
         ),
     )
     assert (job.stage, job.error_code, job.rolled_back) == (
         "failed",
-        "codex_sdk_probe_failed",
+        "codex_direct_transport_error",
         True,
     )
     assert installed(venv) == "1.0.0"
@@ -258,8 +257,8 @@ def test_a_second_update_is_refused_while_one_runs() -> None:
 
 
 def test_restart_is_required_only_for_code_this_process_already_imported() -> None:
-    loaded = ProviderComponents("x", ("pytest",), ("pytest",), False, "")
-    absent = ProviderComponents("x", ("nope",), ("definitely_not_imported_mod",), False, "")
+    loaded = ProviderComponents("x", ("pytest",), ("pytest",), "")
+    absent = ProviderComponents("x", ("nope",), ("definitely_not_imported_mod",), "")
     here = updater.UpdateEnvironment(python=sys.executable)
     assert updater._loaded_here(here, loaded) is True
     assert updater._loaded_here(here, absent) is False
