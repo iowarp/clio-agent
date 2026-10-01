@@ -504,47 +504,45 @@ def _emit_react_step_event(
     projection for THIS event type via ``SSE_KEEP_KEYS_BY_EVENT`` (so the model's
     chain-of-thought reaches the live UI here while staying redacted on lm.call /
     lm.token.delta / raw-prompt events). Steps of one expert share
-    ``expert_span_id``. Best-effort: capture must never break the expert loop.
+    ``expert_span_id``. The step is part of clio-core's record: an event it cannot
+    record fails the turn (typed), never a silent drop.
     """
 
     app = _ctx.active_app()
     sid = _ctx.active_session_id()
     if app is None or not sid:
         return
-    try:
-        _emit_semantic_event(
-            app,
-            sid,
-            "react.step.completed",
-            turn_id=_active_semantic_turn_id(),
-            trace_id=_active_semantic_trace_id(),
-            parent_span_id=expert_span_id,
-            status="completed",
-            summary=(
-                f"{expert_id or 'expert'} model action {step_index}: "
-                f"{', '.join(str(c.get('name') or '') for c in tool_calls) or 'finish'}"
-            ),
-            actor={"agent_id": expert_id, "role": "expert"},
-            payload={
-                "expert_id": expert_id,
-                "expert_span_id": expert_span_id,
-                # This step's span: the lm.call (self.react) and tool.call (act/
-                # observe) of this step carry parent_span_id == step_span_id, so a
-                # consumer links them to this step.
-                "step_span_id": step_span_id,
-                "step_index": step_index,
-                # ``thought`` = DSPy's parsed next_thought (good for content-channel
-                # models like gemma). ``reasoning`` = the raw reasoning channel
-                # (chain-of-thought) for reasoning models — distinct from thought.
-                # Allowed through the SSE projection only for this event type.
-                "thought": wire_value(thought, mode="gact_runtime"),
-                "reasoning": wire_value(reasoning, mode="gact_runtime"),
-                "tool_calls": wire_value(tool_calls, mode="gact_runtime"),
-                "is_finish": bool(is_finish),
-            },
-        )
-    except Exception:  # noqa: BLE001,S110 - capture must never break the expert loop
-        pass
+    _emit_semantic_event(
+        app,
+        sid,
+        "react.step.completed",
+        turn_id=_active_semantic_turn_id(),
+        trace_id=_active_semantic_trace_id(),
+        parent_span_id=expert_span_id,
+        status="completed",
+        summary=(
+            f"{expert_id or 'expert'} model action {step_index}: "
+            f"{', '.join(str(c.get('name') or '') for c in tool_calls) or 'finish'}"
+        ),
+        actor={"agent_id": expert_id, "role": "expert"},
+        payload={
+            "expert_id": expert_id,
+            "expert_span_id": expert_span_id,
+            # This step's span: the lm.call (self.react) and tool.call (act/
+            # observe) of this step carry parent_span_id == step_span_id, so a
+            # consumer links them to this step.
+            "step_span_id": step_span_id,
+            "step_index": step_index,
+            # ``thought`` = DSPy's parsed next_thought (good for content-channel
+            # models like gemma). ``reasoning`` = the raw reasoning channel
+            # (chain-of-thought) for reasoning models — distinct from thought.
+            # Allowed through the SSE projection only for this event type.
+            "thought": wire_value(thought, mode="gact_runtime"),
+            "reasoning": wire_value(reasoning, mode="gact_runtime"),
+            "tool_calls": wire_value(tool_calls, mode="gact_runtime"),
+            "is_finish": bool(is_finish),
+        },
+    )
 
 
 def _emit_expert_lifecycle_event(
@@ -563,27 +561,25 @@ def _emit_expert_lifecycle_event(
     delegating scope); ``expert.extract.completed`` is emitted while the active
     span IS this expert (so it nests under the lifecycle). The extract output is
     carried FULL/uncapped — what the parent ultimately filters to is a downstream
-    projection (#710), not a capture-time loss. Best-effort.
+    projection (#710), not a capture-time loss. An event clio-core cannot record
+    fails the turn (typed), never a silent drop.
     """
 
     app = _ctx.active_app()
     sid = _ctx.active_session_id()
     if app is None or not sid:
         return
-    try:
-        _emit_semantic_event(
-            app,
-            sid,
-            event_type,
-            turn_id=_active_semantic_turn_id(),
-            trace_id=_active_semantic_trace_id(),
-            status=status,
-            summary=f"expert {expert_id or '?'} {event_type.rsplit('.', 1)[-1]}",
-            actor={"agent_id": expert_id, "role": "expert"},
-            payload={"expert_id": expert_id, "expert_span_id": expert_span_id, **payload},
-        )
-    except Exception:  # noqa: BLE001,S110 - capture must never break the expert loop
-        pass
+    _emit_semantic_event(
+        app,
+        sid,
+        event_type,
+        turn_id=_active_semantic_turn_id(),
+        trace_id=_active_semantic_trace_id(),
+        status=status,
+        summary=f"expert {expert_id or '?'} {event_type.rsplit('.', 1)[-1]}",
+        actor={"agent_id": expert_id, "role": "expert"},
+        payload={"expert_id": expert_id, "expert_span_id": expert_span_id, **payload},
+    )
 
 
 # The single new event type for ARC live-context-plane mutations. event_type is a
