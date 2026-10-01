@@ -3,7 +3,7 @@
 An ordered, scoped, mutable sequence of :class:`~clio_agent.arc.schema.Segment`s that the gact
 ReAct loop reads from on every iteration. The loop *writes* one segment per produced piece
 (thought / tool_call / observation) and *reads* the prompt back by rendering the live ordered
-set (see ``render_keys``). The context operations — ``append`` / ``insert`` / ``delete`` /
+set (``render``, folded into messages by ``clio_react_record.fold_steps``). The context operations — ``append`` / ``insert`` / ``delete`` /
 ``summarize`` / ``replace`` — mutate segments between renders, so an out-of-band edit changes
 the *next* prompt. That is the whole point of the live plane.
 
@@ -132,50 +132,6 @@ OpLogger = Callable[..., Optional[dict[str, Any]]]
 
 _SCOPE_SEP = "__"  # session_id <SEP> scope, in the store record name
 _SLASH_SUB = "~"  # scope's '/' replaced so the record name is one path segment
-
-
-def segments_to_keys(segments: list[Segment]) -> dict[str, Any]:
-    """Project an ordered list of LIVE segments into dspy's trajectory dict
-    (``thought_{i}`` / ``tool_name_{i}`` / ``tool_args_{i}`` / ``observation_{i}``).
-
-    ``i`` is the RENDER POSITION (not ``Segment.step``), recomputed so the dict is
-    gapless after deletes/summaries (stock dspy never has index gaps). A ``thought``
-    opens a new iteration; ``tool_call`` / ``observation`` attach to the current
-    one; a ``summary`` renders as its own ``observation_{i}``. ``system`` / ``user``
-    / ``tool_def`` are dspy's own framing — never in the trajectory dict.
-
-    Pure function shared by ``SegmentStore.render_keys`` and ``arc.replay`` so the
-    live store and a Trace-replay produce byte-identical trajectories.
-
-    A new iteration starts on a ``thought``/``summary`` OR whenever the slot a
-    segment needs is already filled in the current iteration — so consecutive
-    observations (from injection or edits) never overwrite each other, while the
-    normal ``thought -> tool_call -> observation`` flow renders exactly as stock dspy.
-    """
-    keys: dict[str, Any] = {}
-    idx = -1
-    filled: set[str] = set()
-    for seg in segments:
-        kind = seg.kind
-        if kind == "thought":
-            idx += 1
-            filled = {"thought"}
-            keys[f"thought_{idx}"] = seg.content.get("text", "")
-        elif kind == "tool_call":
-            if idx < 0 or "tool" in filled:
-                idx += 1
-                filled = set()
-            filled.add("tool")
-            keys[f"tool_name_{idx}"] = seg.content.get("name", "")
-            keys[f"tool_args_{idx}"] = seg.content.get("args", {})
-        elif kind in ("observation", "summary"):
-            if idx < 0 or "obs" in filled:
-                idx += 1
-                filled = set()
-            filled.add("obs")
-            keys[f"observation_{idx}"] = seg.content.get("text", "")
-        # system / user / tool_def: not part of the trajectory dict
-    return keys
 
 
 class SegmentIndex:
@@ -894,16 +850,6 @@ class SegmentStore:
             ]
             return sorted(visible, key=lambda s: (s.order, s.logical_time))
 
-    def render_keys(
-        self, session_id: str, scope: str, *, as_of: int | None = None
-    ) -> dict[str, Any]:
-        """``render`` projected into dspy's trajectory dict
-        (``thought_{i}`` / ``tool_name_{i}`` / ``tool_args_{i}`` / ``observation_{i}``).
-        This is exactly what the ``_format_trajectory`` override reads. See
-        :func:`segments_to_keys` for the projection algorithm.
-        """
-        return segments_to_keys(self.render(session_id, scope, as_of=as_of))
-
     def render_working_set(
         self, session_id: str, scope: str, *, as_of: int | None = None
     ) -> list[Segment]:
@@ -912,13 +858,8 @@ class SegmentStore:
         ``semantic_event``), which are part of ARC's complete freeze-anytime
         state but are NOT working-set context.
 
-        This is the target of the per-turn working-set reset and ``_maybe_autocompact``
-        — NOT a new prompt source. ``render`` / ``render_keys`` are UNCHANGED: the
-        prompt stays ``segments_to_keys(render(...))``, which is a kind-allowlist that
-        already ignores the new kinds, so the prompt is byte-identical whether or not
-        the new atoms are present. Until any writer emits the new kinds, this returns
-        exactly what ``render`` returns (so adopting it is behavior-preserving), and
-        excludes exactly the atoms once they exist.
+        This is compaction's target. The agent's context folds these kinds (see
+        ``clio_react_record.fold_steps``), which ignores any kind it does not model.
         """
         return [
             s for s in self.render(session_id, scope, as_of=as_of) if s.kind in WORKING_SET_KINDS

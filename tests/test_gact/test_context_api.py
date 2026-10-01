@@ -56,11 +56,27 @@ def test_get_context_state(tmp_path, monkeypatch):
     assert body["tokens_by_kind"] == {"thought": 5, "tool_call": 0, "observation": 10}
     assert body["live_tokens"] == 15
     assert body["pct_used"] is None  # no agent/_provider_config -> window unknown
-    assert list(body["render_keys"].keys()) == [
-        "thought_0",
-        "tool_name_0",
-        "tool_args_0",
-        "observation_0",
+    # The agent's context exactly as the model receives it: one step, its call, its result.
+    assert body["messages"] == [
+        {
+            "role": "assistant",
+            "parts": [
+                {"type": "text", "text": "T0"},
+                {"type": "tool_call", "id": "call_0", "name": "a", "input": {}},
+            ],
+        },
+        {
+            "role": "tool",
+            "parts": [
+                {
+                    "type": "tool_result",
+                    "id": "call_0",
+                    "name": "a",
+                    "is_error": False,
+                    "content": [{"type": "text", "text": "O0"}],
+                }
+            ],
+        },
     ]
     assert "O0" in body["render_text"]
 
@@ -238,7 +254,7 @@ def test_post_context_op_append_then_delete(tmp_path):
     assert r.json()["tokens_by_kind"] == {"observation": 7}
 
     state = client.get(f"/v1/sessions/{sid}/context/state", params={"scope": SCOPE}).json()
-    assert "NEEDLE" in str(state["render_keys"])
+    assert "NEEDLE" in str(state["messages"])
 
     seg_id = arc.render_segments(sid, SCOPE)[0].id
     r2 = client.post(
@@ -248,7 +264,7 @@ def test_post_context_op_append_then_delete(tmp_path):
     assert r2.status_code == 200
     assert r2.json()["tombstoned_count"] == 1
     state2 = client.get(f"/v1/sessions/{sid}/context/state", params={"scope": SCOPE}).json()
-    assert "NEEDLE" not in str(state2["render_keys"])
+    assert "NEEDLE" not in str(state2["messages"])
 
 
 def test_post_context_op_invalid_op_rejected(tmp_path):

@@ -18,6 +18,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from clio_agent.gact import viewed_media
 from clio_agent.gact.resource_mime import detect_media_type
 from clio_agent.providers.native_attachment_bounds import (
     check_block_bytes,
@@ -87,12 +88,16 @@ def _workspace_image(path: str) -> tuple[Path, Path, bytes, str]:
 
 def _descriptor(path: str) -> dict[str, Any]:
     _resolved, relative, data, media_type = _workspace_image(path)
+    snapshot_path, snapshot_sha256 = viewed_media.snapshot(data, _resolved.suffix)
     return {
         "type": VIEW_IMAGE_DESCRIPTOR_TYPE,
         "path": relative.as_posix(),
         "media_type": media_type,
         "size_bytes": len(data),
         "sha256": hashlib.sha256(data).hexdigest(),
+        # What the agent saw, kept: history reads this, never the live file.
+        "snapshot": snapshot_path,
+        "snapshot_sha256": snapshot_sha256,
     }
 
 
@@ -101,6 +106,14 @@ def _is_descriptor(value: Any) -> bool:
 
 
 def _hydrate_descriptor(value: Mapping[str, Any]) -> tuple[Any, int]:
+    if value.get("snapshot"):
+        import dspy  # noqa: PLC0415 - keep UI/bootstrap imports light
+
+        data = viewed_media.read_snapshot(
+            str(value["snapshot"]), str(value.get("snapshot_sha256") or "")
+        )
+        encoded = base64.b64encode(data).decode("ascii")
+        return dspy.Image(url=f"data:{value.get('media_type')};base64,{encoded}"), len(data)
     path = str(value.get("path") or "").strip()
     if not path or Path(path).is_absolute():
         raise ViewImageError(

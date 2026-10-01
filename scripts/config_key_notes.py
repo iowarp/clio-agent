@@ -542,8 +542,9 @@ KEY_NOTES: dict[str, str] = {
         "for a slow-starting server."
     ),
     "limits.model_tool_result_chars": (
-        "Character bound on the model-facing MCP tool-result projection (head/tail cut); distinct "
-        "from limits.tool_result_chars."
+        "Characters of a tool result shown to the model; a longer result is saved to the "
+        "session's tool-output folder and the agent gets this many head characters plus the "
+        "file path. Distinct from limits.tool_result_chars."
     ),
     "limits.plan_review_chars": (
         "Character bound on saved plan content embedded in an approval record; raise for "
@@ -1094,6 +1095,10 @@ KEY_NOTES: dict[str, str] = {
     "spotter.watcher_expert_id": (
         "Expert id within the watcher blueprint SPOTTER arms as the standing watcher; change "
         "alongside watcher_blueprint_id for a custom expert."
+    ),
+    "tools.circuit_breaker.failure_limit": (
+        "Consecutive failures of one tool before CLIO blocks further calls to it (the agent is "
+        "warned at the limit and told why a call was blocked); 0 turns the breaker off."
     ),
     "tools.file_policy.allow_symlinks": (
         "Whether tool file reads/writes may traverse symlinks; set true only if a workflow "

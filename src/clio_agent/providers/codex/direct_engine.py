@@ -47,8 +47,10 @@ from dspy.lm15 import (
     Request,
     Response,
     ServerError,
+    TransportError,
     materialize_response,
 )
+from dspy.lm15 import TimeoutError as ProviderTimeoutError
 
 from clio_agent.lm.engines.conversations import conversation_key, new_messages
 from clio_agent.providers.codex import constants as c
@@ -152,6 +154,7 @@ class AsyncCodexDirectEngine:
     ) -> None:
         try:
             _check_media(request)  # typed refusal of oversized attachments before any send
+            request = _with_reasoning_summary(request)
             if self.http:
                 await asyncio.to_thread(self._http, request, out)
                 return
@@ -183,8 +186,9 @@ class AsyncCodexDirectEngine:
         _audit(key, self.model, request, live is not None, reason, len(frame.get("input") or []))
         try:
             response_id = await _exchange(self.wire, request, socket, frame, out)
-        except _ContinuationLost:
-            # The backend no longer holds the previous response (nothing was streamed):
+        except (_ContinuationLost, _ConnectionLost):
+            # The backend no longer holds the previous response, or the connection
+            # dropped (a service restart, an idle-closed socket) -- nothing was streamed:
             # resend in full on a fresh socket, typed.
             _close_soon(socket)
             socket = await _connect(headers, key)
@@ -351,6 +355,13 @@ async def _connect(headers: dict[str, str], key: tuple[str, ...] | None) -> Any:
         if is_usage_limit_text(body):
             raise CodexPlanLimitError(body[:500], status_code=status) from exc
         raise ServerError(f"Codex WebSocket handshake failed (HTTP {status})") from exc
+    # Typed so DSPy retries them; a lasting failure reaches the user in plain words.
+    except TimeoutError as exc:
+        raise ProviderTimeoutError(
+            f"Codex did not answer the connection within {c.WS_CONNECT_TIMEOUT_S:.0f} s"
+        ) from exc
+    except OSError as exc:
+        raise TransportError(f"Could not connect to Codex: {exc}") from exc
 
 
 async def _exchange(
@@ -370,6 +381,29 @@ async def _exchange(
         provider="codex_direct",
         transport="websocket",
     )
+    streamed: list[bool] = []  # set once any event of the reply reached the caller
+    try:
+        return await _stream(wire, request, socket, frame, out, call_id, call_index, streamed)
+    except websockets.ConnectionClosed as exc:
+        if streamed:
+            reason = f"code {exc.rcvd.code}: {exc.rcvd.reason}" if exc.rcvd else "no close frame"
+            raise ServerError(
+                f"Codex closed the connection during the reply ({reason}); please try again"
+            ) from exc
+        raise _ConnectionLost from exc
+
+
+async def _stream(
+    wire: Any,
+    request: Request,
+    socket: Any,
+    frame: dict[str, Any],
+    out: queue.SimpleQueue[Any],
+    call_id: str,
+    call_index: int,
+    streamed: list[bool],
+) -> str:
+    """The body of :func:`_exchange`: send the frame and forward the reply's events."""
     first = True
     usage: Any = None
     await socket.send(json.dumps({"type": "response.create", **frame}))
@@ -398,6 +432,7 @@ async def _exchange(
                 )
             if event.type == "end":
                 usage = event.usage
+            streamed[:] = [True]
             out.put(event)
         if kind in _TERMINAL:
             emit_call_usage(
@@ -438,8 +473,29 @@ def _usage_row(usage: Any) -> dict[str, int]:
     return {k: int(v) for k, v in fields.items() if v is not None}
 
 
+def _with_reasoning_summary(request: Request) -> Request:
+    """Ask Codex for its reasoning summary: the model's thinking is shown to the user.
+
+    With no effort set, only the summary is asked for (the backend keeps its own
+    default effort) -- through ``extensions``, since lm15's ``Reasoning`` needs one.
+    """
+    config = request.config
+    if config.reasoning is not None:
+        if config.reasoning.summary is not None:
+            return request
+        reasoning = dataclasses.replace(config.reasoning, summary="auto")
+        return dataclasses.replace(request, config=dataclasses.replace(config, reasoning=reasoning))
+    extensions = dict(config.extensions or {})
+    extensions.setdefault("reasoning", {"summary": "auto"})
+    return dataclasses.replace(request, config=dataclasses.replace(config, extensions=extensions))
+
+
 class _ContinuationLost(Exception):
     """The backend no longer holds ``previous_response_id`` (before any event)."""
+
+
+class _ConnectionLost(Exception):
+    """The WebSocket closed before any event of the reply was forwarded."""
 
 
 def _error_message(payload: dict[str, Any]) -> str:

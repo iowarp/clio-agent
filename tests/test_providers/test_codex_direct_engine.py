@@ -24,12 +24,15 @@ with a static test credential); the WebSocket is faked. Pins:
 from __future__ import annotations
 
 import asyncio
+import builtins
+import dataclasses
 import json
 from collections.abc import Iterator
 from typing import Any
 
 import pytest
 import websockets
+from dspy.clients.errors import wrap_error
 from dspy.lm15 import (
     AuthError,
     FunctionTool,
@@ -41,7 +44,12 @@ from dspy.lm15 import (
     TextPart,
     ToolCallPart,
     ToolResultPart,
+    TransportError,
 )
+from dspy.lm15 import (
+    TimeoutError as RequestTimeoutError,
+)
+from dspy.utils.exceptions import is_retryable_lm_error
 from websockets.datastructures import Headers
 from websockets.http11 import Response as HandshakeResponse
 
@@ -100,7 +108,8 @@ class FakeSocket:
         self.frames.append(json.loads(raw))
         reply = self._script.pop(0)
         events = _answer(f"resp_{len(self.frames)}", reply) if isinstance(reply, str) else reply
-        self._pending = [json.dumps(e) for e in events]
+        # An exception in the script is the connection dropping at that point.
+        self._pending = [e if isinstance(e, BaseException) else json.dumps(e) for e in events]
 
     def __aiter__(self) -> FakeSocket:
         return self
@@ -108,7 +117,10 @@ class FakeSocket:
     async def __anext__(self) -> str:
         if not self._pending:
             raise StopAsyncIteration
-        return self._pending.pop(0)
+        item = self._pending.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
 
     async def close(self) -> None:
         self.closed = True
@@ -265,6 +277,38 @@ def test_a_lost_continuation_resends_in_full_on_a_fresh_socket(
     assert _stateful(audit)[-1] == ("full", "session_evicted")
 
 
+def _service_restart() -> websockets.ConnectionClosedError:
+    from websockets.frames import Close
+
+    close = Close(1012, "service restart")
+    return websockets.ConnectionClosedError(close, close, True)
+
+
+def test_a_connection_closed_before_any_output_reconnects_and_resends(
+    harness: Harness, audit: list[dict[str, Any]], loop_scope: None
+) -> None:
+    """Codex restarting (WebSocket 1012) before any output is not the user's problem:
+    the call reconnects and resends in full, typed as an evicted session."""
+    harness.script[:] = ["one", [_service_restart()], "two"]
+    engine = _engine()
+    _run(engine, _request(HEAD))
+    response = _run(engine, _request(HEAD, *_step(0)))
+
+    first, second = harness.sockets
+    [resend] = second.frames
+    assert "previous_response_id" not in resend
+    assert len(resend["input"]) > len(first.frames[-1]["input"])  # the FULL body
+    assert response.message.parts == (TextPart(text="two"),)
+    assert _stateful(audit)[-1] == ("full", "session_evicted")
+
+
+def test_a_connection_closed_mid_reply_is_a_clear_server_error(harness: Harness) -> None:
+    started = _answer("resp_1", "partial")[:2]
+    harness.script[:] = [[*started, _service_restart()]]
+    with pytest.raises(ServerError, match="Codex closed the connection during the reply"):
+        _run(_engine(), _request(HEAD))
+
+
 # --------------------------------------------------------------------------- #
 # clear errors                                                                #
 # --------------------------------------------------------------------------- #
@@ -304,6 +348,33 @@ def test_handshake_failures_are_typed(
     monkeypatch.setattr(direct_engine.websockets, "connect", refuse)
     with pytest.raises(typed):
         asyncio.run(direct_engine._connect({"Authorization": "Bearer t"}, None))
+
+
+@pytest.mark.parametrize(
+    ("raised", "typed"),
+    [
+        (builtins.TimeoutError("timed out during opening handshake"), RequestTimeoutError),
+        (ConnectionRefusedError("refused"), TransportError),
+        (OSError("getaddrinfo failed"), TransportError),
+    ],
+)
+def test_a_connect_that_never_completes_is_a_retryable_typed_error(
+    monkeypatch: pytest.MonkeyPatch, raised: BaseException, typed: type[Exception]
+) -> None:
+    """Found live (opal, 2026-09-30): a handshake timeout reached the user raw.
+
+    Typed as lm15 errors DSPy retries them, and a lasting failure reaches the
+    user as a provider error in plain words.
+    """
+
+    async def stall(*_a: Any, **_k: Any) -> Any:
+        raise raised
+
+    monkeypatch.setattr(direct_engine.websockets, "connect", stall)
+    with pytest.raises(typed) as caught:
+        asyncio.run(direct_engine._connect({"Authorization": "Bearer t"}, None))
+    assert "Codex" in str(caught.value)
+    assert is_retryable_lm_error(wrap_error(caught.value, model="codex_direct/gpt-6-sol"))
 
 
 # --------------------------------------------------------------------------- #
@@ -425,3 +496,20 @@ def test_an_oversized_image_is_refused_typed_before_any_send(
     with pytest.raises(NativeAttachmentTooLargeError):
         _run(_engine(), _request(Message(role="user", parts=(TextPart(text="see"), image))))
     assert harness.sockets == []
+
+
+def test_codex_is_asked_for_its_reasoning_summary(harness: Harness) -> None:
+    """The model's thinking is shown to the user (owner: everything the model outputs
+    is displayed) -- Codex only streams it when the request asks for a summary."""
+    _run(_engine(), _request(HEAD))
+    [frame] = harness.sockets[0].frames
+    assert frame["reasoning"]["summary"] == "auto"
+
+
+def test_a_set_effort_keeps_its_value_and_gains_the_summary(harness: Harness) -> None:
+    from dspy.lm15 import Config, Reasoning
+
+    request = dataclasses.replace(_request(HEAD), config=Config(reasoning=Reasoning(effort="low")))
+    _run(_engine(), request)
+    [frame] = harness.sockets[0].frames
+    assert frame["reasoning"] == {"effort": "low", "summary": "auto"}

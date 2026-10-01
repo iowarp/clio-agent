@@ -148,8 +148,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # MERGE (PR #1298 x #1310): 1030 -> 1032. Both campaigns' call-site lines
     # coexist; neither side's additions were dropped.
     "src/clio_agent/agent.py": 988,  # MCP refresh moved to gact/mcp_gateway_refresh.py; L1: -4 (executor_work_may_continue deleted)
-    "src/clio_agent/arc/memory.py": 1339,  # #1339: the _events chunk writer cursor moved to arc/lane_chunking.py
-    "src/clio_agent/arc/segments.py": 1116,
+    "src/clio_agent/arc/memory.py": 1333,  # #1339: the _events chunk writer cursor moved to arc/lane_chunking.py
+    "src/clio_agent/arc/segments.py": 1057,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
     # owner ruling 2026-07-14: +3 to route explicit =local through the loud
     # DEGRADED banner (owner module: arc/init_degradation.py).
@@ -174,7 +174,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # plane byte-identically (the S2 slice had dropped these, breaking replay). Footprint
     # minimized to concise docstrings; the per-op payload passing is irreducible. Ratchet
     # down with the #714/#767 decomposition.
-    "src/clio_agent/arc/working_set_fold.py": 919,
+    "src/clio_agent/arc/working_set_fold.py": 914,
     # #1326: adapters.py was 780 lines (under the 800 cap). +56 for: a new
     # _ContextOverflowError typed exception, a _check_context_overflow pre-flight
     # helper (mirrors the guided path's _bound_guided_output_kwargs shape), pre-
@@ -665,7 +665,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # P4b adds the 3-line surrogate refusal on the chat-model bind: 1116 -> 1119.
     # 1096 -> 1077 (#1506): duplicated LM-apply failure branches merged; selection persistence lives in gact/providers/selection_store.py.
     # 1077 -> 1076: the Claude Code missing-support status moved to providers/support_restore.py.
-    "src/clio_agent/gact/routes/providers.py": 1075,
+    "src/clio_agent/gact/routes/providers.py": 1074,
     # #947 DEBT (recorded 2026-07-18, #948 S4): inherited MCP-apps landing growth
     # (merged to develop with the size check red, baseline 1478 -> actual); ratchet
     # back below the pre-#947 count with the mcp_app_* owner-module split (see the
@@ -958,7 +958,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # thin sync delegate to AsyncMCPToolExecutor.merge_namespace_tools
     # (mcp_executor.py), the actual live-tool-table merge target for an
     # on-demand mount (gact/agents/builders.py).
-    "src/clio_agent/tools/execution.py": 1188,  # structured result parsing moved to tools/result_errors.py
+    "src/clio_agent/tools/execution.py": 1101,  # path hints moved to tools/path_hints.py
     # #1201 (adversarial review, PR #1202): not previously baselined (under the
     # 800 default cap). +24 for the unreadable-mcp.yaml snapshot (a reset-per-
     # call list + lock, mirroring the existing per-server MCPServerSpec.
@@ -1043,7 +1043,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # _tool_visible_to_model moved to the new owner module
     # tools/tool_ui_metadata.py (re-exported here), landing well under either
     # recorded value.
-    "src/clio_agent/tools/mcp_executor.py": 923,
+    "src/clio_agent/tools/mcp_executor.py": 918,
     # AF-FOLD (PR #1298): ratcheted DOWN 817 -> 816. Credential redaction moved to
     # the owner module tools/mcp_redaction.py, which more than paid for the
     # ``declared`` pre-expansion field this file gained.

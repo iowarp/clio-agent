@@ -75,8 +75,11 @@ def test_view_pdf_retains_only_verified_workspace_metadata(tmp_path: Path) -> No
         "media_type": "application/pdf",
         "size_bytes": len(whole_document),
         "sha256": result["sha256"],
+        "snapshot": result["snapshot"],
+        "snapshot_sha256": result["snapshot_sha256"],
     }
     assert len(result["sha256"]) == 64
+    assert (tmp_path / result["snapshot"]).read_bytes() == whole_document
     assert "base64" not in str(result).lower()
 
 
@@ -261,14 +264,16 @@ def test_view_pdf_hydrates_the_pdf_without_mutating_the_retained_descriptor(
     assert len(PdfReader(io.BytesIO(base64.b64decode(document.data))).pages) == 2
 
 
-def test_view_pdf_revalidates_hash_before_provider_delivery(tmp_path: Path) -> None:
+def test_a_changed_pdf_still_shows_what_the_agent_saw(tmp_path: Path) -> None:
+    """History is what the agent saw: a later change to the file does not change it."""
     _tool, result = _descriptor(tmp_path, page_count=2)
+    seen = (tmp_path / result["snapshot"]).read_bytes()
     (tmp_path / "doc.pdf").write_bytes(_make_pdf(2) + b"\n%changed")
 
-    with tool_workspace_context(tmp_path), pytest.raises(ViewPdfError) as exc_info:
-        _hydrated(result)
+    with tool_workspace_context(tmp_path):
+        document = _hydrated(result)
 
-    assert exc_info.value.reason == "view_pdf_file_changed"
+    assert base64.b64decode(document.data) == seen
 
 
 def test_the_loop_sends_a_real_document_part_for_the_tool_result(tmp_path: Path) -> None:

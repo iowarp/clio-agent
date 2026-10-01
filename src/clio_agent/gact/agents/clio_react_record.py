@@ -43,6 +43,7 @@ from dspy.lm15 import (
 )
 
 from clio_agent.errors import ClioError
+from clio_agent.gact.injection_parts import emit_injection
 
 logger = logging.getLogger(__name__)
 
@@ -177,9 +178,9 @@ def fold_steps(segments: Sequence[Any]) -> list[Message]:
 
     A ``user`` segment is the user message it recorded. A ``thought`` opens a step; its
     ``tool_call`` / ``observation`` segments attach to it (results matched by call id, by
-    order for a segment written without one). A ``summary`` -- or an observation with no
-    open step -- becomes a user message carrying the text, so compacted content still
-    reaches the model.
+    order for a segment written without one); a call with no step open starts its own. A
+    ``summary`` -- or an observation with no open step -- becomes a user message carrying
+    the text, so compacted content still reaches the model.
     """
     messages: list[Message] = []
     step: _StepFold | None = None
@@ -192,7 +193,9 @@ def fold_steps(segments: Sequence[Any]) -> list[Message]:
             if step is not None:
                 messages.extend(step.messages())
             step = _StepFold(content)
-        elif kind == "tool_call" and step is not None:
+        elif kind == "tool_call":
+            if step is None:  # a call with no thought before it (an edit put it there)
+                step = _StepFold({})
             step.add_call(content)
         elif kind == "observation" and step is not None and step.expects_result():
             step.add_result(content)
@@ -257,8 +260,21 @@ class _StepFold:
 
 
 def result_part(call_id: str, name: str, value: Any, is_error: bool) -> ToolResultPart:
-    """A tool's result as the provider-native part (images/PDFs as media, else text)."""
-    media = _media(value)
+    """A tool's result as the provider-native part (images/PDFs as media, else text).
+
+    Media the history can no longer show (its snapshot is gone) becomes a note the
+    agent reads -- one old image never fails the whole conversation.
+    """
+    try:
+        media = _media(value)
+    except ValueError as exc:  # ViewImageError / ViewPdfError / ViewedMediaUnavailable
+        logger.warning("tool media unavailable reason=%s call=%s", type(exc).__name__, call_id)
+        note = (
+            f"[clio: media_unavailable] The media this call returned can no longer be shown: {exc}"
+        )
+        return ToolResultPart(
+            id=call_id, content=(TextPart(text=note),), name=name, is_error=is_error
+        )
     content: tuple[Any, ...] = (
         (media,) if media is not None else (TextPart(text=_observation_text(value)),)
     )
@@ -341,6 +357,39 @@ class StepRecorder:
         """Record the forward's user message; the projection starts every turn with it."""
         self._write("user", user_to_record(message), 0, "")
 
+    def carry_over(self, ledger: Sequence[Any]) -> None:
+        """Seed a scope new to the conversation with its earlier turns, once.
+
+        An agent with nothing recorded yet (the user switched the session's agent,
+        or its store changed) joins a conversation that already has turns: the
+        transcript's model context -- user and assistant text, the latest
+        compaction summary -- is recorded as the messages it was, and the agent is
+        told its tool details are not included. From then on the scope is
+        append-only like any other.
+        """
+        if self.arc is None or self.arc.list_segments(
+            self.session, self.scope, include_tombstoned=True
+        ):
+            return
+        from clio_agent.gact.conversation_projection import (  # noqa: PLC0415
+            model_context_messages,
+        )
+
+        rows = list(model_context_messages(list(ledger)))
+        while rows and _field(rows[-1], "role") == "user":
+            rows.pop()  # this turn's own message is recorded by the loop itself
+        carried = 0
+        for row in rows:
+            for kind, content in _carried(row):
+                self._write(kind, content, 0, "")
+                carried += 1
+        if carried:
+            note = (
+                f"The {carried} earlier messages of this conversation were carried over "
+                "from its transcript (their tool calls and results are not included)."
+            )
+            self.injections([("earlier_turns", note)])
+
     def injections(self, injections: Sequence[tuple[str, str]]) -> None:
         """Record CLIO's additions for this turn, each once.
 
@@ -359,6 +408,7 @@ class StepRecorder:
             if text and latest.get(source) != text:
                 record = {"text": text, "source": source, "actor": "algorithm"}
                 self._write("user", record, 0, "")
+                emit_injection(source, text, agent_id=self.expert_id)
                 latest[source] = text
 
     def arrivals(self, arrivals: Sequence[tuple[str, str]], step: int) -> list[Message]:
@@ -372,6 +422,8 @@ class StepRecorder:
             actor = "user" if source == "steer" else "algorithm"
             record = {"text": text, "source": source, "actor": actor}
             self._write("user", record, step, "")
+            if actor == "algorithm":
+                emit_injection(source, text, agent_id=self.expert_id)
             messages.append(user_from_record(record))
         return messages
 
@@ -516,6 +568,30 @@ def _token_estimate(content: Mapping[str, Any]) -> int:
     media = content.get("media") or []
     text = {k: v for k, v in content.items() if k != "media"}
     return max(1, len(json.dumps(text, default=str)) // 4 + _MEDIA_TOKENS * len(media))
+
+
+def _field(row: Any, name: str) -> Any:
+    return row.get(name) if isinstance(row, Mapping) else getattr(row, name, None)
+
+
+def _carried(row: Any) -> list[tuple[str, dict[str, Any]]]:
+    """A transcript row as plane segments (text only; a checkpoint as its summary)."""
+    role = _field(row, "role")
+    texts: list[str] = []
+    for part in _field(row, "parts") or []:
+        kind = _field(part, "type")
+        if kind == "compaction" and _field(part, "summary"):
+            return [("summary", {"text": str(_field(part, "summary"))})]
+        if kind == "text" and str(_field(part, "text") or "").strip():
+            texts.append(str(_field(part, "text")))
+    if not texts:
+        return []
+    text = "\n\n".join(texts)
+    if role == "user":
+        return [("user", {"text": text})]
+    if role == "assistant":
+        return [("thought", {"text": text, "thinking": []})]
+    return []
 
 
 def pending_turn_yield(calls: Sequence[ToolCallPart]) -> str:

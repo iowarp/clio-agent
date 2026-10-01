@@ -128,6 +128,13 @@ def _is_typed(prompt: Any) -> bool:
     return hasattr(prompt, "messages") and hasattr(prompt, "config") and hasattr(prompt, "model")
 
 
+def _show_hook(text: str) -> None:
+    """Record a model-hook effect for the user (an ``injection`` part in the turn)."""
+    from clio_agent.gact.injection_parts import emit_injection  # noqa: PLC0415
+
+    emit_injection("hook", f"[clio: hook] {text}")
+
+
 def _typed_model_request(inner: Any, request: Any) -> ModelRequest:
     """The public :class:`ModelRequest` for a typed call: JSON messages, params, tools."""
     import dataclasses  # noqa: PLC0415
@@ -328,6 +335,7 @@ class _HookedLMBehaviour:
         before = dispatch_before_model(request, session_id=sid, turn_id=turn_id, cwd=cwd)
         self._enforce_deny(before)
         if self._should_synthesize(before):
+            _show_hook("A BeforeModel hook answered this model call without calling the model.")
             outputs = _coerce_outputs(before.llm_response)
             synthetic = True
         else:
@@ -346,6 +354,7 @@ class _HookedLMBehaviour:
         before = dispatch_before_model(request, session_id=sid, turn_id=turn_id, cwd=cwd)
         self._enforce_deny(before)
         if self._should_synthesize(before):
+            _show_hook("A BeforeModel hook answered this model call without calling the model.")
             outputs = _coerce_outputs(before.llm_response)
             synthetic = True
         else:
@@ -365,6 +374,7 @@ class _HookedLMBehaviour:
         before = dispatch_before_model(public, session_id=sid, turn_id=turn_id, cwd=cwd)
         self._enforce_deny(before)
         if self._should_synthesize(before):
+            _show_hook("A BeforeModel hook answered this model call without calling the model.")
             response, synthetic = _typed_response(request, before.llm_response), True
         else:
             target, call_request = self._typed_target(before, request)
@@ -379,6 +389,7 @@ class _HookedLMBehaviour:
         before = dispatch_before_model(public, session_id=sid, turn_id=turn_id, cwd=cwd)
         self._enforce_deny(before)
         if self._should_synthesize(before):
+            _show_hook("A BeforeModel hook answered this model call without calling the model.")
             response, synthetic = _typed_response(request, before.llm_response), True
         else:
             target, call_request = self._typed_target(before, request)
@@ -392,10 +403,12 @@ class _HookedLMBehaviour:
             routed = self._resolve_route(before.model_override)
             if routed is not None:
                 target = routed
+                _show_hook(f"A BeforeModel hook routed this model call to {before.model_override}.")
             else:
                 record_hook_reason("hook_route_unresolved", model_override=before.model_override)
         if before.has_request_patch and before.request_patch is not None:
             request = _patched_request(request, before.request_patch)
+            _show_hook(f"A BeforeModel hook changed this model call: {before.request_patch}.")
         # A routed LM is called with its own model string (lm15 requires it).
         return target, _with_model(request, str(getattr(target, "model", "") or request.model))
 
@@ -417,6 +430,7 @@ class _HookedLMBehaviour:
             cwd=cwd,
         )
         if after.llm_response_present:
+            _show_hook("An AfterModel hook replaced the model's reply.")
             return _rewritten(response, after.llm_response)
         return response
 
@@ -479,12 +493,14 @@ class _HookedLMBehaviour:
             routed = self._resolve_route(before.model_override)
             if routed is not None:
                 target = routed
+                _show_hook(f"A BeforeModel hook routed this model call to {before.model_override}.")
             else:
                 record_hook_reason("hook_route_unresolved", model_override=before.model_override)
         call_messages = messages
         call_kwargs = dict(kwargs)
         if before.has_request_patch and before.request_patch is not None:
             patch = before.request_patch
+            _show_hook(f"A BeforeModel hook changed this model call: {patch}.")
             if "messages" in patch:
                 call_messages = list(patch["messages"])
             patch_params = patch.get("params")
@@ -520,6 +536,7 @@ class _HookedLMBehaviour:
             cwd=cwd,
         )
         if after.llm_response_present:
+            _show_hook("An AfterModel hook replaced the model's reply.")
             return _coerce_outputs(after.llm_response)
         return outputs
 

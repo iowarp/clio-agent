@@ -45,8 +45,12 @@ def test_view_image_retains_only_verified_workspace_metadata(tmp_path: Path) -> 
         "media_type": "image/png",
         "size_bytes": len(_ONE_PIXEL_PNG),
         "sha256": result["sha256"],
+        "snapshot": result["snapshot"],
+        "snapshot_sha256": result["sha256"],
     }
     assert len(result["sha256"]) == 64
+    assert result["snapshot"].startswith(".clio/tool-output/")
+    assert (tmp_path / result["snapshot"]).read_bytes() == _ONE_PIXEL_PNG
     assert "base64" not in str(result).lower()
 
 
@@ -80,16 +84,34 @@ def test_view_image_hydrates_pixels_without_mutating_the_retained_descriptor(
     assert base64.b64decode(image.data) == _ONE_PIXEL_PNG
 
 
-def test_view_image_revalidates_hash_before_provider_delivery(tmp_path: Path) -> None:
+def test_a_regenerated_image_still_shows_what_the_agent_saw(tmp_path: Path) -> None:
+    """History is what the agent saw: after the file changes (a regenerated plot), an
+    earlier view still delivers the bytes it viewed -- never the new file, never a
+    failed turn."""
     from clio_agent.gact.agents.clio_react_record import result_part
 
     _tool, result = _descriptor(tmp_path)
     (tmp_path / "page-1.png").write_bytes(_ONE_PIXEL_PNG + b"changed")
 
-    with tool_workspace_context(tmp_path), pytest.raises(ViewImageError) as exc_info:
-        result_part("call_0_0", "view_image", result, False)
+    with tool_workspace_context(tmp_path):
+        part = result_part("call_0_0", "view_image", result, False)
 
-    assert exc_info.value.reason == "view_image_file_changed"
+    [image] = part.content
+    assert isinstance(image, ImagePart)
+    assert base64.b64decode(image.data) == _ONE_PIXEL_PNG
+
+
+def test_media_the_history_cannot_show_is_told_not_fatal(tmp_path: Path) -> None:
+    from clio_agent.gact.agents.clio_react_record import result_part
+
+    _tool, result = _descriptor(tmp_path)
+    (tmp_path / result["snapshot"]).unlink()
+
+    with tool_workspace_context(tmp_path):
+        part = result_part("call_0_0", "view_image", result, False)
+
+    [note] = part.content
+    assert note.text.startswith("[clio: media_unavailable] The media this call returned")
 
 
 def test_the_loop_sends_a_real_image_part_for_the_tool_result(tmp_path: Path) -> None:

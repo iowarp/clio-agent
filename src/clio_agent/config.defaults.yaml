@@ -317,8 +317,9 @@ limits.mcp_content_block_max_bytes: 524288
 limits.mcp_reconnect_timeout_s: 15.0
 
 # CLIO_MODEL_TOOL_RESULT_CHARS  (int)  <- src/clio_agent/tools/mcp_result_projection.py
-# Character bound on the model-facing MCP tool-result projection (head/tail
-# cut); distinct from limits.tool_result_chars.
+# Characters of a tool result shown to the model; a longer result is saved
+# to the session's tool-output folder and the agent gets this many head
+# characters plus the file path. Distinct from limits.tool_result_chars.
 limits.model_tool_result_chars: 12000
 
 # CLIO_PLAN_REVIEW_CHARS  (int)  <- src/clio_agent/gact/plan_review.py
@@ -1092,6 +1093,12 @@ resources.upload_chunk_bytes: 8388608
 # ==========================================================================
 # File-policy sandboxing, shell execution bounds and the MCP tool fleet's
 # discovery/cache/timeouts.
+
+# CLIO_TOOL_FAILURE_LIMIT  (int)  <- src/clio_agent/tools/execution.py
+# Consecutive failures of one tool before CLIO blocks further calls to it
+# (the agent is warned at the limit and told why a call was blocked); 0
+# turns the breaker off.
+tools.circuit_breaker.failure_limit: 3
 
 # CLIO_ALLOW_SYMLINKS  (bool)  <- src/clio_agent/tools/file_policy.py
 # Whether tool file reads/writes may traverse symlinks; set true only if a

@@ -66,9 +66,11 @@ from dspy.utils.exceptions import ContextWindowExceededError, LMUnexpectedError
 from clio_agent.errors import ClioError, MCPProtocolError
 from clio_agent.gact.agents import clio_react_record as record
 from clio_agent.gact.agents.clio_react_submit import active_react_scope_safe, record_submit_audit
+from clio_agent.gact.injection_parts import emit_injection
 from clio_agent.lm.engines.lm_loop import run_on_lm_loop
 from clio_agent.lm.engines.text_tools import INVALID_TOOL_CALL
 from clio_agent.lm.request_config import config_from_lm_kwargs
+from clio_agent.tools import injections
 
 __all__ = ["ClioReAct"]
 
@@ -298,6 +300,10 @@ class _Loop:
 
         expert_span = uuid.uuid4().hex[:16]
         self.recorder.started(expert_span, self.inputs)
+        state = getattr(_ctx.active_app(), "state", None)
+        ledger = getattr(state, "messages", None)
+        if ledger is not None:
+            self.recorder.carry_over(ledger.get(self.session, []) or [])
         self.recorder.injections(_ctx.turn_injections())
         self.recorder.user_message(self.head)
         parent_token = _ctx.set_parent_span(expert_span)
@@ -403,9 +409,6 @@ class _Loop:
             return [f.result() for f in futures]
 
     def _call(self, call: ToolCallPart) -> _CallOutcome:
-        from clio_agent.gact.runtime.globals import _TurnCancelled  # noqa: PLC0415
-        from clio_agent.tools.mcp_errors import typed_mcp_protocol_error  # noqa: PLC0415
-
         if call.name == INVALID_TOOL_CALL:
             return _CallOutcome(
                 "Your tool_calls block could not be read: "
@@ -415,6 +418,17 @@ class _Loop:
         tool = self.agent.tools.get(call.name)
         if tool is None:
             return _CallOutcome(f"Unknown tool: {call.name}", True)
+        with injections.collect() as told:
+            outcome = self._run_tool(call, tool)
+        # What the harness told the agent about this call is shown to the user too.
+        for source, text in told:
+            emit_injection(source, text, call_id=call.id, agent_id=self.recorder.expert_id)
+        return outcome
+
+    def _run_tool(self, call: ToolCallPart, tool: dspy.Tool) -> _CallOutcome:
+        from clio_agent.gact.runtime.globals import _TurnCancelled  # noqa: PLC0415
+        from clio_agent.tools.mcp_errors import typed_mcp_protocol_error  # noqa: PLC0415
+
         try:
             if inspect.iscoroutinefunction(getattr(tool, "func", None)):
                 # The worker thread has no running loop; the task copies this context.

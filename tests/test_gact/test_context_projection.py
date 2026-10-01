@@ -194,3 +194,42 @@ def test_a_rollback_past_a_compaction_restores_what_it_replaced(arc: ARCMemory) 
     arc.append_segment(SESSION, SCOPE, "user", {"text": "q3"}, turn_id="t3")
     roll_back_agent_context(arc, SESSION, rolled_back={"t3"}, kept_user_turns=set())
     assert _texts(arc) == ["q1", "a1", "q2", "a2"]
+
+
+def _ledger_row(row_id: str, role: str, text: str) -> Any:
+    return types.SimpleNamespace(
+        id=row_id, role=role, parts=[types.SimpleNamespace(type="text", text=text)]
+    )
+
+
+def test_a_scope_new_to_the_conversation_starts_from_its_earlier_turns(arc: ARCMemory) -> None:
+    """An agent with nothing recorded yet (the user switched agents, or its store
+    changed) joins the conversation: the transcript's earlier turns are carried
+    over once, as the messages they were, and the agent is told they were."""
+    ledger = [
+        _ledger_row("u1", "user", "which station moved most?"),
+        _ledger_row("a1", "assistant", "P595."),
+        _ledger_row("u2", "user", "by how much?"),  # this turn's own message
+    ]
+    lm, engine = scripted_lm([Reply(text="About 20 cm.")])
+    agent = ClioReAct("question -> answer", tools=[])
+    with _plane(arc, messages={SESSION: ledger}), dspy.context(lm=lm):
+        agent(question="by how much?")
+        texts_after_first = [s.content.get("text") for s in arc.render_working_set(SESSION, SCOPE)]
+
+    assert wire(engine.requests[0]) == [
+        ("user", [("text", "which station moved most?")]),
+        ("assistant", [("text", "P595.")]),
+        (
+            "user",
+            [
+                (
+                    "text",
+                    "[clio: earlier_turns]\nThe 2 earlier messages of this conversation were "
+                    "carried over from its transcript (their tool calls and results are not included).",
+                )
+            ],
+        ),
+        ("user", [("text", "by how much?")]),
+    ]
+    assert texts_after_first.count("which station moved most?") == 1  # carried over once

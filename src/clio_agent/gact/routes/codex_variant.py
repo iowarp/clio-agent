@@ -13,8 +13,9 @@ to a god file. ``codex_variant`` ITSELF is validated by
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
 
@@ -53,6 +54,21 @@ async def codex_sdk_readiness() -> tuple[str, str, bool, str]:
     return "ready", "Codex SDK sign-in and models verified", True, result.default_model
 
 
+#: How long a bind waits for the startup model check still in flight.
+STARTUP_CHECK_WAIT_S = 60.0
+
+
+async def await_startup_check(app: Any) -> None:
+    """Let a bind made right after launch wait for the startup model check (bounded).
+
+    Without this, choosing a model in the first seconds answered "models are being
+    checked" (401) although the check was about to finish.
+    """
+    task = getattr(app.state, "provider_catalog_startup_task", None)
+    if task is not None and not task.done():
+        await asyncio.wait({task}, timeout=STARTUP_CHECK_WAIT_S)
+
+
 async def resolve_codex_readiness(
     variant: str, direct_readiness: Callable[[], tuple[str, str, bool, str]]
 ) -> tuple[str, str, bool, str]:
@@ -80,6 +96,16 @@ async def apply_codex_readiness_gate(
     status, message, verified, default_model = await resolve_codex_readiness(
         cfg.codex_variant, direct_readiness
     )
+    if status == "auth_check_required" and cfg.codex_variant != "sdk":
+        # Signed in but never checked (no startup check ran): check now, as the
+        # Claude Code bind does, instead of refusing a working sign-in.
+        from clio_agent.providers import model_discovery  # noqa: PLC0415
+        from clio_agent.providers.catalog import get_provider  # noqa: PLC0415
+
+        provider = get_provider("codex")
+        if provider is not None:
+            await model_discovery.refresh_all(presets=[provider])
+        status, message, verified, default_model = direct_readiness()
     if not verified:
         raise HTTPException(
             status_code=401 if status in {"auth_required", "auth_check_required"} else 503,
@@ -99,4 +125,9 @@ async def apply_codex_readiness_gate(
         cfg.model = default_model
 
 
-__all__ = ["apply_codex_readiness_gate", "codex_sdk_readiness", "resolve_codex_readiness"]
+__all__ = [
+    "apply_codex_readiness_gate",
+    "await_startup_check",
+    "codex_sdk_readiness",
+    "resolve_codex_readiness",
+]

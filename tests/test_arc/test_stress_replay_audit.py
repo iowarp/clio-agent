@@ -12,16 +12,17 @@ on a small hand-written sequence):
 
   * Long, randomized-but-SEEDED edit sequences interleaving all four ops across
     several scopes and two sessions, replayed and checked at EVERY logical time.
-  * Byte-equality of ``segments_to_keys`` between the live store and the replay,
-    plus equality of the full per-id ``trace_ref`` map (audit-grade).
+  * Equality of the ordered render (``(id, kind, content)`` per segment) between the
+    live store and the replay, plus equality of the full per-id segment state and
+    ``trace_ref`` map (audit-grade).
   * Event-shape conformance to ``gact.app._emit_arc_op`` payload, verified by
-    driving the REAL ``_emit_arc_op`` through a real ``_RetainingReAct`` loop and
+    driving the REAL ``_emit_arc_op`` through a real ``ClioReAct`` loop and
     replaying the events it actually emitted into the trace.
   * Order/event-shuffle invariance (replay sorts by logical_time, so trace storage
     order must not matter) and cross-scope event-stream isolation.
   * A live (CLIO_RUN_LIVE=1) end-to-end audit against real ALCF inference.
 
-These exercise the REAL SegmentStore / ARCMemory / ClioCoreStore / _RetainingReAct — no
+These exercise the REAL SegmentStore / ARCMemory / ClioCoreStore / ClioReAct — no
 mocking of src code.
 """
 
@@ -38,7 +39,7 @@ import clio_agent.gact.app as gact_app
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.replay import reconstruct_arc_segments
 from clio_agent.arc.schema import Segment
-from clio_agent.arc.segments import SegmentStore, segments_to_keys
+from clio_agent.arc.segments import SegmentStore
 from clio_agent.arc.storage import LocalFSStore, make_arc_store
 
 # ---------------------------------------------------------------------------
@@ -97,8 +98,9 @@ def _store(tmp_path, sub: str = "store") -> tuple[SegmentStore, list[dict]]:
 # ---------------------------------------------------------------------------
 
 
-def _keys_for(segs: list[Segment]) -> dict[str, Any]:
-    return segments_to_keys(segs)
+def _render_proj(segs: list[Segment]) -> list[tuple[str, str, dict[str, Any]]]:
+    """The ordered render, projected to ``(id, kind, content)`` per segment."""
+    return [(s.id, s.kind, s.content) for s in segs]
 
 
 def _trace_ref_map(segs: list[Segment]) -> dict[str, str]:
@@ -133,12 +135,12 @@ def _assert_replay_matches_store(
 ) -> None:
     """The full audit: for the head view and every historical logical time, and
     for every scope, replay must reproduce the live store byte-identically —
-    render keys, full segment state, and the trace_ref back-link map."""
+    the ordered render, full segment state, and the trace_ref back-link map."""
     # Head (current live) view, per scope.
     for scope in scopes:
         live = ss.render(session_id, scope)
         replayed = reconstruct_arc_segments(events, scope_filter=scope)
-        assert _keys_for(replayed) == _keys_for(live), f"head render_keys mismatch scope={scope}"
+        assert _render_proj(replayed) == _render_proj(live), f"head render mismatch scope={scope}"
         assert _trace_ref_map(replayed) == _trace_ref_map(live), (
             f"head trace_ref mismatch scope={scope}"
         )
@@ -151,8 +153,8 @@ def _assert_replay_matches_store(
         for scope in scopes:
             live_t = ss.render(session_id, scope, as_of=t)
             replayed_t = reconstruct_arc_segments(events, scope_filter=scope, as_of_logical_time=t)
-            assert _keys_for(replayed_t) == _keys_for(live_t), (
-                f"as_of={t} render_keys mismatch scope={scope}"
+            assert _render_proj(replayed_t) == _render_proj(live_t), (
+                f"as_of={t} render mismatch scope={scope}"
             )
             assert _full_state_map(replayed_t) == _full_state_map(live_t), (
                 f"as_of={t} full-state mismatch scope={scope}"
@@ -199,10 +201,10 @@ def test_interleaved_multi_scope_sequence_replays_byte_identical(tmp_path):
     _assert_replay_matches_store(ss, events, sid, scopes, max_lt=_max_lt(events))
 
     # Sanity: the live content is actually what we expect post-edits.
-    a_keys = ss.render_keys(sid, sa)
-    assert "A-STEP0-SUMMARY" in str(a_keys)
-    assert "A-think-0" not in str(a_keys)  # folded into the summary
-    assert "B-obs-0" not in str(ss.render_keys(sid, sb))  # deleted
+    a_text = ss.render_text(sid, sa)
+    assert "A-STEP0-SUMMARY" in a_text
+    assert "A-think-0" not in a_text  # folded into the summary
+    assert "B-obs-0" not in ss.render_text(sid, sb)  # deleted
 
 
 # ---------------------------------------------------------------------------
@@ -273,20 +275,20 @@ def test_fuzz_long_single_sequence(tmp_path):
 
 def test_replay_invariant_to_event_shuffle(tmp_path):
     ss, events, sid, scopes = _run_fuzz(seed=55, n_ops=120, tmp_path=tmp_path)
-    head = {sc: _keys_for(ss.render(sid, sc)) for sc in scopes}
+    head = {sc: _render_proj(ss.render(sid, sc)) for sc in scopes}
 
     shuffled = list(events)
     random.Random(0).shuffle(shuffled)
     for sc in scopes:
         replayed = reconstruct_arc_segments(shuffled, scope_filter=sc)
-        assert _keys_for(replayed) == head[sc], f"shuffle changed reconstruction scope={sc}"
+        assert _render_proj(replayed) == head[sc], f"shuffle changed reconstruction scope={sc}"
         assert _trace_ref_map(replayed) == _trace_ref_map(ss.render(sid, sc))
 
     # Reversed order too (worst case for any order-dependent bug).
     rev = list(reversed(events))
     for sc in scopes:
         replayed = reconstruct_arc_segments(rev, scope_filter=sc)
-        assert _keys_for(replayed) == head[sc]
+        assert _render_proj(replayed) == head[sc]
 
 
 def test_replay_ignores_foreign_events(tmp_path):
@@ -302,7 +304,7 @@ def test_replay_ignores_foreign_events(tmp_path):
     for sc in scopes:
         clean = reconstruct_arc_segments(events, scope_filter=sc)
         dirty = reconstruct_arc_segments(mixed, scope_filter=sc)
-        assert _keys_for(dirty) == _keys_for(clean)
+        assert _render_proj(dirty) == _render_proj(clean)
 
 
 # ---------------------------------------------------------------------------
@@ -359,23 +361,23 @@ def test_as_of_exact_boundaries(tmp_path):
     for t in (created0, created1 - 1):
         live = ss.render(sid, scope, as_of=t)
         rep = reconstruct_arc_segments(events, as_of_logical_time=t)
-        assert _keys_for(rep) == _keys_for(live)
-        assert "T0" in str(_keys_for(rep))
-        assert "O1" not in str(_keys_for(rep))
+        assert _render_proj(rep) == _render_proj(live)
+        assert "T0" in str(_render_proj(rep))
+        assert "O1" not in str(_render_proj(rep))
 
     # At created1 .. tomb0-1: both visible (s0 tombstoned strictly AFTER this T).
     for t in (created1, tomb0 - 1):
         live = ss.render(sid, scope, as_of=t)
         rep = reconstruct_arc_segments(events, as_of_logical_time=t)
-        assert _keys_for(rep) == _keys_for(live)
-        assert "T0" in str(_keys_for(rep)) and "O1" in str(_keys_for(rep))
+        assert _render_proj(rep) == _render_proj(live)
+        assert "T0" in str(_render_proj(rep)) and "O1" in str(_render_proj(rep))
 
     # At tomb0 and after: s0 gone (tombstoned_at <= T), s1 remains.
     for t in (tomb0, tomb0 + 5):
         live = ss.render(sid, scope, as_of=t)
         rep = reconstruct_arc_segments(events, as_of_logical_time=t)
-        assert _keys_for(rep) == _keys_for(live)
-        assert "T0" not in str(_keys_for(rep)) and "O1" in str(_keys_for(rep))
+        assert _render_proj(rep) == _render_proj(live)
+        assert "T0" not in str(_render_proj(rep)) and "O1" in str(_render_proj(rep))
 
 
 # ---------------------------------------------------------------------------
@@ -468,13 +470,13 @@ def test_replay_through_arcmemory_passthroughs(tmp_path):
 
     live = arc.render_segments(sid, scope)
     replayed = reconstruct_arc_segments(events, scope_filter=scope)
-    assert segments_to_keys(replayed) == arc.render_segments_keys(sid, scope)
+    assert _render_proj(replayed) == _render_proj(arc.render_segments(sid, scope))
     assert _trace_ref_map(replayed) == _trace_ref_map(live)
     assert _full_state_map(replayed) == _full_state_map(live)
 
 
 # ---------------------------------------------------------------------------
-# 8. End-to-end through the REAL _emit_arc_op + _RetainingReAct loop: the events
+# 8. End-to-end through the REAL _emit_arc_op + ClioReAct loop: the events
 #    that the actual gact trace logger emits must reconstruct the live plane.
 #    This is the audit on the production code path, not a hand-rolled logger.
 # ---------------------------------------------------------------------------
@@ -554,7 +556,7 @@ def test_real_react_loop_trace_reconstructs_arc(tmp_path):
     assert live, "real loop wrote no segments"
 
     replayed = reconstruct_arc_segments(events, scope_filter=scope)
-    assert segments_to_keys(replayed) == arc.render_segments_keys(sid, scope)
+    assert _render_proj(replayed) == _render_proj(arc.render_segments(sid, scope))
     assert _trace_ref_map(replayed) == _trace_ref_map(live)
     assert _full_state_map(replayed) == _full_state_map(live)
 
@@ -565,7 +567,7 @@ def test_real_react_loop_trace_reconstructs_arc(tmp_path):
     for t in range(0, max_lt + 2):
         live_t = arc.render_segments(sid, scope, as_of=t)
         rep_t = reconstruct_arc_segments(events, scope_filter=scope, as_of_logical_time=t)
-        assert segments_to_keys(rep_t) == segments_to_keys(live_t), f"as_of={t}"
+        assert _render_proj(rep_t) == _render_proj(live_t), f"as_of={t}"
 
 
 # ---------------------------------------------------------------------------
@@ -580,11 +582,12 @@ def test_cold_reload_and_replay_agree(tmp_path):
     # Cold store re-reads the persisted segments from the same backend dir.
     cold = SegmentStore(LocalFSStore(str(tmp_path / "fuzz131")))
     for sc in scopes:
-        reloaded_keys = cold.render_keys(sid, sc)
-        replay_keys = segments_to_keys(reconstruct_arc_segments(events, scope_filter=sc))
-        live_keys = ss.render_keys(sid, sc)
-        assert reloaded_keys == live_keys, f"cold reload != live scope={sc}"
-        assert replay_keys == live_keys, f"replay != live scope={sc}"
+        reloaded = _render_proj(cold.render(sid, sc))
+        replayed = _render_proj(reconstruct_arc_segments(events, scope_filter=sc))
+        live = _render_proj(ss.render(sid, sc))
+        assert reloaded == live, f"cold reload != live scope={sc}"
+        assert replayed == live, f"replay != live scope={sc}"
+        assert cold.render_text(sid, sc) == ss.render_text(sid, sc)
         # Cold reload preserves trace_ref (persisted on the segment), matching replay.
         assert _trace_ref_map(cold.render(sid, sc)) == _trace_ref_map(
             reconstruct_arc_segments(events, scope_filter=sc)
@@ -666,7 +669,7 @@ def test_live_alcf_trace_reconstructs_arc(tmp_path):
     arc.summarize_segments(sid, scope, [s.id for s in live], {"text": "LIVE_SUMMARY"})
 
     replayed = reconstruct_arc_segments(events, scope_filter=scope)
-    assert segments_to_keys(replayed) == arc.render_segments_keys(sid, scope)
+    assert _render_proj(replayed) == _render_proj(arc.render_segments(sid, scope))
     assert _trace_ref_map(replayed) == _trace_ref_map(arc.render_segments(sid, scope))
     assert _full_state_map(replayed) == _full_state_map(arc.render_segments(sid, scope))
 
@@ -699,7 +702,7 @@ def test_clio_core_backed_replay_audit():
 
         live = ss.render(sid, scope)
         replayed = reconstruct_arc_segments(events, scope_filter=scope)
-        assert segments_to_keys(replayed) == segments_to_keys(live)
+        assert _render_proj(replayed) == _render_proj(live)
         assert _trace_ref_map(replayed) == _trace_ref_map(live)
         _assert_replay_matches_store(ss, events, sid, [scope], max_lt=_max_lt(events))
     finally:

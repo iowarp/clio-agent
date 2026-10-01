@@ -14,10 +14,12 @@ from typing import Any, Iterator
 
 import dspy
 import pytest
+from dspy.lm15 import Message, Request, TextPart
 
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact import context as ctx
-from clio_agent.gact.agents.clio_react import ClioReAct
+from clio_agent.gact.agents.clio_react import ClioReAct, _call_lm
+from clio_agent.gact.agents.clio_react_record import fold_steps, read_steps
 
 
 @pytest.fixture(params=["local", "cte"])
@@ -85,3 +87,33 @@ def make_react_agent(tools: list[Any] | None = None) -> Any:
         return "SEARCH_RESULT"
 
     return ClioReAct("question -> answer", tools=tools or [dspy.Tool(search)])
+
+
+def response_text(response: Any) -> str:
+    """The joined text parts of a model response, stripped."""
+    return "".join(p.text for p in response.message.parts if isinstance(p, TextPart)).strip()
+
+
+def probe_live_context(
+    lm: Any,
+    arc_memory: ARCMemory,
+    question: str,
+    *,
+    session: str,
+    scope: str,
+    as_of: int | None = None,
+) -> str:
+    """One REAL model call whose context is the ARC plane, returning its text answer.
+
+    The context is exactly what the agent loop sends: the scope's live segments folded
+    by ``fold_steps`` (``read_steps`` for the current view; ``as_of`` folds the
+    store's as-of-T render instead), followed by the question as a user message.
+    """
+    with live_plane_context(arc_memory, session=session, scope=scope):
+        if as_of is None:
+            steps = read_steps(arc_memory, session, scope)
+        else:
+            steps = fold_steps(arc_memory.render_segments(session, scope, as_of=as_of))
+        messages = (*steps, Message.user(question))
+        response = _call_lm(lm, Request(model=lm.model, messages=messages))
+    return response_text(response)

@@ -356,9 +356,10 @@ async def test_cancellation_grace_is_configurable() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_model_tool_result_bound_is_configurable() -> None:
+def test_model_tool_result_bound_is_configurable(tmp_path: Path) -> None:
     """``limits.model_tool_result_chars`` bounds the MODEL lane, not the evidence lane."""
 
+    from clio_agent.tools.execution import tool_workspace_context
     from clio_agent.tools.mcp_result_projection import (
         bounded_model_tool_result,
         model_tool_result_chars,
@@ -367,9 +368,11 @@ def test_model_tool_result_bound_is_configurable() -> None:
     set_config("limits", {"model_tool_result_chars": 900})
     assert model_tool_result_chars() == 900
 
-    bounded = bounded_model_tool_result("x" * 5_000)
+    with tool_workspace_context(str(tmp_path)):
+        bounded = bounded_model_tool_result("x" * 5_000)
     assert len(bounded) <= 900
-    assert '"reason": "model_tool_result_oversize"' in bounded
+    assert bounded.startswith("[clio: result_spilled] This result is 5,000 characters")
+    assert "more than the 900 shown to you" in bounded
 
 
 def test_model_and_evidence_tool_result_bounds_are_independent() -> None:

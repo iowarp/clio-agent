@@ -1,4 +1,4 @@
-"""Submit-audit helpers for the CLIO ReActV2 loop."""
+"""Submit-audit helpers for the CLIO agent loop (ClioReAct)."""
 
 from __future__ import annotations
 

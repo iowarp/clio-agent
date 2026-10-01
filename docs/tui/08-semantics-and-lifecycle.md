@@ -34,11 +34,24 @@ A turn is `POST /v1/sessions/{sid}/messages`. The turn engine (`gact/turn.py`,
 
 ### The agent loop (`ClioReAct`)
 
-Each step: cancellation is checked; the context is the task head (question,
-system prompt, tools) plus every earlier step of this turn, read back from the ARC
-live plane; one model call returns `next_thought` + `tool_calls`; the step's tool
-calls run **concurrently** (results in call order); the step is recorded
-(`react.step.completed`, ARC segments). The loop ends when the model calls no tool
+The agent's context is its scope's ARC live plane, and it spans turns: every earlier
+turn's user message, steps, tool results and answer are there as the messages they
+were (never a prose recap), and nothing is wiped between turns -- only a recorded op
+removes content (compaction summarizes it; undo / rewind roll it back to before the
+first rolled-back turn). A turn first records CLIO's additions (plan reminder, todos,
+replan suggestion, task notifications, memory hits) as user messages headed
+`[clio: <source>]` -- each source again only when its text changed -- then the user's
+message. An agent new to a conversation that already has turns is seeded once from
+the transcript and told so (`earlier_turns`).
+
+Each step: cancellation is checked; what arrived since the last step (a user steer, a
+finished child's result) is recorded as its own user message; the context is folded
+from the plane (`fold_steps`); one model call returns thinking, text and tool calls;
+the step's tool calls run **concurrently** (results in call order); the step is
+recorded (`react.step.completed`, ARC segments). Every note CLIO adds to a call's
+result -- a path hint, the circuit breaker, a spilled oversize result, a hook's
+effect -- is in the result the model reads and is shown to the user as an `injection`
+part with the exact text. The loop ends when the model calls no tool
 (the text is the answer, `termination_reason="direct_response"`), calls `submit`
 (typed outputs), calls `ask_user` / `plan_exit` (the turn yields to the user),
 or hits a declared `max_iters` / a parse error / the context window. Nothing

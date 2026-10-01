@@ -39,6 +39,7 @@ import msgspec
 from fastapi import FastAPI, HTTPException
 
 from clio_agent.gact.agents import runtime as agents_runtime
+from clio_agent.gact.context_view import context_messages
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.runtime.context_tokens import (
     _bucket_context_categories,
@@ -152,7 +153,7 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
             categories=_bucket_context_categories(tokens_by_kind, used, live_tokens),
             segments=[msgspec.to_builtins(s) for s in segments],
             render_text=arc.render_segment_text(sid, scope, as_of=as_of),
-            render_keys=arc.render_segments_keys(sid, scope, as_of=as_of),
+            messages=context_messages(segments),
         )
 
     def _context_preferences(sid: str) -> ContextPreferences:

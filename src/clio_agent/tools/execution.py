@@ -6,12 +6,12 @@ import asyncio
 import concurrent.futures
 import contextvars
 import inspect
+import json
 import logging
-import os
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,8 +22,7 @@ from clio_agent.errors import ClioError
 from clio_agent.runtime import commitment_activity
 from clio_agent.runtime.stream_audit import stream_audit
 from clio_agent.tools import foreground_cancellation as foreground_cancel
-from clio_agent.tools import tool_presentation
-from clio_agent.tools.file_policy import FileAccessPolicy
+from clio_agent.tools import injections, tool_presentation
 from clio_agent.tools.mcp_executor import (
     AsyncMCPToolExecutor,
     ClientFactory,
@@ -35,6 +34,8 @@ from clio_agent.tools.mcp_executor import (
     _tool_visible_to_model,
 )
 from clio_agent.tools.mcp_namespace_executor import SyncNamespacePreparationMixin
+from clio_agent.tools.mcp_result_projection import bounded_model_tool_result
+from clio_agent.tools.path_hints import missing_path_hint
 from clio_agent.tools.result_errors import structured_tool_result_error
 from clio_agent.tools.tool_hooks import InterceptDecision, PostToolHook, assemble_model_observation
 from clio_agent.tools.tool_observation import (
@@ -337,7 +338,19 @@ class SyncToolExecutor(Protocol):
 
 ToolExecutor = SyncToolExecutor
 
-REPEATED_TRANSIENT_FAILURE_LIMIT = 2
+
+def tool_failure_limit() -> int:
+    """Consecutive transient failures of one tool before its calls are blocked (0: never)."""
+    from clio_agent import conf  # noqa: PLC0415
+
+    return conf.resolve(
+        "tools.circuit_breaker.failure_limit",
+        env="CLIO_TOOL_FAILURE_LIMIT",
+        default=3,
+        cast=conf.as_int,
+    )
+
+
 SYNC_TOOL_RESULT_GRACE_SECONDS = 1.0
 
 
@@ -675,9 +688,10 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             if cancellation_checker is not None and cancellation_checker():
                 raise foreground_cancel._tool_cancellation_error(name, stage)
 
-        effective_args, repair_records = _repair_missing_file_arguments(args)
+        # The call runs exactly as the agent asked (relative paths resolve against the
+        # workspace root); a failed call gets a "did you mean" hint, never a rewrite.
         effective_args = _ground_output_paths(
-            effective_args,
+            dict(args),
             _tool_input_schema(self._mcp_tools.get(name)),  # fastmcp-4 snake-case-aware read
             get_active_tool_workspace_root(),
         )
@@ -708,10 +722,11 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
 
         raise_if_cancelled("tool_call_before")
 
-        circuit_error = self._repeated_transient_failure_error(name)
+        circuit_error = self._circuit_open_message(name)
         if circuit_error is not None:
             notify_tool_observer(tool_observer, name, effective_args, "started", None)
             notify_tool_observer(tool_observer, name, effective_args, "completed", circuit_error)
+            injections.note("circuit_breaker", circuit_error)
             raise RepeatedToolFailureError(circuit_error)
 
         # P2.3: gate-stashed, single-fire PreToolUse decision. ``modify`` mutates input;
@@ -719,12 +734,18 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
         intercept = (
             hooks.tool_interceptor(name, dict(effective_args)) if hooks.tool_interceptor else None
         )
+        hook_note = ""
         if (
             intercept is not None
             and intercept.kind == "modify"
             and intercept.modified_args is not None
         ):
             effective_args = dict(intercept.modified_args)
+            hook_note = (
+                "[clio: hook] A PreToolUse hook changed this call's arguments to "
+                f"{json.dumps(effective_args, default=str)}."
+            )
+            injections.note("hook", hook_note)
         elif intercept is not None and intercept.kind == "synthesize":
             notify_tool_observer(tool_observer, name, effective_args, "started", None)
             notify_tool_observer(
@@ -733,7 +754,11 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             self._record_tool_success(name)
             if return_raw:
                 return intercept.result  # MCP Apps bridge is not model-facing: no PostToolUse
-            return assemble_model_observation(
+            synthesized = (
+                "[clio: hook] A PreToolUse hook answered this call without running the tool."
+            )
+            injections.note("hook", synthesized)
+            observation = assemble_model_observation(
                 hooks.post_tool,
                 name,
                 effective_args,
@@ -741,6 +766,7 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
                 is_error=False,
                 synthetic=True,
             )
+            return f"{synthesized}\n\n{observation}"
 
         observer_handle = notify_tool_observer(tool_observer, name, effective_args, "started", None)
         presentation_snapshot = tool_presentation.capture_tool_presentation(name, effective_args)
@@ -790,20 +816,28 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
                 )
                 raise uncertain from exc
             error_text = repr(exc)
+            if hint := missing_path_hint(effective_args):
+                exc.add_note(hint)
+                injections.note("path_hint", hint)
             if not isinstance(exc, UncertainMutatingToolOutcomeError):
-                self._record_tool_failure(name, error_text)
+                if warning := self._record_tool_failure(name, error_text):
+                    exc.add_note(warning)
+                    injections.note("circuit_breaker", warning)
             trace = {"error": exc.to_dict()} if isinstance(exc, ClioError) else None
             notify_tool_observer(
                 tool_observer, name, effective_args, "completed", error_text, trace
             )
             raise
-        result = outcome.model_text
+        # The model-facing text is bounded HERE, on the calling thread, so an oversize
+        # result spills into the session's workspace and its note reaches the loop.
+        result = bounded_model_tool_result(outcome.model_text)
         observer_result = tool_presentation.observe_mcp_result(
             name, outcome.raw_result, effective_args, presentation_snapshot
         )
         structured_error = structured_tool_result_error(outcome.raw_result)
+        breaker_warning = ""
         if structured_error:
-            self._record_tool_failure(name, structured_error)
+            breaker_warning = self._record_tool_failure(name, structured_error)
             notify_tool_observer(
                 tool_observer,
                 name,
@@ -840,7 +874,14 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
 
         if return_raw:
             return outcome.raw_result  # MCP Apps bridge is not model-facing: no PostToolUse
-        result = _prepend_repair_notes(repair_records, result) if repair_records else result
+        if structured_error and (hint := missing_path_hint(effective_args)):
+            result = f"{hint}\n\n{result}"
+            injections.note("path_hint", hint)
+        if breaker_warning:
+            result = f"{breaker_warning}\n\n{result}"
+            injections.note("circuit_breaker", breaker_warning)
+        if hook_note:
+            result = f"{hook_note}\n\n{result}"
         # The model-visible observation (minted artifact identity, then P2.3 PostToolUse),
         # assembled AFTER the observer recorded the real effect (the trace keeps the result).
         result = assemble_model_observation(
@@ -864,29 +905,37 @@ class SyncMCPToolExecutor(SyncNamespacePreparationMixin):
             action=f"MCP resource {uri!r}",
         )
 
-    def _repeated_transient_failure_error(self, name: str) -> str | None:
-        """Return a structured error when the tool circuit should stay open."""
+    def _circuit_open_message(self, name: str) -> str | None:
+        """What the agent is told when a call is not run because the tool keeps failing."""
 
+        limit = tool_failure_limit()
         with self._failure_lock:
             count, last_error = self._consecutive_transient_failures.get(name, (0, ""))
-        if count < REPEATED_TRANSIENT_FAILURE_LIMIT:
+        if limit <= 0 or count < limit:
             return None
         return (
-            f"RepeatedToolFailureError(tool={name!r}, consecutive_failures={count}, "
-            f"last_error={last_error!r}, status='tool_failed', "
-            "message='tool call skipped after repeated transient failures; "
-            "return structured blocker evidence instead of retrying broad variants')"
+            f"[clio: circuit_breaker] {name} was not run: it failed {count} times in a row "
+            f"(last error: {last_error}). Take an alternative route, or report what "
+            "blocks you -- repeating this call would loop."
         )
 
-    def _record_tool_failure(self, name: str, error_text: str) -> None:
-        """Track consecutive transient failures for bounded tool retries."""
+    def _record_tool_failure(self, name: str, error_text: str) -> str:
+        """Count a transient failure; at the limit, return the warning the agent gets."""
 
+        limit = tool_failure_limit()
         with self._failure_lock:
             if not _is_transient_tool_error(error_text):
                 self._consecutive_transient_failures.pop(name, None)
-                return
+                return ""
             count, _last_error = self._consecutive_transient_failures.get(name, (0, ""))
-            self._consecutive_transient_failures[name] = (count + 1, error_text)
+            count += 1
+            self._consecutive_transient_failures[name] = (count, error_text)
+        if limit <= 0 or count != limit:
+            return ""
+        return (
+            f"[clio: circuit_breaker] {name} has failed {count} times in a row. Consider an "
+            "alternative route: further calls to it will be blocked to prevent looping."
+        )
 
     def _record_tool_success(self, name: str) -> None:
         """Clear repeated-failure state after a successful tool call."""
@@ -957,17 +1006,6 @@ class MCPToolBridge(SyncMCPToolExecutor):
     """Backward-compatible name for the sync MCP tool executor."""
 
 
-_FILE_ARGUMENT_NAMES = {
-    "file",
-    "filepath",
-    "file_path",
-    "path",
-    "input",
-    "input_path",
-    "source",
-    "source_path",
-}
-
 # Output-artifact designation table (issue #966 deletion inventory item 2): the
 # tool-declared output-arg names, artifact suffixes and the pre-call grounding
 # now live in the artifacts designation module — the ONE place that decides which
@@ -988,131 +1026,6 @@ def _ground_output_paths(
     from clio_agent.gact.artifacts.designation import ground_output_paths  # noqa: PLC0415
 
     return ground_output_paths(args, input_schema, workspace_root)
-
-
-# Bounds on the allowed-root basename scan: a mistyped path must not turn a tool
-# call into an unbounded filesystem walk. Both are hard ceilings — hitting either
-# aborts the scan and leaves the argument UNCHANGED, because a partial scan cannot
-# prove a match is unique.
-_REPAIR_SCAN_LIMIT = 20_000
-_REPAIR_DEADLINE_S = 2.0
-
-
-def _bounded_basename_matches(
-    roots: Sequence[Path],
-    basename: str,
-    scanned: int,
-    deadline: float,
-) -> tuple[list[Path], int, bool]:
-    """Walk ``roots`` for files named ``basename``, bounding every entry visited.
-
-    Unlike ``Path.rglob``, which only yields name-matches (so a no-match basename
-    over a huge tree would traverse it exhaustively before any bound could be
-    consulted), this walk increments ``scanned`` and checks the wall-clock
-    ``deadline`` for EVERY directory entry visited. Directory symlinks are not
-    followed, matching ``rglob``'s non-recursing behavior and avoiding cycles.
-
-    Returns:
-        ``(matches, scanned, aborted)``: resolved file matches (the walk stops
-        after a second match, which already disproves uniqueness), the updated
-        entry count, and whether a bound aborted the walk.
-    """
-    matches: list[Path] = []
-    for root in roots:
-        stack: list[str] = [str(root)]
-        while stack:
-            directory = stack.pop()
-            try:
-                entries = os.scandir(directory)
-            except OSError:
-                continue
-            with entries:
-                for entry in entries:
-                    scanned += 1
-                    if scanned > _REPAIR_SCAN_LIMIT or time.monotonic() > deadline:
-                        return matches, scanned, True
-                    try:
-                        if entry.is_dir(follow_symlinks=False):
-                            stack.append(entry.path)
-                        elif entry.name == basename and entry.is_file():
-                            matches.append(Path(entry.path).resolve())
-                            if len(matches) > 1:
-                                return matches, scanned, False
-                    except OSError:
-                        continue
-    return matches, scanned, False
-
-
-def _repair_missing_file_arguments(
-    args: Mapping[str, Any],
-) -> tuple[dict[str, Any], list[dict[str, str]]]:
-    """Repair obvious missing file-path typos to a unique allowed-root match.
-
-    Model-generated tool calls occasionally mistype a directory component while
-    preserving the target basename. Retrying a unique basename match under the
-    configured allowed roots keeps the repair inside the existing file policy:
-    no outside-root access, and no ambiguous guessing.
-
-    The allowed-root walk is bounded (``_REPAIR_SCAN_LIMIT`` entries across roots,
-    ``_REPAIR_DEADLINE_S`` seconds); exceeding either bound aborts the scan and
-    leaves the argument unchanged, since a partial scan cannot prove uniqueness.
-
-    Returns:
-        The (possibly repaired) argument dict, and a list of substitution records
-        ``{"argument", "requested", "used"}`` — one per actually-substituted
-        argument — so the caller can surface every repair in the tool result.
-    """
-
-    repaired = dict(args)
-    records: list[dict[str, str]] = []
-    try:
-        policy = FileAccessPolicy.from_env()
-    except Exception as exc:  # noqa: BLE001 - degradation surfaced via structured log below
-        logger.warning(
-            "file-argument repair skipped: file policy unavailable "
-            "reason=file_policy_unavailable error=%r",
-            exc,
-        )
-        return repaired, records
-
-    scanned = 0
-    deadline = time.monotonic() + _REPAIR_DEADLINE_S
-    for key, value in list(repaired.items()):
-        if key not in _FILE_ARGUMENT_NAMES or not isinstance(value, str) or not value.strip():
-            continue
-        candidate = Path(value).expanduser()
-        if candidate.exists():
-            continue
-        basename = candidate.name
-        if not basename or basename in {".", ".."}:
-            continue
-        matches, scanned, aborted = _bounded_basename_matches(
-            policy.allowed_roots, basename, scanned, deadline
-        )
-        if aborted:
-            # A partial scan can't prove uniqueness — leave the argument as-is.
-            continue
-        unique = sorted(set(matches))
-        if len(unique) == 1:
-            used = str(unique[0])
-            repaired[key] = used
-            records.append({"argument": key, "requested": value, "used": used})
-    return repaired, records
-
-
-def _prepend_repair_notes(records: Sequence[Mapping[str, str]], result: str) -> str:
-    """Prepend a human-readable ``[path-repair]`` note per substitution to ``result``.
-
-    Every file-argument substitution the executor made is surfaced verbatim in the
-    tool result the model reads back, so a silently-corrected path is never
-    invisible — the repair is auditable in the trace and to the model itself.
-    """
-    notes = "".join(
-        f"[path-repair] argument '{rec['argument']}': '{rec['requested']}' not found; "
-        f"substituted unique match '{rec['used']}'\n"
-        for rec in records
-    )
-    return f"{notes}\n{result}"
 
 
 def _make_dspy_tools(

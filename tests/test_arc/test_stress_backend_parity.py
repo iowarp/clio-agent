@@ -8,7 +8,8 @@ binary-hostile non-UTF-8 content, large content) we drive the SAME script throug
 two real ``ARCMemory`` instances -- one ``backend="local"``, one ``backend="cte"`` --
 and assert the four observable read surfaces are byte/structure EQUAL:
 
-    * ``render_segments_keys``   (the dspy trajectory dict the ReAct loop reads)
+    * ``render_segments``        (the ordered live segments -- kind/step/content;
+                                  ids are backend-local uuids, so not compared)
     * ``render_segment_text``    (the flattened text -- byte-equality)
     * ``segment_tokens_by_kind`` (compaction attribution)
     * ``scan_scopes``            (cross-scope discovery)
@@ -111,6 +112,21 @@ def _sid(base: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _structure(
+    arc: ARCMemory, sid: str, scope: str, *, as_of: int | None = None
+) -> list[tuple[str, int, Any]]:
+    """The ordered live render as ``(kind, step, content)`` per segment. Segment ids
+    are fresh uuids per write, so they legitimately differ ACROSS backends; everything
+    the agent context is built from (kind + content, in order) must not."""
+    return [(s.kind, s.step, s.content) for s in arc.render_segments(sid, scope, as_of=as_of)]
+
+
+def _with_ids(arc: ARCMemory, sid: str, scope: str) -> list[tuple[str, str, Any]]:
+    """The ordered live render as ``(id, kind, content)`` -- for SAME-backend
+    persistence parity, where the ids must survive a cold reload."""
+    return [(s.id, s.kind, s.content) for s in arc.render_segments(sid, scope)]
+
+
 def _observable(arc: ARCMemory, sessions_scopes: list[tuple[str, str]]) -> dict[str, Any]:
     """Snapshot every observable read surface of the live plane for a set of
     (session, scope) pairs, plus per-session scope discovery. Pure read; no mutation.
@@ -124,7 +140,7 @@ def _observable(arc: ARCMemory, sessions_scopes: list[tuple[str, str]]) -> dict[
         snap["scopes"][sid] = arc._segments.scan_scopes(sid)
     for sid, scope in sessions_scopes:
         snap["scope_views"][(sid, scope)] = {
-            "keys": arc.render_segments_keys(sid, scope),
+            "render": _structure(arc, sid, scope),
             "text": arc.render_segment_text(sid, scope),
             "tokens": arc.segment_tokens_by_kind(sid, scope),
         }
@@ -165,9 +181,9 @@ def _assert_parity(
         lview = lv["scope_views"][(lsid, lscope)]
         cview = cv["scope_views"][(csid, cscope)]
         assert lscope == cscope, f"[{label}] scope pairing bug {lscope!r} vs {cscope!r}"
-        assert lview["keys"] == cview["keys"], (
-            f"[{label}] render_segments_keys mismatch scope={lscope}\n"
-            f"  local={lview['keys']!r}\n  cte  ={cview['keys']!r}"
+        assert lview["render"] == cview["render"], (
+            f"[{label}] render_segments mismatch scope={lscope}\n"
+            f"  local={lview['render']!r}\n  cte  ={cview['render']!r}"
         )
         assert lview["text"] == cview["text"], (
             f"[{label}] render_segment_text mismatch scope={lscope}\n"
@@ -444,7 +460,7 @@ def test_persistence_parity_second_arcmemory(
     local2 = ARCMemory(data_dir=str(tmp_path / "arc_p_local2"), store=store2)
 
     for sid, scope in local_scopes:
-        assert local2.render_segments_keys(sid, scope) == local1.render_segments_keys(sid, scope), (
+        assert _with_ids(local2, sid, scope) == _with_ids(local1, sid, scope), (
             f"[{name}] LOCAL persistence: second ARCMemory render diverged"
         )
         assert local2.render_segment_text(sid, scope) == local1.render_segment_text(sid, scope)
@@ -460,9 +476,7 @@ def test_persistence_parity_second_arcmemory(
     clio_core2 = _clio_core_arc()  # new client into the same in-process shared-memory runtime
     try:
         for sid, scope in clio_core_scopes:
-            assert clio_core2.render_segments_keys(
-                sid, scope
-            ) == clio_core_arc.render_segments_keys(sid, scope), (
+            assert _with_ids(clio_core2, sid, scope) == _with_ids(clio_core_arc, sid, scope), (
                 f"[{name}] clio-core persistence: second ARCMemory render diverged"
             )
             assert clio_core2.render_segment_text(sid, scope) == clio_core_arc.render_segment_text(
@@ -478,9 +492,9 @@ def test_persistence_parity_second_arcmemory(
 
         # And local persisted render == cte persisted render (the full cross-backend tie)
         for (lsid_, lscope), (csid_, cscope) in zip(local_scopes, clio_core_scopes, strict=True):
-            assert local2.render_segments_keys(lsid_, lscope) == clio_core2.render_segments_keys(
-                csid_, cscope
-            ), f"[{name}] cross-backend persisted render mismatch on scope {lscope}"
+            assert _structure(local2, lsid_, lscope) == _structure(clio_core2, csid_, cscope), (
+                f"[{name}] cross-backend persisted render mismatch on scope {lscope}"
+            )
             assert local2.render_segment_text(lsid_, lscope) == clio_core2.render_segment_text(
                 csid_, cscope
             )
@@ -519,14 +533,15 @@ def test_as_of_render_parity(tmp_path, clio_core_arc) -> None:
     cscope, csnap = build(clio_core_arc, csid)
 
     # current render parity
-    assert local.render_segments_keys(lsid, lscope) == clio_core_arc.render_segments_keys(
-        csid, cscope
-    )
+    assert _structure(local, lsid, lscope) == _structure(clio_core_arc, csid, cscope)
     # as-of-snapshot render parity: both must still show the pre-delete o0
-    lkeys = local._segments.render_keys(lsid, lscope, as_of=lsnap)
-    ckeys = clio_core_arc._segments.render_keys(csid, cscope, as_of=csnap)
-    assert lkeys == ckeys, f"as-of-T render mismatch local={lkeys} cte={ckeys}"
-    assert "o0" in str(lkeys) and "o0" in str(ckeys), "as-of-T must show the pre-delete obs"
+    lview = _structure(local, lsid, lscope, as_of=lsnap)
+    cview = _structure(clio_core_arc, csid, cscope, as_of=csnap)
+    assert lview == cview, f"as-of-T render mismatch local={lview} cte={cview}"
+    ltext = local._segments.render_text(lsid, lscope, as_of=lsnap)
+    ctext = clio_core_arc._segments.render_text(csid, cscope, as_of=csnap)
+    assert ltext == ctext
+    assert "o0" in ltext, "as-of-T must show the pre-delete obs"
     # the snapshots are at the same logical position (3 appends => lt of last)
     assert lsnap == csnap, (
         f"logical_time snapshot diverged across backends: local={lsnap} cte={csnap}"
@@ -575,18 +590,18 @@ def test_real_react_loop_parity(tmp_path, clio_core_arc) -> None:
     _run_real_loop(local, lsid, scope)
     _run_real_loop(clio_core_arc, csid, scope)
 
-    lkeys = local.render_segments_keys(lsid, scope)
-    ckeys = clio_core_arc.render_segments_keys(csid, scope)
-    assert lkeys == ckeys, (
-        f"real-loop render diverged across backends\n  local={lkeys}\n  cte  ={ckeys}"
+    lview = _structure(local, lsid, scope)
+    cview = _structure(clio_core_arc, csid, scope)
+    assert lview == cview, (
+        f"real-loop render diverged across backends\n  local={lview}\n  cte  ={cview}"
     )
     assert local.render_segment_text(lsid, scope) == clio_core_arc.render_segment_text(csid, scope)
     assert local.segment_tokens_by_kind(lsid, scope) == clio_core_arc.segment_tokens_by_kind(
         csid, scope
     )
     # sanity: the loop actually produced the search observation on both
-    assert "SEARCH_RESULT" in str(lkeys)
-    assert "SEARCH_RESULT" in str(ckeys)
+    assert "SEARCH_RESULT" in local.render_segment_text(lsid, scope)
+    assert "SEARCH_RESULT" in clio_core_arc.render_segment_text(csid, scope)
 
 
 # ---------------------------------------------------------------------------
@@ -605,7 +620,8 @@ def test_local_battery_runs(tmp_path, name: str, script: Script) -> None:
     assert scopes, f"[{name}] script returned no scopes"
     for s, scope in scopes:
         # idempotent re-render is stable
-        assert local.render_segments_keys(s, scope) == local.render_segments_keys(s, scope)
+        assert _with_ids(local, s, scope) == _with_ids(local, s, scope)
+        assert local.render_segment_text(s, scope) == local.render_segment_text(s, scope)
         # tokens_by_kind only counts live segments and is non-negative
         toks = local.segment_tokens_by_kind(s, scope)
         assert all(v >= 0 for v in toks.values())

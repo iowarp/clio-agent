@@ -1060,12 +1060,6 @@ class ARCMemory:
         """Ordered LIVE working-set segments: the agent's context (compaction's target)."""
         return self._segments.render_working_set(session_id, scope, as_of=as_of)
 
-    def render_segments_keys(
-        self, session_id: str, scope: str, *, as_of: Optional[int] = None
-    ) -> Dict[str, Any]:
-        """The live segments as a trajectory dict (the context route's inspection view)."""
-        return self._segments.render_keys(session_id, scope, as_of=as_of)
-
     def render_segment_text(
         self, session_id: str, scope: str, *, as_of: Optional[int] = None
     ) -> str:

@@ -517,9 +517,8 @@ class TurnTranscript:
     def annotate(self, part_id: str, **metadata: Any) -> None:
         """Merge post-hoc facts into a part's metadata — never its text.
 
-        For tool_result final previews, ``stream_fallback`` payloads,
-        ``restates_part_id`` tags. Persisted with the part and republished as
-        a metadata patch so live and reload agree.
+        For tool_result previews, ``stream_fallback`` payloads, ``restates_part_id``
+        tags. Persisted, and republished with the whole part so live == reload.
         """
 
         with self._lock:
@@ -550,6 +549,7 @@ class TurnTranscript:
                     "message_id": self.message_id,
                     "part_id": part_id,
                     "metadata_patch": dict(metadata),
+                    "part": part.to_wire(),
                 },
             )
 
