@@ -104,6 +104,14 @@ KEY_NOTES: dict[str, str] = {
         "Disables auto-installing the default marketplace Agent-Blueprint registry on first boot; "
         "set true for an offline deployment."
     ),
+    "agents.react_extract.after_steps": (
+        "Model steps a ReAct loop must exceed before DSPy's extract may fill the outputs it did "
+        "not produce (a max_iters ending, or a signature's extra outputs after a direct answer)."
+    ),
+    "agents.react_extract.enabled": (
+        "Runs DSPy's extract after a long ReAct loop to fill outputs the loop did not produce; "
+        "never replaces the model's own answer. Set false for the strict one-call-per-step contract."
+    ),
     "arc.cache_capacity": (
         "Max entries in ARC's in-process LRU cache; raise to cut store re-reads on a low-RAM host, "
         "lower to shrink resident memory."

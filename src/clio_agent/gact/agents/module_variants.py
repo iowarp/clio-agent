@@ -47,6 +47,7 @@ import dspy
 from dspy.predict.predict import Prediction
 
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.agents import variant_lines
 from clio_agent.gact.runtime.type_parsing import (
     VariantSpec,
     _blueprint_module_variant,
@@ -85,6 +86,9 @@ class _VariantRunLedger:
     # inner module) and lets the outer wrapper re-raise it typed instead of
     # wrapping it in the generic :class:`VariantTotalFailure` envelope.
     terminal_refusal: Exception | None = None
+    # Per-try forked segment ids (``variant_lines.fork_try``): the winner's line is
+    # what it added after them.
+    forks: dict[int, list[str] | None] = field(default_factory=dict)
 
 
 _LEDGER: contextvars.ContextVar[_VariantRunLedger | None] = contextvars.ContextVar(
@@ -209,6 +213,8 @@ class _RunKeyedModule(dspy.Module):
             run_index,
         )
         try:
+            if ledger is not None:
+                ledger.forks[run_index] = variant_lines.fork_try(run_index)
             return self.inner(**kwargs)
         except Exception as exc:  # noqa: BLE001 - record the REAL error the engine only prints
             # The engine (`dspy.BestOfN`/`Refine`) catches + PRINTS each failed try and
@@ -271,6 +277,11 @@ class _RunScopedVariantMixin:
             # selected). ALWAYS a typed turn-ladder failure — never swallowed to None.
             raise _total_variant_failure(self._clio_agent_id, self._clio_variant, ledger, None)
         _stamp_variant_selection(pred, self._clio_variant, self._clio_agent_id, ledger)
+        if ledger.scores:
+            winning_index = max(ledger.scores, key=lambda pair: pair[1])[0]
+            forked = ledger.forks.get(winning_index)
+            if forked is not None:
+                variant_lines.record_winner(winning_index, forked)
         return pred
 
 

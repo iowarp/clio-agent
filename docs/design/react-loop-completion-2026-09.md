@@ -41,6 +41,42 @@ model-selected tool, and continues with the observation. A response without a
 tool call ends the run. Wrapper layers preserve the returned answer instead of
 trimming it, synthesizing a substitute, or raising based on its content.
 
+## Amendment 2026-09-30: DSPy's extract, config-driven
+
+Owner decision for the agent-loop rebuild
+(`docs/design/agent-loop-rebuild-2026-09.md`, phase 6). This amendment narrows
+"CLIO does not call the model again after that loop returns" and removed
+mechanism 6 in exactly one respect. DSPy's own `ReAct` extract may run once after
+a loop. It is literally DSPy's extract: `dspy.ChainOfThought` over the task
+inputs, the missing outputs and the text trajectory
+(`gact/agents/clio_react_extract.py`).
+
+It runs only when all of these hold:
+
+- `agents.react_extract.enabled` / `CLIO_REACT_EXTRACT_ENABLED` is on (default
+  `true`).
+- The loop took more than `agents.react_extract.after_steps` /
+  `CLIO_REACT_EXTRACT_AFTER_STEPS` model steps (default `3`).
+- The loop ended by `max_iters`, which has no answer at all, or by a direct
+  response on a signature that declares outputs the loop did not produce (for
+  example `question -> answer, summary`).
+- It fills only those missing outputs.
+
+What does not change:
+
+- The answer the model wrote, which the user already saw, is never replaced.
+- `submit` (the model's own typed outputs), an `ask_user` / `plan_exit` yield and
+  `context_window_exceeded` never extract.
+- A plain `question -> answer` direct response never extracts.
+- A short loop never extracts, so the qualification invariant below holds as
+  written. The one-sentence prompt and a blank response are still one provider
+  call. An explicit iteration cap of three or fewer steps is still one call per
+  step, with no finalization.
+- The extract is not hidden. It is a normal DSPy module call on the same LM. The
+  expert lifecycle's `expert.extract.completed` event names the fields it filled
+  in `payload.extracted`.
+- Setting `enabled: false` restores the original contract exactly.
+
 ## Qualification invariant
 
 For a prompt such as `Reply ready in one sentence. Do not call tools.`, the
