@@ -66,3 +66,42 @@ def test_a_prompt_answer_returns_at_once() -> None:
     assert wait_while_progressing(
         future_done_within(fut), slice_s=10.0, op_name="get", cpu_seconds=lambda: None
     )
+
+
+def test_descendant_work_never_drops_when_a_working_child_exits() -> None:
+    """A finished child's work stays counted: the signal is cumulative, never a dip.
+
+    Live under load (test_hpc_mcp_integration, four cold MCP namespaces at once): each
+    ``uv`` installer burns CPU and EXITS mid-probe. Summing only the descendants still
+    alive made the total drop when one exited, so a probe whose servers were all busy
+    read "no progress" and spent its timeout retries until discovery degraded.
+    """
+    import subprocess
+    import sys
+
+    from clio_agent.arc.daemon_progress import descendants_work
+
+    burn = (
+        "import sys, time\n"
+        "end = time.process_time() + 0.5\n"
+        "while time.process_time() < end:\n"
+        "    pass\n"
+        "print('done', flush=True)\n"
+        "sys.stdin.readline()\n"
+    )
+    child = subprocess.Popen(
+        [sys.executable, "-c", burn],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert child.stdout is not None and child.stdin is not None
+    assert child.stdout.readline().strip() == "done"  # the work is done, child alive
+    before_exit = descendants_work()
+    child.stdin.write("\n")
+    child.stdin.flush()
+    child.wait()
+    after_exit = descendants_work()
+
+    assert before_exit >= 0.5
+    assert after_exit >= before_exit

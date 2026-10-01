@@ -16,6 +16,7 @@ hangs forever.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import Future
@@ -56,17 +57,35 @@ def process_work(pid: int) -> float | None:
     return float(times.user + times.system) + io_mib
 
 
+#: Last observed work of every descendant ever seen, keyed by (pid, create_time) so a
+#: reused pid is a new process. Kept after the process exits: the total is cumulative.
+_DESCENDANT_WORK: dict[tuple[int, float], float] = {}
+_DESCENDANT_WORK_LOCK = threading.Lock()
+
+
 def descendants_work() -> float:
-    """Total work (CPU seconds + I/O MiB) of this process's descendants -- the MCP servers
-    and their launchers (uv installing, Python importing) run there."""
+    """Cumulative work (CPU seconds + I/O MiB) of this process's descendants -- the MCP
+    servers and their launchers (uv installing, Python importing) run there.
+
+    Never decreases: a descendant that exits keeps the work it was last seen doing. A
+    sum over only the live descendants dropped whenever a working child (a ``uv``
+    installer) finished, which read as "no progress" while every server was busy.
+    """
     import psutil  # noqa: PLC0415
 
-    total = 0.0
+    observed: dict[tuple[int, float], float] = {}
     for child in psutil.Process().children(recursive=True):
+        try:
+            key = (child.pid, child.create_time())
+        except psutil.Error:
+            continue
         work = process_work(child.pid)
         if work is not None:
-            total += work
-    return total
+            observed[key] = work
+    with _DESCENDANT_WORK_LOCK:
+        for key, work in observed.items():
+            _DESCENDANT_WORK[key] = max(work, _DESCENDANT_WORK.get(key, 0.0))
+        return sum(_DESCENDANT_WORK.values())
 
 
 def daemon_cpu_seconds() -> float | None:
