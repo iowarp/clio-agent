@@ -1232,6 +1232,12 @@ tools.mcp.launcher_cache_lock_timeout_s: 600.0
 # forced; lower to pick up upstream tool changes sooner.
 tools.mcp.listing_ttl_h: 24.0
 
+# CLIO_MCP_MAX_WAIT_S  (float)  <- src/clio_agent/tools/mcp_probe_hardening.py
+# Ceiling (seconds) on waiting for an MCP server that is still visibly
+# starting (its process tree working); until then a slow start never spends
+# the probe retry budget.
+tools.mcp.max_wait_s: 600.0
+
 # CLIO_MCP_MOUNT_RETRY_DELAYS_S  (list)  <- src/clio_agent/gact/mcp_readiness.py
 # Increasing waits (seconds, comma-separated) between an on-demand MCP
 # mount's retry attempts; list length is the retry budget.

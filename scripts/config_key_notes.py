@@ -1198,6 +1198,10 @@ KEY_NOTES: dict[str, str] = {
         "Hours a cached MCP tool listing stays valid before a live relist is forced; lower to pick "
         "up upstream tool changes sooner."
     ),
+    "tools.mcp.max_wait_s": (
+        "Ceiling (seconds) on waiting for an MCP server that is still visibly starting (its "
+        "process tree working); until then a slow start never spends the probe retry budget."
+    ),
     "tools.mcp.mount_retry_delays_s": (
         "Increasing waits (seconds, comma-separated) between an on-demand MCP mount's retry "
         "attempts; list length is the retry budget."

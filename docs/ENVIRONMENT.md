@@ -193,6 +193,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_MCP_INPUT_REQUIRED_MAX_ROUNDS` | `tools.mcp.input_required_max_rounds` | int | `DEFAULT_INPUT_REQUIRED_MAX_ROUNDS` _(computed)_ | `src/clio_agent/tools/mcp_runtime.py` |
 | `CLIO_MCP_LAUNCHER_CACHE_LOCK_TIMEOUT_S` | `tools.mcp.launcher_cache_lock_timeout_s` | float | `600.0` | `src/clio_agent/tools/launcher_cache_lock.py` |
 | `CLIO_MCP_LISTING_TTL_H` | `tools.mcp.listing_ttl_h` | float | `24.0` | `src/clio_agent/tools/listing_cache.py` |
+| `CLIO_MCP_MAX_WAIT_S` | `tools.mcp.max_wait_s` | float | `600.0` | `src/clio_agent/tools/mcp_probe_hardening.py` |
 | `CLIO_MCP_MOUNT_RETRY_DELAYS_S` | `tools.mcp.mount_retry_delays_s` | list | `0.5,1.5` | `src/clio_agent/gact/mcp_readiness.py` |
 | `CLIO_MCP_PROBE_TIMEOUT_RETRIES` | `tools.mcp.probe_timeout_retries` | int | `3` | `src/clio_agent/tools/mcp_probe_hardening.py` |
 | `CLIO_MCP_RESPONSE_CACHE_ENABLED` | `tools.mcp.response_cache_enabled` | bool | `false` | `src/clio_agent/tools/mcp_runtime.py` |

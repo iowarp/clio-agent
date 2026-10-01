@@ -56,6 +56,19 @@ def process_work(pid: int) -> float | None:
     return float(times.user + times.system) + io_mib
 
 
+def descendants_work() -> float:
+    """Total work (CPU seconds + I/O MiB) of this process's descendants -- the MCP servers
+    and their launchers (uv installing, Python importing) run there."""
+    import psutil  # noqa: PLC0415
+
+    total = 0.0
+    for child in psutil.Process().children(recursive=True):
+        work = process_work(child.pid)
+        if work is not None:
+            total += work
+    return total
+
+
 def daemon_cpu_seconds() -> float | None:
     """The clio-core daemon's work so far (CPU seconds + I/O MiB), ``None`` if none is found."""
     from clio_agent.arc.clio_core_daemon import _resolve_daemon_pid  # noqa: PLC0415
