@@ -6,6 +6,8 @@ TUI/HTTP surface aren't tracked here.
 
 ## Unreleased
 
+## [0.9.4.24] — 2026-09-30
+
 ### Fixed
 
 - A turn whose model reply is neither a tool call nor a readable answer (for
