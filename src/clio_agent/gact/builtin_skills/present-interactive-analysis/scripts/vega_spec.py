@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """Export an Altair chart to a Vega-Lite spec and pre-check it for clio.chart.v1.
 
-The server-side chart guard is authoritative; these checks only catch the
-refusals Altair users hit most often (inlined data, URLs, oversize specs) before
-a round trip.
+The pre-check in :func:`check_spec` calls the real server-side guard
+(:func:`clio_schemas.a2ui.chart_spec.check_chart_spec`) instead of a hand-copied
+rule list, so this script can never drift from what the server actually
+enforces — a spec this script accepts is a spec the guard accepts, including
+the data-free layout keys (``columns``, ``spacing``, ``padding``, ``align``,
+``bounds``, ``center``) and ``projection`` it allows as of clio-schemas 0.5.2.
+The server-side guard is still authoritative; this is a pre-check to save a
+round trip, not a second source of truth.
 """
 
 from __future__ import annotations
@@ -15,28 +20,19 @@ import sys
 from pathlib import Path
 from typing import Any
 
-MAX_SPEC_BYTES = 64 * 1024
-SOURCE_DATA = {"name": "source"}
-FORBIDDEN_DATA_KEYS = ("url", "values", "sequence")
-
-
-def _walk(node: Any, path: str) -> list[tuple[str, Any, Any]]:
-    """Return (path, key, value) for every mapping entry in ``node``."""
-
-    found: list[tuple[str, Any, Any]] = []
-    if isinstance(node, dict):
-        for key, value in node.items():
-            child = f"{path}/{key}"
-            found.append((child, key, value))
-            found.extend(_walk(value, child))
-    elif isinstance(node, list):
-        for index, value in enumerate(node):
-            found.extend(_walk(value, f"{path}/{index}"))
-    return found
+from clio_schemas.a2ui.chart_spec import check_chart_spec
 
 
 def check_spec(spec: Any) -> list[str]:
-    """Return human-readable problems that would get ``spec`` refused."""
+    """Return human-readable problems that would get ``spec`` refused.
+
+    Delegates to the real guard for every structural rule (allowed top-level
+    keys, the ``data: {"name": "source"}`` requirement, forbidden keys, size
+    and depth limits). The one addition on top is Altair-specific: a
+    top-level ``datasets`` key is what Altair emits when a chart is built on
+    a DataFrame or URL instead of ``alt.NamedData("source")``, so it gets a
+    tool-specific explanation alongside the guard's own verdict.
+    """
 
     if not isinstance(spec, dict):
         return ["the spec must be a JSON object"]
@@ -46,21 +42,7 @@ def check_spec(spec: Any) -> list[str]:
             "top-level 'datasets' present: build the chart on alt.NamedData('source') "
             "instead of passing a DataFrame"
         )
-    for path, key, value in _walk(spec, ""):
-        if key == "data" and value != SOURCE_DATA:
-            if isinstance(value, dict) and any(k in value for k in FORBIDDEN_DATA_KEYS):
-                problems.append(
-                    f"{path}: data must be {{'name': 'source'}}, not inline or URL data"
-                )
-            else:
-                problems.append(f"{path}: data must be exactly {{'name': 'source'}}")
-        elif key == "url":
-            problems.append(f"{path}: URLs are not allowed anywhere in a chart spec")
-        elif key == "usermeta":
-            problems.append(f"{path}: 'usermeta' is not allowed")
-    size = len(json.dumps(spec, separators=(",", ":")).encode("utf-8"))
-    if size > MAX_SPEC_BYTES:
-        problems.append(f"spec is {size} bytes; the limit is {MAX_SPEC_BYTES}")
+    problems.extend(str(violation) for violation in check_chart_spec(spec))
     return problems
 
 
