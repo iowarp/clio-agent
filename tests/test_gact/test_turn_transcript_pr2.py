@@ -33,7 +33,7 @@ from clio_agent.gact.transcript import (
 )
 from clio_agent.gact.types import Part
 from tests._harness import emit_live_text, install_scripted_module
-from tests.turn_signals import wait_for_terminal_status
+from tests.turn_signals import TERMINAL_STATUSES, wait_for_terminal_status
 
 from .conftest import complete_turn
 
@@ -480,29 +480,50 @@ class _AskUserThenAnswerAgent:
         return _Pred(answer=f"resumed: {question[-20:]}", selected_expert="main")
 
 
+@pytest.mark.parametrize("disk", ["fast", "slow"])
 def test_ask_user_pause_persists_activity_and_resume_has_a_distinct_turn(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, disk: str
 ) -> None:
     """Pause and resume retain every observed part exactly once, even on reload.
 
     The paused assistant is durable before the answer, rather than relying on
-    process-local carry dictionaries which disappear on restart.
+    process-local carry dictionaries which disappear on restart. ``slow`` delays
+    every message-store write, as a loaded machine does: the test must wait on the
+    turn's own signals, never on how long a write usually takes.
     """
+
+    if disk == "slow":
+        from clio_agent.gact.messages import MessageStore
+
+        def _slowed(method: Any) -> Any:
+            def slow(self: Any, *args: Any, **kwargs: Any) -> Any:
+                time.sleep(0.3)  # a loaded disk, not a bound
+                return method(self, *args, **kwargs)
+
+            return slow
+
+        for name in ("append", "extend", "replace_session"):
+            monkeypatch.setattr(MessageStore, name, _slowed(getattr(MessageStore, name)))
 
     agent = _AskUserThenAnswerAgent()
     app = _build(tmp_path, "askuser", agent)
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "s"}).json()["id"]
+        # Wait on the turn's own status events, never a wall-clock guess: under load a
+        # turn takes as long as it takes (see tests/turn_signals.py).
+        cursor = app.state.bus.latest_event_id(sid)
         ack = client.post(
             f"/v1/sessions/{sid}/messages",
             json={"parts": [{"type": "text", "text": "inspect data"}]},
         )
         assert ack.status_code == 200, ack.text
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline:
-            if client.get(f"/v1/sessions/{sid}").json()["status"] == "waiting_user":
-                break
-            time.sleep(0.05)
+        paused_status = wait_for_terminal_status(
+            app.state.bus,
+            sid,
+            after_event_id=cursor,
+            statuses=frozenset({"waiting_user", *TERMINAL_STATUSES}),
+        )
+        assert paused_status == "waiting_user"
         session = client.get(f"/v1/sessions/{sid}").json()
         assert session["status"] == "waiting_user"
 
@@ -518,28 +539,26 @@ def test_ask_user_pause_persists_activity_and_resume_has_a_distinct_turn(
         assert sid not in app.state.live_assistant_parts
 
         question_id = session["metadata"]["pending_user_question_id"]
+        cursor = app.state.bus.latest_event_id(sid)
         answered = client.post(
             f"/v1/sessions/{sid}/questions/{question_id}/answer",
             json={"answer": "use column value"},
         )
         assert answered.status_code == 200, answered.text
-
-        deadline = time.monotonic() + 5.0
-        assistant = None
-        while time.monotonic() < deadline:
-            msgs = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-            settled = [
-                m
-                for m in msgs
-                if m["role"] == "assistant"
-                and m["id"] != paused_msg_id
-                and not m.get("metadata", {}).get("live")
-            ]
-            if settled:
-                assistant = settled[-1]
-                break
-            time.sleep(0.05)
-        assert assistant is not None, "resume turn did not settle"
+        # The terminal status is published only after the resume turn's assistant
+        # message is persisted; polling GET /messages raced the durable store write
+        # (the in-memory ledger is appended just before the store).
+        assert wait_for_terminal_status(app.state.bus, sid, after_event_id=cursor) == "idle"
+        msgs = client.get(f"/v1/sessions/{sid}/messages").json()["messages"]
+        settled = [
+            m
+            for m in msgs
+            if m["role"] == "assistant"
+            and m["id"] != paused_msg_id
+            and not m.get("metadata", {}).get("live")
+        ]
+        assert settled, "resume turn did not settle"
+        assistant = settled[0]
 
         assert assistant["id"] != paused_msg_id
         persisted = app.state.message_store.load_session(sid)

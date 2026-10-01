@@ -555,6 +555,10 @@ def maybe_pause_for_plan_exit(state: "TurnState") -> bool:
         },
     )
     assistant_message_id = persist_paused_transcript(state)
+    # Retire the paused turn's ledger BEFORE the question becomes answerable: an
+    # answer arriving right after the status event starts the resume turn, whose
+    # transcript a late settle here would close.
+    settle_turn_transcript(state)
     record_user_question(app, question)
     updated = app.state.sessions.update(
         state.sid,
@@ -605,7 +609,6 @@ def maybe_pause_for_plan_exit(state: "TurnState") -> bool:
             },
         )
     )
-    settle_turn_transcript(state)
     return True
 
 
