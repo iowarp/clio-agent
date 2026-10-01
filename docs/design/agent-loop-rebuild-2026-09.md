@@ -440,7 +440,7 @@ live legs before any removal.
       turns is reported.
     - The web UI browser check comes with Phase 4's fix events (DoD 4).
 
-**Platform fallback (recorded decision, to confirm with the owner):** the sanctioned loud
+**Platform fallback (superseded 2026-10-01 by the Phase 8 History mode sub-plan; `LocalFSStore` is deleted):** the sanctioned loud
 fallback is the existing typed `LocalFSStore` degrade in `make_arc_store`. It runs the same
 projection code with clio-core search off, and is visible in the UI and in doctor. No
 separate DSPy `History` path is built, since that would be a second context system. Losing
@@ -904,16 +904,19 @@ namespace. A data dir is a namespace, and app lifespans never stop the worker's 
 - Several real bugs were hidden by the swallows and surfaced only once tests ran on clio-core:
   the observer events, the child-result consumption, and the activation and install event writes.
 
+**Also done (2026-10-01):**
+
+| Defect | Fix |
+|---|---|
+| The MCP discovery probe failed a slow server on fixed timeouts | A timeout while the server's process tree is still working does not spend the retry budget, up to `tools.mcp.max_wait_s` (600 s). |
+| The seeded file tier was a fixed 50 GB (allocated up front on Windows), and the preflight then refused a smaller disk on the first run | The seed is 10% of the target disk's free space, clamped to 2–50 GB; an explicit `arc.cte.file_capacity` wins. |
+| The loop ran without ARC on its own in-memory step list, and `Prediction.messages`, the extract and BestOfN tries read that list | No plane is `NoContextStoreError` before any model call. The private step list is deleted: the model's input, `Prediction.messages`, the extract and the variant tries all read clio-core. |
+
 **Remaining.**
 
 - *The rest of the inventory:*
-  - the MCP server discovery probe's fixed timeouts (first-run failure on a slow machine);
-  - the seeded clio-core file tier is a fixed 50 GB, and the preflight then refuses a smaller
-    disk; it must be sized to fit the machine;
-  - the loop running without ARC on in-memory steps (to become typed, except the loud DSPy
-    `History` mode, which must be built);
+  - the loud DSPy `History` mode (sub-plan below);
   - context rebuilt from the transcript file;
-  - the extract and BestOfN reading the loop's private steps instead of clio-core;
   - stale-id edits silently not applied;
   - compaction failures swallowed;
   - the Claude Code CLI's own auto-compaction not detected.
@@ -923,6 +926,67 @@ namespace. A data dir is a namespace, and app lifespans never stop the worker's 
   - the per-step cost of clio-core in the loop;
   - a session survives a restart and a move to another machine;
   - suites, the browser UI check and the live legs again.
+
+### History mode sub-plan (the one sanctioned fallback)
+
+This supersedes the Phase 3 note that made `LocalFSStore` the platform fallback; that store is
+deleted.
+
+**What the code does today (read 2026-10-01).**
+- A missing clio-core binding is classified `clio_core_binding_absent`, but it is treated like any
+  other init failure: `ClioAgent` cannot be built, the agent stays unready, and every turn gets a
+  503.
+- With no ARC, `_emit_semantic_event` raises "ARC-as-source violated" at about 25 unguarded call
+  sites. That covers turn start and finish, tool observation, LM calls, spawn and hooks. The live
+  highway (SSE, trace, hooks) is derived from ARC records.
+- The transcript works without ARC. The file `MessageStore` is written on every change, and
+  `materialize_ledger` serves it when ARC is absent. `StepRecorder.carry_over` already rebuilds
+  the model's prior turns from that ledger.
+- Several surfaces fail silently or misreport:
+  - compaction with no ARC reports an "empty transcript" skip;
+  - undo and rewind of the agent context are silent no-ops;
+  - the `arc` health row is `UNAVAILABLE`, so `/v1/health` returns 503 "service down".
+
+**Rules.**
+- *Trigger.* History mode is entered for one reason only: `clio_core_binding_absent`, the binding
+  cannot be imported on this platform. It is decided once, at boot, and recorded on
+  `app.state.context_mode`.
+- *Other failures stay typed.* Every other `ArcStoreUnavailableError` reason (spawn, attach,
+  durability, capacity, version) stays a typed init failure.
+- *No switching mid-session.* A session that had clio-core and loses it fails its turn, typed. A
+  session never switches modes.
+
+**Steps (each with its failing-first test, then a commit and push).**
+1. **Mode record.** `gact/history_mode.py` holds a typed `ContextMode`, plus `enter(reason)`, which
+   counts process-wide entries for the test guard. Boot asks the ARC build for its reason: on
+   `clio_core_binding_absent` it builds `ClioAgent(arc=None)` in History mode, and on any other
+   reason it fails as today. `ClioAgent` accepts `arc=None` only in History mode; its ARC stats
+   and history accessors answer typed.
+2. **Loop.** In History mode the loop's context is a DSPy `History`-backed message list for the
+   forward. It is seeded with the prior turns from the file ledger (the existing carry-over), the
+   injections and the head. It is appended with each step and its results, and read for the
+   request, `Prediction.messages` and the extract. Variant tries fork the list. With no ARC
+   outside History mode, the loop still raises `NoContextStoreError`.
+3. **Highway.** In History mode, events go straight to the semantic sink: SSE, trace and hooks
+   keep working, but nothing is durable. Each event carries `context_mode: "history"`. With no
+   ARC outside History mode, the emitter still raises.
+4. **Loud surfaces.**
+   - Health and doctor: the `arc` row becomes `DEGRADED`, with `context_mode: "history"`, the
+     reason and the remedy (install a platform build of iowarp-core). `HealthResponse` gets a
+     top-level `context_mode`. The `clio_core_attach` row says the same.
+   - The UI: a boot `context.mode` event; the web status bar shows a History-mode badge, and the
+     context panel says edits are unavailable.
+   - Context edits, compaction, undo/rewind of the agent context, and search: each answers a
+     typed `history_mode_unsupported` (409 on routes). None of them becomes a silent no-op or an
+     "empty" skip.
+5. **Test guard.** An autouse fixture fails any test that enters History mode unless the test is
+   marked `history_mode`. The marked tests cover only the basics:
+   - boot with the binding import blocked, giving a `DEGRADED` row and `context_mode: history`;
+   - a two-step tool turn;
+   - a second turn that sees the first through the ledger;
+   - the UI events arriving;
+   - edits and compaction refused, typed;
+   - every other init reason still failing, typed.
 
 ## Phase 9: BestOfN / Refine as runtime self-refinement (goal of this campaign)
 
