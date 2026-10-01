@@ -5,17 +5,18 @@ Today every ReAct step re-folds the whole session's content lane. This script me
 that cost on the REAL code path against a REAL, PRIVATE clio-core daemon, before any
 change is made:
 
-1. **warm context build per step** -- the two calls ``clio_react_record.read_steps``
-   makes (``ARCMemory.render_segments`` then ``fold_steps``), ms p50/p90, plus the lane
-   atoms each read touched (``FoldingSegmentStore._lane_atoms``);
+1. **warm context build per step** -- what ``ClioReAct`` does each step: its
+   recorder's ``read_steps`` (the scope's context view folded into messages, closed
+   steps cached), ms p50/p90, plus the atoms each read folded (``fold_atoms`` input);
+   ``render_ms`` is the view snapshot alone (``ARCMemory.context_view``);
 2. **append cost per atom** -- every ``ARCMemory.append_segment`` the real
    ``StepRecorder`` issues: wall ms, store RPCs (ARCStore ops and native clio-core
    calls), bytes put, folds run;
 3. **cold first read** -- a new ``ARCMemory`` over the same daemon/namespace (a restart:
    no hot copy, no lane cache): ms, RPCs, bytes read;
 4. **Codex-direct request build per step** -- the engine's own work per step over the
-   folded messages (``wire.build_request``, ``new_messages`` and ``_items``; no network,
-   no LM call);
+   folded messages (``prepare_request`` and ``continuation``; no network, no LM call),
+   counting every ``wire.build_request``;
 5. **after the compaction** -- whether the next read still scans pre-compaction atoms.
 
 The workload is the shape ClioReAct writes: per forward ``carry_over`` / ``injections``
@@ -27,7 +28,7 @@ set, as ``gact.compaction._fold_scopes`` does) once half of the atoms are writte
 Measurement hooks (all in this script, none in ``src/``): instance-level wrappers on
 the ``ClioCoreStore`` (ops + bytes), counting proxies over its native client/CTE
 handles (native RPCs), a wrapper on ``ARCMemory.append_segment`` (per-atom samples) and
-on ``FoldingSegmentStore._lane_atoms`` (atoms touched per fold).
+on ``fold_atoms`` (atoms folded per read; a warm read of the view folds none).
 
 The daemon is private (``tests._cte_isolation``: own port block, own storage under
 ``--root``, own shm namespace); it is stopped and its root deleted at the end. Each
@@ -74,19 +75,22 @@ from dspy.lm15 import (
     ToolCallPart,
 )
 
+from clio_agent.arc import context_view as arc_context_view
 from clio_agent.arc import storage as arc_storage
+from clio_agent.arc import working_set_fold as arc_fold
 from clio_agent.arc.init_degradation import ArcStoreUnavailableError
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.storage import ClioCoreStore, make_arc_store
 from clio_agent.arc.working_set_fold import FoldingSegmentStore
 from clio_agent.gact.agents import clio_react as react
 from clio_agent.gact.agents import clio_react_record as record
-from clio_agent.lm.engines.conversations import new_messages
 from clio_agent.lm.request_config import config_from_lm_kwargs
 from clio_agent.providers.codex import constants as codex_constants
+from clio_agent.providers.codex import direct_engine
 from clio_agent.providers.codex.direct_engine import (
-    AsyncCodexDirectEngine,
     _with_reasoning_summary,
+    continuation,
+    prepare_request,
 )
 from tests._cte_isolation import (
     CteIsolation,
@@ -261,7 +265,7 @@ def instrument_store(store: ClioCoreStore, counters: RpcCounters) -> None:
 
 @dataclass
 class LaneProbe:
-    """Atoms the fold touched: one entry per ``_lane_atoms`` call since :meth:`reset`."""
+    """Atoms folded: one entry per ``fold_atoms`` call since :meth:`reset`."""
 
     calls: int = 0
     atoms: int = 0
@@ -274,23 +278,35 @@ class LaneProbe:
         self.last = []
 
 
+_PROBES: list[LaneProbe] = []
+
+
 def instrument_fold(arc: ARCMemory, probe: LaneProbe) -> None:
-    """Record every ``FoldingSegmentStore._lane_atoms`` result (the fold's input)."""
+    """Record every ``fold_atoms`` input (the fold's atoms) into ``probe``.
+
+    The fold is one module function used by the view (rebuilds) and the store (as-of /
+    history reads); both names are wrapped once per process, and each probe sees every
+    fold while it is the active one.
+    """
     segments = arc._segments
     if not isinstance(segments, FoldingSegmentStore):
         raise BenchInvariantError(
             f"the live plane is {type(segments).__name__}, not the production fold"
         )
-    orig = segments._lane_atoms
+    if not _PROBES:
+        orig = arc_context_view.fold_atoms
 
-    def lane_atoms(session_id: str) -> list[Any]:
-        atoms = orig(session_id)
-        probe.calls += 1
-        probe.atoms += len(atoms)
-        probe.last = atoms
-        return atoms
+        def fold_atoms(atoms: Any, scope: str, **kw: Any) -> list[Any]:
+            out = orig(atoms, scope, **kw)
+            for active in _PROBES[-1:]:
+                active.calls += 1
+                active.atoms += len(atoms)
+                active.last = list(atoms)
+            return out
 
-    segments._lane_atoms = lane_atoms  # type: ignore[method-assign]
+        arc_context_view.fold_atoms = fold_atoms  # type: ignore[assignment]
+        arc_fold.fold_atoms = fold_atoms  # type: ignore[assignment]
+    _PROBES.append(probe)
 
 
 @dataclass(frozen=True)
@@ -366,8 +382,7 @@ class Forward:
 
     scope: str
     recorder: record.StepRecorder
-    held: tuple[Message, ...] | None = None
-    held_system: str = ""
+    held: Any = None  # the engine's kept-conversation record after the last call
     step: int = 0
 
 
@@ -424,7 +439,14 @@ class Bench:
             account_id="bench",
             originator=codex_constants.ORIGINATOR,
         )
-        self.engine = AsyncCodexDirectEngine(_CODEX_MODEL, wire=self.wire)
+        self.builds = [0]
+        real_build = self.wire.build_request
+
+        def counted_build(request: Request, stream: bool) -> Any:
+            self.builds[0] += 1
+            return real_build(request, stream)
+
+        self.wire.build_request = counted_build  # type: ignore[method-assign]
         self.system_prompt = self._text(4000)
         self.compaction: dict[str, Any] = {}
         self.compacted = False
@@ -468,9 +490,9 @@ class Bench:
         before = self.counters.snapshot()
         self.probe.reset()
         t0 = time.perf_counter()
-        segments = self.arc.render_segments(self.session, fwd.scope)
+        segments = self.arc.context_view(self.session, fwd.scope).segments
         t1 = time.perf_counter()
-        messages = record.fold_steps(segments)
+        messages = fwd.recorder.read_steps()
         t2 = time.perf_counter()
         read_rpc = before.delta(self.counters.snapshot())["native_rpcs"]
         atoms_touched = self.probe.atoms
@@ -550,9 +572,9 @@ class Bench:
         """The Codex-direct engine's per-step request work, minus the socket.
 
         ``_Loop._one_step`` builds the Request; ``AsyncCodexDirectEngine._call/_run``
-        adds the reasoning summary, builds the wire request, checks the held prefix
-        (``new_messages``) and, on a delta, renders the new input items (``_items``:
-        two more full builds).
+        adds the reasoning summary, builds the wire request once (``prepare_request``)
+        and checks the kept conversation (``continuation``: item count + running hash).
+        Every ``wire.build_request`` is counted.
         """
         config = config_from_lm_kwargs({})
         config = dataclasses.replace(
@@ -561,6 +583,7 @@ class Bench:
                 config.cache or CacheConfig(), key=f"clio:{self.session}:{fwd.scope}"
             ),
         )
+        builds_before = self.builds[0]
         t0 = time.perf_counter()
         request = Request(
             model=_CODEX_MODEL,
@@ -570,28 +593,30 @@ class Bench:
             config=config,
         )
         request = _with_reasoning_summary(request)
-        wire_request = self.wire.build_request(request, stream=True)
-        body = json.loads(wire_request.body)
-        wire_system = str(body.get("instructions") or "")
-        json.dumps(body.get("tools") or [])
-        builds = 1
+        prepared = prepare_request(self.wire, request)
         delta = False
-        frame_items = len(body.get("input") or [])
+        frame_items = len(prepared.items)
         if fwd.held is not None:
-            new = new_messages(fwd.held, fwd.held_system, request, wire_system)
-            if new is not None:
-                items = self.engine._items(request, len(request.messages) - len(new))
-                builds += 2
+            first_new = continuation(fwd.held, request, prepared)
+            if first_new is not None:
                 delta = True
-                frame_items = len(items)
+                frame_items = len(prepared.items) - first_new
+        held = direct_engine._Conversation(
+            socket=None,
+            system=prepared.system,
+            tools=prepared.tools,
+            held=len(request.messages),
+            sent_items=len(prepared.items),
+            digest=prepared.digest_at(len(prepared.items)),
+            response_id="bench",
+        )
         ms = (time.perf_counter() - t0) * 1e3
-        fwd.held = request.messages
-        fwd.held_system = wire_system
+        fwd.held = held
         return {
             "ms": ms,
-            "builds": builds,
+            "builds": self.builds[0] - builds_before,
             "delta": delta,
-            "input_items": len(body.get("input") or []),
+            "input_items": len(prepared.items),
             "frame_items": frame_items,
         }
 
@@ -599,7 +624,10 @@ class Bench:
         """``gact.compaction._fold_scopes`` on the main scope (fixed summary text, no LM)."""
         live = self.arc.render_working_set(self.session, _MAIN_SCOPE)
         self.probe.reset()
-        lane_before = len(self.arc._segments._lane_atoms(self.session))
+        segments = self.arc._segments
+        if not isinstance(segments, FoldingSegmentStore):
+            raise BenchInvariantError("the live plane is not the production fold")
+        lane_before = len(segments.raw_lane_atoms(self.session))
         summary = self._text(2000)
         before = self.counters.snapshot()
         self.probe.reset()

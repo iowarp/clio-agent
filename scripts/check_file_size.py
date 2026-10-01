@@ -148,8 +148,8 @@ RATCHET_BASELINE: dict[str, int] = {
     # MERGE (PR #1298 x #1310): 1030 -> 1032. Both campaigns' call-site lines
     # coexist; neither side's additions were dropped.
     "src/clio_agent/agent.py": 985,  # MCP refresh moved to gact/mcp_gateway_refresh.py; L1: -4 (executor_work_may_continue deleted)
-    "src/clio_agent/arc/memory.py": 1278,  # #1339: the _events chunk writer cursor moved to arc/lane_chunking.py
-    "src/clio_agent/arc/segments.py": 1024,
+    "src/clio_agent/arc/memory.py": 1068,  # 11a: the segment-plane surface moved to arc/memory_segments.py
+    "src/clio_agent/arc/segments.py": 966,  # 11a: SegmentIndex moved to arc/segment_index.py
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
     # owner ruling 2026-07-14: +3 to route explicit =local through the loud
     # DEGRADED banner (owner module: arc/init_degradation.py).
@@ -173,7 +173,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # plane byte-identically (the S2 slice had dropped these, breaking replay). Footprint
     # minimized to concise docstrings; the per-op payload passing is irreducible. Ratchet
     # down with the #714/#767 decomposition.
-    "src/clio_agent/arc/working_set_fold.py": 905,
+    "src/clio_agent/arc/working_set_fold.py": 855,  # 11a: view/index/companion/search in owner modules
     # #1326: adapters.py was 780 lines (under the 800 cap). +56 for: a new
     # _ContextOverflowError typed exception, a _check_context_overflow pre-flight
     # helper (mirrors the guided path's _bound_guided_output_kwargs shape), pre-
