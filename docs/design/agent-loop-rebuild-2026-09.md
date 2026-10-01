@@ -1432,6 +1432,73 @@ Each step: a failing-first test, a sabotage check, the touched test files green,
 push. Each phase: the full suite plus guards. Phase 11a passes only on before/after bench numbers.
 Final: live legs, the browser check and DoD evidence recorded in the design doc.
 
+### Phase 11a design: the context view (2026-10-01)
+
+**Measured first** (`scripts/bench_context_view.py`, `d57ed9de`). N≈100, private clio-core daemon:
+
+| Measure | Result |
+|---|---|
+| Warm context build | 0.3 ms p50, but a read touches about 119 lane atoms for about 21 live segments |
+| Append, per atom | 33 ms p50; 3 RPCs and 2 full folds; 72 KB put on average, rising to 149 KB as the partition grows |
+| Cold first read | 17 RPCs; the scan downloads every session blob to read its name |
+| Codex request build | 2.7 builds per step |
+| Read after a compaction | 62 of the 95 atoms it touches are retired |
+
+The 1k/10k baseline run was stopped by the machine's memory guard (1k completed in 52.9 s; no numbers were saved). It will be re-measured on `037e66ec` (the unchanged baseline) together with the after-numbers.
+
+**Design.**
+1. **`ContextView`** (`arc/context_view.py`) is one object per (session, logical scope). It is owned by
+   `FoldingSegmentStore` and holds:
+   - the anchor: the latest summary atom of the scope, or none;
+   - the live atoms after the anchor in render order;
+   - `next_order`;
+   - a generation counter.
+
+   It is built lazily on first read.
+2. **Append** to a scope with a loaded view:
+   - `view.append(atom)` is O(1);
+   - `next_order` comes from the view, so the full fold with tombstoned atoms is gone;
+   - the atom is written to its partition's current chunk (step 4);
+   - the search companion appends the atom's text (step 6).
+
+   No full fold remains on the write path.
+3. **Ops:**
+   - `delete`, `replace`, `summarize`, `as_of` rollback and lane drops rebuild the affected scope's view from the anchor;
+   - a `summarize` moves the anchor to its summary atom and records it in the scope's anchor record;
+   - the rebuild uses the existing `_fold` restricted to atoms at or after the anchor.
+
+   One fold implementation remains, no second one.
+4. **Chunk the `_events/w/<span>` lane** with `lane_chunking.chunk_for_append`, as `_events` and `_events/m`
+   already are. An append puts one bounded chunk, not the whole partition.
+5. **Session index record** (`_events/w/_index`): it lists each partition and chunk with its scopes, its
+   min/max `logical_time`, and each scope's anchor (partition, chunk, `logical_time`). Updated on
+   partition/chunk creation and on summarize. A cold read gets the index (1 get), then only the chunks
+   holding the scope's atoms at or after its anchor. The whole `segments`-tag scan is gone from the read
+   path.
+6. **Search companion:**
+   - per scope, append-only text chunks covering every atom ever written, live or retired;
+   - a query result maps back to atom ids;
+   - retired atoms are marked compacted at query time from the view's tombstone set;
+   - a refresh failure is a typed write failure (removes the swallow at `working_set_fold.py:493`).
+7. **Messages cache:**
+   - `StepRecorder.read_steps` keeps the folded `Message` list per view generation;
+   - it re-folds only the open tail step when atoms are appended;
+   - rehydrated media are cached by sha256 per path (the integrity check is unchanged).
+8. **Codex direct:**
+   - build the request once per step and reuse it;
+   - the held-prefix check uses a running hash plus length instead of element-wise comparison;
+   - the engine registers with `_SCOPE_REGISTRIES` so a compaction resets as `ops_reset`.
+9. **Invariants (tests, on real clio-core):**
+   - view == full fold for random op sequences (append, delete, replace, summarize, as_of, restart);
+   - a cold read after restart == warm read;
+   - render(n) is a prefix of render(n+1) unless an op landed;
+   - each has a sabotage check.
+10. **Acceptance:**
+    - before/after bench at 1k/10k;
+    - warm read and append independent of history length (flat from 1k to 10k);
+    - a cold read touches only post-anchor chunks;
+    - the full suite is green.
+
 ### Known follow-ups recorded with the transcript flag
 - Turning `transcript.file` off later needs an atomic `replace_session` in clio-core (write the new lane generation, then swap); with the flag off a failed whole-transcript replace can leave a truncated lane. Not needed for release: the default stays on.
 - `SessionStore._legacy_interaction_at` (`sessions.py:566`) still reads the `messages/<sid>.json` mtime for old rows lacking `last_interaction_at`.
