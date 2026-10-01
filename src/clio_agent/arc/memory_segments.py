@@ -128,11 +128,14 @@ class SegmentPlane:
         turn_id: str = "",
         expert_span_id: str = "",
         run_span_id: str = "",
+        position: Optional[int] = None,
     ) -> Any:
-        """Replace a range of segments with one summary (= context-compaction over all).
+        """Replace segments with one summary (= context-compaction over all).
 
-        ``turn_id`` / ``expert_span_id`` / ``run_span_id`` are optional correlation
-        span ids stamped on the summary segment (default ``""``)."""
+        The summary renders at the first replaced slot, or at render ``position`` over
+        the live segments (``0``: ahead of everything kept). ``turn_id`` /
+        ``expert_span_id`` / ``run_span_id`` are optional correlation span ids stamped
+        on the summary segment (default ``""``)."""
         return self._segments.summarize(
             session_id,
             scope,
@@ -143,6 +146,7 @@ class SegmentPlane:
             turn_id=turn_id,
             expert_span_id=expert_span_id,
             run_span_id=run_span_id,
+            position=position,
         )
 
     def replace_segment(
