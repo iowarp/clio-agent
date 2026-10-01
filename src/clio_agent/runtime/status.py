@@ -618,7 +618,10 @@ class RuntimeProbe:
         """Probe the clio-core backend (pip runtime + shared daemon); without the binding
         this process runs in the loud History mode, a DEGRADED row (never a 503)."""
         from clio_agent.arc import history_mode  # noqa: PLC0415 - keep import light
-        from clio_agent.runtime.clio_core_health import history_mode_row  # noqa: PLC0415
+        from clio_agent.runtime.clio_core_health import (  # noqa: PLC0415
+            daemon_not_listening_row,
+            history_mode_row,
+        )
 
         runtime = self._probe_clio_core_runtime()
         details = {"storage_mode": "cte", **runtime.to_details()}
@@ -626,22 +629,13 @@ class RuntimeProbe:
         if (mode := history_mode.resolve()).is_history:
             return history_mode_row("arc", mode, source, endpoint, details)
         if not runtime.daemon_alive:
-            return IntegrationStatus(
-                name="arc",
-                state=IntegrationState.UNAVAILABLE,
-                summary=(
-                    "ARC is configured for the clio-core backend but the shared "
-                    f"clio-core daemon is not listening on port {runtime.port}."
-                ),
-                config_source=source,
-                next_action=(
-                    "Start the shared clio-core daemon (clio start / clio_run start); "
-                    f"see {runtime.log_path}."
-                ),
+            return daemon_not_listening_row(
+                "arc",
+                source=source,
                 endpoint=endpoint,
-                fallback="none",
                 details=details,
-                required=True,
+                port=runtime.port,
+                log_path=str(runtime.log_path),
             )
         # 905: "semantic-search" is real only once the indexer chimod is composed
         # (currently never -- absent from every published 2.2.1 wheel binary).
@@ -975,7 +969,10 @@ class RuntimeProbe:
         required.
         """
         from clio_agent.arc import history_mode  # noqa: PLC0415 - keep import light
-        from clio_agent.runtime.clio_core_health import history_mode_row  # noqa: PLC0415
+        from clio_agent.runtime.clio_core_health import (  # noqa: PLC0415
+            daemon_not_listening_row,
+            history_mode_row,
+        )
 
         backend, backend_source = self._arc_backend()
         runtime = self._probe_clio_core_runtime()
@@ -986,21 +983,13 @@ class RuntimeProbe:
             return history_mode_row("clio_core", mode, source, endpoint, details)
 
         if not runtime.daemon_alive:
-            return IntegrationStatus(
-                name="clio_core",
-                state=IntegrationState.UNAVAILABLE,
-                summary=(
-                    "iowarp_core is installed but the shared clio-core daemon is not "
-                    f"listening on port {runtime.port}."
-                ),
-                config_source=source,
-                next_action=(
-                    "Start the shared clio-core daemon (clio start / clio_run start); "
-                    f"see {runtime.log_path}."
-                ),
+            return daemon_not_listening_row(
+                "clio_core",
+                source=source,
                 endpoint=endpoint,
                 details=details,
-                required=True,
+                port=runtime.port,
+                log_path=str(runtime.log_path),
             )
 
         return IntegrationStatus(

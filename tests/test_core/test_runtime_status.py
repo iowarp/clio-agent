@@ -389,6 +389,56 @@ def test_file_policy_probe_reports_invalid_policy_as_misconfigured():
 # ---------------------------------------------------------------------------
 
 
+def _crash_record(state_dir):
+    from clio_agent.arc.runtime_crash import crash_record_path
+
+    crash_record_path(state_dir).write_text('{"exit_code": 3221225477}', encoding="utf-8")
+
+
+def _attach_phase(monkeypatch, phase):
+    from clio_agent.arc import clio_core_attach
+    from clio_agent.runtime import clio_core_health
+
+    snap = clio_core_attach.ClioCoreAttachState(phase=phase, reason=f"clio_core_{phase.value}")
+    monkeypatch.setattr(clio_core_health, "attach_state_snapshot", lambda: snap)
+
+
+def test_a_daemon_not_started_yet_is_starting_not_down(tmp_path, monkeypatch):
+    """Found live: a fresh server answered /v1/health 503 before its first agent build
+    spawned clio-core. CLIO starts the daemon on first use: that is DEGRADED, never down."""
+    from clio_agent.arc.clio_core_attach import ClioCoreAttachPhase
+
+    _attach_phase(monkeypatch, ClioCoreAttachPhase.IDLE)
+    probe = RuntimeProbe(
+        env={},
+        module_checker=lambda name: name == "iowarp_core",
+        port_checker=lambda port: False,
+        clio_runtime_dir=tmp_path / "clio-home",
+    )
+
+    rows = [probe.probe_arc(), probe.probe_clio_core()]
+
+    assert [(r.name, r.state) for r in rows] == [
+        ("arc", IntegrationState.DEGRADED),
+        ("clio_core", IntegrationState.DEGRADED),
+    ]
+    assert {r.details["reason"] for r in rows} == {"clio_core_starting"}
+
+
+def test_a_failed_attach_with_no_daemon_is_down(tmp_path, monkeypatch):
+    from clio_agent.arc.clio_core_attach import ClioCoreAttachPhase
+
+    _attach_phase(monkeypatch, ClioCoreAttachPhase.UNAVAILABLE)
+    probe = RuntimeProbe(
+        env={},
+        module_checker=lambda name: name == "iowarp_core",
+        port_checker=lambda port: False,
+        clio_runtime_dir=tmp_path / "clio-home",
+    )
+
+    assert probe.probe_arc().state == IntegrationState.UNAVAILABLE
+
+
 def test_arc_clio_core_default_backend_red_when_daemon_down(tmp_path):
     """Default backend is clio-core: iowarp_core installed but no daemon MUST go red."""
     clio_home = tmp_path / "clio-home"
@@ -396,6 +446,7 @@ def test_arc_clio_core_default_backend_red_when_daemon_down(tmp_path):
     (clio_home / "clio-runtime.log").write_text(
         "boot: composing pools\nFATAL: could not bind RPC port\n", encoding="utf-8"
     )
+    _crash_record(clio_home)
 
     probe = RuntimeProbe(
         env={},
@@ -468,6 +519,7 @@ def test_clio_core_red_when_clio_core_backend_and_daemon_down(tmp_path):
     clio_home = tmp_path / "clio-home"
     clio_home.mkdir()
     (clio_home / "clio-runtime.log").write_text("FATAL: shm init failed\n", encoding="utf-8")
+    _crash_record(clio_home)
 
     probe = RuntimeProbe(
         env={},

@@ -271,9 +271,12 @@ def test_widened_rows_carry_full_doctor_detail(
 def test_down_clio_core_daemon_turns_health_503(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """clio-core backend + installed pkg + daemon NOT listening -> arc red -> 503."""
+    """clio-core backend + installed pkg + a crashed daemon -> arc red -> 503."""
+    from clio_agent.arc.runtime_crash import crash_record_path
+
     clio_home = tmp_path / "clio-home"
     clio_home.mkdir()
+    crash_record_path(clio_home).write_text('{"exit_code": 3221225477}', encoding="utf-8")
     probe = _ready_probe(
         tmp_path,
         env={"CLIO_ARC_STORE": "cte"},
@@ -289,6 +292,36 @@ def test_down_clio_core_daemon_turns_health_503(
     rows = _rows(body)
     assert rows["arc"]["status"] == "unavailable"
     assert rows["clio_core"]["status"] == "unavailable"
+
+
+def test_a_cold_server_before_clio_core_starts_is_degraded_not_503(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Found live: a fresh server answered 503 until its first agent build started
+    clio-core. Not running yet (no failed attach, no crash) is DEGRADED, 200."""
+    from clio_agent.arc import clio_core_attach
+    from clio_agent.runtime import clio_core_health
+
+    idle = clio_core_attach.ClioCoreAttachState(
+        phase=clio_core_attach.ClioCoreAttachPhase.IDLE, reason="clio_core_not_started"
+    )
+    monkeypatch.setattr(clio_core_health, "attach_state_snapshot", lambda: idle)
+    clio_home = tmp_path / "clio-home"
+    clio_home.mkdir()
+    probe = _ready_probe(
+        tmp_path,
+        port_checker=lambda port: False,
+        clio_runtime_dir=clio_home,
+    )
+    resp = _health(build_app(sessions_path=tmp_path / "s.json"), monkeypatch, probe)
+    down = [
+        (r["name"], r.get("summary", "")[:140])
+        for r in resp.json()["integrations"]
+        if r["status"] == "unavailable"
+    ]
+    assert resp.status_code == 200, down
+    rows = _rows(resp.json())
+    assert rows["arc"]["status"] == rows["clio_core"]["status"] == "degraded"
 
 
 def test_unreachable_lm_dependency_turns_health_503(

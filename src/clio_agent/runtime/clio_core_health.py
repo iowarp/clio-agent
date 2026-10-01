@@ -20,6 +20,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from clio_agent.arc.clio_core_attach import ClioCoreAttachPhase, attach_state_snapshot
 from clio_agent.arc.clio_core_config import (
     RamTierCap,
     cte_disk_warn_fraction,
@@ -27,6 +28,7 @@ from clio_agent.arc.clio_core_config import (
     effective_ram_cap,
     parse_capacity_bytes,
 )
+from clio_agent.arc.runtime_crash import read_crash_record, summarize_crash
 from clio_agent.runtime.humanize import format_bytes
 from clio_agent.runtime.status import IntegrationState, IntegrationStatus
 
@@ -183,6 +185,48 @@ def probe_clio_core_ram_cap(*, env: Mapping[str, str] | None = None) -> list[Int
             required=True,
         )
     ]
+
+
+def daemon_not_listening_row(
+    name: str, *, source: str, endpoint: str, details: dict[str, object], port: int, log_path: str
+) -> IntegrationStatus:
+    """The shared clio-core daemon is not listening: down only when that is a failure.
+
+    CLIO starts the daemon itself on first use (and the server at boot), so a daemon that
+    is not up yet is DEGRADED ``clio_core_starting`` -- a fresh server answered 503 before
+    its first agent build. It is UNAVAILABLE when this process's attach failed, when an
+    attached daemon is gone, or when the daemon left a crash record.
+    """
+    snap = attach_state_snapshot()
+    crash = read_crash_record(Path(log_path).parent)
+    lost = snap.phase in (ClioCoreAttachPhase.UNAVAILABLE, ClioCoreAttachPhase.ATTACHED)
+    if lost or crash is not None:
+        why = summarize_crash(crash) if crash is not None else (snap.error or snap.reason)
+        return IntegrationStatus(
+            name=name,
+            state=IntegrationState.UNAVAILABLE,
+            summary=f"The shared clio-core daemon is not listening on port {port}: {why}",
+            config_source=source,
+            next_action=f"Restart CLIO (it starts clio-core); see {log_path}.",
+            endpoint=endpoint,
+            fallback="none",
+            details=details,
+            required=True,
+        )
+    return IntegrationStatus(
+        name=name,
+        state=IntegrationState.DEGRADED,
+        summary=(
+            f"clio-core is not running yet on port {port}; CLIO starts it on first use "
+            "(or it is starting now)."
+        ),
+        config_source=source,
+        next_action="No action needed; this row turns ready once clio-core listens.",
+        endpoint=endpoint,
+        fallback="none",
+        details={**details, "reason": "clio_core_starting"},
+        required=True,
+    )
 
 
 def history_mode_row(
