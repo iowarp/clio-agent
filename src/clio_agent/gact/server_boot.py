@@ -53,7 +53,8 @@ async def process_arc_off_loop(app: "FastAPI") -> Any:
         app: The GACT FastAPI app.
 
     Returns:
-        The ``ARCMemory`` stored on ``app.state.arc``.
+        The ``ARCMemory`` stored on ``app.state.arc``; ``None`` in the loud History mode
+        (:mod:`clio_agent.arc.history_mode`), decided once and cached like an ARC.
     """
     arc = getattr(app.state, "arc", None)
     if arc is not None:

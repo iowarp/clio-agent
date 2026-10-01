@@ -695,6 +695,15 @@ def _test_arc_namespace(request: pytest.FixtureRequest) -> str:
 
 
 @pytest.fixture(autouse=True)
+def no_history_mode_unless_marked(request):
+    """Fail any test that enters the loud History mode unless marked ``history_mode``."""
+    from tests._history_mode_guard import guard
+
+    with guard(request.node):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def keep_the_workers_clio_core_runtime(request, monkeypatch: pytest.MonkeyPatch) -> list[tuple]:
     """An app's lifespan shutdown must not stop this worker's shared clio-core daemon.
 

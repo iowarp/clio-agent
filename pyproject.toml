@@ -280,6 +280,7 @@ python_functions = ["test_*"]
 asyncio_mode = "auto"  # SSE tests use async httpx
 markers = [
     "real_runtime_release: the test exercises release_runtime_client itself (the harness no-op is skipped)",
+    "history_mode: the test may enter the loud DSPy History mode (every other test fails if it does)",
     "integration: marks tests requiring full-stack/external runtime behavior",
     "marketplace: reads shipped packs from the pinned external/clio-agent-marketplace submodule; FAILS (never skips) with the fix when the checkout is missing (tests/_marketplace.py)",
     "real_dependency_installer: exercises providers.dependencies' installer itself (subprocess stubbed); exempt from the suite-wide no-real-install guard",

@@ -760,11 +760,16 @@ def _process_arc(app: "FastAPI") -> Any:
     orphaned ARC while the shared durable trace kept them: the trace ⊋ ARC split).
 
     Stored on ``app.state.arc`` via ``_set_app_arc`` so a single, fail-loud path reaches
-    it; rebuilt only if the app has none yet (first build).
+    it; rebuilt only if the app has none yet (first build). ``None`` in History mode
+    (:mod:`clio_agent.arc.history_mode`): the platform cannot run clio-core.
     """
     arc = getattr(getattr(app, "state", None), "arc", None)
     if arc is not None:
         return arc
+    from clio_agent.arc import history_mode  # noqa: PLC0415
+
+    if history_mode.resolve().is_history:
+        return None  # the platform has no clio-core: the loud History mode, decided once
     from clio_agent.arc.memory import ARCMemory  # noqa: PLC0415
     from clio_agent.arc.storage import make_arc_store  # noqa: PLC0415
 
