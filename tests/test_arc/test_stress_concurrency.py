@@ -33,6 +33,7 @@ import pytest
 
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.schema import decode_segments
+from clio_agent.arc.segment_ids import StaleSegmentIdError
 from clio_agent.arc.segments import SegmentStore
 from clio_agent.arc.storage import ARCStore, make_arc_store
 
@@ -240,6 +241,11 @@ def test_interleaved_ops_count_accounting(tmp_path):
     stop = threading.Event()
     # The op log (written under the store's RLock) is the single source of truth
     # for the count ledger, so the workers stay thin — no test-side accumulators.
+    # The deleter and summarizer pick their ids from a render taken OUTSIDE the lock,
+    # so one can name an id the other just tombstoned. The store re-checks the ids
+    # under the lock and rejects the whole op typed (StaleSegmentIdError, nothing
+    # applied): losing that race is a valid outcome, recorded here and checked below.
+    stale: list[StaleSegmentIdError] = []
 
     def appender(tid: int) -> None:
         for i in range(per_appender):
@@ -250,7 +256,10 @@ def test_interleaved_ops_count_accounting(tmp_path):
             live = ss.render(SID, scope)
             if len(live) >= 4:
                 victim = live[len(live) // 2]
-                ss.delete(SID, scope, [victim.id])
+                try:
+                    ss.delete(SID, scope, [victim.id])
+                except StaleSegmentIdError as lost_race:
+                    stale.append(lost_race)
 
     def summarizer() -> None:
         while not stop.is_set():
@@ -258,7 +267,10 @@ def test_interleaved_ops_count_accounting(tmp_path):
             if len(live) >= 6:
                 # summarize the oldest 3 live segments into one summary segment
                 victims = live[:3]
-                ss.summarize(SID, scope, [v.id for v in victims], {"text": "SUMMARY"})
+                try:
+                    ss.summarize(SID, scope, [v.id for v in victims], {"text": "SUMMARY"})
+                except StaleSegmentIdError as lost_race:
+                    stale.append(lost_race)
 
     appended = {f"a{t}-{i}" for t in range(n_appenders) for i in range(per_appender)}
 
@@ -320,6 +332,11 @@ def test_interleaved_ops_count_accounting(tmp_path):
     # tombstoned count on the actual segments matches the log
     tombstoned_now = sum(1 for s in all_segs if s.status == "tombstoned")
     assert tombstoned_now == tombstoned_from_log
+    # A rejected op lost a real race: every id it named as stale was written and then
+    # tombstoned by the op that won (never an id the store did not know).
+    tombstoned_ids = {s.id for s in all_segs if s.status == "tombstoned"}
+    for lost_race in stale:
+        assert set(lost_race.details["missing"]) <= tombstoned_ids, lost_race
 
     # all originally-appended texts are accounted for (live OR tombstoned), never lost
     appended_texts = {s.content.get("text") for s in all_segs if s.kind == "thought"}
@@ -371,8 +388,6 @@ def test_concurrent_delete_same_ids_tombstoned_once(tmp_path):
     """Many threads race to delete the SAME set of ids. The live check runs under the
     scope lock: exactly one delete applies (each id tombstoned once) and every other
     racer fails typed (its ids are no longer live), never a silent partial delete."""
-    from clio_agent.arc.segment_ids import StaleSegmentIdError
-
     ss = _fresh_store(tmp_path)
     scope = "agentA/del"
     n = 200
