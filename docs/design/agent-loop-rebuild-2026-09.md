@@ -927,6 +927,35 @@ namespace. A data dir is a namespace, and app lifespans never stop the worker's 
   - a session survives a restart and a move to another machine;
   - suites, the browser UI check and the live legs again.
 
+### Found live in the History mode browser check (2026-10-01)
+
+Fixed:
+- A History mode server still answered `/v1/health` 503: the `clio_core` daemon row read
+  "not listening" as down. Both clio-core rows now report the DEGRADED History row.
+- A CLIO-seeded config from before the disk-based sizing kept a fixed 50 GB tier; with
+  42 GB free the agent never started. An unallocated old seed that cannot fit is resized
+  in place.
+
+Open (next):
+- **The file-tier preflight refuses a store clio-core is serving (second start fails).**
+  A fresh 3 GB seed came up with a 1 GiB `storage.bin_node0` (iowarp-core 2.2.1, Windows),
+  and the daemon served turns. On the next server start the preflight refused it as
+  "smaller than capacity_limit; clio-core would reuse it without growing it". The July rule
+  ("clio-core creates each file tier at its full capacity") does not match what the daemon
+  did. Measure the real allocation behaviour before changing the rule.
+- **The browser renders no live updates on this branch** (History and clio-core mode alike):
+  the session SSE route answers from inside the page (200, frames flowing), and a reload shows
+  everything, but nothing (text, tools, the permission prompt) appears until reload. To
+  bisect: web build vs server branch.
+- **The health `lm_provider` row reads environment variables only**, falls back to
+  `lm_studio`, and ignores `config.yaml` and the server's provider profile: a server with Codex
+  configured answered 503 "unavailable".
+- **`/v1/health` is 503 while a cold clio-core attach is still starting** (`arc` and
+  `clio_core` rows UNAVAILABLE before the daemon is up): the first impression is "down".
+- Swallows seen on the way: the semantic trace writer drops an event on a write error;
+  `_emit_expert_lifecycle_event` swallowed "ARC-as-source violated" (caught here only by
+  the event count).
+
 ### History mode sub-plan (the one sanctioned fallback)
 
 This supersedes the Phase 3 note that made `LocalFSStore` the platform fallback; that store is
