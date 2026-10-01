@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException, Request
 from clio_agent.gact.a2ui import (
     A2UICatalogNotProducibleError,
     A2UICatalogUnknownError,
+    A2UIComponentLimitExceededError,
     A2UIFunctionNotInCatalogError,
     A2UIValidationError,
 )
@@ -43,7 +44,16 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     @app.get("/v1/sessions/{sid}/a2ui/surfaces")
     async def list_surfaces(sid: str) -> dict[str, Any]:
-        """Return compacted surface snapshots for reconnect reconciliation."""
+        """Return compacted surface snapshots for reconnect reconciliation.
+
+        Each row (`A2UISurfaceRecord.to_wire()`) carries `message_revisions`
+        alongside `messages`, parallel and the same length/order (coordinator
+        design, 2026-10-01; see `docs/gact/a2ui-binding.md`'s "Surface
+        snapshot wire shape" section): the revision that produced each
+        slot's CURRENT content, so a client can tell "this slot changed"
+        from "this slot is unchanged" by comparing integers, never by
+        re-hashing the slot's full content.
+        """
 
         require_session(sid)
         degradations = app.state.a2ui_store.projection_degradations(sid)
@@ -109,6 +119,14 @@ def register_a2ui_routes(app: FastAPI, deps: "GactDeps") -> None:
                 catalog_id=exc.catalog_id,
             )
             raise _error(422, "a2ui_function_not_in_catalog", str(exc)) from exc
+        except A2UIComponentLimitExceededError as exc:
+            app.state.a2ui_catalogs.record_session_reason(
+                sid,
+                "a2ui_component_limit_exceeded",
+                component_count=exc.component_count,
+                limit=exc.limit,
+            )
+            raise _error(422, "a2ui_component_limit_exceeded", str(exc)) from exc
         except A2UIValidationError as exc:
             raise _error(422, "a2ui_validation_failed", str(exc)) from exc
         # Sibling of the model tool's ``created`` flag: the same fold-derived

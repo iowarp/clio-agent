@@ -1058,3 +1058,55 @@ def test_new_components_path_and_definition_reasons_have_default_hints() -> None
     ):
         assert reason in KNOWN_REFUSAL_REASONS
         assert _DEFAULT_HINTS.get(reason)
+
+
+def test_component_limit_exceeded_has_an_actionable_hint_and_is_recorded(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """M3 (coordinator design, adversarial re-review): F5's merged-component
+    cap refusal must carry a concrete, actionable hint -- not the
+    un-actionable-retry pattern issue #1374 fixed -- and must land in the
+    session's own typed reason ledger, the same way its catalog-error
+    siblings (``a2ui_catalog_unknown``/``a2ui_catalog_not_producible``) do.
+    """
+
+    import clio_agent.gact.a2ui as a2ui_module
+    from clio_agent.gact.a2ui_producer._refusal import _DEFAULT_HINTS, KNOWN_REFUSAL_REASONS
+
+    monkeypatch.setattr(a2ui_module, "MAX_A2UI_COMPONENTS", 2)
+
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+    create = build_create_a2ui_surface_tool()
+    update_components = build_update_a2ui_components_tool()
+
+    created = create(
+        surface_id="capped",
+        components=[{"id": "root", "component": "Text", "text": "one"}],
+    )
+    assert created["rendered"] is True
+
+    # "root" (1) + "overflow" (1) = 2, AT the cap -- still fine.
+    at_cap = update_components(
+        surface_id="capped",
+        components=[{"id": "overflow", "component": "Text", "text": "two"}],
+    )
+    assert at_cap["rendered"] is True
+
+    refused = update_components(
+        surface_id="capped",
+        components=[{"id": "overflow_2", "component": "Text", "text": "three"}],
+    )
+
+    assert refused["ok"] is False
+    assert refused["reason"] == "a2ui_component_limit_exceeded"
+    assert refused["reason"] in KNOWN_REFUSAL_REASONS
+    assert refused["hint"] == _DEFAULT_HINTS["a2ui_component_limit_exceeded"]
+    # Actionable: names a concrete next step, never a bare retry.
+    assert "reuse" in refused["hint"] or "delete_a2ui_surface" in refused["hint"]
+
+    reasons = app.state.a2ui_catalogs.session_reasons(sid)
+    recorded = [r for r in reasons if r["reason"] == "a2ui_component_limit_exceeded"]
+    assert len(recorded) == 1
+    assert recorded[0]["component_count"] == 3
+    assert recorded[0]["limit"] == 2

@@ -19,10 +19,12 @@ from clio_agent.gact import context as _ctx
 from clio_agent.gact.a2ui import (
     A2UICatalogNotProducibleError,
     A2UICatalogUnknownError,
+    A2UIComponentLimitExceededError,
     A2UIFunctionNotInCatalogError,
     A2UITranscriptFrozenError,
     A2UIValidationError,
 )
+from clio_agent.gact.a2ui_component_fold import upsert_components_by_id
 from clio_agent.gact.a2ui_producer import _emit
 from clio_agent.gact.a2ui_producer._refusal import catalog_hint, component_hint, refusal
 
@@ -57,39 +59,20 @@ def existing_surface(app: Any, session_id: str, surface_id: str) -> Any:
     return app.state.a2ui_store.get(session_id, surface_id)
 
 
-def _upsert_components_by_id(
-    previous: "list[dict[str, Any]]", upserted: "list[dict[str, Any]]"
-) -> "list[dict[str, Any]]":
-    """Upsert ``upserted`` into ``previous`` by ``id``: an existing id is
-    REPLACED in place (its original position kept); a new id is appended.
-    Mirrors the ``updateComponents`` wire message's own upsert contract —
-    there is no per-component delete, only a whole-surface one."""
-
-    by_id: dict[Any, dict[str, Any]] = {}
-    order: list[Any] = []
-    for component in previous:
-        if not isinstance(component, dict):
-            continue
-        cid = component.get("id")
-        if cid not in by_id:
-            order.append(cid)
-        by_id[cid] = component
-    for component in upserted:
-        if not isinstance(component, dict):
-            continue
-        cid = component.get("id")
-        if cid not in by_id:
-            order.append(cid)
-        by_id[cid] = component
-    return [by_id[cid] for cid in order]
-
-
 def current_surface_components(existing: Any) -> "list[dict[str, Any]]":
     """Replay ``existing``'s own ``updateComponents`` message history into the
     FULL, currently-live component list (an empty list for ``None``/a
     brand-new surface) -- the surface record stores raw ordered messages, not
     a pre-reduced view, so every producer call that needs "what does this
-    surface look like right now" folds it the same way, here, once."""
+    surface look like right now" folds it the same way, here, once.
+
+    As of G2 (iowarp/gact-tui#513 comment 5937313752), ``a2ui.py`` itself
+    already materializes a surface's stored messages down to AT MOST one
+    ``updateComponents`` entry on every write (``a2ui_component_fold.
+    materialize_update_components``), so this loop folding several such
+    entries together only matters for a surface persisted before that
+    change; either way the result is the same live component list.
+    """
 
     merged: list[dict[str, Any]] = []
     if existing is None:
@@ -98,7 +81,7 @@ def current_surface_components(existing: Any) -> "list[dict[str, Any]]":
         update = message.get("updateComponents") if isinstance(message, dict) else None
         components = update.get("components") if isinstance(update, dict) else None
         if isinstance(components, list):
-            merged = _upsert_components_by_id(merged, components)
+            merged = upsert_components_by_id(merged, components)
     return merged
 
 
@@ -114,7 +97,7 @@ def merged_surface_components(
     payload.
     """
 
-    return _upsert_components_by_id(current_surface_components(existing), new_components)
+    return upsert_components_by_id(current_surface_components(existing), new_components)
 
 
 def surface_registry_fields(outcome: "A2UIBatchOutcome") -> dict[str, Any]:
@@ -186,6 +169,14 @@ def apply_messages(
             detail=str(exc),
             hint=catalog_hint(app, exc.catalog_id),
         )
+    except A2UIComponentLimitExceededError as exc:
+        app.state.a2ui_catalogs.record_session_reason(
+            session_id,
+            "a2ui_component_limit_exceeded",
+            component_count=exc.component_count,
+            limit=exc.limit,
+        )
+        return refusal("a2ui_component_limit_exceeded", detail=str(exc))
     except A2UIValidationError as exc:
         return refusal(
             "a2ui_validation_failed",

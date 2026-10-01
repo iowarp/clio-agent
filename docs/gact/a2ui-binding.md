@@ -410,6 +410,49 @@ always resolve it from the addressed surface's own record.
   `a2ui_capabilities`: that ONE blueprint's resolved catalog ids, in
   declared order.
 
+## Surface snapshot wire shape: `message_revisions` (coordinator design, 2026-10-01)
+
+Patch-level contract addition, iowarp/clio-agent#1553 / iowarp/gact-tui#513:
+`GET /v1/sessions/{sid}/a2ui/surfaces` and the inline `surfaces` array every
+`POST /v1/sessions/{sid}/a2ui/messages`/`.../a2ui/actions` response already
+carries (`A2UISurfaceRecord.to_wire()`) now also carry `message_revisions`,
+a sidecar array parallel to `messages` (same length, same index
+correspondence) — never a key inside the official A2UI envelopes
+`messages` holds, which are the wire protocol's own shape, untouched:
+
+```jsonc
+{
+  "id": "surface_1",
+  "revision": 4,
+  "messages": [
+    { "version": "v0.9.1", "createSurface": { "...": "..." } },
+    { "version": "v0.9.1", "updateComponents": { "...": "..." } },
+    { "version": "v0.9.1", "updateDataModel": { "...": "..." } }
+  ],
+  "message_revisions": [1, 4, 3]
+}
+```
+
+Each integer names the revision that produced that slot's CURRENT content.
+`createSurface` is stamped once, at creation, and never again. Each
+`updateDataModel` is stamped with its own, one-time revision. The ONE
+merged `updateComponents` slot (materialized from the surface's whole
+`updateComponents` history, see "What the server does with them" /
+`gact/a2ui_component_fold.py`) is RE-stamped on every component change,
+however small — its position in `messages` does not move, but its stamp
+always reflects the latest write.
+
+**Why:** a client reconciling a surface across revisions needs to know
+which slots are new since its own last-applied revision. Comparing
+`message_revisions[i] > appliedRevision` is O(1) per slot; the alternative
+— re-serializing and comparing each slot's full content on every reconcile
+— is O(surface size) and was the cost the client's own fingerprint cache
+existed to avoid. A client talking to a server that predates this field
+(absent `message_revisions`, an older pinned clio-agent) falls back to a
+full rebuild from the stream on each revision that moves forward, with a
+visible, typed degradation reason — never silently trusting stale content
+as unchanged.
+
 ## Content references: media and artifacts on a remote viewer (A2)
 
 A surface is drawn by a viewer that may run on another machine than the

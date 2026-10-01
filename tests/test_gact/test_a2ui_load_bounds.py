@@ -6,8 +6,13 @@ Three distinct bounded-memory properties, each driven by real repeated
 production traffic (never a synthetic pre-sized list):
 
 1. A surface's own ordered message log never grows past
-   ``max_a2ui_messages()`` (``gact/a2ui.py``) -- the oldest non-createSurface
-   message is evicted with the typed ``a2ui_message_limit`` reason.
+   ``max_a2ui_messages()`` (``gact/a2ui.py``) -- the oldest message that
+   is not ``createSurface`` or the one merged ``updateComponents`` is
+   evicted with the typed ``a2ui_message_limit`` reason. ``updateComponents``
+   traffic (G2 merge-gate finding, gact-tui#513 comment 5937313752:
+   materializes into ONE current-state message, `a2ui_component_fold.py`)
+   never needs this eviction at all -- only sustained ``updateDataModel``
+   traffic still grows the list and exercises it.
 2. The per-session catalog-reason ring
    (``CatalogRegistry._session_reasons``) never grows past
    ``A2UI_CATALOG_REASON_RING_MAXLEN`` (256) -- driven by distinct
@@ -55,9 +60,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from clio_agent.gact import a2ui as a2ui_module
+from clio_agent.gact.a2ui import A2UIComponentLimitExceededError
 from clio_agent.gact.a2ui_catalogs.builtin import workspace_catalog_id
 from clio_agent.gact.a2ui_catalogs.reasons import A2UI_CATALOG_REASON_RING_MAXLEN
 from clio_agent.gact.app import build_app
@@ -108,7 +115,7 @@ def _stub_spawn(app: Any) -> None:
     app.state.turn_runner.spawn = _spawn
 
 
-def test_sustained_surface_updates_keep_message_retention_at_its_configured_bound(
+def test_sustained_data_model_updates_keep_message_retention_at_its_configured_bound(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     # A small bound (not the 512 default) makes eviction happen repeatedly
@@ -121,13 +128,65 @@ def test_sustained_surface_updates_keep_message_retention_at_its_configured_boun
     sid = session.id
     app.state.a2ui_store.apply_batch(sid, _create_batch("load_surface"))
 
-    # Each update names a FRESH component id (never "root" again) so the
-    # message list actually GROWS instead of being compacted away: an
-    # updateComponents batch that only redefines ids a later batch also
-    # redefines is superseded and dropped BEFORE the message-limit check
-    # even runs (``_apply_staged_message``'s own compaction step) -- using
-    # the same id every time would keep the list at 2 forever and never
-    # exercise ``a2ui_message_limit`` at all.
+    # `updateDataModel` (never `updateComponents`, G2 merge-gate finding,
+    # gact-tui#513 comment 5937313752): `_apply_staged_message` now
+    # MATERIALIZES every `updateComponents` into the ONE current component
+    # state (`a2ui_component_fold.py`), so a sustained run of those no
+    # longer grows the message list at all -- see
+    # ``test_sustained_component_updates_never_grow_past_one_merged_message``
+    # below for that bound. `updateDataModel` is the one message kind that
+    # still accumulates one entry per write, so it is what still exercises
+    # ``a2ui_message_limit`` eviction here.
+    updates = 60
+    for i in range(updates):
+        app.state.a2ui_store.apply_batch(
+            sid,
+            [
+                {
+                    "version": "v0.9.1",
+                    "updateDataModel": {
+                        "surfaceId": "load_surface",
+                        "path": "/counter",
+                        "value": i,
+                    },
+                }
+            ],
+        )
+
+    surface = app.state.a2ui_store.get(sid, "load_surface")
+    assert surface is not None
+    assert surface.revision == 2 + updates  # createSurface + updateComponents + N updates
+    assert len(surface.messages) <= 8
+    assert surface.eviction_reason == "a2ui_message_limit"
+    assert surface.evicted_messages > 50, "sustained load must keep evicting, not stall once"
+    # createSurface itself is NEVER the eviction target -- replay must still
+    # be able to reconstruct the surface's catalog/id.
+    assert any("createSurface" in m for m in surface.messages)
+    # Nor is the one merged updateComponents message -- evicting it would
+    # blank the surface's entire rendered component tree, not just history.
+    assert any("updateComponents" in m for m in surface.messages)
+    assert surface.state == "ready"
+
+
+def test_sustained_component_updates_never_grow_past_one_merged_message(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """Materialization (G2 merge-gate finding, gact-tui#513 comment
+    5937313752) means sustained `updateComponents` traffic never needs
+    message-limit eviction to stay bounded in the first place: every update,
+    however many DISTINCT component ids it introduces, folds into the SAME
+    one current-state message. A bound even lower than the default (and
+    lower than the previous version of this test exercised) still never
+    evicts.
+    """
+
+    monkeypatch.setattr(a2ui_module, "max_a2ui_messages", lambda: 8)
+
+    app = _isolated_app(tmp_path)
+    session = app.state.sessions.create(workspace_id="ws_default", title="load bounds")
+    sid = session.id
+    app.state.a2ui_store.apply_batch(sid, _create_batch("load_surface"))
+
     updates = 60
     for i in range(updates):
         app.state.a2ui_store.apply_batch(
@@ -148,13 +207,81 @@ def test_sustained_surface_updates_keep_message_retention_at_its_configured_boun
     surface = app.state.a2ui_store.get(sid, "load_surface")
     assert surface is not None
     assert surface.revision == 2 + updates  # createSurface + updateComponents + N updates
-    assert len(surface.messages) <= 8
-    assert surface.eviction_reason == "a2ui_message_limit"
-    assert surface.evicted_messages > 50, "sustained load must keep evicting, not stall once"
-    # createSurface itself is NEVER the eviction target -- replay must still
-    # be able to reconstruct the surface's catalog/id.
-    assert any("createSurface" in m for m in surface.messages)
+    assert len(surface.messages) == 2  # createSurface + the one merged updateComponents
+    assert "createSurface" in surface.messages[0]
+    assert "updateComponents" in surface.messages[1]
+    assert surface.eviction_reason == ""
+    assert surface.evicted_messages == 0
+    merged_components = surface.messages[1]["updateComponents"]["components"]
+    assert len(merged_components) == 1 + updates  # the seeded "root" plus every "node_i"
     assert surface.state == "ready"
+
+
+def test_sustained_distinct_component_ids_hit_the_merged_cap_and_refuse(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """F5 (coordinator design, 2026-10-01): the merged state's component
+    COUNT is bounded too, not just the message list's LENGTH -- a surface
+    that accumulates distinct ids across many small updates, never any
+    single oversized one, was otherwise unbounded once materialization
+    (G2) made the stored list itself stay at one entry forever. A lowered
+    cap (not the 256 default) makes this a fast, deterministic test.
+    """
+
+    monkeypatch.setattr(a2ui_module, "MAX_A2UI_COMPONENTS", 5)
+
+    app = _isolated_app(tmp_path)
+    session = app.state.sessions.create(workspace_id="ws_default", title="load bounds")
+    sid = session.id
+    app.state.a2ui_store.apply_batch(sid, _create_batch("load_surface"))  # seeds "root" (1/5)
+
+    for i in range(4):  # "node_0".."node_3" -> exactly at the cap (5/5)
+        app.state.a2ui_store.apply_batch(
+            sid,
+            [
+                {
+                    "version": "v0.9.1",
+                    "updateComponents": {
+                        "surfaceId": "load_surface",
+                        "components": [
+                            {"id": f"node_{i}", "component": "Text", "text": f"update {i}"}
+                        ],
+                    },
+                }
+            ],
+        )
+
+    surface_at_cap = app.state.a2ui_store.get(sid, "load_surface")
+    assert surface_at_cap is not None
+    at_cap_components = surface_at_cap.messages[1]["updateComponents"]["components"]
+    assert len(at_cap_components) == 5
+
+    with pytest.raises(A2UIComponentLimitExceededError) as excinfo:
+        app.state.a2ui_store.apply_batch(
+            sid,
+            [
+                {
+                    "version": "v0.9.1",
+                    "updateComponents": {
+                        "surfaceId": "load_surface",
+                        "components": [
+                            {"id": "node_overflow", "component": "Text", "text": "one too many"}
+                        ],
+                    },
+                }
+            ],
+        )
+    assert excinfo.value.component_count == 6
+    assert excinfo.value.limit == 5
+
+    # The refusal rolls back: the surface still has exactly the 5 components
+    # it had before the rejected call, never a partially-applied 6th.
+    surface_after_refusal = app.state.a2ui_store.get(sid, "load_surface")
+    assert surface_after_refusal is not None
+    assert surface_after_refusal.revision == surface_at_cap.revision
+    after_refusal_components = surface_after_refusal.messages[1]["updateComponents"]["components"]
+    assert len(after_refusal_components) == 5
+    assert all(c["id"] != "node_overflow" for c in after_refusal_components)
 
 
 def test_sustained_actions_keep_the_per_session_reason_ring_at_256(tmp_path: Path) -> None:

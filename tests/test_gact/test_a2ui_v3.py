@@ -413,6 +413,118 @@ def test_complete_component_update_compacts_the_superseded_snapshot(tmp_path: Pa
     assert surface["messages"] == [_create_message(), corrected]
 
 
+def test_fix_touching_fewer_ids_than_the_bad_update_still_folds_it_away(tmp_path: Path) -> None:
+    """G2 merge-gate finding (iowarp/gact-tui#513 comment 5937313752, #23):
+    the OLD compaction only dropped an earlier ``updateComponents`` whose
+    component-id set was a SUBSET of a later one's. A bad message that
+    defines a whole dashboard (``root`` + a sibling ``a``) is NOT a subset
+    of a fix that redefines only ``root`` -- ``{root, a}`` is not ``<=
+    {root}`` -- so the bad message survived in ``surface.messages``
+    forever, stranding the fix right next to it (reproduced twice against a
+    real server via ``GET /v1/sessions/{sid}/a2ui/surfaces``; the client
+    half of this bug is gact-tui#513). Materialization folds every
+    ``updateComponents`` message into ONE current definition per component
+    id, so a fix for one component never again needs to also resend its
+    unrelated siblings just to make the bad definition disappear.
+    """
+
+    client, sid, _ = _session_client(tmp_path)
+    bad_dashboard = {
+        "version": "v0.9.1",
+        "updateComponents": {
+            "surfaceId": "surface_1",
+            "components": [
+                # `gap: 15` is accepted by the server's currently-pinned
+                # clio-schemas 0.5.1 (the client-side bound landed in 0.5.2,
+                # clio-schemas#19, not yet pinned here) -- the exact drift
+                # that produced this bug live.
+                {"id": "root", "component": "Grid", "gap": 15, "children": ["a"]},
+                {"id": "a", "component": "Text", "text": "A"},
+            ],
+        },
+    }
+    grid_fix = {
+        "version": "v0.9.1",
+        "updateComponents": {
+            "surfaceId": "surface_1",
+            "components": [{"id": "root", "component": "Grid", "gap": 8, "children": ["a"]}],
+        },
+    }
+
+    response = client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={"messages": [_create_message(), bad_dashboard, grid_fix]},
+    )
+
+    assert response.status_code == 200
+    surface = response.json()["surfaces"][-1]
+    assert surface["revision"] == 3
+    merged = {
+        "version": "v0.9.1",
+        "updateComponents": {
+            "surfaceId": "surface_1",
+            "components": [
+                {"id": "root", "component": "Grid", "gap": 8, "children": ["a"]},
+                {"id": "a", "component": "Text", "text": "A"},
+            ],
+        },
+    }
+    assert surface["messages"] == [_create_message(), merged]
+
+
+def test_message_revisions_are_present_and_monotonic_per_slot(tmp_path: Path) -> None:
+    """Coordinator design (2026-10-01, adversarial review of #1553/#513):
+    each stored message is stamped with the revision that produced its
+    CURRENT content, exposed in the wire projection as `message_revisions`
+    (parallel to `messages`, same length/order) -- a client needs this to
+    tell "this slot changed" from "this slot is unchanged" in O(1), never by
+    re-hashing the slot's full content on every reconcile. The merged
+    `updateComponents` slot is RE-stamped on every component change,
+    however small; every other slot (`createSurface`, each
+    `updateDataModel`) keeps the stamp it was created with.
+    """
+
+    client, sid, _ = _session_client(tmp_path)
+    grid_first = {
+        "version": "v0.9.1",
+        "updateComponents": {
+            "surfaceId": "surface_1",
+            "components": [{"id": "root", "component": "Grid", "gap": 8, "children": []}],
+        },
+    }
+    status_update = {
+        "version": "v0.9.1",
+        "updateDataModel": {"surfaceId": "surface_1", "path": "/status", "value": "running"},
+    }
+    grid_second = {
+        "version": "v0.9.1",
+        "updateComponents": {
+            "surfaceId": "surface_1",
+            "components": [{"id": "root", "component": "Grid", "gap": 10, "children": []}],
+        },
+    }
+
+    response = client.post(
+        f"/v1/sessions/{sid}/a2ui/messages",
+        headers=HEADERS,
+        json={"messages": [_create_message(), grid_first, status_update, grid_second]},
+    )
+
+    assert response.status_code == 200
+    surface = response.json()["surfaces"][-1]
+    assert surface["revision"] == 4
+    assert len(surface["message_revisions"]) == len(surface["messages"]) == 3
+    assert "createSurface" in surface["messages"][0]
+    assert "updateComponents" in surface["messages"][1]
+    assert "updateDataModel" in surface["messages"][2]
+    # createSurface: stamped 1, never touched again. The merged
+    # updateComponents slot: re-stamped to 4 (grid_second's own revision),
+    # not 2 (grid_first's) -- it is the LATEST change that counts. The
+    # updateDataModel slot: stamped 3, its own and only revision.
+    assert surface["message_revisions"] == [1, 4, 3]
+
+
 def test_surface_ids_are_scoped_to_each_session(tmp_path: Path) -> None:
     client, first_sid, _ = _session_client(tmp_path)
     second = client.app.state.sessions.create(workspace_id="ws_default", title="Second A2UI")

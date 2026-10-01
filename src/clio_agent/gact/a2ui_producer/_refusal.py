@@ -112,6 +112,12 @@ _DEFAULT_HINTS: dict[str, str] = {
         "call load_skill for the failing component's schema, then retry "
         "with a components payload that matches it"
     ),
+    "a2ui_component_limit_exceeded": (
+        "reuse existing component ids for content that already has one "
+        "instead of minting new ids for the same thing, or call "
+        "delete_a2ui_surface and recreate it with only the components "
+        "currently shown"
+    ),
     "a2ui_url_unresolved": (
         "reference an existing file inside this session's workspace by its path "
         "(download a web file there first with your shell or fetch tool) or an "
@@ -189,6 +195,7 @@ KNOWN_REFUSAL_REASONS: frozenset[str] = frozenset(
         "a2ui_catalog_not_producible",
         "a2ui_function_not_in_catalog",
         "a2ui_validation_failed",
+        "a2ui_component_limit_exceeded",
         "a2ui_surface_not_found",
         "a2ui_client_capabilities_unknown",
         "a2ui_catalog_no_client_match",
