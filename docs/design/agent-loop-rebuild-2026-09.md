@@ -962,6 +962,45 @@ Open (next):
   window visible.
 - The semantic trace writer drops an event on a write error (with the rest of the inventory).
 
+**The rest of the inventory, re-located in code (2026-10-01), in fix order.** Ranked by how
+directly each can change what the model sees; each fix lands with a failing-first test.
+1. *Claude Code CLI auto-compaction is invisible.* The engine handles `StreamEvent`,
+   `AssistantMessage`, `ResultMessage` and `RateLimitEvent`. Every other SDK message, including
+   the `SystemMessage` `compact_boundary`, returns `[]` with no audit. The engine keeps one CLI
+   session per conversation and sends deltas, so a CLI-side compaction changes the model's real
+   context behind clio-core. Fix: a `compact_boundary` resets the conversation (typed, audited);
+   an unknown message kind is audited.
+2. *Context ops on stale ids are silently not applied.* The fold store's `delete`, `summarize`
+   and `replace` (production, `working_set_fold.py`) skip ids that are not live with no log,
+   and `POST /context/ops` answers `applied: true, tombstoned_count: 0`. Fix: a typed
+   `StaleSegmentIdError`, 409 on the route.
+3. *The fold tolerates a broken record.* `fold_steps`:
+   - skips unknown kinds;
+   - turns an orphan observation into a `[earlier context]` user message;
+   - re-matches an unknown `call_id`;
+   - leaves a call with no result in the context;
+   - defaults missing ids and names.
+
+   It also runs outside the typed `ContextReadError` wrapper. Fix: typed failure for each case,
+   and the recorder's failed-step observation gets a `call_id`.
+4. *Compaction:*
+   - an empty LM summary replaces the working set;
+   - a manual compact during a turn folds clio-core and then discards the checkpoint
+     (`checkpoint_already_staged` is checked after the fold);
+   - the staged checkpoint lives only in memory, and a failed flush is audited and lost;
+   - auto-compaction never fires and audits nothing when real token counts are missing;
+   - an estimated prompt usage is used as if it were real.
+5. *Context silently rebuilt from the transcript file:*
+   - `carry_over` re-seeds any scope whose `list_segments` comes back empty, and a missing
+     clio-core record reads as empty (`if raw else []`);
+   - `materialize_ledger` repairs a divergent atom lane from the file, so the file wins over
+     clio-core;
+   - malformed ledger rows are skipped.
+6. *Highway wiring:*
+   - the trace writer drops events on write errors;
+   - `_set_app_arc` and `_wire_arc_op_logger` swallow wiring failures;
+   - `op_logger` failures are swallowed with "op still applied".
+
 ### History mode sub-plan (the one sanctioned fallback)
 
 This supersedes the Phase 3 note that made `LocalFSStore` the platform fallback; that store is
