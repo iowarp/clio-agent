@@ -1,7 +1,8 @@
 """DSPy's extract for :class:`~clio_agent.gact.agents.clio_react.ClioReAct`, config-driven.
 
 After a loop longer than ``agents.react_extract.after_steps`` model steps (default 3),
-the signature outputs the loop did not produce are filled by literally DSPy's
+the signature outputs the loop did not produce are filled, from the agent's clio-core
+context, by literally DSPy's
 ``ReAct`` extract: ``ChainOfThought`` over the task inputs, those outputs and the
 trajectory. Two endings qualify: ``max_iters`` (no answer at all) and a direct answer
 on a signature with further outputs (``question -> answer, summary``). The answer the
@@ -72,11 +73,11 @@ def extract(
 
 
 def trajectory_text(steps: Sequence[Message]) -> str:
-    """The loop's steps as the plain-text trajectory the extract reads (the task head
-    is already in the extract's inputs, so the leading user message is skipped)."""
+    """The agent's context -- read from clio-core, exactly what the agent saw, the
+    harness's additions included -- as the plain-text trajectory the extract reads."""
     lines: list[str] = []
     step = 0
-    for message in steps[1:]:
+    for message in steps:
         for part in message.parts:
             if isinstance(part, ThinkingPart):
                 continue

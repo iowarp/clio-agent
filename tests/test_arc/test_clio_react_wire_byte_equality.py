@@ -183,14 +183,14 @@ def test_every_loop_call_is_equal_to_the_reference(arc):
         assert list(request.messages) == [NOTE, HEAD, *reference[: 2 * k]], f"call {k} diverged"
 
 
-def test_plane_fold_equals_the_loops_own_steps(arc):
-    """The ARC fold of the plane after the turn == the message list the loop kept
-    (the user message first): the loop's context and its record are one thing."""
+def test_prediction_messages_are_the_plane_fold(arc):
+    """The Prediction's messages are the ARC fold of the plane after the turn: the
+    loop keeps no step list of its own, clio-core is the one record."""
     pred, _ = _run_loop(arc, _agent(), _script(_STEPS))
     with live_plane_context(arc, session=SESSION, scope=SCOPE):
         folded = read_steps(arc, SESSION, SCOPE)
-    assert pred.messages[0] == HEAD
-    assert folded == [NOTE, *pred.messages]  # the loop keeps the task; the plane the note too
+    assert pred.messages[:2] == [NOTE, HEAD]
+    assert folded == pred.messages
 
 
 def test_consecutive_calls_are_strict_prefix_extensions(arc):

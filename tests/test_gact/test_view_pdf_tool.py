@@ -25,6 +25,8 @@ from clio_agent.tools.execution import tool_workspace_context
 from tests._config_layer import set_config
 from tests._scripted_engine import Reply, calls, scripted_lm
 
+pytestmark = pytest.mark.usefixtures("clio_core_plane")
+
 
 def _make_pdf(page_count: int) -> bytes:
     writer = PdfWriter()

@@ -25,6 +25,8 @@ from clio_agent.errors import (
 from clio_agent.gact.agents.clio_react import ClioReAct
 from tests._scripted_engine import ScriptedEngine, calls, scripted_lm
 
+pytestmark = pytest.mark.usefixtures("clio_core_plane")
+
 
 def _make_refusing_tool(calls: list[int]) -> Any:
     def task_echo(payload: str = "") -> str:
@@ -145,7 +147,7 @@ def test_ordinary_tool_error_is_not_escalated() -> None:
     with dspy.context(lm=lm):
         pred = agent(question="fetch it")
     assert (pred.answer, pred.termination_reason) == ("n/a", "submit")
-    first, second = pred.messages[2].parts
+    first, second = pred.messages[3].parts
     assert [first.is_error, second.is_error] == [True, True]
     assert "transient upstream hiccup" in first.content[0].text
     assert len(engine.requests) == 2

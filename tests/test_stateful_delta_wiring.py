@@ -266,6 +266,7 @@ def test_maybe_autocompact_wires_ops_reset_through_the_loop(
 #     the binding unlocks, directly on the Claude SDK registry (append-only
 #     growing message list under an active scope).
 # --------------------------------------------------------------------------- #
+@pytest.mark.usefixtures("clio_core_plane")
 def test_clio_react_forward_binds_stateful_scope() -> None:
     """``ClioReAct.forward`` binds a fresh per-forward stateful scope for its LM sends.
 

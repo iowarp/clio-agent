@@ -28,10 +28,12 @@ from dspy.lm15 import ContextLengthError, Request, ToolCallPart, ToolResultPart
 
 from clio_agent.agent import cancellation_checker
 from clio_agent.errors import MCPMissingRequiredClientCapabilityError
-from clio_agent.gact.agents.clio_react import ClioReAct, NoLanguageModelError
+from clio_agent.gact.agents.clio_react import TOOL_USE_NOTE, ClioReAct, NoLanguageModelError
 from clio_agent.gact.runtime.globals import _TurnCancelled
 from clio_agent.lm.engines.text_tools import INVALID_TOOL_CALL
 from tests._scripted_engine import Reply, ScriptedEngine, calls, scripted_lm, wire
+
+pytestmark = pytest.mark.usefixtures("clio_core_plane")
 
 
 def search(query: str) -> str:
@@ -95,16 +97,21 @@ def test_differential_same_calls_results_and_outputs_as_stock_reactv2() -> None:
         assert sorted(t.name for t in mine.tools) == sorted(t.name for t in theirs.tools)
 
 
+# What the harness records first for an agent with tools (an injection, shown in the UI
+# and in the agent's clio-core context): one step may call several tools at once.
+_TOOL_NOTE = ("user", [("text", f"[clio: tool_use]\n{TOOL_USE_NOTE}")])
+
+
 def test_each_step_is_one_request_and_the_wire_is_append_only() -> None:
     _, engine = _run(DIFF_STEPS, [search])
 
     wires = [wire(r) for r in engine.requests]
-    assert wires[0] == [("user", [("text", "what?")])]
-    assert wires[1][1] == (
+    assert wires[0] == [_TOOL_NOTE, ("user", [("text", "what?")])]
+    assert wires[1][2] == (
         "assistant",
         [("text", "look it up"), ("call", "call_0_0", "search", {"query": "x"})],
     )
-    assert wires[1][2] == ("tool", [("result", "call_0_0", "results for x", False)])
+    assert wires[1][3] == ("tool", [("result", "call_0_0", "results for x", False)])
     for prev, cur in zip(wires, wires[1:], strict=False):
         assert cur[: len(prev)] == prev
     assert {r.system for r in engine.requests} == {engine.requests[0].system}
@@ -114,7 +121,7 @@ def test_thinking_goes_back_with_its_step() -> None:
     _, engine = _run(
         [calls(("search", {"query": "x"}), thinking="plan: search"), Reply(text="ok")], [search]
     )
-    assert wire(engine.requests[1])[1] == (
+    assert wire(engine.requests[1])[2] == (
         "assistant",
         [("thinking", "plan: search"), ("call", "call_0_0", "search", {"query": "x"})],
     )
@@ -128,7 +135,7 @@ def test_the_expert_system_prompt_is_the_system_message() -> None:
         )
     request = engine.requests[0]
     assert request.system == "You are the data expert."
-    assert wire(request) == [("user", [("text", "what?")])]
+    assert wire(request) == [_TOOL_NOTE, ("user", [("text", "what?")])]
 
 
 def test_generation_settings_ride_the_request_config() -> None:
@@ -376,7 +383,7 @@ def test_the_loop_places_media_by_the_lms_tag(monkeypatch: pytest.MonkeyPatch) -
     with dspy.context(lm=lm):
         ClioReAct("question -> answer", tools=[view])(question="q")
     roles = [m.role for m in engine.requests[1].messages]
-    assert roles == ["user", "assistant", "tool", "user"]
+    assert roles == ["user", "user", "assistant", "tool", "user"]  # the tool-use note first
     assert engine.requests[1].messages[-1].parts[-1] == image
 
 

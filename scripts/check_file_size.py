@@ -149,7 +149,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # coexist; neither side's additions were dropped.
     "src/clio_agent/agent.py": 987,  # MCP refresh moved to gact/mcp_gateway_refresh.py; L1: -4 (executor_work_may_continue deleted)
     "src/clio_agent/arc/memory.py": 1278,  # #1339: the _events chunk writer cursor moved to arc/lane_chunking.py
-    "src/clio_agent/arc/segments.py": 1032,
+    "src/clio_agent/arc/segments.py": 1031,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
     # owner ruling 2026-07-14: +3 to route explicit =local through the loud
     # DEGRADED banner (owner module: arc/init_degradation.py).
@@ -600,7 +600,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # builders.py above (owner module tools/mcp_header_mismatch.py).
     # MERGE (PR #1298 x #1310): 962 -> 972. The two campaigns' route additions are
     # disjoint and both survive intact.
-    "src/clio_agent/gact/routes/mcp.py": 972,  # declared MCP assembly moved to routes/mcp_specs.py
+    "src/clio_agent/gact/routes/mcp.py": 970,  # declared MCP assembly moved to routes/mcp_specs.py
     # #947 DEBT (recorded 2026-07-18, #948 S4 branch): the MCP-apps landing grew
     # these files past their baselines without a ratchet update (it merged to
     # develop with the check job red). Recording current counts makes the debt

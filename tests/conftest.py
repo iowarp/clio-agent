@@ -758,6 +758,34 @@ def clio_core_namespace(request, allow_pytest_tmp_path, monkeypatch):
         store.clear()
 
 
+@pytest.fixture
+def clio_core_plane():
+    """What a real turn gives the agent loop: an app holding a real ARC (this test's
+    clio-core namespace), a react scope and a session. The loop has no other context
+    store; a test running ``ClioReAct`` bare opts in with
+    ``pytestmark = pytest.mark.usefixtures("clio_core_plane")``.
+    """
+    import types  # noqa: PLC0415
+
+    from clio_agent.arc.memory import ARCMemory  # noqa: PLC0415
+    from clio_agent.arc.storage import make_arc_store  # noqa: PLC0415
+    from clio_agent.gact import context as gact_context  # noqa: PLC0415
+    from clio_agent.gact.events import EventBus  # noqa: PLC0415
+
+    arc = ARCMemory(store=make_arc_store(backend="cte"))
+    app = types.SimpleNamespace(state=types.SimpleNamespace(arc=arc, bus=EventBus()))
+    tokens = [
+        gact_context.set_app(app),
+        gact_context.set_react_scope("agent"),
+        gact_context.set_react_session("sess-plane"),
+    ]
+    try:
+        yield app
+    finally:
+        for token in reversed(tokens):
+            gact_context.reset(token)
+
+
 def _path_under(path: Path, base: Path) -> bool:
     try:
         Path(path).resolve().relative_to(Path(base).resolve())

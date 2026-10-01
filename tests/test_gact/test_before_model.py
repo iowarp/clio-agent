@@ -50,6 +50,8 @@ from clio_agent.lm.hooked_lm import (
 )
 from tests.test_gact._hook_fixtures import command_run, write_hook_script
 
+pytestmark = pytest.mark.usefixtures("clio_core_plane")
+
 
 # --------------------------------------------------------------------------- #
 # Spy LMs — real dspy.BaseLM subclasses. No mocking of the call boundary.       #

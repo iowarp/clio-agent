@@ -22,6 +22,8 @@ from clio_agent.gact.view_image_tool import (
 from clio_agent.tools.execution import tool_workspace_context
 from tests._scripted_engine import Reply, calls, scripted_lm
 
+pytestmark = pytest.mark.usefixtures("clio_core_plane")
+
 _ONE_PIXEL_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6ZQAAAABJRU5ErkJggg=="
 )

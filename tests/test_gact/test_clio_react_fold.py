@@ -32,7 +32,7 @@ import clio_agent.gact.runtime.globals as runtime_globals
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.schema import Segment
 from clio_agent.gact import context as ctx
-from clio_agent.gact.agents.clio_react import ClioReAct
+from clio_agent.gact.agents.clio_react import ClioReAct, NoContextStoreError
 from clio_agent.gact.agents.clio_react_record import (
     ContextReadError,
     arc_scope,
@@ -41,7 +41,7 @@ from clio_agent.gact.agents.clio_react_record import (
     thinking_from_record,
     thinking_to_record,
 )
-from tests._scripted_engine import Reply, calls, scripted_lm, summarize, wire
+from tests._scripted_engine import Reply, scripted_lm, summarize
 
 SESSION, SCOPE = "s1", "agentA"
 
@@ -362,12 +362,12 @@ def test_loop_fails_typed_on_a_plane_read_failure_without_fallback(
     assert lifecycle[-1][1]["payload"]["reason"] == "arc_context_read_failed"
 
 
-def test_loop_without_a_plane_uses_its_own_steps() -> None:
-    """No ARC scope: the loop's context is its own step list (the prior step reaches the
-    next call) -- the only other context source, chosen up front, not a fallback."""
-    lm, engine = scripted_lm([calls(("search", {"q": "x"}), text="look"), Reply(text="done")])
+def test_loop_without_a_plane_fails_typed() -> None:
+    """No clio-core scope bound: the loop has no context store and fails typed before
+    any model call -- it never runs on a private step list."""
+    lm, engine = scripted_lm([Reply(text="done")])
     agent = ClioReAct("question -> answer", tools=[dspy.Tool(lambda q: "OWN_OBS", name="search")])
-    with dspy.context(lm=lm):
-        pred = agent(question="q")
-    assert pred.termination_reason == "direct_response"
-    assert wire(engine.requests[1])[2] == ("tool", [("result", "call_0_0", "OWN_OBS", False)])
+    with dspy.context(lm=lm), pytest.raises(NoContextStoreError) as err:
+        agent(question="q")
+    assert err.value.error_type == "no_context_store"
+    assert engine.requests == []

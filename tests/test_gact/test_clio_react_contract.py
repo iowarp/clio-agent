@@ -20,10 +20,13 @@ from __future__ import annotations
 from typing import Any
 
 import dspy
+import pytest
 from dspy.lm15 import TextPart, ThinkingPart
 
-from clio_agent.gact.agents.clio_react import ClioReAct
+from clio_agent.gact.agents.clio_react import TOOL_USE_NOTE, ClioReAct
 from tests._scripted_engine import Reply, ScriptedEngine, calls, scripted_lm
+
+pytestmark = pytest.mark.usefixtures("clio_core_plane")
 
 
 def _search(q: str) -> str:
@@ -61,9 +64,12 @@ def test_requests_grow_append_only_behind_a_static_head() -> None:
 
     assert (pred.answer, pred.termination_reason) == ("FINAL", "submit")
     requests = engine.requests
-    # call 0 sees only the head, then one (assistant, tool) pair per prior step.
-    assert [len(r.messages) for r in requests] == [1, 3, 5]
-    head = requests[0].messages[0]
+    # call 0 sees only the head (the tool-use note, then the question), then one
+    # (assistant, tool) pair per prior step.
+    assert [len(r.messages) for r in requests] == [2, 4, 6]
+    note, head = requests[0].messages
+    tool_note = TextPart(text=f"[clio: tool_use]\n{TOOL_USE_NOTE}")
+    assert (note.role, note.parts) == ("user", (tool_note,))
     assert (head.role, head.parts) == ("user", (TextPart(text="find alpha"),))
     assert [t.name for t in requests[0].tools] == ["search", "submit"]
     for earlier, later in zip(requests, requests[1:], strict=False):
@@ -94,7 +100,7 @@ def test_thinking_is_a_typed_part_never_the_answer() -> None:
     )
 
     assert pred.answer == "the answer"
-    step = engine.requests[1].messages[1]
+    step = engine.requests[1].messages[2]
     assert [type(p) for p in step.parts[:2]] == [ThinkingPart, TextPart]
     assert (step.parts[0].text, step.parts[1].text) == ("private plan", "checking")
     final = pred.messages[-1]

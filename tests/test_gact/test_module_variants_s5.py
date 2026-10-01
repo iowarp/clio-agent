@@ -45,6 +45,8 @@ from clio_agent.gact.runtime.type_parsing import (
 from clio_agent.gact.types import AgentDef
 from tests._scripted_engine import Reply, scripted_lm
 
+pytestmark = pytest.mark.usefixtures("clio_core_plane")
+
 # --------------------------------------------------------------------------- #
 # helpers
 # --------------------------------------------------------------------------- #

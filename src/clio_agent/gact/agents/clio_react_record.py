@@ -91,9 +91,9 @@ class ContextWriteError(ClioError):
 def arc_scope() -> tuple[Any, str, str]:
     """Resolve ``(ARCMemory, session_id, scope)`` for the live plane, or ``(None, '', '')``.
 
-    ``arc`` is ``None`` whenever there is no app, no ARC, or no react scope (a bare
-    unit call, the CLI) -- then the loop's own step list is its context. The in-process
-    variant try index is folded into the ARC key only (#953).
+    ``arc`` is ``None`` whenever there is no app, no ARC, or no react scope; the loop
+    then fails typed (``NoContextStoreError``). The in-process variant try index is
+    folded into the ARC key only (#953).
     """
     from clio_agent.gact import context as _ctx  # noqa: PLC0415
 
@@ -411,21 +411,18 @@ class StepRecorder:
                 emit_injection(source, text, agent_id=self.expert_id)
                 latest[source] = text
 
-    def arrivals(self, arrivals: Sequence[tuple[str, str]], step: int) -> list[Message]:
-        """Record what arrived mid-turn, in order; returns the messages it adds.
+    def arrivals(self, arrivals: Sequence[tuple[str, str]], step: int) -> None:
+        """Record what arrived mid-turn, in order; the projection reads them back.
 
         A ``steer`` is the user's own message; anything else (a finished child's
         result) is a CLIO addition, headed with its source.
         """
-        messages: list[Message] = []
         for source, text in arrivals:
             actor = "user" if source == "steer" else "algorithm"
             record = {"text": text, "source": source, "actor": actor}
             self._write("user", record, step, "")
             if actor == "algorithm":
                 emit_injection(source, text, agent_id=self.expert_id)
-            messages.append(user_from_record(record))
-        return messages
 
     def step_open(self, step: int, span: str, text: str, calls: Sequence[ToolCallPart]) -> None:
         """The pre-execution breadcrumb: a crash mid-step still leaves the step's opening."""
