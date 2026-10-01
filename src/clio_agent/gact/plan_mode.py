@@ -78,20 +78,21 @@ _PLAN_SLUG_MAX_LEN = 60
 
 
 def _session_compaction_count(app: "FastAPI", sid: str) -> int:
-    """Return how many compaction summaries are in this session's live transcript.
+    """Return how many compaction records are in this session's live transcript.
 
-    A compaction (``POST /v1/sessions/{sid}/compact`` or the auto path) appends an assistant
-    message carrying a single ``compaction`` part (SPEC §4.5). Counting those parts gives a
-    monotonic "a compaction happened since the last full plan reminder" signal — the trigger to
-    re-inject the full contract (it would otherwise have been compacted out of the model's view).
+    Every compaction records a summarization injection (``gact.summarization_record``).
+    Counting them gives a monotonic "a compaction happened since the last full plan
+    reminder" signal -- the trigger to re-inject the full contract (it would otherwise
+    have been compacted out of the model's view).
     """
+    from clio_agent.gact.summarization_record import as_summarization  # noqa: PLC0415
 
-    count = 0
-    for msg in app.state.messages.get(sid, []) or []:
-        for part in getattr(msg, "parts", []) or []:
-            if getattr(part, "type", "") == "compaction":
-                count += 1
-    return count
+    return sum(
+        1
+        for msg in app.state.messages.get(sid, []) or []
+        for part in getattr(msg, "parts", []) or []
+        if as_summarization(part) is not None
+    )
 
 
 def _slugify(text: str) -> str:

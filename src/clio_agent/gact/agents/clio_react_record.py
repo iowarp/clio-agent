@@ -629,13 +629,16 @@ def _field(row: Any, name: str) -> Any:
 
 
 def _carried(row: Any) -> list[tuple[str, dict[str, Any]]]:
-    """A transcript row as plane segments (text only; a checkpoint as its summary)."""
+    """A transcript row as plane segments (text only; a compaction as its summary)."""
+    from clio_agent.gact.summarization_record import row_summarization  # noqa: PLC0415
+
+    record = row_summarization(row)
+    if record is not None and record.text:
+        return [("summary", {"text": record.text})]
     role = _field(row, "role")
     texts: list[str] = []
     for part in _field(row, "parts") or []:
         kind = _field(part, "type")
-        if kind == "compaction" and _field(part, "summary"):
-            return [("summary", {"text": str(_field(part, "summary"))})]
         if kind == "text" and str(_field(part, "text") or "").strip():
             texts.append(str(_field(part, "text")))
     if not texts:

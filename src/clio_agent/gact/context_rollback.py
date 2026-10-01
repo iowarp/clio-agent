@@ -5,8 +5,10 @@ agent scope (:mod:`clio_agent.gact.agents.clio_react_record`), recorded per turn
 turns are rolled back in the ledger, each scope's live set is rebuilt as it stood
 before the first rolled-back turn -- recorded ops (delete, then re-append), so what
 a rolled-back compaction replaced comes back and nothing is erased from history. A
-kept question of a rolled-back turn (a rewind that keeps the target user message)
-stays as its user message.
+compaction is found by its recorded summarization injection in the rolled-back rows
+(its ``compaction_id`` names the summary segment), wherever the record sits. A kept
+question of a rolled-back turn (a rewind that keeps the target user message) stays as
+its user message.
 """
 
 from __future__ import annotations
@@ -14,7 +16,12 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-__all__ = ["follow_rollback", "roll_back_agent_context", "rolled_back_turns"]
+__all__ = [
+    "follow_rollback",
+    "roll_back_agent_context",
+    "rolled_back_compactions",
+    "rolled_back_turns",
+]
 
 
 def follow_rollback(app: Any, session: str, deleted: list[Any], kept: list[Any]) -> None:
@@ -27,7 +34,13 @@ def follow_rollback(app: Any, session: str, deleted: list[Any], kept: list[Any])
         if rolled:
             plane.drop_session(session)  # History mode: reseeded from the transcript
         return
-    roll_back_agent_context(plane, session, rolled_back=rolled, kept_user_turns=kept_users)
+    roll_back_agent_context(
+        plane,
+        session,
+        rolled_back=rolled,
+        kept_user_turns=kept_users,
+        compactions=rolled_back_compactions(deleted),
+    )
 
 
 def rolled_back_turns(deleted: Iterable[Any], kept: Iterable[Any]) -> tuple[set[str], set[str]]:
@@ -37,21 +50,38 @@ def rolled_back_turns(deleted: Iterable[Any], kept: Iterable[Any]) -> tuple[set[
     return rolled, kept_users & rolled
 
 
+def rolled_back_compactions(deleted: Iterable[Any]) -> set[str]:
+    """The compactions recorded in rolled-back rows (their ``compaction_id``)."""
+    from clio_agent.gact.summarization_record import as_summarization  # noqa: PLC0415
+
+    records = (as_summarization(p) for m in deleted for p in getattr(m, "parts", []) or [])
+    return {r.compaction_id for r in records if r is not None and r.compaction_id}
+
+
 def roll_back_agent_context(
-    arc: Any, session: str, *, rolled_back: set[str], kept_user_turns: set[str]
+    arc: Any,
+    session: str,
+    *,
+    rolled_back: set[str],
+    kept_user_turns: set[str],
+    compactions: set[str] | None = None,
 ) -> None:
-    """Rebuild every agent scope of ``session`` as it was before ``rolled_back``.
+    """Rebuild every agent scope of ``session`` as it was before ``rolled_back`` (turn
+    ids) and the ``compactions`` recorded in the rolled-back rows.
 
     Raises whatever the store raises: a context that silently kept rolled-back turns
     would show the model a conversation the user undid.
     """
-    if arc is None or not rolled_back:
+    compactions = compactions or set()
+    if arc is None or not (rolled_back or compactions):
         return
     for scope in arc.list_segment_scopes(session):
         if scope.startswith("_"):
             continue
         history = arc.list_segments(session, scope, include_tombstoned=True)
-        affected = [s for s in history if s.turn_id in rolled_back]
+        affected = [
+            s for s in history if s.turn_id in rolled_back or _compaction_of(s) in compactions
+        ]
         if not affected:
             continue
         cut = min(s.logical_time for s in affected) - 1
@@ -80,6 +110,12 @@ def roll_back_agent_context(
                 expert_span_id=seg.expert_span_id,
                 run_span_id=seg.run_span_id,
             )
+
+
+def _compaction_of(seg: Any) -> str:
+    """The compaction a summary segment came from (``""`` for anything else)."""
+    content = seg.content if isinstance(seg.content, dict) else {}
+    return str(content.get("compaction_id") or "") if seg.kind == "summary" else ""
 
 
 def _is_kept_question(seg: Any, kept_user_turns: set[str]) -> bool:

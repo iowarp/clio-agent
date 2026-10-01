@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 
 from clio_agent.gact import context as ctx
 from clio_agent.gact.app import build_app
+from clio_agent.gact.summarization_record import summarization_part
 from clio_agent.gact.types import Message, Part, Tokens
 from clio_agent.gact.workspaces import Workspace
 
@@ -242,14 +243,14 @@ def test_memory_stats_reports_retained_context_files_and_compaction_pressure(
             created_at="2026-05-27T00:00:00+00:00",
             updated_at="2026-05-27T00:00:00+00:00",
             parts=[
-                Part(
-                    id="part_compact",
-                    type="text",
-                    text="[compact summary]\n" + ("x" * 12000),
-                    metadata={"synthetic": "compact_summary"},
+                summarization_part(
+                    "x" * 12000,
+                    trigger="auto",
+                    compaction_id="cmp_1",
+                    derived_from=["a1"],
+                    compacted_message_ids=[],
                 )
             ],
-            metadata={"synthetic": "compact_summary"},
         )
     ]
     client_with_arc.app.state.context_files[sid] = {

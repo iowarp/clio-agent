@@ -31,8 +31,9 @@ from clio_agent.gact.plan_mode import (
 # Single source of truth for the default full-reminder cadence (P1.6a #1068 deleted the
 # duplicate plan_mode._PLAN_REMINDER_FULL_INTERVAL; the composer reads guidance.full_interval).
 from clio_agent.gact.planning import _DEFAULT_FULL_INTERVAL
-from clio_agent.gact.routes.compaction import build_compact_summary_message
 from clio_agent.gact.runtime.grant_resolver import plans_dir, resolve
+from clio_agent.gact.summarization_record import summarization_part
+from clio_agent.gact.types import Message, Tokens
 from clio_agent.tools.execution import tool_workspace_context
 from clio_agent.tools.file_policy import FileAccessPolicy
 
@@ -51,13 +52,24 @@ def _plan_session(tmp_path: Path, mode: str = "plan"):
 
 
 def _append_compaction(app, sid: str) -> None:
+    """A between-turns compaction record row (its summarization injection)."""
+    part = summarization_part(
+        "prior work summarized",
+        trigger="manual",
+        compaction_id="cmp_x",
+        derived_from=["a1"],
+        compacted_message_ids=["m1", "m2"],
+    )
     app.state.messages.setdefault(sid, []).append(
-        build_compact_summary_message(
+        Message(
+            id="msg_summary_x",
             session_id=sid,
-            turn_id="turn_x",
-            summary="prior work summarized",
-            event_id="evt_x",
-            compacted_message_ids=["m1", "m2"],
+            role="assistant",
+            created_at="2026-10-01T00:00:00+00:00",
+            updated_at="2026-10-01T00:00:00+00:00",
+            parts=[part],
+            tokens=Tokens(),
+            stop_reason="end_turn",
         )
     )
 

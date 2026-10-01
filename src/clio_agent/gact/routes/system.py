@@ -51,6 +51,7 @@ from clio_agent.gact.runtime.constants import (
     GACT_BACKEND_VERSION,
 )
 from clio_agent.gact.runtime.context_tokens import _resolve_expert_context_window
+from clio_agent.gact.summarization_record import row_summarization
 from clio_agent.gact.transcript_file import seeded_metrics_counters
 from clio_agent.gact.types import (
     AuthInfo,
@@ -761,12 +762,7 @@ def register_system_routes(app: FastAPI, deps: "GactDeps") -> None:
                     tokens_retained,
                     tokens_budget,
                 )
-                compact_summaries = sum(
-                    1
-                    for m in messages
-                    if m.metadata.get("synthetic") == "compact_summary"
-                    or any(p.metadata.get("synthetic") == "compact_summary" for p in m.parts)
-                )
+                compact_summaries = sum(1 for m in messages if row_summarization(m))
                 session_block = SessionMemoryStats(
                     session_id=session_id,
                     messages_retained=len(messages),

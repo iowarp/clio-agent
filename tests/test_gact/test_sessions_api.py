@@ -225,10 +225,9 @@ class CapturingCompactAgent(RetryCompactAgent):
 
 
 def test_compact_retries_transient_provider_errors(tmp_path: Path) -> None:
-    """#1339: compaction APPENDS a checkpoint -- the seed row is retained, and the
-    fake compact agent's OWN ``.arc`` (a stand-in for the deleted conversation-record
-    mirror) is never touched; the fold runs through ``app.state.arc`` over every agent
-    scope holding live context, replacing the seeded segment with the summary."""
+    """Compaction APPENDS its record row (the summarization injection) -- the seed row
+    is retained, and the fake agent's own ``.arc`` is never touched; the fold runs
+    through ``app.state.arc``, replacing the seeded segment with the summary."""
 
     agent = RetryCompactAgent()
     with TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=agent)) as c:
@@ -240,65 +239,44 @@ def test_compact_retries_transient_provider_errors(tmp_path: Path) -> None:
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body["compacted"] is True
-        assert body["summary"] == "Recovered compact summary."
-        assert body["event_id"].startswith("mem_")
-        assert body["checkpoint_placement"] == "appended"
+        [done] = body["compactions"]
+        assert done["summary"].startswith("Recovered compact summary.")
+        assert done["compaction_id"].startswith("cmp_")
         assert agent.retry_labels == ["compact_summary"]
         assert agent.chat_calls == 2
-        # The deleted ARC conversation-record mirror is gone: the agent's own (fake)
-        # ARC handle is never touched by the new session-level fold.
         assert agent.arc.conversation is None
         ledger = c.app.state.messages[sid]
-        assert len(ledger) == 2
-        assert ledger[0].id == "msg_seed"  # seed first -- history is retained, not replaced
-        assert ledger[1].parts[0].type == "compaction"
+        assert [m.id for m in ledger] == ["msg_seed", done["message_id"]]
         messages = c.get(f"/v1/sessions/{sid}/messages").json()["messages"]
-        assert len(messages) == 2
-        # GET serves newest-first: the checkpoint is messages[0], the seed messages[1].
+        assert len(messages) == 2  # newest-first: the record row, then the seed
         part = messages[0]["parts"][0]
-        # #832: the client-facing summary is a structured `compaction` part
-        # (SPEC §4.5), not a `[compact summary]`-prefixed synthetic text part.
-        assert part["type"] == "compaction"
-        assert part["summary"] == "Recovered compact summary."
-        assert not part["summary"].startswith("[compact summary]")
-        # `auto` defaults to False (user-triggered /compact); omitempty on the wire.
-        assert part.get("auto", False) is False
-        # The model-context ledger message ids this summary stands in for (#832).
-        assert part["compacted_message_ids"] == ["msg_seed"]
-        assert part["metadata"]["synthetic"] == "compact_summary"
-        assert messages[0]["metadata"]["memory_event_id"] == body["event_id"]
+        assert (part["type"], part["source"], part["trigger"]) == (
+            "injection",
+            "summarization",
+            "manual",
+        )
+        assert part["text"] == done["summary"]
+        assert part["compaction_id"] == done["compaction_id"]
+        assert part["metadata"]["compacted_message_ids"] == ["msg_seed"]
         assert messages[1]["id"] == "msg_seed"
-        # No part on the compaction message is a legacy `[compact summary]` text part.
-        for p in messages[0]["parts"]:
-            assert not (
-                p.get("type") == "text" and p.get("text", "").startswith("[compact summary]")
-            )
         events = c.get(f"/v1/sessions/{sid}/memory/events").json()["events"]
-        assert len(events) == 1
-        event = events[0]
-        assert event["id"] == body["event_id"]
-        assert event["version"] == 1
-        assert event["type"] == "compact_summary"
+        [event] = events
+        assert (event["id"], event["type"], event["trigger"]) == (
+            done["compaction_id"],
+            "compact_summary",
+            "manual",
+        )
         assert event["summary_message_id"] == messages[0]["id"]
-        assert event["archived_count"] == 1
-        assert event["arc_status"] == "folded"
         folded = c.app.state.arc.render_working_set(sid, "main")
         assert [seg.kind for seg in folded] == ["summary"]
-        assert event["trigger"] == "manual"
-        assert event["checkpoint_placement"] == "appended"
-        assert event["metadata"]["source"] == "gact_compact"
-        detail = c.get(f"/v1/sessions/{sid}/memory/events/{body['event_id']}").json()
-        assert detail["event"]["id"] == body["event_id"]
-        compact_events = [
-            e for e in c.app.state.bus._history.get(sid, []) if e.type == "session.compacted"
-        ]
-        assert compact_events[-1].payload["event_id"] == body["event_id"]
+        detail = c.get(f"/v1/sessions/{sid}/memory/events/{done['compaction_id']}").json()
+        assert detail["event"]["id"] == done["compaction_id"]
 
 
 def test_compact_retains_the_a2ui_surface_and_every_row(tmp_path: Path) -> None:
-    """#1339: compaction no longer replaces the ledger, so there is no "preserved"
-    a2ui row to synthesize any more -- the original a2ui row is simply still there,
-    like every other row, and the checkpoint is APPENDED after it."""
+    """Compaction never replaces the ledger, so there is no "preserved" a2ui row to
+    synthesize -- the original a2ui row is still there, like every other row, and the
+    record row is APPENDED after it."""
 
     agent = RetryCompactAgent()
     with TestClient(build_app(sessions_path=tmp_path / "sessions.json", agent=agent)) as c:
@@ -342,7 +320,7 @@ def test_compact_retains_the_a2ui_surface_and_every_row(tmp_path: Path) -> None:
         assert [part.type for message in messages for part in message.parts] == [
             "text",
             "a2ui",
-            "compaction",
+            "injection",
         ]
         # No synthetic "preserved" row: nothing was removed for the a2ui row to be
         # preserved FROM.
@@ -417,11 +395,11 @@ def test_compact_prompt_preserves_late_scientific_identifiers(tmp_path: Path) ->
         resp = c.post(f"/v1/sessions/{sid}/compact", json={})
 
         assert resp.status_code == 200, resp.text
-        body = resp.json()
-        assert "[exact retained evidence index]" in body["summary"]
-        assert "/plasma/electron_temperature" in body["summary"]
-        assert "anomaly_score" in body["summary"]
-        assert "operator_note" in body["summary"]
+        [done] = resp.json()["compactions"]
+        assert "[exact retained evidence index]" in done["summary"]
+        assert "/plasma/electron_temperature" in done["summary"]
+        assert "anomaly_score" in done["summary"]
+        assert "operator_note" in done["summary"]
         assert agent.retry_labels == ["compact_summary"]
         assert len(agent.prompts) == 1
         prompt = agent.prompts[0]

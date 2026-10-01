@@ -37,8 +37,23 @@ SID, SCOPE = "s1", "agentA"
 
 def _view(arc, scope=SCOPE) -> list[tuple[str, Any]]:
     """The scope's live render as ``(kind, text)`` pairs (``text`` is ``None`` for a
-    tool_call) -- precise enough to pin "collapsed to one summary" vs "untouched"."""
-    return [(s.kind, s.content.get("text")) for s in arc.render_segments(SID, scope)]
+    tool_call) -- precise enough to pin "collapsed to one summary" vs "untouched". A
+    summary's text is shown without its last line (the recall line naming its id)."""
+    return [
+        (
+            s.kind,
+            _without_recall_line(s.content.get("text"))
+            if s.kind == "summary"
+            else s.content.get("text"),
+        )
+        for s in arc.render_segments(SID, scope)
+    ]
+
+
+def _without_recall_line(text: str) -> str:
+    body, _, last = text.rpartition("\n\n")
+    assert last.startswith("[The steps this summary replaced are kept in full: recall_context(")
+    return body
 
 
 def _populate(arc, scope=SCOPE):
@@ -50,7 +65,7 @@ def _populate(arc, scope=SCOPE):
 
 class _FakeSessions:
     """Minimal ``app.state.sessions`` stand-in: ``.get`` (compact_session_context's
-    404 check) + ``.update`` (``append_checkpoint``'s message_count bump)."""
+    404 check) + ``.update`` (the record row's message_count bump)."""
 
     def __init__(self, rows: dict[str, Any]) -> None:
         self._rows = rows
@@ -63,7 +78,7 @@ class _FakeSessions:
 
 
 class _FakeBus:
-    """``app.state.bus`` stand-in: ``append_checkpoint`` publishes two events."""
+    """``app.state.bus`` stand-in: the record row publishes ``message.created``."""
 
     def __init__(self) -> None:
         self.published: list[Any] = []
@@ -262,22 +277,6 @@ def test_no_token_count_is_audited_never_silent(arc, monkeypatch):
     assert [r["reason"] for r in rows if r["stage"] == "compaction.auto_skipped"] == [
         "no_token_count"
     ]
-
-
-def test_a_staged_checkpoint_is_checked_before_any_work(arc, monkeypatch):
-    """A manual compact during a turn that already staged a checkpoint used to fold
-    clio-core, call the LM and then discard the checkpoint. It skips before any work."""
-    from clio_agent.gact import compaction, part_atom_minter
-
-    _populate(arc)
-    before = _view(arc)
-    monkeypatch.setattr(part_atom_minter, "turn_minter", lambda _app, _sid: object())
-    monkeypatch.setattr(compaction, "staged_checkpoint", lambda _app, _sid: object())
-    with _full_plane_context(arc, session=SID, scope=SCOPE, window=1000) as agent:
-        result = compaction.compact_session_context(ctx.active_app(), SID, trigger="manual")
-    assert result["reason"] == compaction.SKIP_CHECKPOINT_ALREADY_STAGED
-    assert agent.prompts == []  # no LM call
-    assert _view(arc) == before  # nothing folded
 
 
 def test_last_prompt_tokens_falls_back_to_token_counter(monkeypatch):
