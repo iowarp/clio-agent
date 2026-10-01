@@ -1003,12 +1003,14 @@ def test_put_lm_provider_omitted_model_claude_code_binds_account_default(
                 "ARC",
                 (),
                 {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
                     "get_cache_stats": lambda self: {
                         "hits": 0,
                         "misses": 0,
                         "hit_rate": 0.0,
                         "capacity": 10,
-                    }
+                    },
                 },
             )()
 
@@ -1060,12 +1062,14 @@ def test_put_lm_provider_omitted_model_binds_the_overlay_default(
                 "ARC",
                 (),
                 {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
                     "get_cache_stats": lambda self: {
                         "hits": 0,
                         "misses": 0,
                         "hit_rate": 0.0,
                         "capacity": 10,
-                    }
+                    },
                 },
             )()
 
@@ -1216,12 +1220,14 @@ def test_get_lm_provider_when_configured_via_put(tmp_path: Path, monkeypatch) ->
                 "ARC",
                 (),
                 {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
                     "get_cache_stats": lambda self: {
                         "hits": 1,
                         "misses": 0,
                         "hit_rate": 1.0,
                         "capacity": 10,
-                    }
+                    },
                 },
             )()
 
@@ -1307,12 +1313,14 @@ def test_put_argonne_omits_client_output_cap_when_omitted(tmp_path: Path, monkey
                 "ARC",
                 (),
                 {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
                     "get_cache_stats": lambda self: {
                         "hits": 0,
                         "misses": 0,
                         "hit_rate": 0.0,
                         "capacity": 10,
-                    }
+                    },
                 },
             )()
 
@@ -1370,12 +1378,14 @@ def test_put_argonne_preset_id_normalizes_to_runtime_provider_kind(
                 "ARC",
                 (),
                 {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
                     "get_cache_stats": lambda self: {
                         "hits": 0,
                         "misses": 0,
                         "hit_rate": 0.0,
                         "capacity": 10,
-                    }
+                    },
                 },
             )()
 
@@ -1431,12 +1441,14 @@ def test_put_argonne_ignores_placeholder_api_key(tmp_path: Path, monkeypatch) ->
                 "ARC",
                 (),
                 {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
                     "get_cache_stats": lambda self: {
                         "hits": 0,
                         "misses": 0,
                         "hit_rate": 0.0,
                         "capacity": 10,
-                    }
+                    },
                 },
             )()
 
@@ -1511,12 +1523,14 @@ def test_put_lm_provider_rejects_invalid_codex_transport(tmp_path: Path, monkeyp
                 "ARC",
                 (),
                 {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
                     "get_cache_stats": lambda self: {
                         "hits": 0,
                         "misses": 0,
                         "hit_rate": 0.0,
                         "capacity": 10,
-                    }
+                    },
                 },
             )()
 
@@ -1571,12 +1585,14 @@ def test_put_lm_provider_accepts_explicit_codex_transport(tmp_path: Path, monkey
                 "ARC",
                 (),
                 {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
                     "get_cache_stats": lambda self: {
                         "hits": 0,
                         "misses": 0,
                         "hit_rate": 0.0,
                         "capacity": 10,
-                    }
+                    },
                 },
             )()
 
@@ -1643,12 +1659,14 @@ def test_put_lm_provider_rejects_removed_claude_code_transport(
                 "ARC",
                 (),
                 {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
                     "get_cache_stats": lambda self: {
                         "hits": 0,
                         "misses": 0,
                         "hit_rate": 0.0,
                         "capacity": 10,
-                    }
+                    },
                 },
             )()
 
@@ -1714,12 +1732,14 @@ def test_put_lm_provider_defaults_claude_code_to_sdk_transport(
                 "ARC",
                 (),
                 {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
                     "get_cache_stats": lambda self: {
                         "hits": 0,
                         "misses": 0,
                         "hit_rate": 0.0,
                         "capacity": 10,
-                    }
+                    },
                 },
             )()
 
@@ -1802,12 +1822,14 @@ def test_lm_provider_reports_resolved_model_id_for_a_claude_code_alias(
                 "ARC",
                 (),
                 {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
                     "get_cache_stats": lambda self: {
                         "hits": 0,
                         "misses": 0,
                         "hit_rate": 0.0,
                         "capacity": 10,
-                    }
+                    },
                 },
             )()
 
@@ -1866,12 +1888,14 @@ def test_put_lm_provider_applies_lm_studio_context_length(tmp_path: Path, monkey
                 "ARC",
                 (),
                 {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
                     "get_cache_stats": lambda self: {
                         "hits": 0,
                         "misses": 0,
                         "hit_rate": 0.0,
                         "capacity": 10,
-                    }
+                    },
                 },
             )()
 
@@ -1963,12 +1987,14 @@ def test_put_lm_provider_reuses_loaded_lm_studio_model(tmp_path: Path, monkeypat
                 "ARC",
                 (),
                 {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
                     "get_cache_stats": lambda self: {
                         "hits": 0,
                         "misses": 0,
                         "hit_rate": 0.0,
                         "capacity": 10,
-                    }
+                    },
                 },
             )()
 
@@ -2164,12 +2190,14 @@ def _make_stub_agent_cls() -> type:
                 "ARC",
                 (),
                 {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
                     "get_cache_stats": lambda self: {
                         "hits": 0,
                         "misses": 0,
                         "hit_rate": 0.0,
                         "capacity": 10,
-                    }
+                    },
                 },
             )()
 
@@ -2341,7 +2369,11 @@ def test_put_lm_provider_accepts_thinking_level(tmp_path: Path, monkeypatch) -> 
             self.arc = type(
                 "ARC",
                 (),
-                {"get_cache_stats": lambda self: {"hits": 0, "misses": 0, "hit_rate": 0.0}},
+                {
+                    "set_highway_sink": lambda self, _f: None,
+                    "set_segment_op_logger": lambda self, _f: None,
+                    "get_cache_stats": lambda self: {"hits": 0, "misses": 0, "hit_rate": 0.0},
+                },
             )()
 
         def forward(self, *args: Any, **kwargs: Any) -> Any:

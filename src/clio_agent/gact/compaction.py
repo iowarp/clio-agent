@@ -39,7 +39,6 @@ from typing import Any, Literal, Optional
 from clio_agent.arc import history_mode
 from clio_agent.errors import ClioError
 from clio_agent.gact import context as _ctx
-from clio_agent.gact.agents.clio_react_record import ContextFoldError
 from clio_agent.gact.conversation_projection import model_context_messages
 from clio_agent.gact.delegation import _compact_exact_evidence_index
 from clio_agent.gact.events import Event
@@ -408,6 +407,10 @@ def compact_session_context(
     arc_status, live = _live_scopes(app, sid)
     if arc_status == ARC_WORKING_SET_TOO_SMALL:
         return _skip(sid, SKIP_NOTHING_NEW)
+    from clio_agent.gact.agents.clio_react_record import (  # noqa: PLC0415 - turn-only
+        ContextFoldError,
+    )
+
     try:
         transcript = _scope_transcript(live)
     except ContextFoldError as exc:

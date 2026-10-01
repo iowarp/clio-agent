@@ -42,7 +42,6 @@ from fastapi import FastAPI, HTTPException
 from clio_agent.arc import history_mode
 from clio_agent.arc.segment_ids import StaleSegmentIdError
 from clio_agent.gact.agents import runtime as agents_runtime
-from clio_agent.gact.agents.clio_react_record import ContextFoldError, fold_steps
 from clio_agent.gact.context_view import context_messages
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.runtime.context_tokens import (
@@ -66,6 +65,7 @@ from clio_agent.gact.types import (
 from clio_agent.gact.workspace_scope import workspace_scope
 
 if TYPE_CHECKING:
+    from clio_agent.gact.agents.clio_react_record import ContextFoldError
     from clio_agent.gact.routes.deps import GactDeps
 
 
@@ -118,7 +118,7 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
             ).model_dump(exclude_none=True),
         )
 
-    def _fold_failed(exc: ContextFoldError, sid: str, scope: str) -> HTTPException:
+    def _fold_failed(exc: "ContextFoldError", sid: str, scope: str) -> HTTPException:
         return HTTPException(
             status_code=409,
             detail=ErrorEnvelope(
@@ -133,6 +133,11 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
 
     def _refuse_unfoldable_op(sid: str, req: ContextOpRequest) -> None:
         """Fold the plane as the op would leave it; refuse (nothing applied) if it cannot."""
+        from clio_agent.gact.agents.clio_react_record import (  # noqa: PLC0415 - turn-only
+            ContextFoldError,
+            fold_steps,
+        )
+
         live = list(app.state.arc.render_segments(sid, req.scope))
         if req.op in ("append", "insert"):
             new = SimpleNamespace(kind=req.kind or "", content=req.content or {}, id="<new>")
@@ -209,6 +214,10 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
         )
 
     def _folded_messages(segments: Any, sid: str, scope: str) -> Any:
+        from clio_agent.gact.agents.clio_react_record import (  # noqa: PLC0415 - turn-only
+            ContextFoldError,
+        )
+
         try:
             return context_messages(segments)
         except ContextFoldError as exc:
