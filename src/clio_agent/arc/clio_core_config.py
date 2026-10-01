@@ -284,29 +284,21 @@ def _default_cte_dir() -> Path:
     return paths.user_data_dir() / "cte" / "hosts" / host_key()
 
 
-def _default_cte_file_capacity() -> str:
-    """Return the default clio-core CTE file-tier capacity.
-
-    The INTENDED semantic (owner ruling 2026-07-13, #906) is an UNBOUNDED
-    final layer — ``capacity_limit`` bounds intermediate tiers only, because a
-    final layer that fills makes writes fail (``PutBlob`` rc=13, proven live
-    on the #893 gate) instead of spilling. clio-core cannot express that yet:
-    ``core_config.cc`` rejects ``capacity_limit`` = 0 for non-ram tiers ("only
-    'ram' tier supports 0"), so the default stays a LARGE bound until upstream
-    supports an unbounded final layer. The boot check warns when the final
-    layer is too small to absorb even one full hot-tier spill.
+def _default_cte_file_capacity(target_dir: Path | None = None) -> str:
+    """The clio-core CTE file-tier capacity: an explicit ``arc.cte.file_capacity`` wins;
+    otherwise, when seeding into ``target_dir``, sized to fit that disk (a fixed 50 GB
+    failed a first run on a smaller disk -- see ``clio_core_file_capacity``). clio-core
+    cannot express an unbounded final layer yet (``capacity_limit`` 0 is ram-only, #906).
     """
     from clio_agent import conf  # noqa: PLC0415 - avoid import cycle
+    from clio_agent.arc import clio_core_file_capacity as _fc  # noqa: PLC0415 - cycle
 
-    return (
-        conf.resolve(
-            "arc.cte.file_capacity",
-            env="CLIO_ARC_CTE_FILE_CAPACITY",
-            default="50GB",
-            cast=conf.as_str,
-        ).strip()
-        or "50GB"
-    )
+    explicit = conf.resolve(
+        "arc.cte.file_capacity", env="CLIO_ARC_CTE_FILE_CAPACITY", default="", cast=conf.as_str
+    ).strip()
+    if explicit:
+        return explicit
+    return _fc.seeded_file_capacity(target_dir) if target_dir is not None else "50GB"
 
 
 def _default_cte_ram_capacity() -> str:
@@ -391,7 +383,7 @@ def default_cte_config_path() -> str:
                 core_port=_default_cte_core_port(),
                 conf_dir=_cte_yaml_path(cte_dir / "conf"),
                 file_tier=_cte_yaml_path(cte_dir / "storage.bin"),
-                file_capacity=_default_cte_file_capacity(),
+                file_capacity=_default_cte_file_capacity(cte_dir),
                 ram_budget=budget,
                 metadata_log=_cte_yaml_path(cte_dir / "metadata.log"),
             ),

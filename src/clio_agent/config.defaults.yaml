@@ -787,9 +787,10 @@ arc.clio_core_write_retry.first_delay_s: 0.2
 arc.cte.disk_warn_fraction: 0.5
 
 # CLIO_ARC_CTE_FILE_CAPACITY  (str)  <- src/clio_agent/arc/clio_core_config.py
-# Capacity string (e.g. "50GB") for clio-core's disk-backed file storage
-# tier; raise if the working set needs more durable disk space.
-arc.cte.file_capacity: "50GB"
+# Capacity (e.g. "20GB") of clio-core's disk file tier; unset, a fresh
+# install sizes it to 10% of the disk's free space (2-50 GB). Windows
+# allocates it up front.
+# arc.cte.file_capacity:  # default unset; resolved in code
 
 # CLIO_ARC_CTE_RAM_CAPACITY  (str)  <- src/clio_agent/arc/clio_core_config.py
 # Hard byte ceiling (e.g. "1GB") for clio-core's RAM working arena; raise

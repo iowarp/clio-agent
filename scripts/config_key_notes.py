@@ -157,8 +157,8 @@ KEY_NOTES: dict[str, str] = {
         "for earlier warnings before the tier fills."
     ),
     "arc.cte.file_capacity": (
-        'Capacity string (e.g. "50GB") for clio-core\'s disk-backed file storage tier; raise if '
-        "the working set needs more durable disk space."
+        'Capacity (e.g. "20GB") of clio-core\'s disk file tier; unset, a fresh install sizes it '
+        "to 10% of the disk's free space (2-50 GB). Windows allocates it up front."
     ),
     "arc.cte.ram_capacity": (
         'Hard byte ceiling (e.g. "1GB") for clio-core\'s RAM working arena; raise for more '

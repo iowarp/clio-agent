@@ -271,3 +271,21 @@ def preflight_clio_core_config(config_path: str | Path, *, env: Mapping[str, str
 
     preflight_file_tier_capacity(config_path)
     return boot_check_ram_cap(config_path, env=env)
+
+
+_SEED_FRACTION_OF_FREE = 0.10
+_SEED_MIN_GIB = 2
+_SEED_MAX_GIB = 50
+
+
+def seeded_file_capacity(target_dir: Path) -> str:
+    """The file-tier capacity a fresh install seeds into ``target_dir``: 10% of that disk's
+    free space, at least 2 GB and at most 50 GB.
+
+    Windows allocates a file tier up front, and the preflight demands the capacity plus a
+    reserve free, so a fixed 50 GB both took 50 GB at once and failed a first run on a
+    smaller disk. A disk too small even for the floor fails the preflight, typed.
+    """
+    free = shutil.disk_usage(_closest_existing_directory(target_dir)).free
+    gib = int(free * _SEED_FRACTION_OF_FREE) // (1 << 30)
+    return f"{min(max(gib, _SEED_MIN_GIB), _SEED_MAX_GIB)}GB"
