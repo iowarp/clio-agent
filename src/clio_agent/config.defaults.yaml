@@ -439,6 +439,12 @@ scheduler.min_interval_s: 60
 # times in; set to change the default zone new schedules use.
 # scheduler.timezone:  # default unset; resolved in code
 
+# CLIO_VARIANTS_MAX_N  (int)  <- src/clio_agent/gact/agents/variant_drafts.py
+# Most tries one BestOfN / Refine run may draft (draft_alternatives, a spawn
+# strategy); a larger request is capped to it. Each try is a full agent run,
+# so it bounds the cost.
+variants.max_n: 4
+
 # CLIO_WORKFLOW_STEP_INACTIVITY_S  (float)  <- src/clio_agent/gact/workflow_step_watch.py
 # No-activity window (seconds) before a declared-workflow step's child is
 # judged stalled; a long but active step never trips it.

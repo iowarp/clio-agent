@@ -23,22 +23,28 @@ Per step:
    step's context; results keep call order. A terminal MCP protocol refusal or a
    cancellation raised by a tool escalates after the step is recorded;
 5. **end** -- no tool call: the text is the answer (``direct_response``); ``submit``:
-   its typed outputs; ``ask_user`` / ``plan_exit``: yield to the user; ``max_iters``
-   (``<= 0`` unlimited) or ``context_window_exceeded``: stop. Nothing calls the model
-   after the loop (``react-loop-completion-2026-09.md``).
+   its typed outputs; ``ask_user`` / ``plan_exit``: yield to the user;
+   ``draft_alternatives``: the selected draft is the answer, or the turn yields the
+   drafts to the user; ``max_iters`` (``<= 0`` unlimited) or ``context_window_exceeded``:
+   stop. Nothing calls the model after the loop (``react-loop-completion-2026-09.md``).
+
+A forward first takes up a human-judged variant run the user has answered
+(:func:`~clio_agent.gact.agents.variant_drafts.resume_pending`).
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import dataclasses
 import inspect
 import itertools
 import math
+import threading
 import traceback
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
@@ -92,6 +98,33 @@ TOOL_USE_NOTE = (
 )
 
 
+#: The loop running in this context (a tool reads it: ``draft_alternatives`` runs the
+#: same agent on the same task as tries).
+_ACTIVE_LOOP: contextvars.ContextVar["_Loop | None"] = contextvars.ContextVar(
+    "clio_react_active_loop", default=None
+)
+#: A forward that continues a forked line: its task is already on the scope, so it
+#: records no new user message (a Refine try forked from the user's pick).
+_CONTINUING: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "clio_react_continuing", default=False
+)
+
+
+def active_loop() -> "_Loop | None":
+    """The :class:`ClioReAct` loop running in this context, if any."""
+    return _ACTIVE_LOOP.get()
+
+
+@contextlib.contextmanager
+def continuing_fork() -> Iterator[None]:
+    """Forwards inside continue their scope's line instead of opening a new task."""
+    token = _CONTINUING.set(True)
+    try:
+        yield
+    finally:
+        _CONTINUING.reset(token)
+
+
 class NoContextStoreError(ClioError):
     """The loop ran with no clio-core context plane (no app, ARC or react scope)."""
 
@@ -141,8 +174,12 @@ class ClioReAct(dspy.Module):
 
     def forward(self, **input_args: Any) -> dspy.Prediction:
         """Run the loop for one expert turn (see the module docstring)."""
+        from clio_agent.gact.agents.variant_drafts import resume_pending  # noqa: PLC0415
         from clio_agent.providers.stateful_common import stateful_scope  # noqa: PLC0415
 
+        resumed = resume_pending(self, input_args)
+        if resumed is not None:
+            return resumed
         # A fresh stateful scope per forward: the SDK transports key their sessions on
         # it (Codex keeps its thread across turns; the scope routes ARC-op resets).
         with stateful_scope():
@@ -317,6 +354,9 @@ class _Loop:
         )
         self.step = -1
         self.span = ""
+        # A ``draft_alternatives`` call of this turn: settled once its step is recorded.
+        self.variant_outcome: Any = None
+        self.variant_claim = threading.Lock()
 
     def run(self) -> dspy.Prediction:
         from clio_agent.gact import context as _ctx  # noqa: PLC0415
@@ -328,8 +368,12 @@ class _Loop:
         if ledger is not None:
             self.recorder.carry_over(ledger.get(self.session, []) or [])
         self.recorder.injections([*self._tool_use_note(), *_ctx.turn_injections()])
-        self.recorder.user_message(self.head)
+        # The continuing flag is this forward's alone: anything it starts opens its own task.
+        continue_token = _CONTINUING.set(False) if _CONTINUING.get() else None
+        if continue_token is None:
+            self.recorder.user_message(self.head)
         parent_token = _ctx.set_parent_span(expert_span)
+        loop_token = _ACTIVE_LOOP.set(self)
         try:
             steps = range(self.max_iters) if self.max_iters > 0 else itertools.count()
             for step in steps:
@@ -347,7 +391,10 @@ class _Loop:
             self.recorder.failed(exc, self.step, self.span)
             raise
         finally:
+            _ACTIVE_LOOP.reset(loop_token)
             _ctx.reset(parent_token)
+            if continue_token is not None:
+                _CONTINUING.reset(continue_token)
 
     def _tool_use_note(self) -> list[tuple[str, str]]:
         """Tell an agent with tools, once, that one step may call several at once."""
@@ -400,6 +447,12 @@ class _Loop:
         self, calls: list[ToolCallPart], outcomes: list[_CallOutcome]
     ) -> dspy.Prediction | None:
         final = self._submitted(calls, outcomes)
+        if self.variant_outcome is not None:
+            answer = self.variant_outcome.settle()
+            if answer is None:  # the drafts went to the user: the turn yields
+                return self._prediction({}, "draft_alternatives_yield")
+            self.recorder.completed({"answer": answer}, self.step + 1)
+            return self._prediction({"answer": answer}, "variant_selected")
         if yield_name := record.pending_turn_yield(calls):
             return self._prediction({}, f"{yield_name}_yield")
         if final is not None:

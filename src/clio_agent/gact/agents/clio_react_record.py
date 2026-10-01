@@ -385,6 +385,7 @@ class StepRecorder:
         self.expert_id = expert_id
         self.turn_id = _active_semantic_turn_id()
         self.expert_span_id = ""
+        self.head_id = ""  # this forward's user message on the scope
         self._reader = ContextReader(arc, session, scope)
 
     def read_steps(self) -> list[Message]:
@@ -407,7 +408,7 @@ class StepRecorder:
 
     def user_message(self, message: Message) -> None:
         """Record the forward's user message; the projection starts every turn with it."""
-        self._write("user", user_to_record(message), 0, "")
+        self.head_id = self._write("user", user_to_record(message), 0, "")
 
     def carry_over(self, ledger: Sequence[Any]) -> None:
         """Seed a scope new to the conversation with its earlier turns, once.
@@ -595,11 +596,12 @@ class StepRecorder:
                 exc_info=True,
             )
 
-    def _write(self, kind: str, content: dict[str, Any], step: int, span: str) -> None:
+    def _write(self, kind: str, content: dict[str, Any], step: int, span: str) -> str:
+        """Append one segment to the scope; its id (typed failure on a lost write)."""
         if self.arc is None:
-            return
+            return ""
         try:
-            self.arc.append_segment(
+            segment = self.arc.append_segment(
                 self.session,
                 self.scope,
                 kind,
@@ -612,6 +614,7 @@ class StepRecorder:
             )
         except Exception as exc:  # noqa: BLE001 - re-raised typed, never swallowed
             raise ContextWriteError(self.scope, kind, exc) from exc
+        return str(getattr(segment, "id", "") or "")
 
 
 _MEDIA_TOKENS = 1_500  # a rough per-attachment share of the context window

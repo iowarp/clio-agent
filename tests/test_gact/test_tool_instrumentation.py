@@ -635,6 +635,9 @@ def test_every_auto_tool_and_a_plain_tool_lands_a_tool_call_part(
                 "target_session_id": sid,
                 "frame_id": "missing",
             },
+            # Phase 9 (tier-1 MAIN only): outside an agent loop it refuses typed
+            # (draft_alternatives_refused); the tool_call part lands either way.
+            "draft_alternatives": {"n": 2, "rubric": "short"},
         }
         assert set(calls) == set(auto_tools), (
             "auto_tools.build_auto_react_tools grew/shrank — update this sabotage test's "
