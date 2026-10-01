@@ -42,7 +42,7 @@ from clio_agent.arc.schema import (
     encode_segments,
     segment_text,
 )
-from clio_agent.arc.segment_ids import require_live
+from clio_agent.arc.segment_ids import ContextOpLogError, require_live
 from clio_agent.arc.storage import ARCStore
 from clio_agent.errors import ClioError
 
@@ -331,13 +331,16 @@ class SegmentStore:
         try:
             self._put_scope(session_id, scope, segs)
         except Exception as exc:  # noqa: BLE001 - re-raised typed after the memory is discarded
-            key = (session_id, scope)
-            self._scopes.pop(key, None)
-            self._loaded.discard(key)
-            self._index.drop_scope(session_id, scope)
+            self._discard_scope(session_id, scope)
             if isinstance(exc, LoopThreadStoreWrite):
                 raise  # a write from the event loop is a caller bug, typed as itself
             raise ArcPersistError(session_id, scope, exc) from exc
+
+    def _discard_scope(self, session_id: str, scope: str) -> None:
+        """Drop the in-memory copy (changed, not persisted); the next read reloads clio-core."""
+        self._scopes.pop((session_id, scope), None)
+        self._loaded.discard((session_id, scope))
+        self._index.drop_scope(session_id, scope)
 
     def _put_scope(self, session_id: str, scope: str, segs: list[Segment]) -> None:
         """Encode the scope's segments and put the record (with the live search_text
@@ -768,14 +771,9 @@ class SegmentStore:
                 if event_id:
                     for s in written:
                         s.trace_ref = event_id
-            except Exception:  # noqa: BLE001 - Trace logging must never break a context op
-                logger.warning(
-                    "segments: op_logger raised for op=%s scope=%s lt=%d (op still applied)",
-                    op,
-                    scope,
-                    lt,
-                    exc_info=True,
-                )
+            except Exception as exc:  # noqa: BLE001 - re-raised typed; memory discarded
+                self._discard_scope(session_id, scope)  # changed in memory, not persisted
+                raise ContextOpLogError(op=op, scope=scope, cause=exc) from exc
         self._persist(session_id, scope)
         logger.debug(
             "segments: persisted op=%s scope=%s lt=%d written=%d tombstoned=%d",

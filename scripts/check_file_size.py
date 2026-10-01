@@ -477,7 +477,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # with develop's activation extraction and provider startup refresh.
     # Ratchet down 2469 -> 2467 (naming reversal): removed the now-unneeded
     # codex->chatgpt boot migration call (the provider id never changed).
-    "src/clio_agent/gact/app.py": 2438,  # L1: -1, the deleted hard_abort_supported/upstream_abort/executor_work_may_continue triad
+    "src/clio_agent/gact/app.py": 2435,  # L1: -1, the deleted hard_abort_supported/upstream_abort/executor_work_may_continue triad
     # #971 GAP A (S5 live gate): the artifact mint funnel was at the 800 cap; +24
     # adds the designation-by-RESULT channel (ndp_stage_resource writes an
     # intermediate whose path rides only ``local_path`` in the result — the arg

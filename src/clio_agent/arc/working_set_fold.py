@@ -70,7 +70,7 @@ from clio_agent.arc.schema import (
     encode_segments,
     segment_text,
 )
-from clio_agent.arc.segment_ids import require_live
+from clio_agent.arc.segment_ids import ContextOpLogError, require_live
 from clio_agent.arc.segments import SegmentStore, _coerce_content
 from clio_agent.arc.storage import ARCStore
 
@@ -296,7 +296,8 @@ class FoldingSegmentStore(SegmentStore):
         ``scope_filter`` sees the same address the non-folding store logged. ``op`` is
         the plain-store vocabulary (append/insert/delete/summarize/replace);
         ``logical_time`` is the producer's creation clock or, for ``delete``, the
-        tombstoning clock. Best-effort — durable logging must never break a context op.
+        tombstoning clock. Called before anything is persisted, so a failure here is a
+        typed :class:`ContextOpLogError` with the op not applied.
         """
         if self._op_logger is None:
             return
@@ -317,14 +318,8 @@ class FoldingSegmentStore(SegmentStore):
             if event_id:
                 for s in written:
                     s.trace_ref = event_id
-        except Exception:  # noqa: BLE001 - durable-trace logging must never break a context op
-            logger.warning(
-                "working_set_fold: op_logger raised for op=%s scope=%s lt=%d (op still applied)",
-                op,
-                scope,
-                logical_time,
-                exc_info=True,
-            )
+        except Exception as exc:  # noqa: BLE001 - re-raised typed; nothing persisted yet
+            raise ContextOpLogError(op=op, scope=scope, cause=exc) from exc
 
     def _make_atom(
         self,

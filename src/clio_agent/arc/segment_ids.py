@@ -27,6 +27,24 @@ class StaleSegmentIdError(ClioError):
         )
 
 
+class ContextOpLogError(ClioError):
+    """A context op's ``arc.op`` record could not be written; the op was not applied.
+
+    The trace is what replays clio-core's context (``reconstruct_arc_segments``): an op
+    applied without it would leave that replay silently incomplete.
+    """
+
+    reason = "context_op_log_failed"
+
+    def __init__(self, *, op: str, scope: str, cause: BaseException) -> None:
+        super().__init__(
+            f"context {op} on scope {scope!r} was not applied: its trace record failed "
+            f"({type(cause).__name__}: {cause})",
+            error_type=self.reason,
+            details={"op": op, "scope": scope, "cause": type(cause).__name__},
+        )
+
+
 def require_live(ids: Iterable[str], live_ids: Collection[str], *, op: str, scope: str) -> None:
     """Raise :class:`StaleSegmentIdError` unless ``ids`` is non-empty and all are live."""
     wanted = list(ids)
