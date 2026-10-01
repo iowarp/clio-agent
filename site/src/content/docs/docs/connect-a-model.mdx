@@ -55,7 +55,7 @@ For Vertex AI and Bedrock, CLIO uses the credentials your machine already has (G
 | Provider | What it needs |
 |---|---|
 | Codex | Sign in with your ChatGPT or Codex account. Usage counts against your Codex plan. |
-| Claude Code | A Claude Code subscription, signed in once on this machine with `claude login`. |
+| Claude Code | A Claude Code subscription, signed in once on this machine. CLIO can start the sign-in from the provider settings, or run `claude auth login` in a terminal. |
 
 ### Research computing
 
@@ -72,7 +72,7 @@ Start the local server first. In LM Studio, load a model and start its server. I
 
 ### Claude Code
 
-Check that `claude --version` works in a terminal, then run `claude login` once. CLIO uses your subscription through Claude Code, so no API key is needed.
+Check that `claude --version` works in a terminal, then sign in once: CLIO offers this in the provider settings, or run `claude auth login` in a terminal. CLIO uses your subscription through Claude Code, so no API key is needed.
 
 ### Codex
 

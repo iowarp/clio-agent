@@ -117,7 +117,7 @@ A hook that fails is not the same as a hook that says no. A crash, timeout, or m
 
 ## Trust
 
-A hook is code, so CLIO remembers a fingerprint of each one. The first time a hook is seen, it is trusted and its fingerprint is saved next to the hooks file, in `hooks.trust.json`. If the hook's configuration or script later changes, for example after pulling a repository, the hook stops running until you re-approve it. This protects you from a hook that was quietly rewritten.
+A hook is code, so CLIO remembers a fingerprint of each one. The first time a hook is seen, it is trusted and its fingerprint is saved next to the hooks file, in `hooks.json.trust.json`. Set `CLIO_HOOKS_TRUST_STORE` to keep it somewhere else. If the hook's configuration or script later changes, for example after pulling a repository, the hook stops running until you re-approve it. This protects you from a hook that was quietly rewritten.
 
 ## Audit
 

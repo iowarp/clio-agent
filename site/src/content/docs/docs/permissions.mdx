@@ -64,16 +64,18 @@ A path outside them fails with `outside_allowed_roots`, and the agent sees that 
 
 The rules above work at the tool boundary. An agent can also start programs, and a program can write anywhere your account can. The sandbox closes that gap. It confines every process the agent starts to the same folders, so a write outside them is refused by the operating system itself.
 
-The sandbox uses [`@anthropic-ai/sandbox-runtime`](https://www.npmjs.com/package/@anthropic-ai/sandbox-runtime), which needs Node.js 20.11 or later:
+The sandbox uses the OS sandbox built into the [Codex CLI](https://www.npmjs.com/package/@openai/codex). Install it with npm:
 
 ```sh
-npm install -g @anthropic-ai/sandbox-runtime
+npm install -g @openai/codex
 ```
+
+On Linux, if Codex is not available, CLIO falls back to the kernel's Landlock file-system fence where the kernel supports it.
 
 <Tabs syncKey="os">
   <TabItem label="macOS and Linux">
 
-Once the package is installed, the sandbox turns on automatically for each process.
+Once Codex is installed, the sandbox turns on automatically for each process. Check it with:
 
 ```sh
 clio sandbox status
@@ -106,7 +108,7 @@ Programs the agent starts connect to the network through one recording proxy. By
 
 You can turn on deny mode for a workspace. In deny mode, a connection to a domain is refused until you grant it, and the first connection to a new domain raises a permission request.
 
-Where the recording is enforced depends on the platform. With the sandbox active, programs are forced through the proxy. Without it, programs use the proxy only if they cooperate, and the record says which of the two applied.
+Programs reach the proxy through the standard proxy settings CLIO gives them. A program that opens its own network connections can go around it, and the record says so for each connection rather than claiming more than it enforced.
 
 ## Hooks
 

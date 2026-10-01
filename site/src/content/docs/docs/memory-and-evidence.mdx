@@ -86,7 +86,7 @@ provenance:
     providers: [jsonl, flowcept]
 ```
 
-The accepted provider names are `jsonl` and `flowcept`. Set the path of the JSONL record with `CLIO_PROVENANCE_JSONL_PATH`. To see which providers are active and whether each is healthy, use `GET /v1/provenance/providers`.
+The accepted provider names are `jsonl` and `flowcept`; `file` and `native` are accepted as other names for `jsonl`. Set the path of the JSONL record with `CLIO_PROVENANCE_JSONL_PATH`. To see which providers are active and whether each is healthy, use `GET /v1/provenance/providers`.
 
 <Aside type="note">
 Provenance records describe what the agent did, including network domains contacted and files written. Review them before sharing them outside your team.
