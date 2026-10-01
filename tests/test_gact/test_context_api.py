@@ -32,8 +32,15 @@ def test_get_context_state(tmp_path, monkeypatch):
     client = _client(tmp_path, arc)
     sid = _session(client)
     arc.append_segment(sid, SCOPE, "thought", {"text": "T0"}, step=0, token_count=5)
-    arc.append_segment(sid, SCOPE, "tool_call", {"name": "a", "args": {}}, step=0)
-    arc.append_segment(sid, SCOPE, "observation", {"text": "O0"}, step=0, token_count=10)
+    arc.append_segment(sid, SCOPE, "tool_call", {"id": "call_0", "name": "a", "args": {}}, step=0)
+    arc.append_segment(
+        sid,
+        SCOPE,
+        "observation",
+        {"call_id": "call_0", "text": "O0", "is_error": False},
+        step=0,
+        token_count=10,
+    )
     render_segments = arc.render_segments
     rendered_off_loop: list[bool] = []
 
@@ -88,11 +95,13 @@ def test_context_state_categories_and_autocompact(tmp_path):
     client = _client(tmp_path, arc)
     sid = _session(client)
     arc.append_segment(sid, SCOPE, "thought", {"text": "T0"}, step=0, token_count=5)
-    arc.append_segment(sid, SCOPE, "observation", {"text": "O0"}, step=0, token_count=10)
-    arc.append_segment(sid, SCOPE, "tool_def", {"name": "fs"}, step=0, token_count=3)
+    call = {"id": "call_0", "name": "fs", "args": {}}
+    arc.append_segment(sid, SCOPE, "tool_call", call, step=0, token_count=3)
+    obs = {"call_id": "call_0", "text": "O0", "is_error": False}
+    arc.append_segment(sid, SCOPE, "observation", obs, step=0, token_count=10)
 
     body = client.get(f"/v1/sessions/{sid}/context/state", params={"scope": SCOPE}).json()
-    assert body["categories"] == {"reasoning": 5, "observations": 10, "tools": 3}
+    assert body["categories"] == {"reasoning": 5, "observations": 10, "tool_calls": 3}
     assert body["autocompact_pct"] == 0.85  # default trigger fraction
     assert body["autocompact_enabled"] is True
     # No LM call in-test -> model-grounded reading is unavailable (no framing entry).
@@ -210,8 +219,15 @@ def test_post_context_compact_summarizes_working_set(tmp_path, monkeypatch):
     client = _client(tmp_path, arc)
     sid = _session(client)
     arc.append_segment(sid, SCOPE, "thought", {"text": "T0"}, step=0, token_count=5)
-    arc.append_segment(sid, SCOPE, "tool_call", {"name": "a", "args": {}}, step=0)
-    arc.append_segment(sid, SCOPE, "observation", {"text": "O0"}, step=0, token_count=10)
+    arc.append_segment(sid, SCOPE, "tool_call", {"id": "call_0", "name": "a", "args": {}}, step=0)
+    arc.append_segment(
+        sid,
+        SCOPE,
+        "observation",
+        {"call_id": "call_0", "text": "O0", "is_error": False},
+        step=0,
+        token_count=10,
+    )
 
     r = client.post(f"/v1/sessions/{sid}/context/compact", params={"scope": SCOPE})
     assert r.status_code == 200, r.text
@@ -244,14 +260,14 @@ def test_post_context_op_append_then_delete(tmp_path):
         json={
             "op": "append",
             "scope": SCOPE,
-            "kind": "observation",
+            "kind": "user",
             "content": {"text": "NEEDLE"},
             "token_count": 7,
         },
     )
     assert r.status_code == 200, r.text
     assert r.json()["live_block_count"] == 1
-    assert r.json()["tokens_by_kind"] == {"observation": 7}
+    assert r.json()["tokens_by_kind"] == {"user": 7}
 
     state = client.get(f"/v1/sessions/{sid}/context/state", params={"scope": SCOPE}).json()
     assert "NEEDLE" in str(state["messages"])
@@ -399,7 +415,7 @@ def test_context_op_append_does_not_publish_arc_op_frame(tmp_path, monkeypatch):
         json={
             "op": "append",
             "scope": SCOPE,
-            "kind": "observation",
+            "kind": "user",
             "content": {"text": "SECRET_CONTENT"},
             "token_count": 3,
         },
@@ -412,4 +428,4 @@ def test_context_op_append_does_not_publish_arc_op_frame(tmp_path, monkeypatch):
     assert all("SECRET_CONTENT" not in str(getattr(e, "payload", "")) for e in published)
     # The op still actually landed (visible via the on-demand context state).
     state = client.get(f"/v1/sessions/{sid}/context/state", params={"scope": SCOPE}).json()
-    assert any(seg.get("kind") == "observation" for seg in state["segments"])
+    assert any(seg.get("kind") == "user" for seg in state["segments"])

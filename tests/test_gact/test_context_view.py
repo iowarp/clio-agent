@@ -2,8 +2,9 @@
 
 ``context_messages`` is ``fold_steps`` -- the loop's own fold -- serialized. The fuzz
 holds the invariant the old trajectory-dict projection was fuzzed for (consecutive
-observations once overwrote each other there): whatever live segments a scope holds,
-in any order, each one's content reaches the model.
+observations once overwrote each other there): whatever coherent live plane a scope
+holds -- user messages, summaries and steps whose results land in any order -- each
+segment's content reaches the model. An incoherent plane is a typed failure.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from clio_agent.gact.agents.clio_react_record import ContextFoldError
 from clio_agent.gact.context_view import context_messages
 
 
@@ -78,28 +80,74 @@ def test_kinds_outside_the_agent_context_are_not_shown() -> None:
     assert messages == []
 
 
-_KINDS = ("user", "thought", "tool_call", "observation", "summary")
+def _random_step(rng: random.Random, counter: list[int]) -> list[tuple[SimpleNamespace, str]]:
+    """One coherent step: an optional thought, 0-3 calls, every call answered after it.
+
+    Results interleave with later calls and land out of call order, as concurrent
+    calls do; each answers a call already made in the same step, matched by call id.
+    """
+
+    def needle() -> str:
+        counter[0] += 1
+        return f"NEEDLE{counter[0]}"
+
+    out: list[tuple[SimpleNamespace, str]] = []
+    n_calls = rng.randrange(4)
+    if n_calls == 0 or rng.random() < 0.8:  # a call may open a step with no thought
+        text = needle()
+        out.append((_seg("thought", text=text), text))
+    to_call = [needle() for _ in range(n_calls)]
+    pending: list[str] = []
+    while to_call or pending:
+        if to_call and (not pending or rng.random() < 0.5):
+            tag = to_call.pop(0)
+            call = _seg("tool_call", id=f"c{tag}", name=f"tool{tag}", args={"k": tag})
+            out.append((call, tag))
+            pending.append(tag)
+        else:
+            tag = pending.pop(rng.randrange(len(pending)))
+            text = needle()
+            obs = _seg("observation", call_id=f"c{tag}", text=text, is_error=rng.random() < 0.2)
+            out.append((obs, text))
+    return out
 
 
-def _random_segment(rng: random.Random, n: int) -> tuple[SimpleNamespace, str]:
-    kind = rng.choice(_KINDS)
-    needle = f"NEEDLE{n}"
-    if kind == "tool_call":
-        return _seg(kind, id=f"c{n}", name=f"tool{needle}", args={"k": needle}), needle
-    if kind == "observation":
-        call_id = f"c{rng.randrange(n + 1)}" if rng.random() < 0.7 else ""
-        return _seg(kind, call_id=call_id, text=needle, is_error=rng.random() < 0.2), needle
-    return _seg(kind, text=needle), needle
+def _random_plane(rng: random.Random) -> list[tuple[SimpleNamespace, str]]:
+    """A coherent live plane: user messages, summaries and steps in random order."""
+    counter = [0]
+    pairs: list[tuple[SimpleNamespace, str]] = []
+    for _ in range(rng.randrange(1, 12)):
+        kind = rng.choice(("user", "summary", "step", "step"))
+        if kind == "step":
+            pairs.extend(_random_step(rng, counter))
+        else:
+            counter[0] += 1
+            text = f"NEEDLE{counter[0]}"
+            pairs.append((_seg(kind, text=text), text))
+    return pairs
 
 
 @pytest.mark.parametrize("seed", range(40))
 def test_folding_never_loses_a_segment(seed: int) -> None:
+    """A coherent plane folds without losing any segment's content."""
     rng = random.Random(seed)
-    pairs = [_random_segment(rng, n) for n in range(rng.randrange(1, 30))]
+    pairs = _random_plane(rng)
     shown = json.dumps(context_messages([seg for seg, _ in pairs]))
-    lost = [
-        (seg.kind, needle)
-        for seg, needle in pairs
-        if needle not in shown and not (seg.kind == "tool_call" and needle in shown)
-    ]
+    lost = [(seg.kind, needle) for seg, needle in pairs if needle not in shown]
     assert not lost, f"seed={seed} lost {lost}"
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_dropping_an_observation_fails_typed_instead_of_losing_it(seed: int) -> None:
+    """The same plane with one observation removed is incoherent: its call is left
+    unanswered and the fold raises rather than showing the call without a result."""
+    rng = random.Random(seed)
+    pairs = _random_plane(rng)
+    observed = [i for i, (seg, _) in enumerate(pairs) if seg.kind == "observation"]
+    if observed:
+        del pairs[rng.choice(observed)]
+    else:  # no step with a call was drawn: end the plane on one whose result is gone
+        pairs.append((_seg("tool_call", id="cX", name="toolX", args={}), "X"))
+    with pytest.raises(ContextFoldError) as err:
+        context_messages([seg for seg, _ in pairs])
+    assert err.value.details["problem"] == "unanswered_call"

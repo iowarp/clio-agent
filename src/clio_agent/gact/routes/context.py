@@ -33,6 +33,7 @@ imports only leaf packages and never loads :mod:`clio_agent.gact.app`.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import msgspec
@@ -41,6 +42,7 @@ from fastapi import FastAPI, HTTPException
 from clio_agent.arc import history_mode
 from clio_agent.arc.segment_ids import StaleSegmentIdError
 from clio_agent.gact.agents import runtime as agents_runtime
+from clio_agent.gact.agents.clio_react_record import ContextFoldError, fold_steps
 from clio_agent.gact.context_view import context_messages
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.runtime.context_tokens import (
@@ -116,6 +118,42 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
             ).model_dump(exclude_none=True),
         )
 
+    def _fold_failed(exc: ContextFoldError, sid: str, scope: str) -> HTTPException:
+        return HTTPException(
+            status_code=409,
+            detail=ErrorEnvelope(
+                error=ErrorInfo(
+                    error=exc.reason,
+                    message=str(exc),
+                    details={"session_id": sid, "scope": scope, **dict(exc.details or {})},
+                    recoverable=True,
+                )
+            ).model_dump(exclude_none=True),
+        )
+
+    def _refuse_unfoldable_op(sid: str, req: ContextOpRequest) -> None:
+        """Fold the plane as the op would leave it; refuse (nothing applied) if it cannot."""
+        live = list(app.state.arc.render_segments(sid, req.scope))
+        if req.op in ("append", "insert"):
+            new = SimpleNamespace(kind=req.kind or "", content=req.content or {}, id="<new>")
+            at = len(live) if req.op == "append" else max(0, min(req.position or 0, len(live)))
+            live.insert(at, new)
+        else:
+            ids = set(req.ids or [])
+            kept = [s for s in live if s.id not in ids]
+            if req.op == "summarize":
+                first = next((i for i, s in enumerate(live) if s.id in ids), len(live))
+                at = len([s for s in live[:first] if s.id not in ids])
+                kept.insert(
+                    at,
+                    SimpleNamespace(kind="summary", content=req.summary_content or {}, id="<new>"),
+                )
+            live = kept
+        try:
+            fold_steps(live)
+        except ContextFoldError as exc:
+            raise _fold_failed(exc, sid, req.scope) from exc
+
     def _context_window_for_state() -> int:
         agent = getattr(app.state, "agent", None)
         cfg = getattr(agent, "_provider_config", None)
@@ -167,8 +205,14 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
             categories=_bucket_context_categories(tokens_by_kind, used, live_tokens),
             segments=[msgspec.to_builtins(s) for s in segments],
             render_text=arc.render_segment_text(sid, scope, as_of=as_of),
-            messages=context_messages(segments),
+            messages=_folded_messages(segments, sid, scope),
         )
+
+    def _folded_messages(segments: Any, sid: str, scope: str) -> Any:
+        try:
+            return context_messages(segments)
+        except ContextFoldError as exc:
+            raise _fold_failed(exc, sid, scope) from exc
 
     def _context_preferences(sid: str) -> ContextPreferences:
         session = app.state.sessions.get(sid)
@@ -280,6 +324,7 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
         arc = app.state.arc
         if arc is None:
             raise _arc_unavailable(sid)
+        await run_off_loop(lambda: _refuse_unfoldable_op(sid, req))
         # Build only the kwargs relevant to req.op.
         if req.op in ("append", "insert"):
             kwargs: dict[str, Any] = {

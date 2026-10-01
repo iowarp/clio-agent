@@ -42,8 +42,9 @@ def _view(arc, scope=SCOPE) -> list[tuple[str, Any]]:
 
 def _populate(arc, scope=SCOPE):
     arc.append_segment(SID, scope, "thought", {"text": "T0"}, step=0)
-    arc.append_segment(SID, scope, "tool_call", {"name": "a", "args": {}}, step=0)
-    arc.append_segment(SID, scope, "observation", {"text": "O0"}, step=0)
+    arc.append_segment(SID, scope, "tool_call", {"id": "c0", "name": "a", "args": {}}, step=0)
+    obs = {"call_id": "c0", "text": "O0", "is_error": False}
+    arc.append_segment(SID, scope, "observation", obs, step=0)
 
 
 class _FakeSessions:

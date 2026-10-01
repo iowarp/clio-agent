@@ -38,6 +38,7 @@ from typing import Any, Literal, Optional
 
 from clio_agent.arc import history_mode
 from clio_agent.gact import context as _ctx
+from clio_agent.gact.agents.clio_react_record import ContextFoldError
 from clio_agent.gact.conversation_projection import model_context_messages
 from clio_agent.gact.delegation import _compact_exact_evidence_index
 from clio_agent.gact.events import Event
@@ -388,7 +389,10 @@ def compact_session_context(
     arc_status, live = _live_scopes(app, sid)
     if arc_status == ARC_WORKING_SET_TOO_SMALL:
         return _skip(sid, SKIP_NOTHING_NEW)
-    transcript = _scope_transcript(live)
+    try:
+        transcript = _scope_transcript(live)
+    except ContextFoldError as exc:
+        raise CompactionError(409, exc.reason, str(exc), dict(exc.details or {})) from exc
     if not transcript.strip():
         # #1339 review F2: a session whose model-context rows render to nothing (e.g.
         # only a2ui/mcp_app parts with no text-bearing class) has real work to skip,

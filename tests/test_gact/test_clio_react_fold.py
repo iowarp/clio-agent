@@ -5,9 +5,9 @@ into the typed ``dspy.lm15`` messages ``ClioReAct`` sends:
 
 * :func:`fold_steps` -- the pure fold: empty plane, one assistant + one tool message
   per STEP (a step's tool calls + their results together, call ids preserved, results
-  matched by call id), a lone summary / orphan observation as a user
-  ``[earlier context]`` message, thinking restored with its continuation state, and
-  malformed ("wrong-input") segment content.
+  matched by call id), a lone summary as a user ``[earlier context]`` message,
+  thinking restored with its continuation state, and the typed ``ContextFoldError``
+  for an id-less call, an unanswered call, an orphan observation and malformed args.
 * :func:`read_steps` -- the read seam: it reads the MATERIALIZED render
   (``render_segments``), NEVER re-derives from the canonical ``_events`` log; it is
   append-only (a new segment extends the prefix); an ARC op (summarize/delete) is the
@@ -34,6 +34,7 @@ from clio_agent.arc.schema import Segment
 from clio_agent.gact import context as ctx
 from clio_agent.gact.agents.clio_react import ClioReAct, NoContextStoreError
 from clio_agent.gact.agents.clio_react_record import (
+    ContextFoldError,
     ContextReadError,
     arc_scope,
     fold_steps,
@@ -72,6 +73,15 @@ def _obs(call_id: str, text: str, *, order: float, is_error: bool = False) -> Se
     return _seg(
         "observation", {"call_id": call_id, "text": text, "is_error": is_error}, order=order
     )
+
+
+def _fold_fails(segs: list[Segment], problem: str) -> ContextFoldError:
+    """Assert the fold raises the typed ``ContextFoldError`` for ``problem``."""
+    with pytest.raises(ContextFoldError) as err:
+        fold_steps(segs)
+    assert err.value.error_type == "context_fold_failed"
+    assert err.value.details["problem"] == problem
+    return err.value
 
 
 # --- 1. the pure fold ----------------------------------------------------------
@@ -124,35 +134,27 @@ def test_step_with_two_calls_folds_into_one_step_with_both_results() -> None:
     ]
 
 
-def test_idless_segments_match_results_by_order() -> None:
-    """A segment written without a call id (an older writer) still folds: the calls get
-    positional ids and observations attach in call order."""
+def test_idless_call_fails_typed() -> None:
+    """A call segment written without an id cannot be matched to its result: the fold
+    raises instead of inventing a positional id."""
     segs = [
         _seg("thought", {"text": "T"}, order=1),
         _seg("tool_call", {"name": "a", "args": {}}, order=2),
-        _seg("tool_call", {"name": "b", "args": {}}, order=3),
-        _seg("observation", {"text": "OA"}, order=4),
-        _seg("observation", {"text": "OB"}, order=5),
     ]
-    _, tool = summarize(fold_steps(segs))
-    assert tool == (
-        "tool",
-        [("result", "call_0", "OA", False), ("result", "call_1", "OB", False)],
-    )
+    _fold_fails(segs, "malformed_call")
 
 
-def test_unanswered_call_folds_without_a_result() -> None:
-    """A call whose observation is gone (deleted / not yet written) keeps its call and
-    carries no result for it."""
+def test_call_unanswered_at_the_end_of_the_plane_fails_typed() -> None:
+    """A call whose observation is gone (only the observation was deleted) leaves the
+    step incoherent: the fold raises rather than sending a call with no result."""
     segs = [
         _seg("thought", {"text": "T"}, order=1),
         _call("call_0_0", "a", {}, order=2),
         _call("call_0_1", "b", {}, order=3),
         _obs("call_0_1", "OB", order=4),
     ]
-    assistant, tool = summarize(fold_steps(segs))
-    assert [p[1] for p in assistant[1] if p[0] == "call"] == ["call_0_0", "call_0_1"]
-    assert tool == ("tool", [("result", "call_0_1", "OB", False)])
+    err = _fold_fails(segs, "unanswered_call")
+    assert "call_0_0" in str(err)
 
 
 def test_multi_step_grouping_and_ordering() -> None:
@@ -198,29 +200,30 @@ def test_lone_summary_segment_surfaces_as_earlier_context() -> None:
     ]
 
 
-def test_orphan_observation_closes_the_step_and_is_its_own_message() -> None:
-    """An observation with no call awaiting a result (e.g. the ``[turn escalated]``
-    note) closes the open step and surfaces as its own ``[earlier context]`` message."""
+def test_observation_after_its_step_is_answered_fails_typed() -> None:
+    """An observation with no call awaiting a result (an id-less note written after a
+    fully answered step) is not turned into a user message: the fold raises."""
     segs = [
         _seg("thought", {"text": "T0"}, order=1),
         _call("call_0_0", "a", {}, order=2),
         _obs("call_0_0", "O0", order=3),
         _seg("observation", {"text": "ORPHAN"}, order=4),
     ]
-    folded = summarize(fold_steps(segs))
-    assert [role for role, _ in folded] == ["assistant", "tool", "user"]
-    assert folded[2] == ("user", [("text", "[earlier context]\nORPHAN")])
+    _fold_fails(segs, "orphan_observation")
 
 
-def test_wrong_input_content_does_not_raise() -> None:
-    """Malformed segment content (missing text, non-dict args, unknown kind) folds
-    without raising -- a bad write can never break the read seam."""
+def test_a_thought_without_text_folds_but_non_mapping_args_fail_typed() -> None:
+    """A thought with no text is a valid (empty) step and non-context kinds are skipped,
+    but a call whose args are not a mapping is malformed: the fold raises instead of
+    sending the call with ``{}`` args."""
+    assert summarize(
+        fold_steps([_seg("thought", {}, order=1), _seg("answer", {"text": "IGNORED"}, order=2)])
+    ) == [("assistant", [("text", "")])]
     segs = [
-        _seg("thought", {}, order=1),  # missing "text"
-        _seg("tool_call", {"name": "t", "args": "notadict"}, order=2),  # bad args
-        _seg("answer", {"text": "IGNORED"}, order=3),  # non-working-set kind
+        _seg("thought", {}, order=1),
+        _seg("tool_call", {"id": "call_0_0", "name": "t", "args": "notadict"}, order=2),
     ]
-    assert summarize(fold_steps(segs)) == [("assistant", [("call", "call_0", "t", {})])]
+    _fold_fails(segs, "malformed_call")
 
 
 # --- 2. the read seam: materialized plane, never the log -----------------------
