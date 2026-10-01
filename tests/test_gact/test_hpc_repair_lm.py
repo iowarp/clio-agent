@@ -22,13 +22,13 @@ from dspy.dsp.utils.settings import main_thread_config
 from dspy.utils import DummyLM
 
 from clio_agent.config import LMProviderConfig, create_lm
-from clio_agent.gact.agents import reactv2
+from clio_agent.gact.agents import clio_react
 from clio_agent.gact.agents.builders import _build_blueprint_dspy_module
 from clio_agent.gact.app import build_app
 from clio_agent.gact.types import AgentDef
 from clio_agent.lm import hooked_lm as hooked_lm_mod
 from clio_agent.lm.io_logging import LMOutputTruncatedError
-from tests.test_gact.test_reactv2_repair import _build, _WsSig
+from tests.test_gact.test_clio_react_repair import _build, _WsSig
 from tests.turn_signals import wait_for_terminal_status
 
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
@@ -37,9 +37,7 @@ pytestmark = pytest.mark.usefixtures("host_agent_executor")
 def _non_submit_response() -> dict[str, Any]:
     """A DummyLM turn that calls a non-submit tool (forces a repair re-ask).
 
-    Reactv2_repair.py dropped its own copy of this helper (#901 S4 cleanup,
-    88e3d07a) once it no longer needed it; this file still does, so it is kept
-    local here rather than reintroduced as shared dead weight there.
+    Kept local: only this file needs it.
     """
     return {
         "next_thought": "t",
@@ -106,7 +104,7 @@ def test_real_http_submit_schema_retry_stays_on_session_endpoint(
     out-of-loop repair mechanism, which has no implementation in ``src/``. The
     fixture still exercises a real path -- a submit call missing a required
     structured field is rejected IN-LOOP with the typed
-    ``REACT_SUBMIT_INVALID_OUTPUT`` reason (``reactv2._execute_tool_calls``) and
+    ``REACT_SUBMIT_INVALID_OUTPUT`` reason (``ClioReAct``'s submit audit) and
     the model gets to retry within the same session -- so it is kept, driven
     through the ordinary in-loop iteration budget, with an explicit capture of
     the typed reason proving the rejection routed through that ladder rather
@@ -177,7 +175,7 @@ def test_real_http_submit_schema_retry_stays_on_session_endpoint(
     assert len(requests) == 3
     assert all(request["model"] == "session-model" for request in requests)
     assert not wrong.history
-    assert reactv2.REACT_SUBMIT_INVALID_OUTPUT in reasons
+    assert clio_react.REACT_SUBMIT_INVALID_OUTPUT in reasons
 
 
 def test_output_truncation_is_visible_terminal_state(tmp_path: Path) -> None:

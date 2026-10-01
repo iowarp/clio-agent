@@ -118,7 +118,7 @@ def create_lm(config: LMProviderConfig) -> dspy.LM:
     _resolve_lm_studio_model_if_needed(config)
     model_name = _resolve_model_name(config)
 
-    extras = build_request_kwargs(config, role="main")
+    extras = build_request_kwargs(config)
     connection = _connection_kwargs(config)
     lm = _construct_lm(
         model=model_name,
@@ -268,46 +268,6 @@ def _is_argonne_sophia(config: LMProviderConfig) -> bool:
 
     parsed = urlparse(config.api_base)
     return config.provider == "argonne" and "/resource_server/sophia/" in parsed.path
-
-
-def create_planner_lm(config: LMProviderConfig) -> dspy.LM:
-    """Create a lower-temperature LM for deterministic action planning.
-
-    Uses config.planner_temperature instead of config.temperature (item 1:
-    "planner and router determinism may set temperature explicitly, but only
-    when temperature is in the effective parameter set" —
-    :func:`~clio_agent.lm.request_builder.build_request_kwargs`'s
-    ``role="planner"`` still gates it).
-
-    Args:
-        config: LM provider configuration
-
-    Returns:
-        Configured dspy.LM instance with lower planner temperature
-    """
-    _ensure_provider_registered(config)
-    _resolve_lm_studio_model_if_needed(config)
-    model_name = _resolve_model_name(config)
-
-    connection = _connection_kwargs(config)
-    lm = _construct_lm(
-        model=model_name,
-        api_key=config.api_key,
-        max_tokens=config.planner_max_tokens or None,
-        model_type="chat",
-        cache=False,  # see create_lm — same rationale
-        **connection,
-        **build_request_kwargs(config, role="planner"),
-    )
-    # Stamp the effective planner sampling surface. Secondary inference from a
-    # planner call must not silently revert to the main LM's temperature/cap.
-    lm._clio_provider_config = replace(  # type: ignore[attr-defined]
-        config,
-        temperature=config.planner_temperature,
-        max_tokens=config.planner_max_tokens or 0,
-        provider_options=dict(config.provider_options),
-    )
-    return lm
 
 
 def _resolve_lm_studio_model_if_needed(config: LMProviderConfig) -> None:

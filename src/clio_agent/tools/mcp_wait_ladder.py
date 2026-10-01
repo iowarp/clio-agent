@@ -1,7 +1,7 @@
 """MCP wait semantics: typed backstops + surfaced waits (#1282, campaign C1-S2 D3).
 
 The owner module for the wait-side of the slice (D1/D2 own refusal semantics —
-``tools/mcp_errors.py`` / ``gact/agents/reactv2.py``). Copies the SHAPE of
+``tools/mcp_errors.py`` / ``gact/agents/clio_react.py``). Copies the SHAPE of
 ``arc/rpc_liveness.py``'s per-RPC stall ladder — typed per-attempt structured
 surfacing, never a bare exception — with the ONE deliberate divergence the
 slice spec calls out: **no terminal give-up on slowness**. ``arc/rpc_liveness``
@@ -53,14 +53,10 @@ Four pieces (adversarial-review round, F1/F3/F4):
    at a 1.0s backstop). :func:`run_with_activity_backstop` now sets the
    contextvar first — see its own docstring/comment for the exact ordering.
 
-   The accepted cost: a PROGRESSING call holds
-   ``AsyncMCPToolExecutor._call_lock`` for as long as it keeps progressing —
-   deliberately NOT restructured (the reviewer's lock-restructuring
-   alternative was skipped). This mirrors the already-sanctioned #1225
-   ``wait_for_terminal`` precedent (``timeout=None`` already holds the slot
-   unboundedly); killing live, progressing work to free the lock sooner is
-   the worse outcome under the user-agency rule. A genuinely SILENT call
-   still frees the lock at ``call_timeout_s``, unchanged.
+   A PROGRESSING call runs for as long as it keeps progressing (the #1225
+   ``wait_for_terminal`` precedent); no executor lock is held across a call,
+   so other calls are never blocked behind it. A genuinely SILENT call still
+   ends at ``call_timeout_s``.
 
 3. :func:`default_task_wait_observer` — the per-drive ``on_poll`` hook every
    NON-relay backend was missing entirely (rule 5, "every wait names what it
@@ -75,10 +71,6 @@ Four pieces (adversarial-review round, F1/F3/F4):
    "attempt N" is the true poll count, not the emitted-event count.
    ``tools/task_observers.py::resolve_task_observer`` falls back to this when
    no backend-specific factory is registered for a drive's ``server_id``.
-
-The async-tool-callable guard for D1's refusal-marking wrap lives in
-``gact/agents/reactv2.py`` (F2), not here — see that module's docstring for
-why an async ``dspy.Tool`` callable is refused rather than "handled."
 """
 
 from __future__ import annotations
@@ -240,9 +232,8 @@ class ActivityClock:
 #: correctly, before task creation, the task's copied context DOES carry
 #: the value for the rest of that task's life, on the SAME running event
 #: loop -- this is a DIFFERENT (safe) boundary than an ``asyncio.run()``
-#: call starting a brand-new loop with a fresh top-level context (see
-#: reactv2.py's F2 docstring, the case that genuinely cannot be fixed by
-#: reordering because there is no shared loop to copy a context across).
+#: call starting a brand-new loop with a fresh top-level context (which
+#: cannot be fixed by reordering: there is no shared loop to copy across).
 _ACTIVE_ACTIVITY_CLOCK: "contextvars.ContextVar[ActivityClock | None]" = contextvars.ContextVar(
     "clio_mcp_active_activity_clock", default=None
 )

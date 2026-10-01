@@ -354,7 +354,7 @@ def _open_minter_with_one_prior_message(client: TestClient, sid: str) -> tuple[A
 def test_auto_trigger_stages_and_flushes_after_the_turns_assistant_row(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import clio_agent.gact.agents.reactv2_events as reactv2_events
+    import clio_agent.gact.agents.clio_react_record as clio_react_record
     import clio_agent.gact.context as gact_context
     import clio_agent.gact.runtime.context_tokens as context_tokens
     from clio_agent.gact import context as _ctx
@@ -374,7 +374,7 @@ def test_auto_trigger_stages_and_flushes_after_the_turns_assistant_row(
         arc.append_segment(sid, scope, "observation", {"text": "first live segment"})
         arc.append_segment(sid, scope, "observation", {"text": "second live segment"})
 
-        monkeypatch.setattr(reactv2_events, "_arc_scope", lambda: (arc, sid, scope))
+        monkeypatch.setattr(clio_react_record, "arc_scope", lambda: (arc, sid, scope))
         monkeypatch.setattr(gact_context, "active_react_context_window", lambda: 1000)
         monkeypatch.setattr(context_tokens, "_last_prompt_tokens", lambda: 950)
 
@@ -440,7 +440,7 @@ def test_auto_trigger_uses_durable_usage_when_new_lm_binding_has_no_history(
 ) -> None:
     """A fresh subscription LM binding must not disable automatic compaction."""
 
-    import clio_agent.gact.agents.reactv2_events as reactv2_events
+    import clio_agent.gact.agents.clio_react_record as clio_react_record
     import clio_agent.gact.context as gact_context
     import clio_agent.gact.runtime.context_tokens as context_tokens
     from clio_agent.gact import context as _ctx
@@ -464,7 +464,7 @@ def test_auto_trigger_uses_durable_usage_when_new_lm_binding_has_no_history(
             },
         )
 
-        monkeypatch.setattr(reactv2_events, "_arc_scope", lambda: (arc, sid, scope))
+        monkeypatch.setattr(clio_react_record, "arc_scope", lambda: (arc, sid, scope))
         monkeypatch.setattr(gact_context, "active_react_context_window", lambda: 1000)
         monkeypatch.setattr(context_tokens, "_last_prompt_tokens", lambda: 0)
 
@@ -494,7 +494,7 @@ def test_maybe_autocompact_skips_typed_with_no_active_app(
 
     import clio_agent.gact.compaction as compaction_module
     from clio_agent.gact import context as _ctx
-    from clio_agent.gact.agents import reactv2_events as _events
+    from clio_agent.gact.agents import clio_react_record
     from clio_agent.gact.compaction import AUDIT_AUTO_SKIPPED, maybe_autocompact
 
     audits: list[tuple[str, dict[str, Any]]] = []
@@ -503,7 +503,7 @@ def test_maybe_autocompact_skips_typed_with_no_active_app(
         "stream_audit",
         lambda stage, **fields: audits.append((stage, fields)),
     )
-    monkeypatch.setattr(_events, "_arc_scope", lambda: (object(), "sess-no-app", "scope"))
+    monkeypatch.setattr(clio_react_record, "arc_scope", lambda: (object(), "sess-no-app", "scope"))
 
     assert _ctx.active_app() is None  # precondition: nothing bound in this thread
     maybe_autocompact()  # must not raise
@@ -552,7 +552,7 @@ def test_arc_status_typed_for_every_plane_outcome(
 
     from types import SimpleNamespace
 
-    import clio_agent.gact.agents.reactv2_events as reactv2_events
+    import clio_agent.gact.agents.clio_react_record as clio_react_record
     from clio_agent.gact.compaction import (
         ARC_FOLDED,
         ARC_NO_ACTIVE_SCOPE,
@@ -587,7 +587,7 @@ def test_arc_status_typed_for_every_plane_outcome(
             if case == "folded":
                 arc.append_segment(sid, scope, "observation", {"text": "one"})
                 arc.append_segment(sid, scope, "observation", {"text": "two"})
-            monkeypatch.setattr(reactv2_events, "_arc_scope", lambda: (arc, sid, scope))
+            monkeypatch.setattr(clio_react_record, "arc_scope", lambda: (arc, sid, scope))
 
         status = _fold_arc_working_set(app, "summary text", "turn_1")
         assert status == expected
@@ -759,7 +759,7 @@ def test_fold_arc_working_set_failure_returns_typed_500(
     """The same wrap covers the ARC fold (arc.summarize_segments is a real store
     RPC and can raise): the client still sees the one typed 500."""
 
-    import clio_agent.gact.agents.reactv2_events as reactv2_events
+    import clio_agent.gact.agents.clio_react_record as clio_react_record
     import clio_agent.gact.compaction as compaction_module
 
     audits: list[tuple[str, dict[str, Any]]] = []
@@ -779,7 +779,7 @@ def test_fold_arc_working_set_failure_returns_typed_500(
         scope = "scope_fold_fail"
         arc.append_segment(sid, scope, "observation", {"text": "one"})
         arc.append_segment(sid, scope, "observation", {"text": "two"})
-        monkeypatch.setattr(reactv2_events, "_arc_scope", lambda: (arc, sid, scope))
+        monkeypatch.setattr(clio_react_record, "arc_scope", lambda: (arc, sid, scope))
 
         def _raise(*_args: Any, **_kwargs: Any) -> None:
             raise RuntimeError("simulated summarize failure")

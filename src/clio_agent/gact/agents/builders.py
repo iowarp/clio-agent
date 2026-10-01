@@ -35,6 +35,7 @@ from clio_agent.gact.agents.blueprint_tool_recording import (
 from clio_agent.gact.agents.blueprint_tool_recording import (
     recording_blueprint_tool as _recording_blueprint_tool,
 )
+from clio_agent.gact.agents.clio_react_submit import tool_names as _tool_names
 from clio_agent.gact.agents.composition import (
     _runtime_active_workspace_context,
     _runtime_dynamic_agent_children_context,
@@ -47,11 +48,7 @@ from clio_agent.gact.agents.invalid_tool_selection import (
     _emit_invalid_tool_selection_event,
     _invalid_tool_selection_from_exception,
 )
-from clio_agent.gact.agents.reactv2_submit import tool_names as _tool_names
 from clio_agent.gact.agents.resolution import _active_workflow_state_schema
-from clio_agent.gact.agents.runtime import (
-    _retaining_react_cls,
-)
 from clio_agent.gact.agents.signatures import (
     _prompt_user_agent_signature,
     _tool_user_agent_signature,
@@ -65,7 +62,6 @@ from clio_agent.gact.permission_gate import (
 )
 from clio_agent.gact.runtime.context_tokens import _resolve_expert_context_window
 from clio_agent.gact.runtime.globals import (
-    _BlueprintTerminalWorkflowState,
     _emit_semantic_event,
     _llm_provider_payload,
     _TurnCancelled,
@@ -77,7 +73,6 @@ from clio_agent.gact.runtime.type_parsing import (
     _structured_output_enabled,
 )
 from clio_agent.runtime import trace
-from clio_agent.tools.mcp_runtime import wire_value
 
 logger = logging.getLogger(__name__)
 
@@ -921,21 +916,18 @@ def _blueprint_runtime_signature(
 
 
 def _emit_blueprint_llm_failure(agent_def: "AgentDef", kind: str, exc: BaseException) -> None:
-    """Best-effort failure event retaining the ReAct trajectory in durable trace only."""
+    """Best-effort failure event carrying the exception in the durable trace."""
 
     app = _ctx.active_app()
     sid = _ctx.active_session_id()
     if app is None or not sid:
         return
-    retained = _ctx.active_trajectory() if kind == "react" else None
     payload: dict[str, Any] = {
         # SSE/UI gets a summary; canonical trace keeps the uncapped exception.
         "error": str(exc).replace("\n", " ")[:2000],
         "error_full": str(exc),
         "error_type": type(exc).__name__,
     }
-    if retained and retained.get("trajectory"):
-        payload["trajectory"] = wire_value(retained.get("trajectory"), mode="gact_runtime")
     agent_id = str(getattr(agent_def, "id", "") or "")
     try:
         _emit_semantic_event(
@@ -966,9 +958,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
     from clio_agent.gact.app import (  # noqa: PLC0415
         _cancelled_error_info,
         _coerce_expert_handoff_rows,
-        _extract_tools_called_from_trajectory,
         _merge_tool_call_rows,
-        _workflow_state_from_outputs,
     )
     from clio_agent.lm.hooked_lm import create_hooked_lm  # noqa: PLC0415
     from clio_agent.providers.credentials import CredentialResolver  # noqa: PLC0415
@@ -1070,23 +1060,23 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                             session_id=_ctx.active_session_id(),
                         )
                     )
-                self.program = _retaining_react_cls()(
+                from clio_agent.gact.agents.clio_react import ClioReAct  # noqa: PLC0415
+
+                self.program = ClioReAct(
                     self.signature,
                     tools=tools,
                     max_iters=_tool_user_agent_max_iters(agent_def, declared_children=_n_children),
                 )
-                # Tag the program so its ReAct loop attributes each step to this
-                # expert on the highway (see _emit_react_step_event).
+                # The loop attributes each step to this expert on the highway.
                 self.program._clio_expert_id = agent_def.id
             # #948 S5: wrap the inner program (any kind) in the declared dspy.BestOfN /
             # Refine variant (no-op when unset; typed ValueError on an invalid decl).
             self.program = _wrap_module_variant(self.program, agent_def)
             agent_prompt = agent_def.system_prompt.strip() or agent_def.description
             active_app = _ctx.active_app()
-            # Do not short-circuit on active_app is None: the streamed forward falls
-            # back to the sync _run_blueprint_dspy_agent build, which has the session
-            # but NOT _ACTIVE_GACT_APP -- the function returns the cached briefing on
-            # that path so the orchestrator grounding never drops.
+            # Do not short-circuit on active_app is None: a build without the active
+            # app (the runner routes) still has the session, and the function returns
+            # the cached briefing there so the orchestrator grounding never drops.
             child_context = _runtime_dynamic_agent_children_context(
                 active_app,
                 agent_def,
@@ -1175,30 +1165,6 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             if trace.HF_ON:
                 trace.hot("FWD-A", "%s child-context+seed-done", getattr(self.agent_def, "id", "?"))
             blueprint_tool_rows: list[dict[str, Any]] = []
-            if self.kind == "react":
-                from clio_agent.gact.agents.resolution import (  # noqa: PLC0415
-                    _active_workflow_state_schema,
-                )
-
-                prior_workflow_state = _workflow_state_from_outputs(
-                    [question, runtime_system_prompt],
-                    schema=_active_workflow_state_schema(active_app, active_session_id),
-                )
-                if trace.HF_ON:
-                    trace.hot(
-                        "FWD-B", "%s workflow-state-parsed", getattr(self.agent_def, "id", "?")
-                    )
-                if prior_workflow_state:
-                    blueprint_tool_rows.append(
-                        {
-                            "name": "clio_prior_workflow_state",
-                            "args": {},
-                            "ok": True,
-                            "result": {},
-                            "workflow_state": prior_workflow_state,
-                            "telemetry_source": "blueprint_react_context_seed",
-                        }
-                    )
             blueprint_tool_rows_token = (
                 _ctx.set_blueprint_tool_rows(blueprint_tool_rows) if self.kind == "react" else None
             )
@@ -1224,20 +1190,6 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 _structured_outputs.get("workflow_state") or False
             )
             _visible_answer_token = _ctx.set_visible_answer_stream(_answer_visible)
-            if trace.HF_ON:
-                _ck_sp = kwargs.get("system_prompt", "")
-                _ck_q = str(kwargs.get("question", ""))
-                trace.hot(
-                    "LM-CALL",
-                    "%s :: sp_len=%d ORCH=%s | has_station_ids_in_q=%s SIO5_in_q=%s P472_in_q=%s | q_tail=%r",
-                    getattr(self.agent_def, "id", "?"),
-                    len(str(_ck_sp)),
-                    "ORCHESTRATOR" in str(_ck_sp),
-                    "station_ids" in _ck_q,
-                    "SIO5" in _ck_q,
-                    "P472" in _ck_q,
-                    _ck_q[-500:],
-                )
             try:
                 # Resolve the credential fresh for this call (tokens rotate); the
                 # dspy.context boundary below is unchanged (design §4).
@@ -1251,22 +1203,6 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                         dspy.context(lm=create_hooked_lm(_fwd_config), adapter=adapter),
                     ):
                         result = self.program(**kwargs)
-                except _BlueprintTerminalWorkflowState as terminal_exc:
-                    terminal_state = terminal_exc.result.get("clio_runtime", {}).get(
-                        "workflow_state", {}
-                    )
-                    terminal_mapping = (
-                        dict(terminal_state) if isinstance(terminal_state, Mapping) else {}
-                    )
-                    result = dspy.Prediction(
-                        answer="The workflow reached a terminal typed state.",
-                        workflow_state=terminal_mapping,
-                        evidence=[terminal_exc.result],
-                        errors=[],
-                        delegation={},
-                        trajectory=None,
-                        tools_called=[],
-                    )
                 except Exception as exc:
                     _emit_blueprint_llm_failure(self.agent_def, self.kind, exc)
                     raise
@@ -1286,13 +1222,9 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                     _cancelled_error_info(session_id, execution_cancellation="cooperative")
                 )
             answer = str(getattr(result, "answer", "") or "")
-            tools_called: list[dict[str, Any]] = []
-            if self.kind == "react":
-                tools_called = _extract_tools_called_from_trajectory(
-                    getattr(result, "trajectory", None)
-                )
-                if blueprint_tool_rows:
-                    tools_called = _merge_tool_call_rows(tools_called, blueprint_tool_rows)
+            tools_called = (
+                _merge_tool_call_rows([], blueprint_tool_rows) if blueprint_tool_rows else []
+            )
             handoff_rows = _coerce_expert_handoff_rows(getattr(result, "expert_handoffs", None))
             return dspy.Prediction(
                 answer=answer,
@@ -1305,7 +1237,6 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
                 evidence=getattr(result, "evidence", ""),
                 errors=getattr(result, "errors", ""),
                 delegation=getattr(result, "delegation", ""),
-                trajectory=getattr(result, "trajectory", None),
                 reasoning=getattr(result, "reasoning", ""),
                 tools_called=tools_called,
                 termination_reason=getattr(result, "termination_reason", ""),
@@ -1326,7 +1257,6 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
     from clio_agent.gact.app import (  # noqa: PLC0415
         _cancelled_error_info,
         _coerce_expert_handoff_rows,
-        _extract_tools_called_from_trajectory,
     )
     from clio_agent.lm.hooked_lm import create_hooked_lm  # noqa: PLC0415
     from clio_agent.prompts import PromptRegistry  # noqa: PLC0415
@@ -1404,13 +1334,9 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                 )
                 if part
             )
-            # Use the retaining ReAct subclass so this path also runs the ARC
-            # live-context plane (writes segments + reads its prompt from ARC).
-            # NOTE: no `answer_synthesizer` here — the classic loop's
-            # `react_agent.extract.predict` alias died with the v0.8.0 flip
-            # (ReActV2 has no `extract`), and forward() never used it: the
-            # stale assignment crashed EVERY tool-user-agent build under V2.
-            self.react_agent = _retaining_react_cls()(
+            from clio_agent.gact.agents.clio_react import ClioReAct  # noqa: PLC0415
+
+            self.react_agent = ClioReAct(
                 _tool_user_agent_signature(),
                 tools=self.tools,
                 max_iters=_tool_user_agent_max_iters(agent_def),
@@ -1486,9 +1412,6 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                     _cancelled_error_info(session_id, execution_cancellation="cooperative")
                 )
             answer = str(getattr(result, "answer", "") or "")
-            tools_called = _extract_tools_called_from_trajectory(
-                getattr(result, "trajectory", None)
-            )
             return dspy.Prediction(
                 answer=answer,
                 selected_expert=self.agent_def.id,
@@ -1498,8 +1421,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
                 expert_handoffs=_coerce_expert_handoff_rows(
                     getattr(result, "expert_handoffs", None)
                 ),
-                trajectory=getattr(result, "trajectory", None),
-                tools_called=tools_called,
+                tools_called=[],
                 termination_reason=getattr(result, "termination_reason", ""),
                 error_info=None,
             )

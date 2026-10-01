@@ -86,9 +86,9 @@ def _usage_cache_tokens(usage: dict[str, Any]) -> tuple[int, int, bool]:
 
 def _all_known_lms(app: "FastAPI") -> list[Any]:
     """Return every LM instance the running agent might call —
-    ``dspy.settings.lm`` plus the agent's ``_planner_lm`` and any
+    ``dspy.settings.lm`` plus the agent's ``_main_lm`` and any
     expert-bound LMs. Lets the turn handler diff history across
-    all of them so planner + expert + chat token counts roll up."""
+    all of them so main + expert + chat token counts roll up."""
 
     lms: list[Any] = []
     try:
@@ -109,10 +109,10 @@ def _all_known_lms(app: "FastAPI") -> list[Any]:
             exc,
         )
     agent = getattr(getattr(app, "state", None), "agent", None)
-    # Include _main_lm: the agent's primary LM (planner + experts route through it
+    # Include _main_lm: the agent's primary LM (experts route through it
     # when it is not the global dspy.settings.lm). Missing it under-counts usage
     # AND drops the reasoning trace for the bulk of the turn. Keep the others.
-    for attr in ("_main_lm", "_planner_lm", "_expert_lm", "main_lm"):
+    for attr in ("_main_lm", "_expert_lm", "main_lm"):
         side = getattr(agent, attr, None) if agent is not None else None
         if side is not None and side not in lms:
             lms.append(side)

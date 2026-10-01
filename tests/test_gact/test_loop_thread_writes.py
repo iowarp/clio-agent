@@ -192,7 +192,7 @@ def test_compact_folds_the_arc_working_set_off_the_loop(
     there is no active react scope (the parametrized sweep above already proves that
     leg: ``arc_status == "no_active_scope"``, no store RPC at all) -- to prove the RPC
     itself is off-loop this test fixes the scope compaction resolves (a real ARC,
-    ``_arc_scope`` monkeypatched to point at it, mirroring turn-scoped resolution)
+    ``clio_react_record.arc_scope`` monkeypatched to point at it, mirroring turn-scoped resolution)
     with >=2 live segments so the fold actually runs end-to-end.
     """
 
@@ -222,9 +222,9 @@ def test_compact_folds_the_arc_working_set_off_the_loop(
         arc.append_segment(sid, scope, "observation", {"text": "first live segment"})
         arc.append_segment(sid, scope, "observation", {"text": "second live segment"})
 
-        import clio_agent.gact.agents.reactv2_events as reactv2_events
+        import clio_agent.gact.agents.clio_react_record as clio_react_record
 
-        monkeypatch.setattr(reactv2_events, "_arc_scope", lambda: (arc, sid, scope))
+        monkeypatch.setattr(clio_react_record, "arc_scope", lambda: (arc, sid, scope))
 
         response = client.post(f"/v1/sessions/{sid}/compact", json={})
         assert response.status_code == 200, response.text

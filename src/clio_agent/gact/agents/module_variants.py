@@ -244,8 +244,8 @@ class _RunScopedVariantMixin:
                     # VariantTotalFailure envelope, which would (a) lose the
                     # typed reason/protocol_data D1/D2 carry and (b) stop the
                     # SAME refusal from being recognized/escalated one layer up
-                    # by reactv2.py's own chokepoint if a variant is ever
-                    # nested inside another tool-calling loop.
+                    # by ClioReAct if a variant is ever nested inside another
+                    # tool-calling loop.
                     raise ledger.terminal_refusal from engine_exc
                 # dspy raises the last try's exception on TOTAL failure only for n>=3
                 # (fail_count off-by-one). Normalize to the typed total-failure so the

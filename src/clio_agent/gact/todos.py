@@ -17,8 +17,8 @@ atomically is ambiguous.
 **Reject ambiguous parallel writes (no silent merge).** clio runs parallel subagents and a
 single ReAct step can emit parallel tool calls; two ``write_todos`` calls in the SAME step are
 ambiguous (which whole-list wins?), so the second is a typed error rather than a silent
-last-writer-wins merge. "Same step" is keyed on the active turn + ReAct step (the trajectory
-step index when available, else the step thought), and the check-and-set is serialized under a
+last-writer-wins merge. "Same step" is keyed on the active turn + ReAct step (the loop's step
+span, else the step thought), and the check-and-set is serialized under a
 module lock so truly-concurrent calls in one step cannot both pass.
 
 **Recitation (Manus).** During execution the current checklist is re-injected compactly into
@@ -107,18 +107,13 @@ def _normalize_todos(todos: Any) -> list[dict[str, str]]:
 def _current_step_key(sid: str) -> str:
     """Return an identity for the CURRENT ReAct step (for the same-step parallel-write guard).
 
-    Prefers the trajectory step index (monotonic per step, robust to identical thoughts); falls
-    back to the step thought when no trajectory is installed (e.g. a direct call). Includes the
-    turn id so a new turn always starts a fresh step namespace.
+    The loop's step span (unique per step, shared by the step's concurrent tool calls);
+    the step thought when no step span is set (a direct call). Includes the turn id so a
+    new turn always starts a fresh step namespace.
     """
 
     turn_id = _ctx.active_turn_id() or ""
-    traj = _ctx.active_trajectory()
-    if isinstance(traj, Mapping):
-        step_idx = sum(1 for k in traj if isinstance(k, str) and k.startswith("thought_"))
-        marker = f"traj{step_idx}"
-    else:
-        marker = _ctx.active_step_thought() or ""
+    marker = _ctx.active_parent_span_id() or _ctx.active_step_thought() or ""
     return f"{sid}#{turn_id}#{marker}"
 
 

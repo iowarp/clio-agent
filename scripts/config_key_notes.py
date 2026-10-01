@@ -651,14 +651,6 @@ KEY_NOTES: dict[str, str] = {
         "Pins the exact model identifier to use; set when the provider default model isn't the one "
         "you want."
     ),
-    "lm.planner_max_tokens": (
-        "Token cap for the lower-temperature planner/routing generations; raise if planner JSON "
-        "output gets truncated."
-    ),
-    "lm.planner_temperature": (
-        "Sampling temperature for deterministic action-planning calls (default 0.3, forced 0.0 for "
-        "local reasoning profiles); lower for determinism."
-    ),
     "lm.presence_penalty": (
         "Sets the OpenAI-standard presence-penalty sampling parameter; tune for reasoning models "
         "needing fuller sampling than temp-0."
@@ -1074,10 +1066,6 @@ KEY_NOTES: dict[str, str] = {
     "runtime.environment": (
         'Deployment environment label ("dev" default) threaded into LM config; change to reflect '
         "staging/prod for environment-aware logging."
-    ),
-    "runtime.live_streaming": (
-        "Streams the top-level GACT turn's answer live via dspy.streamify instead of blocking; "
-        "disable per-model if streaming responses break."
     ),
     "runtime.lm_token_liveness": (
         "Streams expert LM calls token-by-token so each token refreshes the no-progress watchdog; "

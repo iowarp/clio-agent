@@ -14,7 +14,7 @@ Four layers are pinned:
   builds a REAL ``dspy.BestOfN``/``Refine`` wrapping the declared inner kind, selects by
   the compiled reward, and stamps the winning try's index + score.
 * **ARC-plane run keying** (``context.run_keyed_scope`` through the real
-  ``reactv2.arc_history_messages`` fold + the ``lm_activity``/``tool_observer``
+  ``clio_react_record.arc_scope`` + ``read_steps`` fold + the ``lm_activity``/``tool_observer``
   attribution seams) — two in-process tries of one module in one session read DISTINCT
   ARC partitions (sabotage: drop the ``react_run`` fold → try 2's fold contains try 1's
   trajectory → red), while every attribution reader keeps the BARE agent id.
@@ -34,7 +34,7 @@ from dspy.utils.dummies import DummyLM
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.gact import context as ctx
 from clio_agent.gact.agents import module_variants as mv
-from clio_agent.gact.agents.reactv2 import arc_history_messages
+from clio_agent.gact.agents.clio_react_record import arc_scope, read_steps
 from clio_agent.gact.app import _build_blueprint_dspy_module, build_app
 from clio_agent.gact.expert_packs import parse_expert_file
 from clio_agent.gact.runtime.type_parsing import (
@@ -605,9 +605,17 @@ def _variant_scope_ctx(arc_memory: ARCMemory) -> Iterator[None]:
             ctx.reset(tok)
 
 
+def _fold_active() -> list[dict[str, Any]]:
+    """The loop's context read for the active try: the plane ``arc_scope`` resolves
+    (run-keyed) folded by ``read_steps`` -- exactly what ``ClioReAct`` sends."""
+    arc_memory, session, scope = arc_scope()
+    assert arc_memory is not None, "no live plane resolved for the active react scope"
+    return read_steps(arc_memory, session, scope)
+
+
 def _write_thought(arc_memory: ARCMemory, text: str) -> None:
-    """Write a thought through the SAME run-keyed scope the writer (reactv2_events
-    _arc_scope) would compute for the active try."""
+    """Write a thought through the SAME run-keyed scope the writer
+    (``clio_react_record.arc_scope``) computes for the active try."""
     scope = ctx.run_keyed_scope(ctx.active_react_scope())
     arc_memory.append_segment(
         _SESSION,
@@ -629,12 +637,12 @@ def test_sequential_tries_read_distinct_arc_partitions(arc: ARCMemory) -> None:
         t0 = ctx.set_react_run(0)
         _write_thought(arc, "TRY0-THOUGHT")
         # its OWN fold sees it (partition is real, not always-empty)
-        assert [m.get("next_thought") for m in (arc_history_messages() or [])] == ["TRY0-THOUGHT"]
+        assert [m.get("next_thought") for m in _fold_active()] == ["TRY0-THOUGHT"]
         ctx.reset(t0)
 
         # try 1 folds its own (empty) partition — clean, no try-0 bleed
         t1 = ctx.set_react_run(1)
-        try1_fold = arc_history_messages() or []
+        try1_fold = _fold_active()
         assert try1_fold == []
         assert all("TRY0-THOUGHT" != m.get("next_thought") for m in try1_fold)
         ctx.reset(t1)
@@ -657,7 +665,7 @@ def test_sabotage_dropping_run_fold_leaks_prior_try(
         ctx.reset(t0)
 
         t1 = ctx.set_react_run(1)
-        leaked = [m.get("next_thought") for m in (arc_history_messages() or [])]
+        leaked = [m.get("next_thought") for m in _fold_active()]
         ctx.reset(t1)
     finally:
         next(gen, None)
@@ -700,7 +708,7 @@ class _ArcWritingInner(dspy.Module):
 
     def forward(self, **kwargs: Any) -> Any:
         run = ctx.active_react_run()
-        _ARC_OBS.append((run, [m.get("next_thought") for m in (arc_history_messages() or [])]))
+        _ARC_OBS.append((run, [m.get("next_thought") for m in _fold_active()]))
         arc_memory = ctx.active_app().state.arc
         scope = ctx.run_keyed_scope(ctx.active_react_scope())
         arc_memory.append_segment(
@@ -721,7 +729,7 @@ def test_variant_forward_run_keys_arc_partitions_through_real_bestofn(arc: ARCMe
     DISTINCT ARC partitions. This is the integration seam the piecewise tests above do not
     exercise (they set ``set_react_run`` manually). A full react inner is too heavy to drive
     deterministically under a stub LM, so this drives the minimal real path — the real BestOfN
-    loop + real _RunKeyedModule + real reactv2 fold + real ARCMemory."""
+    loop + real _RunKeyedModule + real clio_react_record fold + real ARCMemory."""
     _ARC_OBS.clear()
     wrapped = mv.wrap_module_variant(
         _ArcWritingInner(),
@@ -737,10 +745,10 @@ def test_variant_forward_run_keys_arc_partitions_through_real_bestofn(arc: ARCMe
         assert _ARC_OBS == [(0, []), (1, [])]
         # ...and the two writes are in DISTINCT run-keyed partitions.
         t0 = ctx.set_react_run(0)
-        fold0 = [m.get("next_thought") for m in (arc_history_messages() or [])]
+        fold0 = [m.get("next_thought") for m in _fold_active()]
         ctx.reset(t0)
         t1 = ctx.set_react_run(1)
-        fold1 = [m.get("next_thought") for m in (arc_history_messages() or [])]
+        fold1 = [m.get("next_thought") for m in _fold_active()]
         ctx.reset(t1)
         assert fold0 == ["TRY0-THOUGHT"]
         assert fold1 == ["TRY1-THOUGHT"]

@@ -1,15 +1,14 @@
 """The byte-equality + mutation-propagation contracts, with the FOLD as the backing.
 
-These re-run the decisive live-plane contracts (``test_reactv2_wire_byte_equality``
-— the V2 wire is the only wire since the v0.8.0 cleanup deleted the classic loop)
+These re-run the decisive live-plane contracts (``test_clio_react_wire_byte_equality``)
 against an ARCMemory built with ``working_set_fold=True`` — so the working set is a
 FOLD of the canonical ``_events`` log, not a separately-written scope. Passing here
 proves the fold is a byte-exact drop-in behind the ``render_segments`` /
 ``render_working_set`` seam (design §2.8b), and the mutation-propagation cases are
 the **anti-shadow guard**: a fold that read a stale materialization would still show
 a deleted/summarized segment (sabotage d), so their propagation is the proof there
-is no second copy. Mutations are observed through the V2 wire
-(``segments_to_messages`` over the fold render).
+is no second copy. Mutations are observed through the loop's context read
+(``fold_steps`` over the fold render).
 
 Both ARC backends are exercised (LocalFS + clio-core) to match the S0 sweep. Each test
 gets a UNIQUE session id so the shared, process-global clio-core runtime can never leak
@@ -24,7 +23,7 @@ from typing import Any, Iterator
 import pytest
 
 from clio_agent.arc.memory import ARCMemory
-from clio_agent.gact.agents.reactv2 import segments_to_messages
+from clio_agent.gact.agents.clio_react_record import fold_steps
 
 from .conftest import live_plane_context
 
@@ -60,8 +59,8 @@ def _populate(arc: ARCMemory, session: str, *triples: Any) -> None:
 
 
 def _wire_text(arc: ARCMemory, session: str) -> str:
-    """The V2 wire over the fold render, flattened to text for containment asserts."""
-    msgs = segments_to_messages(arc.render_segments(session, SCOPE))
+    """The loop's History events over the fold render, flattened to text."""
+    msgs = fold_steps(arc.render_segments(session, SCOPE))
     return "\n".join(str(m) for m in msgs)
 
 
@@ -135,8 +134,7 @@ def test_fold_summarize_propagates(fold_arc: ARCMemory, session: str) -> None:
 
 
 def test_fold_insert_propagates_at_position(fold_arc: ARCMemory, session: str) -> None:
-    """Insert is observed at the fold-render layer: the V2 wire folds a mid-step
-    bare thought into the step's single event slot, so the anti-shadow proof for
+    """Insert is observed at the fold-render layer: ``fold_steps`` groups by step, so the anti-shadow proof for
     positional insert is the ordered ``render_segments`` view itself."""
     _populate(fold_arc, session, ("thought", {"text": "FIRST"}), ("observation", {"text": "THIRD"}))
     with live_plane_context(fold_arc, session=session, scope=SCOPE):
@@ -148,7 +146,7 @@ def test_fold_insert_propagates_at_position(fold_arc: ARCMemory, session: str) -
 
 
 def test_fold_append_only_is_a_prefix(fold_arc: ARCMemory, session: str) -> None:
-    """Appends extend the V2 message list; the prior messages are a byte-stable prefix."""
+    """Appends extend the History event list; the prior events are a byte-stable prefix."""
     _populate(
         fold_arc,
         session,
@@ -157,9 +155,9 @@ def test_fold_append_only_is_a_prefix(fold_arc: ARCMemory, session: str) -> None
         ("observation", {"text": "B0"}),
     )
     with live_plane_context(fold_arc, session=session, scope=SCOPE):
-        first = segments_to_messages(fold_arc.render_segments(session, SCOPE))
+        first = fold_steps(fold_arc.render_segments(session, SCOPE))
         fold_arc.append_segment(session, SCOPE, "thought", {"text": "A1"}, step=1)
-        second = segments_to_messages(fold_arc.render_segments(session, SCOPE))
+        second = fold_steps(fold_arc.render_segments(session, SCOPE))
     assert len(second) >= len(first)
     assert second[: len(first)] == first
 
@@ -177,10 +175,10 @@ def test_fold_replace_propagates(fold_arc: ARCMemory, session: str) -> None:
     assert "AFTER_REPLACE" in after and "BEFORE_REPLACE" not in after
 
 
-# ---- V2 wire (fold-backed) --------------------------------------------------
+# ---- loop context (fold-backed) --------------------------------------------------
 
 
-_V2_STEPS = [
+_STEPS = [
     {
         "thought": "search first",
         "tool_name": "search",
@@ -196,32 +194,43 @@ _V2_STEPS = [
 ]
 
 
-def _populate_v2(arc: ARCMemory, session: str, steps: list[dict[str, Any]]) -> None:
+def _populate_steps(arc: ARCMemory, session: str, steps: list[dict[str, Any]]) -> None:
     for i, s in enumerate(steps):
+        call_id = f"call_{i}_0"
         arc.append_segment(session, SCOPE, "thought", {"text": s["thought"]}, step=i)
         arc.append_segment(
-            session, SCOPE, "tool_call", {"name": s["tool_name"], "args": s["tool_args"]}, step=i
+            session,
+            SCOPE,
+            "tool_call",
+            {"id": call_id, "name": s["tool_name"], "args": s["tool_args"]},
+            step=i,
         )
-        arc.append_segment(session, SCOPE, "observation", {"text": s["observation"]}, step=i)
+        arc.append_segment(
+            session,
+            SCOPE,
+            "observation",
+            {"call_id": call_id, "text": s["observation"], "is_error": False},
+            step=i,
+        )
 
 
-def test_fold_v2_fold_matches_reference(fold_arc: ARCMemory, session: str) -> None:
-    """``segments_to_messages`` over the fold reproduces the independently-built V2
-    reference message list exactly (the V2 anti-shadow wire proof)."""
-    from .test_reactv2_wire_byte_equality import expected_history_messages
+def test_fold_steps_match_reference(fold_arc: ARCMemory, session: str) -> None:
+    """``fold_steps`` over the fold reproduces the independently-built reference event
+    list exactly (the anti-shadow wire proof)."""
+    from .test_clio_react_wire_byte_equality import expected_history_messages
 
-    _populate_v2(fold_arc, session, _V2_STEPS)
+    _populate_steps(fold_arc, session, _STEPS)
     with live_plane_context(fold_arc, session=session, scope=SCOPE):
-        folded = segments_to_messages(fold_arc.render_segments(session, SCOPE))
-    assert folded == expected_history_messages(_V2_STEPS)
+        folded = fold_steps(fold_arc.render_segments(session, SCOPE))
+    assert folded == expected_history_messages(_STEPS)
 
 
-def test_fold_v2_delete_propagates_on_wire(fold_arc: ARCMemory, session: str) -> None:
-    _populate_v2(fold_arc, session, _V2_STEPS)
+def test_fold_delete_propagates_on_the_loop_context(fold_arc: ARCMemory, session: str) -> None:
+    _populate_steps(fold_arc, session, _STEPS)
     with live_plane_context(fold_arc, session=session, scope=SCOPE):
         obs = [s for s in fold_arc.render_segments(session, SCOPE) if s.kind == "observation"]
         fold_arc.delete_segments(session, SCOPE, [obs[-1].id])
-        after = segments_to_messages(fold_arc.render_segments(session, SCOPE))
+        after = fold_steps(fold_arc.render_segments(session, SCOPE))
     after_text = "\n".join(str(m) for m in after)
     assert "SECOND_RESULT" not in after_text
     assert "SEARCH_RESULT" in after_text

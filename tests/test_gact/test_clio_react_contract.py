@@ -1,14 +1,12 @@
-"""S1 pins for clio's ``ReActV2`` subclass — the ONLY expert loop since v0.8.0.
+"""Loop-contract pins for ``ClioReAct`` (:mod:`clio_agent.gact.agents.clio_react`).
 
-These tests exercise the V2 subclass (:mod:`clio_agent.gact.agents.reactv2`).
-The classic ``_RetainingReAct`` and the ``CLIO_REACTV2`` kill-switch were
-deleted in the v0.8.0 cleanup. They pin four properties the design calls out:
+They pin three properties the design calls out:
 
-1. **Append-only composition** (the whole point, design §3): across two scripted
-   react steps the structured ``history.messages`` grows append-only (each turn's
-   messages are a byte-stable prefix of the next), and the rendered *wire* messages
-   share a growing byte-identical prefix — the #891 prompt-cache fingerprint the
-   classic single-string trajectory fails.
+1. **Append-only composition** (design §3): across scripted react steps the
+   structured ``history.messages`` grows append-only behind one static head event
+   (task inputs + tools), and the rendered *wire* of EVERY call -- the first
+   included -- is a delta-extension of the previous one beneath a byte-static tail
+   (the #891 prompt-cache fingerprint / the Claude session-delta precondition).
 2. **Reasoning-hijack defense** (design §4, risk 1): the ReAct-internal
    ``next_thought`` output field is typed plain ``str``, NOT ``dspy.Reasoning`` —
    so its native reasoning-channel adaptation cannot hijack clio's thinking lane.
@@ -16,8 +14,6 @@ deleted in the v0.8.0 cleanup. They pin four properties the design calls out:
 3. **workflow_state on submit args** (design fact 4): a typed ``workflow_state``
    output field on the user signature rides the internal ``submit`` tool's
    ``arg_types`` unchanged (the load-bearing typed extract survives, relocated).
-4. **Single loop (v0.8.0)**: ``_retaining_react_cls`` unconditionally returns
-   ``_RetainingReActV2``, and the deleted ``CLIO_REACTV2`` env is inert.
 """
 
 from __future__ import annotations
@@ -26,12 +22,11 @@ import copy
 from typing import Any
 
 import dspy
-import pytest
 from dspy.utils.dummies import DummyLM
 
 from clio_agent.arc.prompt_recorder import PromptRecorder
-from clio_agent.gact.agents import runtime
-from clio_agent.gact.agents.reactv2 import _RetainingReActV2, retaining_reactv2_cls
+from clio_agent.gact.agents.clio_react import ClioReAct
+from clio_agent.lm.adapters import _lenient_chat_adapter_cls
 from clio_agent.providers.claude_code_stateful import classify_delta, is_strict_prefix
 
 
@@ -60,9 +55,8 @@ def _two_step_lm() -> DummyLM:
     )
 
 
-def _build_agent(signature: Any = "question -> answer") -> _RetainingReActV2:
-    cls = retaining_reactv2_cls()
-    return cls(signature, tools=[dspy.Tool(_search)], max_iters=6)
+def _build_agent(signature: Any = "question -> answer") -> ClioReAct:
+    return ClioReAct(signature, tools=[dspy.Tool(_search, name="search")], max_iters=6)
 
 
 # --- 1. append-only composition ------------------------------------------------
@@ -70,13 +64,14 @@ def _build_agent(signature: Any = "question -> answer") -> _RetainingReActV2:
 
 def test_history_messages_grow_append_only_across_steps() -> None:
     """The structured ``history.messages`` handed to each ``self.react`` call is a
-    byte-stable prefix of the next call's — append-only by construction (§3)."""
+    byte-stable prefix of the next call's -- append-only by construction (§3): one
+    static head event (task inputs + tools), then one event per committed step."""
     agent = _build_agent()
     captured: list[list[dict[str, Any]]] = []
     original_react = agent.react
 
     def spy(**kwargs: Any) -> Any:
-        # history is mutated in place (append); snapshot the messages per call.
+        # snapshot the messages per call.
         captured.append(copy.deepcopy(kwargs["history"].messages))
         return original_react(**kwargs)
 
@@ -86,8 +81,11 @@ def test_history_messages_grow_append_only_across_steps() -> None:
 
     assert pred.answer == "FINAL"
     assert pred.termination_reason == "submit"
-    # turn 0 sees an empty history, then one committed event per prior turn.
-    assert [len(m) for m in captured] == [0, 1, 2]
+    # call 0 sees only the head, then one committed event per prior step.
+    assert [len(m) for m in captured] == [1, 2, 3]
+    head = captured[0][0]
+    assert head["question"] == "find alpha"
+    assert [t.name for t in head["tools"]] == ["search", "submit"]
     for earlier, later in zip(captured, captured[1:], strict=False):
         assert later[: len(earlier)] == earlier, "history is not an append-only prefix"
         assert len(later) > len(earlier), "history did not grow"
@@ -95,16 +93,16 @@ def test_history_messages_grow_append_only_across_steps() -> None:
 
 def test_wire_messages_share_a_growing_byte_prefix() -> None:
     """The #891 fingerprint, asserted on the FULL wire message list via the real delta
-    detector (#901): consecutive ``self.react`` calls are an append-only extension of
-    each other beneath a single byte-static trailing block (the ChatAdapter
-    ``main_request`` closing instruction / current-input block, which never changes bytes
-    but moves position). The classic single-string trajectory fails this; V2's
-    append-only history passes it — ``classify_delta`` returns a real ``delta`` (not a
+    detector: consecutive ``self.react`` calls -- the FIRST included, since the head is
+    static from call 0 -- are an append-only extension of each other beneath a single
+    byte-static trailing block (the adapter's closing instruction, which never changes
+    bytes but moves position). ``classify_delta`` returns a real ``delta`` (not a
     ``prefix_mismatch``) over the whole list, which is exactly what engages the Claude
     stateful session-delta transport."""
     agent = _build_agent()
     recorder = PromptRecorder()
-    with dspy.context(lm=_two_step_lm(), adapter=dspy.ChatAdapter(), callbacks=[recorder]):
+    adapter = _lenient_chat_adapter_cls()()
+    with dspy.context(lm=_two_step_lm(), adapter=adapter, callbacks=[recorder]):
         agent(question="find alpha")
 
     calls = recorder.calls()
@@ -113,7 +111,7 @@ def test_wire_messages_share_a_growing_byte_prefix() -> None:
     # The FULL message list of call N is a delta-extension of call N-1's FULL list under
     # the two-rung structural contract (pure strict prefix, else strict prefix beneath a
     # byte-identical static tail). No slicing off the tail by hand — the detector owns it.
-    for earlier_call, later_call in zip(calls[1:], calls[2:], strict=False):
+    for earlier_call, later_call in zip(calls, calls[1:], strict=False):
         plan = classify_delta(earlier_call.messages, later_call.messages)
         assert plan.mode == "delta", f"expected a delta, got {plan.mode}/{plan.reason}"
         assert plan.reason is None
@@ -123,7 +121,8 @@ def test_wire_messages_share_a_growing_byte_prefix() -> None:
     # The static trailing block is byte-identical across the delta calls (the tail the
     # contract tolerates), so a plain strict prefix is NOT what holds here — the extended
     # contract is load-bearing.
-    assert calls[1].messages[-1] == calls[2].messages[-1]
+    assert calls[0].messages[-1] == calls[1].messages[-1] == calls[2].messages[-1]
+    assert not is_strict_prefix(calls[0].messages, calls[1].messages)
     assert not is_strict_prefix(calls[1].messages, calls[2].messages)
 
 
@@ -150,7 +149,7 @@ def test_next_thought_is_plain_str_not_reasoning() -> None:
 def test_workflow_state_rides_submit_tool_arg_types() -> None:
     """A typed ``workflow_state`` output field on the user signature becomes a typed
     arg of the internal ``submit`` tool (design fact 4) — the load-bearing typed
-    extract survives on V2, relocated onto submit rather than a ChainOfThought."""
+    extract survives, relocated onto submit rather than a ChainOfThought."""
 
     class _Sig(dspy.Signature):
         question: str = dspy.InputField()
@@ -193,29 +192,3 @@ def test_submit_returns_typed_workflow_state_value() -> None:
         pred = agent(question="q")
     assert pred.answer == "DONE"
     assert pred.workflow_state == {"status": "complete"}
-
-
-# --- 4. single loop (v0.8.0) ----------------------------------------------------
-
-
-def test_production_class_is_v2() -> None:
-    """``_retaining_react_cls`` unconditionally selects ``_RetainingReActV2`` —
-    the classic ``_RetainingReAct`` was deleted in the v0.8.0 cleanup."""
-    cls = runtime._retaining_react_cls()
-    assert cls is _RetainingReActV2
-    assert issubclass(cls, dspy.ReActV2)
-    assert not hasattr(runtime, "_reactv2_enabled")
-
-
-def test_deleted_kill_switch_env_is_inert(monkeypatch: pytest.MonkeyPatch) -> None:
-    """SABOTAGE twin: CLIO_REACTV2=0 (the deleted #901 kill-switch) must not
-    resurrect the classic loop — V2 is selected regardless."""
-    from clio_agent import conf
-
-    monkeypatch.setenv("CLIO_REACTV2", "0")
-    conf.reload()
-    try:
-        assert runtime._retaining_react_cls() is _RetainingReActV2
-    finally:
-        monkeypatch.delenv("CLIO_REACTV2", raising=False)
-        conf.reload()

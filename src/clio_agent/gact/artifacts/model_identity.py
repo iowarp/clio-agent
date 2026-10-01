@@ -20,8 +20,7 @@ This module carries the SAME registry truth into the two model-facing places:
   into the structured result as an ``artifacts`` list;
 * **the turn's produced ``workflow_state``** — :func:`annotate_workflow_state_artifacts`
   stamps ``artifact_id`` / ``artifact_uri`` beside the path a section already
-  carries, so the next turn (which reads the prior state through
-  ``clio_prior_workflow_state``) can reuse the registered artifact instead of
+  carries, so a later turn can reuse the registered artifact instead of
   re-staging it.
 
 Raw truth only. Every entry is a registry-resolved :class:`ArtifactVersion` reached

@@ -65,8 +65,8 @@ SSE_KEEP_KEYS_BY_EVENT: dict[str, frozenset[str]] = {
 # See the four ReAct atoms:
 #   a) delegation  = blueprint.delegation.* + the orchestrator's reasoning
 #                    (carried on expert.response.completed for CoT orchestrators)
-#   b) tool call   } react.step.completed (thought + tool_name + tool_args
-#   c) tool result }                       + observation), for ReAct leaves
+#   b) tool calls   } react.step.completed (thought + tool_calls: every call of the
+#   c) tool results }                       step with its observation), for ReAct leaves
 #   d) extract     = expert.extract.completed (output + structured workflow_state)
 SSE_UI_EVENT_TYPES: frozenset[str] = frozenset(
     {
@@ -517,7 +517,7 @@ def trace_line_from_events_content(
 # --- lm.token.delta: the live token stream on the highway (#693) --------------
 # The single LM-stream tap emits ``lm.token.delta`` events so the live token
 # stream rides the SAME highway as every other semantic event (one capture, N
-# projections) instead of being read ad-hoc by streamify + the watchdog drain.
+# projections) instead of being read ad-hoc by the watchdog drain.
 
 LM_TOKEN_DELTA = "lm.token.delta"
 

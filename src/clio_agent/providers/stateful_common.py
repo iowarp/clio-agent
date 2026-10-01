@@ -28,7 +28,7 @@ fallback: every reset/degrade is a recorded, queryable reason (#775).
 own scope token (a fresh per-``forward`` uuid) so they can never share a session.
 The registry is bounded (LRU over live entries) and released explicitly on loop end
 (:func:`stateful_scope`'s teardown, which releases EVERY registered provider
-registry so every Claude leg tears down from the one scope the ReActV2 loop binds).
+registry so every Claude leg tears down from the one scope the loop forward binds).
 """
 
 from __future__ import annotations
@@ -142,12 +142,11 @@ def stateful_reset_payload(reason: str, message: str = "") -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
-# Per-forward stateful scope token (the "session token from the V2 loop").
+# Per-forward stateful scope token.
 #
-# Set ONLY by the ReActV2 loop's ``forward`` (see reactv2._RetainingReActV2), a
-# fresh uuid per forward so parallel experts never collide and a new turn always
-# starts a fresh session. The classic loop never sets it, so every provider
-# transport sees ``None`` and never deltas — the classic wire stays byte-identical.
+# Set ONLY by ``ClioReAct.forward``: a fresh uuid per forward so parallel experts
+# never collide. Outside a loop forward every transport sees ``None`` and sends
+# in full.
 # --------------------------------------------------------------------------- #
 _STATEFUL_SCOPE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "clio_stateful_scope", default=None
@@ -177,7 +176,7 @@ def register_scope_registry(registry: ScopeParticipant) -> None:
     """Register a provider registry for scope-end teardown (idempotent).
 
     Called once per provider singleton at module load so :func:`stateful_scope`'s
-    teardown releases EVERY provider's entries for the ending scope — the ReActV2
+    teardown releases EVERY provider's entries for the ending scope — the loop
     loop binds one scope and both the claude + codex legs must release from it.
     """
     with _SCOPE_REGISTRIES_LOCK:
@@ -201,7 +200,7 @@ def note_prefix_reset_for_active_scope(reason: str = "ops_reset") -> bool:
     next send on the active loop is then a typed reset (``reason``, default
     ``ops_reset``) rather than the generic ``prefix_mismatch`` the detector would
     otherwise infer. A no-op returning ``False`` when no stateful scope is active
-    (classic loop / feature off), so it is always safe to call.
+    (no loop forward / feature off), so it is always safe to call.
 
     Args:
         reason: A key of :data:`STATEFUL_RESET_REASONS` (default ``"ops_reset"``);
@@ -224,7 +223,7 @@ def note_prefix_reset_for_active_scope(reason: str = "ops_reset") -> bool:
 def stateful_scope(token: str | None = None) -> Any:
     """Bind a per-forward stateful scope token for the duration of one react loop.
 
-    Entered by the ReActV2 ``forward``. On exit it releases the scope's registry
+    Entered by ``ClioReAct.forward``. On exit it releases the scope's registry
     entries in EVERY registered provider registry (the #900 explicit-teardown seam —
     a loop's session never outlives the loop). ``token`` defaults to a fresh uuid; an
     explicit token is accepted for tests. Symmetric ``contextvars`` set/reset so

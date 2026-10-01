@@ -329,27 +329,26 @@ def test_live_edge_integration_streamed_turn(
     test_agent_resolution_unify.py::test_bare_session_runs_builtin_main_and_fails_typed_on_inexecutable_host).
     A ``build_app(agent=...)`` host fake only gets its ``forward`` called
     through the ``host_agent_executor`` seam — without it the turn errors
-    with ``custom_agent_tool_executor_unavailable`` before
-    ``_try_streamed_forward`` (the thing under test) ever runs.
+    with ``custom_agent_tool_executor_unavailable`` before the module (the
+    thing under test) ever runs.
     """
 
     from fastapi.testclient import TestClient
 
     from clio_agent.gact.app import build_app
     from clio_agent.gact.part_atoms import load_message_part_atoms
+    from tests._harness import emit_live_text, install_scripted_module
     from tests.equivalence import normalizers as N
     from tests.test_gact.conftest import complete_turn
     from tests.test_gact.test_post_messages import FakeClioAgent, FakePrediction
 
-    async def fake_streamed_forward(
-        app: Any, enriched_text: str, sid: str, emit_chunk: Any, **kwargs: Any
-    ) -> Any:
-        del app, enriched_text, sid, kwargs
+    def streamed_answer(**kwargs: Any) -> Any:
+        del kwargs
         for chunk in ["Los ", "Angeles ", "has ", "dense ", "seismic ", "stations."]:
-            await emit_chunk(chunk)
+            emit_live_text(chunk)
         return FakePrediction(answer="Los Angeles has dense seismic stations.")
 
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    install_scripted_module(monkeypatch, streamed_answer)
     monkeypatch.setenv("CLIO_LIVE_EDGE_STREAMING", "1")  # S7 live edge
 
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))

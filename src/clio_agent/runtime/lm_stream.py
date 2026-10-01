@@ -1,9 +1,9 @@
 """Streaming answer-field extractor for the unified LM token highway (#693).
 
-DSPy's ``StreamListener`` only surfaces field-level deltas inside the
-``dspy.streamify`` pump, which the blueprint/expert calls never enter (they run
-in executor threads). So the single LM-stream tap (``config.IOLoggingLM._clio_
-streamed_call``) needs its OWN field extraction to turn the raw ChatAdapter token
+DSPy's ``StreamListener`` only surfaces field-level deltas inside a
+``dspy.streamify`` pump, which clio does not use (the loop runs in executor
+threads). So the single LM-stream tap (``config.IOLoggingLM._clio_
+streamed_call``) does its OWN field extraction to turn the raw ChatAdapter token
 stream into clean *answer-field* deltas for the live UI, while reasoning and the
 structured fields stay off the user-facing text.
 

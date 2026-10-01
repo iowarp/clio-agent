@@ -2,7 +2,7 @@
 ClioAgent - Main Agent Host
 
 The process-level HOST for CLIO's runtime resources. ClioAgent owns the
-provider identity (``_main_lm`` / ``_planner_lm`` / ``_dspy_adapter``), the tool
+provider identity (``_main_lm`` / ``_dspy_adapter``), the tool
 gateway + per-workspace executors, pack/blueprint discovery, the ARC memory
 plane, and the agent registry. It also carries the small chat-synthesis surface
 that the session-compaction summarizer reuses.
@@ -40,7 +40,6 @@ from clio_agent.config import (
     LMProviderConfig,
     create_chat_adapter,
     create_lm,
-    create_planner_lm,
     has_explicit_model_override,
     list_lm_studio_models,
     load_config_from_env,
@@ -173,7 +172,7 @@ class ClioAgent(dspy.Module):
                 split). ``None`` mints a fresh ARC (the standalone CLI / test path that
                 owns no server-level ARC).
             provider_config: The default-profile provider config the agent binds its
-                ``_main_lm`` / ``_planner_lm`` / ``_dspy_adapter`` from. The gact
+                ``_main_lm`` / ``_dspy_adapter`` from. The gact
                 server supplies the config resolved off its authoritative
                 ``ProviderProfileStore`` default (design §9 step 9), so the main agent
                 and the store agree on ONE identity rather than each reading the
@@ -245,10 +244,10 @@ class ClioAgent(dspy.Module):
 
         if self.verbose:
             print(f"[ClioAgent] Provider: {self._provider_config.provider}")
-            print(f"[ClioAgent] Main/Planner model: {main_model}")
+            print(f"[ClioAgent] Main model: {main_model}")
             print(f"[ClioAgent] Expert model: {expert_model}")
 
-        # Bind the LM surface (``_main_lm`` / ``_planner_lm`` / ``_dspy_adapter``).
+        # Bind the LM surface (``_main_lm`` / ``_dspy_adapter``).
         self.rebind_lms(self._provider_config)
 
         # Chat Agent: Predict for conversational responses. This keeps the
@@ -312,14 +311,13 @@ class ClioAgent(dspy.Module):
     def rebind_lms(self, provider_config: LMProviderConfig) -> None:
         """(Re)build the LM-dependent surface from a provider config.
 
-        The single writer for ``_provider_config`` / ``_main_lm`` / ``_planner_lm`` /
-        ``_dspy_adapter``. Used by ``__init__`` and by the gact LM-bind hot-swap, so the
-        four fields are always rebuilt together (no partial/torn LM surface).
+        The single writer for ``_provider_config`` / ``_main_lm`` / ``_dspy_adapter``.
+        Used by ``__init__`` and by the gact LM-bind hot-swap, so the three fields are
+        always rebuilt together (no partial/torn LM surface).
         """
 
         self._provider_config = provider_config
         self._main_lm = create_lm(provider_config)
-        self._planner_lm = create_planner_lm(provider_config)
         self._dspy_adapter = create_chat_adapter(provider_config)
 
     def _discover_pack_servers(

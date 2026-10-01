@@ -139,10 +139,10 @@
           "metadata": {
             "signature_field_name": "answer",
             "stream_fallback": {
-              "category": "capability_gap",
-              "description": "The selected agent is not a DSPy module and cannot emit provider-token deltas.",
+              "category": "non_streamed_execution",
+              "description": "The answer arrived as one batch part: no live answer deltas this turn.",
               "live_streaming": false,
-              "reason": "agent_not_streamable",
+              "reason": "sync_execution_path",
               "recovery_actions": [
                 "continue_without_live_streaming",
                 "reconfigure"
@@ -165,10 +165,10 @@
         "message_id": "<msg#5>",
         "part_id": "<part#6>",
         "stream_fallback": {
-          "category": "capability_gap",
-          "description": "The selected agent is not a DSPy module and cannot emit provider-token deltas.",
+          "category": "non_streamed_execution",
+          "description": "The answer arrived as one batch part: no live answer deltas this turn.",
           "live_streaming": false,
-          "reason": "agent_not_streamable",
+          "reason": "sync_execution_path",
           "recovery_actions": [
             "continue_without_live_streaming",
             "reconfigure"
@@ -231,10 +231,10 @@
             "status": "resolved"
           },
           "stream_fallback": {
-            "category": "capability_gap",
-            "description": "The selected agent is not a DSPy module and cannot emit provider-token deltas.",
+            "category": "non_streamed_execution",
+            "description": "The answer arrived as one batch part: no live answer deltas this turn.",
             "live_streaming": false,
-            "reason": "agent_not_streamable",
+            "reason": "sync_execution_path",
             "recovery_actions": [
               "continue_without_live_streaming",
               "reconfigure"
@@ -315,10 +315,10 @@
       "metadata": {
         "signature_field_name": "answer",
         "stream_fallback": {
-          "category": "capability_gap",
-          "description": "The selected agent is not a DSPy module and cannot emit provider-token deltas.",
+          "category": "non_streamed_execution",
+          "description": "The answer arrived as one batch part: no live answer deltas this turn.",
           "live_streaming": false,
-          "reason": "agent_not_streamable",
+          "reason": "sync_execution_path",
           "recovery_actions": [
             "continue_without_live_streaming",
             "reconfigure"

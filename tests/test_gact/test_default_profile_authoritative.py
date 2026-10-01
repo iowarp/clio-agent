@@ -3,7 +3,7 @@
 Step 9 flips per-expert resolution ON for every path by making the per-app
 :class:`ProviderProfileStore` the ONE authoritative provider identity:
 
-* ``ClioAgent`` binds ``_main_lm`` / ``_planner_lm`` / ``_dspy_adapter`` off an
+* ``ClioAgent`` binds ``_main_lm`` / ``_dspy_adapter`` off an
   **injected** default-profile config (the gact server resolves it off the store)
   rather than reading the environment a SECOND time — the dropped boot
   env-handoff. ``provider_config=None`` still reads ``load_config_from_env`` (the

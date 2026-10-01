@@ -7,19 +7,24 @@ CLIO registers a LiteLLM `CustomLLM`
 (`src/clio_agent/providers/claude_code_litellm.py`) for the
 `claude_code/` model prefix. When `CLIO_LM_PROVIDER=claude_code`, DSPy
 constructs `dspy.LM(model="claude_code/<model>")`, LiteLLM routes that
-call to the custom handler, and the handler invokes `claude -p`.
+call to the custom handler, and the handler drives the Claude Agent SDK
+(`claude_agent_sdk`) through ONE pooled client per GACT session
+(`claude_code_sessions.py`). The SDK is the only transport (the old
+one-`claude -p`-per-call `exec` transport is deleted).
 
-Claude Code is used only as a model transport. The provider passes
-`--tools ""` so Claude Code's built-in agent tools are disabled, and a
-fresh `--session-id` for each call so Claude Code state does not bleed
-between CLIO turns. CLIO's planner, experts, and MCP tools remain the only
-tool execution path.
+Claude Code is used only as a model transport: its built-in agent tools are
+disabled, and CLIO's agent loop (`ClioReAct`) and MCP/tool gateway remain the
+only tool execution path.
 
-Claude Code does not expose a live token-streaming contract through this
-provider. GACT skips DSPy live streaming for `CLIO_LM_PROVIDER=claude_code`
-and marks completed text as `stream_source="batch"` with
-`stream_fallback.reason="provider_streaming_unsupported"` instead of
-emitting fake live deltas.
+**Stateful sessions.** Inside one agent-loop forward, the transport keeps one
+Claude Code session and sends only the newly appended messages on each
+following call (`claude_code_stateful.py`, sharing the delta detector in
+`stateful_common.py` with the Codex SDK transport); any other call is a full
+send under a fresh session, with a typed reset reason on the
+`provider.stateful` audit row. The session is released when the forward ends.
+
+**Streaming.** Text and thinking stream live (`astreaming`) through the LM
+token hooks, so answer deltas arrive with `stream_source="live"`.
 
 ## Setup
 

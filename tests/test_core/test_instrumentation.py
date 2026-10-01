@@ -1,8 +1,6 @@
-"""Tests for optimizer instrumentation decorator and MetricsAggregator.
+"""Tests for the optimizer MetricsAggregator and ARC variant records.
 
 Tests cover:
-    - instrumented_forward decorator logging on success and failure
-    - _extract_output from dspy.Prediction-like objects
     - MetricsAggregator.compute_expert_metrics
     - VariantRecord schema encode/decode round-trip
     - get_invocations_by_agent filtering
@@ -11,8 +9,6 @@ Tests cover:
 
 import tempfile
 import time
-
-import dspy
 
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.schema import (
@@ -23,114 +19,12 @@ from clio_agent.arc.schema import (
 )
 from clio_agent.optimizer.instrumentation import (
     MetricsAggregator,
-    _extract_output,
-    instrumented_forward,
 )
 
 
 def _make_arc(tmp_path: str) -> ARCMemory:
     """Create a fresh ARCMemory instance in a temp directory."""
     return ARCMemory(data_dir=tmp_path, cache_capacity=100)
-
-
-class FakeExpert:
-    """Fake expert for testing instrumented_forward."""
-
-    def forward(self, question: str, file_context: str = "") -> dspy.Prediction:
-        return dspy.Prediction(
-            analysis="This is a detailed analysis of HDF5 compression strategies.",
-            recommendations="Use gzip-6 for float64 data arrays.",
-        )
-
-
-class FailingExpert:
-    """Expert that always raises."""
-
-    def forward(self, question: str, file_context: str = "") -> dspy.Prediction:
-        raise RuntimeError("Expert crashed on purpose")
-
-
-def test_instrumented_forward_logs_success():
-    """Decorator logs Invocation with status=success on successful call."""
-    with tempfile.TemporaryDirectory() as tmp:
-        arc = _make_arc(tmp)
-        expert = FakeExpert()
-
-        wrapped = instrumented_forward(arc, "data")(expert.forward)
-        result = wrapped(question="How to optimize HDF5?")
-
-        assert result.analysis is not None
-        assert "gzip" in result.recommendations.lower()
-
-        # Verify invocation was stored
-        invocations = arc.get_invocations_by_agent("data")
-        assert len(invocations) == 1
-        inv = invocations[0]
-        assert inv.agent_id == "data"
-        assert inv.status == "success"
-        assert inv.tier == 2
-        assert inv.duration_ms > 0
-        assert "question" in inv.input
-        assert "analysis" in inv.output
-
-
-def test_instrumented_forward_logs_failure():
-    """Decorator logs Invocation with status=failure on exception."""
-    with tempfile.TemporaryDirectory() as tmp:
-        arc = _make_arc(tmp)
-        expert = FailingExpert()
-
-        wrapped = instrumented_forward(arc, "analysis")(expert.forward)
-
-        try:
-            wrapped(question="Analyze this data")
-        except RuntimeError:
-            pass  # expected
-
-        invocations = arc.get_invocations_by_agent("analysis")
-        assert len(invocations) == 1
-        inv = invocations[0]
-        assert inv.status == "failure"
-        assert "error" in inv.output
-        assert "crashed" in inv.output["error"].lower()
-
-
-def test_instrumented_forward_preserves_exception():
-    """Decorator re-raises the original exception."""
-    with tempfile.TemporaryDirectory() as tmp:
-        arc = _make_arc(tmp)
-        expert = FailingExpert()
-
-        wrapped = instrumented_forward(arc, "data")(expert.forward)
-
-        raised = False
-        try:
-            wrapped(question="test")
-        except RuntimeError as e:
-            raised = True
-            assert "crashed on purpose" in str(e)
-
-        assert raised
-
-
-def test_extract_output_from_prediction():
-    """_extract_output extracts string fields from dspy.Prediction."""
-    pred = dspy.Prediction(
-        analysis="Detailed analysis here",
-        recommendations="Use gzip compression",
-    )
-    output = _extract_output(pred)
-    assert "analysis" in output
-    assert "recommendations" in output
-    assert output["analysis"] == "Detailed analysis here"
-
-
-def test_extract_output_truncates():
-    """_extract_output truncates values to 500 chars."""
-    long_text = "x" * 1000
-    pred = dspy.Prediction(analysis=long_text)
-    output = _extract_output(pred)
-    assert len(output["analysis"]) == 500
 
 
 def test_metrics_aggregator_success_rate():
@@ -306,21 +200,3 @@ def test_store_and_get_variant_records():
         analysis_records = arc.get_variant_records("analysis")
         assert len(analysis_records) == 1
         assert analysis_records[0].variant_id == "analysis_v1"
-
-
-def test_extract_output_capture_failure_logs_reason(caplog):
-    """A prediction whose fields cannot be read warns instead of vanishing (#772)."""
-    import logging
-
-    class ExplodingPrediction:
-        def keys(self):
-            raise RuntimeError("fields exploded")
-
-    with caplog.at_level(logging.WARNING, logger="clio_agent.optimizer.instrumentation"):
-        output = _extract_output(ExplodingPrediction())
-
-    assert output == {}
-    matching = [
-        r for r in caplog.records if "reason=prediction_output_capture_failed" in r.getMessage()
-    ]
-    assert matching, "expected a structured prediction_output_capture_failed warning"

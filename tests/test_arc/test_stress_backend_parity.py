@@ -19,7 +19,7 @@ the dir, for clio-core because the in-process runtime is shared-memory and survi
 construction of a new client.
 
 clio-core cases are marked ``integration`` (need iowarp-core's in-process runtime). The
-real ``_RetainingReAct`` machinery is also exercised end-to-end against both backends
+real ``ClioReAct`` machinery is also exercised end-to-end against both backends
 so parity is asserted on the actual loop, not just the store API.
 
 Run (unit lane, local only):
@@ -534,18 +534,15 @@ def test_as_of_render_parity(tmp_path, clio_core_arc) -> None:
 
 
 # ---------------------------------------------------------------------------
-# End-to-end parity through the REAL _RetainingReAct loop
+# End-to-end parity through the REAL ClioReAct loop
 # ---------------------------------------------------------------------------
 
 
 def _scripted_lm() -> DummyLM:
     """A 2-iteration ReAct script: search then submit.
 
-    Speaks the ReActV2 contract (``next_thought`` + typed ``tool_calls``) —
-    the SHIPPED default loop since #901; ``make_react_agent`` builds whatever
-    ``app._retaining_react_cls()`` resolves, and the old classic-contract
-    script (``next_tool_name``/``next_tool_args``) failed the V2 adapter parse
-    so the loop never ran its tool (#914).
+    Speaks the ``ClioReAct`` step contract (``next_thought`` + typed
+    ``tool_calls``); ``make_react_agent`` builds the real loop.
     """
     return DummyLM(
         [
@@ -565,7 +562,7 @@ def _scripted_lm() -> DummyLM:
 
 
 def _run_real_loop(arc: ARCMemory, sid: str, scope: str) -> None:
-    """Drive the REAL _RetainingReAct loop so the live plane is written by the actual
+    """Drive the REAL ClioReAct loop so the live plane is written by the actual
     machinery (not direct append_segment calls)."""
     agent = make_react_agent()
     lm = _scripted_lm()
@@ -576,7 +573,7 @@ def _run_real_loop(arc: ARCMemory, sid: str, scope: str) -> None:
 
 @pytest.mark.integration
 def test_real_react_loop_parity(tmp_path, clio_core_arc) -> None:
-    """Drive the actual ``_RetainingReAct`` loop against both backends with the same
+    """Drive the actual ``ClioReAct`` loop against both backends with the same
     scripted LM; the trajectory it WROTE to the live plane must render identically.
 
     This proves parity on the real write path, including the loop's own

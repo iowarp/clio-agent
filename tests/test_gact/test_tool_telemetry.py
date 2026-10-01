@@ -126,19 +126,6 @@ def test_propose_edit_skips_failed_calls_and_dedups() -> None:
     assert [d["path"] for d in diffs] == ["b.py"]  # failed dropped, dup collapsed
 
 
-def test_propose_edit_falls_back_to_trajectory() -> None:
-    pred = _FakePred(
-        tools_called=[],
-        trajectory={
-            "tool_name_0": "fs_propose_edit",
-            "tool_args_0": {"path": "c.py"},
-            "observation_0": {"path": "c.py", "unified_diff": "@@ x @@", "new_content": "c"},
-        },
-    )
-    diffs = _propose_edit_diffs_from_pred(pred)
-    assert len(diffs) == 1 and diffs[0]["path"] == "c.py"
-
-
 @pytest.fixture(autouse=True)
 def _isolate_tool_runtime_globals():
     """Reset the retained app-less tool-runtime fallback around every test.

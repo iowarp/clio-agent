@@ -13,14 +13,14 @@ mirror -- its readers were unreachable) and the ``session_archives`` ledger snap
 the bound now, by construction, so there is nothing left to truncate defensively.
 
 ARC's live working set has meaning only INSIDE a turn (the per-turn reset in
-``reactv2_events.instrumented_forward``); a manual compact between turns has no scope
+``clio_react.ClioReAct``); a manual compact between turns has no scope
 to fold, so ``arc_status`` is a typed description of that reality
 (:data:`ARC_STATUSES`), never a fabricated "stored". A MANUAL compact issued WHILE a
 turn is running (``trigger="manual"`` during an open minter, see Placement below)
 still reports :data:`ARC_NO_ACTIVE_SCOPE`: it executes on the route's off-loop
 executor thread, whose contextvars carry no react scope even though one is live
 inside that turn's own forward call -- only the AUTO trigger, which runs from inside
-``instrumented_forward`` itself, ever observes a scope to fold.
+``ClioReAct`` itself, ever observes a scope to fold.
 
 Placement: a checkpoint is never inserted ahead of an in-flight assistant message (that
 would reorder ``reload`` ahead of ``live``, see design note in the tracking issue), so
@@ -302,7 +302,7 @@ def _fold_arc_working_set(app: Any, summary: str, turn_id: str) -> str:
     running still resolves :data:`ARC_NO_ACTIVE_SCOPE` here (see the module
     docstring): this function reads the CALLING THREAD's contextvars, and a manual
     compact runs on the route's off-loop executor thread, which carries none --
-    only the auto trigger (inside ``instrumented_forward`` itself) ever observes a
+    only the auto trigger (inside ``ClioReAct`` itself) ever observes a
     live scope to fold.
 
     CAN raise: ``arc.summarize_segments`` is a real store RPC and a store defect is
@@ -316,9 +316,9 @@ def _fold_arc_working_set(app: Any, summary: str, turn_id: str) -> str:
     if top_arc is None:
         return ARC_NOT_CONFIGURED
 
-    from clio_agent.gact.agents.reactv2_events import _arc_scope  # noqa: PLC0415
+    from clio_agent.gact.agents.clio_react_record import arc_scope  # noqa: PLC0415
 
-    arc, session, scope = _arc_scope()
+    arc, session, scope = arc_scope()
     if not scope or arc is None:
         return ARC_NO_ACTIVE_SCOPE
     live = arc.render_working_set(session, scope)
@@ -671,13 +671,13 @@ def maybe_autocompact() -> None:
     a silent no-op.
     """
 
-    from clio_agent.gact.agents.reactv2_events import _arc_scope  # noqa: PLC0415
+    from clio_agent.gact.agents.clio_react_record import arc_scope  # noqa: PLC0415
     from clio_agent.gact.runtime.context_tokens import (  # noqa: PLC0415
         _last_prompt_tokens,
         _session_autocompact_preferences,
     )
 
-    arc, session, scope = _arc_scope()
+    arc, session, scope = arc_scope()
     if arc is None:
         return
     app = _ctx.active_app()

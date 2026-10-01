@@ -78,7 +78,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from clio_agent.lm import dialect_wire
 from clio_agent.providers.capabilities import accepted_parameters
@@ -274,9 +274,7 @@ def _stop_sequences() -> list[str]:
     ]
 
 
-def build_request_kwargs(
-    config: "LMProviderConfig", *, role: Literal["main", "planner"] = "main"
-) -> dict[str, Any]:
+def build_request_kwargs(config: "LMProviderConfig") -> dict[str, Any]:
     """Build the LiteLLM/``dspy.LM`` kwargs for one request (Part 7).
 
     Args:
@@ -284,12 +282,9 @@ def build_request_kwargs(
             top_p/top_k/min_p/presence_penalty/thinking_level/thinking_budget/
             provider_options) are the "user's settings" input this function
             takes; everything else comes from the effective capabilities.
-        role: ``"main"`` uses ``config.temperature`` (an explicit user value,
-            else the model's recommended sampling for the current thinking
-            mode). ``"planner"`` uses ``config.planner_temperature``
-            unconditionally (item 1: "planner and router determinism may set
-            temperature explicitly") -- still gated on the effective
-            parameter set either way.
+            Temperature is ``config.temperature`` when the user set it, else
+            the model's recommended sampling for the current thinking mode --
+            gated on the effective parameter set either way.
 
     Returns:
         The kwargs dict to splat into ``dspy.LM(...)`` alongside ``model``/
@@ -306,17 +301,13 @@ def build_request_kwargs(
     recommended = _recommended_sampling(effective, thinking_on)
 
     # -- temperature (item 1) ------------------------------------------
-    temperature_candidate: float | None
-    if role == "planner":
-        temperature_candidate = config.planner_temperature
-    else:
-        temperature_candidate = (
-            config.temperature if config.temperature is not None else recommended.get("temperature")
-        )
+    temperature_candidate = (
+        config.temperature if config.temperature is not None else recommended.get("temperature")
+    )
     if temperature_candidate is not None and _accepts("temperature", accepted):
         extras["temperature"] = temperature_candidate
         sent_optional = True
-    elif role == "main" and config.temperature is not None:
+    elif config.temperature is not None:
         _log_not_sent(config, dialect, "temperature")
 
     # -- the rest of the request surface (items 1-3) ---------------------
@@ -328,7 +319,7 @@ def build_request_kwargs(
         if candidate is None:
             continue
         if not _accepts(field, accepted):
-            if user_value is not None and role == "main":
+            if user_value is not None:
                 _log_not_sent(config, dialect, field)
             continue
         dialect_wire.place_optional_param(extras, dialect, field, candidate)

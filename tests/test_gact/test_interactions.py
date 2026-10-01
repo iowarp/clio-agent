@@ -18,7 +18,7 @@ from clio_agent.gact.agent_initialization import mark_agent_ready, record_init_f
 from clio_agent.gact.agent_tasks import AgentTask
 from clio_agent.gact.agents.auto_tools import build_auto_react_tools
 from clio_agent.gact.agents.builders import _dynamic_agent_tools
-from clio_agent.gact.agents.reactv2 import retaining_reactv2_cls
+from clio_agent.gact.agents.clio_react import ClioReAct
 from clio_agent.gact.app import build_app
 from clio_agent.gact.ask_user_tool import arm_ask_user_deadline
 from clio_agent.gact.elicitation_bridge import (
@@ -171,7 +171,7 @@ def test_ask_user_success_ends_react_turn_before_another_model_step(tmp_path) ->
     session = app.state.sessions.create(workspace_id="ws_default", title="ask")
     agent_def = AgentDef(id="asker", title="Asker", tools=["ask_user"])
     ask_tool = _dynamic_agent_tools(SimpleNamespace(), agent_def, {})[0]
-    react = retaining_reactv2_cls()(
+    react = ClioReAct(
         "question -> answer",
         tools=[ask_tool],
         max_iters=0,

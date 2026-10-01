@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Any
 
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents import skill_runtime as _skill_runtime
-from clio_agent.gact.runtime.globals import _BlueprintTerminalWorkflowState
 from clio_agent.tools.result_errors import structured_tool_result_error
 
 if TYPE_CHECKING:
@@ -39,8 +38,6 @@ def recording_blueprint_tool(tool: Any) -> Any:
         try:
             result = tool(**kwargs)
         except BaseException as exc:  # noqa: BLE001
-            if isinstance(exc, _BlueprintTerminalWorkflowState):
-                raise
             if rows is not None:
                 rows.append(
                     {

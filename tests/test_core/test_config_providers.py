@@ -1,7 +1,7 @@
 """
 Tests for multi-provider LM configuration.
 
-Tests LMProviderConfig, load_config_from_env, create_lm, and create_planner_lm.
+Tests LMProviderConfig, load_config_from_env, and create_lm.
 """
 
 from pathlib import Path
@@ -14,7 +14,6 @@ from clio_agent import conf
 from clio_agent.config import (
     LMProviderConfig,
     create_lm,
-    create_planner_lm,
     load_config_from_env,
 )
 from tests.env_isolation import isolated_environ
@@ -104,61 +103,22 @@ class TestLMProviderConfig:
         config = LMProviderConfig()
         assert config.temperature is None
 
-    def test_default_planner_temperature(self):
-        """Default planner temperature should be 0.3."""
-        config = LMProviderConfig()
-        assert config.planner_temperature == 0.3
-        assert config.router_temperature == 0.3
-
-    def test_router_temperature_alias(self):
-        """Legacy router_temperature constructor arg should still configure the planner."""
-        config = LMProviderConfig(router_temperature=0.2)
-        assert config.planner_temperature == 0.2
-        assert config.router_temperature == 0.2
-
     def test_default_max_tokens(self):
         """Default max_tokens leaves the output budget to the provider (#1323)."""
         config = LMProviderConfig()
         assert config.max_tokens == 0
-        assert config.planner_max_tokens == 0
 
     def test_qwopus_profile_keeps_exact_inherited_cap(self):
         # model-capabilities brief 9.1: the qwen-name heuristic
         # (_uses_local_reasoning_model_profile / _apply_model_profile_defaults)
-        # that used to force planner_temperature/router_temperature to 0.0 for a
-        # "qwopus"-named model is deleted -- no per-model-name matching in code.
-        # planner_temperature keeps its own explicit default (0.3) regardless of
-        # the model name; only the inherited max_tokens cap is asserted here.
+        # is deleted -- no per-model-name matching in code, so the explicit
+        # max_tokens cap is kept exactly regardless of the model name.
         config = LMProviderConfig(
             provider="lm_studio",
             model="qwopus3.5-9b-v3",
             max_tokens=1024,
         )
         assert config.max_tokens == 1024
-        assert config.planner_temperature == 0.3
-        assert config.router_temperature == 0.3
-        assert config.planner_max_tokens == 1024
-
-    def test_qwopus_profile_respects_exact_explicit_planner_cap(self):
-        config = LMProviderConfig(
-            provider="lm_studio",
-            model="qwopus3.5-9b-v3",
-            max_tokens=1024,
-            planner_temperature=0.2,
-            planner_max_tokens=2048,
-        )
-        assert config.planner_temperature == 0.2
-        assert config.planner_max_tokens == 2048
-
-    def test_qwopus_profile_respects_explicit_planner_cap_above_floor(self):
-        """Explicit planner caps above the local reasoning floor should win."""
-        config = LMProviderConfig(
-            provider="lm_studio",
-            model="qwopus3.5-9b-v3",
-            max_tokens=1024,
-            planner_max_tokens=8192,
-        )
-        assert config.planner_max_tokens == 8192
 
     def test_default_environment(self):
         """Default environment should be 'dev'."""
@@ -299,40 +259,6 @@ class TestLoadConfigFromEnv:
             config = load_config_from_env()
             assert config.max_tokens == 8192
 
-    def test_env_planner_max_tokens_override(self):
-        """CLIO_LM_PLANNER_MAX_TOKENS should override planner max tokens."""
-        env = {"CLIO_LM_PLANNER_MAX_TOKENS": "2048"}
-        with isolated_environ(env):
-            config = load_config_from_env()
-            assert config.max_tokens == 0
-            assert config.planner_max_tokens == 2048
-
-    def test_env_qwopus_profile_without_manual_planner_tuning(self):
-        """No per-model-name planner profile any more (brief 9.1) -- planner_temperature
-        keeps its own explicit default regardless of the configured model's name."""
-        env = {
-            "CLIO_LM_PROVIDER": "lm_studio",
-            "CLIO_LM_MODEL": "qwopus3.5-9b-v3",
-            "CLIO_LM_MAX_TOKENS": "1024",
-        }
-        with isolated_environ(env):
-            config = load_config_from_env()
-            assert config.planner_temperature == 0.3
-            assert config.planner_max_tokens == 1024
-
-    def test_env_qwopus_profile_preserves_small_manual_planner_cap(self):
-        """Explicit positive planner caps are sent exactly."""
-        env = {
-            "CLIO_LM_PROVIDER": "lm_studio",
-            "CLIO_LM_MODEL": "qwopus3.5-9b-v3",
-            "CLIO_LM_MAX_TOKENS": "8192",
-            "CLIO_LM_PLANNER_MAX_TOKENS": "1024",
-        }
-        with isolated_environ(env):
-            config = load_config_from_env()
-            assert config.max_tokens == 8192
-            assert config.planner_max_tokens == 1024
-
     def test_env_environment(self):
         """CLIO_ENVIRONMENT should set environment field."""
         env = {"CLIO_ENVIRONMENT": "production"}
@@ -451,18 +377,6 @@ class TestLoadConfigFileLayerWins:
         self._write_user_config("runtime:\n  environment: production\n")
         config = load_config_from_env()
         assert config.environment == "production"
-
-    def test_router_temperature_legacy_env_alias_is_retired(self, monkeypatch):
-        # SABOTAGE twin (#985 move 1): the CLIO_LM_ROUTER_TEMPERATURE env alias was a
-        # pure fall-through to the migrated lm.planner_temperature and is now deleted.
-        # Setting it must be INERT — planner_temperature falls to its normal default,
-        # never 0.42, so the retired alias can never silently re-acquire a reader.
-        monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")
-        monkeypatch.setenv("CLIO_LM_MODEL", "plain/model")  # avoid a profile override
-        monkeypatch.delenv("CLIO_LM_PLANNER_TEMPERATURE", raising=False)
-        monkeypatch.setenv("CLIO_LM_ROUTER_TEMPERATURE", "0.42")
-        config = load_config_from_env()
-        assert config.planner_temperature == 0.3
 
     def test_api_key_stays_env_only(self, monkeypatch):
         # A config file must NOT be able to supply the secret API key.
@@ -712,49 +626,6 @@ class TestCreateLM:
             config = LMProviderConfig(provider=provider, model=model)
             lm = create_lm(config)
             assert isinstance(lm, dspy.LM), f"Failed for {provider}"
-
-
-class TestCreatePlannerLM:
-    """Test create_planner_lm function."""
-
-    def test_returns_dspy_lm(self):
-        """create_planner_lm should return a dspy.LM instance."""
-        config = LMProviderConfig(provider="lm_studio", model="loaded-model")
-        lm = create_planner_lm(config)
-        assert isinstance(lm, dspy.LM)
-
-    def test_uses_planner_temperature(self):
-        """Planner LM should use planner_temperature, not temperature."""
-        config = LMProviderConfig(
-            provider="lm_studio",
-            model="loaded-model",
-            temperature=1.0,
-            planner_temperature=0.3,
-        )
-        lm = create_planner_lm(config)
-        # The temperature is set on the LM kwargs
-        assert lm.kwargs.get("temperature") == 0.3
-
-    def test_uses_planner_max_tokens(self):
-        """Planner LM should use planner_max_tokens, not answer max_tokens."""
-        config = LMProviderConfig(
-            provider="lm_studio",
-            model="loaded-model",
-            max_tokens=1024,
-            planner_max_tokens=4096,
-        )
-        lm = create_planner_lm(config)
-        assert lm.kwargs.get("max_tokens") == 4096
-
-    def test_custom_planner_temperature(self):
-        """Planner LM should respect custom planner_temperature."""
-        config = LMProviderConfig(
-            provider="ollama",
-            model="llama3.2",
-            planner_temperature=0.1,
-        )
-        lm = create_planner_lm(config)
-        assert lm.kwargs.get("temperature") == 0.1
 
 
 class TestSetupDspy:

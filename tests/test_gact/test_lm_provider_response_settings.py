@@ -95,7 +95,6 @@ class _StubAgent:
     def rebind_lms(self, cfg: Any) -> None:
         self._provider_config = cfg
         self._main_lm = SimpleNamespace(model=cfg.model, provider=cfg.provider, history=[])
-        self._planner_lm = self._main_lm
         self._dspy_adapter = None
 
     def forward(self, *args: Any, **kwargs: Any) -> Any:

@@ -7,10 +7,8 @@ per-turn invocation corpus — but no optimization run is wired today. Every
 user-facing entry point (the gact ``/optimize`` command, the
 ``optimizer_command`` capability-gap row, the ``--tune`` CLI hook) returns
 the uniform structured not-implemented payload from
-:mod:`clio_agent.optimizer.stub`. The live pieces are the per-turn invocation
-collection (the ``instrumented_forward`` decorator persisting through
-``arc_memory.store_invocation``, the future training corpus) and
-:class:`MetricsAggregator`, which feeds ``/metrics``.
+:mod:`clio_agent.optimizer.stub`. The live piece is :class:`MetricsAggregator`,
+which feeds ``/metrics``.
 
 Provides instrumentation, training set generation, metric functions,
 SIMBA optimization runner, and variant management for expert modules.
@@ -18,7 +16,6 @@ SIMBA optimization runner, and variant management for expert modules.
 Exports:
     OPTIMIZER_NOT_IMPLEMENTED_REASON / OPTIMIZER_TRACKING_ISSUE /
         optimizer_not_implemented_payload: The uniform not-implemented stub
-    instrumented_forward: Decorator that logs expert invocations to ARC
     MetricsAggregator: Computes per-expert performance metrics from ARC
     TrainingSetGenerator: Converts ARC invocations to dspy.Example lists
     clio_expert_metric: Multi-signal metric function for SIMBA optimization
@@ -41,10 +38,7 @@ from clio_agent.optimizer.stub import (
 )
 
 if TYPE_CHECKING:
-    from clio_agent.optimizer.instrumentation import (
-        MetricsAggregator,
-        instrumented_forward,
-    )
+    from clio_agent.optimizer.instrumentation import MetricsAggregator
     from clio_agent.optimizer.runner import SIMBARunner
     from clio_agent.optimizer.trainer import TrainingSetGenerator, clio_expert_metric
     from clio_agent.optimizer.variants import VariantManager
@@ -54,7 +48,6 @@ __all__ = [
     "OPTIMIZER_NOT_IMPLEMENTED_REASON",
     "OPTIMIZER_TRACKING_ISSUE",
     "optimizer_not_implemented_payload",
-    "instrumented_forward",
     "MetricsAggregator",
     "TrainingSetGenerator",
     "clio_expert_metric",
@@ -63,7 +56,6 @@ __all__ = [
 ]
 
 _LAZY_EXPORTS: dict[str, str] = {
-    "instrumented_forward": "clio_agent.optimizer.instrumentation",
     "MetricsAggregator": "clio_agent.optimizer.instrumentation",
     "TrainingSetGenerator": "clio_agent.optimizer.trainer",
     "clio_expert_metric": "clio_agent.optimizer.trainer",

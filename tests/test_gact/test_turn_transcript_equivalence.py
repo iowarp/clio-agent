@@ -33,9 +33,11 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from tests._harness import emit_live_text, install_scripted_module
+
 # #948 S4b: default sessions run the blueprint react ``main``; route it to each
-# scenario's ``build_app(agent=...)`` host fake (scenarios that monkeypatch
-# ``_try_streamed_forward`` are unaffected).
+# scenario's ``build_app(agent=...)`` host fake (the streamed scenarios install
+# their own scripted module, which streams through the LM token hooks).
 pytestmark = pytest.mark.usefixtures("host_agent_executor")
 
 GOLDEN_DIR = Path(__file__).parent / "goldens" / "turn_transcript_pr1"
@@ -244,12 +246,11 @@ def _build(tmp_path: Path, name: str, agent: Any) -> Any:
 def scenario_streamed_text_turn(tmp_path: Path, monkeypatch: Any) -> dict[str, Any]:
     """A live-streamed plain text answer: added -> deltas -> completed."""
 
-    async def fake_streamed_forward(
-        app: Any, enriched_text: str, sid: str, emit_chunk: Any, **kwargs: Any
-    ) -> Any:
-        await emit_chunk("Hello ")
-        await emit_chunk("streamed ")
-        await emit_chunk("world.")
+    def streamed_forward(**kwargs: Any) -> Any:
+        del kwargs
+        emit_live_text("Hello ")
+        emit_live_text("streamed ")
+        emit_live_text("world.")
         return _Pred(
             answer="Hello streamed world.",
             selected_expert="code_expert",
@@ -258,7 +259,7 @@ def scenario_streamed_text_turn(tmp_path: Path, monkeypatch: Any) -> dict[str, A
             route_reason="planner selected code expert",
         )
 
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    install_scripted_module(monkeypatch, streamed_forward)
     app = _build(tmp_path, "streamed", _PlainAgent("unused"))
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "s"}).json()["id"]
@@ -284,14 +285,13 @@ def scenario_tool_call_turn(tmp_path: Path, monkeypatch: Any) -> dict[str, Any]:
 def scenario_multi_part_thinking_turn(tmp_path: Path, monkeypatch: Any) -> dict[str, Any]:
     """Provider thinking + reasoning + answer: three live parts, split by field."""
 
-    async def fake_streamed_forward(
-        app: Any, enriched_text: str, sid: str, emit_chunk: Any, **kwargs: Any
-    ) -> Any:
-        await emit_chunk("Weighing the options...", None, "provider_thinking:anthropic")
-        await emit_chunk("I should answer directly. ", None, "reasoning")
-        await emit_chunk("Because it is simple.", None, "reasoning")
-        await emit_chunk("The answer ", None, "answer")
-        await emit_chunk("is 42.", None, "answer")
+    def streamed_forward(**kwargs: Any) -> Any:
+        del kwargs
+        emit_live_text("Weighing the options...", "", "provider_thinking:anthropic")
+        emit_live_text("I should answer directly. ", "", "reasoning")
+        emit_live_text("Because it is simple.", "", "reasoning")
+        emit_live_text("The answer ", "", "answer")
+        emit_live_text("is 42.", "", "answer")
         return _Pred(
             answer="The answer is 42.",
             selected_expert="code_expert",
@@ -300,7 +300,7 @@ def scenario_multi_part_thinking_turn(tmp_path: Path, monkeypatch: Any) -> dict[
             route_reason="planner selected code expert",
         )
 
-    monkeypatch.setattr("clio_agent.gact.app._try_streamed_forward", fake_streamed_forward)
+    install_scripted_module(monkeypatch, streamed_forward)
     app = _build(tmp_path, "thinking", _PlainAgent("unused"))
     with TestClient(app) as client:
         sid = client.post("/v1/sessions", json={"title": "th"}).json()["id"]

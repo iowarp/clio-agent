@@ -5,7 +5,7 @@ The legacy LM-Studio-specific dataclasses (LMStudioConfig / RouterLMConfig
 / ReasonerLMConfig) and their configure_dspy_*_lm_studio factories were
 removed alongside the provider registry refactor (umbrella iowarp/clio-
 agent#48, sprint #50). The canonical surface is now
-LMProviderConfig + create_lm() / create_planner_lm() driven by the
+LMProviderConfig + create_lm() driven by the
 PROVIDER_DEFAULTS dict derived from clio_agent.providers.catalog.
 """
 
@@ -105,26 +105,6 @@ class TestSelectModels:
         """Embedding-only models are not usable for chat/planner turns."""
         with pytest.raises(ValueError, match="only embedding/non-chat models"):
             select_models_for_agents(["text-embedding-nomic-embed-text-v1.5"])
-
-
-def test_lenient_chat_adapter_is_streamable() -> None:
-    """The lenient ChatAdapter subclass must pass DSPy's streaming allowlist.
-
-    DSPy gates streaming on ``settings.adapter.__class__.__name__`` (a STRING) being
-    in {ChatAdapter, XMLAdapter, JSONAdapter} — NOT isinstance. Our subclass IS a
-    ChatAdapter but a non-allowlisted name made DSPy raise "Unsupported adapter for
-    streaming: LenientChatAdapter", which surfaced as nemotron/Sophia's TaskGroup
-    "live streaming failed before emitting output". Regression: it must report a
-    name DSPy accepts while staying a ChatAdapter with recovery intact.
-    """
-    import dspy
-
-    from clio_agent.config import _lenient_chat_adapter_cls
-
-    cls = _lenient_chat_adapter_cls()
-    inst = cls(use_json_adapter_fallback=False)
-    assert inst.__class__.__name__ in {"ChatAdapter", "XMLAdapter", "JSONAdapter"}
-    assert isinstance(inst, dspy.ChatAdapter)
 
 
 def test_lenient_chat_adapter_restores_escaped_section_boundary() -> None:

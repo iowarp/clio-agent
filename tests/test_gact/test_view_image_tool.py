@@ -11,8 +11,8 @@ import dspy
 import pytest
 from dspy.adapters.types.tool import ToolCallResults, ToolCalls
 
+from clio_agent.gact.agents.clio_react import ClioReAct
 from clio_agent.gact.agents.declared_native_tools import resolve_declared_native_tools
-from clio_agent.gact.agents.reactv2 import _RetainingReActV2
 from clio_agent.gact.types import AgentDef
 from clio_agent.gact.view_image_tool import (
     VIEW_IMAGE_DESCRIPTOR_TYPE,
@@ -116,7 +116,7 @@ def test_view_image_revalidates_hash_before_provider_delivery(tmp_path: Path) ->
 )
 def test_every_adapter_emits_a_real_image_content_block(tmp_path: Path, adapter_class: Any) -> None:
     tool, result = _descriptor(tmp_path)
-    react = _RetainingReActV2(cast(Any, "question -> answer"), tools=[tool])
+    react = ClioReAct(cast(Any, "question -> answer"), tools=[tool])
     adapter = adapter_class()()
     inputs = {
         "question": "What is visible?",
