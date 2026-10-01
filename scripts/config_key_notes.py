@@ -30,7 +30,7 @@ SECTIONS: list[tuple[str, tuple[str, ...], str]] = [
     ),
     (
         "GACT server",
-        ("gact", "a2ui", "autocompact", "permissions", "hooks", "transcript"),
+        ("gact", "a2ui", "autocompact", "compaction", "permissions", "hooks", "transcript"),
         "The GACT HTTP/SSE server: ledgers, the transcript file copy, auth, hooks, A2UI payload "
         "bounds and context auto-compaction.",
     ),
@@ -299,6 +299,18 @@ KEY_NOTES: dict[str, str] = {
     "autocompact.pct": (
         "Fraction (0-1) of the model's context window that triggers proactive auto-compaction; "
         "lower to compact earlier, raise to accumulate more."
+    ),
+    "compaction.keep.head": (
+        "Whether a compaction keeps the current user question verbatim after the summary "
+        "(mid-turn); turn off to summarize it too."
+    ),
+    "compaction.keep.last_turns": (
+        "Whole earlier turns a compaction keeps verbatim after the summary (0 = none); raise "
+        "to keep recent turns exact at the cost of a larger context."
+    ),
+    "compaction.keep.last_steps": (
+        "ReAct steps of the latest turn a compaction keeps verbatim after the summary "
+        "(0 = none); raise to keep the newest steps exact."
     ),
     "debug.level": (
         'Log verbosity ("off"/"low"/"med"/"high", default "low"); raise to "high" for '

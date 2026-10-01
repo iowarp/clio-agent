@@ -465,6 +465,21 @@ a2ui.max_string_chars: 16384
 # compaction; lower to compact earlier, raise to accumulate more.
 autocompact.pct: "0.85"
 
+# CLIO_COMPACTION_KEEP_HEAD  (bool)  <- src/clio_agent/gact/compaction_policy.py
+# Whether a compaction keeps the current user question verbatim after the
+# summary (mid-turn); turn off to summarize it too.
+compaction.keep.head: true
+
+# CLIO_COMPACTION_KEEP_LAST_STEPS  (int)  <- src/clio_agent/gact/compaction_policy.py
+# ReAct steps of the latest turn a compaction keeps verbatim after the
+# summary (0 = none); raise to keep the newest steps exact.
+compaction.keep.last_steps: 0
+
+# CLIO_COMPACTION_KEEP_LAST_TURNS  (int)  <- src/clio_agent/gact/compaction_policy.py
+# Whole earlier turns a compaction keeps verbatim after the summary (0 =
+# none); raise to keep recent turns exact at the cost of a larger context.
+compaction.keep.last_turns: 0
+
 # CLIO_GACT_ALLOWED_HOSTS  (str)  <- src/clio_agent/gact/cors.py
 # Comma-separated host names (no ports) a request without a bearer token may
 # address, besides localhost/127.0.0.1/[::1]; set for a LAN or container
