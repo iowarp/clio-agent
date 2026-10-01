@@ -26,12 +26,14 @@ logger = logging.getLogger(__name__)
 
 
 def _plane() -> tuple[Any, str, str]:
-    """``(arc, session, base_scope)`` for the active agent; clio-core is required."""
+    """``(plane, session, base_scope)`` for the active agent: its clio-core ARC, or the
+    History mode plane; no plane is :class:`NoContextStoreError`."""
+    from clio_agent.arc.history_plane import plane_for  # noqa: PLC0415
     from clio_agent.gact.agents.clio_react import NoContextStoreError  # noqa: PLC0415
 
     app = _ctx.active_app()
     base = _ctx.active_react_scope()
-    arc = getattr(getattr(app, "state", None), "arc", None) if (app is not None and base) else None
+    arc = plane_for(app) if (app is not None and base) else None
     if arc is None:
         raise NoContextStoreError()
     return arc, _ctx.active_react_session(), base

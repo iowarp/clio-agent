@@ -944,18 +944,12 @@ class ClioAgent(dspy.Module):
 
     @staticmethod
     def _arc_for_mode(arc: ARCMemory | None, *, data_dir: str) -> ARCMemory | None:
-        """The injected ARC, else a new one on clio-core (the only store: a typed
-        ``ArcStoreUnavailableError`` when it cannot be brought up), else ``None`` in the
-        loud History mode (the platform has no clio-core binding)."""
-        if arc is not None:
+        """The injected ARC, else a new clio-core one (typed error if it cannot come up),
+        else ``None`` in the loud History mode (no clio-core binding on the platform)."""
+        if arc is not None or history_mode.resolve().is_history:
             return arc
-        if history_mode.resolve().is_history:
-            return None
-        return ARCMemory(
-            data_dir=f"{data_dir}/arc",
-            cache_capacity=1000,
-            store=make_arc_store(data_dir=f"{data_dir}/arc"),
-        )
+        store = make_arc_store(data_dir=f"{data_dir}/arc")
+        return ARCMemory(data_dir=f"{data_dir}/arc", cache_capacity=1000, store=store)
 
     def get_arc_stats(self) -> Dict[str, Any]:
         """Get ARC memory statistics (typed ``history_mode_unsupported`` in History mode)."""

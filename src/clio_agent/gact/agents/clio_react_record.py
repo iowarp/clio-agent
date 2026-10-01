@@ -91,16 +91,18 @@ class ContextWriteError(ClioError):
 def arc_scope() -> tuple[Any, str, str]:
     """Resolve ``(ARCMemory, session_id, scope)`` for the live plane, or ``(None, '', '')``.
 
-    ``arc`` is ``None`` whenever there is no app, no ARC, or no react scope; the loop
-    then fails typed (``NoContextStoreError``). The in-process variant try index is
-    folded into the ARC key only (#953).
+    ``arc`` is the app's clio-core ARC, or its in-memory ``HistoryPlane`` in the loud
+    History mode; ``None`` whenever there is no app, no plane, or no react scope -- the
+    loop then fails typed (``NoContextStoreError``). The in-process variant try index
+    is folded into the ARC key only (#953).
     """
+    from clio_agent.arc.history_plane import plane_for  # noqa: PLC0415
     from clio_agent.gact import context as _ctx  # noqa: PLC0415
 
     app = _ctx.active_app()
     scope = _ctx.run_keyed_scope(_ctx.active_react_scope())
     session = _ctx.active_react_session()
-    arc = getattr(getattr(app, "state", None), "arc", None) if (app is not None and scope) else None
+    arc = plane_for(app) if (app is not None and scope) else None
     if arc is None:
         return None, "", ""
     return arc, session, scope

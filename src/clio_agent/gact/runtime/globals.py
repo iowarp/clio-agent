@@ -10,8 +10,8 @@ It owns, as the single source of truth:
 * **The ARC singleton + accessors.** ``_PROCESS_ARC`` is the ONE
   :class:`~clio_agent.arc.memory.ARCMemory` per process (ARC is a per-clio-agent
   keystone). ``_set_app_arc`` publishes it and wires the durable-trace op-logger
-  + highway-derive sink; ``_process_arc`` lazily constructs it once;
-  ``_emit_arc_op`` logs an applied ARC context op to the durable Trace.
+  + highway-derive sink (:func:`clio_agent.gact.server_boot.process_arc` constructs it
+  once); ``_emit_arc_op`` logs an applied ARC context op to the durable Trace.
 * **The semantic-event FUNNEL.** ``_build_semantic_event`` /
   ``_emit_semantic_event`` (+ the react-step / expert-lifecycle wrappers) are the
   60+-callsite choke point through which EVERY semantic event enters ARC, the
@@ -41,6 +41,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Iterator, Optional
 
+from clio_agent.arc import history_mode
 from clio_agent.gact import context as _ctx
 from clio_agent.gact.events import Event
 from clio_agent.gact.semantic_events import DEFAULT_DETAIL_LEVEL, SemanticEvent
@@ -402,6 +403,12 @@ def _emit_semantic_event(
     sink = getattr(state, "semantic_event_sink", None)
     if sink is None:
         return {}
+    arc = getattr(state, "arc", None) or _PROCESS_ARC
+    history = arc is None and history_mode.active()
+    if history:
+        # The loud History mode (no clio-core on this platform): there is no record to
+        # derive from, so the highway is fed directly and every event says so.
+        payload = {**(payload or {}), "context_mode": "history"}
     event = _build_semantic_event(
         app,
         sid,
@@ -425,7 +432,9 @@ def _emit_semantic_event(
     # the process singleton (a deep/threaded emit context may not carry the app). If it is
     # STILL not reachable, FAIL LOUD — never silently fall back to sink.emit, which would
     # feed the trace/UI an event ARC never saw (a hidden split: trace has data ARC doesn't).
-    arc = getattr(state, "arc", None) or _PROCESS_ARC
+    # The one exception is the History mode above, decided once and marked on each event.
+    if history:
+        return sink.emit(event)
     rec = getattr(arc, "record_semantic_event", None)
     if rec is None:
         msg = (
@@ -748,35 +757,6 @@ def _set_app_arc(app: "FastAPI", arc: Any) -> None:
             )
         except Exception as exc:  # noqa: BLE001 - highway wiring is best-effort
             trace.event("ARC-AS-SOURCE", "arc highway-sink wiring failed: %r", exc)
-
-
-def _process_arc(app: "FastAPI") -> Any:
-    """Return the ONE ARCMemory for this clio-agent, constructing it once on first use.
-
-    ARC is a per-clio-agent keystone: exactly one per process (one ARC per clio-agent,
-    N clio-agents per node, one clio-core per node). The gact server OWNS that single
-    ARC's lifecycle so that every agent build/bind reuses the SAME instance — the agent
-    no longer mints a fresh ARC per build (which stranded already-recorded events on an
-    orphaned ARC while the shared durable trace kept them: the trace ⊋ ARC split).
-
-    Stored on ``app.state.arc`` via ``_set_app_arc`` so a single, fail-loud path reaches
-    it; rebuilt only if the app has none yet (first build). ``None`` in History mode
-    (:mod:`clio_agent.arc.history_mode`): the platform cannot run clio-core.
-    """
-    arc = getattr(getattr(app, "state", None), "arc", None)
-    if arc is not None:
-        return arc
-    from clio_agent.arc import history_mode  # noqa: PLC0415
-
-    if history_mode.resolve().is_history:
-        return None  # the platform has no clio-core: the loud History mode, decided once
-    from clio_agent.arc.memory import ARCMemory  # noqa: PLC0415
-    from clio_agent.arc.storage import make_arc_store  # noqa: PLC0415
-
-    data_dir = ".clio/agent/arc"
-    arc = ARCMemory(data_dir=data_dir, cache_capacity=1000, store=make_arc_store(data_dir=data_dir))
-    _set_app_arc(app, arc)
-    return arc
 
 
 def _coerce_error_info(value: Any) -> Optional["ErrorInfo"]:

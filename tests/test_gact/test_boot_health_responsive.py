@@ -89,7 +89,7 @@ def test_health_answers_within_a_second_while_clio_core_attach_stalls(
     slow_clio_core, monkeypatch, tmp_path: Path
 ) -> None:
     entered, released, releases = slow_clio_core
-    monkeypatch.chdir(tmp_path)  # _process_arc's cwd-relative data dir
+    monkeypatch.chdir(tmp_path)  # process_arc's cwd-relative data dir
     # An LM Studio that is not there: a user-selected lm_studio with nothing listening.
     monkeypatch.setenv("CLIO_LM_PROVIDER", "lm_studio")
     monkeypatch.setenv("CLIO_LM_API_BASE", f"http://127.0.0.1:{_free_port()}/v1")

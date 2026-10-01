@@ -55,7 +55,7 @@ def test_the_binding_present_never_enters_history_after_a_failed_build(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A present binding whose build fails is a typed failure, never History mode."""
-    from clio_agent.gact.runtime import globals as runtime_globals
+    from clio_agent.gact import server_boot
 
     def _refused(**_kw: object) -> object:
         raise ArcStoreUnavailableError(error=RuntimeError("never bound port"), config_path="x")
@@ -64,14 +64,14 @@ def test_the_binding_present_never_enters_history_after_a_failed_build(
     app = SimpleNamespace(state=SimpleNamespace(arc=None))
 
     with pytest.raises(ArcStoreUnavailableError):
-        runtime_globals._process_arc(app)
+        server_boot.process_arc(app)
     assert history_mode.active() is False
 
 
 @pytest.mark.history_mode
 @pytest.mark.usefixtures("no_binding")
 def test_the_process_arc_is_none_in_history_mode(monkeypatch: pytest.MonkeyPatch) -> None:
-    from clio_agent.gact.runtime import globals as runtime_globals
+    from clio_agent.gact import server_boot
 
     def _must_not_build(**_kw: object) -> object:
         raise AssertionError("History mode never builds a clio-core store")
@@ -79,7 +79,7 @@ def test_the_process_arc_is_none_in_history_mode(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr("clio_agent.arc.storage.make_arc_store", _must_not_build)
     app = SimpleNamespace(state=SimpleNamespace(arc=None))
 
-    assert runtime_globals._process_arc(app) is None
+    assert server_boot.process_arc(app) is None
 
 
 @pytest.mark.history_mode

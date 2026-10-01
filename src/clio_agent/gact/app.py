@@ -115,7 +115,6 @@ from clio_agent.gact.runtime.globals import (  # noqa: E402, F401
     _new_part_id,
     _new_question_id,
     _not_implemented,
-    _process_arc,
     _resolve_tool_session,
     _semantic_trace_id,
     _session_agent_id,
