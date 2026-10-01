@@ -995,16 +995,54 @@ directly each can change what the model sees; each fix lands with a failing-firs
    - the staged checkpoint lives only in memory, and a failed flush is audited and lost;
    - auto-compaction never fires and audits nothing when real token counts are missing;
    - an estimated prompt usage is used as if it were real.
+   - Done (`3c615186`):
+     - an empty LM summary is a typed `empty_summary`, applied before any fold;
+     - "already staged" is checked before the LM call and the fold;
+     - a failed automatic compaction fails the turn typed (`AutoCompactionFailedError`,
+       nothing folded);
+     - a missing token count is audited.
+   - **Owner decision needed:** a failed flush of a staged checkpoint is still audited and the
+     checkpoint dropped. The #1339 review (F1) chose this so a turn whose answer is already
+     persisted never fails. The fold is in clio-core, but the transcript loses its compaction
+     marker, so the UI does not show the compaction and a rollback cannot find it. The
+     options are to fail the turn after its answer, or to keep the entry staged and surface
+     it until it lands.
+   - Not yet: using an estimated prompt usage (`source: estimated`) as if it were real.
 5. *Context silently rebuilt from the transcript file:*
    - `carry_over` re-seeds any scope whose `list_segments` comes back empty, and a missing
      clio-core record reads as empty (`if raw else []`);
    - `materialize_ledger` repairs a divergent atom lane from the file, so the file wins over
      clio-core;
    - malformed ledger rows are skipped.
+
+   Read again on 2026-10-01: `carry_over` is by design. It seeds a scope only when clio-core
+   holds no records for it (a new scope, an agent switch, a variant try over an empty base).
+   A failed read now raises, and release no longer erases lanes.
+
+   The real defect is the *two transcript records* in clio-core mode, the file ledger and
+   clio-core's `_events/m` atom lane:
+   - the file is written synchronously, the atoms off the loop;
+   - when they diverge, `_repair_divergent_lane` re-mints the atoms from the file, so the
+     file wins.
+
+   Sub-plan (replace, don't keep both):
+   - In clio-core mode the atom lane is the transcript. Appends mint synchronously, off the
+     event loop, as the store requires. The file ledger is written only in History mode,
+     where it is the transcript.
+   - The repair and backfill paths are deleted, except a one-time migration of pre-atom
+     sessions, which is typed and audited.
+   - Malformed rows fail typed.
 6. *Highway wiring:*
    - the trace writer drops events on write errors;
    - `_set_app_arc` and `_wire_arc_op_logger` swallow wiring failures;
    - `op_logger` failures are swallowed with "op still applied".
+
+   Done (`b33e6e1b`): the wiring raises, and a trace write failure is kept and raised typed
+   (`TraceWriteError`) by the next emit or flush. Still open: `op_logger` failures after an
+   applied op ("op still applied").
+
+Items 1–3 done: `c85ab687` (Claude Code CLI compaction), `2ac785b7` (stale ids), `dcea7e43`
+(strict fold).
 
 ### History mode sub-plan (the one sanctioned fallback)
 
