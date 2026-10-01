@@ -187,53 +187,14 @@ def test_context_preferences_reject_invalid_threshold(tmp_path):
     assert response.status_code == 422
 
 
-def test_post_context_compact_nothing_409(tmp_path):
-    arc = ARCMemory(data_dir=str(tmp_path / "arc"))
-    client = _client(tmp_path, arc)
-    sid = _session(client)
-    r = client.post(f"/v1/sessions/{sid}/context/compact", params={"scope": SCOPE})
-    assert r.status_code == 409
-
-
-def test_post_context_compact_no_summary_503(tmp_path, monkeypatch):
-    import clio_agent.gact.agents.runtime as runtime_mod
-
-    monkeypatch.setattr(runtime_mod, "_summarize_segments_llm", lambda segs, **kwargs: "")
+def test_the_scope_compact_route_is_gone(tmp_path):
+    """Compaction is ONE operation (``POST /v1/sessions/{sid}/compact?scope=``)."""
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
     client = _client(tmp_path, arc)
     sid = _session(client)
     arc.append_segment(sid, SCOPE, "thought", {"text": "T0"}, step=0, token_count=5)
     r = client.post(f"/v1/sessions/{sid}/context/compact", params={"scope": SCOPE})
-    assert r.status_code == 503
-
-
-def test_post_context_compact_summarizes_working_set(tmp_path, monkeypatch):
-    """Manual compaction collapses the live working-set into one summary segment via the
-    sanctioned summarize op (the same summarizer the auto-compactor uses)."""
-    import clio_agent.gact.agents.runtime as runtime_mod
-
-    monkeypatch.setattr(
-        runtime_mod, "_summarize_segments_llm", lambda segs, **kwargs: "COMPACT_SUMMARY"
-    )
-    arc = ARCMemory(data_dir=str(tmp_path / "arc"))
-    client = _client(tmp_path, arc)
-    sid = _session(client)
-    arc.append_segment(sid, SCOPE, "thought", {"text": "T0"}, step=0, token_count=5)
-    arc.append_segment(sid, SCOPE, "tool_call", {"id": "call_0", "name": "a", "args": {}}, step=0)
-    arc.append_segment(
-        sid,
-        SCOPE,
-        "observation",
-        {"call_id": "call_0", "text": "O0", "is_error": False},
-        step=0,
-        token_count=10,
-    )
-
-    r = client.post(f"/v1/sessions/{sid}/context/compact", params={"scope": SCOPE})
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["live_block_count"] == 1  # three segments -> one summary
-    assert "COMPACT_SUMMARY" in body["render_text"]
+    assert r.status_code in {404, 405}
 
 
 def test_get_context_state_unknown_session_404(tmp_path):

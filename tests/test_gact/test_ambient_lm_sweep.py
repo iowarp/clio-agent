@@ -253,62 +253,6 @@ def test_estimate_text_tokens_ambient_records(boot_default: _LM, session_ctx: An
 
 
 # --------------------------------------------------------------------------- #
-# swept call site: agents.runtime._summarize_segments_llm
-# --------------------------------------------------------------------------- #
-
-
-def _seg(text: str) -> Any:
-    return SimpleNamespace(kind="thought", content={"text": text})
-
-
-def test_summarize_bound_uses_bound_lm_no_record(
-    monkeypatch: pytest.MonkeyPatch, session_ctx: Any
-) -> None:
-    from clio_agent.gact.agents import runtime as agents_runtime
-
-    captured: dict[str, Any] = {}
-
-    class _FakePredict:
-        def __init__(self, *_a: Any, **_k: Any) -> None:
-            pass
-
-        def __call__(self, *, prior_context: str, lm: Any = None) -> Any:
-            captured["lm"] = lm
-            return SimpleNamespace(summary="COMPACTED")
-
-    monkeypatch.setattr(dspy, "Predict", _FakePredict)
-    bound = _LM("bound")
-    with dspy.context(lm=bound):
-        out = agents_runtime._summarize_segments_llm([_seg("a"), _seg("b")])
-    assert out == "COMPACTED"
-    assert captured["lm"] is bound  # ran on the bound profile LM explicitly
-    assert ambient_lm_fallbacks(session_ctx) == {}
-
-
-def test_summarize_ambient_records_and_passes_boot_default(
-    monkeypatch: pytest.MonkeyPatch, boot_default: _LM, session_ctx: Any
-) -> None:
-    from clio_agent.gact.agents import runtime as agents_runtime
-
-    captured: dict[str, Any] = {}
-
-    class _FakePredict:
-        def __init__(self, *_a: Any, **_k: Any) -> None:
-            pass
-
-        def __call__(self, *, prior_context: str, lm: Any = None) -> Any:
-            captured["lm"] = lm
-            return SimpleNamespace(summary="OK")
-
-    monkeypatch.setattr(dspy, "Predict", _FakePredict)
-    out = agents_runtime._summarize_segments_llm([_seg("a")])
-    assert out == "OK"
-    assert captured["lm"] is boot_default
-    sites = [e["message"] for e in ambient_lm_fallbacks(session_ctx)["sess-1"]]
-    assert "agents.runtime._summarize_segments_llm" in sites
-
-
-# --------------------------------------------------------------------------- #
 # swept call site: app._current_lm_model_id
 # --------------------------------------------------------------------------- #
 

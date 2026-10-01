@@ -14,20 +14,17 @@ inspect/compact context) read and mutate it through this surface:
 * ``POST /v1/sessions/{sid}/context/ops`` -- apply ONE live-context operation
   (append/insert/delete/summarize); a validated passthrough to the sanctioned
   ``apply_segment_op`` seam (clio carries the op, the caller chooses it).
-* ``POST /v1/sessions/{sid}/context/compact`` -- LLM-summarize a scope's live
-  working set NOW into one summary segment (same summarizer the in-turn
-  auto-compactor uses), then return the fresh state.
 * ``GET /v1/sessions/{sid}/context/search`` -- semantic discovery over a
   session's scopes ("which scope knows about X").
 
 Everything these handlers need is a module-level leaf import: the segment-token
 arithmetic + window resolution live in :mod:`clio_agent.gact.runtime.context_tokens`,
-the live-summary call in :mod:`clio_agent.gact.agents.runtime`, the compartment
+the compartment
 metadata in :mod:`clio_agent.gact.workspace_scope`, and the session-not-found
 envelope in :mod:`clio_agent.gact.app`'s leaf helper (re-exported here as a
 module import, NOT a ``build_app`` closure). The ARC-unavailable ``503`` pattern
 and the ``_build_context_state`` / ``_context_window_for_state`` helpers shared
-by the state + compact routes are concern-private and live here. The module
+by the state routes are concern-private and live here. The module
 imports only leaf packages and never loads :mod:`clio_agent.gact.app`.
 """
 
@@ -41,12 +38,10 @@ from fastapi import FastAPI, HTTPException
 
 from clio_agent.arc import history_mode
 from clio_agent.arc.segment_ids import StaleSegmentIdError
-from clio_agent.gact.agents import runtime as agents_runtime
 from clio_agent.gact.context_view import context_messages
 from clio_agent.gact.off_loop import run_off_loop
 from clio_agent.gact.runtime.context_tokens import (
     _bucket_context_categories,
-    _estimate_text_tokens,
     _resolve_expert_context_window,
     _session_autocompact_preferences,
 )
@@ -76,8 +71,8 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
     reach the live ARC + sessions through ``app.state``; this concern needs no
     cross-concern seam from ``deps`` (it is accepted to match the uniform
     ``register_<concern>_routes(app, deps)`` factory signature). The
-    ARC-unavailable ``503`` envelope and the state-assembly helpers shared by the
-    state + compact routes are defined here as closures over ``app``.
+    ARC-unavailable ``503`` envelope and the state-assembly helpers are defined here
+    as closures over ``app``. Compaction is ``POST /v1/sessions/{sid}/compact``.
     """
 
     def _session_not_found(sid: str) -> HTTPException:
@@ -167,8 +162,7 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
     def _build_context_state(
         sid: str, scope: str, as_of: int | None = None
     ) -> ContextStateResponse:
-        """Assemble the ARC live-context-plane view for a (session, scope). Shared by the
-        GET state endpoint and the POST compact endpoint so both report identically.
+        """Assemble the ARC live-context-plane view for a (session, scope).
         Combines the segment-store attribution (``live_tokens`` / editable ``categories``)
         with the model-grounded reading (``used_tokens`` from the last LM call) + the
         auto-compaction threshold."""
@@ -398,70 +392,6 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
             tokens_by_kind=tokens_by_kind,
             pct_used=(live_tokens / window) if window else None,
         )
-
-    @app.post("/v1/sessions/{sid}/context/compact", response_model=ContextStateResponse)
-    async def post_context_compact(sid: str, scope: str) -> ContextStateResponse:
-        """Manually compact a scope NOW (fire-and-forget). LLM-summarizes the scope's live
-        working-set into ONE summary segment — the SAME summarizer the in-turn
-        auto-compactor uses — via the sanctioned ``summarize`` op, then returns the fresh
-        context state. The caller chooses WHEN to compact; clio chooses WHAT to keep (a
-        faithful summary). 409 if nothing live; 503 if no LM is bound / the summary fails.
-
-        A different, LOWER-level op than session-level compaction
-        (:func:`clio_agent.gact.compaction.compact_session_context`, #1339): this one
-        operates on an explicit ARC ``scope`` directly, not a session's ledger/checkpoint.
-        """
-        if app.state.sessions.get(sid) is None:
-            raise _session_not_found(sid)
-        arc = app.state.arc
-        if arc is None:
-            raise _arc_unavailable(sid)
-        live = arc.render_segments(sid, scope)
-        ids = [s.id for s in live]
-        if not ids:
-            raise HTTPException(
-                status_code=409,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="nothing_to_compact",
-                        message=f"scope {scope!r} has no live segments to compact",
-                        details={"scope": scope},
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        # This route runs outside a turn context. Resolve the owning session's
-        # currently accepted main identity explicitly; never consult DSPy's
-        # process boot default (which may be stale or belong to another app).
-        owner = app.state.agent
-        summary = agents_runtime._summarize_segments_llm(
-            live,
-            owning_lm=getattr(owner, "_main_lm", None),
-            owning_adapter=getattr(owner, "_dspy_adapter", None),
-        )
-        if not summary:
-            raise HTTPException(
-                status_code=503,
-                detail=ErrorEnvelope(
-                    error=ErrorInfo(
-                        error="compaction_unavailable",
-                        message="summary LM call failed or no LM is bound",
-                        details={"scope": scope},
-                        recoverable=True,
-                    )
-                ).model_dump(exclude_none=True),
-            )
-        await run_off_loop(  # #1334: the summarize op persists the scope (store RPCs)
-            lambda: arc.apply_segment_op(
-                "summarize",
-                sid,
-                scope,
-                ids=ids,
-                summary_content={"text": summary},
-                token_count=_estimate_text_tokens(summary),
-            )
-        )
-        return _build_context_state(sid, scope)
 
     @app.get("/v1/sessions/{sid}/context/search", response_model=ContextSearchResponse)
     async def search_context(
