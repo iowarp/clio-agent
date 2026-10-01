@@ -9,6 +9,14 @@ only when interaction or structure helps the user more than prose. A2UI is a vie
 of observed state, never an analysis substitute. Do not mention the protocol or
 ask the user to supply component payloads.
 
+A `create_a2ui_surface` call renders inline in the chat as an interactive
+view — hoverable, clickable, linkable to the session's other views.
+Producing the same data through the artifact tools instead (a `.json` spec,
+a rendered `.png`) makes a file in the workspace: the user sees a file
+attachment, not a chart, unless a surface for it also exists. Reach for the
+surface when the ask is to see, render, plot, or map something; reach for an
+artifact when the deliverable itself is a file the user asked to keep.
+
 Component shapes are NOT in this skill — the catalog itself is the allowlist and
 the source of truth (`docs/design/a2ui-compat-campaign-2026-09.md` S2/S4). Load a
 catalog's index with `load_skill("a2ui-catalog-<slug>")` (see "Skills available to
@@ -20,7 +28,12 @@ before producing it.
 
 Match the surface to the shape of the evidence, not to what looks impressive:
 
-- A spatial result (stations, sites, points on a map) → a map component.
+- A spatial result shown as point markers (stations, sites, cities) → a map
+  component.
+- A choropleth or other filled-region map (regions colored by a value) →
+  `clio.chart.v1` with a `geoshape` mark and `projection`, fed inline rows
+  whose geometry column holds the GeoJSON shapes — the map component only
+  places point markers, it does not fill regions.
 - Structured rows and columns → a data table.
 - A quantity that changes over an index or time for a few series → the catalog's
   chart component (`clio.chart.v1`), typically its `trajectories` preset.
@@ -58,23 +71,34 @@ exported spec to the component instead of writing Vega-Lite JSON by hand.
   `alt.Chart(...)` get inlined into the spec, and the server's chart guard
   refuses them. Rows arrive through the component's inline data or its
   artifact reference.
+- **Layout keys the guard allows.** Past the usual mark/encoding grammar,
+  the guard also allows `facet` + `columns` (a wrapped small-multiples
+  grid), `spacing`/`padding`/`align`/`bounds`/`center` (composition
+  layout), and `projection` (a geoshape or lon/lat point map) at the top
+  level. No `url` anywhere, in any of them.
+- **A choropleth from inline rows.** A row's cell can hold a GeoJSON
+  Geometry object instead of a scalar, so a `geoshape` mark can draw real
+  shapes straight from rows the agent already has, no artifact needed. Set
+  `projection` for the map projection; leave `projection.fit` unset — the
+  renderer fits the map to the geometry actually present in the rows.
 - **Shared selection.** Define one point selection whose name matches the
   component's selection parameter, over the entity field. The component's
   selection binding then links the chart to the other views (see below).
-- **Keep specs small.** The guard caps size, nesting and view count. No URLs
-  anywhere.
+- **Keep specs small.** The guard caps size, nesting and view count.
 
 Write a Python file that assigns the Altair chart to `chart`, resolve this
 skill's directory as `SKILL_ROOT`, and export plus pre-check it:
 
 ```text
-uv run --no-project --with "altair>=5" python "SKILL_ROOT/scripts/vega_spec.py" build "CHART.py" "SPEC.json"
+uv run --no-project --with "altair>=5" --with "clio-schemas>=0.5.2" python "SKILL_ROOT/scripts/vega_spec.py" build "CHART.py" "SPEC.json"
 ```
 
-The script writes the spec and names any rule it would obviously break;
-`vega_spec.py check SPEC.json` re-checks an existing spec. The server's guard
-is the final authority. Load the chart component's schema from the catalog
-skill before putting the spec into a surface.
+The pre-check calls the same guard the server runs
+(`clio_schemas.a2ui.chart_spec.check_chart_spec`), so it names the same rule
+a server refusal would instead of a hand-copied approximation;
+`vega_spec.py check SPEC.json` re-checks an existing spec. The server's
+guard is still the final authority. Load the chart component's schema from
+the catalog skill before putting the spec into a surface.
 
 ## Linking views on one surface
 
