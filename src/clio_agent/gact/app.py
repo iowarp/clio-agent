@@ -67,14 +67,13 @@ _install_sigusr1_diagnostic()
 # import time is the earliest point every caller (production entry point,
 # every test file importing `build_app`) shares, so it is the only point
 # that is not itself part of the race.
-import numpy  # noqa: E402, F401
-import pyarrow  # noqa: E402, F401
-
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
+import numpy  # noqa: E402, F401
+import pyarrow  # noqa: E402, F401
 from fastapi import FastAPI, HTTPException
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
