@@ -396,6 +396,41 @@ def test_v3_message_deduplicates_repeated_artifact_references() -> None:
     ]
 
 
+def test_v3_message_leaves_background_exit_to_the_child_return() -> None:
+    projected = message_to_v3(
+        Message(
+            id="msg_exit",
+            session_id="sess_exit",
+            role="assistant",
+            created_at="2026-08-22T00:00:00+00:00",
+            updated_at="2026-08-22T00:00:01+00:00",
+            parts=[
+                Part(
+                    id="live_background_exit_1",
+                    type="background_exit",
+                    handle_id="task_remote",
+                    exit_status="completed",
+                ),
+                Part(
+                    id="live_handoff_1",
+                    type="expert_handoff",
+                    handle_id="task_remote",
+                    stage="delegate.completed",
+                ),
+            ],
+        )
+    )
+
+    assert projected["blocks"] == [
+        {
+            "id": "live_handoff_1",
+            "type": "subagent",
+            "subagent_id": "task_remote",
+            "stage": "delegate.completed",
+        }
+    ]
+
+
 def test_v3_message_projects_only_native_resume_classification_metadata() -> None:
     projected = message_to_v3(
         Message(
