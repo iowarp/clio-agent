@@ -323,12 +323,9 @@ class SegmentStore:
         return self._scopes[key]
 
     def _persist(self, session_id: str, scope: str) -> None:
-        """Encode + put the whole scope record; clio-core must accept it.
-
-        The in-memory scope was changed before this call. When the put fails, that copy
-        now holds something clio-core does not, so it is DISCARDED (the next read reloads
-        clio-core's record) and a typed :class:`ArcPersistError` is raised -- never a
-        dropped segment, never memory that disagrees with clio-core."""
+        """Encode + put the whole scope record; clio-core must accept it. On failure the
+        in-memory copy (changed before this call) is DISCARDED -- the next read reloads
+        clio-core's record -- and a typed :class:`ArcPersistError` is raised."""
         segs = self._scopes[(session_id, scope)]
         try:
             self._put_scope(session_id, scope, segs)

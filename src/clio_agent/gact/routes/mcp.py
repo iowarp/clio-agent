@@ -531,10 +531,12 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
             tool_observer = getattr(app.state, "pending_tool_observer", None)
             if tool_observer is None:
                 tool_observer = app.state.make_tool_observer()
-            # The observer records into clio-core (store writes): never on the event loop.
-            await run_off_loop(
-                lambda: notify_tool_observer(tool_observer, observer_name, tool_args, "started")
-            )
+
+            def observe(phase: str, **kw: Any) -> Any:  # records into clio-core: off the loop
+                obs, name, args = tool_observer, observer_name, tool_args
+                return run_off_loop(lambda: notify_tool_observer(obs, name, args, phase, **kw))
+
+            await observe("started")
             try:
                 async with client_ctx as client:
                     from clio_agent.tools.mcp_header_mismatch import (  # noqa: PLC0415
@@ -553,11 +555,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
             except Exception as raw_exc:  # noqa: BLE001
                 # #1114: typed translation first — no raw SDK class/message on the wire.
                 surfaced = typed_mcp_call_error(raw_exc, tool=tool_name) or raw_exc
-                await run_off_loop(
-                    lambda: notify_tool_observer(
-                        tool_observer, observer_name, tool_args, "completed", error=repr(surfaced)
-                    )
-                )
+                await observe("completed", error=repr(surfaced))
                 raise HTTPException(
                     status_code=502,
                     detail=ErrorEnvelope(
@@ -577,12 +575,7 @@ def register_mcp_routes(app: FastAPI, deps: "GactDeps") -> None:
                     if isinstance(data, Mapping)
                     else str(data if data is not None else result)
                 )
-            observed = call_tool_result_to_observer(result)
-            await run_off_loop(
-                lambda: notify_tool_observer(
-                    tool_observer, observer_name, tool_args, "completed", result=observed
-                )
-            )
+            await observe("completed", result=call_tool_result_to_observer(result))
             return {
                 "server_id": sid,
                 "tool": tool_name,

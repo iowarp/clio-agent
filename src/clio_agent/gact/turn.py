@@ -323,8 +323,13 @@ async def _run_turn_in_background(
         # turn will forward with the enriched input. Consume the staged observe-later
         # notifications once AND emit each delegation terminal (shared once-gate with
         # wait/check) into this turn's already-open transcript.
-        consume_pending_agent_task_notifications(
-            state.app, state.sid, state.pending_notification_task_ids
+        # Consuming records into clio-core (store writes): on the turn executor, never
+        # the event loop (a write there is refused and the turn failed).
+        await _run_turn_setup_off_loop(
+            state,
+            lambda: consume_pending_agent_task_notifications(
+                state.app, state.sid, state.pending_notification_task_ids
+            ),
         )
 
         # #767 Phase B Slice 5: agent resolve -> module build -> streamed/sync
