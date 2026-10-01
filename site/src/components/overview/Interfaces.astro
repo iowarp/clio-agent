@@ -1,0 +1,113 @@
+---
+/**
+ * Where CLIO runs: the desktop app, the browser workspace, Docker, and the
+ * terminal UI. Commands come from install/clio and docker-compose.yml.
+ */
+import { Container, Globe, Monitor, SquareTerminal } from 'lucide-react';
+import { Frame, FramePanel } from '@/components/reui/frame';
+import { IconTile } from '@/components/reui/icon-tile';
+import SectionHeading from './SectionHeading.astro';
+import InstallTabs from './InstallTabs';
+import Command from './Command';
+import { release } from '@/lib/release';
+---
+
+<section class="interfaces not-content" aria-labelledby="interfaces">
+	<SectionHeading
+		id="interfaces"
+		label="Interfaces"
+		title="One workspace,"
+		emphasis="wherever you work."
+		lede="The desktop app is the simplest start. On a server or a shared machine, open the same workspace in a browser or run it in a container. A keyboard-only terminal interface is there if you prefer it."
+	/>
+
+	<div class="grid">
+		<Frame>
+			<FramePanel className="flex h-full flex-col gap-3">
+				<IconTile variant="soft"><Monitor /></IconTile>
+				<h3>Desktop app</h3>
+				<p>Windows, macOS, and Linux installers. The bundled build includes everything and starts CLIO for you.</p>
+				<a class="link" href="#download">Download the desktop app</a>
+			</FramePanel>
+		</Frame>
+
+		<Frame>
+			<FramePanel className="flex h-full flex-col gap-3">
+				<IconTile variant="soft"><Globe /></IconTile>
+				<h3>In your browser</h3>
+				<p>Install CLIO with one command, then open the workspace in your browser.</p>
+				<InstallTabs client:visible />
+				<p class="after">
+					Then run <code>clio --web</code>. It opens <code>http://127.0.0.1:17800</code>.
+				</p>
+			</FramePanel>
+		</Frame>
+
+		<Frame>
+			<FramePanel className="flex h-full flex-col gap-3">
+				<IconTile variant="soft"><Container /></IconTile>
+				<h3>Docker</h3>
+				<p>The web image bundles CLIO and the workspace interface.</p>
+				<Command client:visible command={`docker run --rm -p 8080:80 ${release.webImage}`} />
+				<p class="after">Open <code>http://localhost:8080</code>.</p>
+			</FramePanel>
+		</Frame>
+
+		<Frame>
+			<FramePanel className="flex h-full flex-col gap-3">
+				<IconTile variant="soft"><SquareTerminal /></IconTile>
+				<h3>Terminal</h3>
+				<p>After the install script, <code>clio</code> starts CLIO and opens the terminal interface in your shell.</p>
+				<a class="link" href="/docs/cli/">Command-line reference</a>
+			</FramePanel>
+		</Frame>
+	</div>
+</section>
+
+<style>
+	.interfaces {
+		padding-block: clamp(4rem, 8vw, 6rem);
+		border-top: 1px solid var(--line);
+	}
+	.grid {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr);
+		gap: 1rem;
+		margin-top: 2.5rem;
+	}
+	@media (min-width: 56rem) {
+		.grid {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+		}
+	}
+	h3 {
+		margin: 0.25rem 0 0;
+		font-family: var(--font-display);
+		font-weight: 500;
+		font-size: 1.5rem;
+		color: var(--ink);
+	}
+	p {
+		margin: 0;
+		line-height: 1.6;
+		color: var(--ink-soft);
+	}
+	.after {
+		font-size: var(--sl-text-sm);
+		color: var(--muted);
+	}
+	code {
+		font-family: var(--font-code);
+		font-size: 0.9em;
+		color: var(--ink);
+	}
+	.link {
+		margin-top: auto;
+		font-weight: 600;
+		color: var(--accent);
+		text-decoration: none;
+	}
+	.link:hover {
+		text-decoration: underline;
+	}
+</style>

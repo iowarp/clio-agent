@@ -1,0 +1,159 @@
+---
+/**
+ * Overview hero. Replaces Starlight's Hero component; Starlight renders it
+ * only on pages whose frontmatter sets `hero`, which is the overview alone.
+ */
+import { ArrowRight, Container, Globe, Monitor, SquareTerminal } from 'lucide-react';
+import HeroDownload from './HeroDownload';
+import Capture from './Capture';
+import { release } from '@/lib/release';
+import { captureImage } from '@/lib/captures';
+import chart from '@/assets/captures/earthscope-chart.png';
+
+const heroCapture = await captureImage(chart);
+
+const surfaces = [
+	{ icon: Monitor, label: 'Desktop app', href: '#download' },
+	{ icon: Globe, label: 'In your browser', href: '#interfaces' },
+	{ icon: Container, label: 'Docker', href: '#interfaces' },
+	{ icon: SquareTerminal, label: 'Terminal', href: '#interfaces' },
+];
+---
+
+<section class="ov-hero not-content" aria-labelledby="_top">
+	<div class="copy">
+		<p class="eyebrow">
+			<span>Open source</span>
+			<span class="sep" aria-hidden="true">/</span>
+			<a href={release.notesUrl}>{release.tag}</a>
+		</p>
+		<h1 id="_top">From scientific question to <em>defensible&nbsp;result.</em></h1>
+		<p class="lede">
+			CLIO is an AI workspace for scientific data. It finds data, runs the analysis with domain experts, and keeps
+			the evidence for every result, on your computer and with the models you choose.
+		</p>
+		<div class="actions">
+			<HeroDownload client:load />
+			<a class="secondary" href="/docs/">Read the docs <ArrowRight aria-hidden="true" size={18} /></a>
+		</div>
+		<ul class="surfaces" aria-label="Where CLIO runs">
+			{
+				surfaces.map(({ icon: Icon, label, href }) => (
+					<li>
+						<a href={href}>
+							<Icon aria-hidden="true" size={16} />
+							{label}
+						</a>
+					</li>
+				))
+			}
+		</ul>
+	</div>
+	<div class="capture">
+		<Capture
+			client:visible
+			priority
+			image={heroCapture}
+			sizes="(min-width: 72rem) 44rem, 100vw"
+			alt="An interactive GNSS time-series chart in a CLIO session, labeled as 1,000 evenly sampled rows from 857,957"
+			caption="A CLIO session charting EarthScope GNSS displacement: 857,957 rows drawn from an even sample of 1,000, labeled as such."
+		/>
+	</div>
+</section>
+
+<style>
+	.ov-hero {
+		display: grid;
+		gap: clamp(2rem, 5vw, 3.5rem);
+		align-items: center;
+		padding-block: clamp(2rem, 6vw, 5rem) 1rem;
+	}
+	@media (min-width: 72rem) {
+		.ov-hero {
+			grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
+		}
+	}
+	.eyebrow {
+		display: flex;
+		gap: 0.6rem;
+		align-items: baseline;
+		margin: 0 0 1.75rem;
+		font-family: var(--font-code);
+		font-size: var(--sl-text-sm);
+		color: var(--muted);
+	}
+	.eyebrow a {
+		color: var(--muted);
+		text-decoration: none;
+	}
+	.eyebrow a:hover {
+		color: var(--accent);
+	}
+	h1 {
+		margin: 0;
+		max-width: 16ch;
+		font-family: var(--font-display);
+		font-weight: 400;
+		font-size: clamp(2.75rem, 6vw, 4.5rem);
+		line-height: 1.02;
+		letter-spacing: -0.02em;
+		color: var(--ink);
+	}
+	h1 em {
+		color: var(--accent);
+		font-style: italic;
+	}
+	.lede {
+		max-width: 38rem;
+		margin: 1.75rem 0 0;
+		font-size: clamp(1.1rem, 1.6vw, 1.3rem);
+		line-height: 1.55;
+		color: var(--ink-soft);
+	}
+	.actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 1rem 2rem;
+		align-items: flex-start;
+		margin-top: 2.25rem;
+	}
+	.secondary {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.5rem;
+		height: 2.75rem;
+		color: var(--ink);
+		font-weight: 600;
+		text-decoration: none;
+	}
+	.secondary :global(svg) {
+		color: var(--accent);
+		transition: transform var(--motion-fast) var(--motion-ease);
+	}
+	.secondary:hover :global(svg) {
+		transform: translateX(3px);
+	}
+	.surfaces {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem 1.75rem;
+		margin: 1.5rem 0 0;
+		padding: 1.25rem 0 0;
+		list-style: none;
+		border-top: 1px solid var(--line);
+	}
+	.surfaces a {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.5rem;
+		font-size: var(--sl-text-sm);
+		color: var(--ink-soft);
+		text-decoration: none;
+	}
+	.surfaces a:hover {
+		color: var(--ink);
+	}
+	.surfaces :global(svg) {
+		color: var(--muted);
+	}
+</style>

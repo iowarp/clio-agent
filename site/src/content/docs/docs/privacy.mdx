@@ -1,0 +1,65 @@
+---
+title: Data and network
+description: What CLIO runs on your machine, exactly what can leave it, and how to limit it.
+---
+
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+CLIO runs on your computer. Your sessions, files, memory, and results are stored locally. Whether anything leaves the machine depends on the model provider and tools you choose.
+
+## What runs locally
+
+- The CLIO backend listens on `127.0.0.1` (port 17800 when started by the `clio` command), so other computers cannot reach it by default.
+- Sessions, messages, memory, and artifacts are stored in your [user configuration folder](/docs/configuration/) and in each workspace's `.clio` folder.
+- The desktop app, web page, and terminal UI all talk to that local backend.
+
+There is no product telemetry or analytics. CLIO does not report usage to anyone.
+
+## What can leave your machine
+
+| What | When | Where it goes |
+|---|---|---|
+| Prompts, files you attach, and tool results sent to the model | Every model call | Only the provider you chose. With a local provider such as LM Studio or Ollama, this stays on your machine. |
+| Requests made by tools and tool servers | When you add a tool or tool server that uses the network | Whatever that tool contacts |
+| Update check by the `clio` command | About once a day, on macOS and Linux | PyPI, to see whether a newer `clio-agent` exists |
+| Model information catalog | When CLIO needs model limits, cached for 24 hours | models.dev |
+| Update check by the desktop app | When the app checks for updates | GitHub releases |
+
+Choosing a cloud provider means the content of your conversations is sent to that provider under its own terms. Choose a provider on your machine if that is not acceptable for your data.
+
+## Turn off update checks
+
+Set `CLIO_NO_UPDATE_CHECK=1` in your environment to stop the `clio` command from checking PyPI.
+
+```sh
+export CLIO_NO_UPDATE_CHECK=1
+```
+
+The desktop app checks GitHub releases for its own updates. That check is separate from the variable above.
+
+## File access limits
+
+The agent's file tools can only use certain folders. By default these are the workspace folder, the folder CLIO was started in, and your system's temp folder. A path outside them fails with `outside_allowed_roots`. Symbolic links are not followed unless you turn that on, and there is a maximum file size.
+
+Change these with `CLIO_ALLOWED_ROOTS`, `CLIO_ALLOW_SYMLINKS`, and `CLIO_MAX_FILE_SIZE_BYTES`. See [Configuration](/docs/configuration/). For what the agent may write or run, and the optional OS-level write fence, see [Permissions and sandbox](/docs/permissions/).
+
+## Browsers and other origins
+
+The backend refuses cross-site browser requests it cannot trust. Pages served by the backend itself, the desktop app, and local development servers work without any setup. A browser app on any other origin must be allowed explicitly with `CLIO_GACT_CORS_ORIGINS`, a comma-separated list:
+
+```sh
+export CLIO_GACT_CORS_ORIGINS=http://localhost:4173,tauri://localhost
+```
+
+Requests addressed to a host name other than `localhost`, `127.0.0.1`, or `[::1]` are refused unless you list the name in `CLIO_GACT_ALLOWED_HOSTS`. This protects against a web page that points its own domain at your machine.
+
+<Aside type="caution">
+Setting `CLIO_GACT_CORS_ORIGINS=*` or `CLIO_GACT_ALLOWED_HOSTS=*` turns these protections off. Use them only in a controlled environment, and require a token for anything reachable beyond your machine.
+</Aside>
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Connect a model" description="Choose a provider that fits your data." href="/docs/connect-a-model/" />
+  <LinkCard title="Permissions and sandbox" description="Control what the agent can write and run." href="/docs/permissions/" />
+</CardGrid>

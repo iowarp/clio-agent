@@ -1,0 +1,46 @@
+---
+title: Run CLIO fully offline with LM Studio
+description: Connect CLIO to a model running in LM Studio on your own machine, so your prompts and data never leave it.
+sidebar:
+  label: Run CLIO offline with LM Studio
+draft: true
+---
+
+import { Steps } from '@astrojs/starlight/components';
+
+This tutorial connects CLIO to a model that runs on your own computer through LM Studio, and runs a first analysis on a file in your workspace. The model runs on your hardware, so your prompts and data stay on the machine.
+
+<Steps>
+
+1. Install the desktop app.
+
+   Follow [Install](/docs/install/) and open CLIO.
+
+2. Start the LM Studio server.
+
+   In LM Studio, download a model and load it, then start its local server. The default address is `http://127.0.0.1:1234/v1`. Longer, multi-step analyses are more reliable on larger models.
+
+3. Choose LM Studio in CLIO.
+
+   Open Settings and choose **Models**. Under **Provider and model**, choose **LM Studio** as the **Provider**. Leave **Endpoint / API base** at its default unless your server uses a different address. Choose the loaded model in the **Model** list, or leave it empty to use the model the server reports as loaded.
+
+4. Apply the settings.
+
+   Choose **Apply provider and model**. This also makes LM Studio the default for new sessions. Choose **Refresh model catalog** if your model does not appear. See [Connect a model](/docs/connect-a-model/).
+
+5. Start a session and check the model.
+
+   Create a session. The model control under the message box should show LM Studio and your model. Ask a question about a file in the workspace, for example "List the files in this workspace and describe each one."
+
+6. Check what leaves the machine.
+
+   Model calls go only to your local server. CLIO itself still makes a few optional outbound checks, such as an update check, and the interface works without them. See [Data and network](/docs/privacy/).
+
+</Steps>
+
+:::note[Captures needed]
+- The Settings, **Models** page with **LM Studio** selected and **Apply provider and model** visible.
+- The LM Studio window with the local server running and a model loaded.
+- The composer model control showing LM Studio and the model name.
+- A finished answer to the workspace file question, with the tool calls visible in the transcript.
+:::

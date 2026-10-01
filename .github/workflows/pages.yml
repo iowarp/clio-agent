@@ -1,6 +1,13 @@
 name: Pages
 
-# Deploy the static landing site (site/) to GitHub Pages on push to main.
+# Build the public site (site/, Astro + Starlight) and deploy it to GitHub
+# Pages at clio.iowarp.ai on push to main. Pull requests that touch the site
+# run the same build and tests without deploying, so a broken page or link
+# is caught before it reaches main.
+#
+# The site reads the release version from pyproject.toml at build time, so a
+# version bump redeploys it. Product captures live in site/src/assets/captures;
+# refresh them per docs/CLIO_INSTALL_PAGE_IMAGE_MANIFEST.md.
 # One-time setup: repo Settings → Pages → Source = "GitHub Actions".
 
 on:
@@ -8,36 +15,57 @@ on:
     branches: [main]
     paths:
       - "site/**"
+      - "pyproject.toml"
+      - ".github/workflows/pages.yml"
+  pull_request:
+    paths:
+      - "site/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
+  group: pages-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: site/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: site/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm check
+      # Fails on any broken internal link (starlight-links-validator).
+      - run: pnpm build
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
+        with:
+          path: site/dist
+
   deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      # Product screenshots are committed directly under site/assets/ (hero.png,
-      # desktop-shell.png, shots/1-5). They used to be staged at deploy time from
-      # external/gact-tui/apps/web/screenshots/audit, but gact-tui #235 stopped
-      # committing those run-output captures, which broke this deploy. Owning the
-      # curated marketing set in this repo (where the site lives) decouples the
-      # landing page from the submodule's volatile screenshot layout. Refresh the
-      # set per docs/CLIO_INSTALL_PAGE_IMAGE_MANIFEST.md when the product UI changes.
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: site
       - id: deployment
         uses: actions/deploy-pages@v4

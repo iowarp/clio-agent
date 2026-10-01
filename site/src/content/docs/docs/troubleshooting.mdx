@@ -1,0 +1,77 @@
+---
+title: Troubleshooting
+description: Check your install, read the logs, and fix the problems people hit most often.
+---
+
+import { Aside, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+Start with these four commands. They tell you most of what you need.
+
+```sh
+clio doctor          # is the install complete?
+clio-agent doctor    # deeper checks: file policy, model provider, memory, tools, API
+clio logs            # follow the backend and terminal UI logs
+clio report          # a summary to paste into a bug report
+```
+
+`clio doctor` checks the install layout and exits with an error if something required is missing. `clio-agent doctor` checks the running configuration. `clio status` shows whether the backend is healthy and where its logs are. See [Command line](/docs/cli/) for all commands.
+
+## The backend is not healthy after about 90 seconds
+
+The first start is slower than later ones, but if `clio start` gives up, read the backend log with `clio logs`. The log shows why startup stopped. Run `clio status` to see the port and log paths. If something else is using port 17800, set `CLIO_PORT` to another port.
+
+## "server binary not found"
+
+CLIO is not installed, or the `clio` command is looking in the wrong folder. Run the [install script](/docs/install/), or set `CLIO_PREFIX` to the folder you installed into.
+
+## "web bundle not found"
+
+`clio --web` could not find the web UI files. Reinstall with the install script (unpacking the bundle needs `unzip`), or point `CLIO_WEB_DIR` at a built web UI folder.
+
+## The Docker web UI says host_not_allowed
+
+You opened the UI with a name other than `localhost`. Set `CLIO_GACT_ALLOWED_HOSTS` to that host name (names only, no port, comma-separated) and restart the container. See [Install](/docs/install/#docker).
+
+## clio-kit is missing
+
+Tool servers from marketplace blueprints start through `clio-kit`. If the install script warned that it could not provision `clio-kit`, or those tools fail to start, install it and make sure its folder is on your `PATH`:
+
+```sh
+uv tool install clio-kit==2.10.6
+uv tool dir --bin
+```
+
+Add the folder that `uv tool dir --bin` prints to your `PATH`. The install script skips this step when `uv` is not installed.
+
+## outside_allowed_roots
+
+A tool tried to use a file outside the folders CLIO allows. Move the file into your workspace, or add its folder to `CLIO_ALLOWED_ROOTS`. See [Configuration](/docs/configuration/).
+
+## The desktop app and the command line clash
+
+The desktop app and the `clio` command both use port 17800 and the same configuration folder. Run one at a time. If you started both, close one, run `clio stop`, and start again.
+
+## The sandbox is not active
+
+Run `clio sandbox status` and follow the `next_action` it shows. On Windows, run `clio sandbox setup` once. See [Permissions and sandbox](/docs/permissions/).
+
+## The Claude Code provider fails
+
+Check that `claude --version` works in a terminal, then run `claude login` once. See [Connect a model](/docs/connect-a-model/#claude-code).
+
+## A model provider will not connect
+
+- For LM Studio, Ollama, llama.cpp, or vLLM, make sure the server is running and the base URL matches its address.
+- For a cloud provider, check that the API key is saved in the app or set in the provider's environment variable before the backend started.
+- A value in `config.yaml` beats an environment variable. See [Configuration](/docs/configuration/).
+
+## Report a bug
+
+Run `clio report` and attach its output to an issue at [github.com/iowarp/clio-agent/issues](https://github.com/iowarp/clio-agent/issues). Remove anything private first. The report includes versions, your environment, backend health, and the last 40 lines of each log.
+
+## Next steps
+
+<CardGrid>
+  <LinkCard title="Command line" description="Every clio command." href="/docs/cli/" />
+  <LinkCard title="Uninstall" description="Remove CLIO and start clean." href="/docs/uninstall/" />
+</CardGrid>

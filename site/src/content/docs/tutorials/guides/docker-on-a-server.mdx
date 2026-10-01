@@ -1,0 +1,63 @@
+---
+title: Run the CLIO workspace on a server with Docker
+description: Start the CLIO backend and web interface in a Docker container, point it at a model, and open it from your browser.
+sidebar:
+  label: Run on a server with Docker
+draft: true
+---
+
+import { Steps } from '@astrojs/starlight/components';
+
+The CLIO web image runs the backend and the web interface in one container. This tutorial starts it on a server, connects it to a model, and opens it from a browser. You need Docker on the server and a model the container can reach.
+
+<Steps>
+
+1. Start the container on the server.
+
+   ```sh
+   docker run --rm -p 8080:80 ghcr.io/iowarp/clio-web:latest
+   ```
+
+   Open `http://localhost:8080` in a browser on the same machine to check that the interface loads. Images are also published under each release's version number.
+
+2. Use Docker Compose for something you will keep.
+
+   The repository's `docker-compose.yml` defines the services and a data volume named `clio-data`, which holds your configuration and sessions at `/home/clio/.config/clio-agent`.
+
+   ```sh
+   docker compose up clio-web
+   ```
+
+3. Point it at a model.
+
+   The container reads these environment variables:
+
+   | Variable | Default |
+   |---|---|
+   | `CLIO_LM_PROVIDER` | `lm_studio` |
+   | `CLIO_LM_API_BASE` | `http://host.docker.internal:1234/v1` |
+   | `CLIO_LM_MODEL` | |
+   | `CLIO_LM_API_KEY` | |
+
+   Set them to match your provider. See [Connect a model](/docs/connect-a-model/).
+
+4. Open it from another computer.
+
+   To open the interface by any name other than `localhost`, set `CLIO_GACT_ALLOWED_HOSTS` to that name. Without it, requests fail with `host_not_allowed`. See [Troubleshooting](/docs/troubleshooting/).
+
+5. Run a first session.
+
+   Create a workspace and a session, and ask a question.
+
+</Steps>
+
+CLIO has no account system. Anyone who can reach the port can use the workspace, so limit who can reach it.
+
+The repository also publishes `ghcr.io/iowarp/clio-api`, the headless API on port 8100 for other clients, and `ghcr.io/iowarp/clio-tui`, the terminal interface.
+
+:::note[Captures needed]
+- The terminal showing `docker compose up clio-web` with the container running.
+- The web interface open in a browser on another computer, with the address bar visible.
+- The `host_not_allowed` error, and the same page working after `CLIO_GACT_ALLOWED_HOSTS` is set.
+- The model settings page showing the provider taken from the environment variables.
+:::
