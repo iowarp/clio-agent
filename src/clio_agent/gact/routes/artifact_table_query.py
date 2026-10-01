@@ -23,12 +23,10 @@ import logging
 import threading
 import time
 from collections import OrderedDict
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 
-from clio_agent.gact.artifacts.cas import sha256_file
 from clio_agent.gact.artifacts.records import ArtifactRecord, ArtifactVersion
 from clio_agent.gact.artifacts.registry import get_registry
 from clio_agent.gact.artifacts.table_query_models import (
@@ -37,10 +35,12 @@ from clio_agent.gact.artifacts.table_query_models import (
     TableQueryRequest,
     table_format_for,
 )
-from clio_agent.gact.routes.artifact_table_preview import (
-    _artifact_source,
-    _error,
-    _workspace_root,
+from clio_agent.gact.routes.artifact_table_preview import _error
+from clio_agent.gact.routes.table_route_shared import (
+    import_table_engine_once,
+    report_watcher_failure,
+    table_source,
+    watch_for_disconnect,
 )
 
 if TYPE_CHECKING:
@@ -54,8 +54,6 @@ _CACHE_MAX_CELLS = 250_000
 # A cached PROCESSED (pre-page) table larger than this many bytes is not
 # retained -- it is heavier than a final JSON result, so its own bound.
 _PROCESSED_CACHE_MAX_BYTES = 64 * 1024 * 1024
-# How often the disconnect watcher polls the client connection.
-_DISCONNECT_POLL_S = 0.25
 
 
 def table_query_max_rows() -> int:
@@ -107,7 +105,7 @@ def table_query_timeout_s() -> float:
     reach (owner ruling: no cap that kneecaps intent); it is configurable
     (raise it for a genuinely large one-shot query) and the reason is always
     typed, never a silent drop. The PRIMARY cancellation path is the
-    requesting client disconnecting (see ``_watch_for_disconnect``): checked
+    requesting client disconnecting (see ``table_route_shared.watch_for_disconnect``): checked
     between every stage and, in the per-entity downsample loop, on every
     entity, not only once between stage boundaries.
     """
@@ -283,90 +281,6 @@ def _concurrency_semaphore_for(app: FastAPI) -> asyncio.Semaphore:
     return semaphore
 
 
-async def _watch_for_disconnect(request: Request, cancel_event: threading.Event) -> None:
-    """Set ``cancel_event`` as soon as ``request``'s own HTTP client disconnects.
-
-    The PRIMARY cancellation path (owner ruling): polled rather than a single
-    ``await``, since Starlette's ``is_disconnected`` only reports a truthful
-    answer when asked repeatedly. Cancelled by the route once the query
-    finishes (success or error) either way -- this task never outlives one
-    request.
-    """
-
-    while True:
-        if await request.is_disconnected():
-            cancel_event.set()
-            return
-        await asyncio.sleep(_DISCONNECT_POLL_S)
-
-
-def _report_watcher_failure(task: "asyncio.Task[None]") -> None:
-    """Log an unexpected ``_watch_for_disconnect`` failure; never re-raise it.
-
-    The route cancels the watcher fire-and-forget (see the route's own
-    ``finally``), so this done-callback is the only place a bug in the
-    watcher itself would otherwise surface -- without it, a non-cancellation
-    exception here would just vanish into "Task exception was never
-    retrieved" at GC time instead of a readable log line (no silent
-    fallback). Cancellation is the expected, silent outcome.
-    """
-
-    if task.cancelled():
-        return
-    exc = task.exception()
-    if exc is not None:
-        logger.warning("table-query disconnect watcher failed: %r", exc)
-
-
-def _owned_error(
-    *, status_code: int, error: str, message: str, details: dict[str, Any] | None = None
-) -> HTTPException:
-    """Adapt the storage-owner error seam onto this route's envelope."""
-
-    return _error(status_code, error, message, **(details or {}))
-
-
-def _table_source(
-    app: FastAPI,
-    record: ArtifactRecord,
-    version: ArtifactVersion,
-    *,
-    verify: bool = True,
-) -> Path:
-    """Resolve bytes exactly as ``/bytes`` does: owned store first, then CAS/path.
-
-    ``verify`` (default ``True``) re-hashes the resolved bytes against
-    ``version.sha256``, exactly like every table-query/table-preview serving
-    path. ``verify=False`` trusts the artifact record's own recorded metadata
-    instead of re-reading and re-hashing the whole file — used by producer-
-    side, non-serving checks (e.g. ``_data_reference.py``'s dataQuery/*Field
-    shape validation, #1533 S4 adversarial review item 6) that run on every
-    ``create_a2ui_surface``/``update_a2ui_components`` call and must not pay
-    a full artifact re-hash each time just to check column names.
-    """
-
-    from clio_agent.gact.artifacts.storage import (  # noqa: PLC0415
-        resolve_owned_artifact_or_raise,
-    )
-
-    root = _workspace_root(app, record.workspace_id)
-    owned = resolve_owned_artifact_or_raise(app, version, workspace_root=root, error=_owned_error)
-    if owned is None:
-        return _artifact_source(app, record, version, verify=verify)
-    if verify and version.sha256:
-        actual = sha256_file(owned)
-        if actual != version.sha256:
-            raise _error(
-                409,
-                "integrity_violation",
-                "artifact store bytes do not match the immutable version hash",
-                artifact_id=version.artifact_id,
-                recorded_sha256=version.sha256,
-                actual_sha256=actual,
-            )
-    return owned
-
-
 def _effective_limit(requested: int | None) -> int:
     ceiling = table_query_max_rows()
     if requested is None:
@@ -401,7 +315,7 @@ def _table_query(
             artifact_id=version.artifact_id,
             name=record.name,
         )
-    source = _table_source(app, record, version)
+    source = table_source(app, record, version)
     source_size = source.stat().st_size
     max_source_bytes = table_query_max_source_bytes()
     if source_size > max_source_bytes:
@@ -459,6 +373,12 @@ def _table_query(
 def register_artifact_table_query_routes(app: FastAPI) -> None:
     """Register the bounded tabular query endpoint used by data-backed charts."""
 
+    # Eager, on the MAIN thread, at route-registration time (app startup) --
+    # see `table_route_shared.import_table_engine_once` (#1551 review item
+    # 6). The (now-cached, cheap) import inside `_table_query` below is
+    # unchanged.
+    import_table_engine_once()
+
     @app.post("/v1/artifacts/{artifact_id}/table-query")
     async def artifact_table_query(
         artifact_id: str, body: TableQueryRequest, request: Request
@@ -492,8 +412,8 @@ def register_artifact_table_query_routes(app: FastAPI) -> None:
         cancellation = QueryCancellation(
             deadline=deadline, timeout_s=timeout_s, cancel_event=cancel_event
         )
-        watcher = asyncio.ensure_future(_watch_for_disconnect(request, cancel_event))
-        watcher.add_done_callback(_report_watcher_failure)
+        watcher = asyncio.ensure_future(watch_for_disconnect(request, cancel_event))
+        watcher.add_done_callback(report_watcher_failure)
         semaphore = _concurrency_semaphore_for(app)
         try:
             async with semaphore:
@@ -528,7 +448,7 @@ def register_artifact_table_query_routes(app: FastAPI) -> None:
             # even though the query itself had already finished. Once a
             # result (or error) exists, the watcher has no further purpose;
             # letting it finish cancelling on its own time is safe, and
-            # ``_report_watcher_failure`` still surfaces a genuine bug in it
+            # ``report_watcher_failure`` still surfaces a genuine bug in it
             # instead of a silently dropped exception.
             watcher.cancel()
 

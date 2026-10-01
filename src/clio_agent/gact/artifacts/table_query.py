@@ -51,6 +51,7 @@ from clio_agent.gact.artifacts.table_query_downsample import (
 )
 from clio_agent.gact.artifacts.table_query_models import (
     DEFAULT_LIMIT,
+    RowKey,
     Scalar,
     TableAggregate,
     TableDownsample,
@@ -336,6 +337,25 @@ def _apply_filters(table: pa.Table, filters: list[TableFilter]) -> pa.Table:
     return table.filter(mask, null_selection_behavior="drop")
 
 
+#: The synthetic stable row-key column name added to every non-aggregated
+#: query result (G0: "views over the SAME dataUri link automatically, through
+#: a stable server row key"). It identifies a row by its position in the
+#: freshly-READ, pre-filter/sort table -- i.e. the underlying dataset row, not
+#: this particular query's filtered/sorted position -- so two different
+#: queries over the SAME artifact (different columns, different filters)
+#: still agree on which row is "row 7" and can link a selection across them.
+ROW_KEY_BASE_NAME = "__row"
+
+
+def _row_key_column_name(existing: list[str]) -> str:
+    """A column name for the synthetic row key that never collides with a real one."""
+
+    name = ROW_KEY_BASE_NAME
+    while name in existing:
+        name += "_"
+    return name
+
+
 def _apply_sort(table: pa.Table, sort: list[TableSort]) -> pa.Table:
     """Apply a (possibly compound) sort; a no-op when ``sort`` is empty."""
 
@@ -488,6 +508,10 @@ class ProcessedTable:
     total_rows: int
     matched_rows: int
     downsample_info: dict[str, Any]
+    #: The row-key column's name in ``table`` (see :data:`ROW_KEY_BASE_NAME`),
+    #: or ``None`` when the request aggregated (grouped rows have no single
+    #: underlying source row to key by).
+    row_key_column: str | None = None
 
 
 def compute_processed_table(
@@ -497,6 +521,7 @@ def compute_processed_table(
     *,
     limit: int,
     cancellation: "QueryCancellation",
+    allow_over_limit_sampling: bool = True,
 ) -> ProcessedTable:
     """Run every stage up to (and including) sort; never applies ``offset``/``limit``.
 
@@ -510,6 +535,12 @@ def compute_processed_table(
     the query immediately (:class:`TableQueryCancelled`); a configured
     wall-clock backstop (:class:`TableQueryTimeout`) is the secondary guard
     for a client that is still connected but has waited too long.
+
+    ``allow_over_limit_sampling`` (default ``True``) gates the automatic
+    over-limit stride above: table-query wants it (an interactive response
+    must stay small), an export never does (:mod:`clio_agent.gact.artifacts.
+    table_export` sets it ``False`` so a download is never silently
+    truncated -- it raises ``export_too_large`` instead).
 
     Raises:
         TableQueryError: for unknown columns, incomparable filter/sort
@@ -537,6 +568,26 @@ def compute_processed_table(
     total_rows = table.num_rows
     cancellation.check()
 
+    # The stable row key, added BEFORE filter/downsample/sort so its values
+    # always identify the row's position in the freshly-read, untouched
+    # table -- every later stage (`_apply_filters`'s mask, `.take()` in the
+    # downsample helpers, `_apply_sort`) carries a real table column through
+    # unchanged, so surviving rows keep their original key. Aggregation
+    # collapses many source rows into one group, which has no single row to
+    # key by, so it is skipped entirely when `request.aggregate` is set.
+    row_key_column: str | None = None
+    if request.aggregate is None:
+        # Derived from the DATASET'S OWN schema (`available`, read once
+        # above), not this query's own projected/needed columns: the
+        # synthetic name must be stable for a given dataset regardless of
+        # which columns any particular query happens to request, or two
+        # queries projecting different columns could compute two different
+        # synthetic key names for the exact same concept (#1551 review).
+        row_key_column = _row_key_column_name(available)
+        table = table.append_column(
+            row_key_column, pa.array(np.arange(table.num_rows, dtype=np.int64))
+        )
+
     table = _apply_filters(table, request.filters)
     cancellation.check()
 
@@ -551,8 +602,16 @@ def compute_processed_table(
         cancellation.check()
     else:
         # An omitted columns list means "every column" — already what ``needed``
-        # (and therefore this table's own schema) resolved to above.
-        output_columns = list(request.columns) if request.columns else list(table.column_names)
+        # (and therefore this table's own schema) resolved to above. The
+        # synthetic row-key column is never one of "every column": it rides
+        # along in `table` for the downsample/sort stages below, but it is
+        # reported separately (`rowKey`, see `page_processed_table`), never
+        # folded into the caller-visible `columns`/`schema`.
+        output_columns = (
+            list(request.columns)
+            if request.columns
+            else [name for name in table.column_names if name != row_key_column]
+        )
     matched_rows = table.num_rows
 
     # Downsample BEFORE sort (the shared DataQuery contract's own documented
@@ -574,15 +633,28 @@ def compute_processed_table(
             # every entity keeps at least one point, and report it.
             table, reduction_info = reduce_evenly_per_entity_for_limit(table, entity_column, limit)
             downsample_info.update(reduction_info)
-    elif not paging and not request.sort and table.num_rows > limit:
-        # One-shot request, no explicit downsample AND no sort, still over
-        # the transfer guard: sample the WHOLE range instead of silently
-        # biasing toward the first rows (owner ruling — see
-        # apply_over_limit_stride). A SORT is excluded here on purpose: a
-        # sort+limit query is a top-/bottom-N request, and sampling before
-        # sorting would silently corrupt it -- let the full matched set
-        # flow through, sort it for real, then slice to limit below.
-        table, downsample_info = apply_over_limit_stride(table, limit)
+    elif not paging and table.num_rows > limit:
+        # One-shot request, no explicit downsample, still over the transfer
+        # guard. `allow_over_limit_sampling=False` (an export) refuses
+        # OUTRIGHT here regardless of `sort` -- an export is never paged or
+        # sliced by `limit` afterward (unlike table-query's own paging step),
+        # so a sorted-but-unsampled oversized table would otherwise flow
+        # through completely unbounded. Only interactive table-query
+        # (`allow_over_limit_sampling=True`) gets the SORT exclusion below:
+        # a sort+limit query there is a top-/bottom-N request, and sampling
+        # before sorting would silently corrupt it -- the full matched set
+        # flows through, gets sorted for real, and `page_processed_table`
+        # slices it to `limit` afterward.
+        if not allow_over_limit_sampling:
+            raise TableQueryError(
+                413,
+                "export_too_large",
+                "export exceeds the configured row ceiling; narrow it with filters",
+                rows=table.num_rows,
+                max_rows=limit,
+            )
+        if not request.sort:
+            table, downsample_info = apply_over_limit_stride(table, limit)
 
     table = _apply_sort(table, request.sort)
     cancellation.check()
@@ -593,6 +665,7 @@ def compute_processed_table(
         total_rows=total_rows,
         matched_rows=matched_rows,
         downsample_info=downsample_info,
+        row_key_column=row_key_column,
     )
 
 
@@ -602,12 +675,22 @@ def page_processed_table(processed: ProcessedTable, *, offset: int, limit: int) 
     Cheap and side-effect-free (no file I/O, no re-filtering/-aggregating/
     -downsampling/-sorting) — the route calls this once per request, reusing
     a cached :class:`ProcessedTable` across every page of the SAME query.
+
+    Response shape (``dict[str, Any]``, no separate Pydantic model -- matches
+    every other table-query/preview route): adds an OPTIONAL ``rowKey`` field
+    (:class:`~clio_agent.gact.artifacts.table_query_models.RowKey`), sized and
+    ordered exactly like ``columns`` (one value per returned row) -- the
+    client's stable key for linking a selection across views of the same
+    artifact, independent of which columns each view happened to request.
+    Present whenever the query did not aggregate (see
+    :attr:`ProcessedTable.row_key_column`); absent otherwise.
     """
 
     table = processed.table
     truncated = (table.num_rows - offset) > limit
-    page = table.slice(offset, limit).select(processed.output_columns)
-    return {
+    sliced = table.slice(offset, limit)
+    page = sliced.select(processed.output_columns)
+    result: dict[str, Any] = {
         "schema": [{"name": field.name, "type": str(field.type)} for field in page.schema],
         "columns": {name: _column_values(page.column(name)) for name in processed.output_columns},
         "totalRows": processed.total_rows,
@@ -617,6 +700,12 @@ def page_processed_table(processed: ProcessedTable, *, offset: int, limit: int) 
         "offset": offset,
         "downsample": processed.downsample_info,
     }
+    if processed.row_key_column is not None:
+        result["rowKey"] = RowKey(
+            column=processed.row_key_column,
+            values=_column_values(sliced.column(processed.row_key_column)),
+        ).model_dump(mode="json")
+    return result
 
 
 def run_table_query(

@@ -49,6 +49,8 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARTIFACTS_LINEAGE_MAX_NODES` | `artifacts.lineage_max_nodes` | int | `500` | `src/clio_agent/gact/artifacts/lineage.py` |
 | `CLIO_ARTIFACTS_PROPOSALS_BATCH_MAX` | `artifacts.proposals_batch_max` | int | `32` | `src/clio_agent/gact/artifacts/proposals.py` |
 | `CLIO_ARTIFACTS_PROPOSALS_PER_TURN` | `artifacts.proposals_per_turn` | int | `8` | `src/clio_agent/gact/artifacts/proposals.py` |
+| `CLIO_ARTIFACTS_TABLE_EXPORT_MAX_ROWS` | `artifacts.table_export_max_rows` | int | `2000000` | `src/clio_agent/gact/routes/artifact_table_export.py` |
+| `CLIO_ARTIFACTS_TABLE_EXPORT_TIMEOUT_S` | `artifacts.table_export_timeout_s` | float | `30.0` | `src/clio_agent/gact/routes/artifact_table_export.py` |
 | `CLIO_ARTIFACTS_TABLE_PREVIEW_MAX_ROWS` | `artifacts.table_preview_max_rows` | int | `2000` | `src/clio_agent/gact/routes/artifact_table_preview.py` |
 | `CLIO_ARTIFACTS_TABLE_PREVIEW_MAX_SOURCE_BYTES` | `artifacts.table_preview_max_source_bytes` | int | `268435456` | `src/clio_agent/gact/routes/artifact_table_preview.py` |
 | `CLIO_ARTIFACTS_TABLE_QUERY_CACHE_ENTRIES` | `artifacts.table_query_cache_entries` | int | `16` | `src/clio_agent/gact/routes/artifact_table_query.py` |

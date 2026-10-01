@@ -118,9 +118,9 @@ def _resolve_artifact_path(
         # (possibly large) file every time (#1533 S4 adversarial review item
         # 6) -- the real integrity check still runs when a client actually
         # reads the data through the table-query/table-preview routes.
-        from clio_agent.gact.routes.artifact_table_query import _table_source  # noqa: PLC0415
+        from clio_agent.gact.routes.table_route_shared import table_source  # noqa: PLC0415
 
-        path = _table_source(app, record, version, verify=False)
+        path = table_source(app, record, version, verify=False)
     except HTTPException as exc:
         detail_obj: dict[str, Any] = exc.detail if isinstance(exc.detail, dict) else {}
         message = detail_obj.get("error", {}).get("message") or str(exc.detail)

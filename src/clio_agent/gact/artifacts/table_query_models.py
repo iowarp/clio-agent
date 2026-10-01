@@ -264,6 +264,55 @@ class TableQueryRequest(_Strict):
         return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
+class RowKey(BaseModel):
+    """A table-query result's stable per-row key (G0): one value per row in
+    ``columns``, same order, same length as every other reported column.
+
+    Documents the ``rowKey`` field of ``POST .../table-query``'s response
+    (``page_processed_table``'s own return is a plain ``dict`` like every
+    other table-query/preview route, so this model is not wired in as a
+    FastAPI ``response_model`` — it exists so the shape has one typed,
+    OpenAPI-visible definition instead of only prose). Absent entirely when
+    the query aggregated (grouped rows have no single source row to key by).
+    """
+
+    column: str
+    values: list[Scalar]
+
+
+class TableExportRequest(_Strict):
+    """``POST /v1/artifacts/{artifact_id}/table-export`` request body.
+
+    Shares ``columns``/``filter``/``aggregate``/``downsample``/``sort`` with
+    :class:`TableQueryRequest` (:meth:`as_query_request` builds one) so an
+    export runs through the identical engine a chart/map/table's own query
+    does -- never a second, divergent implementation. ``scope`` picks between
+    the current (filtered/sorted) view and the full, unfiltered dataset;
+    ``format`` picks the serialization. Neither ``offset`` nor a transfer
+    ``limit`` applies here: an export is never paged or silently sampled (see
+    :mod:`clio_agent.gact.artifacts.table_export`).
+    """
+
+    columns: list[str] = Field(default_factory=list)
+    filters: list[TableFilter] = Field(default_factory=list, alias="filter")
+    aggregate: TableAggregate | None = None
+    downsample: TableDownsample | None = None
+    sort: list[TableSort] = Field(default_factory=list)
+    scope: Literal["current", "full"] = "current"
+    format: Literal["csv", "json", "parquet"] = "csv"
+
+    def as_query_request(self) -> TableQueryRequest:
+        """This export's filter/aggregate/downsample/sort, as a plain query."""
+
+        return TableQueryRequest(
+            columns=self.columns,
+            filter=self.filters,
+            aggregate=self.aggregate,
+            downsample=self.downsample,
+            sort=self.sort,
+        )
+
+
 def _is_scalar(value: Any) -> bool:
     return isinstance(value, (str, int, float, bool)) and value is not None
 
