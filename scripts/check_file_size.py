@@ -147,9 +147,9 @@ RATCHET_BASELINE: dict[str, int] = {
     # comment lines explaining why the stamp is deliberately absent here.
     # MERGE (PR #1298 x #1310): 1030 -> 1032. Both campaigns' call-site lines
     # coexist; neither side's additions were dropped.
-    "src/clio_agent/agent.py": 988,  # MCP refresh moved to gact/mcp_gateway_refresh.py; L1: -4 (executor_work_may_continue deleted)
-    "src/clio_agent/arc/memory.py": 1333,  # #1339: the _events chunk writer cursor moved to arc/lane_chunking.py
-    "src/clio_agent/arc/segments.py": 1057,
+    "src/clio_agent/agent.py": 987,  # MCP refresh moved to gact/mcp_gateway_refresh.py; L1: -4 (executor_work_may_continue deleted)
+    "src/clio_agent/arc/memory.py": 1278,  # #1339: the _events chunk writer cursor moved to arc/lane_chunking.py
+    "src/clio_agent/arc/segments.py": 1032,
     # #900: +4 for the CREATE_BREAKAWAY_FROM_JOB daemon-spawn flag + its rationale.
     # owner ruling 2026-07-14: +3 to route explicit =local through the loud
     # DEGRADED banner (owner module: arc/init_degradation.py).
@@ -167,7 +167,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1439 (C1): 863 -> 843. The version gate + config adoption live in the owner
     # module arc/clio_core_daemon_version.py; the PID-identity helpers moved to
     # arc/pid_identity.py (re-exported here under their old names).
-    "src/clio_agent/arc/storage.py": 826,
     # #737 S2 fold owner module. Crossed the 800 new-file cap restoring the FROZEN
     # arc.op reproducibility contract (§2 / GOAL.md DoD #4): the five working-set write
     # overrides now emit a per-op arc.op via _emit_op so arc.replay rebuilds the live
@@ -581,7 +580,6 @@ RATCHET_BASELINE: dict[str, int] = {
     # gact/agent_blueprint_requires.py (install_refusal_http_exception,
     # path_activation_invalid_http_exception) instead of building the
     # ErrorEnvelope inline here.
-    "src/clio_agent/gact/routes/blueprints.py": 867,
     "src/clio_agent/gact/routes/catalog.py": 898,  # +4: /goal command dispatch wiring (#1080; logic in gact/goal.py)
     # #1201 (adversarial review, PR #1202): +6 for two direct-connect era-
     # classification call sites (call_external_mcp_tool + _external_mcp_inventory's
@@ -892,7 +890,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # #1201 (adversarial review, PR #1202): +4 to register the mcp_yaml doctor
     # sub-check (import + the probe_mcp_yaml_declarations() call); the probe
     # logic lives in the owner module runtime/mcp_launcher.py.
-    "src/clio_agent/runtime/status.py": 1235,
+    "src/clio_agent/runtime/status.py": 1167,
     # #932: +62 for preloaded tool definitions (start() without the list_tools
     # fan-out) and namespace-direct call routing with lazy per-namespace
     # clients — the executor IS the owner module for this.

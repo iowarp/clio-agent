@@ -200,9 +200,13 @@ KEY_NOTES: dict[str, str] = {
         "Path to a clio-core server YAML config the port-resolution logic reads; set to point "
         "liveness probing at a non-default config file."
     ),
+    "arc.namespace": (
+        "clio-core namespace ARC records live under (tags <namespace>/<kind>); empty keeps the "
+        "bare tags. Set to keep two deployments on one clio-core apart."
+    ),
     "arc.store": (
-        'Selects the ARC persistence backend: "cte" (clio-core, default) or "local" (plain '
-        'files); use "local" for guaranteed on-disk durability.'
+        'The ARC store: "cte" (clio-core), the only store; any other value is a typed '
+        "configuration error."
     ),
     "arc.store_config": (
         'Path to the clio-core CTE config used when arc.store is "cte"; set to point ARC at a '

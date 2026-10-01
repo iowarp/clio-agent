@@ -837,14 +837,20 @@ arc.lsm_memtable_size: 1000
 # cost.
 arc.message_part_chunk_segments: 512
 
+# CLIO_ARC_NAMESPACE  (str)  <- src/clio_agent/arc/storage.py
+# clio-core namespace ARC records live under (tags <namespace>/<kind>);
+# empty keeps the bare tags. Set to keep two deployments on one clio-core
+# apart.
+# arc.namespace:  # default unset; resolved in code
+
 # CLIO_SERVER_CONF  (str)  <- src/clio_agent/arc/clio_core_liveness.py
 # Path to a clio-core server YAML config the port-resolution logic reads;
 # set to point liveness probing at a non-default config file.
 # arc.server_conf:  # default unset; resolved in code
 
 # CLIO_ARC_STORE  (str)  <- src/clio_agent/arc/storage.py
-# Selects the ARC persistence backend: "cte" (clio-core, default) or "local"
-# (plain files); use "local" for guaranteed on-disk durability.
+# The ARC store: "cte" (clio-core), the only store; any other value is a
+# typed configuration error.
 arc.store: "cte"
 
 # CLIO_ARC_STORE_CONFIG  (str)  <- src/clio_agent/arc/storage.py

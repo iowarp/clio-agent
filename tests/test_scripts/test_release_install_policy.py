@@ -195,7 +195,7 @@ def test_bundled_runtime_is_precompiled_before_relocation_proof() -> None:
     assert "install/arc_smoke.py" in windows_builder
 
     arc_smoke = _text("install/arc_smoke.py")
-    assert "isinstance(store, ClioCoreStore)" in arc_smoke
+    assert "except ArcStoreUnavailableError" in arc_smoke  # typed: clio-core or exit 1
 
 
 def test_release_workflow_smokes_the_published_registry_tool() -> None:

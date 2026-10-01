@@ -527,7 +527,7 @@ def _append_segment_raw(
         )
         segs.append(seg)
         store._index.add(session_id, scope, seg)
-        store._persist(session_id, scope, just_written=[seg])
+        store._persist(session_id, scope)
         return seg
 
 
