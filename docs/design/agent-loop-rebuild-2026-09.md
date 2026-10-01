@@ -1178,6 +1178,30 @@ design follows from how they will be used.
   - *Online:* advice that proved useful can be kept as a lesson and recalled for similar tasks,
     as a recorded, visible injection, never a silent prompt change.
 
+### Phase 9 progress (`feat/variant-self-refine`, cut from `feat/clio-core-failstop`)
+
+- **Refine's advice reaches the next ClioReAct try** (`99fed16c`). Tested around the real loop
+  on real clio-core, Refine was a sequential BestOfN, and DSPy's feedback call could fail a try
+  (its output did not parse) and spend the try.
+  - For a `ClioReAct` inner, Refine now runs DSPy's BestOfN loop, and clio writes the advice:
+    one LM call reads the previous try from clio-core, and the advice is recorded on the next
+    try's scope as a CLIO addition (`variant_advice`).
+  - The wrapper records each try's score itself, so the winner's line no longer depends on
+    the reward function writing the ledger.
+  - A sabotage run without the advice turns the test red.
+- **`variant.try` and `variant.selected` are highway events** (`d0720271`), shown in the UI.
+- **A parent can spawn a subagent with a strategy** (`ac4a7b09`):
+  `spawn_agent_task(strategy={variant, n, rubric, threshold})`.
+  - Validated by the blueprint parser before any child exists (`invalid_strategy` otherwise).
+  - Carried in the child session's metadata and applied by the builder.
+  - Only the LM judge exists; a human judge is refused typed until the next step.
+- Next:
+  - `draft_alternatives` (parallel tries in one turn);
+  - the human judge as pause and resume over clio-core;
+  - the preference record;
+  - the tabs/carousel UI;
+  - live legs.
+
 ### Tests (the real composition, never a stub)
 
 - BestOfN and Refine wrapped around the real `ClioReAct` on real clio-core, through a scripted
