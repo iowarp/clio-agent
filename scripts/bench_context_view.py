@@ -225,7 +225,7 @@ class _CountingProxy:
 
 
 def instrument_store(store: ClioCoreStore, counters: RpcCounters) -> None:
-    """Count ``store``'s ARCStore ops, bytes and native RPCs (instance-level wrappers)."""
+    """Count ``store``'s ARCStore ops (``put_many`` per record), bytes and native RPCs."""
     orig_put = store.put
     orig_get = store.get
     orig_scan = store.scan
@@ -240,6 +240,17 @@ def instrument_store(store: ClioCoreStore, counters: RpcCounters) -> None:
         if search_text is not None:
             counters.wire_bytes_put += len(search_text.encode("utf-8"))
         orig_put(kind, name, data, tier=tier, search_text=search_text)
+
+    orig_put_many = store.put_many
+
+    def put_many(kind: str, records: Any) -> None:
+        for rec in records:
+            counters.ops["put"] += 1
+            counters.raw_bytes_put += len(rec.data)
+            counters.wire_bytes_put += 4 * math.ceil(len(rec.data) / 3)
+            if rec.search_text is not None:
+                counters.wire_bytes_put += len(rec.search_text.encode("utf-8"))
+        orig_put_many(kind, records)
 
     def get(kind: str, name: str) -> bytes | None:
         counters.ops["get"] += 1
@@ -256,6 +267,7 @@ def instrument_store(store: ClioCoreStore, counters: RpcCounters) -> None:
         orig_delete(kind, name)
 
     store.put = put  # type: ignore[method-assign]
+    store.put_many = put_many  # type: ignore[method-assign]
     store.get = get  # type: ignore[method-assign]
     store.scan = scan  # type: ignore[method-assign]
     store.delete = delete  # type: ignore[method-assign]

@@ -135,6 +135,38 @@ def store_put(store: Any, kind: str, name: str, body: bytes) -> None:
     put_blob_with_retry(AsyncPutTag(store._client, store._tag_ids.get(kind)), name, body)
 
 
+def store_put_many(
+    store: Any, kind: str, blobs: list[tuple[str, bytes]]
+) -> dict[str, RuntimeError]:
+    """Write several blobs of ``store`` concurrently: every ``AsyncPutBlob`` is issued
+    before any is awaited, then each is awaited. A refused blob continues its own bounded
+    retry (:func:`put_blob_with_retry`). Returns ``{name: final refusal}`` of the blobs
+    that were lost (empty when all were written); every blob has completed by then.
+    """
+    from clio_agent.arc.clio_core_retry import (  # noqa: PLC0415
+        note_put_success,
+        put_blob_with_retry,
+    )
+
+    client = store._client
+    tag_id = store._tag_ids.get(kind)
+    issued = [(name, data, client.AsyncPutBlob(tag_id, name, data, 0)) for name, data in blobs]
+    lost: dict[str, RuntimeError] = {}
+    for name, data, future in issued:
+        try:
+            code = await_future(future, op_name="put").wait(0)
+            if code != 0:
+                raise RuntimeError(f"clio-core AsyncPutBlob({name!r}) returned code {code}")
+        except RuntimeError as refused:
+            try:
+                put_blob_with_retry(AsyncPutTag(client, tag_id), name, data, first_failure=refused)
+            except RuntimeError as final:
+                lost[name] = final
+        else:
+            note_put_success()
+    return lost
+
+
 def store_delete(store: Any, kind: str, name: str) -> bool:
     """Delete one blob of ``store`` (a missing one is a no-op), GIL-free."""
     return delete_blob(store._client, store._tag_ids.get(kind), name)

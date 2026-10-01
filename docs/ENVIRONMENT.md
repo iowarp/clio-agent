@@ -45,7 +45,7 @@ These resolve through `clio_agent.conf`: a value under the dotted key in `config
 | `CLIO_ARC_SEARCH_CHUNK_ATOMS` | `arc.search_chunk_atoms` | int | `16` | `src/clio_agent/arc/search_companion.py` |
 | `CLIO_ARC_STORE` | `arc.store` | str | `cte` | `src/clio_agent/arc/storage.py` |
 | `CLIO_ARC_STORE_CONFIG` | `arc.store_config` | str | _(unset)_ | `src/clio_agent/arc/storage.py` |
-| `CLIO_ARC_WS_CHUNK_SEGMENTS` | `arc.ws_chunk_segments` | int | `32` | `src/clio_agent/arc/working_set_fold.py` |
+| `CLIO_ARC_WS_CHUNK_SEGMENTS` | `arc.ws_chunk_segments` | int | `32` | `src/clio_agent/arc/lane_writer.py` |
 | `CLIO_ARTIFACTS_EXPORT_LICENSE` | `artifacts.export_license` | str | `NOASSERTION` | `src/clio_agent/gact/artifacts/export.py` |
 | `CLIO_ARTIFACTS_HASH_MAX_FILE_BYTES` | `artifacts.hash_max_file_bytes` | int | `67108864` | `src/clio_agent/gact/artifacts/hashing.py` |
 | `CLIO_ARTIFACTS_INSTRUMENT_ARG_MAX_BYTES` | `artifacts.instrument_arg_max_bytes` | int | `2048` | `src/clio_agent/gact/artifacts/transforms.py` |

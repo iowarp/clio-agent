@@ -173,7 +173,7 @@ RATCHET_BASELINE: dict[str, int] = {
     # plane byte-identically (the S2 slice had dropped these, breaking replay). Footprint
     # minimized to concise docstrings; the per-op payload passing is irreducible. Ratchet
     # down with the #714/#767 decomposition.
-    "src/clio_agent/arc/working_set_fold.py": 855,  # 11a: view/index/companion/search in owner modules
+    "src/clio_agent/arc/working_set_fold.py": 802,  # 11a: view/index/companion/search in owner modules
     # #1326: adapters.py was 780 lines (under the 800 cap). +56 for: a new
     # _ContextOverflowError typed exception, a _check_context_overflow pre-flight
     # helper (mirrors the guided path's _bound_guided_output_kwargs shape), pre-

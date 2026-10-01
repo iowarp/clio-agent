@@ -867,7 +867,7 @@ arc.store: "cte"
 # point ARC at a hand-authored multi-tier topology.
 # arc.store_config:  # default unset; resolved in code
 
-# CLIO_ARC_WS_CHUNK_SEGMENTS  (int)  <- src/clio_agent/arc/working_set_fold.py
+# CLIO_ARC_WS_CHUNK_SEGMENTS  (int)  <- src/clio_agent/arc/lane_writer.py
 # Working-set atoms held per on-disk chunk of an expert span's content lane
 # before rolling; an append re-puts only the active chunk, so lower bounds
 # bytes per append.

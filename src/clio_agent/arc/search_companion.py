@@ -10,8 +10,9 @@ Layout: a scope's companion is a family of chunk records ``_search/<scope>/<firs
 (named by the ``logical_time`` of their first atom, so a restarted process simply opens
 a new chunk). Each record's body lists its atoms (id, ``logical_time``); its plain-text
 search companion is their text, one atom per line. An append re-puts only the active
-chunk (bounded by ``arc.search_chunk_atoms``). A write that clio-core does not accept is
-a typed :class:`SearchCompanionError` -- the write fails, it is not skipped.
+chunk (bounded by ``arc.search_chunk_atoms``), in the same concurrent batch as its lane
+chunk. A write that clio-core does not accept is a typed :class:`SearchCompanionError`
+-- the write fails, it is not skipped.
 """
 
 from __future__ import annotations
@@ -23,8 +24,9 @@ from dataclasses import dataclass, field
 import msgspec
 
 from clio_agent import conf
+from clio_agent.arc.batch_put import BatchPutError, PutRecord
 from clio_agent.arc.context_view import NON_CONTENT_KINDS
-from clio_agent.arc.loop_guard import LoopThreadStoreWrite, assert_store_write_off_loop
+from clio_agent.arc.loop_guard import assert_store_write_off_loop
 from clio_agent.arc.schema import Segment, segment_text
 from clio_agent.arc.storage import ARCStore
 from clio_agent.errors import ClioError
@@ -134,12 +136,9 @@ class SearchCompanion:
         self._lock = threading.Lock()
         self._active: dict[tuple[str, str], _Chunk] = {}
 
-    def add(self, session_id: str, atoms: Sequence[Segment]) -> None:
-        """Index content atoms (each once, in order); the active chunk of each scope is re-put.
-
-        Raises:
-            SearchCompanionError: clio-core did not accept a chunk.
-        """
+    def stage(self, session_id: str, atoms: Sequence[Segment]) -> list[PutRecord]:
+        """Add content atoms (each once, in order) to their scopes' active chunks and
+        return the chunk records to put (the caller puts them with its own write)."""
         touched: dict[str, _Chunk] = {}
         capacity = _capacity()
         with self._lock:
@@ -150,40 +149,45 @@ class SearchCompanion:
                 chunk = self._active.get(key)
                 if chunk is None or len(chunk.atoms) >= capacity:
                     if chunk is not None:
-                        touched.setdefault(atom.scope, chunk)  # finish the full one
+                        touched.setdefault(f"{atom.scope}\0{chunk.record_scope}", chunk)
                     chunk = _Chunk(search_chunk_scope(atom.scope, atom.logical_time))
                     self._active[key] = chunk
                 chunk.atoms.append((atom.id, atom.logical_time))
                 chunk.texts.append(segment_text(atom).replace("\n", " "))
-                touched[atom.scope] = chunk
-            pending = [
-                (scope, chunk.record_scope, list(chunk.atoms), "\n".join(chunk.texts))
-                for scope, chunk in touched.items()
+                touched[f"{atom.scope}\0{chunk.record_scope}"] = chunk
+            return [
+                PutRecord(
+                    name=self._record_name(session_id, chunk.record_scope),
+                    data=msgspec.msgpack.encode(
+                        SearchChunkBody(scope=key.split("\0", 1)[0], atoms=list(chunk.atoms))
+                    ),
+                    search_text="\n".join(chunk.texts) or " ",
+                )
+                for key, chunk in touched.items()
             ]
-        for scope, record_scope, entries, text in pending:
-            self._put(session_id, scope, record_scope, entries, text)
 
-    def _put(
-        self,
-        session_id: str,
-        scope: str,
-        record_scope: str,
-        entries: list[tuple[str, int]],
-        text: str,
-    ) -> None:
-        assert_store_write_off_loop("segments.put", scope=record_scope)
-        body = msgspec.msgpack.encode(SearchChunkBody(scope=scope, atoms=entries))
+    def add(self, session_id: str, atoms: Sequence[Segment]) -> None:
+        """Stage ``atoms`` and put their chunks now (the one-time migration backfill).
+
+        Raises:
+            SearchCompanionError: clio-core did not accept a chunk.
+        """
+        records = self.stage(session_id, atoms)
+        if not records:
+            return
+        assert_store_write_off_loop("segments.put", scope=SEARCH_FAMILY)
         try:
-            self._store.put(
-                "segments",
-                self._record_name(session_id, record_scope),
-                body,
-                search_text=text or " ",
-            )
-        except LoopThreadStoreWrite:
-            raise
-        except Exception as exc:  # noqa: BLE001 - re-raised typed: the write failed
-            raise SearchCompanionError(session_id, scope, exc) from exc
+            self._store.put_many("segments", records)
+        except BatchPutError as exc:
+            raise SearchCompanionError(session_id, SEARCH_FAMILY, exc) from exc
+
+    def unstage(self, session_id: str, atom: Segment) -> None:
+        """Take back an atom whose own write was lost (it never reaches the companion)."""
+        with self._lock:
+            chunk = self._active.get((session_id, atom.scope))
+            if chunk is not None and chunk.atoms and chunk.atoms[-1][0] == atom.id:
+                chunk.atoms.pop()
+                chunk.texts.pop()
 
     def chunk_atoms(self, session_id: str, record_scope: str) -> list[tuple[str, int]]:
         """The atoms a companion chunk covers, read from clio-core.

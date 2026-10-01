@@ -46,7 +46,6 @@ from typing import Any, Callable
 
 import msgspec
 
-from clio_agent import conf
 from clio_agent.arc.context_search import ContextSearch
 from clio_agent.arc.context_view import (
     STEP_OPEN_KIND,
@@ -56,28 +55,29 @@ from clio_agent.arc.context_view import (
     ViewSnapshot,
     fold_atoms,
 )
-from clio_agent.arc.lane_chunking import chunk_for_append
 from clio_agent.arc.lane_index import (
-    INDEX_SCOPE,
     WS_CONTENT_FAMILY,
     SessionIndex,
     chunks_holding,
-    encode_index,
     is_ws_content_scope,
-    note_atom,
     set_anchor,
     ws_content_partition,
 )
 from clio_agent.arc.lane_migration import load_or_migrate
+from clio_agent.arc.lane_writer import LaneWriter
 from clio_agent.arc.live import is_events_scope
-from clio_agent.arc.loop_guard import LoopThreadStoreWrite, assert_store_write_off_loop
-from clio_agent.arc.schema import WORKING_SET_KINDS, Segment, SegmentKind, segment_text
+from clio_agent.arc.schema import (
+    WORKING_SET_KINDS,
+    Segment,
+    SegmentKind,
+    segment_text,
+)
 from clio_agent.arc.search_companion import (
     SearchCompanion,
     is_search_scope,
 )
 from clio_agent.arc.segment_ids import ContextOpLogError, require_live
-from clio_agent.arc.segments import ArcPersistError, SegmentStore
+from clio_agent.arc.segments import SegmentStore
 from clio_agent.arc.segments import _coerce_content as _coerce_content
 from clio_agent.arc.storage import ARCStore
 
@@ -93,16 +93,6 @@ __all__ = [
     "make_segment_store",
     "ws_content_partition",
 ]
-
-
-def _chunk_capacity() -> int:
-    """Atoms per content-lane chunk before the writer rolls (file -> env -> default)."""
-    return conf.resolve(
-        "arc.ws_chunk_segments",
-        env="CLIO_ARC_WS_CHUNK_SEGMENTS",
-        default=32,
-        cast=conf.as_int,
-    )
 
 
 def _default_search_indexed(scope: str) -> bool:
@@ -196,7 +186,7 @@ class _Session:
     views: dict[str, ContextView] = field(default_factory=dict)
 
 
-class FoldingSegmentStore(ContextSearch, SegmentStore):
+class FoldingSegmentStore(LaneWriter, ContextSearch, SegmentStore):
     """A :class:`SegmentStore` whose working set is a fold of the canonical log.
 
     Working-set-scope writes (any scope outside the reserved ``_events`` family) go to
@@ -289,53 +279,6 @@ class FoldingSegmentStore(ContextSearch, SegmentStore):
                 atoms.extend(self._segs(session_id, chunk))
         return sorted(atoms, key=lambda s: s.logical_time)
 
-    def _put_index(self, session_id: str, index: SessionIndex) -> None:
-        """Put the session index record; a refusal is a typed :class:`ArcPersistError`."""
-        assert_store_write_off_loop("segments.put", scope=INDEX_SCOPE)
-        try:
-            self._store.put(
-                "segments", self._record_name(session_id, INDEX_SCOPE), encode_index(index)
-            )
-        except LoopThreadStoreWrite:
-            raise
-        except Exception as exc:  # noqa: BLE001 - re-raised typed; the write failed
-            raise ArcPersistError(session_id, INDEX_SCOPE, exc) from exc
-
-    def _mark_absent(self, session_id: str, chunk: str) -> None:
-        """A chunk the index does not list is not stored: load it as empty, no get."""
-        with self._lock_for(session_id, chunk):
-            key = (session_id, chunk)
-            if key not in self._loaded:
-                self._scopes[key] = []
-                self._loaded.add(key)
-
-    def _write(self, session_id: str, partition: str, atom: Segment) -> str:
-        """Persist ONE atom to its partition's active chunk; returns the chunk scope.
-
-        Index first (it only ever lists more than is stored), then the chunk. Never
-        runs ``_finish_write`` (§2.9). Held under the partition's writer lock so chunk
-        choice and persist are one step per partition.
-        """
-        state = self._session(session_id)
-        with self._sessions_lock:
-            writer = self._partition_locks.setdefault((session_id, partition), threading.Lock())
-        with writer:
-            with state.lock:
-                if partition not in state.index.chunks:
-                    self._mark_absent(session_id, partition)
-            chunk = chunk_for_append(self, session_id, partition, capacity=_chunk_capacity())
-            with state.lock:
-                if chunk not in state.index.chunks:
-                    self._mark_absent(session_id, chunk)
-                if note_atom(state.index, chunk, atom):
-                    self._put_index(session_id, state.index)
-            with self._lock_for(session_id, chunk):
-                segs = self._segs(session_id, chunk)
-                segs.append(atom)
-                self._index.add(session_id, chunk, atom)
-                self._persist(session_id, chunk)
-        return chunk
-
     def _emit_op(
         self,
         op: str,
@@ -417,9 +360,10 @@ class FoldingSegmentStore(ContextSearch, SegmentStore):
     ) -> str:
         """Emit, persist and fold in one op's atom; index its text. Returns its chunk."""
         self._emit_op(op, session_id, view.scope, logical_time=atom.logical_time, **emit)
-        chunk = self._write(session_id, ws_content_partition(atom.expert_span_id), atom)
+        chunk, late = self._write(session_id, ws_content_partition(atom.expert_span_id), atom)
         view.apply_op(atom)
-        self._search.add(session_id, [atom])
+        if late is not None:
+            raise late
         return chunk
 
     # ---- overridden write surface --------------------------------------
@@ -482,9 +426,10 @@ class FoldingSegmentStore(ContextSearch, SegmentStore):
                 step=step,
                 logical_time=atom.logical_time,
             )
-            self._write(session_id, ws_content_partition(expert_span_id), atom)
+            _chunk, late = self._write(session_id, ws_content_partition(expert_span_id), atom)
             view.append(atom)
-            self._search.add(session_id, [atom])
+            if late is not None:
+                raise late
         return atom
 
     def insert(
@@ -734,7 +679,9 @@ class FoldingSegmentStore(ContextSearch, SegmentStore):
                 expert_span_id=expert_span_id,
                 run_span_id=run_span_id,
             )
-            self._write(session_id, ws_content_partition(expert_span_id), atom)
+            _chunk, late = self._write(session_id, ws_content_partition(expert_span_id), atom)
+            if late is not None:  # breadcrumbs carry no text: never set, kept typed
+                raise late
         return atom
 
     # ---- overridden read surface ---------------------------------------

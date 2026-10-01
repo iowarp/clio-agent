@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from clio_agent.arc.batch_put import BatchPutError
 from clio_agent.arc.memory import ARCMemory
 from clio_agent.arc.segments import ArcPersistError
 
@@ -28,16 +29,17 @@ def test_a_failed_put_raises_and_memory_matches_clio_core(
     arc = ARCMemory(data_dir=str(tmp_path / "arc"))
     arc.append_segment("s1", "agentA", "thought", {"text": "kept"}, step=0)
     store = arc._store
-    real_put = store.put
+    real_put_many = store.put_many
     failures = {"left": 1}
 
-    def flaky_put(kind: str, name: str, data: bytes, **kw: Any) -> None:
+    def flaky_put_many(kind: str, records: Any) -> None:
+        # The append's batch (lane chunk + search companion): clio-core keeps none of it.
         if kind == "segments" and failures["left"]:
             failures["left"] -= 1
-            raise RuntimeError("clio-core refused the put")
-        real_put(kind, name, data, **kw)
+            raise BatchPutError(kind, [], {r.name: RuntimeError("refused") for r in records})
+        real_put_many(kind, records)
 
-    monkeypatch.setattr(store, "put", flaky_put)
+    monkeypatch.setattr(store, "put_many", flaky_put_many)
 
     with pytest.raises(ArcPersistError):
         arc.append_segment("s1", "agentA", "thought", {"text": "never stored"}, step=1)
