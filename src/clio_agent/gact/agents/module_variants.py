@@ -89,6 +89,11 @@ class _VariantRunLedger:
     # Per-try forked segment ids (``variant_lines.fork_try``): the winner's line is
     # what it added after them.
     forks: dict[int, list[str] | None] = field(default_factory=dict)
+    # Each scored try's prediction, and whether clio writes Refine's advice between tries
+    # (a ``react`` inner: DSPy's hint_ advice cannot reach ClioReAct).
+    answers: dict[int, Any] = field(default_factory=dict)
+    advise: bool = False
+    threshold: float | None = None
 
 
 _LEDGER: contextvars.ContextVar[_VariantRunLedger | None] = contextvars.ContextVar(
@@ -215,6 +220,8 @@ class _RunKeyedModule(dspy.Module):
         try:
             if ledger is not None:
                 ledger.forks[run_index] = variant_lines.fork_try(run_index)
+                if ledger.advise and run_index > 0:
+                    self._advise(ledger, run_index, kwargs)
             return self.inner(**kwargs)
         except Exception as exc:  # noqa: BLE001 - record the REAL error the engine only prints
             # The engine (`dspy.BestOfN`/`Refine`) catches + PRINTS each failed try and
@@ -231,6 +238,23 @@ class _RunKeyedModule(dspy.Module):
         finally:
             _ctx.reset(token)
 
+    def _advise(self, ledger: _VariantRunLedger, run_index: int, kwargs: dict) -> None:
+        """Write Refine's advice for this try from the previous one, onto its scope."""
+        from clio_agent.gact.agents import variant_advice  # noqa: PLC0415
+
+        previous = run_index - 1
+        score = dict(ledger.scores).get(previous, 0.0)
+        answer = str(getattr(ledger.answers.get(previous), "answer", "") or "")
+        advice = variant_advice.advise(
+            self.get_lm() or dspy.settings.lm,
+            task=kwargs,
+            attempt=variant_lines.try_steps(previous),
+            answer=answer,
+            score=score,
+            threshold=ledger.threshold,
+        )
+        variant_lines.record_advice(run_index, advice, variant_advice.ADVICE_SOURCE)
+
 
 class _RunScopedVariantMixin:
     """Bracket a ``dspy.BestOfN``/``Refine`` ``forward`` with the per-call run ledger.
@@ -245,12 +269,35 @@ class _RunScopedVariantMixin:
     _clio_variant: str = ""
     _clio_agent_id: str = ""
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)  # type: ignore[call-arg]
+        judge = self.reward_fn  # type: ignore[has-type]
+
+        def recorded_reward(call_kwargs: dict, pred: Prediction) -> float:
+            """Score a try and record it: selection never depends on the reward fn."""
+            score = float(judge(call_kwargs, pred))
+            ledger = _LEDGER.get()
+            if ledger is not None:
+                ledger.scores.append((ledger.current_index, score))
+                ledger.answers[ledger.current_index] = pred
+            return score
+
+        self.reward_fn = recorded_reward
+
     def forward(self, **kwargs: Any) -> Any:
+        from clio_agent.gact.agents.clio_react import ClioReAct  # noqa: PLC0415
+
         ledger = _VariantRunLedger()
+        inner = getattr(getattr(self, "module", None), "inner", None)
+        ledger.advise = isinstance(self, dspy.Refine) and isinstance(inner, ClioReAct)
+        ledger.threshold = getattr(self, "threshold", None)
+        # Refine over ClioReAct: DSPy's BestOfN loop, with clio's advice between tries
+        # (DSPy's own feedback call cannot reach the loop and only costs a call).
+        engine = dspy.BestOfN.forward if ledger.advise else super().forward  # type: ignore[misc]
         token = _LEDGER.set(ledger)
         try:
             try:
-                pred = super().forward(**kwargs)  # type: ignore[misc]
+                pred = engine(self, **kwargs) if ledger.advise else engine(**kwargs)
             except Exception as engine_exc:  # noqa: BLE001
                 if ledger.terminal_refusal is not None:
                     # #1282 F7: a deterministic MCP protocol refusal must reach
@@ -399,8 +446,6 @@ def compile_reward_fn(spec: VariantSpec, *, agent_id: str) -> Callable[[dict, Pr
                 exc,
             )
             score = 0.0
-        if ledger is not None:
-            ledger.scores.append((run_index, score))
         logger.info("variant.reward agent=%s run_index=%d score=%.3f", agent_id, run_index, score)
         return score
 
