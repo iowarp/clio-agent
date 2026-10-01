@@ -885,14 +885,31 @@ guard `check_silent_fallbacks.py` reported 0 while 583 broad excepts were hidden
 | A failed event persist was logged and still sent to trace and SSE (24 `blueprint.install.reason` lost in 11 live runs) | The persist failure raises. This surfaced blueprint install, uninstall and activation doing clio-core writes on the event loop; they now run off the loop. |
 | Context search on clio-core (no indexer chimod, #905) answered 200 with empty hits | `SearchUnavailableError`, and a typed 503 on the route. |
 | Doctor and status still offered a local mode | clio-core is always required; the local rows and skips are removed. |
+| A write clio-core refused left memory holding context clio-core never stored, or dropped the segment | A failed persist discards the scope's in-memory copy (the next read reloads clio-core) and raises `ArcPersistError`. |
+| A slow but healthy daemon was a hard failure: the post-attach probe after 10 s, every RPC after 30 s | A stall is a whole window in which the daemon makes **no progress** (neither its CPU time nor its I/O advances); a working daemon is waited for, up to `arc.liveness.max_wait_s` (600 s). |
+| Every store construction re-ran the post-attach probe, and a failure there released the process's attach and stopped the shared daemon | The probe runs once per attach. |
+| The daemon stop gave 3 s (1 s once the helper exited) then hard-killed, mid-flush under load: records lost or read back corrupted | The stop waits on the daemon's own progress and kills only a stalled daemon, loudly. A record survives an explicit stop and a normal process exit. |
+| `notify_tool_observer` swallowed observer failures, and the external-MCP route ran its observer on the event loop: its `tool.call.*` events were lost | Observer failures propagate; the route records off the loop. |
+| A finished child's result was consumed (written to clio-core) on the event loop: refused, and the swallow hid it, so the parent's next turn never saw it | Consumed on the turn executor. |
+| A misplaced decorator from the namespace change: `get()` lost its liveness guard and every tag lookup nested a pooled RPC (pool deadlock under concurrent first writes) | Fixed; a test pins that `tag()` is pure and every native op keeps its guard. |
 
 Store namespaces (`<ns>/<kind>` tags; the default empty namespace keeps existing keys) give every
 test its own namespace on the worker's private daemon.
 
+**The suite now runs on clio-core.** Every test runs ARC on its worker's private daemon, in its own
+namespace. A data dir is a namespace, and app lifespans never stop the worker's daemon.
+- 2026-10-01: **10,214 passed** in 21 min, the same time as on local files. The one failure is the
+  HPC MCP integration test, which passes alone; its MCP discovery probe uses fixed timeouts
+  (next item).
+- Several real bugs were hidden by the swallows and surfaced only once tests ran on clio-core:
+  the observer events, the child-result consumption, and the activation and install event writes.
+
 **Remaining.**
 
 - *The rest of the inventory:*
-  - writes that change memory before they persist, and segments dropped on an encode failure;
+  - the MCP server discovery probe's fixed timeouts (first-run failure on a slow machine);
+  - the seeded clio-core file tier is a fixed 50 GB, and the preflight then refuses a smaller
+    disk; it must be sized to fit the machine;
   - the loop running without ARC on in-memory steps (to become typed, except the loud DSPy
     `History` mode, which must be built);
   - context rebuilt from the transcript file;
