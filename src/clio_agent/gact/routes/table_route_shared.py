@@ -32,55 +32,28 @@ DISCONNECT_POLL_S = 0.25
 def import_table_engine_once(*, export: bool = False) -> None:
     """Import the table-query (and, if ``export``, table-export) engine
     (numpy/pyarrow) on the CURRENT thread, at route-registration time -- not
-    the first time a request reaches a worker thread (#1551 review item 6:
-    numpy's C extension has been observed to fail with ``ImportError:
-    numpy._core.multiarray failed to import`` when its FIRST import in the
-    process happens inside ``asyncio.to_thread`` instead of the main
-    thread/event loop).
+    the first time a request reaches a worker thread (#1551 review item 6).
 
-    Defensively retries ONCE on the transient corruption a concurrent numpy
-    import elsewhere in the process (observed: another import path racing
-    this one) can cause -- the same root symptom, or a nonsensical
-    downstream ``TypeError: data type 'bool' not understood`` from numpy's
-    own C extension reading a half-initialized module. A clean re-import
-    after the racing party finishes reliably recovers; this is a known
-    numpy fragility under concurrent import, not something perfect
-    ordering alone can rule out everywhere in a large app.
+    numpy/pyarrow themselves are pre-imported even earlier than this, at the
+    very top of ``build_app`` (the app factory), specifically so this call
+    and every other importer in the process always find them already fully
+    initialized -- see that pre-import's own comment for the root-caused
+    race (``_construct_agent_async``'s executor thread importing ``dspy``,
+    which transitively imports numpy) this once worked around with a
+    retry-and-purge of ``sys.modules`` instead of fixing. That retry is
+    deleted: purging and re-importing numpy mid-process does not give a
+    clean module -- numpy's C extension does not support being initialized
+    twice in one process, so a purge-and-retry can leave two incompatible
+    numpy objects alive in different already-imported modules, which is
+    worse than the original failure and silent about it. A failure here now
+    surfaces as a typed startup error, not a swallowed warning.
     """
 
     import importlib  # noqa: PLC0415
 
-    def _do_import() -> None:
-        importlib.import_module("clio_agent.gact.artifacts.table_query")
-        if export:
-            importlib.import_module("clio_agent.gact.artifacts.table_export")
-
-    try:
-        _do_import()
-    except (ImportError, TypeError) as exc:
-        logger.warning(
-            "table engine import raced a concurrent numpy import (%r); "
-            "retrying once after clearing the partially-initialized module.",
-            exc,
-        )
-        import sys  # noqa: PLC0415
-
-        stale = [
-            name
-            for name in sys.modules
-            if name == "numpy"
-            or name.startswith("numpy.")
-            or name == "pyarrow"
-            or name.startswith("pyarrow.")
-            or name
-            in {
-                "clio_agent.gact.artifacts.table_query",
-                "clio_agent.gact.artifacts.table_export",
-            }
-        ]
-        for name in stale:
-            del sys.modules[name]
-        _do_import()
+    importlib.import_module("clio_agent.gact.artifacts.table_query")
+    if export:
+        importlib.import_module("clio_agent.gact.artifacts.table_export")
 
 
 def owned_error(

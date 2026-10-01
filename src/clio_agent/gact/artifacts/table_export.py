@@ -173,7 +173,9 @@ def resolve_export_table(
     """Resolve the table an export request should serialize, per ``scope``."""
 
     if scope == "full":
-        return _full_scope_result(source, fmt, request, max_rows=max_rows, cancellation=cancellation)
+        return _full_scope_result(
+            source, fmt, request, max_rows=max_rows, cancellation=cancellation
+        )
     return _current_scope_result(source, fmt, request, max_rows=max_rows, cancellation=cancellation)
 
 

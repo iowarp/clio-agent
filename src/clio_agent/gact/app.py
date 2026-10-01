@@ -41,6 +41,35 @@ from clio_agent.gact.diagnostics import (  # noqa: E402,F401
 
 _install_sigusr1_diagnostic()
 
+# numpy/pyarrow, on THIS thread (module import, i.e. whichever thread first
+# does `import clio_agent.gact.app` -- the main thread in every real entry
+# point and the overwhelming majority of tests), before ANYTHING else in the
+# process can race them. Root-caused (numpy-race follow-up to #1551): dspy's
+# own `dspy.utils.lazy_import._LazyModule._load()` calls
+# `spec.loader.exec_module(module)` directly on a brand-new module object,
+# bypassing Python's per-module import lock entirely. If numpy/pyarrow are
+# not ALREADY the real, fully-materialized module in `sys.modules` by the
+# time something calls `require("numpy")` (inside `import dspy`, which
+# `_construct_agent_async`'s executor thread runs off the main thread/event
+# loop), dspy inserts its own lazy PROXY into `sys.modules["numpy"]`; a
+# later *standard* `import numpy`, or pyarrow's C extension touching numpy,
+# both just find that proxy already "imported" and defer to its unlocked
+# `_load()`, which can then run concurrently with another thread doing the
+# same thing -- two independent executions of `numpy/__init__.py` mutating
+# numpy's C-level type registry at once (confirmed live via a
+# `sys.addaudithook` probe and a targeted repro: `ImportError:
+# numpy._core.multiarray failed to import` / `TypeError: data type 'bool'
+# not understood`, 15/15 runs with a naive ordering). Doing this inside
+# `build_app()` is NOT early enough -- a thread that started importing dspy
+# before `build_app()` was even called (observed: a prior test's still-
+# running agent-construction thread, since that executor is not joined
+# before its TestClient context exits) can still beat it there. Module
+# import time is the earliest point every caller (production entry point,
+# every test file importing `build_app`) shares, so it is the only point
+# that is not itself part of the race.
+import numpy  # noqa: E402, F401
+import pyarrow  # noqa: E402, F401
+
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -1114,6 +1143,26 @@ def build_app(
     constructs a real ``ClioAgent`` and passes it here.
     """
 
+    # numpy/pyarrow, on THIS thread, before anything else: the FIRST thing
+    # this factory does, while it is still the only thing running in the
+    # process (no lifespan task, no executor thread exists yet). Root-caused
+    # (#1551 follow-up): `_construct_agent_async`'s `_build()` runs `import
+    # dspy` on a `run_in_executor` worker thread; `import dspy` transitively
+    # imports numpy. A probe (`sys.addaudithook` on the "import" event) and a
+    # targeted repro confirmed that thread's `import dspy` racing a second,
+    # independent `import numpy` on the main thread (previously
+    # `table_route_shared.import_table_engine_once`'s own first touch, at
+    # route-registration time, i.e. already DURING this same factory call)
+    # reproduces numpy's C extension corruption 15/15 runs -- ``ImportError:
+    # numpy._core.multiarray failed to import`` or a downstream ``TypeError:
+    # data type 'bool' not understood``. Importing both here, before
+    # `build_app` has done anything else, makes that race structurally
+    # impossible: every later importer (table-query's own route registration
+    # below, the agent-construction executor thread, anything else) finds a
+    # fully-initialized module already in ``sys.modules`` and never touches
+    # the C extension's own init path at all. See the `import litellm`
+    # pre-import a few lines into `_construct_agent_async` for the same
+    # pattern applied earlier to an analogous litellm race.
     app = FastAPI(
         title="CLIO GACT v0.2",
         version=GACT_BACKEND_VERSION,

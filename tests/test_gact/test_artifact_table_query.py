@@ -1526,41 +1526,124 @@ def test_route_registration_imports_the_query_engine_eagerly_on_the_main_thread(
             sys.modules.pop(module_name, None)
 
 
-def test_eager_import_retries_once_on_a_simulated_concurrent_import_corruption() -> None:
-    """#1551 review item 6: a concurrent numpy import elsewhere in the
-    process (observed: `dspy`'s own lazy loader, triggered by nothing more
-    than a bare ``build_app()`` in a fresh process) can corrupt numpy's
-    partially-initialized state on the FIRST attempt; a clean retry recovers.
-    Simulated here (rather than relying on reproducing the real race, which
-    is environment-timing-dependent) by making the first import attempt
-    raise the exact observed symptom."""
+def test_import_table_engine_once_never_retries_or_purges_sys_modules() -> None:
+    """numpy-race follow-up: the retry-and-purge this function used to do on
+    ImportError/TypeError is DELETED (it hid a real concurrent-import defect
+    behind two incompatible numpy module objects, since numpy's C extension
+    does not support being initialized twice in one process). This asserts
+    the replacement contract directly: `import_table_engine_once` calls
+    `importlib.import_module` EXACTLY ONCE per module, and a failure
+    propagates as-is -- no `except`, no `sys.modules` mutation, no retry.
+    """
 
-    import sys
+    import importlib
 
-    attempts = {"count": 0}
-    real_import_module = __import__("importlib").import_module
+    calls: list[str] = []
+    real_import_module = importlib.import_module
 
-    def _flaky_import(name: str, *args: Any, **kwargs: Any) -> Any:
-        if name == "clio_agent.gact.artifacts.table_query":
-            attempts["count"] += 1
-            if attempts["count"] == 1:
-                raise ImportError("numpy._core.multiarray failed to import")
+    def _counting_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        calls.append(name)
         return real_import_module(name, *args, **kwargs)
 
-    module_name = "clio_agent.gact.artifacts.table_query"
-    original = sys.modules.pop(module_name, None)
-    try:
-        import importlib
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(importlib, "import_module", _counting_import)
+        shared_route.import_table_engine_once(export=True)
 
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(importlib, "import_module", _flaky_import)
+    assert calls == [
+        "clio_agent.gact.artifacts.table_query",
+        "clio_agent.gact.artifacts.table_export",
+    ], "exactly one import call per module -- no retry loop"
+
+    def _raising_import(name: str, *args: Any, **kwargs: Any) -> Any:
+        raise ImportError("numpy._core.multiarray failed to import")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(importlib, "import_module", _raising_import)
+        with pytest.raises(ImportError, match="numpy._core.multiarray"):
             shared_route.import_table_engine_once()
-    finally:
-        if original is not None:
-            sys.modules[module_name] = original
 
-    assert attempts["count"] >= 1
-    assert module_name in sys.modules
+
+def test_build_app_survives_a_racing_dspy_import_in_a_fresh_process(tmp_path: Path) -> None:
+    """numpy-race follow-up, end to end: in a FRESH interpreter (so numpy and
+    pyarrow are not already cached from some earlier import in this test
+    session), start a background thread that imports `dspy` -- exactly what
+    `_construct_agent_async`'s executor thread does, and at the same point
+    in the real startup sequence: strictly AFTER `build_app()` returns (that
+    executor thread is only scheduled from the lifespan "startup" handler,
+    which ASGI guarantees runs after the factory returns -- this test must
+    not race the two artificially earlier than production ever would).
+
+    Root cause (confirmed live, not just reasoned about): `dspy`'s own
+    `dspy.utils.lazy_import._LazyModule._load()` calls
+    `spec.loader.exec_module(module)` directly on a brand-new module object
+    -- bypassing Python's own per-module import lock entirely. If `numpy`/
+    `pyarrow` are not ALREADY the real, fully-materialized module in
+    `sys.modules` by the time anything calls `require("numpy")` (which
+    happens somewhere inside `import dspy`), dspy inserts its own lazy
+    proxy into `sys.modules["numpy"]`; a later *standard* `import numpy` or
+    pyarrow's C extension touching numpy both just find that proxy already
+    "imported" and defer to its unlocked `_load()`, which can then run
+    concurrently with another thread doing the same -- two independent
+    executions of `numpy/__init__.py` mutating numpy's C-level type
+    registry at once. `ImportError: numpy._core.multiarray failed to
+    import` / `TypeError: data type 'bool' not understood` reproduced
+    15/15 runs with a naive ordering; pre-importing the REAL numpy/pyarrow
+    before build_app does anything else closes it, because
+    `dspy.utils.lazy_import.require` checks `sys.modules` first and returns
+    the real module directly when it is already there (never creating a
+    proxy at all).
+    """
+
+    script = tmp_path / "race_check.py"
+    script.write_text(
+        # Worst case, deliberately: the racing thread starts importing dspy
+        # BEFORE this process has imported `clio_agent.gact.app` at all (not
+        # just before `build_app()` is called) -- the only ordering that
+        # actually tests the module-import-time pre-import's own claim: it
+        # is the EARLIEST point, so nothing can race ahead of it.
+        "import threading\n"
+        "def _dspy_thread():\n"
+        "    import dspy  # noqa: F401\n"
+        "t = threading.Thread(target=_dspy_thread, name='dspy-build-thread')\n"
+        "t.start()\n"
+        "from fastapi.testclient import TestClient\n"
+        "from clio_agent.gact.app import build_app\n"
+        "from clio_agent.arc.live import _MemoryStore\n"
+        "from clio_agent.arc.memory import ARCMemory\n"
+        "import tempfile as _tf, os as _os\n"
+        "arc = ARCMemory(data_dir=_tf.mkdtemp(dir=_os.getcwd()), store=_MemoryStore())\n"
+        "app = build_app(sessions_path=None, arc=arc)\n"
+        "t.join(timeout=30)\n"
+        "client = TestClient(app)\n"
+        "ws = client.post('/v1/workspaces', json={'name': 'race', 'root_path': str(__import__('pathlib').Path.cwd())}).json()['id']\n"
+        "sid = client.post('/v1/sessions', json={'workspace_id': ws}).json()['id']\n"
+        "import tempfile, os\n"
+        "fd, path = tempfile.mkstemp(suffix='.csv', dir=os.getcwd())\n"
+        "os.write(fd, b'sensor,t,value\\na,0,1.0\\na,1,2.0\\n')\n"
+        "os.close(fd)\n"
+        "pin = client.post(f'/v1/sessions/{sid}/artifacts/pin', json={'path': os.path.basename(path)})\n"
+        "assert pin.status_code == 200, pin.text\n"
+        "artifact_id = pin.json()['pinned']['artifact_id']\n"
+        "resp = client.post(f'/v1/artifacts/{artifact_id}/table-query', json={'columns': ['sensor']})\n"
+        "assert resp.status_code == 200, resp.text\n"
+        "print('RACE_CHECK_OK')\n",
+        encoding="utf-8",
+    )
+    import os
+    import subprocess
+    import sys as _sys
+
+    repo_root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [_sys.executable, str(script)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(repo_root / "src")},
+    )
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    assert "RACE_CHECK_OK" in result.stdout
 
 
 def test_route_registration_eager_import_does_not_block_a_real_first_query(

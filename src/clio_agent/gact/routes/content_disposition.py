@@ -38,7 +38,7 @@ def content_disposition(filename: str, *, disposition: str = "attachment") -> st
 
     ascii_fallback = _ascii_fallback(filename)
     encoded = quote(filename, safe="")
-    return f'{disposition}; filename="{ascii_fallback}"; filename*=UTF-8\'\'{encoded}'
+    return f"{disposition}; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded}"
 
 
 __all__ = ["content_disposition"]

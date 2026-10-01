@@ -245,7 +245,12 @@ def test_export_too_large_refuses_even_with_an_explicit_sort(
     response = _export(
         env,
         artifact_id,
-        {"columns": ["sensor", "value"], "sort": [{"column": "value"}], "scope": "current", "format": "csv"},
+        {
+            "columns": ["sensor", "value"],
+            "sort": [{"column": "value"}],
+            "scope": "current",
+            "format": "csv",
+        },
     )
 
     assert response.status_code == 413, response.text
@@ -264,9 +269,7 @@ def test_full_scope_export_too_large_also_refuses(
     monkeypatch.setattr(route, "table_export_max_rows", lambda: 2)
     artifact_id = env.pin_csv("sensors.csv", _SENSORS_CSV)
 
-    response = _export(
-        env, artifact_id, {"columns": ["sensor"], "scope": "full", "format": "csv"}
-    )
+    response = _export(env, artifact_id, {"columns": ["sensor"], "scope": "full", "format": "csv"})
 
     assert response.status_code == 413, response.text
     assert response.json()["error"]["error"] == "export_too_large"
