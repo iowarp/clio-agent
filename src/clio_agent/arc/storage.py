@@ -415,6 +415,7 @@ class ClioCoreStore:
     """
 
     _namespace = ""  # the default (bare-tag) namespace; set per instance in __init__
+    _attach_verified = False  # the post-attach probe ran (once per process attach)
 
     _initialized = False  # process-global init guard (the runtime inits exactly once)
     _init_lock = threading.Lock()
@@ -444,9 +445,17 @@ class ClioCoreStore:
         # binding, so a dead daemon raises ClioCoreRuntimeLostError instead of AV-ing the
         # host process (clio-core#722). See clio_agent.arc.clio_core_liveness.
         self._gate = LivenessGate(config_path=config_path, log_level=log_level)
-        clio_core_attach.verify_post_attach(
-            self, on_failure=lambda: runtime_stop.release_failed_attach(config_path, log_level)
-        )
+        # The probe proves the process's FRESH attach answers one real RPC; it runs once
+        # per attach. A later store (another namespace) must not re-probe: under load a
+        # re-probe failing used to release the process's attach and stop the shared
+        # daemon for every store. A daemon lost later is the per-op liveness gate's job.
+        with type(self)._init_lock:
+            if not type(self)._attach_verified:
+                clio_core_attach.verify_post_attach(
+                    self,
+                    on_failure=lambda: runtime_stop.release_failed_attach(config_path, log_level),
+                )
+                type(self)._attach_verified = True
         logger.info(
             "ClioCoreStore active: clio-core is the ARC backend (shared daemon runtime). "
             "The DEFAULT config is a DRAM hot tier + file cold tier; durable + "
