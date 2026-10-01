@@ -7,8 +7,8 @@ the reason was invisible: the check was piped to ``Out-Null``, so CI reported a
 bare ``exit 1``.
 
 What is pinned here is that the failure can always be read: the smoke runs
-through :mod:`install.arc_smoke`, which on a failure re-runs the initialization
-directly to recover the traceback and dumps the daemon log. The environment pins keep the smoke from failing for reasons that
+through :mod:`install.arc_smoke`, which on a failure prints the typed reason, the
+chained traceback and the daemon log. The environment pins keep the smoke from failing for reasons that
 say nothing about the image, without weakening what it asserts.
 """
 
@@ -90,12 +90,26 @@ def test_arc_smoke_cleans_up_after_itself(script: str) -> None:
     assert block.count("Remove-Item -LiteralPath $smokeUser -Recurse -Force") >= 2
 
 
-def test_helper_recovers_the_traceback_and_the_daemon_log() -> None:
-    """A clio-core init failure must reach the build log with its stack and the
-    daemon log, not a bare ``exit 1``."""
+def test_helper_recovers_the_traceback_and_the_daemon_log(tmp_path: Path) -> None:
+    """A clio-core init failure reaches the build log with its typed reason, its
+    stack and the daemon log, not a bare ``exit 1``: run the helper against a config
+    clio-core refuses (no durable tier)."""
+    import os
+    import subprocess
+    import sys
+
+    config = tmp_path / "cte.yaml"
+    config.write_text(
+        "compose:\n  - mod_name: clio_cte_core\n    storage:\n"
+        '      - path: "x"\n        bdev_type: "file"\n',
+        encoding="utf-8",
+    )
+    env = {**os.environ, "CLIO_ARC_STORE_CONFIG": str(config)}
+    done = subprocess.run(
+        [sys.executable, str(HELPER)], env=env, capture_output=True, text=True, timeout=120
+    )
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert "reason=clio_core_not_durable" in done.stderr
+    assert "Traceback" in done.stderr
     helper = HELPER.read_text(encoding="utf-8")
-    assert "traceback.print_exc()" in helper
-    assert "preflight_clio_core_config" in helper
-    assert "ClioCoreStore(config_path=config_path)" in helper
-    assert "clio-runtime.log" in helper
-    assert "runtime_state_dir" in helper, "the log dump must follow the pinned state dir"
+    assert "clio-runtime.log" in helper and "runtime_state_dir" in helper
