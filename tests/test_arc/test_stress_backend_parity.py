@@ -132,10 +132,15 @@ def _script_delete(arc: ARCMemory, sid: str) -> list[tuple[str, str]]:
     assert obs, "setup: DELETE_ME segment must exist"
     n = arc.delete_segments(sid, scope, [obs[0].id])
     assert n == 1
-    # deleting an already-tombstoned id is a no-op
-    assert arc.delete_segments(sid, scope, [obs[0].id]) == 0
-    # deleting an unknown id is a no-op
-    assert arc.delete_segments(sid, scope, ["does-not-exist"]) == 0
+    # deleting an already-tombstoned or an unknown id fails typed, applying nothing
+    from clio_agent.arc.segment_ids import StaleSegmentIdError
+
+    for stale in (obs[0].id, "does-not-exist"):
+        try:
+            arc.delete_segments(sid, scope, [stale])
+        except StaleSegmentIdError:
+            continue
+        raise AssertionError(f"delete of stale id {stale!r} did not fail typed")
     return [(sid, scope)]
 
 

@@ -353,12 +353,15 @@ def test_replace_can_rekind_the_slot(tmp_path):
     assert new2 is not None and new2.kind == "observation"
 
 
-def test_replace_no_live_target_is_noop(tmp_path):
+def test_replace_no_live_target_fails_typed(tmp_path):
+    from clio_agent.arc.segment_ids import StaleSegmentIdError
+
     ss, logged = _store(tmp_path)
     ss.append(SID, SCOPE, "thought", {"text": "x"})
     n_before = len(logged)
-    assert ss.replace(SID, SCOPE, "does-not-exist", {"text": "y"}) is None
-    assert len(logged) == n_before  # no op logged for a no-op replace
+    with pytest.raises(StaleSegmentIdError):
+        ss.replace(SID, SCOPE, "does-not-exist", {"text": "y"})
+    assert len(logged) == n_before  # nothing applied, nothing logged
 
 
 def test_replace_via_apply_dispatch(tmp_path):

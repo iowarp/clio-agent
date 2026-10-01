@@ -42,6 +42,7 @@ from clio_agent.arc.schema import (
     encode_segments,
     segment_text,
 )
+from clio_agent.arc.segment_ids import require_live
 from clio_agent.arc.storage import ARCStore
 from clio_agent.errors import ClioError
 
@@ -522,6 +523,7 @@ class SegmentStore:
         number actually tombstoned."""
         with self._lock_for(session_id, scope):
             segs = self._segs(session_id, scope)
+            require_live(ids, {s.id for s in segs if s.status == "live"}, op="delete", scope=scope)
             target = set(ids)
             tombstoned: list[str] = []
             op_lt = 0
@@ -543,8 +545,6 @@ class SegmentStore:
                 self._finish_write(
                     session_id, scope, "delete", tombstoned=tombstoned, logical_time=op_lt
                 )
-            else:
-                logger.debug("segments: delete scope=%s matched no live ids=%s", scope, ids)
             return len(tombstoned)
 
     def summarize(
@@ -569,17 +569,15 @@ class SegmentStore:
         summary_content = _coerce_content(summary_content)
         with self._lock_for(session_id, scope):
             segs = self._segs(session_id, scope)
+            live_ids = {s.id for s in segs if s.status == "live"}
+            require_live(ids, live_ids, op="summarize", scope=scope)
             target = set(ids)
             replaced = [s for s in segs if s.id in target and s.status == "live"]
             # Summary takes the position (order) of the first replaced segment so it
             # renders where the range was; its step is the min replaced step.
-            if replaced:
-                first = min(replaced, key=lambda s: (s.order, s.logical_time))
-                order = first.order
-                step = min((s.step for s in replaced), default=-1)
-            else:
-                order = (max((s.order for s in segs), default=0.0)) + 1.0
-                step = -1
+            first = min(replaced, key=lambda s: (s.order, s.logical_time))
+            order = first.order
+            step = min((s.step for s in replaced), default=-1)
             summary_lt = self._new_lt()
             tombstoned: list[str] = []
             for s in replaced:
@@ -664,14 +662,9 @@ class SegmentStore:
         content = _coerce_content(content)
         with self._lock_for(session_id, scope):
             segs = self._segs(session_id, scope)
-            original = next((s for s in segs if s.id == target_id and s.status == "live"), None)
-            if original is None:
-                logger.debug(
-                    "segments: replace scope=%s matched no live id=%s (no-op)",
-                    scope,
-                    target_id,
-                )
-                return None
+            live_ids = {s.id for s in segs if s.status == "live"}
+            require_live([target_id], live_ids, op="replace", scope=scope)
+            original = next(s for s in segs if s.id == target_id and s.status == "live")
             op_lt = self._new_lt()
             original.status = "tombstoned"
             original.tombstoned_at = op_lt  # replaced exactly when the new segment appears

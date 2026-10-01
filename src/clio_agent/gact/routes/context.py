@@ -39,6 +39,7 @@ import msgspec
 from fastapi import FastAPI, HTTPException
 
 from clio_agent.arc import history_mode
+from clio_agent.arc.segment_ids import StaleSegmentIdError
 from clio_agent.gact.agents import runtime as agents_runtime
 from clio_agent.gact.context_view import context_messages
 from clio_agent.gact.off_loop import run_off_loop
@@ -303,6 +304,18 @@ def register_context_routes(app: FastAPI, deps: "GactDeps") -> None:
             result = await run_off_loop(  # #1334: a working-set write is a store RPC
                 lambda: app.state.arc.apply_segment_op(req.op, sid, req.scope, **kwargs)
             )
+        except StaleSegmentIdError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=ErrorEnvelope(
+                    error=ErrorInfo(
+                        error=exc.reason,
+                        message=str(exc),
+                        details=dict(exc.details or {}),
+                        recoverable=True,
+                    )
+                ).model_dump(exclude_none=True),
+            ) from exc
         except (ValueError, TypeError) as exc:
             raise HTTPException(
                 status_code=400,

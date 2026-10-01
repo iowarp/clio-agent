@@ -368,9 +368,11 @@ def test_interleaved_ops_count_accounting(tmp_path):
 
 
 def test_concurrent_delete_same_ids_tombstoned_once(tmp_path):
-    """Many threads race to delete the SAME set of ids. delete() only tombstones
-    LIVE segments, so across all threads each id is tombstoned exactly once and
-    the returned counts must sum to exactly the number of ids."""
+    """Many threads race to delete the SAME set of ids. The live check runs under the
+    scope lock: exactly one delete applies (each id tombstoned once) and every other
+    racer fails typed (its ids are no longer live), never a silent partial delete."""
+    from clio_agent.arc.segment_ids import StaleSegmentIdError
+
     ss = _fresh_store(tmp_path)
     scope = "agentA/del"
     n = 200
@@ -382,10 +384,15 @@ def test_concurrent_delete_same_ids_tombstoned_once(tmp_path):
     def worker() -> int:
         barrier.wait()
         # every thread tries to delete every id
-        return ss.delete(SID, scope, ids)
+        try:
+            return ss.delete(SID, scope, ids)
+        except StaleSegmentIdError:
+            return 0
 
     with ThreadPoolExecutor(max_workers=n_threads) as ex:
         counts = [f.result() for f in [ex.submit(worker) for _ in range(n_threads)]]
+
+    assert sorted(counts)[-2:] == [0, n], "exactly one racing delete applies"
 
     # total tombstones across all racing deletes == n (each id exactly once)
     assert sum(counts) == n, f"double-tombstone or lost delete: sum={sum(counts)} != {n}"

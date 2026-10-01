@@ -70,6 +70,7 @@ from clio_agent.arc.schema import (
     encode_segments,
     segment_text,
 )
+from clio_agent.arc.segment_ids import require_live
 from clio_agent.arc.segments import SegmentStore, _coerce_content
 from clio_agent.arc.storage import ARCStore
 
@@ -626,9 +627,8 @@ class FoldingSegmentStore(SegmentStore):
         if not self._is_working_set_scope(scope):
             return super().delete(session_id, scope, ids)
         live_ids = {s.id for s in self._live_fold(session_id, scope, as_of=None)}
-        targets = [i for i in ids if i in live_ids]
-        if not targets:
-            return 0
+        require_live(ids, live_ids, op="delete", scope=scope)
+        targets = list(dict.fromkeys(ids))
         op = self._make_atom(
             session_id,
             scope,
@@ -684,14 +684,11 @@ class FoldingSegmentStore(SegmentStore):
             )
         target = set(ids)
         live = self._live_fold(session_id, scope, as_of=None)
+        require_live(ids, {s.id for s in live}, op="summarize", scope=scope)
         replaced = [s for s in live if s.id in target]
-        if replaced:
-            first = min(replaced, key=lambda s: (s.order, s.logical_time))
-            order = first.order
-            step = min((s.step for s in replaced), default=-1)
-        else:
-            order = self._next_order(self._scope_content(session_id, scope))
-            step = -1
+        first = min(replaced, key=lambda s: (s.order, s.logical_time))
+        order = first.order
+        step = min((s.step for s in replaced), default=-1)
         atom = self._make_atom(
             session_id,
             scope,
@@ -750,9 +747,8 @@ class FoldingSegmentStore(SegmentStore):
                 run_span_id=run_span_id,
             )
         live = self._live_fold(session_id, scope, as_of=None)
-        original = next((s for s in live if s.id == target_id), None)
-        if original is None:
-            return None
+        require_live([target_id], {s.id for s in live}, op="replace", scope=scope)
+        original = next(s for s in live if s.id == target_id)
         atom = self._make_atom(
             session_id,
             scope,
