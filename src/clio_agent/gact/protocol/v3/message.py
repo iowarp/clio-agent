@@ -259,6 +259,8 @@ def part_to_v3_block(part: Mapping[str, Any]) -> dict[str, Any]:
             # A compaction's record (source "summarization"): who asked, and its id.
             **({"trigger": str(part["trigger"])} if part.get("trigger") else {}),
             **({"compaction_id": str(part["compaction_id"])} if part.get("compaction_id") else {}),
+            # An injection made inside a variant try (e.g. Refine advice) belongs to that tab.
+            **{k: metadata[k] for k in ("variants_id", "try_index") if k in metadata},
             **common,
         }
     if part_type == "notice":

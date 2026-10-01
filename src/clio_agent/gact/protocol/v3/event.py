@@ -10,6 +10,7 @@ from clio_agent.gact.protocol.v3 import CONNECTION_ID, GACT_V3, Projection
 from clio_agent.gact.protocol.v3.composer import COMPOSER_PROJECTORS
 from clio_agent.gact.protocol.v3.message import message_to_v3, part_to_v3_block, subagent_from_part
 from clio_agent.gact.protocol.v3.session import session_to_v3
+from clio_agent.gact.protocol.v3.variant import project_variant_event
 
 # Cancellation facts that live ONLY on a session.status_changed payload (they are
 # per-attempt, so the Session record cannot carry them) and must ride the v3
@@ -399,6 +400,9 @@ _EVENT_PROJECTORS: dict[str, _Projector] = {
     "tool.call.completed": _tool_completed,
     "permission.requested": _permission_requested,
     "permission.resolved": _permission_resolved,
+    # A variant run's tries and selection get frames of their own (the try tabs);
+    # every other semantic row stays ``semantic.event``.
+    "semantic.event": project_variant_event,
     **COMPOSER_PROJECTORS,
 }
 
