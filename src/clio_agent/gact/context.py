@@ -458,11 +458,6 @@ _VARIANT_TRY: contextvars.ContextVar[tuple[str, int] | None] = contextvars.Conte
 )
 
 
-def active_variant_try() -> tuple[str, int] | None:
-    """``(variants_id, try_index)`` of the variant try running here, if any."""
-    return _VARIANT_TRY.get()
-
-
 def set_variant_try(variants_id: str, try_index: int) -> contextvars.Token[tuple[str, int] | None]:
     """Mark this context as running try ``try_index`` of run ``variants_id``."""
     return _VARIANT_TRY.set((variants_id, int(try_index)))

@@ -472,9 +472,8 @@ class ClioCoreStore:
         # host process (clio-core#722). See clio_agent.arc.clio_core_liveness.
         self._gate = LivenessGate(config_path=config_path, log_level=log_level)
         # The probe proves the process's FRESH attach answers one real RPC; it runs once
-        # per attach. A later store (another namespace) must not re-probe: under load a
-        # re-probe failing used to release the process's attach and stop the shared
-        # daemon for every store. A daemon lost later is the per-op liveness gate's job.
+        # per attach. A later store must not re-probe: a failing re-probe would release
+        # the shared attach for every store. A daemon lost later is the liveness gate's job.
         with type(self)._init_lock:
             if not type(self)._attach_verified:
                 clio_core_attach.verify_post_attach(

@@ -807,7 +807,7 @@ def test_discover_claude_code_unresponsive_auth_status_is_typed_not_signed_out(
 ) -> None:
     """#1577: a sign-in check that never answers is "slow or unresponsive", never
     "not signed in"."""
-    from clio_agent.runtime.process_progress import ProbeUnresponsiveError
+    from clio_agent.runtime.progress import ProbeUnresponsiveError
 
     monkeypatch.setattr(md_claude_code, "_resolve_claude_binary", lambda: "claude")
     monkeypatch.setattr(md_claude_code, "refresh_claude_code_catalog", lambda: _catalog())

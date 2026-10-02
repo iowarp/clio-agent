@@ -66,7 +66,7 @@ def verify_claude_code() -> dict[str, Any]:
     from clio_agent.providers.model_discovery.claude_code import (
         discover_claude_code,  # noqa: PLC0415
     )
-    from clio_agent.runtime.process_progress import (  # noqa: PLC0415
+    from clio_agent.runtime.progress import (  # noqa: PLC0415
         ProbeUnresponsiveError,
     )
 

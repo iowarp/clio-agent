@@ -292,13 +292,10 @@ def materialize_ledger(app: "FastAPI", session_id: str) -> Optional[list[Message
     under the **atoms** regime the ledger is assembled from the canonical log
     (:func:`assemble_session_messages`), backfilling once from the RETAINED messages-store
     ledger (:func:`mint_atoms_from_ledger`) when the atom lane is absent because the
-    session predates the atoms (migration), and repairing a divergent lane from it.
-    (``ARCMemory.release_session`` no longer erases the ``_events`` family -- clio-core
-    keeps the atoms on release -- so the old #762 lifecycle-erase case is gone.) Without
+    session predates the atoms (migration), and repairing a divergent lane from it. Without
     an ARC it falls through to ``MessageStore.load_session``. With ``transcript.file``
     off there is no retained ledger: :func:`~clio_agent.gact.transcript_file.
-    materialize_from_atoms` reads the atoms alone. The LRU/TTL/pinning semantics (#889)
-    are unchanged — only the SOURCE moves.
+    materialize_from_atoms` reads the atoms alone.
 
     Preserves the store's contract precisely: ``None`` => the session has no ledger (a
     cache-miss ``KeyError`` upstream), ``[]`` => an existing-but-empty ledger,

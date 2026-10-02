@@ -1,9 +1,6 @@
-"""Git for blueprint installs: waited for while git works, typed when it stalls (#1577).
+"""Git for blueprint installs: waited for while git works, typed when it stalls.
 
-The registry clone/fetch/checkout ran under a flat 20 s ``subprocess`` timeout, so a
-first-run clone over a slow network failed with an untyped ``TimeoutExpired`` that the
-install routes did not even catch. :func:`run_git` answers fast when git does, keeps
-waiting while git's process tree is working (CPU / I/O, 180 s ceiling), and raises
+:func:`run_git` answers fast when git does, keeps waiting while git's process tree is working (CPU / I/O, 180 s ceiling), and raises
 :class:`BlueprintGitStalledError` -- a ``ValueError``, so the install/update routes
 already turn it into a typed 400 -- when it stops making progress.
 """
@@ -13,7 +10,7 @@ from __future__ import annotations
 import subprocess
 from collections.abc import Mapping, Sequence
 
-from clio_agent.runtime.process_progress import ProbeUnresponsiveError, run_probe
+from clio_agent.runtime.progress import ProbeUnresponsiveError, run_probe
 
 #: A git step answering within this costs nothing extra; past it, each stretch this long
 #: must show git working.

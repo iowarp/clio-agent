@@ -25,11 +25,10 @@ from clio_agent.arc.daemon_progress import (
     DONE,
     NO_PROGRESS,
     DaemonPidUnresolved,
-    ProcessTreeWork,
     future_done_within,
-    process_work,
     wait_while_progressing,
 )
+from clio_agent.runtime.progress import ProcessTreeWork, process_work
 
 _BURN = (
     "import sys, time\n"

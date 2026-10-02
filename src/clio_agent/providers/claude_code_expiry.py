@@ -1,13 +1,12 @@
 """How long a Claude Code call may wait, and the typed errors when it stops progressing.
 
-Two waits, each on its own progress signal (#1577 3.6); never one flat bound over the
-connect plus the whole streamed reply, which killed a long answer that was still
-streaming and treated a slow machine as a failure:
+Two waits, each on its own progress signal (never one flat bound over the connect plus
+the whole streamed reply):
 
 * **Connect** (:func:`connect_while_working`): the CLI subprocess starting and answering
   ``initialize``. After :data:`CONNECT_FIRST_WAIT_S` it is waited for only while the CLI
   process tree keeps working (CPU / I/O), each :data:`CONNECT_STRETCH_S`, up to the
-  :data:`~clio_agent.runtime.process_progress.DEFAULT_CEILING_S` ceiling; else
+  :data:`~clio_agent.runtime.progress.DEFAULT_CEILING_S` ceiling; else
   :class:`ClaudeCodeConnectTimeout`.
 * **Stream** (:func:`relay_with_idle_bound`): the gap between two SDK messages may not
   exceed the idle bound (``limits.lm_inter_token_idle_s``); a reply that keeps streaming
@@ -24,7 +23,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from clio_agent.runtime.process_progress import NoProgressError, await_while_working, tree_work
+from clio_agent.runtime.progress import NoProgressError, await_while_working, tree_work
 
 logger = logging.getLogger(__name__)
 

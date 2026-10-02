@@ -1,8 +1,6 @@
 """Wait for an MCP server while ITS OWN process tree is working; never a fixed deadline.
 
-A server still starting on a slow machine (``uv`` installing its environment, Python
-importing) answers late; a hung one never answers. Only the awaited server's own work
-tells them apart, so every MCP connect/list wait here measures exactly that server:
+Every MCP connect/list wait here measures exactly the awaited server:
 
 * :func:`wait_while_server_works` binds a fresh :class:`ProcessTreeWork` for the wait
   (in a context variable, copied into the awaited task and every task it starts);
@@ -24,11 +22,11 @@ import logging
 import time
 from typing import Any
 
-from clio_agent.arc.daemon_progress import CEILING, NO_PROGRESS, ProcessTreeWork
+from clio_agent.arc.daemon_progress import CEILING, NO_PROGRESS
+from clio_agent.runtime.progress import ProcessTreeWork, progressed
 
 logger = logging.getLogger(__name__)
 
-_MIN_WORK_PROGRESS = 0.01
 _DEFAULT_NO_PROGRESS_S = 30.0
 _DEFAULT_MAX_WAIT_S = 180.0
 
@@ -166,7 +164,7 @@ async def wait_while_server_works(
                 return task.result()
             waited = time.monotonic() - started
             work = await asyncio.to_thread(tree.sample)
-            if work is None or (last is not None and work - last < _MIN_WORK_PROGRESS):
+            if not progressed(work, last):
                 raise NoProgressTimeout(op_name, NO_PROGRESS, waited, window)
             if waited >= ceiling:
                 raise NoProgressTimeout(op_name, CEILING, waited, window)

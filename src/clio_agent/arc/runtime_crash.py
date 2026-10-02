@@ -195,7 +195,7 @@ class DaemonStillStarting(DaemonSpawnFailed):
 def daemon_start_work(pid: int | None, log_path: Path) -> Callable[[], float | None]:
     """The startup progress signal of a spawned daemon: its process tree's CPU + I/O work
     plus its log's growth (MiB). ``None`` when there is no daemon process to measure."""
-    from clio_agent.arc.daemon_progress import ProcessTreeWork  # noqa: PLC0415 - cycle
+    from clio_agent.runtime.progress import ProcessTreeWork  # noqa: PLC0415
 
     tree = ProcessTreeWork(pid) if pid is not None else None
 

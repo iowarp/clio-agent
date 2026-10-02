@@ -19,8 +19,8 @@ import pytest
 
 from clio_agent.providers.components import client_binary as cb
 from clio_agent.providers.model_discovery import claude_code as cc_discovery
-from clio_agent.runtime import process_progress, sandbox_codex
-from clio_agent.runtime.process_progress import ProbeUnresponsiveError
+from clio_agent.runtime import progress, sandbox_codex
+from clio_agent.runtime.progress import ProbeUnresponsiveError
 
 _CLI = """
 import json, sys, time
@@ -69,7 +69,7 @@ def test_an_unresponsive_cli_is_typed_not_unreadable(tmp_path: Path) -> None:
     started = time.monotonic()
     with pytest.raises(ProbeUnresponsiveError) as caught:
         cb.probe_version(_fake_cli(tmp_path, "idle", 30.0))
-    assert caught.value.reason == process_progress.REASON_NO_PROGRESS
+    assert caught.value.reason == progress.REASON_NO_PROGRESS
     assert time.monotonic() - started < 15
 
 

@@ -256,7 +256,7 @@ def _build_prompt_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> A
             _ = (
                 session_mode,
                 session_edit_mode,
-            )  # P1.2 #1064: kept for a stable forward() signature; mode is surfaced upstream in turn.py enrichment (plan_mode_reminder), not here.
+            )  # kept for a stable forward() signature; mode is surfaced in turn.py enrichment
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
                     _cancelled_error_info(session_id, execution_cancellation="cooperative")
@@ -1119,7 +1119,7 @@ def _build_blueprint_dspy_module(base_agent: Any, agent_def: "AgentDef") -> Any:
             _ = (
                 session_mode,
                 session_edit_mode,
-            )  # P1.2 #1064: kept for a stable forward() signature; mode is surfaced upstream in turn.py enrichment (plan_mode_reminder), not here.
+            )  # kept for a stable forward() signature; mode is surfaced in turn.py enrichment
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
                     _cancelled_error_info(session_id, execution_cancellation="cooperative")
@@ -1338,7 +1338,7 @@ def _build_tool_user_agent_module(base_agent: Any, agent_def: "AgentDef") -> Any
             _ = (
                 session_mode,
                 session_edit_mode,
-            )  # P1.2 #1064: kept for a stable forward() signature; mode is surfaced upstream in turn.py enrichment (plan_mode_reminder), not here.
+            )  # kept for a stable forward() signature; mode is surfaced in turn.py enrichment
             if cancel_requested is not None and cancel_requested():
                 raise _TurnCancelled(
                     _cancelled_error_info(session_id, execution_cancellation="cooperative")

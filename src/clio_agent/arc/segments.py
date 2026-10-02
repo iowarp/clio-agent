@@ -298,11 +298,6 @@ class SegmentStore:
             search_text=search_text,
         )
 
-    def _index_remove(self, session_id: str, scope: str, seg: Segment) -> None:
-        """Drop a dropped segment from the per-scope locator so the index stays in sync
-        with the scan (the parallel-consistency invariant)."""
-        self._index.remove(session_id, scope, seg)
-
     def _new_lt(self) -> int:
         """Issue the next monotonic logical tick. Guarded by its OWN tiny lock so the
         shared clock is serialized across ALL scopes (each scope holds only its own

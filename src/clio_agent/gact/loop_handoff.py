@@ -1,12 +1,6 @@
 """Run a synchronous call on the app event loop from another thread, typed on failure.
 
-The spawn and spotter hand-offs (``turn_spawn.spawn_child_turn_threadsafe``,
-``spotter_watcher._start_check_turn_on_app_loop``) used
-``run_coroutine_threadsafe(...).result(timeout=60/30)``: a loop that was stopped made the
-caller wait out the bound and then raise a bare ``TimeoutError`` -- and the call could
-still run afterwards, behind the caller's back (#1577 3.9).
-
-:func:`call_on_loop` instead:
+:func:`call_on_loop`:
 
 * fails at once with :class:`LoopHandoffError` (:data:`REASON_LOOP_NOT_RUNNING`) when the
   loop is closed or not running -- nothing will ever process the call;

@@ -254,10 +254,11 @@ class _Drafts:
         this context; a failed try is recorded and the others go on."""
 
         def in_own_context(context: Context, **example: Any) -> Any:
-            return context.run(self._parallel_try, cut=cut, **example)
+            return context.run(self.one_try, cut=cut, **example)
 
         calls = [
-            (functools.partial(in_own_context, copy_context()), {"index": k}) for k in range(count)
+            (functools.partial(in_own_context, copy_context()), {"try_index": k})
+            for k in range(count)
         ]
         # timeout=0: no wall-clock straggler re-run (a slow try is a long agent run, not
         # a stuck one; re-running it would double its cost on the same scope).
@@ -265,9 +266,6 @@ class _Drafts:
             num_threads=count, max_errors=count + 1, timeout=0, disable_progress_bar=True
         )(calls)
         self.escalate()
-
-    def _parallel_try(self, *, index: int, cut: str) -> Any:
-        return self.one_try(index, cut=cut)
 
     def escalate(self) -> None:
         """A cancelled turn or a terminal MCP refusal in any try ends the run as itself."""

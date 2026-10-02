@@ -66,13 +66,6 @@ class SegmentIndex:
             return []
         return [sd[lt] for lt in sd.irange(lt_min, lt_max)]
 
-    def remove(self, session_id: str, scope: str, seg: Segment) -> None:
-        """Forget a single segment (mirrors a non-poisoning drop of an un-encodable
-        segment from the scan, so the locator stays consistent with the scope list)."""
-        sd = self._by_scope.get((session_id, scope))
-        if sd is not None and sd.get(seg.logical_time) == seg.id:
-            del sd[seg.logical_time]
-
     def drop_scope(self, session_id: str, scope: str) -> None:
         """Forget a single scope's locator (mirrors SegmentStore.drop_scope)."""
         self._by_scope.pop((session_id, scope), None)

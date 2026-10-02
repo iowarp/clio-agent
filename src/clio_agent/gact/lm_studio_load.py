@@ -1,19 +1,17 @@
-"""LM Studio model load for ``PUT /v1/providers/lm``: reuse or load, never silently (#1577).
+"""LM Studio model load for ``PUT /v1/providers/lm``: reuse or load, never silently.
 
-Kept out of ``gact/routes/providers.py`` (a baselined god-file). Two steps:
+Two steps:
 
 * :func:`loaded_instance_matching` asks LM Studio whether the model is already loaded
   with the requested context length and concurrency. A slow answer is retried with a
   longer bound (:data:`LIST_TIMEOUTS_S`) and, if LM Studio never answers, the bind fails
-  typed (:data:`REASON_LIST_UNANSWERED`) -- it no longer reads as "not loaded" and
-  silently reloads the model. A refused or unreadable listing is logged with a typed
+  typed (:data:`REASON_LIST_UNANSWERED`), never read as "not loaded". A refused or unreadable listing is logged with a typed
   reason before the load proceeds.
 * :func:`load_model` sends the load. LM Studio's REST API reports no load progress, so the
   wait is bounded by LM Studio staying responsive: while the load is pending its model
   list is polled every :data:`LOAD_POLL_S`; a server that stops answering for
   :data:`LOAD_UNRESPONSIVE_S` fails typed (:data:`REASON_UNRESPONSIVE_DURING_LOAD`), and a
   responsive server that never finishes the load fails typed at :data:`LOAD_CEILING_S`.
-  A big model loading from a slow disk is waited for; there is no flat 180 s cut.
 """
 
 from __future__ import annotations
