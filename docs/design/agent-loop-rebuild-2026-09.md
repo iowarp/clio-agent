@@ -1610,7 +1610,10 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
   - New setting `arc.liveness.stop_no_progress_s`.
 - **Done (#1585):** the cumulative-work test's child burns CPU time, not wall time (a load-sensitive test).
 - **CI green on the `rework_agent` tip `1f454adc`** (run 36959115221, 2026-10-02), with every fix above.
-- **Live verification running on that tip:** `live/bench/suite.sh rework final1`, Codex direct (`gpt-6-sol`), results in `D:/t/bench/legs-rework-final1`. The harness binds Codex direct and maps the `rework` tree.
+- **Live suite started on that tip, then stopped by the owner** (testing happens at the end; see the battery below).
+  - `preflight`, leg C and the goal judge passed.
+  - `leg_compaction` failed only on the old contract's checks; it is being updated.
+  - Leg B needs `WEB_REMOTE_URL`.
 
 ### Issues filed
 - **iowarp/clio-core#1112:** expose scheduler progress and the hang watchdog to clients (an out-of-band stats call, future state, startup and flush progress, the GIL, typed `clio_init`, `.pyi` stubs).
@@ -1634,12 +1637,63 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
 6. **DSPy upstream issue** for the lazy `anyio` proxy: needs the owner's OK to post on stanfordnlp/dspy.
 7. **Whatever the next CI runs report:** fix on a branch off `rework_agent` and merge back by PR.
 
-### Verification (normal work)
-- **Live legs, marketplace agents and OPAL exp67** on Codex direct against the recorded baselines. Marketplace agents: earthscope-single-agent, factorio-flat evals, deep-researcher, data-semantics. The live harness already points at Codex direct.
-- **The named Definition-of-done tests** pass in CI on `rework_agent`:
-  - `test_clio_react.py::test_differential_same_calls_results_and_outputs_as_stock_reactv2`;
-  - `test_context_projection.py::test_every_request_is_a_prefix_of_the_next_across_steps_and_turns`;
-  - the Phase 4 UI-vs-agent and fix-recorded tests.
+### Final verification battery (run on the PR-ready `rework_agent`, right before the merge into develop)
+
+Owner, 2026-10-02: implementation and bug fixing first. All testing and evaluation happens once, here, at the end. Codex can run this battery. If a step fails, the fix is implementation work: a branch off `rework_agent`, merged back by PR. Then re-run the failed step.
+
+**Environment**
+- Worktrees live under `D:\Libraries\Documents\projects\opal-work\`.
+- The live harness is `opal-work\live\` (not a git repo). `live\bench\{bench.sh,suite.sh,common.py}` know the `rework` tree, which is `clio-agent-live`, and bind Codex direct. Update `clio-agent-live` to the tip: `git fetch && git checkout --detach origin/rework_agent && uv sync --all-extras --python 3.12`.
+- Codex direct signs in from `~/.codex/auth.json`, model `gpt-6-sol`.
+- Never run a full test suite alongside live legs. Kill any leftover `clio_run.exe` after a killed run.
+
+1. **CI**
+   - clio-agent: `gh workflow run ci.yml --repo iowarp/clio-agent --ref rework_agent`. It must be green (the last green tip was `1f454adc`, run 36959115221).
+   - gact-tui: its CI runs only on PRs into develop/main. Open the final PR (`rework_agent` → `develop`) as a draft to run it, and push `rework_agent:codex/rework-agent` for `apps.yml` (e2e and visual baselines on Linux).
+   - Generate the Linux baseline `summarization-row-collapsed.png` there.
+2. **Live suite** (Codex direct, a private clio-core daemon per leg): `bash live/bench/suite.sh rework <tag>`. Results go to `D:/t/bench/legs-rework-<tag>/`.
+   - **Scenarios** against the develop baselines in `D:/t/bench/baseline-{earthscope,deep,factorio,data,opal}-*`; compare with `live/bench/report.py`:
+     - earthscope-single-agent;
+     - deep-researcher;
+     - factorio-flat (evals);
+     - data-semantics;
+     - OPAL.
+   - **Legs:**
+     - `preflight`, `leg_c_synthetic_session` and `leg_goal_judge`: passed on `1f454adc` (36 s, 132 s, 74 s).
+     - `leg_compaction`: re-run with the leg updated to the Phase 11b contract.
+     - `leg_b_web_fetch`: needs `WEB_REMOTE_URL`, a local `clio-web-search` container.
+     - `leg_bd_stress`.
+     - Leg A (v1 fleet) and leg D (deep researcher), per `scripts/live_verification/RUNBOOK.md`.
+   - **Bar:** clearly faster than the develop baseline, with no quality regression (graders and checklists in each scenario).
+3. **Phase 9 live legs:**
+   - a blueprint with `best_of_n`;
+   - a blueprint with `refine`;
+   - a subagent spawned with a `strategy`;
+   - the email case with the user's pick in the web UI (also part of the browser gate).
+4. **OPAL exp67:** `live/drive.py`, with the base APPL-CORE pack (`marketplace-appl-core` `feat/appl-core-pack`, placeholder APPL skills). Use realistic prompts: "<exp67 path> what is this data?", "does the nickel hurt growth?", "show me the growth curves". Compare with `runs/exp67-first-contact` (2348 / 427 / 308 s), and check quality: the DBL_MAX sentinel, the ghost band columns, unflagged empty rows, the RGB2 scale, clipping.
+5. **The named Definition-of-done tests** pass in CI:
+   - the differential against stock ReActV2;
+   - prefix stability;
+   - UI vs agent projection;
+   - fix recorded and told.
+6. **Release gate: the 1k/10k context-view benchmark.**
+   - `scripts/bench_context_view.py --sizes 1000,10000 --out <json>` on `037e66ec` (before; a worktree at that commit) and on the tip (after).
+   - Bar: warm read and append flat from 1k to 10k; a cold read touches only the chunks after the anchor.
+   - At N=100 the smoke run already showed append p50 of 32.5 → 11.1 ms, and pre-compaction atoms scanned after a compaction of 62 → 0.
+7. **Release gate: the Chrome UI check (owner)** on the gact-tui `rework_agent` build against the clio-agent tip. Check:
+   - thinking streaming;
+   - concurrent tool calls;
+   - injections;
+   - compaction: the "Summarizing context" shimmer becomes the "Summarization" injection, and a failure becomes the notice;
+   - fixes;
+   - steer and cancel;
+   - variant tabs (pick, refine comment; closed runs show superseded, cancelled or expired);
+   - the History-mode badge;
+   - reload == live.
+8. **Marketplace:** run the APPL pack's lint and tests against the tip, then merge `clio-agent-marketplace` `feat/appl-core-pack` into `main`, at release.
+9. **Releases, owner:**
+   - clio-schemas 0.5.2 (iowarp/clio-schemas#18), then bump clio-agent's `clio-schemas` pin;
+   - then the two PRs `rework_agent` → `develop`.
 
 ### Release gates (end only)
 - the Chrome-driven UI verification (owner);
