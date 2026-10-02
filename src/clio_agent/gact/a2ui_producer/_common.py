@@ -100,6 +100,43 @@ def merged_surface_components(
     return upsert_components_by_id(current_surface_components(existing), new_components)
 
 
+def component_tree_error(components: list[dict[str, Any]]) -> str | None:
+    """Explain missing or unattached components in a new surface's root tree."""
+
+    by_id = {str(component.get("id")): component for component in components}
+    seen: set[str] = set()
+    pending = ["root"]
+    while pending:
+        component_id = pending.pop()
+        if component_id in seen:
+            continue
+        component = by_id.get(component_id)
+        if component is None:
+            return f'component id="{component_id}" is referenced but not defined'
+        seen.add(component_id)
+        child = component.get("child")
+        if isinstance(child, str):
+            pending.append(child)
+        children = component.get("children")
+        if isinstance(children, list):
+            pending.extend(value for value in children if isinstance(value, str))
+        tabs = component.get("tabs")
+        if isinstance(tabs, list):
+            pending.extend(
+                tab["child"]
+                for tab in tabs
+                if isinstance(tab, dict) and isinstance(tab.get("child"), str)
+            )
+    unattached = [component_id for component_id in by_id if component_id not in seen]
+    if unattached:
+        return (
+            f'Components {", ".join(unattached)} are not reachable from id="root" '
+            "and will not render. Put their ids in a root Row, Column, Grid, "
+            "Frame, or Tabs layout."
+        )
+    return None
+
+
 def surface_registry_fields(outcome: "A2UIBatchOutcome") -> dict[str, Any]:
     """Return the bounded ``session_surface_ids`` result fields for one outcome."""
 

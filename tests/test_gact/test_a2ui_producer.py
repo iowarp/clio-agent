@@ -998,6 +998,42 @@ def test_partial_update_definition_artifact_carries_the_full_merged_surface(
     ]
 
 
+def test_create_rejects_an_unattached_chart_instead_of_claiming_it_rendered(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+    result = build_create_a2ui_surface_tool()(
+        surface_id="unattached",
+        components=[
+            {"id": "root", "component": "Text", "text": "Map"},
+            {"id": "scatter", "component": "Text", "text": "Chart"},
+        ],
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "a2ui_validation_failed"
+    assert "scatter" in result["detail"]
+    assert "root Row, Column, Grid" in result["detail"]
+    assert app.state.a2ui_store.get(sid, "unattached") is None
+
+
+def test_create_accepts_a_layout_referencing_every_child(tmp_path: Path, monkeypatch: Any) -> None:
+    app, sid = _session(tmp_path, monkeypatch)
+    _advertise_workspace_catalog(app, sid)
+    result = build_create_a2ui_surface_tool()(
+        surface_id="composed",
+        components=[
+            {"id": "root", "component": "Row", "children": ["map", "scatter"]},
+            {"id": "map", "component": "Text", "text": "Map"},
+            {"id": "scatter", "component": "Text", "text": "Chart"},
+        ],
+    )
+
+    assert result.get("ok") is not False, result
+    assert app.state.a2ui_store.get(sid, "composed") is not None
+
+
 def test_partial_update_adding_a_new_component_appends_to_the_merged_definition(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
