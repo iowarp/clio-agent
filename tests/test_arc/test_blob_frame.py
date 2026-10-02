@@ -18,7 +18,7 @@ import uuid
 import pytest
 
 from clio_agent.arc.batch_put import PutRecord
-from clio_agent.arc.blob_frame import BlobFrameError, frame, unframe
+from clio_agent.arc.blob_frame import BlobDecodeError, BlobFrameError, frame, unframe
 from clio_agent.arc.lane_index import (
     INDEX_SCOPE,
     ChunkEntry,
@@ -52,6 +52,13 @@ def test_a_truncated_frame_is_typed() -> None:
     with pytest.raises(BlobFrameError) as caught:
         unframe("r", frame(b"x" * 30)[:-4])
     assert caught.value.error_type == "clio_core_blob_truncated"
+
+
+def test_invalid_base64_is_typed_for_legacy_and_framed_blobs() -> None:
+    for body in (b"invalid!", b"8:invalid!"):
+        with pytest.raises(BlobDecodeError) as caught:
+            unframe("damaged", body)
+        assert caught.value.error_type == "clio_core_blob_invalid_base64"
 
 
 def test_a_slightly_shorter_put_reads_back_exactly() -> None:

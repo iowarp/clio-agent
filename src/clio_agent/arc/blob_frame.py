@@ -17,10 +17,11 @@ as it always did.
 from __future__ import annotations
 
 import base64
+import binascii
 
 from clio_agent.errors import ClioError
 
-__all__ = ["BlobFrameError", "frame", "unframe"]
+__all__ = ["BlobDecodeError", "BlobFrameError", "frame", "unframe"]
 
 _SEP = b":"
 _MAX_HEADER = 20  # digits of the length; a body is far below 10**19 characters
@@ -40,6 +41,19 @@ class BlobFrameError(ClioError):
         )
 
 
+class BlobDecodeError(ClioError):
+    """A stored clio-core blob has invalid base64 content."""
+
+    reason = "clio_core_blob_invalid_base64"
+
+    def __init__(self, name: str) -> None:
+        super().__init__(
+            f"clio-core blob {name!r} cannot be decoded",
+            error_type=self.reason,
+            details={"name": name},
+        )
+
+
 def frame(data: bytes) -> bytes:
     """The stored body of ``data``: its base64 text behind a length header."""
     text = base64.b64encode(data)
@@ -55,9 +69,15 @@ def unframe(name: str, raw: bytes | str) -> bytes:
     body = raw.encode("ascii") if isinstance(raw, str) else bytes(raw)
     cut = body.find(_SEP, 0, _MAX_HEADER + 1)
     if cut <= 0 or not body[:cut].isdigit():
-        return base64.b64decode(body)  # written before the frame: plain base64, read whole
+        try:
+            return base64.b64decode(body, validate=True)  # legacy plain base64
+        except (binascii.Error, ValueError) as exc:
+            raise BlobDecodeError(name) from exc
     declared = int(body[:cut])
     text = body[cut + 1 : cut + 1 + declared]
     if len(text) != declared:
         raise BlobFrameError(name, declared, len(text))
-    return base64.b64decode(text)
+    try:
+        return base64.b64decode(text, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise BlobDecodeError(name) from exc
