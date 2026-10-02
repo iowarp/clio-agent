@@ -1641,7 +1641,7 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
 
 **Owner, 2026-10-02:**
 - Implementation and bug fixing come first. All testing and evaluation happens once, here; Codex can run it.
-- Live verification is **targeted**. For each behaviour this branch changed, check live what the tests cannot reach: real providers, real clocks and slow machines, real model behaviour, real UI, other OSes. Scenario benchmarks only answer "faster, no regression".
+- Live verification is **targeted**. For each behaviour this branch changed, check live what the tests cannot reach: real providers, real clocks and slow machines, real model behaviour, real UI, other OSes. The early adopters' scenarios (C) are a separate release check: their use cases must stay fast and correct.
 - A failed check is implementation work: a branch off `rework_agent`, merged back by PR, then that check re-runs.
 
 **Environment**
@@ -1726,7 +1726,8 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
 
 **11. Subagents and delegation.** One deep-research run checks alternative execution modes, division of labour, and child results at the step boundary.
 
-#### C. Speed and regression only
+#### C. Early adopters' use cases (a release gate in their own right)
+These scenarios are the real workloads of CLIO's early adopters. Before a release they must be fast, work well and operate properly. They do not verify the new semantics; sections A and B do that, because this layer aims to serve other clients too.
 Run `bash live/bench/suite.sh rework <tag>` and compare with the develop baselines in `D:/t/bench/baseline-*` using `live/bench/report.py`. The scenarios are earthscope-single-agent, deep-researcher, factorio-flat (evals), data-semantics and OPAL exp67, the last via `live/drive.py` with the base APPL-CORE pack. The legs:
 - `preflight`, leg C and the goal judge passed on `1f454adc`.
 - `leg_compaction` is on the Phase 11b contract (#1586). Replaying the `1f454adc` evidence passed 28 of 28. The live run must confirm recall by compaction id and whole-row byte-equality.
