@@ -1638,6 +1638,11 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
   - gact-tui #525: the double-mounted surface fixed (a latent bug also on develop: a surface awaiting a pending response showed in both the tray and the detached list); the Go file freeze back to 612; the Linux summarization baseline added.
   - **MERGED INTO DEVELOP** after green PR CI: clio-agent #1593 (`1a2a4ccc`) and gact-tui #524 (`4177f167`).
   - **Final verification running on develop.** Results go to `opal-work/reports/final-verification-2026-10-02.md`.
+  - **Final verification status (04:40 CDT):** four product bugs found live and fixed into develop, each by PR with CI green: #1594 (clio-core PutBlob shrink), #1595 (rollout temperature on Codex), #1596 (Claude Code Windows command line), #1597 (Codex continuation after a pick). Develop `e6cbe288` CI green (push run 36984457306).
+    - PASS: B1 Codex direct, ALCF, Claude Code; B2; B3 cancel and steer; B4/B5 compaction (auto, manual, prompt file, restart, recall); B6 best_of_n user and LM judge, parallel tries, pick, line continues after the pick, supersede, cancel; B7 transcript intact and History mode; B8 transcript off (8/8); B9 long answer and the 2M-row table query.
+    - Two more bugs being fixed (decided overnight, MORNING-DECISIONS 5 and 6): auto-compaction thrash when the post-compaction floor is above the threshold (`fix/autocompact-thrash`), and pre-rebuild sessions with tool calls cannot continue (`fix/legacy-call-ids`).
+    - Not run: OpenRouter (no key), LM Studio (server down), Refine with a comment (the model chose n=1), spawn with a strategy, short expiry, `ask_user` (the model asked in prose).
+    - Running: the scenario suite C (`final2`; the deep scenario's server was killed mid-run and reruns after the suite), then the D1 1k/10k bench.
 
 **Implementation status (2026-10-02): complete on both `rework_agent` branches.** Everything left needs either an owner decision or the final verification below.
 
@@ -1653,7 +1658,7 @@ Append wall time is unchanged (about 32 ms: 3 sequential puts). Next: overlap th
   - `src` +19,194 / −17,149.
   - Neither meets deletions ≥ additions now. `src` met it until the 2026-10-02 work: the #1577 progress waits, variant closing, atomic transcript replace, typed delete cleanup, graceful shutdown and the thread-progress probe all added net code.
 
-**Owner decisions:**
+**Owner decisions (all answered 2026-10-02 night; kept for history):**
 1. **Deletions ≥ additions** (it no longer holds even for `src`, see above): accept the net growth from the new features, or look for genuinely dead code to remove?
 2. **OK to post the DSPy upstream issue** about the lazy `anyio` proxy (stanfordnlp/dspy)?
 3. **Release clio-schemas 0.5.2** (#18), then bump the clio-agent pin.
