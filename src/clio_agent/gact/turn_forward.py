@@ -108,7 +108,18 @@ async def _run_module(state: "TurnState", module: Any, cancel_cb: Callable[[], b
     The executor gets a copy of the turn context (identity, cancellation checker,
     tool session), so the loop's live text and thinking stream through the LM
     token hooks while it runs. A failure propagates to the turn as itself.
+
+    First, the session's drafts pick still waiting when this turn starts is superseded
+    (:mod:`clio_agent.gact.agents.variant_close`); what the agent must know about a run
+    closed without a pick joins the turn's injections.
     """
+    from clio_agent.gact.agents.variant_close import turn_start_notices  # noqa: PLC0415
+
+    state.injections.extend(
+        await run_off_loop(
+            lambda: turn_start_notices(state.app, state.sid, message_id=state.user_msg.id)
+        )
+    )
     native = await run_off_loop(
         lambda: native_input_kwargs(
             state.app, state.sid, module, images=state.native_images, files=state.native_files

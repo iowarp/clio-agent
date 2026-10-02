@@ -6,7 +6,9 @@ Events (recorded on clio-core first, then the UI, trace and hooks):
   (``completed`` with its final text, score and tokens, or ``failed`` with the error);
 * ``variant.try.delta`` -- the try's streamed text / thinking, live, for its tab;
 * ``variant.selected`` -- the selection: the judge's scores or the user's pick and
-  comment, and the selected text.
+  comment, and the selected text;
+* ``variant.closed`` -- a human-judged run ended without a pick: ``superseded`` (a new
+  turn started first), ``cancelled`` or ``expired`` (:mod:`variant_close`).
 
 Every payload carries the run's stable ``variants_id`` and the try's ``try_index``. While
 a try runs (:func:`try_context`), every other semantic event emitted in it -- its steps,
@@ -27,9 +29,11 @@ from clio_agent.gact import context as _ctx
 from clio_agent.gact.agents.variant_records import TryRecord, VariantRun
 
 __all__ = [
+    "VARIANT_CLOSED",
     "VARIANT_SELECTED",
     "VARIANT_TRY",
     "VARIANT_TRY_DELTA",
+    "emit_closed",
     "emit_selected",
     "emit_try",
     "try_context",
@@ -38,6 +42,7 @@ __all__ = [
 VARIANT_TRY = "variant.try"
 VARIANT_TRY_DELTA = "variant.try.delta"
 VARIANT_SELECTED = "variant.selected"
+VARIANT_CLOSED = "variant.closed"
 
 _SEMANTIC_STATUS = {"running": "running", "completed": "completed", "failed": "failed"}
 
@@ -117,6 +122,40 @@ def emit_selected(run: VariantRun) -> None:
         payload["pick"] = run.pick
         payload["comment"] = run.comment
     _emit(VARIANT_SELECTED, "completed", run.agent_id, payload)
+
+
+def emit_closed(app: Any, session_id: str, run: VariantRun) -> None:
+    """Put a run that closed without a pick on ``session_id``'s highway.
+
+    Explicit ``app`` / ``session_id``: a run closes outside any turn (the cancel route,
+    the question's deadline) as well as at a turn's start.
+    """
+    from clio_agent.gact.runtime.globals import _emit_semantic_event  # noqa: PLC0415
+
+    payload: dict[str, Any] = {
+        **_run_payload(run),
+        "status": run.status,
+        "reason": run.closed_reason,
+        "question_id": run.question_id,
+        "closed_at": run.closed_at,
+        "candidates": [
+            {"try_index": t.try_index, "scope": t.scope, "text": t.text}
+            for t in run.tries
+            if t.status == "completed"
+        ],
+    }
+    if run.superseded_by_message_id:
+        payload["superseded_by_message_id"] = run.superseded_by_message_id
+    _emit_semantic_event(
+        app,
+        session_id,
+        VARIANT_CLOSED,
+        turn_id=run.turn_id,
+        status="cancelled",
+        summary=f"{run.agent_id or 'agent'} drafts {run.status}",
+        actor={"agent_id": run.agent_id, "role": "expert"},
+        payload=payload,
+    )
 
 
 def _delta_emitter(run: VariantRun, try_index: int) -> Any:

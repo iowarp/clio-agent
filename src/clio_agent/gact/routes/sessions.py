@@ -939,7 +939,7 @@ def register_sessions_routes(app: FastAPI, deps: "GactDeps") -> None:
 
         row = claim_question_transition(app, question_id, "cancelled") or row
         # P1.3 #1113: cancelled elicitation/forwarded-mirror resolves down, not to idle.
-        if not resolve_cancelled_question(app, row) and not pending_user_questions(app, sid):
+        if not await resolve_cancelled_question(app, row) and not pending_user_questions(app, sid):
             sess = app.state.sessions.get(sid)
             _set_session_status(
                 sid,

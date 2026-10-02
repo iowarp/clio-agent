@@ -1,6 +1,7 @@
 """GACT 0.3 frames for a BestOfN / Refine run (Phase 9): the variant tabs.
 
-A run's semantic events (``variant.try``, ``variant.try.delta``, ``variant.selected``)
+A run's semantic events (``variant.try``, ``variant.try.delta``, ``variant.selected``,
+``variant.closed``)
 reach the bus as ``semantic.event`` rows; here they become their own v3 frames, so a
 client renders one tab per try without reading semantic payloads:
 
@@ -8,7 +9,9 @@ client renders one tab per try without reading semantic payloads:
   ended (its text, score, tokens), or failed;
 * ``variant.try.delta`` (same entity) -- the try's live text / thinking;
 * ``variant.selected`` (entity ``<variants_id>``) -- the scores or the user's pick and
-  comment, and the selected try.
+  comment, and the selected try;
+* ``variant.closed`` (entity ``<variants_id>``) -- the run ended without a pick:
+  ``status`` ``superseded`` / ``cancelled`` / ``expired`` with its typed ``reason``.
 
 Every other semantic event a try emits keeps its ``semantic.event`` frame and carries
 ``variants_id`` / ``try_index`` in its payload.
@@ -86,7 +89,38 @@ def _selected(event: Event, outer: Mapping[str, Any], inner: Mapping[str, Any]) 
     return Projection("variant.selected", payload, variants_id)
 
 
-_PROJECTORS = {"variant.try": _try, "variant.try.delta": _delta, "variant.selected": _selected}
+def _closed(event: Event, outer: Mapping[str, Any], inner: Mapping[str, Any]) -> Projection:
+    variants_id = str(inner.get("variants_id") or "")
+    payload = {
+        **_run_fields(event, outer, inner),
+        "status": str(inner.get("status") or ""),
+        "reason": str(inner.get("reason") or ""),
+        "question_id": str(inner.get("question_id") or ""),
+        "closed_at": str(inner.get("closed_at") or ""),
+        "candidates": [
+            {
+                "try_index": int(row.get("try_index") or 0),
+                "scope": str(row.get("scope") or ""),
+                "text": str(row.get("text") or ""),
+            }
+            for row in inner.get("candidates") or []
+            if isinstance(row, Mapping)
+        ],
+        **(
+            {"superseded_by_message_id": str(inner["superseded_by_message_id"])}
+            if inner.get("superseded_by_message_id")
+            else {}
+        ),
+    }
+    return Projection("variant.closed", payload, variants_id)
+
+
+_PROJECTORS = {
+    "variant.try": _try,
+    "variant.try.delta": _delta,
+    "variant.selected": _selected,
+    "variant.closed": _closed,
+}
 
 
 def project_variant_event(event: Event, payload: dict[str, Any], session: Any) -> Projection | None:
